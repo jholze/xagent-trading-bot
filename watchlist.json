@@ -1,34 +1,34 @@
 {
-  "coins": [
-    {
-      "symbol": "ARIA/USDT",
-      "ticker": "ARIA",
-      "name": "Aria AI",
-      "active": true
-    },
-    {
-      "symbol": "RAVE/USDT",
-      "ticker": "RAVE",
-      "name": "RaveDAO",
-      "active": true
-    },
-    {
-      "symbol": "HIGH/USDT",
-      "ticker": "HIGH",
-      "name": "Highstreet",
-      "active": true
-    },
-    {
-      "symbol": "SOL/USDT",
-      "ticker": "SOL",
-      "name": "Solana",
-      "active": true
-    },
-    {
-      "symbol": "BTC/USDT",
-      "ticker": "BTC",
-      "name": "Bitcoin",
-      "active": true
-    }
-  ]
+    "coins": [
+        {
+            "symbol": "ARIA/USDT",
+            "ticker": "ARIA",
+            "name": "Aria AI",
+            "active": true
+        },
+        {
+            "symbol": "RAVE/USDT",
+            "ticker": "RAVE",
+            "name": "RaveDAO",
+            "active": true
+        },
+        {
+            "symbol": "HIGH/USDT",
+            "ticker": "HIGH",
+            "name": "Highstreet",
+            "active": true
+        },
+        {
+            "symbol": "SOL/USDT",
+            "ticker": "SOL",
+            "name": "Solana",
+            "active": true
+        },
+        {
+            "symbol": "BTC/USDT",
+            "ticker": "BTC",
+            "name": "Bitcoin",
+            "active": true
+        }
+    ]
 }

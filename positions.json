@@ -1,14 +1,14 @@
 {
   "positions": {
     "ARIA_USDT_4h": {
-      "amount": 1376.48,
-      "sold_percent": 0.4,
+      "amount": 2150.75,
+      "sold_percent": 0.0,
       "average_entry": 0.0523,
       "realized_pnl": 45.2,
       "last_buy_price": 0.0523,
       "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 38.30855190156188,
-      "last_action": "SELL"
+      "last_rsi": 38.139030855641415,
+      "last_action": "BUY"
     },
     "RAVE_USDT_4h": {
       "amount": 875.4,
@@ -16,69 +16,19 @@
       "average_entry": 0.481,
       "realized_pnl": 128.7,
       "last_buy_price": 0.481,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 30.596431425913188,
+      "last_ampel": "\ud83d\udfe2",
+      "last_rsi": 28.243299681269434,
       "last_action": "SELL"
     },
     "HIGH_USDT_4h": {
-      "amount": 27.922317689697074,
-      "sold_percent": 3.400000000000001,
+      "amount": 992.0,
+      "sold_percent": 0.2,
       "average_entry": 0.172,
       "realized_pnl": -67.3,
       "last_buy_price": 0.172,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 42.33107974823938,
-      "last_action": "SELL"
-    },
-    "SOL_USDT_4h": {
-      "amount": 98.24887717926165,
-      "sold_percent": 3.2000000000000006,
-      "average_entry": 0.04297377,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.04297377,
       "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 37.195819937190755,
+      "last_rsi": 41.8,
       "last_action": "SELL"
-    },
-    "BTC_USDT_4h": {
-      "amount": 3490.501298815533,
-      "sold_percent": 0.0,
-      "average_entry": 0.04297377,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.04297377,
-      "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 33.47782421511356,
-      "last_action": "BUY"
-    },
-    "BNB_USDT_4h": {
-      "amount": 0.0,
-      "sold_percent": 0.0,
-      "average_entry": 0.0,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.0,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 45.0,
-      "last_action": null
-    },
-    "ETH_USDT_4h": {
-      "amount": 0.0,
-      "sold_percent": 0.0,
-      "average_entry": 0.0,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.0,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 45.0,
-      "last_action": null
-    },
-    "REAL_USDT_4h": {
-      "amount": 300.0,
-      "sold_percent": 0.0,
-      "average_entry": 0.5,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.5,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 45.0,
-      "last_action": "BUY"
     }
   }
 }

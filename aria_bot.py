@@ -11,12 +11,14 @@ from flask import Flask, request
 load_dotenv()
 
 try:
-    from data_manager import get_text
+    from data_manager import get_text, load_demo_data
 except:
     def get_text(key, default=""):
         return default or key
 
 print(get_text("bot_started") + "\n")
+
+load_demo_data()  # Always load demo data for now (as requested)
 
 try:
     from data_manager import (  # <-- nur die benötigten Funktionen
