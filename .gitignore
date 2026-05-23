@@ -1,0 +1,28 @@
+# Ignore secrets and sensitive files
+.env
+*.log
+aria_bot.log
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp

@@ -1,0 +1,28 @@
+{
+  "coins": [
+    {
+      "symbol": "ARIA/USDT",
+      "ticker": "ARIA",
+      "name": "Aria AI",
+      "active": true
+    },
+    {
+      "symbol": "RAVE/USDT",
+      "ticker": "RAVE",
+      "name": "RAVE",
+      "active": true
+    },
+    {
+      "symbol": "HIGH/USDT",
+      "ticker": "HIGH",
+      "name": "HIGH",
+      "active": true
+    },
+    {
+      "symbol": "RAVE/USDT",
+      "contract": "0x97693439ea2f0ecdeb9135881e49f354656a911c",
+      "name": "RaveDAO",
+      "active": true
+    }
+  ]
+}
