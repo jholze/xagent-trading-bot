@@ -92,7 +92,7 @@ def load_config():
             "max_usdt_per_trade": 150,
             "stop_loss_pct": 12.0,
             "max_open_positions": 5,
-            "debug": false,
+            "debug": False,
             "x_accounts": ["CryptoCapo_", "Pentosh1"],
             "min_x_confidence": 65,
             "x_weight": 0.45,
@@ -129,6 +129,114 @@ def save_x_accounts(accounts):
         return True
     except:
         return False
+
+
+def load_x_posts():
+    if not os.path.exists("x_posts.json"):
+        return {"posts": []}
+    try:
+        with open("x_posts.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"posts": []}
+
+
+def save_x_posts(data):
+    try:
+        with open("x_posts.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except:
+        return False
+
+
+def load_demo_data():
+    """Load realistic demo data for testing (only used in -test mode)."""
+    # Demo watchlist with top coins
+    watchlist = [
+        {"symbol": "ARIA/USDT", "ticker": "ARIA", "name": "Aria AI", "active": True},
+        {"symbol": "RAVE/USDT", "ticker": "RAVE", "name": "RaveDAO", "active": True},
+        {"symbol": "HIGH/USDT", "ticker": "HIGH", "name": "Highstreet", "active": True},
+        {"symbol": "SOL/USDT", "ticker": "SOL", "name": "Solana", "active": True},
+        {"symbol": "BTC/USDT", "ticker": "BTC", "name": "Bitcoin", "active": True}
+    ]
+    save_watchlist(watchlist)
+
+    # Demo positions with realistic average entry and PnL
+    positions = {
+        "positions": {
+            "ARIA_USDT_4h": {
+                "amount": 2150.75,
+                "sold_percent": 0.0,
+                "average_entry": 0.0523,
+                "realized_pnl": 45.2,
+                "last_buy_price": 0.0523,
+                "last_ampel": "🟢",
+                "last_rsi": 32.4,
+                "last_action": "BUY"
+            },
+            "RAVE_USDT_4h": {
+                "amount": 875.4,
+                "sold_percent": 0.25,
+                "average_entry": 0.481,
+                "realized_pnl": 128.7,
+                "last_buy_price": 0.481,
+                "last_ampel": "🟡",
+                "last_rsi": 52.1,
+                "last_action": "SELL"
+            },
+            "HIGH_USDT_4h": {
+                "amount": 1240.0,
+                "sold_percent": 0.0,
+                "average_entry": 0.172,
+                "realized_pnl": -67.3,
+                "last_buy_price": 0.172,
+                "last_ampel": "🟢",
+                "last_rsi": 41.8,
+                "last_action": "BUY"
+            }
+        }
+    }
+    with open("positions.json", "w", encoding="utf-8") as f:
+        json.dump(positions, f, indent=2)
+
+    # Demo trade history
+    trades = {
+        "virtual_balance": 4250.75,
+        "realized_pnl": 320.4,
+        "open_positions": 3,
+        "trades": [
+            {
+                "type": "BUY",
+                "symbol": "ARIA/USDT",
+                "price": 0.0523,
+                "amount": 2150.75,
+                "usdt_amount": 112.5,
+                "timestamp": "2026-05-23T10:15:00"
+            },
+            {
+                "type": "BUY",
+                "symbol": "HIGH/USDT",
+                "price": 0.172,
+                "amount": 1240.0,
+                "usdt_amount": 213.28,
+                "timestamp": "2026-05-23T10:20:00"
+            },
+            {
+                "type": "SELL",
+                "symbol": "RAVE/USDT",
+                "price": 0.62,
+                "amount": 218.85,
+                "usdt_received": 135.69,
+                "pnl": 32.4,
+                "timestamp": "2026-05-23T10:45:00"
+            }
+        ]
+    }
+    with open("trade_history.json", "w", encoding="utf-8") as f:
+        json.dump(trades, f, indent=2)
+
+    print("Demo data loaded for testing.")
 
 
 

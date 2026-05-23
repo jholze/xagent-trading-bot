@@ -1,15 +1,6 @@
 {
-  "virtual_balance": 4500.0,
+  "virtual_balance": 5000.0,
   "realized_pnl": 0.0,
-  "open_positions": 1,
-  "trades": [
-    {
-      "type": "BUY",
-      "symbol": "1/USDT",
-      "price": 0.04284418,
-      "amount": 11670.196512105027,
-      "usdt_amount": 500.0,
-      "timestamp": "2026-05-23T11:46:36.970923"
-    }
-  ]
+  "open_positions": 0,
+  "trades": []
 }

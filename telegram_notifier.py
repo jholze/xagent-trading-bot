@@ -11,22 +11,23 @@ from data_manager import (
     load_trade_history,
     load_watchlist,
     load_x_accounts,
+    load_x_posts,
     record_trade,
     remove_coin,
     save_config,
     save_full_coin,
     save_watchlist,
     save_x_accounts,
+    save_x_posts,
 )
 from price_fetcher import get_prices
 from strategies.positions import get_position, list_active_positions, update_position
+from x_analyzer import XAnalyzer
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Temporärer Speicher für Suchergebnisse (pro Chat)
 search_results = {}
-
 
 def send_signal_message(
     signal,
@@ -75,10 +76,26 @@ def send_signal_message(
     send_telegram_message(message.strip())
 
 
+def send_x_recommendation_message(recommendation):
+    """Clean message for X recommendations with raw tweet and rationale."""
+    emoji = "🟢" if recommendation["action"] == "BUY" else "🔴" if recommendation["action"] == "SELL" else "📋" if recommendation["action"] == "ADD_TO_WATCHLIST" else "⏸️"
+    title = recommendation["action"]
+    raw = recommendation.get("raw_tweet", "—")[:100] + "..." if len(recommendation.get("raw_tweet", "")) > 100 else recommendation.get("raw_tweet", "—")
+    msg = f"""{emoji} <b>{title} RECOMMENDATION</b> — {recommendation.get("coin", "UNKNOWN")}/USDT
+
+<b>From:</b> @{recommendation.get("account", "Unknown")}
+<b>Raw Tweet:</b> {raw}
+<b>Confidence:</b> {recommendation.get("confidence", 0)}%
+<b>Rationale:</b> {recommendation.get("rationale", "—")}
+
+🕒 {datetime.now().strftime("%H:%M:%S")}
+"""
+    send_telegram_message(msg)
+
 
 def send_telegram_message(text):
     if not BOT_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram nicht konfiguriert")
+        print("⚠️ Telegram not configured")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -88,7 +105,7 @@ def send_telegram_message(text):
         response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        print(f"Fehler beim Senden: {e}")
+        print(f"Error sending Telegram message: {e}")
         return False
 
 
@@ -96,32 +113,14 @@ def handle_telegram_command(text):
     text = text.strip()
     print(f"[DEBUG] Empfangener Befehl: '{text}'")
 
-    # Smart Add
     if text.startswith("/add "):
         query = text[5:].strip().upper()
         if not query:
             send_telegram_message("Bitte einen Coin-Namen angeben, z.B. /add RAVE")
             return True
-
-        # Hier später echte Suche einbauen. Für den Anfang einfaches Add
         success, msg = add_coin(query)
         send_telegram_message(f"{'✅' if success else '❌'} {msg}")
         return True
-
-    elif text.startswith("/select "):
-        try:
-            index = int(text[8:].strip())
-            if index in search_results:
-                coin_data = search_results[index]
-                success, msg = save_full_coin(coin_data)
-                send_telegram_message(f"{'✅' if success else '❌'} {msg}")
-                del search_results[index]  # Aufräumen
-            else:
-                send_telegram_message("❌ Ungültige Auswahl.")
-            return True
-        except:
-            send_telegram_message("❌ Bitte eine Nummer angeben, z.B. /select 2")
-            return True
 
     elif text.startswith("/remove "):
         try:
@@ -150,42 +149,11 @@ def handle_telegram_command(text):
         return True
 
     elif text.startswith("/buy "):
-        parts = text.split()
+        parts = [p.strip() for p in text.split() if p.strip()]
         coins = list_coins()
-
         if len(parts) < 2:
             send_telegram_message("❌ Usage: /buy SYMBOL USDT or /buy NUMBER USDT\nExample: /buy ARIA 200 or /buy 1 200")
             return True
-
-        # Check if first argument is index (number)
-        if parts[1].replace(".", "").isdigit():
-            idx = int(parts[1]) - 1
-            if 0 <= idx < len(coins):
-                sym = coins[idx]["symbol"]
-                usdt = float(parts[2]) if len(parts) > 2 else load_config().get("max_usdt_per_trade", 150)
-            else:
-                send_telegram_message("❌ Invalid coin number. First run /list to see available coins (1-based index).")
-                return True
-        else:
-            sym = (parts[1].upper() + "/USDT") if len(parts) > 1 else None
-            usdt = float(parts[2]) if len(parts) > 2 else load_config().get("max_usdt_per_trade", 150)
-
-        if not sym:
-            send_telegram_message("❌ Please specify a coin or valid number.\nExample: /buy ARIA 200 or /buy 1 200")
-            return True
-
-        price = get_prices(sym)[0]
-        if price and price > 0:
-            amount = usdt / price
-            record_trade({"type": "BUY", "symbol": sym, "price": price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
-            update_position(sym, "4h", "BUY", price, amount)
-            send_telegram_message(f"✅ Virtual BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}")
-        else:
-            send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
-        return True
-
-
-        # Check if first argument is index (number)
         if parts[1].replace(".", "").isdigit():
             idx = int(parts[1]) - 1
             if 0 <= idx < len(coins):
@@ -197,35 +165,35 @@ def handle_telegram_command(text):
         else:
             sym = (parts[1].upper() + "/USDT") if len(parts) > 1 else None
             usdt = float(parts[2]) if len(parts) > 2 else load_config().get("max_usdt_per_trade", 150)
-
         if not sym:
             send_telegram_message("❌ Please specify a coin or number.\nExample: /buy ARIA 200 or /buy 1 200")
             return True
-
         price = get_prices(sym)[0]
-        if price > 0:
+        if price and price > 0:
             amount = usdt / price
             record_trade({"type": "BUY", "symbol": sym, "price": price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
             update_position(sym, "4h", "BUY", price, amount)
             send_telegram_message(f"✅ Virtual BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}")
         else:
-            send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin exists.")
+            send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
         return True
 
     elif text.startswith("/sell"):
-        parts = text.split()
+        parts = [p.strip() for p in text.split() if p.strip()]
         if len(parts) == 1:
             active = list_active_positions()
             if not active:
                 send_telegram_message("❌ No active positions to sell.")
                 return True
             msg = "<b>📍 Active Positions to Sell:</b>\n\n"
+            msg += "──────────────────────────────────\n"
             for i, p in enumerate(active, 1):
                 highlight = p.get("highlight", "")
                 price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
                 entry = p.get("average_entry", p.get("entry_price", 0))
                 unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
                 msg += f"{i}. {highlight}{p['symbol']} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f}\n"
+                msg += "──────────────────────────────────\n"
             msg += "\nUse <code>/sell NUMBER PERCENT</code> (e.g. /sell 1 30)"
             send_telegram_message(msg)
             return True
@@ -240,58 +208,20 @@ def handle_telegram_command(text):
                     price = get_prices(sym)[0]
                     if price > 0:
                         pos = get_position(sym, "4h")
-                        amount_sold = float(pos.get("amount", 0) * pct)
+                        amount_sold = float(pos.get("amount", 0)) * pct
                         if amount_sold > 0:
                             received = price * amount_sold
-                            pnl = (price - pos.get("entry_price", price)) * amount_sold
+                            pnl = (price - pos.get("average_entry", pos.get("entry_price", price))) * amount_sold
                             record_trade({"type": "SELL", "symbol": sym, "price": price, "amount": amount_sold, "usdt_received": received, "pnl": pnl, "timestamp": datetime.now().isoformat()})
                             update_position(sym, "4h", "SELL", price, amount_sold)
-                            send_telegram_message(f"✅ Sold {pct*100:.0f}% of {sym} @ ${price:.4f} (PnL: ${pnl:.1f})")
+                            send_telegram_message(f"✅ Virtual SELL {pct*100:.0f}% of {sym}: ${received:.0f} (PnL: ${pnl:.1f})")
                             return True
-                send_telegram_message("❌ Invalid selection.")
-            except:
-                send_telegram_message("❌ Usage: /sell NUMBER PERCENT")
+                send_telegram_message("❌ Invalid selection. First run /sell to list positions.")
+            except ValueError:
+                send_telegram_message("❌ Invalid number. Usage: /sell NUMBER PERCENT (e.g. /sell 1 30)")
+            except Exception as e:
+                send_telegram_message(f"❌ Error: {str(e)[:50]}")
             return True
-
-    elif text in ["/positions", "/status", "/balance"]:
-        active = list_active_positions()
-        history = load_trade_history()
-        total_unreal = 0.0
-        for p in active:
-            price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
-            if price > 0 and p.get("entry_price", 0) > 0:
-                total_unreal += (price - p["entry_price"]) * p["amount"]
-        total_value = history.get("virtual_balance", 0) + total_unreal
-        total_pnl = history.get("realized_pnl", 0) + total_unreal
-        pnl_pct = (total_pnl / 5000 * 100) if total_pnl != 0 else 0
-
-        msg = f"""<b>📊 Portfolio Overview</b>
-
-Balance: <b>${history.get("virtual_balance", 0):.0f}</b>
-Unrealized: <b>${total_unreal:.1f}</b>
-Total Value: <b>${total_value:.0f}</b>
-Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
-
-<b>Active Positions ({len(active)}):</b>
-"""
-        for p in active:
-            highlight = p.get("highlight", "")
-            price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
-            entry = p.get("average_entry", p.get("entry_price", 0))
-            unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
-            unreal_pct = (unreal / (entry * p["amount"]) * 100) if entry > 0 else 0
-            msg += f"{highlight}{p['symbol']:8} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f} ({unreal_pct:+.1f}%)\n"
-
-        msg += "\n<b>── Last Trades ──</b>\n"
-        trades = history.get("trades", [])[-8:]
-        for t in reversed(trades):
-            ts = t.get("timestamp", "")[:16].replace("T", " ")
-            typ = "🟢 BUY" if t.get("type") == "BUY" else "🔴 SELL"
-            pnl_str = f" PnL:${t.get('pnl', 0):+.1f}" if t.get("pnl") is not None else ""
-            msg += f"{ts} | {typ} | {t.get('symbol',''):<10} | ${t.get('price',0):.4f} | Amt:{t.get('amount',0):.4f}{pnl_str}\n"
-
-        send_telegram_message(msg)
-        return True
 
     elif text.startswith("/addx "):
         handle = text[6:].strip().replace("@", "")
@@ -336,23 +266,77 @@ Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
             send_telegram_message(msg)
         return True
 
-    elif text in ["/xsignals", "/signals", "/xs"]:
-        from x_analyzer import XAnalyzer
-        analyzer = XAnalyzer()
-        signals = analyzer.fetch_latest_signals()
-        if not signals:
-            send_telegram_message("No high-confidence X signals found.")
+    elif text in ["/xposts", "/xhistory", "/xlog"]:
+        posts = load_x_posts().get("posts", [])[-10:]
+        if not posts:
+            send_telegram_message("No tracked X posts yet.")
         else:
-            msg = "<b>📡 Latest X Signals:</b>\n\n"
-            for s in signals:
-                emoji = "🟢" if s.action == "BUY" else "🔴" if s.action == "SELL" else "⏸️"
-                target = f" Target ~${s.price_target}" if s.price_target else ""
-                msg += f"{emoji} <b>{s.action}</b> {s.coin} | Confidence: {s.confidence}% | From: @{s.account}{target}\n"
-                if s.rationale:
-                    msg += f"   └ {s.rationale[:80]}...\n\n"
+            msg = "<b>📜 Last 10 Tracked X Posts:</b>\n\n"
+            for p in reversed(posts):
+                ts = p.get("timestamp", "")[:16].replace("T", " ")
+                rec = p.get("action", "IGNORE")
+                emoji = "🟢" if rec == "BUY" else "🔴" if rec == "SELL" else "📋" if rec == "ADD_TO_WATCHLIST" else "⏸️"
+                raw = p.get("raw_tweet", "—")[:80] + "..." if len(p.get("raw_tweet", "")) > 80 else p.get("raw_tweet", "—")
+                msg += f"{emoji} {ts} | @{p.get('account')} | {rec} {p.get('coin')} | {p.get('confidence')}% \nRaw: {raw}\nRationale: {p.get('rationale', '')[:80]}...\n\n"
             send_telegram_message(msg)
         return True
-    elif text in ["/help", "/commands", "/?" ]:
+
+    elif text == "/tracktest":
+        from x_analyzer import XAnalyzer
+        analyzer = XAnalyzer()
+        test_tweet = "SOL looking very strong on the weekly chart. Breaking resistance with good volume. Long bias."
+        recommendation = analyzer.track_and_recommend(test_tweet, "TestAccount", 0.05)
+        analyzer.log_tracked_post(recommendation)
+        send_x_recommendation_message(recommendation)
+        return True
+
+    elif text in ["/positions", "/status", "/balance"]:
+        active = list_active_positions()
+        history = load_trade_history()
+        total_unreal = 0.0
+        for p in active:
+            price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
+            entry = p.get("average_entry", p.get("entry_price", 0))
+            if price > 0 and entry > 0:
+                total_unreal += (price - entry) * p["amount"]
+        total_value = history.get("virtual_balance", 0) + total_unreal
+        total_pnl = history.get("realized_pnl", 0) + total_unreal
+        pnl_pct = (total_pnl / 5000 * 100) if total_pnl != 0 else 0
+
+        msg = f"""<b>📊 Portfolio Overview</b>
+
+Balance: <b>${history.get("virtual_balance", 0):.0f}</b>
+Unrealized: <b>${total_unreal:.1f}</b>
+Total Value: <b>${total_value:.0f}</b>
+Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
+
+<b>Active Positions ({len(active)}):</b>
+"""
+        msg += "──────────────────────────────────\n"
+        for p in active:
+            highlight = p.get("highlight", "")
+            price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
+            entry = p.get("average_entry", p.get("entry_price", 0))
+            amount = float(p["amount"])
+            unreal = (price - entry) * amount if entry > 0 and price > 0 else 0
+            unreal_pct = (unreal / (entry * amount) * 100) if entry > 0 and amount > 0 else 0
+            msg += f"{highlight}{p['symbol']:8} | Amt: {amount:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f} ({unreal_pct:+.1f}%)\n"
+            msg += "──────────────────────────────────\n"
+
+        msg += "\n<b>── Last Trades ──</b>\n"
+        msg += "──────────────────────────────────\n"
+        trades = history.get("trades", [])[-8:]
+        for t in reversed(trades):
+            ts = t.get("timestamp", "")[:16].replace("T", " ")
+            typ = "🟢 BUY" if t.get("type") == "BUY" else "🔴 SELL"
+            pnl_str = f" PnL:${t.get('pnl', 0):+.1f}" if t.get("pnl") is not None else ""
+            msg += f"{ts} | {typ} | {t.get('symbol',''):<10} | ${t.get('price',0):.4f} | Amt:{t.get('amount',0):.4f}{pnl_str}\n"
+            msg += "──────────────────────────────────\n"
+
+        send_telegram_message(msg)
+        return True
+
+    elif text in ["/help", "/commands", "/?"]:
         msg = """<b>🛠️ Available Commands:</b>
 
 <b>Watchlist:</b>
@@ -361,7 +345,7 @@ Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
 /list or /watchlist - Show all coins
 
 <b>Trading:</b>
-/buy SYMBOL [USDT] - Virtual buy (e.g. /buy ARIA 200)
+/buy SYMBOL USDT or /buy NUMBER USDT - Virtual buy (e.g. /buy ARIA 200 or /buy 1 200)
 /sell NUMBER PERCENT - Sell from position (first /sell to list)
 /positions or /status - Portfolio overview with PnL and trades
 
@@ -370,6 +354,8 @@ Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
 /removex ACCOUNT - Remove X account
 /listx - List monitored X accounts
 /xsignals - Show latest parsed X signals
+/xposts - Show tracked posts and recommendations
+/tracktest - Test tracking with a sample post
 
 Send /help anytime for this list.
 """
@@ -377,6 +363,3 @@ Send /help anytime for this list.
         return True
 
     return False
-
-
-
