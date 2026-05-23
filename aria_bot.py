@@ -72,6 +72,10 @@ def price_loop(analyzer=None):
 
             x_signals = analyzer.get_top_signals() if analyzer else []
 
+            for signal in x_signals:
+                if signal.confidence >= 75:
+                    print(f"   → Strong X-Signal from @{signal.account}: {signal.action} {signal.coin} | Confidence: {signal.confidence}%")
+
             for coin in watchlist:
                 if not coin.get("active", True):
                     continue
@@ -85,8 +89,7 @@ def price_loop(analyzer=None):
             print("-" * 90)
             print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
 
-            interval = config.get("update_interval", 600)
-            for remaining in range(interval, 0, -1):
+            for remaining in range(60, 0, -1):
                 print(f"\r   Nächste Aktualisierung in {remaining:2d} Sekunden...", end="", flush=True)
                 time.sleep(1)
             print("\n")
@@ -94,6 +97,12 @@ def price_loop(analyzer=None):
         except Exception as e:
             print(f"Fehler im Price-Loop: {e}")
             time.sleep(60)
+
+
+        except Exception as e:
+            print(f"Fehler im Price-Loop: {e}")
+            time.sleep(60)
+
 
 
         except Exception as e:

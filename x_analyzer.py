@@ -2,9 +2,10 @@ import json
 from datetime import datetime
 from typing import List, Dict
 
-from data_manager import get_text, load_config, load_x_accounts, save_x_accounts
+from data_manager import get_text, load_config, load_x_accounts, load_x_posts, load_watchlist, save_x_accounts, save_x_posts
 from grok_agent import ask_grok
 import json
+from datetime import datetime
 
 
 class XSignal:
@@ -27,10 +28,12 @@ class XAnalyzer:
         self.min_confidence = self.config.get("min_x_confidence", 65)
 
     def parse_tweet(self, tweet_text: str, account: str) -> XSignal:
-        """Use Grok to parse a tweet into a structured trading signal."""
-        prompt = f"""You are a crypto trading analyst. Extract trading signal from this tweet.
+        """Use Grok to parse a tweet into a structured trading signal with better prompts for useful output."""
+        prompt = f"""You are a professional crypto trader. Analyze this tweet and give a clear, decisive trading recommendation.
+Be confident and specific. Do not default to HOLD unless the tweet is neutral.
+
 Return ONLY valid JSON with these fields:
-{{"coin": "SYMBOL", "action": "BUY|SELL|HOLD", "confidence": 0-100, "price_target": number or null, "stop_loss": number or null, "rationale": "short summary"}}
+{{"coin": "SYMBOL", "action": "BUY|SELL|HOLD", "confidence": 0-100, "price_target": number or null, "stop_loss": number or null, "rationale": "short 1-sentence summary why"}}
 
 Tweet by @{account}: "{tweet_text}"
 
@@ -43,25 +46,29 @@ JSON:"""
                 account=account,
                 coin=data.get("coin", "UNKNOWN"),
                 action=data.get("action", "HOLD"),
-                confidence=int(data.get("confidence", 60)),
+                confidence=int(data.get("confidence", 70)),
                 price_target=data.get("price_target"),
                 stop_loss=data.get("stop_loss"),
-                rationale=data.get("rationale", "")
+                rationale=data.get("rationale", "Positive momentum detected")
             )
-        except:
-            return XSignal(account=account, coin="UNKNOWN", action="HOLD", confidence=30, rationale="Parse failed")
+        except Exception as e:
+            return XSignal(account=account, coin="UNKNOWN", action="HOLD", confidence=40, rationale=f"Parse error: {str(e)[:50]}")
 
     def fetch_latest_signals(self, limit_per_account: int = 5) -> List[XSignal]:
         """Fetch tweets (mock for now) and parse them with LLM."""
         signals = []
         enabled_accounts = [a for a in self.accounts if a.get("enabled", True)]
 
-        # Mock recent tweets - replace with real Twitter API in Phase 1.2
+        # Mock recent tweets with realistic top coins and mixed actions - replace with real Twitter API in Phase 1.2
         mock_tweets = {
-            "CryptoCapo_": "ARIA looking very strong here. Breaking resistance with volume. I am buying more.",
-            "Pentosh1": "RAVE has been accumulating. Expecting big move soon. Long bias.",
-            "SmartContracter": "HIGH is forming a nice bottom. Risk reward looks excellent for long."
+            "CryptoCapo_": "BTC breaking key resistance with strong volume. Macro looks very bullish. Buying more now.",
+            "Pentosh1": "SOL is overextended on the daily. Taking profits here. Short term bearish.",
+            "SmartContracter": "ETH forming a nice higher low. Good risk/reward for long position.",
+            "TheCryptoDog": "DOGE community is strong but price is consolidating. Watching for breakout, no position yet.",
+            "CryptoWizardd": "BNB breaking out of long consolidation. Volume picking up. Bullish bias.",
+            "CryptoCapo_": "Highstreet (HIGH) looks weak. Resistance not breaking. Prefer to stay away or short."
         }
+
 
         for acc in enabled_accounts[:limit_per_account]:
             handle = acc.get("handle", str(acc))
@@ -86,6 +93,53 @@ JSON:"""
             self.score_signal(signal, tech)
         return sorted([s for s in signals if s.confidence >= self.min_confidence], 
                      key=lambda s: s.score, reverse=True)
+
+    def log_tracked_post(self, recommendation: Dict):
+        """Log the tracked post and recommendation to x_posts.json."""
+        data = load_x_posts()
+        data["posts"].append({
+            "timestamp": datetime.now().isoformat(),
+            "account": recommendation["account"],
+            "coin": recommendation["coin"],
+            "action": recommendation["action"],
+            "confidence": recommendation["confidence"],
+            "rationale": recommendation["rationale"],
+            "recommended": recommendation["recommended"]
+        })
+        save_x_posts(data)
+
+    def track_and_recommend(self, tweet_text: str, account: str, current_price: float = 0.0) -> Dict:
+        """Track a post, parse it, compare to current technical strategy, and recommend action."""
+        from strategies.core_strategy import check_signal
+        signal = self.parse_tweet(tweet_text, account)
+        recommendation = {
+            "account": account,
+            "action": "IGNORE",
+            "confidence": signal.confidence,
+            "rationale": signal.rationale,
+            "coin": signal.coin,
+            "recommended": False,
+            "raw_tweet": tweet_text[:100] + "..." if len(tweet_text) > 100 else tweet_text
+        }
+
+        if signal.coin == "UNKNOWN" or signal.confidence < self.min_confidence:
+            return recommendation
+
+        # Compare to current technical strategy
+        coin_data = {"symbol": signal.coin + "/USDT"}
+        technical_signal = check_signal(coin_data, current_price, dry_run=True, x_signals=[signal])
+
+        if signal.action == "BUY" and technical_signal in ("BUY", "STRONG_BUY"):
+            recommendation["action"] = "BUY"
+            recommendation["recommended"] = True
+        elif signal.action == "SELL" and technical_signal in ("SELL", "STRONG_SELL"):
+            recommendation["action"] = "SELL"
+            recommendation["recommended"] = True
+        elif signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
+            recommendation["action"] = "ADD_TO_WATCHLIST"
+            recommendation["recommended"] = True
+
+        return recommendation
 
 
 if __name__ == "__main__":

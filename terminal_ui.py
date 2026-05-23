@@ -1,33 +1,57 @@
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.columns import Columns
+from rich.text import Text
+from rich import print as rprint
 from datetime import datetime
 
+console = Console()
+
 def print_dashboard(data):
-    """Simple text-based split UI with clear sections (no dependencies)."""
-    print("\n" + "=" * 80)
-    print(" " * 20 + "🧠 X-AGENT TRADING BOT" + " " * 20)
-    print("=" * 80)
-
-    # Left - Main Output (simulated as top section)
-    print("\n📡 MAIN ACTIVITY")
-    print("-" * 80)
+    """Simple split view: Left = Main output, Right = Sidebar with portfolio info."""
+    # Left - Main Output
+    main_text = Text()
+    main_text.append("Latest Signals & Analysis\n\n", style="bold cyan")
     for line in data.get("signals", ["No signals yet..."]):
-        print("  " + line)
-    print("-" * 80)
+        main_text.append(str(line) + "\n", style="white")
 
-    # Right - Sidebar info (as bottom section for simplicity)
-    print("\n📊 PORTFOLIO & INFO")
-    print("-" * 80)
-    print(f"Balance          : {data.get('balance', '$0')}")
-    print(f"Unrealized       : {data.get('unrealized', '$0')}")
-    print(f"Realized PnL     : {data.get('realized_pnl', '$0')}")
-    print(f"Total Value      : {data.get('total_value', '$0')}")
-    print(f"Active Positions : {data.get('active_positions', 0)}")
-    print(f"Win Rate         : {data.get('win_rate', '—')}")
-    print(f"X Accounts       : {', '.join(data.get('x_accounts', []))}")
-    print(f"Last Cycle       : {data.get('last_cycle', '—')}")
-    print(f"Status           : {data.get('status', '🟢 Running')}")
-    print("-" * 80)
+    left = Panel(
+        main_text,
+        title="📡 Main Activity",
+        border_style="green",
+        padding=(1, 2)
+    )
 
-    print(f"\nNext update in {data.get('next_update', 60)} seconds... (Press Ctrl+C to stop)\n")
+    # Right - Sidebar with rich portfolio
+    sidebar_table = Table(box=None, expand=True, show_header=False, padding=(0, 1))
+    sidebar_table.add_column("Metric", style="dim", width=16)
+    sidebar_table.add_column("Value", style="bold")
+
+    p = data
+    sidebar_table.add_row("Balance", str(p.get("balance", "$0")))
+    sidebar_table.add_row("Unrealized", str(p.get("unrealized", "$0")))
+    sidebar_table.add_row("Realized PnL", str(p.get("realized_pnl", "$0")))
+    sidebar_table.add_row("Total Value", str(p.get("total_value", "$0")))
+    sidebar_table.add_row("Active Pos.", str(p.get("active_positions", 0)))
+    sidebar_table.add_row("Win Rate", str(p.get("win_rate", "—")))
+    sidebar_table.add_row("X Accounts", ", ".join([str(a) for a in p.get("x_accounts", [])[:4]]))
+    sidebar_table.add_row("Last Cycle", str(p.get("last_cycle", "—")))
+    sidebar_table.add_row("Status", str(p.get("status", "🟢 Running")))
+
+    right = Panel(
+        sidebar_table,
+        title="📊 Portfolio & Info",
+        border_style="blue",
+        padding=(1, 2)
+    )
+
+    # Split Layout
+    layout = Columns([left, right], expand=True)
+
+    console.clear()
+    rprint(layout)
+    rprint(f"\n[bold yellow]Next update in {data.get('next_update', 60)}s...[/bold yellow]  (Press Ctrl+C to stop)")
 
 # Test
 if __name__ == "__main__":
@@ -41,14 +65,14 @@ if __name__ == "__main__":
         "coins": ["ARIA", "RAVE", "HIGH"],
         "x_accounts": ["CryptoCapo_", "Pentosh1", "SmartContracter"],
         "signals": [
-            "🟢 @CryptoCapo_ BUY ARIA | 84% - Strong breakout",
-            "🔴 @Pentosh1 SELL RAVE | 76% - Resistance hit",
+            "🟢 @CryptoCapo_ BUY ARIA | 84%",
+            "🔴 @Pentosh1 SELL RAVE | 76%",
             "→ Technical: ARIA | Price: $0.0474",
             "→ Technical: RAVE | Price: $0.5737"
         ],
         "last_cycle": "10:25:12",
         "status": "🟢 Running",
-        "next_update": 37
+        "next_update": 42
     }
     print_dashboard(test_data)
-    print("Test completed - this is the new UI.")
+    print("\nUI test completed successfully.")

@@ -1,0 +1,112 @@
+{
+  "posts": [
+    {
+      "timestamp": "2026-05-23T14:33:37.780332",
+      "account": "TestAccount",
+      "coin": "UNKNOWN",
+      "action": "IGNORE",
+      "confidence": 70,
+      "rationale": "strong with high volume, buying more now",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:33:40.544269",
+      "account": "TestAccount",
+      "coin": "UNKNOWN",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Strong momentum with high volume, buying more",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:37:21.439815",
+      "account": "TestAccount",
+      "coin": "UNKNOWN",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Strong volume and positive momentum, user buying more",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:38:45.395279",
+      "account": "TestAccount",
+      "coin": "UNKNOWN",
+      "action": "IGNORE",
+      "confidence": 30,
+      "rationale": "Parse failed",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:42:01.766282",
+      "account": "TestAccount",
+      "coin": "UNKNOWN",
+      "action": "IGNORE",
+      "confidence": 65,
+      "rationale": "Tweet shows clear bullish sentiment citing strength and high volume with personal accumulation.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:49:12.444198",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Tweet shows clear bullish bias on SOL with resistance breakout and rising volume on weekly chart.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:49:25.556322",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Strong weekly breakout above resistance on rising volume signals bullish momentum and long bias.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:49:41.009450",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 80,
+      "rationale": "Bullish weekly breakout with volume supports long bias and upward momentum.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:50:06.258983",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Strong weekly breakout above resistance on rising volume supports long bias.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:50:19.787554",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 80,
+      "rationale": "Strong weekly breakout above resistance on rising volume supports long bias.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:50:35.260049",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 75,
+      "rationale": "Bullish weekly breakout with volume supports long bias on SOL.",
+      "recommended": false
+    },
+    {
+      "timestamp": "2026-05-23T14:53:04.079822",
+      "account": "TestAccount",
+      "coin": "SOL",
+      "action": "IGNORE",
+      "confidence": 80,
+      "rationale": "Bullish weekly breakout with volume supports long bias and upward continuation.",
+      "recommended": false
+    }
+  ]
+}
