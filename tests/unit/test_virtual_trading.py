@@ -196,7 +196,7 @@ class TestVirtualTrading(unittest.TestCase):
             # Test invalid (basic check)
             mock_coins.return_value = []
             handle_telegram_command("/buy")
-            self.assertTrue(True)  # Command runs without crashing
+            mock_send.assert_called()  # Error message is sent for invalid input
 
     def test_fetch_stability(self):
         config = load_config()
