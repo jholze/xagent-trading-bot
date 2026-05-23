@@ -12,7 +12,7 @@
   "technical_weight": 0.35,
   "onchain_weight": 0.2,
   "max_daily_trades": 5,
-  "update_interval": 600,  // 10 minutes - good balance between responsiveness and API usage
+  "update_interval": 600,
   "strategies": [
     {
       "symbol": "ARIA/USDT",

@@ -9,19 +9,25 @@
     {
       "symbol": "RAVE/USDT",
       "ticker": "RAVE",
-      "name": "RAVE",
+      "name": "RaveDAO",
       "active": true
     },
     {
       "symbol": "HIGH/USDT",
       "ticker": "HIGH",
-      "name": "HIGH",
+      "name": "Highstreet",
       "active": true
     },
     {
-      "symbol": "RAVE/USDT",
-      "contract": "0x97693439ea2f0ecdeb9135881e49f354656a911c",
-      "name": "RaveDAO",
+      "symbol": "SOL/USDT",
+      "ticker": "SOL",
+      "name": "Solana",
+      "active": true
+    },
+    {
+      "symbol": "BTC/USDT",
+      "ticker": "BTC",
+      "name": "Bitcoin",
       "active": true
     }
   ]

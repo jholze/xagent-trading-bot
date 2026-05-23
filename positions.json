@@ -1,53 +1,33 @@
 {
   "positions": {
     "ARIA_USDT_4h": {
-      "amount": 691.6106330069316,
-      "sold_percent": 1.0,
-      "average_entry": 0.04737926,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.04737926,
-      "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 35.38384724451101,
-      "last_action": "SELL"
+      "amount": 2150.75,
+      "sold_percent": 0.0,
+      "average_entry": 0.0523,
+      "realized_pnl": 45.2,
+      "last_buy_price": 0.0523,
+      "last_ampel": "🟢",
+      "last_rsi": 32.4,
+      "last_action": "BUY"
     },
     "RAVE_USDT_4h": {
-      "amount": 433.94189344470016,
-      "sold_percent": 0.0,
-      "average_entry": 0.576114,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.576114,
-      "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 27.441030995126127,
-      "last_action": null
+      "amount": 875.4,
+      "sold_percent": 0.25,
+      "average_entry": 0.481,
+      "realized_pnl": 128.7,
+      "last_buy_price": 0.481,
+      "last_ampel": "🟡",
+      "last_rsi": 52.1,
+      "last_action": "SELL"
     },
     "HIGH_USDT_4h": {
-      "amount": 890.9215098149854,
+      "amount": 1240.0,
       "sold_percent": 0.0,
-      "average_entry": 0.168365,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.168365,
-      "last_ampel": "\ud83d\udfe2",
-      "last_rsi": 36.70798281676746,
-      "last_action": "BUY"
-    },
-    "REAL_USDT_4h": {
-      "amount": 2000.0,
-      "sold_percent": 0.0,
-      "average_entry": 0.5,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.5,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 45.0,
-      "last_action": "BUY"
-    },
-    "1_USDT_4h": {
-      "amount": 11670.196512105027,
-      "sold_percent": 0.0,
-      "average_entry": 0.04284418,
-      "realized_pnl": 0.0,
-      "last_buy_price": 0.04284418,
-      "last_ampel": "\ud83d\udfe1",
-      "last_rsi": 45.0,
+      "average_entry": 0.172,
+      "realized_pnl": -67.3,
+      "last_buy_price": 0.172,
+      "last_ampel": "🟢",
+      "last_rsi": 41.8,
       "last_action": "BUY"
     }
   }

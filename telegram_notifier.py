@@ -273,6 +273,7 @@ Total Value: <b>${total_value:.0f}</b>
 Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
 
 <b>Active Positions ({len(active)}):</b>
+──────────────────────────────────
 """
         for p in active:
             highlight = p.get("highlight", "")
@@ -281,14 +282,17 @@ Total PnL: <b>${total_pnl:.1f}</b> ({pnl_pct:.1f}%)
             unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
             unreal_pct = (unreal / (entry * p["amount"]) * 100) if entry > 0 else 0
             msg += f"{highlight}{p['symbol']:8} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f} ({unreal_pct:+.1f}%)\n"
+            msg += "──────────────────────────────────\n"
 
         msg += "\n<b>── Last Trades ──</b>\n"
+        msg += "──────────────────────────────────\n"
         trades = history.get("trades", [])[-8:]
         for t in reversed(trades):
             ts = t.get("timestamp", "")[:16].replace("T", " ")
             typ = "🟢 BUY" if t.get("type") == "BUY" else "🔴 SELL"
             pnl_str = f" PnL:${t.get('pnl', 0):+.1f}" if t.get("pnl") is not None else ""
             msg += f"{ts} | {typ} | {t.get('symbol',''):<10} | ${t.get('price',0):.4f} | Amt:{t.get('amount',0):.4f}{pnl_str}\n"
+            msg += "──────────────────────────────────\n"
 
         send_telegram_message(msg)
         return True
