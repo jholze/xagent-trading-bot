@@ -1,4 +1,6 @@
-# X-Agent Trading Bot
+# X-Agent Trading Bot (Version 1.0)
+
+**Stable foundation with X integration, autonomous virtual trading, Telegram management, and clean UI.**
 
 An autonomous crypto trading agent that combines **technical analysis** with **signals from selected X (Twitter) accounts**. It analyses tweets using Grok (LLM), scores them, and trades automatically while maintaining strong risk controls.
 
