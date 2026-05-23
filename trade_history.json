@@ -1,15 +1,49 @@
 {
-  "virtual_balance": 4500.0,
-  "realized_pnl": 0.0,
-  "open_positions": 1,
+  "virtual_balance": 4250.75,
+  "realized_pnl": 320.4,
+  "open_positions": 3,
   "trades": [
     {
       "type": "BUY",
-      "symbol": "1/USDT",
-      "price": 0.04284418,
-      "amount": 11670.196512105027,
-      "usdt_amount": 500.0,
-      "timestamp": "2026-05-23T11:46:36.970923"
+      "symbol": "ARIA/USDT",
+      "price": 0.0523,
+      "amount": 2150.75,
+      "usdt_amount": 112.5,
+      "timestamp": "2026-05-23T10:15:00"
+    },
+    {
+      "type": "BUY",
+      "symbol": "HIGH/USDT",
+      "price": 0.172,
+      "amount": 1240.0,
+      "usdt_amount": 213.28,
+      "timestamp": "2026-05-23T10:20:00"
+    },
+    {
+      "type": "SELL",
+      "symbol": "RAVE/USDT",
+      "price": 0.62,
+      "amount": 218.85,
+      "usdt_received": 135.69,
+      "pnl": 32.4,
+      "timestamp": "2026-05-23T10:45:00"
+    },
+    {
+      "type": "BUY",
+      "symbol": "RAVE/USDT",
+      "price": 0.481,
+      "amount": 875.4,
+      "usdt_amount": 421.0,
+      "timestamp": "2026-05-23T11:10:00"
+    },
+    {
+      "type": "SELL",
+      "symbol": "ARIA/USDT",
+      "price": 0.0432,
+      "amount": 675.4,
+      "usdt_received": 29.18,
+      "pnl": -6.2,
+      "timestamp": "2026-05-23T11:34:00"
     }
   ]
 }

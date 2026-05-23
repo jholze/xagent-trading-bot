@@ -92,7 +92,7 @@ def load_config():
             "max_usdt_per_trade": 150,
             "stop_loss_pct": 12.0,
             "max_open_positions": 5,
-            "debug": false,
+            "debug": False,
             "x_accounts": ["CryptoCapo_", "Pentosh1"],
             "min_x_confidence": 65,
             "x_weight": 0.45,
