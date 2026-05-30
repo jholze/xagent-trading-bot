@@ -1,7 +1,7 @@
 {
   "bot_started": "🚀 Trading Bot – Clean Webhook Version started",
-  "dry_run_enabled": "Dry-Run: Enabled",
-  "dry_run_disabled": "Dry-Run: Disabled",
+  "virtual_trading_enabled": "Virtual Trading: Enabled",
+  "virtual_trading_disabled": "Virtual Trading: Disabled",
   "webhook_started": "Webhook Listener started on Port 5000",
   "price_coingecko": "   [Price] CoinGecko → ${price:.4f} | {symbol}",
   "price_gate": "   [Price] Gate.io → ${price:.4f} | {symbol}",

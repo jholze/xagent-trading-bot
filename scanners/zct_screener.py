@@ -8,7 +8,7 @@ from data_manager import load_config
 
 class ZCTAltcoinScanner:
     def __init__(self, min_volume_5m: float = 500_000):
-        self.config = load_config()
+        self.config = get_config()
         self.min_volume_5m = min_volume_5m
         self.exchange = ccxt.binance({
             'enableRateLimit': True,

@@ -8,7 +8,7 @@ import talib
 from logger import log, log_signal
 from telegram_notifier import send_signal_message
 from strategies.positions import get_position, update_position
-from data_manager import get_text, load_config, load_trade_history, record_trade
+from data_manager import get_config, get_text, load_trade_history, record_trade
 
 
 def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
@@ -27,7 +27,7 @@ def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
         return "🟡", "Neutral"
 
 
-def check_signal(coin, current_price, dry_run=True, x_signals=None):
+def check_signal(coin, current_price, x_signals=None):
     if not current_price:
         return "HOLD"
 
@@ -73,7 +73,7 @@ def check_signal(coin, current_price, dry_run=True, x_signals=None):
         vol_multiplier = 1.3
         df = pd.DataFrame()
 
-    config = load_config()
+    config = get_config()
     history = load_trade_history()
     ampel_emoji, ampel_text = get_ampel_color(last_rsi, vol_multiplier, current_price, last_lower)
 

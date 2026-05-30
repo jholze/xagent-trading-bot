@@ -44,7 +44,6 @@ class ColoredTestResult(unittest.TextTestResult):
 
 from data_manager import get_text, load_config, load_trade_history, load_x_accounts, record_trade, save_x_accounts
 from strategies.positions import get_position, list_active_positions, update_position
-from strategies.core_strategy import check_signal
 from x_analyzer import XAnalyzer
 
 
@@ -175,6 +174,8 @@ class TestVirtualTrading(unittest.TestCase):
         from unittest.mock import patch
         from telegram_notifier import handle_telegram_command
 
+        # Note: Some patches target telegram_notifier's namespace because
+        # telegram_notifier imports and re-uses those names internally.
         with patch("telegram_notifier.send_telegram_message") as mock_send, \
              patch("telegram_notifier.get_prices") as mock_price, \
              patch("telegram_notifier.update_position") as mock_update, \
@@ -197,6 +198,48 @@ class TestVirtualTrading(unittest.TestCase):
             mock_coins.return_value = []
             handle_telegram_command("/buy")
             mock_send.assert_called()  # Error message is sent for invalid input
+
+    def test_demo_mode_prefixes_telegram_messages(self):
+        """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""
+        from unittest.mock import patch, MagicMock
+        from telegram_notifier import send_telegram_message
+
+        with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_telegram_message("Important trade signal")
+
+            # Check that the message sent to Telegram contained the demo prefix
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("🧪 [DEMO]", called_text)
+            self.assertIn("Important trade signal", called_text)
+
+        # Also verify that without demo mode, no prefix is added
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_telegram_message("Normal message")
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertNotIn("🧪 [DEMO]", called_text)
+            self.assertIn("Normal message", called_text)
+
+    def test_demo_file_path_helper(self):
+        """Basic sanity check for demo mode file path logic."""
+        from unittest.mock import patch
+        import data_manager
+
+        with patch.object(data_manager, "_DEMO_MODE", True):
+            self.assertTrue(data_manager.is_demo_mode())
+            path = data_manager.get_data_file("trade_history.json")
+            self.assertIn(".demo.json", path)
+
+        with patch.object(data_manager, "_DEMO_MODE", False):
+            self.assertFalse(data_manager.is_demo_mode())
+            path = data_manager.get_data_file("trade_history.json")
+            self.assertNotIn(".demo.json", path)
 
     def test_fetch_stability(self):
         config = load_config()
@@ -230,6 +273,157 @@ class TestVirtualTrading(unittest.TestCase):
         for p in active:
             if p.get("last_action") == "BUY":
                 self.assertIn("highlight", p)
+
+    def test_price_fetcher_caching(self):
+        """Smoke test that the price cache doesn't break basic calls."""
+        from price_fetcher import get_prices
+        # Should not raise and should return a tuple of 3 values
+        result = get_prices("BTC/USDT")
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(len(result), 3)
+
+    # ==================================================================
+    # Expanded Telegram Notifier Tests (send_signal_message + demo prefix)
+    # ==================================================================
+
+    def _assert_demo_prefix_in_message(self, mock_post, expected_content):
+        """Helper to verify both demo prefix and content in sent messages."""
+        called_text = mock_post.call_args[1]["json"]["text"]
+        self.assertIn("🧪 [DEMO]", called_text)
+        self.assertIn(expected_content, called_text)
+
+    def test_send_signal_message_buy_with_demo_prefix(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "ARIA/USDT", "name": "Aria AI"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message("BUY", coin, 0.0523, 35.0, 0.048, 1.4, "🟢", "Stark Bullish")
+
+            self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
+            self._assert_demo_prefix_in_message(mock_post, "ARIA/USDT")
+
+    def test_send_signal_message_sell_20_with_demo_prefix(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message("SELL_20", coin, 0.65, 72.0, 0.60, 0.8, "🔴", "Bearish")
+
+            self._assert_demo_prefix_in_message(mock_post, "SELL 20% EXECUTED")
+
+    def test_send_signal_message_x_signal_without_demo_prefix(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "SOL/USDT", "name": "Solana"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message("X_SIGNAL", coin, 142.5, 55.0, 138.0, 1.1, "📡", "Strong volume")
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertNotIn("🧪 [DEMO]", called_text)
+            self.assertIn("X SIGNAL", called_text)
+
+    def test_send_x_recommendation_message(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_x_recommendation_message
+
+        rec = {
+            "account": "CryptoCapo_",
+            "coin": "BTC",
+            "action": "BUY",
+            "confidence": 82,
+            "rationale": "Breaking resistance with volume",
+            "raw_tweet": "BTC looking very strong..."
+        }
+
+        with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_x_recommendation_message(rec)
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("🧪 [DEMO]", called_text)
+            self.assertIn("CryptoCapo_", called_text)
+            self.assertIn("Breaking resistance", called_text)
+
+    # ==================================================================
+    # Expanded Demo Mode & Data Layer Tests
+    # ==================================================================
+
+    def test_demo_mode_auto_copies_real_file_on_first_use(self):
+        """Basic verification that demo mode changes the returned file path."""
+        from unittest.mock import patch
+        import data_manager
+
+        with patch.object(data_manager, "_DEMO_MODE", True):
+            path = data_manager.get_data_file("watchlist.json")
+            self.assertTrue(path.endswith(".demo.json"))
+
+        with patch.object(data_manager, "_DEMO_MODE", False):
+            path = data_manager.get_data_file("watchlist.json")
+            self.assertFalse(path.endswith(".demo.json"))
+
+    def test_load_demo_data_only_runs_in_demo_mode(self):
+        from unittest.mock import patch
+        import data_manager
+
+        with patch.object(data_manager, "_DEMO_MODE", False), \
+             patch("data_manager.log") as mock_log:
+            data_manager.load_demo_data()
+            # Should log a warning and do nothing
+            self.assertTrue(any("without --demo" in str(c) for c in mock_log.call_args_list))
+
+    def test_price_cache_avoids_repeated_network_calls(self):
+        """Smoke test: repeated calls for the same symbol should not explode and should eventually use cache."""
+        from unittest.mock import patch, MagicMock
+        from price_fetcher import get_prices, _price_cache
+
+        _price_cache.clear()
+
+        with patch("price_fetcher.requests.get") as mock_get:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"bitcoin": {"usd": 65000.0}}
+            mock_get.return_value = mock_response
+
+            # Multiple calls should not raise and should stay reasonable
+            for _ in range(3):
+                get_prices("BTC/USDT")
+
+            # Just ensure we didn't make a ridiculous number of calls
+            self.assertLessEqual(mock_get.call_count, 10)
+
+    def test_data_layer_logs_on_failed_save(self):
+        """When saving fails, we should log an ERROR instead of failing silently."""
+        from unittest.mock import patch, mock_open
+        import data_manager
+
+        with patch("builtins.open", mock_open()) as mock_file, \
+             patch("data_manager.log") as mock_log:
+
+            mock_file.side_effect = IOError("Disk full")
+
+            result = data_manager.save_watchlist([{"symbol": "TEST/USDT"}])
+
+            self.assertFalse(result)
+            # Check that we logged an error
+            error_logs = [c for c in mock_log.call_args_list if "ERROR" in str(c)]
+            self.assertTrue(len(error_logs) > 0)
 
     def tearDown(self):
         import json

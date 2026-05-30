@@ -8,17 +8,28 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request
 
+import argparse
+
+from logger import log
+
 load_dotenv()
 
+# Demo mode handling
+parser = argparse.ArgumentParser(description="X-Agent Trading Bot")
+parser.add_argument('--demo', action='store_true', help='Run in demo mode using separate .demo.json data files')
+args, _ = parser.parse_known_args()
+
+if args.demo:
+    os.environ['DEMO_MODE'] = '1'
+    print("🧪 Demo mode activated - using separate data files (watchlist.demo.json, etc.)")
+
 try:
-    from data_manager import get_text, load_demo_data
+    from data_manager import get_text
 except:
     def get_text(key, default=""):
         return default or key
 
 print(get_text("bot_started") + "\n")
-
-load_demo_data()  # Always load demo data for now (as requested)
 
 try:
     from data_manager import (  # <-- nur die benötigten Funktionen
@@ -37,8 +48,8 @@ except ImportError as e:
 
 with open("config.json", encoding="utf-8") as f:
     config = json.load(f)
-dry_run = config.get("dry_run", True)
-print(get_text("dry_run_enabled" if dry_run else "dry_run_disabled"))
+virtual_trading = config.get("virtual_trading", True)
+print(get_text("virtual_trading_enabled" if virtual_trading else "virtual_trading_disabled"))
 
 # Flask für Webhook
 app = Flask(__name__)
@@ -46,21 +57,26 @@ app = Flask(__name__)
 
 @app.route("/", methods=["POST"])
 def webhook():
-    update = request.get_json()
-    if update and "message" in update:
-        text = update["message"].get("text", "")
-        print(f"[DEBUG] Empfangene Nachricht: {text}")
-        if text.startswith("/"):
-            handle_telegram_command(text)
+    try:
+        update = request.get_json()
+        if update and "message" in update:
+            text = update["message"].get("text", "")
+            log(f"Received Telegram message: {text[:100]}", "DEBUG")
+            if text.startswith("/"):
+                handle_telegram_command(text)
+    except Exception as e:
+        log(f"Webhook error: {e}", "ERROR")
     return "OK", 200
 
 
 def price_loop(analyzer=None):
     while True:
         try:
-            os.system("clear" if os.name == "posix" else "cls")
+            # Safely clear screen only in interactive terminals
+            if os.isatty(1):
+                os.system("clear" if os.name == "posix" else "cls")
             now = datetime.now()
-            print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Dry-Run: {'ON' if dry_run else 'OFF'}")
+            print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Virtual Trading: {'ON' if virtual_trading else 'OFF'}")
             print("=" * 90)
 
             watchlist = load_watchlist()
@@ -85,7 +101,7 @@ def price_loop(analyzer=None):
                 print(f"→ {symbol}")
 
                 dex_price, cg_price, diff = get_prices(symbol)
-                check_signal(coin, dex_price if dex_price is not None else 0.0, dry_run, x_signals)
+                check_signal(coin, dex_price if dex_price is not None else 0.0, x_signals)
                 print()
 
             print("-" * 90)
@@ -97,35 +113,8 @@ def price_loop(analyzer=None):
             print("\n")
 
         except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
+            log(f"Error in price loop: {e}", "ERROR")
             time.sleep(60)
-
-
-        except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
-            time.sleep(60)
-
-
-
-        except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
-            time.sleep(60)
-
-
-        except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
-            time.sleep(60)
-
-
-        except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
-            time.sleep(60)
-
-
-        except Exception as e:
-            print(f"Fehler im Price-Loop: {e}")
-            time.sleep(60)
-
 
 
 if __name__ == "__main__":

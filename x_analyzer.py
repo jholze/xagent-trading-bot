@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import List, Dict
 
-from data_manager import get_text, load_config, load_x_accounts, load_x_posts, load_watchlist, save_x_accounts, save_x_posts
+from data_manager import get_config, get_text, load_x_accounts, load_x_posts, load_watchlist, save_x_accounts, save_x_posts
 from grok_agent import ask_grok
 import json
 from datetime import datetime
@@ -23,7 +23,7 @@ class XSignal:
 
 class XAnalyzer:
     def __init__(self):
-        self.config = load_config()
+        self.config = get_config()
         self.accounts = load_x_accounts()
         self.min_confidence = self.config.get("min_x_confidence", 65)
 
@@ -55,20 +55,15 @@ JSON:"""
             return XSignal(account=account, coin="UNKNOWN", action="HOLD", confidence=40, rationale=f"Parse error: {str(e)[:50]}")
 
     def fetch_latest_signals(self, limit_per_account: int = 5) -> List[XSignal]:
-        """Fetch tweets (mock for now) and parse them with LLM."""
+        """Fetch tweets (currently mock) and parse them with LLM."""
         signals = []
         enabled_accounts = [a for a in self.accounts if a.get("enabled", True)]
 
-        # Mock recent tweets with realistic top coins and mixed actions - replace with real Twitter API in Phase 1.2
-        mock_tweets = {
-            "CryptoCapo_": "BTC breaking key resistance with strong volume. Macro looks very bullish. Buying more now.",
-            "Pentosh1": "SOL is overextended on the daily. Taking profits here. Short term bearish.",
-            "SmartContracter": "ETH forming a nice higher low. Good risk/reward for long position.",
-            "TheCryptoDog": "DOGE community is strong but price is consolidating. Watching for breakout, no position yet.",
-            "CryptoWizardd": "BNB breaking out of long consolidation. Volume picking up. Bullish bias.",
-            "CryptoCapo_": "Highstreet (HIGH) looks weak. Resistance not breaking. Prefer to stay away or short."
-        }
-
+        # Controlled mock data usage (easy to turn off later when real API is integrated)
+        if self.config.get("use_mock_x_data", True):
+            mock_tweets = self._get_mock_tweets()
+        else:
+            mock_tweets = {}
 
         for acc in enabled_accounts[:limit_per_account]:
             handle = acc.get("handle", str(acc))
@@ -78,6 +73,17 @@ JSON:"""
                 signals.append(signal)
 
         return signals
+
+    def _get_mock_tweets(self) -> dict:
+        """Central place for mock X data — easy to spot and replace later."""
+        return {
+            "CryptoCapo_": "BTC breaking key resistance with strong volume. Macro looks very bullish. Buying more now.",
+            "Pentosh1": "SOL is overextended on the daily. Taking profits here. Short term bearish.",
+            "SmartContracter": "ETH forming a nice higher low. Good risk/reward for long position.",
+            "TheCryptoDog": "DOGE community is strong but price is consolidating. Watching for breakout, no position yet.",
+            "CryptoWizardd": "BNB breaking out of long consolidation. Volume picking up. Bullish bias.",
+            "CryptoCapo_": "Highstreet (HIGH) looks weak. Resistance not breaking. Prefer to stay away or short."
+        }
 
     def score_signal(self, signal: XSignal, technical_score: float = 50.0) -> float:
         """Hybrid scoring: X confidence + technical weight."""
@@ -127,7 +133,7 @@ JSON:"""
 
         # Compare to current technical strategy
         coin_data = {"symbol": signal.coin + "/USDT"}
-        technical_signal = check_signal(coin_data, current_price, dry_run=True, x_signals=[signal])
+        technical_signal = check_signal(coin_data, current_price, x_signals=[signal])
 
         if signal.action == "BUY" and technical_signal in ("BUY", "STRONG_BUY"):
             recommendation["action"] = "BUY"
