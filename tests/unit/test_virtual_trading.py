@@ -43,17 +43,28 @@ class ColoredTestResult(unittest.TextTestResult):
 
 
 from data_manager import get_text, load_config, load_trade_history, load_x_accounts, record_trade, save_x_accounts
-from strategies.positions import get_position, list_active_positions, update_position
+from strategies.positions import (
+    count_open_positions,
+    get_position,
+    list_active_positions,
+    sell_fraction_for_signal,
+    update_position,
+)
 from x_analyzer import XAnalyzer
 
 
 class TestVirtualTrading(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
-        self.symbol = "TESTUNIT/USDT"
+        self.symbol = "XRVM/USDT"
         self.tf = "4h"
         self.test_price = 0.5
+        from decimal import Decimal
         from strategies.positions import positions, get_key
+        self._positions_backup = {
+            k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
+        }
+        self._trade_history_backup = load_trade_history()
         key = get_key(self.symbol, self.tf)
         if key in positions:
             del positions[key]
@@ -61,7 +72,7 @@ class TestVirtualTrading(unittest.TestCase):
         try:
             with open("trade_history.json", "w", encoding="utf-8") as f:
                 json.dump({"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}, f, indent=2)
-        except:
+        except Exception:
             pass
 
     def test_position_initialization(self):
@@ -89,13 +100,46 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertGreater(len(history.get("trades", [])), 0)
         self.assertIn("virtual_balance", history)
 
-    def test_stop_loss_logic(self):
-        update_position(self.symbol, self.tf, "BUY", 0.5, 300)
+    def test_sell_fraction_mapping(self):
+        self.assertEqual(sell_fraction_for_signal("SELL_STOP_FULL"), 1.0)
+        self.assertEqual(sell_fraction_for_signal("SELL_STOP_PARTIAL"), 0.5)
+        self.assertEqual(sell_fraction_for_signal("SELL_30"), 0.3)
+        self.assertEqual(sell_fraction_for_signal("SELL_20"), 0.2)
+        self.assertEqual(sell_fraction_for_signal("SELL"), 0.2)
+
+    def test_sell_stop_full_closes_position(self):
+        update_position(self.symbol, self.tf, "BUY", 0.5, 1000)
+        update_position(self.symbol, self.tf, "SELL_STOP_FULL", 0.4, 1000)
         pos = get_position(self.symbol, self.tf)
-        pos["entry_price"] = 0.5
-        with patch("data_manager.load_trade_history") as mock_history:
-            mock_history.return_value = {"open_positions": 1}
-            self.assertTrue(True)
+        self.assertAlmostEqual(float(pos["amount"]), 0.0, places=4)
+
+    def test_sell_stop_partial_sells_half(self):
+        update_position(self.symbol, self.tf, "BUY", 0.5, 1000)
+        update_position(self.symbol, self.tf, "SELL_STOP_PARTIAL", 0.4)
+        pos = get_position(self.symbol, self.tf)
+        self.assertAlmostEqual(float(pos["amount"]), 500.0, places=4)
+
+    def test_sell_with_explicit_amount(self):
+        update_position(self.symbol, self.tf, "BUY", 0.5, 1000)
+        update_position(self.symbol, self.tf, "SELL", 0.6, 250)
+        pos = get_position(self.symbol, self.tf)
+        self.assertAlmostEqual(float(pos["amount"]), 750.0, places=4)
+
+    def test_list_active_positions_average_entry(self):
+        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
+        active = list_active_positions()
+        match = next((p for p in active if p["symbol"] == "XRVM"), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["average_entry"], 0.5)
+        self.assertEqual(match["entry_price"], 0.5)
+
+    def test_open_positions_count_sync(self):
+        before = count_open_positions()
+        update_position("COUNT_A/USDT", "4h", "BUY", 1.0, 10)
+        update_position("COUNT_B/USDT", "4h", "BUY", 1.0, 10)
+        self.assertEqual(count_open_positions(), before + 2)
+        history = load_trade_history()
+        self.assertEqual(history.get("open_positions"), before + 2)
 
     def test_virtual_pnl_tracking(self):
         history = load_trade_history()
@@ -116,11 +160,16 @@ class TestVirtualTrading(unittest.TestCase):
 
     def test_x_analyzer_integration(self):
         analyzer = XAnalyzer()
-        signals = analyzer.get_top_signals()
-        self.assertGreater(len(signals), 0)
-        for s in signals:
-            self.assertGreater(s.confidence, 0)
-            self.assertGreater(s.score, 0)
+        with patch.object(analyzer, "fetch_latest_signals") as mock_fetch:
+            from x_analyzer import XSignal
+            mock_fetch.return_value = [
+                XSignal("CryptoCapo_", "BTC", "BUY", 80, rationale="Test signal")
+            ]
+            signals = analyzer.get_top_signals()
+            self.assertGreater(len(signals), 0)
+            for s in signals:
+                self.assertGreater(s.confidence, 0)
+                self.assertGreater(s.score, 0)
 
     def test_ui_rendering(self):
         from terminal_ui import print_dashboard
@@ -160,12 +209,12 @@ class TestVirtualTrading(unittest.TestCase):
         expected_average = (0.5 * 1000 + 0.6 * 1000) / 2000
         self.assertAlmostEqual(pos["average_entry"], expected_average, places=4)
 
-        # Simulate sell and check PnL
+        # Simulate sell with explicit amount and check remaining position
         current_price = 0.7
         update_position("TEST/PNL", "4h", "SELL", current_price, 500)
         pos = get_position("TEST/PNL", "4h")
         self.assertGreater(pos["average_entry"], 0)
-        self.assertLess(pos["amount"], 2000)
+        self.assertAlmostEqual(float(pos["amount"]), 1500.0, places=4)
 
         history = load_trade_history()
         self.assertIsInstance(history.get("realized_pnl", 0), (int, float))
@@ -256,9 +305,20 @@ class TestVirtualTrading(unittest.TestCase):
     def test_sell_command_execute(self):
         update_position("REAL/USDT", "4h", "BUY", 0.5, 100)
         from telegram_notifier import handle_telegram_command
-        with patch("telegram_notifier.send_telegram_message") as mock_send:
+        with patch("telegram_notifier.send_telegram_message"), \
+             patch("telegram_notifier.get_prices", return_value=(0.6, 0.6, None)), \
+             patch("telegram_notifier.list_active_positions") as mock_active:
+            mock_active.return_value = [{
+                "symbol": "REAL",
+                "amount": 100.0,
+                "average_entry": 0.5,
+                "entry_price": 0.5,
+                "realized_pnl": 0,
+                "highlight": "",
+            }]
             handle_telegram_command("/sell 1 50")
-            self.assertTrue(mock_send.called)
+            pos = get_position("REAL/USDT", "4h")
+            self.assertAlmostEqual(float(pos["amount"]), 50.0, places=4)
 
     def test_i18n(self):
         self.assertIn(get_text("bot_started"), ["🚀 Trading Bot – Clean Webhook Version started", "🚀 Trading Bot – Saubere Webhook Version gestartet"])
@@ -426,17 +486,15 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertTrue(len(error_logs) > 0)
 
     def tearDown(self):
-        import json
+        from decimal import Decimal
+        from strategies.positions import positions, save_positions
+        positions.clear()
+        positions.update(self._positions_backup)
+        save_positions()
         try:
-            with open("trade_history.json", "w", encoding="utf-8") as f:
-                json.dump({"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}, f, indent=2)
-            with open("positions.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if "positions" in data:
-                data["positions"] = {k: v for k, v in data["positions"].items() if not any(t in k.upper() for t in ["TEST", "TESTUNIT"])}
-            with open("positions.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except:
+            from data_manager import save_trade_history
+            save_trade_history(self._trade_history_backup)
+        except Exception:
             pass
 
 

@@ -2,7 +2,6 @@ import os
 import threading
 import time
 import json
-import itertools
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -32,7 +31,8 @@ except:
 print(get_text("bot_started") + "\n")
 
 try:
-    from data_manager import (  # <-- nur die benötigten Funktionen
+    from data_manager import (
+        get_config,
         get_text,
         list_coins,
         load_trade_history,
@@ -107,14 +107,15 @@ def price_loop(analyzer=None):
             print("-" * 90)
             print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
 
-            for remaining in range(60, 0, -1):
-                print(f"\r   Nächste Aktualisierung in {remaining:2d} Sekunden...", end="", flush=True)
+            interval = get_config().get("update_interval", 600)
+            for remaining in range(interval, 0, -1):
+                print(f"\r   Nächste Aktualisierung in {remaining:3d} Sekunden...", end="", flush=True)
                 time.sleep(1)
             print("\n")
 
         except Exception as e:
             log(f"Error in price loop: {e}", "ERROR")
-            time.sleep(60)
+            time.sleep(get_config().get("update_interval", 600))
 
 
 if __name__ == "__main__":

@@ -135,10 +135,11 @@ JSON:"""
         coin_data = {"symbol": signal.coin + "/USDT"}
         technical_signal = check_signal(coin_data, current_price, x_signals=[signal])
 
-        if signal.action == "BUY" and technical_signal in ("BUY", "STRONG_BUY"):
+        sell_signals = ("SELL", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL")
+        if signal.action == "BUY" and technical_signal == "BUY":
             recommendation["action"] = "BUY"
             recommendation["recommended"] = True
-        elif signal.action == "SELL" and technical_signal in ("SELL", "STRONG_SELL"):
+        elif signal.action == "SELL" and technical_signal in sell_signals:
             recommendation["action"] = "SELL"
             recommendation["recommended"] = True
         elif signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:

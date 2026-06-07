@@ -202,8 +202,8 @@ def handle_telegram_command(text):
             price = get_prices(sym)[0]
             if price and price > 0:
                 amount = usdt / price
-                record_trade({"type": "BUY", "symbol": sym, "price": price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
                 update_position(sym, "4h", "BUY", price, amount)
+                record_trade({"type": "BUY", "symbol": sym, "price": price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
                 send_telegram_message(f"✅ Virtual BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}")
             else:
                 send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
@@ -247,8 +247,8 @@ def handle_telegram_command(text):
                         if amount_sold > 0:
                             received = price * amount_sold
                             pnl = (price - pos.get("average_entry", pos.get("entry_price", price))) * amount_sold
-                            record_trade({"type": "SELL", "symbol": sym, "price": price, "amount": amount_sold, "usdt_received": received, "pnl": pnl, "timestamp": datetime.now().isoformat()})
                             update_position(sym, "4h", "SELL", price, amount_sold)
+                            record_trade({"type": "SELL", "symbol": sym, "price": price, "amount": amount_sold, "usdt_received": received, "pnl": pnl, "timestamp": datetime.now().isoformat()})
                             send_telegram_message(f"✅ Virtual SELL {pct*100:.0f}% of {sym}: ${received:.0f} (PnL: ${pnl:.1f})")
                             return True
                 send_telegram_message("❌ Invalid selection. First run /sell to list positions.")

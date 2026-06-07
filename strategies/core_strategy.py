@@ -7,7 +7,7 @@ import pandas as pd
 import talib
 from logger import log, log_signal
 from telegram_notifier import send_signal_message
-from strategies.positions import get_position, update_position
+from strategies.positions import count_open_positions, get_position, sell_fraction_for_signal, update_position
 from data_manager import get_config, get_text, load_trade_history, record_trade
 
 
@@ -80,13 +80,14 @@ def check_signal(coin, current_price, x_signals=None):
     signal = "HOLD"
     x_boost = x_score > 0.6
 
-    if not has_position and history.get("open_positions", 0) < config.get("max_open_positions", 5):
+    open_positions = count_open_positions()
+    if not has_position and open_positions < config.get("max_open_positions", 5):
         buy_threshold = 48 if x_boost else 45
         if (current_price <= last_lower * 1.01 and 28 <= last_rsi <= buy_threshold and vol_multiplier >= 1.2) or (x_signal and x_signal.action == "BUY" and x_confidence >= 75):
             signal = "BUY"
     else:
         pos = get_position(symbol, tf)
-        entry = pos.get("entry_price", current_price)
+        entry = pos.get("average_entry", current_price)
         if entry > 0:
             loss_pct = (current_price / entry - 1) * -100
             if loss_pct > 15 or (x_signal and x_signal.action == "SELL" and x_confidence >= 80):
@@ -103,23 +104,22 @@ def check_signal(coin, current_price, x_signals=None):
         if "BUY" in signal:
             usdt = config["max_usdt_per_trade"]
             amount = usdt / current_price
-            record_trade({"type": "BUY", "symbol": symbol, "price": current_price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
             update_position(symbol, tf, "BUY", current_price, amount)
-            pos["entry_price"] = current_price
+            record_trade({"type": "BUY", "symbol": symbol, "price": current_price, "amount": amount, "usdt_amount": usdt, "timestamp": datetime.now().isoformat()})
             send_signal_message("BUY", coin, current_price, last_rsi, last_lower, vol_multiplier, "🟢", "Virtual Buy Executed")
         else:
-            sell_fraction = 1.0 if "FULL" in signal or "STOP" in signal else 0.5 if "PARTIAL" in signal else 0.3 if "30" in signal else 0.2
+            sell_fraction = sell_fraction_for_signal(signal)
             amount_sold = float(pos["amount"]) * sell_fraction
             received = current_price * amount_sold * (1 - config.get("slippage_percent", 1.5) / 100)
-            pnl = (current_price - pos.get("entry_price", current_price)) * amount_sold
-            record_trade({"type": "SELL", "symbol": symbol, "price": current_price, "amount": amount_sold, "usdt_received": received, "pnl": pnl, "timestamp": datetime.now().isoformat()})
+            pnl = (current_price - pos.get("average_entry", current_price)) * amount_sold
             update_position(symbol, tf, signal, current_price, amount_sold)
+            record_trade({"type": "SELL", "symbol": symbol, "price": current_price, "amount": amount_sold, "usdt_received": received, "pnl": pnl, "timestamp": datetime.now().isoformat()})
 
     last_ampel = pos.get("last_ampel", "🟡")
     last_rsi_old = pos.get("last_rsi", 45.0)
     unrealized = 0.0
-    if has_position and pos.get("entry_price", 0) > 0:
-        unrealized = (current_price - pos["entry_price"]) * float(pos["amount"])
+    if has_position and pos.get("average_entry", 0) > 0:
+        unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])
 
     should_send = (signal != "HOLD") or (has_position and (ampel_emoji != last_ampel or abs(last_rsi - last_rsi_old) > 15))
     reason = "Signal" if signal != "HOLD" else "Position Ampel change" if has_position else "No position"

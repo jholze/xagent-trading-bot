@@ -315,12 +315,18 @@ def record_trade(trade):
     history = load_trade_history()
     history["trades"].append(trade)
     if trade.get("type") == "BUY":
-        history["open_positions"] = min(history.get("open_positions", 0) + 1, 5)
         history["virtual_balance"] = max(0, history["virtual_balance"] - trade.get("usdt_amount", 0))
     else:
-        history["open_positions"] = max(0, history.get("open_positions", 0) - 1)
         history["virtual_balance"] += trade.get("usdt_received", 0)
         history["realized_pnl"] += trade.get("pnl", 0)
+    try:
+        from strategies.positions import count_open_positions
+        history["open_positions"] = count_open_positions()
+    except Exception:
+        if trade.get("type") == "BUY":
+            history["open_positions"] = history.get("open_positions", 0) + 1
+        else:
+            history["open_positions"] = max(0, history.get("open_positions", 0) - 1)
     save_trade_history(history)
     return history
 
