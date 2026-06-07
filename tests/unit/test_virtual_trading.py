@@ -158,6 +158,40 @@ class TestVirtualTrading(unittest.TestCase):
         cleaned = [a for a in reloaded if a.get("handle") != "TestTraderX"]
         save_x_accounts(cleaned)
 
+    def test_technical_strategy_analyze_hold(self):
+        from core.models import MarketContext
+        from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+        strategy = TechnicalRSIStrategy()
+        market = MarketContext(
+            symbol="XRVM/USDT",
+            timeframe="4h",
+            current_price=1.0,
+            rsi=50.0,
+            lower_bb=0.9,
+            vol_multiplier=1.0,
+            has_position=False,
+            open_positions=0,
+        )
+        result = strategy.analyze({"symbol": "XRVM/USDT"}, market)
+        self.assertEqual(result.action, "HOLD")
+        self.assertEqual(result.symbol, "XRVM/USDT")
+
+    def test_portfolio_service_buy(self):
+        from services.portfolio_service import PortfolioService
+        portfolio = PortfolioService()
+        result = portfolio.execute_buy("XRVM/USDT", "4h", 0.5, 100)
+        self.assertTrue(result.executed)
+        self.assertAlmostEqual(result.amount, 200.0, places=4)
+
+    def test_signal_orchestrator_analyze_only(self):
+        from services.signal_orchestrator import SignalOrchestrator
+        orch = SignalOrchestrator()
+        with patch.object(orch.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}):
+            analysis = orch.analyze({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
+            self.assertIsNotNone(analysis)
+            self.assertIn(analysis.action, ("HOLD", "BUY", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"))
+
     def test_x_analyzer_integration(self):
         analyzer = XAnalyzer()
         with patch.object(analyzer, "fetch_latest_signals") as mock_fetch:
@@ -226,10 +260,10 @@ class TestVirtualTrading(unittest.TestCase):
         # Note: Some patches target telegram_notifier's namespace because
         # telegram_notifier imports and re-uses those names internally.
         with patch("telegram_notifier.send_telegram_message") as mock_send, \
-             patch("telegram_notifier.get_prices") as mock_price, \
-             patch("telegram_notifier.update_position") as mock_update, \
-             patch("telegram_notifier.record_trade") as mock_record, \
-             patch("telegram_notifier.list_coins") as mock_coins:
+             patch("notifications.telegram_commands.trading_commands.get_prices") as mock_price, \
+             patch("services.portfolio_service.update_position") as mock_update, \
+             patch("services.portfolio_service.record_trade") as mock_record, \
+             patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins:
 
             mock_coins.return_value = [{"symbol": "ARIA/USDT"}, {"symbol": "RAVE/USDT"}]
             mock_price.return_value = (0.05, 0.05, None)
@@ -303,13 +337,13 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertGreater(len(active), 0)
 
     def test_sell_command_execute(self):
-        update_position("REAL/USDT", "4h", "BUY", 0.5, 100)
+        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
         from telegram_notifier import handle_telegram_command
         with patch("telegram_notifier.send_telegram_message"), \
-             patch("telegram_notifier.get_prices", return_value=(0.6, 0.6, None)), \
-             patch("telegram_notifier.list_active_positions") as mock_active:
+             patch("notifications.telegram_commands.trading_commands.get_prices", return_value=(0.6, 0.6, None)), \
+             patch("notifications.telegram_commands.trading_commands.list_active_positions") as mock_active:
             mock_active.return_value = [{
-                "symbol": "REAL",
+                "symbol": "XRVM",
                 "amount": 100.0,
                 "average_entry": 0.5,
                 "entry_price": 0.5,
@@ -317,7 +351,7 @@ class TestVirtualTrading(unittest.TestCase):
                 "highlight": "",
             }]
             handle_telegram_command("/sell 1 50")
-            pos = get_position("REAL/USDT", "4h")
+            pos = get_position(self.symbol, self.tf)
             self.assertAlmostEqual(float(pos["amount"]), 50.0, places=4)
 
     def test_i18n(self):

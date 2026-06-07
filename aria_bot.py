@@ -39,7 +39,7 @@ try:
         load_watchlist,
     )
     from price_fetcher import get_prices
-    from strategies.core_strategy import check_signal
+    from services.signal_orchestrator import SignalOrchestrator
     from telegram_notifier import handle_telegram_command, send_signal_message
     from x_analyzer import XAnalyzer
 except ImportError as e:
@@ -69,7 +69,7 @@ def webhook():
     return "OK", 200
 
 
-def price_loop(analyzer=None):
+def price_loop(analyzer=None, orchestrator=None):
     while True:
         try:
             # Safely clear screen only in interactive terminals
@@ -101,7 +101,12 @@ def price_loop(analyzer=None):
                 print(f"→ {symbol}")
 
                 dex_price, cg_price, diff = get_prices(symbol)
-                check_signal(coin, dex_price if dex_price is not None else 0.0, x_signals)
+                price = dex_price if dex_price is not None else 0.0
+                if orchestrator:
+                    orchestrator.process_coin(coin, price, x_signals)
+                else:
+                    from strategies.core_strategy import check_signal
+                    check_signal(coin, price, x_signals, notify_callback=send_signal_message)
                 print()
 
             print("-" * 90)
@@ -120,8 +125,8 @@ def price_loop(analyzer=None):
 
 if __name__ == "__main__":
     analyzer = XAnalyzer()
-
-    price_thread = threading.Thread(target=price_loop, args=(analyzer,), daemon=True)
+    orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
+    price_thread = threading.Thread(target=price_loop, args=(analyzer, orchestrator), daemon=True)
     price_thread.start()
 
     print(get_text("webhook_started"))

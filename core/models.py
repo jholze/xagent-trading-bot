@@ -1,6 +1,48 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
+
+
+@dataclass
+class MarketContext:
+    symbol: str
+    timeframe: str
+    current_price: float
+    rsi: float = 45.0
+    lower_bb: float = 0.0
+    vol_multiplier: float = 1.0
+    has_position: bool = False
+    average_entry: float = 0.0
+    open_positions: int = 0
+    strategy_params: dict = field(default_factory=dict)
+
+
+@dataclass
+class SignalAnalysis:
+    action: str
+    symbol: str
+    timeframe: str
+    rsi: float
+    lower_bb: float
+    vol_multiplier: float
+    ampel_emoji: str
+    ampel_text: str
+    should_notify: bool = False
+    notify_reason: str = ""
+    x_confidence: float = 0.0
+    sources: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TradeResult:
+    executed: bool
+    order_type: str
+    symbol: str
+    amount: float = 0.0
+    price: float = 0.0
+    usdt_amount: float = 0.0
+    pnl: float = 0.0
+    message: str = ""
 
 
 @dataclass

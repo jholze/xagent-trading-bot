@@ -1,0 +1,1 @@
+from notifications.telegram_commands.router import dispatch_command
