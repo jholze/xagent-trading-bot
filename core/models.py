@@ -114,3 +114,29 @@ class RiskDecision:
     drawdown_pct: float = 0.0
     atr_factor: float = 1.0
     trust_factor: float = 1.0
+
+
+@dataclass
+class StrategyHypothesis:
+    id: str
+    name: str
+    source_account: str
+    status: str = "testing"
+    timeframe: str = "4h"
+    symbol: str = ""
+    params: dict = field(default_factory=dict)
+    rationale: str = ""
+    source_tweet: str = ""
+    source_post_id: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    metrics: dict = field(default_factory=dict)
+
+
+@dataclass
+class SandboxMetrics:
+    win_rate: float = 0.0
+    sharpe: float = 0.0
+    max_drawdown_pct: float = 0.0
+    trades: int = 0
+    realized_pnl: float = 0.0
+    equity: float = 0.0

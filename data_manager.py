@@ -362,6 +362,52 @@ def record_trade(trade):
     return history
 
 
+PAPER_STRATEGIES_FILE = "paper_strategies.json"
+PAPER_SANDBOX_HISTORY_FILE = "paper_sandbox_history.json"
+
+
+def load_paper_strategies():
+    path = get_data_file(PAPER_STRATEGIES_FILE)
+    if not os.path.exists(path):
+        return {"hypotheses": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"hypotheses": []}
+
+
+def save_paper_strategies(data):
+    path = get_data_file(PAPER_STRATEGIES_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def load_paper_sandbox_history():
+    path = get_data_file(PAPER_SANDBOX_HISTORY_FILE)
+    if not os.path.exists(path):
+        return {"portfolios": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"portfolios": {}}
+
+
+def save_paper_sandbox_history(data):
+    path = get_data_file(PAPER_SANDBOX_HISTORY_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
 TRANSLATIONS = {}
 
 def load_translations():

@@ -45,6 +45,19 @@
     "min_trade_usdt": 5.0
   },
   "update_interval": 600,
+  "sandbox": {
+    "enabled": true,
+    "initial_capital_usdt": 1000,
+    "usdt_per_trade": 50,
+    "min_test_days": 7,
+    "max_test_days": 30,
+    "promotion": {
+      "min_win_rate": 55,
+      "min_sharpe": 0.5,
+      "max_drawdown_pct": 15,
+      "min_trades": 3
+    }
+  },
   "strategies": [
     {
       "symbol": "ARIA/USDT",

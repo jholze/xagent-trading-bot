@@ -21,6 +21,11 @@ def handle(text: str) -> bool:
 /sell NUMBER PERCENT - Sell from position (first /sell to list)
 /positions or /status - Portfolio overview with PnL and trades
 
+<b>Sandbox (strategy experiments):</b>
+/sandbox - List hypotheses being paper-tested
+/sandbox_results ID - Detailed metrics for a hypothesis
+/sandbox_promote ID - Promote successful hypothesis to active strategy
+
 <b>X Accounts:</b>
 /addx ACCOUNT - Add X account (e.g. /addx CryptoCapo_)
 /removex ACCOUNT - Remove X account

@@ -47,3 +47,35 @@ def get_strategy(coin: dict) -> BaseStrategy:
         from strategies.technical_rsi_bb import TechnicalRSIStrategy
         cls = TechnicalRSIStrategy
     return cls()
+
+
+def promote_hypothesis_to_config(hypothesis: dict) -> tuple:
+    """Promote a sandbox hypothesis into config.strategies[]."""
+    from data_manager import get_config, save_config
+
+    symbol = hypothesis.get("symbol")
+    if not symbol:
+        return False, "Hypothesis has no symbol — assign one before promotion"
+
+    cfg = get_config()
+    strategies = cfg.setdefault("strategies", [])
+    tf = hypothesis.get("timeframe", "4h")
+    for entry in strategies:
+        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            if entry.get("sandbox_id") == hypothesis.get("id"):
+                return True, "Already promoted"
+            return False, f"Strategy already exists for {symbol} {tf}"
+
+    params = dict(hypothesis.get("params") or {})
+    params.update({
+        "symbol": symbol,
+        "timeframe": tf,
+        "strategy_class": "technical_rsi_bb",
+        "description": f"Promoted from sandbox: {hypothesis.get('name', '')}",
+        "sandbox_id": hypothesis.get("id"),
+        "source_account": hypothesis.get("source_account"),
+    })
+    strategies.append(params)
+    if save_config(cfg):
+        return True, f"Added {symbol} ({tf}) to strategies"
+    return False, "Failed to save config.json"

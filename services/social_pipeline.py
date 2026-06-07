@@ -1,5 +1,6 @@
 from data_manager import add_coin
 from intelligence.accuracy_tracker import AccuracyTracker
+from intelligence.strategy_discovery import StrategyDiscovery
 from logger import log
 from price_fetcher import get_prices
 from telegram_notifier import send_x_recommendation_message
@@ -14,6 +15,7 @@ class SocialPipeline:
         self.orchestrator = orchestrator
         self.notify_callback = notify_callback
         self.tracker = AccuracyTracker()
+        self.discovery = StrategyDiscovery()
         self.provider = get_x_provider()
         self._cycle_signals = []
 
@@ -61,6 +63,12 @@ class SocialPipeline:
 
             self.analyzer.log_tracked_post(rec)
             recommendations.append(rec)
+
+            hypothesis = self.discovery.discover_from_tweet(post.text, post.account, post.post_id)
+            if hypothesis:
+                if not hypothesis.symbol and symbol:
+                    hypothesis.symbol = symbol
+                self.discovery.save_hypothesis(hypothesis)
 
             if rec.get("recommended"):
                 log(

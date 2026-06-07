@@ -298,16 +298,18 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertIn(analysis.action, ("HOLD", "BUY", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"))
 
     def test_mock_x_provider_dedup(self):
+        import uuid
         from x_data_provider import MockXProvider
         from data_manager import load_x_posts, save_x_posts
 
         provider = MockXProvider()
-        accounts = [{"handle": "DedupTestTrader", "enabled": True}]
+        handle = f"DedupTest{uuid.uuid4().hex[:8]}"
+        accounts = [{"handle": handle, "enabled": True}]
         first = provider.fetch_new_posts(accounts)
         self.assertGreater(len(first), 0)
 
         data = load_x_posts()
-        data["posts"].append({"post_id": first[0].post_id, "account": "DedupTestTrader", "coin": "BTC"})
+        data["posts"].append({"post_id": first[0].post_id, "account": handle, "coin": "BTC"})
         save_x_posts(data)
         second = provider.fetch_new_posts(accounts)
         self.assertFalse(any(p.post_id == first[0].post_id for p in second))
@@ -796,6 +798,150 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("atr", indicators)
         self.assertIn("atr_pct", indicators)
         self.assertGreater(indicators["atr_pct"], 0)
+
+    def test_strategy_discovery_heuristic(self):
+        from intelligence.strategy_discovery import StrategyDiscovery
+
+        discovery = StrategyDiscovery()
+        hyp = discovery.discover_from_tweet(
+            "SOL showing RSI divergence on 1h with strong volume spike. Bullish setup.",
+            "TestTrader",
+            "post_strategy_1",
+        )
+        self.assertIsNotNone(hyp)
+        self.assertEqual(hyp.timeframe, "1h")
+        self.assertIn("rsi_buy_low", hyp.params)
+
+    def test_strategy_discovery_save_and_dedup(self):
+        from intelligence.strategy_discovery import StrategyDiscovery
+        from data_manager import load_paper_strategies, save_paper_strategies
+
+        backup = load_paper_strategies()
+        save_paper_strategies({"hypotheses": []})
+        try:
+            discovery = StrategyDiscovery()
+            hyp = discovery.discover_from_tweet(
+                "BTC breakout with volume confirmation on 4h timeframe.",
+                "DedupTrader",
+                "dedup_post_1",
+            )
+            self.assertTrue(discovery.save_hypothesis(hyp))
+            self.assertFalse(discovery.save_hypothesis(hyp))
+        finally:
+            save_paper_strategies(backup)
+
+    def test_trend_engine_cross_validate(self):
+        from intelligence.trend_engine import TrendEngine
+        from x_analyzer import XSignal
+
+        engine = TrendEngine()
+        signals = [XSignal("Trader", "SOL", "BUY", 80)]
+        scanner = [{
+            "symbol": "SOL/USDT",
+            "change_5m": 2.5,
+            "change_1d": 12.0,
+            "regime": "BREAKOUT",
+            "volume_24h": 5_000_000,
+        }]
+        results = engine.cross_validate(signals, scanner_results=scanner)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["symbol"], "SOL/USDT")
+        self.assertEqual(results[0]["consensus"], "x_scanner")
+
+    def test_paper_sandbox_evaluate_and_metrics(self):
+        from strategies.paper_sandbox import PaperSandbox
+        from data_manager import load_paper_strategies, save_paper_strategies, load_paper_sandbox_history, save_paper_sandbox_history
+
+        strat_backup = load_paper_strategies()
+        hist_backup = load_paper_sandbox_history()
+        hyp_id = "hyp_test_sandbox"
+        save_paper_strategies({
+            "hypotheses": [{
+                "id": hyp_id,
+                "name": "Test RSI 4h",
+                "source_account": "Tester",
+                "status": "testing",
+                "timeframe": "4h",
+                "symbol": "XRVM/USDT",
+                "params": {
+                    "rsi_buy_low": 0,
+                    "rsi_buy_high": 100,
+                    "volume_multiplier": 0.1,
+                    "rsi_sell_30": 99,
+                    "rsi_sell_20": 99,
+                },
+                "created_at": datetime.now().isoformat(),
+                "metrics": {},
+            }]
+        })
+        save_paper_sandbox_history({"portfolios": {}})
+        try:
+            sandbox = PaperSandbox()
+            with patch.object(sandbox.market, "fetch_indicators", return_value={
+                "rsi": 40.0, "lower_bb": 1.1, "vol_multiplier": 2.0, "atr_pct": 3.0,
+            }):
+                action = sandbox.evaluate_hypothesis(
+                    load_paper_strategies()["hypotheses"][0],
+                    "XRVM/USDT",
+                    1.0,
+                )
+            self.assertEqual(action, "BUY")
+            metrics = sandbox.compute_metrics(hyp_id, {"XRVM/USDT": 1.0})
+            self.assertGreater(metrics.trades, 0)
+            self.assertGreater(metrics.equity, 0)
+        finally:
+            save_paper_strategies(strat_backup)
+            save_paper_sandbox_history(hist_backup)
+
+    def test_promote_hypothesis_to_config(self):
+        from strategies.registry import promote_hypothesis_to_config
+        from data_manager import get_config, save_config
+
+        cfg = dict(get_config())
+        original_strategies = list(cfg.get("strategies", []))
+        cfg["strategies"] = [s for s in original_strategies if s.get("sandbox_id") != "hyp_promote_test"]
+        save_config(cfg)
+
+        hypothesis = {
+            "id": "hyp_promote_test",
+            "name": "Promoted test",
+            "symbol": "TESTCOIN/USDT",
+            "timeframe": "4h",
+            "source_account": "Tester",
+            "params": {"rsi_buy_low": 28, "rsi_buy_high": 48, "volume_multiplier": 1.3},
+        }
+        ok, msg = promote_hypothesis_to_config(hypothesis)
+        self.assertTrue(ok)
+
+        reloaded = get_config()
+        promoted = [s for s in reloaded.get("strategies", []) if s.get("sandbox_id") == "hyp_promote_test"]
+        self.assertEqual(len(promoted), 1)
+        self.assertEqual(promoted[0]["symbol"], "TESTCOIN/USDT")
+
+        cfg["strategies"] = original_strategies
+        save_config(cfg)
+
+    def test_sandbox_promotion_ready_checks_min_days(self):
+        from strategies.paper_sandbox import PaperSandbox
+        from data_manager import load_paper_strategies, save_paper_strategies
+
+        backup = load_paper_strategies()
+        save_paper_strategies({
+            "hypotheses": [{
+                "id": "hyp_young",
+                "name": "Young",
+                "status": "testing",
+                "created_at": datetime.now().isoformat(),
+                "metrics": {"win_rate": 80, "sharpe": 1.2, "max_drawdown_pct": 5, "trades": 5},
+            }]
+        })
+        try:
+            sandbox = PaperSandbox()
+            ready, reason = sandbox.promotion_ready("hyp_young")
+            self.assertFalse(ready)
+            self.assertIn("min", reason.lower())
+        finally:
+            save_paper_strategies(backup)
 
     def test_data_layer_logs_on_failed_save(self):
         """When saving fails, we should log an ERROR instead of failing silently."""

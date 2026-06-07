@@ -74,6 +74,14 @@ class BotConfig:
     def risk_config(self) -> dict:
         return self._raw.get("risk", {})
 
+    @property
+    def sandbox_config(self) -> dict:
+        return self._raw.get("sandbox", {})
+
+    @property
+    def sandbox_enabled(self) -> bool:
+        return bool(self.sandbox_config.get("enabled", True))
+
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:

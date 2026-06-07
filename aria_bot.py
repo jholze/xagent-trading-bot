@@ -39,8 +39,10 @@ try:
         load_watchlist,
     )
     from price_fetcher import get_prices
+    from intelligence.trend_engine import TrendEngine
     from services.signal_orchestrator import SignalOrchestrator
     from services.social_pipeline import SocialPipeline
+    from strategies.paper_sandbox import PaperSandbox
     from telegram_notifier import handle_telegram_command, send_signal_message
     from x_analyzer import XAnalyzer
 except ImportError as e:
@@ -70,7 +72,7 @@ def webhook():
     return "OK", 200
 
 
-def price_loop(analyzer=None, orchestrator=None, social_pipeline=None):
+def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None):
     while True:
         try:
             # Safely clear screen only in interactive terminals
@@ -97,6 +99,17 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None):
                     print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
 
             x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
+
+            if trend_engine and x_signals:
+                candidates = trend_engine.cross_validate(x_signals, run_scan=False)
+                for c in candidates[:3]:
+                    print(f"   → Trend+X consensus: {c['symbol']} ({c['regime']}) 5m:{c['change_5m']:+.1f}%")
+
+            if sandbox and get_config().get("sandbox", {}).get("enabled", True):
+                sandbox_results = sandbox.run_cycle(watchlist, get_prices)
+                for sr in sandbox_results[:3]:
+                    m = sr["metrics"]
+                    print(f"   → Sandbox {sr['hypothesis_id']}: {sr['action']} {sr['symbol']} | WR={m.win_rate}%")
 
             for signal in x_signals:
                 eff = getattr(signal, "effective_confidence", signal.confidence)
@@ -139,8 +152,12 @@ if __name__ == "__main__":
     analyzer = XAnalyzer()
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
+    sandbox = PaperSandbox()
+    trend_engine = TrendEngine()
     price_thread = threading.Thread(
-        target=price_loop, args=(analyzer, orchestrator, social_pipeline), daemon=True
+        target=price_loop,
+        args=(analyzer, orchestrator, social_pipeline, sandbox, trend_engine),
+        daemon=True,
     )
     price_thread.start()
 
