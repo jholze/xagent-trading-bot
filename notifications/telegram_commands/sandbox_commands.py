@@ -1,3 +1,4 @@
+from notifications.telegram_commands.usage_hints import hint
 from strategies.paper_sandbox import PaperSandbox
 from telegram_notifier import send_telegram_message
 
@@ -26,10 +27,18 @@ def handle(text: str) -> bool:
         send_telegram_message(msg)
         return True
 
+    if text == "/sandbox_results":
+        send_telegram_message(hint("sandbox_results"))
+        return True
+
+    if text == "/sandbox_promote":
+        send_telegram_message(hint("sandbox_promote"))
+        return True
+
     if text.startswith("/sandbox_results"):
         parts = text.split()
         if len(parts) < 2:
-            send_telegram_message("Usage: /sandbox_results ID")
+            send_telegram_message(hint("sandbox_results"))
             return True
         hyp_id = parts[1].strip()
         from intelligence.strategy_discovery import StrategyDiscovery
@@ -65,7 +74,7 @@ Equity: ${metrics.equity:.2f}
     if text.startswith("/sandbox_promote"):
         parts = text.split()
         if len(parts) < 2:
-            send_telegram_message("Usage: /sandbox_promote ID")
+            send_telegram_message(hint("sandbox_promote"))
             return True
         hyp_id = parts[1].strip()
         ok, msg = _sandbox.promote(hyp_id)

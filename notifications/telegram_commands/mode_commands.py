@@ -1,5 +1,6 @@
 from data_manager import get_config, reload_config, save_config
 from data_manager import is_demo_mode
+from notifications.telegram_commands.usage_hints import hint
 from services.trading_service import TradingService
 from telegram_notifier import send_telegram_message
 
@@ -102,6 +103,10 @@ Current: <b>{service.mode_label()}</b>{demo}
             send_telegram_message("✅ Live trading cancelled. Back to <b>paper</b> mode.")
         else:
             send_telegram_message("❌ Failed to save config.")
+        return True
+
+    if text.startswith("/mode "):
+        send_telegram_message(hint("mode"))
         return True
 
     return False

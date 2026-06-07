@@ -452,7 +452,7 @@ class TestVirtualTrading(unittest.TestCase):
 
         # Note: Some patches target telegram_notifier's namespace because
         # telegram_notifier imports and re-uses those names internally.
-        with patch("telegram_notifier.send_telegram_message") as mock_send, \
+        with patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send, \
              patch("notifications.telegram_commands.trading_commands.get_prices") as mock_price, \
              patch("notifications.telegram_commands.trading_commands._trading.execute_buy") as mock_buy, \
              patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins:
@@ -471,10 +471,11 @@ class TestVirtualTrading(unittest.TestCase):
             handle_telegram_command("/buy RAVE 100")
             self.assertTrue(mock_buy.called)
 
-            # Test invalid (basic check)
-            mock_coins.return_value = []
+            # Bare /buy sends usage hint with example
+            mock_send.reset_mock()
             handle_telegram_command("/buy")
-            mock_send.assert_called()  # Error message is sent for invalid input
+            mock_send.assert_called()
+            self.assertIn("/buy", mock_send.call_args[0][0])
 
     def test_demo_mode_prefixes_telegram_messages(self):
         """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""

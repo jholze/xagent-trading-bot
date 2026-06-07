@@ -1,5 +1,6 @@
 from logger import log
 from notifications.telegram_commands import cmc_commands, gate_commands, help_commands, mode_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
 _HANDLERS = [
@@ -26,6 +27,9 @@ def dispatch_command(text: str) -> bool:
         for handler in _HANDLERS:
             if handler(text):
                 return True
+        if text.startswith("/"):
+            send_telegram_message(hint("unknown"))
+            return True
         return False
     except Exception as e:
         log(f"Error in dispatch_command for '{text}': {e}", "ERROR")

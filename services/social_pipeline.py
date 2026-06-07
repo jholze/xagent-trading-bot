@@ -58,6 +58,7 @@ class SocialPipeline:
                 post.account,
                 current_price=price,
                 orchestrator=self.orchestrator,
+                signal=signal,
             )
             rec["post_id"] = post.post_id
             rec["raw_tweet"] = post.text[:200]

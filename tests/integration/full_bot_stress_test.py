@@ -263,10 +263,43 @@ def run_trading_trials(coins):
                 sells += 1
 
     history = load_trade_history()
+    active = list_active_positions()
     report.stats["trial_buys"] = buys
     report.stats["trial_sells"] = sells
     report.stats["trial_balance"] = history.get("virtual_balance", 0)
-    report.stats["open_positions"] = len(list_active_positions())
+    report.stats["open_positions"] = len(active)
+
+    # Portfolio invariants after multi buy/sell
+    portfolio_ok = True
+    portfolio_detail = []
+    if any(float(p.get("amount", 0)) < 0 for p in active):
+        portfolio_ok = False
+        portfolio_detail.append("negative amount")
+    sell_pnls = [t.get("pnl", 0) for t in history.get("trades", []) if t.get("type") == "SELL"]
+    if sell_pnls and abs(sum(sell_pnls) - history.get("realized_pnl", 0)) > 0.05:
+        portfolio_ok = False
+        portfolio_detail.append("realized_pnl mismatch")
+    if history.get("open_positions", -1) != len(active):
+        portfolio_ok = False
+        portfolio_detail.append("open_positions desync")
+
+    unreal = 0.0
+    for p in active:
+        sym = p["symbol"] if "/" in p["symbol"] else p["symbol"] + "/USDT"
+        price, _, _ = get_prices(sym)
+        entry = p.get("average_entry", p.get("entry_price", 0))
+        if price and entry:
+            unreal += (price - entry) * float(p["amount"])
+    total_value = history.get("virtual_balance", 0) + unreal
+    report.stats["trial_total_value"] = round(total_value, 2)
+    if total_value <= 0:
+        portfolio_ok = False
+        portfolio_detail.append("total_value <= 0")
+
+    if portfolio_ok:
+        report.ok("Portfolio invariants", f"value=${total_value:.0f}, realized=${history.get('realized_pnl', 0):.1f}")
+    else:
+        report.fail("Portfolio invariants", "; ".join(portfolio_detail) or "check failed")
 
     if buys >= 3:
         report.ok("Paper BUY trials", f"{buys} executed")
@@ -321,12 +354,18 @@ def run_social_pipeline():
     from services.signal_orchestrator import SignalOrchestrator
     from data_manager import load_watchlist
 
+    grok_response = (
+        '{"coin": "SOL", "action": "BUY", "confidence": 80, '
+        '"price_target": 200, "stop_loss": 150, "rationale": "Stress test signal"}'
+    )
+
     try:
         analyzer = XAnalyzer()
         orch = SignalOrchestrator(notify_callback=lambda *a, **k: None)
         pipeline = SocialPipeline(analyzer, orchestrator=orch)
 
-        x_posts = pipeline.process_new_posts()
+        with patch("x_analyzer.ask_grok", return_value=grok_response):
+            x_posts = pipeline.process_new_posts()
         report.stats["x_posts_processed"] = len(x_posts) if x_posts else 0
 
         watchlist = load_watchlist()

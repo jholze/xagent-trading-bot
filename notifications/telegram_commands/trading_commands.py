@@ -1,5 +1,6 @@
 from core.config import get_bot_config
 from data_manager import list_coins
+from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
@@ -10,11 +11,15 @@ _trading = TradingService()
 
 
 def handle(text: str) -> bool:
+    if text == "/buy":
+        send_telegram_message(hint("buy"))
+        return True
+
     if text.startswith("/buy "):
         parts = [p.strip() for p in text.split() if p.strip()]
         coins = list_coins()
         if len(parts) < 2:
-            send_telegram_message("❌ Usage: /buy SYMBOL USDT or /buy NUMBER USDT\nExample: /buy ARIA 200 or /buy 1 200")
+            send_telegram_message(hint("buy"))
             return True
 
         sym = None
@@ -30,7 +35,7 @@ def handle(text: str) -> bool:
 
         usdt = safe_float(parts[2]) if len(parts) > 2 else get_bot_config().max_usdt_per_trade
         if not sym or usdt is None or usdt <= 0:
-            send_telegram_message("❌ Please specify a coin or number.\nExample: /buy ARIA 200 or /buy 1 200")
+            send_telegram_message(hint("buy"))
             return True
 
         price = get_prices(sym)[0]

@@ -1,3 +1,4 @@
+from core.config import get_bot_config
 from data_manager import load_trade_history
 from price_fetcher import get_prices_batch
 from strategies.positions import list_active_positions
@@ -29,7 +30,8 @@ def handle(text: str) -> bool:
 
     total_value = history.get("virtual_balance", 0) + total_unreal
     total_pnl = history.get("realized_pnl", 0) + total_unreal
-    pnl_pct = (total_pnl / 5000 * 100) if total_pnl != 0 else 0
+    initial = get_bot_config().initial_capital_usdt
+    pnl_pct = (total_pnl / initial * 100) if initial > 0 and total_pnl != 0 else 0
 
     msg = f"""<b>📊 Portfolio Overview</b>
 

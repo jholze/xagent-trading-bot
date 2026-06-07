@@ -43,6 +43,13 @@ class BotConfig:
         return self._raw.get("paper", {})
 
     @property
+    def initial_capital_usdt(self) -> float:
+        paper = self.paper_config.get("initial_capital_usdt")
+        if paper:
+            return float(paper)
+        return float(self._raw.get("initial_capital_usdt", 5000))
+
+    @property
     def max_daily_trades(self) -> int:
         return int(self._raw.get("max_daily_trades", 5))
 

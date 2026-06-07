@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from data_manager import load_x_accounts, load_x_posts, save_x_accounts
+from notifications.telegram_commands.usage_hints import hint
 from intelligence.accuracy_tracker import AccuracyTracker
 from services.signal_orchestrator import SignalOrchestrator
 from telegram_notifier import send_telegram_message, send_x_recommendation_message
@@ -8,10 +9,18 @@ from x_analyzer import XAnalyzer
 
 
 def handle(text: str) -> bool:
+    if text == "/addx":
+        send_telegram_message(hint("addx"))
+        return True
+
+    if text == "/removex":
+        send_telegram_message(hint("removex"))
+        return True
+
     if text.startswith("/addx "):
         handle_name = text[6:].strip().replace("@", "").strip()
         if not handle_name:
-            send_telegram_message("Please provide an X account, e.g. /addx CryptoCapo_")
+            send_telegram_message(hint("addx"))
             return True
         accounts = load_x_accounts()
         if not any(a.get("handle", a) == handle_name for a in accounts):
@@ -27,7 +36,7 @@ def handle(text: str) -> bool:
     if text.startswith("/removex "):
         handle_name = text[8:].strip().replace("@", "").strip()
         if not handle_name:
-            send_telegram_message("Please provide an X account to remove, e.g. /removex CryptoCapo_")
+            send_telegram_message(hint("removex"))
             return True
         accounts = load_x_accounts()
         new_accounts = [a for a in accounts if a.get("handle", a) != handle_name]

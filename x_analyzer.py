@@ -159,8 +159,16 @@ JSON:"""
         data["posts"].append(entry)
         save_x_posts(data)
 
-    def track_and_recommend(self, tweet_text: str, account: str, current_price: float = 0.0, orchestrator=None) -> Dict:
-        signal = self.parse_tweet(tweet_text, account)
+    def track_and_recommend(
+        self,
+        tweet_text: str,
+        account: str,
+        current_price: float = 0.0,
+        orchestrator=None,
+        signal: XSignal = None,
+    ) -> Dict:
+        if signal is None:
+            signal = self.parse_tweet(tweet_text, account)
         trust = self.get_trust_score(account)
         signal.trust_score = trust
         signal.effective_confidence = signal.confidence * (trust / 100)
