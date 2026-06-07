@@ -153,7 +153,8 @@ class CMCProApiProvider(CMCDataProvider):
             url = f"{self.BASE_URL}/community/trending/token"
             resp = requests.get(url, headers=self._headers(), params={"limit": limit}, timeout=15)
             if resp.status_code != 200:
-                log(f"CMC trending token API failed: {resp.status_code}", "WARNING")
+                err = resp.json().get("status", {}).get("error_message", resp.status_code)
+                log(f"CMC trending token API unavailable: {err}", "WARNING")
                 return []
             posts = []
             for item in resp.json().get("data", []):
@@ -194,7 +195,8 @@ class CMCProApiProvider(CMCDataProvider):
                 timeout=15,
             )
             if resp.status_code != 200:
-                log(f"CMC content API failed: {resp.status_code}", "WARNING")
+                err = resp.json().get("status", {}).get("error_message", resp.status_code)
+                log(f"CMC content API unavailable: {err}", "WARNING")
                 return []
             posts = []
             for item in resp.json().get("data", []):
@@ -220,6 +222,59 @@ class CMCProApiProvider(CMCDataProvider):
             log(f"CMC content fetch error: {e}", "WARNING")
             return []
 
+    def _fetch_quotes_sentiment(self, symbols: list, limit: int) -> List[RawCMCPost]:
+        """Fallback for plans without community/content endpoints — uses market quotes."""
+        if not self.api_key or not symbols:
+            return []
+        try:
+            url = f"{self.BASE_URL}/cryptocurrency/quotes/latest"
+            resp = requests.get(
+                url,
+                headers=self._headers(),
+                params={"symbol": ",".join(symbols[:30])},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                err = resp.json().get("status", {}).get("error_message", resp.status_code)
+                log(f"CMC quotes API failed: {err}", "WARNING")
+                return []
+
+            posts = []
+            data = resp.json().get("data", {})
+            for symbol, item in data.items():
+                quote = item.get("quote", {}).get("USDT") or item.get("quote", {}).get("USD") or {}
+                pct = float(quote.get("percent_change_24h", 0) or 0)
+                vol = float(quote.get("volume_24h", 0) or 0)
+                price = float(quote.get("price", 0) or 0)
+
+                if pct >= 5:
+                    bull, bear = min(95, 55 + int(pct)), max(5, 35 - int(pct / 2))
+                    text = f"{symbol} +{pct:.1f}% in 24h — bullish momentum (CMC market data)"
+                elif pct <= -5:
+                    bull, bear = max(5, 35 + int(pct / 2)), min(95, 55 + int(abs(pct)))
+                    text = f"{symbol} {pct:.1f}% in 24h — bearish momentum (CMC market data)"
+                else:
+                    bull, bear = 50, 50
+                    text = f"{symbol} {pct:+.1f}% in 24h — neutral (CMC market data)"
+
+                posts.append(RawCMCPost(
+                    post_id=f"cmc_quote_{symbol}_{round(pct, 1)}",
+                    coin=symbol.upper(),
+                    text=text,
+                    author="CMC Market",
+                    votes_bullish=bull,
+                    votes_bearish=bear,
+                    created_at=datetime.now().isoformat(),
+                ))
+                if len(posts) >= limit:
+                    break
+            if posts:
+                log(f"CMC using quotes/latest fallback for {len(posts)} symbols (community plan not available)", "INFO")
+            return posts
+        except Exception as e:
+            log(f"CMC quotes sentiment fetch error: {e}", "WARNING")
+            return []
+
     def fetch_posts(self, watchlist: list, limit: int = 10) -> List[RawCMCPost]:
         if not self.api_key:
             log("CMC_API_KEY not set — skipping live CMC fetch", "WARNING")
@@ -235,6 +290,11 @@ class CMCProApiProvider(CMCDataProvider):
         for post in self._fetch_content_latest(symbols, limit):
             if post.post_id not in seen and post.post_id not in {r.post_id for r in results}:
                 results.append(post)
+
+        if not results:
+            for post in self._fetch_quotes_sentiment(symbols, limit):
+                if post.post_id not in seen:
+                    results.append(post)
 
         return results[:limit]
 

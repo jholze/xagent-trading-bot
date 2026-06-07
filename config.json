@@ -38,7 +38,7 @@
   "onchain_weight": 0.2,
   "cmc": {
     "enabled": true,
-    "use_mock": true,
+    "use_mock": false,
     "min_confidence": 60,
     "api_key_env": "CMC_API_KEY"
   },
