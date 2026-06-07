@@ -37,6 +37,13 @@
   "technical_weight": 0.35,
   "onchain_weight": 0.2,
   "max_daily_trades": 5,
+  "risk": {
+    "drawdown_throttle_pct": 10.0,
+    "drawdown_size_multiplier": 0.5,
+    "atr_reference_pct": 3.0,
+    "min_size_multiplier": 0.25,
+    "min_trade_usdt": 5.0
+  },
   "update_interval": 600,
   "strategies": [
     {

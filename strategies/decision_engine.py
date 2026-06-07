@@ -92,13 +92,21 @@ class DecisionEngine:
                 return BUY, sources, max(technical.confidence, eff)
         return HOLD, sources, technical.confidence
 
-    def _merge_sell(self, technical: SignalAnalysis, x_signal, coin_signals: list) -> tuple:
+    def _x_stop_loss_triggered(self, x_signal, current_price: float) -> bool:
+        stop = getattr(x_signal, "stop_loss", None) if x_signal else None
+        return stop is not None and current_price > 0 and current_price <= float(stop)
+
+    def _merge_sell(self, technical: SignalAnalysis, x_signal, coin_signals: list, market: MarketContext = None) -> tuple:
         sources = list(technical.sources)
         candidates = []
 
         tech_norm = normalize(technical.action)
         if is_sell(technical.action):
             candidates.append((tech_norm, self.SELL_PRIORITY.get(tech_norm, 1), "technical"))
+
+        if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):
+            candidates.append((SELL_FULL, 6, "x_stop_loss"))
+            sources.append("x_stop_loss")
 
         if x_signal and x_signal.action == "SELL":
             eff = getattr(x_signal, "effective_confidence", x_signal.confidence)
@@ -126,7 +134,7 @@ class DecisionEngine:
         x_signal = coin_x[0] if coin_x else None
 
         if market.has_position:
-            normalized, sources, confidence = self._merge_sell(technical, x_signal, coin_x)
+            normalized, sources, confidence = self._merge_sell(technical, x_signal, coin_x, market)
             if normalized == HOLD and not is_sell(technical.action):
                 normalized = normalize(technical.action) if is_sell(technical.action) else HOLD
                 sources = list(technical.sources)

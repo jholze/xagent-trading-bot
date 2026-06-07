@@ -47,7 +47,7 @@ class SignalOrchestrator:
                 symbol=symbol,
                 price=current_price,
                 amount=0,
-                usdt_amount=self.trading.max_usdt_for_order(),
+                usdt_amount=0,
                 signal=analysis.action,
             )
         else:
@@ -68,9 +68,25 @@ class SignalOrchestrator:
             if not ok:
                 from core.models import TradeResult
                 return TradeResult(False, order.type, symbol, message=reason)
-            return self._execution_override.execute(order, tf)
+            decision = self.trading.evaluate_risk(
+                order,
+                tf,
+                source=source,
+                trust_score=trust_score,
+                confidence=analysis.confidence,
+            )
+            if not decision.approved:
+                from core.models import TradeResult
+                return TradeResult(False, order.type, symbol, message=decision.message)
+            return self._execution_override.execute(decision.order, tf)
 
-        return self.trading.execute_order(order, tf, source=source, trust_score=trust_score)
+        return self.trading.execute_order(
+            order,
+            tf,
+            source=source,
+            trust_score=trust_score,
+            confidence=analysis.confidence,
+        )
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None) -> str:
         if not current_price:

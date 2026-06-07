@@ -13,6 +13,7 @@ def handle(text: str) -> bool:
 /list or /watchlist - Show all coins
 
 <b>Trading:</b>
+/risk - Risk limits, drawdown, and sizing status
 /mode - Show trading mode (paper/live/off)
 /mode paper|live|off - Switch mode (/live_confirm for live)
 /live_confirm /live_cancel - Live trading safety

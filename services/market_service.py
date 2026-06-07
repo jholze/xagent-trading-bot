@@ -18,15 +18,22 @@ class MarketService:
                 "rsi": 45.0,
                 "lower_bb": current_price * 0.97,
                 "vol_multiplier": 1.3,
+                "atr": current_price * 0.03,
+                "atr_pct": 3.0,
             }
 
         recent_vol_avg = df["volume"].tail(4).mean()
         long_vol_avg = df["vol_avg"].iloc[-1]
         vol_multiplier = recent_vol_avg / long_vol_avg if long_vol_avg and long_vol_avg > 0 else 1.0
+        close = float(df["close"].iloc[-1])
+        atr = float(talib.ATR(df["high"], df["low"], df["close"], timeperiod=14).iloc[-1])
+        atr_pct = (atr / close * 100.0) if close > 0 else 3.0
         return {
             "rsi": float(df["rsi"].iloc[-1]),
             "lower_bb": float(df["lower"].iloc[-1]),
             "vol_multiplier": float(vol_multiplier),
+            "atr": atr,
+            "atr_pct": float(atr_pct),
         }
 
     def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):

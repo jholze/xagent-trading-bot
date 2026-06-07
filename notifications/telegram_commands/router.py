@@ -1,9 +1,10 @@
 from logger import log
-from notifications.telegram_commands import help_commands, mode_commands, portfolio_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands import help_commands, mode_commands, portfolio_commands, risk_commands, trading_commands, watchlist_commands, x_commands
 from telegram_notifier import send_telegram_message
 
 _HANDLERS = [
     mode_commands.handle,
+    risk_commands.handle,
     watchlist_commands.handle,
     trading_commands.handle,
     x_commands.handle,

@@ -302,12 +302,12 @@ class TestVirtualTrading(unittest.TestCase):
         from data_manager import load_x_posts, save_x_posts
 
         provider = MockXProvider()
-        accounts = [{"handle": "CryptoCapo_", "enabled": True}]
+        accounts = [{"handle": "DedupTestTrader", "enabled": True}]
         first = provider.fetch_new_posts(accounts)
         self.assertGreater(len(first), 0)
 
         data = load_x_posts()
-        data["posts"].append({"post_id": first[0].post_id, "account": "CryptoCapo_", "coin": "BTC"})
+        data["posts"].append({"post_id": first[0].post_id, "account": "DedupTestTrader", "coin": "BTC"})
         save_x_posts(data)
         second = provider.fetch_new_posts(accounts)
         self.assertFalse(any(p.post_id == first[0].post_id for p in second))
@@ -643,6 +643,159 @@ class TestVirtualTrading(unittest.TestCase):
 
             # Just ensure we didn't make a ridiculous number of calls
             self.assertLessEqual(mock_get.call_count, 10)
+
+    def test_risk_manager_approves_buy_with_dynamic_sizing(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0, "rsi": 45.0}):
+            decision = risk.evaluate(
+                TradeOrder("BUY", "XRVM/USDT", 1.0, 0, usdt_amount=150),
+                "4h",
+                trust_score=90,
+                confidence=80,
+                indicators={"atr_pct": 3.0},
+            )
+        self.assertTrue(decision.approved)
+        self.assertGreater(decision.order.usdt_amount, 0)
+        self.assertLessEqual(decision.order.usdt_amount, 300)
+
+    def test_risk_manager_blocks_max_open_positions(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        raw["max_open_positions"] = 1
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        update_position("POS_A/USDT", "4h", "BUY", 1.0, 10)
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+            decision = risk.evaluate(TradeOrder("BUY", "POS_B/USDT", 1.0, 0), "4h", indicators={"atr_pct": 3.0})
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.code, "max_open_positions")
+
+    def test_risk_manager_blocks_daily_trade_limit(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config, load_trade_history, save_trade_history
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        raw["max_daily_trades"] = 1
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        history = load_trade_history()
+        history["trades"] = [{"timestamp": datetime.now().isoformat(), "type": "BUY"}]
+        save_trade_history(history)
+
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+            decision = risk.evaluate(TradeOrder("BUY", "XRVM/USDT", 1.0, 0), "4h", indicators={"atr_pct": 3.0})
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.code, "max_daily_trades")
+
+    def test_risk_manager_drawdown_throttle_halves_size(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config, load_trade_history, save_trade_history
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        history = load_trade_history()
+        history["virtual_balance"] = 4000.0
+        history["peak_equity"] = 5000.0
+        save_trade_history(history)
+
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+            normal = risk.evaluate(
+                TradeOrder("BUY", "XRVM/USDT", 1.0, 0, usdt_amount=100),
+                "4h",
+                trust_score=70,
+                confidence=50,
+                indicators={"atr_pct": 3.0},
+            )
+        self.assertTrue(normal.approved)
+        self.assertEqual(normal.size_multiplier, 0.5)
+
+    def test_risk_manager_approves_sells_without_limits(self):
+        from risk.risk_manager import RiskManager
+        from core.models import TradeOrder
+
+        risk = RiskManager()
+        decision = risk.evaluate(TradeOrder("SELL", "XRVM/USDT", 1.0, 50), "4h")
+        self.assertTrue(decision.approved)
+
+    def test_trading_service_blocks_via_risk_manager(self):
+        from core.config import BotConfig
+        from data_manager import get_config, load_trade_history, save_trade_history
+        from services.trading_service import TradingService
+
+        raw = dict(get_config())
+        raw["max_daily_trades"] = 0
+        cfg = BotConfig()
+        cfg._raw = raw
+        svc = TradingService(cfg)
+
+        history = load_trade_history()
+        history["trades"] = [{"timestamp": datetime.now().isoformat(), "type": "BUY"}]
+        save_trade_history(history)
+
+        result = svc.execute_buy("XRVM/USDT", "4h", 1.0, 100)
+        self.assertFalse(result.executed)
+        self.assertIn("Daily trade limit", result.message)
+
+    def test_decision_engine_x_stop_loss_trigger(self):
+        from strategies.decision_engine import DecisionEngine
+        from x_analyzer import XSignal
+
+        engine = DecisionEngine()
+        x_sig = XSignal("CryptoCapo_", "XRVM", "HOLD", 70, stop_loss=1.05, rationale="protective stop")
+        x_sig.trust_score = 80
+
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}):
+            update_position("XRVM/USDT", "4h", "BUY", 1.2, 100)
+            analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0, x_signals=[x_sig])
+        self.assertIn(analysis.normalized_action, ("SELL_FULL", "SELL_PARTIAL_20", "SELL_PARTIAL_30"))
+        self.assertIn("x_stop_loss", analysis.sources)
+
+    def test_market_service_includes_atr(self):
+        from services.market_service import MarketService
+        import pandas as pd
+
+        service = MarketService()
+        df = pd.DataFrame({
+            "ts": range(30),
+            "open": [1.0] * 30,
+            "high": [1.05] * 30,
+            "low": [0.95] * 30,
+            "close": [1.0] * 30,
+            "volume": [1000.0] * 30,
+        })
+        df["rsi"] = 45.0
+        df["lower"] = 0.97
+        df["vol_avg"] = 900.0
+
+        with patch.object(service, "_fetch_ohlcv", return_value=df):
+            indicators = service.fetch_indicators("XRVM/USDT", "4h", 1.0)
+        self.assertIn("atr", indicators)
+        self.assertIn("atr_pct", indicators)
+        self.assertGreater(indicators["atr_pct"], 0)
 
     def test_data_layer_logs_on_failed_save(self):
         """When saving fails, we should log an ERROR instead of failing silently."""

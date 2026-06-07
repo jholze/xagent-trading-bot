@@ -92,3 +92,25 @@ class TradeOrder:
     usdt_amount: float = 0.0
     signal: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
+class ApprovedOrder:
+    order: TradeOrder
+    usdt_amount: float
+    size_multiplier: float = 1.0
+    atr_factor: float = 1.0
+    trust_factor: float = 1.0
+    drawdown_pct: float = 0.0
+
+
+@dataclass
+class RiskDecision:
+    approved: bool
+    order: Optional[TradeOrder] = None
+    message: str = ""
+    code: str = ""
+    size_multiplier: float = 1.0
+    drawdown_pct: float = 0.0
+    atr_factor: float = 1.0
+    trust_factor: float = 1.0

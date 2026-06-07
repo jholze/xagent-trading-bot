@@ -62,6 +62,18 @@ class BotConfig:
     def stop_loss_pct(self) -> float:
         return float(self._raw.get("stop_loss_pct", 12.0))
 
+    @property
+    def max_position_percent(self) -> float:
+        return float(self._raw.get("max_position_percent", 30))
+
+    @property
+    def aggression_config(self) -> dict:
+        return self._raw.get("aggression", {})
+
+    @property
+    def risk_config(self) -> dict:
+        return self._raw.get("risk", {})
+
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:
