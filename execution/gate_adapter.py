@@ -12,23 +12,32 @@ from services.portfolio_service import PortfolioService
 
 
 class GateExecutionAdapter(ExecutionAdapter):
-    """Gate.io live execution via ccxt."""
+    """Gate.io execution via ccxt (mainnet or testnet)."""
 
-    def __init__(self, config: BotConfig = None, portfolio: PortfolioService = None):
+    def __init__(
+        self,
+        config: BotConfig = None,
+        portfolio: PortfolioService = None,
+        testnet: bool = False,
+    ):
         self.config = config or get_bot_config()
         self.portfolio = portfolio or PortfolioService(self.config)
-        self.live_cfg = self.config.live_config
+        self.testnet = testnet
+        self.live_cfg = (
+            self.config.gate_testnet_config if testnet else self.config.live_config
+        )
         self._exchange = None
 
     @property
     def mode(self) -> str:
-        return "live"
+        return "gate_testnet" if self.testnet else "live"
 
     def _get_exchange(self):
         if self._exchange:
             return self._exchange
         api_key = os.getenv(self.live_cfg.get("api_key_env", "GATE_API_KEY"), "")
-        api_secret = os.getenv(self.live_cfg.get("api_secret_env", "GATE_API_SECRET"), "")
+        secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
+        api_secret = os.getenv(secret_env, "")
         if not api_key or not api_secret:
             return None
         self._exchange = ccxt.gate({
@@ -37,10 +46,14 @@ class GateExecutionAdapter(ExecutionAdapter):
             "enableRateLimit": True,
             "timeout": 20000,
         })
+        if self.testnet:
+            self._exchange.set_sandbox_mode(True)
         return self._exchange
 
     def _max_usdt(self) -> float:
-        return float(self.live_cfg.get("max_usdt_per_trade", self.config.max_usdt_per_trade))
+        return float(
+            self.live_cfg.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
+        )
 
     def _fetch_usdt_balance(self) -> float:
         exchange = self._get_exchange()
@@ -48,25 +61,39 @@ class GateExecutionAdapter(ExecutionAdapter):
             return 0.0
         try:
             balance = exchange.fetch_balance()
-            return float(balance.get("USDT", {}).get("free", 0) or balance.get("free", {}).get("USDT", 0) or 0)
+            return float(
+                balance.get("USDT", {}).get("free", 0)
+                or balance.get("free", {}).get("USDT", 0)
+                or 0
+            )
         except Exception as e:
-            log(f"Gate balance fetch failed: {e}", "WARNING")
+            label = "Gate testnet" if self.testnet else "Gate"
+            log(f"{label} balance fetch failed: {e}", "WARNING")
             return 0.0
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
-        if self.live_cfg.get("dry_run", True):
-            log(f"[DRY RUN] Live {order.type} {order.symbol} amount={order.amount} @ {order.price}", "INFO")
+        dry_default = not self.testnet
+        if self.live_cfg.get("dry_run", dry_default):
+            label = "Gate testnet" if self.testnet else "Live"
+            log(
+                f"[DRY RUN] {label} {order.type} {order.symbol} "
+                f"amount={order.amount} @ {order.price}",
+                "INFO",
+            )
             result = self._sync_local_ledger(order, timeframe, exchange_order_id="dry_run")
-            result.message = "Dry run — order logged locally, not sent to Gate.io"
+            target = "Gate testnet" if self.testnet else "Gate.io"
+            result.message = f"Dry run — order logged locally, not sent to {target}"
             return result
 
         exchange = self._get_exchange()
         if not exchange:
+            key_env = self.live_cfg.get("api_key_env", "GATE_API_KEY")
+            secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
             return TradeResult(
                 executed=False,
                 order_type=order.type,
                 symbol=order.symbol,
-                message="Gate API keys not configured (GATE_API_KEY / GATE_API_SECRET)",
+                message=f"Gate API keys not configured ({key_env} / {secret_env})",
             )
 
         try:
@@ -74,7 +101,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                 return self._execute_buy(exchange, order, timeframe)
             return self._execute_sell(exchange, order, timeframe)
         except Exception as e:
-            log(f"Gate execution failed for {order.symbol}: {e}", "ERROR")
+            label = "Gate testnet" if self.testnet else "Gate"
+            log(f"{label} execution failed for {order.symbol}: {e}", "ERROR")
             return TradeResult(
                 executed=False,
                 order_type=order.type,
@@ -86,10 +114,14 @@ class GateExecutionAdapter(ExecutionAdapter):
         usdt = order.usdt_amount or self._max_usdt()
         balance = self._fetch_usdt_balance()
         if balance < usdt:
-            return TradeResult(False, "BUY", order.symbol, message=f"Insufficient USDT balance ({balance:.2f})")
+            return TradeResult(
+                False,
+                "BUY",
+                order.symbol,
+                message=f"Insufficient USDT balance ({balance:.2f})",
+            )
 
         amount = usdt / order.price if order.price > 0 else order.amount
-        market = exchange.market(order.symbol)
         amount = float(exchange.amount_to_precision(order.symbol, amount))
 
         raw = exchange.create_market_buy_order(order.symbol, amount)
@@ -102,7 +134,8 @@ class GateExecutionAdapter(ExecutionAdapter):
             timeframe,
             exchange_order_id=raw.get("id", ""),
         )
-        result.message = f"Gate BUY filled {filled:.6f} @ ${fill_price:.4f}"
+        prefix = "Gate testnet" if self.testnet else "Gate"
+        result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
         return result
 
     def _execute_sell(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
@@ -122,14 +155,25 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange_order_id=raw.get("id", ""),
             usdt_received=received,
         )
-        result.message = f"Gate SELL filled {filled:.6f} @ ${fill_price:.4f}"
+        prefix = "Gate testnet" if self.testnet else "Gate"
+        result.message = f"{prefix} SELL filled {filled:.6f} @ ${fill_price:.4f}"
         return result
 
-    def _sync_local_ledger(self, order: TradeOrder, timeframe: str, exchange_order_id: str = "", usdt_received: float = 0) -> TradeResult:
+    def _sync_local_ledger(
+        self,
+        order: TradeOrder,
+        timeframe: str,
+        exchange_order_id: str = "",
+        usdt_received: float = 0,
+    ) -> TradeResult:
         if order.type == "BUY":
-            local = self.portfolio.execute_buy(order.symbol, timeframe, order.price, order.usdt_amount)
+            local = self.portfolio.execute_buy(
+                order.symbol, timeframe, order.price, order.usdt_amount
+            )
         else:
-            local = self.portfolio.execute_sell(order.symbol, timeframe, order.price, order.signal or "SELL", order.amount)
+            local = self.portfolio.execute_sell(
+                order.symbol, timeframe, order.price, order.signal or "SELL", order.amount
+            )
 
         record_live_trade({
             "type": order.type,
@@ -141,7 +185,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             "pnl": local.pnl,
             "exchange_order_id": exchange_order_id,
             "timestamp": datetime.now().isoformat(),
-            "mode": "live",
+            "mode": self.mode,
         })
-        local.message = local.message or f"Live {order.type} synced"
+        local.message = local.message or f"{self.mode} {order.type} synced"
         return local

@@ -36,15 +36,21 @@ class TradingService:
             confirmed = "CONFIRMED" if self.config.live_confirmed else "needs /live_confirm"
             dry = " [DRY RUN]" if self.config.live_config.get("dry_run", True) else ""
             return f"live ({confirmed}){dry}"
+        if mode == "gate_testnet":
+            dry = " [DRY RUN]" if self.config.gate_testnet_config.get("dry_run", False) else ""
+            return f"gate testnet (Gate.io demo){dry}"
         if mode == "off":
             return "off (analysis only)"
-        return "paper"
+        backend = self.config.paper_config.get("backend", "local")
+        if backend != "local":
+            return f"paper ({backend})"
+        return "paper (local ledger)"
 
     def can_execute(self, source: str = "auto", trust_score: float = None) -> tuple:
         mode = self.config.trading_mode
         if mode == "off":
             return False, "Trading disabled (mode=off). Use /mode paper to enable."
-        if mode == "paper":
+        if mode in ("paper", "gate_testnet"):
             return True, ""
         if mode == "live":
             if not self.config.live_confirmed:
@@ -58,6 +64,10 @@ class TradingService:
     def max_usdt_for_order(self) -> float:
         if self.config.trading_mode == "live":
             return float(self.config.live_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade))
+        if self.config.trading_mode == "gate_testnet":
+            return float(
+                self.config.gate_testnet_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
+            )
         return self.config.max_usdt_per_trade
 
     def evaluate_risk(

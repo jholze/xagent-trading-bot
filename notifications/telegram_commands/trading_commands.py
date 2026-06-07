@@ -1,7 +1,7 @@
 from core.config import get_bot_config
 from data_manager import list_coins
 from notifications.telegram_commands.utils import safe_float, safe_int
-from price_fetcher import get_prices
+from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
@@ -58,9 +58,15 @@ def handle(text: str) -> bool:
                 return True
             msg = "<b>📍 Active Positions to Sell:</b>\n\n"
             msg += "──────────────────────────────────\n"
+            symbols = [
+                p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
+                for p in active
+            ]
+            prices = get_prices_batch(symbols)
             for i, p in enumerate(active, 1):
                 highlight = p.get("highlight", "")
-                price = get_prices(p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"])[0]
+                sym = symbols[i - 1]
+                price = prices.get(sym, 0.0)
                 entry = p.get("average_entry", p.get("entry_price", 0))
                 unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
                 msg += f"{i}. {highlight}{p['symbol']} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f}\n"

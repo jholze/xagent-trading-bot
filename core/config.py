@@ -35,6 +35,10 @@ class BotConfig:
         return self._raw.get("live", {})
 
     @property
+    def gate_testnet_config(self) -> dict:
+        return self._raw.get("gate_testnet", {})
+
+    @property
     def paper_config(self) -> dict:
         return self._raw.get("paper", {})
 

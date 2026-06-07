@@ -8,5 +8,7 @@ def get_execution_adapter(config: BotConfig = None, portfolio: PortfolioService 
     cfg = config or get_bot_config()
     portfolio = portfolio or PortfolioService(cfg)
     if cfg.trading_mode == "live":
-        return GateExecutionAdapter(cfg, portfolio)
+        return GateExecutionAdapter(cfg, portfolio, testnet=False)
+    if cfg.trading_mode == "gate_testnet":
+        return GateExecutionAdapter(cfg, portfolio, testnet=True)
     return PaperExecutionAdapter(portfolio)

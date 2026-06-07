@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -258,6 +258,56 @@ class TestVirtualTrading(unittest.TestCase):
         adapter = get_execution_adapter()
         self.assertIsInstance(adapter, PaperExecutionAdapter)
 
+    def test_execution_factory_gate_testnet(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+        from execution.factory import get_execution_adapter
+        from execution.gate_adapter import GateExecutionAdapter
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "gate_testnet"
+        cfg = BotConfig()
+        cfg._raw = raw
+        adapter = get_execution_adapter(cfg)
+        self.assertIsInstance(adapter, GateExecutionAdapter)
+        self.assertTrue(adapter.testnet)
+        self.assertEqual(adapter.mode, "gate_testnet")
+
+    def test_gate_adapter_testnet_dry_run(self):
+        from execution.gate_adapter import GateExecutionAdapter
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("gate_testnet", {})["dry_run"] = True
+        cfg = BotConfig()
+        cfg._raw = raw
+        adapter = GateExecutionAdapter(cfg, testnet=True)
+        with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
+            from core.models import TradeResult
+            mock_buy.return_value = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=0.5, usdt_amount=5)
+            with patch("execution.gate_adapter.record_live_trade"):
+                result = adapter.execute(TradeOrder("BUY", "XRVM/USDT", 0.5, 10, usdt_amount=5), "4h")
+        self.assertTrue(result.executed)
+        self.assertIn("Dry run", result.message)
+        self.assertIn("testnet", result.message.lower())
+
+    def test_trading_service_gate_testnet_can_execute(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+        from services.trading_service import TradingService
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "gate_testnet"
+        cfg = BotConfig()
+        cfg._raw = raw
+        svc = TradingService(cfg)
+        ok, reason = svc.can_execute()
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+        self.assertIn("gate testnet", svc.mode_label())
+
     def test_registry_lists_strategies(self):
         from strategies.registry import list_registered_strategies
         strategies = list_registered_strategies()
@@ -512,6 +562,37 @@ class TestVirtualTrading(unittest.TestCase):
             if p.get("last_action") == "BUY":
                 self.assertIn("highlight", p)
 
+    def test_get_prices_batch_uses_cache(self):
+        from price_fetcher import get_prices_batch, _price_cache
+        import time
+
+        _price_cache.clear()
+        _price_cache["SOL/USDT"] = (100.0, time.time())
+        _price_cache["BNB/USDT"] = (500.0, time.time())
+
+        with patch("price_fetcher.requests.get") as mock_get:
+            result = get_prices_batch(["SOL/USDT", "BNB/USDT", "SOL/USDT"])
+        self.assertEqual(result["SOL/USDT"], 100.0)
+        self.assertEqual(result["BNB/USDT"], 500.0)
+        mock_get.assert_not_called()
+
+    def test_get_prices_batch_gate_bulk(self):
+        from price_fetcher import get_prices_batch, _price_cache
+
+        _price_cache.clear()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            {"currency_pair": "SOL_USDT", "last": "150.5"},
+            {"currency_pair": "DOGE_USDT", "last": "0.08"},
+            {"currency_pair": "BTC_USDT", "last": "60000"},
+        ]
+        with patch("price_fetcher.requests.get", return_value=mock_resp) as mock_get:
+            result = get_prices_batch(["SOL/USDT", "DOGE/USDT"])
+        self.assertEqual(result["SOL/USDT"], 150.5)
+        self.assertEqual(result["DOGE/USDT"], 0.08)
+        self.assertEqual(mock_get.call_count, 1)
+
     def test_price_fetcher_caching(self):
         """Smoke test that the price cache doesn't break basic calls."""
         from price_fetcher import get_prices
@@ -657,7 +738,8 @@ class TestVirtualTrading(unittest.TestCase):
         cfg._raw = raw
         risk = RiskManager(cfg)
 
-        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0, "rsi": 45.0}):
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0, "rsi": 45.0}), \
+             patch.object(risk, "_daily_trades_count", return_value=0):
             decision = risk.evaluate(
                 TradeOrder("BUY", "XRVM/USDT", 1.0, 0, usdt_amount=150),
                 "4h",
@@ -724,7 +806,8 @@ class TestVirtualTrading(unittest.TestCase):
         history["peak_equity"] = 5000.0
         save_trade_history(history)
 
-        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_daily_trades_count", return_value=0):
             normal = risk.evaluate(
                 TradeOrder("BUY", "XRVM/USDT", 1.0, 0, usdt_amount=100),
                 "4h",
@@ -978,8 +1061,10 @@ class TestVirtualTrading(unittest.TestCase):
         cmc = CMCCommunitySignal("SOL", "BUY", 78, rationale="bullish community", votes_bullish=90, votes_bearish=8)
         cmc.effective_confidence = 70
 
+        empty_pos = {"amount": 0, "average_entry": 0}
         with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
-             patch("strategies.decision_engine.count_open_positions", return_value=0):
+             patch("strategies.decision_engine.count_open_positions", return_value=0), \
+             patch("strategies.decision_engine.get_position", return_value=empty_pos):
             analysis = engine.evaluate({"symbol": "SOL/USDT", "timeframe": "4h"}, 1.0, cmc_signals=[cmc])
         self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
         self.assertIn("cmc", analysis.sources)
@@ -996,8 +1081,10 @@ class TestVirtualTrading(unittest.TestCase):
         cmc = CMCCommunitySignal("SOL", "BUY", 80, votes_bullish=85, votes_bearish=10)
         cmc.effective_confidence = 65
 
+        empty_pos = {"amount": 0, "average_entry": 0}
         with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 35.0, "lower_bb": 1.05, "vol_multiplier": 2.0}), \
-             patch("strategies.decision_engine.count_open_positions", return_value=0):
+             patch("strategies.decision_engine.count_open_positions", return_value=0), \
+             patch("strategies.decision_engine.get_position", return_value=empty_pos):
             analysis = engine.evaluate(
                 {"symbol": "SOL/USDT", "timeframe": "4h"},
                 1.0,
