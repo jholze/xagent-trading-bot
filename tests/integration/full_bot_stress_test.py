@@ -364,7 +364,7 @@ def run_social_pipeline():
         orch = SignalOrchestrator(notify_callback=lambda *a, **k: None)
         pipeline = SocialPipeline(analyzer, orchestrator=orch)
 
-        with patch("x_analyzer.ask_grok", return_value=grok_response):
+        with patch("x_analyzer.ask_grok_json", return_value=grok_response):
             x_posts = pipeline.process_new_posts()
         report.stats["x_posts_processed"] = len(x_posts) if x_posts else 0
 

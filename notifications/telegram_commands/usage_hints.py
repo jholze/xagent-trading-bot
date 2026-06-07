@@ -118,6 +118,16 @@ USAGE = {
     "tracktest": {
         "help_line": "<code>/tracktest</code> — Test-Tweet sofort durch den Analyzer schicken",
     },
+    "testaccount": {
+        "hint": (
+            "❌ <b>/testaccount</b> — X-Account auf Empfehlungs-Performance testen\n\n"
+            "So geht's: <code>/testaccount ACCOUNT [TAGE]</code>\n"
+            "Standard: 60 Tage, wenn kein Zeitraum angegeben ist.\n"
+            "Beispiel: <code>/testaccount CryptoCapo_</code>\n"
+            "Beispiel: <code>/testaccount @Pentosh1 30</code>"
+        ),
+        "help_line": "<code>/testaccount ACCOUNT [TAGE]</code> — Backtest der BUY/SELL-Empfehlungen (Standard: 60 Tage)",
+    },
     "help": {
         "help_line": "<code>/help</code> — Diese Befehlsliste",
     },
@@ -136,7 +146,7 @@ def build_help_message() -> str:
         ("📋 <b>Watchlist</b> — Welche Coins der Bot beobachtet", ["list", "add", "remove"]),
         ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "risk"]),
         ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "live_confirm", "live_cancel", "gate"]),
-        ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "tracktest"]),
+        ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
         ("🧪 <b>Sandbox & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "cmc"]),
         ("❓ <b>Hilfe</b>", ["help"]),
     ]

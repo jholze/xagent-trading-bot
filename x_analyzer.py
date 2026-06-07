@@ -1,10 +1,11 @@
 import json
+import re
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional, Union
 
 from data_manager import get_config, load_watchlist, load_x_accounts, load_x_posts, save_x_posts
-from grok_agent import ask_grok
-from x_data_provider import get_x_provider
+from grok_agent import ask_grok, ask_grok_json
+from x_data_provider import RawPost, get_x_provider
 
 
 class XSignal:
@@ -33,16 +34,82 @@ class XSignal:
         self.effective_confidence = float(confidence)
 
 
+def _clean_grok_json(response: str) -> str:
+    cleaned = response.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def _extract_json_array(text: str) -> list:
+    cleaned = _clean_grok_json(text)
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    try:
+        data = json.loads(cleaned[start : end + 1])
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
 class XAnalyzer:
     def __init__(self):
         self.config = get_config()
         self.accounts = load_x_accounts()
         self.min_confidence = self.config.get("min_x_confidence", 65)
         self.provider = get_x_provider(self.config)
+        self._perf = self.config.get("x_performance", {})
+        self._parse_batch_size = int(self._perf.get("parse_batch_size", 10))
+        self._parse_cache: Dict[str, XSignal] = {}
+        self._hydrate_parse_cache()
 
     def _reload_accounts(self):
         self.accounts = load_x_accounts()
         return self.accounts
+
+    def _hydrate_parse_cache(self):
+        for entry in load_x_posts().get("posts", []):
+            post_id = entry.get("post_id")
+            if not post_id or post_id in self._parse_cache:
+                continue
+            action = entry.get("parsed_action") or entry.get("action")
+            coin = entry.get("coin")
+            if not action or not coin:
+                continue
+            self._parse_cache[post_id] = XSignal(
+                account=entry.get("account", ""),
+                coin=coin,
+                action=action,
+                confidence=int(entry.get("confidence", 70)),
+                price_target=entry.get("price_target"),
+                stop_loss=entry.get("stop_loss"),
+                rationale=entry.get("rationale", ""),
+                post_id=post_id,
+            )
+
+    def _cache_signal(self, post_id: str, signal: XSignal):
+        if post_id:
+            self._parse_cache[post_id] = signal
+
+    def _cached_signal(self, post: RawPost) -> Optional[XSignal]:
+        if not post.post_id:
+            return None
+        cached = self._parse_cache.get(post.post_id)
+        if not cached:
+            return None
+        return XSignal(
+            account=post.account,
+            coin=cached.coin,
+            action=cached.action,
+            confidence=cached.confidence,
+            price_target=cached.price_target,
+            stop_loss=cached.stop_loss,
+            rationale=cached.rationale,
+            post_id=post.post_id,
+        )
 
     def get_trust_score(self, account: str) -> float:
         for acc in self.accounts:
@@ -53,11 +120,51 @@ class XAnalyzer:
     def effective_confidence_threshold(self, account: str) -> float:
         trust = self.get_trust_score(account)
         base = self.config.get("aggression", {}).get("base_confidence_threshold", 75)
-        # Lower trust → require higher confidence; high trust → more aggressive
         adjustment = (70 - trust) * 0.2
         return max(65.0, min(90.0, base + adjustment))
 
+    def _signal_from_data(self, account: str, data: dict, post_id: str = None) -> XSignal:
+        return XSignal(
+            account=account,
+            coin=data.get("coin", "UNKNOWN"),
+            action=data.get("action", "HOLD"),
+            confidence=int(data.get("confidence", 70)),
+            price_target=data.get("price_target"),
+            stop_loss=data.get("stop_loss"),
+            rationale=data.get("rationale", "Positive momentum detected"),
+            post_id=post_id,
+        )
+
+    def _levels_from_signal(self, signal: XSignal) -> Dict:
+        return {
+            "price_target": signal.price_target,
+            "stop_loss": signal.stop_loss,
+        }
+
+    def _hold_signal(self, account: str, post_id: str = None, rationale: str = "") -> XSignal:
+        return XSignal(
+            account=account,
+            coin="UNKNOWN",
+            action="HOLD",
+            confidence=40,
+            rationale=rationale or "Parse error",
+            post_id=post_id,
+        )
+
     def parse_tweet(self, tweet_text: str, account: str, post_id: str = None) -> XSignal:
+        if post_id and post_id in self._parse_cache:
+            cached = self._parse_cache[post_id]
+            return XSignal(
+                account=account,
+                coin=cached.coin,
+                action=cached.action,
+                confidence=cached.confidence,
+                price_target=cached.price_target,
+                stop_loss=cached.stop_loss,
+                rationale=cached.rationale,
+                post_id=post_id,
+            )
+
         prompt = f"""You are a professional crypto trader. Analyze this tweet and give a clear, decisive trading recommendation.
 Be confident and specific. Do not default to HOLD unless the tweet is neutral.
 
@@ -68,35 +175,111 @@ Tweet by @{account}: "{tweet_text}"
 
 JSON:"""
 
-        response = ask_grok(prompt)
+        response = ask_grok_json(prompt)
         try:
-            data = json.loads(response.strip("```json").strip("```").strip())
-            return XSignal(
-                account=account,
-                coin=data.get("coin", "UNKNOWN"),
-                action=data.get("action", "HOLD"),
-                confidence=int(data.get("confidence", 70)),
-                price_target=data.get("price_target"),
-                stop_loss=data.get("stop_loss"),
-                rationale=data.get("rationale", "Positive momentum detected"),
-                post_id=post_id,
-            )
+            data = json.loads(_clean_grok_json(response))
+            signal = self._signal_from_data(account, data, post_id)
+            self._cache_signal(post_id, signal)
+            return signal
         except Exception as e:
-            return XSignal(
-                account=account,
-                coin="UNKNOWN",
-                action="HOLD",
-                confidence=40,
-                rationale=f"Parse error: {str(e)[:50]}",
-                post_id=post_id,
-            )
+            signal = self._hold_signal(account, post_id, f"Parse error: {str(e)[:50]}")
+            self._cache_signal(post_id, signal)
+            return signal
+
+    def _batch_prompt(self, posts: List[RawPost]) -> str:
+        lines = [
+            "You are a professional crypto trader. Analyze each tweet below and return trading recommendations.",
+            "Be confident and specific. Do not default to HOLD unless the tweet is neutral.",
+            "",
+            "Return ONLY a valid JSON array. Each item must include post_id and:",
+            '{"post_id": "...", "coin": "SYMBOL", "action": "BUY|SELL|HOLD", "confidence": 0-100, "price_target": number or null, "stop_loss": number or null, "rationale": "short summary"}',
+            "",
+            "Tweets:",
+        ]
+        for i, post in enumerate(posts, 1):
+            pid = post.post_id or f"idx_{i}"
+            lines.append(f'{i}. post_id="{pid}" account=@{post.account}: "{post.text}"')
+        lines.append("")
+        lines.append("JSON array:")
+        return "\n".join(lines)
+
+    def _parse_batch_response(self, response: str, posts: List[RawPost]) -> Dict[str, XSignal]:
+        by_id: Dict[str, XSignal] = {}
+        for item in _extract_json_array(response):
+            if not isinstance(item, dict):
+                continue
+            post_id = str(item.get("post_id", "")).strip()
+            account = item.get("account", "")
+            if not post_id:
+                continue
+            if not account:
+                for post in posts:
+                    if post.post_id == post_id:
+                        account = post.account
+                        break
+            signal = self._signal_from_data(account or "unknown", item, post_id)
+            by_id[post_id] = signal
+            self._cache_signal(post_id, signal)
+        return by_id
+
+    def _parse_posts_chunk(self, posts: List[RawPost]) -> Dict[str, XSignal]:
+        if not posts:
+            return {}
+        if len(posts) == 1:
+            post = posts[0]
+            return {post.post_id: self.parse_tweet(post.text, post.account, post_id=post.post_id)}
+
+        response = ask_grok_json(self._batch_prompt(posts))
+        parsed = self._parse_batch_response(response, posts)
+        if len(parsed) >= len(posts):
+            return parsed
+
+        results: Dict[str, XSignal] = {}
+        for post in posts:
+            pid = post.post_id
+            if pid in parsed:
+                results[pid] = parsed[pid]
+            else:
+                results[pid] = self.parse_tweet(post.text, post.account, post_id=pid)
+        return results
+
+    def parse_tweets_batch(self, posts: List[Union[RawPost, dict]]) -> Dict[str, XSignal]:
+        normalized: List[RawPost] = []
+        results: Dict[str, XSignal] = {}
+
+        for item in posts:
+            if isinstance(item, RawPost):
+                post = item
+            else:
+                post = RawPost(
+                    post_id=item.get("post_id", ""),
+                    account=item.get("account", ""),
+                    text=item.get("text", ""),
+                    created_at=item.get("created_at", ""),
+                )
+            if not post.post_id:
+                continue
+            cached = self._cached_signal(post)
+            if cached:
+                results[post.post_id] = cached
+            else:
+                normalized.append(post)
+
+        for i in range(0, len(normalized), self._parse_batch_size):
+            chunk = normalized[i : i + self._parse_batch_size]
+            results.update(self._parse_posts_chunk(chunk))
+
+        return results
 
     def fetch_latest_signals(self, limit_per_account: int = 5) -> List[XSignal]:
-        signals = []
         raw_posts = self.provider.fetch_new_posts(self.accounts, limit_per_account)
+        parsed = self.parse_tweets_batch(raw_posts)
+        signals = []
 
         for post in raw_posts:
-            signal = self.parse_tweet(post.text, post.account, post_id=post.post_id)
+            signal = parsed.get(post.post_id)
+            if not signal:
+                continue
             threshold = self.effective_confidence_threshold(post.account)
             signal.trust_score = self.get_trust_score(post.account)
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
@@ -148,6 +331,8 @@ JSON:"""
             "confidence": recommendation["confidence"],
             "trust_at_signal": recommendation.get("trust_at_signal"),
             "signal_price": recommendation.get("signal_price"),
+            "price_target": recommendation.get("price_target"),
+            "stop_loss": recommendation.get("stop_loss"),
             "rationale": recommendation["rationale"],
             "recommended": recommendation["recommended"],
             "raw_tweet": recommendation.get("raw_tweet", ""),
@@ -158,6 +343,21 @@ JSON:"""
                 return
         data["posts"].append(entry)
         save_x_posts(data)
+        post_id = recommendation.get("post_id")
+        if post_id and recommendation.get("parsed_action"):
+            self._cache_signal(
+                post_id,
+                XSignal(
+                    account=recommendation["account"],
+                    coin=recommendation.get("coin", "UNKNOWN"),
+                    action=recommendation["parsed_action"],
+                    confidence=int(recommendation.get("confidence", 70)),
+                    price_target=recommendation.get("price_target"),
+                    stop_loss=recommendation.get("stop_loss"),
+                    rationale=recommendation.get("rationale", ""),
+                    post_id=post_id,
+                ),
+            )
 
     def track_and_recommend(
         self,
@@ -183,6 +383,7 @@ JSON:"""
             "trust_at_signal": trust,
             "parsed_action": signal.action,
             "signal_price": current_price,
+            **self._levels_from_signal(signal),
         }
 
         if signal.coin == "UNKNOWN" or signal.confidence < self.min_confidence:

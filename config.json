@@ -29,7 +29,8 @@
   "stop_loss_pct": 12.0,
   "max_open_positions": 5,
   "debug": false,
-  "use_mock_x_data": true,
+  "use_mock_x_data": false,
+  "use_grok_x_search": true,
   "min_x_confidence": 65,
   "aggression": {
     "base_confidence_threshold": 75,
@@ -41,6 +42,21 @@
     "buy_success_pct": 3.0,
     "sell_success_pct": -2.0,
     "trust_ema_alpha": 0.3
+  },
+  "x_backtest": {
+    "default_days": 60,
+    "max_days": 365,
+    "max_posts": 50,
+    "max_hold_days": 7,
+    "target_tolerance_pct": 0.5,
+    "min_signal_age_hours": 24
+  },
+  "x_performance": {
+    "live_search_days": 2,
+    "x_search_cache_ttl_sec": 900,
+    "parse_batch_size": 10,
+    "strategy_discovery_async": true,
+    "parallel_account_fetch": 3
   },
   "x_weight": 0.45,
   "technical_weight": 0.35,

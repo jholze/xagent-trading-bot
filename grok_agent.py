@@ -11,17 +11,23 @@ client = OpenAI(
 )
 
 MODEL = "grok-4"
+PARSE_MODEL = os.getenv("GROK_PARSE_MODEL", MODEL)
 
-def ask_grok(prompt):
+
+def ask_grok(prompt, temperature=0.7, model=None):
     try:
         response = client.chat.completions.create(
-            model=MODEL,
+            model=model or MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
+            temperature=temperature,
         )
         return response.choices[0].message.content
     except Exception as e:
         return f"API-Fehler: {e}"
+
+
+def ask_grok_json(prompt, model=None):
+    return ask_grok(prompt, temperature=0.2, model=model or PARSE_MODEL)
 
 def read_file(filename):
     try:

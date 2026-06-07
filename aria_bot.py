@@ -45,7 +45,7 @@ try:
     from services.signal_orchestrator import SignalOrchestrator
     from services.social_pipeline import SocialPipeline
     from strategies.paper_sandbox import PaperSandbox
-    from telegram_notifier import handle_telegram_command, send_cycle_summary, send_signal_message
+    from telegram_notifier import handle_telegram_callback, handle_telegram_command, send_cycle_summary, send_signal_message
     from x_analyzer import XAnalyzer
 except ImportError as e:
     print(f"Fehler beim Laden der Module: {e}")
@@ -64,7 +64,10 @@ app = Flask(__name__)
 def webhook():
     try:
         update = request.get_json()
-        if update and "message" in update:
+        if update and "callback_query" in update:
+            log("Received Telegram callback query", "DEBUG")
+            handle_telegram_callback(update["callback_query"])
+        elif update and "message" in update:
             text = update["message"].get("text", "")
             log(f"Received Telegram message: {text[:100]}", "DEBUG")
             if text.startswith("/"):

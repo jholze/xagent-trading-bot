@@ -99,7 +99,7 @@ def send_cycle_summary(text: str):
     return send_telegram_message(text)
 
 
-def send_telegram_message(text):
+def send_telegram_message(text, reply_markup=None):
     if not BOT_TOKEN or not CHAT_ID:
         print("⚠️ Telegram not configured")
         return False
@@ -109,6 +109,8 @@ def send_telegram_message(text):
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     try:
         response = requests.post(url, json=payload, timeout=10)
@@ -118,7 +120,33 @@ def send_telegram_message(text):
         return False
 
 
+def send_telegram_buttons(text, buttons):
+    """buttons: list of rows, each row is list of {text, callback_data} dicts."""
+    reply_markup = {"inline_keyboard": buttons}
+    return send_telegram_message(text, reply_markup=reply_markup)
+
+
+def answer_callback_query(callback_id, text=None):
+    if not BOT_TOKEN:
+        return False
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_id}
+    if text:
+        payload["text"] = text
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Error answering callback query: {e}")
+        return False
+
+
 def handle_telegram_command(text):
     """Delegates to modular command router."""
     from notifications.telegram_commands.router import dispatch_command
     return dispatch_command(text)
+
+
+def handle_telegram_callback(callback_query):
+    from notifications.telegram_commands.router import dispatch_callback
+    return dispatch_callback(callback_query)

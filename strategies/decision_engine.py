@@ -194,12 +194,25 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
         return best[0], sources, max(technical.confidence, social_conf)
 
+    def evaluate_with_market(
+        self,
+        coin: dict,
+        market: MarketContext,
+        x_signals=None,
+        cmc_signals=None,
+    ) -> SignalAnalysis:
+        coin = resolve_coin_config(coin)
+        return self._evaluate_internal(coin, market, x_signals, cmc_signals)
+
     def evaluate(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None) -> SignalAnalysis:
         if not current_price:
             return None
 
         coin = resolve_coin_config(coin)
         market = self.build_market_context(coin, current_price)
+        return self._evaluate_internal(coin, market, x_signals, cmc_signals)
+
+    def _evaluate_internal(self, coin: dict, market: MarketContext, x_signals=None, cmc_signals=None) -> SignalAnalysis:
         strategy = get_strategy(coin)
         technical = strategy.analyze(coin, market, x_signals=None)
 
@@ -278,6 +291,8 @@ class DecisionEngine:
             "trust_at_signal": getattr(x_signal, "trust_score", 70),
             "parsed_action": x_signal.action,
             "signal_price": price,
+            "price_target": getattr(x_signal, "price_target", None),
+            "stop_loss": getattr(x_signal, "stop_loss", None),
         }
 
         if x_signal.coin == "UNKNOWN":

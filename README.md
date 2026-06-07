@@ -7,7 +7,7 @@
 - Hybrid scoring: X signals vs. technical analysis (RSI, Bollinger Bands, Volume)
 - Action recommendations (BUY, SELL, ADD_TO_WATCHLIST, IGNORE) with rationale
 - Accurate virtual trading with weighted-average entry price and full PnL tracking
-- Full Telegram bot management (`/buy`, `/sell`, `/positions`, `/addx`, `/removex`, `/listx`, `/xposts`, `/tracktest`, `/help` and more)
+- Full Telegram bot management (`/buy`, `/sell`, `/positions`, `/addx`, `/removex`, `/listx`, `/xposts`, `/testaccount`, `/tracktest`, `/help` and more)
 - Clean split terminal UI (rich library) with live sections
 - **Major stability & safety refactor** (May/June 2026): atomic JSON writes, price caching, global state protection with locks, proper error logging instead of silent `pass`, `os.isatty` guards, centralized config, duplicate code removal, and more
 - Comprehensive test suite (96+ unit tests: portfolio equity, X pipeline, commands, PnL, caching, etc.)
@@ -92,6 +92,7 @@ The bot is now much safer to run in production while still allowing realistic te
 | `/xsignals` | Aktuelle starke Signale | `/xsignals` |
 | `/xposts` | Letzte analysierte Posts | `/xposts` |
 | `/xaccuracy` | Trefferquote (Leaderboard) | `/xaccuracy` |
+| `/testaccount ACCOUNT [TAGE]` | X-Account Backtest (Standard: 60 Tage) | `/testaccount CryptoCapo_ 30` |
 | `/tracktest` | Test-Tweet sofort analysieren | `/tracktest` |
 
 ### Sandbox & CMC

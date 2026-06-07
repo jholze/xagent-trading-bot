@@ -1,11 +1,103 @@
+import threading
 from datetime import datetime
 
-from data_manager import load_x_accounts, load_x_posts, save_x_accounts
+from data_manager import get_config, load_x_accounts, load_x_posts, save_x_accounts
+from intelligence.x_account_backtest import XAccountBacktester
 from notifications.telegram_commands.usage_hints import hint
+from notifications.telegram_commands.utils import safe_int
 from intelligence.accuracy_tracker import AccuracyTracker
 from services.signal_orchestrator import SignalOrchestrator
-from telegram_notifier import send_telegram_message, send_x_recommendation_message
+from telegram_notifier import (
+    answer_callback_query,
+    send_telegram_buttons,
+    send_telegram_message,
+    send_x_recommendation_message,
+)
 from x_analyzer import XAnalyzer
+
+
+def _normalize_handle(raw: str) -> str:
+    return raw.strip().replace("@", "").strip()
+
+
+def add_x_account(handle_name: str) -> tuple[bool, str]:
+    accounts = load_x_accounts()
+    if any(a.get("handle", a) == handle_name for a in accounts):
+        return False, f"@{handle_name} is already monitored."
+    accounts.append({
+        "handle": handle_name,
+        "trust_score": 70,
+        "enabled": True,
+        "notes": "Added via Telegram",
+    })
+    if save_x_accounts(accounts):
+        return True, f"✅ Added @{handle_name} to monitored X accounts."
+    return False, "❌ Failed to save x_accounts.json."
+
+
+def _parse_testaccount_args(text: str) -> tuple[str | None, int | None]:
+    parts = [p.strip() for p in text.split() if p.strip()]
+    if len(parts) < 2:
+        return None, None
+    handle = _normalize_handle(parts[1])
+    if not handle:
+        return None, None
+    cfg = get_config().get("x_backtest", {})
+    default_days = cfg.get("default_days", 60)
+    max_days = cfg.get("max_days", 365)
+    days = safe_int(parts[2], default=default_days) if len(parts) > 2 else default_days
+    days = max(1, min(days, max_days))
+    return handle, days
+
+
+def _run_backtest(handle: str, days: int):
+    def progress(msg: str):
+        send_telegram_message(msg)
+
+    try:
+        backtester = XAccountBacktester(progress_callback=progress)
+        result = backtester.run(handle, days=days)
+        summary = result.to_telegram_summary()
+        already_monitored = any(
+            a.get("handle", a) == handle for a in load_x_accounts()
+        )
+        if already_monitored:
+            summary += f"\n\nℹ️ @{handle} wird bereits überwacht."
+            send_telegram_message(summary)
+            return
+
+        prompt = (
+            f"{summary}\n\n"
+            f"<b>@{handle} zur Monitoring-Liste hinzufügen?</b>"
+        )
+        send_telegram_buttons(prompt, [[
+            {"text": "✅ Ja, übernehmen", "callback_data": f"testaccount_add:{handle}"},
+            {"text": "❌ Nein", "callback_data": f"testaccount_skip:{handle}"},
+        ]])
+    except Exception as e:
+        send_telegram_message(f"❌ Backtest für @{handle} fehlgeschlagen: {e}")
+
+
+def handle_callback(callback_query: dict) -> bool:
+    data = callback_query.get("data", "")
+    callback_id = callback_query.get("id")
+    if not data.startswith("testaccount_"):
+        return False
+
+    answer_callback_query(callback_id)
+
+    if data.startswith("testaccount_add:"):
+        handle = data.split(":", 1)[1]
+        ok, msg = add_x_account(handle)
+        send_telegram_message(msg)
+        return True
+
+    if data.startswith("testaccount_skip:"):
+        handle = data.split(":", 1)[1]
+        send_telegram_message(f"👍 @{handle} wurde nicht zur Liste hinzugefügt.")
+        return True
+
+    return False
 
 
 def handle(text: str) -> bool:
@@ -18,23 +110,16 @@ def handle(text: str) -> bool:
         return True
 
     if text.startswith("/addx "):
-        handle_name = text[6:].strip().replace("@", "").strip()
+        handle_name = _normalize_handle(text[6:])
         if not handle_name:
             send_telegram_message(hint("addx"))
             return True
-        accounts = load_x_accounts()
-        if not any(a.get("handle", a) == handle_name for a in accounts):
-            accounts.append({"handle": handle_name, "trust_score": 70, "enabled": True, "notes": "Added via Telegram"})
-            if save_x_accounts(accounts):
-                send_telegram_message(f"✅ Added @{handle_name} to monitored X accounts.")
-            else:
-                send_telegram_message("❌ Failed to save x_accounts.json.")
-        else:
-            send_telegram_message(f"@{handle_name} is already monitored.")
+        ok, msg = add_x_account(handle_name)
+        send_telegram_message(msg)
         return True
 
     if text.startswith("/removex "):
-        handle_name = text[8:].strip().replace("@", "").strip()
+        handle_name = _normalize_handle(text[8:])
         if not handle_name:
             send_telegram_message(hint("removex"))
             return True
@@ -115,6 +200,24 @@ def handle(text: str) -> bool:
         recommendation["post_id"] = f"tracktest_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         analyzer.log_tracked_post(recommendation)
         send_x_recommendation_message(recommendation)
+        return True
+
+    if text == "/testaccount":
+        send_telegram_message(hint("testaccount"))
+        return True
+
+    if text.startswith("/testaccount "):
+        handle, days = _parse_testaccount_args(text)
+        if not handle:
+            send_telegram_message(hint("testaccount"))
+            return True
+        send_telegram_message(f"⏳ Backtest für @{handle} ({days} Tage) gestartet…")
+        thread = threading.Thread(
+            target=_run_backtest,
+            args=(handle, days),
+            daemon=True,
+        )
+        thread.start()
         return True
 
     return False

@@ -887,6 +887,7 @@ class TestVirtualTrading(unittest.TestCase):
         from intelligence.strategy_discovery import StrategyDiscovery
 
         discovery = StrategyDiscovery()
+        discovery.config.raw["use_mock_x_data"] = True
         hyp = discovery.discover_from_tweet(
             "SOL showing RSI divergence on 1h with strong volume spike. Bullish setup.",
             "TestTrader",
@@ -904,6 +905,7 @@ class TestVirtualTrading(unittest.TestCase):
         save_paper_strategies({"hypotheses": []})
         try:
             discovery = StrategyDiscovery()
+            discovery.config.raw["use_mock_x_data"] = True
             hyp = discovery.discover_from_tweet(
                 "BTC breakout with volume confirmation on 4h timeframe.",
                 "DedupTrader",

@@ -24,7 +24,7 @@ class TestXPipeline(unittest.TestCase):
             "rationale": "Strong breakout",
         })
 
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_parse_tweet_valid_json(self, mock_grok):
         mock_grok.return_value = self._valid_grok_json()
         analyzer = XAnalyzer()
@@ -33,7 +33,7 @@ class TestXPipeline(unittest.TestCase):
         self.assertEqual(signal.action, "BUY")
         self.assertEqual(signal.confidence, 85)
 
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_parse_tweet_invalid_json_returns_hold(self, mock_grok):
         mock_grok.return_value = "not json at all"
         analyzer = XAnalyzer()
@@ -42,7 +42,7 @@ class TestXPipeline(unittest.TestCase):
         self.assertEqual(signal.action, "HOLD")
         self.assertEqual(signal.confidence, 40)
 
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_track_and_recommend_low_confidence_ignores(self, mock_grok):
         mock_grok.return_value = self._valid_grok_json(confidence=50)
         analyzer = XAnalyzer()
@@ -50,7 +50,7 @@ class TestXPipeline(unittest.TestCase):
         self.assertEqual(rec["action"], "IGNORE")
         self.assertFalse(rec["recommended"])
 
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_track_and_recommend_accepts_pre_parsed_signal(self, mock_grok):
         analyzer = XAnalyzer()
         signal = XSignal("CryptoCapo_", "SOL", "BUY", 85, rationale="pre-parsed")
@@ -62,7 +62,7 @@ class TestXPipeline(unittest.TestCase):
         self.assertEqual(rec["coin"], "SOL")
         self.assertEqual(rec["parsed_action"], "BUY")
 
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_track_and_recommend_add_to_watchlist_off_list(self, mock_grok):
         mock_grok.return_value = self._valid_grok_json(coin="NEWCOIN", confidence=80)
         analyzer = XAnalyzer()
@@ -74,9 +74,12 @@ class TestXPipeline(unittest.TestCase):
 
     @patch("services.social_pipeline.send_x_recommendation_message")
     @patch("services.social_pipeline.get_prices")
-    @patch("x_analyzer.ask_grok")
-    def test_process_new_posts_single_parse_per_post(self, mock_grok, mock_prices, mock_notify):
-        mock_grok.return_value = self._valid_grok_json()
+    @patch("x_analyzer.ask_grok_json")
+    def test_process_new_posts_single_batch_parse(self, mock_grok, mock_prices, mock_notify):
+        mock_grok.return_value = json.dumps([{
+            "post_id": "post_1",
+            **json.loads(self._valid_grok_json()),
+        }])
         mock_prices.return_value = (150.0, 150.0, None)
 
         post = RawPost("post_1", "CryptoCapo_", "SOL looking strong", datetime.now().isoformat())
@@ -89,15 +92,16 @@ class TestXPipeline(unittest.TestCase):
 
         with patch.object(pipeline, "_already_logged", return_value=False), \
              patch.object(analyzer, "log_tracked_post"), \
-             patch.object(pipeline.discovery, "discover_from_tweet", return_value=None):
-            with patch.object(analyzer, "parse_tweet", wraps=analyzer.parse_tweet) as mock_parse:
+             patch.object(pipeline, "_enqueue_strategy_discovery"):
+            with patch.object(analyzer, "parse_tweets_batch", wraps=analyzer.parse_tweets_batch) as mock_batch:
                 recs = pipeline.process_new_posts()
-                self.assertEqual(mock_parse.call_count, 1)
+                self.assertEqual(mock_batch.call_count, 1)
+        self.assertEqual(mock_grok.call_count, 1)
         self.assertEqual(len(recs), 1)
         self.assertEqual(len(pipeline._cycle_signals), 1)
 
     @patch("services.social_pipeline.send_x_recommendation_message")
-    @patch("x_analyzer.ask_grok")
+    @patch("x_analyzer.ask_grok_json")
     def test_process_new_posts_skips_logged_posts(self, mock_grok, mock_notify):
         analyzer = XAnalyzer()
         pipeline = SocialPipeline(analyzer)
@@ -105,6 +109,81 @@ class TestXPipeline(unittest.TestCase):
             recs = pipeline.process_new_posts()
         self.assertEqual(recs, [])
         mock_grok.assert_not_called()
+
+    @patch("x_analyzer.save_x_posts")
+    @patch("x_analyzer.load_x_posts")
+    def test_log_tracked_post_persists_price_target_and_stop_loss(self, mock_load, mock_save):
+        mock_load.return_value = {"posts": []}
+        analyzer = XAnalyzer()
+        analyzer.log_tracked_post({
+            "post_id": "persist_p1",
+            "account": "Trader1",
+            "coin": "BTC",
+            "action": "BUY",
+            "parsed_action": "BUY",
+            "confidence": 82,
+            "rationale": "TP at 105k",
+            "recommended": True,
+            "price_target": 105000.0,
+            "stop_loss": 98000.0,
+        })
+        saved = mock_save.call_args[0][0]
+        entry = saved["posts"][-1]
+        self.assertEqual(entry["price_target"], 105000.0)
+        self.assertEqual(entry["stop_loss"], 98000.0)
+        self.assertEqual(analyzer._parse_cache["persist_p1"].price_target, 105000.0)
+        self.assertEqual(analyzer._parse_cache["persist_p1"].stop_loss, 98000.0)
+
+    @patch("x_analyzer.load_x_posts")
+    def test_parse_cache_hydrates_price_target_from_x_posts(self, mock_load):
+        mock_load.return_value = {
+            "posts": [{
+                "post_id": "hydrate_p1",
+                "account": "Trader1",
+                "coin": "ETH",
+                "parsed_action": "SELL",
+                "confidence": 77,
+                "price_target": 3200.0,
+                "stop_loss": 3400.0,
+                "rationale": "short to support",
+            }],
+        }
+        analyzer = XAnalyzer()
+        cached = analyzer._parse_cache["hydrate_p1"]
+        self.assertEqual(cached.price_target, 3200.0)
+        self.assertEqual(cached.stop_loss, 3400.0)
+
+    @patch("x_analyzer.ask_grok_json")
+    def test_track_and_recommend_includes_price_levels(self, mock_grok):
+        mock_grok.return_value = self._valid_grok_json()
+        analyzer = XAnalyzer()
+        rec = analyzer.track_and_recommend("SOL long", "CryptoCapo_", 150.0)
+        self.assertEqual(rec["price_target"], 200)
+        self.assertEqual(rec["stop_loss"], 150)
+
+    @patch("services.social_pipeline.send_x_recommendation_message")
+    @patch("services.social_pipeline.get_prices")
+    @patch("x_analyzer.ask_grok_json")
+    def test_process_new_posts_persists_price_levels(self, mock_grok, mock_prices, mock_notify):
+        mock_grok.return_value = self._valid_grok_json(coin="SOL", action="BUY", confidence=85)
+        mock_prices.return_value = (150.0, 150.0, None)
+
+        post = RawPost("post_levels_persist_test", "CryptoCapo_", "SOL tp 200", datetime.now().isoformat())
+        provider = MagicMock()
+        provider.fetch_new_posts.return_value = [post]
+
+        analyzer = XAnalyzer()
+        pipeline = SocialPipeline(analyzer)
+        pipeline.provider = provider
+
+        with patch.object(pipeline, "_already_logged", return_value=False), \
+             patch.object(analyzer, "log_tracked_post", wraps=analyzer.log_tracked_post) as mock_log, \
+             patch.object(pipeline, "_enqueue_strategy_discovery"):
+            pipeline.process_new_posts()
+
+        logged = mock_log.call_args[0][0]
+        self.assertEqual(logged["price_target"], 200)
+        self.assertEqual(logged["stop_loss"], 150)
 
     def test_score_signal_consensus_multiplier(self):
         analyzer = XAnalyzer()

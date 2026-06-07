@@ -1,11 +1,14 @@
-from data_manager import add_coin, load_watchlist, log_cmc_post
+import threading
+from queue import Queue
+
+from data_manager import add_coin, get_config, load_watchlist, log_cmc_post
 from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
 from logger import log
 from price_fetcher import get_prices
 from telegram_notifier import send_x_recommendation_message
-from x_data_provider import get_x_provider
+from x_data_provider import RawPost, get_x_provider
 
 
 class SocialPipeline:
@@ -22,6 +25,51 @@ class SocialPipeline:
         self.cmc_parser = CMCCommunityParser()
         self._cycle_signals = []
         self._cycle_cmc_signals = []
+        self._perf = get_config().get("x_performance", {})
+        self._strategy_async = self._perf.get("strategy_discovery_async", True)
+        self._strategy_queue: Queue = Queue()
+        self._strategy_worker_started = False
+        self._strategy_lock = threading.Lock()
+
+    def _ensure_strategy_worker(self):
+        if not self._strategy_async or self._strategy_worker_started:
+            return
+        with self._strategy_lock:
+            if self._strategy_worker_started:
+                return
+            thread = threading.Thread(target=self._strategy_worker, daemon=True)
+            thread.start()
+            self._strategy_worker_started = True
+
+    def _strategy_worker(self):
+        while True:
+            item = self._strategy_queue.get()
+            if item is None:
+                break
+            text, account, post_id, symbol = item
+            try:
+                hypothesis = self.discovery.discover_from_tweet(text, account, post_id)
+                if hypothesis:
+                    if not hypothesis.symbol and symbol:
+                        hypothesis.symbol = symbol
+                    self.discovery.save_hypothesis(hypothesis)
+            except Exception as e:
+                log(f"Strategy discovery failed for @{account}: {e}", "WARNING")
+            finally:
+                self._strategy_queue.task_done()
+
+    def _enqueue_strategy_discovery(self, post: RawPost, symbol: str | None):
+        if not self.discovery._is_strategy_tweet(post.text):
+            return
+        if self._strategy_async:
+            self._ensure_strategy_worker()
+            self._strategy_queue.put((post.text, post.account, post.post_id, symbol))
+            return
+        hypothesis = self.discovery.discover_from_tweet(post.text, post.account, post.post_id)
+        if hypothesis:
+            if not hypothesis.symbol and symbol:
+                hypothesis.symbol = symbol
+            self.discovery.save_hypothesis(hypothesis)
 
     def _already_logged(self, post_id: str) -> bool:
         from data_manager import load_x_posts
@@ -36,12 +84,15 @@ class SocialPipeline:
         recommendations = []
         self._cycle_signals = []
 
-        for post in raw_posts:
-            if self._already_logged(post.post_id):
+        new_posts = [post for post in raw_posts if not self._already_logged(post.post_id)]
+        parsed_by_id = self.analyzer.parse_tweets_batch(new_posts) if new_posts else {}
+
+        for post in new_posts:
+            signal = parsed_by_id.get(post.post_id)
+            if not signal:
                 continue
 
             symbol = None
-            signal = self.analyzer.parse_tweet(post.text, post.account, post_id=post.post_id)
             signal.trust_score = self.analyzer.get_trust_score(post.account)
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
             self._cycle_signals.append(signal)
@@ -69,11 +120,7 @@ class SocialPipeline:
             self.analyzer.log_tracked_post(rec)
             recommendations.append(rec)
 
-            hypothesis = self.discovery.discover_from_tweet(post.text, post.account, post.post_id)
-            if hypothesis:
-                if not hypothesis.symbol and symbol:
-                    hypothesis.symbol = symbol
-                self.discovery.save_hypothesis(hypothesis)
+            self._enqueue_strategy_discovery(post, symbol)
 
             if rec.get("recommended"):
                 log(
