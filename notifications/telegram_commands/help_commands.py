@@ -13,7 +13,10 @@ def handle(text: str) -> bool:
 /list or /watchlist - Show all coins
 
 <b>Trading:</b>
-/buy SYMBOL USDT or /buy NUMBER USDT - Virtual buy (e.g. /buy ARIA 200 or /buy 1 200)
+/mode - Show trading mode (paper/live/off)
+/mode paper|live|off - Switch mode (/live_confirm for live)
+/live_confirm /live_cancel - Live trading safety
+/buy SYMBOL USDT or /buy NUMBER USDT - Buy (paper or live)
 /sell NUMBER PERCENT - Sell from position (first /sell to list)
 /positions or /status - Portfolio overview with PnL and trades
 

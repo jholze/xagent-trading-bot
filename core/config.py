@@ -20,6 +20,29 @@ class BotConfig:
         return self._raw.get("virtual_trading", True)
 
     @property
+    def trading_mode(self) -> str:
+        mode = self._raw.get("trading_mode")
+        if mode:
+            return mode
+        return "paper" if self.virtual_trading else "off"
+
+    @property
+    def live_confirmed(self) -> bool:
+        return bool(self._raw.get("live_confirmed", False))
+
+    @property
+    def live_config(self) -> dict:
+        return self._raw.get("live", {})
+
+    @property
+    def paper_config(self) -> dict:
+        return self._raw.get("paper", {})
+
+    @property
+    def max_daily_trades(self) -> int:
+        return int(self._raw.get("max_daily_trades", 5))
+
+    @property
     def max_usdt_per_trade(self) -> float:
         return float(self._raw.get("max_usdt_per_trade", 150))
 

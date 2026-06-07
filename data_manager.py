@@ -291,6 +291,7 @@ def load_demo_data():
 
 
 TRADE_HISTORY_FILE = "trade_history.json"
+LIVE_TRADE_HISTORY_FILE = "live_trade_history.json"
 
 def load_trade_history():
     path = get_data_file(TRADE_HISTORY_FILE)
@@ -310,6 +311,36 @@ def save_trade_history(data):
         return True
     except Exception:
         return False
+
+def load_live_trade_history():
+    path = get_data_file(LIVE_TRADE_HISTORY_FILE)
+    if not os.path.exists(path):
+        return {"trades": [], "total_pnl": 0.0}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"trades": [], "total_pnl": 0.0}
+
+
+def save_live_trade_history(data):
+    path = get_data_file(LIVE_TRADE_HISTORY_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def record_live_trade(trade):
+    history = load_live_trade_history()
+    history.setdefault("trades", []).append(trade)
+    if trade.get("type") == "SELL":
+        history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
+    save_live_trade_history(history)
+    return history
+
 
 def record_trade(trade):
     history = load_trade_history()

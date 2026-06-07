@@ -49,8 +49,8 @@ except ImportError as e:
 
 with open("config.json", encoding="utf-8") as f:
     config = json.load(f)
-virtual_trading = config.get("virtual_trading", True)
-print(get_text("virtual_trading_enabled" if virtual_trading else "virtual_trading_disabled"))
+trading_mode = config.get("trading_mode", "paper" if config.get("virtual_trading", True) else "off")
+print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DEMO_MODE") == "1" else ""))
 
 # Flask für Webhook
 app = Flask(__name__)
@@ -77,7 +77,8 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None):
             if os.isatty(1):
                 os.system("clear" if os.name == "posix" else "cls")
             now = datetime.now()
-            print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Virtual Trading: {'ON' if virtual_trading else 'OFF'}")
+            mode = get_config().get("trading_mode", "paper")
+            print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
             print("=" * 90)
 
             watchlist = load_watchlist()

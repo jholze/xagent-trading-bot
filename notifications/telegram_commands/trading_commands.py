@@ -2,11 +2,11 @@ from core.config import get_bot_config
 from data_manager import list_coins
 from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices
-from services.portfolio_service import PortfolioService
+from services.trading_service import TradingService
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
 
-_portfolio = PortfolioService()
+_trading = TradingService()
 
 
 def handle(text: str) -> bool:
@@ -35,9 +35,14 @@ def handle(text: str) -> bool:
 
         price = get_prices(sym)[0]
         if price and price > 0:
-            result = _portfolio.execute_buy(sym, "4h", price, usdt)
+            _trading.refresh()
+            result = _trading.execute_buy(sym, "4h", price, usdt)
+            mode = _trading.adapter.mode
             if result.executed:
-                send_telegram_message(f"✅ Virtual BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}")
+                send_telegram_message(
+                    f"✅ {mode.upper()} BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}"
+                    + (f"\n{result.message}" if result.message else "")
+                )
             else:
                 send_telegram_message(f"❌ Buy failed: {result.message}")
         else:
@@ -79,10 +84,13 @@ def handle(text: str) -> bool:
                 pos = get_position(sym, "4h")
                 amount_sold = float(pos.get("amount", 0)) * pct
                 if amount_sold > 0:
-                    result = _portfolio.execute_sell(sym, "4h", price, "SELL", amount_sold)
+                    _trading.refresh()
+                    result = _trading.execute_sell(sym, "4h", price, "SELL", amount_sold)
+                    mode = _trading.adapter.mode
                     if result.executed:
                         send_telegram_message(
-                            f"✅ Virtual SELL {pct*100:.0f}% of {sym}: ${result.usdt_amount:.0f} (PnL: ${result.pnl:.1f})"
+                            f"✅ {mode.upper()} SELL {pct*100:.0f}% of {sym}: "
+                            f"${result.usdt_amount:.0f} (PnL: ${result.pnl:.1f})"
                         )
                     else:
                         send_telegram_message(f"❌ Sell failed: {result.message}")

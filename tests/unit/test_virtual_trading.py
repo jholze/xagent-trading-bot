@@ -42,7 +42,9 @@ class ColoredTestResult(unittest.TextTestResult):
         print(f"{self.COLORS['orange']}  ⏭ SKIPPED{self.COLORS['reset']}")
 
 
+from core.config import get_bot_config
 from data_manager import get_text, load_config, load_trade_history, load_x_accounts, record_trade, save_x_accounts
+from services.portfolio_service import PortfolioService
 from strategies.positions import (
     count_open_positions,
     get_position,
@@ -197,6 +199,65 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
             self.assertIn("x", analysis.sources)
 
+    def test_trading_mode_defaults_paper(self):
+        from core.config import get_bot_config
+        cfg = get_bot_config()
+        self.assertEqual(cfg.trading_mode, "paper")
+
+    def test_trading_service_blocks_off_mode(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+        from services.trading_service import TradingService
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "off"
+        cfg = BotConfig()
+        cfg._raw = raw
+        svc = TradingService(cfg)
+        ok, reason = svc.can_execute()
+        self.assertFalse(ok)
+        self.assertIn("disabled", reason.lower())
+
+    def test_trading_service_live_requires_confirm(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+        from services.trading_service import TradingService
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "live"
+        raw["live_confirmed"] = False
+        cfg = BotConfig()
+        cfg._raw = raw
+        svc = TradingService(cfg)
+        ok, reason = svc.can_execute()
+        self.assertFalse(ok)
+        self.assertIn("live_confirm", reason)
+
+    def test_gate_adapter_dry_run(self):
+        from execution.gate_adapter import GateExecutionAdapter
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("live", {})["dry_run"] = True
+        cfg = BotConfig()
+        cfg._raw = raw
+        adapter = GateExecutionAdapter(cfg)
+        with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
+            from core.models import TradeResult
+            mock_buy.return_value = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=0.5, usdt_amount=5)
+            with patch("execution.gate_adapter.record_live_trade"):
+                result = adapter.execute(TradeOrder("BUY", "XRVM/USDT", 0.5, 10, usdt_amount=5), "4h")
+        self.assertTrue(result.executed)
+        self.assertIn("Dry run", result.message)
+
+    def test_execution_factory_paper(self):
+        from execution.factory import get_execution_adapter
+        from execution.paper_adapter import PaperExecutionAdapter
+        adapter = get_execution_adapter()
+        self.assertIsInstance(adapter, PaperExecutionAdapter)
+
     def test_registry_lists_strategies(self):
         from strategies.registry import list_registered_strategies
         strategies = list_registered_strategies()
@@ -341,21 +402,22 @@ class TestVirtualTrading(unittest.TestCase):
         # telegram_notifier imports and re-uses those names internally.
         with patch("telegram_notifier.send_telegram_message") as mock_send, \
              patch("notifications.telegram_commands.trading_commands.get_prices") as mock_price, \
-             patch("services.portfolio_service.update_position") as mock_update, \
-             patch("services.portfolio_service.record_trade") as mock_record, \
+             patch("notifications.telegram_commands.trading_commands._trading.execute_buy") as mock_buy, \
              patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins:
 
             mock_coins.return_value = [{"symbol": "ARIA/USDT"}, {"symbol": "RAVE/USDT"}]
             mock_price.return_value = (0.05, 0.05, None)
 
             # Test index based
+            from core.models import TradeResult
+            mock_buy.return_value = TradeResult(True, "BUY", "ARIA/USDT", amount=4000.0, price=0.05, usdt_amount=200)
+
             handle_telegram_command("/buy 1 200")
-            mock_record.assert_called()
-            mock_update.assert_called_with("ARIA/USDT", "4h", "BUY", 0.05, 4000.0)
+            mock_buy.assert_called_with("ARIA/USDT", "4h", 0.05, 200)
 
             # Test symbol based
             handle_telegram_command("/buy RAVE 100")
-            self.assertTrue(mock_record.called)
+            self.assertTrue(mock_buy.called)
 
             # Test invalid (basic check)
             mock_coins.return_value = []

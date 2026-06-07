@@ -3,9 +3,9 @@ from datetime import datetime
 from core.config import get_bot_config
 from core.models import TradeOrder
 from data_manager import get_text, load_trade_history
-from execution.paper_adapter import PaperExecutionAdapter
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
+from services.trading_service import TradingService
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 
@@ -23,44 +23,54 @@ class SignalOrchestrator:
         self.config = get_bot_config()
         self.market = market_service or MarketService()
         self.portfolio = portfolio or PortfolioService(self.config)
-        self.execution = execution_adapter or PaperExecutionAdapter(self.portfolio)
+        self.trading = TradingService(self.config, self.portfolio)
+        self._execution_override = execution_adapter
         self.notify_callback = notify_callback
         self.decision_engine = DecisionEngine(self.market)
 
     def analyze(self, coin: dict, current_price: float, x_signals=None):
         return self.decision_engine.evaluate(coin, current_price, x_signals)
 
-    def execute_if_needed(self, analysis, coin: dict, current_price: float):
+    def execute_if_needed(self, analysis, coin: dict, current_price: float, x_signals=None):
         if analysis is None or analysis.action == "HOLD":
             return None
-        if not self.config.virtual_trading:
-            return None
 
+        self.trading.refresh()
         symbol = analysis.symbol
         tf = analysis.timeframe
+        source = "x" if "x" in (analysis.sources or []) else "auto"
+        trust_score = analysis.x_confidence if source == "x" else None
+
         if "BUY" in analysis.action:
             order = TradeOrder(
                 type="BUY",
                 symbol=symbol,
                 price=current_price,
                 amount=0,
-                usdt_amount=self.config.max_usdt_per_trade,
+                usdt_amount=self.trading.max_usdt_for_order(),
                 signal=analysis.action,
             )
-            return self.execution.execute(order, tf)
+        else:
+            pos = get_position(symbol, tf)
+            from strategies.positions import sell_fraction_for_signal
+            fraction = sell_fraction_for_signal(analysis.action)
+            amount_sold = float(pos["amount"]) * fraction
+            order = TradeOrder(
+                type="SELL",
+                symbol=symbol,
+                price=current_price,
+                amount=amount_sold,
+                signal=analysis.action,
+            )
 
-        pos = get_position(symbol, tf)
-        from strategies.positions import sell_fraction_for_signal
-        fraction = sell_fraction_for_signal(analysis.action)
-        amount_sold = float(pos["amount"]) * fraction
-        order = TradeOrder(
-            type="SELL",
-            symbol=symbol,
-            price=current_price,
-            amount=amount_sold,
-            signal=analysis.action,
-        )
-        return self.execution.execute(order, tf)
+        if self._execution_override:
+            ok, reason = self.trading.can_execute(source=source, trust_score=trust_score)
+            if not ok:
+                from core.models import TradeResult
+                return TradeResult(False, order.type, symbol, message=reason)
+            return self._execution_override.execute(order, tf)
+
+        return self.trading.execute_order(order, tf, source=source, trust_score=trust_score)
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None) -> str:
         if not current_price:

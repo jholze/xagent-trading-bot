@@ -1,3 +1,4 @@
 from execution.base import ExecutionAdapter
+from execution.factory import get_execution_adapter
 from execution.paper_adapter import PaperExecutionAdapter
 from execution.gate_adapter import GateExecutionAdapter
