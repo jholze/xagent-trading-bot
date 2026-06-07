@@ -55,7 +55,11 @@ class TechnicalRSIStrategy(BaseStrategy):
                 and rsi_buy_low <= market.rsi <= buy_threshold
                 and market.vol_multiplier >= volume_multiplier_min
             )
-            x_buy = x_signal and x_signal.action == "BUY" and x_confidence >= 75
+            x_conf_threshold = getattr(x_signal, "effective_confidence", x_confidence) if x_signal else 0
+            min_x_buy = 75
+            if x_signal and hasattr(x_signal, "trust_score"):
+                min_x_buy = max(65, 85 - (x_signal.trust_score - 70) * 0.5)
+            x_buy = x_signal and x_signal.action == "BUY" and x_conf_threshold >= min_x_buy
             if technical_buy or x_buy:
                 action = "BUY"
                 if x_buy:

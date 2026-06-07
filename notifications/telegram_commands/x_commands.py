@@ -1,4 +1,8 @@
+from datetime import datetime
+
 from data_manager import load_x_accounts, load_x_posts, save_x_accounts
+from intelligence.accuracy_tracker import AccuracyTracker
+from services.signal_orchestrator import SignalOrchestrator
 from telegram_notifier import send_telegram_message, send_x_recommendation_message
 from x_analyzer import XAnalyzer
 
@@ -77,10 +81,29 @@ def handle(text: str) -> bool:
             send_telegram_message(msg)
         return True
 
+    if text in ["/xaccuracy", "/xleaderboard"]:
+        tracker = AccuracyTracker()
+        board = tracker.get_leaderboard()
+        if not board:
+            send_telegram_message("No X account accuracy data yet.")
+        else:
+            msg = "<b>📊 X Account Accuracy Leaderboard:</b>\n\n"
+            for i, row in enumerate(board, 1):
+                status = "🟢" if row["enabled"] else "🔴"
+                msg += (
+                    f"{i}. {status} @{row['handle']} | Trust: {row['trust_score']} | "
+                    f"Hit: {row['hit_rate']*100:.0f}% ({row['samples']} samples) | "
+                    f"Avg 24h: {row['avg_return_24h']:+.1f}%\n"
+                )
+            send_telegram_message(msg)
+        return True
+
     if text == "/tracktest":
         analyzer = XAnalyzer()
+        orchestrator = SignalOrchestrator()
         test_tweet = "SOL looking very strong on the weekly chart. Breaking resistance with good volume. Long bias."
-        recommendation = analyzer.track_and_recommend(test_tweet, "TestAccount", 0.05)
+        recommendation = analyzer.track_and_recommend(test_tweet, "TestAccount", 0.05, orchestrator=orchestrator)
+        recommendation["post_id"] = f"tracktest_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         analyzer.log_tracked_post(recommendation)
         send_x_recommendation_message(recommendation)
         return True

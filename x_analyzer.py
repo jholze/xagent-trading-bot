@@ -1,24 +1,36 @@
 import json
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
 
-from data_manager import get_config, get_text, load_x_accounts, load_x_posts, load_watchlist, save_x_accounts, save_x_posts
+from data_manager import get_config, load_watchlist, load_x_accounts, load_x_posts, save_x_posts
 from grok_agent import ask_grok
-import json
-from datetime import datetime
+from x_data_provider import get_x_provider
 
 
 class XSignal:
-    def __init__(self, account: str, coin: str, action: str, confidence: int, price_target: float = None, stop_loss: float = None, rationale: str = ""):
+    def __init__(
+        self,
+        account: str,
+        coin: str,
+        action: str,
+        confidence: int,
+        price_target: float = None,
+        stop_loss: float = None,
+        rationale: str = "",
+        post_id: str = None,
+    ):
         self.account = account
         self.coin = coin.upper()
-        self.action = action.upper()  # BUY, SELL, HOLD
-        self.confidence = confidence  # 0-100
+        self.action = action.upper()
+        self.confidence = confidence
         self.price_target = price_target
         self.stop_loss = stop_loss
         self.rationale = rationale
+        self.post_id = post_id
         self.timestamp = datetime.now()
-        self.score = 0.0  # Will be calculated by analyzer
+        self.score = 0.0
+        self.trust_score = 70.0
+        self.effective_confidence = float(confidence)
 
 
 class XAnalyzer:
@@ -26,9 +38,26 @@ class XAnalyzer:
         self.config = get_config()
         self.accounts = load_x_accounts()
         self.min_confidence = self.config.get("min_x_confidence", 65)
+        self.provider = get_x_provider(self.config)
 
-    def parse_tweet(self, tweet_text: str, account: str) -> XSignal:
-        """Use Grok to parse a tweet into a structured trading signal with better prompts for useful output."""
+    def _reload_accounts(self):
+        self.accounts = load_x_accounts()
+        return self.accounts
+
+    def get_trust_score(self, account: str) -> float:
+        for acc in self.accounts:
+            if acc.get("handle", acc) == account:
+                return float(acc.get("trust_score", 70))
+        return 70.0
+
+    def effective_confidence_threshold(self, account: str) -> float:
+        trust = self.get_trust_score(account)
+        base = self.config.get("aggression", {}).get("base_confidence_threshold", 75)
+        # Lower trust → require higher confidence; high trust → more aggressive
+        adjustment = (70 - trust) * 0.2
+        return max(65.0, min(90.0, base + adjustment))
+
+    def parse_tweet(self, tweet_text: str, account: str, post_id: str = None) -> XSignal:
         prompt = f"""You are a professional crypto trader. Analyze this tweet and give a clear, decisive trading recommendation.
 Be confident and specific. Do not default to HOLD unless the tweet is neutral.
 
@@ -49,46 +78,50 @@ JSON:"""
                 confidence=int(data.get("confidence", 70)),
                 price_target=data.get("price_target"),
                 stop_loss=data.get("stop_loss"),
-                rationale=data.get("rationale", "Positive momentum detected")
+                rationale=data.get("rationale", "Positive momentum detected"),
+                post_id=post_id,
             )
         except Exception as e:
-            return XSignal(account=account, coin="UNKNOWN", action="HOLD", confidence=40, rationale=f"Parse error: {str(e)[:50]}")
+            return XSignal(
+                account=account,
+                coin="UNKNOWN",
+                action="HOLD",
+                confidence=40,
+                rationale=f"Parse error: {str(e)[:50]}",
+                post_id=post_id,
+            )
 
     def fetch_latest_signals(self, limit_per_account: int = 5) -> List[XSignal]:
-        """Fetch tweets (currently mock) and parse them with LLM."""
         signals = []
-        enabled_accounts = [a for a in self.accounts if a.get("enabled", True)]
+        raw_posts = self.provider.fetch_new_posts(self.accounts, limit_per_account)
 
-        # Controlled mock data usage (easy to turn off later when real API is integrated)
-        if self.config.get("use_mock_x_data", True):
-            mock_tweets = self._get_mock_tweets()
-        else:
-            mock_tweets = {}
-
-        for acc in enabled_accounts[:limit_per_account]:
-            handle = acc.get("handle", str(acc))
-            tweet = mock_tweets.get(handle, "General bullish sentiment on major alts.")
-            signal = self.parse_tweet(tweet, handle)
-            if signal.confidence >= self.min_confidence:
+        for post in raw_posts:
+            signal = self.parse_tweet(post.text, post.account, post_id=post.post_id)
+            threshold = self.effective_confidence_threshold(post.account)
+            signal.trust_score = self.get_trust_score(post.account)
+            signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
+            if signal.effective_confidence >= min(self.min_confidence, threshold):
                 signals.append(signal)
 
         return signals
 
-    def _get_mock_tweets(self) -> dict:
-        """Central place for mock X data — easy to spot and replace later."""
-        return {
-            "CryptoCapo_": "BTC breaking key resistance with strong volume. Macro looks very bullish. Buying more now.",
-            "Pentosh1": "SOL is overextended on the daily. Taking profits here. Short term bearish.",
-            "SmartContracter": "ETH forming a nice higher low. Good risk/reward for long position.",
-            "TheCryptoDog": "DOGE community is strong but price is consolidating. Watching for breakout, no position yet.",
-            "CryptoWizardd": "BNB breaking out of long consolidation. Volume picking up. Bullish bias.",
-            "CryptoCapo_": "Highstreet (HIGH) looks weak. Resistance not breaking. Prefer to stay away or short."
-        }
+    def _consensus_multiplier(self, signals: List[XSignal], coin: str) -> float:
+        count = sum(1 for s in signals if s.coin == coin and s.action in ("BUY", "SELL"))
+        if count >= 3:
+            return 1.25
+        if count >= 2:
+            return 1.1
+        return 1.0
 
-    def score_signal(self, signal: XSignal, technical_score: float = 50.0) -> float:
-        """Hybrid scoring: X confidence + technical weight."""
-        x_score = signal.confidence * (self.config.get("x_weight", 0.45))
-        tech_score = technical_score * (self.config.get("technical_weight", 0.35))
+    def score_signal(self, signal: XSignal, technical_score: float = 50.0, all_signals: List[XSignal] = None) -> float:
+        trust = signal.trust_score or self.get_trust_score(signal.account)
+        effective = signal.confidence * (trust / 100)
+        consensus = self._consensus_multiplier(all_signals or [], signal.coin)
+        effective *= consensus
+        signal.effective_confidence = effective
+
+        x_score = effective * self.config.get("x_weight", 0.45)
+        tech_score = technical_score * self.config.get("technical_weight", 0.35)
         signal.score = (x_score + tech_score) / 100
         return signal.score
 
@@ -96,28 +129,37 @@ JSON:"""
         signals = self.fetch_latest_signals()
         for signal in signals:
             tech = technical_scores.get(signal.coin, 50.0) if technical_scores else 50.0
-            self.score_signal(signal, tech)
-        return sorted([s for s in signals if s.confidence >= self.min_confidence], 
-                     key=lambda s: s.score, reverse=True)
+            self.score_signal(signal, tech, all_signals=signals)
+        return sorted(signals, key=lambda s: s.score, reverse=True)
 
     def log_tracked_post(self, recommendation: Dict):
-        """Log the tracked post and recommendation to x_posts.json."""
         data = load_x_posts()
-        data["posts"].append({
+        entry = {
             "timestamp": datetime.now().isoformat(),
+            "post_id": recommendation.get("post_id"),
             "account": recommendation["account"],
             "coin": recommendation["coin"],
             "action": recommendation["action"],
+            "parsed_action": recommendation.get("parsed_action"),
             "confidence": recommendation["confidence"],
+            "trust_at_signal": recommendation.get("trust_at_signal"),
+            "signal_price": recommendation.get("signal_price"),
             "rationale": recommendation["rationale"],
-            "recommended": recommendation["recommended"]
-        })
+            "recommended": recommendation["recommended"],
+            "raw_tweet": recommendation.get("raw_tweet", ""),
+        }
+        if recommendation.get("post_id"):
+            existing_ids = {p.get("post_id") for p in data.get("posts", [])}
+            if recommendation["post_id"] in existing_ids:
+                return
+        data["posts"].append(entry)
         save_x_posts(data)
 
-    def track_and_recommend(self, tweet_text: str, account: str, current_price: float = 0.0) -> Dict:
-        """Track a post, parse it, compare to current technical strategy, and recommend action."""
-        from strategies.core_strategy import check_signal
+    def track_and_recommend(self, tweet_text: str, account: str, current_price: float = 0.0, orchestrator=None) -> Dict:
         signal = self.parse_tweet(tweet_text, account)
+        trust = self.get_trust_score(account)
+        signal.trust_score = trust
+        signal.effective_confidence = signal.confidence * (trust / 100)
         recommendation = {
             "account": account,
             "action": "IGNORE",
@@ -125,21 +167,31 @@ JSON:"""
             "rationale": signal.rationale,
             "coin": signal.coin,
             "recommended": False,
-            "raw_tweet": tweet_text[:100] + "..." if len(tweet_text) > 100 else tweet_text
+            "raw_tweet": tweet_text[:200],
+            "trust_at_signal": trust,
+            "parsed_action": signal.action,
+            "signal_price": current_price,
         }
 
         if signal.coin == "UNKNOWN" or signal.confidence < self.min_confidence:
             return recommendation
 
-        # Compare to current technical strategy
-        coin_data = {"symbol": signal.coin + "/USDT"}
-        technical_signal = check_signal(coin_data, current_price, x_signals=[signal])
+        if signal.effective_confidence < self.effective_confidence_threshold(account):
+            recommendation["rationale"] += f" (below trust-adjusted threshold for @{account})"
+            return recommendation
+
+        coin_data = {"symbol": signal.coin + "/USDT", "timeframe": "4h"}
+        if orchestrator and current_price:
+            analysis = orchestrator.analyze(coin_data, current_price, x_signals=[signal])
+            technical_action = analysis.action if analysis else "HOLD"
+        else:
+            technical_action = "HOLD"
 
         sell_signals = ("SELL", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL")
-        if signal.action == "BUY" and technical_signal == "BUY":
+        if signal.action == "BUY" and technical_action == "BUY":
             recommendation["action"] = "BUY"
             recommendation["recommended"] = True
-        elif signal.action == "SELL" and technical_signal in sell_signals:
+        elif signal.action == "SELL" and technical_action in sell_signals:
             recommendation["action"] = "SELL"
             recommendation["recommended"] = True
         elif signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
@@ -153,4 +205,8 @@ if __name__ == "__main__":
     analyzer = XAnalyzer()
     signals = analyzer.get_top_signals()
     for s in signals:
-        print(f"{s.account}: {s.action} {s.coin} | Confidence: {s.confidence} | Score: {s.score:.2f} | {s.rationale}")
+        print(
+            f"{s.account}: {s.action} {s.coin} | Conf: {s.confidence} | "
+            f"Effective: {s.effective_confidence:.0f} | Trust: {s.trust_score} | "
+            f"Score: {s.score:.2f} | {s.rationale}"
+        )

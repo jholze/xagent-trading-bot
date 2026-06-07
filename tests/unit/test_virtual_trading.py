@@ -50,7 +50,7 @@ from strategies.positions import (
     sell_fraction_for_signal,
     update_position,
 )
-from x_analyzer import XAnalyzer
+from x_analyzer import XAnalyzer, XSignal
 
 
 class TestVirtualTrading(unittest.TestCase):
@@ -191,6 +191,42 @@ class TestVirtualTrading(unittest.TestCase):
             analysis = orch.analyze({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
             self.assertIsNotNone(analysis)
             self.assertIn(analysis.action, ("HOLD", "BUY", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"))
+
+    def test_mock_x_provider_dedup(self):
+        from x_data_provider import MockXProvider
+        from data_manager import load_x_posts, save_x_posts
+
+        provider = MockXProvider()
+        accounts = [{"handle": "CryptoCapo_", "enabled": True}]
+        first = provider.fetch_new_posts(accounts)
+        self.assertGreater(len(first), 0)
+
+        data = load_x_posts()
+        data["posts"].append({"post_id": first[0].post_id, "account": "CryptoCapo_", "coin": "BTC"})
+        save_x_posts(data)
+        second = provider.fetch_new_posts(accounts)
+        self.assertFalse(any(p.post_id == first[0].post_id for p in second))
+
+    def test_trust_adjusted_scoring(self):
+        analyzer = XAnalyzer()
+        signal = XSignal("CryptoCapo_", "BTC", "BUY", 80, rationale="test")
+        signal.trust_score = 90
+        analyzer.score_signal(signal, 50.0, all_signals=[signal])
+        self.assertGreater(signal.effective_confidence, 70)
+        self.assertGreater(signal.score, 0)
+
+    def test_effective_confidence_threshold(self):
+        analyzer = XAnalyzer()
+        high_trust = analyzer.effective_confidence_threshold("CryptoCapo_")
+        low_trust_threshold = analyzer.effective_confidence_threshold("UnknownUser")
+        self.assertLessEqual(high_trust, 75)
+
+    def test_accuracy_tracker_leaderboard(self):
+        from intelligence.accuracy_tracker import AccuracyTracker
+        tracker = AccuracyTracker()
+        board = tracker.get_leaderboard()
+        self.assertGreater(len(board), 0)
+        self.assertIn("trust_score", board[0])
 
     def test_x_analyzer_integration(self):
         analyzer = XAnalyzer()

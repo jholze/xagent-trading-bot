@@ -40,6 +40,7 @@ try:
     )
     from price_fetcher import get_prices
     from services.signal_orchestrator import SignalOrchestrator
+    from services.social_pipeline import SocialPipeline
     from telegram_notifier import handle_telegram_command, send_signal_message
     from x_analyzer import XAnalyzer
 except ImportError as e:
@@ -69,7 +70,7 @@ def webhook():
     return "OK", 200
 
 
-def price_loop(analyzer=None, orchestrator=None):
+def price_loop(analyzer=None, orchestrator=None, social_pipeline=None):
     while True:
         try:
             # Safely clear screen only in interactive terminals
@@ -88,11 +89,21 @@ def price_loop(analyzer=None, orchestrator=None):
 
             print("Prüfe Coins + X-Signale:\n")
 
-            x_signals = analyzer.get_top_signals() if analyzer else []
+            if social_pipeline:
+                social_pipeline.process_new_posts()
+                accuracy = social_pipeline.update_accuracy_loop()
+                if accuracy["outcomes_updated"] or accuracy["trust_updates"]:
+                    print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
+
+            x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
 
             for signal in x_signals:
-                if signal.confidence >= 75:
-                    print(f"   → Strong X-Signal from @{signal.account}: {signal.action} {signal.coin} | Confidence: {signal.confidence}%")
+                eff = getattr(signal, "effective_confidence", signal.confidence)
+                if eff >= 70:
+                    print(
+                        f"   → X-Signal @{signal.account}: {signal.action} {signal.coin} | "
+                        f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | Trust: {getattr(signal, 'trust_score', '?')}"
+                    )
 
             for coin in watchlist:
                 if not coin.get("active", True):
@@ -126,7 +137,10 @@ def price_loop(analyzer=None, orchestrator=None):
 if __name__ == "__main__":
     analyzer = XAnalyzer()
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
-    price_thread = threading.Thread(target=price_loop, args=(analyzer, orchestrator), daemon=True)
+    social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
+    price_thread = threading.Thread(
+        target=price_loop, args=(analyzer, orchestrator, social_pipeline), daemon=True
+    )
     price_thread.start()
 
     print(get_text("webhook_started"))

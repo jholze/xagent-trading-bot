@@ -7,7 +7,19 @@
   "stop_loss_pct": 12.0,
   "max_open_positions": 5,
   "debug": false,
+  "use_mock_x_data": true,
   "min_x_confidence": 65,
+  "aggression": {
+    "base_confidence_threshold": 75,
+    "trust_boost_per_10_points": -2,
+    "max_position_multiplier": 2.0,
+    "min_trust_for_live": 70
+  },
+  "accuracy": {
+    "buy_success_pct": 3.0,
+    "sell_success_pct": -2.0,
+    "trust_ema_alpha": 0.3
+  },
   "x_weight": 0.45,
   "technical_weight": 0.35,
   "onchain_weight": 0.2,

@@ -22,6 +22,7 @@ def handle(text: str) -> bool:
 /removex ACCOUNT - Remove X account
 /listx - List monitored X accounts
 /xsignals - Show latest parsed X signals
+/xaccuracy - X account accuracy leaderboard
 /xposts - Show tracked posts and recommendations
 /tracktest - Test tracking with a sample post
 
