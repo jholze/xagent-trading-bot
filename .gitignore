@@ -48,3 +48,12 @@ build/
 # Demo / test data files (created by --demo mode)
 *.demo.json
 
+# Runtime bot state (local paper/live ledger, feeds, sandbox)
+positions.json
+trade_history.json
+live_trade_history.json
+x_posts.json
+cmc_posts.json
+paper_sandbox_history.json
+paper_strategies.json
+
