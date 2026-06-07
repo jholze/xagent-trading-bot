@@ -1,8 +1,8 @@
+from core.actions import normalize, to_execution_action
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from strategies.base import BaseStrategy
 from strategies.positions import count_open_positions, get_position
-
 
 
 def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
@@ -20,6 +20,8 @@ def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
 
 
 class TechnicalRSIStrategy(BaseStrategy):
+    """Pure technical analysis — social signals merged by DecisionEngine."""
+
     name = "technical_rsi_bb"
 
     def analyze(self, coin: dict, market: MarketContext, x_signals=None) -> SignalAnalysis:
@@ -27,10 +29,6 @@ class TechnicalRSIStrategy(BaseStrategy):
         tf = self.get_timeframe(coin)
         config = get_bot_config()
         params = market.strategy_params or config.strategy_params(symbol, tf)
-
-        x_signal = next((s for s in (x_signals or []) if s.coin == symbol.split("/")[0]), None)
-        x_score = x_signal.score if x_signal else 0.0
-        x_confidence = x_signal.confidence if x_signal else 0
 
         rsi_buy_low = params.get("rsi_buy_low", 28)
         rsi_buy_high = params.get("rsi_buy_high", 48)
@@ -46,40 +44,28 @@ class TechnicalRSIStrategy(BaseStrategy):
 
         action = "HOLD"
         sources = ["technical"]
-        x_boost = x_score > 0.6
 
         if not market.has_position and market.open_positions < config.max_open_positions:
-            buy_threshold = rsi_buy_high if x_boost else rsi_buy_high - 3
-            technical_buy = (
+            if (
                 market.current_price <= market.lower_bb * 1.01
-                and rsi_buy_low <= market.rsi <= buy_threshold
+                and rsi_buy_low <= market.rsi <= rsi_buy_high
                 and market.vol_multiplier >= volume_multiplier_min
-            )
-            x_conf_threshold = getattr(x_signal, "effective_confidence", x_confidence) if x_signal else 0
-            min_x_buy = 75
-            if x_signal and hasattr(x_signal, "trust_score"):
-                min_x_buy = max(65, 85 - (x_signal.trust_score - 70) * 0.5)
-            x_buy = x_signal and x_signal.action == "BUY" and x_conf_threshold >= min_x_buy
-            if technical_buy or x_buy:
+            ):
                 action = "BUY"
-                if x_buy:
-                    sources.append("x")
         else:
             entry = market.average_entry
             if entry > 0:
                 loss_pct = (market.current_price / entry - 1) * -100
-                if loss_pct > stop_loss_pct or (x_signal and x_signal.action == "SELL" and x_confidence >= 80):
+                if loss_pct > stop_loss_pct:
                     action = "SELL_STOP_FULL"
                     sources.append("stop_loss")
                 elif loss_pct > partial_stop:
                     action = "SELL_STOP_PARTIAL"
                     sources.append("stop_loss")
-            if market.rsi >= rsi_sell_20 or (x_signal and x_signal.action == "SELL" and x_confidence >= 70):
+            if market.rsi >= rsi_sell_20:
                 action = "SELL_20"
-                sources.append("x" if x_signal else "technical")
             elif market.rsi >= rsi_sell_30:
                 action = "SELL_30"
-                sources.append("technical")
 
         pos = get_position(symbol, tf)
         last_ampel = pos.get("last_ampel", "🟡")
@@ -88,9 +74,10 @@ class TechnicalRSIStrategy(BaseStrategy):
             market.has_position and (ampel_emoji != last_ampel or abs(market.rsi - last_rsi_old) > 15)
         )
         notify_reason = "Signal" if action != "HOLD" else "Position Ampel change" if market.has_position else "No position"
+        normalized = normalize(action)
 
         return SignalAnalysis(
-            action=action,
+            action=to_execution_action(normalized),
             symbol=symbol,
             timeframe=tf,
             rsi=market.rsi,
@@ -100,6 +87,8 @@ class TechnicalRSIStrategy(BaseStrategy):
             ampel_text=ampel_text,
             should_notify=should_notify,
             notify_reason=notify_reason,
-            x_confidence=x_confidence,
             sources=sources,
+            normalized_action=normalized,
+            rationale=f"TA: RSI={market.rsi:.1f} Vol={market.vol_multiplier:.2f}x",
+            confidence=50.0,
         )

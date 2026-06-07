@@ -158,6 +158,50 @@ class TestVirtualTrading(unittest.TestCase):
         cleaned = [a for a in reloaded if a.get("handle") != "TestTraderX"]
         save_x_accounts(cleaned)
 
+    def test_action_normalization(self):
+        from core.actions import normalize, to_execution_action, BUY_STRONG, SELL_PARTIAL_20
+
+        self.assertEqual(normalize("SELL_20"), SELL_PARTIAL_20)
+        self.assertEqual(to_execution_action(BUY_STRONG), "BUY")
+        self.assertEqual(to_execution_action(SELL_PARTIAL_20), "SELL_20")
+
+    def test_resolve_coin_config_from_strategies(self):
+        from strategies.registry import resolve_coin_config
+
+        coin = resolve_coin_config({"symbol": "ARIA/USDT", "timeframe": "4h"})
+        self.assertEqual(coin.get("timeframe"), "4h")
+        self.assertIn("strategy_params", coin)
+        self.assertEqual(coin["strategy_params"].get("rsi_buy_low"), 28)
+
+    def test_decision_engine_evaluate(self):
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine()
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}):
+            analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
+            self.assertIsNotNone(analysis)
+            self.assertIn(analysis.normalized_action, ("HOLD", "BUY", "BUY_STRONG"))
+            self.assertIsNotNone(analysis.rationale)
+
+    def test_decision_engine_x_buy_merge(self):
+        from strategies.decision_engine import DecisionEngine
+        from x_analyzer import XSignal
+
+        engine = DecisionEngine()
+        x_sig = XSignal("CryptoCapo_", "XRVM", "BUY", 85, rationale="strong")
+        x_sig.trust_score = 90
+        x_sig.effective_confidence = 80
+
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.5, "vol_multiplier": 0.8}):
+            analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0, x_signals=[x_sig])
+            self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
+            self.assertIn("x", analysis.sources)
+
+    def test_registry_lists_strategies(self):
+        from strategies.registry import list_registered_strategies
+        strategies = list_registered_strategies()
+        self.assertIn("technical_rsi_bb", strategies)
+
     def test_technical_strategy_analyze_hold(self):
         from core.models import MarketContext
         from strategies.technical_rsi_bb import TechnicalRSIStrategy

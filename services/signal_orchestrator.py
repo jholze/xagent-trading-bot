@@ -1,13 +1,15 @@
 from datetime import datetime
 
 from core.config import get_bot_config
-from core.models import MarketContext, TradeOrder
+from core.models import TradeOrder
 from data_manager import get_text, load_trade_history
 from execution.paper_adapter import PaperExecutionAdapter
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
-from strategies.positions import count_open_positions, get_position
-from strategies.registry import get_strategy
+from strategies.positions import get_position
+from strategies.decision_engine import DecisionEngine
+
+
 class SignalOrchestrator:
     """Coordinates analysis, execution, and notification without strategy↔telegram coupling."""
 
@@ -23,31 +25,10 @@ class SignalOrchestrator:
         self.portfolio = portfolio or PortfolioService(self.config)
         self.execution = execution_adapter or PaperExecutionAdapter(self.portfolio)
         self.notify_callback = notify_callback
-
-    def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
-        symbol = coin["symbol"]
-        tf = coin.get("timeframe", "4h")
-        indicators = self.market.fetch_indicators(symbol, tf, current_price)
-        pos = get_position(symbol, tf)
-        return MarketContext(
-            symbol=symbol,
-            timeframe=tf,
-            current_price=current_price,
-            rsi=indicators["rsi"],
-            lower_bb=indicators["lower_bb"],
-            vol_multiplier=indicators["vol_multiplier"],
-            has_position=float(pos["amount"]) > 0,
-            average_entry=pos.get("average_entry", 0),
-            open_positions=count_open_positions(),
-            strategy_params=self.config.strategy_params(symbol, tf),
-        )
+        self.decision_engine = DecisionEngine(self.market)
 
     def analyze(self, coin: dict, current_price: float, x_signals=None):
-        if not current_price:
-            return None
-        market = self.build_market_context(coin, current_price)
-        strategy = get_strategy(coin)
-        return strategy.analyze(coin, market, x_signals)
+        return self.decision_engine.evaluate(coin, current_price, x_signals)
 
     def execute_if_needed(self, analysis, coin: dict, current_price: float):
         if analysis is None or analysis.action == "HOLD":
@@ -132,10 +113,11 @@ class SignalOrchestrator:
             if has_position else " | No position"
         )
         executed = f" | Executed: {trade_result.order_type}" if trade_result and trade_result.executed else ""
+        rationale = f" | {analysis.rationale}" if analysis.rationale else ""
         print(
-            f"{symbol} → {analysis.action} | RSI: {analysis.rsi:.1f} | "
+            f"{symbol} → {analysis.action} ({analysis.normalized_action}) | RSI: {analysis.rsi:.1f} | "
             f"Vol: {analysis.vol_multiplier:.2f}x | Ampel: {analysis.ampel_emoji} {analysis.ampel_text}"
-            f"{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
+            f"{rationale}{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
             f"RealPnL: ${history.get('realized_pnl', 0):.1f}\n"
         )
         return analysis.action

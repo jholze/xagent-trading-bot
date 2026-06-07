@@ -180,21 +180,19 @@ JSON:"""
             recommendation["rationale"] += f" (below trust-adjusted threshold for @{account})"
             return recommendation
 
-        coin_data = {"symbol": signal.coin + "/USDT", "timeframe": "4h"}
-        if orchestrator and current_price:
-            analysis = orchestrator.analyze(coin_data, current_price, x_signals=[signal])
-            technical_action = analysis.action if analysis else "HOLD"
-        else:
-            technical_action = "HOLD"
+        from strategies.decision_engine import DecisionEngine
 
-        sell_signals = ("SELL", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL")
-        if signal.action == "BUY" and technical_action == "BUY":
-            recommendation["action"] = "BUY"
-            recommendation["recommended"] = True
-        elif signal.action == "SELL" and technical_action in sell_signals:
-            recommendation["action"] = "SELL"
-            recommendation["recommended"] = True
-        elif signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
+        coin_data = {"symbol": signal.coin + "/USDT", "timeframe": "4h"}
+        engine = getattr(orchestrator, "decision_engine", None) if orchestrator else None
+        if engine is None:
+            engine = DecisionEngine()
+
+        if current_price:
+            analysis = engine.evaluate(coin_data, current_price, x_signals=[signal])
+            if analysis:
+                return engine.to_recommendation(signal, analysis, account, tweet_text, current_price)
+
+        if signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
             recommendation["action"] = "ADD_TO_WATCHLIST"
             recommendation["recommended"] = True
 

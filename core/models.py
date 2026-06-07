@@ -31,6 +31,10 @@ class SignalAnalysis:
     notify_reason: str = ""
     x_confidence: float = 0.0
     sources: list[str] = field(default_factory=list)
+    normalized_action: str = "HOLD"
+    rationale: str = ""
+    confidence: float = 0.0
+    recommended: bool = False
 
 
 @dataclass
