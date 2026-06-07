@@ -1,0 +1,13 @@
+Analyze this Hermes trading experiment and extract a reusable skill.
+
+VARIABLE: {proposal_variable}
+CHANGE: {old_value} → {new_value}
+BASELINE METRICS: {baseline_metrics}
+VARIANT METRICS: {variant_metrics}
+PROMOTED: {promoted}
+
+Return ONLY valid JSON:
+{{
+  "pattern": "concise lesson learned (one sentence)",
+  "confidence": 0.0 to 1.0
+}}

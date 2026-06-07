@@ -125,6 +125,14 @@ class BotConfig:
     def decisions_audit_enabled(self) -> bool:
         return bool(self.observability_config.get("decisions_audit", True))
 
+    @property
+    def hermes_config(self) -> dict:
+        return self._raw.get("hermes", {})
+
+    @property
+    def hermes_enabled(self) -> bool:
+        return bool(self.hermes_config.get("enabled", False))
+
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:

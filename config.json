@@ -82,6 +82,34 @@
     "notify_on_cycle": false,
     "decisions_audit": true
   },
+  "hermes": {
+    "enabled": true,
+    "primary_metric": "sharpe",
+    "success_criteria": {
+      "min_sharpe": 0.8,
+      "max_drawdown_pct": 15,
+      "min_win_rate": 50,
+      "min_trades": 5
+    },
+    "failure_criteria": {
+      "sharpe_delta_max": -0.2,
+      "drawdown_delta_max": 5
+    },
+    "backtest_days": 60,
+    "symbols": ["ARIA/USDT"],
+    "timeframes": ["4h"],
+    "tunable_params": [
+      "rsi_buy_low",
+      "rsi_buy_high",
+      "volume_multiplier",
+      "rsi_sell_30",
+      "rsi_sell_20",
+      "stop_loss_pct"
+    ],
+    "cycle_interval_sec": 3600,
+    "initial_capital_usdt": 1000,
+    "usdt_per_trade": 50
+  },
   "sandbox": {
     "enabled": true,
     "initial_capital_usdt": 1000,
