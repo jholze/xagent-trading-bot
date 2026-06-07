@@ -29,13 +29,20 @@ def print_dashboard(data):
     sidebar_table.add_column("Value", style="bold")
 
     p = data
+    sidebar_table.add_row("Mode", str(p.get("trading_mode", "PAPER")))
     sidebar_table.add_row("Balance", str(p.get("balance", "$0")))
     sidebar_table.add_row("Unrealized", str(p.get("unrealized", "$0")))
     sidebar_table.add_row("Realized PnL", str(p.get("realized_pnl", "$0")))
     sidebar_table.add_row("Total Value", str(p.get("total_value", "$0")))
     sidebar_table.add_row("Active Pos.", str(p.get("active_positions", 0)))
     sidebar_table.add_row("Win Rate", str(p.get("win_rate", "—")))
-    sidebar_table.add_row("X Accounts", ", ".join([str(a) for a in p.get("x_accounts", [])[:4]]))
+    watch = ", ".join([str(c) for c in p.get("coins", [])[:5]])
+    sidebar_table.add_row("Watchlist", watch or "—")
+    sidebar_table.add_row("X Accounts", ", ".join([str(a) for a in p.get("x_accounts", [])[:3]]))
+    board = p.get("trust_leaderboard") or []
+    if board:
+        top = board[0]
+        sidebar_table.add_row("Top Trust", f"@{top.get('handle', '?')} ({top.get('trust_score', 0):.0f})")
     sidebar_table.add_row("Last Cycle", str(p.get("last_cycle", "—")))
     sidebar_table.add_row("Status", str(p.get("status", "🟢 Running")))
 

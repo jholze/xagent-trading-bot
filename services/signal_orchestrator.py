@@ -5,6 +5,7 @@ from core.models import TradeOrder
 from data_manager import get_text, load_trade_history
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
+from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
@@ -27,6 +28,7 @@ class SignalOrchestrator:
         self._execution_override = execution_adapter
         self.notify_callback = notify_callback
         self.decision_engine = DecisionEngine(self.market)
+        self.audit = AuditTrail(self.config)
 
     def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None):
         return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals)
@@ -93,15 +95,16 @@ class SignalOrchestrator:
             confidence=analysis.confidence,
         )
 
-    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None) -> str:
+    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, quiet: bool = False) -> dict:
         if not current_price:
-            return "HOLD"
+            return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
         analysis = self.analyze(coin, current_price, x_signals, cmc_signals)
         if analysis is None:
-            return "HOLD"
+            return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
         trade_result = self.execute_if_needed(analysis, coin, current_price)
+        self.audit.record(coin, analysis, trade_result, current_price)
 
         symbol = coin["symbol"]
         tf = analysis.timeframe
@@ -145,10 +148,26 @@ class SignalOrchestrator:
         )
         executed = f" | Executed: {trade_result.order_type}" if trade_result and trade_result.executed else ""
         rationale = f" | {analysis.rationale}" if analysis.rationale else ""
-        print(
-            f"{symbol} → {analysis.action} ({analysis.normalized_action}) | RSI: {analysis.rsi:.1f} | "
-            f"Vol: {analysis.vol_multiplier:.2f}x | Ampel: {analysis.ampel_emoji} {analysis.ampel_text}"
-            f"{rationale}{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
-            f"RealPnL: ${history.get('realized_pnl', 0):.1f}\n"
-        )
-        return analysis.action
+        if not quiet:
+            print(
+                f"{symbol} → {analysis.action} ({analysis.normalized_action}) | RSI: {analysis.rsi:.1f} | "
+                f"Vol: {analysis.vol_multiplier:.2f}x | Ampel: {analysis.ampel_emoji} {analysis.ampel_text}"
+                f"{rationale}{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
+                f"RealPnL: ${history.get('realized_pnl', 0):.1f}\n"
+            )
+        return {
+            "action": analysis.action,
+            "normalized_action": analysis.normalized_action,
+            "symbol": symbol,
+            "rsi": analysis.rsi,
+            "vol_multiplier": analysis.vol_multiplier,
+            "ampel_emoji": analysis.ampel_emoji,
+            "ampel_text": analysis.ampel_text,
+            "rationale": analysis.rationale,
+            "sources": list(analysis.sources or []),
+            "confidence": analysis.confidence,
+            "executed": bool(trade_result.executed) if trade_result else False,
+            "order_type": trade_result.order_type if trade_result else None,
+            "trade_message": trade_result.message if trade_result else "",
+            "unrealized": unrealized,
+        }

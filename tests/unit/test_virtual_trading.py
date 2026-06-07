@@ -1033,6 +1033,89 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertAlmostEqual(cfg.onchain_weight, 0.2)
         self.assertAlmostEqual(cfg.x_weight + cfg.technical_weight + cfg.onchain_weight, 1.0)
 
+    def test_audit_trail_records_decision(self):
+        import json
+        import tempfile
+        from unittest.mock import patch
+        from services.audit_trail import AuditTrail
+        from core.models import SignalAnalysis
+
+        analysis = SignalAnalysis(
+            action="BUY",
+            symbol="XRVM/USDT",
+            timeframe="4h",
+            rsi=40.0,
+            lower_bb=0.9,
+            vol_multiplier=1.5,
+            ampel_emoji="🟢",
+            ampel_text="Bullish",
+            normalized_action="BUY",
+            rationale="TA→BUY",
+            confidence=70.0,
+            sources=["technical"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "decisions.jsonl")
+            with patch("logger.DECISIONS_LOG_FILE", log_path):
+                trail = AuditTrail()
+                trail.record({"symbol": "XRVM/USDT"}, analysis, None, 1.0)
+                with open(log_path, encoding="utf-8") as f:
+                    line = f.readline()
+                entry = json.loads(line)
+                self.assertEqual(entry["symbol"], "XRVM/USDT")
+                self.assertEqual(entry["normalized_action"], "BUY")
+                self.assertIn("rationale", entry)
+
+    def test_build_dashboard_data(self):
+        from notifications.terminal_dashboard import build_dashboard_data
+
+        with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
+             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]):
+            data = build_dashboard_data(
+                cycle_signals=["🟢 @Trader BUY BTC | 80%"],
+                coin_results=[{"symbol": "BTC/USDT", "action": "HOLD", "normalized_action": "HOLD", "rsi": 50, "ampel_emoji": "🟡", "rationale": ""}],
+                trading_mode="paper",
+            )
+        self.assertIn("balance", data)
+        self.assertIn("trading_mode", data)
+        self.assertEqual(data["trading_mode"], "PAPER")
+        self.assertGreater(len(data["signals"]), 0)
+
+    def test_build_cycle_summary(self):
+        from notifications.terminal_dashboard import build_cycle_summary
+
+        summary = build_cycle_summary(
+            coin_results=[{"symbol": "ARIA/USDT", "executed": True, "order_type": "BUY", "normalized_action": "BUY"}],
+            trading_mode="paper",
+            x_signal_count=2,
+            cmc_signal_count=1,
+        )
+        self.assertIn("Cycle Summary", summary)
+        self.assertIn("PAPER", summary)
+        self.assertIn("Executed", summary)
+
+    def test_log_decision_writes_jsonl(self):
+        import json
+        import tempfile
+        from unittest.mock import patch
+        from logger import log_decision
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "decisions.jsonl")
+            with patch("logger.DECISIONS_LOG_FILE", log_path):
+                log_decision({"symbol": "TEST/USDT", "action": "HOLD"})
+                with open(log_path, encoding="utf-8") as f:
+                    entry = json.loads(f.readline())
+                self.assertEqual(entry["symbol"], "TEST/USDT")
+                self.assertIn("timestamp", entry)
+
+    def test_observability_config_accessors(self):
+        from core.config import get_bot_config
+        cfg = get_bot_config()
+        self.assertTrue(cfg.terminal_dashboard_enabled)
+        self.assertFalse(cfg.notify_on_cycle)
+        self.assertTrue(cfg.decisions_audit_enabled)
+
     def test_data_layer_logs_on_failed_save(self):
         """When saving fails, we should log an ERROR instead of failing silently."""
         from unittest.mock import patch, mock_open

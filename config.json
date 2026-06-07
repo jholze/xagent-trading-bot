@@ -51,6 +51,12 @@
     "min_trade_usdt": 5.0
   },
   "update_interval": 600,
+  "observability": {
+    "terminal_dashboard": true,
+    "json_logs": false,
+    "notify_on_cycle": false,
+    "decisions_audit": true
+  },
   "sandbox": {
     "enabled": true,
     "initial_capital_usdt": 1000,

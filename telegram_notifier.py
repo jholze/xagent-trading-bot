@@ -91,6 +91,14 @@ def send_x_recommendation_message(recommendation):
     send_telegram_message(msg)
 
 
+def send_cycle_summary(text: str):
+    """Send end-of-cycle summary (respects notify_on_cycle config)."""
+    from data_manager import get_config
+    if not get_config().get("observability", {}).get("notify_on_cycle", False):
+        return False
+    return send_telegram_message(text)
+
+
 def send_telegram_message(text):
     if not BOT_TOKEN or not CHAT_ID:
         print("⚠️ Telegram not configured")

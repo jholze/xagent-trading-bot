@@ -31,6 +31,7 @@ except:
 print(get_text("bot_started") + "\n")
 
 try:
+    from core.config import get_bot_config
     from data_manager import (
         get_config,
         get_text,
@@ -38,12 +39,13 @@ try:
         load_trade_history,
         load_watchlist,
     )
+    from notifications.terminal_dashboard import build_cycle_summary, render_cycle_dashboard
     from price_fetcher import get_prices
     from intelligence.trend_engine import TrendEngine
     from services.signal_orchestrator import SignalOrchestrator
     from services.social_pipeline import SocialPipeline
     from strategies.paper_sandbox import PaperSandbox
-    from telegram_notifier import handle_telegram_command, send_signal_message
+    from telegram_notifier import handle_telegram_command, send_cycle_summary, send_signal_message
     from x_analyzer import XAnalyzer
 except ImportError as e:
     print(f"Fehler beim Laden der Module: {e}")
@@ -73,30 +75,40 @@ def webhook():
 
 
 def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None):
+    bot_config = get_bot_config()
+    use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
+
     while True:
         try:
-            # Safely clear screen only in interactive terminals
-            if os.isatty(1):
+            bot_config.refresh()
+            use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
+
+            if not use_dashboard and os.isatty(1):
                 os.system("clear" if os.name == "posix" else "cls")
+
             now = datetime.now()
             mode = get_config().get("trading_mode", "paper")
-            print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
-            print("=" * 90)
+            cycle_signal_lines = []
+            coin_results = []
+
+            if not use_dashboard:
+                print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
+                print("=" * 90)
 
             watchlist = load_watchlist()
             active_symbols = [
                 coin["symbol"] for coin in watchlist if coin.get("active", True)
             ]
-            print(f"Aktive Coins ({len(active_symbols)}): " + " • ".join(active_symbols))
-            print("-" * 90)
-
-            print("Prüfe Coins + X-Signale:\n")
+            if not use_dashboard:
+                print(f"Aktive Coins ({len(active_symbols)}): " + " • ".join(active_symbols))
+                print("-" * 90)
+                print("Prüfe Coins + X-Signale:\n")
 
             if social_pipeline:
                 social_pipeline.process_new_posts()
                 social_pipeline.process_cmc_posts(watchlist)
                 accuracy = social_pipeline.update_accuracy_loop()
-                if accuracy["outcomes_updated"] or accuracy["trust_updates"]:
+                if not use_dashboard and (accuracy["outcomes_updated"] or accuracy["trust_updates"]):
                     print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
 
             x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
@@ -105,52 +117,90 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             if trend_engine and x_signals:
                 candidates = trend_engine.cross_validate(x_signals, run_scan=False)
                 for c in candidates[:3]:
-                    print(f"   → Trend+X consensus: {c['symbol']} ({c['regime']}) 5m:{c['change_5m']:+.1f}%")
+                    line = f"→ Trend+X: {c['symbol']} ({c['regime']}) 5m:{c['change_5m']:+.1f}%"
+                    cycle_signal_lines.append(line)
+                    if not use_dashboard:
+                        print(f"   {line}")
 
             if sandbox and get_config().get("sandbox", {}).get("enabled", True):
                 sandbox_results = sandbox.run_cycle(watchlist, get_prices)
                 for sr in sandbox_results[:3]:
                     m = sr["metrics"]
-                    print(f"   → Sandbox {sr['hypothesis_id']}: {sr['action']} {sr['symbol']} | WR={m.win_rate}%")
+                    line = f"→ Sandbox {sr['hypothesis_id']}: {sr['action']} {sr['symbol']} | WR={m.win_rate}%"
+                    cycle_signal_lines.append(line)
+                    if not use_dashboard:
+                        print(f"   {line}")
 
             for signal in x_signals:
                 eff = getattr(signal, "effective_confidence", signal.confidence)
                 if eff >= 70:
-                    print(
-                        f"   → X-Signal @{signal.account}: {signal.action} {signal.coin} | "
-                        f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | Trust: {getattr(signal, 'trust_score', '?')}"
+                    line = (
+                        f"🟢 @{signal.account} {signal.action} {signal.coin} | "
+                        f"Conf: {signal.confidence}% | Eff: {eff:.0f}%"
                     )
+                    cycle_signal_lines.append(line)
+                    if not use_dashboard:
+                        print(f"   → X-Signal @{signal.account}: {signal.action} {signal.coin} | "
+                              f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | "
+                              f"Trust: {getattr(signal, 'trust_score', '?')}")
 
             for signal in cmc_signals:
                 if signal.confidence >= 60:
-                    print(
-                        f"   → CMC Community: {signal.action} {signal.coin} | "
-                        f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
-                    )
+                    line = f"📊 CMC {signal.action} {signal.coin} | {signal.confidence}%"
+                    cycle_signal_lines.append(line)
+                    if not use_dashboard:
+                        print(
+                            f"   → CMC Community: {signal.action} {signal.coin} | "
+                            f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
+                        )
 
             for coin in watchlist:
                 if not coin.get("active", True):
                     continue
                 symbol = coin["symbol"]
-                print(f"→ {symbol}")
+                if not use_dashboard:
+                    print(f"→ {symbol}")
 
                 dex_price, cg_price, diff = get_prices(symbol)
                 price = dex_price if dex_price is not None else 0.0
                 if orchestrator:
-                    orchestrator.process_coin(coin, price, x_signals, cmc_signals)
+                    result = orchestrator.process_coin(
+                        coin, price, x_signals, cmc_signals, quiet=use_dashboard
+                    )
+                    coin_results.append(result)
                 else:
                     from strategies.core_strategy import check_signal
                     check_signal(coin, price, x_signals, notify_callback=send_signal_message)
-                print()
-
-            print("-" * 90)
-            print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
+                if not use_dashboard:
+                    print()
 
             interval = get_config().get("update_interval", 600)
+
+            if use_dashboard:
+                render_cycle_dashboard(
+                    cycle_signals=cycle_signal_lines,
+                    coin_results=coin_results,
+                    trading_mode=mode,
+                    next_update=interval,
+                )
+            else:
+                print("-" * 90)
+                print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
+
+            summary = build_cycle_summary(
+                coin_results=coin_results,
+                trading_mode=mode,
+                x_signal_count=len(x_signals),
+                cmc_signal_count=len(cmc_signals),
+            )
+            send_cycle_summary(summary)
+
             for remaining in range(interval, 0, -1):
-                print(f"\r   Nächste Aktualisierung in {remaining:3d} Sekunden...", end="", flush=True)
+                if not use_dashboard:
+                    print(f"\r   Nächste Aktualisierung in {remaining:3d} Sekunden...", end="", flush=True)
                 time.sleep(1)
-            print("\n")
+            if not use_dashboard:
+                print("\n")
 
         except Exception as e:
             log(f"Error in price loop: {e}", "ERROR")
@@ -173,4 +223,3 @@ if __name__ == "__main__":
     print(get_text("webhook_started"))
 
     app.run(port=5000)
-

@@ -98,6 +98,22 @@ class BotConfig:
     def onchain_weight(self) -> float:
         return float(self._raw.get("onchain_weight", 0.2))
 
+    @property
+    def observability_config(self) -> dict:
+        return self._raw.get("observability", {})
+
+    @property
+    def terminal_dashboard_enabled(self) -> bool:
+        return bool(self.observability_config.get("terminal_dashboard", True))
+
+    @property
+    def notify_on_cycle(self) -> bool:
+        return bool(self.observability_config.get("notify_on_cycle", False))
+
+    @property
+    def decisions_audit_enabled(self) -> bool:
+        return bool(self.observability_config.get("decisions_audit", True))
+
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:
