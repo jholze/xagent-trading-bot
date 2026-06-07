@@ -943,6 +943,96 @@ class TestVirtualTrading(unittest.TestCase):
         finally:
             save_paper_strategies(backup)
 
+    def test_cmc_parser_bullish_votes(self):
+        from data.cmc_community_provider import CMCCommunityParser, RawCMCPost
+
+        parser = CMCCommunityParser()
+        signal = parser.parse(RawCMCPost("p1", "SOL", "Community loves SOL", votes_bullish=80, votes_bearish=10))
+        self.assertEqual(signal.action, "BUY")
+        self.assertGreaterEqual(signal.confidence, 60)
+        self.assertEqual(signal.source, "cmc")
+
+    def test_cmc_mock_provider_respects_watchlist(self):
+        import uuid
+        from data.cmc_community_provider import MockCMCProvider
+        from data_manager import load_cmc_posts, save_cmc_posts
+
+        backup = load_cmc_posts()
+        save_cmc_posts({"posts": []})
+        try:
+            provider = MockCMCProvider()
+            handle_coin = f"ZZZ{uuid.uuid4().hex[:4].upper()}"
+            posts = provider.fetch_posts([{"symbol": f"{handle_coin}/USDT"}], limit=5)
+            self.assertEqual(len(posts), 0)
+
+            sol_posts = provider.fetch_posts([{"symbol": "SOL/USDT"}], limit=5)
+            self.assertGreater(len(sol_posts), 0)
+        finally:
+            save_cmc_posts(backup)
+
+    def test_decision_engine_cmc_buy_merge(self):
+        from data.cmc_community_provider import CMCCommunitySignal
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine()
+        cmc = CMCCommunitySignal("SOL", "BUY", 78, rationale="bullish community", votes_bullish=90, votes_bearish=8)
+        cmc.effective_confidence = 70
+
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
+             patch("strategies.decision_engine.count_open_positions", return_value=0):
+            analysis = engine.evaluate({"symbol": "SOL/USDT", "timeframe": "4h"}, 1.0, cmc_signals=[cmc])
+        self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
+        self.assertIn("cmc", analysis.sources)
+
+    def test_decision_engine_multi_source_x_cmc_consensus(self):
+        from data.cmc_community_provider import CMCCommunitySignal
+        from strategies.decision_engine import DecisionEngine
+        from x_analyzer import XSignal
+
+        engine = DecisionEngine()
+        x_sig = XSignal("Trader", "SOL", "BUY", 85, rationale="strong")
+        x_sig.trust_score = 90
+        x_sig.effective_confidence = 80
+        cmc = CMCCommunitySignal("SOL", "BUY", 80, votes_bullish=85, votes_bearish=10)
+        cmc.effective_confidence = 65
+
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 35.0, "lower_bb": 1.05, "vol_multiplier": 2.0}), \
+             patch("strategies.decision_engine.count_open_positions", return_value=0):
+            analysis = engine.evaluate(
+                {"symbol": "SOL/USDT", "timeframe": "4h"},
+                1.0,
+                x_signals=[x_sig],
+                cmc_signals=[cmc],
+            )
+        self.assertEqual(analysis.normalized_action, "BUY_STRONG")
+        self.assertIn("multi_source", analysis.sources)
+        self.assertIn("x", analysis.sources)
+        self.assertIn("cmc", analysis.sources)
+
+    def test_social_pipeline_process_cmc_posts(self):
+        from data_manager import load_cmc_posts, save_cmc_posts, load_watchlist
+        from services.social_pipeline import SocialPipeline
+        from x_analyzer import XAnalyzer
+
+        backup = load_cmc_posts()
+        save_cmc_posts({"posts": []})
+        try:
+            pipeline = SocialPipeline(XAnalyzer())
+            watchlist = load_watchlist()
+            if not any("SOL" in c.get("symbol", "") for c in watchlist):
+                watchlist = watchlist + [{"symbol": "SOL/USDT", "active": True}]
+            signals = pipeline.process_cmc_posts(watchlist)
+            self.assertGreater(len(signals), 0)
+            self.assertEqual(signals[0].source, "cmc")
+        finally:
+            save_cmc_posts(backup)
+
+    def test_onchain_weight_config_accessors(self):
+        from core.config import get_bot_config
+        cfg = get_bot_config()
+        self.assertAlmostEqual(cfg.onchain_weight, 0.2)
+        self.assertAlmostEqual(cfg.x_weight + cfg.technical_weight + cfg.onchain_weight, 1.0)
+
     def test_data_layer_logs_on_failed_save(self):
         """When saving fails, we should log an ERROR instead of failing silently."""
         from unittest.mock import patch, mock_open

@@ -122,7 +122,11 @@ JSON:"""
 
         x_score = effective * self.config.get("x_weight", 0.45)
         tech_score = technical_score * self.config.get("technical_weight", 0.35)
-        signal.score = (x_score + tech_score) / 100
+        onchain_score = 0.0
+        if getattr(signal, "source", "x") == "cmc":
+            onchain_score = effective * self.config.get("onchain_weight", 0.2)
+            x_score = 0.0
+        signal.score = (x_score + tech_score + onchain_score) / 100
         return signal.score
 
     def get_top_signals(self, technical_scores: Dict[str, float] = None) -> List[XSignal]:

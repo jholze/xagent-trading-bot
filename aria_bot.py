@@ -94,11 +94,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
             if social_pipeline:
                 social_pipeline.process_new_posts()
+                social_pipeline.process_cmc_posts(watchlist)
                 accuracy = social_pipeline.update_accuracy_loop()
                 if accuracy["outcomes_updated"] or accuracy["trust_updates"]:
                     print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
 
             x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
+            cmc_signals = social_pipeline.refresh_cmc_signals() if social_pipeline else []
 
             if trend_engine and x_signals:
                 candidates = trend_engine.cross_validate(x_signals, run_scan=False)
@@ -119,6 +121,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                         f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | Trust: {getattr(signal, 'trust_score', '?')}"
                     )
 
+            for signal in cmc_signals:
+                if signal.confidence >= 60:
+                    print(
+                        f"   → CMC Community: {signal.action} {signal.coin} | "
+                        f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
+                    )
+
             for coin in watchlist:
                 if not coin.get("active", True):
                     continue
@@ -128,7 +137,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 dex_price, cg_price, diff = get_prices(symbol)
                 price = dex_price if dex_price is not None else 0.0
                 if orchestrator:
-                    orchestrator.process_coin(coin, price, x_signals)
+                    orchestrator.process_coin(coin, price, x_signals, cmc_signals)
                 else:
                     from strategies.core_strategy import check_signal
                     check_signal(coin, price, x_signals, notify_callback=send_signal_message)

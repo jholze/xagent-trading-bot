@@ -26,6 +26,9 @@ def handle(text: str) -> bool:
 /sandbox_results ID - Detailed metrics for a hypothesis
 /sandbox_promote ID - Promote successful hypothesis to active strategy
 
+<b>CMC Community:</b>
+/cmc or /cmcsignals - CoinMarketCap community sentiment signals
+
 <b>X Accounts:</b>
 /addx ACCOUNT - Add X account (e.g. /addx CryptoCapo_)
 /removex ACCOUNT - Remove X account

@@ -82,6 +82,22 @@ class BotConfig:
     def sandbox_enabled(self) -> bool:
         return bool(self.sandbox_config.get("enabled", True))
 
+    @property
+    def cmc_config(self) -> dict:
+        return self._raw.get("cmc", {})
+
+    @property
+    def x_weight(self) -> float:
+        return float(self._raw.get("x_weight", 0.45))
+
+    @property
+    def technical_weight(self) -> float:
+        return float(self._raw.get("technical_weight", 0.35))
+
+    @property
+    def onchain_weight(self) -> float:
+        return float(self._raw.get("onchain_weight", 0.2))
+
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:

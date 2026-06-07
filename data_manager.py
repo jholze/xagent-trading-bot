@@ -2,6 +2,7 @@ import json
 import locale
 import os
 import shutil
+from datetime import datetime
 
 from logger import log
 
@@ -364,6 +365,49 @@ def record_trade(trade):
 
 PAPER_STRATEGIES_FILE = "paper_strategies.json"
 PAPER_SANDBOX_HISTORY_FILE = "paper_sandbox_history.json"
+CMC_POSTS_FILE = "cmc_posts.json"
+
+
+def load_cmc_posts():
+    path = get_data_file(CMC_POSTS_FILE)
+    if not os.path.exists(path):
+        return {"posts": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"posts": []}
+
+
+def save_cmc_posts(data):
+    path = get_data_file(CMC_POSTS_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def log_cmc_post(signal, post_id: str = None):
+    data = load_cmc_posts()
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "post_id": post_id or getattr(signal, "post_id", None),
+        "coin": getattr(signal, "coin", ""),
+        "action": getattr(signal, "action", "HOLD"),
+        "confidence": getattr(signal, "confidence", 0),
+        "rationale": getattr(signal, "rationale", ""),
+        "votes_bullish": getattr(signal, "votes_bullish", 0),
+        "votes_bearish": getattr(signal, "votes_bearish", 0),
+        "source": "cmc",
+    }
+    pid = entry.get("post_id")
+    if pid and any(p.get("post_id") == pid for p in data.get("posts", [])):
+        return data
+    data.setdefault("posts", []).append(entry)
+    save_cmc_posts(data)
+    return data
 
 
 def load_paper_strategies():

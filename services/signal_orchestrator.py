@@ -28,8 +28,8 @@ class SignalOrchestrator:
         self.notify_callback = notify_callback
         self.decision_engine = DecisionEngine(self.market)
 
-    def analyze(self, coin: dict, current_price: float, x_signals=None):
-        return self.decision_engine.evaluate(coin, current_price, x_signals)
+    def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None):
+        return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals)
 
     def execute_if_needed(self, analysis, coin: dict, current_price: float, x_signals=None):
         if analysis is None or analysis.action == "HOLD":
@@ -38,7 +38,12 @@ class SignalOrchestrator:
         self.trading.refresh()
         symbol = analysis.symbol
         tf = analysis.timeframe
-        source = "x" if "x" in (analysis.sources or []) else "auto"
+        if "x" in (analysis.sources or []):
+            source = "x"
+        elif "cmc" in (analysis.sources or []):
+            source = "cmc"
+        else:
+            source = "auto"
         trust_score = analysis.x_confidence if source == "x" else None
 
         if "BUY" in analysis.action:
@@ -88,11 +93,11 @@ class SignalOrchestrator:
             confidence=analysis.confidence,
         )
 
-    def process_coin(self, coin: dict, current_price: float, x_signals=None) -> str:
+    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None) -> str:
         if not current_price:
             return "HOLD"
 
-        analysis = self.analyze(coin, current_price, x_signals)
+        analysis = self.analyze(coin, current_price, x_signals, cmc_signals)
         if analysis is None:
             return "HOLD"
 

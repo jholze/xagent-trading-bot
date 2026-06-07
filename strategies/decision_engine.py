@@ -22,7 +22,7 @@ from strategies.registry import get_strategy, resolve_coin_config
 
 
 class DecisionEngine:
-    """Merges technical strategy output with social signals and consensus."""
+    """Merges technical strategy output with X and CMC social signals."""
 
     SELL_PRIORITY = {
         SELL_FULL: 5,
@@ -56,49 +56,112 @@ class DecisionEngine:
             strategy_params=params,
         )
 
-    def _x_signals_for_coin(self, symbol: str, x_signals: list) -> list:
+    def _signals_for_coin(self, symbol: str, signals: list) -> list:
         base = symbol.split("/")[0]
-        return [s for s in (x_signals or []) if getattr(s, "coin", "") == base]
+        return [s for s in (signals or []) if getattr(s, "coin", "") == base]
+
+    def _all_coin_social_signals(self, symbol: str, x_signals: list, cmc_signals: list) -> list:
+        return self._signals_for_coin(symbol, x_signals) + self._signals_for_coin(symbol, cmc_signals)
 
     def _consensus_multiplier(self, coin_signals: list) -> float:
         actionable = [s for s in coin_signals if getattr(s, "action", "HOLD") in ("BUY", "SELL")]
+        sources = {getattr(s, "source", "x") for s in actionable}
+        multiplier = 1.0
         if len(actionable) >= 3:
-            return 1.25
-        if len(actionable) >= 2:
-            return 1.1
-        return 1.0
+            multiplier = 1.25
+        elif len(actionable) >= 2:
+            multiplier = 1.1
+        if "x" in sources and "cmc" in sources:
+            multiplier *= 1.15
+        return multiplier
 
     def _x_buy_threshold(self, x_signal) -> float:
         trust = getattr(x_signal, "trust_score", 70)
         return max(65.0, 85 - (trust - 70) * 0.5)
 
-    def _merge_buy(self, technical: SignalAnalysis, x_signal, coin_signals: list, market: MarketContext) -> tuple:
+    def _cmc_buy_threshold(self) -> float:
+        return float(self.config.cmc_config.get("min_confidence", 60))
+
+    def _weighted_social_confidence(self, x_eff: float, cmc_eff: float) -> float:
+        x_w = self.config.x_weight
+        c_w = self.config.onchain_weight
+        total = 0.0
+        weight_sum = 0.0
+        if x_eff > 0:
+            total += x_eff * x_w
+            weight_sum += x_w
+        if cmc_eff > 0:
+            total += cmc_eff * c_w
+            weight_sum += c_w
+        if weight_sum <= 0:
+            return 0.0
+        return total / weight_sum * (x_w + c_w)
+
+    def _merge_buy(
+        self,
+        technical: SignalAnalysis,
+        x_signal,
+        cmc_signal,
+        coin_signals: list,
+        market: MarketContext,
+    ) -> tuple:
         sources = list(technical.sources)
         x_buy = False
-        eff = 0.0
+        cmc_buy = False
+        x_eff = 0.0
+        cmc_eff = 0.0
         tech_buy = normalize(technical.action) in (BUY, BUY_STRONG) or technical.action == "BUY"
+        consensus = self._consensus_multiplier(coin_signals)
 
         if x_signal and x_signal.action == "BUY":
-            eff = getattr(x_signal, "effective_confidence", x_signal.confidence)
-            eff *= self._consensus_multiplier(coin_signals)
-            if eff >= self._x_buy_threshold(x_signal):
+            x_eff = getattr(x_signal, "effective_confidence", x_signal.confidence)
+            x_eff *= consensus
+            if x_eff >= self._x_buy_threshold(x_signal):
                 x_buy = True
                 sources.append("x")
 
+        if cmc_signal and cmc_signal.action == "BUY":
+            cmc_eff = getattr(cmc_signal, "effective_confidence", cmc_signal.confidence)
+            cmc_eff *= consensus
+            if cmc_eff >= self._cmc_buy_threshold():
+                cmc_buy = True
+                sources.append("cmc")
+
+        blended = self._weighted_social_confidence(x_eff if x_buy else 0, cmc_eff if cmc_buy else 0)
+
         if not market.has_position and market.open_positions < self.config.max_open_positions:
-            if tech_buy and x_buy:
-                return BUY_STRONG, sources, max(technical.confidence, eff)
-            if tech_buy or x_buy:
-                return BUY, sources, max(technical.confidence, eff)
+            if tech_buy and x_buy and cmc_buy:
+                sources.append("multi_source")
+                return BUY_STRONG, sources, max(technical.confidence, blended)
+            if tech_buy and (x_buy or cmc_buy):
+                if x_buy and cmc_buy:
+                    sources.append("multi_source")
+                    return BUY_STRONG, sources, max(technical.confidence, blended)
+                return BUY, sources, max(technical.confidence, blended)
+            if x_buy and cmc_buy:
+                sources.append("multi_source")
+                return BUY, sources, blended
+            if tech_buy:
+                return BUY, sources, technical.confidence
+            if x_buy or cmc_buy:
+                return BUY, sources, blended
         return HOLD, sources, technical.confidence
 
     def _x_stop_loss_triggered(self, x_signal, current_price: float) -> bool:
         stop = getattr(x_signal, "stop_loss", None) if x_signal else None
         return stop is not None and current_price > 0 and current_price <= float(stop)
 
-    def _merge_sell(self, technical: SignalAnalysis, x_signal, coin_signals: list, market: MarketContext = None) -> tuple:
+    def _merge_sell(
+        self,
+        technical: SignalAnalysis,
+        x_signal,
+        cmc_signal,
+        coin_signals: list,
+        market: MarketContext = None,
+    ) -> tuple:
         sources = list(technical.sources)
         candidates = []
+        consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
         if is_sell(technical.action):
@@ -109,19 +172,29 @@ class DecisionEngine:
             sources.append("x_stop_loss")
 
         if x_signal and x_signal.action == "SELL":
-            eff = getattr(x_signal, "effective_confidence", x_signal.confidence)
-            eff *= self._consensus_multiplier(coin_signals)
+            eff = getattr(x_signal, "effective_confidence", x_signal.confidence) * consensus
             if eff >= 70:
                 candidates.append((SELL_PARTIAL_20, 2, "x"))
                 sources.append("x")
+
+        if cmc_signal and cmc_signal.action == "SELL":
+            eff = getattr(cmc_signal, "effective_confidence", cmc_signal.confidence) * consensus
+            if eff >= self._cmc_buy_threshold():
+                candidates.append((SELL_PARTIAL_20, 2, "cmc"))
+                sources.append("cmc")
 
         if not candidates:
             return HOLD, sources, technical.confidence
 
         best = max(candidates, key=lambda c: c[1])
-        return best[0], sources, max(technical.confidence, getattr(x_signal, "effective_confidence", 0) if x_signal else 0)
+        social_conf = 0.0
+        if x_signal:
+            social_conf = max(social_conf, getattr(x_signal, "effective_confidence", 0))
+        if cmc_signal:
+            social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
+        return best[0], sources, max(technical.confidence, social_conf)
 
-    def evaluate(self, coin: dict, current_price: float, x_signals=None) -> SignalAnalysis:
+    def evaluate(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None) -> SignalAnalysis:
         if not current_price:
             return None
 
@@ -130,17 +203,24 @@ class DecisionEngine:
         strategy = get_strategy(coin)
         technical = strategy.analyze(coin, market, x_signals=None)
 
-        coin_x = self._x_signals_for_coin(coin["symbol"], x_signals)
+        coin_x = self._signals_for_coin(coin["symbol"], x_signals)
+        coin_cmc = self._signals_for_coin(coin["symbol"], cmc_signals)
+        all_social = coin_x + coin_cmc
         x_signal = coin_x[0] if coin_x else None
+        cmc_signal = coin_cmc[0] if coin_cmc else None
 
         if market.has_position:
-            normalized, sources, confidence = self._merge_sell(technical, x_signal, coin_x, market)
+            normalized, sources, confidence = self._merge_sell(
+                technical, x_signal, cmc_signal, all_social, market
+            )
             if normalized == HOLD and not is_sell(technical.action):
                 normalized = normalize(technical.action) if is_sell(technical.action) else HOLD
                 sources = list(technical.sources)
                 confidence = technical.confidence
         else:
-            normalized, sources, confidence = self._merge_buy(technical, x_signal, coin_x, market)
+            normalized, sources, confidence = self._merge_buy(
+                technical, x_signal, cmc_signal, all_social, market
+            )
             if normalized == HOLD:
                 normalized = normalize(technical.action) if normalize(technical.action) == BUY else HOLD
 
@@ -154,8 +234,18 @@ class DecisionEngine:
             rationale_parts.append(f"TA→{technical.action}")
         if "x" in sources and x_signal:
             rationale_parts.append(f"X→{x_signal.action}@{x_signal.account}({x_signal.confidence}%)")
+        if "cmc" in sources and cmc_signal:
+            rationale_parts.append(f"CMC→{cmc_signal.action}({cmc_signal.confidence}%)")
+        if "multi_source" in sources:
+            rationale_parts.append("X+CMC consensus")
         if normalized == BUY_STRONG:
             rationale_parts.append("strong consensus")
+
+        social_conf = 0.0
+        if x_signal:
+            social_conf = max(social_conf, getattr(x_signal, "confidence", 0))
+        if cmc_signal:
+            social_conf = max(social_conf, getattr(cmc_signal, "confidence", 0))
 
         return SignalAnalysis(
             action=execution_action,
@@ -168,11 +258,11 @@ class DecisionEngine:
             ampel_text=technical.ampel_text,
             should_notify=technical.should_notify or execution_action != "HOLD",
             notify_reason=technical.notify_reason if execution_action == "HOLD" else "Decision",
-            x_confidence=getattr(x_signal, "confidence", 0) if x_signal else 0,
+            x_confidence=social_conf,
             sources=sources,
             normalized_action=normalized,
             rationale=" | ".join(rationale_parts) or technical.notify_reason,
-            confidence=confidence or technical.x_confidence,
+            confidence=confidence or social_conf,
             recommended=execution_action != "HOLD",
         )
 

@@ -36,6 +36,12 @@
   "x_weight": 0.45,
   "technical_weight": 0.35,
   "onchain_weight": 0.2,
+  "cmc": {
+    "enabled": true,
+    "use_mock": true,
+    "min_confidence": 60,
+    "api_key_env": "CMC_API_KEY"
+  },
   "max_daily_trades": 5,
   "risk": {
     "drawdown_throttle_pct": 10.0,

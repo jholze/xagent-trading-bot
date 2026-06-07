@@ -1,4 +1,5 @@
-from data_manager import add_coin
+from data_manager import add_coin, load_watchlist, log_cmc_post
+from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
 from logger import log
@@ -17,7 +18,10 @@ class SocialPipeline:
         self.tracker = AccuracyTracker()
         self.discovery = StrategyDiscovery()
         self.provider = get_x_provider()
+        self.cmc_provider = get_cmc_provider()
+        self.cmc_parser = CMCCommunityParser()
         self._cycle_signals = []
+        self._cycle_cmc_signals = []
 
     def _already_logged(self, post_id: str) -> bool:
         from data_manager import load_x_posts
@@ -82,12 +86,37 @@ class SocialPipeline:
 
         return recommendations
 
+    def process_cmc_posts(self, watchlist: list = None) -> list:
+        from core.config import get_bot_config
+        cfg = get_bot_config()
+        if not cfg.cmc_config.get("enabled", True):
+            return []
+
+        watchlist = watchlist or load_watchlist()
+        raw_posts = self.cmc_provider.fetch_posts(watchlist)
+        self._cycle_cmc_signals = []
+
+        for post in raw_posts:
+            signal = self.cmc_parser.parse(post)
+            signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
+            self._cycle_cmc_signals.append(signal)
+            log_cmc_post(signal, post.post_id)
+            log(
+                f"CMC signal: {signal.coin} {signal.action} ({signal.confidence}%) "
+                f"votes {signal.votes_bullish}↑/{signal.votes_bearish}↓",
+                "INFO",
+            )
+        return self._cycle_cmc_signals
+
     def refresh_signals(self) -> list:
         """Score signals from the current cycle for watchlist integration."""
         signals = self._cycle_signals or self.analyzer.fetch_latest_signals()
         for signal in signals:
             self.analyzer.score_signal(signal, 50.0, all_signals=signals)
         return sorted(signals, key=lambda s: s.score, reverse=True)
+
+    def refresh_cmc_signals(self) -> list:
+        return self._cycle_cmc_signals
 
     def update_accuracy_loop(self) -> dict:
         outcomes = self.tracker.update_outcomes()
