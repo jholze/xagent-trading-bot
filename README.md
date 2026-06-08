@@ -1,4 +1,4 @@
-# X-Agent Trading Bot (Version 1.0)
+# X-Agent Trading Bot (Version 1.3.0)
 
 **Stable autonomous agent that analyses X (Twitter) posts, compares them to technical strategy, recommends actions (trade, sell, watchlist add), and executes virtual trades.**
 
@@ -13,6 +13,12 @@
 - Comprehensive test suite (96+ unit tests: portfolio equity, X pipeline, commands, PnL, caching, etc.)
 - Safe **--demo mode** for testing without touching live data files (separate `*.demo.json` + 🧪 [DEMO] prefixes in Telegram)
 - Configurable update interval (default 10 minutes)
+
+## Version 1.3.0 (June 2026) — Sell Fixes & Telegram Portfolio
+- Fix phantom `SELL 30%` signals when no position is held (RSI exits only with open position)
+- Telegram trade titles: `SIGNAL` / `EXECUTED` / `BLOCKED` instead of always "EXECUTED"
+- Redesigned `/positions` and `/sell` list (German labels, PnL indicators, sorted by value)
+- Automatic portfolio snapshot after every successful buy or sell (with latest trades)
 
 ## How It Works
 1. Monitors your X accounts (add/remove with `/addx` and `/listx`)
