@@ -122,6 +122,12 @@ class TradingService:
                 f"executed (${approved_order.usdt_amount:.0f})",
                 "INFO",
             )
+            if approved_order.type in ("BUY", "SELL"):
+                try:
+                    from notifications.telegram_commands.position_display import send_positions_snapshot
+                    send_positions_snapshot(trade_result=result, mode_label=self.mode_label())
+                except Exception as e:
+                    log(f"Positions snapshot failed: {e}", "WARNING")
         elif decision.size_multiplier != 1.0 and not result.message:
             result.message = f"Size multiplier: {decision.size_multiplier:.2f}x"
         return result

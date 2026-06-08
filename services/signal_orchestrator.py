@@ -127,7 +127,8 @@ class SignalOrchestrator:
         if is_sell(analysis.action) and not has_position:
             should_notify = False
 
-        if should_notify and self.notify_callback:
+        trade_executed = bool(trade_result.executed) if trade_result else False
+        if should_notify and self.notify_callback and not trade_executed:
             self.notify_callback(
                 analysis.action,
                 coin,
@@ -137,7 +138,7 @@ class SignalOrchestrator:
                 analysis.vol_multiplier,
                 analysis.ampel_emoji,
                 analysis.ampel_text,
-                executed=bool(trade_result.executed) if trade_result else None,
+                executed=None,
                 trade_message=trade_result.message if trade_result and not trade_result.executed else None,
             )
 

@@ -10,7 +10,10 @@ from notifications.telegram_commands.position_display import (
     format_position_card,
     format_positions_message,
     format_sell_list_message,
+    format_trade_banner,
+    send_positions_snapshot,
 )
+from core.models import TradeResult
 
 
 class TestPositionDisplay(unittest.TestCase):
@@ -57,6 +60,26 @@ class TestPositionDisplay(unittest.TestCase):
         ]
         msg = format_positions_message(active, {"SMALL/USDT": 1.0, "BIG/USDT": 1.0}, {"virtual_balance": 1000, "trades": []})
         self.assertLess(msg.index("BIG"), msg.index("SMALL"))
+
+    def test_trade_banner_buy_and_sell(self):
+        buy = TradeResult(True, "BUY", "ARIA/USDT", amount=100, price=0.04, usdt_amount=4)
+        sell = TradeResult(True, "SELL", "ARIA/USDT", amount=30, price=0.05, usdt_amount=1.5, pnl=0.3)
+        self.assertIn("Kauf ausgeführt", format_trade_banner(buy))
+        self.assertIn("Verkauf ausgeführt", format_trade_banner(sell))
+        self.assertIn("PnL", format_trade_banner(sell))
+
+    def test_send_positions_snapshot_includes_trade_banner(self):
+        result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)
+        with patch("telegram_notifier.send_telegram_message") as mock_send, \
+             patch("price_fetcher.get_prices_batch", return_value={}), \
+             patch("strategies.positions.list_active_positions", return_value=[]), \
+             patch("data_manager.load_trade_history", return_value={"virtual_balance": 5000, "trades": []}), \
+             patch("services.trading_service.TradingService") as mock_svc:
+            mock_svc.return_value.mode_label.return_value = "paper"
+            send_positions_snapshot(trade_result=result)
+            msg = mock_send.call_args[0][0]
+            self.assertIn("Kauf ausgeführt", msg)
+            self.assertIn("Letzte Trades", msg)
 
 
 if __name__ == "__main__":

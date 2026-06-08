@@ -103,6 +103,23 @@ def format_positions_message(
         )
         if mode_label:
             empty += f"\n<i>{mode_label}</i>"
+        if include_trades:
+            empty += "\n\n<b>Letzte Trades</b>\n"
+            trades = history.get("trades", [])[-5:]
+            if not trades:
+                empty += "<i>Keine Trades im Ledger.</i>"
+            else:
+                for t in reversed(trades):
+                    ts = t.get("timestamp", "")[:16].replace("T", " ")
+                    typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
+                    sym = (t.get("symbol") or "").replace("/USDT", "")
+                    pnl = t.get("pnl")
+                    pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
+                    empty += (
+                        f"\n{typ} <b>{sym}</b> · {ts}\n"
+                        f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
+                        f"${float(t.get('price', 0)):.4f}{pnl_part}"
+                    )
         return empty
 
     enriched = []
@@ -162,3 +179,45 @@ def format_sell_list_message(active: list, prices: dict) -> str:
 def load_trade_history_safe() -> dict:
     from data_manager import load_trade_history
     return load_trade_history()
+
+
+def format_trade_banner(result) -> str:
+    sym = (result.symbol or "").replace("/USDT", "")
+    price = float(result.price or 0)
+    amount = float(result.amount or 0)
+    usdt = float(result.usdt_amount or 0)
+    if result.order_type == "BUY":
+        return (
+            f"✅ <b>Kauf ausgeführt</b> — <b>{sym}</b>\n"
+            f"   └ <code>{amount:.4f}</code> @ ${price:.4f} · <b>${usdt:.0f}</b>"
+        )
+    pnl_part = f" · PnL <b>${result.pnl:+.1f}</b>" if result.pnl is not None else ""
+    return (
+        f"✅ <b>Verkauf ausgeführt</b> — <b>{sym}</b>\n"
+        f"   └ <code>{amount:.4f}</code> @ ${price:.4f} · <b>${usdt:.0f}</b>{pnl_part}"
+    )
+
+
+def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
+    """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
+    from data_manager import load_trade_history
+    from price_fetcher import get_prices_batch
+    from services.trading_service import TradingService
+    from strategies.positions import list_active_positions
+    from telegram_notifier import send_telegram_message
+
+    active = list_active_positions()
+    history = load_trade_history()
+    symbols = [position_symbol(p) for p in active]
+    prices = get_prices_batch(symbols) if symbols else {}
+    mode = mode_label or TradingService().mode_label()
+    msg = format_positions_message(
+        active,
+        prices,
+        history,
+        mode_label=mode,
+        include_trades=True,
+    )
+    if trade_result is not None and getattr(trade_result, "executed", False):
+        msg = f"{format_trade_banner(trade_result)}\n\n{msg}"
+    return send_telegram_message(msg)

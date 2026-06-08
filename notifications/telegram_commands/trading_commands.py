@@ -8,6 +8,8 @@ from notifications.telegram_commands.position_display import format_sell_list_me
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
 
+# Portfolio snapshot after manual buy/sell is sent by TradingService.execute_order.
+
 _trading = TradingService()
 
 
@@ -43,13 +45,7 @@ def handle(text: str) -> bool:
         if price and price > 0:
             _trading.refresh()
             result = _trading.execute_buy(sym, "4h", price, usdt)
-            mode = _trading.adapter.mode
-            if result.executed:
-                send_telegram_message(
-                    f"✅ {mode.upper()} BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}"
-                    + (f"\n{result.message}" if result.message else "")
-                )
-            else:
+            if not result.executed:
                 send_telegram_message(f"❌ Buy failed: {result.message}")
         else:
             send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
@@ -84,13 +80,7 @@ def handle(text: str) -> bool:
                 if amount_sold > 0:
                     _trading.refresh()
                     result = _trading.execute_sell(sym, "4h", price, "SELL", amount_sold)
-                    mode = _trading.adapter.mode
-                    if result.executed:
-                        send_telegram_message(
-                            f"✅ {mode.upper()} SELL {pct*100:.0f}% of {sym}: "
-                            f"${result.usdt_amount:.0f} (PnL: ${result.pnl:.1f})"
-                        )
-                    else:
+                    if not result.executed:
                         send_telegram_message(f"❌ Sell failed: {result.message}")
                     return True
         send_telegram_message("❌ Invalid selection. First run /sell to list positions.")

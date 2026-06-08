@@ -932,6 +932,27 @@ class TestVirtualTrading(unittest.TestCase):
         decision = risk.evaluate(TradeOrder("SELL", "XRVM/USDT", 1.0, 50), "4h")
         self.assertTrue(decision.approved)
 
+    def test_trading_service_sends_positions_after_executed_trade(self):
+        from services.trading_service import TradingService
+        from core.models import TradeResult
+
+        svc = TradingService()
+        ok_result = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=1.0, usdt_amount=10)
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute", return_value=ok_result), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot") as mock_snapshot:
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=True,
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            from core.models import TradeOrder as TO
+            result = svc.execute_order(TO("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h")
+            self.assertTrue(result.executed)
+            mock_snapshot.assert_called_once()
+            self.assertIs(mock_snapshot.call_args.kwargs.get("trade_result"), result)
+
     def test_trading_service_blocks_via_risk_manager(self):
         from core.config import BotConfig
         from data_manager import get_config, load_trade_history, save_trade_history
