@@ -27,6 +27,20 @@ def _safe_float(value: str, default: float = None) -> float:
         return default
 
 
+def _sell_label(signal: str) -> str:
+    if "STOP_FULL" in signal or signal.endswith("_FULL"):
+        return "100%"
+    if "STOP_PARTIAL" in signal or "PARTIAL_50" in signal or "50" in signal:
+        return "50%"
+    if "30" in signal:
+        return "30%"
+    if "20" in signal:
+        return "20%"
+    if "STOP" in signal:
+        return "STOP"
+    return "PARTIAL"
+
+
 def send_signal_message(
     signal,
     coin,
@@ -36,39 +50,52 @@ def send_signal_message(
     vol_multiplier,
     ampel_emoji=None,
     ampel_text=None,
+    executed=None,
+    trade_message=None,
 ):
     symbol = coin.get("symbol", "Unknown")
     name = coin.get("name", symbol)
 
     if signal == "BUY":
         emoji = "🟢"
-        title = "BUY EXECUTED"
+        if executed is True:
+            title = "BUY EXECUTED"
+        elif executed is False:
+            title = "BUY BLOCKED"
+        else:
+            title = "BUY SIGNAL"
         pos = get_position(symbol, "4h")
         amount = float(pos.get("amount", 0))
         cost = current_price * amount if current_price > 0 else 0
         extra = f"\n<b>Amount:</b> {amount:.4f} | <b>Cost:</b> ${cost:.1f}"
     elif "SELL" in signal:
         emoji = "🔴"
-        pct = "20%" if "20" in signal else "30%" if "30" in signal else "STOP"
-        title = f"SELL {pct} EXECUTED"
+        pct = _sell_label(signal)
+        if executed is True:
+            title = f"SELL {pct} EXECUTED"
+        elif executed is False:
+            title = f"SELL {pct} BLOCKED"
+        else:
+            title = f"SELL {pct} SIGNAL"
         extra = ""
     else:
         emoji = "📡"
-        title = "X SIGNAL"
-        extra = f"\n<b>Confidence:</b> {ampel_text}" if ampel_text else ""
+        title = "MARKET UPDATE"
+        extra = f"\n<b>Ampel:</b> {ampel_text}" if ampel_text else ""
 
     ampel_line = f"<b>Ampel:</b> {ampel_emoji} {ampel_text}\n" if ampel_emoji and ampel_emoji != "📡" else ""
     price_str = f"{current_price:.4f}" if isinstance(current_price, (int, float)) and current_price > 0 else "—"
     rsi_str = f"{rsi:.1f}" if isinstance(rsi, (int, float)) and rsi > 0 else "—"
     lower_str = f"{lower_bb:.4f}" if isinstance(lower_bb, (int, float)) and lower_bb > 0 else "—"
 
+    blocked_line = f"\n<b>Reason:</b> {trade_message}" if executed is False and trade_message else ""
     message = f"""
 {emoji} <b>{title}</b> — {symbol}
 
 <b>Name:</b> {name}
 <b>Preis:</b> ${price_str}
 <b>RSI:</b> {rsi_str}
-{ampel_line}{extra}
+{ampel_line}{extra}{blocked_line}
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """
     send_telegram_message(message.strip())

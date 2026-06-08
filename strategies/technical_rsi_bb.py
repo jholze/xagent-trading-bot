@@ -52,7 +52,7 @@ class TechnicalRSIStrategy(BaseStrategy):
                 and market.vol_multiplier >= volume_multiplier_min
             ):
                 action = "BUY"
-        else:
+        elif market.has_position:
             entry = market.average_entry
             if entry > 0:
                 loss_pct = (market.current_price / entry - 1) * -100

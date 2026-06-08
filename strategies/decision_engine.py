@@ -226,20 +226,15 @@ class DecisionEngine:
             normalized, sources, confidence = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market
             )
-            if normalized == HOLD and not is_sell(technical.action):
-                normalized = normalize(technical.action) if is_sell(technical.action) else HOLD
-                sources = list(technical.sources)
-                confidence = technical.confidence
         else:
             normalized, sources, confidence = self._merge_buy(
                 technical, x_signal, cmc_signal, all_social, market
             )
             if normalized == HOLD:
-                normalized = normalize(technical.action) if normalize(technical.action) == BUY else HOLD
-
-        if normalized == HOLD and technical.action != "HOLD":
-            normalized = normalize(technical.action)
-            sources = list(technical.sources)
+                tech_norm = normalize(technical.action)
+                if is_buy(tech_norm):
+                    normalized = tech_norm
+                    sources = list(technical.sources)
 
         execution_action = to_execution_action(normalized)
         rationale_parts = []

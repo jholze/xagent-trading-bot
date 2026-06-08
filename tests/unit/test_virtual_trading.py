@@ -332,6 +332,62 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertEqual(result.action, "HOLD")
         self.assertEqual(result.symbol, "XRVM/USDT")
 
+    def test_technical_strategy_high_rsi_without_position_stays_hold(self):
+        from core.models import MarketContext
+        from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+        strategy = TechnicalRSIStrategy()
+        for open_positions in (0, 5):
+            with self.subTest(open_positions=open_positions):
+                market = MarketContext(
+                    symbol="RAVE/USDT",
+                    timeframe="4h",
+                    current_price=0.65,
+                    rsi=75.0,
+                    lower_bb=0.60,
+                    vol_multiplier=1.0,
+                    has_position=False,
+                    open_positions=open_positions,
+                )
+                result = strategy.analyze({"symbol": "RAVE/USDT"}, market)
+                self.assertEqual(result.action, "HOLD")
+                self.assertEqual(result.normalized_action, "HOLD")
+
+    def test_decision_engine_no_phantom_sell_when_no_position(self):
+        from strategies.decision_engine import DecisionEngine
+        from strategies.positions import get_position
+
+        symbol = "PHANTOM/USDT"
+        engine = DecisionEngine()
+        self.assertEqual(float(get_position(symbol, "4h")["amount"]), 0.0)
+        with patch.object(
+            engine.market,
+            "fetch_indicators",
+            return_value={"rsi": 75.0, "lower_bb": 0.60, "vol_multiplier": 1.0},
+        ):
+            analysis = engine.evaluate({"symbol": symbol, "timeframe": "4h"}, 0.65)
+        self.assertEqual(analysis.action, "HOLD")
+        self.assertEqual(analysis.normalized_action, "HOLD")
+
+    def test_orchestrator_no_sell_notification_without_position(self):
+        from services.signal_orchestrator import SignalOrchestrator
+        from strategies.positions import get_position
+
+        symbol = "PHANTOM/USDT"
+        notifications = []
+        orch = SignalOrchestrator(notify_callback=lambda *args, **kwargs: notifications.append((args, kwargs)))
+        self.assertEqual(float(get_position(symbol, "4h")["amount"]), 0.0)
+        with patch.object(
+            orch.market,
+            "fetch_indicators",
+            return_value={"rsi": 75.0, "lower_bb": 0.60, "vol_multiplier": 1.0},
+        ):
+            result = orch.process_coin({"symbol": symbol, "timeframe": "4h", "name": "Phantom"}, 0.65)
+        self.assertEqual(result["action"], "HOLD")
+        self.assertFalse(result["executed"])
+        sell_notifications = [n for n in notifications if "SELL" in str(n)]
+        self.assertEqual(len(sell_notifications), 0)
+
     def test_portfolio_service_buy(self):
         from services.portfolio_service import PortfolioService
         portfolio = PortfolioService()
@@ -622,12 +678,14 @@ class TestVirtualTrading(unittest.TestCase):
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
-            send_signal_message("BUY", coin, 0.0523, 35.0, 0.048, 1.4, "🟢", "Stark Bullish")
+            send_signal_message(
+                "BUY", coin, 0.0523, 35.0, 0.048, 1.4, "🟢", "Stark Bullish", executed=True
+            )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
             self._assert_demo_prefix_in_message(mock_post, "ARIA/USDT")
 
-    def test_send_signal_message_sell_20_with_demo_prefix(self):
+    def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch
         from telegram_notifier import send_signal_message
 
@@ -637,9 +695,56 @@ class TestVirtualTrading(unittest.TestCase):
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
-            send_signal_message("SELL_20", coin, 0.65, 72.0, 0.60, 0.8, "🔴", "Bearish")
+            send_signal_message(
+                "SELL_20", coin, 0.65, 72.0, 0.60, 0.8, "🔴", "Bearish", executed=True
+            )
 
             self._assert_demo_prefix_in_message(mock_post, "SELL 20% EXECUTED")
+
+    def test_send_signal_message_sell_30_signal_not_executed(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message(
+                "SELL_30", coin, 0.65, 75.0, 0.60, 0.8, "🔴", "Bearish", executed=None
+            )
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("SELL 30% SIGNAL", called_text)
+            self.assertNotIn("EXECUTED", called_text)
+
+    def test_send_signal_message_sell_blocked_shows_reason(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message(
+                "SELL_30",
+                coin,
+                0.65,
+                75.0,
+                0.60,
+                0.8,
+                "🔴",
+                "Bearish",
+                executed=False,
+                trade_message="No position to sell",
+            )
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("SELL 30% BLOCKED", called_text)
+            self.assertIn("No position to sell", called_text)
 
     def test_send_signal_message_x_signal_without_demo_prefix(self):
         from unittest.mock import patch
@@ -655,7 +760,7 @@ class TestVirtualTrading(unittest.TestCase):
 
             called_text = mock_post.call_args[1]["json"]["text"]
             self.assertNotIn("🧪 [DEMO]", called_text)
-            self.assertIn("X SIGNAL", called_text)
+            self.assertIn("MARKET UPDATE", called_text)
 
     def test_send_x_recommendation_message(self):
         from unittest.mock import patch

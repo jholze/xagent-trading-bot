@@ -7,6 +7,7 @@ from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
+from core.actions import is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 
@@ -122,7 +123,11 @@ class SignalOrchestrator:
                 reason=analysis.notify_reason,
             ))
 
-        if analysis.should_notify and self.notify_callback:
+        should_notify = analysis.should_notify
+        if is_sell(analysis.action) and not has_position:
+            should_notify = False
+
+        if should_notify and self.notify_callback:
             self.notify_callback(
                 analysis.action,
                 coin,
@@ -132,6 +137,8 @@ class SignalOrchestrator:
                 analysis.vol_multiplier,
                 analysis.ampel_emoji,
                 analysis.ampel_text,
+                executed=bool(trade_result.executed) if trade_result else None,
+                trade_message=trade_result.message if trade_result and not trade_result.executed else None,
             )
 
         pos["last_ampel"] = analysis.ampel_emoji
