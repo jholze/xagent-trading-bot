@@ -166,7 +166,7 @@ class TestPortfolioEquity(unittest.TestCase):
             amount = float(pos["amount"])
             unreal = (2.5 - entry) * amount
             total_value = history["virtual_balance"] + unreal
-            self.assertIn(f"Total Value: <b>${total_value:.0f}</b>", msg)
+            self.assertIn(f"Gesamtwert <b>${total_value:,.0f}</b>", msg)
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
@@ -177,7 +177,7 @@ class TestPortfolioEquity(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.initial_capital_usdt = 1000.0
 
-        with patch("notifications.telegram_commands.portfolio_commands.get_bot_config", return_value=mock_cfg), \
+        with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=mock_cfg), \
              patch("notifications.telegram_commands.portfolio_commands.get_prices_batch") as mock_batch, \
              patch("notifications.telegram_commands.portfolio_commands.send_telegram_message") as mock_send:
             mock_batch.return_value = {self.SYMBOL: 1.5}
@@ -190,8 +190,8 @@ class TestPortfolioEquity(unittest.TestCase):
             unreal = (1.5 - 1.0) * float(pos["amount"])
             total_pnl = history["realized_pnl"] + unreal
             expected_pct = total_pnl / 1000.0 * 100
-            self.assertIn(f"({expected_pct:.1f}%)", msg)
-            self.assertNotIn(f"({total_pnl / 5000 * 100:.1f}%)", msg)
+            self.assertIn(f"<code>{expected_pct:+.1f}%</code>", msg)
+            self.assertNotIn(f"<code>{total_pnl / 5000 * 100:+.1f}%</code>", msg)
 
 
 if __name__ == "__main__":

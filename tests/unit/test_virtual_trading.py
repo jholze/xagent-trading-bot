@@ -130,7 +130,7 @@ class TestVirtualTrading(unittest.TestCase):
     def test_list_active_positions_average_entry(self):
         update_position(self.symbol, self.tf, "BUY", 0.5, 100)
         active = list_active_positions()
-        match = next((p for p in active if p["symbol"] == "XRVM"), None)
+        match = next((p for p in active if p["symbol"] in ("XRVM", "XRVM/USDT")), None)
         self.assertIsNotNone(match)
         self.assertEqual(match["average_entry"], 0.5)
         self.assertEqual(match["entry_price"], 0.5)

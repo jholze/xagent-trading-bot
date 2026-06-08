@@ -4,6 +4,7 @@ from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
+from notifications.telegram_commands.position_display import format_sell_list_message, position_symbol
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
 
@@ -61,23 +62,9 @@ def handle(text: str) -> bool:
             if not active:
                 send_telegram_message("❌ No active positions to sell.")
                 return True
-            msg = "<b>📍 Active Positions to Sell:</b>\n\n"
-            msg += "──────────────────────────────────\n"
-            symbols = [
-                p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
-                for p in active
-            ]
+            symbols = [position_symbol(p) for p in active]
             prices = get_prices_batch(symbols)
-            for i, p in enumerate(active, 1):
-                highlight = p.get("highlight", "")
-                sym = symbols[i - 1]
-                price = prices.get(sym, 0.0)
-                entry = p.get("average_entry", p.get("entry_price", 0))
-                unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
-                msg += f"{i}. {highlight}{p['symbol']} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f}\n"
-                msg += "──────────────────────────────────\n"
-            msg += "\nUse <code>/sell NUMBER PERCENT</code> (e.g. /sell 1 30)"
-            send_telegram_message(msg)
+            send_telegram_message(format_sell_list_message(active, prices))
             return True
 
         idx = safe_int(parts[1]) - 1

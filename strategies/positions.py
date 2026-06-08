@@ -174,15 +174,18 @@ def list_active_positions():
         active = []
         for key, p in positions.items():
             if float(p.get("amount", 0)) > 0.01:
-                symbol = key.split("_")[0] if "_" in key else key
+                base, _, tf = key.rpartition("_")
+                symbol = base.replace("_", "/") if "/" not in base else base
                 if not symbol.upper().startswith("TEST"):
                     highlight = "🔥 " if p.get("last_action") == "BUY" else ""
                     active.append({
                         "symbol": symbol,
+                        "timeframe": tf,
                         "amount": float(p["amount"]),
                         "average_entry": p.get("average_entry", 0),
                         "entry_price": p.get("average_entry", 0),
                         "realized_pnl": p.get("realized_pnl", 0),
+                        "sold_percent": float(p.get("sold_percent", 0)),
                         "last_action": p.get("last_action"),
                         "highlight": highlight,
                     })
