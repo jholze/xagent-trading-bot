@@ -43,6 +43,15 @@ USAGE = {
     "positions": {
         "help_line": "<code>/positions</code> — Portfolio mit Positionsnummern, Kurse, PnL und letzte Trades",
     },
+    "orders": {
+        "hint": (
+            "❌ <b>/orders</b> — Auftragshistorie (Order-Ledger)\n\n"
+            "<code>/orders</code> — Letzte Orders mit 24h-Statistik\n"
+            "<code>/orders page 2</code> — Seite 2 (5 Orders pro Seite)\n"
+            "<code>/orders 3</code> — Details zu Order Nr. 3"
+        ),
+        "help_line": "<code>/orders</code> — Auftragshistorie; <code>/orders NUMMER</code> für Details",
+    },
     "risk": {
         "help_line": "<code>/risk</code> — Risiko-Limits, Drawdown und Positionsgröße anzeigen",
     },
@@ -154,7 +163,7 @@ def hint(key: str) -> str:
 def build_help_message() -> str:
     sections = [
         ("📋 <b>Watchlist</b> — Welche Coins der Bot beobachtet", ["list", "add", "remove"]),
-        ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "risk"]),
+        ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "orders", "risk"]),
         ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "maxpositions", "live_confirm", "live_cancel", "gate"]),
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
         ("🧪 <b>Sandbox & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "cmc"]),

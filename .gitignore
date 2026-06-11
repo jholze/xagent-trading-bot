@@ -52,6 +52,8 @@ build/
 positions.json
 trade_history.json
 live_trade_history.json
+orders.paper.json
+orders.live.json
 x_posts.json
 cmc_posts.json
 paper_sandbox_history.json

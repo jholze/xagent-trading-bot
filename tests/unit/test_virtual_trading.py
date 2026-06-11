@@ -1335,7 +1335,7 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("Cycle Summary", summary)
         self.assertIn("PAPER", summary)
         self.assertIn("Auto-Executed", summary)
-        self.assertIn("Trades (24h, Ledger)", summary)
+        self.assertIn("Orders (24h", summary)
 
     def test_log_decision_writes_jsonl(self):
         import json

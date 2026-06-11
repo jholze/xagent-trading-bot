@@ -1,23 +1,36 @@
 import os
 import sys
+import tempfile
 import unittest
-from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.models import RiskDecision, TradeOrder, TradeResult
-from notifications.telegram_commands import manual_order_flow
 from notifications.telegram_commands.manual_order_flow import (
     handle_callback,
     request_buy_confirmation,
     request_sell_confirmation,
 )
+from services.order_service import OrderService
 
 
 class TestManualOrderFlow(unittest.TestCase):
     def setUp(self):
-        manual_order_flow._PENDING.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", {
+            "demo": os.path.join(self.tmp.name, "orders.demo.json"),
+            "paper": os.path.join(self.tmp.name, "orders.paper.json"),
+            "live": os.path.join(self.tmp.name, "orders.live.json"),
+        })
+        self.scope_patch.start()
+        self.scope = patch("services.order_service.resolve_ledger_scope", return_value="paper")
+        self.scope.start()
+
+    def tearDown(self):
+        self.scope.stop()
+        self.scope_patch.stop()
 
     def test_request_buy_shows_preview_buttons(self):
         trading = MagicMock()
@@ -50,7 +63,9 @@ class TestManualOrderFlow(unittest.TestCase):
             buttons = mock_buttons.call_args[0][1]
             self.assertIn("Risiko-Prüfung", msg)
             self.assertIn("Trade-Cooldown", msg)
-            self.assertEqual(len(manual_order_flow._PENDING), 1)
+            orders, _ = OrderService("paper").list_orders()
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0]["status"], "pending_confirmation")
             self.assertIn("manual_ok:", buttons[0][0]["callback_data"])
 
     def test_request_buy_rejected_without_buttons(self):
@@ -76,27 +91,28 @@ class TestManualOrderFlow(unittest.TestCase):
             mock_send.assert_called_once()
             mock_buttons.assert_not_called()
             self.assertIn("blockiert", mock_send.call_args[0][0])
+            orders, _ = OrderService("paper").list_orders(status_filter={"rejected"})
+            self.assertEqual(len(orders), 1)
 
     def test_confirm_executes_pending_buy(self):
         trading = MagicMock()
         trading.refresh.return_value = trading
         trading.execute_buy.return_value = TradeResult(True, "BUY", "ARIA/USDT", amount=100, price=0.0325, usdt_amount=200)
 
-        manual_order_flow._PENDING["abc123"] = {
-            "kind": "buy",
-            "symbol": "ARIA/USDT",
-            "timeframe": "4h",
-            "usdt": 200,
-            "pct": None,
-            "signal": "",
-            "created": datetime.now(),
-        }
+        svc = OrderService("paper")
+        svc.create_from_request(
+            TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200),
+            timeframe="4h",
+            status="pending_confirmation",
+            request_extra={"usdt": 200},
+            telegram_token="abc123",
+        )
 
         with patch("notifications.telegram_commands.manual_order_flow.TradingService", return_value=trading), \
              patch("price_fetcher.get_prices", return_value=(0.0325, 0.0325, None)), \
              patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
             self.assertTrue(handle_callback({"id": "cb1", "data": "manual_ok:abc123"}))
-            trading.execute_buy.assert_called_once_with("ARIA/USDT", "4h", 0.0325, 200)
+            trading.execute_buy.assert_called_once_with("ARIA/USDT", "4h", 0.0325, 200, order_id="abc123")
 
     def test_request_sell_shows_preview_buttons(self):
         trading = MagicMock()
@@ -126,20 +142,19 @@ class TestManualOrderFlow(unittest.TestCase):
             self.assertTrue(mock_buttons.called)
             self.assertIn("Verkauf", mock_buttons.call_args[0][0])
 
-    def test_cancel_removes_pending(self):
-        manual_order_flow._PENDING["abc123"] = {
-            "kind": "buy",
-            "symbol": "ARIA/USDT",
-            "timeframe": "4h",
-            "usdt": 200,
-            "pct": None,
-            "signal": "",
-            "created": datetime.now(),
-        }
+    def test_cancel_marks_cancelled(self):
+        svc = OrderService("paper")
+        svc.create_from_request(
+            TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200),
+            timeframe="4h",
+            status="pending_confirmation",
+            request_extra={"usdt": 200},
+            telegram_token="abc123",
+        )
         with patch("notifications.telegram_commands.manual_order_flow.send_telegram_message") as mock_send, \
              patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
             self.assertTrue(handle_callback({"id": "cb1", "data": "manual_no:abc123"}))
-            self.assertNotIn("abc123", manual_order_flow._PENDING)
+            self.assertEqual(svc.get_by_id("abc123")["status"], "cancelled")
             self.assertIn("abgebrochen", mock_send.call_args[0][0])
 
 

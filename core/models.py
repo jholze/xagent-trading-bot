@@ -47,6 +47,8 @@ class TradeResult:
     usdt_amount: float = 0.0
     pnl: float = 0.0
     message: str = ""
+    order_id: str = ""
+    exchange_order_id: str = ""
 
 
 @dataclass
@@ -92,6 +94,7 @@ class TradeOrder:
     usdt_amount: float = 0.0
     signal: str = ""
     source: str = "auto"
+    order_id: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

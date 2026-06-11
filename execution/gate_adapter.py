@@ -130,12 +130,17 @@ class GateExecutionAdapter(ExecutionAdapter):
         cost = float(raw.get("cost") or fill_price * filled)
 
         result = self._sync_local_ledger(
-            TradeOrder("BUY", order.symbol, fill_price, filled, usdt_amount=cost, signal=order.signal),
+            TradeOrder(
+                "BUY", order.symbol, fill_price, filled, usdt_amount=cost,
+                signal=order.signal, source=order.source, order_id=order.order_id,
+            ),
             timeframe,
-            exchange_order_id=raw.get("id", ""),
+            exchange_order_id=str(raw.get("id", "")),
+            fee=_extract_fee(raw),
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
+        result.exchange_order_id = str(raw.get("id", ""))
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
@@ -200,13 +205,18 @@ class GateExecutionAdapter(ExecutionAdapter):
         received = float(raw.get("cost") or fill_price * filled)
 
         result = self._sync_local_ledger(
-            TradeOrder("SELL", order.symbol, fill_price, filled, signal=order.signal),
+            TradeOrder(
+                "SELL", order.symbol, fill_price, filled, signal=order.signal,
+                source=order.source, order_id=order.order_id,
+            ),
             timeframe,
-            exchange_order_id=raw.get("id", ""),
+            exchange_order_id=str(raw.get("id", "")),
             usdt_received=received,
+            fee=_extract_fee(raw),
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} SELL filled {filled:.6f} @ ${fill_price:.4f}"
+        result.exchange_order_id = str(raw.get("id", ""))
         return result
 
     def _sync_local_ledger(
@@ -215,14 +225,18 @@ class GateExecutionAdapter(ExecutionAdapter):
         timeframe: str,
         exchange_order_id: str = "",
         usdt_received: float = 0,
+        fee: float = 0,
     ) -> TradeResult:
+        oid = order.order_id or None
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
-                order.symbol, timeframe, order.price, order.usdt_amount
+                order.symbol, timeframe, order.price, order.usdt_amount,
+                source=order.source, order_id=oid,
             )
         else:
             local = self.portfolio.execute_sell(
-                order.symbol, timeframe, order.price, order.signal or "SELL", order.amount
+                order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
+                source=order.source, order_id=oid,
             )
 
         record_live_trade({
@@ -234,8 +248,19 @@ class GateExecutionAdapter(ExecutionAdapter):
             "usdt_received": usdt_received or local.usdt_amount,
             "pnl": local.pnl,
             "exchange_order_id": exchange_order_id,
+            "order_id": oid,
+            "fee": fee,
+            "source": order.source,
             "timestamp": datetime.now().isoformat(),
             "mode": self.mode,
         })
         local.message = local.message or f"{self.mode} {order.type} synced"
+        local.exchange_order_id = exchange_order_id
         return local
+
+
+def _extract_fee(raw: dict) -> float:
+    fee = raw.get("fee") or {}
+    if isinstance(fee, dict):
+        return float(fee.get("cost", 0) or 0)
+    return float(fee or 0)

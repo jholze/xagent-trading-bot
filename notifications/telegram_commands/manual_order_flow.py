@@ -2,36 +2,17 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timedelta
 from typing import Optional
 
 from core.models import TradeOrder
+from services.order_service import OrderService
 from services.trading_service import TradingService
 from strategies.positions import get_position
 from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
-_PENDING: dict[str, dict] = {}
-_TTL = timedelta(minutes=10)
-
-
-def _cleanup_expired() -> None:
-    cutoff = datetime.now() - _TTL
-    for key in list(_PENDING.keys()):
-        if _PENDING[key]["created"] < cutoff:
-            del _PENDING[key]
-
 
 def _ticker(symbol: str) -> str:
     return symbol.replace("/USDT", "").split("/")[0]
-
-
-def _store_pending(payload: dict) -> str:
-    _cleanup_expired()
-    order_id = uuid.uuid4().hex[:10]
-    payload["created"] = datetime.now()
-    _PENDING[order_id] = payload
-    return order_id
 
 
 def _format_buy_preview(
@@ -146,6 +127,39 @@ def _format_rejection(kind: str, symbol: str, decision, status: dict) -> str:
     return "\n".join(lines)
 
 
+def _pending_payload(kind: str, *, symbol: str, timeframe: str, usdt: float = None, pct: float = None, signal: str = "") -> dict:
+    return {
+        "kind": kind,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "usdt": usdt,
+        "pct": pct,
+        "signal": signal,
+    }
+
+
+def _store_pending(
+    ledger: OrderService,
+    order: TradeOrder,
+    *,
+    timeframe: str,
+    decision,
+    request_extra: dict,
+) -> str:
+    import uuid
+
+    token = uuid.uuid4().hex[:10]
+    ledger.create_from_request(
+        order,
+        timeframe=timeframe,
+        status="pending_confirmation",
+        request_extra=request_extra,
+        risk=decision,
+        telegram_token=token,
+    )
+    return token
+
+
 def request_buy_confirmation(
     trading: TradingService,
     *,
@@ -161,17 +175,15 @@ def request_buy_confirmation(
     status["drawdown_throttle_pct"] = trading.config.risk_config.get("drawdown_throttle_pct", 10.0)
 
     if not decision.approved:
+        ledger = OrderService()
+        ledger.record_rejected(order, decision, timeframe=timeframe)
         send_telegram_message(_format_rejection("buy", symbol, decision, status))
         return True
 
-    order_id = _store_pending({
-        "kind": "buy",
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "usdt": usdt,
-        "pct": None,
-        "signal": "",
-    })
+    ledger = OrderService()
+    order_id = _store_pending(
+        ledger, order, timeframe=timeframe, decision=decision, request_extra={"usdt": usdt},
+    )
     msg = _format_buy_preview(decision, status, symbol=symbol, price=price, requested_usdt=usdt)
     send_telegram_buttons(msg, [[
         {"text": "✅ Bestätigen", "callback_data": f"manual_ok:{order_id}"},
@@ -196,17 +208,19 @@ def request_sell_confirmation(
     status["drawdown_throttle_pct"] = trading.config.risk_config.get("drawdown_throttle_pct", 10.0)
 
     if not decision.approved:
+        ledger = OrderService()
+        ledger.record_rejected(order, decision, timeframe=timeframe, request_extra={"pct": pct})
         send_telegram_message(_format_rejection("sell", symbol, decision, status))
         return True
 
-    order_id = _store_pending({
-        "kind": "sell",
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "usdt": None,
-        "pct": pct,
-        "signal": "SELL",
-    })
+    ledger = OrderService()
+    order_id = _store_pending(
+        ledger,
+        order,
+        timeframe=timeframe,
+        decision=decision,
+        request_extra={"pct": pct, "amount": amount},
+    )
     msg = _format_sell_preview(
         decision, status, symbol=symbol, price=price, amount=amount, pct=pct, timeframe=timeframe,
     )
@@ -217,10 +231,40 @@ def request_sell_confirmation(
     return True
 
 
+def _pending_from_record(record: dict) -> Optional[dict]:
+    req = record.get("request", {})
+    side = (record.get("side") or "").lower()
+    if side == "buy":
+        return {
+            "kind": "buy",
+            "symbol": record.get("symbol"),
+            "timeframe": record.get("timeframe", "4h"),
+            "usdt": req.get("usdt"),
+            "pct": None,
+            "signal": "",
+        }
+    if side == "sell":
+        return {
+            "kind": "sell",
+            "symbol": record.get("symbol"),
+            "timeframe": record.get("timeframe", "4h"),
+            "usdt": None,
+            "pct": req.get("pct"),
+            "signal": record.get("signal", "SELL"),
+        }
+    return None
+
+
 def _execute_pending(order_id: str, trading: TradingService) -> None:
-    pending = _PENDING.pop(order_id, None)
-    if not pending:
+    ledger = OrderService()
+    record = ledger.get_by_id(order_id)
+    if not record or record.get("status") != "pending_confirmation":
         send_telegram_message("⏱️ Diese Order ist abgelaufen. Bitte <code>/buy</code> oder <code>/sell</code> erneut senden.")
+        return
+
+    pending = _pending_from_record(record)
+    if not pending:
+        send_telegram_message("❌ Ungültige Order-Daten.")
         return
 
     trading.refresh()
@@ -230,18 +274,20 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
 
     price = get_prices(symbol)[0]
     if not price or price <= 0:
+        ledger.update_status(order_id, "failed", error="Price unavailable")
         send_telegram_message(f"❌ Kurs für {_ticker(symbol)} nicht verfügbar. Order abgebrochen.")
         return
 
     if pending["kind"] == "buy":
-        result = trading.execute_buy(symbol, timeframe, price, pending["usdt"])
+        result = trading.execute_buy(symbol, timeframe, price, pending["usdt"], order_id=order_id)
     else:
         pos = get_position(symbol, timeframe)
         amount = float(pos.get("amount", 0)) * float(pending["pct"])
         if amount <= 0:
+            ledger.update_status(order_id, "failed", error="No sellable amount")
             send_telegram_message(f"❌ Keine verkaufbare Menge für {_ticker(symbol)}.")
             return
-        result = trading.execute_sell(symbol, timeframe, price, pending["signal"], amount)
+        result = trading.execute_sell(symbol, timeframe, price, pending["signal"], amount, order_id=order_id)
 
     if not result.executed:
         send_telegram_message(f"❌ Order fehlgeschlagen: {result.message}")
@@ -259,9 +305,12 @@ def handle_callback(callback_query: dict) -> bool:
 
     action, order_id = parts
     trading = TradingService()
+    ledger = OrderService()
 
     if action == "manual_no":
-        if _PENDING.pop(order_id, None):
+        record = ledger.get_by_id(order_id)
+        if record and record.get("status") == "pending_confirmation":
+            ledger.update_status(order_id, "cancelled")
             send_telegram_message("🚫 Manuelle Order abgebrochen.")
         else:
             send_telegram_message("⏱️ Order bereits abgelaufen oder unbekannt.")

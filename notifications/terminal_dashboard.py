@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 from core.config import get_bot_config
 from data_manager import load_trade_history, load_watchlist, load_x_accounts
+from services.order_service import OrderService, format_order_line, ledger_label
 from intelligence.accuracy_tracker import AccuracyTracker
 from price_fetcher import get_prices
 from strategies.positions import list_active_positions
@@ -144,6 +145,14 @@ def recent_trades_lines(history: dict, hours: float = 24, limit: int = 5) -> lis
     return [format_recent_trade_line(t) for t in recent]
 
 
+def recent_orders_lines(hours: float = 24, limit: int = 5) -> list[str]:
+    ledger = OrderService()
+    orders, _ = ledger.list_orders(hours=hours, page=1, per_page=limit)
+    if not orders:
+        return [f"  <i>Keine Orders in den letzten {int(hours)}h ({ledger_label()}).</i>"]
+    return [f"  {format_order_line(o)}" for o in orders]
+
+
 def build_cycle_summary(
     coin_results: list = None,
     trading_mode: str = "paper",
@@ -167,8 +176,11 @@ def build_cycle_summary(
     else:
         lines.append("No auto-trades executed this cycle.")
 
+    ledger = OrderService()
+    stats = ledger.stats_24h()
     lines.append("")
-    lines.append("<b>Trades (24h, Ledger):</b>")
-    lines.extend(recent_trades_lines(history))
-    lines.append("<i>Manuelle /buy · /sell erscheinen hier; Auto nur oben bei Ausführung im Zyklus.</i>")
+    lines.append(f"<b>Orders (24h, {ledger_label()}):</b> "
+                 f"✅{stats['filled']} ❌{stats['rejected']} 🚫{stats['cancelled']}")
+    lines.extend(recent_orders_lines())
+    lines.append("<i>Details: <code>/orders</code> · Manuelle /buy · /sell im Ledger</i>")
     return "\n".join(lines)
