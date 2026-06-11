@@ -24,7 +24,7 @@ USAGE = {
         "hint": (
             "❌ <b>/buy</b> — Coin kaufen (Paper, Testnet oder Live)\n\n"
             "Zuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\n"
-            "Dann: <code>/buy NUMMER USDT</code> oder <code>/buy SYMBOL USDT</code>\n"
+            "Dann: <code>/buy NUMMER USDT</code> — Risk Manager zeigt Vorschau, Bestätigung per Button.\n"
             "Beispiele:\n"
             "• <code>/buy 1 25</code> — Coin Nr. 1, 25 $\n"
             "• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren"
@@ -35,7 +35,7 @@ USAGE = {
         "hint": (
             "❌ <b>/sell</b> — Anteil einer Position verkaufen\n\n"
             "Nummern sind in <code>/positions</code> und <code>/sell</code> gleich (nach Wert sortiert).\n"
-            "Dann: <code>/sell NUMMER PROZENT</code>\n"
+            "Dann: <code>/sell NUMMER PROZENT</code> — Vorschau mit Bestätigen/Abbrechen.\n"
             "Beispiel: <code>/sell 1 30</code> — 30 % von Position 1 verkaufen"
         ),
         "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",

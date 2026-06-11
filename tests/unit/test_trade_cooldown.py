@@ -62,6 +62,21 @@ class TestTradeCooldown(unittest.TestCase):
         decision = risk.evaluate(order, self.tf)
         self.assertTrue(decision.approved)
 
+    def test_manual_buy_bypasses_cooldown(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["last_trade_at"] = datetime.now().isoformat()
+        pos["last_trade_type"] = "BUY"
+
+        risk = RiskManager()
+        order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=200)
+        with patch.object(risk, "_portfolio_equity", return_value=5000.0):
+            with patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+                decision = risk.evaluate(order, self.tf, source="manual")
+
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
+
     def test_buy_allowed_after_cooldown_expires(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)

@@ -503,29 +503,26 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIsInstance(history.get("realized_pnl", 0), (int, float))
 
     def test_buy_command_parsing(self):
-        from unittest.mock import patch
+        from unittest.mock import ANY, patch
         from telegram_notifier import handle_telegram_command
 
         # Note: Some patches target telegram_notifier's namespace because
         # telegram_notifier imports and re-uses those names internally.
         with patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send, \
+             patch("notifications.telegram_commands.trading_commands.request_buy_confirmation") as mock_preview, \
              patch("notifications.telegram_commands.trading_commands.get_prices") as mock_price, \
-             patch("notifications.telegram_commands.trading_commands._trading.execute_buy") as mock_buy, \
              patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins:
 
             mock_coins.return_value = [{"symbol": "ARIA/USDT"}, {"symbol": "RAVE/USDT"}]
             mock_price.return_value = (0.05, 0.05, None)
 
-            # Test index based
-            from core.models import TradeResult
-            mock_buy.return_value = TradeResult(True, "BUY", "ARIA/USDT", amount=4000.0, price=0.05, usdt_amount=200)
-
             handle_telegram_command("/buy 1 200")
-            mock_buy.assert_called_with("ARIA/USDT", "4h", 0.05, 200)
+            mock_preview.assert_called_with(
+                ANY, symbol="ARIA/USDT", timeframe="4h", price=0.05, usdt=200,
+            )
 
-            # Test symbol based
             handle_telegram_command("/buy RAVE 100")
-            self.assertTrue(mock_buy.called)
+            self.assertEqual(mock_preview.call_count, 2)
 
             # Bare /buy sends numbered buy list
             mock_send.reset_mock()

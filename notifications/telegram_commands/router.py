@@ -42,6 +42,8 @@ def dispatch_command(text: str) -> bool:
 
 def dispatch_callback(callback_query: dict) -> bool:
     try:
+        if trading_commands.handle_callback(callback_query):
+            return True
         return x_commands.handle_callback(callback_query)
     except Exception as e:
         log(f"Error in dispatch_callback: {e}", "ERROR")

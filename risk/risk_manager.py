@@ -31,7 +31,7 @@ class RiskManager:
         indicators: dict = None,
     ) -> RiskDecision:
         if order.type == "SELL":
-            blocked, reason = self._trade_cooldown_blocked(order, timeframe)
+            blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             if order.amount <= 0:
@@ -41,7 +41,7 @@ class RiskManager:
         if order.price <= 0:
             return RiskDecision(approved=False, message="Invalid price")
 
-        blocked, reason = self._trade_cooldown_blocked(order, timeframe)
+        blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
@@ -106,6 +106,7 @@ class RiskManager:
         balance = load_trade_history().get("virtual_balance", equity)
         if self.config.trading_mode == "paper" and sized > balance:
             sized = balance
+            factors["balance_capped"] = True
 
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
         if sized < min_trade:
@@ -242,7 +243,9 @@ class RiskManager:
             "total_multiplier": round(total, 3),
         }
 
-    def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str) -> tuple:
+    def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
+        if source == "manual":
+            return False, ""
         signal = order.signal or ""
         if order.type == "SELL" and signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL"):
             return False, ""

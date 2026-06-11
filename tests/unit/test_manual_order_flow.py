@@ -1,0 +1,118 @@
+import os
+import sys
+import unittest
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+from core.models import RiskDecision, TradeOrder, TradeResult
+from notifications.telegram_commands import manual_order_flow
+from notifications.telegram_commands.manual_order_flow import (
+    handle_callback,
+    request_buy_confirmation,
+)
+
+
+class TestManualOrderFlow(unittest.TestCase):
+    def setUp(self):
+        manual_order_flow._PENDING.clear()
+
+    def test_request_buy_shows_preview_buttons(self):
+        trading = MagicMock()
+        trading.refresh.return_value = trading
+        trading.evaluate_risk.return_value = RiskDecision(
+            approved=True,
+            order=TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200),
+            drawdown_pct=1.0,
+            size_multiplier=1.0,
+        )
+        trading.risk.status_summary.return_value = {
+            "virtual_balance": 4800,
+            "open_positions": 2,
+            "max_open_positions": 10,
+            "daily_trades": 1,
+            "max_daily_trades": 8,
+            "max_position_percent": 30,
+            "drawdown_pct": 1.0,
+            "drawdown_throttle_active": False,
+            "base_usdt_per_trade": 25,
+        }
+        trading.config.risk_config = {"drawdown_throttle_pct": 10.0}
+
+        with patch("notifications.telegram_commands.manual_order_flow.send_telegram_buttons") as mock_buttons:
+            request_buy_confirmation(
+                trading, symbol="ARIA/USDT", timeframe="4h", price=0.0325, usdt=200,
+            )
+            self.assertTrue(mock_buttons.called)
+            msg = mock_buttons.call_args[0][0]
+            buttons = mock_buttons.call_args[0][1]
+            self.assertIn("Risiko-Prüfung", msg)
+            self.assertIn("Trade-Cooldown", msg)
+            self.assertEqual(len(manual_order_flow._PENDING), 1)
+            self.assertIn("manual_ok:", buttons[0][0]["callback_data"])
+
+    def test_request_buy_rejected_without_buttons(self):
+        trading = MagicMock()
+        trading.refresh.return_value = trading
+        trading.evaluate_risk.return_value = RiskDecision(
+            approved=False,
+            message="Max open positions reached (5)",
+            code="max_open_positions",
+        )
+        trading.risk.status_summary.return_value = {
+            "open_positions": 5,
+            "max_open_positions": 5,
+            "daily_trades": 0,
+            "max_daily_trades": 8,
+        }
+
+        with patch("notifications.telegram_commands.manual_order_flow.send_telegram_message") as mock_send, \
+             patch("notifications.telegram_commands.manual_order_flow.send_telegram_buttons") as mock_buttons:
+            request_buy_confirmation(
+                trading, symbol="ARIA/USDT", timeframe="4h", price=0.0325, usdt=200,
+            )
+            mock_send.assert_called_once()
+            mock_buttons.assert_not_called()
+            self.assertIn("blockiert", mock_send.call_args[0][0])
+
+    def test_confirm_executes_pending_buy(self):
+        trading = MagicMock()
+        trading.refresh.return_value = trading
+        trading.execute_buy.return_value = TradeResult(True, "BUY", "ARIA/USDT", amount=100, price=0.0325, usdt_amount=200)
+
+        manual_order_flow._PENDING["abc123"] = {
+            "kind": "buy",
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "usdt": 200,
+            "pct": None,
+            "signal": "",
+            "created": datetime.now(),
+        }
+
+        with patch("notifications.telegram_commands.manual_order_flow.TradingService", return_value=trading), \
+             patch("price_fetcher.get_prices", return_value=(0.0325, 0.0325, None)), \
+             patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
+            self.assertTrue(handle_callback({"id": "cb1", "data": "manual_ok:abc123"}))
+            trading.execute_buy.assert_called_once_with("ARIA/USDT", "4h", 0.0325, 200)
+
+    def test_cancel_removes_pending(self):
+        manual_order_flow._PENDING["abc123"] = {
+            "kind": "buy",
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "usdt": 200,
+            "pct": None,
+            "signal": "",
+            "created": datetime.now(),
+        }
+        with patch("notifications.telegram_commands.manual_order_flow.send_telegram_message") as mock_send, \
+             patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
+            self.assertTrue(handle_callback({"id": "cb1", "data": "manual_no:abc123"}))
+            self.assertNotIn("abc123", manual_order_flow._PENDING)
+            self.assertIn("abgebrochen", mock_send.call_args[0][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

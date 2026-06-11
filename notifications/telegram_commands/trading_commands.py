@@ -9,6 +9,10 @@ from notifications.telegram_commands.position_display import (
     position_symbol,
     resolve_position_by_display_index,
 )
+from notifications.telegram_commands.manual_order_flow import (
+    request_buy_confirmation,
+    request_sell_confirmation,
+)
 from notifications.telegram_commands.watchlist_commands import (
     _coin_symbol,
     format_buy_list_message,
@@ -59,10 +63,7 @@ def handle(text: str) -> bool:
 
         price = get_prices(sym)[0]
         if price and price > 0:
-            _trading.refresh()
-            result = _trading.execute_buy(sym, "4h", price, usdt)
-            if not result.executed:
-                send_telegram_message(f"❌ Buy failed: {result.message}")
+            request_buy_confirmation(_trading, symbol=sym, timeframe="4h", price=price, usdt=usdt)
         else:
             send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
         return True
@@ -96,12 +97,22 @@ def handle(text: str) -> bool:
                 pos = get_position(sym, "4h")
                 amount_sold = float(pos.get("amount", 0)) * pct
                 if amount_sold > 0:
-                    _trading.refresh()
-                    result = _trading.execute_sell(sym, "4h", price, "SELL", amount_sold)
-                    if not result.executed:
-                        send_telegram_message(f"❌ Sell failed: {result.message}")
+                    request_sell_confirmation(
+                        _trading,
+                        symbol=sym,
+                        timeframe="4h",
+                        price=price,
+                        amount=amount_sold,
+                        pct=pct,
+                    )
                     return True
         send_telegram_message("❌ Invalid selection. First run /sell to list positions.")
         return True
 
     return False
+
+
+def handle_callback(callback_query: dict) -> bool:
+    from notifications.telegram_commands.manual_order_flow import handle_callback as handle_manual_callback
+
+    return handle_manual_callback(callback_query)
