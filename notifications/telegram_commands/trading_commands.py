@@ -9,6 +9,11 @@ from notifications.telegram_commands.position_display import (
     position_symbol,
     resolve_position_by_display_index,
 )
+from notifications.telegram_commands.watchlist_commands import (
+    _coin_symbol,
+    format_buy_list_message,
+    resolve_coin_by_display_index,
+)
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
 
@@ -19,7 +24,13 @@ _trading = TradingService()
 
 def handle(text: str) -> bool:
     if text == "/buy":
-        send_telegram_message(hint("buy"))
+        coins = list_coins()
+        if not coins:
+            send_telegram_message("❌ Watchlist ist leer. Zuerst <code>/add SYMBOL</code> nutzen.")
+            return True
+        symbols = [_coin_symbol(c) for c in coins]
+        prices = get_prices_batch(symbols)
+        send_telegram_message(format_buy_list_message(coins, prices))
         return True
 
     if text.startswith("/buy "):
@@ -32,10 +43,11 @@ def handle(text: str) -> bool:
         sym = None
         if parts[1].replace(".", "").isdigit():
             idx = safe_int(parts[1]) - 1
-            if 0 <= idx < len(coins):
-                sym = coins[idx]["symbol"]
+            coin = resolve_coin_by_display_index(coins, idx)
+            if coin:
+                sym = coin["symbol"]
             else:
-                send_telegram_message("❌ Invalid coin number. First run /list to see available coins.")
+                send_telegram_message("❌ Ungültige Nummer. Zuerst <code>/buy</code> oder <code>/list</code> senden.")
                 return True
         else:
             sym = (parts[1].upper() + "/USDT") if len(parts) > 1 else None

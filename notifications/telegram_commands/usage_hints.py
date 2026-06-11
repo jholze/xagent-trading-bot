@@ -23,12 +23,13 @@ USAGE = {
     "buy": {
         "hint": (
             "❌ <b>/buy</b> — Coin kaufen (Paper, Testnet oder Live)\n\n"
-            "So geht's: <code>/buy SYMBOL USDT</code> oder <code>/buy NUMMER USDT</code>\n"
+            "Zuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\n"
+            "Dann: <code>/buy NUMMER USDT</code> oder <code>/buy SYMBOL USDT</code>\n"
             "Beispiele:\n"
-            "• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren\n"
-            "• <code>/buy 1 200</code> — Coin Nr. 1 aus <code>/list</code>, 200 $"
+            "• <code>/buy 1 25</code> — Coin Nr. 1, 25 $\n"
+            "• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren"
         ),
-        "help_line": "<code>/buy SYMBOL USDT</code> — Kaufen (z.B. <code>/buy ARIA 200</code> oder <code>/buy 1 200</code>)",
+        "help_line": "<code>/buy NUMMER USDT</code> — Kaufen (Nummer aus <code>/buy</code> oder <code>/list</code>, z.B. <code>/buy 1 25</code>)",
     },
     "sell": {
         "hint": (

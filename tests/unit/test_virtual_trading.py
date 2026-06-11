@@ -527,11 +527,15 @@ class TestVirtualTrading(unittest.TestCase):
             handle_telegram_command("/buy RAVE 100")
             self.assertTrue(mock_buy.called)
 
-            # Bare /buy sends usage hint with example
+            # Bare /buy sends numbered buy list
             mock_send.reset_mock()
-            handle_telegram_command("/buy")
+            with patch("notifications.telegram_commands.trading_commands.get_prices_batch") as mock_batch:
+                mock_batch.return_value = {"ARIA/USDT": 0.05, "RAVE/USDT": 0.12}
+                handle_telegram_command("/buy")
             mock_send.assert_called()
-            self.assertIn("/buy", mock_send.call_args[0][0])
+            msg = mock_send.call_args[0][0]
+            self.assertIn("Coins kaufen", msg)
+            self.assertIn("/buy NUMMER USDT", msg)
 
     def test_demo_mode_prefixes_telegram_messages(self):
         """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""
