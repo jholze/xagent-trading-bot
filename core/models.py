@@ -15,6 +15,7 @@ class MarketContext:
     average_entry: float = 0.0
     open_positions: int = 0
     strategy_params: dict = field(default_factory=dict)
+    sim_state: dict | None = None  # isolated in-memory state for Hermes backtests
 
 
 @dataclass

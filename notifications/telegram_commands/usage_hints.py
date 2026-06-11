@@ -103,6 +103,14 @@ USAGE = {
         ),
         "help_line": "<code>/sandbox_promote ID</code> — Strategie übernehmen (z.B. <code>/sandbox_promote hyp_abc123</code>)",
     },
+    "hermes": {
+        "hint": (
+            "🧠 <b>Hermes Self-Improvement Agent</b>\n\n"
+            "<code>/hermes</code> — Baseline + letzte Experimente\n"
+            "<code>/hermes_run</code> — Einen Lern-Zyklus starten"
+        ),
+        "help_line": "<code>/hermes</code> — Hermes-Status | <code>/hermes_run</code> — Lern-Zyklus",
+    },
     "cmc": {
         "help_line": "<code>/cmc</code> — CoinMarketCap Community-Stimmung (Sentiment-Signale)",
     },
@@ -166,7 +174,7 @@ def build_help_message() -> str:
         ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "orders", "risk"]),
         ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "maxpositions", "live_confirm", "live_cancel", "gate"]),
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
-        ("🧪 <b>Sandbox & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "cmc"]),
+        ("🧪 <b>Sandbox, Hermes & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "hermes", "cmc"]),
         ("❓ <b>Hilfe</b>", ["help"]),
     ]
     lines = [

@@ -228,6 +228,26 @@ if __name__ == "__main__":
     )
     price_thread.start()
 
+    bot_config = get_bot_config()
+    if bot_config.hermes_enabled:
+        from hermes.agent import HermesAgent
+
+        hermes_interval = int(bot_config.hermes_config.get("cycle_interval_sec", 3600))
+
+        def hermes_loop():
+            agent = HermesAgent(bot_config)
+            while True:
+                try:
+                    bot_config.refresh()
+                    result = agent.run_cycle()
+                    log(result.summary, "INFO")
+                except Exception as e:
+                    log(f"Hermes loop error: {e}", "ERROR")
+                time.sleep(hermes_interval)
+
+        threading.Thread(target=hermes_loop, daemon=True, name="hermes-agent").start()
+        print(f"Hermes self-improvement loop started (interval={hermes_interval}s)")
+
     print(get_text("webhook_started"))
 
     app.run(port=5000)

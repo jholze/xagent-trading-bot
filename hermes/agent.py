@@ -33,13 +33,14 @@ class HermesAgent:
         self.improver = SelfImprover(self.config)
 
     def run_cycle(self) -> CycleResult:
+        self.config.refresh()
         baseline = store.init_baseline_from_config(self.config)
         symbol = baseline.get("symbol", self.hermes.get("symbols", ["ARIA/USDT"])[0])
         timeframe = baseline.get("timeframe", self.hermes.get("timeframes", ["4h"])[0])
         params = baseline.get("params", {})
 
         grok_proposal = self.improver.propose_experiment(baseline)
-        proposal = self.experiments.propose(params, grok_proposal)
+        proposal = self.experiments.propose(params, grok_proposal, symbol, timeframe)
 
         log(
             f"Hermes experiment: {proposal.variable} {proposal.old_value}→{proposal.new_value} "
@@ -47,8 +48,10 @@ class HermesAgent:
             "INFO",
         )
 
-        bt_base = self.backtester.run(symbol, timeframe, params)
-        bt_var = self.backtester.run(symbol, timeframe, proposal.params)
+        days = int(self.hermes.get("backtest_days", 60))
+        ohlcv_df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
+        bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
+        bt_var = self.backtester.run(symbol, timeframe, proposal.params, ohlcv_df=ohlcv_df)
 
         base_m = bt_base.metrics.__dict__
         var_m = bt_var.metrics.__dict__
@@ -69,6 +72,8 @@ class HermesAgent:
             baseline["metrics"] = var_m
             store.save_baseline(baseline)
             log(f"Hermes baseline updated: {proposal.variable}={proposal.new_value}", "INFO")
+            self._sync_to_config(baseline, record.get("id", ""))
+            self._notify_promotion(record, proposal, var_m)
 
         self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
         summary = self.improver.analyze_and_suggest(record)
@@ -82,6 +87,31 @@ class HermesAgent:
             variant_sharpe=var_m.get("sharpe", 0),
             summary=summary,
         )
+
+    def _sync_to_config(self, baseline: dict, experiment_id: str):
+        if not self.hermes.get("sync_to_config", True):
+            return
+        try:
+            from strategies.registry import sync_hermes_baseline_to_config
+            ok, msg = sync_hermes_baseline_to_config(baseline, experiment_id)
+            log(f"Hermes config sync: {msg}", "INFO" if ok else "WARNING")
+        except Exception as e:
+            log(f"Hermes config sync failed: {e}", "ERROR")
+
+    def _notify_promotion(self, record: dict, proposal, metrics: dict):
+        if not self.hermes.get("notify_on_promotion", True):
+            return
+        try:
+            from telegram_notifier import send_telegram_message
+            send_telegram_message(
+                f"🧠 <b>Hermes promoted</b>\n"
+                f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
+                f"Sharpe: {metrics.get('sharpe', 0)} | WR: {metrics.get('win_rate', 0)}% | "
+                f"DD: {metrics.get('max_drawdown_pct', 0)}%\n"
+                f"Experiment: {record.get('id', '')}"
+            )
+        except Exception as e:
+            log(f"Hermes promotion notify failed: {e}", "WARNING")
 
     def run_loop(self, interval_sec: int | None = None):
         interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 3600))

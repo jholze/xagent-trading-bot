@@ -49,9 +49,21 @@ class ExperimentRunner:
     def _recent_variables(self, limit: int = 10) -> set[str]:
         return {e.get("variable") for e in store.recent_experiments(limit) if e.get("variable")}
 
-    def _pick_variable(self) -> str:
+    def _pick_variable(self, baseline_params: dict, symbol: str = "", timeframe: str = "") -> str:
         recent = self._recent_variables()
-        candidates = [p for p in self.tunable_params if p not in recent]
+        refuted = store.refuted_variables(symbol, timeframe) if symbol else set()
+        skills = store.relevant_skills(symbol, timeframe, min_confidence=0.5) if symbol else []
+        avoid = set()
+        for skill in skills:
+            if not skill.get("promoted") and skill.get("variable"):
+                avoid.add(skill["variable"])
+
+        candidates = [
+            p for p in self.tunable_params
+            if p not in recent and p not in refuted and p not in avoid
+        ]
+        if not candidates:
+            candidates = [p for p in self.tunable_params if p not in avoid]
         if not candidates:
             candidates = list(self.tunable_params)
         return random.choice(candidates)
@@ -70,7 +82,13 @@ class ExperimentRunner:
             new_value = min(high, old_value + step) if direction > 0 else max(low, old_value - step)
         return new_value
 
-    def propose(self, baseline_params: dict, grok_proposal: dict | None = None) -> ExperimentProposal:
+    def propose(
+        self,
+        baseline_params: dict,
+        grok_proposal: dict | None = None,
+        symbol: str = "",
+        timeframe: str = "",
+    ) -> ExperimentProposal:
         if grok_proposal and grok_proposal.get("variable") in self.tunable_params:
             variable = grok_proposal["variable"]
             old_value = float(baseline_params.get(variable, grok_proposal.get("old_value", 0)))
@@ -90,7 +108,7 @@ class ExperimentRunner:
                 source=grok_proposal.get("source", "grok"),
             )
 
-        variable = self._pick_variable()
+        variable = self._pick_variable(baseline_params, symbol, timeframe)
         old_value = float(baseline_params.get(variable, MUTATION_STEPS.get(variable, 1)))
         new_value = self._mutate(variable, old_value)
         params = copy.deepcopy(baseline_params)

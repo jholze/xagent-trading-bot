@@ -51,6 +51,47 @@ def get_strategy(coin: dict) -> BaseStrategy:
     return cls()
 
 
+def sync_hermes_baseline_to_config(baseline: dict, experiment_id: str = "") -> tuple:
+    """Patch config.strategies[] with Hermes baseline params for symbol/timeframe."""
+    from data_manager import get_config, reload_config, save_config
+
+    symbol = baseline.get("symbol")
+    timeframe = baseline.get("timeframe", "4h")
+    params = baseline.get("params") or {}
+    if not symbol or not params:
+        return False, "Baseline missing symbol or params"
+
+    cfg = get_config()
+    strategies = cfg.setdefault("strategies", [])
+    updated = False
+    for entry in strategies:
+        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == timeframe:
+            for key, value in params.items():
+                entry[key] = value
+            entry["hermes_experiment_id"] = experiment_id
+            entry["hermes_updated_at"] = baseline.get("updated_at")
+            entry["description"] = entry.get("description") or f"Hermes-tuned {symbol} {timeframe}"
+            updated = True
+            break
+
+    if not updated:
+        new_entry = dict(params)
+        new_entry.update({
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy_class": "technical_rsi_bb",
+            "description": f"Hermes-tuned {symbol} {timeframe}",
+            "hermes_experiment_id": experiment_id,
+            "hermes_updated_at": baseline.get("updated_at"),
+        })
+        strategies.append(new_entry)
+
+    if save_config(cfg):
+        reload_config()
+        return True, f"Hermes baseline synced to config.strategies for {symbol} {timeframe}"
+    return False, "Failed to save config.json"
+
+
 def promote_hypothesis_to_config(hypothesis: dict) -> tuple:
     """Promote a sandbox hypothesis into config.strategies[]."""
     from data_manager import get_config, save_config

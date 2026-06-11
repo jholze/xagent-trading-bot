@@ -93,6 +93,41 @@ def recent_experiments(limit: int = 5) -> list:
     return exps[-limit:]
 
 
+def relevant_skills(
+    symbol: str,
+    timeframe: str,
+    min_confidence: float = 0.0,
+    limit: int = 10,
+) -> list:
+    skills = load_skills().get("skills", [])
+    matched = []
+    for skill in reversed(skills):
+        applies = skill.get("applies_to") or {}
+        if applies.get("symbol") and applies["symbol"] != symbol:
+            continue
+        if applies.get("timeframe") and applies["timeframe"] != timeframe:
+            continue
+        if float(skill.get("confidence", 0)) < min_confidence:
+            continue
+        matched.append(skill)
+        if len(matched) >= limit:
+            break
+    return list(reversed(matched))
+
+
+def refuted_variables(symbol: str, timeframe: str, limit: int = 20) -> set[str]:
+    """Variables recently rejected — heuristic should avoid repeating."""
+    refuted = set()
+    for exp in reversed(load_experiments().get("experiments", [])):
+        if exp.get("symbol") != symbol or exp.get("timeframe") != timeframe:
+            continue
+        if exp.get("verdict") == "rejected" and exp.get("variable"):
+            refuted.add(exp["variable"])
+        if len(refuted) >= limit:
+            break
+    return refuted
+
+
 def init_baseline_from_config(config) -> dict:
     """Seed baseline.json from config.strategies if missing or empty."""
     baseline = load_baseline()

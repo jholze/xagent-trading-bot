@@ -28,6 +28,40 @@ def _rsi_crossed_up(last_rsi: float, current_rsi: float, threshold: float) -> bo
     return last_rsi < threshold <= current_rsi
 
 
+def _position_state(market: MarketContext, symbol: str, tf: str) -> dict:
+    if market.sim_state is not None:
+        return market.sim_state
+    return get_position(symbol, tf)
+
+
+def _tier_done(market: MarketContext, symbol: str, tf: str, tier: str) -> bool:
+    if market.sim_state is not None:
+        return bool((market.sim_state.get("rsi_sell_tiers_done") or {}).get(tier))
+    return is_rsi_sell_tier_done(symbol, tf, tier)
+
+
+def _reset_tiers_if_cooled(
+    market: MarketContext,
+    symbol: str,
+    tf: str,
+    current_rsi: float,
+    rsi_sell_30: float,
+    rsi_sell_20: float,
+    buffer: float = 5.0,
+):
+    if market.sim_state is not None:
+        tiers = dict(market.sim_state.get("rsi_sell_tiers_done") or {})
+        if tiers.get("30") and current_rsi < rsi_sell_30 - buffer:
+            tiers["30"] = False
+        if tiers.get("20") and current_rsi < rsi_sell_20 - buffer:
+            tiers["20"] = False
+        if tiers.get("tp") and current_rsi < rsi_sell_30 - buffer:
+            tiers["tp"] = False
+        market.sim_state["rsi_sell_tiers_done"] = tiers
+        return
+    reset_rsi_sell_tiers_if_cooled(symbol, tf, current_rsi, rsi_sell_30, rsi_sell_20, buffer)
+
+
 class TechnicalRSIStrategy(BaseStrategy):
     """Pure technical analysis — social signals merged by DecisionEngine."""
 
@@ -63,9 +97,9 @@ class TechnicalRSIStrategy(BaseStrategy):
             ):
                 action = "BUY"
         elif market.has_position:
-            pos = get_position(symbol, tf)
+            pos = _position_state(market, symbol, tf)
             last_rsi = float(pos.get("last_rsi", 45.0))
-            reset_rsi_sell_tiers_if_cooled(symbol, tf, market.rsi, rsi_sell_30, rsi_sell_20)
+            _reset_tiers_if_cooled(market, symbol, tf, market.rsi, rsi_sell_30, rsi_sell_20)
 
             entry = market.average_entry
             if entry > 0:
@@ -79,23 +113,23 @@ class TechnicalRSIStrategy(BaseStrategy):
 
             if action == "HOLD" and entry > 0 and take_profit_pct:
                 gain_pct = (market.current_price / entry - 1) * 100
-                if gain_pct >= take_profit_pct and not is_rsi_sell_tier_done(symbol, tf, "tp"):
+                if gain_pct >= take_profit_pct and not _tier_done(market, symbol, tf, "tp"):
                     action = "SELL_TP"
                     sources.append("take_profit")
 
             if action == "HOLD":
                 if (
-                    not is_rsi_sell_tier_done(symbol, tf, "20")
+                    not _tier_done(market, symbol, tf, "20")
                     and _rsi_crossed_up(last_rsi, market.rsi, rsi_sell_20)
                 ):
                     action = "SELL_20"
                 elif (
-                    not is_rsi_sell_tier_done(symbol, tf, "30")
+                    not _tier_done(market, symbol, tf, "30")
                     and _rsi_crossed_up(last_rsi, market.rsi, rsi_sell_30)
                 ):
                     action = "SELL_30"
 
-        pos = get_position(symbol, tf)
+        pos = _position_state(market, symbol, tf)
         last_ampel = pos.get("last_ampel", "🟡")
         last_rsi_old = pos.get("last_rsi", 45.0)
         should_notify = action != "HOLD" or (

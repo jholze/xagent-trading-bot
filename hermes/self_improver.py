@@ -26,6 +26,11 @@ class SelfImprover:
     def propose_experiment(self, baseline: dict) -> dict:
         params = baseline.get("params", {})
         recent = store.recent_experiments(5)
+        skills = store.relevant_skills(
+            baseline.get("symbol", "ARIA/USDT"),
+            baseline.get("timeframe", "4h"),
+            limit=8,
+        )
         prompt_template = _load_prompt("propose_experiment.txt")
         if not prompt_template:
             proposal = self.runner.propose(params)
@@ -39,6 +44,7 @@ class SelfImprover:
         prompt = prompt_template.format(
             baseline_params=json.dumps(params, indent=2),
             recent_experiments=json.dumps(recent, indent=2),
+            recent_skills=json.dumps(skills, indent=2),
             tunable_params=json.dumps(self.runner.tunable_params),
             symbol=baseline.get("symbol", "ARIA/USDT"),
             timeframe=baseline.get("timeframe", "4h"),

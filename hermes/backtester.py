@@ -9,6 +9,7 @@ import talib
 from core.config import get_bot_config
 from core.models import MarketContext, SandboxMetrics
 from logger import log
+from strategies.positions import sell_fraction_for_signal
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
 
@@ -84,9 +85,15 @@ class Backtester:
 
         balance = capital
         position = {"amount": 0.0, "average_entry": 0.0}
+        sim_state = {
+            "last_rsi": 45.0,
+            "last_ampel": "🟡",
+            "rsi_sell_tiers_done": {},
+        }
         trades = []
         equity_curve = []
         peak_equity = capital
+        max_drawdown_pct = 0.0
 
         coin = {"symbol": symbol, "timeframe": timeframe, "strategy_params": params}
 
@@ -109,6 +116,7 @@ class Backtester:
                 average_entry=position["average_entry"],
                 open_positions=open_positions,
                 strategy_params=params,
+                sim_state=sim_state,
             )
 
             analysis = self.strategy.analyze(coin, market)
@@ -121,6 +129,7 @@ class Backtester:
                     position["amount"] = amount
                     position["average_entry"] = price
                     balance -= cost
+                    sim_state["rsi_sell_tiers_done"] = {}
                     trades.append({
                         "type": "BUY",
                         "price": price,
@@ -129,37 +138,46 @@ class Backtester:
                         "bar": i,
                     })
 
-            elif position["amount"] > 0:
-                sell_fraction = self._sell_fraction(action)
+            elif position["amount"] > 0 and action != "HOLD" and "SELL" in action:
+                sell_fraction = sell_fraction_for_signal(action)
                 if sell_fraction > 0:
                     entry = position["average_entry"]
-                    loss_pct = (price / entry - 1) * -100 if entry > 0 else 0
-                    force_stop = loss_pct > stop_loss_pct and "SELL" not in action
-                    if sell_fraction > 0 or force_stop:
-                        frac = 1.0 if force_stop else sell_fraction
-                        sell_amount = position["amount"] * frac
-                        received = price * sell_amount * (1 - slippage)
-                        pnl = (price - entry) * sell_amount
-                        balance += received
-                        position["amount"] -= sell_amount
-                        if position["amount"] < 1e-10:
-                            position["amount"] = 0.0
-                            position["average_entry"] = 0.0
-                        trades.append({
-                            "type": "SELL",
-                            "price": price,
-                            "amount": sell_amount,
-                            "pnl": pnl,
-                            "usdt_received": received,
-                            "bar": i,
-                            "action": action,
-                        })
+                    sell_amount = position["amount"] * sell_fraction
+                    received = price * sell_amount * (1 - slippage)
+                    pnl = (price - entry) * sell_amount
+                    balance += received
+                    position["amount"] -= sell_amount
+                    if position["amount"] < 1e-10:
+                        position["amount"] = 0.0
+                        position["average_entry"] = 0.0
+                    tiers = dict(sim_state.get("rsi_sell_tiers_done") or {})
+                    if "TP" in action.upper():
+                        tiers["tp"] = True
+                    elif "30" in action:
+                        tiers["30"] = True
+                    elif "20" in action:
+                        tiers["20"] = True
+                    sim_state["rsi_sell_tiers_done"] = tiers
+                    trades.append({
+                        "type": "SELL",
+                        "price": price,
+                        "amount": sell_amount,
+                        "pnl": pnl,
+                        "usdt_received": received,
+                        "bar": i,
+                        "action": action,
+                    })
 
+            sim_state["last_rsi"] = float(row["rsi"])
             equity = balance + position["amount"] * price
             peak_equity = max(peak_equity, equity)
+            if peak_equity > 0:
+                max_drawdown_pct = max(max_drawdown_pct, (peak_equity - equity) / peak_equity * 100)
             equity_curve.append(equity)
 
-        metrics = self._compute_metrics(trades, balance, position, df.iloc[-1]["close"], peak_equity, capital)
+        metrics = self._compute_metrics(
+            trades, balance, position, df.iloc[-1]["close"], max_drawdown_pct, capital
+        )
         return BacktestResult(
             symbol=symbol,
             timeframe=timeframe,
@@ -170,28 +188,13 @@ class Backtester:
             bars_tested=len(df) - 20,
         )
 
-    def _sell_fraction(self, action: str) -> float:
-        if "FULL" in action or action == "SELL":
-            return 1.0
-        if "PARTIAL" in action or "50" in action or "20" in action:
-            if "20" in action:
-                return 0.2
-            if "30" in action:
-                return 0.3
-            return 0.5
-        if "30" in action:
-            return 0.3
-        if "SELL" in action:
-            return 1.0
-        return 0.0
-
     def _compute_metrics(
         self,
         trades: list,
         balance: float,
         position: dict,
         last_price: float,
-        peak_equity: float,
+        max_drawdown_pct: float,
         initial_capital: float,
     ) -> SandboxMetrics:
         sells = [t for t in trades if t.get("type") == "SELL"]
@@ -215,15 +218,13 @@ class Backtester:
             sharpe = 0.0
 
         equity = balance + position.get("amount", 0) * float(last_price)
-        peak = max(peak_equity, equity, initial_capital)
-        max_dd = max(0.0, (peak - equity) / peak * 100) if peak > 0 else 0.0
         realized_pnl = sum(t.get("pnl", 0) for t in sells)
 
         return SandboxMetrics(
             win_rate=round(win_rate, 1),
             sharpe=round(sharpe, 2),
-            max_drawdown_pct=round(max_dd, 1),
-            trades=len(trades),
+            max_drawdown_pct=round(max_drawdown_pct, 1),
+            trades=len(sells),
             realized_pnl=round(realized_pnl, 2),
             equity=round(equity, 2),
         )

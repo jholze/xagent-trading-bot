@@ -6,6 +6,9 @@ CURRENT BASELINE PARAMS:
 RECENT EXPERIMENTS (avoid repeating failed variables):
 {recent_experiments}
 
+LEARNED SKILLS (prefer promoted patterns, avoid refuted directions):
+{recent_skills}
+
 TUNABLE PARAMS (change exactly ONE):
 {tunable_params}
 

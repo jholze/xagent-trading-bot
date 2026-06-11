@@ -74,11 +74,18 @@ class GoalEngine:
 
         if v_val > b_val:
             meets = self.meets_success_criteria(variant)
+            if meets:
+                return Verdict(
+                    promoted=True,
+                    reason=f"Variant {primary} {v_val:.2f} > baseline {b_val:.2f} and meets success criteria",
+                    baseline_better=False,
+                    meets_success_criteria=True,
+                )
             return Verdict(
-                promoted=True,
-                reason=f"Variant {primary} {v_val:.2f} > baseline {b_val:.2f}",
+                promoted=False,
+                reason=f"Variant {primary} {v_val:.2f} > baseline {b_val:.2f} but below success criteria",
                 baseline_better=False,
-                meets_success_criteria=meets,
+                meets_success_criteria=False,
             )
 
         return Verdict(

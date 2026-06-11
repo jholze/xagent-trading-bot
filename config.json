@@ -109,7 +109,9 @@
     ],
     "cycle_interval_sec": 3600,
     "initial_capital_usdt": 1000,
-    "usdt_per_trade": 50
+    "usdt_per_trade": 50,
+    "sync_to_config": true,
+    "notify_on_promotion": true
   },
   "sandbox": {
     "enabled": true,
