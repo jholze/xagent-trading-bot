@@ -837,6 +837,26 @@ class TestVirtualTrading(unittest.TestCase):
             # Just ensure we didn't make a ridiculous number of calls
             self.assertLessEqual(mock_get.call_count, 10)
 
+    def test_risk_manager_manual_buy_honors_requested_usdt(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        with patch.object(risk, "_daily_trades_count", return_value=0):
+            decision = risk.evaluate(
+                TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200),
+                "4h",
+                source="manual",
+            )
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
+
     def test_risk_manager_approves_buy_with_dynamic_sizing(self):
         from core.config import BotConfig
         from core.models import TradeOrder

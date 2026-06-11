@@ -63,18 +63,29 @@ class RiskManager:
             )
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
-        if indicators is None:
-            indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
-
-        sized, factors = self._dynamic_size(
-            base_usdt,
-            order,
-            timeframe,
-            source,
-            trust_score,
-            confidence,
-            indicators,
-        )
+        if source == "manual":
+            # Telegram /buy amounts are explicit user intent — don't shrink via auto-trade multipliers.
+            sized = base_usdt
+            factors = {
+                "trust_factor": 1.0,
+                "conf_factor": 1.0,
+                "atr_factor": 1.0,
+                "drawdown_pct": round(self._equity_drawdown_pct(), 2),
+                "drawdown_multiplier": 1.0,
+                "total_multiplier": 1.0,
+            }
+        else:
+            if indicators is None:
+                indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
+            sized, factors = self._dynamic_size(
+                base_usdt,
+                order,
+                timeframe,
+                source,
+                trust_score,
+                confidence,
+                indicators,
+            )
 
         equity = self._portfolio_equity(order.price)
         pos_value = float(pos.get("amount", 0)) * order.price
