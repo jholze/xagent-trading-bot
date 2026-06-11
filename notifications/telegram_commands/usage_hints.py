@@ -33,14 +33,14 @@ USAGE = {
     "sell": {
         "hint": (
             "❌ <b>/sell</b> — Anteil einer Position verkaufen\n\n"
-            "Zuerst <code>/sell</code> ohne Parameter → Liste der Positionen.\n"
+            "Nummern sind in <code>/positions</code> und <code>/sell</code> gleich (nach Wert sortiert).\n"
             "Dann: <code>/sell NUMMER PROZENT</code>\n"
             "Beispiel: <code>/sell 1 30</code> — 30 % von Position 1 verkaufen"
         ),
-        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (zuerst <code>/sell</code> für Liste, z.B. <code>/sell 1 30</code>)",
+        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
     },
     "positions": {
-        "help_line": "<code>/positions</code> — Portfolio, Kurse, Gewinn/Verlust und letzte Trades",
+        "help_line": "<code>/positions</code> — Portfolio mit Positionsnummern, Kurse, PnL und letzte Trades",
     },
     "risk": {
         "help_line": "<code>/risk</code> — Risiko-Limits, Drawdown und Positionsgröße anzeigen",

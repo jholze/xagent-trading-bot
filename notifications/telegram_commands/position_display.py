@@ -115,7 +115,7 @@ def format_positions_message(
     history: dict,
     mode_label: str = "",
     include_trades: bool = True,
-    numbered: bool = False,
+    numbered: bool = True,
     title: str = None,
 ) -> str:
     if not active:

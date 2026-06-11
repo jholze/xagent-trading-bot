@@ -63,6 +63,19 @@ class TestPositionDisplay(unittest.TestCase):
         msg = format_positions_message(active, {"SMALL/USDT": 1.0, "BIG/USDT": 1.0}, {"virtual_balance": 1000, "trades": []})
         self.assertLess(msg.index("BIG"), msg.index("SMALL"))
 
+    def test_positions_message_shows_stable_numbers(self):
+        active = [
+            {"symbol": "SOL/USDT", "amount": 10, "average_entry": 1.0, "sold_percent": 0},
+            {"symbol": "BTC/USDT", "amount": 1, "average_entry": 1.0, "sold_percent": 0},
+        ]
+        prices = {"SOL/USDT": 10.0, "BTC/USDT": 1000.0}
+        positions_msg = format_positions_message(active, prices, {"virtual_balance": 1000, "trades": []})
+        sell_msg = format_sell_list_message(active, prices)
+        self.assertIn("<b>1.</b>", positions_msg)
+        self.assertIn("<b>2.</b>", positions_msg)
+        self.assertLess(positions_msg.index("BTC"), positions_msg.index("SOL"))
+        self.assertLess(sell_msg.index("BTC"), sell_msg.index("SOL"))
+
     def test_sell_index_matches_display_order(self):
         """Display #2 must resolve to second-highest value, not raw list order."""
         active = [

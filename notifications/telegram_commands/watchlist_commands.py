@@ -43,7 +43,9 @@ def handle(text: str) -> bool:
         else:
             msg = "📋 <b>Aktive Watchlist:</b>\n\n"
             for i, coin in enumerate(coins, 1):
-                msg += f"{i}. {coin['symbol']} ({coin.get('name', '')})\n"
+                name = coin.get("name", "")
+                suffix = f" ({name})" if name else ""
+                msg += f"<b>{i}.</b> <b>{coin['symbol']}</b>{suffix}\n"
             send_telegram_message(msg)
         return True
 
