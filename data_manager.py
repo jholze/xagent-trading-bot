@@ -369,11 +369,25 @@ ORDERS_SCOPE_FILES = {
     "live": "orders.live.json",
 }
 
+POSITIONS_SCOPE_FILES = {
+    "demo": "positions.demo.json",
+    "paper": "positions.paper.json",
+    "live": "positions.live.json",
+}
+
 
 def resolve_orders_file(scope: str) -> str:
     if scope not in ORDERS_SCOPE_FILES:
         raise ValueError(f"Invalid ledger scope: {scope}")
     return ORDERS_SCOPE_FILES[scope]
+
+
+def resolve_positions_file(scope: str) -> str:
+    if scope not in POSITIONS_SCOPE_FILES:
+        raise ValueError(f"Invalid ledger scope: {scope}")
+    if scope == "demo":
+        return get_data_file("positions.json")
+    return POSITIONS_SCOPE_FILES[scope]
 
 
 def resolve_ledger_scope(trading_mode: str = None) -> str:

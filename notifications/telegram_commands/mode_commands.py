@@ -3,6 +3,7 @@ import os
 from data_manager import get_config, is_demo_mode, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
+from services.ledger_sync import on_trading_mode_change
 from services.trading_service import TradingService
 from strategies.positions import count_open_positions
 from telegram_notifier import send_telegram_message
@@ -15,6 +16,16 @@ def _save_mode_updates(updates: dict) -> bool:
     config = get_config()
     config.update(updates)
     return save_config(config)
+
+
+def _apply_mode_switch(updates: dict) -> tuple[bool, str]:
+    old_mode = get_config().get("trading_mode", "paper")
+    if not _save_mode_updates(updates):
+        return False, ""
+    reload_config()
+    new_mode = get_config().get("trading_mode", "paper")
+    ledger_msg = on_trading_mode_change(old_mode, new_mode)
+    return True, ledger_msg
 
 
 def handle(text: str) -> bool:
@@ -68,16 +79,19 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/mode paper":
-        if _save_mode_updates({
+        ok, ledger_msg = _apply_mode_switch({
             "trading_mode": "paper",
             "virtual_trading": True,
             "live_confirmed": False,
-        }):
-            reload_config()
-            send_telegram_message(
+        })
+        if ok:
+            msg = (
                 "✅ Switched to <b>paper</b> mode (local ledger).\n"
                 "Trades in trade_history.json — not on Gate.io."
             )
+            if ledger_msg:
+                msg += f"\n\n{ledger_msg}"
+            send_telegram_message(msg)
         else:
             send_telegram_message("❌ Failed to save config.")
         return True
@@ -91,15 +105,27 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/mode live":
+        if is_demo_mode():
+            send_telegram_message(
+                "❌ Live-Modus im <b>Demo-Modus</b> nicht verfügbar.\n"
+                "Bot ohne <code>--demo</code> starten."
+            )
+            return True
         cfg = get_config()
         dry = cfg.get("live", {}).get("dry_run", True)
-        if _save_mode_updates({"trading_mode": "live", "virtual_trading": False}):
-            reload_config()
-            send_telegram_message(
+        ok, ledger_msg = _apply_mode_switch({
+            "trading_mode": "live",
+            "virtual_trading": False,
+        })
+        if ok:
+            msg = (
                 "⚠️ Switched to <b>live</b> mode (mainnet).\n"
                 "Send <code>/live_confirm</code> to enable real orders.\n"
                 f"Dry run: <b>{'ON' if dry else 'OFF'}</b> (set live.dry_run in config.json)"
             )
+            if ledger_msg:
+                msg += f"\n\n{ledger_msg}"
+            send_telegram_message(msg)
         else:
             send_telegram_message("❌ Failed to save config.")
         return True
@@ -124,8 +150,12 @@ Current: <b>{service.mode_label()}</b>{demo}
             return True
 
         dry = live_cfg.get("dry_run", True)
-        if _save_mode_updates({"trading_mode": "live", "live_confirmed": True}):
-            reload_config()
+        ok, ledger_msg = _apply_mode_switch({
+            "trading_mode": "live",
+            "live_confirmed": True,
+            "virtual_trading": False,
+        })
+        if ok:
             msg = "🔴 <b>Live trading CONFIRMED.</b>"
             if dry:
                 msg += (
@@ -134,19 +164,24 @@ Current: <b>{service.mode_label()}</b>{demo}
                 )
             else:
                 msg += "\n\nEchte Gate.io Mainnet-Orders sind aktiv."
+            if ledger_msg:
+                msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)
         else:
             send_telegram_message("❌ Failed to save config.")
         return True
 
     if text == "/live_cancel":
-        if _save_mode_updates({
+        ok, ledger_msg = _apply_mode_switch({
             "live_confirmed": False,
             "trading_mode": "paper",
             "virtual_trading": True,
-        }):
-            reload_config()
-            send_telegram_message("✅ Live trading cancelled. Back to <b>paper</b> mode.")
+        })
+        if ok:
+            msg = "✅ Live trading cancelled. Back to <b>paper</b> mode."
+            if ledger_msg:
+                msg += f"\n\n{ledger_msg}"
+            send_telegram_message(msg)
         else:
             send_telegram_message("❌ Failed to save config.")
         return True
