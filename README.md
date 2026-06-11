@@ -25,7 +25,9 @@ In Telegram: `/help` senden.
 
 ## Was ist neu in 1.4 (Juni 2026)
 
-- **Gate.io Live-Trading** — Paper + Live Mainnet (2-Stufen: `/mode live` + `/live_confirm`)
+- **Gate.io Live-Trading** — Paper + Live Mainnet (kein Testnet; 2-Stufen: `/mode live` + `/live_confirm`)
+- **Order-Ledger** — `/orders` mit Kaufdatum/Verkaufsdatum, scope-isoliert (demo/paper/live)
+- **Live-Readiness** — echte Gate-Balances in Risk/`/positions`, `reconcile_gate_positions.py`
 - **Anti-Churn** — Trade-Cooldowns, RSI-Cross-Sells, einmalige Sell-Tiers
 - **Take-Profit** — `take_profit_pct` pro Coin + X `price_target`
 - **5 Coin-Strategien** — ARIA, RAVE, HIGH, SOL, BTC (4h, 25 USDT/Trade)
@@ -64,7 +66,7 @@ Alle Intervalle: [DOCUMENTATION.md §3](DOCUMENTATION.md#3-wann-läuft-was--alle
 | Bereich | Befehle |
 |---------|---------|
 | Watchlist | `/list` `/add` `/remove` |
-| Handel | `/buy` `/sell` `/positions` `/risk` |
+| Handel | `/buy` `/sell` `/positions` `/orders` `/risk` |
 | Modus | `/mode` `/live_confirm` `/gate` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
 | Sandbox | `/sandbox` `/sandbox_results` `/sandbox_promote` |
@@ -117,7 +119,9 @@ DOCUMENTATION.md         # ← Vollständige Doku
 
 ```bash
 pytest tests/unit/ -v
-pytest tests/unit/test_trade_cooldown.py -v
+pytest tests/unit/test_live_gate_readiness.py -v
+python3 scripts/gate_live_smoke_test.py      # Keys + Balance (.env)
+python3 scripts/reconcile_gate_positions.py  # nur im Live-Modus
 ```
 
 ---
@@ -137,4 +141,4 @@ pytest tests/unit/test_trade_cooldown.py -v
 
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
-Letzte Aktualisierung: 11. Juni 2026
+Letzte Aktualisierung: 12. Juni 2026
