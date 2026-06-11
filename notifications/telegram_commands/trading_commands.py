@@ -4,7 +4,11 @@ from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
-from notifications.telegram_commands.position_display import format_sell_list_message, position_symbol
+from notifications.telegram_commands.position_display import (
+    format_sell_list_message,
+    position_symbol,
+    resolve_position_by_display_index,
+)
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
 
@@ -70,10 +74,12 @@ def handle(text: str) -> bool:
             return True
 
         active = list_active_positions()
-        if 0 <= idx < len(active):
-            p = active[idx]
-            sym = p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"]
-            price = get_prices(sym)[0]
+        symbols = [position_symbol(p) for p in active]
+        prices = get_prices_batch(symbols)
+        p = resolve_position_by_display_index(active, prices, idx)
+        if p:
+            sym = position_symbol(p)
+            price = prices.get(sym) or get_prices(sym)[0]
             if price > 0:
                 pos = get_position(sym, "4h")
                 amount_sold = float(pos.get("amount", 0)) * pct

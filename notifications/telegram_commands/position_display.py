@@ -18,6 +18,29 @@ def _fmt_pct(value: float) -> str:
     return f"{value:+.1f}%"
 
 
+def sort_positions_by_value(active: list, prices: dict) -> list:
+    """Return positions sorted by current USDT value (highest first).
+
+    Display (/sell, /positions) and sell execution must use the same order.
+    """
+    enriched = []
+    for p in active:
+        sym = position_symbol(p)
+        price = float(prices.get(sym, 0) or 0)
+        m = _position_metrics(p, price)
+        enriched.append((p, m["value_usdt"]))
+    enriched.sort(key=lambda row: row[1], reverse=True)
+    return [p for p, _ in enriched]
+
+
+def resolve_position_by_display_index(active: list, prices: dict, index: int):
+    """Map 0-based display index (from numbered /sell list) to a position dict."""
+    sorted_active = sort_positions_by_value(active, prices)
+    if 0 <= index < len(sorted_active):
+        return sorted_active[index]
+    return None
+
+
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
@@ -122,16 +145,15 @@ def format_positions_message(
                     )
         return empty
 
-    enriched = []
     total_unreal = 0.0
-    for p in active:
+    sorted_active = sort_positions_by_value(active, prices)
+    rows = []
+    for p in sorted_active:
         sym = position_symbol(p)
         price = float(prices.get(sym, 0) or 0)
         m = _position_metrics(p, price)
         total_unreal += m["unreal"]
-        enriched.append((p, price, m["value_usdt"]))
-
-    enriched.sort(key=lambda row: row[2], reverse=True)
+        rows.append((p, price))
 
     if title:
         msg = f"<b>{title}</b>\n\n"
@@ -139,7 +161,7 @@ def format_positions_message(
         msg = format_portfolio_summary(history, total_unreal, len(active), mode_label) + "\n"
 
     cards = []
-    for i, (p, price, _) in enumerate(enriched, 1):
+    for i, (p, price) in enumerate(rows, 1):
         cards.append(format_position_card(i, p, price, numbered=numbered))
     msg += "\n\n".join(cards)
 
