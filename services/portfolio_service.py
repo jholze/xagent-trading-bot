@@ -20,22 +20,24 @@ class PortfolioService:
         usdt_amount: float = None,
         source: str = "auto",
         order_id: str = None,
+        sync_virtual_ledger: bool = True,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
         update_position(symbol, timeframe, "BUY", price, amount)
-        record_trade({
-            "type": "BUY",
-            "symbol": symbol,
-            "price": price,
-            "amount": amount,
-            "usdt_amount": usdt,
-            "source": source,
-            "order_id": order_id,
-            "timestamp": datetime.now().isoformat(),
-        })
+        if sync_virtual_ledger:
+            record_trade({
+                "type": "BUY",
+                "symbol": symbol,
+                "price": price,
+                "amount": amount,
+                "usdt_amount": usdt,
+                "source": source,
+                "order_id": order_id,
+                "timestamp": datetime.now().isoformat(),
+            })
         return TradeResult(True, "BUY", symbol, amount=amount, price=price, usdt_amount=usdt, order_id=order_id or "")
 
     def execute_sell(
@@ -47,6 +49,7 @@ class PortfolioService:
         amount: float = None,
         source: str = "auto",
         order_id: str = None,
+        sync_virtual_ledger: bool = True,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
@@ -60,17 +63,18 @@ class PortfolioService:
         entry = pos.get("average_entry", price)
         pnl = (price - entry) * amount
         update_position(symbol, timeframe, signal, price, amount)
-        record_trade({
-            "type": "SELL",
-            "symbol": symbol,
-            "price": price,
-            "amount": amount,
-            "usdt_received": received,
-            "pnl": pnl,
-            "source": source,
-            "order_id": order_id,
-            "timestamp": datetime.now().isoformat(),
-        })
+        if sync_virtual_ledger:
+            record_trade({
+                "type": "SELL",
+                "symbol": symbol,
+                "price": price,
+                "amount": amount,
+                "usdt_received": received,
+                "pnl": pnl,
+                "source": source,
+                "order_id": order_id,
+                "timestamp": datetime.now().isoformat(),
+            })
         return TradeResult(
             True, "SELL", symbol, amount=amount, price=price, usdt_amount=received, pnl=pnl, order_id=order_id or "",
         )

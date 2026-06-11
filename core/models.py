@@ -49,6 +49,7 @@ class TradeResult:
     message: str = ""
     order_id: str = ""
     exchange_order_id: str = ""
+    fee: float = 0.0
 
 
 @dataclass

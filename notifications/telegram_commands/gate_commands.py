@@ -3,6 +3,8 @@ import os
 from core.config import get_bot_config
 from data_manager import reload_config
 from execution.gate_adapter import GateExecutionAdapter
+from price_fetcher import get_prices_batch
+from services.gate_balance import fetch_spot_holdings, format_holdings_lines
 from services.trading_service import TradingService
 from telegram_notifier import send_telegram_message
 
@@ -47,6 +49,21 @@ def handle(text: str) -> bool:
     if show_testnet:
         msg += _gate_section("Testnet (Paper auf Gate)", cfg.gate_testnet_config, testnet_adapter)
         msg += "\n\n"
+
+    if show_mainnet and cfg.trading_mode == "live":
+        holdings = fetch_spot_holdings(cfg)
+        if holdings:
+            prices = get_prices_batch([h["symbol"] for h in holdings])
+            msg += "<b>Mainnet Spot-Bestände</b>\n"
+            msg += "\n".join(format_holdings_lines(holdings, prices))
+            msg += "\n\n"
+    elif show_testnet and cfg.trading_mode == "gate_testnet":
+        holdings = fetch_spot_holdings(cfg)
+        if holdings:
+            prices = get_prices_batch([h["symbol"] for h in holdings])
+            msg += "<b>Testnet Spot-Bestände</b>\n"
+            msg += "\n".join(format_holdings_lines(holdings, prices))
+            msg += "\n\n"
 
     msg += """<b>Modi</b>
 /mode paper — Lokales Paper (JSON-Ledger)

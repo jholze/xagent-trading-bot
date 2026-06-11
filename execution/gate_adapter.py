@@ -8,6 +8,7 @@ from core.models import TradeOrder, TradeResult
 from data_manager import record_live_trade
 from execution.base import ExecutionAdapter
 from logger import log
+from data_manager import uses_exchange_ledger
 from services.portfolio_service import PortfolioService
 
 
@@ -129,6 +130,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         cost = float(raw.get("cost") or fill_price * filled)
 
+        fee = _extract_fee(raw)
         result = self._sync_local_ledger(
             TradeOrder(
                 "BUY", order.symbol, fill_price, filled, usdt_amount=cost,
@@ -136,11 +138,12 @@ class GateExecutionAdapter(ExecutionAdapter):
             ),
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
-            fee=_extract_fee(raw),
+            fee=fee,
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
         result.exchange_order_id = str(raw.get("id", ""))
+        result.fee = fee
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
@@ -204,6 +207,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         received = float(raw.get("cost") or fill_price * filled)
 
+        fee = _extract_fee(raw)
         result = self._sync_local_ledger(
             TradeOrder(
                 "SELL", order.symbol, fill_price, filled, signal=order.signal,
@@ -212,11 +216,12 @@ class GateExecutionAdapter(ExecutionAdapter):
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
             usdt_received=received,
-            fee=_extract_fee(raw),
+            fee=fee,
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} SELL filled {filled:.6f} @ ${fill_price:.4f}"
         result.exchange_order_id = str(raw.get("id", ""))
+        result.fee = fee
         return result
 
     def _sync_local_ledger(
@@ -228,15 +233,16 @@ class GateExecutionAdapter(ExecutionAdapter):
         fee: float = 0,
     ) -> TradeResult:
         oid = order.order_id or None
+        sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
                 order.symbol, timeframe, order.price, order.usdt_amount,
-                source=order.source, order_id=oid,
+                source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
             )
         else:
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
-                source=order.source, order_id=oid,
+                source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
             )
 
         record_live_trade({

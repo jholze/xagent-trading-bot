@@ -385,6 +385,11 @@ def resolve_ledger_scope(trading_mode: str = None) -> str:
     return "paper"
 
 
+def uses_exchange_ledger(trading_mode: str = None) -> bool:
+    mode = trading_mode or get_config().get("trading_mode", "paper")
+    return mode in ("live", "gate_testnet")
+
+
 def _empty_orders(scope: str) -> dict:
     return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
 

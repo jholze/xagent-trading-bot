@@ -494,6 +494,8 @@ XAI_API_KEY=...            # Grok
 | `positions.json` | Offene Positionen, Cooldowns, RSI-Tiers |
 | `trade_history.json` | Trades, Balance, PnL |
 | `live_trade_history.json` | Gate-Orders (Live/Testnet) |
+| `orders.live.json` | Order-Ledger für Live + Gate-Testnet (scope `live`) |
+| `orders.paper.json` | Order-Ledger für lokales Paper |
 | `x_accounts.json` | Überwachte X-Accounts |
 | `x_posts.json` | Analysierte Posts + Empfehlungen |
 | `paper_strategies.json` | Sandbox-Hypothesen |
@@ -507,18 +509,29 @@ XAI_API_KEY=...            # Grok
 ```bash
 pytest tests/unit/ -v
 pytest tests/unit/test_trade_cooldown.py -v   # Cooldown + RSI-Churn
+pytest tests/unit/test_live_gate_readiness.py -v
+
+# Gate readiness (keys in .env required)
+python3 scripts/gate_live_smoke_test.py --testnet
+python3 scripts/reconcile_gate_positions.py
 ```
 
 ---
 
 ## 15. Go-Live Checkliste
 
-1. `bash scripts/start_demo_with_ngrok.sh` — Telegram testen
-2. Paper laufen lassen, `/positions` + Cycle-Summaries prüfen
-3. `/mode gate_testnet` + `gate_testnet.dry_run: false` — 1 Buy + 1 Sell
-4. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus
-5. `live.dry_run: false` + `/live_confirm`
-6. Grok-Credits prüfen (`use_grok_x_search`)
+1. Bot **ohne** `--demo` starten (Demo isoliert `*.demo.json` / `orders.demo.json`)
+2. `bash scripts/start_demo_with_ngrok.sh` oder Produktiv-Start — Telegram testen
+3. Paper laufen lassen, `/positions` + `/orders` + Cycle-Summaries prüfen
+4. `python3 scripts/gate_live_smoke_test.py --testnet` — Keys + Balance
+5. `/mode gate_testnet` + `gate_testnet.dry_run: false` — 1 Buy + 1 Sell auf Gate Testnet
+6. `python3 scripts/reconcile_gate_positions.py` — lokale Positionen vs. Gate-Bestand
+7. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus, Ledger in `orders.live.json`
+8. `live.dry_run: false` in `config.json`, Bot neu starten, dann `/live_confirm`
+9. `/gate` — USDT, Spot-Bestände, Dry-Run-Status prüfen
+10. Grok-Credits prüfen (`use_grok_x_search`) — sonst keine X-Auto-Trades im Live-Modus
+
+**Hinweis:** Im Live-/Testnet-Modus nutzen Risk Manager und `/positions` die **echte Gate-USDT-Balance**; `trade_history.json` wird für Gate-Orders nicht mehr beschrieben (nur `live_trade_history.json` + Order-Ledger). `positions.json` bleibt Bot-Cache — regelmäßig mit `reconcile_gate_positions.py` abgleichen.
 
 ---
 

@@ -278,6 +278,7 @@ class OrderService:
                     "amount": float(result.amount or 0),
                     "usdt": float(result.usdt_amount or 0),
                     "exchange_order_id": getattr(result, "exchange_order_id", None),
+                    "fee": float(getattr(result, "fee", 0) or 0) or None,
                 },
                 pnl=float(result.pnl) if result.pnl else None,
             )
@@ -344,6 +345,8 @@ def format_order_detail(order: dict) -> str:
         )
         if exe.get("exchange_order_id"):
             lines.append(f"   Exchange-ID <code>{exe['exchange_order_id']}</code>")
+        if exe.get("fee"):
+            lines.append(f"   Fee <b>${float(exe['fee']):.4f}</b>")
     if order.get("pnl") is not None:
         lines.append(f"   PnL <b>${float(order['pnl']):+.2f}</b>")
     if order.get("error"):

@@ -1,3 +1,5 @@
+import os
+
 from data_manager import get_config, is_demo_mode, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
@@ -121,9 +123,36 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/live_confirm":
+        if is_demo_mode():
+            send_telegram_message(
+                "❌ Live-Trading im <b>Demo-Modus</b> nicht möglich.\n"
+                "Bot ohne <code>--demo</code> starten."
+            )
+            return True
+
+        cfg = get_config()
+        live_cfg = cfg.get("live", {})
+        key_env = live_cfg.get("api_key_env", "GATE_API_KEY")
+        secret_env = live_cfg.get("api_secret_env", "GATE_API_SECRET")
+        if not os.getenv(key_env) or not os.getenv(secret_env):
+            send_telegram_message(
+                f"❌ Gate Mainnet-Keys fehlen.\n"
+                f"Setze <code>{key_env}</code> und <code>{secret_env}</code> in .env, dann <code>/gate</code>."
+            )
+            return True
+
+        dry = live_cfg.get("dry_run", True)
         if _save_mode_updates({"trading_mode": "live", "live_confirmed": True}):
             reload_config()
-            send_telegram_message("🔴 <b>Live trading CONFIRMED.</b> Real Gate.io orders may be placed.")
+            msg = "🔴 <b>Live trading CONFIRMED.</b>"
+            if dry:
+                msg += (
+                    "\n\n⚠️ <b>dry_run ist noch ON</b> — Orders werden nur lokal geloggt.\n"
+                    "Für echte Orders: <code>live.dry_run: false</code> in config.json, Bot neu starten."
+                )
+            else:
+                msg += "\n\nEchte Gate.io Mainnet-Orders sind aktiv."
+            send_telegram_message(msg)
         else:
             send_telegram_message("❌ Failed to save config.")
         return True
