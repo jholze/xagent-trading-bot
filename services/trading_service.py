@@ -37,9 +37,6 @@ class TradingService:
             confirmed = "CONFIRMED" if self.config.live_confirmed else "needs /live_confirm"
             dry = " [DRY RUN]" if self.config.live_config.get("dry_run", True) else ""
             return f"live ({confirmed}){dry}"
-        if mode == "gate_testnet":
-            dry = " [DRY RUN]" if self.config.gate_testnet_config.get("dry_run", False) else ""
-            return f"gate testnet (Gate.io demo){dry}"
         if mode == "off":
             return "off (analysis only)"
         backend = self.config.paper_config.get("backend", "local")
@@ -51,8 +48,10 @@ class TradingService:
         mode = self.config.trading_mode
         if mode == "off":
             return False, "Trading disabled (mode=off). Use /mode paper to enable."
-        if mode in ("paper", "gate_testnet"):
+        if mode == "paper":
             return True, ""
+        if mode == "gate_testnet":
+            return False, "Gate Testnet ist nicht verfügbar. Nutze /mode paper oder /mode live."
         if mode == "live":
             if not self.config.live_confirmed:
                 return False, "Live trading requires /live_confirm first."
@@ -65,10 +64,6 @@ class TradingService:
     def max_usdt_for_order(self) -> float:
         if self.config.trading_mode == "live":
             return float(self.config.live_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade))
-        if self.config.trading_mode == "gate_testnet":
-            return float(
-                self.config.gate_testnet_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
-            )
         return self.config.max_usdt_per_trade
 
     def evaluate_risk(

@@ -22,7 +22,7 @@ from strategies.positions import list_active_positions
 def main() -> int:
     cfg = get_bot_config()
     if not uses_exchange_ledger(cfg.trading_mode):
-        print(f"trading_mode={cfg.trading_mode} — switch to gate_testnet or live first")
+        print(f"trading_mode={cfg.trading_mode} — switch to /mode live first")
         return 1
 
     holdings = {h["currency"]: h["amount"] for h in fetch_spot_holdings(cfg)}

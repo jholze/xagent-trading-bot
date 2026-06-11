@@ -25,7 +25,7 @@ In Telegram: `/help` senden.
 
 ## Was ist neu in 1.4 (Juni 2026)
 
-- **Gate.io Live-Trading** — Paper, Testnet, Live (2-Stufen: `/mode live` + `/live_confirm`)
+- **Gate.io Live-Trading** — Paper + Live Mainnet (2-Stufen: `/mode live` + `/live_confirm`)
 - **Anti-Churn** — Trade-Cooldowns, RSI-Cross-Sells, einmalige Sell-Tiers
 - **Take-Profit** — `take_profit_pct` pro Coin + X `price_target`
 - **5 Coin-Strategien** — ARIA, RAVE, HIGH, SOL, BTC (4h, 25 USDT/Trade)
@@ -39,8 +39,7 @@ In Telegram: `/help` senden.
 | Modus | Befehl | Beschreibung |
 |-------|--------|--------------|
 | Paper | `/mode paper` | Virtuelles Ledger (Standard) |
-| Gate Testnet | `/mode gate_testnet` | Orders auf Gate Testnet |
-| Live | `/mode live` + `/live_confirm` | Gate Mainnet (dry_run standardmäßig an) |
+| Live | `/mode live` + `/live_confirm` | Gate.io Mainnet (dry_run standardmäßig an) |
 | Off | `/mode off` | Nur Analyse |
 
 Details: [DOCUMENTATION.md §4](DOCUMENTATION.md#4-handelsmodi)

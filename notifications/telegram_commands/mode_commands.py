@@ -27,12 +27,11 @@ Current: <b>{service.mode_label()}</b>{demo}
 
 <b>Commands:</b>
 /mode paper — Local paper trading (virtual ledger)
-/mode gate_testnet — Gate.io testnet orders (visible on Gate)
 /mode live — Live Gate.io mainnet (requires /live_confirm)
 /mode off — Analysis only, no execution
 /live_confirm — Confirm live trading
 /live_cancel — Revoke live confirmation
-/gate — Mainnet + testnet API status
+/gate — Gate.io API status + Balance
 /maxpositions — Max. offene Positionen anzeigen/setzen
 """
         send_telegram_message(msg)
@@ -84,20 +83,10 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/mode gate_testnet":
-        dry = get_config().get("gate_testnet", {}).get("dry_run", False)
-        if _save_mode_updates({
-            "trading_mode": "gate_testnet",
-            "virtual_trading": True,
-            "live_confirmed": False,
-        }):
-            reload_config()
-            send_telegram_message(
-                "✅ Switched to <b>gate_testnet</b> mode.\n"
-                "Orders go to Gate.io Testnet (visible in Spot Order History).\n"
-                f"Dry run: <b>{'ON' if dry else 'OFF'}</b> — use /gate to check keys."
-            )
-        else:
-            send_telegram_message("❌ Failed to save config.")
+        send_telegram_message(
+            "ℹ️ Gate.io <b>Testnet</b> ist in Deutschland nicht verfügbar.\n\n"
+            "Nutze <code>/mode paper</code> zum Üben oder <code>/mode live</code> für echtes Trading."
+        )
         return True
 
     if text == "/mode off":

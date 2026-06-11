@@ -53,9 +53,6 @@ def _mode_badge() -> str:
         if not cfg.live_confirmed:
             return "🟠 LIVE (unconfirmed)"
         return "🔶 LIVE DRY" if dry else "🔴 LIVE"
-    if mode == "gate_testnet":
-        dry = cfg.gate_testnet_config.get("dry_run", False)
-        return "🧪 GATE TESTNET DRY" if dry else "🧪 GATE TESTNET"
     if mode == "off":
         return "⏸️ OFF"
     return "📋 PAPER"

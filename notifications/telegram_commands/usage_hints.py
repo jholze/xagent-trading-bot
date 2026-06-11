@@ -22,7 +22,7 @@ USAGE = {
     },
     "buy": {
         "hint": (
-            "❌ <b>/buy</b> — Coin kaufen (Paper, Testnet oder Live)\n\n"
+            "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\n"
             "Zuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\n"
             "Dann: <code>/buy NUMMER USDT</code> — Risk Manager zeigt Vorschau, Bestätigung per Button.\n"
             "Beispiele:\n"
@@ -60,11 +60,10 @@ USAGE = {
             "❌ Unbekannter Modus.\n\n"
             "Sende <code>/mode</code> für die aktuelle Einstellung und alle Optionen:\n"
             "• <code>/mode paper</code> — Virtuelles Geld (Standard)\n"
-            "• <code>/mode gate_testnet</code> — Gate.io Testnet\n"
-            "• <code>/mode live</code> — Echtes Geld (braucht <code>/live_confirm</code>)\n"
+            "• <code>/mode live</code> — Echtes Geld auf Gate.io (braucht <code>/live_confirm</code>)\n"
             "• <code>/mode off</code> — Nur Analyse, kein Handel"
         ),
-        "help_line": "<code>/mode</code> — Handelsmodus anzeigen; <code>/mode paper|gate_testnet|live|off</code> zum Wechseln",
+        "help_line": "<code>/mode</code> — Handelsmodus anzeigen; <code>/mode paper|live|off</code> zum Wechseln",
     },
     "live_confirm": {
         "help_line": "<code>/live_confirm</code> — Live-Handel auf Gate.io Mainnet bestätigen",
@@ -73,7 +72,7 @@ USAGE = {
         "help_line": "<code>/live_cancel</code> — Live-Handel abbrechen, zurück zu Paper",
     },
     "gate": {
-        "help_line": "<code>/gate</code> — Gate.io API-Status (Mainnet + Testnet)",
+        "help_line": "<code>/gate</code> — Gate.io API-Status, Balance, Spot-Bestände",
     },
     "maxpositions": {
         "hint": (

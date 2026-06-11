@@ -380,14 +380,14 @@ def resolve_ledger_scope(trading_mode: str = None) -> str:
     if is_demo_mode():
         return "demo"
     mode = trading_mode or get_config().get("trading_mode", "paper")
-    if mode in ("gate_testnet", "live"):
+    if mode == "live":
         return "live"
     return "paper"
 
 
 def uses_exchange_ledger(trading_mode: str = None) -> bool:
     mode = trading_mode or get_config().get("trading_mode", "paper")
-    return mode in ("live", "gate_testnet")
+    return mode == "live"
 
 
 def _empty_orders(scope: str) -> dict:

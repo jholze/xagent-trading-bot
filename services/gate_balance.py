@@ -1,4 +1,4 @@
-"""Gate.io balance and holdings helpers for live / testnet modes."""
+"""Gate.io balance and holdings helpers for live mode."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ def get_gate_adapter(config: BotConfig = None):
     from execution.gate_adapter import GateExecutionAdapter
 
     cfg = config or get_bot_config()
-    return GateExecutionAdapter(cfg, testnet=cfg.trading_mode == "gate_testnet")
+    return GateExecutionAdapter(cfg)
 
 
 def fetch_usdt_balance(config: BotConfig = None) -> float:

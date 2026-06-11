@@ -35,10 +35,10 @@ class TestOrderIsolation(unittest.TestCase):
              patch("data_manager.get_config", return_value={"trading_mode": "paper"}):
             self.assertEqual(resolve_ledger_scope(), "paper")
 
-    def test_gate_testnet_uses_live_scope(self):
+    def test_gate_testnet_uses_paper_scope(self):
         with patch("data_manager.is_demo_mode", return_value=False), \
              patch("data_manager.get_config", return_value={"trading_mode": "gate_testnet"}):
-            self.assertEqual(resolve_ledger_scope(), "live")
+            self.assertEqual(resolve_ledger_scope(), "paper")
 
     def test_live_mode_uses_live_scope(self):
         with patch("data_manager.is_demo_mode", return_value=False), \

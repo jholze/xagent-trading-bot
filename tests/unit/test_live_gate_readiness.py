@@ -25,7 +25,7 @@ class TestLiveGateReadiness(unittest.TestCase):
 
     def test_uses_exchange_ledger(self):
         self.assertTrue(uses_exchange_ledger("live"))
-        self.assertTrue(uses_exchange_ledger("gate_testnet"))
+        self.assertFalse(uses_exchange_ledger("gate_testnet"))
         self.assertFalse(uses_exchange_ledger("paper"))
 
     def test_risk_manager_caps_buy_to_gate_usdt(self):
@@ -56,7 +56,7 @@ class TestLiveGateReadiness(unittest.TestCase):
 
     def test_gate_adapter_skips_virtual_ledger_in_live(self):
         cfg = self._live_config()
-        adapter = GateExecutionAdapter(cfg, testnet=False)
+        adapter = GateExecutionAdapter(cfg)
         order = TradeOrder("BUY", "SOL/USDT", 100, 0.5, usdt_amount=25)
         with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
             from core.models import TradeResult

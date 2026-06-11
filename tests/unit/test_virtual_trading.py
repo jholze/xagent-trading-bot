@@ -258,42 +258,20 @@ class TestVirtualTrading(unittest.TestCase):
         adapter = get_execution_adapter()
         self.assertIsInstance(adapter, PaperExecutionAdapter)
 
-    def test_execution_factory_gate_testnet(self):
+    def test_execution_factory_gate_testnet_uses_paper(self):
         from core.config import BotConfig
         from data_manager import get_config
         from execution.factory import get_execution_adapter
-        from execution.gate_adapter import GateExecutionAdapter
+        from execution.paper_adapter import PaperExecutionAdapter
 
         raw = dict(get_config())
         raw["trading_mode"] = "gate_testnet"
         cfg = BotConfig()
         cfg._raw = raw
         adapter = get_execution_adapter(cfg)
-        self.assertIsInstance(adapter, GateExecutionAdapter)
-        self.assertTrue(adapter.testnet)
-        self.assertEqual(adapter.mode, "gate_testnet")
+        self.assertIsInstance(adapter, PaperExecutionAdapter)
 
-    def test_gate_adapter_testnet_dry_run(self):
-        from execution.gate_adapter import GateExecutionAdapter
-        from core.config import BotConfig
-        from core.models import TradeOrder
-        from data_manager import get_config
-
-        raw = dict(get_config())
-        raw.setdefault("gate_testnet", {})["dry_run"] = True
-        cfg = BotConfig()
-        cfg._raw = raw
-        adapter = GateExecutionAdapter(cfg, testnet=True)
-        with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
-            from core.models import TradeResult
-            mock_buy.return_value = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=0.5, usdt_amount=5)
-            with patch("execution.gate_adapter.record_live_trade"):
-                result = adapter.execute(TradeOrder("BUY", "XRVM/USDT", 0.5, 10, usdt_amount=5), "4h")
-        self.assertTrue(result.executed)
-        self.assertIn("Dry run", result.message)
-        self.assertIn("testnet", result.message.lower())
-
-    def test_trading_service_gate_testnet_can_execute(self):
+    def test_trading_service_gate_testnet_blocked(self):
         from core.config import BotConfig
         from data_manager import get_config
         from services.trading_service import TradingService
@@ -304,9 +282,8 @@ class TestVirtualTrading(unittest.TestCase):
         cfg._raw = raw
         svc = TradingService(cfg)
         ok, reason = svc.can_execute()
-        self.assertTrue(ok)
-        self.assertEqual(reason, "")
-        self.assertIn("gate testnet", svc.mode_label())
+        self.assertFalse(ok)
+        self.assertIn("Testnet", reason)
 
     def test_registry_lists_strategies(self):
         from strategies.registry import list_registered_strategies

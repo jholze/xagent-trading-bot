@@ -6,14 +6,6 @@
     "initial_capital_usdt": 5000,
     "backend": "local"
   },
-  "gate_testnet": {
-    "exchange": "gate",
-    "api_key_env": "GATE_TESTNET_API_KEY",
-    "api_secret_env": "GATE_TESTNET_API_SECRET",
-    "max_usdt_per_trade": 25,
-    "require_min_trust_score": 70,
-    "dry_run": true
-  },
   "live": {
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",

@@ -168,12 +168,6 @@ class RiskManager:
             return float(
                 self.config.live_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
             )
-        if self.config.trading_mode == "gate_testnet":
-            return float(
-                self.config.gate_testnet_config.get(
-                    "max_usdt_per_trade", self.config.max_usdt_per_trade
-                )
-            )
         return self.config.max_usdt_per_trade
 
     def _initial_capital(self) -> float:
