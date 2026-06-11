@@ -1,8 +1,12 @@
-from data_manager import get_config, reload_config, save_config
-from data_manager import is_demo_mode
+from data_manager import get_config, is_demo_mode, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
+from notifications.telegram_commands.utils import safe_int
 from services.trading_service import TradingService
+from strategies.positions import count_open_positions
 from telegram_notifier import send_telegram_message
+
+MAX_POSITIONS_MIN = 1
+MAX_POSITIONS_MAX = 50
 
 
 def _save_mode_updates(updates: dict) -> bool:
@@ -27,8 +31,39 @@ Current: <b>{service.mode_label()}</b>{demo}
 /live_confirm — Confirm live trading
 /live_cancel — Revoke live confirmation
 /gate — Mainnet + testnet API status
+/maxpositions — Max. offene Positionen anzeigen/setzen
 """
         send_telegram_message(msg)
+        return True
+
+    if text in ["/maxpositions", "/maxpos"]:
+        cfg = get_config()
+        current = int(cfg.get("max_open_positions", 5))
+        open_count = count_open_positions()
+        send_telegram_message(
+            f"<b>Max. offene Positionen</b>\n\n"
+            f"Aktuell: <b>{current}</b>  ·  Offen: <b>{open_count}</b>\n\n"
+            f"Ändern: <code>/maxpositions ANZAHL</code>\n"
+            f"Beispiel: <code>/maxpositions 10</code>  "
+            f"(Bereich {MAX_POSITIONS_MIN}–{MAX_POSITIONS_MAX})"
+        )
+        return True
+
+    if text.startswith("/maxpositions ") or text.startswith("/maxpos "):
+        parts = [p.strip() for p in text.split() if p.strip()]
+        value = safe_int(parts[1]) if len(parts) > 1 else None
+        if value is None or value < MAX_POSITIONS_MIN or value > MAX_POSITIONS_MAX:
+            send_telegram_message(hint("maxpositions"))
+            return True
+        if _save_mode_updates({"max_open_positions": value}):
+            reload_config()
+            open_count = count_open_positions()
+            send_telegram_message(
+                f"✅ Max. offene Positionen auf <b>{value}</b> gesetzt.\n"
+                f"Aktuell offen: <b>{open_count}</b>/{value}"
+            )
+        else:
+            send_telegram_message("❌ Konfiguration konnte nicht gespeichert werden.")
         return True
 
     if text == "/mode paper":

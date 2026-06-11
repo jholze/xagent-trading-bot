@@ -66,6 +66,15 @@ USAGE = {
     "gate": {
         "help_line": "<code>/gate</code> — Gate.io API-Status (Mainnet + Testnet)",
     },
+    "maxpositions": {
+        "hint": (
+            "❌ <b>/maxpositions</b> — Limit für gleichzeitige Positionen\n\n"
+            "Aktuellen Wert: <code>/maxpositions</code>\n"
+            "Setzen: <code>/maxpositions ANZAHL</code>\n"
+            "Beispiel: <code>/maxpositions 10</code>"
+        ),
+        "help_line": "<code>/maxpositions ANZAHL</code> — Max. offene Positionen setzen (z.B. <code>/maxpositions 10</code>)",
+    },
     "sandbox": {
         "help_line": "<code>/sandbox</code> — Strategie-Experimente anzeigen (automatisch aus X-Posts)",
     },
@@ -146,7 +155,7 @@ def build_help_message() -> str:
     sections = [
         ("📋 <b>Watchlist</b> — Welche Coins der Bot beobachtet", ["list", "add", "remove"]),
         ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "risk"]),
-        ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "live_confirm", "live_cancel", "gate"]),
+        ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "maxpositions", "live_confirm", "live_cancel", "gate"]),
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
         ("🧪 <b>Sandbox & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "cmc"]),
         ("❓ <b>Hilfe</b>", ["help"]),
