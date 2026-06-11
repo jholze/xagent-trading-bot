@@ -49,6 +49,26 @@ def _parse_ts(value: str):
         return None
 
 
+def _format_ts_short(value: str) -> str:
+    dt = _parse_ts(value)
+    if not dt:
+        return ""
+    return dt.strftime("%d.%m.%Y %H:%M")
+
+
+def _trade_date_label(side: str) -> str:
+    if (side or "").lower() == "buy":
+        return "Kaufdatum"
+    if (side or "").lower() == "sell":
+        return "Verkaufdatum"
+    return "Datum"
+
+
+def _order_trade_ts(order: dict) -> str:
+    ts = order.get("timestamps", {})
+    return _format_ts_short(ts.get("filled") or ts.get("created") or "")
+
+
 class OrderService:
     def __init__(self, scope: str = None):
         self.scope = scope or resolve_ledger_scope()
@@ -288,7 +308,12 @@ def format_order_line(order: dict) -> str:
     seq = order.get("display_seq", "?")
     src = order.get("source", "auto")
     usdt = _order_usdt_display(order)
-    return f"{icon} <b>#{seq}</b> {order.get('status', '').upper()}  {side}  <b>{sym}</b>  {usdt}  <i>{src}</i>"
+    trade_ts = _order_trade_ts(order)
+    date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
+    return (
+        f"{icon} <b>#{seq}</b> {order.get('status', '').upper()}  {side}  "
+        f"<b>{sym}</b>  {usdt}  <i>{src}</i>{date_part}"
+    )
 
 
 def format_order_detail(order: dict) -> str:
@@ -323,9 +348,13 @@ def format_order_detail(order: dict) -> str:
         lines.append(f"   PnL <b>${float(order['pnl']):+.2f}</b>")
     if order.get("error"):
         lines.append(f"<b>Fehler</b>  {order['error']}")
-    created = (ts.get("created") or "")[:16].replace("T", " ")
-    filled = (ts.get("filled") or "")[:16].replace("T", " ")
-    lines.append(f"<b>Zeit</b>  erstellt {created}" + (f" · filled {filled}" if filled.strip() else ""))
+    trade_ts = _format_ts_short(ts.get("filled") or ts.get("created") or "")
+    if trade_ts:
+        lines.append(f"<b>{_trade_date_label(order.get('side'))}</b>  {trade_ts}")
+    created = _format_ts_short(ts.get("created") or "")
+    filled = _format_ts_short(ts.get("filled") or "")
+    if created and filled and created != filled:
+        lines.append(f"<b>Angelegt</b>  {created}")
     return "\n".join(lines)
 
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.models import RiskDecision, TradeOrder, TradeResult
-from services.order_service import OrderService, format_order_line, ledger_label
+from services.order_service import OrderService, format_order_detail, format_order_line, ledger_label
 
 
 class TestOrderService(unittest.TestCase):
@@ -81,14 +81,39 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(len(l_orders), 1)
         self.assertEqual(l_orders[0]["symbol"], "B/USDT")
 
-    def test_format_order_line(self):
+    def test_format_order_line_includes_trade_date(self):
         line = format_order_line({
             "status": "filled", "display_seq": 3, "side": "buy",
             "symbol": "ARIA/USDT", "source": "manual",
             "request": {"usdt": 200}, "execution": {"usdt": 200},
+            "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
         })
         self.assertIn("#3", line)
         self.assertIn("ARIA", line)
+        self.assertIn("07.06.2026 19:16", line)
+
+    def test_format_order_detail_shows_buy_date_label(self):
+        detail = format_order_detail({
+            "display_seq": 1, "status": "filled", "side": "buy",
+            "symbol": "ARIA/USDT", "source": "manual", "ledger_scope": "paper",
+            "request": {"price": 0.05, "usdt": 200},
+            "risk": {}, "execution": {"usdt": 200, "price": 0.05, "amount": 4000},
+            "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
+        })
+        self.assertIn("Kaufdatum", detail)
+        self.assertIn("07.06.2026 19:16", detail)
+
+    def test_format_order_detail_shows_sell_date_label(self):
+        detail = format_order_detail({
+            "display_seq": 2, "status": "filled", "side": "sell",
+            "symbol": "SOL/USDT", "source": "manual", "ledger_scope": "paper",
+            "request": {"price": 70, "amount": 2},
+            "risk": {}, "execution": {"usdt": 140, "price": 70, "amount": 2},
+            "pnl": 3.5,
+            "timestamps": {"created": "2026-06-08T10:30:00", "filled": "2026-06-08T10:30:00"},
+        })
+        self.assertIn("Verkaufdatum", detail)
+        self.assertIn("08.06.2026 10:30", detail)
 
     def test_ledger_label(self):
         self.assertEqual(ledger_label("demo"), "DEMO")
