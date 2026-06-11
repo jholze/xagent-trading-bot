@@ -54,6 +54,10 @@ class BotConfig:
         return int(self._raw.get("max_daily_trades", 5))
 
     @property
+    def trade_cooldown_hours(self) -> float:
+        return float(self._raw.get("trade_cooldown_hours", 1.0))
+
+    @property
     def max_usdt_per_trade(self) -> float:
         return float(self._raw.get("max_usdt_per_trade", 150))
 

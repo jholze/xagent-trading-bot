@@ -63,12 +63,13 @@ class SignalOrchestrator:
             from strategies.positions import sell_fraction_for_signal
             fraction = sell_fraction_for_signal(analysis.action)
             amount_sold = float(pos["amount"]) * fraction
+            sell_signal = analysis.normalized_action or analysis.action
             order = TradeOrder(
                 type="SELL",
                 symbol=symbol,
                 price=current_price,
                 amount=amount_sold,
-                signal=analysis.action,
+                signal=sell_signal,
             )
 
         if self._execution_override:
@@ -128,7 +129,7 @@ class SignalOrchestrator:
             should_notify = False
 
         trade_executed = bool(trade_result.executed) if trade_result else False
-        if should_notify and self.notify_callback and not trade_executed:
+        if should_notify and self.notify_callback:
             self.notify_callback(
                 analysis.action,
                 coin,
@@ -138,8 +139,11 @@ class SignalOrchestrator:
                 analysis.vol_multiplier,
                 analysis.ampel_emoji,
                 analysis.ampel_text,
-                executed=None,
-                trade_message=trade_result.message if trade_result and not trade_result.executed else None,
+                executed=trade_executed if trade_result else None,
+                trade_message=trade_result.message if trade_result else None,
+                trade_result=trade_result,
+                sources=analysis.sources,
+                timeframe=tf,
             )
 
         pos["last_ampel"] = analysis.ampel_emoji

@@ -138,12 +138,62 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
         return result
 
+    def _fetch_base_balance(self, exchange, symbol: str) -> float:
+        base = symbol.split("/")[0]
+        try:
+            balance = exchange.fetch_balance()
+            return float(
+                balance.get(base, {}).get("free", 0)
+                or balance.get("free", {}).get(base, 0)
+                or 0
+            )
+        except Exception as e:
+            label = "Gate testnet" if self.testnet else "Gate"
+            log(f"{label} {base} balance fetch failed: {e}", "WARNING")
+            return 0.0
+
+    def _validate_sell_amount(self, exchange, order: TradeOrder, amount: float) -> tuple:
+        if amount <= 0:
+            return 0.0, "No amount to sell"
+
+        exchange_balance = self._fetch_base_balance(exchange, order.symbol)
+        if exchange_balance > 0 and amount > exchange_balance:
+            log(
+                f"Sell amount capped: ledger {amount:.6f} > exchange {exchange_balance:.6f} "
+                f"for {order.symbol}",
+                "WARNING",
+            )
+            amount = exchange_balance
+
+        try:
+            markets = exchange.load_markets()
+            market = markets.get(order.symbol) or {}
+            min_amount = float(
+                market.get("limits", {}).get("amount", {}).get("min", 0) or 0
+            )
+            min_cost = float(
+                market.get("limits", {}).get("cost", {}).get("min", 0) or 0
+            )
+            amount = float(exchange.amount_to_precision(order.symbol, amount))
+            if min_amount and amount < min_amount:
+                return 0.0, f"Amount {amount:.6f} below Gate minimum ({min_amount})"
+            if min_cost and order.price > 0 and amount * order.price < min_cost:
+                return 0.0, f"Order value below Gate minimum (${min_cost:.2f})"
+        except Exception as e:
+            log(f"Gate market limits check failed for {order.symbol}: {e}", "WARNING")
+            amount = float(exchange.amount_to_precision(order.symbol, amount))
+
+        return amount, ""
+
     def _execute_sell(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         amount = order.amount
         if amount <= 0:
             return TradeResult(False, "SELL", order.symbol, message="No amount to sell")
 
-        amount = float(exchange.amount_to_precision(order.symbol, amount))
+        amount, error = self._validate_sell_amount(exchange, order, amount)
+        if error:
+            return TradeResult(False, "SELL", order.symbol, message=error)
+
         raw = exchange.create_market_sell_order(order.symbol, amount)
         fill_price = float(raw.get("average") or raw.get("price") or order.price)
         filled = float(raw.get("filled") or amount)

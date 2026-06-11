@@ -31,10 +31,19 @@ class RiskManager:
         indicators: dict = None,
     ) -> RiskDecision:
         if order.type == "SELL":
+            blocked, reason = self._trade_cooldown_blocked(order, timeframe)
+            if blocked:
+                return RiskDecision(approved=False, message=reason, code="trade_cooldown")
+            if order.amount <= 0:
+                return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             return RiskDecision(approved=True, order=order, message="Sell approved")
 
         if order.price <= 0:
             return RiskDecision(approved=False, message="Invalid price")
+
+        blocked, reason = self._trade_cooldown_blocked(order, timeframe)
+        if blocked:
+            return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
@@ -221,6 +230,38 @@ class RiskManager:
             "drawdown_multiplier": dd_mult,
             "total_multiplier": round(total, 3),
         }
+
+    def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str) -> tuple:
+        signal = order.signal or ""
+        if order.type == "SELL" and signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL"):
+            return False, ""
+        if order.type == "SELL" and "FULL" in signal:
+            return False, ""
+
+        pos = get_position(order.symbol, timeframe)
+        last_at = pos.get("last_trade_at")
+        last_type = pos.get("last_trade_type")
+        if not last_at or last_type != order.type:
+            return False, ""
+
+        try:
+            last_ts = datetime.fromisoformat(str(last_at).replace("Z", ""))
+        except Exception:
+            return False, ""
+
+        params = self.config.strategy_params(order.symbol, timeframe)
+        if order.type == "BUY":
+            min_hours = float(params.get("min_hours_between_buys", self.config.trade_cooldown_hours))
+        else:
+            min_hours = float(params.get("min_hours_between_sells", self.config.trade_cooldown_hours))
+
+        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+        if elapsed < min_hours:
+            return True, (
+                f"Trade cooldown: {elapsed:.1f}h since last {order.type} "
+                f"(min {min_hours:.1f}h)"
+            )
+        return False, ""
 
     def _daily_trades_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=24)

@@ -60,6 +60,11 @@ print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DE
 app = Flask(__name__)
 
 
+@app.route("/health", methods=["GET"])
+def health():
+    return "OK", 200
+
+
 @app.route("/", methods=["POST"])
 def webhook():
     try:

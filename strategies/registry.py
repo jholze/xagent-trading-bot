@@ -21,6 +21,8 @@ def resolve_coin_config(coin: dict) -> dict:
 
     for entry in cfg.raw.get("strategies", []):
         if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            if entry.get("live_enabled") is False and cfg.trading_mode == "live":
+                continue
             merged["timeframe"] = entry.get("timeframe", tf)
             merged["strategy_class"] = entry.get("strategy_class", "technical_rsi_bb")
             merged["strategy_params"] = entry

@@ -10,7 +10,7 @@
     "exchange": "gate",
     "api_key_env": "GATE_TESTNET_API_KEY",
     "api_secret_env": "GATE_TESTNET_API_SECRET",
-    "max_usdt_per_trade": 150,
+    "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true
   },
@@ -18,16 +18,17 @@
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",
     "api_secret_env": "GATE_API_SECRET",
-    "max_usdt_per_trade": 150,
+    "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true
   },
   "initial_capital_usdt": 5000,
-  "max_usdt_per_trade": 150,
+  "max_usdt_per_trade": 25,
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 12.0,
   "max_open_positions": 5,
+  "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
   "use_grok_x_search": true,
@@ -67,7 +68,7 @@
     "min_confidence": 60,
     "api_key_env": "CMC_API_KEY"
   },
-  "max_daily_trades": 5,
+  "max_daily_trades": 8,
   "risk": {
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,
@@ -79,7 +80,7 @@
   "observability": {
     "terminal_dashboard": true,
     "json_logs": false,
-    "notify_on_cycle": false,
+    "notify_on_cycle": true,
     "decisions_audit": true
   },
   "sandbox": {
@@ -101,11 +102,15 @@
       "token_address": "0x5d3a12c42e5372b2cc3264ab3cdcf660a1555238",
       "timeframe": "4h",
       "rsi_buy_low": 28,
-      "rsi_buy_high": 48,
-      "rsi_sell_30": 70,
-      "rsi_sell_20": 85,
-      "volume_multiplier": 1.3,
-      "description": "Konservative 4-Stunden Strategie"
+      "rsi_buy_high": 45,
+      "rsi_sell_30": 72,
+      "rsi_sell_20": 84,
+      "volume_multiplier": 1.4,
+      "stop_loss_pct": 15,
+      "take_profit_pct": 12,
+      "min_hours_between_buys": 4,
+      "min_hours_between_sells": 3,
+      "description": "ARIA 4h Live — Meme/High-Vol"
     },
     {
       "symbol": "ARIA/USDT",
@@ -116,7 +121,64 @@
       "rsi_sell_30": 68,
       "rsi_sell_20": 78,
       "volume_multiplier": 1.3,
-      "description": "Aggressivere 1-Stunden Strategie"
+      "live_enabled": false,
+      "description": "ARIA 1h Sandbox only"
+    },
+    {
+      "symbol": "RAVE/USDT",
+      "timeframe": "4h",
+      "rsi_buy_low": 28,
+      "rsi_buy_high": 45,
+      "rsi_sell_30": 72,
+      "rsi_sell_20": 84,
+      "volume_multiplier": 1.5,
+      "stop_loss_pct": 15,
+      "take_profit_pct": 12,
+      "min_hours_between_buys": 4,
+      "min_hours_between_sells": 3,
+      "description": "RAVE 4h Live — Meme/High-Vol"
+    },
+    {
+      "symbol": "HIGH/USDT",
+      "timeframe": "4h",
+      "rsi_buy_low": 30,
+      "rsi_buy_high": 46,
+      "rsi_sell_30": 70,
+      "rsi_sell_20": 80,
+      "volume_multiplier": 1.3,
+      "stop_loss_pct": 12,
+      "take_profit_pct": 10,
+      "min_hours_between_buys": 4,
+      "min_hours_between_sells": 3,
+      "description": "HIGH 4h Live — Mid-Cap Alt"
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "rsi_buy_low": 32,
+      "rsi_buy_high": 48,
+      "rsi_sell_30": 68,
+      "rsi_sell_20": 78,
+      "volume_multiplier": 1.2,
+      "stop_loss_pct": 8,
+      "take_profit_pct": 6,
+      "min_hours_between_buys": 6,
+      "min_hours_between_sells": 4,
+      "description": "SOL 4h Live — Large-Cap"
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "rsi_buy_low": 32,
+      "rsi_buy_high": 48,
+      "rsi_sell_30": 68,
+      "rsi_sell_20": 78,
+      "volume_multiplier": 1.15,
+      "stop_loss_pct": 8,
+      "take_profit_pct": 6,
+      "min_hours_between_buys": 6,
+      "min_hours_between_sells": 4,
+      "description": "BTC 4h Live — Large-Cap"
     }
   ]
 }
