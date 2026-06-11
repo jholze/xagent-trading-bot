@@ -50,8 +50,6 @@ class TradingService:
             return False, "Trading disabled (mode=off). Use /mode paper to enable."
         if mode == "paper":
             return True, ""
-        if mode == "gate_testnet":
-            return False, "Gate Testnet ist nicht verfügbar. Nutze /mode paper oder /mode live."
         if mode == "live":
             if not self.config.live_confirmed:
                 return False, "Live trading requires /live_confirm first."

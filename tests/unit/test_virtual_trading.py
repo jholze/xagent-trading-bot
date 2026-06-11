@@ -271,7 +271,7 @@ class TestVirtualTrading(unittest.TestCase):
         adapter = get_execution_adapter(cfg)
         self.assertIsInstance(adapter, PaperExecutionAdapter)
 
-    def test_trading_service_gate_testnet_blocked(self):
+    def test_trading_mode_gate_testnet_migrates_to_paper(self):
         from core.config import BotConfig
         from data_manager import get_config
         from services.trading_service import TradingService
@@ -280,10 +280,10 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "gate_testnet"
         cfg = BotConfig()
         cfg._raw = raw
+        self.assertEqual(cfg.trading_mode, "paper")
         svc = TradingService(cfg)
-        ok, reason = svc.can_execute()
-        self.assertFalse(ok)
-        self.assertIn("Testnet", reason)
+        ok, _ = svc.can_execute()
+        self.assertTrue(ok)
 
     def test_registry_lists_strategies(self):
         from strategies.registry import list_registered_strategies

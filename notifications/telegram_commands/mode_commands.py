@@ -82,13 +82,6 @@ Current: <b>{service.mode_label()}</b>{demo}
             send_telegram_message("❌ Failed to save config.")
         return True
 
-    if text == "/mode gate_testnet":
-        send_telegram_message(
-            "ℹ️ Gate.io <b>Testnet</b> ist in Deutschland nicht verfügbar.\n\n"
-            "Nutze <code>/mode paper</code> zum Üben oder <code>/mode live</code> für echtes Trading."
-        )
-        return True
-
     if text == "/mode off":
         if _save_mode_updates({"trading_mode": "off", "virtual_trading": False}):
             reload_config()

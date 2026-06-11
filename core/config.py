@@ -22,6 +22,8 @@ class BotConfig:
     @property
     def trading_mode(self) -> str:
         mode = self._raw.get("trading_mode")
+        if mode == "gate_testnet":
+            return "paper"
         if mode:
             return mode
         return "paper" if self.virtual_trading else "off"
