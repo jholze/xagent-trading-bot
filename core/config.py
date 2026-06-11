@@ -1,4 +1,5 @@
 from data_manager import get_config, reload_config
+from logger import log
 
 
 class BotConfig:
@@ -23,6 +24,10 @@ class BotConfig:
     def trading_mode(self) -> str:
         mode = self._raw.get("trading_mode")
         if mode == "gate_testnet":
+            log(
+                "trading_mode gate_testnet is deprecated — use paper or live; treating as paper",
+                "WARNING",
+            )
             return "paper"
         if mode:
             return mode

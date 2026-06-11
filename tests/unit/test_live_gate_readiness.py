@@ -25,8 +25,8 @@ class TestLiveGateReadiness(unittest.TestCase):
 
     def test_uses_exchange_ledger(self):
         self.assertTrue(uses_exchange_ledger("live"))
-        self.assertFalse(uses_exchange_ledger("gate_testnet"))
         self.assertFalse(uses_exchange_ledger("paper"))
+        self.assertFalse(uses_exchange_ledger("off"))
 
     def test_risk_manager_caps_buy_to_gate_usdt(self):
         cfg = self._live_config()

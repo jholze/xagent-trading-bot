@@ -1,3 +1,5 @@
+import threading
+
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder, TradeResult
 from execution.factory import get_execution_adapter
@@ -6,6 +8,9 @@ from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
+
+
+_execute_lock = threading.Lock()
 
 
 class TradingService:
@@ -92,6 +97,28 @@ class TradingService:
         indicators: dict = None,
         order_id: str = None,
     ) -> TradeResult:
+        with _execute_lock:
+            return self._execute_order_locked(
+                order,
+                timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
+                order_id=order_id,
+            )
+
+    def _execute_order_locked(
+        self,
+        order: TradeOrder,
+        timeframe: str = "4h",
+        source: str = "manual",
+        trust_score: float = None,
+        confidence: float = None,
+        indicators: dict = None,
+        order_id: str = None,
+    ) -> TradeResult:
+        self.refresh()
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
 

@@ -23,6 +23,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         self.portfolio = portfolio or PortfolioService(self.config)
         self.live_cfg = self.config.live_config
         self._exchange = None
+        self._last_api_error = ""
 
     @property
     def mode(self) -> str:
@@ -61,8 +62,10 @@ class GateExecutionAdapter(ExecutionAdapter):
                 or 0
             )
         except Exception as e:
+            self._last_api_error = str(e)
             log(f"Gate balance fetch failed: {e}", "WARNING")
             return 0.0
+        self._last_api_error = ""
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
         if self.live_cfg.get("dry_run", True):

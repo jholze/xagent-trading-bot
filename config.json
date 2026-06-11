@@ -23,7 +23,7 @@
   "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
-  "use_grok_x_search": true,
+  "use_grok_x_search": false,
   "min_x_confidence": 65,
   "aggression": {
     "base_confidence_threshold": 75,

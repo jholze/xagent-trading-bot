@@ -9,12 +9,36 @@ from services.trading_service import TradingService
 from telegram_notifier import send_telegram_message
 
 
-def _gate_section(title: str, cfg: dict, adapter: GateExecutionAdapter) -> str:
+def _gate_key_status(cfg: dict, adapter: GateExecutionAdapter) -> tuple:
     key_env = cfg.get("api_key_env", "GATE_API_KEY")
     secret_env = cfg.get("api_secret_env", "GATE_API_SECRET")
     has_key = bool(os.getenv(key_env))
     has_secret = bool(os.getenv(secret_env))
-    balance = adapter._fetch_usdt_balance() if has_key and has_secret else 0.0
+    balance = 0.0
+    api_hint = ""
+
+    if not has_key or not has_secret:
+        api_hint = (
+            f"\n⚠️ Keys in <code>.env</code> setzen: <code>{key_env}</code> / <code>{secret_env}</code>"
+        )
+    else:
+        balance = adapter._fetch_usdt_balance()
+        err = getattr(adapter, "_last_api_error", "") or ""
+        if "INVALID_KEY" in err or "Invalid key" in err:
+            api_hint = (
+                "\n⚠️ <b>INVALID_KEY</b> — Gate lehnt die API-Keys ab.\n"
+                "• Neue Keys im Gate.io Dashboard erstellen (Spot-Trading, Read + Trade)\n"
+                "• IP-Whitelist prüfen (leer = alle IPs)\n"
+                "• <code>.env</code> aktualisieren und Bot neu starten"
+            )
+        elif err:
+            api_hint = f"\n⚠️ Gate API: <code>{err[:80]}</code>"
+
+    return key_env, secret_env, balance, api_hint, has_key, has_secret
+
+
+def _gate_section(title: str, cfg: dict, adapter: GateExecutionAdapter) -> str:
+    key_env, secret_env, balance, api_hint, has_key, has_secret = _gate_key_status(cfg, adapter)
     dry = cfg.get("dry_run", True)
 
     return f"""<b>{title}</b>
@@ -22,7 +46,7 @@ def _gate_section(title: str, cfg: dict, adapter: GateExecutionAdapter) -> str:
 {secret_env}: {'✅ gesetzt' if has_secret else '❌ fehlt'}
 Dry Run: <b>{'ON' if dry else 'OFF'}</b>
 Max/Trade: ${cfg.get('max_usdt_per_trade', 150):.0f} USDT
-USDT verfügbar: <b>${balance:,.2f}</b>"""
+USDT verfügbar: <b>${balance:,.2f}</b>{api_hint}"""
 
 
 def handle(text: str) -> bool:

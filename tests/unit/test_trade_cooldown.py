@@ -68,7 +68,14 @@ class TestTradeCooldown(unittest.TestCase):
         pos["last_trade_at"] = datetime.now().isoformat()
         pos["last_trade_type"] = "BUY"
 
-        risk = RiskManager()
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "paper"
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
         order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=200)
         with patch.object(risk, "_portfolio_equity", return_value=5000.0):
             with patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
@@ -83,7 +90,14 @@ class TestTradeCooldown(unittest.TestCase):
         pos["last_trade_at"] = (datetime.now() - timedelta(hours=5)).isoformat()
         pos["last_trade_type"] = "BUY"
 
-        risk = RiskManager()
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "paper"
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
         order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=25)
         with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
             with patch.object(risk, "_portfolio_equity", return_value=5000.0):

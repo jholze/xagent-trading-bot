@@ -57,6 +57,10 @@ from x_analyzer import XAnalyzer, XSignal
 
 class TestVirtualTrading(unittest.TestCase):
     def setUp(self):
+        import json
+        import tempfile
+        import logger as logger_mod
+
         self.config = load_config()
         self.symbol = "XRVM/USDT"
         self.tf = "4h"
@@ -67,10 +71,14 @@ class TestVirtualTrading(unittest.TestCase):
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
         self._trade_history_backup = load_trade_history()
+        self._log_dir_backup = logger_mod.LOG_DIR
+        self._log_file_backup = logger_mod.LOG_FILE
+        self._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
+        logger_mod.LOG_DIR = self._log_tmp
+        logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
         key = get_key(self.symbol, self.tf)
         if key in positions:
             del positions[key]
-        import json
         try:
             with open("trade_history.json", "w", encoding="utf-8") as f:
                 json.dump({"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}, f, indent=2)
@@ -137,8 +145,16 @@ class TestVirtualTrading(unittest.TestCase):
 
     def test_open_positions_count_sync(self):
         before = count_open_positions()
-        update_position("COUNT_A/USDT", "4h", "BUY", 1.0, 10)
-        update_position("COUNT_B/USDT", "4h", "BUY", 1.0, 10)
+        for sym in ("COUNT_A/USDT", "COUNT_B/USDT"):
+            update_position(sym, "4h", "BUY", 1.0, 10)
+            record_trade({
+                "type": "BUY",
+                "symbol": sym,
+                "price": 1.0,
+                "amount": 10,
+                "usdt_amount": 10,
+                "timestamp": datetime.now().isoformat(),
+            })
         self.assertEqual(count_open_positions(), before + 2)
         history = load_trade_history()
         self.assertEqual(history.get("open_positions"), before + 2)
@@ -200,8 +216,10 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertIn("x", analysis.sources)
 
     def test_trading_mode_defaults_paper(self):
-        from core.config import get_bot_config
-        cfg = get_bot_config()
+        from core.config import BotConfig
+
+        cfg = BotConfig()
+        cfg._raw = {"virtual_trading": True}
         self.assertEqual(cfg.trading_mode, "paper")
 
     def test_trading_service_blocks_off_mode(self):
@@ -253,9 +271,16 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("Dry run", result.message)
 
     def test_execution_factory_paper(self):
+        from core.config import BotConfig
+        from data_manager import get_config
         from execution.factory import get_execution_adapter
         from execution.paper_adapter import PaperExecutionAdapter
-        adapter = get_execution_adapter()
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "paper"
+        cfg = BotConfig()
+        cfg._raw = raw
+        adapter = get_execution_adapter(cfg)
         self.assertIsInstance(adapter, PaperExecutionAdapter)
 
     def test_execution_factory_gate_testnet_uses_paper(self):
@@ -823,6 +848,7 @@ class TestVirtualTrading(unittest.TestCase):
         from risk.risk_manager import RiskManager
 
         raw = dict(get_config())
+        raw["trading_mode"] = "paper"
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -843,6 +869,7 @@ class TestVirtualTrading(unittest.TestCase):
         from risk.risk_manager import RiskManager
 
         raw = dict(get_config())
+        raw["trading_mode"] = "paper"
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -881,7 +908,7 @@ class TestVirtualTrading(unittest.TestCase):
     def test_risk_manager_blocks_daily_trade_limit(self):
         from core.config import BotConfig
         from core.models import TradeOrder
-        from data_manager import get_config, load_trade_history, save_trade_history
+        from data_manager import get_config
         from risk.risk_manager import RiskManager
 
         raw = dict(get_config())
@@ -890,11 +917,12 @@ class TestVirtualTrading(unittest.TestCase):
         cfg._raw = raw
         risk = RiskManager(cfg)
 
-        history = load_trade_history()
-        history["trades"] = [{"timestamp": datetime.now().isoformat(), "type": "BUY"}]
-        save_trade_history(history)
-
-        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+        filled_order = {
+            "status": "filled",
+            "timestamps": {"filled": datetime.now().isoformat()},
+        }
+        with patch("data_manager.load_orders", return_value={"orders": [filled_order]}), \
+             patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
             decision = risk.evaluate(TradeOrder("BUY", "XRVM/USDT", 1.0, 0), "4h", indicators={"atr_pct": 3.0})
         self.assertFalse(decision.approved)
         self.assertEqual(decision.code, "max_daily_trades")
@@ -906,6 +934,7 @@ class TestVirtualTrading(unittest.TestCase):
         from risk.risk_manager import RiskManager
 
         raw = dict(get_config())
+        raw["trading_mode"] = "paper"
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -958,20 +987,25 @@ class TestVirtualTrading(unittest.TestCase):
 
     def test_trading_service_blocks_via_risk_manager(self):
         from core.config import BotConfig
-        from data_manager import get_config, load_trade_history, save_trade_history
+        from data_manager import get_config
         from services.trading_service import TradingService
 
         raw = dict(get_config())
-        raw["max_daily_trades"] = 0
+        raw["trading_mode"] = "paper"
+        raw["max_daily_trades"] = 1
         cfg = BotConfig()
         cfg._raw = raw
         svc = TradingService(cfg)
 
-        history = load_trade_history()
-        history["trades"] = [{"timestamp": datetime.now().isoformat(), "type": "BUY"}]
-        save_trade_history(history)
-
-        result = svc.execute_buy("XRVM/USDT", "4h", 1.0, 100)
+        filled_order = {
+            "status": "filled",
+            "timestamps": {"filled": datetime.now().isoformat()},
+        }
+        with patch.object(svc, "refresh"), \
+             patch("data_manager.load_orders", return_value={"orders": [filled_order]}), \
+             patch.object(svc.risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(svc.risk, "_available_usdt", return_value=5000.0):
+            result = svc.execute_buy("XRVM/USDT", "4h", 1.0, 100)
         self.assertFalse(result.executed)
         self.assertIn("Daily trade limit", result.message)
 
@@ -1354,8 +1388,10 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertTrue(len(error_logs) > 0)
 
     def tearDown(self):
-        from decimal import Decimal
+        import logger as logger_mod
+        import shutil
         from strategies.positions import positions, save_positions
+
         positions.clear()
         positions.update(self._positions_backup)
         save_positions()
@@ -1364,6 +1400,10 @@ class TestVirtualTrading(unittest.TestCase):
             save_trade_history(self._trade_history_backup)
         except Exception:
             pass
+        if hasattr(self, "_log_file_backup"):
+            logger_mod.LOG_DIR = self._log_dir_backup
+            logger_mod.LOG_FILE = self._log_file_backup
+            shutil.rmtree(self._log_tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -19,14 +19,12 @@ class SignalOrchestrator:
         self,
         market_service: MarketService = None,
         portfolio: PortfolioService = None,
-        execution_adapter=None,
         notify_callback=None,
     ):
         self.config = get_bot_config()
         self.market = market_service or MarketService()
         self.portfolio = portfolio or PortfolioService(self.config)
         self.trading = TradingService(self.config, self.portfolio)
-        self._execution_override = execution_adapter
         self.notify_callback = notify_callback
         self.decision_engine = DecisionEngine(self.market)
         self.audit = AuditTrail(self.config)
@@ -73,23 +71,6 @@ class SignalOrchestrator:
                 signal=sell_signal,
                 source=source,
             )
-
-        if self._execution_override:
-            ok, reason = self.trading.can_execute(source=source, trust_score=trust_score)
-            if not ok:
-                from core.models import TradeResult
-                return TradeResult(False, order.type, symbol, message=reason)
-            decision = self.trading.evaluate_risk(
-                order,
-                tf,
-                source=source,
-                trust_score=trust_score,
-                confidence=analysis.confidence,
-            )
-            if not decision.approved:
-                from core.models import TradeResult
-                return TradeResult(False, order.type, symbol, message=decision.message)
-            return self._execution_override.execute(decision.order, tf)
 
         return self.trading.execute_order(
             order,

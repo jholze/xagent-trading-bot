@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
-from data_manager import load_trade_history, load_live_trade_history
+from data_manager import load_live_trade_history, load_trade_history
 from data_manager import uses_exchange_ledger
 from services.gate_balance import fetch_portfolio_equity, fetch_usdt_balance
 from services.market_service import MarketService
@@ -57,10 +57,12 @@ class RiskManager:
                 code="max_open_positions",
             )
 
-        if self._daily_trades_count() >= self.config.max_daily_trades:
+        daily_count = self._daily_trades_count()
+        max_daily = self.config.max_daily_trades
+        if max_daily > 0 and daily_count >= max_daily:
             return RiskDecision(
                 approved=False,
-                message=f"Daily trade limit reached ({self.config.max_daily_trades})",
+                message=f"Daily trade limit reached ({daily_count}/{max_daily})",
                 code="max_daily_trades",
             )
 
@@ -288,15 +290,24 @@ class RiskManager:
         return False, ""
 
     def _daily_trades_count(self) -> int:
+        """Count filled ledger orders in the last 24h (single source of truth per scope)."""
+        from data_manager import load_orders, resolve_ledger_scope
+
         cutoff = datetime.now() - timedelta(hours=24)
+        scope = resolve_ledger_scope(self.config.trading_mode)
         count = 0
-        history_fns = (load_live_trade_history,) if uses_exchange_ledger(self.config.trading_mode) else (load_trade_history,)
-        for history_fn in history_fns:
-            for trade in history_fn().get("trades", []):
-                try:
-                    ts = datetime.fromisoformat(trade.get("timestamp", "").replace("Z", ""))
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    count += 1
+        for order in load_orders(scope).get("orders", []):
+            if order.get("status") != "filled":
+                continue
+            ts_raw = (
+                order.get("timestamps", {}).get("filled")
+                or order.get("timestamps", {}).get("created")
+                or ""
+            )
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", ""))
+            except Exception:
+                continue
+            if ts >= cutoff:
+                count += 1
         return count
