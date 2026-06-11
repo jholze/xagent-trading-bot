@@ -2,7 +2,12 @@ from core.actions import normalize, to_execution_action
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from strategies.base import BaseStrategy
-from strategies.positions import count_open_positions, get_position
+from strategies.positions import (
+    count_open_positions,
+    get_position,
+    is_rsi_sell_tier_done,
+    reset_rsi_sell_tiers_if_cooled,
+)
 
 
 def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
@@ -17,6 +22,10 @@ def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
     if vol_multiplier <= 0.6:
         return "🔴", "Schwaches Volumen"
     return "🟡", "Neutral"
+
+
+def _rsi_crossed_up(last_rsi: float, current_rsi: float, threshold: float) -> bool:
+    return last_rsi < threshold <= current_rsi
 
 
 class TechnicalRSIStrategy(BaseStrategy):
@@ -37,6 +46,7 @@ class TechnicalRSIStrategy(BaseStrategy):
         partial_stop = stop_loss_pct * 0.67
         rsi_sell_30 = params.get("rsi_sell_30", 70)
         rsi_sell_20 = params.get("rsi_sell_20", 80)
+        take_profit_pct = params.get("take_profit_pct")
 
         ampel_emoji, ampel_text = get_ampel_color(
             market.rsi, market.vol_multiplier, market.current_price, market.lower_bb
@@ -52,7 +62,11 @@ class TechnicalRSIStrategy(BaseStrategy):
                 and market.vol_multiplier >= volume_multiplier_min
             ):
                 action = "BUY"
-        else:
+        elif market.has_position:
+            pos = get_position(symbol, tf)
+            last_rsi = float(pos.get("last_rsi", 45.0))
+            reset_rsi_sell_tiers_if_cooled(symbol, tf, market.rsi, rsi_sell_30, rsi_sell_20)
+
             entry = market.average_entry
             if entry > 0:
                 loss_pct = (market.current_price / entry - 1) * -100
@@ -62,10 +76,24 @@ class TechnicalRSIStrategy(BaseStrategy):
                 elif loss_pct > partial_stop:
                     action = "SELL_STOP_PARTIAL"
                     sources.append("stop_loss")
-            if market.rsi >= rsi_sell_20:
-                action = "SELL_20"
-            elif market.rsi >= rsi_sell_30:
-                action = "SELL_30"
+
+            if action == "HOLD" and entry > 0 and take_profit_pct:
+                gain_pct = (market.current_price / entry - 1) * 100
+                if gain_pct >= take_profit_pct and not is_rsi_sell_tier_done(symbol, tf, "tp"):
+                    action = "SELL_TP"
+                    sources.append("take_profit")
+
+            if action == "HOLD":
+                if (
+                    not is_rsi_sell_tier_done(symbol, tf, "20")
+                    and _rsi_crossed_up(last_rsi, market.rsi, rsi_sell_20)
+                ):
+                    action = "SELL_20"
+                elif (
+                    not is_rsi_sell_tier_done(symbol, tf, "30")
+                    and _rsi_crossed_up(last_rsi, market.rsi, rsi_sell_30)
+                ):
+                    action = "SELL_30"
 
         pos = get_position(symbol, tf)
         last_ampel = pos.get("last_ampel", "🟡")

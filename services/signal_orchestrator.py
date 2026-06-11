@@ -7,6 +7,7 @@ from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
+from core.actions import is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 
@@ -56,18 +57,21 @@ class SignalOrchestrator:
                 amount=0,
                 usdt_amount=0,
                 signal=analysis.action,
+                source=source,
             )
         else:
             pos = get_position(symbol, tf)
             from strategies.positions import sell_fraction_for_signal
             fraction = sell_fraction_for_signal(analysis.action)
             amount_sold = float(pos["amount"]) * fraction
+            sell_signal = analysis.normalized_action or analysis.action
             order = TradeOrder(
                 type="SELL",
                 symbol=symbol,
                 price=current_price,
                 amount=amount_sold,
-                signal=analysis.action,
+                signal=sell_signal,
+                source=source,
             )
 
         if self._execution_override:
@@ -122,7 +126,12 @@ class SignalOrchestrator:
                 reason=analysis.notify_reason,
             ))
 
-        if analysis.should_notify and self.notify_callback:
+        should_notify = analysis.should_notify
+        if is_sell(analysis.action) and not has_position:
+            should_notify = False
+
+        trade_executed = bool(trade_result.executed) if trade_result else False
+        if should_notify and self.notify_callback:
             self.notify_callback(
                 analysis.action,
                 coin,
@@ -132,6 +141,11 @@ class SignalOrchestrator:
                 analysis.vol_multiplier,
                 analysis.ampel_emoji,
                 analysis.ampel_text,
+                executed=trade_executed if trade_result else None,
+                trade_message=trade_result.message if trade_result else None,
+                trade_result=trade_result,
+                sources=analysis.sources,
+                timeframe=tf,
             )
 
         pos["last_ampel"] = analysis.ampel_emoji

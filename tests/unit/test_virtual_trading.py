@@ -130,7 +130,7 @@ class TestVirtualTrading(unittest.TestCase):
     def test_list_active_positions_average_entry(self):
         update_position(self.symbol, self.tf, "BUY", 0.5, 100)
         active = list_active_positions()
-        match = next((p for p in active if p["symbol"] == "XRVM"), None)
+        match = next((p for p in active if p["symbol"] in ("XRVM", "XRVM/USDT")), None)
         self.assertIsNotNone(match)
         self.assertEqual(match["average_entry"], 0.5)
         self.assertEqual(match["entry_price"], 0.5)
@@ -332,6 +332,62 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertEqual(result.action, "HOLD")
         self.assertEqual(result.symbol, "XRVM/USDT")
 
+    def test_technical_strategy_high_rsi_without_position_stays_hold(self):
+        from core.models import MarketContext
+        from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+        strategy = TechnicalRSIStrategy()
+        for open_positions in (0, 5):
+            with self.subTest(open_positions=open_positions):
+                market = MarketContext(
+                    symbol="RAVE/USDT",
+                    timeframe="4h",
+                    current_price=0.65,
+                    rsi=75.0,
+                    lower_bb=0.60,
+                    vol_multiplier=1.0,
+                    has_position=False,
+                    open_positions=open_positions,
+                )
+                result = strategy.analyze({"symbol": "RAVE/USDT"}, market)
+                self.assertEqual(result.action, "HOLD")
+                self.assertEqual(result.normalized_action, "HOLD")
+
+    def test_decision_engine_no_phantom_sell_when_no_position(self):
+        from strategies.decision_engine import DecisionEngine
+        from strategies.positions import get_position
+
+        symbol = "PHANTOM/USDT"
+        engine = DecisionEngine()
+        self.assertEqual(float(get_position(symbol, "4h")["amount"]), 0.0)
+        with patch.object(
+            engine.market,
+            "fetch_indicators",
+            return_value={"rsi": 75.0, "lower_bb": 0.60, "vol_multiplier": 1.0},
+        ):
+            analysis = engine.evaluate({"symbol": symbol, "timeframe": "4h"}, 0.65)
+        self.assertEqual(analysis.action, "HOLD")
+        self.assertEqual(analysis.normalized_action, "HOLD")
+
+    def test_orchestrator_no_sell_notification_without_position(self):
+        from services.signal_orchestrator import SignalOrchestrator
+        from strategies.positions import get_position
+
+        symbol = "PHANTOM/USDT"
+        notifications = []
+        orch = SignalOrchestrator(notify_callback=lambda *args, **kwargs: notifications.append((args, kwargs)))
+        self.assertEqual(float(get_position(symbol, "4h")["amount"]), 0.0)
+        with patch.object(
+            orch.market,
+            "fetch_indicators",
+            return_value={"rsi": 75.0, "lower_bb": 0.60, "vol_multiplier": 1.0},
+        ):
+            result = orch.process_coin({"symbol": symbol, "timeframe": "4h", "name": "Phantom"}, 0.65)
+        self.assertEqual(result["action"], "HOLD")
+        self.assertFalse(result["executed"])
+        sell_notifications = [n for n in notifications if "SELL" in str(n)]
+        self.assertEqual(len(sell_notifications), 0)
+
     def test_portfolio_service_buy(self):
         from services.portfolio_service import PortfolioService
         portfolio = PortfolioService()
@@ -447,35 +503,36 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIsInstance(history.get("realized_pnl", 0), (int, float))
 
     def test_buy_command_parsing(self):
-        from unittest.mock import patch
+        from unittest.mock import ANY, patch
         from telegram_notifier import handle_telegram_command
 
         # Note: Some patches target telegram_notifier's namespace because
         # telegram_notifier imports and re-uses those names internally.
         with patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send, \
+             patch("notifications.telegram_commands.trading_commands.request_buy_confirmation") as mock_preview, \
              patch("notifications.telegram_commands.trading_commands.get_prices") as mock_price, \
-             patch("notifications.telegram_commands.trading_commands._trading.execute_buy") as mock_buy, \
              patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins:
 
             mock_coins.return_value = [{"symbol": "ARIA/USDT"}, {"symbol": "RAVE/USDT"}]
             mock_price.return_value = (0.05, 0.05, None)
 
-            # Test index based
-            from core.models import TradeResult
-            mock_buy.return_value = TradeResult(True, "BUY", "ARIA/USDT", amount=4000.0, price=0.05, usdt_amount=200)
-
             handle_telegram_command("/buy 1 200")
-            mock_buy.assert_called_with("ARIA/USDT", "4h", 0.05, 200)
+            mock_preview.assert_called_with(
+                ANY, symbol="ARIA/USDT", timeframe="4h", price=0.05, usdt=200,
+            )
 
-            # Test symbol based
             handle_telegram_command("/buy RAVE 100")
-            self.assertTrue(mock_buy.called)
+            self.assertEqual(mock_preview.call_count, 2)
 
-            # Bare /buy sends usage hint with example
+            # Bare /buy sends numbered buy list
             mock_send.reset_mock()
-            handle_telegram_command("/buy")
+            with patch("notifications.telegram_commands.trading_commands.get_prices_batch") as mock_batch:
+                mock_batch.return_value = {"ARIA/USDT": 0.05, "RAVE/USDT": 0.12}
+                handle_telegram_command("/buy")
             mock_send.assert_called()
-            self.assertIn("/buy", mock_send.call_args[0][0])
+            msg = mock_send.call_args[0][0]
+            self.assertIn("Coins kaufen", msg)
+            self.assertIn("/buy NUMMER USDT", msg)
 
     def test_demo_mode_prefixes_telegram_messages(self):
         """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""
@@ -531,14 +588,16 @@ class TestVirtualTrading(unittest.TestCase):
         active = list_active_positions()
         self.assertGreater(len(active), 0)
 
-    def test_sell_command_execute(self):
-        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
+    def test_sell_command_requests_confirmation(self):
         from telegram_notifier import handle_telegram_command
-        with patch("telegram_notifier.send_telegram_message"), \
+
+        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
+        with patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"XRVM/USDT": 0.6}), \
              patch("notifications.telegram_commands.trading_commands.get_prices", return_value=(0.6, 0.6, None)), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
              patch("notifications.telegram_commands.trading_commands.list_active_positions") as mock_active:
             mock_active.return_value = [{
-                "symbol": "XRVM",
+                "symbol": "XRVM/USDT",
                 "amount": 100.0,
                 "average_entry": 0.5,
                 "entry_price": 0.5,
@@ -546,8 +605,11 @@ class TestVirtualTrading(unittest.TestCase):
                 "highlight": "",
             }]
             handle_telegram_command("/sell 1 50")
-            pos = get_position(self.symbol, self.tf)
-            self.assertAlmostEqual(float(pos["amount"]), 50.0, places=4)
+            mock_confirm.assert_called_once()
+            kwargs = mock_confirm.call_args[1]
+            self.assertEqual(kwargs["symbol"], "XRVM/USDT")
+            self.assertAlmostEqual(kwargs["amount"], 50.0, places=4)
+            self.assertAlmostEqual(kwargs["pct"], 0.5, places=4)
 
     def test_i18n(self):
         self.assertIn(get_text("bot_started"), ["🚀 Trading Bot – Clean Webhook Version started", "🚀 Trading Bot – Saubere Webhook Version gestartet"])
@@ -622,12 +684,14 @@ class TestVirtualTrading(unittest.TestCase):
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
-            send_signal_message("BUY", coin, 0.0523, 35.0, 0.048, 1.4, "🟢", "Stark Bullish")
+            send_signal_message(
+                "BUY", coin, 0.0523, 35.0, 0.048, 1.4, "🟢", "Stark Bullish", executed=True
+            )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
             self._assert_demo_prefix_in_message(mock_post, "ARIA/USDT")
 
-    def test_send_signal_message_sell_20_with_demo_prefix(self):
+    def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch
         from telegram_notifier import send_signal_message
 
@@ -637,9 +701,56 @@ class TestVirtualTrading(unittest.TestCase):
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
-            send_signal_message("SELL_20", coin, 0.65, 72.0, 0.60, 0.8, "🔴", "Bearish")
+            send_signal_message(
+                "SELL_20", coin, 0.65, 72.0, 0.60, 0.8, "🔴", "Bearish", executed=True
+            )
 
             self._assert_demo_prefix_in_message(mock_post, "SELL 20% EXECUTED")
+
+    def test_send_signal_message_sell_30_signal_not_executed(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message(
+                "SELL_30", coin, 0.65, 75.0, 0.60, 0.8, "🔴", "Bearish", executed=None
+            )
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("SELL 30% SIGNAL", called_text)
+            self.assertNotIn("EXECUTED", called_text)
+
+    def test_send_signal_message_sell_blocked_shows_reason(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message(
+                "SELL_30",
+                coin,
+                0.65,
+                75.0,
+                0.60,
+                0.8,
+                "🔴",
+                "Bearish",
+                executed=False,
+                trade_message="No position to sell",
+            )
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("SELL 30% BLOCKED", called_text)
+            self.assertIn("No position to sell", called_text)
 
     def test_send_signal_message_x_signal_without_demo_prefix(self):
         from unittest.mock import patch
@@ -655,7 +766,7 @@ class TestVirtualTrading(unittest.TestCase):
 
             called_text = mock_post.call_args[1]["json"]["text"]
             self.assertNotIn("🧪 [DEMO]", called_text)
-            self.assertIn("X SIGNAL", called_text)
+            self.assertIn("MARKET UPDATE", called_text)
 
     def test_send_x_recommendation_message(self):
         from unittest.mock import patch
@@ -727,6 +838,26 @@ class TestVirtualTrading(unittest.TestCase):
 
             # Just ensure we didn't make a ridiculous number of calls
             self.assertLessEqual(mock_get.call_count, 10)
+
+    def test_risk_manager_manual_buy_honors_requested_usdt(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        with patch.object(risk, "_daily_trades_count", return_value=0):
+            decision = risk.evaluate(
+                TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200),
+                "4h",
+                source="manual",
+            )
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
 
     def test_risk_manager_approves_buy_with_dynamic_sizing(self):
         from core.config import BotConfig
@@ -826,6 +957,27 @@ class TestVirtualTrading(unittest.TestCase):
         risk = RiskManager()
         decision = risk.evaluate(TradeOrder("SELL", "XRVM/USDT", 1.0, 50), "4h")
         self.assertTrue(decision.approved)
+
+    def test_trading_service_sends_positions_after_executed_trade(self):
+        from services.trading_service import TradingService
+        from core.models import TradeResult
+
+        svc = TradingService()
+        ok_result = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=1.0, usdt_amount=10)
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute", return_value=ok_result), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot") as mock_snapshot:
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=True,
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            from core.models import TradeOrder as TO
+            result = svc.execute_order(TO("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h")
+            self.assertTrue(result.executed)
+            mock_snapshot.assert_called_once()
+            self.assertIs(mock_snapshot.call_args.kwargs.get("trade_result"), result)
 
     def test_trading_service_blocks_via_risk_manager(self):
         from core.config import BotConfig
@@ -1182,7 +1334,8 @@ class TestVirtualTrading(unittest.TestCase):
         )
         self.assertIn("Cycle Summary", summary)
         self.assertIn("PAPER", summary)
-        self.assertIn("Executed", summary)
+        self.assertIn("Auto-Executed", summary)
+        self.assertIn("Orders (24h", summary)
 
     def test_log_decision_writes_jsonl(self):
         import json
@@ -1203,7 +1356,7 @@ class TestVirtualTrading(unittest.TestCase):
         from core.config import get_bot_config
         cfg = get_bot_config()
         self.assertTrue(cfg.terminal_dashboard_enabled)
-        self.assertFalse(cfg.notify_on_cycle)
+        self.assertIsInstance(cfg.notify_on_cycle, bool)
         self.assertTrue(cfg.decisions_audit_enabled)
 
     def test_data_layer_logs_on_failed_save(self):

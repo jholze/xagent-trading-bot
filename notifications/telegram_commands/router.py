@@ -1,5 +1,5 @@
 from logger import log
-from notifications.telegram_commands import cmc_commands, gate_commands, help_commands, mode_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands import cmc_commands, gate_commands, help_commands, mode_commands, order_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
 from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
@@ -11,6 +11,7 @@ _HANDLERS = [
     cmc_commands.handle,
     watchlist_commands.handle,
     trading_commands.handle,
+    order_commands.handle,
     x_commands.handle,
     portfolio_commands.handle,
     help_commands.handle,
@@ -42,6 +43,10 @@ def dispatch_command(text: str) -> bool:
 
 def dispatch_callback(callback_query: dict) -> bool:
     try:
+        if trading_commands.handle_callback(callback_query):
+            return True
+        if order_commands.handle_callback(callback_query):
+            return True
         return x_commands.handle_callback(callback_query)
     except Exception as e:
         log(f"Error in dispatch_callback: {e}", "ERROR")

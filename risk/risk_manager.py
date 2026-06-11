@@ -31,10 +31,19 @@ class RiskManager:
         indicators: dict = None,
     ) -> RiskDecision:
         if order.type == "SELL":
+            blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
+            if blocked:
+                return RiskDecision(approved=False, message=reason, code="trade_cooldown")
+            if order.amount <= 0:
+                return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             return RiskDecision(approved=True, order=order, message="Sell approved")
 
         if order.price <= 0:
             return RiskDecision(approved=False, message="Invalid price")
+
+        blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
+        if blocked:
+            return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
@@ -54,18 +63,29 @@ class RiskManager:
             )
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
-        if indicators is None:
-            indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
-
-        sized, factors = self._dynamic_size(
-            base_usdt,
-            order,
-            timeframe,
-            source,
-            trust_score,
-            confidence,
-            indicators,
-        )
+        if source == "manual":
+            # Telegram /buy amounts are explicit user intent — don't shrink via auto-trade multipliers.
+            sized = base_usdt
+            factors = {
+                "trust_factor": 1.0,
+                "conf_factor": 1.0,
+                "atr_factor": 1.0,
+                "drawdown_pct": round(self._equity_drawdown_pct(), 2),
+                "drawdown_multiplier": 1.0,
+                "total_multiplier": 1.0,
+            }
+        else:
+            if indicators is None:
+                indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
+            sized, factors = self._dynamic_size(
+                base_usdt,
+                order,
+                timeframe,
+                source,
+                trust_score,
+                confidence,
+                indicators,
+            )
 
         equity = self._portfolio_equity(order.price)
         pos_value = float(pos.get("amount", 0)) * order.price
@@ -86,6 +106,7 @@ class RiskManager:
         balance = load_trade_history().get("virtual_balance", equity)
         if self.config.trading_mode == "paper" and sized > balance:
             sized = balance
+            factors["balance_capped"] = True
 
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
         if sized < min_trade:
@@ -221,6 +242,40 @@ class RiskManager:
             "drawdown_multiplier": dd_mult,
             "total_multiplier": round(total, 3),
         }
+
+    def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
+        if source == "manual":
+            return False, ""
+        signal = order.signal or ""
+        if order.type == "SELL" and signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL"):
+            return False, ""
+        if order.type == "SELL" and "FULL" in signal:
+            return False, ""
+
+        pos = get_position(order.symbol, timeframe)
+        last_at = pos.get("last_trade_at")
+        last_type = pos.get("last_trade_type")
+        if not last_at or last_type != order.type:
+            return False, ""
+
+        try:
+            last_ts = datetime.fromisoformat(str(last_at).replace("Z", ""))
+        except Exception:
+            return False, ""
+
+        params = self.config.strategy_params(order.symbol, timeframe)
+        if order.type == "BUY":
+            min_hours = float(params.get("min_hours_between_buys", self.config.trade_cooldown_hours))
+        else:
+            min_hours = float(params.get("min_hours_between_sells", self.config.trade_cooldown_hours))
+
+        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+        if elapsed < min_hours:
+            return True, (
+                f"Trade cooldown: {elapsed:.1f}h since last {order.type} "
+                f"(min {min_hours:.1f}h)"
+            )
+        return False, ""
 
     def _daily_trades_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=24)

@@ -1,9 +1,10 @@
 from core.config import BotConfig, get_bot_config
-from core.models import TradeOrder, TradeResult
+from core.models import RiskDecision, TradeOrder, TradeResult
 from execution.factory import get_execution_adapter
 from logger import log
 from risk.risk_manager import RiskManager
 from services.market_service import MarketService
+from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
 
 
@@ -96,11 +97,21 @@ class TradingService:
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
+        order_id: str = None,
     ) -> TradeResult:
+        ledger = OrderService()
+        ledger_id = order_id or order.order_id or None
+
         ok, reason = self.can_execute(source=source, trust_score=trust_score)
         if not ok:
             log(f"Trade blocked: {reason}", "WARNING")
-            return TradeResult(False, order.type, order.symbol, message=reason)
+            if not ledger_id:
+                ledger.record_rejected(
+                    order,
+                    RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
+                    timeframe=timeframe,
+                )
+            return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
 
         decision = self.risk.evaluate(
             order,
@@ -112,30 +123,61 @@ class TradingService:
         )
         if not decision.approved:
             log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
-            return TradeResult(False, order.type, order.symbol, message=decision.message)
+            if not ledger_id:
+                ledger.record_rejected(order, decision, timeframe=timeframe)
+            else:
+                ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
+            return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
 
         approved_order = decision.order
+        if ledger_id:
+            ledger.update_status(ledger_id, "executing", risk=ledger._risk_snapshot(decision))
+            approved_order.order_id = ledger_id
+        else:
+            created = ledger.create_from_request(
+                approved_order, timeframe=timeframe, status="executing", risk=decision,
+            )
+            ledger_id = created["id"]
+            approved_order.order_id = ledger_id
+
         result = self.adapter.execute(approved_order, timeframe)
+        result.order_id = ledger_id
+        ledger.link_execution_result(ledger_id, result, approved_order)
         if result.executed:
             log(
                 f"{self.adapter.mode.upper()} {approved_order.type} {approved_order.symbol} "
                 f"executed (${approved_order.usdt_amount:.0f})",
                 "INFO",
             )
+            if approved_order.type in ("BUY", "SELL"):
+                try:
+                    from notifications.telegram_commands.position_display import send_positions_snapshot
+                    send_positions_snapshot(trade_result=result, mode_label=self.mode_label())
+                except Exception as e:
+                    log(f"Positions snapshot failed: {e}", "WARNING")
         elif decision.size_multiplier != 1.0 and not result.message:
             result.message = f"Size multiplier: {decision.size_multiplier:.2f}x"
         return result
 
-    def execute_buy(self, symbol: str, timeframe: str, price: float, usdt: float = None) -> TradeResult:
+    def execute_buy(
+        self, symbol: str, timeframe: str, price: float, usdt: float = None, order_id: str = None,
+    ) -> TradeResult:
         order = TradeOrder(
             type="BUY",
             symbol=symbol,
             price=price,
             amount=0,
             usdt_amount=usdt or 0,
+            source="manual",
+            order_id=order_id or "",
         )
-        return self.execute_order(order, timeframe, source="manual")
+        return self.execute_order(order, timeframe, source="manual", order_id=order_id)
 
-    def execute_sell(self, symbol: str, timeframe: str, price: float, signal: str, amount: float) -> TradeResult:
-        order = TradeOrder(type="SELL", symbol=symbol, price=price, amount=amount, signal=signal)
-        return self.execute_order(order, timeframe, source="manual")
+    def execute_sell(
+        self, symbol: str, timeframe: str, price: float, signal: str, amount: float, order_id: str = None,
+    ) -> TradeResult:
+        order = TradeOrder(
+            type="SELL", symbol=symbol, price=price, amount=amount, signal=signal, source="manual",
+            order_id=order_id or "",
+        )
+        return self.execute_order(order, timeframe, source="manual", order_id=order_id)

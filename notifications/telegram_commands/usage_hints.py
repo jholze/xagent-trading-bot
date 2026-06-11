@@ -23,24 +23,34 @@ USAGE = {
     "buy": {
         "hint": (
             "❌ <b>/buy</b> — Coin kaufen (Paper, Testnet oder Live)\n\n"
-            "So geht's: <code>/buy SYMBOL USDT</code> oder <code>/buy NUMMER USDT</code>\n"
+            "Zuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\n"
+            "Dann: <code>/buy NUMMER USDT</code> — Risk Manager zeigt Vorschau, Bestätigung per Button.\n"
             "Beispiele:\n"
-            "• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren\n"
-            "• <code>/buy 1 200</code> — Coin Nr. 1 aus <code>/list</code>, 200 $"
+            "• <code>/buy 1 25</code> — Coin Nr. 1, 25 $\n"
+            "• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren"
         ),
-        "help_line": "<code>/buy SYMBOL USDT</code> — Kaufen (z.B. <code>/buy ARIA 200</code> oder <code>/buy 1 200</code>)",
+        "help_line": "<code>/buy NUMMER USDT</code> — Kaufen (Nummer aus <code>/buy</code> oder <code>/list</code>, z.B. <code>/buy 1 25</code>)",
     },
     "sell": {
         "hint": (
             "❌ <b>/sell</b> — Anteil einer Position verkaufen\n\n"
-            "Zuerst <code>/sell</code> ohne Parameter → Liste der Positionen.\n"
-            "Dann: <code>/sell NUMMER PROZENT</code>\n"
+            "Nummern sind in <code>/positions</code> und <code>/sell</code> gleich (nach Wert sortiert).\n"
+            "Dann: <code>/sell NUMMER PROZENT</code> — Vorschau mit Bestätigen/Abbrechen.\n"
             "Beispiel: <code>/sell 1 30</code> — 30 % von Position 1 verkaufen"
         ),
-        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (zuerst <code>/sell</code> für Liste, z.B. <code>/sell 1 30</code>)",
+        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
     },
     "positions": {
-        "help_line": "<code>/positions</code> — Portfolio, Kurse, Gewinn/Verlust und letzte Trades",
+        "help_line": "<code>/positions</code> — Portfolio mit Positionsnummern, Kurse, PnL und letzte Trades",
+    },
+    "orders": {
+        "hint": (
+            "❌ <b>/orders</b> — Auftragshistorie (Order-Ledger)\n\n"
+            "<code>/orders</code> — Letzte Orders mit 24h-Statistik\n"
+            "<code>/orders page 2</code> — Seite 2 (5 Orders pro Seite)\n"
+            "<code>/orders 3</code> — Details zu Order Nr. 3"
+        ),
+        "help_line": "<code>/orders</code> — Auftragshistorie; <code>/orders NUMMER</code> für Details",
     },
     "risk": {
         "help_line": "<code>/risk</code> — Risiko-Limits, Drawdown und Positionsgröße anzeigen",
@@ -64,6 +74,15 @@ USAGE = {
     },
     "gate": {
         "help_line": "<code>/gate</code> — Gate.io API-Status (Mainnet + Testnet)",
+    },
+    "maxpositions": {
+        "hint": (
+            "❌ <b>/maxpositions</b> — Limit für gleichzeitige Positionen\n\n"
+            "Aktuellen Wert: <code>/maxpositions</code>\n"
+            "Setzen: <code>/maxpositions ANZAHL</code>\n"
+            "Beispiel: <code>/maxpositions 10</code>"
+        ),
+        "help_line": "<code>/maxpositions ANZAHL</code> — Max. offene Positionen setzen (z.B. <code>/maxpositions 10</code>)",
     },
     "sandbox": {
         "help_line": "<code>/sandbox</code> — Strategie-Experimente anzeigen (automatisch aus X-Posts)",
@@ -144,8 +163,8 @@ def hint(key: str) -> str:
 def build_help_message() -> str:
     sections = [
         ("📋 <b>Watchlist</b> — Welche Coins der Bot beobachtet", ["list", "add", "remove"]),
-        ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "risk"]),
-        ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "live_confirm", "live_cancel", "gate"]),
+        ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "orders", "risk"]),
+        ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "maxpositions", "live_confirm", "live_cancel", "gate"]),
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
         ("🧪 <b>Sandbox & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "cmc"]),
         ("❓ <b>Hilfe</b>", ["help"]),

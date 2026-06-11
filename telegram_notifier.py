@@ -27,6 +27,40 @@ def _safe_float(value: str, default: float = None) -> float:
         return default
 
 
+def _sell_label(signal: str) -> str:
+    if "STOP_FULL" in signal or signal.endswith("_FULL"):
+        return "100%"
+    if "STOP_PARTIAL" in signal or "PARTIAL_50" in signal:
+        return "50%"
+    if "TP" in signal.upper():
+        return "TP 30%"
+    if "30" in signal:
+        return "30%"
+    if "20" in signal:
+        return "20%"
+    if "STOP" in signal:
+        return "STOP"
+    return "PARTIAL"
+
+
+def _mode_badge() -> str:
+    from core.config import get_bot_config
+
+    cfg = get_bot_config()
+    mode = cfg.trading_mode
+    if mode == "live":
+        dry = cfg.live_config.get("dry_run", True)
+        if not cfg.live_confirmed:
+            return "🟠 LIVE (unconfirmed)"
+        return "🔶 LIVE DRY" if dry else "🔴 LIVE"
+    if mode == "gate_testnet":
+        dry = cfg.gate_testnet_config.get("dry_run", False)
+        return "🧪 GATE TESTNET DRY" if dry else "🧪 GATE TESTNET"
+    if mode == "off":
+        return "⏸️ OFF"
+    return "📋 PAPER"
+
+
 def send_signal_message(
     signal,
     coin,
@@ -36,39 +70,71 @@ def send_signal_message(
     vol_multiplier,
     ampel_emoji=None,
     ampel_text=None,
+    executed=None,
+    trade_message=None,
+    trade_result=None,
+    sources=None,
+    timeframe="4h",
 ):
     symbol = coin.get("symbol", "Unknown")
     name = coin.get("name", symbol)
+    tf = timeframe or coin.get("timeframe", "4h")
+    mode_badge = _mode_badge()
+    source_line = ""
+    if sources:
+        source_line = f"\n<b>Sources:</b> {', '.join(sources)}"
 
     if signal == "BUY":
         emoji = "🟢"
-        title = "BUY EXECUTED"
-        pos = get_position(symbol, "4h")
-        amount = float(pos.get("amount", 0))
-        cost = current_price * amount if current_price > 0 else 0
+        if executed is True:
+            title = "BUY EXECUTED"
+        elif executed is False:
+            title = "BUY BLOCKED"
+        else:
+            title = "BUY SIGNAL"
+        pos = get_position(symbol, tf)
+        amount = float(trade_result.amount) if trade_result and trade_result.executed else float(pos.get("amount", 0))
+        cost = (trade_result.usdt_amount if trade_result and trade_result.executed else current_price * amount) if current_price > 0 else 0
         extra = f"\n<b>Amount:</b> {amount:.4f} | <b>Cost:</b> ${cost:.1f}"
     elif "SELL" in signal:
         emoji = "🔴"
-        pct = "20%" if "20" in signal else "30%" if "30" in signal else "STOP"
-        title = f"SELL {pct} EXECUTED"
+        pct = _sell_label(signal)
+        if executed is True:
+            title = f"SELL {pct} EXECUTED"
+        elif executed is False:
+            title = f"SELL {pct} BLOCKED"
+        else:
+            title = f"SELL {pct} SIGNAL"
+        pos = get_position(symbol, tf)
+        entry = float(pos.get("average_entry", 0))
+        sold_amount = float(trade_result.amount) if trade_result and trade_result.executed else 0.0
+        pnl = float(trade_result.pnl) if trade_result and trade_result.executed else 0.0
         extra = ""
+        if entry > 0:
+            extra += f"\n<b>Entry:</b> ${entry:.4f}"
+        if sold_amount > 0:
+            extra += f"\n<b>Sold:</b> {sold_amount:.4f}"
+        if pnl != 0:
+            extra += f"\n<b>PnL:</b> ${pnl:+.2f}"
     else:
         emoji = "📡"
-        title = "X SIGNAL"
-        extra = f"\n<b>Confidence:</b> {ampel_text}" if ampel_text else ""
+        title = "MARKET UPDATE"
+        extra = f"\n<b>Ampel:</b> {ampel_text}" if ampel_text else ""
 
     ampel_line = f"<b>Ampel:</b> {ampel_emoji} {ampel_text}\n" if ampel_emoji and ampel_emoji != "📡" else ""
     price_str = f"{current_price:.4f}" if isinstance(current_price, (int, float)) and current_price > 0 else "—"
     rsi_str = f"{rsi:.1f}" if isinstance(rsi, (int, float)) and rsi > 0 else "—"
-    lower_str = f"{lower_bb:.4f}" if isinstance(lower_bb, (int, float)) and lower_bb > 0 else "—"
 
+    blocked_line = f"\n<b>Reason:</b> {trade_message}" if executed is False and trade_message else ""
+    exec_line = f"\n<b>Fill:</b> {trade_message}" if executed is True and trade_message else ""
     message = f"""
 {emoji} <b>{title}</b> — {symbol}
+<b>Mode:</b> {mode_badge}
 
 <b>Name:</b> {name}
 <b>Preis:</b> ${price_str}
 <b>RSI:</b> {rsi_str}
-{ampel_line}{extra}
+{ampel_line}{source_line}{extra}{blocked_line}{exec_line}
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """
     send_telegram_message(message.strip())
@@ -79,12 +145,20 @@ def send_x_recommendation_message(recommendation):
     emoji = "🟢" if recommendation["action"] == "BUY" else "🔴" if recommendation["action"] == "SELL" else "📋" if recommendation["action"] == "ADD_TO_WATCHLIST" else "⏸️"
     title = recommendation["action"]
     raw = recommendation.get("raw_tweet", "—")[:100] + "..." if len(recommendation.get("raw_tweet", "")) > 100 else recommendation.get("raw_tweet", "—")
+    tp = recommendation.get("price_target")
+    sl = recommendation.get("stop_loss")
+    target_lines = ""
+    if tp is not None:
+        target_lines += f"\n<b>Take Profit:</b> ${float(tp):.4f}"
+    if sl is not None:
+        target_lines += f"\n<b>Stop Loss:</b> ${float(sl):.4f}"
+
     msg = f"""{emoji} <b>{title} RECOMMENDATION</b> — {recommendation.get("coin", "UNKNOWN")}/USDT
 
 <b>From:</b> @{recommendation.get("account", "Unknown")}
 <b>Raw Tweet:</b> {raw}
 <b>Confidence:</b> {recommendation.get("confidence", 0)}%
-<b>Rationale:</b> {recommendation.get("rationale", "—")}
+<b>Rationale:</b> {recommendation.get("rationale", "—")}{target_lines}
 
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """

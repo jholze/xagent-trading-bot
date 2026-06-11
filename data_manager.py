@@ -363,6 +363,57 @@ def record_trade(trade):
     return history
 
 
+ORDERS_SCOPE_FILES = {
+    "demo": "orders.demo.json",
+    "paper": "orders.paper.json",
+    "live": "orders.live.json",
+}
+
+
+def resolve_orders_file(scope: str) -> str:
+    if scope not in ORDERS_SCOPE_FILES:
+        raise ValueError(f"Invalid ledger scope: {scope}")
+    return ORDERS_SCOPE_FILES[scope]
+
+
+def resolve_ledger_scope(trading_mode: str = None) -> str:
+    if is_demo_mode():
+        return "demo"
+    mode = trading_mode or get_config().get("trading_mode", "paper")
+    if mode in ("gate_testnet", "live"):
+        return "live"
+    return "paper"
+
+
+def _empty_orders(scope: str) -> dict:
+    return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
+
+
+def load_orders(scope: str):
+    path = resolve_orders_file(scope)
+    if not os.path.exists(path):
+        return _empty_orders(scope)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("ledger_scope") != scope:
+            data["ledger_scope"] = scope
+        return data
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return _empty_orders(scope)
+
+
+def save_orders(data: dict, scope: str) -> bool:
+    path = resolve_orders_file(scope)
+    try:
+        data["ledger_scope"] = scope
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
 PAPER_STRATEGIES_FILE = "paper_strategies.json"
 PAPER_SANDBOX_HISTORY_FILE = "paper_sandbox_history.json"
 CMC_POSTS_FILE = "cmc_posts.json"

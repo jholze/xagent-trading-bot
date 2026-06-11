@@ -4,15 +4,37 @@ from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
+from notifications.telegram_commands.position_display import (
+    format_sell_list_message,
+    position_symbol,
+    resolve_position_by_display_index,
+)
+from notifications.telegram_commands.manual_order_flow import (
+    request_buy_confirmation,
+    request_sell_confirmation,
+)
+from notifications.telegram_commands.watchlist_commands import (
+    _coin_symbol,
+    format_buy_list_message,
+    resolve_coin_by_display_index,
+)
 from strategies.positions import get_position, list_active_positions
 from telegram_notifier import send_telegram_message
+
+# Portfolio snapshot after manual buy/sell is sent by TradingService.execute_order.
 
 _trading = TradingService()
 
 
 def handle(text: str) -> bool:
     if text == "/buy":
-        send_telegram_message(hint("buy"))
+        coins = list_coins()
+        if not coins:
+            send_telegram_message("❌ Watchlist ist leer. Zuerst <code>/add SYMBOL</code> nutzen.")
+            return True
+        symbols = [_coin_symbol(c) for c in coins]
+        prices = get_prices_batch(symbols)
+        send_telegram_message(format_buy_list_message(coins, prices))
         return True
 
     if text.startswith("/buy "):
@@ -25,10 +47,11 @@ def handle(text: str) -> bool:
         sym = None
         if parts[1].replace(".", "").isdigit():
             idx = safe_int(parts[1]) - 1
-            if 0 <= idx < len(coins):
-                sym = coins[idx]["symbol"]
+            coin = resolve_coin_by_display_index(coins, idx)
+            if coin:
+                sym = coin["symbol"]
             else:
-                send_telegram_message("❌ Invalid coin number. First run /list to see available coins.")
+                send_telegram_message("❌ Ungültige Nummer. Zuerst <code>/buy</code> oder <code>/list</code> senden.")
                 return True
         else:
             sym = (parts[1].upper() + "/USDT") if len(parts) > 1 else None
@@ -40,16 +63,7 @@ def handle(text: str) -> bool:
 
         price = get_prices(sym)[0]
         if price and price > 0:
-            _trading.refresh()
-            result = _trading.execute_buy(sym, "4h", price, usdt)
-            mode = _trading.adapter.mode
-            if result.executed:
-                send_telegram_message(
-                    f"✅ {mode.upper()} BUY executed: {sym} ${usdt:.0f} @ ${price:.4f}"
-                    + (f"\n{result.message}" if result.message else "")
-                )
-            else:
-                send_telegram_message(f"❌ Buy failed: {result.message}")
+            request_buy_confirmation(_trading, symbol=sym, timeframe="4h", price=price, usdt=usdt)
         else:
             send_telegram_message(f"❌ Could not fetch price for {sym}. Check if the coin is valid and listed.")
         return True
@@ -61,23 +75,9 @@ def handle(text: str) -> bool:
             if not active:
                 send_telegram_message("❌ No active positions to sell.")
                 return True
-            msg = "<b>📍 Active Positions to Sell:</b>\n\n"
-            msg += "──────────────────────────────────\n"
-            symbols = [
-                p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
-                for p in active
-            ]
+            symbols = [position_symbol(p) for p in active]
             prices = get_prices_batch(symbols)
-            for i, p in enumerate(active, 1):
-                highlight = p.get("highlight", "")
-                sym = symbols[i - 1]
-                price = prices.get(sym, 0.0)
-                entry = p.get("average_entry", p.get("entry_price", 0))
-                unreal = (price - entry) * p["amount"] if entry > 0 and price > 0 else 0
-                msg += f"{i}. {highlight}{p['symbol']} | Amt: {p['amount']:.4f} | Entry: ${entry:.4f} | Unreal: ${unreal:.1f}\n"
-                msg += "──────────────────────────────────\n"
-            msg += "\nUse <code>/sell NUMBER PERCENT</code> (e.g. /sell 1 30)"
-            send_telegram_message(msg)
+            send_telegram_message(format_sell_list_message(active, prices))
             return True
 
         idx = safe_int(parts[1]) - 1
@@ -87,26 +87,32 @@ def handle(text: str) -> bool:
             return True
 
         active = list_active_positions()
-        if 0 <= idx < len(active):
-            p = active[idx]
-            sym = p["symbol"] + "/USDT" if "/" not in p["symbol"] else p["symbol"]
-            price = get_prices(sym)[0]
+        symbols = [position_symbol(p) for p in active]
+        prices = get_prices_batch(symbols)
+        p = resolve_position_by_display_index(active, prices, idx)
+        if p:
+            sym = position_symbol(p)
+            price = prices.get(sym) or get_prices(sym)[0]
             if price > 0:
                 pos = get_position(sym, "4h")
                 amount_sold = float(pos.get("amount", 0)) * pct
                 if amount_sold > 0:
-                    _trading.refresh()
-                    result = _trading.execute_sell(sym, "4h", price, "SELL", amount_sold)
-                    mode = _trading.adapter.mode
-                    if result.executed:
-                        send_telegram_message(
-                            f"✅ {mode.upper()} SELL {pct*100:.0f}% of {sym}: "
-                            f"${result.usdt_amount:.0f} (PnL: ${result.pnl:.1f})"
-                        )
-                    else:
-                        send_telegram_message(f"❌ Sell failed: {result.message}")
+                    request_sell_confirmation(
+                        _trading,
+                        symbol=sym,
+                        timeframe="4h",
+                        price=price,
+                        amount=amount_sold,
+                        pct=pct,
+                    )
                     return True
         send_telegram_message("❌ Invalid selection. First run /sell to list positions.")
         return True
 
     return False
+
+
+def handle_callback(callback_query: dict) -> bool:
+    from notifications.telegram_commands.manual_order_flow import handle_callback as handle_manual_callback
+
+    return handle_manual_callback(callback_query)

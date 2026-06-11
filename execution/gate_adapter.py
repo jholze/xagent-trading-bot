@@ -130,33 +130,93 @@ class GateExecutionAdapter(ExecutionAdapter):
         cost = float(raw.get("cost") or fill_price * filled)
 
         result = self._sync_local_ledger(
-            TradeOrder("BUY", order.symbol, fill_price, filled, usdt_amount=cost, signal=order.signal),
+            TradeOrder(
+                "BUY", order.symbol, fill_price, filled, usdt_amount=cost,
+                signal=order.signal, source=order.source, order_id=order.order_id,
+            ),
             timeframe,
-            exchange_order_id=raw.get("id", ""),
+            exchange_order_id=str(raw.get("id", "")),
+            fee=_extract_fee(raw),
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
+        result.exchange_order_id = str(raw.get("id", ""))
         return result
+
+    def _fetch_base_balance(self, exchange, symbol: str) -> float:
+        base = symbol.split("/")[0]
+        try:
+            balance = exchange.fetch_balance()
+            return float(
+                balance.get(base, {}).get("free", 0)
+                or balance.get("free", {}).get(base, 0)
+                or 0
+            )
+        except Exception as e:
+            label = "Gate testnet" if self.testnet else "Gate"
+            log(f"{label} {base} balance fetch failed: {e}", "WARNING")
+            return 0.0
+
+    def _validate_sell_amount(self, exchange, order: TradeOrder, amount: float) -> tuple:
+        if amount <= 0:
+            return 0.0, "No amount to sell"
+
+        exchange_balance = self._fetch_base_balance(exchange, order.symbol)
+        if exchange_balance > 0 and amount > exchange_balance:
+            log(
+                f"Sell amount capped: ledger {amount:.6f} > exchange {exchange_balance:.6f} "
+                f"for {order.symbol}",
+                "WARNING",
+            )
+            amount = exchange_balance
+
+        try:
+            markets = exchange.load_markets()
+            market = markets.get(order.symbol) or {}
+            min_amount = float(
+                market.get("limits", {}).get("amount", {}).get("min", 0) or 0
+            )
+            min_cost = float(
+                market.get("limits", {}).get("cost", {}).get("min", 0) or 0
+            )
+            amount = float(exchange.amount_to_precision(order.symbol, amount))
+            if min_amount and amount < min_amount:
+                return 0.0, f"Amount {amount:.6f} below Gate minimum ({min_amount})"
+            if min_cost and order.price > 0 and amount * order.price < min_cost:
+                return 0.0, f"Order value below Gate minimum (${min_cost:.2f})"
+        except Exception as e:
+            log(f"Gate market limits check failed for {order.symbol}: {e}", "WARNING")
+            amount = float(exchange.amount_to_precision(order.symbol, amount))
+
+        return amount, ""
 
     def _execute_sell(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         amount = order.amount
         if amount <= 0:
             return TradeResult(False, "SELL", order.symbol, message="No amount to sell")
 
-        amount = float(exchange.amount_to_precision(order.symbol, amount))
+        amount, error = self._validate_sell_amount(exchange, order, amount)
+        if error:
+            return TradeResult(False, "SELL", order.symbol, message=error)
+
         raw = exchange.create_market_sell_order(order.symbol, amount)
         fill_price = float(raw.get("average") or raw.get("price") or order.price)
         filled = float(raw.get("filled") or amount)
         received = float(raw.get("cost") or fill_price * filled)
 
         result = self._sync_local_ledger(
-            TradeOrder("SELL", order.symbol, fill_price, filled, signal=order.signal),
+            TradeOrder(
+                "SELL", order.symbol, fill_price, filled, signal=order.signal,
+                source=order.source, order_id=order.order_id,
+            ),
             timeframe,
-            exchange_order_id=raw.get("id", ""),
+            exchange_order_id=str(raw.get("id", "")),
             usdt_received=received,
+            fee=_extract_fee(raw),
         )
         prefix = "Gate testnet" if self.testnet else "Gate"
         result.message = f"{prefix} SELL filled {filled:.6f} @ ${fill_price:.4f}"
+        result.exchange_order_id = str(raw.get("id", ""))
         return result
 
     def _sync_local_ledger(
@@ -165,14 +225,18 @@ class GateExecutionAdapter(ExecutionAdapter):
         timeframe: str,
         exchange_order_id: str = "",
         usdt_received: float = 0,
+        fee: float = 0,
     ) -> TradeResult:
+        oid = order.order_id or None
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
-                order.symbol, timeframe, order.price, order.usdt_amount
+                order.symbol, timeframe, order.price, order.usdt_amount,
+                source=order.source, order_id=oid,
             )
         else:
             local = self.portfolio.execute_sell(
-                order.symbol, timeframe, order.price, order.signal or "SELL", order.amount
+                order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
+                source=order.source, order_id=oid,
             )
 
         record_live_trade({
@@ -184,8 +248,19 @@ class GateExecutionAdapter(ExecutionAdapter):
             "usdt_received": usdt_received or local.usdt_amount,
             "pnl": local.pnl,
             "exchange_order_id": exchange_order_id,
+            "order_id": oid,
+            "fee": fee,
+            "source": order.source,
             "timestamp": datetime.now().isoformat(),
             "mode": self.mode,
         })
         local.message = local.message or f"{self.mode} {order.type} synced"
+        local.exchange_order_id = exchange_order_id
         return local
+
+
+def _extract_fee(raw: dict) -> float:
+    fee = raw.get("fee") or {}
+    if isinstance(fee, dict):
+        return float(fee.get("cost", 0) or 0)
+    return float(fee or 0)

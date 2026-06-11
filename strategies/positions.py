@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -42,6 +43,9 @@ def load_positions():
                         "last_ampel": p.get("last_ampel", "🟡"),
                         "last_rsi": float(p.get("last_rsi", 45.0)),
                         "last_action": p.get("last_action"),
+                        "last_trade_at": p.get("last_trade_at"),
+                        "last_trade_type": p.get("last_trade_type"),
+                        "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
                     }
         except Exception as e:
             log(f"Failed to load {path}: {e}", "ERROR")
@@ -62,6 +66,9 @@ def save_positions():
                     "last_ampel": p.get("last_ampel", "🟡"),
                     "last_rsi": p.get("last_rsi", 45.0),
                     "last_action": p.get("last_action"),
+                    "last_trade_at": p.get("last_trade_at"),
+                    "last_trade_type": p.get("last_trade_type"),
+                    "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
                 }
             atomic_write_json(path, data)
         except Exception as e:
@@ -87,6 +94,9 @@ def init_position(symbol, timeframe):
                 "last_ampel": "🟡",
                 "last_rsi": 45.0,
                 "last_action": None,
+                "last_trade_at": None,
+                "last_trade_type": None,
+                "rsi_sell_tiers_done": {},
             }
 
 def get_position(symbol, timeframe):
@@ -95,13 +105,48 @@ def get_position(symbol, timeframe):
         return positions[get_key(symbol, timeframe)]
 
 
+def reset_rsi_sell_tiers_if_cooled(
+    symbol: str,
+    timeframe: str,
+    current_rsi: float,
+    rsi_sell_30: float,
+    rsi_sell_20: float,
+    buffer: float = 5.0,
+):
+    """Clear sell-tier flags after RSI drops below threshold minus buffer."""
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    changed = False
+    with _positions_lock:
+        pos = positions[key]
+        tiers = dict(pos.get("rsi_sell_tiers_done") or {})
+        if tiers.get("30") and current_rsi < rsi_sell_30 - buffer:
+            tiers["30"] = False
+            changed = True
+        if tiers.get("20") and current_rsi < rsi_sell_20 - buffer:
+            tiers["20"] = False
+            changed = True
+        if tiers.get("tp") and current_rsi < rsi_sell_30 - buffer:
+            tiers["tp"] = False
+            changed = True
+        if changed:
+            pos["rsi_sell_tiers_done"] = tiers
+    if changed:
+        save_positions()
+
+
+def is_rsi_sell_tier_done(symbol: str, timeframe: str, tier: str) -> bool:
+    pos = get_position(symbol, timeframe)
+    return bool((pos.get("rsi_sell_tiers_done") or {}).get(tier))
+
+
 def sell_fraction_for_signal(signal: str) -> float:
     """Map sell signal names to fraction of position to close."""
     if signal in ("SELL_STOP_FULL", "SELL_FULL"):
         return 1.0
     if signal == "SELL_STOP_PARTIAL":
         return 0.5
-    if signal == "SELL_30":
+    if signal in ("SELL_30", "SELL_TP", "SELL_PARTIAL_30"):
         return 0.3
     if signal == "SELL_20":
         return 0.2
@@ -131,6 +176,9 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["sold_percent"] = 0.0
             pos["last_buy_price"] = current_price
             pos["last_action"] = "BUY"
+            pos["rsi_sell_tiers_done"] = {}
+            pos["last_trade_at"] = datetime.now().isoformat()
+            pos["last_trade_type"] = "BUY"
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
             if amount_traded > 0:
@@ -142,6 +190,16 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["sold_percent"] = min(1.0, pos["sold_percent"] + float(sell_amount) / original_amount)
             pos["amount"] -= sell_amount
             pos["last_action"] = "SELL"
+            pos["last_trade_at"] = datetime.now().isoformat()
+            pos["last_trade_type"] = "SELL"
+            tiers = dict(pos.get("rsi_sell_tiers_done") or {})
+            if "TP" in signal.upper():
+                tiers["tp"] = True
+            elif "30" in signal:
+                tiers["30"] = True
+            elif "20" in signal:
+                tiers["20"] = True
+            pos["rsi_sell_tiers_done"] = tiers
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
     save_positions()
@@ -174,15 +232,18 @@ def list_active_positions():
         active = []
         for key, p in positions.items():
             if float(p.get("amount", 0)) > 0.01:
-                symbol = key.split("_")[0] if "_" in key else key
+                base, _, tf = key.rpartition("_")
+                symbol = base.replace("_", "/") if "/" not in base else base
                 if not symbol.upper().startswith("TEST"):
                     highlight = "🔥 " if p.get("last_action") == "BUY" else ""
                     active.append({
                         "symbol": symbol,
+                        "timeframe": tf,
                         "amount": float(p["amount"]),
                         "average_entry": p.get("average_entry", 0),
                         "entry_price": p.get("average_entry", 0),
                         "realized_pnl": p.get("realized_pnl", 0),
+                        "sold_percent": float(p.get("sold_percent", 0)),
                         "last_action": p.get("last_action"),
                         "highlight": highlight,
                     })

@@ -151,6 +151,13 @@ class DecisionEngine:
         stop = getattr(x_signal, "stop_loss", None) if x_signal else None
         return stop is not None and current_price > 0 and current_price <= float(stop)
 
+    def _x_price_target_triggered(self, x_signal, current_price: float) -> bool:
+        target = getattr(x_signal, "price_target", None) if x_signal else None
+        if target is None or current_price <= 0:
+            return False
+        tolerance = float(self.config.raw.get("x_backtest", {}).get("target_tolerance_pct", 0.5))
+        return current_price >= float(target) * (1 - tolerance / 100.0)
+
     def _merge_sell(
         self,
         technical: SignalAnalysis,
@@ -171,9 +178,16 @@ class DecisionEngine:
             candidates.append((SELL_FULL, 6, "x_stop_loss"))
             sources.append("x_stop_loss")
 
+        if x_signal and self._x_price_target_triggered(x_signal, market.current_price if market else 0):
+            candidates.append((SELL_PARTIAL_30, 5, "x_take_profit"))
+            sources.append("x_take_profit")
+
         if x_signal and x_signal.action == "SELL":
             eff = getattr(x_signal, "effective_confidence", x_signal.confidence) * consensus
-            if eff >= 70:
+            if eff >= 85:
+                candidates.append((SELL_PARTIAL_30, 3, "x"))
+                sources.append("x")
+            elif eff >= 70:
                 candidates.append((SELL_PARTIAL_20, 2, "x"))
                 sources.append("x")
 
@@ -226,25 +240,26 @@ class DecisionEngine:
             normalized, sources, confidence = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market
             )
-            if normalized == HOLD and not is_sell(technical.action):
-                normalized = normalize(technical.action) if is_sell(technical.action) else HOLD
-                sources = list(technical.sources)
-                confidence = technical.confidence
         else:
             normalized, sources, confidence = self._merge_buy(
                 technical, x_signal, cmc_signal, all_social, market
             )
             if normalized == HOLD:
-                normalized = normalize(technical.action) if normalize(technical.action) == BUY else HOLD
-
-        if normalized == HOLD and technical.action != "HOLD":
-            normalized = normalize(technical.action)
-            sources = list(technical.sources)
+                tech_norm = normalize(technical.action)
+                if is_buy(tech_norm):
+                    normalized = tech_norm
+                    sources = list(technical.sources)
 
         execution_action = to_execution_action(normalized)
         rationale_parts = []
         if "technical" in sources:
             rationale_parts.append(f"TA→{technical.action}")
+        if "take_profit" in sources:
+            rationale_parts.append("TA→take_profit")
+        if "x_take_profit" in sources:
+            rationale_parts.append("X→price_target hit")
+        if "x_stop_loss" in sources:
+            rationale_parts.append("X→stop_loss hit")
         if "x" in sources and x_signal:
             rationale_parts.append(f"X→{x_signal.action}@{x_signal.account}({x_signal.confidence}%)")
         if "cmc" in sources and cmc_signal:
