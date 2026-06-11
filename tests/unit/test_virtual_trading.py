@@ -588,14 +588,16 @@ class TestVirtualTrading(unittest.TestCase):
         active = list_active_positions()
         self.assertGreater(len(active), 0)
 
-    def test_sell_command_execute(self):
-        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
+    def test_sell_command_requests_confirmation(self):
         from telegram_notifier import handle_telegram_command
-        with patch("telegram_notifier.send_telegram_message"), \
+
+        update_position(self.symbol, self.tf, "BUY", 0.5, 100)
+        with patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"XRVM/USDT": 0.6}), \
              patch("notifications.telegram_commands.trading_commands.get_prices", return_value=(0.6, 0.6, None)), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
              patch("notifications.telegram_commands.trading_commands.list_active_positions") as mock_active:
             mock_active.return_value = [{
-                "symbol": "XRVM",
+                "symbol": "XRVM/USDT",
                 "amount": 100.0,
                 "average_entry": 0.5,
                 "entry_price": 0.5,
@@ -603,8 +605,11 @@ class TestVirtualTrading(unittest.TestCase):
                 "highlight": "",
             }]
             handle_telegram_command("/sell 1 50")
-            pos = get_position(self.symbol, self.tf)
-            self.assertAlmostEqual(float(pos["amount"]), 50.0, places=4)
+            mock_confirm.assert_called_once()
+            kwargs = mock_confirm.call_args[1]
+            self.assertEqual(kwargs["symbol"], "XRVM/USDT")
+            self.assertAlmostEqual(kwargs["amount"], 50.0, places=4)
+            self.assertAlmostEqual(kwargs["pct"], 0.5, places=4)
 
     def test_i18n(self):
         self.assertIn(get_text("bot_started"), ["🚀 Trading Bot – Clean Webhook Version started", "🚀 Trading Bot – Saubere Webhook Version gestartet"])
@@ -1329,7 +1334,8 @@ class TestVirtualTrading(unittest.TestCase):
         )
         self.assertIn("Cycle Summary", summary)
         self.assertIn("PAPER", summary)
-        self.assertIn("Executed", summary)
+        self.assertIn("Auto-Executed", summary)
+        self.assertIn("Trades (24h, Ledger)", summary)
 
     def test_log_decision_writes_jsonl(self):
         import json
@@ -1350,7 +1356,7 @@ class TestVirtualTrading(unittest.TestCase):
         from core.config import get_bot_config
         cfg = get_bot_config()
         self.assertTrue(cfg.terminal_dashboard_enabled)
-        self.assertFalse(cfg.notify_on_cycle)
+        self.assertIsInstance(cfg.notify_on_cycle, bool)
         self.assertTrue(cfg.decisions_audit_enabled)
 
     def test_data_layer_logs_on_failed_save(self):

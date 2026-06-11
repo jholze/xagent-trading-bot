@@ -11,6 +11,7 @@ from notifications.telegram_commands import manual_order_flow
 from notifications.telegram_commands.manual_order_flow import (
     handle_callback,
     request_buy_confirmation,
+    request_sell_confirmation,
 )
 
 
@@ -96,6 +97,34 @@ class TestManualOrderFlow(unittest.TestCase):
              patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
             self.assertTrue(handle_callback({"id": "cb1", "data": "manual_ok:abc123"}))
             trading.execute_buy.assert_called_once_with("ARIA/USDT", "4h", 0.0325, 200)
+
+    def test_request_sell_shows_preview_buttons(self):
+        trading = MagicMock()
+        trading.refresh.return_value = trading
+        trading.evaluate_risk.return_value = RiskDecision(
+            approved=True,
+            order=TradeOrder("SELL", "SOL/USDT", 67.0, 2.5, signal="SELL"),
+        )
+        trading.risk.status_summary.return_value = {
+            "virtual_balance": 4000,
+            "open_positions": 2,
+            "max_open_positions": 10,
+            "daily_trades": 1,
+            "max_daily_trades": 8,
+            "max_position_percent": 30,
+            "drawdown_pct": 0.0,
+            "drawdown_throttle_active": False,
+        }
+        trading.config.risk_config = {"drawdown_throttle_pct": 10.0}
+
+        with patch("notifications.telegram_commands.manual_order_flow.get_position", return_value={
+            "amount": 5.0, "average_entry": 60.0,
+        }), patch("notifications.telegram_commands.manual_order_flow.send_telegram_buttons") as mock_buttons:
+            request_sell_confirmation(
+                trading, symbol="SOL/USDT", timeframe="4h", price=67.0, amount=2.5, pct=0.5,
+            )
+            self.assertTrue(mock_buttons.called)
+            self.assertIn("Verkauf", mock_buttons.call_args[0][0])
 
     def test_cancel_removes_pending(self):
         manual_order_flow._PENDING["abc123"] = {

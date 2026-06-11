@@ -91,6 +91,7 @@ class TradeOrder:
     amount: float
     usdt_amount: float = 0.0
     signal: str = ""
+    source: str = "auto"
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

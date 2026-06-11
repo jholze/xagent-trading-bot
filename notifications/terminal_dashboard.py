@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.config import get_bot_config
 from data_manager import load_trade_history, load_watchlist, load_x_accounts
@@ -96,6 +96,54 @@ def render_cycle_dashboard(
     print_dashboard(data)
 
 
+def _parse_trade_timestamp(trade: dict):
+    raw = trade.get("timestamp")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", ""))
+    except Exception:
+        return None
+
+
+def _trade_source_label(source: str) -> str:
+    labels = {
+        "manual": "manuell",
+        "auto": "Auto",
+        "x": "X-Signal",
+        "cmc": "CMC",
+    }
+    return labels.get(source or "auto", source or "Auto")
+
+
+def format_recent_trade_line(trade: dict) -> str:
+    sym = (trade.get("symbol") or "").replace("/USDT", "")
+    typ = trade.get("type", "?")
+    src = _trade_source_label(trade.get("source", "auto"))
+    if typ == "BUY":
+        usdt = float(trade.get("usdt_amount", 0) or 0)
+        return f"  · {typ} <b>{sym}</b> · ${usdt:.0f} · <i>{src}</i>"
+    usdt = float(trade.get("usdt_received", 0) or 0)
+    pnl = trade.get("pnl")
+    pnl_part = f" · PnL <b>${float(pnl):+.1f}</b>" if pnl is not None else ""
+    return f"  · {typ} <b>{sym}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
+
+
+def recent_trades_lines(history: dict, hours: float = 24, limit: int = 5) -> list[str]:
+    cutoff = datetime.now() - timedelta(hours=hours)
+    recent = []
+    for trade in reversed(history.get("trades", [])):
+        ts = _parse_trade_timestamp(trade)
+        if ts is not None and ts < cutoff:
+            continue
+        recent.append(trade)
+        if len(recent) >= limit:
+            break
+    if not recent:
+        return ["  <i>Keine Trades in den letzten 24h.</i>"]
+    return [format_recent_trade_line(t) for t in recent]
+
+
 def build_cycle_summary(
     coin_results: list = None,
     trading_mode: str = "paper",
@@ -113,9 +161,14 @@ def build_cycle_summary(
         f"Signals: {len(actions)} actionable | {x_signal_count} X | {cmc_signal_count} CMC",
     ]
     if executed:
-        lines.append(f"<b>Executed:</b> {len(executed)} trade(s)")
+        lines.append(f"<b>Auto-Executed (this cycle):</b> {len(executed)} trade(s)")
         for r in executed[:5]:
             lines.append(f"  • {r.get('symbol')} {r.get('order_type')}")
     else:
-        lines.append("No trades executed this cycle.")
+        lines.append("No auto-trades executed this cycle.")
+
+    lines.append("")
+    lines.append("<b>Trades (24h, Ledger):</b>")
+    lines.extend(recent_trades_lines(history))
+    lines.append("<i>Manuelle /buy · /sell erscheinen hier; Auto nur oben bei Ausführung im Zyklus.</i>")
     return "\n".join(lines)

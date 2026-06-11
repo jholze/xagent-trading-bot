@@ -139,9 +139,12 @@ class TradingService:
             price=price,
             amount=0,
             usdt_amount=usdt or 0,
+            source="manual",
         )
         return self.execute_order(order, timeframe, source="manual")
 
     def execute_sell(self, symbol: str, timeframe: str, price: float, signal: str, amount: float) -> TradeResult:
-        order = TradeOrder(type="SELL", symbol=symbol, price=price, amount=amount, signal=signal)
+        order = TradeOrder(
+            type="SELL", symbol=symbol, price=price, amount=amount, signal=signal, source="manual",
+        )
         return self.execute_order(order, timeframe, source="manual")

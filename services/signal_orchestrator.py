@@ -57,6 +57,7 @@ class SignalOrchestrator:
                 amount=0,
                 usdt_amount=0,
                 signal=analysis.action,
+                source=source,
             )
         else:
             pos = get_position(symbol, tf)
@@ -70,6 +71,7 @@ class SignalOrchestrator:
                 price=current_price,
                 amount=amount_sold,
                 signal=sell_signal,
+                source=source,
             )
 
         if self._execution_override:

@@ -66,6 +66,12 @@ class TestPortfolioEquity(unittest.TestCase):
                 unreal += (price - entry) * float(p["amount"])
         return balance + unreal
 
+    def test_trade_records_source_manual(self):
+        svc = self._service()
+        svc.execute_buy(self.SYMBOL, self.TF, 1.0, 100.0, source="manual")
+        history = load_trade_history()
+        self.assertEqual(history["trades"][-1].get("source"), "manual")
+
     def test_double_buy_weighted_average_and_balance(self):
         svc = self._service()
         svc.execute_buy(self.SYMBOL, self.TF, 1.0, 100.0)
