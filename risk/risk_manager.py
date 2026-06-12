@@ -2,8 +2,13 @@ from datetime import datetime, timedelta
 
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
-from data_manager import load_live_trade_history, load_trade_history
-from data_manager import uses_exchange_ledger
+from data_manager import (
+    is_dry_run_enhanced,
+    load_live_trade_history,
+    load_trade_history,
+    simulated_balance_usdt,
+    uses_exchange_ledger,
+)
 from services.gate_balance import fetch_portfolio_equity, fetch_usdt_balance
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
@@ -58,7 +63,7 @@ class RiskManager:
             )
 
         daily_count = self._daily_trades_count()
-        max_daily = self.config.max_daily_trades
+        max_daily = self._effective_max_daily_trades()
         if max_daily > 0 and daily_count >= max_daily:
             return RiskDecision(
                 approved=False,
@@ -154,7 +159,7 @@ class RiskManager:
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
-            "max_daily_trades": self.config.max_daily_trades,
+            "max_daily_trades": self._effective_max_daily_trades(),
             "max_position_percent": self.config.max_position_percent,
             "base_usdt_per_trade": self._base_usdt_cap(),
             "portfolio_equity": round(equity, 2),
@@ -162,8 +167,22 @@ class RiskManager:
             "drawdown_pct": round(drawdown_pct, 2),
             "drawdown_throttle_active": drawdown_pct >= throttle_at,
             "virtual_balance": cash,
-            "ledger_source": "gate" if uses_exchange_ledger(self.config.trading_mode) else "paper",
+            "ledger_source": self._ledger_source_label(),
         }
+
+    def _ledger_source_label(self) -> str:
+        if is_dry_run_enhanced(self.config.raw):
+            return "simulated"
+        if uses_exchange_ledger(self.config.trading_mode):
+            return "gate"
+        return "paper"
+
+    def _effective_max_daily_trades(self) -> int:
+        if is_dry_run_enhanced(self.config.raw):
+            defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_trades") is not None:
+                return int(defaults["max_daily_trades"])
+        return self.config.max_daily_trades
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
@@ -184,11 +203,23 @@ class RiskManager:
         return load_trade_history()
 
     def _available_usdt(self, fallback: float = 0) -> float:
+        if is_dry_run_enhanced(self.config.raw):
+            history = load_live_trade_history()
+            return float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
         if uses_exchange_ledger(self.config.trading_mode):
             return fetch_usdt_balance(self.config)
         return float(load_trade_history().get("virtual_balance", fallback))
 
     def _portfolio_equity(self, reference_price: float = 0) -> float:
+        if is_dry_run_enhanced(self.config.raw):
+            history = load_live_trade_history()
+            balance = float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
+            unrealized = 0.0
+            for pos in list_active_positions():
+                entry = pos.get("average_entry", 0) or pos.get("entry_price", 0)
+                price = reference_price if reference_price > 0 else entry
+                unrealized += (price - entry) * pos.get("amount", 0)
+            return max(balance + unrealized, balance)
         if uses_exchange_ledger(self.config.trading_mode):
             return fetch_portfolio_equity(self.config)
         history = load_trade_history()
@@ -201,9 +232,14 @@ class RiskManager:
         return max(balance + unrealized, balance)
 
     def _equity_drawdown_pct(self, reference_price: float = 0) -> float:
-        history = load_trade_history()
-        balance = float(history.get("virtual_balance", self._initial_capital()))
-        initial = self._initial_capital()
+        if is_dry_run_enhanced(self.config.raw):
+            history = load_live_trade_history()
+            balance = float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
+            initial = simulated_balance_usdt(self.config.raw)
+        else:
+            history = load_trade_history()
+            balance = float(history.get("virtual_balance", self._initial_capital()))
+            initial = self._initial_capital()
         peak = float(history.get("peak_equity", initial))
         peak = max(peak, balance, initial)
         if peak <= 0:
@@ -276,10 +312,21 @@ class RiskManager:
             return False, ""
 
         params = self.config.strategy_params(order.symbol, timeframe)
+        defaults = self.config.dry_run_defaults if is_dry_run_enhanced(self.config.raw) else {}
         if order.type == "BUY":
-            min_hours = float(params.get("min_hours_between_buys", self.config.trade_cooldown_hours))
+            min_hours = float(
+                params.get("min_hours_between_buys")
+                or defaults.get("min_hours_between_buys")
+                or defaults.get("trade_cooldown_hours")
+                or self.config.trade_cooldown_hours
+            )
         else:
-            min_hours = float(params.get("min_hours_between_sells", self.config.trade_cooldown_hours))
+            min_hours = float(
+                params.get("min_hours_between_sells")
+                or defaults.get("min_hours_between_sells")
+                or defaults.get("trade_cooldown_hours")
+                or self.config.trade_cooldown_hours
+            )
 
         elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
         if elapsed < min_hours:

@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from core.config import BotConfig, get_bot_config
-from data_manager import load_trade_history, uses_exchange_ledger
+from data_manager import (
+    is_dry_run_enhanced,
+    load_live_trade_history,
+    load_trade_history,
+    simulated_balance_usdt,
+    uses_exchange_ledger,
+)
 from logger import log
 from price_fetcher import get_prices_batch
 
@@ -17,6 +23,9 @@ def get_gate_adapter(config: BotConfig = None):
 
 def fetch_usdt_balance(config: BotConfig = None) -> float:
     cfg = config or get_bot_config()
+    if is_dry_run_enhanced(cfg.raw):
+        history = load_live_trade_history()
+        return float(history.get("virtual_balance", cfg.simulated_balance_usdt))
     if not uses_exchange_ledger(cfg.trading_mode):
         return float(load_trade_history().get("virtual_balance", 0))
     return get_gate_adapter(cfg)._fetch_usdt_balance()
@@ -54,6 +63,8 @@ def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> li
 
 def fetch_portfolio_equity(config: BotConfig = None, reference_prices: dict = None) -> float:
     cfg = config or get_bot_config()
+    if is_dry_run_enhanced(cfg.raw):
+        return fetch_usdt_balance(cfg)
     if not uses_exchange_ledger(cfg.trading_mode):
         history = load_trade_history()
         return float(history.get("virtual_balance", 0))

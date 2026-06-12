@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+import unittest.mock
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -111,6 +112,20 @@ class TestCycleSummary(unittest.TestCase):
             summary = build_cycle_summary(coin_results=[], trading_mode="paper")
         self.assertIn("No auto-trades executed", summary)
         self.assertIn("/orders", summary)
+
+    def test_build_cycle_summary_shows_simulated_balance(self):
+        live_hist = {"virtual_balance": 4750.0, "total_pnl": 12.5, "trades": []}
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.raw = {
+            "trading_mode": "live",
+            "live": {"dry_run": True, "dry_run_enhanced": True},
+        }
+        with patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("core.config.get_bot_config", return_value=mock_cfg):
+            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+        self.assertIn("Sim USDT", summary)
+        self.assertIn("4,750", summary)
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ class TestXPipeline(unittest.TestCase):
     def test_track_and_recommend_add_to_watchlist_off_list(self, mock_grok):
         mock_grok.return_value = self._valid_grok_json(coin="NEWCOIN", confidence=80)
         analyzer = XAnalyzer()
-        with patch("x_analyzer.load_watchlist", return_value=[{"symbol": "BTC/USDT"}]), \
+        with patch("strategies.decision_engine.load_effective_watchlist", return_value=[{"symbol": "BTC/USDT"}]), \
              patch.object(analyzer, "effective_confidence_threshold", return_value=50.0):
             rec = analyzer.track_and_recommend("NEWCOIN gem", "CryptoCapo_", 0.0)
         self.assertEqual(rec["action"], "ADD_TO_WATCHLIST")

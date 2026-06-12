@@ -1,4 +1,5 @@
 from core.config import get_bot_config
+from data_manager import is_dry_run_enhanced
 from strategies.base import BaseStrategy
 
 _STRATEGY_CLASSES = {}
@@ -29,9 +30,14 @@ def resolve_coin_config(coin: dict) -> dict:
             break
     else:
         merged.setdefault("strategy_class", "technical_rsi_bb")
-        params = cfg.strategy_params(symbol, tf)
-        if params:
-            merged["strategy_params"] = params
+        if coin.get("source") == "cmc_trending" and is_dry_run_enhanced():
+            defaults = dict(cfg.dry_run_defaults)
+            defaults.update({"symbol": symbol, "timeframe": tf})
+            merged["strategy_params"] = defaults
+        else:
+            params = cfg.strategy_params(symbol, tf)
+            if params:
+                merged["strategy_params"] = params
 
     return merged
 

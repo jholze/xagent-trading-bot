@@ -15,10 +15,11 @@ from data_manager import uses_exchange_ledger
 
 
 class TestLiveGateReadiness(unittest.TestCase):
-    def _live_config(self):
+    def _live_config(self, enhanced: bool = False):
         raw = dict(get_config())
         raw["trading_mode"] = "live"
         raw["live_confirmed"] = True
+        raw.setdefault("live", {})["dry_run_enhanced"] = enhanced
         cfg = BotConfig()
         cfg._raw = raw
         return cfg

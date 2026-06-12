@@ -15,7 +15,7 @@ from core.actions import (
 )
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
-from data_manager import load_watchlist
+from data_manager import is_dry_run_enhanced, load_effective_watchlist
 from services.market_service import MarketService
 from strategies.positions import count_open_positions, get_position
 from strategies.registry import get_strategy, resolve_coin_config
@@ -80,6 +80,8 @@ class DecisionEngine:
         return max(65.0, 85 - (trust - 70) * 0.5)
 
     def _cmc_buy_threshold(self) -> float:
+        if is_dry_run_enhanced():
+            return float(self.config.dry_run_defaults.get("cmc_min_confidence", 55))
         return float(self.config.cmc_config.get("min_confidence", 60))
 
     def _weighted_social_confidence(self, x_eff: float, cmc_eff: float) -> float:
@@ -320,7 +322,7 @@ class DecisionEngine:
         elif is_sell(norm) and x_signal.action == "SELL":
             recommendation["action"] = "SELL"
             recommendation["recommended"] = True
-        elif x_signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
+        elif x_signal.coin not in [c["symbol"].split("/")[0] for c in load_effective_watchlist()]:
             recommendation["action"] = ADD_WATCHLIST
             recommendation["recommended"] = True
 

@@ -161,18 +161,21 @@ def build_cycle_summary(
 ) -> str:
     from data_manager import load_live_trade_history, uses_exchange_ledger
 
+    from data_manager import is_dry_run_enhanced
+    from core.config import get_bot_config
+
+    bot_cfg = get_bot_config()
     if uses_exchange_ledger(trading_mode):
         live_hist = load_live_trade_history()
         balance = live_hist.get("virtual_balance")
         if balance is None:
             try:
                 from services.gate_balance import fetch_usdt_balance
-                from core.config import get_bot_config
-                balance = fetch_usdt_balance(get_bot_config())
+                balance = fetch_usdt_balance(bot_cfg)
             except Exception:
                 balance = 0.0
         realized = live_hist.get("total_pnl", live_hist.get("realized_pnl", 0))
-        balance_label = "USDT (Gate)"
+        balance_label = "Sim USDT" if is_dry_run_enhanced(bot_cfg.raw) else "USDT (Gate)"
     else:
         history = load_trade_history()
         balance = history.get("virtual_balance", 0)

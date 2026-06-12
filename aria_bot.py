@@ -37,7 +37,7 @@ try:
         get_text,
         list_coins,
         load_trade_history,
-        load_watchlist,
+        load_effective_watchlist,
     )
     from notifications.terminal_dashboard import build_cycle_summary, render_cycle_dashboard
     from price_fetcher import get_prices
@@ -109,7 +109,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
                 print("=" * 90)
 
-            watchlist = load_watchlist()
+            try:
+                from services.dry_run_watchlist import DryRunWatchlistSync
+                DryRunWatchlistSync(bot_config).sync_if_needed()
+            except Exception as e:
+                log(f"Dry-run watchlist sync failed: {e}", "WARNING")
+
+            watchlist = load_effective_watchlist()
             active_symbols = [
                 coin["symbol"] for coin in watchlist if coin.get("active", True)
             ]

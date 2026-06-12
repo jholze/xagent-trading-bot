@@ -58,6 +58,23 @@ def atomic_write_json(path: str, data: dict):
         raise
 
 WATCHLIST_FILE = "watchlist.json"
+DRY_RUN_OVERLAY_FILE = "watchlist.dry_run_overlay.json"
+
+
+def is_dry_run_enhanced(config: dict = None) -> bool:
+    """True when live + dry_run + dry_run_enhanced — never when dry_run is false."""
+    cfg = config or get_config()
+    if cfg.get("trading_mode") != "live":
+        return False
+    live = cfg.get("live", {})
+    if not live.get("dry_run", True):
+        return False
+    return bool(live.get("dry_run_enhanced", False))
+
+
+def simulated_balance_usdt(config: dict = None) -> float:
+    cfg = config or get_config()
+    return float(cfg.get("live", {}).get("simulated_balance_usdt", 5000))
 
 
 def load_watchlist():
@@ -122,7 +139,51 @@ def remove_coin(symbol):
 
 def list_coins():
     """Gibt alle Coins zurück"""
-    return load_watchlist()
+    return load_effective_watchlist()
+
+
+def load_dry_run_overlay():
+    path = get_data_file(DRY_RUN_OVERLAY_FILE)
+    if not os.path.exists(path):
+        return {"refreshed_at": "", "source": "", "coins": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"refreshed_at": "", "source": "", "coins": []}
+
+
+def save_dry_run_overlay(data: dict) -> bool:
+    path = get_data_file(DRY_RUN_OVERLAY_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def _dedupe_watchlist_coins(coins: list) -> list:
+    seen = set()
+    unique = []
+    for c in coins:
+        sym = c.get("symbol", "")
+        if sym and sym not in seen:
+            seen.add(sym)
+            unique.append(c)
+    return unique
+
+
+def load_effective_watchlist():
+    """Base watchlist merged with CMC trending overlay when enhanced dry run is active."""
+    base = load_watchlist()
+    if not is_dry_run_enhanced():
+        return base
+    overlay = load_dry_run_overlay()
+    overlay_coins = overlay.get("coins", [])
+    if not overlay_coins:
+        return base
+    return _dedupe_watchlist_coins(base + overlay_coins)
 
 
 def save_full_coin(coin_data):
@@ -310,16 +371,28 @@ def save_trade_history(data):
     except Exception:
         return False
 
+def _ensure_live_virtual_balance(history: dict, config: dict = None) -> dict:
+    cfg = config or get_config()
+    if not is_dry_run_enhanced(cfg):
+        return history
+    if "virtual_balance" not in history:
+        history["virtual_balance"] = simulated_balance_usdt(cfg)
+    return history
+
+
 def load_live_trade_history():
     path = get_data_file(LIVE_TRADE_HISTORY_FILE)
     if not os.path.exists(path):
-        return {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0}
+        return _ensure_live_virtual_balance(history)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            history = json.load(f)
+            return _ensure_live_virtual_balance(history)
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
-        return {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0}
+        return _ensure_live_virtual_balance(history)
 
 
 def save_live_trade_history(data):
@@ -332,8 +405,22 @@ def save_live_trade_history(data):
 
 
 def record_live_trade(trade):
+    cfg = get_config()
     history = load_live_trade_history()
     history.setdefault("trades", []).append(trade)
+    if is_dry_run_enhanced(cfg):
+        history = _ensure_live_virtual_balance(history, cfg)
+        if trade.get("type") == "BUY":
+            history["virtual_balance"] = max(
+                0.0,
+                float(history.get("virtual_balance", simulated_balance_usdt(cfg)))
+                - float(trade.get("usdt_amount", 0) or 0),
+            )
+        elif trade.get("type") == "SELL":
+            history["virtual_balance"] = (
+                float(history.get("virtual_balance", simulated_balance_usdt(cfg)))
+                + float(trade.get("usdt_received", 0) or 0)
+            )
     if trade.get("type") == "SELL":
         history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
     save_live_trade_history(history)

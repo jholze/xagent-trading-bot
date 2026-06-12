@@ -1,7 +1,7 @@
 import threading
 from queue import Queue
 
-from data_manager import add_coin, get_config, load_watchlist, log_cmc_post
+from data_manager import add_coin, get_config, load_effective_watchlist, log_cmc_post
 from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
@@ -140,7 +140,7 @@ class SocialPipeline:
         if not cfg.cmc_config.get("enabled", True):
             return []
 
-        watchlist = watchlist or load_watchlist()
+        watchlist = watchlist or load_effective_watchlist()
         raw_posts = self.cmc_provider.fetch_posts(watchlist)
         self._cycle_cmc_signals = []
 
