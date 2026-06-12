@@ -1,6 +1,7 @@
 from core.config import get_bot_config
-from data_manager import uses_exchange_ledger
+from data_manager import is_dry_run_enhanced, uses_exchange_ledger
 from services.gate_balance import fetch_spot_holdings, fetch_usdt_balance, format_holdings_lines
+from services.order_service import source_label
 
 
 def position_symbol(p: dict) -> str:
@@ -90,6 +91,20 @@ def format_position_card(index: int, p: dict, price: float, numbered: bool = Fal
     )
 
 
+def _trade_line(t: dict) -> str:
+    ts = t.get("timestamp", "")[:16].replace("T", " ")
+    typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
+    sym = (t.get("symbol") or "").replace("/USDT", "")
+    pnl = t.get("pnl")
+    pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
+    src = source_label(t.get("source", "auto"))
+    return (
+        f"\n{typ} <b>{sym}</b> · <i>{src}</i> · {ts}\n"
+        f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
+        f"${float(t.get('price', 0)):.4f}{pnl_part}"
+    )
+
+
 def format_portfolio_summary(
     history: dict,
     total_unreal: float,
@@ -151,16 +166,7 @@ def format_positions_message(
                 empty += "<i>Keine Trades im Ledger.</i>"
             else:
                 for t in reversed(trades):
-                    ts = t.get("timestamp", "")[:16].replace("T", " ")
-                    typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
-                    sym = (t.get("symbol") or "").replace("/USDT", "")
-                    pnl = t.get("pnl")
-                    pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
-                    empty += (
-                        f"\n{typ} <b>{sym}</b> · {ts}\n"
-                        f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
-                        f"${float(t.get('price', 0)):.4f}{pnl_part}"
-                    )
+                    empty += _trade_line(t)
         return empty
 
     total_unreal = 0.0
@@ -197,16 +203,7 @@ def format_positions_message(
             msg += "<i>Keine Trades im Ledger.</i>"
         else:
             for t in reversed(trades):
-                ts = t.get("timestamp", "")[:16].replace("T", " ")
-                typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
-                sym = (t.get("symbol") or "").replace("/USDT", "")
-                pnl = t.get("pnl")
-                pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
-                msg += (
-                    f"\n{typ} <b>{sym}</b> · {ts}\n"
-                    f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
-                    f"${float(t.get('price', 0)):.4f}{pnl_part}"
-                )
+                msg += _trade_line(t)
 
     return msg
 
@@ -234,6 +231,15 @@ def load_trade_history_safe() -> dict:
 def resolve_portfolio_context() -> dict:
     cfg = get_bot_config()
     history = load_trade_history_safe()
+    if is_dry_run_enhanced(cfg.raw):
+        return {
+            "history": history,
+            "cash_balance": float(
+                history.get("virtual_balance", getattr(cfg, "simulated_balance_usdt", 5000))
+            ),
+            "cash_label": "Cash (Sim)",
+            "gate_holdings": None,
+        }
     if uses_exchange_ledger(cfg.trading_mode):
         return {
             "history": history,

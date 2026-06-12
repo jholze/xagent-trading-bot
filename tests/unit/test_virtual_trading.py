@@ -861,6 +861,27 @@ class TestVirtualTrading(unittest.TestCase):
             )
         self.assertTrue(decision.approved)
         self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
+        self.assertEqual(decision.order.source, "manual")
+
+    def test_risk_manager_preserves_source_on_approved_buy(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "paper"
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder("BUY", "ARIA/USDT", 0.0325, 0, usdt_amount=200, source="manual", order_id="abc")
+
+        with patch.object(risk, "_daily_trades_count", return_value=0):
+            decision = risk.evaluate(order, "4h", source="manual")
+
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.order.source, "manual")
+        self.assertEqual(decision.order.order_id, "abc")
 
     def test_risk_manager_approves_buy_with_dynamic_sizing(self):
         from core.config import BotConfig

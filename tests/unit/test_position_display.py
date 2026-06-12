@@ -6,11 +6,13 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from notifications.telegram_commands.position_display import (
+    _trade_line,
     format_portfolio_summary,
     format_position_card,
     format_positions_message,
     format_sell_list_message,
     format_trade_banner,
+    resolve_portfolio_context,
     resolve_position_by_display_index,
     send_positions_snapshot,
     sort_positions_by_value,
@@ -98,6 +100,25 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Kauf ausgeführt", format_trade_banner(buy))
         self.assertIn("Verkauf ausgeführt", format_trade_banner(sell))
         self.assertIn("PnL", format_trade_banner(sell))
+
+    def test_trade_line_shows_manual_source(self):
+        line = _trade_line({
+            "type": "BUY", "symbol": "CAT/USDT", "amount": 100, "price": 0.0000015,
+            "source": "manual", "timestamp": "2026-06-12T15:35:11",
+        })
+        self.assertIn("Manuell", line)
+
+    def test_resolve_portfolio_context_dry_run_uses_sim_cash(self):
+        cfg = type("Cfg", (), {"raw": {"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}})()
+        with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
+             patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value={
+                 "virtual_balance": 3904.25, "total_pnl": -10, "trades": [],
+             }), \
+             patch("notifications.telegram_commands.position_display.is_dry_run_enhanced", return_value=True):
+            ctx = resolve_portfolio_context()
+        self.assertEqual(ctx["cash_label"], "Cash (Sim)")
+        self.assertAlmostEqual(ctx["cash_balance"], 3904.25)
+        self.assertIsNone(ctx["gate_holdings"])
 
     def test_send_positions_snapshot_includes_trade_banner(self):
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)

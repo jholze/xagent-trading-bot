@@ -66,6 +66,7 @@ class TestManualOrderFlow(unittest.TestCase):
             orders, _ = OrderService("paper").list_orders()
             self.assertEqual(len(orders), 1)
             self.assertEqual(orders[0]["status"], "pending_confirmation")
+            self.assertEqual(orders[0]["source"], "manual")
             self.assertIn("manual_ok:", buttons[0][0]["callback_data"])
 
     def test_request_buy_rejected_without_buttons(self):

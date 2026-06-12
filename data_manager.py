@@ -380,18 +380,52 @@ def _ensure_live_virtual_balance(history: dict, config: dict = None) -> dict:
     return history
 
 
+def _reconcile_live_trade_sources(history: dict) -> tuple:
+    changed = False
+    try:
+        from services.order_service import OrderService, infer_manual_source
+
+        svc = OrderService("live")
+        if svc.reconcile_legacy_sources():
+            changed = True
+        by_id = {o["id"]: o.get("source") for o in svc._load().get("orders", []) if o.get("id")}
+        for trade in history.get("trades", []):
+            oid = trade.get("order_id")
+            src = by_id.get(oid) if oid else None
+            if not src:
+                side = "buy" if trade.get("type") == "BUY" else "sell"
+                signal = "" if trade.get("type") == "BUY" else "SELL"
+                src = infer_manual_source({
+                    "side": side,
+                    "signal": signal,
+                    "source": trade.get("source"),
+                })
+            if src and trade.get("source") != src:
+                trade["source"] = src
+                changed = True
+    except Exception:
+        pass
+    return history, changed
+
+
 def load_live_trade_history():
     path = get_data_file(LIVE_TRADE_HISTORY_FILE)
     if not os.path.exists(path):
-        history = {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
         return _ensure_live_virtual_balance(history)
     try:
         with open(path, "r", encoding="utf-8") as f:
             history = json.load(f)
-            return _ensure_live_virtual_balance(history)
+            if history.get("total_pnl") is not None and history.get("realized_pnl") is None:
+                history["realized_pnl"] = history["total_pnl"]
+            history, reconciled = _reconcile_live_trade_sources(history)
+            history = _ensure_live_virtual_balance(history)
+            if reconciled:
+                save_live_trade_history(history)
+            return history
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
-        history = {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
         return _ensure_live_virtual_balance(history)
 
 
@@ -423,6 +457,7 @@ def record_live_trade(trade):
             )
     if trade.get("type") == "SELL":
         history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
+        history["realized_pnl"] = history["total_pnl"]
     save_live_trade_history(history)
     return history
 

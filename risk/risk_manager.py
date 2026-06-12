@@ -129,6 +129,7 @@ class RiskManager:
                 trust_factor=factors.get("trust_factor", 1.0),
             )
 
+        resolved_source = order.source if order.source not in ("", "auto") else source
         approved = TradeOrder(
             type=order.type,
             symbol=order.symbol,
@@ -136,6 +137,8 @@ class RiskManager:
             amount=order.amount,
             usdt_amount=round(sized, 2),
             signal=order.signal,
+            source=resolved_source,
+            order_id=order.order_id,
             timestamp=order.timestamp,
         )
         return RiskDecision(

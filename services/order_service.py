@@ -29,6 +29,30 @@ STATUS_ICONS = {
     "failed": "⚠️",
 }
 
+SOURCE_LABELS = {
+    "auto": "Auto",
+    "manual": "Manuell",
+    "x": "X",
+    "cmc": "CMC",
+}
+
+
+def source_label(source: str) -> str:
+    return SOURCE_LABELS.get(source or "auto", source or "Auto")
+
+
+def infer_manual_source(order: dict) -> Optional[str]:
+    """Heuristic for legacy orders saved before source was propagated."""
+    if order.get("source") not in (None, "", "auto"):
+        return None
+    side = (order.get("side") or "").lower()
+    signal = (order.get("signal") or "").strip()
+    if side == "buy" and not signal:
+        return "manual"
+    if side == "sell" and signal == "SELL":
+        return "manual"
+    return None
+
 
 def ledger_label(scope: str = None) -> str:
     scope = scope or resolve_ledger_scope()
@@ -226,6 +250,20 @@ class OrderService:
             self._save(data)
         return count
 
+    def reconcile_legacy_sources(self) -> int:
+        data = self._load()
+        changed = 0
+        for order in data.get("orders", []):
+            if order.get("ledger_scope") != self.scope:
+                continue
+            inferred = infer_manual_source(order)
+            if inferred:
+                order["source"] = inferred
+                changed += 1
+        if changed:
+            self._save(data)
+        return changed
+
     def list_orders(
         self,
         *,
@@ -235,6 +273,7 @@ class OrderService:
         per_page: int = ORDERS_PER_PAGE,
     ) -> tuple[list, int]:
         self.expire_stale_pending()
+        self.reconcile_legacy_sources()
         data = self._load()
         orders = [o for o in data.get("orders", []) if o.get("ledger_scope") == self.scope]
         orders = list(reversed(orders))
@@ -269,6 +308,12 @@ class OrderService:
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:
         if not order_id:
             return
+        if result.executed and approved_order and approved_order.source:
+            data = self._load()
+            record = self._find(data, order_id=order_id)
+            if record and record.get("source") != approved_order.source:
+                record["source"] = approved_order.source
+                self._save(data)
         if result.executed:
             self.update_status(
                 order_id,
@@ -307,7 +352,7 @@ def format_order_line(order: dict) -> str:
     sym = (order.get("symbol") or "").replace("/USDT", "")
     side = (order.get("side") or "?").upper()
     seq = order.get("display_seq", "?")
-    src = order.get("source", "auto")
+    src = source_label(order.get("source", "auto"))
     usdt = _order_usdt_display(order)
     trade_ts = _order_trade_ts(order)
     date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
@@ -325,7 +370,7 @@ def format_order_detail(order: dict) -> str:
     ts = order.get("timestamps", {})
     lines = [
         f"<b>Order #{order.get('display_seq')} — {order.get('status', '').upper()}</b>",
-        f"{order.get('side', '').upper()} <b>{sym}</b> · {order.get('source', '')} · {ledger_label(order.get('ledger_scope'))}",
+        f"{order.get('side', '').upper()} <b>{sym}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
         "",
         f"<b>Anfrage</b>  Kurs ${float(req.get('price', 0)):.4f}",
     ]
