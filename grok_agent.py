@@ -27,7 +27,13 @@ def ask_grok(prompt, temperature=0.7, model=None):
 
 
 def ask_grok_json(prompt, model=None):
-    return ask_grok(prompt, temperature=0.2, model=model or PARSE_MODEL)
+    try:
+        import json
+        from intelligence.grok_json import ask_grok_json as _ask_json
+        data = _ask_json(prompt, model=model or PARSE_MODEL)
+        return json.dumps(data)
+    except Exception as e:
+        return f"API-Fehler: {e}"
 
 def read_file(filename):
     try:

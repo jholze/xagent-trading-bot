@@ -96,6 +96,7 @@ class TradingService:
         confidence: float = None,
         indicators: dict = None,
         order_id: str = None,
+        request_extra: dict = None,
     ) -> TradeResult:
         with _execute_lock:
             return self._execute_order_locked(
@@ -106,6 +107,7 @@ class TradingService:
                 confidence=confidence,
                 indicators=indicators,
                 order_id=order_id,
+                request_extra=request_extra,
             )
 
     def _execute_order_locked(
@@ -117,6 +119,7 @@ class TradingService:
         confidence: float = None,
         indicators: dict = None,
         order_id: str = None,
+        request_extra: dict = None,
     ) -> TradeResult:
         self.refresh()
         ledger = OrderService()
@@ -130,6 +133,7 @@ class TradingService:
                     order,
                     RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
                     timeframe=timeframe,
+                    request_extra=request_extra,
                 )
             return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
 
@@ -144,7 +148,7 @@ class TradingService:
         if not decision.approved:
             log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
             if not ledger_id:
-                ledger.record_rejected(order, decision, timeframe=timeframe)
+                ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
             else:
                 ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
             return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
@@ -155,7 +159,11 @@ class TradingService:
             approved_order.order_id = ledger_id
         else:
             created = ledger.create_from_request(
-                approved_order, timeframe=timeframe, status="executing", risk=decision,
+                approved_order,
+                timeframe=timeframe,
+                status="executing",
+                risk=decision,
+                request_extra=request_extra,
             )
             ledger_id = created["id"]
             approved_order.order_id = ledger_id

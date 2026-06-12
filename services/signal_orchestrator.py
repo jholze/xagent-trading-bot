@@ -10,6 +10,7 @@ from services.trading_service import TradingService
 from core.actions import is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
+from strategies.registry import resolve_coin_config
 
 
 class SignalOrchestrator:
@@ -39,7 +40,16 @@ class SignalOrchestrator:
         self.trading.refresh()
         symbol = analysis.symbol
         tf = analysis.timeframe
-        if "x" in (analysis.sources or []):
+        coin_cfg = resolve_coin_config(coin)
+        strategy_params = coin_cfg.get("strategy_params") or {}
+        request_extra = {}
+        if strategy_params.get("hermes_experiment_id"):
+            source = "hermes"
+            request_extra = {
+                "hermes_experiment_id": strategy_params.get("hermes_experiment_id"),
+                "hermes_updated_at": strategy_params.get("hermes_updated_at"),
+            }
+        elif "x" in (analysis.sources or []):
             source = "x"
         elif "cmc" in (analysis.sources or []):
             source = "cmc"
@@ -78,6 +88,7 @@ class SignalOrchestrator:
             source=source,
             trust_score=trust_score,
             confidence=analysis.confidence,
+            request_extra=request_extra or None,
         )
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, quiet: bool = False) -> dict:

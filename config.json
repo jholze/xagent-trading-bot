@@ -168,7 +168,7 @@
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
-    "backtest_days": 60,
+    "backtest_days": 35,
     "symbols": ["ARIA/USDT"],
     "timeframes": ["4h"],
     "tunable_params": [
@@ -179,11 +179,26 @@
       "rsi_sell_20",
       "stop_loss_pct"
     ],
-    "cycle_interval_sec": 3600,
+    "cycle_interval_sec": 1800,
     "initial_capital_usdt": 1000,
     "usdt_per_trade": 50,
     "sync_to_config": true,
-    "notify_on_promotion": true
+    "notify_on_promotion": true,
+    "validation": {
+      "mode": "walk_forward",
+      "backtest_days": 35,
+      "fold_days": 7,
+      "step_days": 3,
+      "min_folds_won_ratio": 0.6,
+      "min_bars_per_fold": 12,
+      "min_trades_per_fold": 2,
+      "min_trades_aggregate": 5
+    },
+    "skills": {
+      "max_per_variable": 5,
+      "min_confidence": 0.25,
+      "confidence_ema_alpha": 0.3
+    }
   },
   "sandbox": {
     "enabled": true,

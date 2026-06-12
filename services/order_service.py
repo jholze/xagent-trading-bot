@@ -380,6 +380,8 @@ def format_order_detail(order: dict) -> str:
         lines.append(f"   Menge <code>{float(req['amount']):.4f}</code>")
     if req.get("pct"):
         lines.append(f"   Anteil <b>{float(req['pct']) * 100:.0f}%</b>")
+    if order.get("source") == "hermes" and req.get("hermes_experiment_id"):
+        lines.append(f"<b>Hermes</b>  Experiment <code>{req['hermes_experiment_id']}</code>")
     lines.append(f"<b>Risk</b>  {risk.get('message') or '—'}")
     if risk.get("approved_usdt"):
         lines.append(f"   Freigegeben <b>${float(risk['approved_usdt']):.0f}</b>")

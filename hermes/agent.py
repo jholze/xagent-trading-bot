@@ -7,6 +7,7 @@ from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
 from hermes.memory import store
 from hermes.self_improver import SelfImprover
+from hermes.validation import run_walk_forward
 from logger import log
 
 
@@ -34,6 +35,7 @@ class HermesAgent:
 
     def run_cycle(self) -> CycleResult:
         self.config.refresh()
+        self.hermes = self.config.hermes_config
         baseline = store.init_baseline_from_config(self.config)
         symbol = baseline.get("symbol", self.hermes.get("symbols", ["ARIA/USDT"])[0])
         timeframe = baseline.get("timeframe", self.hermes.get("timeframes", ["4h"])[0])
@@ -48,24 +50,50 @@ class HermesAgent:
             "INFO",
         )
 
-        days = int(self.hermes.get("backtest_days", 60))
+        vcfg = self.hermes.get("validation", {})
+        days = int(vcfg.get("backtest_days", self.hermes.get("backtest_days", 35)))
         ohlcv_df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
-        bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
-        bt_var = self.backtester.run(symbol, timeframe, proposal.params, ohlcv_df=ohlcv_df)
 
-        base_m = bt_base.metrics.__dict__
-        var_m = bt_var.metrics.__dict__
-        verdict = self.goals.evaluate(bt_base.metrics, bt_var.metrics)
-
-        record = self.experiments.record(
-            proposal=proposal,
-            baseline_metrics=base_m,
-            variant_metrics=var_m,
-            verdict_promoted=verdict.promoted,
-            verdict_reason=verdict.reason,
-            symbol=symbol,
-            timeframe=timeframe,
-        )
+        validation_mode = vcfg.get("mode", "walk_forward")
+        if validation_mode == "walk_forward" and ohlcv_df is not None and not ohlcv_df.empty:
+            wf_base = run_walk_forward(self.backtester, symbol, timeframe, params, ohlcv_df, self.hermes)
+            wf_var = run_walk_forward(
+                self.backtester, symbol, timeframe, proposal.params, ohlcv_df, self.hermes,
+                baseline_folds=wf_base.fold_metrics,
+            )
+            base_m = wf_base.aggregate.__dict__
+            var_m = wf_var.aggregate.__dict__
+            verdict = self.goals.evaluate_walk_forward(wf_base, wf_var)
+            record = self.experiments.record(
+                proposal=proposal,
+                baseline_metrics=base_m,
+                variant_metrics=var_m,
+                verdict_promoted=verdict.promoted,
+                verdict_reason=verdict.reason,
+                symbol=symbol,
+                timeframe=timeframe,
+                validation_mode="walk_forward",
+                fold_metrics=wf_var.fold_metrics,
+                baseline_fold_metrics=wf_base.fold_metrics,
+                folds_won=wf_var.folds_won,
+                folds_total=wf_var.folds_total,
+            )
+        else:
+            bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
+            bt_var = self.backtester.run(symbol, timeframe, proposal.params, ohlcv_df=ohlcv_df)
+            base_m = bt_base.metrics.__dict__
+            var_m = bt_var.metrics.__dict__
+            verdict = self.goals.evaluate(bt_base.metrics, bt_var.metrics)
+            record = self.experiments.record(
+                proposal=proposal,
+                baseline_metrics=base_m,
+                variant_metrics=var_m,
+                verdict_promoted=verdict.promoted,
+                verdict_reason=verdict.reason,
+                symbol=symbol,
+                timeframe=timeframe,
+                validation_mode="full",
+            )
 
         if verdict.promoted:
             baseline["params"] = proposal.params
@@ -103,18 +131,21 @@ class HermesAgent:
             return
         try:
             from telegram_notifier import send_telegram_message
+            folds = ""
+            if record.get("folds_total"):
+                folds = f"\nFolds: {record.get('folds_won')}/{record.get('folds_total')}"
             send_telegram_message(
                 f"🧠 <b>Hermes promoted</b>\n"
                 f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
                 f"Sharpe: {metrics.get('sharpe', 0)} | WR: {metrics.get('win_rate', 0)}% | "
-                f"DD: {metrics.get('max_drawdown_pct', 0)}%\n"
+                f"DD: {metrics.get('max_drawdown_pct', 0)}%{folds}\n"
                 f"Experiment: {record.get('id', '')}"
             )
         except Exception as e:
             log(f"Hermes promotion notify failed: {e}", "WARNING")
 
     def run_loop(self, interval_sec: int | None = None):
-        interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 3600))
+        interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 1800))
         log(f"Hermes agent loop started (interval={interval}s)", "INFO")
         while True:
             try:
@@ -138,13 +169,17 @@ class HermesAgent:
             f"Recent experiments ({len(recent)}):",
         ]
         for exp in recent:
+            fold_info = ""
+            if exp.get("folds_total"):
+                fold_info = f" [{exp.get('folds_won')}/{exp.get('folds_total')} folds]"
             lines.append(
                 f"  • {exp.get('id')}: {exp.get('variable')} "
-                f"{exp.get('old_value')}→{exp.get('new_value')} → {exp.get('verdict')}"
+                f"{exp.get('old_value')}→{exp.get('new_value')} → {exp.get('verdict')}{fold_info}"
             )
         if skills:
             lines.append("")
             lines.append("Recent skills:")
             for s in skills:
-                lines.append(f"  • [{s.get('confidence', 0)}] {s.get('pattern', '')[:80]}")
+                ev = s.get("evidence_count", 1)
+                lines.append(f"  • [{s.get('confidence', 0)} x{ev}] {s.get('pattern', '')[:80]}")
         return "\n".join(lines)

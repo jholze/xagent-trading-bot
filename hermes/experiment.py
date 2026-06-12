@@ -131,6 +131,11 @@ class ExperimentRunner:
         verdict_reason: str,
         symbol: str,
         timeframe: str,
+        validation_mode: str = "full",
+        fold_metrics: list = None,
+        baseline_fold_metrics: list = None,
+        folds_won: int = 0,
+        folds_total: int = 0,
     ) -> dict:
         return store.append_experiment({
             "variable": proposal.variable,
@@ -144,4 +149,9 @@ class ExperimentRunner:
             "variant_metrics": variant_metrics,
             "verdict": "promoted" if verdict_promoted else "rejected",
             "verdict_reason": verdict_reason,
+            "validation_mode": validation_mode,
+            "fold_metrics": fold_metrics or [],
+            "baseline_fold_metrics": baseline_fold_metrics or [],
+            "folds_won": folds_won,
+            "folds_total": folds_total,
         })

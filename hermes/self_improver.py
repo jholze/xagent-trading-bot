@@ -4,6 +4,7 @@ from pathlib import Path
 from core.config import get_bot_config
 from hermes.experiment import ExperimentRunner
 from hermes.memory import store
+from intelligence.grok_json import GrokError, ask_grok_json
 from logger import log
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
@@ -25,41 +26,32 @@ class SelfImprover:
 
     def propose_experiment(self, baseline: dict) -> dict:
         params = baseline.get("params", {})
+        symbol = baseline.get("symbol", "ARIA/USDT")
+        timeframe = baseline.get("timeframe", "4h")
         recent = store.recent_experiments(5)
-        skills = store.relevant_skills(
-            baseline.get("symbol", "ARIA/USDT"),
-            baseline.get("timeframe", "4h"),
-            limit=8,
-        )
+        skills = store.relevant_skills(symbol, timeframe, limit=8)
         prompt_template = _load_prompt("propose_experiment.txt")
-        if not prompt_template:
-            proposal = self.runner.propose(params)
-            return {
-                "variable": proposal.variable,
-                "old_value": proposal.old_value,
-                "new_value": proposal.new_value,
-                "hypothesis": proposal.hypothesis,
-            }
 
-        prompt = prompt_template.format(
-            baseline_params=json.dumps(params, indent=2),
-            recent_experiments=json.dumps(recent, indent=2),
-            recent_skills=json.dumps(skills, indent=2),
-            tunable_params=json.dumps(self.runner.tunable_params),
-            symbol=baseline.get("symbol", "ARIA/USDT"),
-            timeframe=baseline.get("timeframe", "4h"),
-        )
-        try:
-            from grok_agent import ask_grok_json
-            response = ask_grok_json(prompt)
-            cleaned = response.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            data = json.loads(cleaned)
-            if data.get("variable") and "new_value" in data:
+        if prompt_template:
+            prompt = prompt_template.format(
+                baseline_params=json.dumps(params, indent=2),
+                recent_experiments=json.dumps(recent, indent=2),
+                recent_skills=json.dumps(skills, indent=2),
+                tunable_params=json.dumps(self.runner.tunable_params),
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            try:
+                data = ask_grok_json(
+                    prompt,
+                    required_keys=["variable", "new_value"],
+                )
+                data["source"] = "grok"
                 return data
-        except Exception as e:
-            log(f"Grok experiment proposal unavailable, using heuristic: {e}", "WARNING")
+            except GrokError as e:
+                log(f"Grok experiment proposal unavailable, using heuristic: {e}", "WARNING")
 
-        proposal = self.runner.propose(params)
+        proposal = self.runner.propose(params, symbol=symbol, timeframe=timeframe)
         return {
             "variable": proposal.variable,
             "old_value": proposal.old_value,
@@ -98,6 +90,7 @@ class SelfImprover:
             "applies_to": {"symbol": symbol, "timeframe": timeframe},
             "variable": proposal.variable,
             "promoted": promoted,
+            "grok_enhanced": False,
         }
 
         prompt = _load_prompt("analyze_cycle.txt")
@@ -111,28 +104,30 @@ class SelfImprover:
                 promoted=promoted,
             )
             try:
-                from grok_agent import ask_grok_json
-                response = ask_grok_json(grok_prompt)
-                cleaned = response.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = json.loads(cleaned)
+                data = ask_grok_json(grok_prompt, required_keys=["pattern"])
                 if data.get("pattern"):
                     skill["pattern"] = data["pattern"]
                 if "confidence" in data:
                     skill["confidence"] = float(data["confidence"])
-            except Exception:
-                pass
+                skill["grok_enhanced"] = True
+            except GrokError as e:
+                log(f"Grok skill extraction failed, using template: {e}", "WARNING")
 
-        return store.append_skill(skill)
+        return store.upsert_skill(skill, proposal.old_value, proposal.new_value)
 
     def analyze_and_suggest(self, experiment_record: dict) -> str:
-        """Human-readable summary of last experiment."""
         v = experiment_record.get("verdict", "unknown")
         var = experiment_record.get("variable", "?")
         reason = experiment_record.get("verdict_reason", "")
         bm = experiment_record.get("baseline_metrics", {})
         vm = experiment_record.get("variant_metrics", {})
+        folds = experiment_record.get("folds_won")
+        folds_total = experiment_record.get("folds_total")
+        fold_part = ""
+        if folds is not None and folds_total:
+            fold_part = f" Folds {folds}/{folds_total}."
         return (
             f"Experiment {experiment_record.get('id')}: {var} "
             f"{experiment_record.get('old_value')}→{experiment_record.get('new_value')} → {v}. "
-            f"Sharpe {bm.get('sharpe', 0)}→{vm.get('sharpe', 0)}. {reason}"
+            f"Sharpe {bm.get('sharpe', 0)}→{vm.get('sharpe', 0)}.{fold_part} {reason}"
         )
