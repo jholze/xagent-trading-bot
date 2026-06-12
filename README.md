@@ -1,4 +1,4 @@
-# X-Agent Trading Bot (Version 1.4.0)
+# X-Agent Trading Bot (Version 1.5.0)
 
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 
@@ -23,16 +23,21 @@ In Telegram: `/help` senden.
 
 ---
 
-## Was ist neu in 1.4 (Juni 2026)
+## Was ist neu in 1.5 (Juni 2026)
 
-- **Gate.io Live-Trading** — Paper + Live Mainnet (kein Testnet; 2-Stufen: `/mode live` + `/live_confirm`)
-- **Order-Ledger** — `/orders` mit Kaufdatum/Verkaufsdatum, scope-isoliert (demo/paper/live)
-- **Live-Readiness** — echte Gate-Balances in Risk/`/positions`, `reconcile_gate_positions.py`
-- **Anti-Churn** — Trade-Cooldowns, RSI-Cross-Sells, einmalige Sell-Tiers
-- **Take-Profit** — `take_profit_pct` pro Coin + X `price_target`
-- **5 Coin-Strategien** — ARIA, RAVE, HIGH, SOL, BTC (4h, 25 USDT/Trade)
-- **Telegram** — SIGNAL / EXECUTED / BLOCKED, Mode-Badges, Cycle-Summaries
-- **ngrok-Neustart** — `start_demo_with_ngrok.sh` richtet Tunnel + Webhook bei jedem Start neu ein
+- **Enhanced Dry Run** — Sim-Wallet ($5000), CMC-Trending-Watchlist, `/dryrun`, realistischeres Live-Üben ohne Orders
+- **Sim-Cash Fix** — Cash wird aus Trade-Historie neu berechnet; Portfolio = Cash (Sim) + Positionen
+- **Strategy Backtest** — Auto-Backtest + Parameter-Tuning pro Coin (`/backtest`, gestaffelt, Auto-Apply mit Guardrails)
+- **Manuell vs. Auto** — `/orders` und `/positions` zeigen Trade-Quelle korrekt (Manuell / Auto)
+- **Scope-Ledger** — `positions.live.json` / `positions.paper.json` getrennt vom Paper-Ledger
+- **237 Unit-Tests** — inkl. Portfolio-Invarianten (`test_dry_run_portfolio.py`)
+
+### Aus 1.4
+
+- **Gate.io Live-Trading** — Paper + Live Mainnet (2-Stufen: `/mode live` + `/live_confirm`)
+- **Order-Ledger** — `/orders` scope-isoliert (demo/paper/live)
+- **Anti-Churn** — Cooldowns, RSI-Cross-Sells, Take-Profit
+- **Produktiv-Start** — `scripts/start_with_ngrok.sh` (ohne `--demo`)
 
 ---
 
@@ -66,7 +71,8 @@ Alle Intervalle: [DOCUMENTATION.md §3](DOCUMENTATION.md#3-wann-läuft-was--alle
 | Bereich | Befehle |
 |---------|---------|
 | Watchlist | `/list` `/add` `/remove` |
-| Handel | `/buy` `/sell` `/positions` `/orders` `/risk` |
+| Handel | `/buy` `/sell` `/positions` `/orders` `/risk` `/dryrun` |
+| Backtest | `/backtest` `/backtest_results` `/backtest_lock` |
 | Modus | `/mode` `/live_confirm` `/gate` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
 | Sandbox | `/sandbox` `/sandbox_results` `/sandbox_promote` |
@@ -118,10 +124,11 @@ DOCUMENTATION.md         # ← Vollständige Doku
 ## Tests
 
 ```bash
-pytest tests/unit/ -v
-pytest tests/unit/test_live_gate_readiness.py -v
-python3 scripts/gate_live_smoke_test.py      # Keys + Balance (.env)
-python3 scripts/reconcile_gate_positions.py  # nur im Live-Modus
+pytest tests/unit/ -v                         # 237+ Tests
+pytest tests/unit/test_dry_run_portfolio.py -v
+pytest tests/unit/test_strategy_backtest.py -v
+python3 scripts/gate_live_smoke_test.py       # Keys + Balance (.env)
+python3 scripts/reconcile_gate_positions.py   # Live-Modus
 ```
 
 ---
@@ -136,6 +143,8 @@ python3 scripts/reconcile_gate_positions.py  # nur im Live-Modus
 | `trade_cooldown_hours` | 1.0 |
 | `notify_on_cycle` | true |
 | `live.dry_run` | true (sicher) |
+| `live.dry_run_enhanced` | false (true = Sim-Wallet + Trending) |
+| `strategy_backtest.auto_run` | true |
 
 ---
 

@@ -1,6 +1,6 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
-Stand: 12. Juni 2026 · Version 1.4
+Stand: 12. Juni 2026 · Version 1.5
 
 Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, Demo-Modus, X/Twitter und Sandbox.
 
@@ -67,7 +67,9 @@ flowchart TB
 | Ausführung | `services/trading_service.py` | Modus, Risiko, Order |
 | Gate.io Live | `execution/gate_adapter.py` | ccxt Spot-Market-Orders (Mainnet) |
 | Order-Ledger | `services/order_service.py` | Auftragshistorie (`/orders`, scope-isoliert) |
-| Gate-Balances | `services/gate_balance.py` | Echte USDT/Spot-Bestände im Live-Modus |
+| Gate-Balances | `services/gate_balance.py` | USDT/Spot (Live) oder Sim-Cash (Enhanced Dry Run) |
+| Enhanced Dry Run | `services/dry_run_watchlist.py`, `data/cmc_trending_provider.py` | Sim-Wallet, CMC-Trending-Overlay |
+| Strategy Backtest | `intelligence/strategy_backtest.py`, `services/strategy_*` | Auto-Backtest + Parameter-Tuning pro Coin |
 | Social | `services/social_pipeline.py` | X-Posts, CMC, Accuracy |
 | Sandbox | `strategies/paper_sandbox.py` | Isolierte Strategie-Tests |
 | Telegram | `notifications/telegram_commands/` | Alle `/`-Befehle |
@@ -107,8 +109,9 @@ flowchart TB
    d. RiskManager → Größe / Block
    e. Execution → Paper oder Gate
    f. Telegram bei Signal / Trade / Block
-7. Cycle-Summary an Telegram (wenn notify_on_cycle: true)
-8. Warten update_interval Sekunden → zurück zu 1
+7. Strategy-Backtest-Tick (adaptiv, gestaffelt, wenn `strategy_backtest.auto_run: true`)
+8. Cycle-Summary an Telegram (wenn notify_on_cycle: true)
+9. Warten update_interval Sekunden → zurück zu 1
 ```
 
 ---
@@ -137,20 +140,39 @@ Alte `config.json` mit `"trading_mode": "gate_testnet"` werden automatisch als *
 
 `/live_confirm` prüft: keine Demo-Session, API-Keys gesetzt; warnt bei aktivem `dry_run`.
 
+### Enhanced Dry Run (`live.dry_run_enhanced: true`)
+
+Zusätzlich zu normalem Dry Run — für realistisches Üben im Live-Modus ohne echte Orders:
+
+| Aspekt | Verhalten |
+|--------|-----------|
+| Aktivierung | `trading_mode: live` + `live.dry_run: true` + `live.dry_run_enhanced: true` |
+| Sim-Cash | `live.simulated_balance_usdt` (Standard 5000) — wird aus `live_trade_history.json` abgeleitet |
+| Watchlist | Core-Coins + CMC-Trending-Overlay (`watchlist.dry_run_overlay.json`, gitignored) |
+| Risk-Limits | `dry_run_defaults` (höheres Tageslimit, kürzere Cooldowns) |
+| `/positions` | **Cash (Sim)** + Bot-Positionen — keine Gate-Spot-Bestände im Portfolio |
+| `/gate` | Zeigt Sim-USDT **und** Gate-API-Balance (nur Info) |
+| `/dryrun` | Status: Sim-Balance, Trending-Coins, letzte CMC-Sync |
+
+**Sim-Cash-Berechnung:** Startkapital minus Käufe plus Verkaufserlöse — wird beim Laden aus der Trade-Historie neu berechnet (kein Drift).  
+**Portfolio-Wert:** Sim-Cash + Marktwert offener Positionen ≈ Startkapital + realisierte + unrealisierte PnL.
+
 ### Live-Modus: Ledger & Portfolio
 
-| Datenquelle | Paper | Live |
-|-------------|-------|------|
-| Cash / USDT | `trade_history.json` | Gate API (echte Balance) |
-| Trades | `trade_history.json` | `live_trade_history.json` + `orders.live.json` |
-| Positionen (Bot) | `positions.json` | `positions.json` (Cache — mit Gate abgleichen) |
-| `/positions` | Virtuelles Portfolio | Gate USDT + Spot-Bestände |
-| `/orders` | `orders.paper.json` | `orders.live.json` |
+| Datenquelle | Paper | Live (dry_run) | Live (enhanced dry_run) | Live (echt) |
+|-------------|-------|----------------|-------------------------|-------------|
+| Cash / USDT | `trade_history.json` | `live_trade_history.json` (virtuell) | Sim-Cash in `live_trade_history.json` | Gate API |
+| Trades | `trade_history.json` | `live_trade_history.json` | `live_trade_history.json` | `live_trade_history.json` |
+| Orders | `orders.paper.json` | `orders.live.json` | `orders.live.json` | `orders.live.json` |
+| Positionen | `positions.paper.json` | `positions.live.json` | `positions.live.json` | `positions.live.json` |
+| `/positions` | Virtuelles Portfolio | Wie Paper, Live-Ledger | **Cash (Sim)** + Positionen | Gate USDT + Spot |
+| Order-Quelle | `auto` / `manual` | `Auto` / `Manuell` in `/orders` | gleich | gleich |
 
 Hilfsskripte:
 
 - `python3 scripts/gate_live_smoke_test.py` — Keys, Balance, ccxt-Verbindung
-- `python3 scripts/reconcile_gate_positions.py` — `positions.json` vs. Gate-Bestand
+- `python3 scripts/reconcile_gate_positions.py` — `positions.live.json` vs. Gate-Bestand
+- `bash scripts/start_with_ngrok.sh` — Produktiv-Start (ohne `--demo`)
 
 ### Telegram-Modus-Badges in Signalen
 
@@ -158,6 +180,7 @@ Hilfsskripte:
 |-------|-----------|
 | 📋 PAPER | Lokales virtuelles Trading |
 | 🔶 LIVE DRY | Live bestätigt, aber dry_run |
+| 🧪 LIVE DRY+ | Enhanced Dry Run (Sim-Wallet + Trending) |
 | 🔴 LIVE | Echte Mainnet-Orders |
 
 ---
@@ -320,6 +343,9 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 | `/orders NUMMER` | `/orders 3` | Detail zu Order Nr. 3 (Kauf-/Verkaufsdatum) |
 | `/orders page N` | `/orders page 2` | Seite 2 der Historie |
 | `/risk` | `/risk` | Limits, Drawdown, Trade-Größe |
+| `/dryrun` | `/dryrun` | Enhanced Dry Run: Sim-Cash, Trending-Overlay |
+
+Manuelle `/buy` und `/sell` erscheinen in `/orders` und letzten Trades als **Manuell**; Bot-Trades als **Auto**.
 
 ### ⚙️ Modus & Gate.io
 
@@ -330,7 +356,7 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 | `/mode live` | `/mode live` | Live vorbereiten (noch nicht aktiv) |
 | `/live_confirm` | `/live_confirm` | Live freischalten (Keys + kein Demo; warnt bei dry_run) |
 | `/live_cancel` | `/live_cancel` | Live abbrechen → Paper |
-| `/gate` | `/gate` | API-Keys, USDT-Balance, Spot-Bestände, dry_run |
+| `/gate` | `/gate` | API-Keys, USDT (Gate + Sim), Spot-Bestände, dry_run |
 
 ### 🐦 X / Twitter
 
@@ -344,6 +370,17 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 | `/xaccuracy` | `/xaccuracy` | Leaderboard (Trefferquote) |
 | `/testaccount ACCOUNT [TAGE]` | `/testaccount CryptoCapo_ 30` | Backtest der Empfehlungen |
 | `/tracktest` | `/tracktest` | Sofort-Test mit Beispiel-Tweet |
+
+### 📊 Strategy Backtest (Auto-Tuning)
+
+| Befehl | Beispiel | Ergebnis |
+|--------|----------|----------|
+| `/backtest` | `/backtest` | Status aller Coins: nächster Review, Churn, PnL sim |
+| `/backtest SYMBOL` | `/backtest ARIA 30` | Sofort-Backtest (30 Tage), 6h Cooldown |
+| `/backtest_results SYMBOL` | `/backtest_results ARIA` | Letzte Metriken + angewandte Parameter |
+| `/backtest_lock SYMBOL` | `/backtest_lock BTC` | Coin von Auto-Apply ausschließen |
+
+Läuft automatisch im Hauptzyklus (`strategy_backtest.auto_run`), gestaffelt (`stagger_minutes`), mit Guardrails (`min_signals_for_valid`, `min_improvement_pct`). Ergebnisse in `strategy_backtest.json` (gitignored).
 
 ### 🧪 Sandbox & CMC
 
@@ -437,6 +474,34 @@ Isoliertes Testen von Strategie-Ideen **ohne** das echte/virtuelle Haupt-Portfol
 
 Bei Erfolg: Eintrag in `config.strategies[]` — ab dann im Haupt-Bot aktiv.
 
+---
+
+## 9b. Strategy Backtest & Auto-Tuning
+
+Automatischer Walk-Forward-Backtest pro Coin in `config.strategies[]` — ersetzt nicht den manuellen X-Backtest (`/testaccount`), optimiert aber RSI/TP/SL-Parameter.
+
+### Ablauf
+
+```
+1. Scheduler wählt fälligen Coin (next_review_at, gestaffelt alle 15 Min)
+2. StrategyBacktester vergleicht Varianten (30 Tage OHLCV)
+3. Metriken: signal_churn, pnl_sim, win_rate, ATR, US-Session-Volumen
+4. Bei Verbesserung ≥ min_improvement_pct UND churn ≥ min_signals_for_valid:
+   → auto_apply schreibt Parameter in config.strategies[] (Guardrails)
+5. next_review_at adaptiv (Coin-Klasse, Volatilität, US-Markt-Schluss)
+```
+
+### Config (`strategy_backtest`)
+
+| Parameter | Standard | Bedeutung |
+|-----------|----------|-----------|
+| `auto_run` | true | Tick im Hauptzyklus |
+| `auto_apply` | true | Parameter automatisch übernehmen |
+| `stagger_minutes` | 15 | Abstand zwischen Coin-Reviews |
+| `min_signals_for_valid` | 3 | Mindest-Signale für Auto-Apply |
+| `min_improvement_pct` | 10 | Mindest-Verbesserung vs. Baseline |
+| `base_review_hours` | meme 24h, large 72h | Basis-Review-Intervall |
+
 ### Beispiel-Workflow
 
 ```
@@ -485,6 +550,14 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
   "max_usdt_per_trade": 25,
   "trade_cooldown_hours": 1.0,
   "max_daily_trades": 8,
+  "live": {
+    "dry_run": true,
+    "dry_run_enhanced": false,
+    "simulated_balance_usdt": 5000,
+    "trending_watchlist": { "enabled": true, "max_coins": 15 }
+  },
+  "dry_run_defaults": { "max_daily_trades": 30 },
+  "strategy_backtest": { "auto_run": true, "auto_apply": true },
   "observability": {
     "notify_on_cycle": true,
     "terminal_dashboard": true
@@ -512,12 +585,16 @@ XAI_API_KEY=...            # Grok
 |-------|--------|
 | `watchlist.json` | Beobachtete Coins |
 | `config.json` | Strategien, Limits, Modi |
-| `positions.json` | Offene Positionen, Cooldowns, RSI-Tiers |
-| `trade_history.json` | Trades, Balance, PnL |
-| `live_trade_history.json` | Gate-Orders (Live) |
+| `positions.paper.json` | Positionen Paper-Modus |
+| `positions.live.json` | Positionen Live-Modus (inkl. Dry Run) |
+| `positions.json` | Legacy / Demo |
+| `trade_history.json` | Trades, Balance, PnL (Paper) |
+| `live_trade_history.json` | Live-Trades + Sim-Cash (Enhanced Dry Run) |
 | `orders.live.json` | Order-Ledger für Live (scope `live`) |
 | `orders.paper.json` | Order-Ledger für lokales Paper |
 | `orders.demo.json` | Order-Ledger im Demo-Modus |
+| `watchlist.dry_run_overlay.json` | CMC-Trending-Coins (Enhanced Dry Run, gitignored) |
+| `strategy_backtest.json` | Backtest-Ergebnisse pro Coin (gitignored) |
 | `x_accounts.json` | Überwachte X-Accounts |
 | `x_posts.json` | Analysierte Posts + Empfehlungen |
 | `paper_strategies.json` | Sandbox-Hypothesen |
@@ -529,8 +606,11 @@ XAI_API_KEY=...            # Grok
 ## 14. Tests
 
 ```bash
-pytest tests/unit/ -v
-pytest tests/unit/test_trade_cooldown.py -v   # Cooldown + RSI-Churn
+pytest tests/unit/ -v                    # 237+ Tests
+pytest tests/unit/test_dry_run_portfolio.py -v   # Sim-Cash + Portfolio-Invarianten
+pytest tests/unit/test_dry_run_wallet.py -v
+pytest tests/unit/test_strategy_backtest.py -v
+pytest tests/unit/test_trade_cooldown.py -v      # Cooldown + RSI-Churn
 pytest tests/unit/test_live_gate_readiness.py -v
 
 # Gate readiness (keys in .env required)
@@ -547,13 +627,14 @@ python3 scripts/reconcile_gate_positions.py
 3. Paper laufen lassen, `/positions` + `/orders` + Cycle-Summaries prüfen
 4. `python3 scripts/gate_live_smoke_test.py` — Keys + Balance prüfen
 5. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus, Ledger in `orders.live.json`
+5b. Optional: `live.dry_run_enhanced: true` — Sim-Wallet ($5000), `/dryrun`, Trending-Watchlist testen
 6. `live.dry_run: false` in `config.json`, Bot neu starten, dann `/live_confirm`
 7. Manueller `/buy` mit kleinem Betrag — Gate Spot Order History + `/orders` vergleichen
 8. `python3 scripts/reconcile_gate_positions.py` — lokale Positionen vs. Gate-Bestand
 9. `/gate` — USDT, Spot-Bestände, Dry-Run-Status prüfen
 10. Grok-Credits prüfen (`use_grok_x_search`) — sonst keine X-Auto-Trades im Live-Modus
 
-**Hinweis:** Kein Testnet — nur Paper zum Üben, Live auf Gate.io Mainnet. Im Live-Modus nutzen Risk Manager und `/positions` die **echte Gate-USDT-Balance**; `trade_history.json` wird für Gate-Orders nicht beschrieben (nur `live_trade_history.json` + Order-Ledger). `positions.json` bleibt Bot-Cache — regelmäßig mit `reconcile_gate_positions.py` abgleichen.
+**Hinweis:** Kein Testnet — Paper oder **Enhanced Dry Run** zum Üben. Im echten Live-Modus (`dry_run: false`) nutzen Risk Manager und `/positions` die **Gate-USDT-Balance**. Bei Enhanced Dry Run: Sim-Cash aus `live_trade_history.json`, Positionen in `positions.live.json`. Vor echtem Trading: `reconcile_gate_positions.py` ausführen.
 
 ---
 
