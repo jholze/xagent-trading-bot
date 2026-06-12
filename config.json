@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": false,
+    "dry_run_enhanced": true,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
