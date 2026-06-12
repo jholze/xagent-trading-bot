@@ -289,6 +289,7 @@ def list_active_positions():
                         "amount": float(p["amount"]),
                         "average_entry": p.get("average_entry", 0),
                         "entry_price": p.get("average_entry", 0),
+                        "last_buy_price": p.get("last_buy_price", 0),
                         "realized_pnl": p.get("realized_pnl", 0),
                         "sold_percent": float(p.get("sold_percent", 0)),
                         "last_action": p.get("last_action"),

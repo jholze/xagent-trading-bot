@@ -15,6 +15,12 @@ def _ticker(symbol: str) -> str:
     return symbol.replace("/USDT", "").split("/")[0]
 
 
+def _format_price(price: float) -> str:
+    from price_fetcher import format_usdt_price
+
+    return format_usdt_price(price)
+
+
 def _format_buy_preview(
     decision,
     status: dict,
@@ -28,7 +34,7 @@ def _format_buy_preview(
     lines = [
         f"<b>🛡️ Risiko-Prüfung — Kauf {_ticker(symbol)}</b>",
         "",
-        f"Kurs <b>${price:.4f}</b>",
+        f"Kurs <b>{_format_price(price)}</b>",
         f"Angefragt <b>${requested_usdt:.0f}</b> USDT",
     ]
     if abs(approved_usdt - requested_usdt) > 0.01:
@@ -66,11 +72,11 @@ def _format_sell_preview(
         f"<b>🛡️ Risiko-Prüfung — Verkauf {_ticker(symbol)}</b>",
         "",
         f"Anteil <b>{pct * 100:.0f}%</b> der Position",
-        f"Kurs <b>${price:.4f}</b>",
+        f"Kurs <b>{_format_price(price)}</b>",
         f"Menge <code>{amount:.4f}</code> {_ticker(symbol)} · ca. <b>${est_usdt:.0f}</b>",
     ]
     if total > 0:
-        lines.append(f"Position <code>{total:.4f}</code> @ Entry ${entry:.4f}")
+        lines.append(f"Position <code>{total:.4f}</code> @ Entry {_format_price(entry)}")
     lines.extend(_portfolio_block(status))
     lines.extend(_hint_block(decision, status, kind="sell"))
     lines.append("")

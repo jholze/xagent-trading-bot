@@ -2,7 +2,7 @@ from datetime import datetime
 
 from core.config import get_bot_config
 from core.models import TradeOrder
-from data_manager import get_text, load_trade_history
+from data_manager import get_text, load_live_trade_history, load_trade_history, uses_exchange_ledger
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
@@ -136,7 +136,12 @@ class SignalOrchestrator:
         if has_position and pos.get("average_entry", 0) > 0:
             unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])
 
-        history = load_trade_history()
+        history = (
+            load_live_trade_history()
+            if uses_exchange_ledger(self.config.trading_mode)
+            else load_trade_history()
+        )
+        realized = history.get("total_pnl", history.get("realized_pnl", 0))
         pos_info = (
             f" | Pos: {float(pos.get('amount', 0)):.2f} | Unrealized: ${unrealized:.1f}"
             if has_position else " | No position"
@@ -148,7 +153,7 @@ class SignalOrchestrator:
                 f"{symbol} → {analysis.action} ({analysis.normalized_action}) | RSI: {analysis.rsi:.1f} | "
                 f"Vol: {analysis.vol_multiplier:.2f}x | Ampel: {analysis.ampel_emoji} {analysis.ampel_text}"
                 f"{rationale}{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
-                f"RealPnL: ${history.get('realized_pnl', 0):.1f}\n"
+                f"RealPnL: ${float(realized or 0):.1f}\n"
             )
         return {
             "action": analysis.action,

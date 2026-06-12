@@ -120,12 +120,56 @@ class TestCycleSummary(unittest.TestCase):
             "trading_mode": "live",
             "live": {"dry_run": True, "dry_run_enhanced": True},
         }
-        with patch("data_manager.load_live_trade_history", return_value=live_hist), \
+        mock_cfg.trading_mode = "live"
+        mock_cfg.simulated_balance_usdt = 5000
+        with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("data_manager.load_live_trade_history", return_value=live_hist), \
              patch("data_manager.is_dry_run_enhanced", return_value=True), \
              patch("core.config.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Sim USDT", summary)
         self.assertIn("4,750", summary)
+        self.assertIn("Gesamtwert", summary)
+
+    def test_build_cycle_summary_live_dry_run_without_enhanced(self):
+        live_hist = {"virtual_balance": 3952.19, "realized_pnl": -111.82, "trades": []}
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.raw = {
+            "trading_mode": "live",
+            "live": {"dry_run": True, "dry_run_enhanced": False},
+        }
+        mock_cfg.trading_mode = "live"
+        mock_cfg.simulated_balance_usdt = 5000
+        with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("data_manager.is_dry_run_enhanced", return_value=False), \
+             patch("core.config.get_bot_config", return_value=mock_cfg):
+            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+        self.assertIn("Dry Run USDT", summary)
+        self.assertIn("3,952", summary)
+        self.assertIn("-111.8", summary)
+        self.assertNotIn("Sim USDT", summary)
+
+    def test_build_cycle_summary_total_value_includes_positions(self):
+        live_hist = {"virtual_balance": 1000.0, "realized_pnl": 5.0, "trades": []}
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.raw = {
+            "trading_mode": "live",
+            "live": {"dry_run": True, "dry_run_enhanced": False},
+        }
+        mock_cfg.trading_mode = "live"
+        mock_cfg.simulated_balance_usdt = 5000
+        positions = [{
+            "symbol": "ARIA/USDT",
+            "amount": 100.0,
+            "average_entry": 0.5,
+        }]
+        with patch("notifications.terminal_dashboard.list_active_positions", return_value=positions), \
+             patch("price_fetcher.get_prices_batch", return_value={"ARIA/USDT": 2.0}), \
+             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("core.config.get_bot_config", return_value=mock_cfg):
+            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+        self.assertIn("Gesamtwert: $1,200", summary)
 
 
 if __name__ == "__main__":

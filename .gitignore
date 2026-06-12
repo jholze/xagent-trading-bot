@@ -50,6 +50,8 @@ build/
 
 # Runtime bot state (local paper/live ledger, feeds, sandbox)
 positions.json
+positions.live.json
+positions.paper.json
 trade_history.json
 live_trade_history.json
 orders.paper.json

@@ -151,6 +151,28 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertAlmostEqual(ctx["cash_balance"], 3904.25)
         self.assertIsNone(ctx["gate_holdings"])
 
+    def test_format_position_card_shows_micro_cap_price(self):
+        p = {
+            "symbol": "CAT/USDT",
+            "amount": 330250990.0,
+            "average_entry": 1.514e-06,
+            "sold_percent": 0,
+        }
+        msg = format_position_card(1, p, 1.514e-06, numbered=True, price_source="live")
+        self.assertIn("CAT", msg)
+        self.assertIn("$0.000001514", msg)
+        self.assertNotIn("@ $0.00000151 ", msg)
+
+    def test_format_position_card_marks_missing_price(self):
+        p = {
+            "symbol": "CAT/USDT",
+            "amount": 100.0,
+            "average_entry": 1.514e-06,
+            "sold_percent": 0,
+        }
+        msg = format_position_card(1, p, 0.0, numbered=True, price_source="missing")
+        self.assertIn("Kein Live-Kurs", msg)
+
     def test_send_positions_snapshot_includes_trade_banner(self):
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)
         with patch("telegram_notifier.send_telegram_message") as mock_send, \

@@ -15,11 +15,13 @@ from data_manager import uses_exchange_ledger
 
 
 class TestLiveGateReadiness(unittest.TestCase):
-    def _live_config(self, enhanced: bool = False):
+    def _live_config(self, enhanced: bool = False, dry_run: bool = False):
         raw = dict(get_config())
         raw["trading_mode"] = "live"
         raw["live_confirmed"] = True
-        raw.setdefault("live", {})["dry_run_enhanced"] = enhanced
+        live = raw.setdefault("live", {})
+        live["dry_run"] = dry_run
+        live["dry_run_enhanced"] = enhanced
         cfg = BotConfig()
         cfg._raw = raw
         return cfg
@@ -81,7 +83,10 @@ class TestLiveGateReadiness(unittest.TestCase):
             self.assertIn("Keys fehlen", mock_send.call_args[0][0])
 
     def test_live_confirm_warns_on_dry_run(self):
+        cfg = dict(get_config())
+        cfg.setdefault("live", {})["dry_run"] = True
         with patch("notifications.telegram_commands.mode_commands.is_demo_mode", return_value=False), \
+             patch("notifications.telegram_commands.mode_commands.get_config", return_value=cfg), \
              patch.dict(os.environ, {"GATE_API_KEY": "k", "GATE_API_SECRET": "s"}), \
              patch("notifications.telegram_commands.mode_commands._save_mode_updates", return_value=True), \
              patch("notifications.telegram_commands.mode_commands.reload_config"), \

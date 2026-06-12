@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": true,
+    "dry_run_enhanced": false,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
@@ -199,11 +199,11 @@
     {
       "symbol": "RAVE/USDT",
       "timeframe": "4h",
-      "rsi_buy_low": 28,
+      "rsi_buy_low": 31,
       "rsi_buy_high": 45,
       "rsi_sell_30": 72,
       "rsi_sell_20": 84,
-      "volume_multiplier": 1.5,
+      "volume_multiplier": 1.7,
       "stop_loss_pct": 50,
       "take_profit_pct": 12,
       "min_hours_between_buys": 4,

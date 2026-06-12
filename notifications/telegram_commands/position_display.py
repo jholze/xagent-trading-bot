@@ -44,6 +44,33 @@ def resolve_position_by_display_index(active: list, prices: dict, index: int):
     return None
 
 
+def _entry_fallback_price(p: dict) -> float:
+    for key in ("average_entry", "entry_price", "last_buy_price"):
+        value = float(p.get(key, 0) or 0)
+        if value > 0:
+            return value
+    return 0.0
+
+
+def build_price_fallbacks(active: list) -> dict[str, float]:
+    fallbacks = {}
+    for p in active:
+        sym = position_symbol(p)
+        fb = _entry_fallback_price(p)
+        if fb > 0:
+            fallbacks[sym] = fb
+    return fallbacks
+
+
+def _price_source_note(source: str = None) -> str:
+    labels = {
+        "entry": " <i>(Entry-Schätzung)</i>",
+        "stale": " <i>(letzter Kurs)</i>",
+        "missing": "",
+    }
+    return labels.get(source or "", "")
+
+
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
@@ -64,7 +91,16 @@ def _position_metrics(p: dict, price: float) -> dict:
     }
 
 
-def format_position_card(index: int, p: dict, price: float, numbered: bool = False) -> str:
+def format_position_card(
+    index: int,
+    p: dict,
+    price: float,
+    numbered: bool = False,
+    *,
+    price_source: str = None,
+) -> str:
+    from price_fetcher import format_usdt_price
+
     sym = position_symbol(p)
     m = _position_metrics(p, price)
     prefix = f"<b>{index}.</b> " if numbered else ""
@@ -80,18 +116,27 @@ def format_position_card(index: int, p: dict, price: float, numbered: bool = Fal
     last = p.get("last_action")
     last_line = f" · Letzte Aktion: <b>{last}</b>" if last else ""
 
-    price_str = f"${m['price']:.4f}" if m["price"] > 0 else "—"
-    entry_str = f"${m['entry']:.4f}" if m["entry"] > 0 else "—"
+    price_str = format_usdt_price(m["price"])
+    if price_source == "missing":
+        price_str = "—"
+    entry_str = format_usdt_price(m["entry"])
+    source_note = _price_source_note(price_source)
+
+    missing_line = ""
+    if price_source == "missing" and m["value_usdt"] <= 0:
+        missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
     return (
         f"{prefix}<b>{ticker}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>\n"
-        f"   └ <code>{m['amount']:.4f}</code> @ {price_str} · Entry {entry_str}\n"
+        f"   └ <code>{m['amount']:.4f}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
         f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
-        f"{sold_line}{last_line}"
+        f"{sold_line}{last_line}{missing_line}"
     )
 
 
 def _trade_line(t: dict) -> str:
+    from price_fetcher import format_usdt_price
+
     ts = t.get("timestamp", "")[:16].replace("T", " ")
     typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
     sym = (t.get("symbol") or "").replace("/USDT", "")
@@ -101,7 +146,7 @@ def _trade_line(t: dict) -> str:
     return (
         f"\n{typ} <b>{sym}</b> · <i>{src}</i> · {ts}\n"
         f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
-        f"${float(t.get('price', 0)):.4f}{pnl_part}"
+        f"{format_usdt_price(float(t.get('price', 0)))}{pnl_part}"
     )
 
 
@@ -147,6 +192,7 @@ def format_positions_message(
     cash_balance: float = None,
     cash_label: str = "Cash",
     gate_holdings: list = None,
+    price_sources: dict = None,
 ) -> str:
     if not active:
         cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
@@ -196,8 +242,12 @@ def format_positions_message(
         msg += "\n".join(format_holdings_lines(gate_holdings, prices))
 
     cards = []
+    sources = price_sources or {}
     for i, (p, price) in enumerate(rows, 1):
-        cards.append(format_position_card(i, p, price, numbered=numbered))
+        sym = position_symbol(p)
+        cards.append(format_position_card(
+            i, p, price, numbered=numbered, price_source=sources.get(sym),
+        ))
     msg += "\n\n".join(cards)
 
     if include_trades:
@@ -261,19 +311,22 @@ def resolve_portfolio_context() -> dict:
 
 
 def format_trade_banner(result) -> str:
+    from price_fetcher import format_usdt_price
+
     sym = (result.symbol or "").replace("/USDT", "")
     price = float(result.price or 0)
     amount = float(result.amount or 0)
     usdt = float(result.usdt_amount or 0)
+    price_str = format_usdt_price(price)
     if result.order_type == "BUY":
         return (
             f"✅ <b>Kauf ausgeführt</b> — <b>{sym}</b>\n"
-            f"   └ <code>{amount:.4f}</code> @ ${price:.4f} · <b>${usdt:.0f}</b>"
+            f"   └ <code>{amount:.4f}</code> @ {price_str} · <b>${usdt:.0f}</b>"
         )
     pnl_part = f" · PnL <b>${result.pnl:+.1f}</b>" if result.pnl is not None else ""
     return (
         f"✅ <b>Verkauf ausgeführt</b> — <b>{sym}</b>\n"
-        f"   └ <code>{amount:.4f}</code> @ ${price:.4f} · <b>${usdt:.0f}</b>{pnl_part}"
+        f"   └ <code>{amount:.4f}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
     )
 
 
@@ -289,7 +342,14 @@ def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):
         symbols.extend(h["symbol"] for h in ctx["gate_holdings"])
-    prices = get_prices_batch(list(dict.fromkeys(symbols))) if symbols else {}
+    unique_symbols = list(dict.fromkeys(symbols))
+    fallbacks = build_price_fallbacks(active)
+    if unique_symbols:
+        prices, price_sources = get_prices_batch(
+            unique_symbols, fallbacks=fallbacks, return_sources=True,
+        )
+    else:
+        prices, price_sources = {}, {}
     mode = mode_label or TradingService().mode_label()
     msg = format_positions_message(
         active,
@@ -300,6 +360,7 @@ def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
         cash_balance=ctx["cash_balance"],
         cash_label=ctx["cash_label"],
         gate_holdings=ctx.get("gate_holdings"),
+        price_sources=price_sources,
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"

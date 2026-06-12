@@ -59,6 +59,7 @@ def atomic_write_json(path: str, data: dict):
 
 WATCHLIST_FILE = "watchlist.json"
 DRY_RUN_OVERLAY_FILE = "watchlist.dry_run_overlay.json"
+DRY_RUN_EXPANSION_FILE = "watchlist.dry_run_expansion.json"
 
 
 def is_live_dry_run(config: dict = None) -> bool:
@@ -79,6 +80,13 @@ def is_dry_run_enhanced(config: dict = None) -> bool:
 
 def uses_simulated_live_portfolio(config: dict = None) -> bool:
     """Portfolio cash/positions come from the local live ledger, not Gate balances."""
+    return is_live_dry_run(config)
+
+
+def uses_watchlist_expansion(config: dict = None) -> bool:
+    """Extra watchlist coins apply in demo mode and live dry-run only."""
+    if is_demo_mode():
+        return True
     return is_live_dry_run(config)
 
 
@@ -118,18 +126,30 @@ def save_watchlist(coins):
         return False
 
 
+def _normalize_watchlist_symbol(symbol: str) -> str:
+    sym = (symbol or "").upper().strip()
+    if sym and "/" not in sym:
+        return f"{sym}/USDT"
+    return sym
+
+
+def _watchlist_symbol(coin: dict) -> str:
+    return _normalize_watchlist_symbol(coin.get("symbol", ""))
+
+
 def add_coin(symbol):
     """Einfaches Hinzufügen eines Coins"""
-    coins = load_watchlist()
-    symbol = symbol.upper().strip()
+    symbol = _normalize_watchlist_symbol(symbol)
 
-    if any(c["symbol"] == symbol for c in coins):
+    if any(_watchlist_symbol(c) == symbol for c in load_effective_watchlist()):
         return False, f"{symbol} ist bereits in der Watchlist."
 
+    coins = load_watchlist()
     new_coin = {
         "symbol": symbol,
-        "ticker": symbol.split("/")[0] if "/" in symbol else symbol,
-        "name": symbol.split("/")[0] if "/" in symbol else symbol,
+        "ticker": symbol.split("/")[0],
+        "name": symbol.split("/")[0],
+        "timeframe": "4h",
         "active": True,
     }
     coins.append(new_coin)
@@ -137,19 +157,61 @@ def add_coin(symbol):
     return True, f"✅ {symbol} wurde zur Watchlist hinzugefügt."
 
 
+def save_dry_run_expansion(data: dict) -> bool:
+    path = get_data_file(DRY_RUN_EXPANSION_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
 def remove_coin(symbol):
-    """Entfernt einen Coin aus der Watchlist"""
+    """Remove a coin from whichever watchlist JSON currently provides it."""
+    symbol = _normalize_watchlist_symbol(symbol)
+
     coins = load_watchlist()
-    new_coins = [c for c in coins if c["symbol"] != symbol.upper()]
-    if len(new_coins) == len(coins):
-        return False, f"{symbol} nicht in der Watchlist gefunden."
-    save_watchlist(new_coins)
-    return True, f"✅ {symbol} wurde entfernt."
+    new_coins = [c for c in coins if _watchlist_symbol(c) != symbol]
+    if len(new_coins) < len(coins):
+        save_watchlist(new_coins)
+        return True, f"✅ {symbol} wurde entfernt."
+
+    if uses_watchlist_expansion():
+        expansion = load_dry_run_expansion()
+        exp_coins = expansion.get("coins", [])
+        new_exp = [c for c in exp_coins if _watchlist_symbol(c) != symbol]
+        if len(new_exp) < len(exp_coins):
+            expansion["coins"] = new_exp
+            save_dry_run_expansion(expansion)
+            return True, f"✅ {symbol} wurde entfernt."
+
+    if is_dry_run_enhanced():
+        overlay = load_dry_run_overlay()
+        overlay_coins = overlay.get("coins", [])
+        new_overlay = [c for c in overlay_coins if _watchlist_symbol(c) != symbol]
+        if len(new_overlay) < len(overlay_coins):
+            overlay["coins"] = new_overlay
+            save_dry_run_overlay(overlay)
+            return True, f"✅ {symbol} wurde entfernt."
+
+    return False, f"{symbol} nicht in der Watchlist gefunden."
 
 
 def list_coins():
     """Gibt alle Coins zurück"""
     return load_effective_watchlist()
+
+
+def load_dry_run_expansion():
+    path = get_data_file(DRY_RUN_EXPANSION_FILE)
+    if not os.path.exists(path):
+        return {"coins": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"coins": []}
 
 
 def load_dry_run_overlay():
@@ -185,15 +247,13 @@ def _dedupe_watchlist_coins(coins: list) -> list:
 
 
 def load_effective_watchlist():
-    """Base watchlist merged with CMC trending overlay when enhanced dry run is active."""
-    base = load_watchlist()
-    if not is_dry_run_enhanced():
-        return base
-    overlay = load_dry_run_overlay()
-    overlay_coins = overlay.get("coins", [])
-    if not overlay_coins:
-        return base
-    return _dedupe_watchlist_coins(base + overlay_coins)
+    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay."""
+    coins = list(load_watchlist())
+    if uses_watchlist_expansion():
+        coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
+    if is_dry_run_enhanced():
+        coins = _dedupe_watchlist_coins(coins + load_dry_run_overlay().get("coins", []))
+    return coins
 
 
 def save_full_coin(coin_data):

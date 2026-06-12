@@ -4,6 +4,7 @@ from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
 from data_manager import (
     is_dry_run_enhanced,
+    is_live_dry_run,
     load_live_trade_history,
     load_trade_history,
     simulated_balance_usdt,
@@ -174,7 +175,7 @@ class RiskManager:
         }
 
     def _ledger_source_label(self) -> str:
-        if is_dry_run_enhanced(self.config.raw):
+        if is_live_dry_run(self.config.raw):
             return "simulated"
         if uses_exchange_ledger(self.config.trading_mode):
             return "gate"
@@ -206,7 +207,7 @@ class RiskManager:
         return load_trade_history()
 
     def _available_usdt(self, fallback: float = 0) -> float:
-        if is_dry_run_enhanced(self.config.raw):
+        if is_live_dry_run(self.config.raw):
             history = load_live_trade_history()
             return float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
         if uses_exchange_ledger(self.config.trading_mode):
@@ -223,7 +224,7 @@ class RiskManager:
         return ref_prices
 
     def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float:
-        if is_dry_run_enhanced(self.config.raw):
+        if is_live_dry_run(self.config.raw):
             return fetch_portfolio_equity(
                 self.config,
                 reference_prices=self._dry_run_reference_prices(reference_price, symbol),
@@ -240,7 +241,7 @@ class RiskManager:
         return max(balance + unrealized, balance)
 
     def _equity_drawdown_pct(self, reference_price: float = 0, symbol: str = None) -> float:
-        if is_dry_run_enhanced(self.config.raw):
+        if is_live_dry_run(self.config.raw):
             history = load_live_trade_history()
             initial = simulated_balance_usdt(self.config.raw)
             equity = self._portfolio_equity(reference_price, symbol)
