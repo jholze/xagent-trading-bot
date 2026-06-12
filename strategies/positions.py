@@ -11,72 +11,111 @@ from logger import log
 _positions_lock = threading.Lock()
 
 try:
-    from data_manager import atomic_write_json, get_data_file, is_demo_mode
+    from data_manager import atomic_write_json, resolve_ledger_scope, resolve_positions_file
 except Exception:
-    def get_data_file(name): return name
-    def is_demo_mode(): return False
+    def resolve_ledger_scope(trading_mode=None):
+        return "paper"
+
+    def resolve_positions_file(scope):
+        return "positions.json"
 
     def atomic_write_json(path, data):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-POSITIONS_FILE = "positions.json"
-
 # Module-level state (global mutable dictionary).
 # This is a known technical debt item. All access should go through the functions below.
 positions = {}
+_active_scope = "paper"
 
 
-def load_positions():
-    path = get_data_file(POSITIONS_FILE)
-    if os.path.exists(path):
+def get_active_scope() -> str:
+    return _active_scope
+
+
+def _deserialize_position(raw: dict) -> dict:
+    return {
+        "amount": Decimal(str(raw.get("amount", 0))),
+        "sold_percent": float(raw.get("sold_percent", 0)),
+        "average_entry": float(raw.get("average_entry", raw.get("entry_price", 0))),
+        "realized_pnl": float(raw.get("realized_pnl", 0)),
+        "last_buy_price": float(raw.get("last_buy_price", 0)),
+        "last_ampel": raw.get("last_ampel", "🟡"),
+        "last_rsi": float(raw.get("last_rsi", 45.0)),
+        "last_action": raw.get("last_action"),
+        "last_trade_at": raw.get("last_trade_at"),
+        "last_trade_type": raw.get("last_trade_type"),
+        "rsi_sell_tiers_done": dict(raw.get("rsi_sell_tiers_done") or {}),
+    }
+
+
+def _serialize_positions() -> dict:
+    data = {"positions": {}, "ledger_scope": _active_scope}
+    for tf, p in positions.items():
+        data["positions"][tf] = {
+            "amount": float(p["amount"]),
+            "sold_percent": p["sold_percent"],
+            "average_entry": float(p.get("average_entry", p.get("entry_price", 0))),
+            "realized_pnl": float(p.get("realized_pnl", 0)),
+            "last_buy_price": p["last_buy_price"],
+            "last_ampel": p.get("last_ampel", "🟡"),
+            "last_rsi": p.get("last_rsi", 45.0),
+            "last_action": p.get("last_action"),
+            "last_trade_at": p.get("last_trade_at"),
+            "last_trade_type": p.get("last_trade_type"),
+            "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
+        }
+    return data
+
+
+def apply_positions_snapshot(snapshot: dict, scope: str = None) -> None:
+    global _active_scope
+    target = scope or _active_scope
+    with _positions_lock:
+        positions.clear()
+        for key, raw in snapshot.items():
+            positions[key] = _deserialize_position(raw)
+        _active_scope = target
+
+
+def load_positions(scope: str = None):
+    global _active_scope
+    target = scope or resolve_ledger_scope()
+    path = resolve_positions_file(target)
+    with _positions_lock:
+        positions.clear()
+        _active_scope = target
+        if not os.path.exists(path):
+            return
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                for tf, p in data.get("positions", {}).items():
-                    positions[tf] = {
-                        "amount": Decimal(str(p.get("amount", 0))),
-                        "sold_percent": float(p.get("sold_percent", 0)),
-                        "average_entry": float(p.get("average_entry", p.get("entry_price", 0))),
-                        "realized_pnl": float(p.get("realized_pnl", 0)),
-                        "last_buy_price": float(p.get("last_buy_price", 0)),
-                        "last_ampel": p.get("last_ampel", "🟡"),
-                        "last_rsi": float(p.get("last_rsi", 45.0)),
-                        "last_action": p.get("last_action"),
-                        "last_trade_at": p.get("last_trade_at"),
-                        "last_trade_type": p.get("last_trade_type"),
-                        "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
-                    }
+            for tf, p in data.get("positions", {}).items():
+                positions[tf] = _deserialize_position(p)
         except Exception as e:
             log(f"Failed to load {path}: {e}", "ERROR")
 
 
-def save_positions():
-    path = get_data_file(POSITIONS_FILE)
+def save_positions(scope: str = None):
+    target = scope or _active_scope
+    path = resolve_positions_file(target)
     with _positions_lock:
+        payload = _serialize_positions()
+        payload["ledger_scope"] = target
         try:
-            data = {"positions": {}}
-            for tf, p in positions.items():
-                data["positions"][tf] = {
-                    "amount": float(p["amount"]),
-                    "sold_percent": p["sold_percent"],
-                    "average_entry": float(p.get("average_entry", p.get("entry_price", 0))),
-                    "realized_pnl": float(p.get("realized_pnl", 0)),
-                    "last_buy_price": p["last_buy_price"],
-                    "last_ampel": p.get("last_ampel", "🟡"),
-                    "last_rsi": p.get("last_rsi", 45.0),
-                    "last_action": p.get("last_action"),
-                    "last_trade_at": p.get("last_trade_at"),
-                    "last_trade_type": p.get("last_trade_type"),
-                    "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
-                }
-            atomic_write_json(path, data)
+            atomic_write_json(path, payload)
         except Exception as e:
             log(f"Failed to save {path}: {e}", "ERROR")
 
 
-# Initialize state on import (after positions dict exists)
-load_positions()
+def _bootstrap_positions():
+    try:
+        load_positions(scope=resolve_ledger_scope())
+    except Exception as e:
+        log(f"Position bootstrap failed: {e}", "WARNING")
+
+
+_bootstrap_positions()
 
 def get_key(symbol, timeframe):
     return f"{symbol.replace('/', '_')}_{timeframe}"
@@ -208,10 +247,18 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
 
 def _sync_open_positions_count():
     try:
-        from data_manager import load_trade_history, save_trade_history
-        history = load_trade_history()
-        history["open_positions"] = count_open_positions()
-        save_trade_history(history)
+        from data_manager import load_live_trade_history, load_trade_history, save_trade_history, uses_exchange_ledger
+
+        open_count = count_open_positions()
+        if uses_exchange_ledger():
+            history = load_live_trade_history()
+            history["open_positions"] = open_count
+            from data_manager import save_live_trade_history
+            save_live_trade_history(history)
+        else:
+            history = load_trade_history()
+            history["open_positions"] = open_count
+            save_trade_history(history)
     except Exception as e:
         log(f"Failed to sync open_positions count: {e}", "WARNING")
 

@@ -159,14 +159,33 @@ def build_cycle_summary(
     x_signal_count: int = 0,
     cmc_signal_count: int = 0,
 ) -> str:
-    history = load_trade_history()
+    from data_manager import load_live_trade_history, uses_exchange_ledger
+
+    if uses_exchange_ledger(trading_mode):
+        live_hist = load_live_trade_history()
+        balance = live_hist.get("virtual_balance")
+        if balance is None:
+            try:
+                from services.gate_balance import fetch_usdt_balance
+                from core.config import get_bot_config
+                balance = fetch_usdt_balance(get_bot_config())
+            except Exception:
+                balance = 0.0
+        realized = live_hist.get("total_pnl", live_hist.get("realized_pnl", 0))
+        balance_label = "USDT (Gate)"
+    else:
+        history = load_trade_history()
+        balance = history.get("virtual_balance", 0)
+        realized = history.get("realized_pnl", 0)
+        balance_label = "Balance"
+
     executed = [r for r in (coin_results or []) if r.get("executed")]
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
 
     lines = [
         f"<b>📋 Cycle Summary</b> — {datetime.now().strftime('%H:%M:%S')}",
         f"Mode: <b>{trading_mode.upper()}</b>",
-        f"Balance: ${history.get('virtual_balance', 0):,.0f} | Realized: ${history.get('realized_pnl', 0):,.1f}",
+        f"{balance_label}: ${float(balance or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
         f"Signals: {len(actions)} actionable | {x_signal_count} X | {cmc_signal_count} CMC",
     ]
     if executed:

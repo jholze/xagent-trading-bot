@@ -1,6 +1,6 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
-Stand: Juni 2026 · Version 1.4
+Stand: 12. Juni 2026 · Version 1.4
 
 Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, Demo-Modus, X/Twitter und Sandbox.
 
@@ -13,7 +13,7 @@ Der X-Agent Trading Bot ist ein **hybrider Krypto-Trading-Agent**:
 1. Beobachtet Coins auf der **Watchlist** (technische Analyse: RSI, Bollinger Bands, Volumen)
 2. Liest **X/Twitter-Posts** und **CMC-Sentiment** ein
 3. Führt Signale in der **DecisionEngine** zusammen
-4. Führt Trades aus (Paper, Gate Testnet oder Live)
+4. Führt Trades aus (Paper oder Live auf Gate.io)
 5. Meldet alles per **Telegram**
 
 **Kernprinzip:** Kein blindes Folgen von Tweets — technische Signale und Social-Signale werden gewichtet zusammengeführt. Risiko-Limits und Cooldowns verhindern Übertrading.
@@ -65,7 +65,9 @@ flowchart TB
 | Entscheidung | `strategies/decision_engine.py` | TA + X + CMC → BUY/SELL/HOLD |
 | Technik | `strategies/technical_rsi_bb.py` | RSI, BB, Volumen, TP, SL |
 | Ausführung | `services/trading_service.py` | Modus, Risiko, Order |
-| Gate.io | `execution/gate_adapter.py` | ccxt Market Orders |
+| Gate.io Live | `execution/gate_adapter.py` | ccxt Spot-Market-Orders (Mainnet) |
+| Order-Ledger | `services/order_service.py` | Auftragshistorie (`/orders`, scope-isoliert) |
+| Gate-Balances | `services/gate_balance.py` | Echte USDT/Spot-Bestände im Live-Modus |
 | Social | `services/social_pipeline.py` | X-Posts, CMC, Accuracy |
 | Sandbox | `strategies/paper_sandbox.py` | Isolierte Strategie-Tests |
 | Telegram | `notifications/telegram_commands/` | Alle `/`-Befehle |
@@ -116,9 +118,12 @@ flowchart TB
 | Modus | Befehl | Was passiert | Echtes Geld? |
 |-------|--------|--------------|--------------|
 | **Paper** | `/mode paper` | Lokales Ledger (`trade_history.json`, `positions.json`) | Nein |
-| **Gate Testnet** | `/mode gate_testnet` | Orders auf Gate.io Testnet | Nein (Testnet-USDT) |
 | **Live** | `/mode live` + `/live_confirm` | Gate.io Mainnet | **Ja** (wenn `dry_run: false`) |
 | **Off** | `/mode off` | Nur Analyse, keine Orders | Nein |
+
+Es gibt **kein Gate.io Testnet** im Bot (in Deutschland nicht nutzbar). Zum Üben: **Paper**. Für echte Orders: **Live** auf Gate.io Mainnet.
+
+Alte `config.json` mit `"trading_mode": "gate_testnet"` werden automatisch als **Paper** behandelt.
 
 ### Live-Aktivierung (2 Stufen)
 
@@ -130,12 +135,28 @@ flowchart TB
 
 **Sicherheit:** `live.dry_run: true` (Standard) loggt Orders nur lokal — nichts geht an Gate.io, bis du `dry_run` auf `false` setzt.
 
+`/live_confirm` prüft: keine Demo-Session, API-Keys gesetzt; warnt bei aktivem `dry_run`.
+
+### Live-Modus: Ledger & Portfolio
+
+| Datenquelle | Paper | Live |
+|-------------|-------|------|
+| Cash / USDT | `trade_history.json` | Gate API (echte Balance) |
+| Trades | `trade_history.json` | `live_trade_history.json` + `orders.live.json` |
+| Positionen (Bot) | `positions.json` | `positions.json` (Cache — mit Gate abgleichen) |
+| `/positions` | Virtuelles Portfolio | Gate USDT + Spot-Bestände |
+| `/orders` | `orders.paper.json` | `orders.live.json` |
+
+Hilfsskripte:
+
+- `python3 scripts/gate_live_smoke_test.py` — Keys, Balance, ccxt-Verbindung
+- `python3 scripts/reconcile_gate_positions.py` — `positions.json` vs. Gate-Bestand
+
 ### Telegram-Modus-Badges in Signalen
 
 | Badge | Bedeutung |
 |-------|-----------|
 | 📋 PAPER | Lokales virtuelles Trading |
-| 🧪 GATE TESTNET | Gate Testnet |
 | 🔶 LIVE DRY | Live bestätigt, aber dry_run |
 | 🔴 LIVE | Echte Mainnet-Orders |
 
@@ -295,19 +316,21 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 | `/sell` | `/sell` | Zeigt offene Positionen mit Entry, PnL |
 | `/sell NUMMER PROZENT` | `/sell 1 30` | Verkauft 30 % von Position 1 |
 | `/positions` | `/positions` | Portfolio-Übersicht, Kurse, letzte Trades |
+| `/orders` | `/orders` | Order-Ledger (24h-Stats, paginiert) |
+| `/orders NUMMER` | `/orders 3` | Detail zu Order Nr. 3 (Kauf-/Verkaufsdatum) |
+| `/orders page N` | `/orders page 2` | Seite 2 der Historie |
 | `/risk` | `/risk` | Limits, Drawdown, Trade-Größe |
 
 ### ⚙️ Modus & Gate.io
 
 | Befehl | Beispiel | Ergebnis |
 |--------|----------|----------|
-| `/mode` | `/mode` | Aktueller Modus + alle Optionen |
+| `/mode` | `/mode` | Aktueller Modus (paper / live / off) |
 | `/mode paper` | `/mode paper` | Zurück zu virtuellem Trading |
-| `/mode gate_testnet` | `/mode gate_testnet` | Gate.io Testnet |
 | `/mode live` | `/mode live` | Live vorbereiten (noch nicht aktiv) |
-| `/live_confirm` | `/live_confirm` | Live-Trading freischalten |
+| `/live_confirm` | `/live_confirm` | Live freischalten (Keys + kein Demo; warnt bei dry_run) |
 | `/live_cancel` | `/live_cancel` | Live abbrechen → Paper |
-| `/gate` | `/gate` | API-Keys, Balance, dry_run |
+| `/gate` | `/gate` | API-Keys, USDT-Balance, Spot-Bestände, dry_run |
 
 ### 🐦 X / Twitter
 
@@ -475,10 +498,8 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
 ```
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
-GATE_API_KEY=...          # Live
+GATE_API_KEY=...          # Gate.io Live (Mainnet)
 GATE_API_SECRET=...
-GATE_TESTNET_API_KEY=...   # Testnet
-GATE_TESTNET_API_SECRET=...
 CMC_API_KEY=...
 XAI_API_KEY=...            # Grok
 ```
@@ -493,7 +514,10 @@ XAI_API_KEY=...            # Grok
 | `config.json` | Strategien, Limits, Modi |
 | `positions.json` | Offene Positionen, Cooldowns, RSI-Tiers |
 | `trade_history.json` | Trades, Balance, PnL |
-| `live_trade_history.json` | Gate-Orders (Live/Testnet) |
+| `live_trade_history.json` | Gate-Orders (Live) |
+| `orders.live.json` | Order-Ledger für Live (scope `live`) |
+| `orders.paper.json` | Order-Ledger für lokales Paper |
+| `orders.demo.json` | Order-Ledger im Demo-Modus |
 | `x_accounts.json` | Überwachte X-Accounts |
 | `x_posts.json` | Analysierte Posts + Empfehlungen |
 | `paper_strategies.json` | Sandbox-Hypothesen |
@@ -507,18 +531,29 @@ XAI_API_KEY=...            # Grok
 ```bash
 pytest tests/unit/ -v
 pytest tests/unit/test_trade_cooldown.py -v   # Cooldown + RSI-Churn
+pytest tests/unit/test_live_gate_readiness.py -v
+
+# Gate readiness (keys in .env required)
+python3 scripts/gate_live_smoke_test.py
+python3 scripts/reconcile_gate_positions.py
 ```
 
 ---
 
 ## 15. Go-Live Checkliste
 
-1. `bash scripts/start_demo_with_ngrok.sh` — Telegram testen
-2. Paper laufen lassen, `/positions` + Cycle-Summaries prüfen
-3. `/mode gate_testnet` + `gate_testnet.dry_run: false` — 1 Buy + 1 Sell
-4. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus
-5. `live.dry_run: false` + `/live_confirm`
-6. Grok-Credits prüfen (`use_grok_x_search`)
+1. Bot **ohne** `--demo` starten (Demo isoliert `*.demo.json` / `orders.demo.json`)
+2. `bash scripts/start_demo_with_ngrok.sh` oder Produktiv-Start — Telegram testen
+3. Paper laufen lassen, `/positions` + `/orders` + Cycle-Summaries prüfen
+4. `python3 scripts/gate_live_smoke_test.py` — Keys + Balance prüfen
+5. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus, Ledger in `orders.live.json`
+6. `live.dry_run: false` in `config.json`, Bot neu starten, dann `/live_confirm`
+7. Manueller `/buy` mit kleinem Betrag — Gate Spot Order History + `/orders` vergleichen
+8. `python3 scripts/reconcile_gate_positions.py` — lokale Positionen vs. Gate-Bestand
+9. `/gate` — USDT, Spot-Bestände, Dry-Run-Status prüfen
+10. Grok-Credits prüfen (`use_grok_x_search`) — sonst keine X-Auto-Trades im Live-Modus
+
+**Hinweis:** Kein Testnet — nur Paper zum Üben, Live auf Gate.io Mainnet. Im Live-Modus nutzen Risk Manager und `/positions` die **echte Gate-USDT-Balance**; `trade_history.json` wird für Gate-Orders nicht beschrieben (nur `live_trade_history.json` + Order-Ledger). `positions.json` bleibt Bot-Cache — regelmäßig mit `reconcile_gate_positions.py` abgleichen.
 
 ---
 

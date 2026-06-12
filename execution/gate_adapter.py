@@ -5,32 +5,29 @@ import ccxt
 
 from core.config import BotConfig, get_bot_config
 from core.models import TradeOrder, TradeResult
-from data_manager import record_live_trade
+from data_manager import record_live_trade, uses_exchange_ledger
 from execution.base import ExecutionAdapter
 from logger import log
 from services.portfolio_service import PortfolioService
 
 
 class GateExecutionAdapter(ExecutionAdapter):
-    """Gate.io execution via ccxt (mainnet or testnet)."""
+    """Gate.io Spot execution via ccxt (mainnet)."""
 
     def __init__(
         self,
         config: BotConfig = None,
         portfolio: PortfolioService = None,
-        testnet: bool = False,
     ):
         self.config = config or get_bot_config()
         self.portfolio = portfolio or PortfolioService(self.config)
-        self.testnet = testnet
-        self.live_cfg = (
-            self.config.gate_testnet_config if testnet else self.config.live_config
-        )
+        self.live_cfg = self.config.live_config
         self._exchange = None
+        self._last_api_error = ""
 
     @property
     def mode(self) -> str:
-        return "gate_testnet" if self.testnet else "live"
+        return "live"
 
     def _get_exchange(self):
         if self._exchange:
@@ -46,8 +43,6 @@ class GateExecutionAdapter(ExecutionAdapter):
             "enableRateLimit": True,
             "timeout": 20000,
         })
-        if self.testnet:
-            self._exchange.set_sandbox_mode(True)
         return self._exchange
 
     def _max_usdt(self) -> float:
@@ -67,22 +62,20 @@ class GateExecutionAdapter(ExecutionAdapter):
                 or 0
             )
         except Exception as e:
-            label = "Gate testnet" if self.testnet else "Gate"
-            log(f"{label} balance fetch failed: {e}", "WARNING")
+            self._last_api_error = str(e)
+            log(f"Gate balance fetch failed: {e}", "WARNING")
             return 0.0
+        self._last_api_error = ""
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
-        dry_default = not self.testnet
-        if self.live_cfg.get("dry_run", dry_default):
-            label = "Gate testnet" if self.testnet else "Live"
+        if self.live_cfg.get("dry_run", True):
             log(
-                f"[DRY RUN] {label} {order.type} {order.symbol} "
+                f"[DRY RUN] Live {order.type} {order.symbol} "
                 f"amount={order.amount} @ {order.price}",
                 "INFO",
             )
             result = self._sync_local_ledger(order, timeframe, exchange_order_id="dry_run")
-            target = "Gate testnet" if self.testnet else "Gate.io"
-            result.message = f"Dry run — order logged locally, not sent to {target}"
+            result.message = "Dry run — order logged locally, not sent to Gate.io"
             return result
 
         exchange = self._get_exchange()
@@ -101,8 +94,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 return self._execute_buy(exchange, order, timeframe)
             return self._execute_sell(exchange, order, timeframe)
         except Exception as e:
-            label = "Gate testnet" if self.testnet else "Gate"
-            log(f"{label} execution failed for {order.symbol}: {e}", "ERROR")
+            log(f"Gate execution failed for {order.symbol}: {e}", "ERROR")
             return TradeResult(
                 executed=False,
                 order_type=order.type,
@@ -129,6 +121,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         cost = float(raw.get("cost") or fill_price * filled)
 
+        fee = _extract_fee(raw)
         result = self._sync_local_ledger(
             TradeOrder(
                 "BUY", order.symbol, fill_price, filled, usdt_amount=cost,
@@ -136,11 +129,11 @@ class GateExecutionAdapter(ExecutionAdapter):
             ),
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
-            fee=_extract_fee(raw),
+            fee=fee,
         )
-        prefix = "Gate testnet" if self.testnet else "Gate"
-        result.message = f"{prefix} BUY filled {filled:.6f} @ ${fill_price:.4f}"
+        result.message = f"Gate BUY filled {filled:.6f} @ ${fill_price:.4f}"
         result.exchange_order_id = str(raw.get("id", ""))
+        result.fee = fee
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
@@ -153,8 +146,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 or 0
             )
         except Exception as e:
-            label = "Gate testnet" if self.testnet else "Gate"
-            log(f"{label} {base} balance fetch failed: {e}", "WARNING")
+            log(f"Gate {base} balance fetch failed: {e}", "WARNING")
             return 0.0
 
     def _validate_sell_amount(self, exchange, order: TradeOrder, amount: float) -> tuple:
@@ -204,6 +196,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         received = float(raw.get("cost") or fill_price * filled)
 
+        fee = _extract_fee(raw)
         result = self._sync_local_ledger(
             TradeOrder(
                 "SELL", order.symbol, fill_price, filled, signal=order.signal,
@@ -212,11 +205,11 @@ class GateExecutionAdapter(ExecutionAdapter):
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
             usdt_received=received,
-            fee=_extract_fee(raw),
+            fee=fee,
         )
-        prefix = "Gate testnet" if self.testnet else "Gate"
-        result.message = f"{prefix} SELL filled {filled:.6f} @ ${fill_price:.4f}"
+        result.message = f"Gate SELL filled {filled:.6f} @ ${fill_price:.4f}"
         result.exchange_order_id = str(raw.get("id", ""))
+        result.fee = fee
         return result
 
     def _sync_local_ledger(
@@ -228,15 +221,16 @@ class GateExecutionAdapter(ExecutionAdapter):
         fee: float = 0,
     ) -> TradeResult:
         oid = order.order_id or None
+        sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
                 order.symbol, timeframe, order.price, order.usdt_amount,
-                source=order.source, order_id=oid,
+                source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
             )
         else:
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
-                source=order.source, order_id=oid,
+                source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
             )
 
         record_live_trade({

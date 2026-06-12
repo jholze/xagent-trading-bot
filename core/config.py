@@ -1,4 +1,5 @@
 from data_manager import get_config, reload_config
+from logger import log
 
 
 class BotConfig:
@@ -22,6 +23,12 @@ class BotConfig:
     @property
     def trading_mode(self) -> str:
         mode = self._raw.get("trading_mode")
+        if mode == "gate_testnet":
+            log(
+                "trading_mode gate_testnet is deprecated — use paper or live; treating as paper",
+                "WARNING",
+            )
+            return "paper"
         if mode:
             return mode
         return "paper" if self.virtual_trading else "off"
@@ -33,10 +40,6 @@ class BotConfig:
     @property
     def live_config(self) -> dict:
         return self._raw.get("live", {})
-
-    @property
-    def gate_testnet_config(self) -> dict:
-        return self._raw.get("gate_testnet", {})
 
     @property
     def paper_config(self) -> dict:

@@ -1,3 +1,5 @@
+import threading
+
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder, TradeResult
 from execution.factory import get_execution_adapter
@@ -6,6 +8,9 @@ from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
+
+
+_execute_lock = threading.Lock()
 
 
 class TradingService:
@@ -37,9 +42,6 @@ class TradingService:
             confirmed = "CONFIRMED" if self.config.live_confirmed else "needs /live_confirm"
             dry = " [DRY RUN]" if self.config.live_config.get("dry_run", True) else ""
             return f"live ({confirmed}){dry}"
-        if mode == "gate_testnet":
-            dry = " [DRY RUN]" if self.config.gate_testnet_config.get("dry_run", False) else ""
-            return f"gate testnet (Gate.io demo){dry}"
         if mode == "off":
             return "off (analysis only)"
         backend = self.config.paper_config.get("backend", "local")
@@ -51,7 +53,7 @@ class TradingService:
         mode = self.config.trading_mode
         if mode == "off":
             return False, "Trading disabled (mode=off). Use /mode paper to enable."
-        if mode in ("paper", "gate_testnet"):
+        if mode == "paper":
             return True, ""
         if mode == "live":
             if not self.config.live_confirmed:
@@ -65,10 +67,6 @@ class TradingService:
     def max_usdt_for_order(self) -> float:
         if self.config.trading_mode == "live":
             return float(self.config.live_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade))
-        if self.config.trading_mode == "gate_testnet":
-            return float(
-                self.config.gate_testnet_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
-            )
         return self.config.max_usdt_per_trade
 
     def evaluate_risk(
@@ -99,6 +97,28 @@ class TradingService:
         indicators: dict = None,
         order_id: str = None,
     ) -> TradeResult:
+        with _execute_lock:
+            return self._execute_order_locked(
+                order,
+                timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
+                order_id=order_id,
+            )
+
+    def _execute_order_locked(
+        self,
+        order: TradeOrder,
+        timeframe: str = "4h",
+        source: str = "manual",
+        trust_score: float = None,
+        confidence: float = None,
+        indicators: dict = None,
+        order_id: str = None,
+    ) -> TradeResult:
+        self.refresh()
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
 

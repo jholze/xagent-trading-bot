@@ -56,6 +56,12 @@ with open("config.json", encoding="utf-8") as f:
 trading_mode = config.get("trading_mode", "paper" if config.get("virtual_trading", True) else "off")
 print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DEMO_MODE") == "1" else ""))
 
+try:
+    from services.ledger_sync import sync_positions_on_startup
+    sync_positions_on_startup()
+except Exception as e:
+    log(f"Ledger position sync on startup failed: {e}", "WARNING")
+
 # Flask für Webhook
 app = Flask(__name__)
 

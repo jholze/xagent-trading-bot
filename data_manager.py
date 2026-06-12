@@ -6,12 +6,9 @@ from datetime import datetime
 
 from logger import log
 
-_DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"
-
-
 def is_demo_mode() -> bool:
-    """Returns True if the bot is running in demo mode (--demo flag)."""
-    return _DEMO_MODE
+    """Returns True if the bot is running in demo mode (--demo flag or pytest)."""
+    return os.environ.get("DEMO_MODE", "0") == "1"
 
 
 def get_data_file(base_name: str) -> str:
@@ -369,6 +366,12 @@ ORDERS_SCOPE_FILES = {
     "live": "orders.live.json",
 }
 
+POSITIONS_SCOPE_FILES = {
+    "demo": "positions.demo.json",
+    "paper": "positions.paper.json",
+    "live": "positions.live.json",
+}
+
 
 def resolve_orders_file(scope: str) -> str:
     if scope not in ORDERS_SCOPE_FILES:
@@ -376,13 +379,26 @@ def resolve_orders_file(scope: str) -> str:
     return ORDERS_SCOPE_FILES[scope]
 
 
+def resolve_positions_file(scope: str) -> str:
+    if scope not in POSITIONS_SCOPE_FILES:
+        raise ValueError(f"Invalid ledger scope: {scope}")
+    if scope == "demo":
+        return get_data_file("positions.json")
+    return POSITIONS_SCOPE_FILES[scope]
+
+
 def resolve_ledger_scope(trading_mode: str = None) -> str:
     if is_demo_mode():
         return "demo"
     mode = trading_mode or get_config().get("trading_mode", "paper")
-    if mode in ("gate_testnet", "live"):
+    if mode == "live":
         return "live"
     return "paper"
+
+
+def uses_exchange_ledger(trading_mode: str = None) -> bool:
+    mode = trading_mode or get_config().get("trading_mode", "paper")
+    return mode == "live"
 
 
 def _empty_orders(scope: str) -> dict:

@@ -2,7 +2,9 @@ from datetime import datetime, timedelta
 
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
-from data_manager import load_trade_history, load_live_trade_history
+from data_manager import load_live_trade_history, load_trade_history
+from data_manager import uses_exchange_ledger
+from services.gate_balance import fetch_portfolio_equity, fetch_usdt_balance
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from strategies.positions import count_open_positions, get_position, list_active_positions
@@ -55,10 +57,12 @@ class RiskManager:
                 code="max_open_positions",
             )
 
-        if self._daily_trades_count() >= self.config.max_daily_trades:
+        daily_count = self._daily_trades_count()
+        max_daily = self.config.max_daily_trades
+        if max_daily > 0 and daily_count >= max_daily:
             return RiskDecision(
                 approved=False,
-                message=f"Daily trade limit reached ({self.config.max_daily_trades})",
+                message=f"Daily trade limit reached ({daily_count}/{max_daily})",
                 code="max_daily_trades",
             )
 
@@ -103,8 +107,8 @@ class RiskManager:
             sized = room
             factors["concentration_capped"] = True
 
-        balance = load_trade_history().get("virtual_balance", equity)
-        if self.config.trading_mode == "paper" and sized > balance:
+        balance = self._available_usdt(equity)
+        if sized > balance:
             sized = balance
             factors["balance_capped"] = True
 
@@ -140,11 +144,12 @@ class RiskManager:
         )
 
     def status_summary(self, current_price: float = None) -> dict:
-        history = load_trade_history()
+        history = self._primary_history()
         equity = self._portfolio_equity(current_price or 0)
         initial = self._initial_capital()
         drawdown_pct = self._equity_drawdown_pct()
         throttle_at = float(self.config.risk_config.get("drawdown_throttle_pct", 10.0))
+        cash = self._available_usdt(equity)
         return {
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
@@ -156,19 +161,14 @@ class RiskManager:
             "initial_capital": initial,
             "drawdown_pct": round(drawdown_pct, 2),
             "drawdown_throttle_active": drawdown_pct >= throttle_at,
-            "virtual_balance": history.get("virtual_balance", 0),
+            "virtual_balance": cash,
+            "ledger_source": "gate" if uses_exchange_ledger(self.config.trading_mode) else "paper",
         }
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
             return float(
                 self.config.live_config.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
-            )
-        if self.config.trading_mode == "gate_testnet":
-            return float(
-                self.config.gate_testnet_config.get(
-                    "max_usdt_per_trade", self.config.max_usdt_per_trade
-                )
             )
         return self.config.max_usdt_per_trade
 
@@ -178,7 +178,19 @@ class RiskManager:
             return float(paper)
         return float(self.config.raw.get("initial_capital_usdt", 5000))
 
+    def _primary_history(self) -> dict:
+        if uses_exchange_ledger(self.config.trading_mode):
+            return load_live_trade_history()
+        return load_trade_history()
+
+    def _available_usdt(self, fallback: float = 0) -> float:
+        if uses_exchange_ledger(self.config.trading_mode):
+            return fetch_usdt_balance(self.config)
+        return float(load_trade_history().get("virtual_balance", fallback))
+
     def _portfolio_equity(self, reference_price: float = 0) -> float:
+        if uses_exchange_ledger(self.config.trading_mode):
+            return fetch_portfolio_equity(self.config)
         history = load_trade_history()
         balance = float(history.get("virtual_balance", self._initial_capital()))
         unrealized = 0.0
@@ -278,14 +290,24 @@ class RiskManager:
         return False, ""
 
     def _daily_trades_count(self) -> int:
+        """Count filled ledger orders in the last 24h (single source of truth per scope)."""
+        from data_manager import load_orders, resolve_ledger_scope
+
         cutoff = datetime.now() - timedelta(hours=24)
+        scope = resolve_ledger_scope(self.config.trading_mode)
         count = 0
-        for history_fn in (load_trade_history, load_live_trade_history):
-            for trade in history_fn().get("trades", []):
-                try:
-                    ts = datetime.fromisoformat(trade.get("timestamp", "").replace("Z", ""))
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    count += 1
+        for order in load_orders(scope).get("orders", []):
+            if order.get("status") != "filled":
+                continue
+            ts_raw = (
+                order.get("timestamps", {}).get("filled")
+                or order.get("timestamps", {}).get("created")
+                or ""
+            )
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", ""))
+            except Exception:
+                continue
+            if ts >= cutoff:
+                count += 1
         return count

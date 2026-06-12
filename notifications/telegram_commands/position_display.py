@@ -1,4 +1,6 @@
 from core.config import get_bot_config
+from data_manager import uses_exchange_ledger
+from services.gate_balance import fetch_spot_holdings, fetch_usdt_balance, format_holdings_lines
 
 
 def position_symbol(p: dict) -> str:
@@ -88,9 +90,17 @@ def format_position_card(index: int, p: dict, price: float, numbered: bool = Fal
     )
 
 
-def format_portfolio_summary(history: dict, total_unreal: float, position_count: int, mode_label: str = "") -> str:
-    balance = float(history.get("virtual_balance", 0))
-    realized = float(history.get("realized_pnl", 0))
+def format_portfolio_summary(
+    history: dict,
+    total_unreal: float,
+    position_count: int,
+    mode_label: str = "",
+    *,
+    cash_balance: float = None,
+    cash_label: str = "Cash",
+) -> str:
+    balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
+    realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
     total_value = balance + total_unreal
     total_pnl = realized + total_unreal
     initial = float(get_bot_config().initial_capital_usdt or 5000)
@@ -100,7 +110,7 @@ def format_portfolio_summary(history: dict, total_unreal: float, position_count:
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
     return (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
-        f"💵 Cash <b>${balance:,.0f}</b>\n"
+        f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
         f"📈 Unrealisiert <b>${total_unreal:+.1f}</b>\n"
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>)\n"
@@ -117,15 +127,23 @@ def format_positions_message(
     include_trades: bool = True,
     numbered: bool = True,
     title: str = None,
+    *,
+    cash_balance: float = None,
+    cash_label: str = "Cash",
+    gate_holdings: list = None,
 ) -> str:
     if not active:
+        cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
         empty = (
             "<b>📊 Portfolio</b>\n\n"
             "Keine offenen Positionen.\n"
-            f"💵 Cash <b>${float(history.get('virtual_balance', 0)):,.0f}</b>"
+            f"💵 {cash_label} <b>${cash:,.2f}</b>"
         )
         if mode_label:
             empty += f"\n<i>{mode_label}</i>"
+        if gate_holdings:
+            empty += "\n\n<b>Gate Spot-Bestände</b>\n"
+            empty += "\n".join(format_holdings_lines(gate_holdings, {}))
         if include_trades:
             empty += "\n\n<b>Letzte Trades</b>\n"
             trades = history.get("trades", [])[-5:]
@@ -158,7 +176,14 @@ def format_positions_message(
     if title:
         msg = f"<b>{title}</b>\n\n"
     else:
-        msg = format_portfolio_summary(history, total_unreal, len(active), mode_label) + "\n"
+        msg = format_portfolio_summary(
+            history, total_unreal, len(active), mode_label,
+            cash_balance=cash_balance, cash_label=cash_label,
+        ) + "\n"
+
+    if gate_holdings:
+        msg += "\n\n<b>Gate Spot-Bestände</b>\n"
+        msg += "\n".join(format_holdings_lines(gate_holdings, prices))
 
     cards = []
     for i, (p, price) in enumerate(rows, 1):
@@ -199,8 +224,29 @@ def format_sell_list_message(active: list, prices: dict) -> str:
 
 
 def load_trade_history_safe() -> dict:
-    from data_manager import load_trade_history
+    from data_manager import load_live_trade_history, load_trade_history
+
+    if uses_exchange_ledger(get_bot_config().trading_mode):
+        return load_live_trade_history()
     return load_trade_history()
+
+
+def resolve_portfolio_context() -> dict:
+    cfg = get_bot_config()
+    history = load_trade_history_safe()
+    if uses_exchange_ledger(cfg.trading_mode):
+        return {
+            "history": history,
+            "cash_balance": fetch_usdt_balance(cfg),
+            "cash_label": "Gate USDT",
+            "gate_holdings": fetch_spot_holdings(cfg),
+        }
+    return {
+        "history": history,
+        "cash_balance": float(history.get("virtual_balance", 0)),
+        "cash_label": "Cash",
+        "gate_holdings": None,
+    }
 
 
 def format_trade_banner(result) -> str:
@@ -222,23 +268,27 @@ def format_trade_banner(result) -> str:
 
 def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
-    from data_manager import load_trade_history
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
     active = list_active_positions()
-    history = load_trade_history()
+    ctx = resolve_portfolio_context()
     symbols = [position_symbol(p) for p in active]
-    prices = get_prices_batch(symbols) if symbols else {}
+    if ctx.get("gate_holdings"):
+        symbols.extend(h["symbol"] for h in ctx["gate_holdings"])
+    prices = get_prices_batch(list(dict.fromkeys(symbols))) if symbols else {}
     mode = mode_label or TradingService().mode_label()
     msg = format_positions_message(
         active,
         prices,
-        history,
+        ctx["history"],
         mode_label=mode,
         include_trades=True,
+        cash_balance=ctx["cash_balance"],
+        cash_label=ctx["cash_label"],
+        gate_holdings=ctx.get("gate_holdings"),
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"
