@@ -1,5 +1,5 @@
 from core.config import get_bot_config
-from data_manager import is_dry_run_enhanced, uses_exchange_ledger
+from data_manager import is_dry_run_enhanced, uses_exchange_ledger, uses_simulated_live_portfolio
 from services.gate_balance import fetch_spot_holdings, fetch_usdt_balance, format_holdings_lines
 from services.order_service import source_label
 
@@ -113,10 +113,11 @@ def format_portfolio_summary(
     *,
     cash_balance: float = None,
     cash_label: str = "Cash",
+    positions_market_value: float = 0.0,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
-    total_value = balance + total_unreal
+    total_value = balance + float(positions_market_value or 0)
     total_pnl = realized + total_unreal
     initial = float(get_bot_config().initial_capital_usdt or 5000)
     pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0.0
@@ -170,6 +171,7 @@ def format_positions_message(
         return empty
 
     total_unreal = 0.0
+    positions_market_value = 0.0
     sorted_active = sort_positions_by_value(active, prices)
     rows = []
     for p in sorted_active:
@@ -177,6 +179,7 @@ def format_positions_message(
         price = float(prices.get(sym, 0) or 0)
         m = _position_metrics(p, price)
         total_unreal += m["unreal"]
+        positions_market_value += m["value_usdt"]
         rows.append((p, price))
 
     if title:
@@ -185,6 +188,7 @@ def format_positions_message(
         msg = format_portfolio_summary(
             history, total_unreal, len(active), mode_label,
             cash_balance=cash_balance, cash_label=cash_label,
+            positions_market_value=positions_market_value,
         ) + "\n"
 
     if gate_holdings:
@@ -231,13 +235,14 @@ def load_trade_history_safe() -> dict:
 def resolve_portfolio_context() -> dict:
     cfg = get_bot_config()
     history = load_trade_history_safe()
-    if is_dry_run_enhanced(cfg.raw):
+    if uses_simulated_live_portfolio(cfg.raw):
+        cash_label = "Cash (Sim)" if is_dry_run_enhanced(cfg.raw) else "Cash (Dry Run)"
         return {
             "history": history,
             "cash_balance": float(
                 history.get("virtual_balance", getattr(cfg, "simulated_balance_usdt", 5000))
             ),
-            "cash_label": "Cash (Sim)",
+            "cash_label": cash_label,
             "gate_holdings": None,
         }
     if uses_exchange_ledger(cfg.trading_mode):

@@ -61,15 +61,25 @@ WATCHLIST_FILE = "watchlist.json"
 DRY_RUN_OVERLAY_FILE = "watchlist.dry_run_overlay.json"
 
 
-def is_dry_run_enhanced(config: dict = None) -> bool:
-    """True when live + dry_run + dry_run_enhanced — never when dry_run is false."""
+def is_live_dry_run(config: dict = None) -> bool:
+    """True when live mode with dry_run ON — orders stay in the local ledger."""
     cfg = config or get_config()
     if cfg.get("trading_mode") != "live":
         return False
-    live = cfg.get("live", {})
-    if not live.get("dry_run", True):
+    return bool(cfg.get("live", {}).get("dry_run", True))
+
+
+def is_dry_run_enhanced(config: dict = None) -> bool:
+    """True when live + dry_run + dry_run_enhanced — never when dry_run is false."""
+    cfg = config or get_config()
+    if not is_live_dry_run(cfg):
         return False
-    return bool(live.get("dry_run_enhanced", False))
+    return bool(cfg.get("live", {}).get("dry_run_enhanced", False))
+
+
+def uses_simulated_live_portfolio(config: dict = None) -> bool:
+    """Portfolio cash/positions come from the local live ledger, not Gate balances."""
+    return is_live_dry_run(config)
 
 
 def simulated_balance_usdt(config: dict = None) -> float:

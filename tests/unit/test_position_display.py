@@ -42,10 +42,41 @@ class TestPositionDisplay(unittest.TestCase):
             total_unreal=25.0,
             position_count=2,
             mode_label="paper (local ledger)",
+            positions_market_value=89.0,
         )
         self.assertIn("Gesamtwert", msg)
+        self.assertIn("$5,000", msg)
         self.assertIn("Gesamt-PnL", msg)
         self.assertIn("Positionen (2)", msg)
+
+    def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
+        msg = format_portfolio_summary(
+            {"virtual_balance": 3952.19, "realized_pnl": -111.82},
+            total_unreal=18.5,
+            position_count=4,
+            cash_balance=3952.19,
+            cash_label="Cash (Dry Run)",
+            positions_market_value=1111.82,
+        )
+        self.assertIn("$5,064", msg)
+
+    def test_resolve_portfolio_context_live_dry_run_without_enhanced(self):
+        cfg = type("Cfg", (), {
+            "raw": {"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": False}},
+            "trading_mode": "live",
+            "simulated_balance_usdt": 5000,
+        })()
+        with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
+             patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value={
+                 "virtual_balance": 3952.19, "realized_pnl": -111.82, "trades": [],
+             }), \
+             patch("notifications.telegram_commands.position_display.is_dry_run_enhanced", return_value=False), \
+             patch("notifications.telegram_commands.position_display.fetch_usdt_balance") as mock_gate:
+            ctx = resolve_portfolio_context()
+            mock_gate.assert_not_called()
+        self.assertEqual(ctx["cash_label"], "Cash (Dry Run)")
+        self.assertAlmostEqual(ctx["cash_balance"], 3952.19)
+        self.assertIsNone(ctx["gate_holdings"])
 
     def test_empty_positions_message(self):
         msg = format_positions_message([], {}, {"virtual_balance": 5000})

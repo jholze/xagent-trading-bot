@@ -173,7 +173,8 @@ def sync_positions_on_startup() -> None:
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
     if scope == "live":
-        activate_ledger_scope(scope, rebuild=True)
+        path = resolve_positions_file(scope)
+        activate_ledger_scope(scope, rebuild=not os.path.exists(path))
         return
     path = resolve_positions_file(scope)
     activate_ledger_scope(scope, rebuild=not os.path.exists(path))
