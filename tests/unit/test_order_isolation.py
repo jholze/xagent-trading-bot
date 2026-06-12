@@ -30,6 +30,15 @@ class TestOrderIsolation(unittest.TestCase):
         with patch("data_manager.is_demo_mode", return_value=True):
             self.assertEqual(resolve_ledger_scope(), "demo")
 
+    def test_demo_mode_reads_env_at_runtime(self):
+        from data_manager import is_demo_mode
+        import os
+
+        with patch.dict(os.environ, {"DEMO_MODE": "1"}):
+            self.assertTrue(is_demo_mode())
+        with patch.dict(os.environ, {"DEMO_MODE": "0"}):
+            self.assertFalse(is_demo_mode())
+
     def test_paper_mode_uses_paper_scope(self):
         with patch("data_manager.is_demo_mode", return_value=False), \
              patch("data_manager.get_config", return_value={"trading_mode": "paper"}):

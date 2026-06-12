@@ -6,12 +6,9 @@ from datetime import datetime
 
 from logger import log
 
-_DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"
-
-
 def is_demo_mode() -> bool:
-    """Returns True if the bot is running in demo mode (--demo flag)."""
-    return _DEMO_MODE
+    """Returns True if the bot is running in demo mode (--demo flag or pytest)."""
+    return os.environ.get("DEMO_MODE", "0") == "1"
 
 
 def get_data_file(base_name: str) -> str:
