@@ -432,8 +432,10 @@ class TestVirtualTrading(unittest.TestCase):
 
     def test_effective_confidence_threshold(self):
         analyzer = XAnalyzer()
-        high_trust = analyzer.effective_confidence_threshold("CryptoCapo_")
-        low_trust_threshold = analyzer.effective_confidence_threshold("UnknownUser")
+        with patch.object(analyzer, "get_trust_score", side_effect=lambda acc: 90.0 if acc == "CryptoCapo_" else 30.0):
+            high_trust = analyzer.effective_confidence_threshold("CryptoCapo_")
+            low_trust_threshold = analyzer.effective_confidence_threshold("UnknownUser")
+        self.assertLess(high_trust, low_trust_threshold)
         self.assertLessEqual(high_trust, 75)
 
     def test_accuracy_tracker_leaderboard(self):
@@ -568,13 +570,11 @@ class TestVirtualTrading(unittest.TestCase):
         from unittest.mock import patch
         import data_manager
 
-        with patch.object(data_manager, "_DEMO_MODE", True):
-            self.assertTrue(data_manager.is_demo_mode())
+        with patch.object(data_manager, "is_demo_mode", return_value=True):
             path = data_manager.get_data_file("trade_history.json")
             self.assertIn(".demo.json", path)
 
-        with patch.object(data_manager, "_DEMO_MODE", False):
-            self.assertFalse(data_manager.is_demo_mode())
+        with patch.object(data_manager, "is_demo_mode", return_value=False):
             path = data_manager.get_data_file("trade_history.json")
             self.assertNotIn(".demo.json", path)
 
@@ -803,11 +803,11 @@ class TestVirtualTrading(unittest.TestCase):
         from unittest.mock import patch
         import data_manager
 
-        with patch.object(data_manager, "_DEMO_MODE", True):
+        with patch.object(data_manager, "is_demo_mode", return_value=True):
             path = data_manager.get_data_file("watchlist.json")
             self.assertTrue(path.endswith(".demo.json"))
 
-        with patch.object(data_manager, "_DEMO_MODE", False):
+        with patch.object(data_manager, "is_demo_mode", return_value=False):
             path = data_manager.get_data_file("watchlist.json")
             self.assertFalse(path.endswith(".demo.json"))
 
@@ -815,7 +815,7 @@ class TestVirtualTrading(unittest.TestCase):
         from unittest.mock import patch
         import data_manager
 
-        with patch.object(data_manager, "_DEMO_MODE", False), \
+        with patch.object(data_manager, "is_demo_mode", return_value=False), \
              patch("data_manager.log") as mock_log:
             data_manager.load_demo_data()
             # Should log a warning and do nothing
