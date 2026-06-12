@@ -64,7 +64,27 @@ def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> li
 def fetch_portfolio_equity(config: BotConfig = None, reference_prices: dict = None) -> float:
     cfg = config or get_bot_config()
     if is_dry_run_enhanced(cfg.raw):
-        return fetch_usdt_balance(cfg)
+        cash = fetch_usdt_balance(cfg)
+        try:
+            from strategies.positions import list_active_positions
+        except Exception:
+            return cash
+        active = list_active_positions()
+        if not active:
+            return cash
+        symbols = [
+            p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
+            for p in active
+        ]
+        prices = reference_prices or get_prices_batch(symbols)
+        total = cash
+        for p in active:
+            sym = p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
+            amount = float(p.get("amount", 0) or 0)
+            price = float(prices.get(sym, 0) or 0)
+            if price > 0 and amount > 0:
+                total += amount * price
+        return total
     if not uses_exchange_ledger(cfg.trading_mode):
         history = load_trade_history()
         return float(history.get("virtual_balance", 0))

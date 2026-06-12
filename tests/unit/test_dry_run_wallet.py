@@ -10,6 +10,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from data_manager import (
     LIVE_TRADE_HISTORY_FILE,
+    compute_sim_cash_from_trades,
     get_config,
     is_dry_run_enhanced,
     load_live_trade_history,
@@ -39,18 +40,22 @@ class TestDryRunWallet(unittest.TestCase):
     def test_record_live_trade_updates_virtual_balance(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "live_trade_history.json")
+            cfg = {
+                "trading_mode": "live",
+                "live": {"dry_run": True, "dry_run_enhanced": True, "simulated_balance_usdt": 5000},
+            }
             with patch("data_manager.get_data_file", return_value=path), \
-                 patch("data_manager.get_config", return_value={
-                     "trading_mode": "live",
-                     "live": {"dry_run": True, "dry_run_enhanced": True, "simulated_balance_usdt": 5000},
-                 }), \
-                 patch("data_manager.is_dry_run_enhanced", return_value=True):
+                 patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_dry_run_enhanced", return_value=True), \
+                 patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
                 record_live_trade({"type": "BUY", "symbol": "PEPE/USDT", "usdt_amount": 100})
                 history = load_live_trade_history()
                 self.assertAlmostEqual(history["virtual_balance"], 4900.0)
                 record_live_trade({"type": "SELL", "symbol": "PEPE/USDT", "usdt_received": 120, "pnl": 20})
                 history = load_live_trade_history()
                 self.assertAlmostEqual(history["virtual_balance"], 5020.0)
+                trades = history["trades"]
+                self.assertAlmostEqual(compute_sim_cash_from_trades(trades, 5000), 5020.0)
 
     def test_risk_manager_approves_buy_with_simulated_balance(self):
         cfg = self._enhanced_config()

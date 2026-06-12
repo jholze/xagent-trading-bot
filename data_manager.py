@@ -371,12 +371,33 @@ def save_trade_history(data):
     except Exception:
         return False
 
+def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:
+    """Replay dry-run trades from starting capital to derive sim USDT cash."""
+    balance = float(initial)
+    for trade in trades or []:
+        if trade.get("type") == "BUY":
+            balance = max(0.0, balance - float(trade.get("usdt_amount") or 0))
+        elif trade.get("type") == "SELL":
+            balance += float(trade.get("usdt_received") or 0)
+    return round(balance, 8)
+
+
+def compute_sim_realized_pnl(trades: list) -> float:
+    return round(
+        sum(float(t.get("pnl") or 0) for t in (trades or []) if t.get("type") == "SELL"),
+        8,
+    )
+
+
 def _ensure_live_virtual_balance(history: dict, config: dict = None) -> dict:
     cfg = config or get_config()
     if not is_dry_run_enhanced(cfg):
         return history
-    if "virtual_balance" not in history:
-        history["virtual_balance"] = simulated_balance_usdt(cfg)
+    initial = simulated_balance_usdt(cfg)
+    trades = history.get("trades", [])
+    history["virtual_balance"] = compute_sim_cash_from_trades(trades, initial)
+    history["realized_pnl"] = compute_sim_realized_pnl(trades)
+    history["total_pnl"] = history["realized_pnl"]
     return history
 
 
@@ -418,9 +439,14 @@ def load_live_trade_history():
             history = json.load(f)
             if history.get("total_pnl") is not None and history.get("realized_pnl") is None:
                 history["realized_pnl"] = history["total_pnl"]
+            stored_cash = history.get("virtual_balance")
             history, reconciled = _reconcile_live_trade_sources(history)
             history = _ensure_live_virtual_balance(history)
-            if reconciled:
+            cash_drifted = (
+                stored_cash is not None
+                and abs(float(stored_cash) - float(history.get("virtual_balance", 0))) > 0.01
+            )
+            if reconciled or cash_drifted:
                 save_live_trade_history(history)
             return history
     except Exception as e:
@@ -444,18 +470,7 @@ def record_live_trade(trade):
     history.setdefault("trades", []).append(trade)
     if is_dry_run_enhanced(cfg):
         history = _ensure_live_virtual_balance(history, cfg)
-        if trade.get("type") == "BUY":
-            history["virtual_balance"] = max(
-                0.0,
-                float(history.get("virtual_balance", simulated_balance_usdt(cfg)))
-                - float(trade.get("usdt_amount", 0) or 0),
-            )
-        elif trade.get("type") == "SELL":
-            history["virtual_balance"] = (
-                float(history.get("virtual_balance", simulated_balance_usdt(cfg)))
-                + float(trade.get("usdt_received", 0) or 0)
-            )
-    if trade.get("type") == "SELL":
+    elif trade.get("type") == "SELL":
         history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
         history["realized_pnl"] = history["total_pnl"]
     save_live_trade_history(history)

@@ -96,7 +96,7 @@ class RiskManager:
                 indicators,
             )
 
-        equity = self._portfolio_equity(order.price)
+        equity = self._portfolio_equity(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
         max_position_value = equity * (self.config.max_position_percent / 100.0)
         room = max_position_value - pos_value
@@ -213,16 +213,21 @@ class RiskManager:
             return fetch_usdt_balance(self.config)
         return float(load_trade_history().get("virtual_balance", fallback))
 
-    def _portfolio_equity(self, reference_price: float = 0) -> float:
+    def _dry_run_reference_prices(self, reference_price: float = 0, symbol: str = None) -> dict:
+        ref_prices = {}
+        for pos in list_active_positions():
+            sym = pos["symbol"] if "/" in pos["symbol"] else f"{pos['symbol']}/USDT"
+            ref_prices[sym] = float(pos.get("average_entry", pos.get("entry_price", 0)) or 0)
+        if reference_price > 0 and symbol:
+            ref_prices[symbol] = reference_price
+        return ref_prices
+
+    def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float:
         if is_dry_run_enhanced(self.config.raw):
-            history = load_live_trade_history()
-            balance = float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
-            unrealized = 0.0
-            for pos in list_active_positions():
-                entry = pos.get("average_entry", 0) or pos.get("entry_price", 0)
-                price = reference_price if reference_price > 0 else entry
-                unrealized += (price - entry) * pos.get("amount", 0)
-            return max(balance + unrealized, balance)
+            return fetch_portfolio_equity(
+                self.config,
+                reference_prices=self._dry_run_reference_prices(reference_price, symbol),
+            )
         if uses_exchange_ledger(self.config.trading_mode):
             return fetch_portfolio_equity(self.config)
         history = load_trade_history()
@@ -234,20 +239,20 @@ class RiskManager:
             unrealized += (price - entry) * pos.get("amount", 0)
         return max(balance + unrealized, balance)
 
-    def _equity_drawdown_pct(self, reference_price: float = 0) -> float:
+    def _equity_drawdown_pct(self, reference_price: float = 0, symbol: str = None) -> float:
         if is_dry_run_enhanced(self.config.raw):
             history = load_live_trade_history()
-            balance = float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
             initial = simulated_balance_usdt(self.config.raw)
+            equity = self._portfolio_equity(reference_price, symbol)
         else:
             history = load_trade_history()
-            balance = float(history.get("virtual_balance", self._initial_capital()))
             initial = self._initial_capital()
+            equity = self._portfolio_equity(reference_price, symbol)
         peak = float(history.get("peak_equity", initial))
-        peak = max(peak, balance, initial)
+        peak = max(peak, equity, initial)
         if peak <= 0:
             return 0.0
-        return max(0.0, (peak - balance) / peak * 100.0)
+        return max(0.0, (peak - equity) / peak * 100.0)
 
     def _dynamic_size(
         self,
