@@ -86,6 +86,60 @@
     "min_confidence": 60,
     "api_key_env": "CMC_API_KEY"
   },
+  "strategy_backtest": {
+    "enabled": true,
+    "auto_run": true,
+    "auto_apply": true,
+    "days": 30,
+    "stagger_minutes": 15,
+    "max_concurrent": 1,
+    "min_review_hours": 12,
+    "max_review_hours": 336,
+    "post_apply_validation_hours": 36,
+    "min_signals_for_valid": 3,
+    "min_improvement_pct": 10,
+    "telegram_on_apply": true,
+    "base_review_hours": {
+      "meme": 24,
+      "mid_cap": 48,
+      "large_cap": 72,
+      "default": 48
+    },
+    "us_market": {
+      "enabled": true,
+      "timezone": "Europe/Berlin",
+      "open": "15:30",
+      "close": "22:00",
+      "prefer_review_after_close": true
+    },
+    "guardrails": {
+      "rsi_buy_low": {
+        "min": 20,
+        "max": 35,
+        "max_delta": 5
+      },
+      "rsi_buy_high": {
+        "min": 40,
+        "max": 60,
+        "max_delta": 5
+      },
+      "volume_multiplier": {
+        "min": 1.0,
+        "max": 2.0,
+        "max_delta": 0.3
+      },
+      "min_hours_between_buys": {
+        "min": 1,
+        "max": 12,
+        "max_delta": 2
+      },
+      "min_hours_between_sells": {
+        "min": 0.5,
+        "max": 8,
+        "max_delta": 2
+      }
+    }
+  },
   "max_daily_trades": 8,
   "risk": {
     "drawdown_throttle_pct": 10.0,

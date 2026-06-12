@@ -517,6 +517,63 @@ def save_orders(data: dict, scope: str) -> bool:
         return False
 
 
+STRATEGY_BACKTEST_FILE = "strategy_backtest.json"
+
+
+def load_strategy_backtest_results() -> dict:
+    path = get_data_file(STRATEGY_BACKTEST_FILE)
+    if not os.path.exists(path):
+        return {"coins": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            data.setdefault("coins", {})
+            return data
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"coins": {}}
+
+
+def save_strategy_backtest_results(data: dict) -> bool:
+    path = get_data_file(STRATEGY_BACKTEST_FILE)
+    try:
+        data.setdefault("coins", {})
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def get_strategy_backtest_entry(key: str) -> dict:
+    return load_strategy_backtest_results().get("coins", {}).get(key, {})
+
+
+def save_strategy_backtest_entry(key: str, entry: dict) -> bool:
+    data = load_strategy_backtest_results()
+    data.setdefault("coins", {})[key] = entry
+    return save_strategy_backtest_results(data)
+
+
+def list_strategy_targets() -> list:
+    """Unique strategy entries from config.strategies (no trending-only coins)."""
+    cfg = get_config()
+    seen = set()
+    targets = []
+    for entry in cfg.get("strategies", []):
+        symbol = entry.get("symbol")
+        tf = entry.get("timeframe", "4h")
+        if not symbol:
+            continue
+        if entry.get("live_enabled") is False and cfg.get("trading_mode") == "live":
+            continue
+        key = f"{symbol}_{tf}"
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(dict(entry))
+    return targets
+
+
 PAPER_STRATEGIES_FILE = "paper_strategies.json"
 PAPER_SANDBOX_HISTORY_FILE = "paper_sandbox_history.json"
 CMC_POSTS_FILE = "cmc_posts.json"

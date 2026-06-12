@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 
-from data_manager import get_config, load_watchlist, load_x_accounts, load_x_posts, save_x_posts
+from data_manager import get_config, load_effective_watchlist, load_x_accounts, load_x_posts, save_x_posts
 from grok_agent import ask_grok, ask_grok_json
 from x_data_provider import RawPost, get_x_provider
 
@@ -405,7 +405,7 @@ JSON:"""
             if analysis:
                 return engine.to_recommendation(signal, analysis, account, tweet_text, current_price)
 
-        if signal.coin not in [c["symbol"].split("/")[0] for c in load_watchlist()]:
+        if signal.coin not in [c["symbol"].split("/")[0] for c in load_effective_watchlist()]:
             recommendation["action"] = "ADD_TO_WATCHLIST"
             recommendation["recommended"] = True
 

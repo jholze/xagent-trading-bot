@@ -215,6 +215,12 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             )
             send_cycle_summary(summary)
 
+            try:
+                from services.strategy_backtest_worker import tick_strategy_backtest
+                tick_strategy_backtest()
+            except Exception as e:
+                log(f"Strategy backtest tick failed: {e}", "WARNING")
+
             for remaining in range(interval, 0, -1):
                 if not use_dashboard:
                     print(f"\r   Nächste Aktualisierung in {remaining:3d} Sekunden...", end="", flush=True)

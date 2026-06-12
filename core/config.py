@@ -116,6 +116,10 @@ class BotConfig:
         return self._raw.get("risk", {})
 
     @property
+    def strategy_backtest_config(self) -> dict:
+        return self._raw.get("strategy_backtest", {})
+
+    @property
     def sandbox_config(self) -> dict:
         return self._raw.get("sandbox", {})
 
