@@ -42,6 +42,29 @@ class BotConfig:
         return self._raw.get("live", {})
 
     @property
+    def dry_run_defaults(self) -> dict:
+        return self._raw.get("dry_run_defaults", {})
+
+    @property
+    def dry_run_enhanced(self) -> bool:
+        return self.is_dry_run_enhanced()
+
+    @property
+    def simulated_balance_usdt(self) -> float:
+        return float(self.live_config.get("simulated_balance_usdt", 5000))
+
+    @property
+    def trending_watchlist_config(self) -> dict:
+        return self.live_config.get("trending_watchlist", {})
+
+    def is_dry_run_enhanced(self) -> bool:
+        if self.trading_mode != "live":
+            return False
+        if not self.live_config.get("dry_run", True):
+            return False
+        return bool(self.live_config.get("dry_run_enhanced", False))
+
+    @property
     def paper_config(self) -> dict:
         return self._raw.get("paper", {})
 
@@ -91,6 +114,10 @@ class BotConfig:
     @property
     def risk_config(self) -> dict:
         return self._raw.get("risk", {})
+
+    @property
+    def strategy_backtest_config(self) -> dict:
+        return self._raw.get("strategy_backtest", {})
 
     @property
     def sandbox_config(self) -> dict:

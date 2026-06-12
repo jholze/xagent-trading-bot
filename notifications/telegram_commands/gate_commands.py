@@ -1,7 +1,7 @@
 import os
 
 from core.config import get_bot_config
-from data_manager import reload_config
+from data_manager import is_dry_run_enhanced, reload_config
 from execution.gate_adapter import GateExecutionAdapter
 from price_fetcher import get_prices_batch
 from services.gate_balance import fetch_spot_holdings, format_holdings_lines
@@ -37,19 +37,56 @@ def _gate_key_status(cfg: dict, adapter: GateExecutionAdapter) -> tuple:
     return key_env, secret_env, balance, api_hint, has_key, has_secret
 
 
-def _gate_section(title: str, cfg: dict, adapter: GateExecutionAdapter) -> str:
+def _gate_section(title: str, cfg: dict, adapter: GateExecutionAdapter, bot_config=None) -> str:
     key_env, secret_env, balance, api_hint, has_key, has_secret = _gate_key_status(cfg, adapter)
     dry = cfg.get("dry_run", True)
+    enhanced = bot_config.is_dry_run_enhanced() if bot_config else (
+        is_dry_run_enhanced({"trading_mode": "live", "live": cfg})
+    )
+    balance_line = f"USDT verfügbar: <b>${balance:,.2f}</b>"
+    if enhanced:
+        from services.gate_balance import fetch_usdt_balance
+        sim = fetch_usdt_balance(bot_config or get_bot_config())
+        balance_line = (
+            f"Simulated USDT: <b>${sim:,.2f}</b>\n"
+            f"Gate USDT (API): <b>${balance:,.2f}</b>"
+        )
+
+    enhanced_line = "\nEnhanced Dry Run: <b>ON</b>" if enhanced else ""
 
     return f"""<b>{title}</b>
 {key_env}: {'✅ gesetzt' if has_key else '❌ fehlt'}
 {secret_env}: {'✅ gesetzt' if has_secret else '❌ fehlt'}
-Dry Run: <b>{'ON' if dry else 'OFF'}</b>
+Dry Run: <b>{'ON' if dry else 'OFF'}</b>{enhanced_line}
 Max/Trade: ${cfg.get('max_usdt_per_trade', 150):.0f} USDT
-USDT verfügbar: <b>${balance:,.2f}</b>{api_hint}"""
+{balance_line}{api_hint}"""
+
+
+def _format_dryrun_status() -> str:
+    from services.dry_run_watchlist import DryRunWatchlistSync
+
+    cfg = get_bot_config()
+    status = DryRunWatchlistSync(cfg).status()
+    if not status.get("enabled"):
+        return "Enhanced Dry Run ist <b>OFF</b> (live.dry_run_enhanced in config.json)."
+
+    refreshed = status.get("refreshed_at") or "—"
+    return (
+        "<b>🧪 Enhanced Dry Run</b>\n\n"
+        f"Status: <b>ON</b>\n"
+        f"Simulated USDT: <b>${status.get('simulated_balance', 0):,.2f}</b>\n"
+        f"Trending Coins: <b>{status.get('trending_count', 0)}</b>\n"
+        f"Letzte Sync: <code>{refreshed}</code>\n"
+        f"Quelle: <code>{status.get('source') or '—'}</code>"
+    )
 
 
 def handle(text: str) -> bool:
+    if text in ["/dryrun", "/dry_run"]:
+        reload_config()
+        send_telegram_message(_format_dryrun_status())
+        return True
+
     if text not in ["/gate", "/gatestatus", "/gate_status", "/gate mainnet"]:
         return False
 
@@ -59,7 +96,7 @@ def handle(text: str) -> bool:
     adapter = GateExecutionAdapter(cfg)
 
     msg = f"<b>🔗 Gate.io Status</b>\n\n<b>Bot-Modus:</b> {trading.mode_label()}\n\n"
-    msg += _gate_section("Mainnet (Live)", cfg.live_config, adapter)
+    msg += _gate_section("Mainnet (Live)", cfg.live_config, adapter, bot_config=cfg)
     msg += "\n\n"
 
     if cfg.trading_mode == "live":

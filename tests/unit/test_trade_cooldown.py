@@ -77,9 +77,10 @@ class TestTradeCooldown(unittest.TestCase):
         cfg._raw = raw
         risk = RiskManager(cfg)
         order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=200)
-        with patch.object(risk, "_portfolio_equity", return_value=5000.0):
-            with patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
-                decision = risk.evaluate(order, self.tf, source="manual")
+        with patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_trades_count", return_value=0), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf, source="manual")
 
         self.assertTrue(decision.approved)
         self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
@@ -99,10 +100,11 @@ class TestTradeCooldown(unittest.TestCase):
         cfg._raw = raw
         risk = RiskManager(cfg)
         order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=25)
-        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
-            with patch.object(risk, "_portfolio_equity", return_value=5000.0):
-                with patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
-                    decision = risk.evaluate(order, self.tf)
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_trades_count", return_value=0), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf)
 
         self.assertTrue(decision.approved)
 

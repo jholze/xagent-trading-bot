@@ -12,7 +12,33 @@
     "api_secret_env": "GATE_API_SECRET",
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
-    "dry_run": true
+    "dry_run": true,
+    "dry_run_enhanced": true,
+    "simulated_balance_usdt": 5000,
+    "trending_watchlist": {
+      "enabled": true,
+      "max_coins": 15,
+      "refresh_hours": 6,
+      "gate_only": true,
+      "strategy_profile": "dry_run_meme",
+      "exclude_symbols": [
+        "USDT",
+        "USDC",
+        "BTC",
+        "ETH",
+        "SOL"
+      ]
+    }
+  },
+  "dry_run_defaults": {
+    "max_daily_trades": 30,
+    "trade_cooldown_hours": 0.5,
+    "cmc_min_confidence": 55,
+    "rsi_buy_low": 25,
+    "rsi_buy_high": 55,
+    "volume_multiplier": 1.1,
+    "min_hours_between_buys": 1,
+    "min_hours_between_sells": 0.5
   },
   "initial_capital_usdt": 5000,
   "max_usdt_per_trade": 25,
@@ -59,6 +85,60 @@
     "use_mock": false,
     "min_confidence": 60,
     "api_key_env": "CMC_API_KEY"
+  },
+  "strategy_backtest": {
+    "enabled": true,
+    "auto_run": true,
+    "auto_apply": true,
+    "days": 30,
+    "stagger_minutes": 15,
+    "max_concurrent": 1,
+    "min_review_hours": 12,
+    "max_review_hours": 336,
+    "post_apply_validation_hours": 36,
+    "min_signals_for_valid": 3,
+    "min_improvement_pct": 10,
+    "telegram_on_apply": true,
+    "base_review_hours": {
+      "meme": 24,
+      "mid_cap": 48,
+      "large_cap": 72,
+      "default": 48
+    },
+    "us_market": {
+      "enabled": true,
+      "timezone": "Europe/Berlin",
+      "open": "15:30",
+      "close": "22:00",
+      "prefer_review_after_close": true
+    },
+    "guardrails": {
+      "rsi_buy_low": {
+        "min": 20,
+        "max": 35,
+        "max_delta": 5
+      },
+      "rsi_buy_high": {
+        "min": 40,
+        "max": 60,
+        "max_delta": 5
+      },
+      "volume_multiplier": {
+        "min": 1.0,
+        "max": 2.0,
+        "max_delta": 0.3
+      },
+      "min_hours_between_buys": {
+        "min": 1,
+        "max": 12,
+        "max_delta": 2
+      },
+      "min_hours_between_sells": {
+        "min": 0.5,
+        "max": 8,
+        "max_delta": 2
+      }
+    }
   },
   "max_daily_trades": 8,
   "risk": {

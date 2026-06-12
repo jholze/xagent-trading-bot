@@ -8,7 +8,14 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.models import RiskDecision, TradeOrder, TradeResult
-from services.order_service import OrderService, format_order_detail, format_order_line, ledger_label
+from services.order_service import (
+    OrderService,
+    format_order_detail,
+    format_order_line,
+    infer_manual_source,
+    ledger_label,
+    source_label,
+)
 
 
 class TestOrderService(unittest.TestCase):
@@ -119,6 +126,46 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(ledger_label("demo"), "DEMO")
         self.assertEqual(ledger_label("paper"), "PAPER")
         self.assertEqual(ledger_label("live"), "GATE/LIVE")
+
+    def test_source_label_manual(self):
+        self.assertEqual(source_label("manual"), "Manuell")
+        line = format_order_line({
+            "status": "filled", "display_seq": 1, "side": "buy",
+            "symbol": "CAT/USDT", "source": "manual",
+            "request": {"usdt": 500}, "execution": {"usdt": 500},
+            "timestamps": {"filled": "2026-06-12T15:35:11"},
+        })
+        self.assertIn("Manuell", line)
+
+    def test_infer_manual_source_heuristic(self):
+        self.assertEqual(infer_manual_source({"side": "buy", "signal": "", "source": "auto"}), "manual")
+        self.assertEqual(infer_manual_source({"side": "sell", "signal": "SELL", "source": "auto"}), "manual")
+        self.assertIsNone(infer_manual_source({"side": "sell", "signal": "SELL_FULL", "source": "auto"}))
+
+    def test_reconcile_legacy_manual_sources(self):
+        svc = OrderService("paper")
+        svc.create_from_request(
+            TradeOrder("BUY", "CAT/USDT", 1.5e-06, 0, usdt_amount=500),
+            status="filled",
+            telegram_token="manual1",
+        )
+        data = svc._load()
+        data["orders"][0]["source"] = "auto"
+        svc._save(data)
+        self.assertEqual(svc.reconcile_legacy_sources(), 1)
+        self.assertEqual(svc.get_by_id("manual1")["source"], "manual")
+
+    def test_link_execution_result_updates_source(self):
+        svc = OrderService("paper")
+        created = svc.create_from_request(
+            TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100),
+            status="pending_confirmation",
+            telegram_token="exec2",
+        )
+        approved = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100, source="manual", order_id="exec2")
+        result = TradeResult(True, "BUY", "ARIA/USDT", amount=2000, price=0.05, usdt_amount=100)
+        svc.link_execution_result("exec2", result, approved)
+        self.assertEqual(svc.get_by_id("exec2")["source"], "manual")
 
 
 if __name__ == "__main__":

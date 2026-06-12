@@ -169,7 +169,7 @@ def request_buy_confirmation(
     usdt: float,
 ) -> bool:
     trading.refresh()
-    order = TradeOrder(type="BUY", symbol=symbol, price=price, amount=0, usdt_amount=usdt)
+    order = TradeOrder(type="BUY", symbol=symbol, price=price, amount=0, usdt_amount=usdt, source="manual")
     decision = trading.evaluate_risk(order, timeframe, source="manual")
     status = trading.risk.status_summary(price)
     status["drawdown_throttle_pct"] = trading.config.risk_config.get("drawdown_throttle_pct", 10.0)
@@ -202,7 +202,7 @@ def request_sell_confirmation(
     pct: float,
 ) -> bool:
     trading.refresh()
-    order = TradeOrder(type="SELL", symbol=symbol, price=price, amount=amount, signal="SELL")
+    order = TradeOrder(type="SELL", symbol=symbol, price=price, amount=amount, signal="SELL", source="manual")
     decision = trading.evaluate_risk(order, timeframe, source="manual")
     status = trading.risk.status_summary(price)
     status["drawdown_throttle_pct"] = trading.config.risk_config.get("drawdown_throttle_pct", 10.0)

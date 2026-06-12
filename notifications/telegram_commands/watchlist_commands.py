@@ -1,5 +1,5 @@
 from core.config import get_bot_config
-from data_manager import add_coin, list_coins, remove_coin
+from data_manager import add_coin, is_dry_run_enhanced, list_coins, load_dry_run_overlay, load_watchlist, remove_coin
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from telegram_notifier import send_telegram_message
@@ -10,7 +10,28 @@ def _coin_symbol(coin: dict) -> str:
     return sym if "/" in sym else f"{sym}/USDT"
 
 
-def format_watchlist_message(coins: list) -> str:
+def format_watchlist_message(coins: list = None) -> str:
+    if is_dry_run_enhanced():
+        core = load_watchlist()
+        overlay = load_dry_run_overlay().get("coins", [])
+        if not core and not overlay:
+            return "📋 Watchlist ist leer."
+        msg = "📋 <b>Watchlist</b> (Enhanced Dry Run)\n\n"
+        msg += "<b>Core:</b>\n"
+        if core:
+            for i, coin in enumerate(core, 1):
+                msg += _format_coin_line(i, coin) + "\n"
+        else:
+            msg += "  <i>leer</i>\n"
+        msg += "\n<b>CMC Trending (Dry Run):</b>\n"
+        if overlay:
+            for i, coin in enumerate(overlay, 1):
+                msg += _format_coin_line(i, coin, trending=True) + "\n"
+        else:
+            msg += "  <i>noch nicht synchronisiert</i>\n"
+        return msg.rstrip()
+
+    coins = coins if coins is not None else list_coins()
     if not coins:
         return "📋 Watchlist ist leer."
     msg = "📋 <b>Aktive Watchlist:</b>\n\n"
@@ -36,11 +57,12 @@ def format_buy_list_message(coins: list, prices: dict) -> str:
     return msg
 
 
-def _format_coin_line(index: int, coin: dict) -> str:
+def _format_coin_line(index: int, coin: dict, trending: bool = False) -> str:
     name = coin.get("name", "")
     suffix = f" ({name})" if name else ""
     inactive = "" if coin.get("active", True) else " <i>(inaktiv)</i>"
-    return f"<b>{index}.</b> <b>{coin['symbol']}</b>{suffix}{inactive}"
+    tag = " 📈" if trending or coin.get("source") == "cmc_trending" else ""
+    return f"<b>{index}.</b> <b>{coin['symbol']}</b>{suffix}{inactive}{tag}"
 
 
 def resolve_coin_by_display_index(coins: list, index: int):

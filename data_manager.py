@@ -58,6 +58,23 @@ def atomic_write_json(path: str, data: dict):
         raise
 
 WATCHLIST_FILE = "watchlist.json"
+DRY_RUN_OVERLAY_FILE = "watchlist.dry_run_overlay.json"
+
+
+def is_dry_run_enhanced(config: dict = None) -> bool:
+    """True when live + dry_run + dry_run_enhanced — never when dry_run is false."""
+    cfg = config or get_config()
+    if cfg.get("trading_mode") != "live":
+        return False
+    live = cfg.get("live", {})
+    if not live.get("dry_run", True):
+        return False
+    return bool(live.get("dry_run_enhanced", False))
+
+
+def simulated_balance_usdt(config: dict = None) -> float:
+    cfg = config or get_config()
+    return float(cfg.get("live", {}).get("simulated_balance_usdt", 5000))
 
 
 def load_watchlist():
@@ -122,7 +139,51 @@ def remove_coin(symbol):
 
 def list_coins():
     """Gibt alle Coins zurück"""
-    return load_watchlist()
+    return load_effective_watchlist()
+
+
+def load_dry_run_overlay():
+    path = get_data_file(DRY_RUN_OVERLAY_FILE)
+    if not os.path.exists(path):
+        return {"refreshed_at": "", "source": "", "coins": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"refreshed_at": "", "source": "", "coins": []}
+
+
+def save_dry_run_overlay(data: dict) -> bool:
+    path = get_data_file(DRY_RUN_OVERLAY_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def _dedupe_watchlist_coins(coins: list) -> list:
+    seen = set()
+    unique = []
+    for c in coins:
+        sym = c.get("symbol", "")
+        if sym and sym not in seen:
+            seen.add(sym)
+            unique.append(c)
+    return unique
+
+
+def load_effective_watchlist():
+    """Base watchlist merged with CMC trending overlay when enhanced dry run is active."""
+    base = load_watchlist()
+    if not is_dry_run_enhanced():
+        return base
+    overlay = load_dry_run_overlay()
+    overlay_coins = overlay.get("coins", [])
+    if not overlay_coins:
+        return base
+    return _dedupe_watchlist_coins(base + overlay_coins)
 
 
 def save_full_coin(coin_data):
@@ -310,16 +371,88 @@ def save_trade_history(data):
     except Exception:
         return False
 
+def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:
+    """Replay dry-run trades from starting capital to derive sim USDT cash."""
+    balance = float(initial)
+    for trade in trades or []:
+        if trade.get("type") == "BUY":
+            balance = max(0.0, balance - float(trade.get("usdt_amount") or 0))
+        elif trade.get("type") == "SELL":
+            balance += float(trade.get("usdt_received") or 0)
+    return round(balance, 8)
+
+
+def compute_sim_realized_pnl(trades: list) -> float:
+    return round(
+        sum(float(t.get("pnl") or 0) for t in (trades or []) if t.get("type") == "SELL"),
+        8,
+    )
+
+
+def _ensure_live_virtual_balance(history: dict, config: dict = None) -> dict:
+    cfg = config or get_config()
+    if not is_dry_run_enhanced(cfg):
+        return history
+    initial = simulated_balance_usdt(cfg)
+    trades = history.get("trades", [])
+    history["virtual_balance"] = compute_sim_cash_from_trades(trades, initial)
+    history["realized_pnl"] = compute_sim_realized_pnl(trades)
+    history["total_pnl"] = history["realized_pnl"]
+    return history
+
+
+def _reconcile_live_trade_sources(history: dict) -> tuple:
+    changed = False
+    try:
+        from services.order_service import OrderService, infer_manual_source
+
+        svc = OrderService("live")
+        if svc.reconcile_legacy_sources():
+            changed = True
+        by_id = {o["id"]: o.get("source") for o in svc._load().get("orders", []) if o.get("id")}
+        for trade in history.get("trades", []):
+            oid = trade.get("order_id")
+            src = by_id.get(oid) if oid else None
+            if not src:
+                side = "buy" if trade.get("type") == "BUY" else "sell"
+                signal = "" if trade.get("type") == "BUY" else "SELL"
+                src = infer_manual_source({
+                    "side": side,
+                    "signal": signal,
+                    "source": trade.get("source"),
+                })
+            if src and trade.get("source") != src:
+                trade["source"] = src
+                changed = True
+    except Exception:
+        pass
+    return history, changed
+
+
 def load_live_trade_history():
     path = get_data_file(LIVE_TRADE_HISTORY_FILE)
     if not os.path.exists(path):
-        return {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+        return _ensure_live_virtual_balance(history)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            history = json.load(f)
+            if history.get("total_pnl") is not None and history.get("realized_pnl") is None:
+                history["realized_pnl"] = history["total_pnl"]
+            stored_cash = history.get("virtual_balance")
+            history, reconciled = _reconcile_live_trade_sources(history)
+            history = _ensure_live_virtual_balance(history)
+            cash_drifted = (
+                stored_cash is not None
+                and abs(float(stored_cash) - float(history.get("virtual_balance", 0))) > 0.01
+            )
+            if reconciled or cash_drifted:
+                save_live_trade_history(history)
+            return history
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
-        return {"trades": [], "total_pnl": 0.0}
+        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+        return _ensure_live_virtual_balance(history)
 
 
 def save_live_trade_history(data):
@@ -332,10 +465,14 @@ def save_live_trade_history(data):
 
 
 def record_live_trade(trade):
+    cfg = get_config()
     history = load_live_trade_history()
     history.setdefault("trades", []).append(trade)
-    if trade.get("type") == "SELL":
+    if is_dry_run_enhanced(cfg):
+        history = _ensure_live_virtual_balance(history, cfg)
+    elif trade.get("type") == "SELL":
         history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
+        history["realized_pnl"] = history["total_pnl"]
     save_live_trade_history(history)
     return history
 
@@ -428,6 +565,63 @@ def save_orders(data: dict, scope: str) -> bool:
         return True
     except Exception:
         return False
+
+
+STRATEGY_BACKTEST_FILE = "strategy_backtest.json"
+
+
+def load_strategy_backtest_results() -> dict:
+    path = get_data_file(STRATEGY_BACKTEST_FILE)
+    if not os.path.exists(path):
+        return {"coins": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            data.setdefault("coins", {})
+            return data
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"coins": {}}
+
+
+def save_strategy_backtest_results(data: dict) -> bool:
+    path = get_data_file(STRATEGY_BACKTEST_FILE)
+    try:
+        data.setdefault("coins", {})
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def get_strategy_backtest_entry(key: str) -> dict:
+    return load_strategy_backtest_results().get("coins", {}).get(key, {})
+
+
+def save_strategy_backtest_entry(key: str, entry: dict) -> bool:
+    data = load_strategy_backtest_results()
+    data.setdefault("coins", {})[key] = entry
+    return save_strategy_backtest_results(data)
+
+
+def list_strategy_targets() -> list:
+    """Unique strategy entries from config.strategies (no trending-only coins)."""
+    cfg = get_config()
+    seen = set()
+    targets = []
+    for entry in cfg.get("strategies", []):
+        symbol = entry.get("symbol")
+        tf = entry.get("timeframe", "4h")
+        if not symbol:
+            continue
+        if entry.get("live_enabled") is False and cfg.get("trading_mode") == "live":
+            continue
+        key = f"{symbol}_{tf}"
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(dict(entry))
+    return targets
 
 
 PAPER_STRATEGIES_FILE = "paper_strategies.json"
