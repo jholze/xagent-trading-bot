@@ -156,7 +156,7 @@
     "decisions_audit": true
   },
   "hermes": {
-    "enabled": true,
+    "enabled": false,
     "backtest_mode": "pipeline",
     "cmc_replay_ttl_hours": 4,
     "primary_metric": "sharpe",
