@@ -41,7 +41,7 @@ USAGE = {
         "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
     },
     "positions": {
-        "help_line": "<code>/positions</code> — Portfolio mit Positionsnummern, Kurse, PnL und letzte Trades",
+        "help_line": "<code>/positions</code> oder <code>/portfolio</code> — Portfolio mit Kurse, PnL und letzte Trades",
     },
     "orders": {
         "hint": (

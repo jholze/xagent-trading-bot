@@ -79,6 +79,17 @@ class TestDryRunWallet(unittest.TestCase):
         with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 4321.0}):
             self.assertAlmostEqual(fetch_usdt_balance(cfg), 4321.0)
 
+    def test_fetch_usdt_balance_returns_simulated_in_plain_dry_run(self):
+        raw = dict(get_config())
+        raw["trading_mode"] = "live"
+        raw.setdefault("live", {})["dry_run"] = True
+        raw["live"]["dry_run_enhanced"] = False
+        raw["live"]["simulated_balance_usdt"] = 5000
+        cfg = BotConfig()
+        cfg._raw = raw
+        with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 3952.19}):
+            self.assertAlmostEqual(fetch_usdt_balance(cfg), 3952.19)
+
     def test_risk_status_uses_simulated_ledger(self):
         cfg = self._enhanced_config()
         rm = RiskManager(cfg)

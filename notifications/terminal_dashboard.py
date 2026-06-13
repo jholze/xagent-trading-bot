@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from core.config import get_bot_config
-from data_manager import load_trade_history, load_watchlist, load_x_accounts
+from data_manager import load_effective_watchlist, load_trade_history, load_x_accounts
 from services.order_service import OrderService, format_order_line, ledger_label
 from intelligence.accuracy_tracker import AccuracyTracker
 from price_fetcher import get_prices
@@ -17,16 +17,67 @@ def _win_rate(history: dict) -> str:
     return f"{wins / len(sells) * 100:.0f}%"
 
 
-def _unrealized_total() -> float:
-    total = 0.0
-    for pos in list_active_positions():
-        symbol = pos["symbol"]
-        sym = symbol if "/" in symbol else f"{symbol}/USDT"
-        price, _, _ = get_prices(sym)
-        entry = pos.get("average_entry", 0)
-        if price and entry:
-            total += (price - entry) * pos.get("amount", 0)
-    return total
+def _portfolio_snapshot(trading_mode: str = None) -> dict:
+    """Cash, PnL, and position values for dashboard and cycle summary."""
+    from data_manager import (
+        is_dry_run_enhanced,
+        load_live_trade_history,
+        uses_exchange_ledger,
+        uses_simulated_live_portfolio,
+    )
+    from notifications.telegram_commands.position_display import (
+        _position_metrics,
+        build_price_fallbacks,
+        position_symbol,
+    )
+    from price_fetcher import get_prices_batch
+
+    cfg = get_bot_config()
+    mode = trading_mode or cfg.trading_mode
+
+    if uses_exchange_ledger(mode):
+        history = load_live_trade_history()
+        if uses_simulated_live_portfolio(cfg.raw):
+            balance = float(history.get("virtual_balance", cfg.simulated_balance_usdt))
+            balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Dry Run USDT"
+        else:
+            balance = history.get("virtual_balance")
+            if balance is None:
+                try:
+                    from services.gate_balance import fetch_usdt_balance
+                    balance = fetch_usdt_balance(cfg)
+                except Exception:
+                    balance = 0.0
+            balance = float(balance or 0)
+            balance_label = "USDT (Gate)"
+        realized = float(history.get("total_pnl", history.get("realized_pnl", 0)))
+    else:
+        history = load_trade_history()
+        balance = float(history.get("virtual_balance", 0))
+        realized = float(history.get("realized_pnl", 0))
+        balance_label = "Balance"
+
+    active = list_active_positions()
+    symbols = [position_symbol(p) for p in active]
+    prices = get_prices_batch(symbols, fallbacks=build_price_fallbacks(active)) if symbols else {}
+
+    unrealized = 0.0
+    positions_market_value = 0.0
+    for pos in active:
+        sym = position_symbol(pos)
+        metrics = _position_metrics(pos, float(prices.get(sym, 0) or 0))
+        unrealized += metrics["unreal"]
+        positions_market_value += metrics["value_usdt"]
+
+    return {
+        "history": history,
+        "balance": balance,
+        "balance_label": balance_label,
+        "realized": realized,
+        "unrealized": unrealized,
+        "positions_market_value": positions_market_value,
+        "total_value": balance + positions_market_value,
+    }
 
 
 def build_dashboard_data(
@@ -35,12 +86,13 @@ def build_dashboard_data(
     trading_mode: str = "paper",
     next_update: int = 60,
 ) -> dict:
-    history = load_trade_history()
-    balance = history.get("virtual_balance", 0)
-    realized = history.get("realized_pnl", 0)
-    unrealized = _unrealized_total()
-    total_value = balance + unrealized
-    watchlist = load_watchlist()
+    snap = _portfolio_snapshot(trading_mode)
+    history = snap["history"]
+    balance = snap["balance"]
+    realized = snap["realized"]
+    unrealized = snap["unrealized"]
+    total_value = snap["total_value"]
+    watchlist = load_effective_watchlist()
     active_coins = [c["symbol"].split("/")[0] for c in watchlist if c.get("active", True)]
 
     signal_lines = list(cycle_signals or [])
@@ -159,28 +211,11 @@ def build_cycle_summary(
     x_signal_count: int = 0,
     cmc_signal_count: int = 0,
 ) -> str:
-    from data_manager import load_live_trade_history, uses_exchange_ledger
-
-    from data_manager import is_dry_run_enhanced
-    from core.config import get_bot_config
-
-    bot_cfg = get_bot_config()
-    if uses_exchange_ledger(trading_mode):
-        live_hist = load_live_trade_history()
-        balance = live_hist.get("virtual_balance")
-        if balance is None:
-            try:
-                from services.gate_balance import fetch_usdt_balance
-                balance = fetch_usdt_balance(bot_cfg)
-            except Exception:
-                balance = 0.0
-        realized = live_hist.get("total_pnl", live_hist.get("realized_pnl", 0))
-        balance_label = "Sim USDT" if is_dry_run_enhanced(bot_cfg.raw) else "USDT (Gate)"
-    else:
-        history = load_trade_history()
-        balance = history.get("virtual_balance", 0)
-        realized = history.get("realized_pnl", 0)
-        balance_label = "Balance"
+    snap = _portfolio_snapshot(trading_mode)
+    balance = snap["balance"]
+    balance_label = snap["balance_label"]
+    realized = snap["realized"]
+    total_value = snap["total_value"]
 
     executed = [r for r in (coin_results or []) if r.get("executed")]
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
@@ -188,7 +223,8 @@ def build_cycle_summary(
     lines = [
         f"<b>📋 Cycle Summary</b> — {datetime.now().strftime('%H:%M:%S')}",
         f"Mode: <b>{trading_mode.upper()}</b>",
-        f"{balance_label}: ${float(balance or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
+        f"{balance_label}: ${float(balance or 0):,.0f} | "
+        f"Gesamtwert: ${float(total_value or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
         f"Signals: {len(actions)} actionable | {x_signal_count} X | {cmc_signal_count} CMC",
     ]
     if executed:

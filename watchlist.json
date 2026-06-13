@@ -1,39 +1,53 @@
 {
-    "coins": [
-        {
-            "symbol": "ARIA/USDT",
-            "ticker": "ARIA",
-            "name": "Aria AI",
-            "timeframe": "4h",
-            "active": true
-        },
-        {
-            "symbol": "RAVE/USDT",
-            "ticker": "RAVE",
-            "name": "RaveDAO",
-            "timeframe": "4h",
-            "active": true
-        },
-        {
-            "symbol": "HIGH/USDT",
-            "ticker": "HIGH",
-            "name": "Highstreet",
-            "timeframe": "4h",
-            "active": true
-        },
-        {
-            "symbol": "SOL/USDT",
-            "ticker": "SOL",
-            "name": "Solana",
-            "timeframe": "4h",
-            "active": true
-        },
-        {
-            "symbol": "BTC/USDT",
-            "ticker": "BTC",
-            "name": "Bitcoin",
-            "timeframe": "4h",
-            "active": true
-        }
-    ]
+  "coins": [
+    {
+      "symbol": "ARIA/USDT",
+      "ticker": "ARIA",
+      "name": "Aria AI",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "RAVE/USDT",
+      "ticker": "RAVE",
+      "name": "RaveDAO",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "HIGH/USDT",
+      "ticker": "HIGH",
+      "name": "Highstreet",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "SOL/USDT",
+      "ticker": "SOL",
+      "name": "Solana",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "BTC/USDT",
+      "ticker": "BTC",
+      "name": "Bitcoin",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "ZBT/USDT",
+      "ticker": "ZBT",
+      "name": "ZBT",
+      "timeframe": "4h",
+      "active": true
+    },
+    {
+      "symbol": "CAT/USDT",
+      "ticker": "CAT",
+      "name": "Cat",
+      "timeframe": "4h",
+      "active": true
+    }
+  ]
 }

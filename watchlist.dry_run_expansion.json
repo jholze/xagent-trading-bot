@@ -1,0 +1,30 @@
+{
+  "description": "Extra watchlist coins for live dry-run and demo mode only (not real live trading)",
+  "coins": [
+    {"symbol": "ETH/USDT", "ticker": "ETH", "name": "Ethereum", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "BEAT/USDT", "ticker": "BEAT", "name": "Beat", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "XRP/USDT", "ticker": "XRP", "name": "Ripple", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "DOGE/USDT", "ticker": "DOGE", "name": "Dogecoin", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "HYPE/USDT", "ticker": "HYPE", "name": "Hyperliquid", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "H/USDT", "ticker": "H", "name": "H", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "VELVET/USDT", "ticker": "VELVET", "name": "Velvet", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "SPCX/USDT", "ticker": "SPCX", "name": "SPCX", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "ADA/USDT", "ticker": "ADA", "name": "Cardano", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "BNB/USDT", "ticker": "BNB", "name": "BNB", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "TRX/USDT", "ticker": "TRX", "name": "TRON", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "TRUMP/USDT", "ticker": "TRUMP", "name": "TRUMP", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "WLD/USDT", "ticker": "WLD", "name": "Worldcoin", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "NEAR/USDT", "ticker": "NEAR", "name": "NEAR", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "XPL/USDT", "ticker": "XPL", "name": "XPL", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "SUI/USDT", "ticker": "SUI", "name": "Sui", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "SKYAI/USDT", "ticker": "SKYAI", "name": "SkyAI", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "STG/USDT", "ticker": "STG", "name": "Stargate", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "LAB/USDT", "ticker": "LAB", "name": "LAB", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "SIREN/USDT", "ticker": "SIREN", "name": "Siren", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "TON/USDT", "ticker": "TON", "name": "Toncoin", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "LTC/USDT", "ticker": "LTC", "name": "Litecoin", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "ZEC/USDT", "ticker": "ZEC", "name": "Zcash", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "LIT/USDT", "ticker": "LIT", "name": "Litentry", "timeframe": "4h", "active": true, "source": "dry_run_expansion"},
+    {"symbol": "HMSTR/USDT", "ticker": "HMSTR", "name": "Hamster", "timeframe": "4h", "active": true, "source": "dry_run_expansion"}
+  ]
+}

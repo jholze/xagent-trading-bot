@@ -347,6 +347,12 @@ class OrderService:
         }
 
 
+def _fmt_price(price) -> str:
+    from price_fetcher import format_usdt_price
+
+    return format_usdt_price(float(price or 0))
+
+
 def format_order_line(order: dict) -> str:
     icon = STATUS_ICONS.get(order.get("status", ""), "·")
     sym = (order.get("symbol") or "").replace("/USDT", "")
@@ -372,7 +378,7 @@ def format_order_detail(order: dict) -> str:
         f"<b>Order #{order.get('display_seq')} — {order.get('status', '').upper()}</b>",
         f"{order.get('side', '').upper()} <b>{sym}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
         "",
-        f"<b>Anfrage</b>  Kurs ${float(req.get('price', 0)):.4f}",
+        f"<b>Anfrage</b>  Kurs {_fmt_price(req.get('price', 0))}",
     ]
     if req.get("usdt"):
         lines.append(f"   USDT <b>${float(req['usdt']):.0f}</b>")
@@ -388,7 +394,7 @@ def format_order_detail(order: dict) -> str:
     if exe:
         lines.append(
             f"<b>Ausführung</b>  <code>{float(exe.get('amount', 0)):.4f}</code> @ "
-            f"${float(exe.get('price', 0)):.4f} · <b>${float(exe.get('usdt', 0)):.0f}</b>"
+            f"{_fmt_price(exe.get('price', 0))} · <b>${float(exe.get('usdt', 0)):.0f}</b>"
         )
         if exe.get("exchange_order_id"):
             lines.append(f"   Exchange-ID <code>{exe['exchange_order_id']}</code>")

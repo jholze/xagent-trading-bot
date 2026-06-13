@@ -1355,6 +1355,26 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertEqual(data["trading_mode"], "PAPER")
         self.assertGreater(len(data["signals"]), 0)
 
+    def test_build_dashboard_data_live_dry_run_uses_live_ledger(self):
+        from notifications.terminal_dashboard import build_dashboard_data
+
+        live_hist = {"virtual_balance": 3952.19, "realized_pnl": -111.82, "trades": []}
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.raw = {
+            "trading_mode": "live",
+            "live": {"dry_run": True, "dry_run_enhanced": False},
+        }
+        mock_cfg.trading_mode = "live"
+        mock_cfg.simulated_balance_usdt = 5000
+        with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
+             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("core.config.get_bot_config", return_value=mock_cfg):
+            data = build_dashboard_data(coin_results=[], trading_mode="live")
+        self.assertEqual(data["balance"], "$3,952")
+        self.assertEqual(data["realized_pnl"], "$-111.8")
+        self.assertEqual(data["total_value"], "$3,952")
+
     def test_build_cycle_summary(self):
         from notifications.terminal_dashboard import build_cycle_summary
 

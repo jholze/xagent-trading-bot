@@ -5,6 +5,7 @@ from __future__ import annotations
 from core.config import BotConfig, get_bot_config
 from data_manager import (
     is_dry_run_enhanced,
+    is_live_dry_run,
     load_live_trade_history,
     load_trade_history,
     simulated_balance_usdt,
@@ -23,7 +24,7 @@ def get_gate_adapter(config: BotConfig = None):
 
 def fetch_usdt_balance(config: BotConfig = None) -> float:
     cfg = config or get_bot_config()
-    if is_dry_run_enhanced(cfg.raw):
+    if is_live_dry_run(cfg.raw):
         history = load_live_trade_history()
         return float(history.get("virtual_balance", cfg.simulated_balance_usdt))
     if not uses_exchange_ledger(cfg.trading_mode):
@@ -63,7 +64,7 @@ def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> li
 
 def fetch_portfolio_equity(config: BotConfig = None, reference_prices: dict = None) -> float:
     cfg = config or get_bot_config()
-    if is_dry_run_enhanced(cfg.raw):
+    if is_live_dry_run(cfg.raw):
         cash = fetch_usdt_balance(cfg)
         try:
             from strategies.positions import list_active_positions
@@ -76,10 +77,16 @@ def fetch_portfolio_equity(config: BotConfig = None, reference_prices: dict = No
             p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
             for p in active
         ]
-        prices = reference_prices or get_prices_batch(symbols)
+        from notifications.telegram_commands.position_display import (
+            build_price_fallbacks,
+            position_symbol,
+        )
+
+        fallbacks = build_price_fallbacks(active)
+        prices = reference_prices or get_prices_batch(symbols, fallbacks=fallbacks)
         total = cash
         for p in active:
-            sym = p["symbol"] if "/" in p["symbol"] else f"{p['symbol']}/USDT"
+            sym = position_symbol(p)
             amount = float(p.get("amount", 0) or 0)
             price = float(prices.get(sym, 0) or 0)
             if price > 0 and amount > 0:

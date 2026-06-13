@@ -119,7 +119,13 @@ def send_signal_message(
         extra = f"\n<b>Ampel:</b> {ampel_text}" if ampel_text else ""
 
     ampel_line = f"<b>Ampel:</b> {ampel_emoji} {ampel_text}\n" if ampel_emoji and ampel_emoji != "📡" else ""
-    price_str = f"{current_price:.4f}" if isinstance(current_price, (int, float)) and current_price > 0 else "—"
+    from price_fetcher import format_usdt_price
+
+    price_str = (
+        format_usdt_price(float(current_price)).replace("$", "")
+        if isinstance(current_price, (int, float)) and current_price > 0
+        else "—"
+    )
     rsi_str = f"{rsi:.1f}" if isinstance(rsi, (int, float)) and rsi > 0 else "—"
 
     blocked_line = f"\n<b>Reason:</b> {trade_message}" if executed is False and trade_message else ""

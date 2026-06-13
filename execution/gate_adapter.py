@@ -131,7 +131,9 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange_order_id=str(raw.get("id", "")),
             fee=fee,
         )
-        result.message = f"Gate BUY filled {filled:.6f} @ ${fill_price:.4f}"
+        from price_fetcher import format_usdt_price
+
+        result.message = f"Gate BUY filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
         result.fee = fee
         return result
@@ -207,7 +209,9 @@ class GateExecutionAdapter(ExecutionAdapter):
             usdt_received=received,
             fee=fee,
         )
-        result.message = f"Gate SELL filled {filled:.6f} @ ${fill_price:.4f}"
+        from price_fetcher import format_usdt_price
+
+        result.message = f"Gate SELL filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
         result.fee = fee
         return result

@@ -1,5 +1,12 @@
 from core.config import get_bot_config
-from data_manager import add_coin, is_dry_run_enhanced, list_coins, load_dry_run_overlay, load_watchlist, remove_coin
+from data_manager import (
+    add_coin,
+    is_dry_run_enhanced,
+    is_demo_mode,
+    list_coins,
+    remove_coin,
+    uses_watchlist_expansion,
+)
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from telegram_notifier import send_telegram_message
@@ -10,37 +17,31 @@ def _coin_symbol(coin: dict) -> str:
     return sym if "/" in sym else f"{sym}/USDT"
 
 
-def format_watchlist_message(coins: list = None) -> str:
+def _watchlist_mode_label() -> str:
+    if is_demo_mode():
+        return "Demo"
     if is_dry_run_enhanced():
-        core = load_watchlist()
-        overlay = load_dry_run_overlay().get("coins", [])
-        if not core and not overlay:
-            return "📋 Watchlist ist leer."
-        msg = "📋 <b>Watchlist</b> (Enhanced Dry Run)\n\n"
-        msg += "<b>Core:</b>\n"
-        if core:
-            for i, coin in enumerate(core, 1):
-                msg += _format_coin_line(i, coin) + "\n"
-        else:
-            msg += "  <i>leer</i>\n"
-        msg += "\n<b>CMC Trending (Dry Run):</b>\n"
-        if overlay:
-            for i, coin in enumerate(overlay, 1):
-                msg += _format_coin_line(i, coin, trending=True) + "\n"
-        else:
-            msg += "  <i>noch nicht synchronisiert</i>\n"
-        return msg.rstrip()
+        return "Enhanced Dry Run"
+    if uses_watchlist_expansion():
+        return "Dry Run"
+    return ""
 
+
+def format_watchlist_message(coins: list = None) -> str:
     coins = coins if coins is not None else list_coins()
     if not coins:
         return "📋 Watchlist ist leer."
-    msg = "📋 <b>Aktive Watchlist:</b>\n\n"
+    mode = _watchlist_mode_label()
+    title = f"📋 <b>Watchlist</b> ({mode})" if mode else "📋 <b>Aktive Watchlist</b>"
+    msg = f"{title}\n\n"
     for i, coin in enumerate(coins, 1):
         msg += _format_coin_line(i, coin) + "\n"
     return msg.rstrip()
 
 
 def format_buy_list_message(coins: list, prices: dict) -> str:
+    from price_fetcher import format_usdt_price
+
     if not coins:
         return "❌ Watchlist ist leer. Zuerst <code>/add SYMBOL</code> nutzen."
     default_usdt = get_bot_config().max_usdt_per_trade
@@ -48,7 +49,7 @@ def format_buy_list_message(coins: list, prices: dict) -> str:
     for i, coin in enumerate(coins, 1):
         sym = _coin_symbol(coin)
         price = float(prices.get(sym, 0) or 0)
-        price_str = f"${price:.4f}" if price > 0 else "—"
+        price_str = format_usdt_price(price)
         msg += f"{_format_coin_line(i, coin)}\n   └ Kurs <b>{price_str}</b>\n"
     msg += (
         f"\n<code>/buy NUMMER USDT</code>  ·  z.B. <code>/buy 1 {default_usdt:.0f}</code>\n"
@@ -61,7 +62,7 @@ def _format_coin_line(index: int, coin: dict, trending: bool = False) -> str:
     name = coin.get("name", "")
     suffix = f" ({name})" if name else ""
     inactive = "" if coin.get("active", True) else " <i>(inaktiv)</i>"
-    tag = " 📈" if trending or coin.get("source") == "cmc_trending" else ""
+    tag = " 📈" if trending or coin.get("source") in ("cmc_trending", "dry_run_expansion") else ""
     return f"<b>{index}.</b> <b>{coin['symbol']}</b>{suffix}{inactive}{tag}"
 
 
