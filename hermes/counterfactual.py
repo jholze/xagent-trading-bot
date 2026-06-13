@@ -67,10 +67,10 @@ def replay_window(
 
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
-    mask = (ohlcv_df["ts"] >= start_ms) & (ohlcv_df["ts"] <= end_ms)
-    window_df = ohlcv_df.loc[mask].copy()
-    if len(window_df) < 12:
-        window_df = ohlcv_df.tail(max(12, len(ohlcv_df) // 3))
+    window_mask = (ohlcv_df["ts"] >= start_ms) & (ohlcv_df["ts"] <= end_ms)
+    window_bars = int(window_mask.sum())
+    # Full OHLCV required: pipeline needs warmup bars (indicators + sim from bar 20).
+    sim_df = ohlcv_df.copy()
 
     base_params = deepcopy(DEFAULT_PARAMS)
     base_params.update(config.strategy_params(symbol, timeframe) or {})
@@ -82,9 +82,17 @@ def replay_window(
         saved_mode = hermes.get("backtest_mode", "ta_only")
         hermes["backtest_mode"] = "pipeline"
         try:
-            result = backtester.run(symbol, timeframe, params, ohlcv_df=window_df)
-            buys = [t for t in result.trades if t.get("type") == "BUY"]
-            sells = [t for t in result.trades if t.get("type") == "SELL"]
+            result = backtester.run(symbol, timeframe, params, ohlcv_df=sim_df)
+
+            def _in_window(trade: dict) -> bool:
+                bar_idx = trade.get("bar")
+                if bar_idx is None:
+                    return False
+                ts = int(sim_df.iloc[bar_idx]["ts"])
+                return start_ms <= ts <= end_ms
+
+            buys = [t for t in result.trades if t.get("type") == "BUY" and _in_window(t)]
+            sells = [t for t in result.trades if t.get("type") == "SELL" and _in_window(t)]
             results[name] = {
                 "params": overrides,
                 "buys": len(buys),
@@ -93,7 +101,7 @@ def replay_window(
                 "opportunity_score": result.metrics.opportunity_score,
                 "trade_quality": result.metrics.trade_quality,
                 "win_rate": result.metrics.win_rate,
-                "trades": result.metrics.trades,
+                "trades": len(sells),
                 "sources": [t.get("sources", []) for t in buys[:5]],
             }
         finally:
@@ -103,7 +111,7 @@ def replay_window(
         "symbol": symbol,
         "timeframe": timeframe,
         "window": f"{start.isoformat()} → {end.isoformat()}",
-        "bars": len(window_df),
+        "bars": window_bars,
         "variants": results,
     }
 
