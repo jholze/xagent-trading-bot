@@ -171,7 +171,7 @@
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
-    "backtest_days": 35,
+    "backtest_days": 14,
     "symbols": ["ARIA/USDT", "H/USDT", "XPL/USDT"],
     "timeframes": ["4h"],
     "rotation": "signal_activity",
@@ -197,8 +197,8 @@
     "notify_on_promotion": true,
     "validation": {
       "mode": "walk_forward",
-      "backtest_days": 35,
-      "fold_days": 7,
+      "backtest_days": 14,
+      "fold_days": 3,
       "step_days": 3,
       "min_folds_won_ratio": 0.55,
       "min_bars_per_fold": 12,
