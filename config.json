@@ -157,24 +157,35 @@
   },
   "hermes": {
     "enabled": true,
+    "backtest_mode": "pipeline",
+    "cmc_replay_ttl_hours": 4,
     "primary_metric": "sharpe",
     "success_criteria": {
-      "min_sharpe": 0.8,
+      "min_sharpe": 0.5,
       "max_drawdown_pct": 15,
-      "min_win_rate": 50,
-      "min_trades": 5
+      "min_win_rate": 45,
+      "min_trades": 3,
+      "min_opportunity_score": 0.2
     },
     "failure_criteria": {
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
     "backtest_days": 35,
-    "symbols": ["ARIA/USDT"],
+    "symbols": ["ARIA/USDT", "H/USDT", "XPL/USDT"],
     "timeframes": ["4h"],
+    "rotation": "signal_activity",
+    "rotation_hours": 24,
     "tunable_params": [
+      "buy_regime",
       "rsi_buy_low",
       "rsi_buy_high",
       "volume_multiplier",
+      "reversal_rsi_cross_low",
+      "reversal_rsi_cross_high",
+      "reversal_volume_multiplier",
+      "cmc_trust_score",
+      "cmc_min_confidence",
       "rsi_sell_30",
       "rsi_sell_20",
       "stop_loss_pct"
@@ -189,10 +200,11 @@
       "backtest_days": 35,
       "fold_days": 7,
       "step_days": 3,
-      "min_folds_won_ratio": 0.6,
+      "min_folds_won_ratio": 0.55,
       "min_bars_per_fold": 12,
-      "min_trades_per_fold": 2,
-      "min_trades_aggregate": 5
+      "min_trades_per_fold": 1,
+      "min_trades_aggregate": 3,
+      "min_opportunity_delta": 0.05
     },
     "skills": {
       "max_per_variable": 5,

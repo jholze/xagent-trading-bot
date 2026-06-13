@@ -54,7 +54,7 @@ def test_goal_engine_promotes_better_sharpe():
 def test_goal_engine_rejects_improvement_below_success_criteria():
     goals = GoalEngine()
     baseline = {"sharpe": 0.4, "max_drawdown_pct": 10, "win_rate": 40, "trades": 2}
-    variant = {"sharpe": 0.5, "max_drawdown_pct": 10, "win_rate": 45, "trades": 3}
+    variant = {"sharpe": 0.5, "max_drawdown_pct": 10, "win_rate": 40, "trades": 3}
     verdict = goals.evaluate(baseline, variant)
     assert verdict.promoted is False
 

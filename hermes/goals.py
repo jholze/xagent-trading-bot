@@ -36,10 +36,10 @@ class GoalEngine:
     def primary_metric(self) -> str:
         return self.hermes.get("primary_metric", "sharpe")
 
-    def _metric(self, metrics: SandboxMetrics | dict, key: str) -> float:
+    def _metric(self, metrics: SandboxMetrics | dict, key: str, default: float = 0) -> float:
         if isinstance(metrics, dict):
-            return float(metrics.get(key, 0))
-        return float(getattr(metrics, key, 0))
+            return float(metrics.get(key, default))
+        return float(getattr(metrics, key, default))
 
     def meets_success_criteria(self, metrics: SandboxMetrics | dict, aggregate_trades: bool = False) -> bool:
         s = self.success
@@ -47,15 +47,41 @@ class GoalEngine:
         min_trades = int(v.get("min_trades_aggregate", s.get("min_trades", 5))) if aggregate_trades else int(
             s.get("min_trades", 5)
         )
-        if self._metric(metrics, "sharpe") < s.get("min_sharpe", 0.8):
+        trades = int(self._metric(metrics, "trades"))
+        opp = self._metric(metrics, "opportunity_score")
+        tq = self._metric(metrics, "trade_quality")
+        min_opp = float(s.get("min_opportunity_score", 0))
+        min_sharpe = float(s.get("min_sharpe", 0.8))
+
+        if trades < min_trades:
             return False
         if self._metric(metrics, "max_drawdown_pct") > s.get("max_drawdown_pct", 15):
             return False
         if self._metric(metrics, "win_rate") < s.get("min_win_rate", 50):
             return False
-        if self._metric(metrics, "trades") < min_trades:
+
+        sharpe_ok = self._metric(metrics, "sharpe") >= min_sharpe
+        opp_ok = min_opp > 0 and opp >= min_opp and tq > 0
+        if not sharpe_ok and not opp_ok:
             return False
         return True
+
+    def _variant_improved(
+        self,
+        baseline: SandboxMetrics | dict,
+        variant: SandboxMetrics | dict,
+    ) -> tuple[bool, str]:
+        primary = self.primary_metric
+        b_primary = self._metric(baseline, primary)
+        v_primary = self._metric(variant, primary)
+        opp_delta = self._metric(variant, "opportunity_score") - self._metric(baseline, "opportunity_score")
+        min_opp_delta = float(self.validation.get("min_opportunity_delta", 0.05))
+
+        if v_primary > b_primary:
+            return True, f"{primary} {v_primary:.2f} > {b_primary:.2f}"
+        if opp_delta >= min_opp_delta and self._metric(variant, "trade_quality") > 0:
+            return True, f"opportunity_score +{opp_delta:.2f}"
+        return False, f"{primary} {v_primary:.2f} <= {b_primary:.2f}"
 
     def evaluate(self, baseline: SandboxMetrics | dict, variant: SandboxMetrics | dict) -> Verdict:
         primary = self.primary_metric
@@ -81,25 +107,26 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
-        if v_val > b_val:
+        improved, improve_reason = self._variant_improved(baseline, variant)
+        if improved:
             meets = self.meets_success_criteria(variant)
             if meets:
                 return Verdict(
                     promoted=True,
-                    reason=f"Variant {primary} {v_val:.2f} > baseline {b_val:.2f} and meets success criteria",
+                    reason=f"Variant improved ({improve_reason}) and meets success criteria",
                     baseline_better=False,
                     meets_success_criteria=True,
                 )
             return Verdict(
                 promoted=False,
-                reason=f"Variant {primary} {v_val:.2f} > baseline {b_val:.2f} but below success criteria",
+                reason=f"Variant improved ({improve_reason}) but below success criteria",
                 baseline_better=False,
                 meets_success_criteria=False,
             )
 
         return Verdict(
             promoted=False,
-            reason=f"Variant {primary} {v_val:.2f} <= baseline {b_val:.2f}",
+            reason=f"Variant not improved ({improve_reason})",
             baseline_better=True,
             meets_success_criteria=self.meets_success_criteria(baseline),
         )
@@ -143,10 +170,11 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
-        if v_val <= b_val:
+        improved, improve_reason = self._variant_improved(b_agg, v_agg)
+        if not improved:
             return Verdict(
                 promoted=False,
-                reason=f"Aggregate {primary} {v_val:.2f} <= baseline {b_val:.2f}",
+                reason=f"Aggregate not improved ({improve_reason})",
                 baseline_better=True,
                 meets_success_criteria=False,
             )
@@ -162,8 +190,8 @@ class GoalEngine:
         return Verdict(
             promoted=True,
             reason=(
-                f"Won {variant.folds_won}/{variant.folds_total} folds, "
-                f"aggregate {primary} {v_val:.2f} > {b_val:.2f}"
+                f"Won {variant.folds_won}/{variant.folds_total} folds, {improve_reason}, "
+                f"opp={self._metric(v_agg, 'opportunity_score'):.2f}"
             ),
             baseline_better=False,
             meets_success_criteria=True,

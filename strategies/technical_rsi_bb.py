@@ -89,13 +89,33 @@ class TechnicalRSIStrategy(BaseStrategy):
         action = "HOLD"
         sources = ["technical"]
 
+        buy_regime = params.get("buy_regime", "dip")
+        reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
+        reversal_rsi_high = float(params.get("reversal_rsi_cross_high", 38))
+        reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
+
         if not market.has_position and market.open_positions < config.max_open_positions:
-            if (
+            dip_buy = (
                 market.current_price <= market.lower_bb * 1.01
                 and rsi_buy_low <= market.rsi <= rsi_buy_high
                 and market.vol_multiplier >= volume_multiplier_min
-            ):
+            )
+            pos_state = _position_state(market, symbol, tf)
+            last_rsi = float(pos_state.get("last_rsi", market.rsi))
+            reversal_buy = (
+                last_rsi < reversal_rsi_low
+                and market.rsi >= reversal_rsi_high
+                and market.vol_multiplier >= reversal_vol_min
+            )
+            if buy_regime == "dip" and dip_buy:
                 action = "BUY"
+            elif buy_regime == "reversal" and reversal_buy:
+                action = "BUY"
+                sources.append("reversal")
+            elif buy_regime == "both" and (dip_buy or reversal_buy):
+                action = "BUY"
+                if reversal_buy and not dip_buy:
+                    sources.append("reversal")
         elif market.has_position:
             pos = _position_state(market, symbol, tf)
             last_rsi = float(pos.get("last_rsi", 45.0))

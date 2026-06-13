@@ -79,10 +79,19 @@ class DecisionEngine:
         trust = getattr(x_signal, "trust_score", 70)
         return max(65.0, 85 - (trust - 70) * 0.5)
 
-    def _cmc_buy_threshold(self) -> float:
+    def _cmc_buy_threshold(self, strategy_params: dict = None) -> float:
+        params = strategy_params or {}
+        if params.get("cmc_min_confidence") is not None:
+            return float(params["cmc_min_confidence"])
         if is_dry_run_enhanced():
             return float(self.config.dry_run_defaults.get("cmc_min_confidence", 55))
         return float(self.config.cmc_config.get("min_confidence", 60))
+
+    def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None) -> float:
+        params = strategy_params or {}
+        if params.get("cmc_trust_score") is not None:
+            return float(params["cmc_trust_score"])
+        return float(getattr(cmc_signal, "trust_score", 65.0))
 
     def _weighted_social_confidence(self, x_eff: float, cmc_eff: float) -> float:
         x_w = self.config.x_weight
@@ -122,10 +131,12 @@ class DecisionEngine:
                 x_buy = True
                 sources.append("x")
 
+        strategy_params = market.strategy_params or {}
         if cmc_signal and cmc_signal.action == "BUY":
-            cmc_eff = getattr(cmc_signal, "effective_confidence", cmc_signal.confidence)
+            trust = self._cmc_trust_score(cmc_signal, strategy_params)
+            cmc_eff = float(cmc_signal.confidence) * (trust / 100.0)
             cmc_eff *= consensus
-            if cmc_eff >= self._cmc_buy_threshold():
+            if cmc_eff >= self._cmc_buy_threshold(strategy_params):
                 cmc_buy = True
                 sources.append("cmc")
 
@@ -193,9 +204,11 @@ class DecisionEngine:
                 candidates.append((SELL_PARTIAL_20, 2, "x"))
                 sources.append("x")
 
+        strategy_params = (market.strategy_params or {}) if market else {}
         if cmc_signal and cmc_signal.action == "SELL":
-            eff = getattr(cmc_signal, "effective_confidence", cmc_signal.confidence) * consensus
-            if eff >= self._cmc_buy_threshold():
+            trust = self._cmc_trust_score(cmc_signal, strategy_params)
+            eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
+            if eff >= self._cmc_buy_threshold(strategy_params):
                 candidates.append((SELL_PARTIAL_20, 2, "cmc"))
                 sources.append("cmc")
 

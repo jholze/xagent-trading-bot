@@ -69,18 +69,25 @@ class SelfImprover:
         symbol: str,
         timeframe: str,
     ) -> dict | None:
+        regime = proposal.params.get("buy_regime", "dip")
+        opp_b = baseline_metrics.get("opportunity_score", 0)
+        opp_v = variant_metrics.get("opportunity_score", 0)
         if promoted:
             pattern = (
-                f"Changing {proposal.variable} from {proposal.old_value} to {proposal.new_value} "
-                f"improved Sharpe from {baseline_metrics.get('sharpe', 0)} to "
-                f"{variant_metrics.get('sharpe', 0)} on {symbol} {timeframe}"
+                f"{proposal.variable} {proposal.old_value}→{proposal.new_value} on {symbol} {timeframe} "
+                f"(regime={regime}): Sharpe {baseline_metrics.get('sharpe', 0)}→"
+                f"{variant_metrics.get('sharpe', 0)}, opp {opp_b}→{opp_v}"
             )
-            confidence = min(0.9, 0.5 + abs(variant_metrics.get("sharpe", 0) - baseline_metrics.get("sharpe", 0)) * 0.2)
+            delta = max(
+                abs(variant_metrics.get("sharpe", 0) - baseline_metrics.get("sharpe", 0)),
+                abs(opp_v - opp_b),
+            )
+            confidence = min(0.9, 0.5 + delta * 0.2)
         else:
             pattern = (
-                f"Changing {proposal.variable} from {proposal.old_value} to {proposal.new_value} "
-                f"did NOT improve Sharpe on {symbol} {timeframe} ({variant_metrics.get('sharpe', 0)} vs "
-                f"{baseline_metrics.get('sharpe', 0)})"
+                f"{proposal.variable} {proposal.old_value}→{proposal.new_value} failed on {symbol} "
+                f"{timeframe} (regime={regime}): Sharpe {variant_metrics.get('sharpe', 0)} vs "
+                f"{baseline_metrics.get('sharpe', 0)}, opp {opp_v} vs {opp_b}"
             )
             confidence = 0.4
 
@@ -89,6 +96,7 @@ class SelfImprover:
             "confidence": round(confidence, 2),
             "applies_to": {"symbol": symbol, "timeframe": timeframe},
             "variable": proposal.variable,
+            "regime": regime,
             "promoted": promoted,
             "grok_enhanced": False,
         }
@@ -127,7 +135,8 @@ class SelfImprover:
         if folds is not None and folds_total:
             fold_part = f" Folds {folds}/{folds_total}."
         return (
-            f"Experiment {experiment_record.get('id')}: {var} "
+            f"Experiment {experiment_record.get('id')}: [{experiment_record.get('symbol')}] {var} "
             f"{experiment_record.get('old_value')}→{experiment_record.get('new_value')} → {v}. "
-            f"Sharpe {bm.get('sharpe', 0)}→{vm.get('sharpe', 0)}.{fold_part} {reason}"
+            f"Sharpe {bm.get('sharpe', 0)}→{vm.get('sharpe', 0)}, "
+            f"opp {bm.get('opportunity_score', 0)}→{vm.get('opportunity_score', 0)}.{fold_part} {reason}"
         )

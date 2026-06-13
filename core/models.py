@@ -146,3 +146,6 @@ class SandboxMetrics:
     trades: int = 0
     realized_pnl: float = 0.0
     equity: float = 0.0
+    trade_quality: float = 0.0
+    opportunity_score: float = 0.0
+    buy_signals: int = 0

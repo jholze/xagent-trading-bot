@@ -66,6 +66,10 @@ def _aggregate_metrics(fold_metrics: list[dict]) -> SandboxMetrics:
     pnl = sum(float(m.get("realized_pnl", 0)) for m in fold_metrics)
     equities = [float(m.get("equity", 0)) for m in fold_metrics if m.get("equity")]
 
+    opps = [float(m.get("opportunity_score", 0)) for m in fold_metrics]
+    tqs = [float(m.get("trade_quality", 0)) for m in fold_metrics]
+    buys = sum(int(m.get("buy_signals", 0)) for m in fold_metrics)
+
     return SandboxMetrics(
         win_rate=round(sum(win_rates) / len(win_rates), 1) if win_rates else 0.0,
         sharpe=round(sum(sharpes) / len(sharpes), 2) if sharpes else 0.0,
@@ -73,6 +77,9 @@ def _aggregate_metrics(fold_metrics: list[dict]) -> SandboxMetrics:
         trades=trades,
         realized_pnl=round(pnl, 2),
         equity=round(equities[-1], 2) if equities else 0.0,
+        trade_quality=round(sum(tqs) / len(tqs), 4) if tqs else 0.0,
+        opportunity_score=round(sum(opps) / len(opps), 4) if opps else 0.0,
+        buy_signals=buys,
     )
 
 

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from core.config import get_bot_config
 from hermes.backtester import Backtester
+from hermes.cmc_replay import recent_signal_activity
 from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
 from hermes.memory import store
@@ -20,10 +21,11 @@ class CycleResult:
     baseline_sharpe: float
     variant_sharpe: float
     summary: str
+    symbol: str = ""
 
 
 class HermesAgent:
-    """Self-improving trading agent: one variable, hypothesis, backtest, learn."""
+    """Self-improving trading agent: pipeline backtest, multi-coin, regime learning."""
 
     def __init__(self, config=None):
         self.config = config or get_bot_config()
@@ -33,20 +35,46 @@ class HermesAgent:
         self.experiments = ExperimentRunner(self.config)
         self.improver = SelfImprover(self.config)
 
+    def _symbols(self) -> list[str]:
+        return self.hermes.get("symbols", ["ARIA/USDT"])
+
+    def _timeframes(self) -> list[str]:
+        return self.hermes.get("timeframes", ["4h"])
+
+    def _pick_symbol_timeframe(self) -> tuple[str, str]:
+        symbols = self._symbols()
+        timeframes = self._timeframes()
+        rotation = self.hermes.get("rotation", "round_robin")
+
+        if rotation == "signal_activity" and len(symbols) > 1:
+            activity = recent_signal_activity(symbols, hours=int(self.hermes.get("rotation_hours", 24)))
+            symbol = max(symbols, key=lambda s: activity.get(s, 0))
+            if activity.get(symbol, 0) == 0:
+                idx = store.get_rotation_index() % len(symbols)
+                symbol = symbols[idx]
+                store.set_rotation_index(idx + 1)
+        else:
+            idx = store.get_rotation_index() % len(symbols)
+            symbol = symbols[idx]
+            store.set_rotation_index(idx + 1)
+
+        tf_idx = store.get_rotation_index() % len(timeframes)
+        timeframe = timeframes[tf_idx]
+        return symbol, timeframe
+
     def run_cycle(self) -> CycleResult:
         self.config.refresh()
         self.hermes = self.config.hermes_config
-        baseline = store.init_baseline_from_config(self.config)
-        symbol = baseline.get("symbol", self.hermes.get("symbols", ["ARIA/USDT"])[0])
-        timeframe = baseline.get("timeframe", self.hermes.get("timeframes", ["4h"])[0])
+        symbol, timeframe = self._pick_symbol_timeframe()
+        baseline = store.init_baseline_from_config(self.config, symbol, timeframe)
         params = baseline.get("params", {})
 
         grok_proposal = self.improver.propose_experiment(baseline)
         proposal = self.experiments.propose(params, grok_proposal, symbol, timeframe)
 
         log(
-            f"Hermes experiment: {proposal.variable} {proposal.old_value}→{proposal.new_value} "
-            f"({proposal.source})",
+            f"Hermes [{symbol} {timeframe}]: {proposal.variable} "
+            f"{proposal.old_value}→{proposal.new_value} ({proposal.source})",
             "INFO",
         )
 
@@ -99,9 +127,9 @@ class HermesAgent:
             baseline["params"] = proposal.params
             baseline["metrics"] = var_m
             store.save_baseline(baseline)
-            log(f"Hermes baseline updated: {proposal.variable}={proposal.new_value}", "INFO")
+            log(f"Hermes baseline updated [{symbol}]: {proposal.variable}={proposal.new_value}", "INFO")
             self._sync_to_config(baseline, record.get("id", ""))
-            self._notify_promotion(record, proposal, var_m)
+            self._notify_promotion(record, proposal, var_m, symbol)
 
         self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
         summary = self.improver.analyze_and_suggest(record)
@@ -114,6 +142,7 @@ class HermesAgent:
             baseline_sharpe=base_m.get("sharpe", 0),
             variant_sharpe=var_m.get("sharpe", 0),
             summary=summary,
+            symbol=symbol,
         )
 
     def _sync_to_config(self, baseline: dict, experiment_id: str):
@@ -126,7 +155,7 @@ class HermesAgent:
         except Exception as e:
             log(f"Hermes config sync failed: {e}", "ERROR")
 
-    def _notify_promotion(self, record: dict, proposal, metrics: dict):
+    def _notify_promotion(self, record: dict, proposal, metrics: dict, symbol: str):
         if not self.hermes.get("notify_on_promotion", True):
             return
         try:
@@ -135,10 +164,10 @@ class HermesAgent:
             if record.get("folds_total"):
                 folds = f"\nFolds: {record.get('folds_won')}/{record.get('folds_total')}"
             send_telegram_message(
-                f"🧠 <b>Hermes promoted</b>\n"
+                f"🧠 <b>Hermes promoted</b> ({symbol})\n"
                 f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
-                f"Sharpe: {metrics.get('sharpe', 0)} | WR: {metrics.get('win_rate', 0)}% | "
-                f"DD: {metrics.get('max_drawdown_pct', 0)}%{folds}\n"
+                f"Sharpe: {metrics.get('sharpe', 0)} | Opp: {metrics.get('opportunity_score', 0)} | "
+                f"WR: {metrics.get('win_rate', 0)}% | DD: {metrics.get('max_drawdown_pct', 0)}%{folds}\n"
                 f"Experiment: {record.get('id', '')}"
             )
         except Exception as e:
@@ -146,7 +175,8 @@ class HermesAgent:
 
     def run_loop(self, interval_sec: int | None = None):
         interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 1800))
-        log(f"Hermes agent loop started (interval={interval}s)", "INFO")
+        mode = self.hermes.get("backtest_mode", "ta_only")
+        log(f"Hermes 2.0 loop started (interval={interval}s, mode={mode})", "INFO")
         while True:
             try:
                 result = self.run_cycle()
@@ -157,23 +187,31 @@ class HermesAgent:
 
     def status(self) -> str:
         baseline = store.load_baseline()
+        profiles = store.list_profiles()
         recent = store.recent_experiments(5)
         skills = store.load_skills().get("skills", [])[-3:]
+        mode = self.hermes.get("backtest_mode", "ta_only")
         lines = [
-            "=== Hermes Agent Status ===",
-            f"Baseline: {baseline.get('symbol')} {baseline.get('timeframe')}",
+            "=== Hermes 2.0 Status ===",
+            f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}",
+            f"Active: {baseline.get('symbol')} {baseline.get('timeframe')}",
             f"Params: {baseline.get('params', {})}",
             f"Metrics: {baseline.get('metrics', {})}",
-            f"Updated: {baseline.get('updated_at', 'never')}",
-            "",
-            f"Recent experiments ({len(recent)}):",
+            f"Profiles: {len(profiles)}",
         ]
+        for p in profiles[:5]:
+            lines.append(
+                f"  • {p.get('symbol')} {p.get('timeframe')}: "
+                f"regime={p.get('params', {}).get('buy_regime', 'dip')}"
+            )
+        lines.append("")
+        lines.append(f"Recent experiments ({len(recent)}):")
         for exp in recent:
             fold_info = ""
             if exp.get("folds_total"):
                 fold_info = f" [{exp.get('folds_won')}/{exp.get('folds_total')} folds]"
             lines.append(
-                f"  • {exp.get('id')}: {exp.get('variable')} "
+                f"  • {exp.get('id')}: [{exp.get('symbol')}] {exp.get('variable')} "
                 f"{exp.get('old_value')}→{exp.get('new_value')} → {exp.get('verdict')}{fold_info}"
             )
         if skills:

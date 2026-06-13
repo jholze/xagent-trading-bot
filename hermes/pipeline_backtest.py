@@ -1,21 +1,21 @@
-import math
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+"""Full DecisionEngine + CMC replay backtest for Hermes 2.0."""
 
-import ccxt
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
 import pandas as pd
-import talib
 
 from core.config import get_bot_config
 from core.models import MarketContext, SandboxMetrics
+from hermes.cmc_replay import load_posts_for_coin, signals_at_timestamp
 from hermes.metrics import enrich_sandbox_metrics, sharpe_from_trades
-from logger import log
+from strategies.decision_engine import DecisionEngine
 from strategies.positions import sell_fraction_for_signal
-from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
 
 @dataclass
-class BacktestResult:
+class PipelineBacktestResult:
     symbol: str
     timeframe: str
     params: dict
@@ -23,48 +23,28 @@ class BacktestResult:
     trades: list = field(default_factory=list)
     equity_curve: list = field(default_factory=list)
     bars_tested: int = 0
+    decision_buys: int = 0
 
 
-class Backtester:
-    """Historical bar-by-bar backtest using TechnicalRSIStrategy."""
-
-    EXCHANGES = ["gate", "binance", "kucoin", "bybit"]
+class PipelineBacktester:
+    """Bar-by-bar simulation through DecisionEngine with optional CMC replay."""
 
     def __init__(self, config=None):
         self.config = config or get_bot_config()
-        self.strategy = TechnicalRSIStrategy()
         self.hermes = self.config.hermes_config
+        self.decision_engine = DecisionEngine()
 
     def run(
         self,
         symbol: str,
         timeframe: str,
         params: dict,
-        days: int | None = None,
-        ohlcv_df: pd.DataFrame | None = None,
-    ) -> BacktestResult:
-        if self.hermes.get("backtest_mode", "ta_only") == "pipeline":
-            from hermes.pipeline_backtest import PipelineBacktester
-
-            days = days or int(self.hermes.get("backtest_days", 60))
-            df = ohlcv_df if ohlcv_df is not None else self._fetch_ohlcv(symbol, timeframe, days)
-            ttl = float(self.hermes.get("cmc_replay_ttl_hours", 4))
-            pr = PipelineBacktester(self.config).run(symbol, timeframe, params, df, cmc_ttl_hours=ttl)
-            return BacktestResult(
-                symbol=pr.symbol,
-                timeframe=pr.timeframe,
-                params=pr.params,
-                metrics=pr.metrics,
-                trades=pr.trades,
-                equity_curve=pr.equity_curve,
-                bars_tested=pr.bars_tested,
-            )
-
-        days = days or int(self.hermes.get("backtest_days", 60))
-        df = ohlcv_df if ohlcv_df is not None else self._fetch_ohlcv(symbol, timeframe, days)
+        ohlcv_df: pd.DataFrame,
+        cmc_ttl_hours: float = 4.0,
+    ) -> PipelineBacktestResult:
+        df = ohlcv_df.copy()
         if df is None or df.empty or len(df) < 30:
-            log(f"Backtest insufficient data for {symbol} {timeframe}", "WARNING")
-            return BacktestResult(
+            return PipelineBacktestResult(
                 symbol=symbol,
                 timeframe=timeframe,
                 params=params,
@@ -73,33 +53,15 @@ class Backtester:
             )
 
         df = self._add_indicators(df)
-        return self._simulate(symbol, timeframe, params, df)
+        since_ms = int(df["ts"].iloc[0])
+        until_ms = int(df["ts"].iloc[-1])
+        cmc_posts = load_posts_for_coin(symbol, since_ms=since_ms, until_ms=until_ms + int(cmc_ttl_hours * 3600 * 1000))
+        ttl_ms = int(cmc_ttl_hours * 3600 * 1000)
+        trust = float(params.get("cmc_trust_score", 65.0))
 
-    def _fetch_ohlcv(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame | None:
-        since_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
-        for ex_name in self.EXCHANGES:
-            try:
-                exchange = getattr(ccxt, ex_name)({"enableRateLimit": True, "timeout": 15000})
-                bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=1000)
-                if bars:
-                    df = pd.DataFrame(bars, columns=["ts", "open", "high", "low", "close", "volume"])
-                    return df
-            except Exception as e:
-                log(f"Backtest {ex_name} fetch failed for {symbol}: {e}", "WARNING")
-        return None
-
-    def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        out = df.copy()
-        out["rsi"] = talib.RSI(out["close"], timeperiod=14)
-        _, _, out["lower"] = talib.BBANDS(out["close"], timeperiod=20)
-        out["vol_avg"] = out["volume"].rolling(window=20).mean()
-        return out.dropna()
-
-    def _simulate(self, symbol: str, timeframe: str, params: dict, df: pd.DataFrame) -> BacktestResult:
         capital = float(self.hermes.get("initial_capital_usdt", 1000))
         usdt_per_trade = float(self.hermes.get("usdt_per_trade", 50))
         slippage = self.config.slippage_percent / 100
-        stop_loss_pct = params.get("stop_loss_pct", self.config.stop_loss_pct)
 
         balance = capital
         position = {"amount": 0.0, "average_entry": 0.0}
@@ -112,12 +74,14 @@ class Backtester:
         equity_curve = []
         peak_equity = capital
         max_drawdown_pct = 0.0
+        decision_buys = 0
 
         coin = {"symbol": symbol, "timeframe": timeframe, "strategy_params": params}
 
         for i in range(20, len(df)):
             row = df.iloc[i]
             price = float(row["close"])
+            bar_ts = int(row["ts"])
             recent_vol = df["volume"].iloc[max(0, i - 3):i + 1].mean()
             long_vol = float(row["vol_avg"]) if row["vol_avg"] > 0 else 1.0
             vol_mult = recent_vol / long_vol if long_vol > 0 else 1.0
@@ -137,8 +101,9 @@ class Backtester:
                 sim_state=sim_state,
             )
 
-            analysis = self.strategy.analyze(coin, market)
-            action = analysis.action
+            cmc_signals = signals_at_timestamp(cmc_posts, bar_ts, trust_score=trust, ttl_ms=ttl_ms)
+            analysis = self.decision_engine.evaluate_with_market(coin, market, cmc_signals=cmc_signals)
+            action = analysis.action if analysis else "HOLD"
 
             if action == "BUY" and position["amount"] <= 0 and balance >= usdt_per_trade:
                 cost = usdt_per_trade * (1 + slippage)
@@ -148,12 +113,14 @@ class Backtester:
                     position["average_entry"] = price
                     balance -= cost
                     sim_state["rsi_sell_tiers_done"] = {}
+                    decision_buys += 1
                     trades.append({
                         "type": "BUY",
                         "price": price,
                         "amount": amount,
                         "usdt": usdt_per_trade,
                         "bar": i,
+                        "sources": list(analysis.sources or []),
                     })
 
             elif position["amount"] > 0 and action != "HOLD" and "SELL" in action:
@@ -193,49 +160,39 @@ class Backtester:
                 max_drawdown_pct = max(max_drawdown_pct, (peak_equity - equity) / peak_equity * 100)
             equity_curve.append(equity)
 
-        metrics = self._compute_metrics(
-            trades, balance, position, df.iloc[-1]["close"], max_drawdown_pct, capital
+        bars_tested = len(df) - 20
+        sells = [t for t in trades if t.get("type") == "SELL"]
+        wins = [t for t in sells if t.get("pnl", 0) > 0]
+        win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
+        equity = balance + position.get("amount", 0) * float(df.iloc[-1]["close"])
+        realized_pnl = sum(t.get("pnl", 0) for t in sells)
+
+        metrics = SandboxMetrics(
+            win_rate=round(win_rate, 1),
+            sharpe=sharpe_from_trades(trades),
+            max_drawdown_pct=round(max_drawdown_pct, 1),
+            trades=len(sells),
+            realized_pnl=round(realized_pnl, 2),
+            equity=round(equity, 2),
         )
-        metrics = enrich_sandbox_metrics(metrics, trades, len(df) - 20)
-        return BacktestResult(
+        metrics = enrich_sandbox_metrics(metrics, trades, bars_tested)
+
+        return PipelineBacktestResult(
             symbol=symbol,
             timeframe=timeframe,
             params=params,
             metrics=metrics,
             trades=trades,
             equity_curve=equity_curve,
-            bars_tested=len(df) - 20,
+            bars_tested=bars_tested,
+            decision_buys=decision_buys,
         )
 
-    def _compute_metrics(
-        self,
-        trades: list,
-        balance: float,
-        position: dict,
-        last_price: float,
-        max_drawdown_pct: float,
-        initial_capital: float,
-    ) -> SandboxMetrics:
-        sells = [t for t in trades if t.get("type") == "SELL"]
-        wins = [t for t in sells if t.get("pnl", 0) > 0]
-        win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
+    def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        import talib
 
-        returns = []
-        for trade in sells:
-            usdt = trade.get("usdt_received", 0)
-            if usdt > 0:
-                returns.append(trade.get("pnl", 0) / usdt)
-
-        sharpe = sharpe_from_trades(trades)
-
-        equity = balance + position.get("amount", 0) * float(last_price)
-        realized_pnl = sum(t.get("pnl", 0) for t in sells)
-
-        return SandboxMetrics(
-            win_rate=round(win_rate, 1),
-            sharpe=round(sharpe, 2),
-            max_drawdown_pct=round(max_drawdown_pct, 1),
-            trades=len(sells),
-            realized_pnl=round(realized_pnl, 2),
-            equity=round(equity, 2),
-        )
+        out = df.copy()
+        out["rsi"] = talib.RSI(out["close"], timeperiod=14)
+        _, _, out["lower"] = talib.BBANDS(out["close"], timeperiod=20)
+        out["vol_avg"] = out["volume"].rolling(window=20).mean()
+        return out.dropna()
