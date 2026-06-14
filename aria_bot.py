@@ -83,6 +83,10 @@ def health():
 def webhook():
     try:
         update = request.get_json()
+        if update:
+            from notifications.telegram_commands.menu_i18n import set_user_language_from_update
+
+            set_user_language_from_update(update)
         if update and "callback_query" in update:
             log("Received Telegram callback query", "DEBUG")
             handle_telegram_callback(update["callback_query"])

@@ -8,32 +8,20 @@ import re
 import requests
 
 from logger import log
-from notifications.telegram_commands.menu_commands import (
-    MENU_SECTIONS,
-    all_menu_command_keys,
-    section_prefixed_description,
-    send_main_section_keyboard,
+from notifications.telegram_commands.menu_commands import MENU_SECTIONS, all_menu_command_keys
+from notifications.telegram_commands.menu_commands import send_main_section_keyboard
+from notifications.telegram_commands.menu_i18n import (
+    SUPPORTED_LANGS,
+    prefixed_command_description,
+    resolve_language,
 )
-from notifications.telegram_commands.usage_hints import USAGE
 
 _COMMAND_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _MAX_DESCRIPTION_LEN = 256
 _MAX_BUTTON_TEXT_LEN = 64
 _DEFAULT_BUTTON_TEXT = "Menü"
 
-# Re-export for tests.
 TELEGRAM_MENU_COMMAND_KEYS: list[str] = all_menu_command_keys()
-
-
-def menu_description(key: str) -> str:
-    for section_id, _, _, keys in MENU_SECTIONS:
-        if key in keys:
-            return section_prefixed_description(section_id, key)
-    entry = USAGE.get(key) or {}
-    desc = entry.get("menu_description") or entry.get("help_line", "")
-    if not desc:
-        raise ValueError(f"Missing menu_description for command key: {key}")
-    return desc
 
 
 def menu_button_text() -> str:
@@ -60,28 +48,29 @@ def menu_button_payload() -> dict:
     }
 
 
-def all_bot_commands() -> list[dict[str, str]]:
+def all_bot_commands(lang: str = "de") -> list[dict[str, str]]:
     commands = []
     seen: set[str] = set()
-    for key in all_menu_command_keys():
-        if key in seen:
-            raise ValueError(f"Duplicate menu command key: {key}")
-        seen.add(key)
-        if not _COMMAND_RE.match(key):
-            raise ValueError(f"Invalid Telegram command name: {key}")
-        description = menu_description(key).strip()
-        if not description:
-            raise ValueError(f"Empty menu description for: {key}")
-        if len(description) > _MAX_DESCRIPTION_LEN:
-            raise ValueError(
-                f"Menu description too long for {key}: {len(description)} chars"
-            )
-        commands.append({"command": key, "description": description})
+    for section_id, keys in MENU_SECTIONS:
+        for key in keys:
+            if key in seen:
+                raise ValueError(f"Duplicate menu command key: {key}")
+            seen.add(key)
+            if not _COMMAND_RE.match(key):
+                raise ValueError(f"Invalid Telegram command name: {key}")
+            description = prefixed_command_description(section_id, key, lang).strip()
+            if not description:
+                raise ValueError(f"Empty menu description for: {key}")
+            if len(description) > _MAX_DESCRIPTION_LEN:
+                raise ValueError(
+                    f"Menu description too long for {key}: {len(description)} chars"
+                )
+            commands.append({"command": key, "description": description})
     return commands
 
 
 def register_bot_commands(token: str | None = None) -> bool:
-    """Publish commands to Telegram (setMyCommands + labeled menu button)."""
+    """Publish DE + EN commands; Telegram picks by user language_code."""
     token = token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         log("Telegram command menu: TELEGRAM_BOT_TOKEN not set", "WARNING")
@@ -90,26 +79,43 @@ def register_bot_commands(token: str | None = None) -> bool:
     try:
         from core.config import get_bot_config
 
-        if not get_bot_config().telegram_command_menu_config.get("enabled", True):
+        cfg = get_bot_config().telegram_command_menu_config
+        if not cfg.get("enabled", True):
             log("Telegram command menu disabled in config", "INFO")
             return False
+        default_lang = resolve_language(cfg.get("default_language"))
     except Exception:
-        pass
+        default_lang = "de"
 
-    commands = all_bot_commands()
     button = menu_button_payload()
     base = f"https://api.telegram.org/bot{token}"
 
     try:
+        for lang in SUPPORTED_LANGS:
+            commands = all_bot_commands(lang)
+            resp = requests.post(
+                f"{base}/setMyCommands",
+                json={"commands": commands, "language_code": lang},
+                timeout=10,
+            )
+            data = resp.json() if resp.content else {}
+            if not resp.ok or not data.get("ok"):
+                log(
+                    f"Telegram setMyCommands({lang}) failed: {data.get('description', resp.text)}",
+                    "WARNING",
+                )
+                return False
+
+        fallback = all_bot_commands(default_lang)
         resp = requests.post(
             f"{base}/setMyCommands",
-            json={"commands": commands, "language_code": "de"},
+            json={"commands": fallback},
             timeout=10,
         )
         data = resp.json() if resp.content else {}
         if not resp.ok or not data.get("ok"):
             log(
-                f"Telegram setMyCommands failed: {data.get('description', resp.text)}",
+                f"Telegram setMyCommands(default) failed: {data.get('description', resp.text)}",
                 "WARNING",
             )
             return False
@@ -128,11 +134,14 @@ def register_bot_commands(token: str | None = None) -> bool:
             return False
 
         log(
-            f"Telegram command menu registered ({len(commands)} commands, "
-            f"{len(MENU_SECTIONS)} Bereiche, button: {button['text']!r})",
+            f"Telegram command menu registered ({len(fallback)} commands, "
+            f"langs de+en, button: {button['text']!r})",
             "INFO",
         )
-        send_main_section_keyboard()
+        from notifications.telegram_commands.menu_i18n import set_user_language
+
+        set_user_language(default_lang)
+        send_main_section_keyboard(lang=default_lang)
         return True
     except Exception as e:
         log(f"Telegram command menu registration error: {e}", "WARNING")

@@ -348,7 +348,9 @@ Telegram erlaubt im Menü-Button **keine echten Überschriften** — deshalb zwe
 
 **Bereiche:** Watchlist · Handel · Modus & Gate · Transparenz · X/Twitter · Sandbox & Backtest · Hilfe
 
-Config: `observability.telegram_command_menu` — `button_text` (z. B. `"Menü"`), `reply_keyboard` (true/false).
+Config: `observability.telegram_command_menu` — `button_text`, `reply_keyboard`, `default_language` (`de`/`en`).
+
+**Sprache:** Telegram `language_code` aus dem Nutzerprofil (App-Sprache) steuert Menü-Beschreibungen (`setMyCommands` de/en) und die Bereichs-Tastatur. Fallback: `default_language` in der Config. Übersetzungen: `locales/telegram_menu.json`.
 
 | Verhalten | Details |
 |-----------|---------|

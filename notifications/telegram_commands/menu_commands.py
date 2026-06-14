@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from notifications.telegram_commands.usage_hints import USAGE
+from notifications.telegram_commands.menu_i18n import (
+    back_label,
+    command_description,
+    current_language,
+    home_inline,
+    home_intro,
+    is_back_label,
+    section_pick,
+    section_title,
+    title_to_section_id,
+)
 from telegram_notifier import (
     answer_callback_query,
     edit_telegram_message,
@@ -10,47 +20,22 @@ from telegram_notifier import (
     send_telegram_buttons,
 )
 
-# All bot commands grouped by Bereich (single source of truth).
-MENU_SECTIONS: list[tuple[str, str, str, list[str]]] = [
-    ("watchlist", "📋 Watchlist", "Watchlist", ["list", "add", "remove"]),
-    ("handel", "💰 Handel", "Handel", ["positions", "buy", "sell", "orders", "risk"]),
-    ("modus", "⚙️ Modus & Gate", "Modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
-    ("transparenz", "🔍 Transparenz", "Transparenz", ["decisions", "why", "hermes", "hermes_last", "cmc"]),
-    ("x", "🐦 X / Twitter", "X", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
-    (
-        "tests",
-        "🧪 Sandbox & Backtest",
-        "Tests",
-        ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"],
-    ),
-    ("hilfe", "❓ Hilfe", "Hilfe", ["menu", "help"]),
+MENU_SECTIONS: list[tuple[str, list[str]]] = [
+    ("watchlist", ["list", "add", "remove"]),
+    ("handel", ["positions", "buy", "sell", "orders", "risk"]),
+    ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
+    ("transparenz", ["decisions", "why", "hermes", "hermes_last", "cmc"]),
+    ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
+    ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
+    ("hilfe", ["menu", "help"]),
 ]
 
-BACK_LABEL = "◀ Bereiche"
-
-_SECTION_BY_ID = {sid: (title, short, keys) for sid, title, short, keys in MENU_SECTIONS}
-_TITLE_TO_SECTION = {title: sid for sid, title, _, _ in MENU_SECTIONS}
-_ALL_COMMAND_KEYS = [k for _, _, _, keys in MENU_SECTIONS for k in keys]
-
-
-def section_prefixed_description(section_id: str, key: str) -> str:
-    _, short, _ = _SECTION_BY_ID[section_id]
-    base = USAGE.get(key, {}).get("menu_description", key)
-    text = f"{short} · {base}"
-    return text[:256]
+_SECTION_KEYS = {sid: keys for sid, keys in MENU_SECTIONS}
+_ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS for k in keys]
 
 
 def all_menu_command_keys() -> list[str]:
-    """Flat command list in section order for setMyCommands."""
     return list(_ALL_COMMAND_KEYS)
-
-
-def _command_label(key: str) -> str:
-    desc = USAGE.get(key, {}).get("menu_description", key)
-    short = desc.split("—")[0].split("(")[0].strip()
-    if len(short) > 28:
-        short = short[:25] + "…"
-    return short or key
 
 
 def _reply_keyboard_enabled() -> bool:
@@ -62,11 +47,11 @@ def _reply_keyboard_enabled() -> bool:
         return True
 
 
-def _main_reply_rows() -> list[list[str]]:
+def _main_reply_rows(lang: str | None = None) -> list[list[str]]:
     rows: list[list[str]] = []
     row: list[str] = []
-    for _, title, _, _ in MENU_SECTIONS:
-        row.append(title)
+    for section_id, _ in MENU_SECTIONS:
+        row.append(section_title(section_id, lang))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -75,63 +60,61 @@ def _main_reply_rows() -> list[list[str]]:
     return rows
 
 
-def _section_reply_rows(section_id: str) -> list[list[str]]:
-    _, title, _, keys = next(s for s in MENU_SECTIONS if s[0] == section_id)
+def _section_reply_rows(section_id: str, lang: str | None = None) -> list[list[str]]:
     rows: list[list[str]] = []
     row: list[str] = []
-    for key in keys:
+    for key in _SECTION_KEYS[section_id]:
         row.append(f"/{key}")
         if len(row) == 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([BACK_LABEL])
+    rows.append([back_label(lang)])
     return rows
 
 
-def send_main_section_keyboard(text: str | None = None) -> bool:
+def send_main_section_keyboard(text: str | None = None, lang: str | None = None) -> bool:
     if not _reply_keyboard_enabled():
         return False
-    msg = text or (
-        "<b>🗂️ Bereiche</b>\n\n"
-        "Wähle unten einen Bereich — darunter erscheinen alle Befehle dieses Bereichs.\n"
-        "<i>Im Menü-Button (☰) sind dieselben Befehle nach Bereich sortiert.</i>"
-    )
-    return send_reply_keyboard(msg, _main_reply_rows())
+    lang = lang or current_language()
+    return send_reply_keyboard(text or home_intro(lang), _main_reply_rows(lang))
 
 
-def send_section_keyboard(section_id: str) -> bool:
-    if section_id not in _SECTION_BY_ID:
+def send_section_keyboard(section_id: str, lang: str | None = None) -> bool:
+    if section_id not in _SECTION_KEYS:
         return False
-    title, _, _ = _SECTION_BY_ID[section_id]
+    lang = lang or current_language()
     return send_reply_keyboard(
-        f"<b>{title}</b>\n\nTippe einen Befehl:",
-        _section_reply_rows(section_id),
+        f"<b>{section_title(section_id, lang)}</b>\n\n{section_pick(lang)}",
+        _section_reply_rows(section_id, lang),
     )
 
 
-def _home_text() -> str:
-    return (
-        "<b>🗂️ Bot-Menü</b>\n\n"
-        "Wähle einen <b>Bereich</b> — alle Befehle sind nach Kategorien sortiert.\n"
-        "<i>Unten: Bereichs-Tastatur · Menü-Button (☰): komplette Liste mit Bereichs-Prefix.</i>"
-    )
+def _command_label(key: str, lang: str | None = None) -> str:
+    desc = command_description(key, lang)
+    if len(desc) > 28:
+        desc = desc[:25] + "…"
+    return desc
 
 
-def _section_text(section_id: str) -> str:
-    title, _, keys = _SECTION_BY_ID[section_id]
-    lines = [f"<b>{title}</b>", "", "Wähle einen Befehl:"]
-    for key in keys:
-        lines.append(f"• <code>/{key}</code> — {_command_label(key)}")
+def _home_text(lang: str | None = None) -> str:
+    return home_inline(lang)
+
+
+def _section_text(section_id: str, lang: str | None = None) -> str:
+    lang = lang or current_language()
+    lines = [f"<b>{section_title(section_id, lang)}</b>", "", section_pick(lang)]
+    for key in _SECTION_KEYS[section_id]:
+        lines.append(f"• <code>/{key}</code> — {_command_label(key, lang)}")
     return "\n".join(lines)
 
 
-def _home_keyboard() -> list[list[dict]]:
+def _home_keyboard(lang: str | None = None) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
-    for section_id, title, _, _ in MENU_SECTIONS:
-        row.append({"text": title, "callback_data": f"menu:sec:{section_id}"})
+    for section_id, _ in MENU_SECTIONS:
+        row.append({"text": section_title(section_id, lang), "callback_data": f"menu:sec:{section_id}"})
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -140,49 +123,49 @@ def _home_keyboard() -> list[list[dict]]:
     return rows
 
 
-def _section_keyboard(section_id: str) -> list[list[dict]]:
-    _, _, keys = _SECTION_BY_ID[section_id]
+def _section_keyboard(section_id: str, lang: str | None = None) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
-    for key in keys:
-        row.append({"text": _command_label(key), "callback_data": f"menu:run:{key}"})
+    for key in _SECTION_KEYS[section_id]:
+        row.append({"text": _command_label(key, lang), "callback_data": f"menu:run:{key}"})
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([{"text": BACK_LABEL, "callback_data": "menu:home"}])
+    rows.append([{"text": back_label(lang), "callback_data": "menu:home"}])
     return rows
 
 
-def show_home(*, chat_id: int | None = None, message_id: int | None = None) -> bool:
-    markup = _home_keyboard()
+def show_home(*, chat_id: int | None = None, message_id: int | None = None, lang: str | None = None) -> bool:
+    lang = lang or current_language()
+    markup = _home_keyboard(lang)
     if chat_id is not None and message_id is not None:
-        return edit_telegram_message(_home_text(), chat_id, message_id, reply_markup=markup)
-    send_main_section_keyboard()
-    return send_telegram_buttons(_home_text(), markup)
+        return edit_telegram_message(_home_text(lang), chat_id, message_id, reply_markup=markup)
+    send_main_section_keyboard(lang=lang)
+    return send_telegram_buttons(_home_text(lang), markup)
 
 
-def show_section(section_id: str, chat_id: int, message_id: int) -> bool:
-    if section_id not in _SECTION_BY_ID:
+def show_section(section_id: str, chat_id: int, message_id: int, lang: str | None = None) -> bool:
+    if section_id not in _SECTION_KEYS:
         return False
+    lang = lang or current_language()
     return edit_telegram_message(
-        _section_text(section_id),
+        _section_text(section_id, lang),
         chat_id,
         message_id,
-        reply_markup=_section_keyboard(section_id),
+        reply_markup=_section_keyboard(section_id, lang),
     )
 
 
 def handle_text(text: str) -> bool:
-    """Reply-keyboard taps: section title or back."""
     if not _reply_keyboard_enabled():
         return False
     stripped = (text or "").strip()
-    if stripped == BACK_LABEL:
+    if is_back_label(stripped):
         send_main_section_keyboard()
         return True
-    section_id = _TITLE_TO_SECTION.get(stripped)
+    section_id = title_to_section_id(stripped)
     if section_id:
         send_section_keyboard(section_id)
         return True
@@ -221,7 +204,7 @@ def handle_callback(callback_query: dict) -> bool:
             answer_callback_query(callback_id)
         if chat_id and message_id:
             show_section(section_id, chat_id, message_id)
-        elif section_id in _SECTION_BY_ID:
+        elif section_id in _SECTION_KEYS:
             send_section_keyboard(section_id)
         return True
 
@@ -229,7 +212,7 @@ def handle_callback(callback_query: dict) -> bool:
         cmd_key = data.split(":", 2)[2]
         if cmd_key not in _ALL_COMMAND_KEYS:
             if callback_id:
-                answer_callback_query(callback_id, "Unbekannter Befehl")
+                answer_callback_query(callback_id, "Unknown command")
             return True
         if callback_id:
             answer_callback_query(callback_id, f"/{cmd_key}")

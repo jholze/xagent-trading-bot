@@ -170,7 +170,8 @@
     "telegram_command_menu": {
       "enabled": true,
       "button_text": "Menü",
-      "reply_keyboard": true
+      "reply_keyboard": true,
+      "default_language": "de"
     },
     "coin_links": {
       "enabled": true,

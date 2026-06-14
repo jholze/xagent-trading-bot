@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch
 
 from notifications.telegram_commands.menu_commands import (
-    BACK_LABEL,
     MENU_SECTIONS,
     _home_keyboard,
     _section_reply_rows,
@@ -10,8 +9,8 @@ from notifications.telegram_commands.menu_commands import (
     handle,
     handle_callback,
     handle_text,
-    section_prefixed_description,
 )
+from notifications.telegram_commands.menu_i18n import back_label, set_user_language
 
 
 class TestMenuCommands(unittest.TestCase):
@@ -20,10 +19,6 @@ class TestMenuCommands(unittest.TestCase):
         self.assertEqual(len(keys), 36)
         self.assertIn("sandbox_results", keys)
         self.assertIn("backtest_lock", keys)
-
-    def test_section_prefixed_description(self):
-        desc = section_prefixed_description("handel", "buy")
-        self.assertTrue(desc.startswith("Handel ·"))
 
     def test_seven_sections(self):
         self.assertEqual(len(MENU_SECTIONS), 7)
@@ -36,7 +31,7 @@ class TestMenuCommands(unittest.TestCase):
         rows = _section_reply_rows("handel")
         flat = [cell for row in rows for cell in row]
         self.assertIn("/buy", flat)
-        self.assertIn(BACK_LABEL, flat)
+        self.assertIn(back_label("de"), flat)
 
     def test_handle_menu_command(self):
         with patch("notifications.telegram_commands.menu_commands.send_main_section_keyboard", return_value=True), \
@@ -44,14 +39,17 @@ class TestMenuCommands(unittest.TestCase):
             self.assertTrue(handle("/menu"))
 
     def test_handle_text_section_opens_subkeyboard(self):
-        title = MENU_SECTIONS[0][1]
+        set_user_language("de")
+        from notifications.telegram_commands.menu_i18n import section_title
+
+        title = section_title("watchlist", "de")
         with patch("notifications.telegram_commands.menu_commands.send_section_keyboard", return_value=True) as mock_sec:
             self.assertTrue(handle_text(title))
             mock_sec.assert_called_once_with("watchlist")
 
     def test_handle_text_back_returns_main(self):
         with patch("notifications.telegram_commands.menu_commands.send_main_section_keyboard", return_value=True) as mock_main:
-            self.assertTrue(handle_text(BACK_LABEL))
+            self.assertTrue(handle_text(back_label("de")))
             mock_main.assert_called_once()
 
     def test_callback_run_dispatches_command(self):

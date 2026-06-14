@@ -13,7 +13,7 @@ from notifications.telegram_commands.usage_hints import USAGE
 
 class TestCommandMenu(unittest.TestCase):
     def test_menu_has_all_section_commands(self):
-        expected = [k for _, _, _, keys in MENU_SECTIONS for k in keys]
+        expected = [k for _, keys in MENU_SECTIONS for k in keys]
         self.assertEqual(TELEGRAM_MENU_COMMAND_KEYS, expected)
         self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 36)
         self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 36)
@@ -24,14 +24,18 @@ class TestCommandMenu(unittest.TestCase):
             self.assertTrue(USAGE[key]["menu_description"].strip())
 
     def test_all_bot_commands_have_section_prefix(self):
-        commands = all_bot_commands()
-        self.assertEqual(len(commands), 36)
-        for entry in commands:
-            self.assertIn("command", entry)
-            self.assertIn("description", entry)
-            self.assertRegex(entry["command"], r"^[a-z0-9_]{1,32}$")
-            self.assertIn("·", entry["description"])
-            self.assertLessEqual(len(entry["description"]), 256)
+        for lang in ("de", "en"):
+            commands = all_bot_commands(lang)
+            self.assertEqual(len(commands), 36)
+            for entry in commands:
+                self.assertIn("·", entry["description"])
+                self.assertLessEqual(len(entry["description"]), 256)
+
+    def test_english_descriptions_differ_from_german(self):
+        de = {c["command"]: c["description"] for c in all_bot_commands("de")}
+        en = {c["command"]: c["description"] for c in all_bot_commands("en")}
+        self.assertNotEqual(de["buy"], en["buy"])
+        self.assertIn("Trading", en["buy"])
 
     def test_menu_button_has_title(self):
         payload = menu_button_payload()
@@ -51,10 +55,12 @@ class TestCommandMenu(unittest.TestCase):
             ok = register_bot_commands(token="test-token")
 
         self.assertTrue(ok)
-        self.assertEqual(mock_post.call_count, 2)
-        payload = mock_post.call_args_list[0][1]["json"]
-        self.assertEqual(len(payload["commands"]), 36)
-        self.assertEqual(payload["language_code"], "de")
+        self.assertEqual(mock_post.call_count, 4)
+        set_cmds = [mock_post.call_args_list[i] for i in range(3)]
+        langs = [c[1]["json"].get("language_code") for c in set_cmds]
+        self.assertEqual(sorted([l for l in langs if l]), ["de", "en"])
+        self.assertIsNone(set_cmds[2][1]["json"].get("language_code"))
+        self.assertIn("/setChatMenuButton", mock_post.call_args_list[3][0][0])
 
     def test_register_without_token_returns_false(self):
         with patch.dict("os.environ", {}, clear=True):
