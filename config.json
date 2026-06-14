@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": false,
+    "dry_run_enhanced": true,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
@@ -173,21 +173,13 @@
     },
     "backtest_days": 14,
     "symbols_mode": "hybrid",
-    "symbols_pin": [
-      "ARIA/USDT"
-    ],
+    "symbols_pin": ["ARIA/USDT"],
     "symbols_max": 8,
-    "symbols_cmc_top_n": 2,
+    "symbols_cmc_top_n": 4,
     "symbols_include_positions": true,
-    "symbols_refresh_hours": 0,
-    "symbols": [
-      "ARIA/USDT",
-      "H/USDT",
-      "XPL/USDT"
-    ],
-    "timeframes": [
-      "4h"
-    ],
+    "symbols_refresh_hours": 6,
+    "symbols": ["ARIA/USDT", "H/USDT", "XPL/USDT"],
+    "timeframes": ["4h"],
     "rotation": "signal_activity",
     "rotation_hours": 24,
     "live_evidence": {
