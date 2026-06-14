@@ -121,3 +121,28 @@ def format_live_metrics_line(metrics: LiveMetrics | None) -> str:
         f"Live {metrics.lookback_days}d: {metrics.live_sell_pnl:+.2f} USDT "
         f"({metrics.live_sell_trades} sells, WR {metrics.live_win_rate:.0f}%)"
     )
+
+
+def compute_counterfactual_delta(
+    symbol: str,
+    timeframe: str,
+    baseline_params: dict,
+    variant_params: dict,
+    lookback_days: int = 7,
+    include_manual_trades: bool = True,
+    now: datetime | None = None,
+):
+    """Replay baseline vs variant over the live evidence window."""
+    from hermes.counterfactual import compare_params_window
+
+    now = now or datetime.now(timezone.utc)
+    start = now - timedelta(days=lookback_days)
+    return compare_params_window(
+        symbol,
+        timeframe,
+        baseline_params,
+        variant_params,
+        start,
+        now,
+        include_manual_trades=include_manual_trades,
+    )

@@ -23,6 +23,7 @@ MUTATION_STEPS = {
     "rsi_buy_high": 2,
     "rsi_sell_30": 2,
     "rsi_sell_20": 2,
+    "take_profit_pct": 2,
     "volume_multiplier": 0.1,
     "stop_loss_pct": 1.0,
     "reversal_rsi_cross_low": 2,
@@ -37,6 +38,7 @@ BOUNDS = {
     "rsi_buy_high": (35, 60),
     "rsi_sell_30": (55, 80),
     "rsi_sell_20": (65, 95),
+    "take_profit_pct": (5, 30),
     "volume_multiplier": (1.0, 2.5),
     "stop_loss_pct": (5.0, 25.0),
     "reversal_rsi_cross_low": (25, 38),
@@ -175,6 +177,7 @@ class ExperimentRunner:
         folds_total: int = 0,
         live_metrics: dict = None,
         live_veto: bool = False,
+        counterfactual_metrics: dict = None,
     ) -> dict:
         payload = {
             "variable": proposal.variable,
@@ -198,4 +201,6 @@ class ExperimentRunner:
             payload["live_metrics"] = live_metrics
         if live_veto:
             payload["live_veto"] = True
+        if counterfactual_metrics is not None:
+            payload["counterfactual_metrics"] = counterfactual_metrics
         return store.append_experiment(payload)

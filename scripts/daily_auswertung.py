@@ -148,9 +148,24 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
         f"| Profile | {', '.join(profiles) or '—'} |",
         f"| Symbol-Pool ({pool_mode}) | {', '.join(active_pool) or '—'} |",
         f"| Live-Vetos (gesamt) | {live_vetoes} |",
+    ]
+    dual_promotes = sum(
+        1 for e in experiments if e.get("verdict") == "promoted" and "Dual promote" in (e.get("verdict_reason") or "")
+    )
+    lines.append(f"| Dual-Promotes (CF) | {dual_promotes} |")
+    last_cf = next(
+        (e.get("counterfactual_metrics") for e in reversed(experiments) if e.get("counterfactual_metrics")),
+        None,
+    )
+    if last_cf:
+        lines.append(
+            f"| Letztes CF-Delta | {last_cf.get('pnl_delta', 0):+.2f} USDT "
+            f"(seeded={last_cf.get('seeded')}, sells={last_cf.get('variant_sells')}) |"
+        )
+    lines.extend([
         "",
         "**Häufigste Ablehnungsgründe:**",
-    ]
+    ])
     for reason, count in reject_reasons.most_common(3):
         lines.append(f"- {reason} ({count}×)")
     return "\n".join(lines)
