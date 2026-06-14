@@ -182,6 +182,7 @@ class BotConfig:
         defaults = {
             "enabled": True,
             "button_text": "Menü",
+            "reply_keyboard": True,
         }
         raw = self.observability_config.get("telegram_command_menu", {})
         return {**defaults, **raw}

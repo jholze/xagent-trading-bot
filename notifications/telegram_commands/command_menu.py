@@ -8,6 +8,12 @@ import re
 import requests
 
 from logger import log
+from notifications.telegram_commands.menu_commands import (
+    MENU_SECTIONS,
+    all_menu_command_keys,
+    section_prefixed_description,
+    send_main_section_keyboard,
+)
 from notifications.telegram_commands.usage_hints import USAGE
 
 _COMMAND_RE = re.compile(r"^[a-z0-9_]{1,32}$")
@@ -15,20 +21,14 @@ _MAX_DESCRIPTION_LEN = 256
 _MAX_BUTTON_TEXT_LEN = 64
 _DEFAULT_BUTTON_TEXT = "Menü"
 
-# Top-level entries for the native Telegram menu button (Option A hub).
-TELEGRAM_MENU_COMMAND_KEYS: list[str] = [
-    "menu",
-    "positions",
-    "buy",
-    "sell",
-    "list",
-    "decisions",
-    "mode",
-    "help",
-]
+# Re-export for tests.
+TELEGRAM_MENU_COMMAND_KEYS: list[str] = all_menu_command_keys()
 
 
 def menu_description(key: str) -> str:
+    for section_id, _, _, keys in MENU_SECTIONS:
+        if key in keys:
+            return section_prefixed_description(section_id, key)
     entry = USAGE.get(key) or {}
     desc = entry.get("menu_description") or entry.get("help_line", "")
     if not desc:
@@ -63,21 +63,20 @@ def menu_button_payload() -> dict:
 def all_bot_commands() -> list[dict[str, str]]:
     commands = []
     seen: set[str] = set()
-    for key in TELEGRAM_MENU_COMMAND_KEYS:
+    for key in all_menu_command_keys():
         if key in seen:
             raise ValueError(f"Duplicate menu command key: {key}")
         seen.add(key)
-        name = key
-        if not _COMMAND_RE.match(name):
-            raise ValueError(f"Invalid Telegram command name: {name}")
+        if not _COMMAND_RE.match(key):
+            raise ValueError(f"Invalid Telegram command name: {key}")
         description = menu_description(key).strip()
         if not description:
-            raise ValueError(f"Empty menu description for: {name}")
+            raise ValueError(f"Empty menu description for: {key}")
         if len(description) > _MAX_DESCRIPTION_LEN:
             raise ValueError(
-                f"Menu description too long for {name}: {len(description)} chars"
+                f"Menu description too long for {key}: {len(description)} chars"
             )
-        commands.append({"command": name, "description": description})
+        commands.append({"command": key, "description": description})
     return commands
 
 
@@ -129,9 +128,11 @@ def register_bot_commands(token: str | None = None) -> bool:
             return False
 
         log(
-            f"Telegram command menu registered ({len(commands)} commands, button: {button['text']!r})",
+            f"Telegram command menu registered ({len(commands)} commands, "
+            f"{len(MENU_SECTIONS)} Bereiche, button: {button['text']!r})",
             "INFO",
         )
+        send_main_section_keyboard()
         return True
     except Exception as e:
         log(f"Telegram command menu registration error: {e}", "WARNING")

@@ -336,25 +336,26 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 
 Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“, konfigurierbar).
 
-### Zwei Ebenen (Option A)
+### Alle Befehle in 7 Bereichen
 
-| Ebene | Inhalt |
-|-------|--------|
-| **Menü-Button** | 8 Schnellbefehle: `menu`, `positions`, `buy`, `sell`, `list`, `decisions`, `mode`, `help` |
-| **`/menu`** | 6 Bereiche mit Inline-Buttons: Watchlist, Handel, Modus & Gate, Transparenz, X/Twitter, Tests & Lernen |
+Telegram erlaubt im Menü-Button **keine echten Überschriften** — deshalb zwei ergänzende Wege:
 
-In jedem Bereich: Befehls-Buttons → ein Tipp führt den Befehl aus (bei Parametern wie `/buy` antwortet der Bot mit Liste/Hinweis wie bisher). **◀ Bereiche** bringt dich zurück zur Übersicht.
+| Weg | Beschreibung |
+|-----|----------------|
+| **Menü-Button (☰)** | Alle **36 Befehle**, nach Bereich sortiert; Beschreibung z. B. `Handel · Kaufen` |
+| **Bereichs-Tastatur** | Unter der Eingabezeile: Bereich wählen → alle Befehle des Bereichs als Tasten (`/buy`, …) → **◀ Bereiche** zurück |
+| **`/menu`** | Inline-Übersicht mit denselben 7 Bereichen (Alternative zur Tastatur) |
 
-Config: `observability.telegram_command_menu.button_text` in `config.json`.
+**Bereiche:** Watchlist · Handel · Modus & Gate · Transparenz · X/Twitter · Sandbox & Backtest · Hilfe
+
+Config: `observability.telegram_command_menu` — `button_text` (z. B. `"Menü"`), `reply_keyboard` (true/false).
 
 | Verhalten | Details |
 |-----------|---------|
-| **Schnellzugriff** | `positions`, `buy`, `sell` direkt aus dem Menü-Button |
-| **Alle Funktionen** | `/menu` oder Menü-Eintrag `menu` → Bereich wählen → Befehl tippen |
-| **Vollständige Liste** | `/help` — alle Befehle mit Beispielen (Text) |
-| **Aliase** | `/portfolio` = `/positions` usw. — weiter per Tippen |
-
-Unterbefehle mit Leerzeichen (z. B. `/mode paper`) — wähle `/mode` im Bereich „Modus & Gate“.
+| **Menü-Button** | Komplette Liste, gruppiert durch Bereichs-Prefix in der Beschreibung |
+| **Tastatur unten** | Bereich antippen → nur Befehle dieses Bereichs |
+| **Parameter** | `/buy`, `/why` usw. ohne Zusatz → Bot zeigt Liste/Hinweis |
+| **`/help`** | Vollständige Textliste mit Beispielen |
 
 ### 7.0 Für Einsteiger — Was du in Telegram siehst
 

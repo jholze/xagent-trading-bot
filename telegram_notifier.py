@@ -346,6 +346,22 @@ def send_telegram_buttons(text, buttons):
     return send_telegram_message(text, reply_markup=reply_markup)
 
 
+def send_reply_keyboard(text, rows: list[list[str]], *, one_time: bool = False) -> bool:
+    """Persistent section keyboard below the input field (rows of button labels)."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram not configured")
+        return False
+
+    keyboard = [[{"text": label} for label in row] for row in rows]
+    reply_markup = {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "is_persistent": True,
+        "one_time_keyboard": one_time,
+    }
+    return send_telegram_message(text, reply_markup=reply_markup)
+
+
 def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN or not chat_id or not message_id:
         return False
@@ -390,6 +406,12 @@ def handle_telegram_command(text):
     """Delegates to modular command router."""
     from notifications.telegram_commands.router import dispatch_command
     return dispatch_command(text)
+
+
+def handle_telegram_text(text):
+    """Non-slash messages (e.g. section buttons on reply keyboard)."""
+    from notifications.telegram_commands.menu_commands import handle_text
+    return handle_text(text)
 
 
 def handle_telegram_callback(callback_query):

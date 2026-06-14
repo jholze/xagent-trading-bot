@@ -169,7 +169,8 @@
     },
     "telegram_command_menu": {
       "enabled": true,
-      "button_text": "Menü"
+      "button_text": "Menü",
+      "reply_keyboard": true
     },
     "coin_links": {
       "enabled": true,

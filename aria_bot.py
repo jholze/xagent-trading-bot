@@ -48,6 +48,7 @@ try:
     from telegram_notifier import (
         handle_telegram_callback,
         handle_telegram_command,
+        handle_telegram_text,
         send_cmc_cycle_digest,
         send_cycle_summary,
         send_signal_message,
@@ -90,6 +91,8 @@ def webhook():
             log(f"Received Telegram message: {text[:100]}", "DEBUG")
             if text.startswith("/"):
                 handle_telegram_command(text)
+            elif text.strip():
+                handle_telegram_text(text)
     except Exception as e:
         log(f"Webhook error: {e}", "ERROR")
     return "OK", 200
