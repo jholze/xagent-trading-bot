@@ -1,8 +1,8 @@
 # Hermes — Self-Improving Trading Agent
 
-Stand: 12. Juni 2026
+Stand: 14. Juni 2026
 
-Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, was neu ist, und wie du ihn nutzt — auch ohne Programmierkenntnisse.
+Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, was neu ist, und wie du ihn in **Telegram nachvollziehst** — auch ohne Programmierkenntnisse.
 
 ---
 
@@ -163,11 +163,46 @@ python3 hermes_agent.py --interval 3600
 
 ### Telegram
 
-| Befehl | Wirkung |
-|--------|---------|
-| `/hermes` | Zeigt Baseline, letzte Experimente und Skills |
-| `/hermes_run` | Startet sofort einen Lernzyklus |
+| Befehl | Wirkung (für Einsteiger) |
+|--------|--------------------------|
+| `/hermes` | Technischer Status + **Klartext** zum letzten Zyklus |
+| `/hermes_last` | Nur der letzte Lern-Zyklus in Alltagssprache |
+| `/hermes_run` | Startet sofort einen Lernzyklus (du bekommst danach eine Meldung) |
 | `/hermes_status` | Wie `/hermes` |
+| `/why SYMBOL` | Letzte Trade-Entscheidung — inkl. Hermes-Experiment-ID am Coin |
+| `/decisions` | Chronologisches Protokoll aller Bot-Entscheidungen |
+
+### Automatische Hermes-Nachrichten in Telegram
+
+Hermes meldet sich **von selbst** — du musst nicht ständig `/hermes` senden.
+
+| Situation | Was du siehst (vereinfacht) |
+|-----------|----------------------------|
+| **Jeder Lern-Zyklus** (~30 Min.) | „Hermes-Test abgelehnt …“ oder Erklärung, warum nicht übernommen |
+| **Promotion** (selten) | „Strategie übernommen“ — welcher Parameter geändert wurde und warum |
+| **Live-Veto** | „Live-Schutz“ — Backtest war ok, echte Trades der letzten Tage sprechen dagegen |
+| **Dual/Counterfactual** | Zusatzinfo mit „Was wäre passiert?“-PnL-Delta in USDT |
+
+Jede Nachricht hat:
+1. **Überschrift auf Deutsch** — was passiert ist
+2. **Erklärung** — z. B. „Nur 1/4 Zeitfenster im Backtest waren besser“
+3. **Technik-Zeile** — `rsi_sell_30 70->68 | verdict=rejected` (optional)
+
+Steuerung in `config.json`:
+
+```json
+"hermes": {
+  "notify_on_promotion": true,
+  "live_evidence": { "notify_on_live_veto": true }
+},
+"observability": {
+  "telegram_explanations": {
+    "notify_hermes_every_cycle": true
+  }
+}
+```
+
+Wenn `notify_hermes_every_cycle: false`, bekommst du nur Promotion und Live-Veto — keine Meldung bei abgelehnten Tests.
 
 ---
 
@@ -252,7 +287,13 @@ python3 hermes_agent.py --interval 3600
 
 **Was passiert:**
 
-1. Telegram: `🧠 Hermes promoted — rsi_buy_low: 30→28 — Sharpe: 1.12 …`
+1. Telegram (Beispiel):
+   ```
+   🧠 Hermes — Strategie übernommen
+   ✅ Hermes hat 'RSI Kauf unten' angepasst (30 -> 28) für ARIA/USDT.
+   Der Bot hat die Einstellung im Backtest verbessert und übernimmt sie ins Live-Trading.
+   Sharpe: 1.12 | WR: 54% | Folds: 7/10
+   ```
 2. `config.json` → Strategie für `ARIA/USDT` / `4h` wird aktualisiert
 3. Nächster BUY auf ARIA nutzt `rsi_buy_low: 28`
 4. Order-Detail zeigt später: `Hermes Experiment exp_a1b2c3d4`
@@ -286,19 +327,29 @@ Won 0/10 folds (0% < 60%)
 ### Beispiel C — Telegram-Workflow
 
 ```
-Du:  /hermes
-Bot: === Hermes Agent Status ===
-     Baseline: ARIA/USDT 4h
-     Params: {rsi_buy_low: 30, rsi_buy_high: 55, ...}
-     Recent experiments:
-       • exp_65e4108a: rsi_sell_30 70→72 → rejected [0/10 folds]
+Du:  /hermes_last
+Bot: 🧠 Hermes — letzter Zyklus
+     🔬 Hermes-Test abgelehnt für H/USDT: RSI Verkauf Stufe 30% 70->68.
+     Nur 1/4 Zeitfenster im Backtest waren besser — zu unsicher für eine Live-Änderung.
+     rsi_sell_30 70->68 | verdict=rejected
 
-Du:  /hermes_run
-Bot: 🔄 Hermes learning cycle started...
-     (nach ~30–60 Sekunden)
-     🧠 Hermes cycle done
-     Experiment exp_f8e2a1b0: volume_multiplier 1.2→1.3 → rejected
-     Verdict: rejected
+Du:  /hermes
+Bot: (technischer Status als <pre>-Block)
+     🧠 In Klartext:
+     (gleiche Erklärung wie /hermes_last)
+
+Du:  /why H
+Bot: ❓ Warum — H/USDT
+     Letzte Entscheidung: SELL_30
+     Warum: RSI überkauft — 30 % verkauft ...
+     Hermes: Experiment exp_a1b2c3d4 (falls Parameter von Hermes stammen)
+```
+
+**Automatisch** (ohne Befehl, alle ~30 Min. bei `notify_hermes_every_cycle: true`):
+
+```
+🧠 Hermes — Lern-Zyklus
+🔬 Hermes-Test abgelehnt für H/USDT: ...
 ```
 
 ---
@@ -334,7 +385,43 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 
 ---
 
-## 13. Schnellreferenz
+## 13. Live-Evidenz & Dual-Modus (v1.7+)
+
+Hermes kann Walk-Forward-Ergebnisse mit dem **Dry-Run-Ledger** abgleichen und optional **Counterfactual-Replay** nutzen.
+
+### Modi (`hermes.live_evidence.mode`)
+
+| Modus | Verhalten |
+|-------|-----------|
+| `guardrail` | WF bleibt Primary; Live vetoed nur bei stark negativem `live_sell_pnl` |
+| `dual` | Promotion via **WF** oder via **Live + Counterfactual** (Pfad B) |
+
+### Pfad B (Dual) — Safety-Guards
+
+Promotion ohne WF-Sieg nur wenn **alle** Bedingungen erfüllt:
+
+- `live_trades >= 3`, `live_sell_trades >= 2`, `live_sell_pnl >= 0`
+- Counterfactual **seeded** (Position aus `live_trade_history`, inkl. manueller BUY)
+- `variant_sells >= min_counterfactual_sells` (Default 1)
+- `counterfactual_pnl_delta > 0` und `>= min_live_pnl_delta_usdt` (Default 5)
+- Variable in **Exit-Whitelist** (`take_profit_pct`, `rsi_sell_30/20`, CMC-Schwellen)
+- `stop_loss_pct` nur via WF (`live_blocklist`)
+
+### `take_profit_pct` lernen
+
+Neu in `tunable_params`. Steuert `SELL_TP` (30 % Teilverkauf) in der TA-Strategie. Bounds: 5–30 %.
+
+### Counterfactual manuell
+
+```bash
+python3 -m hermes.counterfactual --symbol H/USDT --from 2026-06-13T15:00:00 --to 2026-06-14T12:00:00
+```
+
+Experiment-Records enthalten `counterfactual_metrics` (Delta, seeded, seed_source).
+
+---
+
+## 14. Schnellreferenz
 
 ```bash
 # Status
@@ -345,11 +432,16 @@ python3 hermes_agent.py --once --demo
 
 # Telegram
 /hermes
+/hermes_last
 /hermes_run
+/why SYMBOL
+/decisions
 ```
 
-**Dateien:** `hermes/` (Logik), `hermes/memory/` (Gedächtnis), `intelligence/grok_json.py` (Grok-Client), `config.json` → Block `hermes`.
+**Dateien:** `hermes/` (Logik), `hermes/memory/` (Gedächtnis), `notifications/user_explain.py` (DE-Erklärungen), `config.json` → Blöcke `hermes` + `observability`.
+
+**Showcase (alle Nachrichtentypen):** `python3 scripts/telegram_transparency_showcase.py`
 
 ---
 
-*Weitere Bot-Dokumentation: siehe `DOCUMENTATION.md` (Gesamtsystem, Intervalle, alle Telegram-Befehle).*
+*Weitere Bot-Dokumentation: [DOCUMENTATION.md](DOCUMENTATION.md) (Gesamtsystem, Transparenz-Glossar, alle Telegram-Befehle).*

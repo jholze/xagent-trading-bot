@@ -42,10 +42,14 @@ python3 scripts/daily_auswertung.py --bot-dir /pfad/zum/trading_bot
 
 Erzeugt `auswertungen/YYYY-MM-DD_tag.md` aus den JSON-Dateien im Bot-Verzeichnis.
 
-**Cron-Beispiel** (täglich 23:55):
+**Cron** (täglich 23:55, mit Log in `logs/daily_auswertung_cron.log`):
 
-```
-55 23 * * * cd /Users/jholze/Documents/scripts/trading_bot && python3 scripts/daily_auswertung.py
+```bash
+# Einmalig installieren:
+(crontab -l 2>/dev/null; echo '55 23 * * * /Users/jholze/Documents/scripts/trading_bot/scripts/cron_daily_auswertung.sh') | crontab -
+
+# Manuell testen:
+bash scripts/cron_daily_auswertung.sh
 ```
 
 ## Inhalt (Checkliste)
@@ -70,4 +74,16 @@ Vorlage: `_vorlage.md`
 - `positions.live.json`
 - `cmc_posts.json`
 - `config.json`
+- `logs/decisions.jsonl` — jede Bot-Entscheidung mit Rationale (auch in Telegram: `/decisions`)
+- `hermes/memory/experiments.json` — Hermes-Lernzyklen (auch: `/hermes_last`)
 - `bot.log` (falls aktuell)
+
+## Telegram vs. Tages-Report
+
+| Kanal | Wann | Für wen |
+|-------|------|---------|
+| **Telegram** (live) | Alle 10 Min. Zyklus-Summary, bei Trades sofort | Schneller Überblick, **„Warum:“**-Erklärungen |
+| **`/decisions`** | On-demand, letzte Einträge | „Was hat der Bot wann entschieden?“ |
+| **`auswertungen/*_tag.md`** | Täglich 23:55 (Cron) | Tagesrückblick mit Tabellen, Hermes-Abschnitt |
+
+Die drei ergänzen sich: Telegram für den Moment, `/decisions` für Details, Markdown-Report für die Archivierung.

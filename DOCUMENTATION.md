@@ -1,8 +1,8 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
-Stand: 14. Juni 2026 · Version 1.7
+Stand: 14. Juni 2026 · Version 1.8
 
-Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, Demo-Modus, X/Twitter und Sandbox.
+Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
 
 ---
 
@@ -14,9 +14,11 @@ Der X-Agent Trading Bot ist ein **hybrider Krypto-Trading-Agent**:
 2. Liest **X/Twitter-Posts** und **CMC-Sentiment** ein
 3. Führt Signale in der **DecisionEngine** zusammen
 4. Führt Trades aus (Paper oder Live auf Gate.io)
-5. Meldet alles per **Telegram**
+5. Meldet alles per **Telegram** — inklusive **„Warum?“-Erklärungen** auf Deutsch (auch ohne Trading-Vorkenntnisse)
 
 **Kernprinzip:** Kein blindes Folgen von Tweets — technische Signale und Social-Signale werden gewichtet zusammengeführt. Risiko-Limits und Cooldowns verhindern Übertrading.
+
+**Für Einsteiger:** Du musst RSI oder Sharpe nicht kennen. Jede wichtige Telegram-Nachricht hat einen Block **„Warum:“** in Alltagssprache. Technische Details stehen darunter in kleiner Schrift (`TA→SELL_30`). Nachlesen jederzeit mit `/decisions` oder `/why SYMBOL`.
 
 ---
 
@@ -73,6 +75,8 @@ flowchart TB
 | Social | `services/social_pipeline.py` | X-Posts, CMC, Accuracy |
 | Sandbox | `strategies/paper_sandbox.py` | Isolierte Strategie-Tests |
 | Telegram | `notifications/telegram_commands/` | Alle `/`-Befehle |
+| Erklärungen (DE) | `notifications/user_explain.py` | Laien-Texte für Trades, Risiko, Hermes, CMC/X |
+| Entscheidungs-Log | `services/audit_trail.py` → `logs/decisions.jsonl` | Protokoll aller Bot-Entscheidungen |
 
 ---
 
@@ -108,10 +112,12 @@ flowchart TB
    c. DecisionEngine → Aktion
    d. RiskManager → Größe / Block
    e. Execution → Paper oder Gate
-   f. Telegram bei Signal / Trade / Block
-7. Strategy-Backtest-Tick (adaptiv, gestaffelt, wenn `strategy_backtest.auto_run: true`)
-8. Cycle-Summary an Telegram (wenn notify_on_cycle: true)
-9. Warten update_interval Sekunden → zurück zu 1
+   f. Telegram bei Signal / Trade / Block — mit **Warum** + Quellen (Technik, X, CMC)
+7. CMC- und X-Zyklus-Digest an Telegram (wenn neue Signale, `telegram_explanations` aktiv)
+8. Strategy-Backtest-Tick (adaptiv, gestaffelt, wenn `strategy_backtest.auto_run: true`)
+9. Cycle-Summary an Telegram (Entscheidungen + Social-Top, wenn `notify_on_cycle: true`)
+10. Hermes-Hintergrundthread (alle ~30 Min., eigene Telegram-Meldungen bei jedem Lern-Zyklus)
+11. Warten update_interval Sekunden → zurück zu 1
 ```
 
 ---
@@ -292,6 +298,8 @@ X-Account sagt auch BUY (Conf 80 %, Trust 85)
 → DecisionEngine: BUY_STRONG
 → RiskManager: 25 USDT (ggf. dynamisch angepasst)
 → Telegram: 🟢 BUY EXECUTED
+  Warum: Technische Analyse sieht Kaufchance. X-Account empfiehlt Kauf.
+  Technik: TA→BUY | X→BUY@CryptoCapo_(80%)
 ```
 
 **Beispiel 2 — Take-Profit (HIGH):**
@@ -307,7 +315,9 @@ take_profit_pct: 10 → SELL_TP (30 % der Position)
 Vor 2 h: BUY ARIA ausgeführt
 Neues BUY-Signal heute
 → RiskManager: BLOCKED — „Trade cooldown: 2.0h (min 4.0h)“
-→ Telegram: 🟢 BUY BLOCKED + Grund
+→ Telegram: 🟢 BUY BLOCKED
+  Grund: Kürzlich schon gehandelt — kurze Pause gegen zu häufiges Hin und Her.
+  Technik: TA→BUY | RSI=38.0
 ```
 
 **Beispiel 4 — Stop-Loss bypassed Cooldown:**
@@ -321,6 +331,39 @@ Position −16 % (stop_loss_pct: 15)
 ## 7. Telegram — Alle Befehle mit Beispielen
 
 Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur `/buy`) antwortet der Bot mit einem Beispiel.
+
+### 7.0 Für Einsteiger — Was du in Telegram siehst
+
+Der Bot erklärt sich **selbst**. Du musst keine Charts lesen — die Nachrichten sind in zwei Ebenen aufgebaut:
+
+| Ebene | Beispiel | Für wen |
+|-------|----------|---------|
+| **Warum** | „RSI überkauft — wir verkaufen 30 %, der Rest bleibt investiert.“ | Alle Nutzer |
+| **Technik** | `TA→SELL_30 \| RSI=74.2` | Optional, zum Nachschlagen |
+
+#### Kurz-Glossar (Begriffe in Nachrichten)
+
+| Begriff | Einfach erklärt |
+|---------|-----------------|
+| **RSI** | Thermometer für „überkauft“ (hoch) vs. „überverkauft“ (niedrig). Hoher RSI → Bot verkauft oft **nur einen Teil**, nicht alles. |
+| **Ampel** | Stimmungsanzeige: grün = eher Aufwärtsdruck, rot = eher Abwärtsdruck. |
+| **Confidence** | Wie sicher ein X- oder CMC-Signal ist (0–100 %). |
+| **Trust-Score** | Wie zuverlässig ein X-Account in der Vergangenheit war. |
+| **Teilverkauf 20 % / 30 %** | Gestaffelter Exit: nicht alles auf einmal verkaufen, Gewinne schrittweise mitnehmen. |
+| **BLOCKED** | Signal war da, aber Risiko-Manager hat abgelehnt (z. B. zu viele Positionen, Cooldown). |
+| **HOLD / Kein Trade** | Bot beobachtet, handelt aber nicht — oft weil Technik und Social nicht übereinstimmen. |
+| **Hermes** | Hintergrund-Assistent, der Strategie-Einstellungen im Backtest testet (alle ~30 Min.). |
+| **Counterfactual** | „Was wäre passiert, wenn…?“ — Vergleich simulierter vs. echter Verkäufe. |
+
+#### Typische Fragen
+
+| Frage | Wo nachschauen |
+|-------|----------------|
+| Warum hat der Bot gerade verkauft? | Trade-Nachricht → **Warum:** oder `/why H` |
+| Warum wurde **nicht** gekauft trotz CMC/X? | Nachricht „Kein Trade“ oder Cycle-Summary |
+| Was hat Hermes zuletzt getestet? | `/hermes_last` oder `/hermes` |
+| Was passierte heute insgesamt? | Cycle-Summary (alle 10 Min.) + `auswertungen/YYYY-MM-DD_tag.md` |
+| Alle Entscheidungen chronologisch? | `/decisions` |
 
 ### 📋 Watchlist
 
@@ -382,26 +425,66 @@ Manuelle `/buy` und `/sell` erscheinen in `/orders` und letzten Trades als **Man
 
 Läuft automatisch im Hauptzyklus (`strategy_backtest.auto_run`), gestaffelt (`stagger_minutes`), mit Guardrails (`min_signals_for_valid`, `min_improvement_pct`). Ergebnisse in `strategy_backtest.json` (gitignored).
 
-### 🧪 Sandbox & CMC
+### 🔍 Transparenz — Was der Bot warum tut
+
+| Befehl | Beispiel | Ergebnis |
+|--------|----------|----------|
+| `/decisions` | `/decisions` | Letzte 8 Bot-Entscheidungen mit **Warum** (aus `logs/decisions.jsonl`) |
+| `/decisions SYMBOL` | `/decisions H` | Wie `/why H` — gefiltert auf einen Coin |
+| `/why SYMBOL` | `/why ARIA` | Letzte Entscheidung + Hermes-Experiment-ID (falls gesetzt) |
+| `/hermes` | `/hermes` | Technischer Status + **Klartext** zum letzten Zyklus |
+| `/hermes_last` | `/hermes_last` | Nur der letzte Hermes-Zyklus in Alltagssprache |
+| `/hermes_run` | `/hermes_run` | Einen Lern-Zyklus manuell starten |
+| `/cmc` | `/cmc` | CMC Community-Sentiment (Votes, Confidence) |
+
+Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md)
+
+### 🧪 Sandbox
 
 | Befehl | Beispiel | Ergebnis |
 |--------|----------|----------|
 | `/sandbox` | `/sandbox` | Laufende Strategie-Experimente |
 | `/sandbox_results ID` | `/sandbox_results hyp_abc` | Win Rate, Sharpe, Drawdown |
 | `/sandbox_promote ID` | `/sandbox_promote hyp_abc` | Strategie → `config.strategies[]` |
-| `/cmc` | `/cmc` | CMC Community-Sentiment |
 
 ### Automatische Telegram-Nachrichten
 
-| Auslöser | Inhalt |
-|----------|--------|
-| **Cycle-Summary** (alle 10 Min) | Balance, Signale, ausgeführte Trades |
-| **BUY/SELL SIGNAL** | Signal ohne Ausführung |
-| **BUY/SELL EXECUTED** | Trade mit Amount, PnL, Mode-Badge |
-| **BUY/SELL BLOCKED** | Abgelehnt + Grund (Cooldown, Limit, …) |
-| **X-Recommendation** | Neuer Tweet mit TP/SL, Confidence |
+| Auslöser | Inhalt (laientauglich) |
+|----------|------------------------|
+| **Zyklus-Zusammenfassung** (alle 10 Min) | Balance, **Entscheidungen mit Warum**, Social-Top (X/CMC), ausgeführte Trades |
+| **BUY/SELL SIGNAL** | Signal + **Warum**, Quellen, optional Technik-Zeile |
+| **BUY/SELL EXECUTED** | Wie oben + Amount, PnL, Mode-Badge |
+| **BUY/SELL BLOCKED** | **Grund** auf Deutsch (Cooldown, Max-Positionen, …) + Technik |
+| **Kein Trade trotz Social** | „X/CMC sagt BUY, Technik noch nicht bereit“ |
+| **X-Empfehlung** | Tweet, Empfehlung, Trust, **Warum**, TP/SL |
+| **CMC-Zyklus-Digest** | Community-Stimmung pro Coin (Votes, Confidence) |
+| **X-Zyklus-Digest** | Starke Signale der überwachten Accounts (ohne Duplikat zur X-Empfehlung) |
+| **Hermes Lern-Zyklus** | Jeder Zyklus (~30 Min.): getestet, abgelehnt oder übernommen — auf Deutsch |
+| **Hermes Promotion** | Strategie-Parameter live übernommen + Kennzahlen |
+| **Hermes Live-Veto** | Backtest ok, aber echte Trades sprechen dagegen — Schutz aktiv |
+| **Strategie Auto-Tune** | Backtest hat Parameter verbessert — welche Werte, wann nächster Check |
 | **Nach jedem Trade** | Positions-Snapshot |
 | **Bot-Neustart** | Webhook-URL, Modus |
+
+#### Beispiel einer Trade-Nachricht (vereinfacht)
+
+```
+🔴 SELL 30% EXECUTED — H/USDT
+Mode: 🔶 LIVE DRY
+
+Warum: RSI überkauft (Stufe 2) — 30 % der Position werden verkauft.
+Quellen: Technische Analyse
+RSI: 74.5 | Entry: $0.5200 | PnL: +$2.30
+TA→SELL_30 | RSI=74.5
+```
+
+#### Showcase (alle Nachrichtentypen testen)
+
+```bash
+python3 scripts/telegram_transparency_showcase.py
+```
+
+Sendet alle Kategorien an den Telegram-Channel — **ohne echte Trades**. Nützlich nach Updates oder Neustart.
 
 ---
 
@@ -517,9 +600,12 @@ Automatischer Walk-Forward-Backtest pro Coin in `config.strategies[]` — ersetz
 ## 10. CMC (CoinMarketCap)
 
 - **Community-Posts** (wenn API-Plan verfügbar) oder **Quotes-Fallback**
-- Signale: BUY / SELL / HOLD mit Confidence und Vote-Ratio
+- Signale: BUY / SELL / HOLD mit Confidence und Vote-Ratio (bullish/bearish Stimmen)
 - In DecisionEngine wie X-Signale gewichtet (`onchain_weight: 0.2`)
-- `/cmc` zeigt aktuelle Sentiment-Signale
+- `/cmc` zeigt aktuelle Sentiment-Signale on-demand
+- **Automatisch:** CMC-Zyklus-Digest in Telegram, wenn sich Signale ändern (Schwelle: `cmc_digest_min_confidence`, Standard 60 %)
+
+**Für Einsteiger:** CMC zeigt, was die **Community** auf CoinMarketCap tendenziell erwartet — nicht unbedingt, was der Bot ausführt. Der Bot kombiniert CMC mit Technik und Risiko-Limits. In Trade-Nachrichten steht dann z. B. „CMC-Community tendiert zu Kauf (Stimmung 78 %)“.
 
 ---
 
@@ -560,7 +646,21 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
   "strategy_backtest": { "auto_run": true, "auto_apply": true },
   "observability": {
     "notify_on_cycle": true,
-    "terminal_dashboard": true
+    "terminal_dashboard": true,
+    "decisions_audit": true,
+    "telegram_explanations": {
+      "enabled": true,
+      "verbosity": "verbose",
+      "language": "de",
+      "show_technical_codes": true,
+      "notify_hermes_every_cycle": true,
+      "notify_cmc_digest": true,
+      "notify_x_digest": true,
+      "notify_social_hold_explanations": true,
+      "notify_blocked_trades": true,
+      "cmc_digest_min_confidence": 60,
+      "x_digest_min_effective_confidence": 70
+    }
   },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ]
 }
@@ -599,6 +699,9 @@ XAI_API_KEY=...            # Grok
 | `x_posts.json` | Analysierte Posts + Empfehlungen |
 | `paper_strategies.json` | Sandbox-Hypothesen |
 | `paper_sandbox_history.json` | Sandbox-Portfolios |
+| `logs/decisions.jsonl` | Entscheidungs-Protokoll (jede Coin-Analyse, `/decisions`) |
+| `hermes/memory/experiments.json` | Hermes-Experiment-Historie |
+| `hermes/memory/baseline.json` | Aktuelle Hermes-Best-Parameter |
 | `*.demo.json` | Demo-Modus-Kopien |
 
 ---
@@ -624,18 +727,41 @@ python3 scripts/reconcile_gate_positions.py
 
 1. Bot **ohne** `--demo` starten (Demo isoliert `*.demo.json` / `orders.demo.json`)
 2. `bash scripts/start_demo_with_ngrok.sh` oder Produktiv-Start — Telegram testen
-3. Paper laufen lassen, `/positions` + `/orders` + Cycle-Summaries prüfen
-4. `python3 scripts/gate_live_smoke_test.py` — Keys + Balance prüfen
-5. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus, Ledger in `orders.live.json`
-5b. Optional: `live.dry_run_enhanced: true` — Sim-Wallet ($5000), `/dryrun`, Trending-Watchlist testen
-6. `live.dry_run: false` in `config.json`, Bot neu starten, dann `/live_confirm`
-7. Manueller `/buy` mit kleinem Betrag — Gate Spot Order History + `/orders` vergleichen
-8. `python3 scripts/reconcile_gate_positions.py` — lokale Positionen vs. Gate-Bestand
-9. `/gate` — USDT, Spot-Bestände, Dry-Run-Status prüfen
-10. Grok-Credits prüfen (`use_grok_x_search`) — sonst keine X-Auto-Trades im Live-Modus
+3. Optional: `python3 scripts/telegram_transparency_showcase.py` — alle Nachrichtentypen prüfen
+4. Paper laufen lassen, `/positions` + `/orders` + `/decisions` + Cycle-Summaries prüfen
+5. `python3 scripts/gate_live_smoke_test.py` — Keys + Balance prüfen
+6. `/mode live` + `live.dry_run: true` — Dry-Run-Zyklus, Ledger in `orders.live.json`
+6b. Optional: `live.dry_run_enhanced: true` — Sim-Wallet ($5000), `/dryrun`, Trending-Watchlist testen
+7. `live.dry_run: false` in `config.json`, Bot neu starten, dann `/live_confirm`
+8. Manueller `/buy` mit kleinem Betrag — Gate Spot Order History + `/orders` vergleichen
+9. `python3 scripts/reconcile_gate_positions.py` — lokale Positionen vs. Gate-Bestand
+10. `/gate` — USDT, Spot-Bestände, Dry-Run-Status prüfen
+11. Grok-Credits prüfen (`use_grok_x_search`) — sonst keine X-Auto-Trades im Live-Modus
 
 **Hinweis:** Kein Testnet — Paper oder **Enhanced Dry Run** zum Üben. Im echten Live-Modus (`dry_run: false`) nutzen Risk Manager und `/positions` die **Gate-USDT-Balance**. Bei Enhanced Dry Run: Sim-Cash aus `live_trade_history.json`, Positionen in `positions.live.json`. Vor echtem Trading: `reconcile_gate_positions.py` ausführen.
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · GitHub Issues im Repo
+## 16. Transparenz & Nachvollziehbarkeit (Technik)
+
+| Komponente | Datei | Aufgabe |
+|------------|-------|---------|
+| Erklärungs-Engine | `notifications/user_explain.py` | DE-Texte für Rationale, Risiko, Hermes, CMC/X |
+| Trade-Notify | `telegram_notifier.py` | `send_signal_message`, Digests, Hold-Erklärungen |
+| Orchestrator | `services/signal_orchestrator.py` | Baut Social-Kontext, ruft `explain_trade()` auf |
+| Audit | `services/audit_trail.py` | Schreibt jede Entscheidung nach `logs/decisions.jsonl` |
+| Hermes-Notify | `hermes/agent.py` | Zyklus-Digest, Promotion, Live-Veto auf Deutsch |
+
+### `verbosity`-Stufen (`telegram_explanations.verbosity`)
+
+| Stufe | Verhalten |
+|-------|-----------|
+| `minimal` | Nur Trades + Strategie-Änderungen (geplant, aktuell Default: `verbose`) |
+| `normal` | + Cycle-Summary mit Warum, blockierte Trades |
+| `verbose` | + Hermes jeden Zyklus, CMC/X-Digests, Hold-Erklärungen bei starkem Social |
+
+Spam-Schutz: CMC-Digest nur bei **geänderten** Signalen; X-Digest überspringt Posts, die schon als X-Empfehlung gesendet wurden.
+
+---
+
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · GitHub Issues im Repo

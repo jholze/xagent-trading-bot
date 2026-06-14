@@ -1,8 +1,10 @@
-# X-Agent Trading Bot (Version 1.7.0)
+# X-Agent Trading Bot (Version 1.8.0)
 
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 
-> **Vollständige Dokumentation:** [DOCUMENTATION.md](DOCUMENTATION.md) — Architektur, Intervalle, Strategien mit Beispielen, alle Telegram-Befehle, Demo-Modus, X/Twitter, Sandbox.
+**Auch für Einsteiger:** Jede wichtige Telegram-Nachricht erklärt **warum** der Bot etwas tut — auf Deutsch, ohne Trading-Vorkenntnisse.
+
+> **Vollständige Dokumentation:** [DOCUMENTATION.md](DOCUMENTATION.md) — Architektur, Strategien, **Transparenz & Glossar**, alle Telegram-Befehle, Hermes, Demo-Modus.
 
 ---
 
@@ -23,12 +25,21 @@ In Telegram: `/help` senden.
 
 ---
 
-## Was ist neu in 1.7 (Juni 2026)
+## Was ist neu in 1.8 (Juni 2026)
+
+- **Telegram-Transparenz** — Trade-Nachrichten mit **„Warum:“** auf Deutsch + technischer Kurzzeile
+- **Neue Befehle** — `/decisions`, `/why SYMBOL`, `/hermes_last` — Bot-Entscheidungen nachvollziehen
+- **Zyklus-Digests** — CMC/X-Signale und Hermes-Lernzyklen automatisch erklärt
+- **Entscheidungs-Protokoll** — `logs/decisions.jsonl` für alle Analysen
+- **Showcase-Skript** — `python3 scripts/telegram_transparency_showcase.py` (alle Nachrichtentypen testen)
+
+Details: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-beispielen) und [§16 Transparenz](DOCUMENTATION.md#16-transparenz--nachvollziehbarkeit-technik)
+
+### Aus 1.7
 
 - **Hermes Hybrid-Pool** — Pins + offene Positionen + CMC-Top-Coins (max. 8), Rotation per `signal_activity`
-- **Live-Evidenz-Guardrail** — Dry-Run-Ledger kann WF-Promotions vetoen (kein Einfluss auf Einzeltrades)
-- **Tages-Auswertung** — `scripts/daily_auswertung.py` → `auswertungen/YYYY-MM-DD_tag.md`
-- **39 Hermes-Unit-Tests** — Symbol-Pool, Live-Evidenz, Agent-Zyklus, Telegram-Status
+- **Live-Evidenz & Dual-Modus** — Dry-Run-Ledger + Counterfactual für sichere Hermes-Promotions
+- **Tages-Auswertung** — `scripts/daily_auswertung.py` → `auswertungen/YYYY-MM-DD_tag.md` (Cron 23:55)
 
 ### Aus 1.6 / 1.5
 
@@ -79,12 +90,15 @@ Alle Intervalle: [DOCUMENTATION.md §3](DOCUMENTATION.md#3-wann-läuft-was--alle
 |---------|---------|
 | Watchlist | `/list` `/add` `/remove` |
 | Handel | `/buy` `/sell` `/positions` `/orders` `/risk` `/dryrun` |
+| **Transparenz** | `/decisions` `/why SYMBOL` `/hermes_last` `/hermes` `/cmc` |
 | Backtest | `/backtest` `/backtest_results` `/backtest_lock` |
 | Modus | `/mode` `/live_confirm` `/gate` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
 | Sandbox | `/sandbox` `/sandbox_results` `/sandbox_promote` |
 
-Vollständige Liste mit Beispielen: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-beispielen)
+**Einsteiger-Tipp:** Nach einem Trade steht unter **„Warum:“** die Erklärung in normalem Deutsch. `/why H` zeigt die letzte Entscheidung für Humanity (H).
+
+Vollständige Liste mit Glossar: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-beispielen)
 
 ---
 
@@ -121,9 +135,11 @@ aria_bot.py              # Hauptschleife + Flask-Webhook
 strategies/              # TA, DecisionEngine, Sandbox
 services/                # Trading, Orchestrator, Social Pipeline
 execution/               # Paper + Gate.io Adapter
-notifications/           # Telegram-Befehle
+notifications/           # Telegram-Befehle + user_explain.py (DE-Erklärungen)
+hermes/                  # Self-Improvement Agent
 config.json              # Strategien, Limits, Modi
 DOCUMENTATION.md         # ← Vollständige Doku
+HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger
 ```
 
 ---
@@ -149,6 +165,8 @@ python3 scripts/reconcile_gate_positions.py   # Live-Modus
 | `max_daily_trades` | 8 |
 | `trade_cooldown_hours` | 1.0 |
 | `notify_on_cycle` | true |
+| `observability.telegram_explanations.enabled` | true |
+| `observability.telegram_explanations.verbosity` | verbose |
 | `live.dry_run` | true (sicher) |
 | `live.dry_run_enhanced` | false (true = Sim-Wallet + Trending) |
 | `strategy_backtest.auto_run` | true |
@@ -157,4 +175,4 @@ python3 scripts/reconcile_gate_positions.py   # Live-Modus
 
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
-Letzte Aktualisierung: 12. Juni 2026
+Letzte Aktualisierung: 14. Juni 2026
