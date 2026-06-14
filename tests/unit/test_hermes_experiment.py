@@ -42,6 +42,24 @@ def test_memory_baseline_init(isolated_memory):
     assert (isolated_memory / "baseline.demo.json").exists() or baseline["params"]
 
 
+def test_take_profit_pct_mutation_bounds(isolated_memory):
+    runner = ExperimentRunner()
+    params = {
+        "rsi_buy_low": 28,
+        "take_profit_pct": 12,
+        "stop_loss_pct": 12.0,
+    }
+    proposal = runner.propose(params, grok_proposal={
+        "variable": "take_profit_pct",
+        "old_value": 12,
+        "new_value": 8,
+        "hypothesis": "earlier take profit",
+        "source": "grok",
+    })
+    assert proposal.variable == "take_profit_pct"
+    assert 5 <= proposal.new_value <= 30
+
+
 def test_experiment_record_persisted(isolated_memory):
     runner = ExperimentRunner()
     params = {"rsi_buy_low": 28, "rsi_buy_high": 48, "volume_multiplier": 1.3}

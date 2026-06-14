@@ -41,6 +41,10 @@ def agent_with_mocks(monkeypatch, hermes_memory_tmp, sample_live_trade_history):
     monkeypatch.setattr(agent.backtester, "_fetch_ohlcv", lambda *a, **k: df)
     monkeypatch.setattr("hermes.validation.run_walk_forward", lambda *a, **k: wf)
     monkeypatch.setattr(
+        "hermes.agent.compute_counterfactual_delta",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
         "hermes.agent.compute_live_metrics",
         lambda *a, **k: MagicMock(
             to_dict=lambda: {"live_sell_pnl": -5.0, "live_trades": 2},

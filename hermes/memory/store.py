@@ -15,6 +15,7 @@ DEFAULT_PARAMS = {
     "volume_multiplier": 1.3,
     "rsi_sell_30": 70,
     "rsi_sell_20": 85,
+    "take_profit_pct": 12,
     "stop_loss_pct": 12.0,
     "buy_regime": "both",
     "reversal_rsi_cross_low": 32,
@@ -344,6 +345,7 @@ def _default_params_for_symbol(config, symbol: str, timeframe: str) -> dict:
         "volume_multiplier": params.get("volume_multiplier", merged["volume_multiplier"]),
         "rsi_sell_30": params.get("rsi_sell_30", merged["rsi_sell_30"]),
         "rsi_sell_20": params.get("rsi_sell_20", merged["rsi_sell_20"]),
+        "take_profit_pct": params.get("take_profit_pct", merged["take_profit_pct"]),
         "stop_loss_pct": params.get("stop_loss_pct", config.stop_loss_pct),
         "buy_regime": params.get("buy_regime", merged["buy_regime"]),
     })

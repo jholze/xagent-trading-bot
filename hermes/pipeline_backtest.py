@@ -24,6 +24,8 @@ class PipelineBacktestResult:
     equity_curve: list = field(default_factory=list)
     bars_tested: int = 0
     decision_buys: int = 0
+    window_sell_pnl: float = 0.0
+    window_sells: int = 0
 
 
 class PipelineBacktester:
@@ -41,6 +43,14 @@ class PipelineBacktester:
         params: dict,
         ohlcv_df: pd.DataFrame,
         cmc_ttl_hours: float = 4.0,
+        *,
+        seed_bar: int | None = None,
+        initial_position: dict | None = None,
+        initial_sim_state: dict | None = None,
+        window_start_ms: int | None = None,
+        window_end_ms: int | None = None,
+        window_metrics_only: bool = False,
+        allow_buys: bool = True,
     ) -> PipelineBacktestResult:
         df = ohlcv_df.copy()
         if df is None or df.empty or len(df) < 30:
@@ -70,15 +80,27 @@ class PipelineBacktester:
             "last_ampel": "🟡",
             "rsi_sell_tiers_done": {},
         }
+
+        loop_start = seed_bar if seed_bar is not None else 20
+        if initial_position and float(initial_position.get("amount") or 0) > 0:
+            position["amount"] = float(initial_position["amount"])
+            position["average_entry"] = float(initial_position.get("average_entry") or 0)
+            entry_cost = position["amount"] * position["average_entry"] * (1 + slippage)
+            balance = max(0.0, capital - entry_cost)
+            if initial_sim_state:
+                sim_state.update(dict(initial_sim_state))
+
         trades = []
         equity_curve = []
         peak_equity = capital
         max_drawdown_pct = 0.0
         decision_buys = 0
+        window_sell_pnl = 0.0
+        window_sells = 0
 
         coin = {"symbol": symbol, "timeframe": timeframe, "strategy_params": params}
 
-        for i in range(20, len(df)):
+        for i in range(loop_start, len(df)):
             row = df.iloc[i]
             price = float(row["close"])
             bar_ts = int(row["ts"])
@@ -105,7 +127,18 @@ class PipelineBacktester:
             analysis = self.decision_engine.evaluate_with_market(coin, market, cmc_signals=cmc_signals)
             action = analysis.action if analysis else "HOLD"
 
-            if action == "BUY" and position["amount"] <= 0 and balance >= usdt_per_trade:
+            in_window = True
+            if window_start_ms is not None and bar_ts < window_start_ms:
+                in_window = False
+            if window_end_ms is not None and bar_ts > window_end_ms:
+                in_window = False
+
+            if (
+                allow_buys
+                and action == "BUY"
+                and position["amount"] <= 0
+                and balance >= usdt_per_trade
+            ):
                 cost = usdt_per_trade * (1 + slippage)
                 if balance >= cost:
                     amount = usdt_per_trade / price
@@ -114,14 +147,17 @@ class PipelineBacktester:
                     balance -= cost
                     sim_state["rsi_sell_tiers_done"] = {}
                     decision_buys += 1
-                    trades.append({
+                    trade = {
                         "type": "BUY",
                         "price": price,
                         "amount": amount,
                         "usdt": usdt_per_trade,
                         "bar": i,
+                        "ts": bar_ts,
                         "sources": list(analysis.sources or []),
-                    })
+                    }
+                    if in_window or not window_metrics_only:
+                        trades.append(trade)
 
             elif position["amount"] > 0 and action != "HOLD" and "SELL" in action:
                 sell_fraction = sell_fraction_for_signal(action)
@@ -143,15 +179,20 @@ class PipelineBacktester:
                     elif "20" in action:
                         tiers["20"] = True
                     sim_state["rsi_sell_tiers_done"] = tiers
-                    trades.append({
+                    trade = {
                         "type": "SELL",
                         "price": price,
                         "amount": sell_amount,
                         "pnl": pnl,
                         "usdt_received": received,
                         "bar": i,
+                        "ts": bar_ts,
                         "action": action,
-                    })
+                    }
+                    trades.append(trade)
+                    if in_window:
+                        window_sell_pnl += pnl
+                        window_sells += 1
 
             sim_state["last_rsi"] = float(row["rsi"])
             equity = balance + position["amount"] * price
@@ -160,22 +201,35 @@ class PipelineBacktester:
                 max_drawdown_pct = max(max_drawdown_pct, (peak_equity - equity) / peak_equity * 100)
             equity_curve.append(equity)
 
-        bars_tested = len(df) - 20
-        sells = [t for t in trades if t.get("type") == "SELL"]
+        bars_tested = len(df) - loop_start
+        metric_trades = trades
+        if window_metrics_only and window_start_ms is not None:
+            metric_trades = [
+                t for t in trades
+                if t.get("type") == "SELL"
+                and window_start_ms <= int(t.get("ts", 0)) <= (window_end_ms or until_ms)
+            ]
+            sells = metric_trades
+            realized_pnl = window_sell_pnl
+            sell_count = window_sells
+        else:
+            sells = [t for t in trades if t.get("type") == "SELL"]
+            realized_pnl = sum(t.get("pnl", 0) for t in sells)
+            sell_count = len(sells)
+
         wins = [t for t in sells if t.get("pnl", 0) > 0]
         win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
         equity = balance + position.get("amount", 0) * float(df.iloc[-1]["close"])
-        realized_pnl = sum(t.get("pnl", 0) for t in sells)
 
         metrics = SandboxMetrics(
             win_rate=round(win_rate, 1),
-            sharpe=sharpe_from_trades(trades),
+            sharpe=sharpe_from_trades(metric_trades if window_metrics_only else trades),
             max_drawdown_pct=round(max_drawdown_pct, 1),
-            trades=len(sells),
+            trades=sell_count,
             realized_pnl=round(realized_pnl, 2),
             equity=round(equity, 2),
         )
-        metrics = enrich_sandbox_metrics(metrics, trades, bars_tested)
+        metrics = enrich_sandbox_metrics(metrics, metric_trades if window_metrics_only else trades, bars_tested)
 
         return PipelineBacktestResult(
             symbol=symbol,
@@ -186,6 +240,8 @@ class PipelineBacktester:
             equity_curve=equity_curve,
             bars_tested=bars_tested,
             decision_buys=decision_buys,
+            window_sell_pnl=round(window_sell_pnl, 4),
+            window_sells=window_sells,
         )
 
     def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
