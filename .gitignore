@@ -62,6 +62,8 @@ paper_sandbox_history.json
 paper_strategies.json
 watchlist.dry_run_overlay.json
 strategy_backtest.json
+data/cmc_slug_cache.json
+ngrok.log
 
 # Hermes runtime memory (local learning state)
 hermes/memory/baseline.json
