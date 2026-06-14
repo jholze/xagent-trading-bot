@@ -354,8 +354,11 @@ def _fmt_price(price) -> str:
 
 
 def format_order_line(order: dict) -> str:
+    from notifications.coin_links import format_ticker_html
+
     icon = STATUS_ICONS.get(order.get("status", ""), "·")
     sym = (order.get("symbol") or "").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
     side = (order.get("side") or "?").upper()
     seq = order.get("display_seq", "?")
     src = source_label(order.get("source", "auto"))
@@ -364,22 +367,30 @@ def format_order_line(order: dict) -> str:
     date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
     return (
         f"{icon} <b>#{seq}</b> {order.get('status', '').upper()}  {side}  "
-        f"<b>{sym}</b>  {usdt}  <i>{src}</i>{date_part}"
+        f"<b>{sym_html}</b>  {usdt}  <i>{src}</i>{date_part}"
     )
 
 
 def format_order_detail(order: dict) -> str:
+    from notifications.coin_links import format_links_line, format_ticker_html
+
     sym = (order.get("symbol") or "").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
+    links = format_links_line(sym)
     req = order.get("request", {})
     risk = order.get("risk", {})
     exe = order.get("execution", {})
     ts = order.get("timestamps", {})
     lines = [
         f"<b>Order #{order.get('display_seq')} — {order.get('status', '').upper()}</b>",
-        f"{order.get('side', '').upper()} <b>{sym}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
+        f"{order.get('side', '').upper()} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
+    ]
+    if links:
+        lines.append(links)
+    lines.extend([
         "",
         f"<b>Anfrage</b>  Kurs {_fmt_price(req.get('price', 0))}",
-    ]
+    ])
     if req.get("usdt"):
         lines.append(f"   USDT <b>${float(req['usdt']):.0f}</b>")
     if req.get("amount"):

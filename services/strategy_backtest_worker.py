@@ -184,8 +184,15 @@ class StrategyBacktestWorker:
             if applied and cfg.raw.get("strategy_backtest", {}).get("telegram_on_apply", True):
                 from notifications.user_explain import describe_param_change
                 changes = "\n".join(f"• {describe_param_change(k, v)}" for k, v in applied.items())
+                from notifications.coin_links import format_links_line, format_ticker_html
+
+                ticker = symbol.split("/")[0] if "/" in symbol else symbol
+                sym_html = format_ticker_html(ticker, symbol_suffix=f"/USDT {timeframe}")
+                links = format_links_line(ticker)
+                links_block = f"{links}\n" if links else ""
                 send_telegram_message(
-                    f"🔧 <b>Strategie angepasst</b> — {symbol} {timeframe}\n"
+                    f"🔧 <b>Strategie angepasst</b> — {sym_html}\n"
+                    f"{links_block}"
                     f"<b>Warum:</b> Backtest ({result.days} Tage) war mit diesen Werten besser.\n"
                     f"{changes}\n"
                     f"Sim-PnL: {result.metrics.pnl_sim:.1f} USDT | Nächster Check: {next_at.strftime('%a %H:%M')}"

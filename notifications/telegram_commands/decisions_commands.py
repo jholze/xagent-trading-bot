@@ -42,7 +42,14 @@ def _handle_why(symbol_filter: str) -> bool:
     coin_cfg = resolve_coin_config({"symbol": sym})
     sp = coin_cfg.get("strategy_params") or {}
 
-    lines = [f"<b>❓ Warum — {sym}</b>", ""]
+    from notifications.coin_links import format_links_line, format_ticker_html
+
+    sym_html = format_ticker_html(sym.replace("/USDT", ""), symbol_suffix="/USDT")
+    links = format_links_line(sym.replace("/USDT", ""))
+    lines = [f"<b>❓ Warum — {sym_html}</b>", ""]
+    if links:
+        lines.append(links)
+        lines.append("")
     if match:
         lines.append(f"<b>Letzte Entscheidung:</b> {match.get('action')} ({match.get('normalized_action', '')})")
         lines.append(f"<b>Warum:</b> {explain_rationale(match.get('rationale', ''))}")

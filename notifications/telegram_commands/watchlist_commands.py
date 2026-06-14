@@ -59,11 +59,15 @@ def format_buy_list_message(coins: list, prices: dict) -> str:
 
 
 def _format_coin_line(index: int, coin: dict, trending: bool = False) -> str:
+    from notifications.coin_links import format_ticker_html
+
     name = coin.get("name", "")
+    ticker = coin.get("symbol", "").split("/")[0]
+    sym_html = format_ticker_html(ticker, name=name, symbol_suffix="/USDT")
     suffix = f" ({name})" if name else ""
     inactive = "" if coin.get("active", True) else " <i>(inaktiv)</i>"
     tag = " 📈" if trending or coin.get("source") in ("cmc_trending", "dry_run_expansion") else ""
-    return f"<b>{index}.</b> <b>{coin['symbol']}</b>{suffix}{inactive}{tag}"
+    return f"<b>{index}.</b> <b>{sym_html}</b>{suffix}{inactive}{tag}"
 
 
 def resolve_coin_by_display_index(coins: list, index: int):

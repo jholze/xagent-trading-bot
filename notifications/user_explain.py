@@ -313,7 +313,12 @@ def explain_hermes_cycle(record: dict, proposal=None) -> str:
     if reason:
         tech += f" | {reason[:80]}"
 
-    return f"{headline}\n{detail}\n<code>{tech}</code>"
+    from notifications.coin_links import format_links_line
+
+    ticker = (symbol or "").replace("/USDT", "").split("/")[0]
+    links = format_links_line(ticker) if ticker else ""
+    links_part = f"\n{links}" if links else ""
+    return f"{headline}\n{detail}{links_part}\n<code>{tech}</code>"
 
 
 def describe_param_change(key: str, value) -> str:
@@ -322,6 +327,8 @@ def describe_param_change(key: str, value) -> str:
 
 
 def explain_cmc_signal(signal) -> str:
+    from notifications.coin_links import format_links_line, format_ticker_html
+
     action = getattr(signal, "action", "?")
     coin = getattr(signal, "coin", "?")
     conf = getattr(signal, "confidence", 0)
@@ -329,9 +336,12 @@ def explain_cmc_signal(signal) -> str:
     bear = getattr(signal, "votes_bearish", 0)
     rat = getattr(signal, "rationale", "") or ""
     act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else "Abwarten"
+    coin_html = format_ticker_html(coin, symbol_suffix="")
+    links = format_links_line(coin)
+    links_part = f"\n{links}" if links else ""
     line = (
-        f"<b>{coin}</b> — Community tendiert zu <b>{act_de}</b> ({conf}%). "
-        f"Stimmen: {bull} bullish / {bear} bearish."
+        f"<b>{coin_html}</b> — Community tendiert zu <b>{act_de}</b> ({conf}%). "
+        f"Stimmen: {bull} bullish / {bear} bearish.{links_part}"
     )
     if rat:
         line += f"\n  {rat[:120]}"
@@ -339,6 +349,8 @@ def explain_cmc_signal(signal) -> str:
 
 
 def explain_x_signal(signal) -> str:
+    from notifications.coin_links import format_links_line, format_ticker_html
+
     account = getattr(signal, "account", "?")
     action = getattr(signal, "action", "?")
     coin = getattr(signal, "coin", "?")
@@ -347,9 +359,12 @@ def explain_x_signal(signal) -> str:
     trust = getattr(signal, "trust_score", "?")
     rat = getattr(signal, "rationale", "") or ""
     act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else action
+    coin_html = format_ticker_html(coin, symbol_suffix="")
+    links = format_links_line(coin)
+    links_part = f"\n{links}" if links else ""
     line = (
-        f"<b>{coin}</b> — @{account} empfiehlt <b>{act_de}</b> "
-        f"({conf}%, effektiv {eff:.0f}%, Trust {trust})."
+        f"<b>{coin_html}</b> — @{account} empfiehlt <b>{act_de}</b> "
+        f"({conf}%, effektiv {eff:.0f}%, Trust {trust}).{links_part}"
     )
     if rat:
         line += f"\n  {rat[:120]}"
@@ -357,13 +372,16 @@ def explain_x_signal(signal) -> str:
 
 
 def format_decision_entry(entry: dict, show_technical: bool = True) -> str:
+    from notifications.coin_links import format_ticker_html
+
     sym = (entry.get("symbol") or "?").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
     action = entry.get("action", "HOLD")
     ts = (entry.get("timestamp") or "")[:16].replace("T", " ")
     executed = entry.get("executed")
     status = "✅" if executed else "🚫" if entry.get("trade_message") else "👀"
     why = explain_rationale(entry.get("rationale", ""))
-    line = f"{status} <b>{sym}</b> {action} — {why[:100]}"
+    line = f"{status} <b>{sym_html}</b> {action} — {why[:100]}"
     if show_technical and entry.get("rationale"):
         line += f"\n  <code>{entry['rationale']}</code>"
     if entry.get("trade_message") and not executed:

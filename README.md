@@ -32,6 +32,7 @@ In Telegram: `/help` senden.
 - **Zyklus-Digests** — CMC/X-Signale und Hermes-Lernzyklen automatisch erklärt
 - **Entscheidungs-Protokoll** — `logs/decisions.jsonl` für alle Analysen
 - **Showcase-Skript** — `python3 scripts/telegram_transparency_showcase.py` (alle Nachrichtentypen testen)
+- **Coin-Links** — klickbare CMC/Gate/Chart-Links + Mini-Chart bei ausgeführten Trades
 
 Details: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-beispielen) und [§16 Transparenz](DOCUMENTATION.md#16-transparenz--nachvollziehbarkeit-technik)
 

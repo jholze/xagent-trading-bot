@@ -31,12 +31,21 @@ def _format_buy_preview(
 ) -> str:
     approved_usdt = float(decision.order.usdt_amount)
     est_amount = approved_usdt / price if price > 0 else 0
+    from notifications.coin_links import format_links_line, format_ticker_html
+
+    ticker = _ticker(symbol)
+    ticker_html = format_ticker_html(ticker, symbol_suffix="")
+    links = format_links_line(ticker)
     lines = [
-        f"<b>🛡️ Risiko-Prüfung — Kauf {_ticker(symbol)}</b>",
+        f"<b>🛡️ Risiko-Prüfung — Kauf {ticker_html}</b>",
+    ]
+    if links:
+        lines.append(links)
+    lines.extend([
         "",
         f"Kurs <b>{_format_price(price)}</b>",
         f"Angefragt <b>${requested_usdt:.0f}</b> USDT",
-    ]
+    ])
     if abs(approved_usdt - requested_usdt) > 0.01:
         reason = []
         if approved_usdt < status.get("virtual_balance", approved_usdt):
@@ -68,13 +77,22 @@ def _format_sell_preview(
     total = float(pos.get("amount", 0))
     entry = float(pos.get("average_entry", pos.get("entry_price", 0)) or 0)
     est_usdt = amount * price
+    from notifications.coin_links import format_links_line, format_ticker_html
+
+    ticker = _ticker(symbol)
+    ticker_html = format_ticker_html(ticker, symbol_suffix="")
+    links = format_links_line(ticker)
     lines = [
-        f"<b>🛡️ Risiko-Prüfung — Verkauf {_ticker(symbol)}</b>",
+        f"<b>🛡️ Risiko-Prüfung — Verkauf {ticker_html}</b>",
+    ]
+    if links:
+        lines.append(links)
+    lines.extend([
         "",
         f"Anteil <b>{pct * 100:.0f}%</b> der Position",
         f"Kurs <b>{_format_price(price)}</b>",
         f"Menge <code>{amount:.4f}</code> {_ticker(symbol)} · ca. <b>${est_usdt:.0f}</b>",
-    ]
+    ])
     if total > 0:
         lines.append(f"Position <code>{total:.4f}</code> @ Entry {_format_price(entry)}")
     lines.extend(_portfolio_block(status))
@@ -191,10 +209,16 @@ def request_buy_confirmation(
         ledger, order, timeframe=timeframe, decision=decision, request_extra={"usdt": usdt},
     )
     msg = _format_buy_preview(decision, status, symbol=symbol, price=price, requested_usdt=usdt)
-    send_telegram_buttons(msg, [[
+    from notifications.coin_links import inline_link_buttons
+
+    keyboard = [[
         {"text": "✅ Bestätigen", "callback_data": f"manual_ok:{order_id}"},
         {"text": "❌ Abbrechen", "callback_data": f"manual_no:{order_id}"},
-    ]])
+    ]]
+    link_row = (inline_link_buttons(symbol) or [None])[0]
+    if link_row:
+        keyboard.append(link_row)
+    send_telegram_buttons(msg, keyboard)
     return True
 
 
@@ -230,10 +254,16 @@ def request_sell_confirmation(
     msg = _format_sell_preview(
         decision, status, symbol=symbol, price=price, amount=amount, pct=pct, timeframe=timeframe,
     )
-    send_telegram_buttons(msg, [[
+    from notifications.coin_links import inline_link_buttons
+
+    keyboard = [[
         {"text": "✅ Bestätigen", "callback_data": f"manual_ok:{order_id}"},
         {"text": "❌ Abbrechen", "callback_data": f"manual_no:{order_id}"},
-    ]])
+    ]]
+    link_row = (inline_link_buttons(symbol) or [None])[0]
+    if link_row:
+        keyboard.append(link_row)
+    send_telegram_buttons(msg, keyboard)
     return True
 
 

@@ -178,6 +178,21 @@ class BotConfig:
         return {**defaults, **raw}
 
     @property
+    def coin_links_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "show_cmc": True,
+            "show_gate": True,
+            "show_tradingview": True,
+            "inline_buttons_on_signals": True,
+            "chart_image_on_executed_trades": True,
+            "chart_bars": 48,
+            "chart_timeframe": "4h",
+        }
+        raw = self.observability_config.get("coin_links", {})
+        return {**defaults, **raw}
+
+    @property
     def hermes_config(self) -> dict:
         return self._raw.get("hermes", {})
 

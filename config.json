@@ -166,6 +166,16 @@
       "notify_blocked_trades": true,
       "cmc_digest_min_confidence": 60,
       "x_digest_min_effective_confidence": 70
+    },
+    "coin_links": {
+      "enabled": true,
+      "show_cmc": true,
+      "show_gate": true,
+      "show_tradingview": true,
+      "inline_buttons_on_signals": true,
+      "chart_image_on_executed_trades": true,
+      "chart_bars": 48,
+      "chart_timeframe": "4h"
     }
   },
   "hermes": {

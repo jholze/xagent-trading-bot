@@ -478,6 +478,18 @@ RSI: 74.5 | Entry: $0.5200 | PnL: +$2.30
 TA→SELL_30 | RSI=74.5
 ```
 
+#### Coin-Links und Mini-Charts
+
+Jeder Coin-Ticker in Telegram ist **klickbar** (CMC-Coin-Seite). Zusätzlich:
+
+| Element | Inhalt |
+|---------|--------|
+| **Links-Zeile** | `CMC · Gate · Chart` (TradingView mit Gate-Kurs) |
+| **Inline-Buttons** | Unter Trade-/Signal-Nachrichten und manuellen Orders |
+| **Chart-Bild** | 4h-Verlauf als Foto bei **EXECUTED** BUY/SELL |
+
+Config: `observability.coin_links` in `config.json`. Slug-Cache: `data/cmc_slug_cache.json` (optional `cmc_slug` pro Coin in `watchlist.json`).
+
 #### Showcase (alle Nachrichtentypen testen)
 
 ```bash

@@ -265,6 +265,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
 if __name__ == "__main__":
     analyzer = XAnalyzer()
+    try:
+        from notifications.coin_links import prefetch_watchlist_slugs
+
+        prefetch_watchlist_slugs()
+    except Exception as e:
+        log(f"Coin link slug prefetch skipped: {e}", "WARNING")
+
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
     sandbox = PaperSandbox()

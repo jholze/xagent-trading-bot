@@ -105,6 +105,9 @@ def format_position_card(
     m = _position_metrics(p, price)
     prefix = f"<b>{index}.</b> " if numbered else ""
     ticker = sym.split("/")[0]
+    from notifications.coin_links import format_ticker_html
+
+    ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
 
     sold_line = ""
@@ -127,7 +130,7 @@ def format_position_card(
         missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
     return (
-        f"{prefix}<b>{ticker}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>\n"
+        f"{prefix}<b>{ticker_html}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>\n"
         f"   └ <code>{m['amount']:.4f}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
         f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
         f"{sold_line}{last_line}{missing_line}"
@@ -136,15 +139,17 @@ def format_position_card(
 
 def _trade_line(t: dict) -> str:
     from price_fetcher import format_usdt_price
+    from notifications.coin_links import format_ticker_html
 
     ts = t.get("timestamp", "")[:16].replace("T", " ")
     typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
     sym = (t.get("symbol") or "").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
     pnl = t.get("pnl")
     pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
     src = source_label(t.get("source", "auto"))
     return (
-        f"\n{typ} <b>{sym}</b> · <i>{src}</i> · {ts}\n"
+        f"\n{typ} <b>{sym_html}</b> · <i>{src}</i> · {ts}\n"
         f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
         f"{format_usdt_price(float(t.get('price', 0)))}{pnl_part}"
     )

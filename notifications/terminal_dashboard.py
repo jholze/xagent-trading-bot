@@ -170,16 +170,19 @@ def _trade_source_label(source: str) -> str:
 
 
 def format_recent_trade_line(trade: dict) -> str:
+    from notifications.coin_links import format_ticker_html
+
     sym = (trade.get("symbol") or "").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
     typ = trade.get("type", "?")
     src = _trade_source_label(trade.get("source", "auto"))
     if typ == "BUY":
         usdt = float(trade.get("usdt_amount", 0) or 0)
-        return f"  · {typ} <b>{sym}</b> · ${usdt:.0f} · <i>{src}</i>"
+        return f"  · {typ} <b>{sym_html}</b> · ${usdt:.0f} · <i>{src}</i>"
     usdt = float(trade.get("usdt_received", 0) or 0)
     pnl = trade.get("pnl")
     pnl_part = f" · PnL <b>${float(pnl):+.1f}</b>" if pnl is not None else ""
-    return f"  · {typ} <b>{sym}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
+    return f"  · {typ} <b>{sym_html}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
 
 
 def recent_trades_lines(history: dict, hours: float = 24, limit: int = 5) -> list[str]:
@@ -237,12 +240,15 @@ def build_cycle_summary(
             lines.append(f"  📊 {top_cmc}")
     if actions:
         lines.append("<b>Entscheidungen:</b>")
+        from notifications.coin_links import format_ticker_html
+
         for r in actions[:6]:
             sym = (r.get("symbol") or "").replace("/USDT", "")
+            sym_html = format_ticker_html(sym, symbol_suffix="")
             act = r.get("normalized_action") or r.get("action")
             why = (r.get("why_de") or r.get("rationale") or "")[:80]
             status = "✅" if r.get("executed") else "🚫" if r.get("trade_message") else "👀"
-            lines.append(f"  {status} {sym} {act}: {why}")
+            lines.append(f"  {status} {sym_html} {act}: {why}")
     if executed:
         lines.append(f"<b>Ausgeführt:</b> {len(executed)} Trade(s)")
         for r in executed[:5]:

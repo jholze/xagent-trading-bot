@@ -152,9 +152,17 @@ def send_signal_message(
     exec_line = f"\n<b>Fill:</b> {trade_message}" if executed is True and trade_message else ""
     tech_block = f"\n<code>{tech_line}</code>" if tech_line and exp_cfg.get("show_technical_codes", True) else ""
 
+    from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
+
+    ticker = symbol.split("/")[0] if "/" in symbol else symbol
+    symbol_html = format_ticker_html(ticker, name=name)
+    links_line = format_links_line(ticker, name=name)
+    links_block = f"\n{links_line}" if links_line else ""
+
     message = f"""
-{emoji} <b>{title}</b> — {symbol}
+{emoji} <b>{title}</b> — {symbol_html}
 <b>Mode:</b> {mode_badge}
+{links_block}
 
 <b>Name:</b> {name}
 <b>Preis:</b> ${price_str}
@@ -162,7 +170,19 @@ def send_signal_message(
 {ampel_line}{why_line}{conf_line}{source_line}{social_block}{extra}{blocked_line}{exec_line}{tech_block}
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """
-    send_telegram_message(message.strip())
+    buttons = inline_link_buttons(ticker, name=name)
+    reply_markup = {"inline_keyboard": buttons} if buttons else None
+    send_telegram_message(message.strip(), reply_markup=reply_markup)
+
+    if executed is True:
+        from notifications.chart_image import send_trade_chart_if_enabled
+
+        send_trade_chart_if_enabled(
+            symbol,
+            executed=True,
+            current_price=float(current_price) if current_price else None,
+            reply_markup=reply_markup,
+        )
 
 
 def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = ""):
@@ -172,12 +192,21 @@ def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = "")
     if not cfg.get("enabled") or not cfg.get("notify_social_hold_explanations"):
         return False
     tech_block = f"\n<code>{tech_line}</code>" if tech_line and cfg.get("show_technical_codes", True) else ""
+    from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
+
+    ticker = symbol.split("/")[0] if "/" in symbol else symbol
+    symbol_html = format_ticker_html(ticker)
+    links_line = format_links_line(ticker)
+    links_block = f"\n{links_line}" if links_line else ""
     msg = (
-        f"👀 <b>Kein Trade</b> — {symbol}\n"
+        f"👀 <b>Kein Trade</b> — {symbol_html}\n"
+        f"{links_block}\n"
         f"<b>Warum:</b> {why_de}{tech_block}\n"
         f"🕒 {datetime.now().strftime('%H:%M:%S')}"
     )
-    return send_telegram_message(msg)
+    buttons = inline_link_buttons(ticker)
+    reply_markup = {"inline_keyboard": buttons} if buttons else None
+    return send_telegram_message(msg.strip(), reply_markup=reply_markup)
 
 
 def send_cmc_cycle_digest(signals: list):
@@ -233,10 +262,16 @@ def send_x_recommendation_message(recommendation):
     if sl is not None:
         target_lines += f"\n<b>Stop Loss:</b> ${float(sl):.4f}"
 
-    act_de = "Kauf" if title == "BUY" else "Verkauf" if title == "SELL" else title
-    msg = f"""{emoji} <b>{title} EMPFEHLUNG</b> — {recommendation.get("coin", "UNKNOWN")}/USDT
+    from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
 
-<b>Von:</b> @{recommendation.get("account", "Unknown")}
+    coin = recommendation.get("coin", "UNKNOWN")
+    act_de = "Kauf" if title == "BUY" else "Verkauf" if title == "SELL" else title
+    symbol_html = format_ticker_html(coin)
+    links_line = format_links_line(coin)
+    links_block = f"{links_line}\n\n" if links_line else ""
+    msg = f"""{emoji} <b>{title} EMPFEHLUNG</b> — {symbol_html}/USDT
+
+{links_block}<b>Von:</b> @{recommendation.get("account", "Unknown")}
 <b>Empfehlung:</b> {act_de}
 <b>Tweet:</b> {raw}
 <b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {recommendation.get("trust_at_signal", "—")}
@@ -244,7 +279,9 @@ def send_x_recommendation_message(recommendation):
 
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """
-    send_telegram_message(msg)
+    buttons = inline_link_buttons(coin)
+    reply_markup = {"inline_keyboard": buttons} if buttons else None
+    send_telegram_message(msg.strip(), reply_markup=reply_markup)
 
 
 def send_cycle_summary(text: str):
@@ -253,6 +290,33 @@ def send_cycle_summary(text: str):
     if not get_config().get("observability", {}).get("notify_on_cycle", False):
         return False
     return send_telegram_message(text)
+
+
+def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> bool:
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram not configured")
+        return False
+
+    if is_demo_mode():
+        caption = "🧪 [DEMO] " + caption
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        with open(photo_path, "rb") as photo_file:
+            payload = {
+                "chat_id": CHAT_ID,
+                "caption": caption[:1024],
+                "parse_mode": "HTML",
+            }
+            if reply_markup:
+                import json
+
+                payload["reply_markup"] = json.dumps(reply_markup)
+            response = requests.post(url, data=payload, files={"photo": photo_file}, timeout=20)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Error sending Telegram photo: {e}")
+        return False
 
 
 def send_telegram_message(text, reply_markup=None):

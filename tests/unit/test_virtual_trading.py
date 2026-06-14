@@ -672,7 +672,8 @@ class TestVirtualTrading(unittest.TestCase):
 
     def _assert_demo_prefix_in_message(self, mock_post, expected_content):
         """Helper to verify both demo prefix and content in sent messages."""
-        called_text = mock_post.call_args[1]["json"]["text"]
+        msg_call = next(c for c in mock_post.call_args_list if c[1].get("json"))
+        called_text = msg_call[1]["json"]["text"]
         self.assertIn("🧪 [DEMO]", called_text)
         self.assertIn(expected_content, called_text)
 
@@ -683,6 +684,7 @@ class TestVirtualTrading(unittest.TestCase):
         coin = {"symbol": "ARIA/USDT", "name": "Aria AI"}
 
         with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("notifications.chart_image.send_trade_chart_if_enabled", return_value=False), \
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
@@ -691,7 +693,7 @@ class TestVirtualTrading(unittest.TestCase):
             )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
-            self._assert_demo_prefix_in_message(mock_post, "ARIA/USDT")
+            self._assert_demo_prefix_in_message(mock_post, "aria-ai")
 
     def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch
@@ -700,6 +702,7 @@ class TestVirtualTrading(unittest.TestCase):
         coin = {"symbol": "RAVE/USDT", "name": "RaveDAO"}
 
         with patch("telegram_notifier.is_demo_mode", return_value=True), \
+             patch("notifications.chart_image.send_trade_chart_if_enabled", return_value=False), \
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
@@ -762,6 +765,7 @@ class TestVirtualTrading(unittest.TestCase):
         coin = {"symbol": "H/USDT", "name": "Humanity"}
 
         with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("notifications.chart_image.send_trade_chart_if_enabled", return_value=False), \
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
@@ -780,10 +784,13 @@ class TestVirtualTrading(unittest.TestCase):
                 source_de="Technische Analyse",
             )
 
-            called_text = mock_post.call_args[1]["json"]["text"]
+            msg_call = next(c for c in mock_post.call_args_list if c[1].get("json"))
+            called_text = msg_call[1]["json"]["text"]
             self.assertIn("Warum:", called_text)
             self.assertIn("überkauft", called_text)
             self.assertIn("TA→SELL_30", called_text)
+            self.assertIn("<a href=", called_text)
+            self.assertIn("Links:", called_text)
 
     def test_send_signal_message_x_signal_without_demo_prefix(self):
         from unittest.mock import patch
