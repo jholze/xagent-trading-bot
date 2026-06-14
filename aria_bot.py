@@ -319,4 +319,4 @@ if __name__ == "__main__":
 
     print(get_text("webhook_started"))
 
-    app.run(port=5000)
+    app.run(port=5000, threaded=True)
