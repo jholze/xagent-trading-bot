@@ -272,6 +272,13 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Coin link slug prefetch skipped: {e}", "WARNING")
 
+    try:
+        from notifications.telegram_commands.command_menu import register_bot_commands
+
+        register_bot_commands()
+    except Exception as e:
+        log(f"Telegram command menu registration skipped: {e}", "WARNING")
+
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
     sandbox = PaperSandbox()

@@ -151,6 +151,14 @@ if [[ -n "$LAST_ERR" ]]; then
     -d 'allowed_updates=["message","callback_query"]' >/dev/null
 fi
 
+echo "📋 Registering Telegram command menu..."
+python3 -c "
+from dotenv import load_dotenv
+load_dotenv()
+from notifications.telegram_commands.command_menu import register_bot_commands
+register_bot_commands()
+" 2>/dev/null || echo "   (command menu registration skipped)"
+
 python3 -c "
 import os, requests
 from dotenv import load_dotenv

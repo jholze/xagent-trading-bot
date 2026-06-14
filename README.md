@@ -21,7 +21,7 @@ bash scripts/start_demo_with_ngrok.sh
 bash scripts/stop_bot.sh
 ```
 
-In Telegram: `/help` senden.
+In Telegram: Menü-Button neben der Eingabezeile (alle Befehle) oder `/help` senden.
 
 ---
 

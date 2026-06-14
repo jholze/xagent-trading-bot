@@ -332,6 +332,19 @@ Position −16 % (stop_loss_pct: 15)
 
 Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur `/buy`) antwortet der Bot mit einem Beispiel.
 
+### Befehlsmenü (Button neben der Eingabezeile)
+
+Telegram zeigt links neben dem Eingabefeld ein **Menü-Icon** (☰). Ein Tipp öffnet alle **35 Bot-Befehle** mit kurzer deutscher Beschreibung — kein manuelles Eintippen von `/…` nötig.
+
+| Verhalten | Details |
+|-----------|---------|
+| **Auswahl** | Befehl wird in die Eingabezeile eingefügt; bei Bedarf Parameter ergänzen (z. B. `/buy 1 25`) |
+| **Nur Stamm** | `/buy`, `/why`, `/add` ohne Parameter → Bot zeigt Liste oder Beispiel (wie bisher) |
+| **Aliase** | `/portfolio` = `/positions` usw. — funktionieren weiter per Tippen, stehen nicht doppelt im Menü |
+| **Registrierung** | Beim Bot-Start via `setMyCommands` ([`command_menu.py`](notifications/telegram_commands/command_menu.py)) |
+
+Unterbefehle mit Leerzeichen (z. B. `/mode paper`) sind im Menü nicht als eigener Eintrag — wähle `/mode`, der Bot listet die Optionen.
+
 ### 7.0 Für Einsteiger — Was du in Telegram siehst
 
 Der Bot erklärt sich **selbst**. Du musst keine Charts lesen — die Nachrichten sind in zwei Ebenen aufgebaut:

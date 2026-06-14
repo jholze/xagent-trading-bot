@@ -104,6 +104,14 @@ WEBHOOK_RESULT=$(curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/set
   -d 'allowed_updates=["message","callback_query"]')
 echo "$WEBHOOK_RESULT" | python3 -m json.tool
 
+echo "📋 Registering Telegram command menu..."
+python3 -c "
+from dotenv import load_dotenv
+load_dotenv()
+from notifications.telegram_commands.command_menu import register_bot_commands
+register_bot_commands()
+" 2>/dev/null || echo "   (command menu registration skipped)"
+
 python3 -c "
 import os, requests
 from dotenv import load_dotenv
