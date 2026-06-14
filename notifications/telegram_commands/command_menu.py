@@ -12,6 +12,7 @@ from notifications.telegram_commands.menu_commands import MENU_SECTIONS, all_men
 from notifications.telegram_commands.menu_commands import send_main_section_keyboard
 from notifications.telegram_commands.menu_i18n import (
     SUPPORTED_LANGS,
+    menu_button_label,
     prefixed_command_description,
     resolve_language,
 )
@@ -24,16 +25,20 @@ _DEFAULT_BUTTON_TEXT = "Menü"
 TELEGRAM_MENU_COMMAND_KEYS: list[str] = all_menu_command_keys()
 
 
-def menu_button_text() -> str:
+def menu_button_text(lang: str | None = None) -> str:
     try:
         from core.config import get_bot_config
 
         cfg = get_bot_config().telegram_command_menu_config
         if not cfg.get("enabled", True):
             return _DEFAULT_BUTTON_TEXT
-        text = str(cfg.get("button_text") or _DEFAULT_BUTTON_TEXT).strip()
+        override = str(cfg.get("button_text") or "").strip()
+        if override:
+            text = override
+        else:
+            text = menu_button_label(lang or resolve_language(cfg.get("default_language")))
     except Exception:
-        text = _DEFAULT_BUTTON_TEXT
+        text = menu_button_label(lang)
     if not text:
         text = _DEFAULT_BUTTON_TEXT
     if len(text) > _MAX_BUTTON_TEXT_LEN:
@@ -41,10 +46,10 @@ def menu_button_text() -> str:
     return text
 
 
-def menu_button_payload() -> dict:
+def menu_button_payload(lang: str | None = None) -> dict:
     return {
         "type": "commands",
-        "text": menu_button_text(),
+        "text": menu_button_text(lang),
     }
 
 
@@ -87,7 +92,7 @@ def register_bot_commands(token: str | None = None) -> bool:
     except Exception:
         default_lang = "de"
 
-    button = menu_button_payload()
+    button = menu_button_payload(lang=default_lang)
     base = f"https://api.telegram.org/bot{token}"
 
     try:

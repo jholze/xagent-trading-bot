@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from notifications.telegram_commands.menu_i18n import (
     back_label,
+    callback_unknown_command,
     command_description,
     current_language,
     home_inline,
@@ -212,7 +213,7 @@ def handle_callback(callback_query: dict) -> bool:
         cmd_key = data.split(":", 2)[2]
         if cmd_key not in _ALL_COMMAND_KEYS:
             if callback_id:
-                answer_callback_query(callback_id, "Unknown command")
+                answer_callback_query(callback_id, callback_unknown_command())
             return True
         if callback_id:
             answer_callback_query(callback_id, f"/{cmd_key}")

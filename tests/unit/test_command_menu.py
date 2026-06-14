@@ -8,7 +8,7 @@ from notifications.telegram_commands.command_menu import (
     register_bot_commands,
 )
 from notifications.telegram_commands.menu_commands import MENU_SECTIONS
-from notifications.telegram_commands.usage_hints import USAGE
+from notifications.telegram_commands.usage_hints import USAGE, _ensure_usage_cache
 
 
 class TestCommandMenu(unittest.TestCase):
@@ -19,6 +19,7 @@ class TestCommandMenu(unittest.TestCase):
         self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 36)
 
     def test_all_commands_have_menu_description(self):
+        _ensure_usage_cache()
         for key in TELEGRAM_MENU_COMMAND_KEYS:
             self.assertIn("menu_description", USAGE[key])
             self.assertTrue(USAGE[key]["menu_description"].strip())

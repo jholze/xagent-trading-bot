@@ -1,108 +1,562 @@
 {
   "de": {
+    "button_text": "Menü",
+    "unknown_hint": "❓ Unbekannter Befehl. Sende <code>/help</code> für die komplette Liste mit Beispielen.",
+    "callback_unknown_command": "Unbekannter Befehl",
     "back": "◀ Bereiche",
     "home_intro": "<b>🗂️ Bereiche</b>\n\nWähle unten einen Bereich — darunter erscheinen alle Befehle dieses Bereichs.\n<i>Im Menü-Button (☰) sind dieselben Befehle nach Bereich sortiert.</i>",
     "home_inline": "<b>🗂️ Bot-Menü</b>\n\nWähle einen <b>Bereich</b> — alle Befehle sind nach Kategorien sortiert.\n<i>Unten: Bereichs-Tastatur · Menü-Button (☰): komplette Liste mit Bereichs-Prefix.</i>",
     "section_pick": "Tippe einen Befehl:",
+    "help": {
+      "title": "<b>🛠️ Telegram-Befehle</b>",
+      "tips": [
+        "Tipp: Menü-Button „Menü“ — Schnellbefehle + <code>/menu</code> für alle Bereiche.",
+        "Bei unvollständigen Befehlen (z.B. nur <code>/buy</code>) antwortet der Bot mit einem Beispiel."
+      ],
+      "footer": "Sende <code>/help</code> jederzeit für diese Liste.",
+      "sections": [
+        {
+          "title": "📋 <b>Watchlist</b> — Welche Coins der Bot beobachtet",
+          "keys": [
+            "list",
+            "add",
+            "remove"
+          ]
+        },
+        {
+          "title": "💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio",
+          "keys": [
+            "buy",
+            "sell",
+            "positions",
+            "orders",
+            "risk"
+          ]
+        },
+        {
+          "title": "⚙️ <b>Modus & Sicherheit</b>",
+          "keys": [
+            "mode",
+            "maxpositions",
+            "live_confirm",
+            "live_cancel",
+            "gate",
+            "dryrun"
+          ]
+        },
+        {
+          "title": "🐦 <b>X / Twitter</b> — Posts analysieren lassen",
+          "keys": [
+            "addx",
+            "removex",
+            "listx",
+            "xsignals",
+            "xposts",
+            "xaccuracy",
+            "testaccount",
+            "tracktest"
+          ]
+        },
+        {
+          "title": "🔍 <b>Transparenz</b> — Was der Bot warum tut",
+          "keys": [
+            "decisions",
+            "why",
+            "hermes",
+            "hermes_last",
+            "hermes_run",
+            "cmc"
+          ]
+        },
+        {
+          "title": "🧪 <b>Sandbox & Strategie-Tests</b>",
+          "keys": [
+            "sandbox",
+            "sandbox_results",
+            "sandbox_promote",
+            "backtest",
+            "backtest_lock",
+            "backtest_results"
+          ]
+        },
+        {
+          "title": "❓ <b>Hilfe</b>",
+          "keys": [
+            "menu",
+            "help"
+          ]
+        }
+      ]
+    },
     "sections": {
-      "watchlist": {"title": "📋 Watchlist", "short": "Watchlist"},
-      "handel": {"title": "💰 Handel", "short": "Handel"},
-      "modus": {"title": "⚙️ Modus & Gate", "short": "Modus"},
-      "transparenz": {"title": "🔍 Transparenz", "short": "Transparenz"},
-      "x": {"title": "🐦 X / Twitter", "short": "X"},
-      "tests": {"title": "🧪 Sandbox & Backtest", "short": "Tests"},
-      "hilfe": {"title": "❓ Hilfe", "short": "Hilfe"}
+      "watchlist": {
+        "title": "📋 Watchlist",
+        "short": "Watchlist"
+      },
+      "handel": {
+        "title": "💰 Handel",
+        "short": "Handel"
+      },
+      "modus": {
+        "title": "⚙️ Modus & Gate",
+        "short": "Modus"
+      },
+      "transparenz": {
+        "title": "🔍 Transparenz",
+        "short": "Transparenz"
+      },
+      "x": {
+        "title": "🐦 X / Twitter",
+        "short": "X"
+      },
+      "tests": {
+        "title": "🧪 Sandbox & Backtest",
+        "short": "Tests"
+      },
+      "hilfe": {
+        "title": "❓ Hilfe",
+        "short": "Hilfe"
+      }
     },
     "commands": {
-      "list": "Alle beobachteten Coins anzeigen",
-      "add": "Coin zur Watchlist hinzufügen",
-      "remove": "Coin von der Watchlist entfernen",
-      "positions": "Portfolio, Kurse und PnL",
-      "buy": "Coin kaufen",
-      "sell": "Position verkaufen",
-      "orders": "Auftragshistorie",
-      "risk": "Risiko-Limits und Drawdown",
-      "mode": "Handelsmodus anzeigen und wechseln",
-      "gate": "Gate.io API-Status und Balance",
-      "dryrun": "Enhanced Dry Run Status",
-      "maxpositions": "Max. offene Positionen",
-      "live_confirm": "Live-Handel bestätigen",
-      "live_cancel": "Live-Handel abbrechen",
-      "decisions": "Letzte Bot-Entscheidungen",
-      "why": "Warum? — Erklärung für einen Coin",
-      "hermes": "Hermes Lern-Agent Status",
-      "hermes_last": "Letzte Hermes-Entscheidung",
-      "cmc": "CMC Community-Sentiment",
-      "addx": "X-Account hinzufügen",
-      "removex": "X-Account entfernen",
-      "listx": "Überwachte X-Accounts",
-      "xposts": "Letzte X-Posts",
-      "xsignals": "Starke X-Signale",
-      "xaccuracy": "X-Account Trefferquote",
-      "tracktest": "Test-Tweet analysieren",
-      "testaccount": "X-Account Backtest",
-      "sandbox": "Strategie-Sandbox",
-      "sandbox_results": "Sandbox-Details",
-      "sandbox_promote": "Sandbox-Strategie übernehmen",
-      "backtest": "Strategie-Backtest Status",
-      "backtest_lock": "Backtest sperren",
-      "backtest_results": "Backtest-Ergebnis",
-      "hermes_run": "Hermes-Lernzyklus starten",
-      "menu": "Alle Bereiche mit Buttons",
-      "help": "Alle Befehle mit Beispielen"
+      "list": {
+        "description": "Alle beobachteten Coins anzeigen",
+        "help_line": "<code>/list</code> — Alle beobachteten Coins anzeigen"
+      },
+      "add": {
+        "description": "Coin zur Watchlist hinzufügen",
+        "help_line": "<code>/add SYMBOL</code> — Coin beobachten (z.B. <code>/add RAVE</code>)",
+        "hint": "❌ <b>/add</b> — Coin zur Beobachtungsliste hinzufügen\n\nSo geht's: <code>/add SYMBOL</code>\nBeispiel: <code>/add RAVE</code> oder <code>/add SOL</code>"
+      },
+      "remove": {
+        "description": "Coin von der Watchlist entfernen",
+        "help_line": "<code>/remove NUMMER</code> — Coin entfernen (zuerst <code>/list</code>, z.B. <code>/remove 2</code>)",
+        "hint": "❌ <b>/remove</b> — Coin von der Liste entfernen\n\nZuerst <code>/list</code> senden, dann Nummer wählen.\nBeispiel: <code>/remove 2</code>"
+      },
+      "positions": {
+        "description": "Portfolio, Kurse und PnL",
+        "help_line": "<code>/positions</code> oder <code>/portfolio</code> — Portfolio mit Kurse, PnL und letzte Trades"
+      },
+      "buy": {
+        "description": "Coin kaufen",
+        "help_line": "<code>/buy NUMMER USDT</code> — Kaufen (Nummer aus <code>/buy</code> oder <code>/list</code>, z.B. <code>/buy 1 25</code>)",
+        "hint": "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\nZuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\nDann: <code>/buy NUMMER USDT</code> — Risk Manager zeigt Vorschau, Bestätigung per Button.\nBeispiele:\n• <code>/buy 1 25</code> — Coin Nr. 1, 25 $\n• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren"
+      },
+      "sell": {
+        "description": "Position verkaufen",
+        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
+        "hint": "❌ <b>/sell</b> — Anteil einer Position verkaufen\n\nNummern sind in <code>/positions</code> und <code>/sell</code> gleich (nach Wert sortiert).\nDann: <code>/sell NUMMER PROZENT</code> — Vorschau mit Bestätigen/Abbrechen.\nBeispiel: <code>/sell 1 30</code> — 30 % von Position 1 verkaufen"
+      },
+      "orders": {
+        "description": "Auftragshistorie",
+        "help_line": "<code>/orders</code> — Auftragshistorie; <code>/orders NUMMER</code> für Details",
+        "hint": "❌ <b>/orders</b> — Auftragshistorie (Order-Ledger)\n\n<code>/orders</code> — Letzte Orders mit 24h-Statistik\n<code>/orders page 2</code> — Seite 2 (5 Orders pro Seite)\n<code>/orders 3</code> — Details zu Order Nr. 3"
+      },
+      "risk": {
+        "description": "Risiko-Limits und Drawdown",
+        "help_line": "<code>/risk</code> — Risiko-Limits, Drawdown und Positionsgröße anzeigen"
+      },
+      "mode": {
+        "description": "Handelsmodus anzeigen und wechseln",
+        "help_line": "<code>/mode</code> — Handelsmodus anzeigen; <code>/mode paper|live|off</code> zum Wechseln",
+        "hint": "❌ Unbekannter Modus.\n\nSende <code>/mode</code> für die aktuelle Einstellung und alle Optionen:\n• <code>/mode paper</code> — Virtuelles Geld (Standard)\n• <code>/mode live</code> — Echtes Geld auf Gate.io (braucht <code>/live_confirm</code>)\n• <code>/mode off</code> — Nur Analyse, kein Handel"
+      },
+      "gate": {
+        "description": "Gate.io API-Status und Balance",
+        "help_line": "<code>/gate</code> — Gate.io API-Status, Balance, Spot-Bestände"
+      },
+      "dryrun": {
+        "description": "Enhanced Dry Run Status",
+        "help_line": "<code>/dryrun</code> — Enhanced Dry Run (Sim-Wallet, Trending-Coins)"
+      },
+      "maxpositions": {
+        "description": "Max. offene Positionen",
+        "help_line": "<code>/maxpositions ANZAHL</code> — Max. offene Positionen setzen (z.B. <code>/maxpositions 10</code>)",
+        "hint": "❌ <b>/maxpositions</b> — Limit für gleichzeitige Positionen\n\nAktuellen Wert: <code>/maxpositions</code>\nSetzen: <code>/maxpositions ANZAHL</code>\nBeispiel: <code>/maxpositions 10</code>"
+      },
+      "live_confirm": {
+        "description": "Live-Handel bestätigen",
+        "help_line": "<code>/live_confirm</code> — Live-Handel auf Gate.io Mainnet bestätigen"
+      },
+      "live_cancel": {
+        "description": "Live-Handel abbrechen",
+        "help_line": "<code>/live_cancel</code> — Live-Handel abbrechen, zurück zu Paper"
+      },
+      "decisions": {
+        "description": "Letzte Bot-Entscheidungen",
+        "help_line": "<code>/decisions</code> — Entscheidungsprotokoll | <code>/why SYMBOL</code> — Warum für einen Coin",
+        "hint": "📜 <b>/decisions</b> — Was der Bot wann entschieden hat\n\n<code>/decisions</code> — Letzte 8 Entscheidungen\n<code>/why SYMBOL</code> — Erklärung für einen Coin (z.B. <code>/why H</code>)"
+      },
+      "why": {
+        "description": "Warum? — Erklärung für einen Coin",
+        "help_line": "<code>/why SYMBOL</code> — Letzte Entscheidung für einen Coin erklären"
+      },
+      "hermes": {
+        "description": "Hermes Lern-Agent Status",
+        "help_line": "<code>/hermes</code> — Status | <code>/hermes_last</code> — letzte Entscheidung | <code>/hermes_run</code> — Zyklus",
+        "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + letzte Experimente\n<code>/hermes_last</code> — Letzter Zyklus in Klartext\n<code>/hermes_run</code> — Einen Lern-Zyklus starten"
+      },
+      "hermes_last": {
+        "description": "Letzte Hermes-Entscheidung",
+        "help_line": "<code>/hermes_last</code> — Letzter Hermes-Zyklus erklärt"
+      },
+      "cmc": {
+        "description": "CMC Community-Sentiment",
+        "help_line": "<code>/cmc</code> — CoinMarketCap Community-Stimmung (Sentiment-Signale)"
+      },
+      "addx": {
+        "description": "X-Account hinzufügen",
+        "help_line": "<code>/addx ACCOUNT</code> — X-Account hinzufügen (z.B. <code>/addx CryptoCapo_</code>)",
+        "hint": "❌ <b>/addx</b> — X/Twitter-Account zum Monitoring hinzufügen\n\nSo geht's: <code>/addx ACCOUNT</code>\nBeispiel: <code>/addx CryptoCapo_</code>"
+      },
+      "removex": {
+        "description": "X-Account entfernen",
+        "help_line": "<code>/removex ACCOUNT</code> — X-Account entfernen (z.B. <code>/removex CryptoCapo_</code>)",
+        "hint": "❌ <b>/removex</b> — X-Account entfernen\n\nSo geht's: <code>/removex ACCOUNT</code>\nBeispiel: <code>/removex CryptoCapo_</code>"
+      },
+      "listx": {
+        "description": "Überwachte X-Accounts",
+        "help_line": "<code>/listx</code> — Alle überwachten X-Accounts mit Trust-Score"
+      },
+      "xposts": {
+        "description": "Letzte X-Posts",
+        "help_line": "<code>/xposts</code> — Letzte analysierte X-Posts und Empfehlungen"
+      },
+      "xsignals": {
+        "description": "Starke X-Signale",
+        "help_line": "<code>/xsignals</code> — Aktuelle starke X-Signale (BUY/SELL)"
+      },
+      "xaccuracy": {
+        "description": "X-Account Trefferquote",
+        "help_line": "<code>/xaccuracy</code> — Trefferquote der X-Accounts (Leaderboard)"
+      },
+      "tracktest": {
+        "description": "Test-Tweet analysieren",
+        "help_line": "<code>/tracktest</code> — Test-Tweet sofort durch den Analyzer schicken"
+      },
+      "testaccount": {
+        "description": "X-Account Backtest",
+        "help_line": "<code>/testaccount ACCOUNT [TAGE]</code> — Backtest der BUY/SELL-Empfehlungen (Standard: 60 Tage)",
+        "hint": "❌ <b>/testaccount</b> — X-Account auf Empfehlungs-Performance testen\n\nSo geht's: <code>/testaccount ACCOUNT [TAGE]</code>\nStandard: 60 Tage, wenn kein Zeitraum angegeben ist.\nBeispiel: <code>/testaccount CryptoCapo_</code>\nBeispiel: <code>/testaccount @Pentosh1 30</code>"
+      },
+      "sandbox": {
+        "description": "Strategie-Sandbox",
+        "help_line": "<code>/sandbox</code> — Strategie-Experimente anzeigen (automatisch aus X-Posts)"
+      },
+      "sandbox_results": {
+        "description": "Sandbox-Details",
+        "help_line": "<code>/sandbox_results ID</code> — Metriken eines Experiments (z.B. <code>/sandbox_results hyp_abc123</code>)",
+        "hint": "❌ <b>/sandbox_results</b> — Details zu einem Experiment\n\nZuerst <code>/sandbox</code> für die ID-Liste.\nBeispiel: <code>/sandbox_results hyp_abc123</code>"
+      },
+      "sandbox_promote": {
+        "description": "Sandbox-Strategie übernehmen",
+        "help_line": "<code>/sandbox_promote ID</code> — Strategie übernehmen (z.B. <code>/sandbox_promote hyp_abc123</code>)",
+        "hint": "❌ <b>/sandbox_promote</b> — Erfolgreiche Strategie aktivieren\n\nZuerst <code>/sandbox_results ID</code> prüfen.\nBeispiel: <code>/sandbox_promote hyp_abc123</code>"
+      },
+      "backtest": {
+        "description": "Strategie-Backtest Status",
+        "help_line": "<code>/backtest</code> — Adaptiver Strategie-Backtest (Scheduling)"
+      },
+      "backtest_lock": {
+        "description": "Backtest sperren",
+        "help_line": "<code>/backtest_lock SYMBOL</code> — Backtest-Zeitplan für Coin fixieren"
+      },
+      "backtest_results": {
+        "description": "Backtest-Ergebnis",
+        "help_line": "<code>/backtest_results SYMBOL</code> — Letztes Backtest-Ergebnis"
+      },
+      "hermes_run": {
+        "description": "Hermes-Lernzyklus starten",
+        "help_line": "<code>/hermes_run</code> — Hermes-Lernzyklus manuell ausführen"
+      },
+      "menu": {
+        "description": "Alle Bereiche mit Buttons",
+        "help_line": "<code>/menu</code> — Bereiche wählen (Watchlist, Handel, Modus, …)"
+      },
+      "help": {
+        "description": "Alle Befehle mit Beispielen",
+        "help_line": "<code>/help</code> — Diese Befehlsliste"
+      }
     }
   },
   "en": {
+    "button_text": "Menu",
+    "unknown_hint": "❓ Unknown command. Send <code>/help</code> for the full list with examples.",
+    "callback_unknown_command": "Unknown command",
     "back": "◀ Sections",
     "home_intro": "<b>🗂️ Sections</b>\n\nPick a section below — its commands appear as buttons.\n<i>Menu button (☰): full list sorted by section prefix.</i>",
     "home_inline": "<b>🗂️ Bot menu</b>\n\nPick a <b>section</b> — commands are grouped by category.\n<i>Keyboard below · Menu button (☰): full list with section prefix.</i>",
     "section_pick": "Tap a command:",
+    "help": {
+      "title": "<b>🛠️ Telegram commands</b>",
+      "tips": [
+        "Tip: Menu button — quick commands + <code>/menu</code> for all sections.",
+        "For incomplete commands (e.g. just <code>/buy</code>) the bot replies with an example."
+      ],
+      "footer": "Send <code>/help</code> anytime for this list.",
+      "sections": [
+        {
+          "title": "📋 <b>Watchlist</b> — Coins the bot is watching",
+          "keys": [
+            "list",
+            "add",
+            "remove"
+          ]
+        },
+        {
+          "title": "💰 <b>Trading</b> — Buy, sell, portfolio",
+          "keys": [
+            "buy",
+            "sell",
+            "positions",
+            "orders",
+            "risk"
+          ]
+        },
+        {
+          "title": "⚙️ <b>Mode & safety</b>",
+          "keys": [
+            "mode",
+            "maxpositions",
+            "live_confirm",
+            "live_cancel",
+            "gate",
+            "dryrun"
+          ]
+        },
+        {
+          "title": "🐦 <b>X / Twitter</b> — Analyze posts",
+          "keys": [
+            "addx",
+            "removex",
+            "listx",
+            "xsignals",
+            "xposts",
+            "xaccuracy",
+            "testaccount",
+            "tracktest"
+          ]
+        },
+        {
+          "title": "🔍 <b>Transparency</b> — What the bot does and why",
+          "keys": [
+            "decisions",
+            "why",
+            "hermes",
+            "hermes_last",
+            "hermes_run",
+            "cmc"
+          ]
+        },
+        {
+          "title": "🧪 <b>Sandbox & strategy tests</b>",
+          "keys": [
+            "sandbox",
+            "sandbox_results",
+            "sandbox_promote",
+            "backtest",
+            "backtest_lock",
+            "backtest_results"
+          ]
+        },
+        {
+          "title": "❓ <b>Help</b>",
+          "keys": [
+            "menu",
+            "help"
+          ]
+        }
+      ]
+    },
     "sections": {
-      "watchlist": {"title": "📋 Watchlist", "short": "Watchlist"},
-      "handel": {"title": "💰 Trading", "short": "Trading"},
-      "modus": {"title": "⚙️ Mode & Gate", "short": "Mode"},
-      "transparenz": {"title": "🔍 Transparency", "short": "Transparency"},
-      "x": {"title": "🐦 X / Twitter", "short": "X"},
-      "tests": {"title": "🧪 Sandbox & Backtest", "short": "Tests"},
-      "hilfe": {"title": "❓ Help", "short": "Help"}
+      "watchlist": {
+        "title": "📋 Watchlist",
+        "short": "Watchlist"
+      },
+      "handel": {
+        "title": "💰 Trading",
+        "short": "Trading"
+      },
+      "modus": {
+        "title": "⚙️ Mode & Gate",
+        "short": "Mode"
+      },
+      "transparenz": {
+        "title": "🔍 Transparency",
+        "short": "Transparency"
+      },
+      "x": {
+        "title": "🐦 X / Twitter",
+        "short": "X"
+      },
+      "tests": {
+        "title": "🧪 Sandbox & Backtest",
+        "short": "Tests"
+      },
+      "hilfe": {
+        "title": "❓ Help",
+        "short": "Help"
+      }
     },
     "commands": {
-      "list": "Show all watched coins",
-      "add": "Add coin to watchlist",
-      "remove": "Remove coin from watchlist",
-      "positions": "Portfolio, prices and PnL",
-      "buy": "Buy coin",
-      "sell": "Sell position",
-      "orders": "Order history",
-      "risk": "Risk limits and drawdown",
-      "mode": "Show or change trading mode",
-      "gate": "Gate.io API status and balance",
-      "dryrun": "Enhanced dry run status",
-      "maxpositions": "Max open positions",
-      "live_confirm": "Confirm live trading",
-      "live_cancel": "Cancel live trading",
-      "decisions": "Recent bot decisions",
-      "why": "Why? — explanation for a coin",
-      "hermes": "Hermes learning agent status",
-      "hermes_last": "Last Hermes decision",
-      "cmc": "CMC community sentiment",
-      "addx": "Add X account",
-      "removex": "Remove X account",
-      "listx": "Monitored X accounts",
-      "xposts": "Recent X posts",
-      "xsignals": "Strong X signals",
-      "xaccuracy": "X account accuracy",
-      "tracktest": "Analyze test tweet",
-      "testaccount": "X account backtest",
-      "sandbox": "Strategy sandbox",
-      "sandbox_results": "Sandbox experiment details",
-      "sandbox_promote": "Promote sandbox strategy",
-      "backtest": "Strategy backtest status",
-      "backtest_lock": "Lock backtest schedule",
-      "backtest_results": "Backtest results",
-      "hermes_run": "Run Hermes learning cycle",
-      "menu": "All sections with buttons",
-      "help": "Full command list with examples"
+      "list": {
+        "description": "Show all watched coins",
+        "help_line": "<code>/list</code> — Show all watched coins"
+      },
+      "add": {
+        "description": "Add coin to watchlist",
+        "help_line": "<code>/add SYMBOL</code> — Watch a coin (e.g. <code>/add RAVE</code>)",
+        "hint": "❌ <b>/add</b> — Add coin to watchlist\n\nUsage: <code>/add SYMBOL</code>\nExample: <code>/add RAVE</code> or <code>/add SOL</code>"
+      },
+      "remove": {
+        "description": "Remove coin from watchlist",
+        "help_line": "<code>/remove NUMBER</code> — Remove coin (use <code>/list</code> first, e.g. <code>/remove 2</code>)",
+        "hint": "❌ <b>/remove</b> — Remove coin from list\n\nSend <code>/list</code> first, then pick a number.\nExample: <code>/remove 2</code>"
+      },
+      "positions": {
+        "description": "Portfolio, prices and PnL",
+        "help_line": "<code>/positions</code> or <code>/portfolio</code> — Portfolio with prices, PnL and recent trades"
+      },
+      "buy": {
+        "description": "Buy coin",
+        "help_line": "<code>/buy NUMBER USDT</code> — Buy (number from <code>/buy</code> or <code>/list</code>, e.g. <code>/buy 1 25</code>)",
+        "hint": "❌ <b>/buy</b> — Buy coin (paper or live)\n\nFirst send <code>/buy</code> without args → numbered coin list (same as <code>/list</code>).\nThen: <code>/buy NUMBER USDT</code> — Risk manager shows preview, confirm via button.\nExamples:\n• <code>/buy 1 25</code> — Coin #1, $25\n• <code>/buy ARIA 200</code> — invest $200 in ARIA"
+      },
+      "sell": {
+        "description": "Sell position",
+        "help_line": "<code>/sell NUMBER PERCENT</code> — Sell (number from <code>/positions</code> or <code>/sell</code>, e.g. <code>/sell 1 30</code>)",
+        "hint": "❌ <b>/sell</b> — Sell part of a position\n\nNumbers match <code>/positions</code> and <code>/sell</code> (sorted by value).\nThen: <code>/sell NUMBER PERCENT</code> — preview with confirm/cancel.\nExample: <code>/sell 1 30</code> — sell 30% of position 1"
+      },
+      "orders": {
+        "description": "Order history",
+        "help_line": "<code>/orders</code> — Order history; <code>/orders NUMBER</code> for details",
+        "hint": "❌ <b>/orders</b> — Order history (order ledger)\n\n<code>/orders</code> — Recent orders with 24h stats\n<code>/orders page 2</code> — Page 2 (5 orders per page)\n<code>/orders 3</code> — Details for order #3"
+      },
+      "risk": {
+        "description": "Risk limits and drawdown",
+        "help_line": "<code>/risk</code> — Risk limits, drawdown and position sizing"
+      },
+      "mode": {
+        "description": "Show or change trading mode",
+        "help_line": "<code>/mode</code> — Show trading mode; <code>/mode paper|live|off</code> to switch",
+        "hint": "❌ Unknown mode.\n\nSend <code>/mode</code> for current setting and all options:\n• <code>/mode paper</code> — Virtual money (default)\n• <code>/mode live</code> — Real money on Gate.io (needs <code>/live_confirm</code>)\n• <code>/mode off</code> — Analysis only, no trading"
+      },
+      "gate": {
+        "description": "Gate.io API status and balance",
+        "help_line": "<code>/gate</code> — Gate.io API status, balance, spot holdings"
+      },
+      "dryrun": {
+        "description": "Enhanced dry run status",
+        "help_line": "<code>/dryrun</code> — Enhanced dry run (sim wallet, trending coins)"
+      },
+      "maxpositions": {
+        "description": "Max open positions",
+        "help_line": "<code>/maxpositions COUNT</code> — Set max open positions (e.g. <code>/maxpositions 10</code>)",
+        "hint": "❌ <b>/maxpositions</b> — Limit for simultaneous positions\n\nCurrent value: <code>/maxpositions</code>\nSet: <code>/maxpositions COUNT</code>\nExample: <code>/maxpositions 10</code>"
+      },
+      "live_confirm": {
+        "description": "Confirm live trading",
+        "help_line": "<code>/live_confirm</code> — Confirm live trading on Gate.io mainnet"
+      },
+      "live_cancel": {
+        "description": "Cancel live trading",
+        "help_line": "<code>/live_cancel</code> — Cancel live trading, back to paper"
+      },
+      "decisions": {
+        "description": "Recent bot decisions",
+        "help_line": "<code>/decisions</code> — Decision log | <code>/why SYMBOL</code> — Why for a coin",
+        "hint": "📜 <b>/decisions</b> — What the bot decided and when\n\n<code>/decisions</code> — Last 8 decisions\n<code>/why SYMBOL</code> — Explanation for a coin (e.g. <code>/why H</code>)"
+      },
+      "why": {
+        "description": "Why? — explanation for a coin",
+        "help_line": "<code>/why SYMBOL</code> — Explain last decision for a coin"
+      },
+      "hermes": {
+        "description": "Hermes learning agent status",
+        "help_line": "<code>/hermes</code> — Status | <code>/hermes_last</code> — last decision | <code>/hermes_run</code> — run cycle",
+        "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + recent experiments\n<code>/hermes_last</code> — Last cycle in plain language\n<code>/hermes_run</code> — Start a learning cycle"
+      },
+      "hermes_last": {
+        "description": "Last Hermes decision",
+        "help_line": "<code>/hermes_last</code> — Last Hermes cycle explained"
+      },
+      "cmc": {
+        "description": "CMC community sentiment",
+        "help_line": "<code>/cmc</code> — CoinMarketCap community sentiment"
+      },
+      "addx": {
+        "description": "Add X account",
+        "help_line": "<code>/addx ACCOUNT</code> — Add X account (e.g. <code>/addx CryptoCapo_</code>)",
+        "hint": "❌ <b>/addx</b> — Add X/Twitter account to monitoring\n\nUsage: <code>/addx ACCOUNT</code>\nExample: <code>/addx CryptoCapo_</code>"
+      },
+      "removex": {
+        "description": "Remove X account",
+        "help_line": "<code>/removex ACCOUNT</code> — Remove X account (e.g. <code>/removex CryptoCapo_</code>)",
+        "hint": "❌ <b>/removex</b> — Remove X account\n\nUsage: <code>/removex ACCOUNT</code>\nExample: <code>/removex CryptoCapo_</code>"
+      },
+      "listx": {
+        "description": "Monitored X accounts",
+        "help_line": "<code>/listx</code> — Monitored X accounts with trust score"
+      },
+      "xposts": {
+        "description": "Recent X posts",
+        "help_line": "<code>/xposts</code> — Recent analyzed X posts and recommendations"
+      },
+      "xsignals": {
+        "description": "Strong X signals",
+        "help_line": "<code>/xsignals</code> — Current strong X signals (BUY/SELL)"
+      },
+      "xaccuracy": {
+        "description": "X account accuracy",
+        "help_line": "<code>/xaccuracy</code> — X account hit rate (leaderboard)"
+      },
+      "tracktest": {
+        "description": "Analyze test tweet",
+        "help_line": "<code>/tracktest</code> — Send a test tweet through the analyzer"
+      },
+      "testaccount": {
+        "description": "X account backtest",
+        "help_line": "<code>/testaccount ACCOUNT [DAYS]</code> — Backtest BUY/SELL recommendations (default: 60 days)",
+        "hint": "❌ <b>/testaccount</b> — Backtest X account recommendation performance\n\nUsage: <code>/testaccount ACCOUNT [DAYS]</code>\nDefault: 60 days if no period given.\nExample: <code>/testaccount CryptoCapo_</code>\nExample: <code>/testaccount @Pentosh1 30</code>"
+      },
+      "sandbox": {
+        "description": "Strategy sandbox",
+        "help_line": "<code>/sandbox</code> — Strategy experiments (auto from X posts)"
+      },
+      "sandbox_results": {
+        "description": "Sandbox experiment details",
+        "help_line": "<code>/sandbox_results ID</code> — Experiment metrics (e.g. <code>/sandbox_results hyp_abc123</code>)",
+        "hint": "❌ <b>/sandbox_results</b> — Experiment details\n\nSend <code>/sandbox</code> first for the ID list.\nExample: <code>/sandbox_results hyp_abc123</code>"
+      },
+      "sandbox_promote": {
+        "description": "Promote sandbox strategy",
+        "help_line": "<code>/sandbox_promote ID</code> — Promote strategy (e.g. <code>/sandbox_promote hyp_abc123</code>)",
+        "hint": "❌ <b>/sandbox_promote</b> — Activate successful strategy\n\nCheck <code>/sandbox_results ID</code> first.\nExample: <code>/sandbox_promote hyp_abc123</code>"
+      },
+      "backtest": {
+        "description": "Strategy backtest status",
+        "help_line": "<code>/backtest</code> — Adaptive strategy backtest (scheduling)"
+      },
+      "backtest_lock": {
+        "description": "Lock backtest schedule",
+        "help_line": "<code>/backtest_lock SYMBOL</code> — Lock backtest schedule for a coin"
+      },
+      "backtest_results": {
+        "description": "Backtest results",
+        "help_line": "<code>/backtest_results SYMBOL</code> — Latest backtest result"
+      },
+      "hermes_run": {
+        "description": "Run Hermes learning cycle",
+        "help_line": "<code>/hermes_run</code> — Run Hermes learning cycle manually"
+      },
+      "menu": {
+        "description": "All sections with buttons",
+        "help_line": "<code>/menu</code> — Pick a section (watchlist, trading, mode, …)"
+      },
+      "help": {
+        "description": "Full command list with examples",
+        "help_line": "<code>/help</code> — This command list"
+      }
     }
   }
 }

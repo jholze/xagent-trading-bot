@@ -65,6 +65,15 @@ def _pack(lang: str) -> dict:
     return data.get(lang) or data["de"]
 
 
+def _command_entry(pack: dict, key: str) -> dict:
+    raw = pack.get("commands", {}).get(key)
+    if isinstance(raw, str):
+        return {"description": raw}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
 def section_title(section_id: str, lang: str | None = None) -> str:
     lang = lang or current_language()
     return _pack(lang)["sections"][section_id]["title"]
@@ -77,13 +86,60 @@ def section_short(section_id: str, lang: str | None = None) -> str:
 
 def command_description(key: str, lang: str | None = None) -> str:
     lang = lang or current_language()
-    pack = _pack(lang)
-    desc = pack["commands"].get(key)
+    entry = _command_entry(_pack(lang), key)
+    desc = entry.get("description")
     if not desc:
         from notifications.telegram_commands.usage_hints import USAGE
 
         desc = USAGE.get(key, {}).get("menu_description", key)
     return desc
+
+
+def command_help_line(key: str, lang: str | None = None) -> str:
+    lang = lang or current_language()
+    entry = _command_entry(_pack(lang), key)
+    line = entry.get("help_line")
+    if not line:
+        from notifications.telegram_commands.usage_hints import USAGE
+
+        line = USAGE.get(key, {}).get("help_line", f"<code>/{key}</code>")
+    return line
+
+
+def command_hint(key: str, lang: str | None = None) -> str:
+    lang = lang or current_language()
+    pack = _pack(lang)
+    entry = _command_entry(pack, key)
+    if entry.get("hint"):
+        return entry["hint"]
+    return pack.get("unknown_hint", "❓")
+
+
+def menu_button_label(lang: str | None = None) -> str:
+    return _pack(lang or current_language()).get("button_text", "Menü")
+
+
+def callback_unknown_command(lang: str | None = None) -> str:
+    return _pack(lang or current_language()).get("callback_unknown_command", "Unknown command")
+
+
+def build_help_message(lang: str | None = None) -> str:
+    lang = lang or current_language()
+    pack = _pack(lang)
+    help_cfg = pack.get("help", {})
+    lines = [help_cfg.get("title", ""), ""]
+    for tip in help_cfg.get("tips", []):
+        lines.append(tip)
+    lines.append("")
+    for section in help_cfg.get("sections", []):
+        lines.append(section.get("title", ""))
+        for key in section.get("keys", []):
+            lines.append(command_help_line(key, lang))
+        lines.append("")
+    footer = help_cfg.get("footer")
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
 
 
 def prefixed_command_description(section_id: str, key: str, lang: str | None = None) -> str:
