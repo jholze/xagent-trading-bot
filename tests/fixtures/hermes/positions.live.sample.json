@@ -1,0 +1,20 @@
+{
+  "ledger_scope": "live",
+  "positions": {
+    "STG_USDT_4h": {
+      "amount": 1078.22,
+      "average_entry": 0.239,
+      "sold_percent": 0.6
+    },
+    "H_USDT_4h": {
+      "amount": 502.4,
+      "average_entry": 0.27867,
+      "sold_percent": 0.5
+    },
+    "ARIA_USDT_4h": {
+      "amount": 0,
+      "average_entry": 0.03363,
+      "sold_percent": 0.9
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "ledger_scope": "live",
+  "orders": [
+    {
+      "symbol": "ARIA/USDT",
+      "status": "rejected",
+      "timestamps": {"created": "2026-06-13T17:34:45.343603"}
+    },
+    {
+      "symbol": "STG/USDT",
+      "status": "filled",
+      "timestamps": {"created": "2026-06-14T12:20:57.307901"}
+    },
+    {
+      "symbol": "STG/USDT",
+      "status": "rejected",
+      "timestamps": {"created": "2026-06-14T12:04:04.000000"}
+    }
+  ]
+}

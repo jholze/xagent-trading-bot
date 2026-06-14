@@ -1,0 +1,54 @@
+{
+  "trades": [
+    {
+      "type": "SELL",
+      "symbol": "ARIA/USDT",
+      "pnl": -5.93,
+      "source": "cmc",
+      "timestamp": "2026-06-13T17:17:41.031308",
+      "mode": "live"
+    },
+    {
+      "type": "SELL",
+      "symbol": "ARIA/USDT",
+      "pnl": -5.11,
+      "source": "cmc",
+      "timestamp": "2026-06-13T22:23:15.216714",
+      "mode": "live"
+    },
+    {
+      "type": "SELL",
+      "symbol": "H/USDT",
+      "pnl": 42.70,
+      "source": "auto",
+      "timestamp": "2026-06-14T07:12:50.431679",
+      "mode": "live"
+    },
+    {
+      "type": "BUY",
+      "symbol": "STG/USDT",
+      "pnl": 0,
+      "source": "manual",
+      "timestamp": "2026-06-14T09:54:01.748438",
+      "mode": "live"
+    },
+    {
+      "type": "SELL",
+      "symbol": "STG/USDT",
+      "pnl": 0.16,
+      "source": "cmc",
+      "timestamp": "2026-06-14T06:07:29.978740",
+      "mode": "live"
+    },
+    {
+      "type": "SELL",
+      "symbol": "STG/USDT",
+      "pnl": 4.18,
+      "source": "cmc",
+      "timestamp": "2026-06-14T12:20:57.307901",
+      "mode": "live"
+    }
+  ],
+  "total_pnl": 0,
+  "realized_pnl": 0
+}

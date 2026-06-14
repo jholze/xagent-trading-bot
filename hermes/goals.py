@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from core.config import get_bot_config
 from core.models import SandboxMetrics
+from hermes.live_evidence import LiveMetrics
 from hermes.validation import WalkForwardResult
 
 
@@ -11,6 +12,7 @@ class Verdict:
     reason: str
     baseline_better: bool
     meets_success_criteria: bool
+    live_veto: bool = False
 
 
 class GoalEngine:
@@ -35,6 +37,10 @@ class GoalEngine:
     @property
     def primary_metric(self) -> str:
         return self.hermes.get("primary_metric", "sharpe")
+
+    @property
+    def live_evidence(self) -> dict:
+        return self.hermes.get("live_evidence", {})
 
     def _metric(self, metrics: SandboxMetrics | dict, key: str, default: float = 0) -> float:
         if isinstance(metrics, dict):
@@ -195,4 +201,61 @@ class GoalEngine:
             ),
             baseline_better=False,
             meets_success_criteria=True,
+        )
+
+    def apply_live_evidence(
+        self,
+        verdict: Verdict,
+        live_metrics: LiveMetrics | None,
+    ) -> Verdict:
+        """Guardrail: veto WF promotion when dry-run ledger strongly disagrees."""
+        le = self.live_evidence
+        if not le.get("enabled", False):
+            return verdict
+        if live_metrics is None:
+            return verdict
+
+        min_trades = int(le.get("min_live_trades", 3))
+        min_sells = int(le.get("min_live_sell_trades", 2))
+        max_loss = float(le.get("live_max_loss_usdt", 10))
+        live_suffix = (
+            f" | live {live_metrics.lookback_days}d: "
+            f"sell_pnl={live_metrics.live_sell_pnl:+.2f} "
+            f"({live_metrics.live_sell_trades} sells)"
+        )
+
+        has_enough = (
+            live_metrics.live_trades >= min_trades
+            and live_metrics.live_sell_trades >= min_sells
+        )
+
+        if not has_enough:
+            if live_metrics.live_trades > 0:
+                return Verdict(
+                    promoted=verdict.promoted,
+                    reason=verdict.reason + live_suffix + " (insufficient live sample)",
+                    baseline_better=verdict.baseline_better,
+                    meets_success_criteria=verdict.meets_success_criteria,
+                    live_veto=False,
+                )
+            return verdict
+
+        if verdict.promoted and live_metrics.live_sell_pnl < -max_loss:
+            return Verdict(
+                promoted=False,
+                reason=(
+                    f"Live veto: sell_pnl={live_metrics.live_sell_pnl:.2f} "
+                    f"< -{max_loss:.0f} USDT{live_suffix}"
+                ),
+                baseline_better=True,
+                meets_success_criteria=False,
+                live_veto=True,
+            )
+
+        return Verdict(
+            promoted=verdict.promoted,
+            reason=verdict.reason + live_suffix,
+            baseline_better=verdict.baseline_better,
+            meets_success_criteria=verdict.meets_success_criteria,
+            live_veto=False,
         )

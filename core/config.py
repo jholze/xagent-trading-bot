@@ -5,8 +5,8 @@ from logger import log
 class BotConfig:
     """Typed accessors over config.json."""
 
-    def __init__(self):
-        self._raw = get_config()
+    def __init__(self, raw: dict | None = None):
+        self._raw = raw if raw is not None else get_config()
 
     def refresh(self):
         self._raw = reload_config()
@@ -166,6 +166,10 @@ class BotConfig:
     @property
     def hermes_enabled(self) -> bool:
         return bool(self.hermes_config.get("enabled", False))
+
+    @property
+    def hermes_live_evidence_config(self) -> dict:
+        return self.hermes_config.get("live_evidence", {})
 
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
         for entry in self._raw.get("strategies", []):

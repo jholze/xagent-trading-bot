@@ -6,8 +6,10 @@ from hermes.backtester import Backtester
 from hermes.cmc_replay import recent_signal_activity
 from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
+from hermes.live_evidence import compute_live_metrics, format_live_metrics_line
 from hermes.memory import store
 from hermes.self_improver import SelfImprover
+from hermes.symbol_pool import format_active_pool_line, resolve_active_symbols
 from hermes.validation import run_walk_forward
 from logger import log
 
@@ -36,7 +38,16 @@ class HermesAgent:
         self.improver = SelfImprover(self.config)
 
     def _symbols(self) -> list[str]:
-        return self.hermes.get("symbols", ["ARIA/USDT"])
+        def _ohlcv_ok(symbol: str, timeframe: str) -> bool:
+            days = int(self.hermes.get("backtest_days", 14))
+            df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
+            return df is not None and not df.empty and len(df) >= 30
+
+        tf = (self.hermes.get("timeframes") or ["4h"])[0]
+        return resolve_active_symbols(
+            self.config,
+            ohlcv_check=lambda sym, _tf=tf: _ohlcv_ok(sym, _tf),
+        )
 
     def _timeframes(self) -> list[str]:
         return self.hermes.get("timeframes", ["4h"])
@@ -69,6 +80,15 @@ class HermesAgent:
         baseline = store.init_baseline_from_config(self.config, symbol, timeframe)
         params = baseline.get("params", {})
 
+        le_cfg = self.hermes.get("live_evidence", {})
+        live_metrics = None
+        if le_cfg.get("enabled", False):
+            live_metrics = compute_live_metrics(
+                symbol,
+                lookback_days=int(le_cfg.get("lookback_days", 7)),
+                include_manual_trades=bool(le_cfg.get("include_manual_trades", True)),
+            )
+
         grok_proposal = self.improver.propose_experiment(baseline)
         proposal = self.experiments.propose(params, grok_proposal, symbol, timeframe)
 
@@ -92,6 +112,7 @@ class HermesAgent:
             base_m = wf_base.aggregate.__dict__
             var_m = wf_var.aggregate.__dict__
             verdict = self.goals.evaluate_walk_forward(wf_base, wf_var)
+            verdict = self.goals.apply_live_evidence(verdict, live_metrics)
             record = self.experiments.record(
                 proposal=proposal,
                 baseline_metrics=base_m,
@@ -105,6 +126,8 @@ class HermesAgent:
                 baseline_fold_metrics=wf_base.fold_metrics,
                 folds_won=wf_var.folds_won,
                 folds_total=wf_var.folds_total,
+                live_metrics=live_metrics.to_dict() if live_metrics else None,
+                live_veto=verdict.live_veto,
             )
         else:
             bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
@@ -112,6 +135,7 @@ class HermesAgent:
             base_m = bt_base.metrics.__dict__
             var_m = bt_var.metrics.__dict__
             verdict = self.goals.evaluate(bt_base.metrics, bt_var.metrics)
+            verdict = self.goals.apply_live_evidence(verdict, live_metrics)
             record = self.experiments.record(
                 proposal=proposal,
                 baseline_metrics=base_m,
@@ -121,7 +145,12 @@ class HermesAgent:
                 symbol=symbol,
                 timeframe=timeframe,
                 validation_mode="full",
+                live_metrics=live_metrics.to_dict() if live_metrics else None,
+                live_veto=verdict.live_veto,
             )
+
+        if verdict.live_veto and le_cfg.get("notify_on_live_veto", True):
+            self._notify_live_veto(record, proposal, live_metrics, symbol)
 
         if verdict.promoted:
             baseline["params"] = proposal.params
@@ -173,6 +202,20 @@ class HermesAgent:
         except Exception as e:
             log(f"Hermes promotion notify failed: {e}", "WARNING")
 
+    def _notify_live_veto(self, record: dict, proposal, live_metrics, symbol: str):
+        try:
+            from telegram_notifier import send_telegram_message
+
+            pnl = live_metrics.live_sell_pnl if live_metrics else 0
+            send_telegram_message(
+                f"🧠 <b>Hermes live veto</b> ({symbol})\n"
+                f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
+                f"Dry-run ledger sell PnL: {pnl:+.2f} USDT\n"
+                f"Experiment: {record.get('id', '')}"
+            )
+        except Exception as e:
+            log(f"Hermes live veto notify failed: {e}", "WARNING")
+
     def run_loop(self, interval_sec: int | None = None):
         interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 1800))
         mode = self.hermes.get("backtest_mode", "ta_only")
@@ -191,14 +234,23 @@ class HermesAgent:
         recent = store.recent_experiments(5)
         skills = store.load_skills().get("skills", [])[-3:]
         mode = self.hermes.get("backtest_mode", "ta_only")
+        le_cfg = self.hermes.get("live_evidence", {})
         lines = [
             "=== Hermes 2.0 Status ===",
             f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}",
+            format_active_pool_line(self.config),
             f"Active: {baseline.get('symbol')} {baseline.get('timeframe')}",
             f"Params: {baseline.get('params', {})}",
             f"Metrics: {baseline.get('metrics', {})}",
             f"Profiles: {len(profiles)}",
         ]
+        if le_cfg.get("enabled", False):
+            lines.append("Live evidence: enabled (guardrail)")
+            pool = resolve_active_symbols(self.config)
+            lookback = int(le_cfg.get("lookback_days", 7))
+            for sym in pool[:6]:
+                metrics = compute_live_metrics(sym, lookback_days=lookback)
+                lines.append(f"  • {sym}: {format_live_metrics_line(metrics)}")
         for p in profiles[:5]:
             lines.append(
                 f"  • {p.get('symbol')} {p.get('timeframe')}: "

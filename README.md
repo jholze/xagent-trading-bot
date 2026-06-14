@@ -1,4 +1,4 @@
-# X-Agent Trading Bot (Version 1.5.0)
+# X-Agent Trading Bot (Version 1.7.0)
 
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 
@@ -23,7 +23,14 @@ In Telegram: `/help` senden.
 
 ---
 
-## Was ist neu in 1.5 (Juni 2026)
+## Was ist neu in 1.7 (Juni 2026)
+
+- **Hermes Hybrid-Pool** — Pins + offene Positionen + CMC-Top-Coins (max. 8), Rotation per `signal_activity`
+- **Live-Evidenz-Guardrail** — Dry-Run-Ledger kann WF-Promotions vetoen (kein Einfluss auf Einzeltrades)
+- **Tages-Auswertung** — `scripts/daily_auswertung.py` → `auswertungen/YYYY-MM-DD_tag.md`
+- **39 Hermes-Unit-Tests** — Symbol-Pool, Live-Evidenz, Agent-Zyklus, Telegram-Status
+
+### Aus 1.6 / 1.5
 
 - **Enhanced Dry Run** — Sim-Wallet ($5000), CMC-Trending-Watchlist, `/dryrun`, realistischeres Live-Üben ohne Orders
 - **Sim-Cash Fix** — Cash wird aus Trade-Historie neu berechnet; Portfolio = Cash (Sim) + Positionen

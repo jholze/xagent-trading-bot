@@ -1,6 +1,6 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
-Stand: 12. Juni 2026 · Version 1.5
+Stand: 14. Juni 2026 · Version 1.7
 
 Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, Demo-Modus, X/Twitter und Sandbox.
 

@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": true,
+    "dry_run_enhanced": false,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
@@ -171,11 +171,37 @@
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
-    "backtest_days": 35,
-    "symbols": ["ARIA/USDT", "H/USDT", "XPL/USDT"],
-    "timeframes": ["4h"],
+    "backtest_days": 14,
+    "symbols_mode": "hybrid",
+    "symbols_pin": [
+      "ARIA/USDT"
+    ],
+    "symbols_max": 8,
+    "symbols_cmc_top_n": 2,
+    "symbols_include_positions": true,
+    "symbols_refresh_hours": 0,
+    "symbols": [
+      "ARIA/USDT",
+      "H/USDT",
+      "XPL/USDT"
+    ],
+    "timeframes": [
+      "4h"
+    ],
     "rotation": "signal_activity",
     "rotation_hours": 24,
+    "live_evidence": {
+      "enabled": true,
+      "mode": "guardrail",
+      "lookback_days": 7,
+      "min_live_trades": 3,
+      "min_live_sell_trades": 2,
+      "live_max_loss_usdt": 10,
+      "min_live_pnl_delta_usdt": 5,
+      "include_manual_trades": true,
+      "counterfactual_enabled": false,
+      "notify_on_live_veto": true
+    },
     "tunable_params": [
       "buy_regime",
       "rsi_buy_low",
@@ -197,8 +223,8 @@
     "notify_on_promotion": true,
     "validation": {
       "mode": "walk_forward",
-      "backtest_days": 35,
-      "fold_days": 7,
+      "backtest_days": 14,
+      "fold_days": 3,
       "step_days": 3,
       "min_folds_won_ratio": 0.55,
       "min_bars_per_fold": 12,

@@ -173,8 +173,10 @@ class ExperimentRunner:
         baseline_fold_metrics: list = None,
         folds_won: int = 0,
         folds_total: int = 0,
+        live_metrics: dict = None,
+        live_veto: bool = False,
     ) -> dict:
-        return store.append_experiment({
+        payload = {
             "variable": proposal.variable,
             "old_value": proposal.old_value,
             "new_value": proposal.new_value,
@@ -191,4 +193,9 @@ class ExperimentRunner:
             "baseline_fold_metrics": baseline_fold_metrics or [],
             "folds_won": folds_won,
             "folds_total": folds_total,
-        })
+        }
+        if live_metrics is not None:
+            payload["live_metrics"] = live_metrics
+        if live_veto:
+            payload["live_veto"] = True
+        return store.append_experiment(payload)

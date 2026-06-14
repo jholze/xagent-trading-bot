@@ -57,7 +57,9 @@ def profile_key(symbol: str, timeframe: str) -> str:
 
 
 def _migrate_baseline_v1(data: dict) -> dict:
-    if data.get("version", 1) >= 2 and data.get("profiles"):
+    if data.get("version", 1) >= 2:
+        data.setdefault("profiles", {})
+        data.setdefault("rotation_index", 0)
         return data
     if not data.get("params") and not data.get("symbol"):
         return {

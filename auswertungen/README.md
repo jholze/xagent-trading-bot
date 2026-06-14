@@ -23,8 +23,30 @@ YYYY-MM-DD_<typ>.md
 Beispiele:
 
 - `2026-06-13_nacht.md` — Overnight-Auswertung
+- `2026-06-14_tag.md` — Tages-Auswertung (automatisch)
 - `2026-06-14_woche.md` — Wochenreview
 - `2026-06-15_incident_portfolio.md` — Bug-/Incident-Analyse
+
+## Tägliche Auswertung (automatisch)
+
+```bash
+python3 scripts/daily_auswertung.py
+```
+
+Optional:
+
+```bash
+python3 scripts/daily_auswertung.py --date 2026-06-14
+python3 scripts/daily_auswertung.py --bot-dir /pfad/zum/trading_bot
+```
+
+Erzeugt `auswertungen/YYYY-MM-DD_tag.md` aus den JSON-Dateien im Bot-Verzeichnis.
+
+**Cron-Beispiel** (täglich 23:55):
+
+```
+55 23 * * * cd /Users/jholze/Documents/scripts/trading_bot && python3 scripts/daily_auswertung.py
+```
 
 ## Inhalt (Checkliste)
 
