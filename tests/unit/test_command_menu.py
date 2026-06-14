@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from notifications.telegram_commands.command_menu import (
     TELEGRAM_MENU_COMMAND_KEYS,
     all_bot_commands,
+    menu_button_payload,
     register_bot_commands,
 )
 from notifications.telegram_commands.usage_hints import USAGE
@@ -28,13 +29,20 @@ class TestCommandMenu(unittest.TestCase):
             self.assertRegex(entry["command"], r"^[a-z0-9_]{1,32}$")
             self.assertLessEqual(len(entry["description"]), 256)
 
+    def test_menu_button_has_title(self):
+        payload = menu_button_payload()
+        self.assertEqual(payload["type"], "commands")
+        self.assertTrue(payload["text"].strip())
+        self.assertLessEqual(len(payload["text"]), 64)
+
     def test_register_bot_commands_calls_telegram_api(self):
         mock_resp = MagicMock()
         mock_resp.ok = True
         mock_resp.content = b'{"ok": true}'
         mock_resp.json.return_value = {"ok": True}
 
-        with patch("notifications.telegram_commands.command_menu.requests.post", return_value=mock_resp) as mock_post:
+        with patch("notifications.telegram_commands.command_menu.requests.post", return_value=mock_resp) as mock_post, \
+             patch("notifications.telegram_commands.command_menu.menu_button_payload", return_value={"type": "commands", "text": "Menü"}):
             ok = register_bot_commands(token="test-token")
 
         self.assertTrue(ok)
@@ -49,7 +57,7 @@ class TestCommandMenu(unittest.TestCase):
         self.assertEqual(payload["language_code"], "de")
         self.assertEqual(
             mock_post.call_args_list[1][1]["json"],
-            {"menu_button": {"type": "commands"}},
+            {"menu_button": {"type": "commands", "text": "Menü"}},
         )
 
     def test_register_without_token_returns_false(self):

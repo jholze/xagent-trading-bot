@@ -178,6 +178,15 @@ class BotConfig:
         return {**defaults, **raw}
 
     @property
+    def telegram_command_menu_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "button_text": "Menü",
+        }
+        raw = self.observability_config.get("telegram_command_menu", {})
+        return {**defaults, **raw}
+
+    @property
     def coin_links_config(self) -> dict:
         defaults = {
             "enabled": True,

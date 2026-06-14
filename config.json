@@ -167,6 +167,10 @@
       "cmc_digest_min_confidence": 60,
       "x_digest_min_effective_confidence": 70
     },
+    "telegram_command_menu": {
+      "enabled": true,
+      "button_text": "Menü"
+    },
     "coin_links": {
       "enabled": true,
       "show_cmc": true,

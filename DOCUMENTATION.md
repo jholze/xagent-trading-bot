@@ -334,7 +334,9 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 
 ### Befehlsmenü (Button neben der Eingabezeile)
 
-Telegram zeigt links neben dem Eingabefeld ein **Menü-Icon** (☰). Ein Tipp öffnet alle **35 Bot-Befehle** mit kurzer deutscher Beschreibung — kein manuelles Eintippen von `/…` nötig.
+Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“, konfigurierbar). Ein Tipp öffnet alle **35 Bot-Befehle** mit kurzer deutscher Beschreibung — kein manuelles Eintippen von `/…` nötig.
+
+Config: `observability.telegram_command_menu.button_text` in `config.json` (z. B. `"Befehle"`).
 
 | Verhalten | Details |
 |-----------|---------|

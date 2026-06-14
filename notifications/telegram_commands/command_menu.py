@@ -12,6 +12,8 @@ from notifications.telegram_commands.usage_hints import USAGE
 
 _COMMAND_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _MAX_DESCRIPTION_LEN = 256
+_MAX_BUTTON_TEXT_LEN = 64
+_DEFAULT_BUTTON_TEXT = "Menü"
 
 # Canonical command names in menu display order (35 entries).
 TELEGRAM_MENU_COMMAND_KEYS: list[str] = [
@@ -61,6 +63,30 @@ def menu_description(key: str) -> str:
     return desc
 
 
+def menu_button_text() -> str:
+    try:
+        from core.config import get_bot_config
+
+        cfg = get_bot_config().telegram_command_menu_config
+        if not cfg.get("enabled", True):
+            return _DEFAULT_BUTTON_TEXT
+        text = str(cfg.get("button_text") or _DEFAULT_BUTTON_TEXT).strip()
+    except Exception:
+        text = _DEFAULT_BUTTON_TEXT
+    if not text:
+        text = _DEFAULT_BUTTON_TEXT
+    if len(text) > _MAX_BUTTON_TEXT_LEN:
+        text = text[:_MAX_BUTTON_TEXT_LEN]
+    return text
+
+
+def menu_button_payload() -> dict:
+    return {
+        "type": "commands",
+        "text": menu_button_text(),
+    }
+
+
 def all_bot_commands() -> list[dict[str, str]]:
     commands = []
     seen: set[str] = set()
@@ -83,13 +109,23 @@ def all_bot_commands() -> list[dict[str, str]]:
 
 
 def register_bot_commands(token: str | None = None) -> bool:
-    """Publish commands to Telegram (setMyCommands + menu button type commands)."""
+    """Publish commands to Telegram (setMyCommands + labeled menu button)."""
     token = token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         log("Telegram command menu: TELEGRAM_BOT_TOKEN not set", "WARNING")
         return False
 
+    try:
+        from core.config import get_bot_config
+
+        if not get_bot_config().telegram_command_menu_config.get("enabled", True):
+            log("Telegram command menu disabled in config", "INFO")
+            return False
+    except Exception:
+        pass
+
     commands = all_bot_commands()
+    button = menu_button_payload()
     base = f"https://api.telegram.org/bot{token}"
 
     try:
@@ -108,7 +144,7 @@ def register_bot_commands(token: str | None = None) -> bool:
 
         menu_resp = requests.post(
             f"{base}/setChatMenuButton",
-            json={"menu_button": {"type": "commands"}},
+            json={"menu_button": button},
             timeout=10,
         )
         menu_data = menu_resp.json() if menu_resp.content else {}
@@ -119,7 +155,10 @@ def register_bot_commands(token: str | None = None) -> bool:
             )
             return False
 
-        log(f"Telegram command menu registered ({len(commands)} commands)", "INFO")
+        log(
+            f"Telegram command menu registered ({len(commands)} commands, button: {button['text']!r})",
+            "INFO",
+        )
         return True
     except Exception as e:
         log(f"Telegram command menu registration error: {e}", "WARNING")
