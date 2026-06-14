@@ -63,3 +63,11 @@ paper_strategies.json
 watchlist.dry_run_overlay.json
 strategy_backtest.json
 
+# Hermes runtime memory (local learning state)
+hermes/memory/baseline.json
+hermes/memory/experiments.json
+hermes/memory/skills.json
+
+# Generated daily reports (keep README + template tracked)
+auswertungen/20*.md
+
