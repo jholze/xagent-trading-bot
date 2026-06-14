@@ -106,9 +106,18 @@ USAGE = {
         "hint": (
             "🧠 <b>Hermes Self-Improvement Agent</b>\n\n"
             "<code>/hermes</code> — Baseline + letzte Experimente\n"
+            "<code>/hermes_last</code> — Letzter Zyklus in Klartext\n"
             "<code>/hermes_run</code> — Einen Lern-Zyklus starten"
         ),
-        "help_line": "<code>/hermes</code> — Hermes-Status | <code>/hermes_run</code> — Lern-Zyklus",
+        "help_line": "<code>/hermes</code> — Status | <code>/hermes_last</code> — letzte Entscheidung | <code>/hermes_run</code> — Zyklus",
+    },
+    "decisions": {
+        "hint": (
+            "📜 <b>/decisions</b> — Was der Bot wann entschieden hat\n\n"
+            "<code>/decisions</code> — Letzte 8 Entscheidungen\n"
+            "<code>/why SYMBOL</code> — Erklärung für einen Coin (z.B. <code>/why H</code>)"
+        ),
+        "help_line": "<code>/decisions</code> — Entscheidungsprotokoll | <code>/why SYMBOL</code> — Warum für einen Coin",
     },
     "cmc": {
         "help_line": "<code>/cmc</code> — CoinMarketCap Community-Stimmung (Sentiment-Signale)",
@@ -173,7 +182,8 @@ def build_help_message() -> str:
         ("💰 <b>Handel</b> — Kaufen, verkaufen, Portfolio", ["buy", "sell", "positions", "orders", "risk"]),
         ("⚙️ <b>Modus & Sicherheit</b>", ["mode", "maxpositions", "live_confirm", "live_cancel", "gate"]),
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
-        ("🧪 <b>Sandbox, Hermes & CMC</b>", ["sandbox", "sandbox_results", "sandbox_promote", "hermes", "cmc"]),
+        ("🔍 <b>Transparenz</b> — Was der Bot warum tut", ["decisions", "hermes", "cmc"]),
+        ("🧪 <b>Sandbox & Strategie-Tests</b>", ["sandbox", "sandbox_results", "sandbox_promote"]),
         ("❓ <b>Hilfe</b>", ["help"]),
     ]
     lines = [

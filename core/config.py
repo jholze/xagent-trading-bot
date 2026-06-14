@@ -160,6 +160,24 @@ class BotConfig:
         return bool(self.observability_config.get("decisions_audit", True))
 
     @property
+    def telegram_explanations_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "verbosity": "verbose",
+            "language": "de",
+            "show_technical_codes": True,
+            "notify_hermes_every_cycle": True,
+            "notify_cmc_digest": True,
+            "notify_x_digest": True,
+            "notify_social_hold_explanations": True,
+            "notify_blocked_trades": True,
+            "cmc_digest_min_confidence": 60,
+            "x_digest_min_effective_confidence": 70,
+        }
+        raw = self.observability_config.get("telegram_explanations", {})
+        return {**defaults, **raw}
+
+    @property
     def hermes_config(self) -> dict:
         return self._raw.get("hermes", {})
 

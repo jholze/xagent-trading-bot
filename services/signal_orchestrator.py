@@ -11,6 +11,11 @@ from core.actions import is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 from strategies.registry import resolve_coin_config
+from notifications.user_explain import (
+    explain_hold_with_social,
+    explain_trade,
+    explanations_config,
+)
 
 
 class SignalOrchestrator:
@@ -32,6 +37,36 @@ class SignalOrchestrator:
 
     def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None):
         return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals)
+
+    def _build_social_context(self, symbol: str, x_signals=None, cmc_signals=None, coin: dict = None) -> dict:
+        base = symbol.split("/")[0]
+        ctx = {}
+        coin_x = self.decision_engine._signals_for_coin(symbol, x_signals)
+        coin_cmc = self.decision_engine._signals_for_coin(symbol, cmc_signals)
+        if coin_x:
+            s = coin_x[0]
+            ctx["x"] = {
+                "account": getattr(s, "account", "?"),
+                "action": getattr(s, "action", "HOLD"),
+                "confidence": getattr(s, "confidence", 0),
+                "trust_score": getattr(s, "trust_score", "?"),
+                "rationale": getattr(s, "rationale", ""),
+            }
+        if coin_cmc:
+            s = coin_cmc[0]
+            ctx["cmc"] = {
+                "action": getattr(s, "action", "HOLD"),
+                "confidence": getattr(s, "confidence", 0),
+                "votes_bullish": getattr(s, "votes_bullish", 0),
+                "votes_bearish": getattr(s, "votes_bearish", 0),
+                "rationale": getattr(s, "rationale", ""),
+            }
+        if coin:
+            coin_cfg = resolve_coin_config(coin)
+            sp = coin_cfg.get("strategy_params") or {}
+            if sp.get("hermes_experiment_id"):
+                ctx["hermes"] = {"experiment_id": sp.get("hermes_experiment_id")}
+        return ctx
 
     def execute_if_needed(self, analysis, coin: dict, current_price: float, x_signals=None):
         if analysis is None or analysis.action == "HOLD":
@@ -123,7 +158,15 @@ class SignalOrchestrator:
             should_notify = False
 
         trade_executed = bool(trade_result.executed) if trade_result else False
-        if should_notify and self.notify_callback:
+        exp_cfg = explanations_config(self.config)
+        social_ctx = self._build_social_context(symbol, x_signals, cmc_signals, coin=coin)
+        explained = explain_trade(analysis, trade_result, social_ctx=social_ctx, signal=analysis.action)
+
+        notify_trade = should_notify
+        if trade_result and not trade_executed and not exp_cfg.get("notify_blocked_trades", True):
+            notify_trade = False
+
+        if notify_trade and self.notify_callback:
             self.notify_callback(
                 analysis.action,
                 coin,
@@ -138,7 +181,21 @@ class SignalOrchestrator:
                 trade_result=trade_result,
                 sources=analysis.sources,
                 timeframe=tf,
+                why_de=explained.get("why_de"),
+                tech_line=explained.get("tech_line"),
+                source_de=explained.get("source_de"),
+                social_lines=explained.get("social_lines"),
+                confidence=analysis.confidence,
             )
+        elif (
+            exp_cfg.get("notify_social_hold_explanations")
+            and analysis.normalized_action == "HOLD"
+            and social_ctx
+        ):
+            hold_why = explain_hold_with_social(analysis, social_ctx)
+            if hold_why:
+                from telegram_notifier import send_hold_explanation_message
+                send_hold_explanation_message(symbol, hold_why, explained.get("tech_line", ""))
 
         pos["last_ampel"] = analysis.ampel_emoji
         pos["last_rsi"] = analysis.rsi
@@ -181,4 +238,5 @@ class SignalOrchestrator:
             "order_type": trade_result.order_type if trade_result else None,
             "trade_message": trade_result.message if trade_result else "",
             "unrealized": unrealized,
+            "why_de": explained.get("why_de", ""),
         }

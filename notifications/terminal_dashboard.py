@@ -210,6 +210,8 @@ def build_cycle_summary(
     trading_mode: str = "paper",
     x_signal_count: int = 0,
     cmc_signal_count: int = 0,
+    top_x: str = "",
+    top_cmc: str = "",
 ) -> str:
     snap = _portfolio_snapshot(trading_mode)
     balance = snap["balance"]
@@ -221,18 +223,32 @@ def build_cycle_summary(
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
 
     lines = [
-        f"<b>📋 Cycle Summary</b> — {datetime.now().strftime('%H:%M:%S')}",
-        f"Mode: <b>{trading_mode.upper()}</b>",
+        f"<b>📋 Zyklus-Zusammenfassung</b> — {datetime.now().strftime('%H:%M:%S')}",
+        f"Modus: <b>{trading_mode.upper()}</b>",
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
-        f"Signals: {len(actions)} actionable | {x_signal_count} X | {cmc_signal_count} CMC",
+        f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC",
     ]
+    if top_x or top_cmc:
+        lines.append("<b>Social:</b>")
+        if top_x:
+            lines.append(f"  🐦 {top_x}")
+        if top_cmc:
+            lines.append(f"  📊 {top_cmc}")
+    if actions:
+        lines.append("<b>Entscheidungen:</b>")
+        for r in actions[:6]:
+            sym = (r.get("symbol") or "").replace("/USDT", "")
+            act = r.get("normalized_action") or r.get("action")
+            why = (r.get("why_de") or r.get("rationale") or "")[:80]
+            status = "✅" if r.get("executed") else "🚫" if r.get("trade_message") else "👀"
+            lines.append(f"  {status} {sym} {act}: {why}")
     if executed:
-        lines.append(f"<b>Auto-Executed (this cycle):</b> {len(executed)} trade(s)")
+        lines.append(f"<b>Ausgeführt:</b> {len(executed)} Trade(s)")
         for r in executed[:5]:
             lines.append(f"  • {r.get('symbol')} {r.get('order_type')}")
     else:
-        lines.append("No auto-trades executed this cycle.")
+        lines.append("Keine Auto-Trades in diesem Zyklus.")
 
     ledger = OrderService()
     stats = ledger.stats_24h()
@@ -240,5 +256,5 @@ def build_cycle_summary(
     lines.append(f"<b>Orders (24h, {ledger_label()}):</b> "
                  f"✅{stats['filled']} ❌{stats['rejected']} 🚫{stats['cancelled']}")
     lines.extend(recent_orders_lines())
-    lines.append("<i>Details: <code>/orders</code> · Manuelle /buy · /sell im Ledger</i>")
+    lines.append("<i>Details: <code>/decisions</code> · <code>/orders</code> · /buy · /sell</i>")
     return "\n".join(lines)

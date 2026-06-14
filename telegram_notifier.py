@@ -72,13 +72,23 @@ def send_signal_message(
     trade_result=None,
     sources=None,
     timeframe="4h",
+    why_de=None,
+    tech_line=None,
+    source_de=None,
+    social_lines=None,
+    confidence=None,
 ):
     symbol = coin.get("symbol", "Unknown")
     name = coin.get("name", symbol)
     tf = timeframe or coin.get("timeframe", "4h")
     mode_badge = _mode_badge()
+    from notifications.user_explain import explanations_config, explain_risk
+
+    exp_cfg = explanations_config()
     source_line = ""
-    if sources:
+    if source_de:
+        source_line = f"\n<b>Quellen:</b> {source_de}"
+    elif sources:
         source_line = f"\n<b>Sources:</b> {', '.join(sources)}"
 
     if signal == "BUY":
@@ -128,8 +138,20 @@ def send_signal_message(
     )
     rsi_str = f"{rsi:.1f}" if isinstance(rsi, (int, float)) and rsi > 0 else "—"
 
-    blocked_line = f"\n<b>Reason:</b> {trade_message}" if executed is False and trade_message else ""
+    why_line = f"\n<b>Warum:</b> {why_de}" if why_de and exp_cfg.get("enabled", True) else ""
+    conf_line = f"\n<b>Confidence:</b> {confidence:.0f}%" if isinstance(confidence, (int, float)) and confidence > 0 else ""
+    social_block = ""
+    if social_lines:
+        social_block = "\n" + "\n".join(f"<b>Social:</b> {line}" if i == 0 else line for i, line in enumerate(social_lines))
+
+    if executed is False and trade_message:
+        risk_de = explain_risk(trade_message) if exp_cfg.get("enabled", True) else trade_message
+        blocked_line = f"\n<b>Grund:</b> {risk_de}"
+    else:
+        blocked_line = ""
     exec_line = f"\n<b>Fill:</b> {trade_message}" if executed is True and trade_message else ""
+    tech_block = f"\n<code>{tech_line}</code>" if tech_line and exp_cfg.get("show_technical_codes", True) else ""
+
     message = f"""
 {emoji} <b>{title}</b> — {symbol}
 <b>Mode:</b> {mode_badge}
@@ -137,10 +159,65 @@ def send_signal_message(
 <b>Name:</b> {name}
 <b>Preis:</b> ${price_str}
 <b>RSI:</b> {rsi_str}
-{ampel_line}{source_line}{extra}{blocked_line}{exec_line}
+{ampel_line}{why_line}{conf_line}{source_line}{social_block}{extra}{blocked_line}{exec_line}{tech_block}
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """
     send_telegram_message(message.strip())
+
+
+def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = ""):
+    from notifications.user_explain import explanations_config
+
+    cfg = explanations_config()
+    if not cfg.get("enabled") or not cfg.get("notify_social_hold_explanations"):
+        return False
+    tech_block = f"\n<code>{tech_line}</code>" if tech_line and cfg.get("show_technical_codes", True) else ""
+    msg = (
+        f"👀 <b>Kein Trade</b> — {symbol}\n"
+        f"<b>Warum:</b> {why_de}{tech_block}\n"
+        f"🕒 {datetime.now().strftime('%H:%M:%S')}"
+    )
+    return send_telegram_message(msg)
+
+
+def send_cmc_cycle_digest(signals: list):
+    from notifications.user_explain import explain_cmc_signal, explanations_config
+
+    cfg = explanations_config()
+    if not cfg.get("enabled") or not cfg.get("notify_cmc_digest"):
+        return False
+    min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
+    filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
+    if not filtered:
+        return False
+    lines = [f"<b>📊 CMC diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
+    for s in filtered[:8]:
+        lines.append(explain_cmc_signal(s))
+        lines.append("")
+    return send_telegram_message("\n".join(lines).strip())
+
+
+def send_x_cycle_digest(signals: list, skip_post_ids: set = None):
+    from notifications.user_explain import explain_x_signal, explanations_config
+
+    cfg = explanations_config()
+    if not cfg.get("enabled") or not cfg.get("notify_x_digest"):
+        return False
+    min_eff = float(cfg.get("x_digest_min_effective_confidence", 70))
+    skip = skip_post_ids or set()
+    filtered = []
+    for s in signals:
+        eff = getattr(s, "effective_confidence", getattr(s, "confidence", 0))
+        pid = getattr(s, "post_id", None)
+        if eff >= min_eff and pid not in skip:
+            filtered.append(s)
+    if not filtered:
+        return False
+    lines = [f"<b>🐦 X-Signale diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
+    for s in filtered[:6]:
+        lines.append(explain_x_signal(s))
+        lines.append("")
+    return send_telegram_message("\n".join(lines).strip())
 
 
 def send_x_recommendation_message(recommendation):
@@ -156,12 +233,14 @@ def send_x_recommendation_message(recommendation):
     if sl is not None:
         target_lines += f"\n<b>Stop Loss:</b> ${float(sl):.4f}"
 
-    msg = f"""{emoji} <b>{title} RECOMMENDATION</b> — {recommendation.get("coin", "UNKNOWN")}/USDT
+    act_de = "Kauf" if title == "BUY" else "Verkauf" if title == "SELL" else title
+    msg = f"""{emoji} <b>{title} EMPFEHLUNG</b> — {recommendation.get("coin", "UNKNOWN")}/USDT
 
-<b>From:</b> @{recommendation.get("account", "Unknown")}
-<b>Raw Tweet:</b> {raw}
-<b>Confidence:</b> {recommendation.get("confidence", 0)}%
-<b>Rationale:</b> {recommendation.get("rationale", "—")}{target_lines}
+<b>Von:</b> @{recommendation.get("account", "Unknown")}
+<b>Empfehlung:</b> {act_de}
+<b>Tweet:</b> {raw}
+<b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {recommendation.get("trust_at_signal", "—")}
+<b>Warum:</b> {recommendation.get("rationale", "—")}{target_lines}
 
 🕒 {datetime.now().strftime("%H:%M:%S")}
 """

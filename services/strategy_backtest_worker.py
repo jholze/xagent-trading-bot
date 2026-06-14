@@ -182,11 +182,13 @@ class StrategyBacktestWorker:
             save_strategy_backtest_entry(key, record)
 
             if applied and cfg.raw.get("strategy_backtest", {}).get("telegram_on_apply", True):
-                changes = ", ".join(f"{k}: {v}" for k, v in applied.items())
+                from notifications.user_explain import describe_param_change
+                changes = "\n".join(f"• {describe_param_change(k, v)}" for k, v in applied.items())
                 send_telegram_message(
-                    f"🔧 <b>{symbol}</b> {timeframe} auto-tuned (Backtest {result.days}d)\n"
+                    f"🔧 <b>Strategie angepasst</b> — {symbol} {timeframe}\n"
+                    f"<b>Warum:</b> Backtest ({result.days} Tage) war mit diesen Werten besser.\n"
                     f"{changes}\n"
-                    f"PnL sim: {result.metrics.pnl_sim:.1f} | Nächster Check: {next_at.strftime('%a %H:%M')}"
+                    f"Sim-PnL: {result.metrics.pnl_sim:.1f} USDT | Nächster Check: {next_at.strftime('%a %H:%M')}"
                 )
             log(
                 f"Strategy backtest {symbol} {timeframe}: churn={result.metrics.signal_churn} "

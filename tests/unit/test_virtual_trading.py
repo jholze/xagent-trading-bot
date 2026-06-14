@@ -752,7 +752,38 @@ class TestVirtualTrading(unittest.TestCase):
 
             called_text = mock_post.call_args[1]["json"]["text"]
             self.assertIn("SELL 30% BLOCKED", called_text)
-            self.assertIn("No position to sell", called_text)
+            self.assertIn("Grund:", called_text)
+            self.assertIn("Position", called_text)
+
+    def test_send_signal_message_includes_why_de(self):
+        from unittest.mock import patch
+        from telegram_notifier import send_signal_message
+
+        coin = {"symbol": "H/USDT", "name": "Humanity"}
+
+        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+             patch("telegram_notifier.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+
+            send_signal_message(
+                "SELL_30",
+                coin,
+                0.12,
+                74.0,
+                0.11,
+                1.1,
+                "🔴",
+                "Bearish",
+                executed=True,
+                why_de="RSI überkauft — 30 % verkauft.",
+                tech_line="TA→SELL_30 | RSI=74.0",
+                source_de="Technische Analyse",
+            )
+
+            called_text = mock_post.call_args[1]["json"]["text"]
+            self.assertIn("Warum:", called_text)
+            self.assertIn("überkauft", called_text)
+            self.assertIn("TA→SELL_30", called_text)
 
     def test_send_signal_message_x_signal_without_demo_prefix(self):
         from unittest.mock import patch

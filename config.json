@@ -45,7 +45,7 @@
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
-  "max_open_positions": 10,
+  "max_open_positions": 20,
   "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
@@ -153,7 +153,20 @@
     "terminal_dashboard": true,
     "json_logs": false,
     "notify_on_cycle": true,
-    "decisions_audit": true
+    "decisions_audit": true,
+    "telegram_explanations": {
+      "enabled": true,
+      "verbosity": "verbose",
+      "language": "de",
+      "show_technical_codes": true,
+      "notify_hermes_every_cycle": true,
+      "notify_cmc_digest": true,
+      "notify_x_digest": true,
+      "notify_social_hold_explanations": true,
+      "notify_blocked_trades": true,
+      "cmc_digest_min_confidence": 60,
+      "x_digest_min_effective_confidence": 70
+    }
   },
   "hermes": {
     "enabled": true,
@@ -173,25 +186,37 @@
     },
     "backtest_days": 14,
     "symbols_mode": "hybrid",
-    "symbols_pin": ["ARIA/USDT"],
+    "symbols_pin": [
+      "ARIA/USDT"
+    ],
     "symbols_max": 8,
     "symbols_cmc_top_n": 4,
     "symbols_include_positions": true,
     "symbols_refresh_hours": 6,
-    "symbols": ["ARIA/USDT", "H/USDT", "XPL/USDT"],
-    "timeframes": ["4h"],
+    "symbols": [
+      "ARIA/USDT",
+      "H/USDT",
+      "XPL/USDT"
+    ],
+    "timeframes": [
+      "4h"
+    ],
     "rotation": "signal_activity",
     "rotation_hours": 24,
     "live_evidence": {
       "enabled": true,
-      "mode": "guardrail",
+      "mode": "dual",
       "lookback_days": 7,
       "min_live_trades": 3,
       "min_live_sell_trades": 2,
       "live_max_loss_usdt": 10,
       "min_live_pnl_delta_usdt": 5,
+      "min_counterfactual_sells": 1,
+      "require_cf_seeded": true,
       "include_manual_trades": true,
-      "counterfactual_enabled": false,
+      "counterfactual_enabled": true,
+      "live_blocklist": ["stop_loss_pct"],
+      "dual_exit_params_only": true,
       "notify_on_live_veto": true
     },
     "tunable_params": [
@@ -206,6 +231,7 @@
       "cmc_min_confidence",
       "rsi_sell_30",
       "rsi_sell_20",
+      "take_profit_pct",
       "stop_loss_pct"
     ],
     "cycle_interval_sec": 1800,

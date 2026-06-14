@@ -25,6 +25,8 @@ class SocialPipeline:
         self.cmc_parser = CMCCommunityParser()
         self._cycle_signals = []
         self._cycle_cmc_signals = []
+        self._notified_post_ids = set()
+        self._last_cmc_digest_sig = ""
         self._perf = get_config().get("x_performance", {})
         self._strategy_async = self._perf.get("strategy_discovery_async", True)
         self._strategy_queue: Queue = Queue()
@@ -129,6 +131,8 @@ class SocialPipeline:
                     "INFO",
                 )
                 send_x_recommendation_message(rec)
+                if rec.get("post_id"):
+                    self._notified_post_ids.add(rec["post_id"])
                 if rec["action"] == "ADD_TO_WATCHLIST" and rec.get("coin"):
                     add_coin(rec["coin"])
 
@@ -165,6 +169,21 @@ class SocialPipeline:
 
     def refresh_cmc_signals(self) -> list:
         return self._cycle_cmc_signals
+
+    def get_notified_post_ids(self) -> set:
+        return set(self._notified_post_ids)
+
+    def should_send_cmc_digest(self, signals: list) -> bool:
+        if not signals:
+            return False
+        sig = "|".join(
+            f"{getattr(s, 'coin', '')}:{getattr(s, 'action', '')}:{getattr(s, 'confidence', 0)}"
+            for s in sorted(signals, key=lambda x: getattr(x, "coin", ""))
+        )
+        if sig == self._last_cmc_digest_sig:
+            return False
+        self._last_cmc_digest_sig = sig
+        return True
 
     def update_accuracy_loop(self) -> dict:
         outcomes = self.tracker.update_outcomes()

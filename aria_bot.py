@@ -45,7 +45,14 @@ try:
     from services.signal_orchestrator import SignalOrchestrator
     from services.social_pipeline import SocialPipeline
     from strategies.paper_sandbox import PaperSandbox
-    from telegram_notifier import handle_telegram_callback, handle_telegram_command, send_cycle_summary, send_signal_message
+    from telegram_notifier import (
+        handle_telegram_callback,
+        handle_telegram_command,
+        send_cmc_cycle_digest,
+        send_cycle_summary,
+        send_signal_message,
+        send_x_cycle_digest,
+    )
     from x_analyzer import XAnalyzer
 except ImportError as e:
     print(f"Fehler beim Laden der Module: {e}")
@@ -207,11 +214,34 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print("-" * 90)
                 print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
 
+            top_x = ""
+            top_cmc = ""
+            if x_signals:
+                best_x = max(
+                    x_signals,
+                    key=lambda s: getattr(s, "effective_confidence", getattr(s, "confidence", 0)),
+                )
+                eff = getattr(best_x, "effective_confidence", best_x.confidence)
+                top_x = f"@{best_x.account} {best_x.action} {best_x.coin} ({eff:.0f}%)"
+            if cmc_signals:
+                best_cmc = max(cmc_signals, key=lambda s: s.confidence)
+                top_cmc = (
+                    f"{best_cmc.coin} {best_cmc.action} ({best_cmc.confidence}%) "
+                    f"Votes {best_cmc.votes_bullish}↑/{best_cmc.votes_bearish}↓"
+                )
+
+            if social_pipeline:
+                if social_pipeline.should_send_cmc_digest(cmc_signals):
+                    send_cmc_cycle_digest(cmc_signals)
+                send_x_cycle_digest(x_signals, skip_post_ids=social_pipeline.get_notified_post_ids())
+
             summary = build_cycle_summary(
                 coin_results=coin_results,
                 trading_mode=mode,
                 x_signal_count=len(x_signals),
                 cmc_signal_count=len(cmc_signals),
+                top_x=top_x,
+                top_cmc=top_cmc,
             )
             send_cycle_summary(summary)
 

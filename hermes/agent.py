@@ -6,7 +6,11 @@ from hermes.backtester import Backtester
 from hermes.cmc_replay import recent_signal_activity
 from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
-from hermes.live_evidence import compute_live_metrics, format_live_metrics_line
+from hermes.live_evidence import (
+    compute_counterfactual_delta,
+    compute_live_metrics,
+    format_live_metrics_line,
+)
 from hermes.memory import store
 from hermes.self_improver import SelfImprover
 from hermes.symbol_pool import format_active_pool_line, resolve_active_symbols
@@ -92,6 +96,21 @@ class HermesAgent:
         grok_proposal = self.improver.propose_experiment(baseline)
         proposal = self.experiments.propose(params, grok_proposal, symbol, timeframe)
 
+        cf_result = None
+        if (
+            le_cfg.get("enabled")
+            and le_cfg.get("counterfactual_enabled")
+            and le_cfg.get("mode") == "dual"
+        ):
+            cf_result = compute_counterfactual_delta(
+                symbol,
+                timeframe,
+                params,
+                proposal.params,
+                lookback_days=int(le_cfg.get("lookback_days", 7)),
+                include_manual_trades=bool(le_cfg.get("include_manual_trades", True)),
+            )
+
         log(
             f"Hermes [{symbol} {timeframe}]: {proposal.variable} "
             f"{proposal.old_value}→{proposal.new_value} ({proposal.source})",
@@ -112,7 +131,9 @@ class HermesAgent:
             base_m = wf_base.aggregate.__dict__
             var_m = wf_var.aggregate.__dict__
             verdict = self.goals.evaluate_walk_forward(wf_base, wf_var)
-            verdict = self.goals.apply_live_evidence(verdict, live_metrics)
+            verdict = self.goals.evaluate_with_live_and_counterfactual(
+                verdict, live_metrics, cf_result, proposal.variable, var_m,
+            )
             record = self.experiments.record(
                 proposal=proposal,
                 baseline_metrics=base_m,
@@ -128,6 +149,7 @@ class HermesAgent:
                 folds_total=wf_var.folds_total,
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
+                counterfactual_metrics=cf_result.to_dict() if cf_result else None,
             )
         else:
             bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
@@ -135,7 +157,9 @@ class HermesAgent:
             base_m = bt_base.metrics.__dict__
             var_m = bt_var.metrics.__dict__
             verdict = self.goals.evaluate(bt_base.metrics, bt_var.metrics)
-            verdict = self.goals.apply_live_evidence(verdict, live_metrics)
+            verdict = self.goals.evaluate_with_live_and_counterfactual(
+                verdict, live_metrics, cf_result, proposal.variable, var_m,
+            )
             record = self.experiments.record(
                 proposal=proposal,
                 baseline_metrics=base_m,
@@ -147,6 +171,7 @@ class HermesAgent:
                 validation_mode="full",
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
+                counterfactual_metrics=cf_result.to_dict() if cf_result else None,
             )
 
         if verdict.live_veto and le_cfg.get("notify_on_live_veto", True):
@@ -159,6 +184,8 @@ class HermesAgent:
             log(f"Hermes baseline updated [{symbol}]: {proposal.variable}={proposal.new_value}", "INFO")
             self._sync_to_config(baseline, record.get("id", ""))
             self._notify_promotion(record, proposal, var_m, symbol)
+        else:
+            self._notify_cycle_result(record, promoted=False)
 
         self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
         summary = self.improver.analyze_and_suggest(record)
@@ -189,14 +216,17 @@ class HermesAgent:
             return
         try:
             from telegram_notifier import send_telegram_message
+            from notifications.user_explain import explain_hermes_cycle
+
+            record = {**record, "verdict": "promoted"}
+            msg = explain_hermes_cycle(record, proposal)
             folds = ""
             if record.get("folds_total"):
                 folds = f"\nFolds: {record.get('folds_won')}/{record.get('folds_total')}"
             send_telegram_message(
-                f"🧠 <b>Hermes promoted</b> ({symbol})\n"
-                f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
-                f"Sharpe: {metrics.get('sharpe', 0)} | Opp: {metrics.get('opportunity_score', 0)} | "
-                f"WR: {metrics.get('win_rate', 0)}% | DD: {metrics.get('max_drawdown_pct', 0)}%{folds}\n"
+                f"🧠 <b>Hermes — Strategie übernommen</b>\n{msg}\n"
+                f"Sharpe: {metrics.get('sharpe', 0)} | WR: {metrics.get('win_rate', 0)}% | "
+                f"DD: {metrics.get('max_drawdown_pct', 0)}%{folds}\n"
                 f"Experiment: {record.get('id', '')}"
             )
         except Exception as e:
@@ -205,16 +235,33 @@ class HermesAgent:
     def _notify_live_veto(self, record: dict, proposal, live_metrics, symbol: str):
         try:
             from telegram_notifier import send_telegram_message
+            from notifications.user_explain import explain_hermes_cycle
 
-            pnl = live_metrics.live_sell_pnl if live_metrics else 0
+            veto_record = {**record, "live_veto": True}
+            if live_metrics:
+                veto_record["live_metrics"] = live_metrics.to_dict()
             send_telegram_message(
-                f"🧠 <b>Hermes live veto</b> ({symbol})\n"
-                f"{proposal.variable}: {proposal.old_value}→{proposal.new_value}\n"
-                f"Dry-run ledger sell PnL: {pnl:+.2f} USDT\n"
-                f"Experiment: {record.get('id', '')}"
+                f"🧠 <b>Hermes — Live-Schutz</b>\n{explain_hermes_cycle(veto_record, proposal)}"
             )
         except Exception as e:
             log(f"Hermes live veto notify failed: {e}", "WARNING")
+
+    def _notify_cycle_result(self, record: dict, promoted: bool = False):
+        from notifications.user_explain import explanations_config, explain_hermes_cycle
+
+        cfg = explanations_config(self.config)
+        if not cfg.get("notify_hermes_every_cycle", True):
+            return
+        if promoted:
+            return
+        if record.get("live_veto"):
+            return
+        try:
+            from telegram_notifier import send_telegram_message
+
+            send_telegram_message(f"🧠 <b>Hermes — Lern-Zyklus</b>\n{explain_hermes_cycle(record)}")
+        except Exception as e:
+            log(f"Hermes cycle notify failed: {e}", "WARNING")
 
     def run_loop(self, interval_sec: int | None = None):
         interval = interval_sec or int(self.hermes.get("cycle_interval_sec", 1800))
@@ -245,7 +292,9 @@ class HermesAgent:
             f"Profiles: {len(profiles)}",
         ]
         if le_cfg.get("enabled", False):
-            lines.append("Live evidence: enabled (guardrail)")
+            mode = le_cfg.get("mode", "guardrail")
+            cf_on = le_cfg.get("counterfactual_enabled", False)
+            lines.append(f"Live evidence: enabled ({mode}, cf={cf_on})")
             pool = resolve_active_symbols(self.config)
             lookback = int(le_cfg.get("lookback_days", 7))
             for sym in pool[:6]:
@@ -262,9 +311,13 @@ class HermesAgent:
             fold_info = ""
             if exp.get("folds_total"):
                 fold_info = f" [{exp.get('folds_won')}/{exp.get('folds_total')} folds]"
+            cf_info = ""
+            cf = exp.get("counterfactual_metrics") or {}
+            if cf.get("pnl_delta") is not None:
+                cf_info = f" cf={cf.get('pnl_delta'):+.2f}"
             lines.append(
                 f"  • {exp.get('id')}: [{exp.get('symbol')}] {exp.get('variable')} "
-                f"{exp.get('old_value')}→{exp.get('new_value')} → {exp.get('verdict')}{fold_info}"
+                f"{exp.get('old_value')}→{exp.get('new_value')} → {exp.get('verdict')}{fold_info}{cf_info}"
             )
         if skills:
             lines.append("")
