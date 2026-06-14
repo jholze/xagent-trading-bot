@@ -75,6 +75,7 @@ flowchart TB
 | Social | `services/social_pipeline.py` | X-Posts, CMC, Accuracy |
 | Sandbox | `strategies/paper_sandbox.py` | Isolierte Strategie-Tests |
 | Telegram | `notifications/telegram_commands/` | Alle `/`-Befehle |
+| Telegram-Menü (DE/EN) | `notifications/telegram_commands/menu_i18n.py`, `locales/telegram_menu.json` | Menü, `/help`, Hinweise nach Nutzersprache |
 | Erklärungen (DE) | `notifications/user_explain.py` | Laien-Texte für Trades, Risiko, Hermes, CMC/X |
 | Entscheidungs-Log | `services/audit_trail.py` → `logs/decisions.jsonl` | Protokoll aller Bot-Entscheidungen |
 
@@ -330,11 +331,11 @@ Position −16 % (stop_loss_pct: 15)
 
 ## 7. Telegram — Alle Befehle mit Beispielen
 
-Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur `/buy`) antwortet der Bot mit einem Beispiel.
+Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur `/buy`) antwortet der Bot mit einem Beispiel — in der Sprache deines Telegram-Profils (DE oder EN).
 
 ### Befehlsmenü (Button neben der Eingabezeile)
 
-Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“, konfigurierbar).
+Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“ / „Menu“ je nach `default_language`).
 
 ### Alle Befehle in 7 Bereichen
 
@@ -342,22 +343,44 @@ Telegram erlaubt im Menü-Button **keine echten Überschriften** — deshalb zwe
 
 | Weg | Beschreibung |
 |-----|----------------|
-| **Menü-Button (☰)** | Alle **36 Befehle**, nach Bereich sortiert; Beschreibung z. B. `Handel · Kaufen` |
-| **Bereichs-Tastatur** | Unter der Eingabezeile: Bereich wählen → alle Befehle des Bereichs als Tasten (`/buy`, …) → **◀ Bereiche** zurück |
+| **Menü-Button (☰)** | Alle **36 Befehle**, nach Bereich sortiert; Beschreibung z. B. `Handel · Coin kaufen` (DE) oder `Trading · Buy coin` (EN) |
+| **Bereichs-Tastatur** | Unter der Eingabezeile: Bereich wählen → alle Befehle des Bereichs als Tasten (`/buy`, …) → **◀ Bereiche** / **◀ Sections** zurück |
 | **`/menu`** | Inline-Übersicht mit denselben 7 Bereichen (Alternative zur Tastatur) |
 
 **Bereiche:** Watchlist · Handel · Modus & Gate · Transparenz · X/Twitter · Sandbox & Backtest · Hilfe
 
-Config: `observability.telegram_command_menu` — `button_text`, `reply_keyboard`, `default_language` (`de`/`en`).
+Config: `observability.telegram_command_menu`:
 
-**Sprache:** Telegram `language_code` aus dem Nutzerprofil (App-Sprache) steuert Menü-Beschreibungen (`setMyCommands` de/en) und die Bereichs-Tastatur. Fallback: `default_language` in der Config. Übersetzungen: `locales/telegram_menu.json`.
+| Schlüssel | Standard | Bedeutung |
+|-----------|----------|-----------|
+| `enabled` | `true` | Menü-Button + `setMyCommands` beim Bot-Start |
+| `reply_keyboard` | `true` | Bereichs-Tastatur unter der Eingabezeile |
+| `default_language` | `de` | Fallback (`de` oder `en`), wenn Telegram kein `language_code` liefert |
+| `button_text` | *(leer)* | Optional: fester Button-Titel für alle Nutzer (überschreibt Sprach-Label) |
+
+### Mehrsprachigkeit (DE / EN)
+
+Alle **sichtbaren Menü-Texte** kommen aus `locales/telegram_menu.json`:
+
+| Was | DE / EN |
+|-----|---------|
+| Menü-Beschreibungen im ☰-Button | `setMyCommands` für `de` und `en` |
+| Bereichs-Tastatur + `/menu` | Titel, Intro, Zurück-Button |
+| `/help` | Komplette Befehlsliste mit Beispielen |
+| Fehlerhinweise | z. B. bei `/buy` ohne Parameter oder unbekanntem Befehl |
+
+**Spracherkennung:** Bei jeder eingehenden Nachricht oder Callback liest der Bot `language_code` aus dem Telegram-Nutzerprofil (`de-DE` → Deutsch, `en-US` → Englisch, sonst Englisch). Das entspricht der **Telegram-App-Sprache** (folgt in der Regel der Gerätesprache). Fehlt `language_code`, gilt `default_language` aus der Config.
+
+**Technische Grenze:** Der **Beschriftungstext** des ☰-Buttons (`Menü` / `Menu`) ist bei Telegram **global pro Bot** — nicht pro Nutzer. Die **Befehlsbeschreibungen** in der Liste darunter sind dagegen pro Nutzersprache korrekt.
+
+**Code:** `notifications/telegram_commands/menu_i18n.py` (Sprachlogik), `command_menu.py` (Registrierung), `menu_commands.py` (Tastatur/Inline), `usage_hints.py` (Hinweise).
 
 | Verhalten | Details |
 |-----------|---------|
 | **Menü-Button** | Komplette Liste, gruppiert durch Bereichs-Prefix in der Beschreibung |
 | **Tastatur unten** | Bereich antippen → nur Befehle dieses Bereichs |
-| **Parameter** | `/buy`, `/why` usw. ohne Zusatz → Bot zeigt Liste/Hinweis |
-| **`/help`** | Vollständige Textliste mit Beispielen |
+| **Parameter** | `/buy`, `/why` usw. ohne Zusatz → Bot zeigt Liste/Hinweis (DE/EN) |
+| **`/help`** | Vollständige Textliste mit Beispielen (DE/EN) |
 
 ### 7.0 Für Einsteiger — Was du in Telegram siehst
 
@@ -699,11 +722,18 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
       "notify_blocked_trades": true,
       "cmc_digest_min_confidence": 60,
       "x_digest_min_effective_confidence": 70
+    },
+    "telegram_command_menu": {
+      "enabled": true,
+      "reply_keyboard": true,
+      "default_language": "de"
     }
   },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ]
 }
 ```
+
+`telegram_command_menu` — siehe Abschnitt 7 (Menü-Button, Bereichs-Tastatur, DE/EN). Optional: `"button_text": "Menü"` für einen festen Button-Titel.
 
 ### `.env` (nicht committen)
 
@@ -742,6 +772,7 @@ XAI_API_KEY=...            # Grok
 | `hermes/memory/experiments.json` | Hermes-Experiment-Historie |
 | `hermes/memory/baseline.json` | Aktuelle Hermes-Best-Parameter |
 | `data/cmc_slug_cache.json` | CMC-Slug-Cache (vom Bot befüllt, gitignored) |
+| `locales/telegram_menu.json` | Telegram-Menü, `/help` und Hinweise (DE/EN) |
 | `*.demo.json` | Demo-Modus-Kopien |
 
 ---
@@ -755,6 +786,7 @@ pytest tests/unit/test_dry_run_wallet.py -v
 pytest tests/unit/test_strategy_backtest.py -v
 pytest tests/unit/test_trade_cooldown.py -v      # Cooldown + RSI-Churn
 pytest tests/unit/test_live_gate_readiness.py -v
+pytest tests/unit/test_command_menu.py tests/unit/test_menu_commands.py tests/unit/test_menu_i18n.py -v  # Telegram-Menü DE/EN
 
 # Gate readiness (keys in .env required)
 python3 scripts/gate_live_smoke_test.py
