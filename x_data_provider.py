@@ -44,12 +44,19 @@ class XDataProvider:
         raise NotImplementedError
 
     def get_last_post_id(self, account: str) -> Optional[str]:
+        """Highest numeric X tweet id seen for account (ignores mock/grok test ids)."""
         posts = load_x_posts().get("posts", [])
-        last_id = None
+        best: int | None = None
         for post in posts:
-            if post.get("account") == account and post.get("post_id"):
-                last_id = post["post_id"]
-        return last_id
+            if post.get("account") != account:
+                continue
+            pid = str(post.get("post_id") or "").strip()
+            if not pid.isdigit():
+                continue
+            val = int(pid)
+            if best is None or val > best:
+                best = val
+        return str(best) if best is not None else None
 
 
 class MockXProvider(XDataProvider):
@@ -277,7 +284,7 @@ class XApiV2Provider(XDataProvider):
 
     def __init__(self, bearer_token: str = None, base_url: str = None):
         self.bearer_token = bearer_token or os.getenv("X_API_BEARER_TOKEN", "")
-        self.base_url = (base_url or os.getenv("X_API_BASE_URL", "https://api.twitter.com/2")).rstrip("/")
+        self.base_url = (base_url or os.getenv("X_API_BASE_URL", "https://api.x.com/2")).rstrip("/")
         self._user_id_cache: dict[str, str] = {}
 
     def _headers(self) -> dict:
@@ -321,7 +328,7 @@ class XApiV2Provider(XDataProvider):
 
             since_id = self.get_last_post_id(handle) or acc.get("last_post_id")
             params = {
-                "max_results": min(limit_per_account, 10),
+                "max_results": max(5, min(limit_per_account, 10)),
                 "tweet.fields": "created_at,text",
                 "exclude": "retweets,replies",
             }
