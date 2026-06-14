@@ -9,13 +9,49 @@
     "handle": "Pentosh1",
     "trust_score": 82,
     "enabled": true,
-    "notes": "Good altcoin picks"
+    "notes": "Altcoin TA, levels & swing trades"
   },
   {
     "handle": "CryptoWizardd",
     "trust_score": 79,
     "enabled": true,
     "notes": "Technical analysis focused"
+  },
+  {
+    "handle": "RektCapital",
+    "trust_score": 78,
+    "enabled": true,
+    "notes": "TA education — RSI, support/resistance, BTC cycles"
+  },
+  {
+    "handle": "DaanCrypto",
+    "trust_score": 77,
+    "enabled": true,
+    "notes": "Full-time chart trader, setups & levels"
+  },
+  {
+    "handle": "CryptoCred",
+    "trust_score": 76,
+    "enabled": true,
+    "notes": "Trader/educator — rules, risk, chart concepts"
+  },
+  {
+    "handle": "CryptoDonAlt",
+    "trust_score": 75,
+    "enabled": true,
+    "notes": "Chart TA, market structure"
+  },
+  {
+    "handle": "TechDev_52",
+    "trust_score": 74,
+    "enabled": true,
+    "notes": "BTC & crypto cycle analysis"
+  },
+  {
+    "handle": "income_sharks",
+    "trust_score": 73,
+    "enabled": true,
+    "notes": "Chart breakdowns, technical setups"
   },
   {
     "handle": "TheCryptoDog",
@@ -28,6 +64,12 @@
     "trust_score": 85,
     "enabled": true,
     "notes": "High conviction calls"
+  },
+  {
+    "handle": "CarpeNoctom",
+    "trust_score": 72,
+    "enabled": true,
+    "notes": "Trader/analyst — macro + positioning"
   },
   {
     "handle": "MacroCRG",
