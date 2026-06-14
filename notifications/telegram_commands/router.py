@@ -1,5 +1,5 @@
 from logger import log
-from notifications.telegram_commands import backtest_commands, cmc_commands, decisions_commands, gate_commands, help_commands, hermes_commands, mode_commands, order_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands import backtest_commands, cmc_commands, decisions_commands, gate_commands, help_commands, hermes_commands, menu_commands, mode_commands, order_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
 from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
@@ -17,6 +17,7 @@ _HANDLERS = [
     order_commands.handle,
     x_commands.handle,
     portfolio_commands.handle,
+    menu_commands.handle,
     help_commands.handle,
 ]
 
@@ -46,6 +47,8 @@ def dispatch_command(text: str) -> bool:
 
 def dispatch_callback(callback_query: dict) -> bool:
     try:
+        if menu_commands.handle_callback(callback_query):
+            return True
         if trading_commands.handle_callback(callback_query):
             return True
         if order_commands.handle_callback(callback_query):

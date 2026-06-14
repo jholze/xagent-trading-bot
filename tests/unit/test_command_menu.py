@@ -11,9 +11,10 @@ from notifications.telegram_commands.usage_hints import USAGE
 
 
 class TestCommandMenu(unittest.TestCase):
-    def test_menu_has_35_commands(self):
-        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 35)
-        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 35)
+    def test_menu_has_8_hub_commands(self):
+        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 8)
+        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 8)
+        self.assertEqual(TELEGRAM_MENU_COMMAND_KEYS[0], "menu")
 
     def test_all_commands_have_menu_description(self):
         for key in TELEGRAM_MENU_COMMAND_KEYS:
@@ -22,7 +23,7 @@ class TestCommandMenu(unittest.TestCase):
 
     def test_all_bot_commands_format(self):
         commands = all_bot_commands()
-        self.assertEqual(len(commands), 35)
+        self.assertEqual(len(commands), 8)
         for entry in commands:
             self.assertIn("command", entry)
             self.assertIn("description", entry)
@@ -53,7 +54,7 @@ class TestCommandMenu(unittest.TestCase):
         self.assertIn("/setChatMenuButton", second_url)
 
         payload = mock_post.call_args_list[0][1]["json"]
-        self.assertEqual(len(payload["commands"]), 35)
+        self.assertEqual(len(payload["commands"]), 8)
         self.assertEqual(payload["language_code"], "de")
         self.assertEqual(
             mock_post.call_args_list[1][1]["json"],

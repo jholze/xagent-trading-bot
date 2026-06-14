@@ -346,6 +346,31 @@ def send_telegram_buttons(text, buttons):
     return send_telegram_message(text, reply_markup=reply_markup)
 
 
+def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
+    if not BOT_TOKEN or not chat_id or not message_id:
+        return False
+
+    if is_demo_mode():
+        text = "🧪 [DEMO] " + text
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        payload["reply_markup"] = {"inline_keyboard": reply_markup}
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Error editing Telegram message: {e}")
+        return False
+
+
 def answer_callback_query(callback_id, text=None):
     if not BOT_TOKEN:
         return False

@@ -15,43 +15,16 @@ _MAX_DESCRIPTION_LEN = 256
 _MAX_BUTTON_TEXT_LEN = 64
 _DEFAULT_BUTTON_TEXT = "Menü"
 
-# Canonical command names in menu display order (35 entries).
+# Top-level entries for the native Telegram menu button (Option A hub).
 TELEGRAM_MENU_COMMAND_KEYS: list[str] = [
-    "help",
-    "list",
-    "add",
-    "remove",
+    "menu",
+    "positions",
     "buy",
     "sell",
-    "positions",
-    "orders",
-    "risk",
-    "mode",
-    "maxpositions",
-    "live_confirm",
-    "live_cancel",
-    "gate",
-    "dryrun",
+    "list",
     "decisions",
-    "why",
-    "hermes",
-    "hermes_last",
-    "hermes_run",
-    "cmc",
-    "addx",
-    "removex",
-    "listx",
-    "xposts",
-    "xsignals",
-    "xaccuracy",
-    "tracktest",
-    "testaccount",
-    "sandbox",
-    "sandbox_results",
-    "sandbox_promote",
-    "backtest",
-    "backtest_lock",
-    "backtest_results",
+    "mode",
+    "help",
 ]
 
 

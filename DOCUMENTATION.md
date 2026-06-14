@@ -334,18 +334,27 @@ Sende `/help` für die komplette Liste. Bei unvollständigen Befehlen (z.B. nur 
 
 ### Befehlsmenü (Button neben der Eingabezeile)
 
-Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“, konfigurierbar). Ein Tipp öffnet alle **35 Bot-Befehle** mit kurzer deutscher Beschreibung — kein manuelles Eintippen von `/…` nötig.
+Telegram zeigt links neben dem Eingabefeld einen beschrifteten **Menü-Button** (Standard: „Menü“, konfigurierbar).
 
-Config: `observability.telegram_command_menu.button_text` in `config.json` (z. B. `"Befehle"`).
+### Zwei Ebenen (Option A)
+
+| Ebene | Inhalt |
+|-------|--------|
+| **Menü-Button** | 8 Schnellbefehle: `menu`, `positions`, `buy`, `sell`, `list`, `decisions`, `mode`, `help` |
+| **`/menu`** | 6 Bereiche mit Inline-Buttons: Watchlist, Handel, Modus & Gate, Transparenz, X/Twitter, Tests & Lernen |
+
+In jedem Bereich: Befehls-Buttons → ein Tipp führt den Befehl aus (bei Parametern wie `/buy` antwortet der Bot mit Liste/Hinweis wie bisher). **◀ Bereiche** bringt dich zurück zur Übersicht.
+
+Config: `observability.telegram_command_menu.button_text` in `config.json`.
 
 | Verhalten | Details |
 |-----------|---------|
-| **Auswahl** | Befehl wird in die Eingabezeile eingefügt; bei Bedarf Parameter ergänzen (z. B. `/buy 1 25`) |
-| **Nur Stamm** | `/buy`, `/why`, `/add` ohne Parameter → Bot zeigt Liste oder Beispiel (wie bisher) |
-| **Aliase** | `/portfolio` = `/positions` usw. — funktionieren weiter per Tippen, stehen nicht doppelt im Menü |
-| **Registrierung** | Beim Bot-Start via `setMyCommands` ([`command_menu.py`](notifications/telegram_commands/command_menu.py)) |
+| **Schnellzugriff** | `positions`, `buy`, `sell` direkt aus dem Menü-Button |
+| **Alle Funktionen** | `/menu` oder Menü-Eintrag `menu` → Bereich wählen → Befehl tippen |
+| **Vollständige Liste** | `/help` — alle Befehle mit Beispielen (Text) |
+| **Aliase** | `/portfolio` = `/positions` usw. — weiter per Tippen |
 
-Unterbefehle mit Leerzeichen (z. B. `/mode paper`) sind im Menü nicht als eigener Eintrag — wähle `/mode`, der Bot listet die Optionen.
+Unterbefehle mit Leerzeichen (z. B. `/mode paper`) — wähle `/mode` im Bereich „Modus & Gate“.
 
 ### 7.0 Für Einsteiger — Was du in Telegram siehst
 

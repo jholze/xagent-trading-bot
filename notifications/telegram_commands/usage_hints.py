@@ -218,6 +218,10 @@ USAGE = {
         ),
         "help_line": "<code>/testaccount ACCOUNT [TAGE]</code> — Backtest der BUY/SELL-Empfehlungen (Standard: 60 Tage)",
     },
+    "menu": {
+        "menu_description": "Alle Bereiche — Kategorien mit Buttons",
+        "help_line": "<code>/menu</code> — Bereiche wählen (Watchlist, Handel, Modus, …)",
+    },
     "help": {
         "menu_description": "Alle Befehle mit Beispielen",
         "help_line": "<code>/help</code> — Diese Befehlsliste",
@@ -240,12 +244,12 @@ def build_help_message() -> str:
         ("🐦 <b>X / Twitter</b> — Posts analysieren lassen", ["addx", "removex", "listx", "xsignals", "xposts", "xaccuracy", "testaccount", "tracktest"]),
         ("🔍 <b>Transparenz</b> — Was der Bot warum tut", ["decisions", "why", "hermes", "hermes_last", "hermes_run", "cmc"]),
         ("🧪 <b>Sandbox & Strategie-Tests</b>", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results"]),
-        ("❓ <b>Hilfe</b>", ["help"]),
+        ("❓ <b>Hilfe</b>", ["menu", "help"]),
     ]
     lines = [
         "<b>🛠️ Telegram-Befehle</b>",
         "",
-        "Tipp: Menü-Button neben der Eingabezeile — alle Befehle per Tippen auswählen.",
+        "Tipp: Menü-Button „Menü“ — Schnellbefehle + <code>/menu</code> für alle Bereiche.",
         "Bei unvollständigen Befehlen (z.B. nur <code>/buy</code>) antwortet der Bot mit einem Beispiel.",
         "",
     ]
