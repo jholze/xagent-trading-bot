@@ -139,7 +139,7 @@ execution/               # Paper + Gate.io Adapter
 notifications/           # Telegram-Befehle + user_explain.py (DE-Erklärungen)
 hermes/                  # Self-Improvement Agent
 config.json              # Strategien, Limits, Modi
-DOCUMENTATION.md         # ← Vollständige Doku
+DOCUMENTATION.md         # ← Vollständige Doku (inkl. §17 Feature-Branch-Workflow)
 HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger
 ```
 

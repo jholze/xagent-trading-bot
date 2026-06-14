@@ -714,6 +714,7 @@ XAI_API_KEY=...            # Grok
 | `logs/decisions.jsonl` | Entscheidungs-Protokoll (jede Coin-Analyse, `/decisions`) |
 | `hermes/memory/experiments.json` | Hermes-Experiment-Historie |
 | `hermes/memory/baseline.json` | Aktuelle Hermes-Best-Parameter |
+| `data/cmc_slug_cache.json` | CMC-Slug-Cache (vom Bot befüllt, gitignored) |
 | `*.demo.json` | Demo-Modus-Kopien |
 
 ---
@@ -773,6 +774,56 @@ python3 scripts/reconcile_gate_positions.py
 | `verbose` | + Hermes jeden Zyklus, CMC/X-Digests, Hold-Erklärungen bei starkem Social |
 
 Spam-Schutz: CMC-Digest nur bei **geänderten** Signalen; X-Digest überspringt Posts, die schon als X-Empfehlung gesendet wurden.
+
+---
+
+## 17. Feature-Branch: entwickeln, testen, mergen
+
+Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufzeit-JSONs des Bots.
+
+### Zwei Arten von JSON-Dateien
+
+| Typ | Beispiele | Verhalten bei Branch-Wechsel / Merge |
+|-----|-----------|--------------------------------------|
+| **Laufzeit** (gitignored) | `positions.json`, `orders.live.json`, `live_trade_history.json`, `hermes/memory/*.json`, `data/cmc_slug_cache.json` | Bleiben auf der Festplatte — **gleiche Dateien** für alle Branches. Der Bot schreibt immer in dieselben Pfade. |
+| **Config** (in Git) | `config.json`, `watchlist.json`, `watchlist.dry_run_expansion.json`, `x_accounts.json` | `git checkout` / Merge lädt die Version aus dem jeweiligen Branch. |
+
+**Merksatz:** Feature-Branch = neuer Code. Bot-Laufzeitdaten = gemeinsamer Ordner, unabhängig vom Branch.
+
+### Checkliste
+
+1. **Branch anlegen** (von sauberem `main`):
+   ```bash
+   git checkout main && git pull
+   git checkout -b feature/mein-feature
+   ```
+2. **Nur Code + bewusste Config** committen — keine Laufzeit-JSONs (`git status` prüfen).
+3. **Bot zum Testen neu starten** (läuft mit Code des aktuellen Branches):
+   ```bash
+   bash scripts/stop_bot.sh
+   bash scripts/start_with_ngrok.sh
+   ```
+4. **Tests** vor dem Merge:
+   ```bash
+   pytest tests/unit/ -q
+   ```
+5. **Merge nach `main`**, Feature-Branch löschen:
+   ```bash
+   git checkout main
+   git merge feature/mein-feature
+   git push origin main
+   git branch -d feature/mein-feature
+   ```
+6. **Bot erneut neu starten** — dann läuft der gemergte Code auf `main`.
+
+### Tipps
+
+| Situation | Empfehlung |
+|-----------|------------|
+| Feature testen ohne Prod-Daten zu vermischen | `--demo` oder separates Bot-Verzeichnis |
+| `config.json` im Feature geändert | Bewusst committen — nach Merge gilt sie auf `main` |
+| Hermes-/Positions-Daten schützen | Vor riskanten Tests: `cp positions.json positions.json.bak` |
+| Sauberer `main` | `git status` muss clean sein; Laufzeit-JSONs nie committen |
 
 ---
 
