@@ -6,6 +6,8 @@ Stand: 15. Juni 2026 (Arena-Review überarbeitet)
 
 Den Trading Bot von einem threading-basierten Monolithen zu **entkoppelten Prozessen mit Redis** umbauen — ohne JSON-Dateien, Demo-Modus oder lokalen Mac-Betrieb zu opfern. Telegram-UX: lange Befehlsausgaben (X-Backtest, Hermes, Backtest) sollen nicht von Trading-Nachrichten unterbrochen werden.
 
+Zusätzlich: **einheitliche Evaluations-Pipeline** für Config-Änderungen (CMC-Churn, Guard-Vergleiche) — als Background-Jobs mit Session-UX, nicht inline im Webhook. Inspiriert von [ai-hedge-fund `BacktestEngine.run_signals()`](https://github.com/virattt/ai-hedge-fund/blob/main/v2/backtesting/engine.py); nur crypto-relevante Teile, kein Monolith-CLI vorab.
+
 **Wichtig:** Nach Arena-Review (3 unabhängige Architektur-Kritiker) wurde der Plan von **6 Prozessen am Tag 1** auf eine **phasierte 3+1-Architektur** revidiert.
 
 ---
@@ -235,6 +237,7 @@ flowchart TD
 - `telegram_notifier.py` → `NotificationPublisher.enqueue()`
 - Tier-System + Progress-Edit für `/testaccount`
 - `/backtest SYMBOL` → Background-Job (wie `/hermes_run` nach `c20f54c`)
+- **Neu:** `/churn_replay` und `/counterfactual` als Tier-2 HEAVY-Jobs (Enqueue only, Ausführung Phase 4)
 - Feature-Flag: `NOTIFICATION_MODE=redis|direct`
 
 ### Phase 4 — Background-Worker (≈2 Wochen)
@@ -243,6 +246,8 @@ flowchart TD
 - `events.signals` Stream mit `version` + `watchlist_hash`
 - Trading konsumiert Snapshot statt synchronem Social-Fetch
 - Social-Dedup (`post_id`) → Redis `SET NX` statt in-memory
+- **Evaluations-Pipeline:** `hermes/replay_engine.py` (`ReplaySignal` + `run_signals()`), `churn_replay` + `counterfactual` Job-Handler
+- **Metriken:** `hermes/metrics.py` vereinheitlichen (annualized return, konsistenter Sharpe, max DD) — ein Report-Format für alle Job-Typen
 
 ### Phase 5 — Trading-Engine Split (nur wenn Phase 4 stabil)
 
@@ -255,6 +260,55 @@ flowchart TD
 - 6 gleichberechtigte Prozesse
 - docker-compose auf Mac
 - Redis als Source-of-Truth für Positions (JSON bleibt SoT bis Phase 5 bewiesen)
+- `churn_replay`-CLI auf Monolith (nur Worker-Jobs ab Phase 3/4)
+- Strategy-Tuner (`intelligence/strategy_backtest.py`) auf Pipeline-Backtest umstellen (nach Phase 4)
+- ai-hedge-fund-Muster: US-Handelskalender, `holding_days`-Exit, Shorts, equal-dollar ohne Slippage
+
+---
+
+## Evaluations-Pipeline (ai-hedge-fund — nur Relevantes)
+
+Kernmuster: **Signal-Generierung ≠ Ausführung** (`run_signals`-Pattern), crypto-angepasst mit Slippage, Partial Sells, Cooldowns.
+
+### Bausteine
+
+| Baustein | Beschreibung | Wo |
+|----------|--------------|-----|
+| `ReplaySignal` | `symbol`, `action`, `ts`, `source`, `metadata` — aus Orders, CMC-Posts, Decision-Audit | Job-Payload |
+| `replay_engine.py` | Füllt Signale gegen OHLCV; optional `realistic_fill` (next-bar, default off) | P4 background-worker |
+| `churn_replay` | Historische Orders → alte vs. neue Guard-Config → PnL/Trade-Delta | P3 enqueue, P4 execute |
+| `counterfactual` | Bestehendes `hermes/counterfactual.py` als Worker-Job | P3 enqueue, P4 execute |
+| Unified metrics | Erweitertes `hermes/metrics.py` | Job-Result → Telegram-Summary |
+
+### Live vs. Replay
+
+```mermaid
+flowchart LR
+    subgraph live [Live Phase 4]
+        Social[SocialPipeline] --> SIGS["aria:events.signals"]
+        SIGS --> Cycle[trading-engine]
+    end
+    subgraph eval [Evaluations Phase 3/4]
+        Orders[orders.json] --> ReplayJob[churn_replay Job]
+        CMC[cmc_posts.json] --> ReplayJob
+        ReplayJob --> ReplayEngine[replay_engine]
+        ReplayEngine --> Summary[Telegram Summary]
+    end
+```
+
+- **`aria:events.signals`** = Live-Snapshots für Trading (unverändert)
+- **Replay-Jobs** = historische Validierung (CMC-Churn, Guard-Vergleiche), kein Cycle-Consumer
+
+### Tier-2 Commands (Phase 3)
+
+| Job | Command | Summary |
+|-----|---------|---------|
+| `churn_replay` | `/churn_replay SYMBOL --since ...` | Sells alt/neu, PnL-Delta |
+| `counterfactual` | `/counterfactual SYMBOL --window ...` | Config-Varianten-Vergleich |
+
+Reuse: `hermes/pipeline_backtest.py`, `hermes/counterfactual.py`, `hermes/cmc_replay.py`.
+
+**CMC-Synergie:** `post_id`-Dedup (Phase 4) + Guards auf `feature/cmc-churn-fixes` — Replay validiert Config-Wechsel vor Deploy.
 
 ---
 
@@ -269,6 +323,12 @@ flowchart TD
 
 // aria:notifications
 { "priority", "session_id", "seq", "reply_to", "kind", "payload", "source" }
+
+// aria:jobs.heavy (Phase 3)
+{ "job_id", "kind": "backtest|churn_replay|counterfactual|hermes_run|testaccount", "chat_id", "session_id", "params", "enqueued_at" }
+
+// aria:job:result:{job_id} (KV, TTL 24h)
+{ "metrics": { "total_return_pct", "sharpe", "max_drawdown_pct", "n_trades", "pnl_delta" }, "trades_summary": { "baseline_sells", "variant_sells" }, "artifact_path" }
 ```
 
 ---
@@ -287,6 +347,12 @@ scripts/
   start_stack.sh              # ab Phase 3, ersetzt start_with_ngrok.sh schrittweise
   stop_stack.sh
 ```
+
+hermes/                       # Evaluations (Phase 4)
+  replay_engine.py            # ReplaySignal + run_signals()
+  churn_replay.py             # Job-Handler, liest orders.json
+notifications/telegram_commands/
+  replay_commands.py          # /churn_replay, /counterfactual (Phase 3)
 
 Bestehende Module (`services/`, `strategies/`, `notifications/`) bleiben shared library.
 
@@ -317,6 +383,9 @@ Tier-0 (`/sell`, manual confirm) jederzeit sofort.
 | Verpasste Trade-Signale während Session | Nur Priority-2 defer (Sekunden–Minuten), nicht verloren |
 | Config-Race Hermes vs Cycle | `config_write`-Lock für Promotion/Apply |
 | Scope-Verwechslung demo/live | Redis-Prefix + `get_data_file()` in jedem Worker |
+| Replay ohne Monolith-CLI | Guards weiterhin via `tests/unit/test_cmc_churn.py`; Replay erst ab Phase 4 |
+| `orders.json` Race während Cycle | Phase 3: Jobs zwischen Cycles; Phase 5: Ledger-Lock |
+| next-bar fill verzerrt Vergleich | `realistic_fill` default `false`, in Summary kennzeichnen |
 
 ---
 
@@ -333,9 +402,11 @@ Tier-0 (`/sell`, manual confirm) jederzeit sofort.
 
 ## Nächster Schritt
 
+**Status: Plan gespeichert — noch nicht implementiert.**
+
 ```bash
 git checkout plan/redis-process-architecture
-# Implementierung beginnt mit Phase 0 + Phase 1
+# Bei Freigabe: Implementierung beginnt mit Phase 0 + Phase 1
 ```
 
-Bei Freigabe: `ARCHITECTURE_MODE=monolith` bleibt Default bis Phase 3 produktiv getestet.
+Bei Freigabe: `ARCHITECTURE_MODE=monolith` bleibt Default bis Phase 3 produktiv getestet. Evaluations-Pipeline (`churn_replay`, `replay_engine`) erst ab Phase 3/4 — kein Vorab-CLI auf Monolith.
