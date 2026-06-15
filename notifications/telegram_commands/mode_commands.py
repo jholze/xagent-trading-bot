@@ -1,5 +1,6 @@
 import os
 
+from core.build_info import format_build_line
 from data_manager import get_config, is_demo_mode, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
@@ -35,6 +36,7 @@ def handle(text: str) -> bool:
         msg = f"""<b>Trading Mode</b>
 
 Current: <b>{service.mode_label()}</b>{demo}
+{format_build_line()}
 
 <b>Commands:</b>
 /mode paper — Local paper trading (virtual ledger)

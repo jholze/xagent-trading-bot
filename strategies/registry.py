@@ -30,10 +30,12 @@ def resolve_coin_config(coin: dict) -> dict:
             break
     else:
         merged.setdefault("strategy_class", "technical_rsi_bb")
-        if coin.get("source") == "cmc_trending" and is_dry_run_enhanced():
-            defaults = dict(cfg.dry_run_defaults)
-            defaults.update({"symbol": symbol, "timeframe": tf})
-            merged["strategy_params"] = defaults
+        if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
+            profile = dict(cfg.altcoin_social_config)
+            if is_dry_run_enhanced():
+                profile.update(cfg.dry_run_defaults)
+            profile.update({"symbol": symbol, "timeframe": tf})
+            merged["strategy_params"] = profile
         else:
             params = cfg.strategy_params(symbol, tf)
             if params:

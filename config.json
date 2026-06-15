@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": true,
+    "dry_run_enhanced": false,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
@@ -32,13 +32,18 @@
   },
   "dry_run_defaults": {
     "max_daily_trades": 30,
+    "max_daily_buys": 30,
+    "max_daily_sells": 50,
     "trade_cooldown_hours": 0.5,
     "cmc_min_confidence": 55,
+    "cmc_sell_min_confidence": 65,
+    "cmc_min_hours_between_sells": 6,
+    "cmc_sell_requires_ta": true,
     "rsi_buy_low": 25,
     "rsi_buy_high": 55,
     "volume_multiplier": 1.1,
     "min_hours_between_buys": 1,
-    "min_hours_between_sells": 0.5
+    "min_hours_between_sells": 3
   },
   "initial_capital_usdt": 5000,
   "max_usdt_per_trade": 25,
@@ -84,7 +89,24 @@
     "enabled": true,
     "use_mock": false,
     "min_confidence": 60,
+    "sell_min_confidence": 70,
+    "sell_requires_ta": true,
+    "signal_ttl_hours": 4,
+    "quotes_fallback_as_signal": true,
+    "quotes_bearish_pct": -8,
+    "quotes_bullish_pct": 5,
+    "quotes_fallback_sell_threshold_bonus": 10,
+    "min_position_usdt_for_social_sell": 50,
+    "min_sell_notional_usdt": 5,
+    "block_social_sell_if_sold_percent_above": 0.8,
+    "cmc_min_hours_between_sells": 6,
     "api_key_env": "CMC_API_KEY"
+  },
+  "altcoin_social": {
+    "cmc_sell_min_confidence": 70,
+    "cmc_min_hours_between_sells": 6,
+    "cmc_sell_requires_ta": true,
+    "min_position_usdt_for_social_sell": 50
   },
   "strategy_backtest": {
     "enabled": true,
@@ -142,6 +164,8 @@
   },
   "max_daily_trades": 8,
   "risk": {
+    "max_daily_buys": 8,
+    "max_daily_sells": 0,
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,
     "atr_reference_pct": 3.0,
@@ -205,9 +229,9 @@
       "ARIA/USDT"
     ],
     "symbols_max": 8,
-    "symbols_cmc_top_n": 4,
+    "symbols_cmc_top_n": 2,
     "symbols_include_positions": true,
-    "symbols_refresh_hours": 6,
+    "symbols_refresh_hours": 0,
     "symbols": [
       "ARIA/USDT",
       "H/USDT",
@@ -230,7 +254,9 @@
       "require_cf_seeded": true,
       "include_manual_trades": true,
       "counterfactual_enabled": true,
-      "live_blocklist": ["stop_loss_pct"],
+      "live_blocklist": [
+        "stop_loss_pct"
+      ],
       "dual_exit_params_only": true,
       "notify_on_live_veto": true
     },

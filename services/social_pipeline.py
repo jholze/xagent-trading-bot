@@ -1,7 +1,8 @@
 import threading
+from datetime import datetime, timezone
 from queue import Queue
 
-from data_manager import add_coin, get_config, load_effective_watchlist, log_cmc_post
+from data_manager import add_coin, get_config, load_cmc_posts, load_effective_watchlist, log_cmc_post
 from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
@@ -147,17 +148,28 @@ class SocialPipeline:
         watchlist = watchlist or load_effective_watchlist()
         raw_posts = self.cmc_provider.fetch_posts(watchlist)
         self._cycle_cmc_signals = []
+        quotes_as_signal = bool(cfg.cmc_config.get("quotes_fallback_as_signal", False))
+        logged_ids = {
+            p.get("post_id")
+            for p in load_cmc_posts().get("posts", [])
+            if p.get("post_id")
+        }
 
         for post in raw_posts:
             signal = self.cmc_parser.parse(post)
+            signal.quotes_fallback = post.author == "CMC Market"
+            if signal.quotes_fallback and not quotes_as_signal:
+                continue
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
             self._cycle_cmc_signals.append(signal)
-            log_cmc_post(signal, post.post_id)
-            log(
-                f"CMC signal: {signal.coin} {signal.action} ({signal.confidence}%) "
-                f"votes {signal.votes_bullish}↑/{signal.votes_bearish}↓",
-                "INFO",
-            )
+            if post.post_id not in logged_ids:
+                log_cmc_post(signal, post.post_id)
+                logged_ids.add(post.post_id)
+                log(
+                    f"CMC signal: {signal.coin} {signal.action} ({signal.confidence}%) "
+                    f"votes {signal.votes_bullish}↑/{signal.votes_bearish}↓",
+                    "INFO",
+                )
         return self._cycle_cmc_signals
 
     def refresh_signals(self) -> list:
@@ -168,7 +180,36 @@ class SocialPipeline:
         return sorted(signals, key=lambda s: s.score, reverse=True)
 
     def refresh_cmc_signals(self) -> list:
-        return self._cycle_cmc_signals
+        from core.config import get_bot_config
+        from hermes.cmc_replay import active_signals_for_symbols
+
+        cfg = get_bot_config()
+        cmc_cfg = cfg.cmc_config
+        ttl_hours = float(
+            cmc_cfg.get("signal_ttl_hours")
+            or cfg.hermes_config.get("cmc_replay_ttl_hours", 4)
+        )
+        quotes_as_signal = bool(cmc_cfg.get("quotes_fallback_as_signal", False))
+        watchlist = load_effective_watchlist()
+        symbols = [c.get("symbol") for c in watchlist if c.get("symbol")]
+        trust = float(cmc_cfg.get("trust_score", 65))
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        active = active_signals_for_symbols(symbols, trust_score=trust, ttl_hours=ttl_hours, now_ms=now_ms)
+        if not quotes_as_signal:
+            active = [s for s in active if not getattr(s, "quotes_fallback", False)]
+
+        by_coin: dict[str, object] = {getattr(s, "coin", ""): s for s in active}
+        for signal in self._cycle_cmc_signals:
+            if getattr(signal, "quotes_fallback", False) and not quotes_as_signal:
+                continue
+            coin = getattr(signal, "coin", "")
+            existing = by_coin.get(coin)
+            if not existing or signal.confidence > getattr(existing, "confidence", 0):
+                by_coin[coin] = signal
+
+        merged = sorted(by_coin.values(), key=lambda s: getattr(s, "confidence", 0), reverse=True)
+        return merged
 
     def get_notified_post_ids(self) -> set:
         return set(self._notified_post_ids)

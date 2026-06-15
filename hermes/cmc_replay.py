@@ -52,6 +52,7 @@ def make_cmc_signal(post: dict, trust_score: float = 65.0) -> CMCCommunitySignal
     )
     signal.trust_score = float(trust_score)
     signal.effective_confidence = confidence * (trust_score / 100.0)
+    signal.quotes_fallback = str(post.get("post_id", "")).startswith("cmc_quote_")
     return signal
 
 
@@ -70,6 +71,25 @@ def signals_at_timestamp(
     if not active:
         return []
     active.sort(key=lambda s: s.confidence, reverse=True)
+    return active
+
+
+def active_signals_for_symbols(
+    symbols: list[str],
+    trust_score: float = 65.0,
+    ttl_hours: float = 4.0,
+    now_ms: int | None = None,
+) -> list[CMCCommunitySignal]:
+    """Strongest active CMC signal per symbol within TTL window."""
+    now_ms = now_ms or int(datetime.now(timezone.utc).timestamp() * 1000)
+    ttl_ms = int(ttl_hours * 3600 * 1000)
+    since_ms = now_ms - ttl_ms
+    active: list[CMCCommunitySignal] = []
+    for symbol in symbols:
+        posts = load_posts_for_coin(symbol, since_ms=since_ms, until_ms=now_ms)
+        signals = signals_at_timestamp(posts, now_ms, trust_score=trust_score, ttl_ms=ttl_ms)
+        if signals:
+            active.append(signals[0])
     return active
 
 

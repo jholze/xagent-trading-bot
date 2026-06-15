@@ -163,6 +163,7 @@ python3 -c "
 import os, requests
 from dotenv import load_dotenv
 load_dotenv()
+from core.build_info import format_build_line
 token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat = os.getenv('TELEGRAM_CHAT_ID')
 if token and chat:
@@ -170,7 +171,8 @@ if token and chat:
     text = (
         '✅ <b>Bot + ngrok neu gestartet</b>\n\n'
         f'<b>Webhook:</b> ${PUBLIC_URL}\n'
-        '<b>Modus:</b> Paper (Demo)\n\n'
+        '<b>Modus:</b> Paper (Demo)\n'
+        f'{format_build_line()}\n\n'
         'Sende /help zum Testen.'
     )
     requests.post(url, json={'chat_id': int(chat), 'text': text, 'parse_mode': 'HTML'}, timeout=10)

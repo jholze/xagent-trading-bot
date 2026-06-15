@@ -22,7 +22,8 @@ Drawdown: <b>{status['drawdown_pct']:.1f}%</b> | Throttle: {throttle}
 
 <b>Limits</b>
 Open positions: {status['open_positions']}/{status['max_open_positions']}
-Daily trades (24h): {status['daily_trades']}/{status['max_daily_trades']}
+Daily buys (24h): {status.get('daily_buys', status['daily_trades'])}/{status.get('max_daily_buys', status['max_daily_trades'])}
+Daily sells (24h): {status.get('daily_sells', 0)}/{status.get('max_daily_sells', 0) or '∞'}
 Max per coin: {status['max_position_percent']:.0f}% of portfolio
 Base trade size: ${status['base_usdt_per_trade']:.0f} USDT
 

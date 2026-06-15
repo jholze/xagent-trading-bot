@@ -109,7 +109,8 @@ def _portfolio_block(status: dict) -> list[str]:
         "<b>Portfolio</b>",
         f"· Cash <b>${status.get('virtual_balance', 0):,.0f}</b>",
         f"· Offene Positionen <b>{status.get('open_positions', 0)}/{status.get('max_open_positions', 0)}</b>",
-        f"· Trades (24h) <b>{status.get('daily_trades', 0)}/{status.get('max_daily_trades', 0)}</b>",
+        f"· Käufe (24h) <b>{status.get('daily_buys', status.get('daily_trades', 0))}/{status.get('max_daily_buys', status.get('max_daily_trades', 0))}</b>",
+        f"· Verkäufe (24h) <b>{status.get('daily_sells', 0)}/{status.get('max_daily_sells', 0) or '∞'}</b>",
         f"· Drawdown <b>{status.get('drawdown_pct', 0):.1f}%</b> · Throttle {throttle}",
         f"· Max. Coin-Anteil <b>{status.get('max_position_percent', 0):.0f}%</b>",
     ]
@@ -144,7 +145,8 @@ def _format_rejection(kind: str, symbol: str, decision, status: dict) -> str:
         "",
         "<b>Portfolio</b>",
         f"· Offene Positionen {status.get('open_positions', 0)}/{status.get('max_open_positions', 0)}",
-        f"· Trades (24h) {status.get('daily_trades', 0)}/{status.get('max_daily_trades', 0)}",
+        f"· Käufe (24h) {status.get('daily_buys', status.get('daily_trades', 0))}/{status.get('max_daily_buys', status.get('max_daily_trades', 0))}",
+        f"· Verkäufe (24h) {status.get('daily_sells', 0)}/{status.get('max_daily_sells', 0) or '∞'}",
     ]
     if decision.code == "trade_cooldown":
         lines.append("· Hinweis: Cooldown gilt nur für Auto-Trades, nicht für manuelle Orders.")

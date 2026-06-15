@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import requests
@@ -48,6 +48,7 @@ class CMCCommunitySignal:
         self.votes_bullish = votes_bullish
         self.votes_bearish = votes_bearish
         self.score = 0.0
+        self.quotes_fallback = False
 
 
 class CMCCommunityParser:
@@ -66,8 +67,10 @@ class CMCCommunityParser:
             bull_ratio = post.votes_bullish / total_votes
             if bull_ratio >= 0.65:
                 action, confidence = "BUY", int(60 + bull_ratio * 35)
-            elif bull_ratio <= 0.35:
+            elif bull_ratio <= 0.25:
                 action, confidence = "SELL", int(60 + (1 - bull_ratio) * 35)
+            elif bull_ratio <= 0.35:
+                action, confidence = "HOLD", 50
             else:
                 action, confidence = "HOLD", 50
         elif bullish_hits > bearish_hits:
@@ -222,10 +225,29 @@ class CMCProApiProvider(CMCDataProvider):
             log(f"CMC content fetch error: {e}", "WARNING")
             return []
 
+    def _quote_thresholds(self) -> tuple[float, float]:
+        from data_manager import get_config
+        cmc_cfg = get_config().get("cmc", {})
+        bear = float(cmc_cfg.get("quotes_bearish_pct", -8))
+        bull = float(cmc_cfg.get("quotes_bullish_pct", 5))
+        return bear, bull
+
+    def _quote_post_id(self, symbol: str, pct: float) -> str:
+        bear_pct, bull_pct = self._quote_thresholds()
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if pct <= bear_pct:
+            bucket = "bear"
+        elif pct >= bull_pct:
+            bucket = "bull"
+        else:
+            bucket = "neutral"
+        return f"cmc_quote_{symbol}_{bucket}_{date}"
+
     def _fetch_quotes_sentiment(self, symbols: list, limit: int) -> List[RawCMCPost]:
         """Fallback for plans without community/content endpoints — uses market quotes."""
         if not self.api_key or not symbols:
             return []
+        bear_pct, bull_pct = self._quote_thresholds()
         try:
             url = f"{self.BASE_URL}/cryptocurrency/quotes/latest"
             resp = requests.get(
@@ -247,10 +269,10 @@ class CMCProApiProvider(CMCDataProvider):
                 vol = float(quote.get("volume_24h", 0) or 0)
                 price = float(quote.get("price", 0) or 0)
 
-                if pct >= 5:
+                if pct >= bull_pct:
                     bull, bear = min(95, 55 + int(pct)), max(5, 35 - int(pct / 2))
                     text = f"{symbol} +{pct:.1f}% in 24h — bullish momentum (CMC market data)"
-                elif pct <= -5:
+                elif pct <= bear_pct:
                     bull, bear = max(5, 35 + int(pct / 2)), min(95, 55 + int(abs(pct)))
                     text = f"{symbol} {pct:.1f}% in 24h — bearish momentum (CMC market data)"
                 else:
@@ -258,7 +280,7 @@ class CMCProApiProvider(CMCDataProvider):
                     text = f"{symbol} {pct:+.1f}% in 24h — neutral (CMC market data)"
 
                 posts.append(RawCMCPost(
-                    post_id=f"cmc_quote_{symbol}_{round(pct, 1)}",
+                    post_id=self._quote_post_id(symbol, pct),
                     coin=symbol.upper(),
                     text=text,
                     author="CMC Market",

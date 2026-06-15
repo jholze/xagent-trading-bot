@@ -44,6 +44,17 @@ class RiskManager:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
+            social_block, social_reason = self._social_sell_blocked(order, timeframe, source)
+            if social_block:
+                return RiskDecision(approved=False, message=social_reason, code="social_sell_guard")
+            max_daily_sells = self._effective_max_daily_sells()
+            daily_sells = self._daily_sells_count()
+            if max_daily_sells > 0 and daily_sells >= max_daily_sells:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Daily sell limit reached ({daily_sells}/{max_daily_sells})",
+                    code="max_daily_sells",
+                )
             return RiskDecision(approved=True, order=order, message="Sell approved")
 
         if order.price <= 0:
@@ -63,12 +74,12 @@ class RiskManager:
                 code="max_open_positions",
             )
 
-        daily_count = self._daily_trades_count()
-        max_daily = self._effective_max_daily_trades()
-        if max_daily > 0 and daily_count >= max_daily:
+        daily_buys = self._daily_buys_count()
+        max_daily_buys = self._effective_max_daily_buys()
+        if max_daily_buys > 0 and daily_buys >= max_daily_buys:
             return RiskDecision(
                 approved=False,
-                message=f"Daily trade limit reached ({daily_count}/{max_daily})",
+                message=f"Daily buy limit reached ({daily_buys}/{max_daily_buys})",
                 code="max_daily_trades",
             )
 
@@ -163,7 +174,11 @@ class RiskManager:
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
-            "max_daily_trades": self._effective_max_daily_trades(),
+            "daily_buys": self._daily_buys_count(),
+            "daily_sells": self._daily_sells_count(),
+            "max_daily_trades": self._effective_max_daily_buys(),
+            "max_daily_buys": self._effective_max_daily_buys(),
+            "max_daily_sells": self._effective_max_daily_sells(),
             "max_position_percent": self.config.max_position_percent,
             "base_usdt_per_trade": self._base_usdt_cap(),
             "portfolio_equity": round(equity, 2),
@@ -181,12 +196,31 @@ class RiskManager:
             return "gate"
         return "paper"
 
-    def _effective_max_daily_trades(self) -> int:
+    def _effective_max_daily_buys(self) -> int:
         if is_dry_run_enhanced(self.config.raw):
             defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_buys") is not None:
+                return int(defaults["max_daily_buys"])
             if defaults.get("max_daily_trades") is not None:
                 return int(defaults["max_daily_trades"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_buys") is not None:
+            return int(risk_cfg["max_daily_buys"])
         return self.config.max_daily_trades
+
+    def _effective_max_daily_sells(self) -> int:
+        if is_dry_run_enhanced(self.config.raw):
+            defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_sells") is not None:
+                return int(defaults["max_daily_sells"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_sells") is not None:
+            return int(risk_cfg["max_daily_sells"])
+        return int(self.config.raw.get("max_daily_sells", 0))
+
+    def _effective_max_daily_trades(self) -> int:
+        """Backward-compatible alias for buy limit."""
+        return self._effective_max_daily_buys()
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
@@ -300,6 +334,51 @@ class RiskManager:
             "total_multiplier": round(total, 3),
         }
 
+    def _social_sell_limits(self, symbol: str, timeframe: str) -> dict:
+        params = self.config.strategy_params(symbol, timeframe)
+        cmc_cfg = self.config.cmc_config
+        return {
+            "min_position_usdt": float(
+                params.get("min_position_usdt_for_social_sell")
+                or cmc_cfg.get("min_position_usdt_for_social_sell", 50)
+            ),
+            "min_notional_usdt": float(
+                params.get("min_sell_notional_usdt")
+                or cmc_cfg.get("min_sell_notional_usdt", 5)
+            ),
+            "max_sold_percent": float(
+                params.get("block_social_sell_if_sold_percent_above")
+                or cmc_cfg.get("block_social_sell_if_sold_percent_above", 0.8)
+            ),
+        }
+
+    def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
+        if source not in ("cmc", "x"):
+            return False, ""
+        if order.price <= 0:
+            return False, ""
+        limits = self._social_sell_limits(order.symbol, timeframe)
+        pos = get_position(order.symbol, timeframe)
+        pos_value = float(pos.get("amount", 0)) * order.price
+        if pos_value < limits["min_position_usdt"]:
+            return True, (
+                f"Social sell blocked: position ${pos_value:.2f} "
+                f"below minimum ${limits['min_position_usdt']:.0f}"
+            )
+        notional = float(order.amount) * order.price
+        if notional < limits["min_notional_usdt"]:
+            return True, (
+                f"Social sell blocked: notional ${notional:.2f} "
+                f"below minimum ${limits['min_notional_usdt']:.0f}"
+            )
+        sold_pct = float(pos.get("sold_percent", 0))
+        if sold_pct >= limits["max_sold_percent"]:
+            return True, (
+                f"Social sell blocked: already sold {sold_pct * 100:.0f}% of position "
+                f"(max {limits['max_sold_percent'] * 100:.0f}%)"
+            )
+        return False, ""
+
     def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
         if source == "manual":
             return False, ""
@@ -310,6 +389,29 @@ class RiskManager:
             return False, ""
 
         pos = get_position(order.symbol, timeframe)
+        params = self.config.strategy_params(order.symbol, timeframe)
+        defaults = self.config.dry_run_defaults if is_dry_run_enhanced(self.config.raw) else {}
+        cmc_cfg = self.config.cmc_config
+
+        if order.type == "SELL" and source == "cmc":
+            last_cmc = pos.get("last_cmc_sell_at")
+            if last_cmc:
+                try:
+                    last_ts = datetime.fromisoformat(str(last_cmc).replace("Z", ""))
+                    min_hours = float(
+                        params.get("cmc_min_hours_between_sells")
+                        or defaults.get("cmc_min_hours_between_sells")
+                        or cmc_cfg.get("cmc_min_hours_between_sells", 6)
+                    )
+                    elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+                    if elapsed < min_hours:
+                        return True, (
+                            f"CMC sell cooldown: {elapsed:.1f}h since last CMC sell "
+                            f"(min {min_hours:.1f}h)"
+                        )
+                except Exception:
+                    pass
+
         last_at = pos.get("last_trade_at")
         last_type = pos.get("last_trade_type")
         if not last_at or last_type != order.type:
@@ -320,8 +422,6 @@ class RiskManager:
         except Exception:
             return False, ""
 
-        params = self.config.strategy_params(order.symbol, timeframe)
-        defaults = self.config.dry_run_defaults if is_dry_run_enhanced(self.config.raw) else {}
         if order.type == "BUY":
             min_hours = float(
                 params.get("min_hours_between_buys")
@@ -345,15 +445,26 @@ class RiskManager:
             )
         return False, ""
 
-    def _daily_trades_count(self) -> int:
-        """Count filled ledger orders in the last 24h (single source of truth per scope)."""
+    @staticmethod
+    def _order_side(order: dict) -> str:
+        side = str(order.get("side") or order.get("type") or "").lower()
+        if side in ("buy", "sell"):
+            return side
+        return ""
+
+    def _daily_trades_count(self, side: str | None = None) -> int:
+        """Count filled ledger orders in the last 24h (optional filter: buy/sell)."""
         from data_manager import load_orders, resolve_ledger_scope
 
         cutoff = datetime.now() - timedelta(hours=24)
         scope = resolve_ledger_scope(self.config.trading_mode)
         count = 0
+        want = (side or "").lower() or None
         for order in load_orders(scope).get("orders", []):
             if order.get("status") != "filled":
+                continue
+            order_side = self._order_side(order)
+            if want and order_side != want:
                 continue
             ts_raw = (
                 order.get("timestamps", {}).get("filled")
@@ -367,3 +478,9 @@ class RiskManager:
             if ts >= cutoff:
                 count += 1
         return count
+
+    def _daily_buys_count(self) -> int:
+        return self._daily_trades_count("buy")
+
+    def _daily_sells_count(self) -> int:
+        return self._daily_trades_count("sell")

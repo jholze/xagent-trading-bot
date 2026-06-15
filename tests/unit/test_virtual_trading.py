@@ -971,13 +971,16 @@ class TestVirtualTrading(unittest.TestCase):
         from risk.risk_manager import RiskManager
 
         raw = dict(get_config())
+        raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
+        raw.setdefault("risk", {})["max_daily_buys"] = 1
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
 
         filled_order = {
             "status": "filled",
+            "side": "buy",
             "timestamps": {"filled": datetime.now().isoformat()},
         }
         with patch("data_manager.load_orders", return_value={"orders": [filled_order]}), \
@@ -985,6 +988,7 @@ class TestVirtualTrading(unittest.TestCase):
             decision = risk.evaluate(TradeOrder("BUY", "XRVM/USDT", 1.0, 0), "4h", indicators={"atr_pct": 3.0})
         self.assertFalse(decision.approved)
         self.assertEqual(decision.code, "max_daily_trades")
+        self.assertIn("buy limit", decision.message.lower())
 
     def test_risk_manager_drawdown_throttle_halves_size(self):
         from core.config import BotConfig
@@ -1023,6 +1027,33 @@ class TestVirtualTrading(unittest.TestCase):
         decision = risk.evaluate(TradeOrder("SELL", "XRVM/USDT", 1.0, 50), "4h")
         self.assertTrue(decision.approved)
 
+    def test_risk_manager_sells_do_not_count_toward_buy_limit(self):
+        from core.config import BotConfig
+        from core.models import TradeOrder
+        from data_manager import get_config
+        from risk.risk_manager import RiskManager
+
+        raw = dict(get_config())
+        raw["trading_mode"] = "paper"
+        raw["max_daily_trades"] = 1
+        raw.setdefault("risk", {})["max_daily_buys"] = 1
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+
+        sell_orders = [
+            {
+                "status": "filled",
+                "side": "sell",
+                "timestamps": {"filled": datetime.now().isoformat()},
+            }
+            for _ in range(10)
+        ]
+        with patch("data_manager.load_orders", return_value={"orders": sell_orders}), \
+             patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}):
+            decision = risk.evaluate(TradeOrder("BUY", "WLD/USDT", 1.0, 0), "4h", indicators={"atr_pct": 3.0})
+        self.assertTrue(decision.approved)
+
     def test_trading_service_sends_positions_after_executed_trade(self):
         from services.trading_service import TradingService
         from core.models import TradeResult
@@ -1052,12 +1083,14 @@ class TestVirtualTrading(unittest.TestCase):
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
+        raw.setdefault("risk", {})["max_daily_buys"] = 1
         cfg = BotConfig()
         cfg._raw = raw
         svc = TradingService(cfg)
 
         filled_order = {
             "status": "filled",
+            "side": "buy",
             "timestamps": {"filled": datetime.now().isoformat()},
         }
         with patch.object(svc, "refresh"), \
@@ -1066,7 +1099,7 @@ class TestVirtualTrading(unittest.TestCase):
              patch.object(svc.risk, "_available_usdt", return_value=5000.0):
             result = svc.execute_buy("XRVM/USDT", "4h", 1.0, 100)
         self.assertFalse(result.executed)
-        self.assertIn("Daily trade limit", result.message)
+        self.assertIn("buy limit", result.message.lower())
 
     def test_decision_engine_x_stop_loss_trigger(self):
         from strategies.decision_engine import DecisionEngine
@@ -1284,7 +1317,8 @@ class TestVirtualTrading(unittest.TestCase):
 
         engine = DecisionEngine()
         cmc = CMCCommunitySignal("SOL", "BUY", 78, rationale="bullish community", votes_bullish=90, votes_bearish=8)
-        cmc.effective_confidence = 70
+        cmc.trust_score = 80.0
+        cmc.effective_confidence = 62.4
 
         empty_pos = {"amount": 0, "average_entry": 0}
         with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
@@ -1422,9 +1456,9 @@ class TestVirtualTrading(unittest.TestCase):
             x_signal_count=2,
             cmc_signal_count=1,
         )
-        self.assertIn("Cycle Summary", summary)
+        self.assertIn("Zyklus-Zusammenfassung", summary)
         self.assertIn("PAPER", summary)
-        self.assertIn("Auto-Executed", summary)
+        self.assertIn("Ausgeführt", summary)
         self.assertIn("Orders (24h", summary)
 
     def test_log_decision_writes_jsonl(self):

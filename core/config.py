@@ -132,6 +132,10 @@ class BotConfig:
         return self._raw.get("cmc", {})
 
     @property
+    def altcoin_social_config(self) -> dict:
+        return self._raw.get("altcoin_social", {})
+
+    @property
     def x_weight(self) -> float:
         return float(self._raw.get("x_weight", 0.45))
 

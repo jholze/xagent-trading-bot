@@ -22,7 +22,8 @@ _RATIONALE_PARTS = {
 
 _RISK_MESSAGES = {
     "max open positions": "Maximale Anzahl offener Positionen erreicht — kein neuer Kauf möglich.",
-    "daily trade limit": "Tageslimit für Trades erreicht — Bot pausiert bis morgen.",
+    "daily trade limit": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",
+    "max_daily_sells": "Tageslimit für Verkäufe erreicht.",
     "max position concentration": "Dieser Coin wäre zu groß im Portfolio — Kauf wurde begrenzt oder blockiert.",
     "trade cooldown": "Kürzlich schon gehandelt — kurze Pause gegen zu häufiges Hin und Her.",
     "no position to sell": "Keine offene Position zum Verkaufen.",

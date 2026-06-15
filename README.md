@@ -27,6 +27,8 @@ In Telegram: Menü-Button neben der Eingabezeile (alle Befehle) oder `/help` sen
 
 ## Was ist neu in 1.8 (Juni 2026)
 
+- **CMC-Churn-Schutz** — stabile Quote-IDs, Sell-TA-Pflicht, höhere Sell-Schwellen, Social-Sell-Cooldowns ([Plan](plans/cmc-churn-fixes.md), [Doku §10](DOCUMENTATION.md#10-cmc-coinmarketcap))
+- **Build-Info in Telegram** — Version + Git-Branch bei Restart, `/gate`, `/mode` (ohne neues Menü)
 - **Telegram-Transparenz** — Trade-Nachrichten mit **„Warum:“** auf Deutsch + technischer Kurzzeile
 - **Neue Befehle** — `/decisions`, `/why SYMBOL`, `/hermes_last` — Bot-Entscheidungen nachvollziehen
 - **Zyklus-Digests** — CMC/X-Signale und Hermes-Lernzyklen automatisch erklärt

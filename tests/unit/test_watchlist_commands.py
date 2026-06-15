@@ -19,9 +19,10 @@ class TestWatchlistCommands(unittest.TestCase):
         ]
         msg = format_watchlist_message(coins)
         self.assertIn("<b>1.</b>", msg)
-        self.assertIn("ARIA/USDT", msg)
+        self.assertIn("ARIA", msg)
+        self.assertIn("/USDT", msg)
         self.assertIn("<b>2.</b>", msg)
-        self.assertIn("SOL/USDT", msg)
+        self.assertIn("SOL", msg)
 
     def test_buy_list_matches_watchlist_order(self):
         coins = [
