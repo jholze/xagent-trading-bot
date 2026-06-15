@@ -76,6 +76,8 @@ Vorlage: `_vorlage.md`
 - `config.json`
 - `logs/decisions.jsonl` — jede Bot-Entscheidung mit Rationale (auch in Telegram: `/decisions`)
 - `hermes/memory/experiments.json` — Hermes-Lernzyklen (auch: `/hermes_last`)
+- `hermes/memory/baseline.json` — gelernte Parameter pro Coin (Live-Fallback, auch ohne `strategies[]`)
+- `config.json` → `volatile_altcoin` — Shadow/Live-Modus für hektische Altcoins
 - `bot.log` (falls aktuell)
 
 ## Telegram vs. Tages-Report

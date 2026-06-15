@@ -1,8 +1,8 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
-Stand: 14. Juni 2026 · Version 1.8
+Stand: 15. Juni 2026 · Version 1.9
 
-Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, Telegram-Befehle, **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
+Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, **Volatile-Altcoin-Profil**, **Hermes-Memory-Fallback**, Telegram-Befehle, **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
 
 ---
 
@@ -117,7 +117,7 @@ flowchart TB
 7. CMC- und X-Zyklus-Digest an Telegram (wenn neue Signale, `telegram_explanations` aktiv)
 8. Strategy-Backtest-Tick (adaptiv, gestaffelt, wenn `strategy_backtest.auto_run: true`)
 9. Cycle-Summary an Telegram (Entscheidungen + Social-Top, wenn `notify_on_cycle: true`)
-10. Hermes-Hintergrundthread (alle ~30 Min., eigene Telegram-Meldungen bei jedem Lern-Zyklus)
+10. Hermes-Hintergrundthread (alle ~30 Min.) — testet Parameter; Live-Bot nutzt `hermes/memory/baseline.json` als Fallback
 11. Warten update_interval Sekunden → zurück zu 1
 ```
 
@@ -279,19 +279,111 @@ Priorität (höchste gewinnt):
 
 **X-BUY-Schwelle:** dynamisch nach Trust-Score (höherer Trust → niedrigere Confidence nötig)
 
-### 6.3 Aktuelle Coin-Strategien (25 USDT/Trade)
+### 6.3 Feste Strategien in `config.strategies[]` (25 USDT/Trade)
+
+Diese Coins haben einen **expliziten Eintrag** in `config.json` — der hat **höchste Priorität** (vor Hermes Memory und Volatile-Profil):
 
 | Coin | Tier | SL | TP | RSI Buy | RSI Sell 30/20 | Buy-Cooldown | Sell-Cooldown |
 |------|------|----|----|---------|----------------|--------------|---------------|
-| ARIA | Meme | 15 % | 12 % | 28–45 | 72/84 | 4 h | 3 h |
-| RAVE | Meme | 15 % | 12 % | 28–45 | 72/84 | 4 h | 3 h |
-| HIGH | Mid | 12 % | 10 % | 30–46 | 70/80 | 4 h | 3 h |
-| SOL | Large | 8 % | 6 % | 32–48 | 68/78 | 6 h | 4 h |
-| BTC | Large | 8 % | 6 % | 32–48 | 68/78 | 6 h | 4 h |
+| ARIA | Meme | 50 % | 12 % | 28–45 | 72/84 | 4 h | 3 h |
+| RAVE | Meme | 50 % | 12 % | 28–45 | 72/84 | 4 h | 3 h |
+| HIGH | Mid | 50 % | 10 % | 30–46 | 70/80 | 4 h | 3 h |
+| SOL | Large | 50 % | 6 % | 32–48 | 68/78 | 6 h | 4 h |
+| BTC | Large | 50 % | 6 % | 32–48 | 68/78 | 6 h | 4 h |
 
 ARIA 1h-Strategie existiert nur für Sandbox (`live_enabled: false`).
 
-### 6.4 Strategie-Beispiele
+**Coins ohne Eintrag** (z. B. **H/USDT**, **WLD/USDT**, Trending-Altcoins) nutzen stattdessen die Kette in Abschnitt 6.5 — typischerweise **Hermes Memory** plus ggf. **Volatile-Overlay**.
+
+### 6.5 Strategie-Auswahl — Wer bekommt welche Regeln?
+
+Stell dir vor, der Bot hat **drei Schubladen** mit Einstellungen. Er nimmt immer die **oberste**, die für den Coin passt:
+
+```
+1. config.strategies[]     ← du hast den Coin fest eingetragen (z. B. ARIA)
+2. Hermes Memory           ← Bot hat im Backtest bessere Werte gelernt (z. B. H)
+3. Volatile-Profil         ← nur bei offener Position + hektischem Coin
+4. Altcoin-Social          ← Trending-Coins von CMC ohne eigene Strategie
+5. Standard-Defaults       ← Rest
+```
+
+**Hermes Memory** (`hermes/memory/baseline.json`) gilt **sofort im Live-Bot** — nicht erst nach Promotion in `config.strategies[]`. Promotion ist nur der Weg, die Werte **dauerhaft in die Config-Datei** zu schreiben.
+
+**Volatile-Overlay** (`volatile_altcoin` in `config.json`) legt sich **auf** Hermes- oder Standard-Parameter, wenn:
+- du eine **offene Position** hast, und
+- der Coin als **volatile** gilt (hoher ATR, Meme-Coin oder Micro-Cap).
+
+Dann heißt das Profil `hermes_baseline+volatile`. Hermes-Werte wie `rsi_sell_30: 70` bleiben erhalten; dazu kommen z. B. Verkauf am **oberen Bollinger-Band** oder bei **Volumen-Erschöpfung**.
+
+| Modus `volatile_altcoin.mode` | Bedeutung für Einsteiger |
+|-------------------------------|--------------------------|
+| `shadow` (aktuell) | Bot zeigt in Telegram, **was er verkaufen würde** (`shadow->SELL_30`), führt es aber **nicht aus** — zum Beobachten ohne Risiko. |
+| `live` | Volatile-Verkaufsregeln werden **wirklich ausgeführt**. |
+
+**Tier-Freeze:** Beim ersten Kauf wird der Coin als `stable` oder `volatile` eingefroren (`freeze_tier_on_entry`) — damit wechselt die Strategie nicht mitten in einer Position hin und her.
+
+Relevante Dateien: `strategies/registry.py` (`resolve_strategy_params`), `intelligence/volatility_classifier.py`, `strategies/market_structure.py`.
+
+### 6.6 Praxis-Beispiele — H, ARIA, WLD (ca. 30 Tage, Mai–Juni 2026)
+
+Die folgenden Beispiele stammen aus echten Bot-Läufen (Enhanced Dry Run). Zahlen sind gerundet; Sinn ist: **wie die Schubladen in der Praxis zusammenspielen**.
+
+#### Beispiel H/USDT (Humanity) — Hermes + Volatile, kein `strategies[]`-Eintrag
+
+**Ausgangslage:** H ist ein sehr volatiler Altcoin (ATR oft > 40 %). Er steht **nicht** in `config.strategies[]`, aber Hermes hat in `baseline.json` gelernt: `rsi_sell_30: 70`, `stop_loss_pct: 50`. CMC zeigte in der Watchlist oft BUY-Stimmung (33× am 14.06.).
+
+| Datum | Was passierte | Einfach erklärt |
+|-------|---------------|-----------------|
+| 13.06. | Manueller Kauf ~250 USDT @ ~0,28 $ | Du (oder der Bot manuell) steigst ein. Hermes-Parameter gelten ab sofort. |
+| 13.06. | Teilverkauf @ ~0,29 $ (+~2 USDT) | Erster Gewinnmitnahme — noch klein, Kurs steigt langsam. |
+| 14.06. 07:12 | Auto-Verkauf @ ~0,48 $ (+~43 USDT) | Starker Pump: RSI hoch, Bot verkauft einen großen Teil — **realisierter Gewinn**. |
+| 14.06. | Rebuy @ ~0,24 $ (Dip) | Position wieder aufgebaut. **Hermes-Memory bleibt aktiv** — du verlierst die optimierten Werte nicht. |
+| 14.06. Abend | Zwei CMC-Teilverkäufe @ ~0,43–0,42 $ (+~168 USDT) | Community-Stimmung + hoher Kurs → gestaffelte Gewinnmitnahme. |
+| 15.06. | Verkauf @ ~0,62 $ (+~186 USDT) | Kurs noch höher — weiterer Exit. Danach Rebuy @ ~0,35 $. |
+
+**Was ein Einsteiger daraus mitnehmen soll:**
+- Der Bot **verkauft selten alles auf einmal** — er nimmt Gewinne in Stufen (30 % / 20 %).
+- Nach **Sell + Rebuy** gelten weiterhin **dieselben Hermes-Parameter** — kein „Reset“ auf Standard.
+- Mit `volatile_altcoin.mode: shadow` würdest du **zusätzliche** Verkäufe (BB oben, Volumen-Dump) nur als `shadow->…` in Telegram sehen, ohne Ausführung.
+
+**Telegram-Nachricht (vereinfacht, Shadow):**
+```
+🔶 SELL 30% — H/USDT (nicht ausgeführt, Shadow)
+Warum: Kurs am oberen Bollinger-Band, RSI über 62 — typisch für „zu heiß gelaufen“.
+shadow->SELL_30 | Profil: hermes_baseline+volatile
+```
+
+#### Beispiel ARIA/USDT — Explizite Config schlägt Hermes
+
+ARIA hat einen **festen** Eintrag in `config.strategies[]` (`rsi_sell_30: 72`). Selbst wenn Hermes im Memory andere Werte hätte, gewinnt **immer die Config**.
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Kauf @ unterem BB, RSI 38 | Technisches BUY → ggf. BUY_STRONG mit X-Signal |
+| Gewinn +12 % | Take-Profit 30 % (`take_profit_pct: 12`) — **einmalig** |
+| RSI kreuzt 72 von unten | Zweite Verkaufsstufe 30 % |
+
+**Merksatz:** ARIA = „du hast die Regeln selbst in die Config geschrieben“. Hermes darf Vorschläge testen; Live nutzt Config, bis du eine Promotion **bewusst** übernimmst.
+
+#### Beispiel WLD/USDT — Nur Hermes Memory (noch kein `strategies[]`)
+
+WLD hat wie H **keinen** Config-Eintrag, aber ein Profil in `baseline.json` (Stand Juni 2026). Beim Kauf gelten Hermes-Werte; bei hoher Volatilität kommt das Volatile-Overlay dazu.
+
+| Phase | Profil | Typische Regel |
+|-------|--------|----------------|
+| Keine Position | `hermes_baseline` | Kauf nur bei RSI/BB/Volumen laut Hermes |
+| Position + volatile | `hermes_baseline+volatile` | Hermes-Verkaufsschwellen + BB/Volumen-Struktur |
+
+#### Vergleich auf einen Blick
+
+| Coin | In `strategies[]`? | Hermes Memory? | Volatile-Overlay? | Nach Rebuy |
+|------|-------------------|----------------|-------------------|------------|
+| ARIA | ✅ Ja | optional, ignoriert | nur wenn volatile | Config-Regeln |
+| H | ❌ Nein | ✅ Ja | ✅ bei Position | Hermes bleibt |
+| WLD | ❌ Nein | ✅ Ja | ✅ bei Position | Hermes bleibt |
+| Neuer Trending-Coin | ❌ Nein | ❌ erst nach Lernen | ✅ bei Position | Volatile oder `altcoin_social` |
+
+### 6.4 Allgemeine Strategie-Beispiele (Paper-Logik)
 
 **Beispiel 1 — Konservativer Einstieg (ARIA):**
 ```
@@ -404,7 +496,11 @@ Der Bot erklärt sich **selbst**. Du musst keine Charts lesen — die Nachrichte
 | **Teilverkauf 20 % / 30 %** | Gestaffelter Exit: nicht alles auf einmal verkaufen, Gewinne schrittweise mitnehmen. |
 | **BLOCKED** | Signal war da, aber Risiko-Manager hat abgelehnt (z. B. zu viele Positionen, Cooldown). |
 | **HOLD / Kein Trade** | Bot beobachtet, handelt aber nicht — oft weil Technik und Social nicht übereinstimmen. |
-| **Hermes** | Hintergrund-Assistent, der Strategie-Einstellungen im Backtest testet (alle ~30 Min.). |
+| **Hermes** | Hintergrund-Assistent, der Strategie-Einstellungen im Backtest testet (alle ~30 Min.) und gelernte Werte in `hermes/memory/baseline.json` speichert. |
+| **Hermes Memory** | Gelernte Parameter pro Coin — gelten im Live-Bot, auch nach Verkauf und erneutem Kauf (Rebuy), bis du sie in `config.strategies[]` promotest. |
+| **Volatile-Profil** | Extra-Verkaufsregeln für hektische Altcoins (Bollinger oben, Volumen-Erschöpfung, Volumen-Dump) — legt sich über Hermes- oder Standard-Parameter. |
+| **Shadow-Mode** | Bot **rechnet** volatile Verkäufe mit, führt sie aber **nicht aus** — du siehst in Telegram `shadow->SELL_30`, ohne echten Trade. |
+| **ATR** | Maß für Kursschwankungen. Hoher ATR (z. B. > 5 %) → Coin gilt als „volatile“. |
 | **Counterfactual** | „Was wäre passiert, wenn…?“ — Vergleich simulierter vs. echter Verkäufe. |
 
 #### Typische Fragen
@@ -751,11 +847,17 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
       "default_language": "de"
     }
   },
-  "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ]
+  "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ],
+  "volatile_altcoin": {
+    "enabled": true,
+    "mode": "shadow",
+    "atr_volatile_enter_pct": 5.0,
+    "freeze_tier_on_entry": true
+  }
 }
 ```
 
-`telegram_command_menu` — siehe Abschnitt 7 (Menü-Button, Bereichs-Tastatur, DE/EN). Optional: `"button_text": "Menü"` für einen festen Button-Titel.
+`volatile_altcoin` — siehe Abschnitt 6.5. `telegram_command_menu` — siehe Abschnitt 7 (Menü-Button, Bereichs-Tastatur, DE/EN). Optional: `"button_text": "Menü"` für einen festen Button-Titel.
 
 ### `.env` (nicht committen)
 
@@ -802,7 +904,7 @@ XAI_API_KEY=...            # Grok
 ## 14. Tests
 
 ```bash
-pytest tests/unit/ -v                    # 237+ Tests
+pytest tests/unit/ -v                    # 381+ Tests
 pytest tests/unit/test_dry_run_portfolio.py -v   # Sim-Cash + Portfolio-Invarianten
 pytest tests/unit/test_dry_run_wallet.py -v
 pytest tests/unit/test_strategy_backtest.py -v
@@ -908,4 +1010,4 @@ Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufze
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · GitHub Issues im Repo
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) (Pool, Memory-Fallback, Promotion) · GitHub Issues im Repo

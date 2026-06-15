@@ -1,8 +1,10 @@
 # Plan: Hermes Live-Trade-Evidenz
 
-Stand: 14. Juni 2026  
-Status: **Approved zur Umsetzung** (Plan only — noch nicht implementiert)  
+Stand: 15. Juni 2026  
+Status: **Umgesetzt** (Live-Evidenz, Dual/Guardrail, Counterfactual-API)  
 Bezug: Tages-Auswertung 14.06., Hermes 2.0 Design, `live_trade_history.json`
+
+> **Ergänzung Juni 2026:** Neben diesem Plan gilt **Hermes Memory als Live-Fallback** — `baseline.json`-Parameter werden im Bot genutzt, auch ohne Promotion in `config.strategies[]`. Siehe [HERMES_DOKUMENTATION.md §1b](HERMES_DOKUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profil--drei-rollen).
 
 ---
 
@@ -21,9 +23,9 @@ Hermes soll **tatsächliche Dry-Run-/Live-Trades** (`live_trade_history.json` + 
 | Live-Bot | Handelt (Dry-Run), schreibt `live_trade_history.json` |
 | Hermes | Liest nur OHLCV + `cmc_posts.json` Replay im Pipeline-Backtest |
 | Promotion | Nur Walk-Forward-Folds; typisch **0/4 gewonnen** → 35/35 rejected |
-| Live-PnL | H +42,70 (auto), ARIA −16 (cmc) — **kein Einfluss** auf Hermes |
+| Live-PnL | H +42,70 (auto), ARIA −16 (cmc) — fließt seit v1.7 in **Live-Evidenz** ein |
 
-Hermes ist damit ein **reiner Backtest-Beobachter**: er lernt Skills, ändert aber nie `config.json`.
+**Historisch (vor Live-Evidenz):** Hermes war ein reiner Backtest-Beobachter. **Heute:** Memory in `baseline.json` steuert den Live-Bot; Promotion in `config.strategies[]` ist optional.
 
 ---
 
@@ -279,14 +281,14 @@ Linearer Stack — von unten nach oben mergen.
 
 ---
 
-## Referenz: Was bei Promotion live passiert (unverändert)
+## Referenz: Was bei erfolgreichem Lernzyklus passiert
 
-1. `hermes/memory/baseline.json` → neue `params`
-2. `sync_hermes_baseline_to_config()` → `config.strategies[]` gepatcht
-3. Telegram: „🧠 Hermes promoted"
-4. Nächster Bot-Zyklus nutzt neue RSI/CMC-Schwellen → **andere Trade-Entscheidungen** (auch im Dry-Run)
+1. `hermes/memory/baseline.json` → neue `params` (**Live-Bot nutzt sie sofort**)
+2. Optional bei Promotion: `sync_hermes_baseline_to_config()` → `config.strategies[]` gepatcht
+3. Telegram: „🧠 Hermes promoted" (nur bei Promotion)
+4. Nächster Bot-Zyklus nutzt neue Schwellen — auch über Sell/Rebuy hinweg
 
-Live-Evidenz ändert **nur die Hürde für Schritt 1–4**, nicht die Execution-Schicht.
+Live-Evidenz ändert **nur die Hürde für Promotion**, nicht die Memory-Nutzung im Live-Bot.
 
 ---
 

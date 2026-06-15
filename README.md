@@ -1,4 +1,4 @@
-# X-Agent Trading Bot (Version 1.8.0)
+# X-Agent Trading Bot (Version 1.9.0)
 
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 
@@ -25,7 +25,14 @@ In Telegram: Menü-Button neben der Eingabezeile (alle Befehle) oder `/help` sen
 
 ---
 
-## Was ist neu in 1.8 (Juni 2026)
+## Was ist neu in 1.9 (Juni 2026)
+
+- **Volatile-Altcoin-Profil** — automatische Erkennung hektischer Coins (ATR, Meme, Micro-Cap); extra Verkaufsregeln (Bollinger oben, Volumen-Erschöpfung, Volumen-Dump); **Shadow-Mode** zum Beobachten ohne Ausführung ([Doku §6.5](DOCUMENTATION.md#65-strategie-auswahl--wer-bekommt-welche-regeln))
+- **Hermes Memory als Live-Fallback** — gelernte Parameter aus `hermes/memory/baseline.json` gelten im Bot auch für Coins **ohne** `config.strategies[]`-Eintrag (z. B. H/USDT) — über Sell, Rebuy und erneuten Kauf hinweg ([HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md))
+- **Praxis-Beispiele H / ARIA / WLD** — 30-Tage-Nachvollzug in Alltagssprache ([Doku §6.6](DOCUMENTATION.md#66-praxis-beispiele--h-aria-wld-ca-30-tage-maijuni-2026))
+- **381 Unit-Tests** — inkl. volatile profile, Hermes fallback, market structure
+
+### Aus 1.8
 
 - **CMC-Churn-Schutz** — stabile Quote-IDs, Sell-TA-Pflicht, höhere Sell-Schwellen, Social-Sell-Cooldowns ([Plan](plans/cmc-churn-fixes.md), [Doku §10](DOCUMENTATION.md#10-cmc-coinmarketcap))
 - **Build-Info in Telegram** — Version + Git-Branch bei Restart, `/gate`, `/mode` (ohne neues Menü)
@@ -51,7 +58,7 @@ Details: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-be
 - **Strategy Backtest** — Auto-Backtest + Parameter-Tuning pro Coin (`/backtest`, gestaffelt, Auto-Apply mit Guardrails)
 - **Manuell vs. Auto** — `/orders` und `/positions` zeigen Trade-Quelle korrekt (Manuell / Auto)
 - **Scope-Ledger** — `positions.live.json` / `positions.paper.json` getrennt vom Paper-Ledger
-- **237 Unit-Tests** — inkl. Portfolio-Invarianten (`test_dry_run_portfolio.py`)
+- Portfolio-Invarianten (`test_dry_run_portfolio.py`)
 
 ### Aus 1.4
 
@@ -121,13 +128,14 @@ Details: [DOCUMENTATION.md §5](DOCUMENTATION.md#5-demo-modus---demo)
 
 ## Strategien (Kurz)
 
-Pro Coin in `config.json` → `strategies[]`:
+**Priorität:** `config.strategies[]` → **Hermes Memory** → **Volatile-Overlay** → Trending-Defaults
 
 - **BUY:** Preis am unteren BB + RSI in Range + Volumen
-- **SELL:** Stop-Loss → Take-Profit → RSI-Tiers (Cross, einmalig)
+- **SELL:** Stop-Loss → Take-Profit / Struktur (BB, Volumen) → RSI-Tiers (Cross, einmalig)
 - **Cooldown:** 3–6 h zwischen Trades pro Coin
+- **H/USDT & Co.:** Kein Config-Eintrag nötig — Hermes-Memory + volatile Regeln reichen
 
-Beispiele: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-strategien--wie-sie-funktionieren)
+Beispiele: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-strategien--wie-sie-funktionieren) · [§6.6 H/ARIA/WLD](DOCUMENTATION.md#66-praxis-beispiele--h-aria-wld-ca-30-tage-maijuni-2026)
 
 ---
 
@@ -150,7 +158,7 @@ HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger
 ## Tests
 
 ```bash
-pytest tests/unit/ -v                         # 237+ Tests
+pytest tests/unit/ -v                         # 381+ Tests
 pytest tests/unit/test_dry_run_portfolio.py -v
 pytest tests/unit/test_strategy_backtest.py -v
 python3 scripts/gate_live_smoke_test.py       # Keys + Balance (.env)
@@ -178,4 +186,4 @@ python3 scripts/reconcile_gate_positions.py   # Live-Modus
 
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
-Letzte Aktualisierung: 14. Juni 2026
+Letzte Aktualisierung: 15. Juni 2026

@@ -1,8 +1,8 @@
 # Hermes — Self-Improving Trading Agent
 
-Stand: 14. Juni 2026
+Stand: 15. Juni 2026
 
-Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, was neu ist, und wie du ihn in **Telegram nachvollziehst** — auch ohne Programmierkenntnisse.
+Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, wie er mit dem **Live-Bot** und dem **Volatile-Profil** zusammenspielt, und wie du alles in **Telegram nachvollziehst** — auch ohne Trading- oder Programmierkenntnisse.
 
 ---
 
@@ -14,9 +14,55 @@ Stell dir Hermes als einen **Assistenten vor, der deine Trading-Strategie ständ
 2. Er ändert **genau einen Parameter** (z. B. RSI-Schwelle von 30 auf 28).
 3. Er **simuliert** beide Varianten mit historischen Kursdaten.
 4. Er entscheidet: **besser, gleich oder schlechter** — und merkt sich das Ergebnis.
-5. Nur wenn die neue Variante **klar besser** ist, wird sie **übernommen** und live genutzt.
+5. Nur wenn die neue Variante **klar besser** ist, wird sie ins **Memory** übernommen (optional auch in `config.strategies[]`).
 
-Hermes handelt **nicht selbstständig wild**. Er optimiert nur die Parameter deiner bestehenden RSI/Bollinger-Strategie und schreibt bessere Werte in die Bot-Konfiguration — wenn die Prüfung besteht.
+Hermes handelt **nicht selbstständig wild**. Er optimiert nur die Parameter deiner bestehenden RSI/Bollinger-Strategie. Bessere Werte landen in **`hermes/memory/baseline.json`** — und werden **sofort im Live-Bot genutzt**, auch wenn sie noch **nicht** in `config.strategies[]` stehen.
+
+---
+
+## 1b. Hermes vs. Live-Bot vs. Volatile-Profil — drei Rollen
+
+| Rolle | Was ist das? | Analogie |
+|-------|--------------|----------|
+| **Live-Bot** | Kauft und verkauft alle 10 Minuten | Der Fahrer |
+| **Hermes** | Testet Einstellungen im Hintergrund (~30 Min.) | Der Tüftler im Labor |
+| **Volatile-Profil** | Extra-Ausstiegsregeln für hektische Coins | Sicherheitsgurt bei wilder Fahrt |
+
+**Wichtig:** Hermes und der Live-Bot sind **nicht dasselbe Programm**, aber sie teilen sich das **Gedächtnis** (`baseline.json`).
+
+### Welche Parameter gelten beim Handel?
+
+Der Bot wählt in dieser Reihenfolge (siehe `strategies/registry.py`):
+
+```
+1. config.strategies[]     — du hast den Coin fest eingetragen (z. B. ARIA)
+2. Hermes Memory         — gelernte Werte aus baseline.json (z. B. H, WLD)
+3. + Volatile-Overlay      — nur bei offener Position + volatilem Coin
+4. altcoin_social          — Trending-Coins ohne eigenes Profil
+5. Standard-Defaults
+```
+
+**Promotion** (`sync_to_config: true` + erfolgreicher Test) schreibt Werte zusätzlich in `config.json` → `strategies[]`. Das ist **optional** für den Live-Betrieb — Memory allein reicht.
+
+**Volatile-Profil** (`volatile_altcoin` in `config.json`) ist **unabhängig** von Hermes: Es legt BB-/Volumen-Verkaufsregeln **oben drauf**, wenn der Coin als volatile gilt. Profilname dann: `hermes_baseline+volatile`.
+
+Aktuell: `volatile_altcoin.mode: shadow` — der Bot **zeigt** volatile Verkäufe in Telegram (`shadow->SELL_30`), führt sie aber **nicht aus**.
+
+---
+
+## 1c. Hermes Coin-Pool (Hybrid-Modus)
+
+Hermes lernt nicht nur die Coins aus `hermes.symbols`. Im **Hybrid-Modus** (`symbols_mode: hybrid`) setzt sich der Pool so zusammen:
+
+| Quelle | Beispiel | Bedeutung |
+|--------|----------|-----------|
+| **Pins** (`symbols_pin`) | ARIA/USDT | Immer dabei — dein Haupt-Coin |
+| **Offene Positionen** | H/USDT, STG/USDT | Was du gerade hältst, wird mitoptimiert |
+| **CMC Top-N** | aus Watchlist | Trending-Coins aus der Beobachtungsliste |
+
+`hermes.symbols: ["ARIA", "H", …]` allein **pinnt** im Hybrid-Modus **nicht** — nur `symbols_pin` tut das. H landet im Pool, weil du eine Position hältst oder CMC ihn in die Watchlist hebt.
+
+Maximal **8 Coins** gleichzeitig (`symbols_max: 8`). Rotation: `signal_activity` — Hermes bearbeitet zuerst Coins mit viel Signal-Aktivität.
 
 ---
 
@@ -53,8 +99,9 @@ Hermes handelt **nicht selbstständig wild**. Er optimiert nur die Parameter dei
 2. **Vorschlag** — Grok (wenn `XAI_API_KEY` gesetzt) oder Heuristik wählt **einen** Parameter und einen neuen Wert.
 3. **Backtest** — Walk-Forward über die letzten ~35 Tage, aufgeteilt in 7-Tage-Fenster mit 3-Tage-Verschiebung.
 4. **Bewertung** — Variante muss u. a. in **≥ 60 % der Folds** besser sein und Mindest-Kennzahlen erfüllen.
-5. **Promotion** (nur bei Erfolg) — neue Parameter → `config.json` → Bot nutzt sie beim nächsten Signal.
+5. **Übernahme** — bessere Parameter → `hermes/memory/baseline.json` (immer); optional zusätzlich → `config.strategies[]` bei Promotion.
 6. **Lernen** — Experiment + Skill werden in `hermes/memory/` gespeichert.
+7. **Live-Bot** — nutzt Memory **sofort** beim nächsten Zyklus (Kauf, Verkauf, Rebuy).
 
 ---
 
@@ -110,23 +157,26 @@ Gespeichert in `hermes/memory/skills.json`:
 
 ---
 
-## 6. Order-Provenance — Nachvollziehbarkeit
+## 6. Memory, Promotion und Order-Provenance
 
-Wenn Hermes Parameter in die Strategie schreibt (`sync_to_config: true`), enthält der Strategie-Eintrag:
+### Zwei Wege, wie Hermes-Werte live werden
 
-- `hermes_experiment_id` — z. B. `exp_65e4108a`
-- `hermes_updated_at` — Zeitstempel der Übernahme
+| Weg | Wo gespeichert | Wann aktiv | Typisches Beispiel |
+|-----|----------------|------------|-------------------|
+| **Memory (Standard)** | `hermes/memory/baseline.json` | Sofort im Live-Bot | H/USDT ohne `strategies[]`-Eintrag |
+| **Promotion** | zusätzlich `config.strategies[]` | Nach erfolgreichem Backtest + `sync_to_config` | ARIA — du willst Werte fest in der Config |
 
-**Beim nächsten Trade** über diese Strategie:
+**Sell → Rebuy:** Memory bleibt erhalten. Du verlierst Hermes-Optimierung **nicht**, wenn du verkaufst und später wieder kaufst — solange du den Coin nicht manuell aus dem Memory löschst und kein expliziter `strategies[]`-Eintrag etwas anderes vorschreibt.
 
-- Die Order bekommt `source: hermes`
-- In `/orders 3` (Order-Details) erscheint:
+### Nachvollziehbarkeit in Orders
 
-  ```
-  Hermes  Experiment exp_65e4108a
-  ```
+Bei Promotion enthält der Strategie-Eintrag `hermes_experiment_id` und `hermes_updated_at`. Orders können `source: hermes` tragen. In `/orders 3`:
 
-So kannst du in Telegram nachvollziehen, ob ein Trade mit **manuellen**, **X-Signal-** oder **Hermes-optimierten** Parametern ausgeführt wurde.
+```
+Hermes  Experiment exp_65e4108a
+```
+
+Ohne Promotion siehst du in `/why H` oder `logs/decisions.jsonl` das Profil `hermes_baseline` bzw. `hermes_baseline+volatile`.
 
 ---
 
@@ -271,9 +321,51 @@ Wenn `notify_hermes_every_cycle: false`, bekommst du nur Promotion und Live-Veto
 
 ---
 
-## 10. Konkrete Beispiele
+## 10. Konkrete Beispiele (30 Tage Praxis: H, ARIA, WLD)
 
-### Beispiel A — Erfolgreiche Promotion
+Die folgenden Geschichten basieren auf echten Bot-Läufen (Mai–Juni 2026, Enhanced Dry Run). Sie zeigen, **wer welche Regeln bekommt** — ohne dass du Charts lesen musst.
+
+### Beispiel 0 — H/USDT: Hermes Memory + Volatile, kein Config-Eintrag
+
+**Situation:** Humanity (H) ist ein sehr volatiler Altcoin. Er steht **nicht** in `config.strategies[]`, aber Hermes hat ein Profil in `baseline.json` (z. B. `rsi_sell_30: 70`, `stop_loss_pct: 50`). Am 14.06. lief Hermes 30 Experimente für H — viele abgelehnt, **Memory trotzdem aktiv**.
+
+**Zeitleiste (vereinfacht):**
+
+| Wann | Ereignis | Was du verstehen sollst |
+|------|----------|-------------------------|
+| 13.06. | Kauf ~250 USDT @ ~0,28 $ | Einstieg — ab jetzt gelten Hermes-Parameter. |
+| 13.06. | Kleiner Verkauf @ ~0,29 $ | Erste Gewinnmitnahme (+~2 USDT). |
+| 14.06. 07:12 | Großer Auto-Verkauf @ ~0,48 $ | Pump erkannt → +~43 USDT realisiert. |
+| 14.06. | Rebuy @ ~0,24 $ | Nach Dip wieder eingestiegen — **dieselben Hermes-Werte**. |
+| 14.06. Abend | Zwei Teilverkäufe @ ~0,43–0,42 $ | Gestaffelte Exits (+~168 USDT). |
+| 15.06. | Verkauf @ ~0,62 $, dann Rebuy @ ~0,35 $ | Weiterer Exit (+~186 USDT), Position neu aufgebaut. |
+
+**Frage:** „Hat Hermes die Strategie nach dem Verkauf verloren?“  
+**Antwort:** Nein. Memory in `baseline.json` gilt weiter — auch über Rebuys hinweg.
+
+**Mit Shadow-Mode** (`volatile_altcoin.mode: shadow`) käme in Telegram zusätzlich z. B.:
+
+```
+Warum: Kurs am oberen Bollinger-Band — Verkauf wäre sinnvoll, läuft aber nur als Shadow.
+shadow->SELL_30 | Profil: hermes_baseline+volatile
+```
+
+### Beispiel 0b — ARIA: Config schlägt Hermes
+
+ARIA hat einen **festen** Eintrag in `config.strategies[]` (`rsi_sell_30: 72`, `take_profit_pct: 12`). Selbst wenn Hermes im Memory `70` vorschlägt, nutzt der Live-Bot **72** aus der Config.
+
+| Merksatz | |
+|----------|--|
+| Du willst volle Kontrolle | Coin in `strategies[]` eintragen |
+| Du willst, dass Hermes mitlernt | Coin **ohne** Eintrag halten (wie H) |
+
+### Beispiel 0c — WLD: Wie H, aber weniger im Rampenlicht
+
+WLD/USDT hat ebenfalls Memory in `baseline.json`, keinen `strategies[]`-Eintrag. Ablauf wie bei H: `hermes_baseline` ohne Position, `hermes_baseline+volatile` mit offener Position bei hohem ATR.
+
+---
+
+### Beispiel A — Erfolgreiche Promotion (in `config.strategies[]`)
 
 **Ausgangslage:** Baseline `rsi_buy_low: 30`, Sharpe 0.95 über 10 Folds.
 
@@ -294,9 +386,10 @@ Wenn `notify_hermes_every_cycle: false`, bekommst du nur Promotion und Live-Veto
    Der Bot hat die Einstellung im Backtest verbessert und übernimmt sie ins Live-Trading.
    Sharpe: 1.12 | WR: 54% | Folds: 7/10
    ```
-2. `config.json` → Strategie für `ARIA/USDT` / `4h` wird aktualisiert
-3. Nächster BUY auf ARIA nutzt `rsi_buy_low: 28`
-4. Order-Detail zeigt später: `Hermes Experiment exp_a1b2c3d4`
+2. `hermes/memory/baseline.json` wird aktualisiert (immer)
+3. Bei `sync_to_config: true` auch `config.json` → Strategie für `ARIA/USDT` / `4h`
+4. Nächster BUY auf ARIA nutzt `rsi_buy_low: 28`
+5. Order-Detail zeigt später: `Hermes Experiment exp_a1b2c3d4`
 
 ---
 
@@ -368,8 +461,10 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 ## 11. Was Hermes **nicht** tut
 
 - **Kein eigenes Trading:** Hermes platziert keine Orders direkt; er optimiert nur Strategie-Parameter.
+- **Kein Ersatz für `strategies[]`:** Wenn du einen Coin fest in der Config hast, **gewinnt die Config** — Hermes-Memory wird dann ignoriert.
 - **Kein Garant für Gewinn:** Backtests sind historisch — Zukunft kann anders sein.
 - **Kein Multi-Parameter-Tuning:** Pro Zyklus nur **eine** Änderung (wissenschaftliche Methode).
+- **Kein Volatile-Profil:** BB-/Volumen-Strukturregeln kommen aus `volatile_altcoin` — separates System, legt sich nur oben drauf.
 - **Illiquide Coins:** Wenige Trades in 7-Tage-Folds → viele Ablehnungen (absichtlich konservativ).
 
 ---
@@ -378,7 +473,9 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 
 | Symptom | Ursache | Lösung |
 |---------|---------|--------|
-| Immer `rejected`, 0 Trades | Zu wenig Signale auf dem Coin/Zeitrahmen | Anderes Symbol, kürzerer Timeframe, oder `min_trades_aggregate` senken (vorsichtig!) |
+| Immer `rejected`, 0 Trades | Zu wenig Signale auf dem Coin/Zeitrahmen | Normal bei volatilen Coins — **Memory aus letztem Stand** gilt trotzdem im Live-Bot |
+| Live-Bot nutzt „falsche“ Werte | Coin in `strategies[]` eingetragen | Config-Eintrag entfernen oder anpassen — er hat Vorrang vor Memory |
+| H nutzt nicht Hermes-Werte | Expliziter `strategies[]`-Eintrag für H | H-Eintrag aus Config entfernen; Memory in `baseline.json` prüfen |
 | `Grok ... unavailable` | Kein API-Key | `XAI_API_KEY` in `.env` setzen — oder Heuristik nutzen |
 | Keine Promotion trotz gutem Sharpe | Folds-Ratio unter 60 % | Strategie ist instabil über Zeitfenster — gewollt |
 | Hermes läuft nicht | `hermes.enabled: false` | In `config.json` auf `true` setzen und Bot neu starten |
