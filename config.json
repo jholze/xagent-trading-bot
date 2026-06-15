@@ -32,6 +32,8 @@
   },
   "dry_run_defaults": {
     "max_daily_trades": 30,
+    "max_daily_buys": 30,
+    "max_daily_sells": 50,
     "trade_cooldown_hours": 0.5,
     "cmc_min_confidence": 55,
     "rsi_buy_low": 25,
@@ -142,6 +144,8 @@
   },
   "max_daily_trades": 8,
   "risk": {
+    "max_daily_buys": 8,
+    "max_daily_sells": 0,
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,
     "atr_reference_pct": 3.0,

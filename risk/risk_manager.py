@@ -44,6 +44,14 @@ class RiskManager:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
+            max_daily_sells = self._effective_max_daily_sells()
+            daily_sells = self._daily_sells_count()
+            if max_daily_sells > 0 and daily_sells >= max_daily_sells:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Daily sell limit reached ({daily_sells}/{max_daily_sells})",
+                    code="max_daily_sells",
+                )
             return RiskDecision(approved=True, order=order, message="Sell approved")
 
         if order.price <= 0:
@@ -63,12 +71,12 @@ class RiskManager:
                 code="max_open_positions",
             )
 
-        daily_count = self._daily_trades_count()
-        max_daily = self._effective_max_daily_trades()
-        if max_daily > 0 and daily_count >= max_daily:
+        daily_buys = self._daily_buys_count()
+        max_daily_buys = self._effective_max_daily_buys()
+        if max_daily_buys > 0 and daily_buys >= max_daily_buys:
             return RiskDecision(
                 approved=False,
-                message=f"Daily trade limit reached ({daily_count}/{max_daily})",
+                message=f"Daily buy limit reached ({daily_buys}/{max_daily_buys})",
                 code="max_daily_trades",
             )
 
@@ -163,7 +171,11 @@ class RiskManager:
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
-            "max_daily_trades": self._effective_max_daily_trades(),
+            "daily_buys": self._daily_buys_count(),
+            "daily_sells": self._daily_sells_count(),
+            "max_daily_trades": self._effective_max_daily_buys(),
+            "max_daily_buys": self._effective_max_daily_buys(),
+            "max_daily_sells": self._effective_max_daily_sells(),
             "max_position_percent": self.config.max_position_percent,
             "base_usdt_per_trade": self._base_usdt_cap(),
             "portfolio_equity": round(equity, 2),
@@ -181,12 +193,31 @@ class RiskManager:
             return "gate"
         return "paper"
 
-    def _effective_max_daily_trades(self) -> int:
+    def _effective_max_daily_buys(self) -> int:
         if is_dry_run_enhanced(self.config.raw):
             defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_buys") is not None:
+                return int(defaults["max_daily_buys"])
             if defaults.get("max_daily_trades") is not None:
                 return int(defaults["max_daily_trades"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_buys") is not None:
+            return int(risk_cfg["max_daily_buys"])
         return self.config.max_daily_trades
+
+    def _effective_max_daily_sells(self) -> int:
+        if is_dry_run_enhanced(self.config.raw):
+            defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_sells") is not None:
+                return int(defaults["max_daily_sells"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_sells") is not None:
+            return int(risk_cfg["max_daily_sells"])
+        return int(self.config.raw.get("max_daily_sells", 0))
+
+    def _effective_max_daily_trades(self) -> int:
+        """Backward-compatible alias for buy limit."""
+        return self._effective_max_daily_buys()
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
@@ -345,15 +376,26 @@ class RiskManager:
             )
         return False, ""
 
-    def _daily_trades_count(self) -> int:
-        """Count filled ledger orders in the last 24h (single source of truth per scope)."""
+    @staticmethod
+    def _order_side(order: dict) -> str:
+        side = str(order.get("side") or order.get("type") or "").lower()
+        if side in ("buy", "sell"):
+            return side
+        return ""
+
+    def _daily_trades_count(self, side: str | None = None) -> int:
+        """Count filled ledger orders in the last 24h (optional filter: buy/sell)."""
         from data_manager import load_orders, resolve_ledger_scope
 
         cutoff = datetime.now() - timedelta(hours=24)
         scope = resolve_ledger_scope(self.config.trading_mode)
         count = 0
+        want = (side or "").lower() or None
         for order in load_orders(scope).get("orders", []):
             if order.get("status") != "filled":
+                continue
+            order_side = self._order_side(order)
+            if want and order_side != want:
                 continue
             ts_raw = (
                 order.get("timestamps", {}).get("filled")
@@ -367,3 +409,9 @@ class RiskManager:
             if ts >= cutoff:
                 count += 1
         return count
+
+    def _daily_buys_count(self) -> int:
+        return self._daily_trades_count("buy")
+
+    def _daily_sells_count(self) -> int:
+        return self._daily_trades_count("sell")
