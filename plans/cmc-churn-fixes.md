@@ -1,6 +1,6 @@
 # CMC-Churn: Änderungsvorschläge für Altcoins
 
-> Status: **geplant, nicht umgesetzt** (2026-06-15)  
+> Status: **umgesetzt** auf `feature/cmc-churn-fixes` (2026-06-15)  
 > Kontext: STG/SIREN-Churn — viele kleine CMC-Teilverkäufe bei Trending-Altcoins.
 
 ## Diagnose (Ist-Zustand)
