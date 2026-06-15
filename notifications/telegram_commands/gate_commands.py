@@ -1,5 +1,6 @@
 import os
 
+from core.build_info import format_build_line
 from core.config import get_bot_config
 from data_manager import is_dry_run_enhanced, reload_config
 from execution.gate_adapter import GateExecutionAdapter
@@ -95,7 +96,11 @@ def handle(text: str) -> bool:
     trading = TradingService(cfg)
     adapter = GateExecutionAdapter(cfg)
 
-    msg = f"<b>🔗 Gate.io Status</b>\n\n<b>Bot-Modus:</b> {trading.mode_label()}\n\n"
+    msg = (
+        f"<b>🔗 Gate.io Status</b>\n\n"
+        f"<b>Bot-Modus:</b> {trading.mode_label()}\n"
+        f"{format_build_line()}\n\n"
+    )
     msg += _gate_section("Mainnet (Live)", cfg.live_config, adapter, bot_config=cfg)
     msg += "\n\n"
 

@@ -44,6 +44,9 @@ class RiskManager:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
+            social_block, social_reason = self._social_sell_blocked(order, timeframe, source)
+            if social_block:
+                return RiskDecision(approved=False, message=social_reason, code="social_sell_guard")
             max_daily_sells = self._effective_max_daily_sells()
             daily_sells = self._daily_sells_count()
             if max_daily_sells > 0 and daily_sells >= max_daily_sells:
@@ -331,6 +334,51 @@ class RiskManager:
             "total_multiplier": round(total, 3),
         }
 
+    def _social_sell_limits(self, symbol: str, timeframe: str) -> dict:
+        params = self.config.strategy_params(symbol, timeframe)
+        cmc_cfg = self.config.cmc_config
+        return {
+            "min_position_usdt": float(
+                params.get("min_position_usdt_for_social_sell")
+                or cmc_cfg.get("min_position_usdt_for_social_sell", 50)
+            ),
+            "min_notional_usdt": float(
+                params.get("min_sell_notional_usdt")
+                or cmc_cfg.get("min_sell_notional_usdt", 5)
+            ),
+            "max_sold_percent": float(
+                params.get("block_social_sell_if_sold_percent_above")
+                or cmc_cfg.get("block_social_sell_if_sold_percent_above", 0.8)
+            ),
+        }
+
+    def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
+        if source not in ("cmc", "x"):
+            return False, ""
+        if order.price <= 0:
+            return False, ""
+        limits = self._social_sell_limits(order.symbol, timeframe)
+        pos = get_position(order.symbol, timeframe)
+        pos_value = float(pos.get("amount", 0)) * order.price
+        if pos_value < limits["min_position_usdt"]:
+            return True, (
+                f"Social sell blocked: position ${pos_value:.2f} "
+                f"below minimum ${limits['min_position_usdt']:.0f}"
+            )
+        notional = float(order.amount) * order.price
+        if notional < limits["min_notional_usdt"]:
+            return True, (
+                f"Social sell blocked: notional ${notional:.2f} "
+                f"below minimum ${limits['min_notional_usdt']:.0f}"
+            )
+        sold_pct = float(pos.get("sold_percent", 0))
+        if sold_pct >= limits["max_sold_percent"]:
+            return True, (
+                f"Social sell blocked: already sold {sold_pct * 100:.0f}% of position "
+                f"(max {limits['max_sold_percent'] * 100:.0f}%)"
+            )
+        return False, ""
+
     def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
         if source == "manual":
             return False, ""
@@ -341,6 +389,29 @@ class RiskManager:
             return False, ""
 
         pos = get_position(order.symbol, timeframe)
+        params = self.config.strategy_params(order.symbol, timeframe)
+        defaults = self.config.dry_run_defaults if is_dry_run_enhanced(self.config.raw) else {}
+        cmc_cfg = self.config.cmc_config
+
+        if order.type == "SELL" and source == "cmc":
+            last_cmc = pos.get("last_cmc_sell_at")
+            if last_cmc:
+                try:
+                    last_ts = datetime.fromisoformat(str(last_cmc).replace("Z", ""))
+                    min_hours = float(
+                        params.get("cmc_min_hours_between_sells")
+                        or defaults.get("cmc_min_hours_between_sells")
+                        or cmc_cfg.get("cmc_min_hours_between_sells", 6)
+                    )
+                    elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+                    if elapsed < min_hours:
+                        return True, (
+                            f"CMC sell cooldown: {elapsed:.1f}h since last CMC sell "
+                            f"(min {min_hours:.1f}h)"
+                        )
+                except Exception:
+                    pass
+
         last_at = pos.get("last_trade_at")
         last_type = pos.get("last_trade_type")
         if not last_at or last_type != order.type:
@@ -351,8 +422,6 @@ class RiskManager:
         except Exception:
             return False, ""
 
-        params = self.config.strategy_params(order.symbol, timeframe)
-        defaults = self.config.dry_run_defaults if is_dry_run_enhanced(self.config.raw) else {}
         if order.type == "BUY":
             min_hours = float(
                 params.get("min_hours_between_buys")

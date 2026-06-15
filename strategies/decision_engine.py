@@ -5,6 +5,7 @@ from core.actions import (
     HOLD,
     IGNORE,
     SELL_FULL,
+    SELL_PARTIAL_10,
     SELL_PARTIAL_20,
     SELL_PARTIAL_30,
     SELL_PARTIAL_50,
@@ -28,6 +29,7 @@ class DecisionEngine:
         SELL_FULL: 5,
         SELL_PARTIAL_50: 4,
         SELL_PARTIAL_30: 3,
+        SELL_PARTIAL_10: 1,
         SELL_PARTIAL_20: 2,
         HOLD: 0,
     }
@@ -86,6 +88,27 @@ class DecisionEngine:
         if is_dry_run_enhanced():
             return float(self.config.dry_run_defaults.get("cmc_min_confidence", 55))
         return float(self.config.cmc_config.get("min_confidence", 60))
+
+    def _cmc_sell_threshold(self, strategy_params: dict = None, cmc_signal=None) -> float:
+        params = strategy_params or {}
+        if params.get("cmc_sell_min_confidence") is not None:
+            base = float(params["cmc_sell_min_confidence"])
+        elif is_dry_run_enhanced():
+            base = float(self.config.dry_run_defaults.get("cmc_sell_min_confidence", 65))
+        else:
+            base = float(self.config.cmc_config.get("sell_min_confidence", 70))
+        if cmc_signal and getattr(cmc_signal, "quotes_fallback", False):
+            bonus = float(self.config.cmc_config.get("quotes_fallback_sell_threshold_bonus", 10))
+            base += bonus
+        return base
+
+    def _cmc_sell_requires_ta(self, strategy_params: dict = None) -> bool:
+        params = strategy_params or {}
+        if "cmc_sell_requires_ta" in params:
+            return bool(params["cmc_sell_requires_ta"])
+        if is_dry_run_enhanced():
+            return bool(self.config.dry_run_defaults.get("cmc_sell_requires_ta", True))
+        return bool(self.config.cmc_config.get("sell_requires_ta", True))
 
     def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None) -> float:
         params = strategy_params or {}
@@ -206,11 +229,23 @@ class DecisionEngine:
 
         strategy_params = (market.strategy_params or {}) if market else {}
         if cmc_signal and cmc_signal.action == "SELL":
-            trust = self._cmc_trust_score(cmc_signal, strategy_params)
-            eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
-            if eff >= self._cmc_buy_threshold(strategy_params):
-                candidates.append((SELL_PARTIAL_20, 2, "cmc"))
-                sources.append("cmc")
+            quotes_as_signal = bool(self.config.cmc_config.get("quotes_fallback_as_signal", False))
+            if getattr(cmc_signal, "quotes_fallback", False) and not quotes_as_signal:
+                pass
+            else:
+                trust = self._cmc_trust_score(cmc_signal, strategy_params)
+                eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
+                requires_ta = self._cmc_sell_requires_ta(strategy_params)
+                ta_bearish = is_sell(technical.action)
+                if eff >= self._cmc_sell_threshold(strategy_params, cmc_signal):
+                    if requires_ta and not ta_bearish:
+                        pass
+                    elif ta_bearish:
+                        candidates.append((SELL_PARTIAL_20, 2, "cmc"))
+                        sources.append("cmc")
+                    else:
+                        candidates.append((SELL_PARTIAL_10, 1, "cmc"))
+                        sources.append("cmc")
 
         if not candidates:
             return HOLD, sources, technical.confidence

@@ -46,6 +46,7 @@ def _deserialize_position(raw: dict) -> dict:
         "last_trade_at": raw.get("last_trade_at"),
         "last_trade_type": raw.get("last_trade_type"),
         "rsi_sell_tiers_done": dict(raw.get("rsi_sell_tiers_done") or {}),
+        "last_cmc_sell_at": raw.get("last_cmc_sell_at"),
     }
 
 
@@ -64,6 +65,7 @@ def _serialize_positions() -> dict:
             "last_trade_at": p.get("last_trade_at"),
             "last_trade_type": p.get("last_trade_type"),
             "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
+            "last_cmc_sell_at": p.get("last_cmc_sell_at"),
         }
     return data
 
@@ -136,6 +138,7 @@ def init_position(symbol, timeframe):
                 "last_trade_at": None,
                 "last_trade_type": None,
                 "rsi_sell_tiers_done": {},
+                "last_cmc_sell_at": None,
             }
 
 def get_position(symbol, timeframe):
@@ -187,6 +190,8 @@ def sell_fraction_for_signal(signal: str) -> float:
         return 0.5
     if signal in ("SELL_30", "SELL_TP", "SELL_PARTIAL_30"):
         return 0.3
+    if signal in ("SELL_10", "SELL_PARTIAL_10"):
+        return 0.1
     if signal == "SELL_20":
         return 0.2
     if "FULL" in signal:
