@@ -23,6 +23,19 @@ def _price_decimal_places(value: float, sig_digits: int = 4) -> int:
     return min(12, max(9, -exponent + sig_digits - 1))
 
 
+def format_token_amount(amount: float) -> str:
+    """Human-readable token quantity (micro-cap and large lots safe)."""
+    value = float(amount or 0)
+    if value <= 0:
+        return "0"
+    if value >= 1000:
+        return f"{value:,.4f}"
+    if value >= 0.0001:
+        return f"{value:.4f}"
+    decimals = _price_decimal_places(value)
+    return f"{value:.{decimals}f}"
+
+
 def format_usdt_price(price: float) -> str:
     """Human-readable USDT price (micro-cap safe — avoids $0.0000 for CAT etc.)."""
     value = float(price or 0)
@@ -208,7 +221,7 @@ def get_prices_batch(
     Zero quotes fall back to last good cache, then optional entry prices.
     """
     if not symbols:
-        return {}
+        return ({}, {}) if return_sources else {}
 
     unique = list(dict.fromkeys(symbols))
     now = time.time()
@@ -223,6 +236,11 @@ def get_prices_batch(
             missing.append(sym)
 
     if not missing:
+        for sym in unique:
+            result.setdefault(sym, 0.0)
+        sources = _apply_price_fallbacks(unique, result, fallbacks)
+        if return_sources:
+            return result, sources
         return result
 
     gate_hits = _fetch_gate_bulk(missing)

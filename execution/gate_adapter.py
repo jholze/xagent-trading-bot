@@ -69,9 +69,14 @@ class GateExecutionAdapter(ExecutionAdapter):
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
         if self.live_cfg.get("dry_run", True):
+            if order.type == "BUY" and order.price > 0:
+                usdt = order.usdt_amount or self._max_usdt()
+                log_amount = usdt / order.price
+            else:
+                log_amount = order.amount
             log(
                 f"[DRY RUN] Live {order.type} {order.symbol} "
-                f"amount={order.amount} @ {order.price}",
+                f"amount={log_amount} @ {order.price}",
                 "INFO",
             )
             result = self._sync_local_ledger(order, timeframe, exchange_order_id="dry_run")
@@ -241,8 +246,8 @@ class GateExecutionAdapter(ExecutionAdapter):
             "type": order.type,
             "symbol": order.symbol,
             "price": order.price,
-            "amount": order.amount,
-            "usdt_amount": order.usdt_amount,
+            "amount": local.amount,
+            "usdt_amount": local.usdt_amount or order.usdt_amount,
             "usdt_received": usdt_received or local.usdt_amount,
             "pnl": local.pnl,
             "exchange_order_id": exchange_order_id,

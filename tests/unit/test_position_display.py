@@ -139,6 +139,14 @@ class TestPositionDisplay(unittest.TestCase):
         })
         self.assertIn("Manuell", line)
 
+    def test_trade_line_buy_shows_usdt_when_amount_missing(self):
+        line = _trade_line({
+            "type": "BUY", "symbol": "AARK/USDT", "amount": 0, "usdt_amount": 37.5,
+            "price": 0.0011504, "source": "auto", "timestamp": "2026-06-15T20:20:26",
+        })
+        self.assertIn("$38", line)
+        self.assertNotIn("0.0000", line)
+
     def test_resolve_portfolio_context_dry_run_uses_sim_cash(self):
         cfg = type("Cfg", (), {"raw": {"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}})()
         with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
@@ -176,7 +184,7 @@ class TestPositionDisplay(unittest.TestCase):
     def test_send_positions_snapshot_includes_trade_banner(self):
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)
         with patch("telegram_notifier.send_telegram_message") as mock_send, \
-             patch("price_fetcher.get_prices_batch", return_value={}), \
+             patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
              patch("strategies.positions.list_active_positions", return_value=[]), \
              patch("data_manager.load_trade_history", return_value={"virtual_balance": 5000, "trades": []}), \
              patch("services.trading_service.TradingService") as mock_svc:

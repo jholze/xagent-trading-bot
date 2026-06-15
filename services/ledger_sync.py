@@ -37,10 +37,10 @@ def migrate_legacy_positions() -> None:
         log(f"Legacy positions migration failed: {e}", "WARNING")
 
 
-def rebuild_positions_from_orders(scope: str) -> int:
-    """Rebuild in-memory positions for *scope* from filled orders only."""
+def _build_positions_snapshot_from_orders(scope: str) -> dict:
+    """Derive position state from filled orders for *scope*."""
     from data_manager import load_orders
-    from strategies.positions import apply_positions_snapshot, get_key, save_positions
+    from strategies.positions import get_key
 
     orders = [
         o
@@ -119,6 +119,22 @@ def rebuild_positions_from_orders(scope: str) -> int:
             pnl = order.get("pnl")
             if pnl is not None:
                 pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + float(pnl)
+    return snapshot
+
+
+def count_open_positions_from_orders(scope: str) -> int:
+    snapshot = _build_positions_snapshot_from_orders(scope)
+    return sum(1 for p in snapshot.values() if p["amount"] > 0.01)
+
+
+def rebuild_positions_from_orders(scope: str) -> int:
+    """Rebuild in-memory positions for *scope* from filled orders only."""
+    from strategies.positions import apply_positions_snapshot, save_positions
+
+    from data_manager import load_orders
+
+    snapshot = _build_positions_snapshot_from_orders(scope)
+    orders = [o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"]
 
     apply_positions_snapshot(snapshot, scope=scope)
     save_positions(scope=scope)
@@ -169,12 +185,25 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
 def sync_positions_on_startup() -> None:
     """Ensure startup uses the correct scoped ledger without cross-contamination."""
     from data_manager import get_config, resolve_ledger_scope, resolve_positions_file
+    from strategies.positions import count_open_positions, load_positions, save_positions
 
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
-    if scope == "live":
-        path = resolve_positions_file(scope)
-        activate_ledger_scope(scope, rebuild=not os.path.exists(path))
-        return
     path = resolve_positions_file(scope)
-    activate_ledger_scope(scope, rebuild=not os.path.exists(path))
+    if not os.path.exists(path):
+        activate_ledger_scope(scope, rebuild=True)
+        return
+
+    load_positions(scope=scope)
+    ledger_open = count_open_positions()
+    order_open = count_open_positions_from_orders(scope)
+    if ledger_open != order_open:
+        log(
+            f"Position drift detected for scope={scope} "
+            f"(ledger={ledger_open}, orders={order_open}); rebuilding from orders",
+            "WARNING",
+        )
+        rebuild_positions_from_orders(scope)
+        return
+
+    save_positions(scope=scope)

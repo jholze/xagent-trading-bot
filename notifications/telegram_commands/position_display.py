@@ -91,6 +91,12 @@ def _position_metrics(p: dict, price: float) -> dict:
     }
 
 
+def _position_amount_label(amount: float) -> str:
+    from price_fetcher import format_token_amount
+
+    return format_token_amount(amount)
+
+
 def format_position_card(
     index: int,
     p: dict,
@@ -131,10 +137,21 @@ def format_position_card(
 
     return (
         f"{prefix}<b>{ticker_html}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>\n"
-        f"   └ <code>{m['amount']:.4f}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
+        f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
         f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
         f"{sold_line}{last_line}{missing_line}"
     )
+
+
+def _trade_quantity_label(t: dict) -> str:
+    from price_fetcher import format_token_amount
+
+    amount = float(t.get("amount", 0) or 0)
+    if t.get("type") == "BUY" and amount <= 0:
+        usdt = float(t.get("usdt_amount", 0) or 0)
+        if usdt > 0:
+            return f"<b>${usdt:.0f}</b>"
+    return f"<code>{format_token_amount(amount)}</code>"
 
 
 def _trade_line(t: dict) -> str:
@@ -150,7 +167,7 @@ def _trade_line(t: dict) -> str:
     src = source_label(t.get("source", "auto"))
     return (
         f"\n{typ} <b>{sym_html}</b> · <i>{src}</i> · {ts}\n"
-        f"   └ <code>{float(t.get('amount', 0)):.4f}</code> @ "
+        f"   └ {_trade_quantity_label(t)} @ "
         f"{format_usdt_price(float(t.get('price', 0)))}{pnl_part}"
     )
 
@@ -316,22 +333,23 @@ def resolve_portfolio_context() -> dict:
 
 
 def format_trade_banner(result) -> str:
-    from price_fetcher import format_usdt_price
+    from price_fetcher import format_token_amount, format_usdt_price
 
     sym = (result.symbol or "").replace("/USDT", "")
     price = float(result.price or 0)
     amount = float(result.amount or 0)
     usdt = float(result.usdt_amount or 0)
     price_str = format_usdt_price(price)
+    amount_str = format_token_amount(amount)
     if result.order_type == "BUY":
         return (
             f"✅ <b>Kauf ausgeführt</b> — <b>{sym}</b>\n"
-            f"   └ <code>{amount:.4f}</code> @ {price_str} · <b>${usdt:.0f}</b>"
+            f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
         )
     pnl_part = f" · PnL <b>${result.pnl:+.1f}</b>" if result.pnl is not None else ""
     return (
         f"✅ <b>Verkauf ausgeführt</b> — <b>{sym}</b>\n"
-        f"   └ <code>{amount:.4f}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
+        f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
     )
 
 

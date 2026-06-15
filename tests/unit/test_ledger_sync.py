@@ -8,7 +8,12 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from data_manager import load_orders, resolve_ledger_scope, resolve_positions_file
-from services.ledger_sync import on_trading_mode_change, rebuild_positions_from_orders
+from services.ledger_sync import (
+    count_open_positions_from_orders,
+    on_trading_mode_change,
+    rebuild_positions_from_orders,
+    sync_positions_on_startup,
+)
 from services.order_service import OrderService
 from strategies.positions import count_open_positions, get_active_scope, get_position, positions
 
@@ -109,6 +114,19 @@ class TestLedgerSync(unittest.TestCase):
     def test_demo_mode_uses_demo_scope(self):
         with patch("data_manager.is_demo_mode", return_value=True):
             self.assertEqual(resolve_ledger_scope(), "demo")
+
+    def test_sync_positions_on_startup_rebuilds_on_drift(self):
+        self._filled_buy("live", "ARIA/USDT", 0.05, 1000)
+        with open(self.positions_files["live"], "w", encoding="utf-8") as f:
+            f.write('{"positions": {}, "ledger_scope": "live"}')
+
+        with patch("data_manager.is_demo_mode", return_value=False), \
+             patch("data_manager.get_config", return_value={"trading_mode": "live"}), \
+             patch("services.ledger_sync.migrate_legacy_positions"):
+            sync_positions_on_startup()
+
+        self.assertEqual(count_open_positions_from_orders("live"), count_open_positions())
+        self.assertGreater(float(get_position("ARIA/USDT", "4h")["amount"]), 0)
 
 
 if __name__ == "__main__":
