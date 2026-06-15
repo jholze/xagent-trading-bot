@@ -136,6 +136,10 @@ class BotConfig:
         return self._raw.get("altcoin_social", {})
 
     @property
+    def volatile_altcoin_config(self) -> dict:
+        return self._raw.get("volatile_altcoin", {})
+
+    @property
     def x_weight(self) -> float:
         return float(self._raw.get("x_weight", 0.45))
 

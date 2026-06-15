@@ -18,19 +18,24 @@ from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from data_manager import is_dry_run_enhanced, load_effective_watchlist
 from services.market_service import MarketService
-from strategies.positions import count_open_positions, get_position
-from strategies.registry import get_strategy, resolve_coin_config
+from strategies.market_structure import (
+    evaluate_market_structure_buy_boost,
+    evaluate_market_structure_sells,
+)
+from intelligence.volatility_classifier import volatility_tier
+from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
+from strategies.registry import get_strategy, resolve_coin_config, resolve_strategy_params
 
 
 class DecisionEngine:
-    """Merges technical strategy output with X and CMC social signals."""
+    """Merges technical strategy output with X, CMC, and market-structure signals."""
 
     SELL_PRIORITY = {
         SELL_FULL: 5,
         SELL_PARTIAL_50: 4,
         SELL_PARTIAL_30: 3,
-        SELL_PARTIAL_10: 1,
         SELL_PARTIAL_20: 2,
+        SELL_PARTIAL_10: 1,
         HOLD: 0,
     }
 
@@ -44,15 +49,35 @@ class DecisionEngine:
         tf = coin.get("timeframe", "4h")
         indicators = self.market.fetch_indicators(symbol, tf, current_price)
         pos = get_position(symbol, tf)
-        params = coin.get("strategy_params") or self.config.strategy_params(symbol, tf)
+        has_position = float(pos["amount"]) > 0
+        atr_pct = float(indicators.get("atr_pct", 3.0))
+        frozen = pos.get("strategy_tier") if has_position else None
+        va_cfg = self.config.volatile_altcoin_config
+        if has_position and not frozen and va_cfg.get("freeze_tier_on_entry", True):
+            tier = volatility_tier(coin, atr_pct, va_cfg)
+            lock_strategy_tier(symbol, tf, tier)
+            frozen = tier
+            pos = get_position(symbol, tf)
+        params = resolve_strategy_params(
+            coin,
+            has_position=has_position,
+            atr_pct=atr_pct,
+            frozen_tier=frozen,
+        )
+        if has_position:
+            update_market_snapshot(symbol, tf, current_price, atr_pct)
+            pos = get_position(symbol, tf)
         return MarketContext(
             symbol=symbol,
             timeframe=tf,
             current_price=current_price,
             rsi=indicators["rsi"],
             lower_bb=indicators["lower_bb"],
+            middle_bb=indicators.get("middle_bb", indicators["lower_bb"]),
+            upper_bb=indicators.get("upper_bb", indicators["lower_bb"]),
+            atr_pct=atr_pct,
             vol_multiplier=indicators["vol_multiplier"],
-            has_position=float(pos["amount"]) > 0,
+            has_position=has_position,
             average_entry=pos.get("average_entry", 0),
             open_positions=count_open_positions(),
             strategy_params=params,
@@ -164,8 +189,14 @@ class DecisionEngine:
                 sources.append("cmc")
 
         blended = self._weighted_social_confidence(x_eff if x_buy else 0, cmc_eff if cmc_buy else 0)
+        boost = evaluate_market_structure_buy_boost(market, strategy_params, tech_buy, cmc_buy)
+        if boost:
+            sources.append(boost.source)
 
         if not market.has_position and market.open_positions < self.config.max_open_positions:
+            if boost and (tech_buy or cmc_buy):
+                sources.append("multi_source")
+                return BUY_STRONG, sources, max(technical.confidence, blended)
             if tech_buy and x_buy and cmc_buy:
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
@@ -201,9 +232,11 @@ class DecisionEngine:
         cmc_signal,
         coin_signals: list,
         market: MarketContext = None,
+        position: dict = None,
     ) -> tuple:
         sources = list(technical.sources)
         candidates = []
+        structure_rationales = []
         consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
@@ -237,18 +270,25 @@ class DecisionEngine:
                 eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
                 requires_ta = self._cmc_sell_requires_ta(strategy_params)
                 ta_bearish = is_sell(technical.action)
+                volatile_profile = strategy_params.get("strategy_profile") == "volatile_altcoin"
                 if eff >= self._cmc_sell_threshold(strategy_params, cmc_signal):
                     if requires_ta and not ta_bearish:
                         pass
-                    elif ta_bearish:
+                    elif ta_bearish or volatile_profile:
                         candidates.append((SELL_PARTIAL_20, 2, "cmc"))
                         sources.append("cmc")
                     else:
                         candidates.append((SELL_PARTIAL_10, 1, "cmc"))
                         sources.append("cmc")
 
+        if market and position:
+            for cand in evaluate_market_structure_sells(market, strategy_params, position):
+                candidates.append((cand.action, cand.priority, cand.source))
+                sources.append(cand.source)
+                structure_rationales.append(cand.rationale)
+
         if not candidates:
-            return HOLD, sources, technical.confidence
+            return HOLD, sources, technical.confidence, structure_rationales
 
         best = max(candidates, key=lambda c: c[1])
         social_conf = 0.0
@@ -256,7 +296,18 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(x_signal, "effective_confidence", 0))
         if cmc_signal:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
-        return best[0], sources, max(technical.confidence, social_conf)
+        return best[0], sources, max(technical.confidence, social_conf), structure_rationales
+
+    def _apply_shadow_mode(self, normalized: str, execution_action: str, strategy_params: dict) -> tuple:
+        if strategy_params.get("strategy_profile") != "volatile_altcoin":
+            return normalized, execution_action, ""
+        mode = self.config.volatile_altcoin_config.get("mode", "shadow")
+        if mode != "shadow":
+            return normalized, execution_action, ""
+        if normalized == HOLD:
+            return normalized, execution_action, ""
+        shadow = execution_action
+        return HOLD, "HOLD", shadow
 
     def evaluate_with_market(
         self,
@@ -277,7 +328,15 @@ class DecisionEngine:
         return self._evaluate_internal(coin, market, x_signals, cmc_signals)
 
     def _evaluate_internal(self, coin: dict, market: MarketContext, x_signals=None, cmc_signals=None) -> SignalAnalysis:
-        strategy = get_strategy(coin)
+        coin = resolve_coin_config(coin)
+        if not market.strategy_params:
+            market.strategy_params = resolve_strategy_params(
+                coin,
+                has_position=market.has_position,
+                atr_pct=market.atr_pct,
+                frozen_tier=get_position(coin["symbol"], market.timeframe).get("strategy_tier"),
+            )
+        strategy = get_strategy({**coin, "strategy_params": market.strategy_params})
         technical = strategy.analyze(coin, market, x_signals=None)
 
         coin_x = self._signals_for_coin(coin["symbol"], x_signals)
@@ -285,10 +344,12 @@ class DecisionEngine:
         all_social = coin_x + coin_cmc
         x_signal = coin_x[0] if coin_x else None
         cmc_signal = coin_cmc[0] if coin_cmc else None
+        position = get_position(coin["symbol"], market.timeframe)
+        structure_rationales = []
 
         if market.has_position:
-            normalized, sources, confidence = self._merge_sell(
-                technical, x_signal, cmc_signal, all_social, market
+            normalized, sources, confidence, structure_rationales = self._merge_sell(
+                technical, x_signal, cmc_signal, all_social, market, position
             )
         else:
             normalized, sources, confidence = self._merge_buy(
@@ -301,29 +362,40 @@ class DecisionEngine:
                     sources = list(technical.sources)
 
         execution_action = to_execution_action(normalized)
+        strategy_params = market.strategy_params or {}
+        normalized, execution_action, shadow_action = self._apply_shadow_mode(
+            normalized, execution_action, strategy_params
+        )
+
         rationale_parts = []
         if "technical" in sources:
-            rationale_parts.append(f"TA→{technical.action}")
+            rationale_parts.append(f"TA->{technical.action}")
+        rationale_parts.extend(structure_rationales)
         if "take_profit" in sources:
-            rationale_parts.append("TA→take_profit")
+            rationale_parts.append("TA->take_profit")
         if "x_take_profit" in sources:
-            rationale_parts.append("X→price_target hit")
+            rationale_parts.append("X->price_target hit")
         if "x_stop_loss" in sources:
-            rationale_parts.append("X→stop_loss hit")
+            rationale_parts.append("X->stop_loss hit")
         if "x" in sources and x_signal:
-            rationale_parts.append(f"X→{x_signal.action}@{x_signal.account}({x_signal.confidence}%)")
+            rationale_parts.append(f"X->{x_signal.action}@{x_signal.account}({x_signal.confidence}%)")
         if "cmc" in sources and cmc_signal:
-            rationale_parts.append(f"CMC→{cmc_signal.action}({cmc_signal.confidence}%)")
+            rationale_parts.append(f"CMC->{cmc_signal.action}({cmc_signal.confidence}%)")
         if "multi_source" in sources:
             rationale_parts.append("X+CMC consensus")
         if normalized == BUY_STRONG:
             rationale_parts.append("strong consensus")
+        if shadow_action:
+            rationale_parts.append(f"shadow->{shadow_action}")
 
         social_conf = 0.0
         if x_signal:
             social_conf = max(social_conf, getattr(x_signal, "confidence", 0))
         if cmc_signal:
             social_conf = max(social_conf, getattr(cmc_signal, "confidence", 0))
+
+        profile = strategy_params.get("strategy_profile", "")
+        tier = strategy_params.get("volatility_tier", "")
 
         return SignalAnalysis(
             action=execution_action,
@@ -334,14 +406,20 @@ class DecisionEngine:
             vol_multiplier=technical.vol_multiplier,
             ampel_emoji=technical.ampel_emoji,
             ampel_text=technical.ampel_text,
-            should_notify=technical.should_notify or execution_action != "HOLD",
-            notify_reason=technical.notify_reason if execution_action == "HOLD" else "Decision",
+            should_notify=technical.should_notify or execution_action != "HOLD" or bool(shadow_action),
+            notify_reason=technical.notify_reason if execution_action == "HOLD" and not shadow_action else "Decision",
             x_confidence=social_conf,
             sources=sources,
             normalized_action=normalized,
             rationale=" | ".join(rationale_parts) or technical.notify_reason,
             confidence=confidence or social_conf,
             recommended=execution_action != "HOLD",
+            upper_bb=market.upper_bb,
+            middle_bb=market.middle_bb,
+            atr_pct=market.atr_pct,
+            volatility_tier=tier,
+            strategy_profile=profile,
+            shadow_action=shadow_action,
         )
 
     def to_recommendation(self, x_signal, analysis: SignalAnalysis, account: str, tweet_text: str, price: float) -> dict:

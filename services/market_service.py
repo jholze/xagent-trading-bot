@@ -17,6 +17,8 @@ class MarketService:
             return {
                 "rsi": 45.0,
                 "lower_bb": current_price * 0.97,
+                "middle_bb": current_price,
+                "upper_bb": current_price * 1.03,
                 "vol_multiplier": 1.3,
                 "atr": current_price * 0.03,
                 "atr_pct": 3.0,
@@ -28,9 +30,17 @@ class MarketService:
         close = float(df["close"].iloc[-1])
         atr = float(talib.ATR(df["high"], df["low"], df["close"], timeperiod=14).iloc[-1])
         atr_pct = (atr / close * 100.0) if close > 0 else 3.0
+        if "upper" not in df.columns:
+            upper, middle, lower = talib.BBANDS(df["close"], timeperiod=20)
+            df["upper"], df["middle"], df["lower"] = upper, middle, lower
+        lower_bb = float(df["lower"].iloc[-1]) if pd.notna(df["lower"].iloc[-1]) else close * 0.97
+        middle_bb = float(df["middle"].iloc[-1]) if pd.notna(df["middle"].iloc[-1]) else close
+        upper_bb = float(df["upper"].iloc[-1]) if pd.notna(df["upper"].iloc[-1]) else close * 1.03
         return {
             "rsi": float(df["rsi"].iloc[-1]),
-            "lower_bb": float(df["lower"].iloc[-1]),
+            "lower_bb": lower_bb,
+            "middle_bb": middle_bb,
+            "upper_bb": upper_bb,
             "vol_multiplier": float(vol_multiplier),
             "atr": atr,
             "atr_pct": float(atr_pct),
@@ -43,7 +53,7 @@ class MarketService:
                 bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
                 df = pd.DataFrame(bars, columns=["ts", "open", "high", "low", "close", "volume"])
                 df["rsi"] = talib.RSI(df["close"], timeperiod=14)
-                _, _, df["lower"] = talib.BBANDS(df["close"], timeperiod=20)
+                df["upper"], df["middle"], df["lower"] = talib.BBANDS(df["close"], timeperiod=20)
                 df["vol_avg"] = df["volume"].rolling(window=20).mean()
                 return df
             except Exception as e:

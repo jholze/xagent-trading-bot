@@ -13,6 +13,60 @@ def _load_registry():
     return _STRATEGY_CLASSES
 
 
+
+
+def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
+    cfg = get_bot_config()
+    for entry in cfg.raw.get("strategies", []):
+        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            return entry
+    return None
+
+
+def resolve_strategy_params(
+    coin: dict,
+    has_position: bool = False,
+    atr_pct: float = 3.0,
+    frozen_tier: str | None = None,
+) -> dict:
+    """Pick strategy params: explicit strategies[] > volatile_altcoin > altcoin_social > defaults."""
+    cfg = get_bot_config()
+    symbol = coin.get("symbol", "")
+    tf = coin.get("timeframe", "4h")
+
+    explicit = _explicit_strategy_entry(symbol, tf)
+    if explicit:
+        return dict(explicit)
+
+    va_cfg = cfg.volatile_altcoin_config
+    if has_position and va_cfg.get("enabled", False):
+        from intelligence.volatility_classifier import volatility_tier
+
+        tier = volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+        if tier == "volatile":
+            profile = dict(va_cfg)
+            if is_dry_run_enhanced():
+                profile.update(cfg.dry_run_defaults)
+            profile.update({
+                "symbol": symbol,
+                "timeframe": tf,
+                "strategy_profile": "volatile_altcoin",
+                "volatility_tier": tier,
+            })
+            if profile.get("take_profit_pct") is None:
+                profile.pop("take_profit_pct", None)
+            return profile
+
+    if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
+        profile = dict(cfg.altcoin_social_config)
+        if is_dry_run_enhanced():
+            profile.update(cfg.dry_run_defaults)
+        profile.update({"symbol": symbol, "timeframe": tf})
+        return profile
+
+    params = cfg.strategy_params(symbol, tf)
+    return dict(params) if params else {}
+
 def resolve_coin_config(coin: dict) -> dict:
     """Merge watchlist coin with matching config.strategies[] entry."""
     cfg = get_bot_config()
@@ -49,7 +103,10 @@ def list_registered_strategies() -> list:
 
 
 def get_strategy(coin: dict) -> BaseStrategy:
+    preset_params = coin.get("strategy_params")
     coin = resolve_coin_config(coin)
+    if preset_params and preset_params.get("strategy_profile"):
+        coin["strategy_params"] = preset_params
     registry = _load_registry()
     strategy_class = coin.get("strategy_class", "technical_rsi_bb")
     cls = registry.get(strategy_class)

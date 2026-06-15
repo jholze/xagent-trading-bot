@@ -394,5 +394,44 @@
       "min_hours_between_sells": 4,
       "description": "BTC 4h Live — Large-Cap"
     }
-  ]
+  ],
+  "volatile_altcoin": {
+    "enabled": true,
+    "mode": "shadow",
+    "atr_volatile_enter_pct": 5.0,
+    "atr_stable_exit_pct": 3.5,
+    "atr_bars_confirm": 3,
+    "micro_cap_override": true,
+    "freeze_tier_on_entry": true,
+    "rsi_sell_mode": "level",
+    "rsi_sell_30": 67,
+    "rsi_sell_20": 75,
+    "rsi_sell_min_gain_pct": 15,
+    "take_profit_pct": null,
+    "safety_tp_pct": 18,
+    "safety_tp_min_gain_pct": 50,
+    "take_profit_tiers": [
+      60,
+      100,
+      150
+    ],
+    "volume_multiplier": 0.9,
+    "reversal_volume_multiplier": 1.1,
+    "cmc_sell_requires_ta": false,
+    "cmc_sell_min_confidence": 60,
+    "cmc_min_confidence": 50,
+    "cmc_min_hours_between_sells": 4,
+    "bb_sell_enabled": true,
+    "bb_sell_upper_ratio": 0.99,
+    "bb_sell_rsi_min": 62,
+    "vol_exhaustion_sell_enabled": true,
+    "vol_exhaustion_max": 0.75,
+    "vol_exhaustion_rsi_min": 60,
+    "vol_exhaustion_min_gain_pct": 25,
+    "vol_dump_sell_enabled": true,
+    "vol_dump_min_multiplier": 1.4,
+    "vol_dump_price_drop_pct": 15,
+    "vol_dump_requires_prior_gain_pct": 5,
+    "vol_buy_boost_enabled": false
+  }
 }

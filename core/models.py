@@ -10,6 +10,9 @@ class MarketContext:
     current_price: float
     rsi: float = 45.0
     lower_bb: float = 0.0
+    middle_bb: float = 0.0
+    upper_bb: float = 0.0
+    atr_pct: float = 3.0
     vol_multiplier: float = 1.0
     has_position: bool = False
     average_entry: float = 0.0
@@ -36,6 +39,12 @@ class SignalAnalysis:
     rationale: str = ""
     confidence: float = 0.0
     recommended: bool = False
+    upper_bb: float = 0.0
+    middle_bb: float = 0.0
+    atr_pct: float = 0.0
+    volatility_tier: str = ""
+    strategy_profile: str = ""
+    shadow_action: str = ""
 
 
 @dataclass

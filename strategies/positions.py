@@ -47,6 +47,8 @@ def _deserialize_position(raw: dict) -> dict:
         "last_trade_type": raw.get("last_trade_type"),
         "rsi_sell_tiers_done": dict(raw.get("rsi_sell_tiers_done") or {}),
         "last_cmc_sell_at": raw.get("last_cmc_sell_at"),
+        "recent_high": float(raw.get("recent_high", 0)),
+        "strategy_tier": raw.get("strategy_tier"),
     }
 
 
@@ -66,6 +68,8 @@ def _serialize_positions() -> dict:
             "last_trade_type": p.get("last_trade_type"),
             "rsi_sell_tiers_done": dict(p.get("rsi_sell_tiers_done") or {}),
             "last_cmc_sell_at": p.get("last_cmc_sell_at"),
+            "recent_high": float(p.get("recent_high", 0)),
+            "strategy_tier": p.get("strategy_tier"),
         }
     return data
 
@@ -119,6 +123,26 @@ def _bootstrap_positions():
 
 _bootstrap_positions()
 
+def update_market_snapshot(symbol: str, timeframe: str, current_price: float, atr_pct: float = 0.0):
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        pos["recent_high"] = max(float(pos.get("recent_high") or 0), current_price)
+    save_positions()
+
+
+def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
+    if tier not in ("stable", "volatile"):
+        return
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        if not positions[key].get("strategy_tier"):
+            positions[key]["strategy_tier"] = tier
+    save_positions()
+
+
 def get_key(symbol, timeframe):
     return f"{symbol.replace('/', '_')}_{timeframe}"
 
@@ -139,6 +163,8 @@ def init_position(symbol, timeframe):
                 "last_trade_type": None,
                 "rsi_sell_tiers_done": {},
                 "last_cmc_sell_at": None,
+                "recent_high": 0.0,
+                "strategy_tier": None,
             }
 
 def get_position(symbol, timeframe):
@@ -221,8 +247,11 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["last_buy_price"] = current_price
             pos["last_action"] = "BUY"
             pos["rsi_sell_tiers_done"] = {}
+            pos["recent_high"] = current_price
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["last_trade_type"] = "BUY"
+            if old_amount <= 0:
+                pos["strategy_tier"] = None
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
             if amount_traded > 0:

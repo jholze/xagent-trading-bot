@@ -80,7 +80,11 @@ class TechnicalRSIStrategy(BaseStrategy):
         partial_stop = stop_loss_pct * 0.67
         rsi_sell_30 = params.get("rsi_sell_30", 70)
         rsi_sell_20 = params.get("rsi_sell_20", 80)
+        rsi_sell_mode = params.get("rsi_sell_mode", "cross")
+        rsi_sell_min_gain = float(params.get("rsi_sell_min_gain_pct", 0))
         take_profit_pct = params.get("take_profit_pct")
+        safety_tp_pct = params.get("safety_tp_pct")
+        safety_tp_min_gain = float(params.get("safety_tp_min_gain_pct", 50))
 
         ampel_emoji, ampel_text = get_ampel_color(
             market.rsi, market.vol_multiplier, market.current_price, market.lower_bb
@@ -131,14 +135,37 @@ class TechnicalRSIStrategy(BaseStrategy):
                     action = "SELL_STOP_PARTIAL"
                     sources.append("stop_loss")
 
+            gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
+
             if action == "HOLD" and entry > 0 and take_profit_pct:
-                gain_pct = (market.current_price / entry - 1) * 100
                 if gain_pct >= take_profit_pct and not _tier_done(market, symbol, tf, "tp"):
                     action = "SELL_TP"
                     sources.append("take_profit")
 
-            if action == "HOLD":
+            if action == "HOLD" and entry > 0 and not take_profit_pct and safety_tp_pct:
                 if (
+                    gain_pct >= safety_tp_min_gain
+                    and gain_pct >= float(safety_tp_pct)
+                    and not _tier_done(market, symbol, tf, "tp")
+                ):
+                    action = "SELL_TP"
+                    sources.append("take_profit")
+
+            if action == "HOLD" and entry > 0:
+                if rsi_sell_mode == "level":
+                    if (
+                        not _tier_done(market, symbol, tf, "20")
+                        and market.rsi >= rsi_sell_20
+                        and gain_pct >= rsi_sell_min_gain
+                    ):
+                        action = "SELL_20"
+                    elif (
+                        not _tier_done(market, symbol, tf, "30")
+                        and market.rsi >= rsi_sell_30
+                        and gain_pct >= rsi_sell_min_gain
+                    ):
+                        action = "SELL_30"
+                elif (
                     not _tier_done(market, symbol, tf, "20")
                     and _rsi_crossed_up(last_rsi, market.rsi, rsi_sell_20)
                 ):
