@@ -1317,7 +1317,8 @@ class TestVirtualTrading(unittest.TestCase):
 
         engine = DecisionEngine()
         cmc = CMCCommunitySignal("SOL", "BUY", 78, rationale="bullish community", votes_bullish=90, votes_bearish=8)
-        cmc.effective_confidence = 70
+        cmc.trust_score = 80.0
+        cmc.effective_confidence = 62.4
 
         empty_pos = {"amount": 0, "average_entry": 0}
         with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
@@ -1455,9 +1456,9 @@ class TestVirtualTrading(unittest.TestCase):
             x_signal_count=2,
             cmc_signal_count=1,
         )
-        self.assertIn("Cycle Summary", summary)
+        self.assertIn("Zyklus-Zusammenfassung", summary)
         self.assertIn("PAPER", summary)
-        self.assertIn("Auto-Executed", summary)
+        self.assertIn("Ausgeführt", summary)
         self.assertIn("Orders (24h", summary)
 
     def test_log_decision_writes_jsonl(self):

@@ -13,7 +13,7 @@
     "max_usdt_per_trade": 25,
     "require_min_trust_score": 70,
     "dry_run": true,
-    "dry_run_enhanced": true,
+    "dry_run_enhanced": false,
     "simulated_balance_usdt": 5000,
     "trending_watchlist": {
       "enabled": true,
@@ -92,7 +92,7 @@
     "sell_min_confidence": 70,
     "sell_requires_ta": true,
     "signal_ttl_hours": 4,
-    "quotes_fallback_as_signal": false,
+    "quotes_fallback_as_signal": true,
     "quotes_bearish_pct": -8,
     "quotes_bullish_pct": 5,
     "quotes_fallback_sell_threshold_bonus": 10,
@@ -229,9 +229,9 @@
       "ARIA/USDT"
     ],
     "symbols_max": 8,
-    "symbols_cmc_top_n": 4,
+    "symbols_cmc_top_n": 2,
     "symbols_include_positions": true,
-    "symbols_refresh_hours": 6,
+    "symbols_refresh_hours": 0,
     "symbols": [
       "ARIA/USDT",
       "H/USDT",
@@ -254,7 +254,9 @@
       "require_cf_seeded": true,
       "include_manual_trades": true,
       "counterfactual_enabled": true,
-      "live_blocklist": ["stop_loss_pct"],
+      "live_blocklist": [
+        "stop_loss_pct"
+      ],
       "dual_exit_params_only": true,
       "notify_on_live_veto": true
     },

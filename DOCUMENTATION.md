@@ -143,6 +143,8 @@ Alte `config.json` mit `"trading_mode": "gate_testnet"` werden automatisch als *
 /gate               → API-Keys, Balance, dry_run-Status prüfen
 ```
 
+Bei **Bot-Restart**, `/gate` und `/mode` zeigt `core/build_info.py` zusätzlich **Version** und **Git-Branch** (z. B. `main @ e66bab7`).
+
 **Sicherheit:** `live.dry_run: true` (Standard) loggt Orders nur lokal — nichts geht an Gate.io, bis du `dry_run` auf `false` setzt.
 
 `/live_confirm` prüft: keine Demo-Session, API-Keys gesetzt; warnt bei aktivem `dry_run`.
@@ -661,11 +663,31 @@ Automatischer Walk-Forward-Backtest pro Coin in `config.strategies[]` — ersetz
 
 ## 10. CMC (CoinMarketCap)
 
-- **Community-Posts** (wenn API-Plan verfügbar) oder **Quotes-Fallback**
+- **Community-Posts** (wenn API-Plan verfügbar) oder **Quotes-Fallback** (`quotes/latest`)
 - Signale: BUY / SELL / HOLD mit Confidence und Vote-Ratio (bullish/bearish Stimmen)
 - In DecisionEngine wie X-Signale gewichtet (`onchain_weight: 0.2`)
 - `/cmc` zeigt aktuelle Sentiment-Signale on-demand
 - **Automatisch:** CMC-Zyklus-Digest in Telegram, wenn sich Signale ändern (Schwelle: `cmc_digest_min_confidence`, Standard 60 %)
+
+### CMC-Churn-Schutz (seit 1.8.1, `main`)
+
+Ziel: weniger sinnlose Teilverkäufe bei Trending-Altcoins (z. B. STG/SIREN), ohne Social-Signale komplett abzuschalten.
+
+| Mechanismus | Config / Ort | Wirkung |
+|-------------|--------------|---------|
+| Stabile Quote-`post_id` | `data/cmc_community_provider.py` | Ein Post pro Coin/Tag (`bull`/`bear`/`neutral`), kein Churn bei ±0.1 % Kurs |
+| CMC-Signal-TTL | `cmc.signal_ttl_hours`, `hermes/cmc_replay.py` | Nur aktive Posts im Zyklus; Replay nutzt dieselbe Logik |
+| Separate Sell-Schwelle | `cmc.sell_min_confidence` / `dry_run_defaults.cmc_sell_min_confidence` | Sell höher als Buy (z. B. 65–70 vs. 55–60) |
+| TA-Pflicht für CMC-Sells | `cmc.sell_requires_ta`, `cmc_sell_requires_ta` | Reine Quote/CMC-Sells ohne bearishes TA → HOLD |
+| Quote-Fallback-Bonus | `quotes_fallback_sell_threshold_bonus` (+10) | Schwächere Quote-Quelle braucht höhere Confidence |
+| `quotes_fallback_as_signal` | `cmc.quotes_fallback_as_signal` | `true` = Quotes dürfen handeln (mit Guards); `false` = nur Anzeige/Watchlist |
+| Social-Sell-Guards | `risk_manager.py` | Min. Position $50, Min. Notional $5, max. 80 % bereits verkauft |
+| CMC-Sell-Cooldown | `cmc_min_hours_between_sells` (6 h) | Pro Position, getrennt von allgemeinem Trade-Cooldown |
+| Altcoin-Profil | `altcoin_social` in `config.json` | Trending-Coins erben strengere Social-Parameter |
+
+**Typischer Ablauf nach den Guards:** CMC zeigt SELL im Digest → DecisionEngine bleibt bei `TA→HOLD` → kein Trade, bis Technik ebenfalls bearish ist oder ein manueller `/sell` kommt.
+
+Details und Replay-Validierung: [plans/cmc-churn-fixes.md](plans/cmc-churn-fixes.md)
 
 **Für Einsteiger:** CMC zeigt, was die **Community** auf CoinMarketCap tendenziell erwartet — nicht unbedingt, was der Bot ausführt. Der Bot kombiniert CMC mit Technik und Risiko-Limits. In Trade-Nachrichten steht dann z. B. „CMC-Community tendiert zu Kauf (Stimmung 78 %)“.
 

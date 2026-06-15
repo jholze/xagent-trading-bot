@@ -50,8 +50,13 @@ class TestCMCChurn(unittest.TestCase):
 
     def test_social_sell_min_notional_block(self):
         risk = RiskManager()
-        order = TradeOrder(type="SELL", symbol="STG/USDT", price=1.0, amount=2.0)
-        blocked, reason = risk._social_sell_blocked(order, "4h", source="cmc")
+        order = TradeOrder(type="SELL", symbol="STG/USDT", price=1.0, amount=3.0)
+        pos_patch = patch(
+            "risk.risk_manager.get_position",
+            return_value={"amount": 100.0, "average_entry": 1.0, "sold_percent": 0},
+        )
+        with pos_patch:
+            blocked, reason = risk._social_sell_blocked(order, "4h", source="cmc")
         self.assertTrue(blocked)
         self.assertIn("notional", reason.lower())
 

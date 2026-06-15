@@ -69,9 +69,9 @@ class TestCycleSummary(unittest.TestCase):
             x_signal_count=2,
             cmc_signal_count=1,
         )
-        self.assertIn("Cycle Summary", summary)
-        self.assertIn("Auto-Executed", summary)
-        self.assertIn("ARIA/USDT", summary)
+        self.assertIn("Zyklus-Zusammenfassung", summary)
+        self.assertIn("Ausgeführt", summary)
+        self.assertIn("ARIA", summary)
         self.assertIn("Orders (24h", summary)
 
     def test_recent_orders_from_ledger(self):
@@ -110,7 +110,7 @@ class TestCycleSummary(unittest.TestCase):
     def test_no_auto_executed_still_shows_ledger_hint(self):
         with patch("notifications.terminal_dashboard.load_trade_history", return_value=self._history([])):
             summary = build_cycle_summary(coin_results=[], trading_mode="paper")
-        self.assertIn("No auto-trades executed", summary)
+        self.assertIn("Keine Auto-Trades in diesem Zyklus", summary)
         self.assertIn("/orders", summary)
 
     def test_build_cycle_summary_shows_simulated_balance(self):
