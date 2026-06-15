@@ -229,7 +229,7 @@ JSON:"""
             post = posts[0]
             return {post.post_id: self.parse_tweet(post.text, post.account, post_id=post.post_id)}
 
-        response = ask_grok_json(self._batch_prompt(posts))
+        response = ask_grok(self._batch_prompt(posts), temperature=0.2)
         parsed = self._parse_batch_response(response, posts)
         if len(parsed) >= len(posts):
             return parsed

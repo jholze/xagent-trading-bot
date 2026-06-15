@@ -334,9 +334,16 @@ def send_telegram_message(text, reply_markup=None):
 
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
+        if response.status_code != 200:
+            log(f"Telegram send HTTP {response.status_code}: {response.text[:200]}", "WARNING")
+            return False
+        body = response.json()
+        if not body.get("ok"):
+            log(f"Telegram send failed: {body.get('description', body)}", "WARNING")
+            return False
+        return True
     except Exception as e:
-        print(f"Error sending Telegram message: {e}")
+        log(f"Error sending Telegram message: {e}", "WARNING")
         return False
 
 
