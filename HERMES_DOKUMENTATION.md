@@ -1,5 +1,7 @@
 # Hermes — Self-Improving Trading Agent
 
+**Sprache:** Deutsch · [English](HERMES_DOCUMENTATION.md)
+
 Stand: 15. Juni 2026
 
 Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, wie er mit dem **Live-Bot** und dem **Volatile-Profil** zusammenspielt, und wie du alles in **Telegram nachvollziehst** — auch ohne Trading- oder Programmierkenntnisse.
@@ -541,4 +543,4 @@ python3 hermes_agent.py --once --demo
 
 ---
 
-*Weitere Bot-Dokumentation: [DOCUMENTATION.md](DOCUMENTATION.md) (Gesamtsystem, Transparenz-Glossar, alle Telegram-Befehle).*
+*Weitere Bot-Dokumentation: [DOCUMENTATION.md](DOCUMENTATION.md) · [English](DOCUMENTATION.en.md) (Gesamtsystem, Transparenz-Glossar, alle Telegram-Befehle).*

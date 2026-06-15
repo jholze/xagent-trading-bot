@@ -1,5 +1,7 @@
 # Hermes 2.0 — Design Document
 
+**Language:** Deutsch · User docs: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [English](HERMES_DOCUMENTATION.md)
+
 Stand: 15. Juni 2026
 
 > **Implementierungsstand (Juni 2026):** Pipeline-Backtest, Walk-Forward, Hybrid-Pool, Live-Evidenz (Dual/Guardrail) und **Hermes Memory als Live-Fallback** (`strategies/registry.py`) sind umgesetzt. **Volatile-Altcoin-Profil** (`volatile_altcoin` + `market_structure.py`) ist ein separates Live-Layer — siehe [DOCUMENTATION.md §6.5](DOCUMENTATION.md#65-strategie-auswahl--wer-bekommt-welche-regeln). Nutzer-Doku: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md).

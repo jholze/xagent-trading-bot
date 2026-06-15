@@ -1,5 +1,7 @@
 # Plan: Hermes Live-Trade-Evidenz
 
+**Language:** Deutsch · User docs: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [English](HERMES_DOCUMENTATION.md)
+
 Stand: 15. Juni 2026  
 Status: **Umgesetzt** (Live-Evidenz, Dual/Guardrail, Counterfactual-API)  
 Bezug: Tages-Auswertung 14.06., Hermes 2.0 Design, `live_trade_history.json`

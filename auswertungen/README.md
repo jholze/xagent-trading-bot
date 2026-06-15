@@ -1,5 +1,7 @@
 # Auswertungen
 
+**Sprache:** Deutsch · [English](README.en.md)
+
 Hier landen periodische Bot-Auswertungen (Nacht-Läufe, Wochenreviews, Incident-Analysen).
 
 ## Format: Markdown (`.md`)

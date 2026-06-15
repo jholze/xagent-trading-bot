@@ -1,5 +1,7 @@
 # X-Agent Trading Bot — Vollständige Dokumentation
 
+**Sprache:** Deutsch · [English](DOCUMENTATION.en.md)
+
 Stand: 15. Juni 2026 · Version 1.9
 
 Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, **Volatile-Altcoin-Profil**, **Hermes-Memory-Fallback**, Telegram-Befehle, **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
@@ -585,7 +587,7 @@ Läuft automatisch im Hauptzyklus (`strategy_backtest.auto_run`), gestaffelt (`s
 | `/hermes_run` | `/hermes_run` | Einen Lern-Zyklus manuell starten |
 | `/cmc` | `/cmc` | CMC Community-Sentiment (Votes, Confidence) |
 
-Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md)
+Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [English](HERMES_DOCUMENTATION.md)
 
 ### 🧪 Sandbox
 

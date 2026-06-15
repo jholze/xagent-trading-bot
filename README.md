@@ -1,5 +1,7 @@
 # X-Agent Trading Bot (Version 1.9.0)
 
+**Language:** Deutsch · [English](README.en.md)
+
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 
 **Auch für Einsteiger:** Jede wichtige Telegram-Nachricht erklärt **warum** der Bot etwas tut — auf Deutsch, ohne Trading-Vorkenntnisse.
@@ -149,8 +151,10 @@ execution/               # Paper + Gate.io Adapter
 notifications/           # Telegram-Befehle + user_explain.py (DE-Erklärungen)
 hermes/                  # Self-Improvement Agent
 config.json              # Strategien, Limits, Modi
-DOCUMENTATION.md         # ← Vollständige Doku (inkl. §17 Feature-Branch-Workflow)
-HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger
+DOCUMENTATION.md         # ← Vollständige Doku (DE)
+DOCUMENTATION.en.md      # ← Full documentation (EN)
+HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger (DE)
+HERMES_DOCUMENTATION.md  # ← Hermes for beginners (EN)
 ```
 
 ---
