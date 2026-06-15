@@ -7,13 +7,41 @@ from strategies.registry import resolve_strategy_params
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
 
+_HERMES_H_PARAMS = {
+    "rsi_buy_low": 28,
+    "rsi_buy_high": 48,
+    "volume_multiplier": 1.3,
+    "rsi_sell_30": 70,
+    "rsi_sell_20": 85,
+    "stop_loss_pct": 50.0,
+    "strategy_profile": "hermes_baseline",
+}
+
+
 class TestVolatileProfile(unittest.TestCase):
     def test_resolve_volatile_profile_for_h_position(self):
         coin = {"symbol": "H/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
-        params = resolve_strategy_params(coin, has_position=True, atr_pct=49.0, frozen_tier="volatile")
+        with patch("strategies.registry._hermes_memory_params", return_value=dict(_HERMES_H_PARAMS)):
+            params = resolve_strategy_params(coin, has_position=True, atr_pct=49.0, frozen_tier="volatile")
+        self.assertEqual(params.get("strategy_profile"), "hermes_baseline+volatile")
+        self.assertEqual(params.get("rsi_sell_30"), 70)
+        self.assertEqual(params.get("rsi_sell_mode"), "level")
+        self.assertEqual(params.get("stop_loss_pct"), 50.0)
+        self.assertIsNone(params.get("take_profit_pct"))
+
+    def test_hermes_memory_without_position(self):
+        coin = {"symbol": "H/USDT", "timeframe": "4h"}
+        with patch("strategies.registry._hermes_memory_params", return_value=dict(_HERMES_H_PARAMS)):
+            params = resolve_strategy_params(coin, has_position=False)
+        self.assertEqual(params.get("strategy_profile"), "hermes_baseline")
+        self.assertEqual(params.get("rsi_sell_30"), 70)
+
+    def test_pure_volatile_when_no_hermes_memory(self):
+        coin = {"symbol": "H/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
+        with patch("strategies.registry._hermes_memory_params", return_value=None):
+            params = resolve_strategy_params(coin, has_position=True, atr_pct=49.0, frozen_tier="volatile")
         self.assertEqual(params.get("strategy_profile"), "volatile_altcoin")
         self.assertEqual(params.get("rsi_sell_30"), 67)
-        self.assertIsNone(params.get("take_profit_pct"))
 
     def test_eth_explicit_not_overridden(self):
         coin = {"symbol": "ETH/USDT", "timeframe": "4h"}
@@ -68,6 +96,22 @@ class TestVolatileProfile(unittest.TestCase):
         coin = {"symbol": "WLD/USDT", "timeframe": "4h", "strategy_params": params}
         result = strategy.analyze(coin, market)
         self.assertEqual(result.normalized_action, "HOLD")
+
+    def test_shadow_mode_blocks_hermes_volatile_overlay(self):
+        engine = DecisionEngine(market_service=MagicMock())
+        with patch.object(
+            type(engine.config),
+            "volatile_altcoin_config",
+            property(lambda self: {"mode": "shadow"}),
+        ):
+            normalized, action, shadow = engine._apply_shadow_mode(
+                "SELL_PARTIAL_30",
+                "SELL_30",
+                {"strategy_profile": "hermes_baseline+volatile"},
+            )
+        self.assertEqual(normalized, "HOLD")
+        self.assertEqual(action, "HOLD")
+        self.assertEqual(shadow, "SELL_30")
 
     def test_shadow_mode_blocks_execution(self):
         engine = DecisionEngine(market_service=MagicMock())

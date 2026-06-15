@@ -23,13 +23,105 @@ def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
     return None
 
 
+_VOLATILE_STRUCTURE_KEYS = (
+    "mode",
+    "bb_sell_enabled",
+    "bb_sell_upper_ratio",
+    "bb_sell_rsi_min",
+    "vol_exhaustion_sell_enabled",
+    "vol_exhaustion_max",
+    "vol_exhaustion_rsi_min",
+    "vol_exhaustion_min_gain_pct",
+    "vol_dump_sell_enabled",
+    "vol_dump_min_multiplier",
+    "vol_dump_price_drop_pct",
+    "vol_dump_requires_prior_gain_pct",
+    "vol_buy_boost_enabled",
+    "vol_buy_boost_min",
+    "rsi_sell_mode",
+    "rsi_sell_min_gain_pct",
+    "safety_tp_pct",
+    "safety_tp_min_gain_pct",
+    "cmc_sell_requires_ta",
+    "cmc_sell_min_confidence",
+    "cmc_min_confidence",
+    "cmc_min_hours_between_sells",
+)
+
+
+def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
+    """Load per-coin params Hermes learned (survives sell/rebuy cycles)."""
+    try:
+        from hermes.memory import store
+
+        profile = store.load_profile(symbol, tf)
+    except Exception:
+        return None
+
+    params = dict(profile.get("params") or {})
+    if not params:
+        return None
+
+    params.update({
+        "symbol": symbol,
+        "timeframe": tf,
+        "strategy_profile": "hermes_baseline",
+        "hermes_baseline_updated_at": profile.get("updated_at"),
+    })
+    return params
+
+
+def _volatile_structure_overlay(
+    base: dict,
+    va_cfg: dict,
+    tier: str,
+    symbol: str,
+    tf: str,
+    cfg=None,
+) -> dict:
+    """Merge volatile BB/volume/CMC sell rules onto coin-specific params."""
+    merged = dict(base)
+    for key in _VOLATILE_STRUCTURE_KEYS:
+        if key in va_cfg:
+            merged[key] = va_cfg[key]
+    if is_dry_run_enhanced():
+        cfg = cfg or get_bot_config()
+        for key in ("cmc_min_confidence", "cmc_sell_min_confidence", "cmc_min_hours_between_sells"):
+            if key in cfg.dry_run_defaults:
+                merged[key] = cfg.dry_run_defaults[key]
+    merged.update({
+        "symbol": symbol,
+        "timeframe": tf,
+        "strategy_profile": "hermes_baseline+volatile",
+        "volatility_tier": tier,
+    })
+    if merged.get("take_profit_pct") is None:
+        merged.pop("take_profit_pct", None)
+    return merged
+
+
+def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -> dict:
+    profile = dict(va_cfg)
+    if is_dry_run_enhanced():
+        profile.update(cfg.dry_run_defaults)
+    profile.update({
+        "symbol": symbol,
+        "timeframe": tf,
+        "strategy_profile": "volatile_altcoin",
+        "volatility_tier": tier,
+    })
+    if profile.get("take_profit_pct") is None:
+        profile.pop("take_profit_pct", None)
+    return profile
+
+
 def resolve_strategy_params(
     coin: dict,
     has_position: bool = False,
     atr_pct: float = 3.0,
     frozen_tier: str | None = None,
 ) -> dict:
-    """Pick strategy params: explicit strategies[] > volatile_altcoin > altcoin_social > defaults."""
+    """Pick strategy params: strategies[] > Hermes memory > volatile > altcoin_social > defaults."""
     cfg = get_bot_config()
     symbol = coin.get("symbol", "")
     tf = coin.get("timeframe", "4h")
@@ -38,24 +130,24 @@ def resolve_strategy_params(
     if explicit:
         return dict(explicit)
 
+    hermes_params = _hermes_memory_params(symbol, tf)
     va_cfg = cfg.volatile_altcoin_config
+    volatile_active = False
+    tier = None
+
     if has_position and va_cfg.get("enabled", False):
         from intelligence.volatility_classifier import volatility_tier
 
         tier = volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
-        if tier == "volatile":
-            profile = dict(va_cfg)
-            if is_dry_run_enhanced():
-                profile.update(cfg.dry_run_defaults)
-            profile.update({
-                "symbol": symbol,
-                "timeframe": tf,
-                "strategy_profile": "volatile_altcoin",
-                "volatility_tier": tier,
-            })
-            if profile.get("take_profit_pct") is None:
-                profile.pop("take_profit_pct", None)
-            return profile
+        volatile_active = tier == "volatile"
+
+    if hermes_params:
+        if volatile_active:
+            return _volatile_structure_overlay(hermes_params, va_cfg, tier, symbol, tf, cfg)
+        return hermes_params
+
+    if volatile_active:
+        return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
 
     if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
         profile = dict(cfg.altcoin_social_config)
@@ -84,16 +176,7 @@ def resolve_coin_config(coin: dict) -> dict:
             break
     else:
         merged.setdefault("strategy_class", "technical_rsi_bb")
-        if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
-            profile = dict(cfg.altcoin_social_config)
-            if is_dry_run_enhanced():
-                profile.update(cfg.dry_run_defaults)
-            profile.update({"symbol": symbol, "timeframe": tf})
-            merged["strategy_params"] = profile
-        else:
-            params = cfg.strategy_params(symbol, tf)
-            if params:
-                merged["strategy_params"] = params
+        merged["strategy_params"] = resolve_strategy_params(coin, has_position=False)
 
     return merged
 

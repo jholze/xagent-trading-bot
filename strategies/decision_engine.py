@@ -299,7 +299,8 @@ class DecisionEngine:
         return best[0], sources, max(technical.confidence, social_conf), structure_rationales
 
     def _apply_shadow_mode(self, normalized: str, execution_action: str, strategy_params: dict) -> tuple:
-        if strategy_params.get("strategy_profile") != "volatile_altcoin":
+        profile = strategy_params.get("strategy_profile", "")
+        if profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
             return normalized, execution_action, ""
         mode = self.config.volatile_altcoin_config.get("mode", "shadow")
         if mode != "shadow":
