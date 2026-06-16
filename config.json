@@ -88,7 +88,8 @@
   "lc_weight": 0.18,
   "lunarcrush": {
     "enabled": true,
-    "use_mock": true,
+    "use_mock": false,
+    "use_list_endpoint": false,
     "api_key_env": "LUNARCRUSH_API_KEY",
     "cache_ttl_sec": 900,
     "signal_ttl_hours": 4,

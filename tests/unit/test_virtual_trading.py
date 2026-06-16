@@ -1373,6 +1373,7 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("cmc", analysis.sources)
 
     def test_social_pipeline_process_lc_signals(self):
+        from data.lunarcrush_provider import MockLunarCrushProvider
         from data_manager import load_lc_signals, save_lc_signals, load_watchlist
         from services.social_pipeline import SocialPipeline
         from x_analyzer import XAnalyzer
@@ -1381,6 +1382,7 @@ class TestVirtualTrading(unittest.TestCase):
         save_lc_signals({"signals": []})
         try:
             pipeline = SocialPipeline(XAnalyzer())
+            pipeline.lc_provider = MockLunarCrushProvider()
             watchlist = load_watchlist()
             if not any("SOL" in c.get("symbol", "") for c in watchlist):
                 watchlist = watchlist + [{"symbol": "SOL/USDT", "active": True}]

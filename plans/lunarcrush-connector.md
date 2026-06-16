@@ -46,8 +46,11 @@ flowchart LR
 
 | Endpoint | Zweck |
 |----------|-------|
-| `GET /api4/public/coins/list/v2` | Batch-Metriken für Watchlist |
-| `GET /api4/public/coins/{symbol}/v1` | Per-Coin-Fallback |
+| `GET /api4/public/coins/list/v2` | Batch-Metriken (Builder+ only) |
+| `GET /api4/public/coins/{symbol}/v1` | Snapshot (Individual) |
+| `GET /api4/public/coins/{symbol}/time-series/v2` | Galaxy/AltRank/Sentiment-Deltas (Individual) |
+
+**Individual plan:** `use_list_endpoint: false` — per-coin + time-series statt List-API.
 
 Auth: `Authorization: Bearer $LUNARCRUSH_API_KEY`
 

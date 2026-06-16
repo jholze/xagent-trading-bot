@@ -66,11 +66,15 @@ class MockLunarCrushProvider(LunarCrushDataProvider):
 class LunarCrushApiProvider(LunarCrushDataProvider):
     BASE_URL = "https://lunarcrush.com/api4/public/coins/list/v2"
 
-    def __init__(self, api_key: str = None, cache_ttl_sec: int = 900):
+    def __init__(self, api_key: str = None, cache_ttl_sec: int = 900, use_list_endpoint: bool = True):
         self.api_key = api_key or os.getenv("LUNARCRUSH_API_KEY", "")
         self.cache_ttl_sec = cache_ttl_sec
         self._cache_data: dict = {}
         self._cache_at: float = 0.0
+        self._coin_cache: Dict[str, tuple] = {}
+        self._list_tier_blocked = not use_list_endpoint
+        if self._list_tier_blocked:
+            _mark_lc_list_tier_blocked()
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
@@ -92,7 +96,15 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
             )
             if resp.status_code != 200:
                 err = resp.text[:200]
-                log(f"LunarCrush list API HTTP {resp.status_code}: {err}", "WARNING")
+                if resp.status_code == 402:
+                    self._list_tier_blocked = True
+                    _mark_lc_list_tier_blocked()
+                    log(
+                        "LunarCrush list API requires Builder+ — using per-coin + time-series (Individual plan)",
+                        "INFO",
+                    )
+                else:
+                    log(f"LunarCrush list API HTTP {resp.status_code}: {err}", "WARNING")
                 return self._cache_data.get("rows", [])
             rows = resp.json().get("data", [])
             self._cache_data = {"rows": rows}
@@ -107,21 +119,27 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
         if not bases:
             return []
 
-        rows = self._fetch_list()
-        by_symbol: Dict[str, dict] = {}
-        for row in rows:
-            sym = str(row.get("symbol", "")).upper()
-            if sym and sym not in by_symbol:
-                by_symbol[sym] = row
-
         now = datetime.now(timezone.utc).isoformat()
         results: List[RawLCMetrics] = []
-        missing = [b for b in bases if b not in by_symbol]
-        for base in sorted(bases - set(missing)):
-            results.append(self._row_to_metrics(by_symbol[base], now))
 
-        for base in missing:
-            single = self._fetch_coin(base)
+        if not self._list_tier_blocked:
+            rows = self._fetch_list()
+            by_symbol: Dict[str, dict] = {}
+            for row in rows:
+                sym = str(row.get("symbol", "")).upper()
+                if sym and sym not in by_symbol:
+                    by_symbol[sym] = row
+            missing = [b for b in bases if b not in by_symbol]
+            for base in sorted(bases - set(missing)):
+                results.append(self._row_to_metrics(by_symbol[base], now))
+            for base in missing:
+                single = self._fetch_coin_enriched(base)
+                if single:
+                    results.append(single)
+            return results
+
+        for base in sorted(bases):
+            single = self._fetch_coin_enriched(base)
             if single:
                 results.append(single)
         return results
@@ -140,7 +158,7 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
             fetched_at=fetched_at,
         )
 
-    def _fetch_coin(self, symbol: str) -> Optional[RawLCMetrics]:
+    def _fetch_coin_snapshot(self, symbol: str) -> Optional[dict]:
         if not self.api_key:
             return None
         try:
@@ -148,32 +166,91 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
             resp = requests.get(url, headers=self._headers(), timeout=15)
             if resp.status_code != 200:
                 return None
-            data = resp.json().get("data") or {}
-            now = datetime.now(timezone.utc).isoformat()
-            return RawLCMetrics(
-                symbol=symbol.upper(),
-                galaxy_score=float(data.get("galaxy_score") or 0),
-                galaxy_score_previous=float(data.get("galaxy_score") or 0),
-                alt_rank=int(data.get("alt_rank") or 0),
-                alt_rank_previous=int(data.get("alt_rank") or 0),
-                sentiment=50.0,
-                percent_change_24h=float(data.get("percent_change_24h") or 0),
-                interactions_24h=0,
-                topic=str(data.get("topic") or symbol.lower()),
-                fetched_at=now,
-            )
+            return resp.json().get("data") or {}
         except Exception as e:
             log(f"LunarCrush coin fetch {symbol}: {e}", "DEBUG")
             return None
 
+    def _fetch_coin_time_series(self, symbol: str) -> list:
+        if not self.api_key:
+            return []
+        try:
+            url = f"https://lunarcrush.com/api4/public/coins/{symbol.lower()}/time-series/v2"
+            resp = requests.get(url, headers=self._headers(), timeout=20)
+            if resp.status_code != 200:
+                return []
+            return resp.json().get("data") or []
+        except Exception as e:
+            log(f"LunarCrush time-series {symbol}: {e}", "DEBUG")
+            return []
+
+    def _fetch_coin_enriched(self, symbol: str) -> Optional[RawLCMetrics]:
+        key = symbol.upper()
+        now = time.time()
+        cached = self._coin_cache.get(key)
+        if cached and now - cached[0] < self.cache_ttl_sec:
+            return cached[1]
+
+        data = self._fetch_coin_snapshot(symbol)
+        if not data:
+            return None
+
+        series = self._fetch_coin_time_series(symbol)
+        latest = series[-1] if series else {}
+        previous = series[-2] if len(series) >= 2 else {}
+
+        galaxy = float(latest.get("galaxy_score") or data.get("galaxy_score") or 0)
+        galaxy_prev = float(previous.get("galaxy_score") or galaxy)
+        alt_rank = int(latest.get("alt_rank") or data.get("alt_rank") or 0)
+        alt_rank_prev = int(previous.get("alt_rank") or alt_rank)
+        sentiment = float(latest.get("sentiment") or 50)
+        interactions = int(latest.get("interactions") or 0)
+        fetched_at = datetime.now(timezone.utc).isoformat()
+
+        metrics = RawLCMetrics(
+            symbol=symbol.upper(),
+            galaxy_score=galaxy,
+            galaxy_score_previous=galaxy_prev,
+            alt_rank=alt_rank,
+            alt_rank_previous=alt_rank_prev,
+            sentiment=sentiment,
+            percent_change_24h=float(data.get("percent_change_24h") or 0),
+            interactions_24h=interactions,
+            topic=str(data.get("topic") or symbol.lower()),
+            fetched_at=fetched_at,
+        )
+        self._coin_cache[key] = (time.time(), metrics)
+        return metrics
+
+    def _fetch_coin(self, symbol: str) -> Optional[RawLCMetrics]:
+        return self._fetch_coin_enriched(symbol)
+
+
+_LC_PROVIDER = None
+_LC_LIST_TIER_BLOCKED = False
+
 
 def get_lc_provider() -> LunarCrushDataProvider:
+    global _LC_PROVIDER, _LC_LIST_TIER_BLOCKED
     from core.config import get_bot_config
 
     cfg = get_bot_config().lunarcrush_config
     if cfg.get("use_mock", True):
         return MockLunarCrushProvider()
-    return LunarCrushApiProvider(
-        api_key=os.getenv(cfg.get("api_key_env", "LUNARCRUSH_API_KEY"), ""),
-        cache_ttl_sec=int(cfg.get("cache_ttl_sec", 900)),
-    )
+
+    if _LC_PROVIDER is None:
+        _LC_PROVIDER = LunarCrushApiProvider(
+            api_key=os.getenv(cfg.get("api_key_env", "LUNARCRUSH_API_KEY"), ""),
+            cache_ttl_sec=int(cfg.get("cache_ttl_sec", 900)),
+            use_list_endpoint=bool(cfg.get("use_list_endpoint", True)),
+        )
+        _LC_PROVIDER._list_tier_blocked = _LC_LIST_TIER_BLOCKED
+    elif _LC_LIST_TIER_BLOCKED:
+        _LC_PROVIDER._list_tier_blocked = True
+
+    return _LC_PROVIDER
+
+
+def _mark_lc_list_tier_blocked():
+    global _LC_LIST_TIER_BLOCKED
+    _LC_LIST_TIER_BLOCKED = True
