@@ -87,8 +87,12 @@ class DecisionEngine:
         base = symbol.split("/")[0]
         return [s for s in (signals or []) if getattr(s, "coin", "") == base]
 
-    def _all_coin_social_signals(self, symbol: str, x_signals: list, cmc_signals: list) -> list:
-        return self._signals_for_coin(symbol, x_signals) + self._signals_for_coin(symbol, cmc_signals)
+    def _all_coin_social_signals(self, symbol: str, x_signals: list, cmc_signals: list, lc_signals: list = None) -> list:
+        return (
+            self._signals_for_coin(symbol, x_signals)
+            + self._signals_for_coin(symbol, cmc_signals)
+            + self._signals_for_coin(symbol, lc_signals)
+        )
 
     def _consensus_multiplier(self, coin_signals: list) -> float:
         actionable = [s for s in coin_signals if getattr(s, "action", "HOLD") in ("BUY", "SELL")]
@@ -100,6 +104,10 @@ class DecisionEngine:
             multiplier = 1.1
         if "x" in sources and "cmc" in sources:
             multiplier *= 1.15
+        if "lc" in sources and "cmc" in sources:
+            multiplier *= 1.12
+        if "lc" in sources and "x" in sources:
+            multiplier *= 1.10
         return multiplier
 
     def _x_buy_threshold(self, x_signal) -> float:
@@ -141,9 +149,38 @@ class DecisionEngine:
             return float(params["cmc_trust_score"])
         return float(getattr(cmc_signal, "trust_score", 65.0))
 
-    def _weighted_social_confidence(self, x_eff: float, cmc_eff: float) -> float:
+    def _lc_buy_threshold(self, strategy_params: dict = None) -> float:
+        params = strategy_params or {}
+        if params.get("lc_min_confidence") is not None:
+            return float(params["lc_min_confidence"])
+        if is_dry_run_enhanced():
+            return float(self.config.dry_run_defaults.get("lc_min_confidence", 52))
+        return float(self.config.lunarcrush_config.get("min_confidence", 58))
+
+    def _lc_sell_threshold(self, strategy_params: dict = None) -> float:
+        params = strategy_params or {}
+        if params.get("lc_sell_min_confidence") is not None:
+            return float(params["lc_sell_min_confidence"])
+        if is_dry_run_enhanced():
+            return float(self.config.dry_run_defaults.get("lc_sell_min_confidence", 65))
+        return float(self.config.lunarcrush_config.get("sell_min_confidence", 68))
+
+    def _lc_sell_requires_ta(self, strategy_params: dict = None) -> bool:
+        params = strategy_params or {}
+        if "lc_sell_requires_ta" in params:
+            return bool(params["lc_sell_requires_ta"])
+        return bool(self.config.lunarcrush_config.get("sell_requires_ta", True))
+
+    def _lc_trust_score(self, lc_signal, strategy_params: dict = None) -> float:
+        params = strategy_params or {}
+        if params.get("lc_trust_score") is not None:
+            return float(params["lc_trust_score"])
+        return float(getattr(lc_signal, "trust_score", self.config.lunarcrush_config.get("trust_score", 72)))
+
+    def _weighted_social_confidence(self, x_eff: float, cmc_eff: float, lc_eff: float = 0.0) -> float:
         x_w = self.config.x_weight
         c_w = self.config.onchain_weight
+        l_w = self.config.lc_weight
         total = 0.0
         weight_sum = 0.0
         if x_eff > 0:
@@ -152,9 +189,15 @@ class DecisionEngine:
         if cmc_eff > 0:
             total += cmc_eff * c_w
             weight_sum += c_w
+        if lc_eff > 0:
+            total += lc_eff * l_w
+            weight_sum += l_w
         if weight_sum <= 0:
             return 0.0
-        return total / weight_sum * (x_w + c_w)
+        return total / weight_sum * (x_w + c_w + l_w)
+
+    def _social_buy_count(self, x_buy: bool, cmc_buy: bool, lc_buy: bool) -> int:
+        return sum((x_buy, cmc_buy, lc_buy))
 
     def _merge_buy(
         self,
@@ -163,12 +206,15 @@ class DecisionEngine:
         cmc_signal,
         coin_signals: list,
         market: MarketContext,
+        lc_signal=None,
     ) -> tuple:
         sources = list(technical.sources)
         x_buy = False
         cmc_buy = False
+        lc_buy = False
         x_eff = 0.0
         cmc_eff = 0.0
+        lc_eff = 0.0
         tech_buy = normalize(technical.action) in (BUY, BUY_STRONG) or technical.action == "BUY"
         consensus = self._consensus_multiplier(coin_signals)
 
@@ -188,29 +234,42 @@ class DecisionEngine:
                 cmc_buy = True
                 sources.append("cmc")
 
-        blended = self._weighted_social_confidence(x_eff if x_buy else 0, cmc_eff if cmc_buy else 0)
-        boost = evaluate_market_structure_buy_boost(market, strategy_params, tech_buy, cmc_buy)
+        if lc_signal and lc_signal.action == "BUY":
+            trust = self._lc_trust_score(lc_signal, strategy_params)
+            lc_eff = float(lc_signal.confidence) * (trust / 100.0)
+            lc_eff *= consensus
+            if lc_eff >= self._lc_buy_threshold(strategy_params):
+                lc_buy = True
+                sources.append("lc")
+
+        social_count = self._social_buy_count(x_buy, cmc_buy, lc_buy)
+        blended = self._weighted_social_confidence(
+            x_eff if x_buy else 0,
+            cmc_eff if cmc_buy else 0,
+            lc_eff if lc_buy else 0,
+        )
+        boost = evaluate_market_structure_buy_boost(market, strategy_params, tech_buy, cmc_buy or lc_buy)
         if boost:
             sources.append(boost.source)
 
         if not market.has_position and market.open_positions < self.config.max_open_positions:
-            if boost and (tech_buy or cmc_buy):
+            if boost and (tech_buy or cmc_buy or lc_buy):
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
-            if tech_buy and x_buy and cmc_buy:
+            if tech_buy and social_count >= 2:
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
-            if tech_buy and (x_buy or cmc_buy):
-                if x_buy and cmc_buy:
+            if tech_buy and social_count >= 1:
+                if social_count >= 2:
                     sources.append("multi_source")
                     return BUY_STRONG, sources, max(technical.confidence, blended)
                 return BUY, sources, max(technical.confidence, blended)
-            if x_buy and cmc_buy:
+            if social_count >= 2:
                 sources.append("multi_source")
                 return BUY, sources, blended
             if tech_buy:
                 return BUY, sources, technical.confidence
-            if x_buy or cmc_buy:
+            if social_count >= 1:
                 return BUY, sources, blended
         return HOLD, sources, technical.confidence
 
@@ -233,6 +292,7 @@ class DecisionEngine:
         coin_signals: list,
         market: MarketContext = None,
         position: dict = None,
+        lc_signal=None,
     ) -> tuple:
         sources = list(technical.sources)
         candidates = []
@@ -281,6 +341,22 @@ class DecisionEngine:
                         candidates.append((SELL_PARTIAL_10, 1, "cmc"))
                         sources.append("cmc")
 
+        if lc_signal and lc_signal.action == "SELL":
+            trust = self._lc_trust_score(lc_signal, strategy_params)
+            eff = float(lc_signal.confidence) * (trust / 100.0) * consensus
+            requires_ta = self._lc_sell_requires_ta(strategy_params)
+            ta_bearish = is_sell(technical.action)
+            volatile_profile = strategy_params.get("strategy_profile") == "volatile_altcoin"
+            if eff >= self._lc_sell_threshold(strategy_params):
+                if requires_ta and not ta_bearish:
+                    pass
+                elif ta_bearish or volatile_profile:
+                    candidates.append((SELL_PARTIAL_20, 2, "lc"))
+                    sources.append("lc")
+                else:
+                    candidates.append((SELL_PARTIAL_10, 1, "lc"))
+                    sources.append("lc")
+
         if market and position:
             for cand in evaluate_market_structure_sells(market, strategy_params, position):
                 candidates.append((cand.action, cand.priority, cand.source))
@@ -296,6 +372,8 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(x_signal, "effective_confidence", 0))
         if cmc_signal:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
+        if lc_signal:
+            social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
         return best[0], sources, max(technical.confidence, social_conf), structure_rationales
 
     def _apply_shadow_mode(self, normalized: str, execution_action: str, strategy_params: dict) -> tuple:
@@ -316,19 +394,27 @@ class DecisionEngine:
         market: MarketContext,
         x_signals=None,
         cmc_signals=None,
+        lc_signals=None,
     ) -> SignalAnalysis:
         coin = resolve_coin_config(coin)
-        return self._evaluate_internal(coin, market, x_signals, cmc_signals)
+        return self._evaluate_internal(coin, market, x_signals, cmc_signals, lc_signals)
 
-    def evaluate(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None) -> SignalAnalysis:
+    def evaluate(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None) -> SignalAnalysis:
         if not current_price:
             return None
 
         coin = resolve_coin_config(coin)
         market = self.build_market_context(coin, current_price)
-        return self._evaluate_internal(coin, market, x_signals, cmc_signals)
+        return self._evaluate_internal(coin, market, x_signals, cmc_signals, lc_signals)
 
-    def _evaluate_internal(self, coin: dict, market: MarketContext, x_signals=None, cmc_signals=None) -> SignalAnalysis:
+    def _evaluate_internal(
+        self,
+        coin: dict,
+        market: MarketContext,
+        x_signals=None,
+        cmc_signals=None,
+        lc_signals=None,
+    ) -> SignalAnalysis:
         coin = resolve_coin_config(coin)
         if not market.strategy_params:
             market.strategy_params = resolve_strategy_params(
@@ -342,19 +428,21 @@ class DecisionEngine:
 
         coin_x = self._signals_for_coin(coin["symbol"], x_signals)
         coin_cmc = self._signals_for_coin(coin["symbol"], cmc_signals)
-        all_social = coin_x + coin_cmc
+        coin_lc = self._signals_for_coin(coin["symbol"], lc_signals)
+        all_social = self._all_coin_social_signals(coin["symbol"], x_signals, cmc_signals, lc_signals)
         x_signal = coin_x[0] if coin_x else None
         cmc_signal = coin_cmc[0] if coin_cmc else None
+        lc_signal = coin_lc[0] if coin_lc else None
         position = get_position(coin["symbol"], market.timeframe)
         structure_rationales = []
 
         if market.has_position:
             normalized, sources, confidence, structure_rationales = self._merge_sell(
-                technical, x_signal, cmc_signal, all_social, market, position
+                technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
         else:
             normalized, sources, confidence = self._merge_buy(
-                technical, x_signal, cmc_signal, all_social, market
+                technical, x_signal, cmc_signal, all_social, market, lc_signal
             )
             if normalized == HOLD:
                 tech_norm = normalize(technical.action)
@@ -382,8 +470,14 @@ class DecisionEngine:
             rationale_parts.append(f"X->{x_signal.action}@{x_signal.account}({x_signal.confidence}%)")
         if "cmc" in sources and cmc_signal:
             rationale_parts.append(f"CMC->{cmc_signal.action}({cmc_signal.confidence}%)")
+        if "lc" in sources and lc_signal:
+            rationale_parts.append(f"LC->{lc_signal.action}({lc_signal.confidence}%)")
         if "multi_source" in sources:
-            rationale_parts.append("X+CMC consensus")
+            social_tags = [t for t in ("x", "cmc", "lc") if t in sources]
+            if social_tags:
+                rationale_parts.append("+".join(s.upper() for s in social_tags) + " consensus")
+            else:
+                rationale_parts.append("multi-source consensus")
         if normalized == BUY_STRONG:
             rationale_parts.append("strong consensus")
         if shadow_action:
@@ -394,6 +488,8 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(x_signal, "confidence", 0))
         if cmc_signal:
             social_conf = max(social_conf, getattr(cmc_signal, "confidence", 0))
+        if lc_signal:
+            social_conf = max(social_conf, getattr(lc_signal, "confidence", 0))
 
         profile = strategy_params.get("strategy_profile", "")
         tier = strategy_params.get("volatility_tier", "")

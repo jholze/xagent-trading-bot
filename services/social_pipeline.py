@@ -2,7 +2,9 @@ import threading
 from datetime import datetime, timezone
 from queue import Queue
 
-from data_manager import add_coin, get_config, load_cmc_posts, load_effective_watchlist, log_cmc_post
+from data_manager import add_coin, get_config, load_cmc_posts, load_effective_watchlist, load_lc_signals, log_cmc_post, log_lc_signal
+from data.lunarcrush_provider import get_lc_provider
+from data.lunarcrush_scorer import score_lc_metrics
 from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
@@ -24,8 +26,11 @@ class SocialPipeline:
         self.provider = get_x_provider()
         self.cmc_provider = get_cmc_provider()
         self.cmc_parser = CMCCommunityParser()
+        self.lc_provider = get_lc_provider()
         self._cycle_signals = []
         self._cycle_cmc_signals = []
+        self._cycle_lc_signals = []
+        self._last_lc_digest_sig = ""
         self._notified_post_ids = set()
         self._last_cmc_digest_sig = ""
         self._perf = get_config().get("x_performance", {})
@@ -210,6 +215,106 @@ class SocialPipeline:
 
         merged = sorted(by_coin.values(), key=lambda s: getattr(s, "confidence", 0), reverse=True)
         return merged
+
+    def process_lc_signals(self, watchlist: list = None) -> list:
+        from core.config import get_bot_config
+
+        cfg = get_bot_config()
+        lc_cfg = cfg.lunarcrush_config
+        if not lc_cfg.get("enabled", True):
+            return []
+
+        watchlist = watchlist or load_effective_watchlist()
+        raw_metrics = self.lc_provider.fetch_for_watchlist(watchlist)
+        self._cycle_lc_signals = []
+        thresholds = dict(lc_cfg.get("thresholds", {}))
+        thresholds["trust_score"] = float(lc_cfg.get("trust_score", 72))
+        logged_ids = {
+            s.get("signal_id")
+            for s in load_lc_signals().get("signals", [])
+            if s.get("signal_id")
+        }
+
+        for metrics in raw_metrics:
+            signal = score_lc_metrics(metrics, thresholds=thresholds, trust_score=thresholds["trust_score"])
+            if not signal:
+                continue
+            signal.effective_confidence = signal.confidence * (signal.trust_score / 100.0)
+            self._cycle_lc_signals.append(signal)
+            sid = signal.post_id
+            if sid and sid not in logged_ids:
+                log_lc_signal(signal, sid)
+                logged_ids.add(sid)
+                log(
+                    f"LC signal: {signal.coin} {signal.action} ({signal.confidence}%) "
+                    f"galaxy={signal.galaxy_score:.0f} alt_rank={signal.alt_rank}",
+                    "INFO",
+                )
+        return self._cycle_lc_signals
+
+    def refresh_lc_signals(self) -> list:
+        from core.config import get_bot_config
+        from datetime import datetime, timezone
+
+        cfg = get_bot_config()
+        lc_cfg = cfg.lunarcrush_config
+        if not lc_cfg.get("enabled", True):
+            return []
+
+        ttl_hours = float(lc_cfg.get("signal_ttl_hours", 4))
+        trust = float(lc_cfg.get("trust_score", 72))
+        cutoff_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - int(ttl_hours * 3600 * 1000)
+
+        by_coin: dict = {}
+        for entry in load_lc_signals().get("signals", []):
+            try:
+                ts = datetime.fromisoformat(str(entry.get("timestamp", "")).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if int(ts.timestamp() * 1000) < cutoff_ms:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            coin = str(entry.get("coin", "")).upper()
+            if not coin:
+                continue
+            from data.lunarcrush_scorer import LunarCrushSignal
+
+            sig = LunarCrushSignal(
+                coin=coin,
+                action=str(entry.get("action", "HOLD")),
+                confidence=int(entry.get("confidence", 0) or 0),
+                rationale=str(entry.get("rationale", "")),
+                post_id=entry.get("signal_id"),
+                galaxy_score=float(entry.get("galaxy_score", 0) or 0),
+                alt_rank=int(entry.get("alt_rank", 0) or 0),
+                sentiment=float(entry.get("sentiment", 0) or 0),
+            )
+            sig.trust_score = trust
+            sig.effective_confidence = sig.confidence * (trust / 100.0)
+            existing = by_coin.get(coin)
+            if not existing or sig.confidence > getattr(existing, "confidence", 0):
+                by_coin[coin] = sig
+
+        for signal in self._cycle_lc_signals:
+            coin = getattr(signal, "coin", "")
+            existing = by_coin.get(coin)
+            if not existing or signal.confidence > getattr(existing, "confidence", 0):
+                by_coin[coin] = signal
+
+        return sorted(by_coin.values(), key=lambda s: getattr(s, "confidence", 0), reverse=True)
+
+    def should_send_lc_digest(self, signals: list) -> bool:
+        if not signals:
+            return False
+        sig = "|".join(
+            f"{getattr(s, 'coin', '')}:{getattr(s, 'action', '')}:{getattr(s, 'confidence', 0)}"
+            for s in sorted(signals, key=lambda x: getattr(x, "coin", ""))
+        )
+        if sig == self._last_lc_digest_sig:
+            return False
+        self._last_lc_digest_sig = sig
+        return True
 
     def get_notified_post_ids(self) -> set:
         return set(self._notified_post_ids)

@@ -1311,6 +1311,23 @@ class TestVirtualTrading(unittest.TestCase):
         finally:
             save_cmc_posts(backup)
 
+    def test_decision_engine_lc_buy_merge(self):
+        from data.lunarcrush_scorer import LunarCrushSignal
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine()
+        lc = LunarCrushSignal("SOL", "BUY", 82, rationale="galaxy momentum", galaxy_score=74, alt_rank=45, sentiment=76)
+        lc.trust_score = 72.0
+        lc.effective_confidence = 59.0
+
+        empty_pos = {"amount": 0, "average_entry": 0}
+        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
+             patch("strategies.decision_engine.count_open_positions", return_value=0), \
+             patch("strategies.decision_engine.get_position", return_value=empty_pos):
+            analysis = engine.evaluate({"symbol": "SOL/USDT", "timeframe": "4h"}, 1.0, lc_signals=[lc])
+        self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
+        self.assertIn("lc", analysis.sources)
+
     def test_decision_engine_cmc_buy_merge(self):
         from data.cmc_community_provider import CMCCommunitySignal
         from strategies.decision_engine import DecisionEngine
@@ -1355,6 +1372,24 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("x", analysis.sources)
         self.assertIn("cmc", analysis.sources)
 
+    def test_social_pipeline_process_lc_signals(self):
+        from data_manager import load_lc_signals, save_lc_signals, load_watchlist
+        from services.social_pipeline import SocialPipeline
+        from x_analyzer import XAnalyzer
+
+        backup = load_lc_signals()
+        save_lc_signals({"signals": []})
+        try:
+            pipeline = SocialPipeline(XAnalyzer())
+            watchlist = load_watchlist()
+            if not any("SOL" in c.get("symbol", "") for c in watchlist):
+                watchlist = watchlist + [{"symbol": "SOL/USDT", "active": True}]
+            signals = pipeline.process_lc_signals(watchlist)
+            self.assertGreater(len(signals), 0)
+            self.assertEqual(signals[0].source, "lc")
+        finally:
+            save_lc_signals(backup)
+
     def test_social_pipeline_process_cmc_posts(self):
         from data_manager import load_cmc_posts, save_cmc_posts, load_watchlist
         from services.social_pipeline import SocialPipeline
@@ -1376,8 +1411,13 @@ class TestVirtualTrading(unittest.TestCase):
     def test_onchain_weight_config_accessors(self):
         from core.config import get_bot_config
         cfg = get_bot_config()
-        self.assertAlmostEqual(cfg.onchain_weight, 0.2)
-        self.assertAlmostEqual(cfg.x_weight + cfg.technical_weight + cfg.onchain_weight, 1.0)
+        self.assertAlmostEqual(cfg.onchain_weight, 0.15)
+        self.assertAlmostEqual(cfg.lc_weight, 0.18)
+        self.assertAlmostEqual(cfg.x_weight, 0.40)
+        self.assertAlmostEqual(
+            cfg.x_weight + cfg.technical_weight + cfg.onchain_weight + cfg.lc_weight,
+            1.0,
+        )
 
     def test_audit_trail_records_decision(self):
         import json

@@ -705,6 +705,7 @@ def list_strategy_targets() -> list:
 PAPER_STRATEGIES_FILE = "paper_strategies.json"
 PAPER_SANDBOX_HISTORY_FILE = "paper_sandbox_history.json"
 CMC_POSTS_FILE = "cmc_posts.json"
+LC_SIGNALS_FILE = "lc_signals.json"
 
 
 def load_cmc_posts():
@@ -746,6 +747,49 @@ def log_cmc_post(signal, post_id: str = None):
         return data
     data.setdefault("posts", []).append(entry)
     save_cmc_posts(data)
+    return data
+
+
+def load_lc_signals():
+    path = get_data_file(LC_SIGNALS_FILE)
+    if not os.path.exists(path):
+        return {"signals": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"signals": []}
+
+
+def save_lc_signals(data):
+    path = get_data_file(LC_SIGNALS_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def log_lc_signal(signal, signal_id: str = None):
+    data = load_lc_signals()
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "signal_id": signal_id or getattr(signal, "post_id", None),
+        "coin": getattr(signal, "coin", ""),
+        "action": getattr(signal, "action", "HOLD"),
+        "confidence": getattr(signal, "confidence", 0),
+        "rationale": getattr(signal, "rationale", ""),
+        "galaxy_score": getattr(signal, "galaxy_score", 0),
+        "alt_rank": getattr(signal, "alt_rank", 0),
+        "sentiment": getattr(signal, "sentiment", 0),
+        "source": "lc",
+    }
+    sid = entry.get("signal_id")
+    if sid and any(s.get("signal_id") == sid for s in data.get("signals", [])):
+        return data
+    data.setdefault("signals", []).append(entry)
+    save_lc_signals(data)
     return data
 
 

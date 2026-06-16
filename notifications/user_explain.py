@@ -72,10 +72,12 @@ def explanations_config(config=None) -> dict:
         "show_technical_codes": True,
         "notify_hermes_every_cycle": True,
         "notify_cmc_digest": True,
+        "notify_lc_digest": True,
         "notify_x_digest": True,
         "notify_social_hold_explanations": True,
         "notify_blocked_trades": True,
         "cmc_digest_min_confidence": 60,
+        "lc_digest_min_confidence": 55,
         "x_digest_min_effective_confidence": 70,
     }
     raw = cfg.observability_config.get("telegram_explanations", {})
@@ -181,6 +183,15 @@ def _social_detail_lines(social_ctx: dict | None) -> list[str]:
         )
         if cmc.get("rationale"):
             lines.append(f"  \"{cmc['rationale'][:100]}\"")
+    lc = social_ctx.get("lc")
+    if lc:
+        lines.append(
+            f"LC: {lc.get('action', '?')} ({lc.get('confidence', 0)}%) — "
+            f"Galaxy {lc.get('galaxy_score', 0):.0f}, AltRank {lc.get('alt_rank', 0)}, "
+            f"Sentiment {lc.get('sentiment', 0):.0f}%"
+        )
+        if lc.get("rationale"):
+            lines.append(f"  \"{lc['rationale'][:100]}\"")
     return lines
 
 
@@ -231,6 +242,8 @@ def explain_trade(
         source_de.append("X/Twitter")
     if "cmc" in sources:
         source_de.append("CMC Community")
+    if "lc" in sources:
+        source_de.append("LunarCrush")
     if "take_profit" in sources:
         source_de.append("Gewinnziel")
     if "stop_loss" in sources:
@@ -253,11 +266,14 @@ def explain_hold_with_social(analysis, social_ctx: dict | None) -> str | None:
         return None
     x = social_ctx.get("x")
     cmc = social_ctx.get("cmc")
+    lc = social_ctx.get("lc")
     parts = []
     if x and x.get("action") in ("BUY", "SELL"):
         parts.append(f"X (@{x.get('account')}) sagt {x['action']}")
     if cmc and cmc.get("action") in ("BUY", "SELL"):
         parts.append(f"CMC sagt {cmc['action']} ({cmc.get('confidence', 0)}%)")
+    if lc and lc.get("action") in ("BUY", "SELL"):
+        parts.append(f"LunarCrush sagt {lc['action']} ({lc.get('confidence', 0)}%)")
     if not parts:
         return None
     social_txt = " und ".join(parts)
@@ -330,6 +346,29 @@ def explain_hermes_cycle(record: dict, proposal=None) -> str:
 def describe_param_change(key: str, value) -> str:
     label = _PARAM_LABELS.get(key, key)
     return f"{label}: {value}"
+
+
+def explain_lc_signal(signal) -> str:
+    from notifications.coin_links import format_links_line, format_ticker_html
+
+    action = getattr(signal, "action", "?")
+    coin = getattr(signal, "coin", "?")
+    conf = getattr(signal, "confidence", 0)
+    galaxy = getattr(signal, "galaxy_score", 0)
+    alt_rank = getattr(signal, "alt_rank", 0)
+    sentiment = getattr(signal, "sentiment", 0)
+    rat = getattr(signal, "rationale", "") or ""
+    act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else "Abwarten"
+    coin_html = format_ticker_html(coin, symbol_suffix="")
+    links = format_links_line(coin)
+    links_part = f"\n{links}" if links else ""
+    line = (
+        f"<b>{coin_html}</b> — LunarCrush tendiert zu <b>{act_de}</b> ({conf}%). "
+        f"Galaxy {galaxy:.0f}, AltRank {alt_rank}, Sentiment {sentiment:.0f}%.{links_part}"
+    )
+    if rat:
+        line += f"\n  {rat[:120]}"
+    return line
 
 
 def explain_cmc_signal(signal) -> str:

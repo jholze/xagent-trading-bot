@@ -1,5 +1,5 @@
 from logger import log
-from notifications.telegram_commands import backtest_commands, cmc_commands, decisions_commands, gate_commands, help_commands, hermes_commands, menu_commands, mode_commands, order_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands import backtest_commands, cmc_commands, decisions_commands, gate_commands, help_commands, hermes_commands, lc_commands, menu_commands, mode_commands, order_commands, portfolio_commands, risk_commands, sandbox_commands, trading_commands, watchlist_commands, x_commands
 from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
@@ -12,6 +12,7 @@ _HANDLERS = [
     decisions_commands.handle,
     backtest_commands.handle,
     cmc_commands.handle,
+    lc_commands.handle,
     watchlist_commands.handle,
     trading_commands.handle,
     order_commands.handle,

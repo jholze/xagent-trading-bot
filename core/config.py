@@ -132,6 +132,10 @@ class BotConfig:
         return self._raw.get("cmc", {})
 
     @property
+    def lunarcrush_config(self) -> dict:
+        return self._raw.get("lunarcrush", {})
+
+    @property
     def altcoin_social_config(self) -> dict:
         return self._raw.get("altcoin_social", {})
 
@@ -150,6 +154,10 @@ class BotConfig:
     @property
     def onchain_weight(self) -> float:
         return float(self._raw.get("onchain_weight", 0.2))
+
+    @property
+    def lc_weight(self) -> float:
+        return float(self._raw.get("lc_weight", 0.18))
 
     @property
     def observability_config(self) -> dict:
@@ -176,10 +184,12 @@ class BotConfig:
             "show_technical_codes": True,
             "notify_hermes_every_cycle": True,
             "notify_cmc_digest": True,
+            "notify_lc_digest": True,
             "notify_x_digest": True,
             "notify_social_hold_explanations": True,
             "notify_blocked_trades": True,
             "cmc_digest_min_confidence": 60,
+            "lc_digest_min_confidence": 55,
             "x_digest_min_effective_confidence": 70,
         }
         raw = self.observability_config.get("telegram_explanations", {})

@@ -51,6 +51,7 @@ try:
         handle_telegram_text,
         send_cmc_cycle_digest,
         send_cycle_summary,
+        send_lc_cycle_digest,
         send_signal_message,
         send_x_cycle_digest,
     )
@@ -141,12 +142,14 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             if social_pipeline:
                 social_pipeline.process_new_posts()
                 social_pipeline.process_cmc_posts(watchlist)
+                social_pipeline.process_lc_signals(watchlist)
                 accuracy = social_pipeline.update_accuracy_loop()
                 if not use_dashboard and (accuracy["outcomes_updated"] or accuracy["trust_updates"]):
                     print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
 
             x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
             cmc_signals = social_pipeline.refresh_cmc_signals() if social_pipeline else []
+            lc_signals = social_pipeline.refresh_lc_signals() if social_pipeline else []
 
             if trend_engine and x_signals:
                 candidates = trend_engine.cross_validate(x_signals, run_scan=False)
@@ -188,6 +191,20 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                             f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
                         )
 
+            for signal in lc_signals:
+                if signal.confidence >= 55:
+                    line = (
+                        f"🌙 LC {signal.action} {signal.coin} | {signal.confidence}% | "
+                        f"Galaxy {signal.galaxy_score:.0f}"
+                    )
+                    cycle_signal_lines.append(line)
+                    if not use_dashboard:
+                        print(
+                            f"   → LunarCrush: {signal.action} {signal.coin} | "
+                            f"Conf: {signal.confidence}% | Galaxy: {signal.galaxy_score:.0f} | "
+                            f"AltRank: {signal.alt_rank} | Sentiment: {signal.sentiment:.0f}%"
+                        )
+
             for coin in watchlist:
                 if not coin.get("active", True):
                     continue
@@ -199,7 +216,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 price = dex_price if dex_price is not None else 0.0
                 if orchestrator:
                     result = orchestrator.process_coin(
-                        coin, price, x_signals, cmc_signals, quiet=use_dashboard
+                        coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
                     )
                     coin_results.append(result)
                 else:
@@ -223,6 +240,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
             top_x = ""
             top_cmc = ""
+            top_lc = ""
             if x_signals:
                 best_x = max(
                     x_signals,
@@ -237,9 +255,18 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                     f"Votes {best_cmc.votes_bullish}↑/{best_cmc.votes_bearish}↓"
                 )
 
+            if lc_signals:
+                best_lc = max(lc_signals, key=lambda s: s.confidence)
+                top_lc = (
+                    f"{best_lc.coin} {best_lc.action} ({best_lc.confidence}%) "
+                    f"Galaxy {best_lc.galaxy_score:.0f}"
+                )
+
             if social_pipeline:
                 if social_pipeline.should_send_cmc_digest(cmc_signals):
                     send_cmc_cycle_digest(cmc_signals)
+                if social_pipeline.should_send_lc_digest(lc_signals):
+                    send_lc_cycle_digest(lc_signals)
                 send_x_cycle_digest(x_signals, skip_post_ids=social_pipeline.get_notified_post_ids())
 
             summary = build_cycle_summary(
@@ -247,8 +274,10 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 trading_mode=mode,
                 x_signal_count=len(x_signals),
                 cmc_signal_count=len(cmc_signals),
+                lc_signal_count=len(lc_signals),
                 top_x=top_x,
                 top_cmc=top_cmc,
+                top_lc=top_lc,
             )
             send_cycle_summary(summary)
 

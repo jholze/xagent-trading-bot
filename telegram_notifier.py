@@ -226,6 +226,23 @@ def send_cmc_cycle_digest(signals: list):
     return send_telegram_message("\n".join(lines).strip())
 
 
+def send_lc_cycle_digest(signals: list):
+    from notifications.user_explain import explain_lc_signal, explanations_config
+
+    cfg = explanations_config()
+    if not cfg.get("enabled") or not cfg.get("notify_lc_digest"):
+        return False
+    min_conf = int(cfg.get("lc_digest_min_confidence", 55))
+    filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
+    if not filtered:
+        return False
+    lines = [f"<b>🌙 LunarCrush diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
+    for s in filtered[:8]:
+        lines.append(explain_lc_signal(s))
+        lines.append("")
+    return send_telegram_message("\n".join(lines).strip())
+
+
 def send_x_cycle_digest(signals: list, skip_post_ids: set = None):
     from notifications.user_explain import explain_x_signal, explanations_config
 

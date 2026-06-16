@@ -35,14 +35,15 @@ class SignalOrchestrator:
         self.decision_engine = DecisionEngine(self.market)
         self.audit = AuditTrail(self.config)
 
-    def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None):
-        return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals)
+    def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None):
+        return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals, lc_signals)
 
-    def _build_social_context(self, symbol: str, x_signals=None, cmc_signals=None, coin: dict = None) -> dict:
+    def _build_social_context(self, symbol: str, x_signals=None, cmc_signals=None, lc_signals=None, coin: dict = None) -> dict:
         base = symbol.split("/")[0]
         ctx = {}
         coin_x = self.decision_engine._signals_for_coin(symbol, x_signals)
         coin_cmc = self.decision_engine._signals_for_coin(symbol, cmc_signals)
+        coin_lc = self.decision_engine._signals_for_coin(symbol, lc_signals)
         if coin_x:
             s = coin_x[0]
             ctx["x"] = {
@@ -59,6 +60,16 @@ class SignalOrchestrator:
                 "confidence": getattr(s, "confidence", 0),
                 "votes_bullish": getattr(s, "votes_bullish", 0),
                 "votes_bearish": getattr(s, "votes_bearish", 0),
+                "rationale": getattr(s, "rationale", ""),
+            }
+        if coin_lc:
+            s = coin_lc[0]
+            ctx["lc"] = {
+                "action": getattr(s, "action", "HOLD"),
+                "confidence": getattr(s, "confidence", 0),
+                "galaxy_score": getattr(s, "galaxy_score", 0),
+                "alt_rank": getattr(s, "alt_rank", 0),
+                "sentiment": getattr(s, "sentiment", 0),
                 "rationale": getattr(s, "rationale", ""),
             }
         if coin:
@@ -88,6 +99,8 @@ class SignalOrchestrator:
             source = "x"
         elif "cmc" in (analysis.sources or []):
             source = "cmc"
+        elif "lc" in (analysis.sources or []):
+            source = "lc"
         else:
             source = "auto"
         trust_score = analysis.x_confidence if source == "x" else None
@@ -126,11 +139,11 @@ class SignalOrchestrator:
             request_extra=request_extra or None,
         )
 
-    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, quiet: bool = False) -> dict:
+    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:
         if not current_price:
             return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
-        analysis = self.analyze(coin, current_price, x_signals, cmc_signals)
+        analysis = self.analyze(coin, current_price, x_signals, cmc_signals, lc_signals)
         if analysis is None:
             return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
@@ -159,7 +172,7 @@ class SignalOrchestrator:
 
         trade_executed = bool(trade_result.executed) if trade_result else False
         exp_cfg = explanations_config(self.config)
-        social_ctx = self._build_social_context(symbol, x_signals, cmc_signals, coin=coin)
+        social_ctx = self._build_social_context(symbol, x_signals, cmc_signals, lc_signals, coin=coin)
         explained = explain_trade(analysis, trade_result, social_ctx=social_ctx, signal=analysis.action)
 
         notify_trade = should_notify

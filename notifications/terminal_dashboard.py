@@ -165,6 +165,7 @@ def _trade_source_label(source: str) -> str:
         "auto": "Auto",
         "x": "X-Signal",
         "cmc": "CMC",
+        "lc": "LunarCrush",
     }
     return labels.get(source or "auto", source or "Auto")
 
@@ -213,8 +214,10 @@ def build_cycle_summary(
     trading_mode: str = "paper",
     x_signal_count: int = 0,
     cmc_signal_count: int = 0,
+    lc_signal_count: int = 0,
     top_x: str = "",
     top_cmc: str = "",
+    top_lc: str = "",
 ) -> str:
     snap = _portfolio_snapshot(trading_mode)
     balance = snap["balance"]
@@ -230,14 +233,16 @@ def build_cycle_summary(
         f"Modus: <b>{trading_mode.upper()}</b>",
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
-        f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC",
+        f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC | {lc_signal_count} LC",
     ]
-    if top_x or top_cmc:
+    if top_x or top_cmc or top_lc:
         lines.append("<b>Social:</b>")
         if top_x:
             lines.append(f"  🐦 {top_x}")
         if top_cmc:
             lines.append(f"  📊 {top_cmc}")
+        if top_lc:
+            lines.append(f"  🌙 {top_lc}")
     if actions:
         lines.append("<b>Entscheidungen:</b>")
         from notifications.coin_links import format_ticker_html

@@ -82,9 +82,32 @@
     "strategy_discovery_async": true,
     "parallel_account_fetch": 3
   },
-  "x_weight": 0.45,
-  "technical_weight": 0.35,
-  "onchain_weight": 0.2,
+  "x_weight": 0.40,
+  "technical_weight": 0.27,
+  "onchain_weight": 0.15,
+  "lc_weight": 0.18,
+  "lunarcrush": {
+    "enabled": true,
+    "use_mock": true,
+    "api_key_env": "LUNARCRUSH_API_KEY",
+    "cache_ttl_sec": 900,
+    "signal_ttl_hours": 4,
+    "trust_score": 72,
+    "min_confidence": 58,
+    "sell_min_confidence": 68,
+    "sell_requires_ta": true,
+    "min_hours_between_sells": 6,
+    "thresholds": {
+      "buy_galaxy_min": 58,
+      "buy_galaxy_delta_min": 4,
+      "buy_sentiment_min": 68,
+      "buy_alt_improve_min_pct": 8,
+      "buy_raw_min": 55,
+      "sell_galaxy_max": 42,
+      "sell_sentiment_max": 40,
+      "sell_alt_worsen_min_pct": 12
+    }
+  },
   "cmc": {
     "enabled": true,
     "use_mock": false,
@@ -185,10 +208,12 @@
       "show_technical_codes": true,
       "notify_hermes_every_cycle": true,
       "notify_cmc_digest": true,
+      "notify_lc_digest": true,
       "notify_x_digest": true,
       "notify_social_hold_explanations": true,
       "notify_blocked_trades": true,
       "cmc_digest_min_confidence": 60,
+      "lc_digest_min_confidence": 55,
       "x_digest_min_effective_confidence": 70
     },
     "telegram_command_menu": {
