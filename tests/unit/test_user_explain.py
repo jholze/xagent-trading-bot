@@ -78,6 +78,8 @@ class TestUserExplain(unittest.TestCase):
         msg = explain_hermes_cycle(record)
         self.assertIn("abgelehnt", msg.lower())
         self.assertIn("1/4", msg)
+        self.assertIn("&lt; 55%", msg)
+        self.assertNotIn("< 55%", msg)
 
     def test_explain_hermes_promoted(self):
         record = {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html import escape
 from typing import Any
 
 _RATIONALE_PARTS = {
@@ -319,7 +320,11 @@ def explain_hermes_cycle(record: dict, proposal=None) -> str:
     ticker = (symbol or "").replace("/USDT", "").split("/")[0]
     links = format_links_line(ticker) if ticker else ""
     links_part = f"\n{links}" if links else ""
-    return f"{headline}\n{detail}{links_part}\n<code>{tech}</code>"
+    return (
+        f"{escape(headline, quote=False)}\n"
+        f"{escape(detail, quote=False)}{links_part}\n"
+        f"<code>{escape(tech, quote=False)}</code>"
+    )
 
 
 def describe_param_change(key: str, value) -> str:

@@ -10,7 +10,7 @@
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",
     "api_secret_env": "GATE_API_SECRET",
-    "max_usdt_per_trade": 25,
+    "max_usdt_per_trade": 200,
     "require_min_trust_score": 70,
     "dry_run": true,
     "dry_run_enhanced": false,
@@ -46,7 +46,7 @@
     "min_hours_between_sells": 3
   },
   "initial_capital_usdt": 5000,
-  "max_usdt_per_trade": 25,
+  "max_usdt_per_trade": 200,
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
@@ -397,7 +397,7 @@
   ],
   "volatile_altcoin": {
     "enabled": true,
-    "mode": "shadow",
+    "mode": "live",
     "atr_volatile_enter_pct": 5.0,
     "atr_stable_exit_pct": 3.5,
     "atr_bars_confirm": 3,
