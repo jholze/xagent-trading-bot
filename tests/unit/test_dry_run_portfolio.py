@@ -197,10 +197,36 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                 json.dump(payload, f)
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
                  patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
                 history = load_live_trade_history()
             self.assertAlmostEqual(history["virtual_balance"], 4900.0)
+
+    def test_stored_drift_corrected_on_load_plain_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, LIVE_TRADE_HISTORY_FILE)
+            cfg = {
+                "trading_mode": "live",
+                "initial_capital_usdt": 5000,
+                "live": {"dry_run": True, "dry_run_enhanced": False, "simulated_balance_usdt": 5000},
+            }
+            payload = {
+                "trades": [
+                    {"type": "BUY", "usdt_amount": 250},
+                    {"type": "BUY", "usdt_amount": 250},
+                ],
+                "virtual_balance": 2949.0,
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            with patch("data_manager.get_data_file", return_value=path), \
+                 patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_live_dry_run", return_value=True), \
+                 patch("data_manager.is_dry_run_enhanced", return_value=False), \
+                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
+                history = load_live_trade_history()
+            self.assertAlmostEqual(history["virtual_balance"], 4500.0)
 
 
 class TestDryRunPortfolioFlows(unittest.TestCase):

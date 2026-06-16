@@ -46,6 +46,7 @@ class TestDryRunWallet(unittest.TestCase):
             }
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
                  patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
                 record_live_trade({"type": "BUY", "symbol": "PEPE/USDT", "usdt_amount": 100})
@@ -56,6 +57,27 @@ class TestDryRunWallet(unittest.TestCase):
                 self.assertAlmostEqual(history["virtual_balance"], 5020.0)
                 trades = history["trades"]
                 self.assertAlmostEqual(compute_sim_cash_from_trades(trades, 5000), 5020.0)
+
+    def test_record_live_trade_updates_virtual_balance_plain_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "live_trade_history.json")
+            cfg = {
+                "trading_mode": "live",
+                "initial_capital_usdt": 5000,
+                "live": {"dry_run": True, "dry_run_enhanced": False, "simulated_balance_usdt": 5000},
+            }
+            with patch("data_manager.get_data_file", return_value=path), \
+                 patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_live_dry_run", return_value=True), \
+                 patch("data_manager.is_dry_run_enhanced", return_value=False), \
+                 patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
+                record_live_trade({"type": "BUY", "symbol": "SIREN/USDT", "usdt_amount": 250})
+                history = load_live_trade_history()
+                self.assertAlmostEqual(history["virtual_balance"], 4750.0)
+                record_live_trade({"type": "SELL", "symbol": "SIREN/USDT", "usdt_received": 260, "pnl": 10})
+                history = load_live_trade_history()
+                self.assertAlmostEqual(history["virtual_balance"], 5010.0)
+                self.assertAlmostEqual(history["realized_pnl"], 10.0)
 
     def test_risk_manager_approves_buy_with_simulated_balance(self):
         cfg = self._enhanced_config()

@@ -459,11 +459,19 @@ def compute_sim_realized_pnl(trades: list) -> float:
     )
 
 
+def live_sim_initial_capital(config: dict = None) -> float:
+    """Starting USDT for replaying live dry-run trades into virtual_balance."""
+    cfg = config or get_config()
+    if is_dry_run_enhanced(cfg):
+        return simulated_balance_usdt(cfg)
+    return float(cfg.get("initial_capital_usdt", simulated_balance_usdt(cfg)))
+
+
 def _ensure_live_virtual_balance(history: dict, config: dict = None) -> dict:
     cfg = config or get_config()
-    if not is_dry_run_enhanced(cfg):
+    if not is_live_dry_run(cfg):
         return history
-    initial = simulated_balance_usdt(cfg)
+    initial = live_sim_initial_capital(cfg)
     trades = history.get("trades", [])
     history["virtual_balance"] = compute_sim_cash_from_trades(trades, initial)
     history["realized_pnl"] = compute_sim_realized_pnl(trades)
@@ -538,7 +546,7 @@ def record_live_trade(trade):
     cfg = get_config()
     history = load_live_trade_history()
     history.setdefault("trades", []).append(trade)
-    if is_dry_run_enhanced(cfg):
+    if is_live_dry_run(cfg):
         history = _ensure_live_virtual_balance(history, cfg)
     elif trade.get("type") == "SELL":
         history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
