@@ -11,6 +11,7 @@ from data_manager import (
 )
 from logger import log
 from services.market_service import MarketService
+from strategies.positions import is_open_position
 from strategies.registry import promote_hypothesis_to_config
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
@@ -128,7 +129,9 @@ class PaperSandbox:
             vol_multiplier=indicators["vol_multiplier"],
             has_position=pos["amount"] > 0,
             average_entry=pos.get("average_entry", 0),
-            open_positions=sum(1 for p in portfolio["positions"].values() if p.get("amount", 0) > 0.01),
+            open_positions=sum(
+                1 for p in portfolio["positions"].values() if is_open_position(p)
+            ),
             strategy_params=params,
         )
 

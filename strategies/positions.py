@@ -28,6 +28,34 @@ except Exception:
 positions = {}
 _active_scope = "paper"
 
+DUST_AMOUNT_EPSILON = 1e-12
+MIN_OPEN_POSITION_USDT = 1.0
+
+
+def position_notional_usdt(pos: dict) -> float:
+    amount = float(pos.get("amount", 0) or 0)
+    if amount <= 0:
+        return 0.0
+    for key in ("average_entry", "entry_price", "last_buy_price"):
+        entry = float(pos.get(key, 0) or 0)
+        if entry > 0:
+            return amount * entry
+    return 0.0
+
+
+def has_position_amount(pos: dict) -> bool:
+    return float(pos.get("amount", 0) or 0) > DUST_AMOUNT_EPSILON
+
+
+def is_open_position(pos: dict) -> bool:
+    """True when the lot is material (BTC-sized fractions, not token-dust)."""
+    if not has_position_amount(pos):
+        return False
+    notional = position_notional_usdt(pos)
+    if notional > 0:
+        return notional >= MIN_OPEN_POSITION_USDT
+    return True
+
 
 def get_active_scope() -> str:
     return _active_scope
@@ -317,7 +345,7 @@ def _sync_open_positions_count():
 
 def count_open_positions():
     with _positions_lock:
-        return sum(1 for p in positions.values() if float(p.get("amount", 0)) > 0.01)
+        return sum(1 for p in positions.values() if is_open_position(p))
 
 def get_total_aria():
     with _positions_lock:
@@ -330,7 +358,7 @@ def list_active_positions():
     with _positions_lock:
         active = []
         for key, p in positions.items():
-            if float(p.get("amount", 0)) > 0.01:
+            if is_open_position(p):
                 base, _, tf = key.rpartition("_")
                 symbol = base.replace("_", "/") if "/" not in base else base
                 if not symbol.upper().startswith("TEST"):

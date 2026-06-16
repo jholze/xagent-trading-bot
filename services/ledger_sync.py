@@ -126,8 +126,10 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
 
 
 def count_open_positions_from_orders(scope: str) -> int:
+    from strategies.positions import is_open_position
+
     snapshot = _build_positions_snapshot_from_orders(scope)
-    return sum(1 for p in snapshot.values() if p["amount"] > 0.01)
+    return sum(1 for p in snapshot.values() if is_open_position(p))
 
 
 def rebuild_positions_from_orders(scope: str) -> int:
@@ -141,7 +143,9 @@ def rebuild_positions_from_orders(scope: str) -> int:
 
     apply_positions_snapshot(snapshot, scope=scope)
     save_positions(scope=scope)
-    open_count = sum(1 for p in snapshot.values() if p["amount"] > 0.01)
+    from strategies.positions import is_open_position
+
+    open_count = sum(1 for p in snapshot.values() if is_open_position(p))
     log(
         f"Rebuilt positions for scope={scope} from {len(orders)} filled order(s), "
         f"{open_count} open",
@@ -187,13 +191,13 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
 
 def reconcile_peak_amounts(scope: str) -> bool:
     """Backfill peak_amount and sold_percent from filled orders for open lots."""
-    from strategies.positions import _positions_lock, positions, save_positions
+    from strategies.positions import _positions_lock, has_position_amount, positions, save_positions
 
     order_snap = _build_positions_snapshot_from_orders(scope)
     changed = False
     with _positions_lock:
         for key, pos in positions.items():
-            if float(pos.get("amount", 0)) <= 0.01:
+            if not has_position_amount(pos):
                 continue
             osnap = order_snap.get(key)
             if osnap:

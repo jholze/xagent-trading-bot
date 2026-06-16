@@ -37,7 +37,7 @@ def _position_value_from_snapshot(snapshot: dict, prices: dict) -> float:
     total = 0.0
     for key, pos in snapshot.items():
         amt = float(pos.get("amount", 0) or 0)
-        if amt <= 0.01:
+        if amt <= 1e-12:
             continue
         sym = key.rpartition("_")[0].replace("_", "/")
         price = float(prices.get(sym, 0) or 0)
@@ -124,7 +124,7 @@ def estimate_nav_at_day_start(trading_mode: str = None) -> float:
     cash = compute_sim_cash_from_trades(pre, initial)
     snap = _snapshot_from_orders_before(cutoff, scope)
     symbols = sorted(
-        {key.rpartition("_")[0].replace("_", "/") for key in snap if snap[key].get("amount", 0) > 0.01}
+        {key.rpartition("_")[0].replace("_", "/") for key in snap if snap[key].get("amount", 0) > 1e-12}
     )
     prices = get_prices_batch(symbols) if symbols else {}
     return cash + _position_value_from_snapshot(snap, prices)
