@@ -228,13 +228,24 @@ def build_cycle_summary(
     executed = [r for r in (coin_results or []) if r.get("executed")]
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
 
+    initial = float(get_bot_config().initial_capital_usdt or 5000)
+    nav_pnl = float(total_value or 0) - initial
     lines = [
         f"<b>📋 Zyklus-Zusammenfassung</b> — {datetime.now().strftime('%H:%M:%S')}",
         f"Modus: <b>{trading_mode.upper()}</b>",
         f"{balance_label}: ${float(balance or 0):,.0f} | "
-        f"Gesamtwert: ${float(total_value or 0):,.0f} | Realized: ${float(realized or 0):,.1f}",
+        f"Gesamtwert: ${float(total_value or 0):,.0f} | "
+        f"PnL: ${nav_pnl:+,.0f} (real. ${float(realized or 0):,.1f})",
         f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC | {lc_signal_count} LC",
     ]
+    try:
+        from notifications.daily_portfolio import format_daily_nav_line
+
+        daily = format_daily_nav_line(trading_mode, total_value=float(total_value or 0))
+        if daily:
+            lines.append(daily)
+    except Exception:
+        pass
     if top_x or top_cmc or top_lc:
         lines.append("<b>Social:</b>")
         if top_x:

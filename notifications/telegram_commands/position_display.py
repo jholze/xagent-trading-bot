@@ -71,14 +71,22 @@ def _price_source_note(source: str = None) -> str:
     return labels.get(source or "", "")
 
 
+def _effective_sold_fraction(p: dict) -> float:
+    amount = float(p.get("amount", 0) or 0)
+    peak = float(p.get("peak_amount", 0) or 0)
+    if peak > 0 and amount >= 0:
+        return min(1.0, max(0.0, 1.0 - amount / peak))
+    return min(float(p.get("sold_percent", 0) or 0), 1.0)
+
+
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
     value_usdt = price * amount if price > 0 else 0.0
     unreal = (price - entry) * amount if entry > 0 and price > 0 else 0.0
     unreal_pct = ((price / entry) - 1) * 100 if entry > 0 and price > 0 else 0.0
-    sold_pct = min(float(p.get("sold_percent", 0) or 0), 1.0) * 100
-    sold_raw = float(p.get("sold_percent", 0) or 0)
+    sold_raw = _effective_sold_fraction(p)
+    sold_pct = sold_raw * 100
     return {
         "entry": entry,
         "amount": amount,
@@ -87,7 +95,7 @@ def _position_metrics(p: dict, price: float) -> dict:
         "unreal": unreal,
         "unreal_pct": unreal_pct,
         "sold_pct": sold_pct,
-        "sold_warn": sold_raw > 1.0,
+        "sold_warn": float(p.get("sold_percent", 0) or 0) > 1.0,
     }
 
 
@@ -185,19 +193,31 @@ def format_portfolio_summary(
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
     total_value = balance + float(positions_market_value or 0)
-    total_pnl = realized + total_unreal
     initial = float(get_bot_config().initial_capital_usdt or 5000)
+    total_pnl = total_value - initial
     pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0.0
     pnl_icon = _pnl_emoji(total_pnl)
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
+    daily_line = ""
+    try:
+        from notifications.daily_portfolio import format_daily_nav_line
+
+        daily_line = format_daily_nav_line(total_value=total_value)
+        if daily_line:
+            daily_line = f"{daily_line}\n"
+    except Exception:
+        pass
+
     return (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
         f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
-        f"📈 Unrealisiert <b>${total_unreal:+.1f}</b>\n"
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
-        f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>)\n"
-        f"✅ Realisiert <b>${realized:+.1f}</b>\n\n"
+        f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
+        f"<i>vs. Start ${initial:,.0f}</i>\n"
+        f"📈 Unrealisiert <b>${total_unreal:+.1f}</b> · "
+        f"✅ Realisiert <b>${realized:+.1f}</b>\n"
+        f"{daily_line}\n"
         f"<b>Positionen ({position_count})</b>"
     )
 

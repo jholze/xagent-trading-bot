@@ -34,8 +34,17 @@ def get_active_scope() -> str:
 
 
 def _deserialize_position(raw: dict) -> dict:
+    amount = Decimal(str(raw.get("amount", 0)))
+    peak = float(raw.get("peak_amount", 0) or 0)
+    if peak <= 0 and float(amount) > 0:
+        sold = float(raw.get("sold_percent", 0) or 0)
+        if 0 < sold < 1:
+            peak = float(amount) / (1.0 - sold)
+        else:
+            peak = float(amount)
     return {
-        "amount": Decimal(str(raw.get("amount", 0))),
+        "amount": amount,
+        "peak_amount": peak,
         "sold_percent": float(raw.get("sold_percent", 0)),
         "average_entry": float(raw.get("average_entry", raw.get("entry_price", 0))),
         "realized_pnl": float(raw.get("realized_pnl", 0)),
@@ -57,6 +66,7 @@ def _serialize_positions() -> dict:
     for tf, p in positions.items():
         data["positions"][tf] = {
             "amount": float(p["amount"]),
+            "peak_amount": float(p.get("peak_amount", 0) or 0),
             "sold_percent": p["sold_percent"],
             "average_entry": float(p.get("average_entry", p.get("entry_price", 0))),
             "realized_pnl": float(p.get("realized_pnl", 0)),
@@ -152,6 +162,7 @@ def init_position(symbol, timeframe):
         if key not in positions:
             positions[key] = {
                 "amount": Decimal("0"),
+                "peak_amount": 0.0,
                 "sold_percent": 0.0,
                 "average_entry": 0.0,
                 "realized_pnl": 0.0,
@@ -243,6 +254,7 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             else:
                 pos["average_entry"] = current_price
             pos["amount"] = new_amount
+            pos["peak_amount"] = float(new_amount)
             pos["sold_percent"] = 0.0
             pos["last_buy_price"] = current_price
             pos["last_action"] = "BUY"
@@ -259,9 +271,15 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             else:
                 fraction = sell_fraction_for_signal(signal)
                 sell_amount = pos["amount"] * Decimal(str(fraction))
-            if original_amount > 0:
-                pos["sold_percent"] = min(1.0, pos["sold_percent"] + float(sell_amount) / original_amount)
+            peak = float(pos.get("peak_amount") or 0)
+            if peak <= 0 and original_amount > 0:
+                peak = original_amount
+                pos["peak_amount"] = peak
             pos["amount"] -= sell_amount
+            if peak > 0:
+                pos["sold_percent"] = min(
+                    1.0, max(0.0, 1.0 - float(pos["amount"]) / peak)
+                )
             pos["last_action"] = "SELL"
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["last_trade_type"] = "SELL"
@@ -325,6 +343,7 @@ def list_active_positions():
                         "entry_price": p.get("average_entry", 0),
                         "last_buy_price": p.get("last_buy_price", 0),
                         "realized_pnl": p.get("realized_pnl", 0),
+                        "peak_amount": float(p.get("peak_amount", 0) or 0),
                         "sold_percent": float(p.get("sold_percent", 0)),
                         "last_action": p.get("last_action"),
                         "highlight": highlight,

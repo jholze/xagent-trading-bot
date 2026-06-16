@@ -66,6 +66,7 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
             key,
             {
                 "amount": 0.0,
+                "peak_amount": 0.0,
                 "sold_percent": 0.0,
                 "average_entry": 0.0,
                 "realized_pnl": 0.0,
@@ -99,6 +100,7 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
             else:
                 pos["average_entry"] = price
             pos["amount"] = new_amount
+            pos["peak_amount"] = new_amount
             pos["sold_percent"] = 0.0
             pos["last_buy_price"] = price
             pos["last_action"] = "BUY"
@@ -108,11 +110,12 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
         elif side == "sell" and amount > 0:
             original = pos["amount"]
             sell_amount = min(amount, original) if original > 0 else amount
-            if original > 0:
-                pos["sold_percent"] = min(
-                    1.0, pos["sold_percent"] + sell_amount / original
-                )
             pos["amount"] = max(0.0, original - sell_amount)
+            peak = float(pos.get("peak_amount") or original or 0)
+            if peak > 0:
+                pos["sold_percent"] = min(
+                    1.0, max(0.0, 1.0 - pos["amount"] / peak)
+                )
             pos["last_action"] = "SELL"
             pos["last_trade_type"] = "SELL"
             pos["last_trade_at"] = trade_ts
@@ -182,6 +185,40 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
     )
 
 
+def reconcile_peak_amounts(scope: str) -> bool:
+    """Backfill peak_amount and sold_percent from filled orders for open lots."""
+    from strategies.positions import _positions_lock, positions, save_positions
+
+    order_snap = _build_positions_snapshot_from_orders(scope)
+    changed = False
+    with _positions_lock:
+        for key, pos in positions.items():
+            if float(pos.get("amount", 0)) <= 0.01:
+                continue
+            osnap = order_snap.get(key)
+            if osnap:
+                peak = float(osnap.get("peak_amount") or 0)
+                sold = float(osnap.get("sold_percent") or 0)
+            else:
+                peak = float(pos.get("peak_amount") or 0)
+                if peak <= 0:
+                    peak = float(pos["amount"])
+                sold = float(pos.get("sold_percent") or 0)
+            if peak <= 0:
+                continue
+            if (
+                float(pos.get("peak_amount") or 0) != peak
+                or abs(float(pos.get("sold_percent") or 0) - sold) > 0.001
+            ):
+                pos["peak_amount"] = peak
+                pos["sold_percent"] = sold
+                changed = True
+    if changed:
+        save_positions(scope=scope)
+        log(f"Reconciled peak_amount for scope={scope}", "INFO")
+    return changed
+
+
 def sync_positions_on_startup() -> None:
     """Ensure startup uses the correct scoped ledger without cross-contamination."""
     from data_manager import get_config, resolve_ledger_scope, resolve_positions_file
@@ -206,4 +243,5 @@ def sync_positions_on_startup() -> None:
         rebuild_positions_from_orders(scope)
         return
 
+    reconcile_peak_amounts(scope)
     save_positions(scope=scope)

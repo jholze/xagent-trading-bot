@@ -25,6 +25,7 @@ class TestPositionDisplay(unittest.TestCase):
         p = {
             "symbol": "ARIA/USDT",
             "amount": 880.0,
+            "peak_amount": 1257.0,
             "average_entry": 0.0442,
             "sold_percent": 0.3,
             "last_action": "SELL",
@@ -34,6 +35,7 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("880.0000", card)
         self.assertIn("0.0389", card)
         self.assertIn("Bereits verkauft", card)
+        self.assertIn("30%", card)
         self.assertIn("Letzte Aktion", card)
 
     def test_portfolio_summary_german_labels(self):

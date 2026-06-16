@@ -115,6 +115,16 @@ class TestLedgerSync(unittest.TestCase):
         with patch("data_manager.is_demo_mode", return_value=True):
             self.assertEqual(resolve_ledger_scope(), "demo")
 
+    def test_partial_sell_peak_amount_from_orders(self):
+        self._filled_buy("paper", "XPL/USDT", 1.0, 100.0)
+        self._filled_sell("paper", "XPL/USDT", 1.2, 30.0)
+
+        rebuild_positions_from_orders("paper")
+        pos = get_position("XPL/USDT", "4h")
+        self.assertAlmostEqual(float(pos["amount"]), 70.0, places=2)
+        self.assertAlmostEqual(float(pos["peak_amount"]), 100.0, places=2)
+        self.assertAlmostEqual(pos["sold_percent"], 0.3, places=2)
+
     def test_sync_positions_on_startup_rebuilds_on_drift(self):
         self._filled_buy("live", "ARIA/USDT", 0.05, 1000)
         with open(self.positions_files["live"], "w", encoding="utf-8") as f:
