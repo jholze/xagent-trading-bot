@@ -1316,9 +1316,9 @@ class TestVirtualTrading(unittest.TestCase):
         from strategies.decision_engine import DecisionEngine
 
         engine = DecisionEngine()
-        lc = LunarCrushSignal("BNB", "BUY", 55, rationale="galaxy ok", galaxy_score=64, alt_rank=50, sentiment=73)
+        lc = LunarCrushSignal("BNB", "BUY", 63, rationale="galaxy ok", galaxy_score=64, alt_rank=50, sentiment=73)
         lc.trust_score = 72.0
-        lc.effective_confidence = 39.6
+        lc.effective_confidence = 45.4
 
         empty_pos = {"amount": 0, "average_entry": 0}
         with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 54.6, "lower_bb": 0.9, "vol_multiplier": 0.86}), \
