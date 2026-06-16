@@ -260,26 +260,77 @@ def explain_trade(
     }
 
 
-def explain_hold_with_social(analysis, social_ctx: dict | None) -> str | None:
-    """When TA says HOLD but social is strong — explain why no trade."""
+def explain_hold_with_social(
+    analysis,
+    social_ctx: dict | None,
+    blockers: dict | None = None,
+) -> str | None:
+    """Explain HOLD when social looked actionable but no trade executed."""
     if not social_ctx:
         return None
+
+    from core.config import get_bot_config
+
+    sources = set(getattr(analysis, "sources", None) or [])
+    blockers = blockers or {}
+    cfg = get_bot_config()
+    counted = []
+    gated = []
+
     x = social_ctx.get("x")
-    cmc = social_ctx.get("cmc")
-    lc = social_ctx.get("lc")
-    parts = []
     if x and x.get("action") in ("BUY", "SELL"):
-        parts.append(f"X (@{x.get('account')}) sagt {x['action']}")
+        if "x" in sources:
+            counted.append(f"X (@{x.get('account')}) → {x['action']}")
+        elif x.get("action") == "BUY":
+            eff = float(x.get("effective_confidence", x.get("confidence", 0)) or 0)
+            gated.append(f"X BUY (eff. {eff:.0f}%) unter Schwelle")
+
+    cmc = social_ctx.get("cmc")
     if cmc and cmc.get("action") in ("BUY", "SELL"):
-        parts.append(f"CMC sagt {cmc['action']} ({cmc.get('confidence', 0)}%)")
+        if "cmc" in sources:
+            counted.append(f"CMC → {cmc['action']} ({cmc.get('confidence', 0)}%)")
+        elif cmc.get("action") == "BUY":
+            conf = float(cmc.get("confidence", 0) or 0)
+            trust = float(cmc.get("trust_score", cfg.cmc_config.get("trust_score", 65)) or 65)
+            eff = conf * trust / 100.0
+            min_c = float(cfg.cmc_config.get("min_confidence", 60))
+            gated.append(f"CMC BUY {conf:.0f}% (eff. {eff:.0f}%, Schwelle {min_c:.0f}%)")
+
+    lc = social_ctx.get("lc")
     if lc and lc.get("action") in ("BUY", "SELL"):
-        parts.append(f"LunarCrush sagt {lc['action']} ({lc.get('confidence', 0)}%)")
-    if not parts:
+        if "lc" in sources:
+            counted.append(f"LunarCrush → {lc['action']} ({lc.get('confidence', 0)}%)")
+        elif lc.get("action") == "BUY":
+            conf = float(lc.get("confidence", 0) or 0)
+            trust = float(lc.get("trust_score", cfg.lunarcrush_config.get("trust_score", 72)) or 72)
+            eff = conf * trust / 100.0
+            min_c = float(cfg.lunarcrush_config.get("min_confidence", 40))
+            gated.append(f"LC BUY {conf:.0f}% (eff. {eff:.0f}%, Schwelle {min_c:.0f}%)")
+
+    if not counted:
         return None
-    social_txt = " und ".join(parts)
-    ta = explain_rationale(getattr(analysis, "rationale", "") or "")
+
+    open_pos = int(blockers.get("open_positions", 0) or 0)
+    max_pos = int(blockers.get("max_open_positions", cfg.max_open_positions) or 0)
+    if open_pos >= max_pos:
+        return (
+            f"{' + '.join(counted)} — aber Max. offene Positionen erreicht "
+            f"({open_pos}/{max_pos}), daher kein Kauf."
+        )
+
+    if blockers.get("has_position"):
+        return f"{' + '.join(counted)} — Position bereits offen, kein Nachkauf."
+
+    shadow = getattr(analysis, "shadow_action", "") or ""
+    if shadow and "BUY" in shadow:
+        return (
+            f"{' + '.join(counted)} — Kauf-Signal im Shadow-Modus "
+            f"(volatile_altcoin), daher kein Live-Trade."
+        )
+
+    ta = explain_rationale(getattr(analysis, "rationale", "") or "") or "TA->HOLD"
     return (
-        f"{social_txt}, aber die Technik gibt noch kein klares Signal — "
+        f"{' + '.join(counted)}, aber die Technik gibt noch kein klares Signal — "
         f"daher kein Trade. ({ta[:120]})"
     )
 

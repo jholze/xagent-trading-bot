@@ -67,6 +67,8 @@ class SignalOrchestrator:
             ctx["lc"] = {
                 "action": getattr(s, "action", "HOLD"),
                 "confidence": getattr(s, "confidence", 0),
+                "trust_score": getattr(s, "trust_score", 72),
+                "effective_confidence": getattr(s, "effective_confidence", 0),
                 "galaxy_score": getattr(s, "galaxy_score", 0),
                 "alt_rank": getattr(s, "alt_rank", 0),
                 "sentiment": getattr(s, "sentiment", 0),
@@ -205,7 +207,17 @@ class SignalOrchestrator:
             and analysis.normalized_action == "HOLD"
             and social_ctx
         ):
-            hold_why = explain_hold_with_social(analysis, social_ctx)
+            from strategies.positions import count_open_positions
+
+            hold_why = explain_hold_with_social(
+                analysis,
+                social_ctx,
+                blockers={
+                    "open_positions": count_open_positions(),
+                    "max_open_positions": self.config.max_open_positions,
+                    "has_position": has_position,
+                },
+            )
             if hold_why:
                 from telegram_notifier import send_hold_explanation_message
                 send_hold_explanation_message(symbol, hold_why, explained.get("tech_line", ""))

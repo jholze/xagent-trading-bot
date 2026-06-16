@@ -2,6 +2,7 @@ import unittest
 
 from notifications.user_explain import (
     explain_hermes_cycle,
+    explain_hold_with_social,
     explain_rationale,
     explain_risk,
     explain_sell_tier,
@@ -91,6 +92,21 @@ class TestUserExplain(unittest.TestCase):
         }
         msg = explain_hermes_cycle(record)
         self.assertTrue("angepasst" in msg.lower() or "übernommen" in msg.lower())
+
+    def test_explain_hold_ignores_below_threshold_lc(self):
+        analysis = DummyAnalysis(normalized_action="HOLD", rationale="TA->HOLD", sources=[])
+        social_ctx = {"lc": {"action": "BUY", "confidence": 55, "trust_score": 72}}
+        self.assertIsNone(explain_hold_with_social(analysis, social_ctx))
+
+    def test_explain_hold_max_positions(self):
+        analysis = DummyAnalysis(normalized_action="HOLD", rationale="TA->HOLD", sources=["lc"])
+        social_ctx = {"lc": {"action": "BUY", "confidence": 70}}
+        msg = explain_hold_with_social(
+            analysis,
+            social_ctx,
+            blockers={"open_positions": 20, "max_open_positions": 20, "has_position": False},
+        )
+        self.assertIn("Max. offene Positionen", msg)
 
     def test_format_decision_entry(self):
         entry = {
