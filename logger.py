@@ -29,7 +29,10 @@ def log(message, level="INFO"):
     except Exception as e:
         print(f"Fehler beim Schreiben ins Log: {e}")
 
-    print(log_entry)
+    try:
+        print(log_entry)
+    except BrokenPipeError:
+        pass
 
     if _json_logs_enabled():
         log_json({"type": "log", "level": level, "message": message})

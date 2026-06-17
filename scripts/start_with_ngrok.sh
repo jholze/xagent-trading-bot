@@ -47,7 +47,8 @@ wait_for_port_free 5000
 wait_for_port_free 4040
 
 echo "🚀 Starting bot (production)..."
-python3 aria_bot.py &
+mkdir -p logs
+python3 aria_bot.py >> logs/bot_restart.log 2>&1 &
 BOT_PID=$!
 
 echo "⏳ Waiting for bot on :5000..."
