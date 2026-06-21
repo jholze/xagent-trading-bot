@@ -184,12 +184,14 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertEqual(to_execution_action(SELL_PARTIAL_20), "SELL_20")
 
     def test_resolve_coin_config_from_strategies(self):
+        from core.config import get_bot_config
         from strategies.registry import resolve_coin_config
 
         coin = resolve_coin_config({"symbol": "ARIA/USDT", "timeframe": "4h"})
         self.assertEqual(coin.get("timeframe"), "4h")
         self.assertIn("strategy_params", coin)
-        self.assertEqual(coin["strategy_params"].get("rsi_buy_low"), 28)
+        expected = get_bot_config().strategy_params("ARIA/USDT", "4h").get("rsi_buy_low")
+        self.assertEqual(coin["strategy_params"].get("rsi_buy_low"), expected)
 
     def test_decision_engine_evaluate(self):
         from strategies.decision_engine import DecisionEngine

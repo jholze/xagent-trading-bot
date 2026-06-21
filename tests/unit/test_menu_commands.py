@@ -16,7 +16,7 @@ from notifications.telegram_commands.menu_i18n import back_label, set_user_langu
 class TestMenuCommands(unittest.TestCase):
     def test_all_commands_in_sections(self):
         keys = all_menu_command_keys()
-        self.assertEqual(len(keys), 36)
+        self.assertEqual(len(keys), 37)
         self.assertIn("sandbox_results", keys)
         self.assertIn("backtest_lock", keys)
 

@@ -1,5 +1,6 @@
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -65,6 +66,9 @@ class MockLunarCrushProvider(LunarCrushDataProvider):
 
 class LunarCrushApiProvider(LunarCrushDataProvider):
     BASE_URL = "https://lunarcrush.com/api4/public/coins/list/v2"
+    _SNAPSHOT_TIMEOUT = 10
+    _SERIES_TIMEOUT = 12
+    _MAX_FETCH_WORKERS = 8
 
     def __init__(self, api_key: str = None, cache_ttl_sec: int = 900, use_list_endpoint: bool = True):
         self.api_key = api_key or os.getenv("LUNARCRUSH_API_KEY", "")
@@ -75,6 +79,27 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
         self._list_tier_blocked = not use_list_endpoint
         if self._list_tier_blocked:
             _mark_lc_list_tier_blocked()
+
+    def _fetch_coins_parallel(self, bases: set[str]) -> List[RawLCMetrics]:
+        if not bases:
+            return []
+        workers = min(self._MAX_FETCH_WORKERS, len(bases))
+        results: List[RawLCMetrics] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(self._fetch_coin_enriched, base): base
+                for base in sorted(bases)
+            }
+            for future in as_completed(futures):
+                try:
+                    single = future.result()
+                except Exception as e:
+                    base = futures[future]
+                    log(f"LunarCrush parallel fetch {base}: {e}", "DEBUG")
+                    continue
+                if single:
+                    results.append(single)
+        return results
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
@@ -129,20 +154,13 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
                 sym = str(row.get("symbol", "")).upper()
                 if sym and sym not in by_symbol:
                     by_symbol[sym] = row
-            missing = [b for b in bases if b not in by_symbol]
-            for base in sorted(bases - set(missing)):
+            missing = {b for b in bases if b not in by_symbol}
+            for base in sorted(bases - missing):
                 results.append(self._row_to_metrics(by_symbol[base], now))
-            for base in missing:
-                single = self._fetch_coin_enriched(base)
-                if single:
-                    results.append(single)
+            results.extend(self._fetch_coins_parallel(missing))
             return results
 
-        for base in sorted(bases):
-            single = self._fetch_coin_enriched(base)
-            if single:
-                results.append(single)
-        return results
+        return self._fetch_coins_parallel(bases)
 
     def _row_to_metrics(self, row: dict, fetched_at: str) -> RawLCMetrics:
         return RawLCMetrics(
@@ -163,7 +181,7 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
             return None
         try:
             url = f"https://lunarcrush.com/api4/public/coins/{symbol.lower()}/v1"
-            resp = requests.get(url, headers=self._headers(), timeout=15)
+            resp = requests.get(url, headers=self._headers(), timeout=self._SNAPSHOT_TIMEOUT)
             if resp.status_code != 200:
                 return None
             return resp.json().get("data") or {}
@@ -176,7 +194,7 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
             return []
         try:
             url = f"https://lunarcrush.com/api4/public/coins/{symbol.lower()}/time-series/v2"
-            resp = requests.get(url, headers=self._headers(), timeout=20)
+            resp = requests.get(url, headers=self._headers(), timeout=self._SERIES_TIMEOUT)
             if resp.status_code != 200:
                 return []
             return resp.json().get("data") or []

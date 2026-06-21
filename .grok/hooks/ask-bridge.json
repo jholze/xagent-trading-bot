@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .cursor/hooks/ask_bridge_stop.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

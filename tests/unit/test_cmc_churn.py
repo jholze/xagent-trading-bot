@@ -50,7 +50,7 @@ class TestCMCChurn(unittest.TestCase):
 
     def test_social_sell_min_notional_block(self):
         risk = RiskManager()
-        order = TradeOrder(type="SELL", symbol="STG/USDT", price=1.0, amount=3.0)
+        order = TradeOrder(type="SELL", symbol="STG/USDT", price=1.0, amount=3.0, signal="SELL_PARTIAL_20")
         pos_patch = patch(
             "risk.risk_manager.get_position",
             return_value={"amount": 100.0, "average_entry": 1.0, "sold_percent": 0},
@@ -59,6 +59,54 @@ class TestCMCChurn(unittest.TestCase):
             blocked, reason = risk._social_sell_blocked(order, "4h", source="cmc")
         self.assertTrue(blocked)
         self.assertIn("notional", reason.lower())
+
+    def test_auto_partial_sell_min_notional_block(self):
+        risk = RiskManager()
+        order = TradeOrder(type="SELL", symbol="STG/USDT", price=1.0, amount=8.0, signal="SELL_PARTIAL_30")
+        pos_patch = patch(
+            "risk.risk_manager.get_position",
+            return_value={"amount": 40.0, "average_entry": 1.0, "sold_percent": 0.5},
+        )
+        with pos_patch:
+            blocked, reason = risk._partial_sell_blocked(order, "4h", source="auto")
+        self.assertTrue(blocked)
+        self.assertIn("notional", reason.lower())
+
+    def test_dust_sweep_upgrades_partial_to_full(self):
+        risk = RiskManager()
+        order = TradeOrder(
+            type="SELL",
+            symbol="HIGH/USDT",
+            price=0.05,
+            amount=60.0,
+            signal="SELL_PARTIAL_20",
+        )
+        pos_patch = patch(
+            "risk.risk_manager.get_position",
+            return_value={"amount": 100.0, "average_entry": 0.05, "sold_percent": 0.97},
+        )
+        with pos_patch:
+            resolved = risk._resolve_sell_order(order, "4h", source="auto")
+        self.assertEqual(resolved.signal, "SELL_FULL")
+        self.assertEqual(resolved.amount, 100.0)
+
+    def test_partial_sell_blocked_after_max_sold_percent(self):
+        risk = RiskManager()
+        order = TradeOrder(
+            type="SELL",
+            symbol="TRX/USDT",
+            price=1.0,
+            amount=50.0,
+            signal="SELL_PARTIAL_20",
+        )
+        pos_patch = patch(
+            "risk.risk_manager.get_position",
+            return_value={"amount": 200.0, "average_entry": 1.0, "sold_percent": 0.80},
+        )
+        with pos_patch:
+            blocked, reason = risk._partial_sell_blocked(order, "4h", source="cmc")
+        self.assertTrue(blocked)
+        self.assertIn("already sold", reason.lower())
 
     def test_refresh_cmc_signals_uses_ttl(self):
         from services.social_pipeline import SocialPipeline

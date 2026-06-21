@@ -105,6 +105,32 @@ WEBHOOK_RESULT=$(curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/set
   -d 'allowed_updates=["message","callback_query"]')
 echo "$WEBHOOK_RESULT" | python3 -m json.tool
 
+WEBHOOK_OK=$(echo "$WEBHOOK_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))")
+if [[ "$WEBHOOK_OK" != "True" ]]; then
+  echo "❌ setWebhook failed"
+  exit 1
+fi
+
+sleep 2
+WEBHOOK_INFO=$(curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")
+LAST_ERR=$(echo "$WEBHOOK_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'].get('last_error_message') or '')")
+REGISTERED_URL=$(echo "$WEBHOOK_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'].get('url') or '')")
+
+if [[ "${REGISTERED_URL%/}" != "${PUBLIC_URL%/}" ]]; then
+  echo "❌ Webhook URL mismatch: $REGISTERED_URL"
+  exit 1
+fi
+
+if [[ -n "$LAST_ERR" ]]; then
+  echo "⚠️  Telegram reports webhook error: $LAST_ERR"
+  echo "   Retrying webhook registration in 5s..."
+  sleep 5
+  curl -sf "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+    -d "url=${WEBHOOK_URL}" \
+    -d "drop_pending_updates=true" \
+    -d 'allowed_updates=["message","callback_query"]' >/dev/null
+fi
+
 echo "📋 Registering Telegram command menu..."
 python3 -c "
 from dotenv import load_dotenv

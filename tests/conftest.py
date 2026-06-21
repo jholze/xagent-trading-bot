@@ -17,6 +17,13 @@ def demo_mode_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def telegram_credentials(monkeypatch):
+    """Keep Telegram send paths testable after other tests clear env vars."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+
+@pytest.fixture(autouse=True)
 def isolate_bot_logs(tmp_path, monkeypatch):
     """Keep test runs from appending to logs/aria_log.txt while the bot is live."""
     log_dir = tmp_path / "logs"

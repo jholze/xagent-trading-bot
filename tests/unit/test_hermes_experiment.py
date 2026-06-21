@@ -37,8 +37,10 @@ def test_experiment_mutates_single_variable(isolated_memory):
 def test_memory_baseline_init(isolated_memory):
     from core.config import get_bot_config
 
-    baseline = store.init_baseline_from_config(get_bot_config())
-    assert baseline["params"]["rsi_buy_low"] == 28
+    cfg = get_bot_config()
+    baseline = store.init_baseline_from_config(cfg)
+    expected = cfg.strategy_params("ARIA/USDT", "4h").get("rsi_buy_low")
+    assert baseline["params"]["rsi_buy_low"] == expected
     assert (isolated_memory / "baseline.demo.json").exists() or baseline["params"]
 
 

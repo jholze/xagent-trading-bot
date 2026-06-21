@@ -16,6 +16,20 @@ from services.portfolio_service import PortfolioService
 from strategies.positions import count_open_positions, get_position, list_active_positions
 
 
+def _is_emergency_sell(signal: str) -> bool:
+    signal = signal or ""
+    return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal
+
+
+def _is_partial_sell(signal: str) -> bool:
+    signal = signal or ""
+    if _is_emergency_sell(signal):
+        return False
+    if "FULL" in signal:
+        return False
+    return "PARTIAL" in signal or signal in ("SELL", "SELL_10", "SELL_20", "SELL_30", "SELL_TP")
+
+
 class RiskManager:
     """Central gate for trade sizing and portfolio limits."""
 
@@ -42,11 +56,12 @@ class RiskManager:
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
+            order = self._resolve_sell_order(order, timeframe, source)
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
-            social_block, social_reason = self._social_sell_blocked(order, timeframe, source)
-            if social_block:
-                return RiskDecision(approved=False, message=social_reason, code="social_sell_guard")
+            partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
+            if partial_block:
+                return RiskDecision(approved=False, message=partial_reason, code="partial_sell_guard")
             max_daily_sells = self._effective_max_daily_sells()
             daily_sells = self._daily_sells_count()
             if max_daily_sells > 0 and daily_sells >= max_daily_sells:
@@ -334,50 +349,112 @@ class RiskManager:
             "total_multiplier": round(total, 3),
         }
 
-    def _social_sell_limits(self, symbol: str, timeframe: str) -> dict:
+    def _partial_sell_limits(self, symbol: str, timeframe: str) -> dict:
         params = self.config.strategy_params(symbol, timeframe)
         cmc_cfg = self.config.cmc_config
+        risk_cfg = self.config.risk_config
         return {
             "min_position_usdt": float(
-                params.get("min_position_usdt_for_social_sell")
-                or cmc_cfg.get("min_position_usdt_for_social_sell", 50)
+                params.get("min_position_usdt_for_partial_sell")
+                or params.get("min_position_usdt_for_social_sell")
+                or risk_cfg.get("min_position_usdt_for_partial_sell")
+                or cmc_cfg.get("min_position_usdt_for_social_sell", 25)
             ),
             "min_notional_usdt": float(
                 params.get("min_sell_notional_usdt")
-                or cmc_cfg.get("min_sell_notional_usdt", 5)
+                or risk_cfg.get("min_sell_notional_usdt")
+                or cmc_cfg.get("min_sell_notional_usdt", 15)
             ),
             "max_sold_percent": float(
-                params.get("block_social_sell_if_sold_percent_above")
-                or cmc_cfg.get("block_social_sell_if_sold_percent_above", 0.8)
+                params.get("block_partial_sell_if_sold_percent_above")
+                or params.get("block_social_sell_if_sold_percent_above")
+                or risk_cfg.get("block_partial_sell_if_sold_percent_above")
+                or cmc_cfg.get("block_social_sell_if_sold_percent_above", 0.75)
+            ),
+            "dust_sweep_max_position_usdt": float(
+                risk_cfg.get("dust_sweep_max_position_usdt", 15)
+            ),
+            "dust_sweep_sold_percent_min": float(
+                risk_cfg.get("dust_sweep_sold_percent_min", 0.70)
+            ),
+            "dust_sweep_min_remainder_usdt": float(
+                risk_cfg.get("dust_sweep_min_remainder_usdt", 10)
             ),
         }
 
-    def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
-        if source not in ("cmc", "x"):
+    def _resolve_sell_order(self, order: TradeOrder, timeframe: str, source: str) -> TradeOrder:
+        """Upgrade partial sells to full close when the lot is dust or nearly exited."""
+        if source == "manual" or _is_emergency_sell(order.signal):
+            return order
+        if not _is_partial_sell(order.signal) or order.price <= 0:
+            return order
+
+        pos = get_position(order.symbol, timeframe)
+        amount = float(pos.get("amount", 0))
+        if amount <= 0:
+            return order
+
+        pos_value = amount * order.price
+        sold_pct = float(pos.get("sold_percent", 0))
+        limits = self._partial_sell_limits(order.symbol, timeframe)
+        notional = float(order.amount) * order.price
+        remainder = pos_value - notional
+
+        sweep = (
+            pos_value <= limits["dust_sweep_max_position_usdt"]
+            or (
+                sold_pct >= limits["dust_sweep_sold_percent_min"]
+                and pos_value <= limits["min_position_usdt"]
+            )
+            or (0 < remainder < limits["dust_sweep_min_remainder_usdt"])
+        )
+        if not sweep:
+            return order
+
+        return TradeOrder(
+            type=order.type,
+            symbol=order.symbol,
+            price=order.price,
+            amount=amount,
+            signal="SELL_FULL",
+            source=order.source,
+            order_id=order.order_id,
+            timestamp=order.timestamp,
+        )
+
+    def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
+        if source == "manual" or _is_emergency_sell(order.signal):
             return False, ""
-        if order.price <= 0:
+        if not _is_partial_sell(order.signal) or order.price <= 0:
             return False, ""
-        limits = self._social_sell_limits(order.symbol, timeframe)
+
+        limits = self._partial_sell_limits(order.symbol, timeframe)
         pos = get_position(order.symbol, timeframe)
         pos_value = float(pos.get("amount", 0)) * order.price
+        notional = float(order.amount) * order.price
+        sold_pct = float(pos.get("sold_percent", 0))
+
         if pos_value < limits["min_position_usdt"]:
             return True, (
-                f"Social sell blocked: position ${pos_value:.2f} "
-                f"below minimum ${limits['min_position_usdt']:.0f}"
+                f"Partial sell blocked: position ${pos_value:.2f} "
+                f"below minimum ${limits['min_position_usdt']:.0f} "
+                f"(use full close or manual sell)"
             )
-        notional = float(order.amount) * order.price
         if notional < limits["min_notional_usdt"]:
             return True, (
-                f"Social sell blocked: notional ${notional:.2f} "
+                f"Partial sell blocked: notional ${notional:.2f} "
                 f"below minimum ${limits['min_notional_usdt']:.0f}"
             )
-        sold_pct = float(pos.get("sold_percent", 0))
         if sold_pct >= limits["max_sold_percent"]:
             return True, (
-                f"Social sell blocked: already sold {sold_pct * 100:.0f}% of position "
+                f"Partial sell blocked: already sold {sold_pct * 100:.0f}% of position "
                 f"(max {limits['max_sold_percent'] * 100:.0f}%)"
             )
         return False, ""
+
+    def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
+        """Backward-compatible alias for tests and callers."""
+        return self._partial_sell_blocked(order, timeframe, source)
 
     def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
         if source == "manual":

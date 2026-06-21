@@ -62,6 +62,7 @@
           "keys": [
             "decisions",
             "why",
+            "ask",
             "hermes",
             "hermes_last",
             "hermes_run",
@@ -190,6 +191,11 @@
       "why": {
         "description": "Warum? — Erklärung für einen Coin",
         "help_line": "<code>/why SYMBOL</code> — Letzte Entscheidung für einen Coin erklären"
+      },
+      "ask": {
+        "description": "Frage an Cursor-Assistent",
+        "help_line": "<code>/ask FRAGE</code> — Frage an den Bot-Assistenten (Cursor oder Grok-Fallback)",
+        "hint": "💬 <b>/ask</b> — Frage an den Assistenten\n\n<code>/ask Warum wurde NEAR gekauft?</code>\n\nCursor wird sofort benachrichtigt — Antwort in Sekunden, sonst Grok-Fallback (~2 Min)."
       },
       "hermes": {
         "description": "Hermes Lern-Agent Status",
@@ -342,6 +348,7 @@
           "keys": [
             "decisions",
             "why",
+            "ask",
             "hermes",
             "hermes_last",
             "hermes_run",
@@ -470,6 +477,11 @@
       "why": {
         "description": "Why? — explanation for a coin",
         "help_line": "<code>/why SYMBOL</code> — Explain last decision for a coin"
+      },
+      "ask": {
+        "description": "Question for Cursor assistant",
+        "help_line": "<code>/ask QUESTION</code> — Ask the bot assistant (Cursor or Grok fallback)",
+        "hint": "💬 <b>/ask</b> — Question for the assistant\n\n<code>/ask Why was NEAR bought?</code>\n\nCursor is notified instantly — reply in seconds, else Grok fallback (~2 min)."
       },
       "hermes": {
         "description": "Hermes learning agent status",

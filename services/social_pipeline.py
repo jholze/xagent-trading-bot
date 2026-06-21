@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from queue import Queue
 
@@ -85,6 +86,17 @@ class SocialPipeline:
             p.get("post_id") == post_id
             for p in load_x_posts().get("posts", [])
         )
+
+    def run_cycle_fetches(self, watchlist: list) -> dict:
+        """Fetch X, CMC, and LunarCrush in parallel, then update accuracy."""
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_x = pool.submit(self.process_new_posts)
+            f_cmc = pool.submit(self.process_cmc_posts, watchlist)
+            f_lc = pool.submit(self.process_lc_signals, watchlist)
+            f_x.result()
+            f_cmc.result()
+            f_lc.result()
+        return self.update_accuracy_loop()
 
     def process_new_posts(self) -> list:
         accounts = self.analyzer.accounts

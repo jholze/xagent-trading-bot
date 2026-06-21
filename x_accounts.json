@@ -1,39 +1,51 @@
 [
   {
     "handle": "CryptoCapo_",
-    "trust_score": 88,
+    "trust_score": 40.1,
     "enabled": true,
-    "notes": "Strong macro calls"
+    "notes": "Strong macro calls",
+    "accuracy_samples": 5,
+    "hit_rate": 0.4
   },
   {
     "handle": "Pentosh1",
-    "trust_score": 82,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Altcoin TA, levels & swing trades"
+    "notes": "Altcoin TA, levels & swing trades",
+    "accuracy_samples": 15,
+    "hit_rate": 0.267
   },
   {
     "handle": "CryptoWizardd",
-    "trust_score": 79,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Technical analysis focused"
+    "notes": "Technical analysis focused",
+    "accuracy_samples": 11,
+    "hit_rate": 0.273
   },
   {
     "handle": "RektCapital",
-    "trust_score": 78,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "TA education — RSI, support/resistance, BTC cycles"
+    "notes": "TA education — RSI, support/resistance, BTC cycles",
+    "accuracy_samples": 7,
+    "hit_rate": 0.143
   },
   {
     "handle": "DaanCrypto",
-    "trust_score": 77,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Full-time chart trader, setups & levels"
+    "notes": "Full-time chart trader, setups & levels",
+    "accuracy_samples": 6,
+    "hit_rate": 0.167
   },
   {
     "handle": "CryptoCred",
-    "trust_score": 76,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Trader/educator — rules, risk, chart concepts"
+    "notes": "Trader/educator — rules, risk, chart concepts",
+    "accuracy_samples": 5,
+    "hit_rate": 0.0
   },
   {
     "handle": "CryptoDonAlt",
@@ -43,9 +55,11 @@
   },
   {
     "handle": "TechDev_52",
-    "trust_score": 74,
+    "trust_score": 99,
     "enabled": true,
-    "notes": "BTC & crypto cycle analysis"
+    "notes": "BTC & crypto cycle analysis",
+    "accuracy_samples": 5,
+    "hit_rate": 1.0
   },
   {
     "handle": "income_sharks",
@@ -67,20 +81,26 @@
   },
   {
     "handle": "CarpeNoctom",
-    "trust_score": 72,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Trader/analyst — macro + positioning"
+    "notes": "Trader/analyst — macro + positioning",
+    "accuracy_samples": 11,
+    "hit_rate": 0.273
   },
   {
     "handle": "MacroCRG",
-    "trust_score": 70,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Added via Telegram"
+    "notes": "Added via Telegram",
+    "accuracy_samples": 21,
+    "hit_rate": 0.286
   },
   {
     "handle": "level941",
-    "trust_score": 70,
+    "trust_score": 30,
     "enabled": true,
-    "notes": "Added via Telegram"
+    "notes": "Added via Telegram",
+    "accuracy_samples": 5,
+    "hit_rate": 0.2
   }
 ]

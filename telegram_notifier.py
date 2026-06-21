@@ -7,8 +7,12 @@ from data_manager import is_demo_mode
 from strategies.positions import get_position
 from logger import log
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+def _bot_token() -> str | None:
+    return os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def _chat_id() -> str | None:
+    return os.getenv("TELEGRAM_CHAT_ID")
 
 search_results = {}
 
@@ -310,18 +314,20 @@ def send_cycle_summary(text: str):
 
 
 def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> bool:
-    if not BOT_TOKEN or not CHAT_ID:
+    bot_token = _bot_token()
+    chat_id = _chat_id()
+    if not bot_token or not chat_id:
         print("⚠️ Telegram not configured")
         return False
 
     if is_demo_mode():
         caption = "🧪 [DEMO] " + caption
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
     try:
         with open(photo_path, "rb") as photo_file:
             payload = {
-                "chat_id": CHAT_ID,
+                "chat_id": chat_id,
                 "caption": caption[:1024],
                 "parse_mode": "HTML",
             }
@@ -336,16 +342,20 @@ def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> boo
         return False
 
 
-def send_telegram_message(text, reply_markup=None):
-    if not BOT_TOKEN or not CHAT_ID:
+def send_telegram_message(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    bot_token = _bot_token()
+    target_chat = str(chat_id or _chat_id() or "").strip()
+    if not bot_token or not target_chat:
         print("⚠️ Telegram not configured")
         return False
 
     if is_demo_mode():
         text = "🧪 [DEMO] " + text
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": target_chat, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
 
@@ -372,7 +382,7 @@ def send_telegram_buttons(text, buttons):
 
 def send_reply_keyboard(text, rows: list[list[str]], *, one_time: bool = False) -> bool:
     """Persistent section keyboard below the input field (rows of button labels)."""
-    if not BOT_TOKEN or not CHAT_ID:
+    if not _bot_token() or not _chat_id():
         print("⚠️ Telegram not configured")
         return False
 
@@ -387,13 +397,14 @@ def send_reply_keyboard(text, rows: list[list[str]], *, one_time: bool = False) 
 
 
 def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
-    if not BOT_TOKEN or not chat_id or not message_id:
+    bot_token = _bot_token()
+    if not bot_token or not chat_id or not message_id:
         return False
 
     if is_demo_mode():
         text = "🧪 [DEMO] " + text
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -412,9 +423,10 @@ def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
 
 
 def answer_callback_query(callback_id, text=None):
-    if not BOT_TOKEN:
+    bot_token = _bot_token()
+    if not bot_token:
         return False
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
     payload = {"callback_query_id": callback_id}
     if text:
         payload["text"] = text

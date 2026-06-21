@@ -40,7 +40,7 @@ try:
         load_effective_watchlist,
     )
     from notifications.terminal_dashboard import build_cycle_summary, render_cycle_dashboard
-    from price_fetcher import get_prices
+    from price_fetcher import get_prices, get_prices_batch
     from intelligence.trend_engine import TrendEngine
     from services.signal_orchestrator import SignalOrchestrator
     from services.social_pipeline import SocialPipeline
@@ -109,6 +109,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
     while True:
         try:
+            cycle_started = time.time()
             bot_config.refresh()
             use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
 
@@ -140,10 +141,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print("Prüfe Coins + X-Signale:\n")
 
             if social_pipeline:
-                social_pipeline.process_new_posts()
-                social_pipeline.process_cmc_posts(watchlist)
-                social_pipeline.process_lc_signals(watchlist)
-                accuracy = social_pipeline.update_accuracy_loop()
+                accuracy = social_pipeline.run_cycle_fetches(watchlist)
                 if not use_dashboard and (accuracy["outcomes_updated"] or accuracy["trust_updates"]):
                     print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
 
@@ -205,15 +203,15 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                             f"AltRank: {signal.alt_rank} | Sentiment: {signal.sentiment:.0f}%"
                         )
 
-            for coin in watchlist:
-                if not coin.get("active", True):
-                    continue
+            active_coins = [coin for coin in watchlist if coin.get("active", True)]
+            price_map = get_prices_batch([coin["symbol"] for coin in active_coins])
+
+            for coin in active_coins:
                 symbol = coin["symbol"]
                 if not use_dashboard:
                     print(f"→ {symbol}")
 
-                dex_price, cg_price, diff = get_prices(symbol)
-                price = dex_price if dex_price is not None else 0.0
+                price = float(price_map.get(symbol, 0) or 0)
                 if orchestrator:
                     result = orchestrator.process_coin(
                         coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
@@ -226,6 +224,9 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                     print()
 
             interval = get_config().get("update_interval", 600)
+            cycle_elapsed = int(time.time() - cycle_started)
+            if cycle_elapsed > 30:
+                log(f"Cycle completed in {cycle_elapsed}s ({len(active_coins)} coins)", "INFO")
 
             if use_dashboard:
                 render_cycle_dashboard(
@@ -287,7 +288,11 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             except Exception as e:
                 log(f"Strategy backtest tick failed: {e}", "WARNING")
 
-            for remaining in range(interval, 0, -1):
+            sleep_seconds = max(0, interval - cycle_elapsed)
+            if sleep_seconds == 0 and cycle_elapsed >= interval:
+                log(f"Cycle took {cycle_elapsed}s (>= interval {interval}s) — starting next immediately", "WARNING")
+
+            for remaining in range(sleep_seconds, 0, -1):
                 if not use_dashboard:
                     print(f"\r   Nächste Aktualisierung in {remaining:3d} Sekunden...", end="", flush=True)
                 time.sleep(1)
@@ -325,6 +330,20 @@ if __name__ == "__main__":
         daemon=True,
     )
     price_thread.start()
+
+    try:
+        from services.webhook_watchdog import start_webhook_watchdog
+
+        start_webhook_watchdog()
+    except Exception as e:
+        log(f"Webhook watchdog not started: {e}", "WARNING")
+
+    try:
+        from services.telegram_ask_bridge import start_ask_bridge_poller
+
+        start_ask_bridge_poller()
+    except Exception as e:
+        log(f"Ask bridge poller not started: {e}", "WARNING")
 
     bot_config = get_bot_config()
     if bot_config.hermes_enabled:
