@@ -538,7 +538,7 @@ class TestVirtualTrading(unittest.TestCase):
             mock_send.assert_called()
             msg = mock_send.call_args[0][0]
             self.assertIn("Coins kaufen", msg)
-            self.assertIn("/buy NUMMER USDT", msg)
+            self.assertIn("Danach nur noch", msg)
 
     def test_demo_mode_prefixes_telegram_messages(self):
         """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""

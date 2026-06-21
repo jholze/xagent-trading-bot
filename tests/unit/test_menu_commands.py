@@ -10,13 +10,14 @@ from notifications.telegram_commands.menu_commands import (
     handle_callback,
     handle_text,
 )
-from notifications.telegram_commands.menu_i18n import back_label, set_user_language
+from notifications.telegram_commands.menu_i18n import back_label, help_label, set_user_language
 
 
 class TestMenuCommands(unittest.TestCase):
     def test_all_commands_in_sections(self):
         keys = all_menu_command_keys()
-        self.assertEqual(len(keys), 37)
+        self.assertEqual(len(keys), 38)
+        self.assertIn("lc", keys)
         self.assertIn("sandbox_results", keys)
         self.assertIn("backtest_lock", keys)
 
@@ -32,6 +33,7 @@ class TestMenuCommands(unittest.TestCase):
         flat = [cell for row in rows for cell in row]
         self.assertIn("/buy", flat)
         self.assertIn(back_label("de"), flat)
+        self.assertIn(help_label("de"), flat)
 
     def test_handle_menu_command(self):
         with patch("notifications.telegram_commands.menu_commands.send_main_section_keyboard", return_value=True), \
@@ -45,7 +47,7 @@ class TestMenuCommands(unittest.TestCase):
         title = section_title("watchlist", "de")
         with patch("notifications.telegram_commands.menu_commands.send_section_keyboard", return_value=True) as mock_sec:
             self.assertTrue(handle_text(title))
-            mock_sec.assert_called_once_with("watchlist")
+            mock_sec.assert_called_once_with("watchlist", chat_id=None)
 
     def test_handle_text_back_returns_main(self):
         with patch("notifications.telegram_commands.menu_commands.send_main_section_keyboard", return_value=True) as mock_main:

@@ -87,7 +87,8 @@ class TestPositionDisplay(unittest.TestCase):
     def test_sell_list_includes_command_hint(self):
         active = [{"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0}]
         msg = format_sell_list_message(active, {"ARIA/USDT": 0.05})
-        self.assertIn("/sell NUMMER PROZENT", msg)
+        self.assertIn("1 30", msg)
+        self.assertIn("Danach nur noch", msg)
         self.assertIn("1.", msg)
 
     def test_positions_sorted_by_value(self):

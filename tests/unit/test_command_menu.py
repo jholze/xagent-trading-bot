@@ -15,8 +15,8 @@ class TestCommandMenu(unittest.TestCase):
     def test_menu_has_all_section_commands(self):
         expected = [k for _, keys in MENU_SECTIONS for k in keys]
         self.assertEqual(TELEGRAM_MENU_COMMAND_KEYS, expected)
-        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 37)
-        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 37)
+        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 38)
+        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 38)
 
     def test_all_commands_have_menu_description(self):
         _ensure_usage_cache()
@@ -27,7 +27,7 @@ class TestCommandMenu(unittest.TestCase):
     def test_all_bot_commands_have_section_prefix(self):
         for lang in ("de", "en"):
             commands = all_bot_commands(lang)
-            self.assertEqual(len(commands), 37)
+            self.assertEqual(len(commands), 38)
             for entry in commands:
                 self.assertIn("·", entry["description"])
                 self.assertLessEqual(len(entry["description"]), 256)

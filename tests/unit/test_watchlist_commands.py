@@ -32,7 +32,7 @@ class TestWatchlistCommands(unittest.TestCase):
         prices = {"ARIA/USDT": 0.05, "SOL/USDT": 145.0}
         msg = format_buy_list_message(coins, prices)
         self.assertIn("Coins kaufen", msg)
-        self.assertIn("/buy NUMMER USDT", msg)
+        self.assertIn("Danach nur noch", msg)
         self.assertLess(msg.index("ARIA"), msg.index("SOL"))
         picked = resolve_coin_by_display_index(coins, 1)
         self.assertEqual(picked["symbol"], "SOL/USDT")

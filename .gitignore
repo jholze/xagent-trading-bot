@@ -68,6 +68,7 @@ data/telegram_ask_queue.json
 data/telegram_ask_pending.json
 data/telegram_ask_notify.jsonl
 data/telegram_ask_agent_inbox.json
+data/telegram_command_context.json
 ngrok.log
 
 # Hermes runtime memory (local learning state)

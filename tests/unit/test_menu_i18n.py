@@ -3,9 +3,12 @@ import unittest
 from notifications.telegram_commands.menu_i18n import (
     back_label,
     build_help_message,
+    build_section_help_message,
     command_hint,
     command_description,
+    help_label,
     is_back_label,
+    is_help_label,
     menu_button_label,
     prefixed_command_description,
     resolve_language,
@@ -65,6 +68,18 @@ class TestMenuI18n(unittest.TestCase):
     def test_menu_button_label(self):
         self.assertEqual(menu_button_label("de"), "Menü")
         self.assertEqual(menu_button_label("en"), "Menu")
+
+    def test_section_help_message(self):
+        de = build_section_help_message("transparenz", "de")
+        en = build_section_help_message("transparenz", "en")
+        self.assertIn("/lc", de)
+        self.assertIn("LunarCrush", de)
+        self.assertIn("/lc", en)
+        self.assertIn("LunarCrush", en)
+
+    def test_help_label(self):
+        self.assertTrue(is_help_label(help_label("de")))
+        self.assertTrue(is_help_label(help_label("en")))
 
 
 if __name__ == "__main__":

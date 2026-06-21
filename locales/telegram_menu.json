@@ -4,6 +4,8 @@
     "unknown_hint": "❓ Unbekannter Befehl. Sende <code>/help</code> für die komplette Liste mit Beispielen.",
     "callback_unknown_command": "Unbekannter Befehl",
     "back": "◀ Bereiche",
+    "help_label": "❓ Hilfe",
+    "short_input_invalid": "❌ Ungültige Eingabe für <code>/{cmd}</code>. Tippe <i>❓ Hilfe</i> in diesem Bereich.",
     "home_intro": "<b>🗂️ Bereiche</b>\n\nWähle unten einen Bereich — darunter erscheinen alle Befehle dieses Bereichs.\n<i>Im Menü-Button (☰) sind dieselben Befehle nach Bereich sortiert.</i>",
     "home_inline": "<b>🗂️ Bot-Menü</b>\n\nWähle einen <b>Bereich</b> — alle Befehle sind nach Kategorien sortiert.\n<i>Unten: Bereichs-Tastatur · Menü-Button (☰): komplette Liste mit Bereichs-Prefix.</i>",
     "section_pick": "Tippe einen Befehl:",
@@ -66,7 +68,8 @@
             "hermes",
             "hermes_last",
             "hermes_run",
-            "cmc"
+            "cmc",
+            "lc"
           ]
         },
         {
@@ -141,12 +144,14 @@
       "buy": {
         "description": "Coin kaufen",
         "help_line": "<code>/buy NUMMER USDT</code> — Kaufen (Nummer aus <code>/buy</code> oder <code>/list</code>, z.B. <code>/buy 1 25</code>)",
-        "hint": "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\nZuerst <code>/buy</code> ohne Parameter → nummerierte Coin-Liste (gleich wie <code>/list</code>).\nDann: <code>/buy NUMMER USDT</code> — Risk Manager zeigt Vorschau, Bestätigung per Button.\nBeispiele:\n• <code>/buy 1 25</code> — Coin Nr. 1, 25 $\n• <code>/buy ARIA 200</code> — 200 $ in ARIA investieren"
+        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer + USDT)\n<i>Ohne USDT: Standard ${default_usdt}</i>",
+        "hint": "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\nZuerst <code>/buy</code> → nummerierte Liste.\nDann nur noch Nummer + USDT senden, z.B. <code>1 25</code>.\nRisk Manager zeigt Vorschau, Bestätigung per Button."
       },
       "sell": {
         "description": "Position verkaufen",
         "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
-        "hint": "❌ <b>/sell</b> — Anteil einer Position verkaufen\n\nNummern sind in <code>/positions</code> und <code>/sell</code> gleich (nach Wert sortiert).\nDann: <code>/sell NUMMER PROZENT</code> — Vorschau mit Bestätigen/Abbrechen.\nBeispiel: <code>/sell 1 30</code> — 30 % von Position 1 verkaufen"
+        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer + Prozent)",
+        "hint": "❌ <b>/sell</b> — Position verkaufen\n\nZuerst <code>/sell</code> → Positionsliste.\nDann nur noch Nummer + Prozent, z.B. <code>1 30</code>."
       },
       "orders": {
         "description": "Auftragshistorie",
@@ -209,6 +214,10 @@
       "cmc": {
         "description": "CMC Community-Sentiment",
         "help_line": "<code>/cmc</code> — CoinMarketCap Community-Stimmung (Sentiment-Signale)"
+      },
+      "lc": {
+        "description": "LunarCrush Social-Signale",
+        "help_line": "<code>/lc</code> — LunarCrush Galaxy, Sentiment, BUY/SELL (Sentiment-Schwelle ~55)"
       },
       "addx": {
         "description": "X-Account hinzufügen",
@@ -290,6 +299,8 @@
     "unknown_hint": "❓ Unknown command. Send <code>/help</code> for the full list with examples.",
     "callback_unknown_command": "Unknown command",
     "back": "◀ Sections",
+    "help_label": "❓ Help",
+    "short_input_invalid": "❌ Invalid input for <code>/{cmd}</code>. Tap <i>❓ Help</i> in this section.",
     "home_intro": "<b>🗂️ Sections</b>\n\nPick a section below — its commands appear as buttons.\n<i>Menu button (☰): full list sorted by section prefix.</i>",
     "home_inline": "<b>🗂️ Bot menu</b>\n\nPick a <b>section</b> — commands are grouped by category.\n<i>Keyboard below · Menu button (☰): full list with section prefix.</i>",
     "section_pick": "Tap a command:",
@@ -352,7 +363,8 @@
             "hermes",
             "hermes_last",
             "hermes_run",
-            "cmc"
+            "cmc",
+            "lc"
           ]
         },
         {
@@ -427,12 +439,14 @@
       "buy": {
         "description": "Buy coin",
         "help_line": "<code>/buy NUMBER USDT</code> — Buy (number from <code>/buy</code> or <code>/list</code>, e.g. <code>/buy 1 25</code>)",
-        "hint": "❌ <b>/buy</b> — Buy coin (paper or live)\n\nFirst send <code>/buy</code> without args → numbered coin list (same as <code>/list</code>).\nThen: <code>/buy NUMBER USDT</code> — Risk manager shows preview, confirm via button.\nExamples:\n• <code>/buy 1 25</code> — Coin #1, $25\n• <code>/buy ARIA 200</code> — invest $200 in ARIA"
+        "context_footer": "Then send only: <code>{example}</code> (number + USDT)\n<i>Without USDT: default ${default_usdt}</i>",
+        "hint": "❌ <b>/buy</b> — Buy coin (paper or live)\n\nFirst <code>/buy</code> → numbered list.\nThen send number + USDT only, e.g. <code>1 25</code>.\nRisk manager preview with confirm button."
       },
       "sell": {
         "description": "Sell position",
         "help_line": "<code>/sell NUMBER PERCENT</code> — Sell (number from <code>/positions</code> or <code>/sell</code>, e.g. <code>/sell 1 30</code>)",
-        "hint": "❌ <b>/sell</b> — Sell part of a position\n\nNumbers match <code>/positions</code> and <code>/sell</code> (sorted by value).\nThen: <code>/sell NUMBER PERCENT</code> — preview with confirm/cancel.\nExample: <code>/sell 1 30</code> — sell 30% of position 1"
+        "context_footer": "Then send only: <code>{example}</code> (number + percent)",
+        "hint": "❌ <b>/sell</b> — Sell position\n\nFirst <code>/sell</code> → position list.\nThen number + percent only, e.g. <code>1 30</code>."
       },
       "orders": {
         "description": "Order history",
@@ -495,6 +509,10 @@
       "cmc": {
         "description": "CMC community sentiment",
         "help_line": "<code>/cmc</code> — CoinMarketCap community sentiment"
+      },
+      "lc": {
+        "description": "LunarCrush social signals",
+        "help_line": "<code>/lc</code> — LunarCrush Galaxy, sentiment, BUY/SELL (sentiment threshold ~55)"
       },
       "addx": {
         "description": "Add X account",

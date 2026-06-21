@@ -9,6 +9,7 @@ from data_manager import (
 )
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
+from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 
@@ -51,9 +52,13 @@ def format_buy_list_message(coins: list, prices: dict) -> str:
         price = float(prices.get(sym, 0) or 0)
         price_str = format_usdt_price(price)
         msg += f"{_format_coin_line(i, coin)}\n   └ Kurs <b>{price_str}</b>\n"
-    msg += (
-        f"\n<code>/buy NUMMER USDT</code>  ·  z.B. <code>/buy 1 {default_usdt:.0f}</code>\n"
-        f"<i>Ohne USDT-Betrag: Standard ${default_usdt:.0f}</i>"
+    from notifications.telegram_commands.menu_i18n import context_footer, current_language
+
+    msg += "\n" + context_footer(
+        "buy",
+        current_language(),
+        default_usdt=f"{default_usdt:.0f}",
+        example=f"1 {default_usdt:.0f}",
     )
     return msg
 
@@ -79,10 +84,12 @@ def resolve_coin_by_display_index(coins: list, index: int):
 
 def handle(text: str) -> bool:
     if text == "/add":
+        activate_command("add")
         send_telegram_message(hint("add"))
         return True
 
     if text == "/remove":
+        activate_command("remove")
         send_telegram_message(hint("remove"))
         return True
 

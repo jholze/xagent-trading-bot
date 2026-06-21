@@ -3,6 +3,7 @@ from datetime import datetime
 
 from data_manager import get_config, load_x_accounts, load_x_posts, save_x_accounts
 from intelligence.x_account_backtest import XAccountBacktester
+from notifications.telegram_commands.command_context import activate_command
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from intelligence.accuracy_tracker import AccuracyTracker
@@ -102,10 +103,12 @@ def handle_callback(callback_query: dict) -> bool:
 
 def handle(text: str) -> bool:
     if text == "/addx":
+        activate_command("addx")
         send_telegram_message(hint("addx"))
         return True
 
     if text == "/removex":
+        activate_command("removex")
         send_telegram_message(hint("removex"))
         return True
 
@@ -203,6 +206,7 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/testaccount":
+        activate_command("testaccount")
         send_telegram_message(hint("testaccount"))
         return True
 

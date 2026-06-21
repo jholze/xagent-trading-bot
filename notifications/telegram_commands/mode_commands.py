@@ -7,6 +7,7 @@ from notifications.telegram_commands.utils import safe_int
 from services.ledger_sync import on_trading_mode_change
 from services.trading_service import TradingService
 from strategies.positions import count_open_positions
+from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 MAX_POSITIONS_MIN = 1
@@ -54,11 +55,11 @@ Current: <b>{service.mode_label()}</b>{demo}
         cfg = get_config()
         current = int(cfg.get("max_open_positions", 5))
         open_count = count_open_positions()
+        activate_command("maxpositions")
         send_telegram_message(
             f"<b>Max. offene Positionen</b>\n\n"
             f"Aktuell: <b>{current}</b>  ·  Offen: <b>{open_count}</b>\n\n"
-            f"Ändern: <code>/maxpositions ANZAHL</code>\n"
-            f"Beispiel: <code>/maxpositions 10</code>  "
+            f"Ändern: nur Zahl senden, z.B. <code>10</code>\n"
             f"(Bereich {MAX_POSITIONS_MIN}–{MAX_POSITIONS_MAX})"
         )
         return True
@@ -189,6 +190,7 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text.startswith("/mode "):
+        activate_command("mode")
         send_telegram_message(hint("mode"))
         return True
 

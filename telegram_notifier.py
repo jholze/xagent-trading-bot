@@ -438,16 +438,25 @@ def answer_callback_query(callback_id, text=None):
         return False
 
 
-def handle_telegram_command(text):
+def handle_telegram_command(text, chat_id=None):
     """Delegates to modular command router."""
+    from notifications.telegram_commands.command_context import set_chat_id
+
+    if chat_id is not None:
+        set_chat_id(chat_id)
     from notifications.telegram_commands.router import dispatch_command
     return dispatch_command(text)
 
 
-def handle_telegram_text(text):
+def handle_telegram_text(text, chat_id=None):
     """Non-slash messages (e.g. section buttons on reply keyboard)."""
+    from notifications.telegram_commands.command_context import try_resolve
+
+    if chat_id is not None and try_resolve(chat_id, text):
+        return True
     from notifications.telegram_commands.menu_commands import handle_text
-    return handle_text(text)
+
+    return handle_text(text, chat_id=chat_id)
 
 
 def handle_telegram_callback(callback_query):

@@ -1,4 +1,5 @@
 from services.telegram_ask_bridge import enqueue_question
+from notifications.telegram_commands.command_context import activate_command
 from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
@@ -9,6 +10,7 @@ def handle(text: str) -> bool:
 
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
+        activate_command("ask")
         send_telegram_message(hint("ask"))
         return True
 

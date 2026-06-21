@@ -1,0 +1,370 @@
+{
+  "de": {
+    "help_label": "❓ Hilfe",
+    "short_input_invalid": "❌ Ungültige Eingabe für <code>/{cmd}</code>. Tippe <i>❓ Hilfe</i> in diesem Bereich.",
+    "section_help": {
+      "watchlist": {
+        "title": "📋 Watchlist — Hilfe",
+        "intro": "Hier verwaltest du, welche Coins der Bot beobachtet und analysiert.",
+        "footer": "Nach <code>/add</code> oder <code>/remove</code> reicht oft nur noch das Symbol bzw. die Nummer — ohne den Befehl erneut zu tippen.",
+        "items": {
+          "list": {
+            "usage": "Zeigt alle Coins mit Nummer, Quelle (Trending/Dry-Run) und Status.",
+            "example": "<code>/list</code>",
+            "tips": "Nummern werden für /buy und /remove verwendet."
+          },
+          "add": {
+            "usage": "Coin hinzufügen — danach nur Symbol: <code>RAVE</code>",
+            "example": "<code>/add RAVE</code> oder nach /add: <code>SOL</code>",
+            "tips": "Gate-Spot-Paar wird als SYMBOL/USDT angelegt."
+          },
+          "remove": {
+            "usage": "Coin entfernen — zuerst /list, dann nur Nummer: <code>2</code>",
+            "example": "<code>/remove 2</code>",
+            "tips": "Entfernt auch Dry-Run-Expansion-Einträge."
+          }
+        }
+      },
+      "handel": {
+        "title": "💰 Handel — Hilfe",
+        "intro": "Kaufen, verkaufen, Portfolio und Risiko — mit Bestätigung durch den Risk Manager.",
+        "items": {
+          "positions": {
+            "usage": "Portfolio mit Kursen, PnL, offenen Positionen und letzten Trades.",
+            "example": "<code>/positions</code>"
+          },
+          "buy": {
+            "usage": "Zuerst /buy → nummerierte Liste. Danach nur: <code>1 25</code> (Nr. + USDT).",
+            "example": "<code>1 200</code> oder <code>ARIA 50</code>",
+            "tips": "Ohne USDT-Betrag wird der Standard aus config verwendet. Risk-Vorschau mit Bestätigen-Button."
+          },
+          "sell": {
+            "usage": "Zuerst /sell → Positionsliste. Danach nur: <code>1 30</code> (Nr. + Prozent).",
+            "example": "<code>1 50</code> = 50 % von Position 1 verkaufen"
+          },
+          "orders": {
+            "usage": "Order-Ledger. Danach: <code>3</code> für Details oder <code>page 2</code>",
+            "example": "<code>/orders</code> · <code>2</code> · <code>page 2</code>"
+          },
+          "risk": {
+            "usage": "Tageslimits, Drawdown, max. Positionen, Cooldowns.",
+            "example": "<code>/risk</code>",
+            "tips": "Signale können kommen, auch wenn Risk einen Kauf blockiert (dry_run)."
+          }
+        }
+      },
+      "modus": {
+        "title": "⚙️ Modus & Gate — Hilfe",
+        "intro": "Paper vs. Live, Gate-API, Dry-Run und Positionslimits.",
+        "items": {
+          "mode": {
+            "usage": "Modus anzeigen. Wechsel: danach nur <code>paper</code>, <code>live</code> oder <code>off</code>",
+            "example": "<code>/mode live</code> + <code>/live_confirm</code> für echtes Trading"
+          },
+          "gate": {
+            "usage": "API-Key-Status, USDT-Balance, Spot-Bestände.",
+            "example": "<code>/gate</code>"
+          },
+          "dryrun": {
+            "usage": "Enhanced Dry Run: Sim-Wallet, Trending-Watchlist (wenn aktiviert).",
+            "example": "<code>/dryrun</code>"
+          },
+          "maxpositions": {
+            "usage": "Limit offener Positionen. Danach nur Zahl: <code>10</code>",
+            "example": "<code>/maxpositions 25</code>"
+          },
+          "live_confirm": {
+            "usage": "Live-Handel auf Gate Mainnet freischalten (nach /mode live).",
+            "tips": "dry_run in config kann Orders weiter nur simulieren."
+          },
+          "live_cancel": {
+            "usage": "Live-Bestätigung widerrufen → zurück zu Paper."
+          }
+        }
+      },
+      "transparenz": {
+        "title": "🔍 Transparenz — Hilfe",
+        "intro": "Entscheidungslog, Social-Signale (LC/CMC), Hermes und Assistent.",
+        "items": {
+          "decisions": {
+            "usage": "Letzte Bot-Entscheidungen (BUY/HOLD/SELL) mit Rationale.",
+            "example": "<code>/decisions</code>",
+            "tips": "Profil zeigt strategy_profile und volatility_tier (volatile/stable/mid)."
+          },
+          "why": {
+            "usage": "Erklärung für einen Coin. Danach nur Symbol: <code>H</code>",
+            "example": "<code>/why NEAR</code>",
+            "tips": "Zeigt TA vs. LC vs. CMC und ob Risk blockiert hat."
+          },
+          "ask": {
+            "usage": "Frage an den Assistenten (Cursor, lokal). Danach nur die Frage als Text.",
+            "example": "Warum wurde DOGE gekauft?",
+            "tips": "Antwort in ~30–90s, kein xAI-API-Fallback aktiv."
+          },
+          "hermes": {
+            "usage": "Hermes Lern-Agent: Baseline, Experimente, Memory pro Coin.",
+            "example": "<code>/hermes</code>"
+          },
+          "hermes_last": {
+            "usage": "Letzter Hermes-Zyklus in Klartext."
+          },
+          "cmc": {
+            "usage": "CoinMarketCap Community-Sentiment und Signale."
+          },
+          "lc": {
+            "usage": "LunarCrush: Galaxy, AltRank, Sentiment. BUY ab Sentiment ~55 (neu gelockert).",
+            "example": "<code>/lc</code>",
+            "tips": "LC-Allein-Käufe möglich (TA=HOLD). Viele BUYs kommen über diesen Pfad."
+          }
+        }
+      },
+      "x": {
+        "title": "🐦 X / Twitter — Hilfe",
+        "intro": "X-Accounts überwachen, Posts analysieren, Backtests.",
+        "items": {
+          "addx": {
+            "usage": "Account hinzufügen. Danach nur Handle: <code>CryptoCapo_</code>",
+            "example": "<code>/addx Pentosh1</code>"
+          },
+          "removex": {
+            "usage": "Account entfernen. Danach nur Handle."
+          },
+          "listx": {
+            "usage": "Alle überwachten Accounts mit Trust-Score."
+          },
+          "xposts": {
+            "usage": "Letzte analysierte Posts mit Empfehlung."
+          },
+          "xsignals": {
+            "usage": "Aktuelle starke BUY/SELL-Signale von X."
+          },
+          "xaccuracy": {
+            "usage": "Trefferquote der Accounts (Leaderboard)."
+          },
+          "tracktest": {
+            "usage": "Test-Tweet durch den Analyzer schicken."
+          },
+          "testaccount": {
+            "usage": "Backtest eines Accounts. Danach: <code>CryptoCapo_</code> oder <code>Pentosh1 30</code>",
+            "example": "60 Tage Standard wenn kein Zeitraum angegeben."
+          }
+        }
+      },
+      "tests": {
+        "title": "🧪 Sandbox & Backtest — Hilfe",
+        "intro": "Strategie-Experimente und adaptiver Backtest.",
+        "items": {
+          "sandbox": {
+            "usage": "Laufende Sandbox-Hypothesen aus X-Posts."
+          },
+          "sandbox_results": {
+            "usage": "Details zu Experiment. Danach nur ID: <code>hyp_abc123</code>"
+          },
+          "sandbox_promote": {
+            "usage": "Erfolgreiche Strategie übernehmen. Danach nur ID."
+          },
+          "backtest": {
+            "usage": "Status des adaptiven Strategie-Backtests."
+          },
+          "backtest_lock": {
+            "usage": "Auto-Backtest für Coin sperren. Danach Symbol: <code>ARIA</code>"
+          },
+          "backtest_results": {
+            "usage": "Letztes Ergebnis. Danach Symbol: <code>HIGH</code>"
+          },
+          "hermes_run": {
+            "usage": "Einen Hermes-Lernzyklus manuell starten."
+          }
+        }
+      },
+      "hilfe": {
+        "title": "❓ Hilfe — Hilfe",
+        "intro": "Navigation und globale Befehlsliste.",
+        "items": {
+          "menu": {
+            "usage": "Bereichs-Menü mit Reply-Keyboard (diese Tastatur unten).",
+            "tips": "Inline-Buttons in der Chat-Nachricht sind dasselbe Menü grafisch."
+          },
+          "help": {
+            "usage": "Komplette Befehlsliste mit Kurzbeispielen (DE/EN je nach Telegram-Sprache)."
+          }
+        }
+      }
+    }
+  },
+  "en": {
+    "help_label": "❓ Help",
+    "short_input_invalid": "❌ Invalid input for <code>/{cmd}</code>. Tap <i>❓ Help</i> in this section.",
+    "section_help": {
+      "watchlist": {
+        "title": "📋 Watchlist — Help",
+        "intro": "Manage which coins the bot watches and analyzes.",
+        "footer": "After <code>/add</code> or <code>/remove</code> you often only need the symbol or number — no need to repeat the command.",
+        "items": {
+          "list": {
+            "usage": "Shows all coins with index, source, and status.",
+            "example": "<code>/list</code>",
+            "tips": "Numbers are used for /buy and /remove."
+          },
+          "add": {
+            "usage": "Add coin — then send symbol only: <code>RAVE</code>",
+            "example": "<code>/add RAVE</code> or after /add: <code>SOL</code>"
+          },
+          "remove": {
+            "usage": "Remove coin — /list first, then number only: <code>2</code>",
+            "example": "<code>/remove 2</code>"
+          }
+        }
+      },
+      "handel": {
+        "title": "💰 Trading — Help",
+        "intro": "Buy, sell, portfolio and risk — with Risk Manager confirmation.",
+        "items": {
+          "positions": {
+            "usage": "Portfolio with prices, PnL, open positions and recent trades.",
+            "example": "<code>/positions</code>"
+          },
+          "buy": {
+            "usage": "First /buy → numbered list. Then send only: <code>1 25</code> (no. + USDT).",
+            "example": "<code>1 200</code> or <code>ARIA 50</code>"
+          },
+          "sell": {
+            "usage": "First /sell → position list. Then only: <code>1 30</code> (no. + percent).",
+            "example": "<code>1 50</code> = sell 50% of position 1"
+          },
+          "orders": {
+            "usage": "Order ledger. Then: <code>3</code> for details or <code>page 2</code>"
+          },
+          "risk": {
+            "usage": "Daily limits, drawdown, max positions, cooldowns.",
+            "tips": "Signals may appear even when risk blocks execution (dry_run)."
+          }
+        }
+      },
+      "modus": {
+        "title": "⚙️ Mode & Gate — Help",
+        "intro": "Paper vs live, Gate API, dry run and position limits.",
+        "items": {
+          "mode": {
+            "usage": "Show mode. Switch: then send only <code>paper</code>, <code>live</code> or <code>off</code>"
+          },
+          "gate": {
+            "usage": "API key status, USDT balance, spot holdings."
+          },
+          "dryrun": {
+            "usage": "Enhanced dry run: sim wallet, trending watchlist (if enabled)."
+          },
+          "maxpositions": {
+            "usage": "Max open positions. Then number only: <code>10</code>"
+          },
+          "live_confirm": {
+            "usage": "Enable live trading on Gate mainnet (after /mode live)."
+          },
+          "live_cancel": {
+            "usage": "Revoke live confirmation → back to paper."
+          }
+        }
+      },
+      "transparenz": {
+        "title": "🔍 Transparency — Help",
+        "intro": "Decision log, social signals (LC/CMC), Hermes and assistant.",
+        "items": {
+          "decisions": {
+            "usage": "Recent bot decisions with rationale.",
+            "tips": "Shows strategy_profile and volatility_tier (volatile/stable/mid)."
+          },
+          "why": {
+            "usage": "Explain a coin. Then symbol only: <code>H</code>",
+            "tips": "Shows TA vs LC vs CMC and risk blocks."
+          },
+          "ask": {
+            "usage": "Question for assistant (Cursor, local). Then send question as plain text."
+          },
+          "hermes": {
+            "usage": "Hermes learning agent: baseline, experiments, per-coin memory."
+          },
+          "hermes_last": {
+            "usage": "Last Hermes cycle in plain language."
+          },
+          "cmc": {
+            "usage": "CoinMarketCap community sentiment."
+          },
+          "lc": {
+            "usage": "LunarCrush: Galaxy, AltRank, sentiment. BUY from sentiment ~55 (lowered).",
+            "example": "<code>/lc</code>",
+            "tips": "LC-only buys possible (TA=HOLD). Many signals use this path."
+          }
+        }
+      },
+      "x": {
+        "title": "🐦 X / Twitter — Help",
+        "intro": "Monitor X accounts, analyze posts, run backtests.",
+        "items": {
+          "addx": {
+            "usage": "Add account. Then handle only: <code>CryptoCapo_</code>"
+          },
+          "removex": {
+            "usage": "Remove account. Then handle only."
+          },
+          "listx": {
+            "usage": "All monitored accounts with trust score."
+          },
+          "xposts": {
+            "usage": "Recent analyzed posts."
+          },
+          "xsignals": {
+            "usage": "Current strong BUY/SELL signals from X."
+          },
+          "xaccuracy": {
+            "usage": "Account hit rate leaderboard."
+          },
+          "tracktest": {
+            "usage": "Send a test tweet through the analyzer."
+          },
+          "testaccount": {
+            "usage": "Backtest account. Then: <code>CryptoCapo_</code> or <code>Pentosh1 30</code>"
+          }
+        }
+      },
+      "tests": {
+        "title": "🧪 Sandbox & Backtest — Help",
+        "intro": "Strategy experiments and adaptive backtest.",
+        "items": {
+          "sandbox": {
+            "usage": "Running sandbox hypotheses from X posts."
+          },
+          "sandbox_results": {
+            "usage": "Experiment details. Then ID only: <code>hyp_abc123</code>"
+          },
+          "sandbox_promote": {
+            "usage": "Promote strategy. Then ID only."
+          },
+          "backtest": {
+            "usage": "Adaptive strategy backtest status."
+          },
+          "backtest_lock": {
+            "usage": "Lock auto-backtest for coin. Then symbol: <code>ARIA</code>"
+          },
+          "backtest_results": {
+            "usage": "Latest result. Then symbol: <code>HIGH</code>"
+          },
+          "hermes_run": {
+            "usage": "Run one Hermes learning cycle manually."
+          }
+        }
+      },
+      "hilfe": {
+        "title": "❓ Help — Help",
+        "intro": "Navigation and global command list.",
+        "items": {
+          "menu": {
+            "usage": "Section menu with reply keyboard (buttons below input)."
+          },
+          "help": {
+            "usage": "Full command list with short examples (DE/EN per Telegram language)."
+          }
+        }
+      }
+    }
+  }
+}

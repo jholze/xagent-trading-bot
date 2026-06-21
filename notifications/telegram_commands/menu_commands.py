@@ -4,16 +4,25 @@ from __future__ import annotations
 
 from notifications.telegram_commands.menu_i18n import (
     back_label,
+    build_section_help_message,
     callback_unknown_command,
     command_description,
     current_language,
+    help_label,
     home_inline,
     home_intro,
     is_back_label,
+    is_help_label,
     section_pick,
     section_title,
     title_to_section_id,
 )
+from notifications.telegram_commands.command_context import (
+    clear_active_section,
+    clear_context,
+    set_active_section,
+)
+from telegram_notifier import send_telegram_message
 from telegram_notifier import (
     answer_callback_query,
     edit_telegram_message,
@@ -25,7 +34,7 @@ MENU_SECTIONS: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", ["positions", "buy", "sell", "orders", "risk"]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
-    ("transparenz", ["decisions", "why", "ask", "hermes", "hermes_last", "cmc"]),
+    ("transparenz", ["decisions", "why", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
     ("hilfe", ["menu", "help"]),
@@ -71,8 +80,15 @@ def _section_reply_rows(section_id: str, lang: str | None = None) -> list[list[s
             row = []
     if row:
         rows.append(row)
-    rows.append([back_label(lang)])
+    rows.append([help_label(lang), back_label(lang)])
     return rows
+
+
+def send_section_help(section_id: str, lang: str | None = None) -> bool:
+    if section_id not in _SECTION_KEYS:
+        return False
+    lang = lang or current_language()
+    return send_telegram_message(build_section_help_message(section_id, lang))
 
 
 def send_main_section_keyboard(text: str | None = None, lang: str | None = None) -> bool:
@@ -82,10 +98,12 @@ def send_main_section_keyboard(text: str | None = None, lang: str | None = None)
     return send_reply_keyboard(text or home_intro(lang), _main_reply_rows(lang))
 
 
-def send_section_keyboard(section_id: str, lang: str | None = None) -> bool:
+def send_section_keyboard(section_id: str, lang: str | None = None, chat_id=None) -> bool:
     if section_id not in _SECTION_KEYS:
         return False
     lang = lang or current_language()
+    if chat_id is not None:
+        set_active_section(chat_id, section_id)
     return send_reply_keyboard(
         f"<b>{section_title(section_id, lang)}</b>\n\n{section_pick(lang)}",
         _section_reply_rows(section_id, lang),
@@ -159,16 +177,34 @@ def show_section(section_id: str, chat_id: int, message_id: int, lang: str | Non
     )
 
 
-def handle_text(text: str) -> bool:
+def handle_text(text: str, chat_id=None) -> bool:
     if not _reply_keyboard_enabled():
         return False
     stripped = (text or "").strip()
     if is_back_label(stripped):
+        if chat_id is not None:
+            clear_context(chat_id)
+            clear_active_section(chat_id)
         send_main_section_keyboard()
+        return True
+    if is_help_label(stripped):
+        section_id = None
+        if chat_id is not None:
+            from notifications.telegram_commands.command_context import get_active_section
+
+            section_id = get_active_section(chat_id)
+        if section_id:
+            send_section_help(section_id)
+            return True
+        send_telegram_message(
+            "<b>❓ Hilfe</b>\n\nWähle zuerst einen Bereich — dann <i>❓ Hilfe</i> für Details zu allen Befehlen dort."
+            if current_language() == "de"
+            else "<b>❓ Help</b>\n\nPick a section first — then tap <i>❓ Help</i> for details on all commands there."
+        )
         return True
     section_id = title_to_section_id(stripped)
     if section_id:
-        send_section_keyboard(section_id)
+        send_section_keyboard(section_id, chat_id=chat_id)
         return True
     return False
 

@@ -19,6 +19,8 @@ from notifications.telegram_commands.watchlist_commands import (
     resolve_coin_by_display_index,
 )
 from strategies.positions import get_position, list_active_positions
+from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_commands.menu_i18n import context_footer, current_language
 from telegram_notifier import send_telegram_message
 
 # Portfolio snapshot after manual buy/sell is sent by TradingService.execute_order.
@@ -34,6 +36,8 @@ def handle(text: str) -> bool:
             return True
         symbols = [_coin_symbol(c) for c in coins]
         prices = get_prices_batch(symbols)
+        default_usdt = get_bot_config().max_usdt_per_trade
+        activate_command("buy", default_usdt=default_usdt)
         send_telegram_message(format_buy_list_message(coins, prices))
         return True
 
@@ -77,6 +81,7 @@ def handle(text: str) -> bool:
                 return True
             symbols = [position_symbol(p) for p in active]
             prices = get_prices_batch(symbols)
+            activate_command("sell")
             send_telegram_message(format_sell_list_message(active, prices))
             return True
 

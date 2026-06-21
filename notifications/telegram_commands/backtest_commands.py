@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from data_manager import get_strategy_backtest_entry, list_strategy_targets, save_strategy_backtest_entry
 from intelligence.strategy_backtest import StrategyBacktester, coin_key
 from services.strategy_backtest_worker import StrategyBacktestWorker
+from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 _FORCE_COOLDOWN: dict[str, datetime] = {}
@@ -32,6 +33,22 @@ def handle(text: str) -> bool:
             return True
         msg = "📊 <b>Strategy Backtest</b> (adaptives Scheduling)\n\n" + "\n".join(lines)
         send_telegram_message(msg)
+        return True
+
+    if text == "/backtest_lock":
+        activate_command("backtest_lock")
+        send_telegram_message(
+            "🔒 <b>/backtest_lock</b> — Coin vom Auto-Backtest ausschließen\n\n"
+            "Danach nur Symbol senden, z.B. <code>ARIA</code>"
+        )
+        return True
+
+    if text == "/backtest_results":
+        activate_command("backtest_results")
+        send_telegram_message(
+            "📊 <b>/backtest_results</b> — Letztes Backtest-Ergebnis\n\n"
+            "Danach nur Symbol senden, z.B. <code>HIGH</code>"
+        )
         return True
 
     if text.startswith("/backtest_lock "):

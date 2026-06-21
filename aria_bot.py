@@ -93,11 +93,12 @@ def webhook():
             handle_telegram_callback(update["callback_query"])
         elif update and "message" in update:
             text = update["message"].get("text", "")
+            chat_id = update["message"].get("chat", {}).get("id")
             log(f"Received Telegram message: {text[:100]}", "DEBUG")
             if text.startswith("/"):
-                handle_telegram_command(text)
+                handle_telegram_command(text, chat_id=chat_id)
             elif text.strip():
-                handle_telegram_text(text)
+                handle_telegram_text(text, chat_id=chat_id)
     except Exception as e:
         log(f"Webhook error: {e}", "ERROR")
     return "OK", 200

@@ -11,6 +11,7 @@ from services.order_service import (
 )
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
+from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 
@@ -71,6 +72,7 @@ def handle(text: str) -> bool:
 
     parts = [p.strip() for p in text.split() if p.strip()]
     if len(parts) < 2:
+        activate_command("orders")
         send_telegram_message(hint("orders"))
         return True
 

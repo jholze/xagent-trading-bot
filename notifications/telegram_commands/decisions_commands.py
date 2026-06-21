@@ -6,6 +6,7 @@ from logger import DECISIONS_LOG_FILE
 from notifications.telegram_commands.usage_hints import hint
 from notifications.user_explain import explain_rationale, explanations_config, format_decision_entry
 from strategies.registry import resolve_coin_config
+from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 
@@ -77,9 +78,11 @@ def handle(text: str) -> bool:
 
     if cmd == "/why":
         if len(parts) < 2:
+            activate_command("why")
             send_telegram_message(
                 "❌ <b>/why</b> — Erklärung zur letzten Bot-Entscheidung für einen Coin\n\n"
-                "Beispiel: <code>/why H</code> oder <code>/why ARIA/USDT</code>"
+                "Beispiel: <code>H</code> oder <code>/why H</code>\n"
+                "<i>Nach <code>/why</code> reicht das Symbol allein.</i>"
             )
             return True
         return _handle_why(parts[1])

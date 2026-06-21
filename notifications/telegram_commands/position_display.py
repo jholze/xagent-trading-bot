@@ -313,7 +313,9 @@ def format_sell_list_message(active: list, prices: dict) -> str:
         numbered=True,
         title="📍 Positionen verkaufen",
     )
-    return msg + "\n\n<code>/sell NUMMER PROZENT</code>  ·  z.B. <code>/sell 1 30</code>"
+    from notifications.telegram_commands.menu_i18n import context_footer, current_language
+
+    return msg + "\n\n" + context_footer("sell", current_language(), example="1 30")
 
 
 def load_trade_history_safe() -> dict:

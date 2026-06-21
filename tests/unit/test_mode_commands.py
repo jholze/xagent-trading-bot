@@ -17,7 +17,7 @@ class TestModeCommands(unittest.TestCase):
             msg = mock_send.call_args[0][0]
             self.assertIn("5", msg)
             self.assertIn("3", msg)
-            self.assertIn("/maxpositions ANZAHL", msg)
+            self.assertIn("nur Zahl", msg)
 
     def test_maxpositions_set_valid(self):
         with patch("notifications.telegram_commands.mode_commands.send_telegram_message") as mock_send, \

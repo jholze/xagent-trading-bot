@@ -1,3 +1,4 @@
+from notifications.telegram_commands.command_context import activate_command
 from notifications.telegram_commands.usage_hints import hint
 from strategies.paper_sandbox import PaperSandbox
 from telegram_notifier import send_telegram_message
@@ -28,10 +29,12 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/sandbox_results":
+        activate_command("sandbox_results")
         send_telegram_message(hint("sandbox_results"))
         return True
 
     if text == "/sandbox_promote":
+        activate_command("sandbox_promote")
         send_telegram_message(hint("sandbox_promote"))
         return True
 

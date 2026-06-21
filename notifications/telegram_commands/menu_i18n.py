@@ -19,6 +19,13 @@ def _load_menu_data() -> dict:
     path = Path(__file__).resolve().parents[2] / "locales" / "telegram_menu.json"
     with open(path, encoding="utf-8") as f:
         _MENU_DATA = json.load(f)
+    extra_path = path.parent / "telegram_section_help.json"
+    if extra_path.exists():
+        with open(extra_path, encoding="utf-8") as f:
+            extra = json.load(f)
+        for lang in SUPPORTED_LANGS:
+            if lang in extra:
+                _MENU_DATA.setdefault(lang, {}).update(extra[lang])
     return _MENU_DATA
 
 
@@ -183,3 +190,57 @@ def title_to_section_id(title: str) -> str | None:
 def is_back_label(text: str) -> bool:
     text = (text or "").strip()
     return text in {back_label("de"), back_label("en")}
+
+
+def help_label(lang: str | None = None) -> str:
+    return _pack(lang or current_language()).get("help_label", "❓ Hilfe")
+
+
+def is_help_label(text: str) -> bool:
+    text = (text or "").strip()
+    return text in {help_label("de"), help_label("en")}
+
+
+def short_input_invalid(command: str, lang: str | None = None) -> str:
+    lang = lang or current_language()
+    pack = _pack(lang)
+    template = pack.get("short_input_invalid", "❌ Ungültige Eingabe für <code>/{cmd}</code>.")
+    return template.replace("{cmd}", command)
+
+
+def context_footer(key: str, lang: str | None = None, **kwargs) -> str:
+    lang = lang or current_language()
+    entry = _command_entry(_pack(lang), key)
+    footer = entry.get("context_footer", "")
+    for k, v in kwargs.items():
+        footer = footer.replace(f"{{{k}}}", str(v))
+    return footer
+
+
+def build_section_help_message(section_id: str, lang: str | None = None) -> str:
+    from notifications.telegram_commands.menu_commands import MENU_SECTIONS
+
+    lang = lang or current_language()
+    pack = _pack(lang)
+    help_cfg = pack.get("section_help", {}).get(section_id, {})
+    keys = dict(MENU_SECTIONS).get(section_id, [])
+    lines = [help_cfg.get("title", section_title(section_id, lang)), ""]
+    if help_cfg.get("intro"):
+        lines.append(help_cfg["intro"])
+        lines.append("")
+    for key in keys:
+        item = help_cfg.get("items", {}).get(key, {})
+        lines.append(f"<b>/{key}</b> — {command_description(key, lang)}")
+        if item.get("usage"):
+            lines.append(f"  {item['usage']}")
+        if item.get("example"):
+            lines.append(f"  {item['example']}")
+        elif command_help_line(key, lang):
+            lines.append(f"  {command_help_line(key, lang)}")
+        if item.get("tips"):
+            lines.append(f"  <i>{item['tips']}</i>")
+        lines.append("")
+    footer = help_cfg.get("footer")
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines).rstrip()
