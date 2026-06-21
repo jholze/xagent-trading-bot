@@ -32,9 +32,31 @@ class TestVolatileProfile(unittest.TestCase):
     def test_hermes_memory_without_position(self):
         coin = {"symbol": "H/USDT", "timeframe": "4h"}
         with patch("strategies.registry._hermes_memory_params", return_value=dict(_HERMES_H_PARAMS)):
-            params = resolve_strategy_params(coin, has_position=False)
+            params = resolve_strategy_params(coin, has_position=False, atr_pct=49.0)
         self.assertEqual(params.get("strategy_profile"), "hermes_baseline")
         self.assertEqual(params.get("rsi_sell_30"), 70)
+        self.assertEqual(params.get("volume_multiplier"), 0.85)
+        self.assertEqual(params.get("buy_regime"), "both")
+        self.assertEqual(params.get("volatility_tier"), "volatile")
+
+    def test_stable_tier_buy_overlay_without_position(self):
+        coin = {"symbol": "BTC/USDT", "timeframe": "4h"}
+        with patch("strategies.registry._hermes_memory_params", return_value=None), \
+             patch("strategies.registry._explicit_strategy_entry", return_value=None):
+            params = resolve_strategy_params(coin, has_position=False, atr_pct=1.5)
+        self.assertEqual(params.get("volatility_tier"), "stable")
+        self.assertEqual(params.get("volume_multiplier"), 1.05)
+        self.assertEqual(params.get("buy_regime"), "dip")
+        self.assertEqual(params.get("rsi_buy_high"), 50)
+
+    def test_mid_cap_buy_overlay_without_position(self):
+        coin = {"symbol": "TRX/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
+        with patch("strategies.registry._hermes_memory_params", return_value=None), \
+             patch("strategies.registry._explicit_strategy_entry", return_value=None):
+            params = resolve_strategy_params(coin, has_position=False, atr_pct=4.0)
+        self.assertEqual(params.get("volatility_tier"), "stable")
+        self.assertEqual(params.get("volume_multiplier"), 0.95)
+        self.assertEqual(params.get("buy_regime"), "both")
 
     def test_pure_volatile_when_no_hermes_memory(self):
         coin = {"symbol": "H/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
