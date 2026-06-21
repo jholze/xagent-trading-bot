@@ -18,6 +18,8 @@ from data_manager import (
 
 ORDERS_PER_PAGE = 5
 PENDING_TTL_MINUTES = 10
+EXECUTED_STATUSES = frozenset({"filled"})
+TRADE_BOOK_STATUSES = frozenset({"filled"})
 
 STATUS_ICONS = {
     "pending_confirmation": "⏳",
@@ -268,6 +270,7 @@ class OrderService:
         self,
         *,
         status_filter: set = None,
+        trade_book_only: bool = False,
         hours: float = None,
         page: int = 1,
         per_page: int = ORDERS_PER_PAGE,
@@ -277,6 +280,8 @@ class OrderService:
         data = self._load()
         orders = [o for o in data.get("orders", []) if o.get("ledger_scope") == self.scope]
         orders = list(reversed(orders))
+        if trade_book_only:
+            orders = [o for o in orders if o.get("status") in TRADE_BOOK_STATUSES]
         if status_filter:
             orders = [o for o in orders if o.get("status") in status_filter]
         if hours is not None:
@@ -290,10 +295,19 @@ class OrderService:
         return orders[start:start + per_page], max(1, (total + per_page - 1) // per_page)
 
     def stats_24h(self) -> dict:
+        """Count all ledger entries in the last 24h (including blocked / pending)."""
         self.expire_stale_pending()
         data = self._load()
         cutoff = datetime.now() - timedelta(hours=24)
-        counts = {"filled": 0, "rejected": 0, "cancelled": 0, "pending_confirmation": 0, "failed": 0}
+        counts = {
+            "filled": 0,
+            "rejected": 0,
+            "cancelled": 0,
+            "pending_confirmation": 0,
+            "failed": 0,
+            "expired": 0,
+            "executing": 0,
+        }
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
@@ -303,6 +317,28 @@ class OrderService:
             st = o.get("status", "")
             if st in counts:
                 counts[st] += 1
+        return counts
+
+    def stats_executed_24h(self) -> dict:
+        """Filled buy/sell counts for the classic order book view."""
+        self.expire_stale_pending()
+        data = self._load()
+        cutoff = datetime.now() - timedelta(hours=24)
+        counts = {"filled": 0, "buys": 0, "sells": 0}
+        for o in data.get("orders", []):
+            if o.get("ledger_scope") != self.scope:
+                continue
+            if o.get("status") != "filled":
+                continue
+            ts = _parse_ts(o.get("timestamps", {}).get("filled") or o.get("timestamps", {}).get("created"))
+            if not ts or ts < cutoff:
+                continue
+            counts["filled"] += 1
+            side = (o.get("side") or "").lower()
+            if side == "buy":
+                counts["buys"] += 1
+            elif side == "sell":
+                counts["sells"] += 1
         return counts
 
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:

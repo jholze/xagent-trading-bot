@@ -55,6 +55,34 @@ class TestOrderService(unittest.TestCase):
         stats = svc.stats_24h()
         self.assertEqual(stats["rejected"], 1)
 
+    def test_stats_executed_24h_counts_buys_and_sells(self):
+        svc = OrderService("paper")
+        buy = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)
+        created = svc.create_from_request(buy, status="executing", telegram_token="b1")
+        svc.link_execution_result(created["id"], TradeResult(True, "BUY", "ARIA/USDT", amount=2000, price=0.05, usdt_amount=100))
+        sell = TradeOrder("SELL", "SOL/USDT", 70, 2, signal="SELL")
+        created_s = svc.create_from_request(sell, status="executing", telegram_token="s1")
+        svc.link_execution_result(created_s["id"], TradeResult(True, "SELL", "SOL/USDT", amount=2, price=70, usdt_amount=140, pnl=5))
+
+        stats = svc.stats_executed_24h()
+        self.assertEqual(stats["filled"], 2)
+        self.assertEqual(stats["buys"], 1)
+        self.assertEqual(stats["sells"], 1)
+
+    def test_trade_book_only_hides_rejected(self):
+        svc = OrderService("paper")
+        buy = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)
+        created = svc.create_from_request(buy, status="executing", telegram_token="filled1")
+        svc.link_execution_result(created["id"], TradeResult(True, "BUY", "ARIA/USDT", amount=2000, price=0.05, usdt_amount=100))
+        reject = TradeOrder("SELL", "SOL/USDT", 70, 2, signal="SELL")
+        svc.record_rejected(reject, RiskDecision(approved=False, message="Cooldown", code="trade_cooldown", order=reject))
+
+        all_orders, _ = svc.list_orders()
+        book_orders, _ = svc.list_orders(trade_book_only=True)
+        self.assertEqual(len(all_orders), 2)
+        self.assertEqual(len(book_orders), 1)
+        self.assertEqual(book_orders[0]["status"], "filled")
+
     def test_link_execution_result_filled(self):
         svc = OrderService("paper")
         order = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)

@@ -203,7 +203,7 @@ def recent_trades_lines(history: dict, hours: float = 24, limit: int = 5) -> lis
 
 def recent_orders_lines(hours: float = 24, limit: int = 5) -> list[str]:
     ledger = OrderService()
-    orders, _ = ledger.list_orders(hours=hours, page=1, per_page=limit)
+    orders, _ = ledger.list_orders(hours=hours, page=1, per_page=limit, trade_book_only=True)
     if not orders:
         return [f"  <i>Keine Orders in den letzten {int(hours)}h ({ledger_label()}).</i>"]
     return [f"  {format_order_line(o)}" for o in orders]
@@ -273,10 +273,19 @@ def build_cycle_summary(
         lines.append("Keine Auto-Trades in diesem Zyklus.")
 
     ledger = OrderService()
-    stats = ledger.stats_24h()
+    executed = ledger.stats_executed_24h()
+    attempts = ledger.stats_24h()
     lines.append("")
-    lines.append(f"<b>Orders (24h, {ledger_label()}):</b> "
-                 f"✅{stats['filled']} ❌{stats['rejected']} 🚫{stats['cancelled']}")
+    lines.append(
+        f"<b>Orders (24h, {ledger_label()}):</b> "
+        f"🟢{executed['buys']} Käufe · 🔴{executed['sells']} Verkäufe"
+    )
+    blocked = attempts["rejected"] + attempts["cancelled"] + attempts["pending_confirmation"]
+    if blocked:
+        lines.append(
+            f"<i>Nicht ausgeführt:</i> ❌{attempts['rejected']} "
+            f"⏳{attempts['pending_confirmation']} 🚫{attempts['cancelled']}"
+        )
     lines.extend(recent_orders_lines())
     lines.append("<i>Details: <code>/decisions</code> · <code>/orders</code> · /buy · /sell</i>")
     return "\n".join(lines)

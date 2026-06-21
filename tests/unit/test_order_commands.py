@@ -43,8 +43,10 @@ class TestOrderCommands(unittest.TestCase):
         with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
             self.assertTrue(order_commands.handle("/orders"))
             msg = mock_send.call_args[0][0]
-            self.assertIn("Order-Ledger", msg)
+            self.assertIn("Orderbuch", msg)
             self.assertIn("PAPER", msg)
+            self.assertIn("SOL", msg)
+            self.assertNotIn("PENDING_CONFIRMATION", msg)
 
     def test_orders_detail_by_number(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
@@ -69,7 +71,7 @@ class TestOrderCommands(unittest.TestCase):
             self.assertTrue(order_commands.handle_callback({
                 "id": "cb1", "data": "orders_page:paper:1",
             }))
-            self.assertIn("Order-Ledger", mock_send.call_args[0][0])
+            self.assertIn("Orderbuch", mock_send.call_args[0][0])
 
     def test_router_dispatches_orders_callback(self):
         from notifications.telegram_commands.router import dispatch_callback

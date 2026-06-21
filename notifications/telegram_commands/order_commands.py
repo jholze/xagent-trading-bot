@@ -16,13 +16,33 @@ from telegram_notifier import answer_callback_query, send_telegram_buttons, send
 
 
 def _stats_header(ledger: OrderService) -> str:
-    stats = ledger.stats_24h()
+    executed = ledger.stats_executed_24h()
+    attempts = ledger.stats_24h()
     scope = ledger.scope
-    return (
-        f"<b>📒 Order-Ledger — {ledger_label(scope)}</b>\n"
-        f"24h: ✅ {stats['filled']} · ❌ {stats['rejected']} · "
-        f"🚫 {stats['cancelled']} · ⏳ {stats['pending_confirmation']} · ⚠️ {stats['failed']}"
+    blocked = (
+        attempts["rejected"]
+        + attempts["cancelled"]
+        + attempts["pending_confirmation"]
+        + attempts["expired"]
+        + attempts["failed"]
+        + attempts["executing"]
     )
+    lines = [
+        f"<b>📒 Orderbuch — {ledger_label(scope)}</b>",
+        (
+            f"24h ausgeführt: 🟢 {executed['buys']} Käufe · "
+            f"🔴 {executed['sells']} Verkäufe"
+        ),
+    ]
+    if blocked:
+        lines.append(
+            f"<i>Nicht ausgeführt (24h):</i> ❌ {attempts['rejected']} blockiert · "
+            f"⏳ {attempts['pending_confirmation']} offen · "
+            f"🚫 {attempts['cancelled']} abgebrochen · "
+            f"⌛ {attempts['expired']} abgelaufen · "
+            f"⚠️ {attempts['failed']} fehlgeschlagen"
+        )
+    return "\n".join(lines)
 
 
 def _pagination_buttons(scope: str, page: int, total_pages: int) -> list[list[dict]]:
@@ -36,10 +56,10 @@ def _pagination_buttons(scope: str, page: int, total_pages: int) -> list[list[di
 
 def send_orders_page(page: int = 1) -> None:
     ledger = OrderService()
-    orders, total_pages = ledger.list_orders(page=page)
+    orders, total_pages = ledger.list_orders(page=page, trade_book_only=True)
     lines = [_stats_header(ledger), ""]
     if not orders:
-        lines.append("<i>Keine Orders in diesem Ledger.</i>")
+        lines.append("<i>Keine ausgeführten Trades in diesem Orderbuch.</i>")
     else:
         lines.append(f"<b>Seite {page}/{total_pages}</b> — <code>/orders NUMMER</code> für Details")
         lines.append("")
