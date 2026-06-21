@@ -23,6 +23,17 @@ def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
     return None
 
 
+_BUY_PARAM_KEYS = (
+    "volume_multiplier",
+    "reversal_volume_multiplier",
+    "buy_regime",
+    "rsi_buy_low",
+    "rsi_buy_high",
+    "reversal_rsi_cross_low",
+    "reversal_rsi_cross_high",
+)
+
+
 _VOLATILE_STRUCTURE_KEYS = (
     "mode",
     "bb_sell_enabled",
@@ -100,6 +111,49 @@ def _volatile_structure_overlay(
     return merged
 
 
+def _resolve_volatility_tier(
+    coin: dict,
+    atr_pct: float,
+    va_cfg: dict,
+    frozen_tier: str | None = None,
+) -> str | None:
+    if not va_cfg.get("enabled", False):
+        return None
+    from intelligence.volatility_classifier import volatility_tier
+
+    return volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+
+
+def _buy_profile_source(tier: str, coin: dict, cfg) -> dict:
+    from intelligence.strategy_backtest import classify_coin
+
+    raw = cfg.raw
+    if tier == "volatile":
+        return cfg.volatile_altcoin_config
+    coin_class = classify_coin(coin.get("symbol", ""), coin.get("strategy_params"))
+    if coin_class == "large_cap":
+        stable = raw.get("stable_altcoin", {})
+        return stable if stable.get("enabled", True) else {}
+    if coin_class == "meme":
+        return cfg.volatile_altcoin_config
+    mid = raw.get("mid_cap_defaults", {})
+    return mid if mid else raw.get("altcoin_social", {})
+
+
+def _buy_profile_overlay(base: dict, coin: dict, tier: str | None, cfg) -> dict:
+    if not tier:
+        return base
+    source = _buy_profile_source(tier, coin, cfg)
+    if not source:
+        return base
+    merged = dict(base)
+    for key in _BUY_PARAM_KEYS:
+        if key in source:
+            merged[key] = source[key]
+    merged["volatility_tier"] = tier
+    return merged
+
+
 def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -> dict:
     profile = dict(va_cfg)
     if is_dry_run_enhanced():
@@ -132,19 +186,14 @@ def resolve_strategy_params(
 
     hermes_params = _hermes_memory_params(symbol, tf)
     va_cfg = cfg.volatile_altcoin_config
-    volatile_active = False
-    tier = None
-
-    if has_position and va_cfg.get("enabled", False):
-        from intelligence.volatility_classifier import volatility_tier
-
-        tier = volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
-        volatile_active = tier == "volatile"
+    tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+    volatile_active = has_position and tier == "volatile"
 
     if hermes_params:
+        base = _buy_profile_overlay(hermes_params, coin, tier, cfg)
         if volatile_active:
-            return _volatile_structure_overlay(hermes_params, va_cfg, tier, symbol, tf, cfg)
-        return hermes_params
+            return _volatile_structure_overlay(base, va_cfg, tier, symbol, tf, cfg)
+        return base
 
     if volatile_active:
         return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
@@ -154,10 +203,11 @@ def resolve_strategy_params(
         if is_dry_run_enhanced():
             profile.update(cfg.dry_run_defaults)
         profile.update({"symbol": symbol, "timeframe": tf})
-        return profile
+        return _buy_profile_overlay(profile, coin, tier, cfg)
 
     params = cfg.strategy_params(symbol, tf)
-    return dict(params) if params else {}
+    base = dict(params) if params else {}
+    return _buy_profile_overlay(base, coin, tier, cfg)
 
 def resolve_coin_config(coin: dict) -> dict:
     """Merge watchlist coin with matching config.strategies[] entry."""
