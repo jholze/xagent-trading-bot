@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from core.config import BotConfig, get_bot_config
 from data_manager import (
     is_dry_run_enhanced,
@@ -15,6 +17,10 @@ from logger import log
 from price_fetcher import get_prices_batch
 
 
+_balance_cache: dict[str, tuple[float, float, list]] = {}
+_BALANCE_CACHE_TTL = 20.0
+
+
 def get_gate_adapter(config: BotConfig = None):
     from execution.gate_adapter import GateExecutionAdapter
 
@@ -22,26 +28,39 @@ def get_gate_adapter(config: BotConfig = None):
     return GateExecutionAdapter(cfg)
 
 
-def fetch_usdt_balance(config: BotConfig = None) -> float:
+def _balance_cache_key(cfg: BotConfig) -> str:
+    return f"{cfg.trading_mode}:{bool(is_live_dry_run(cfg.raw))}"
+
+
+def fetch_balance_bundle(config: BotConfig = None, *, min_amount: float = 0.0, max_age_sec: float = None) -> dict:
+    """Single Gate fetch_balance for USDT + spot holdings (cached briefly)."""
     cfg = config or get_bot_config()
     if is_live_dry_run(cfg.raw):
         history = load_live_trade_history()
-        return float(history.get("virtual_balance", cfg.simulated_balance_usdt))
+        cash = float(history.get("virtual_balance", cfg.simulated_balance_usdt))
+        return {"usdt": cash, "holdings": [], "from_cache": False}
     if not uses_exchange_ledger(cfg.trading_mode):
-        return float(load_trade_history().get("virtual_balance", 0))
-    return get_gate_adapter(cfg)._fetch_usdt_balance()
+        cash = float(load_trade_history().get("virtual_balance", 0))
+        return {"usdt": cash, "holdings": [], "from_cache": False}
 
+    ttl = _BALANCE_CACHE_TTL if max_age_sec is None else max(1.0, float(max_age_sec))
+    key = _balance_cache_key(cfg)
+    now = time.time()
+    cached = _balance_cache.get(key)
+    if cached and now - cached[0] < ttl:
+        return {"usdt": cached[1], "holdings": cached[2], "from_cache": True}
 
-def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> list[dict]:
-    cfg = config or get_bot_config()
-    if not uses_exchange_ledger(cfg.trading_mode):
-        return []
     adapter = get_gate_adapter(cfg)
     exchange = adapter._get_exchange()
     if not exchange:
-        return []
+        return {"usdt": 0.0, "holdings": [], "from_cache": False}
     try:
         balance = exchange.fetch_balance()
+        usdt = float(
+            balance.get("USDT", {}).get("free", 0)
+            or balance.get("free", {}).get("USDT", 0)
+            or 0
+        )
         free = balance.get("free", {})
         holdings = []
         for currency, amount in free.items():
@@ -56,10 +75,24 @@ def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> li
                 "amount": amt,
             })
         holdings.sort(key=lambda h: h["amount"], reverse=True)
-        return holdings
+        _balance_cache[key] = (now, usdt, holdings)
+        return {"usdt": usdt, "holdings": holdings, "from_cache": False}
     except Exception as e:
-        log(f"Gate holdings fetch failed: {e}", "WARNING")
+        log(f"Gate balance bundle fetch failed: {e}", "WARNING")
+        if cached:
+            return {"usdt": cached[1], "holdings": cached[2], "from_cache": True}
+        return {"usdt": 0.0, "holdings": [], "from_cache": False}
+
+
+def fetch_usdt_balance(config: BotConfig = None) -> float:
+    return float(fetch_balance_bundle(config).get("usdt", 0))
+
+
+def fetch_spot_holdings(config: BotConfig = None, min_amount: float = 0.0) -> list[dict]:
+    cfg = config or get_bot_config()
+    if not uses_exchange_ledger(cfg.trading_mode) or is_live_dry_run(cfg.raw):
         return []
+    return list(fetch_balance_bundle(cfg, min_amount=min_amount).get("holdings") or [])
 
 
 def fetch_portfolio_equity(config: BotConfig = None, reference_prices: dict = None) -> float:

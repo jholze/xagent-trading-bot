@@ -160,9 +160,13 @@ class TestPortfolioEquity(unittest.TestCase):
 
         with patch("notifications.telegram_commands.portfolio_commands.send_positions_snapshot") as mock_send:
             from notifications.telegram_commands.portfolio_commands import handle
+            import time
 
             handle("/positions")
-            mock_send.assert_called_once()
+            deadline = time.time() + 3
+            while time.time() < deadline and not mock_send.called:
+                time.sleep(0.05)
+            mock_send.assert_called_once_with(fast=True)
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
@@ -175,9 +179,13 @@ class TestPortfolioEquity(unittest.TestCase):
 
         with patch("notifications.telegram_commands.portfolio_commands.send_positions_snapshot") as mock_send:
             from notifications.telegram_commands.portfolio_commands import handle
+            import time
 
             handle("/positions")
-            mock_send.assert_called_once()
+            deadline = time.time() + 3
+            while time.time() < deadline and not mock_send.called:
+                time.sleep(0.05)
+            mock_send.assert_called_once_with(fast=True)
 
 
 if __name__ == "__main__":

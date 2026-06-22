@@ -189,6 +189,8 @@ def format_portfolio_summary(
     cash_balance: float = None,
     cash_label: str = "Cash",
     positions_market_value: float = 0.0,
+    prices: dict = None,
+    fast_daily_nav: bool = False,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
@@ -203,7 +205,11 @@ def format_portfolio_summary(
     try:
         from notifications.daily_portfolio import format_daily_nav_line
 
-        daily_line = format_daily_nav_line(total_value=total_value)
+        daily_line = format_daily_nav_line(
+            total_value=total_value,
+            prices=prices,
+            cache_ttl_sec=180.0 if fast_daily_nav else 120.0,
+        )
         if daily_line:
             daily_line = f"{daily_line}\n"
     except Exception:
@@ -235,6 +241,7 @@ def format_positions_message(
     cash_label: str = "Cash",
     gate_holdings: list = None,
     price_sources: dict = None,
+    fast_daily_nav: bool = False,
 ) -> str:
     if not active:
         cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
@@ -277,6 +284,8 @@ def format_positions_message(
             history, total_unreal, len(active), mode_label,
             cash_balance=cash_balance, cash_label=cash_label,
             positions_market_value=positions_market_value,
+            prices=prices,
+            fast_daily_nav=fast_daily_nav,
         ) + "\n"
 
     if gate_holdings:
@@ -326,7 +335,7 @@ def load_trade_history_safe() -> dict:
     return load_trade_history()
 
 
-def resolve_portfolio_context() -> dict:
+def resolve_portfolio_context(*, fast: bool = False) -> dict:
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
@@ -340,11 +349,14 @@ def resolve_portfolio_context() -> dict:
             "gate_holdings": None,
         }
     if uses_exchange_ledger(cfg.trading_mode):
+        from services.gate_balance import fetch_balance_bundle
+
+        bundle = fetch_balance_bundle(cfg, max_age_sec=25.0 if fast else 20.0)
         return {
             "history": history,
-            "cash_balance": fetch_usdt_balance(cfg),
+            "cash_balance": float(bundle.get("usdt", 0)),
             "cash_label": "Gate USDT",
-            "gate_holdings": fetch_spot_holdings(cfg),
+            "gate_holdings": bundle.get("holdings") or [],
         }
     return {
         "history": history,
@@ -375,15 +387,21 @@ def format_trade_banner(result) -> str:
     )
 
 
-def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
+def send_positions_snapshot(trade_result=None, mode_label: str = None, *, fast: bool = True) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
-    active = list_active_positions()
-    ctx = resolve_portfolio_context()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_active = pool.submit(list_active_positions)
+        f_ctx = pool.submit(resolve_portfolio_context, fast=fast)
+        active = f_active.result()
+        ctx = f_ctx.result()
+
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):
         symbols.extend(h["symbol"] for h in ctx["gate_holdings"])
@@ -406,6 +424,7 @@ def send_positions_snapshot(trade_result=None, mode_label: str = None) -> bool:
         cash_label=ctx["cash_label"],
         gate_holdings=ctx.get("gate_holdings"),
         price_sources=price_sources,
+        fast_daily_nav=fast,
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"

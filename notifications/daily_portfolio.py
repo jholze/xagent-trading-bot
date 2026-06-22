@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date, datetime
 
 from core.config import get_bot_config
@@ -106,11 +107,26 @@ def realized_pnl_for(trade_list: list) -> float:
     )
 
 
-def estimate_nav_at_day_start(trading_mode: str = None) -> float:
+_nav_start_cache: dict[str, tuple[float, float]] = {}
+_NAV_CACHE_TTL = 120.0
+
+
+def estimate_nav_at_day_start(
+    trading_mode: str = None,
+    *,
+    prices: dict | None = None,
+    cache_ttl_sec: float = _NAV_CACHE_TTL,
+) -> float:
     """Replay ledger at today's first trade; mark open lots with current prices."""
     cfg = get_bot_config()
     mode = trading_mode or cfg.trading_mode
     scope = "live" if uses_exchange_ledger(mode) else "paper"
+    cache_key = f"{date.today().isoformat()}:{scope}"
+    now = time.time()
+    cached = _nav_start_cache.get(cache_key)
+    if cached and now - cached[0] < max(5.0, float(cache_ttl_sec)):
+        return cached[1]
+
     today_trades = trades_today()
     if today_trades:
         cutoff = min(t.get("timestamp", "") for t in today_trades)
@@ -126,11 +142,25 @@ def estimate_nav_at_day_start(trading_mode: str = None) -> float:
     symbols = sorted(
         {key.rpartition("_")[0].replace("_", "/") for key in snap if snap[key].get("amount", 0) > 1e-12}
     )
-    prices = get_prices_batch(symbols) if symbols else {}
-    return cash + _position_value_from_snapshot(snap, prices)
+    if symbols:
+        if prices and all(float(prices.get(s, 0) or 0) > 0 for s in symbols):
+            price_map = prices
+        else:
+            price_map = get_prices_batch(symbols)
+    else:
+        price_map = {}
+    nav = cash + _position_value_from_snapshot(snap, price_map)
+    _nav_start_cache[cache_key] = (now, nav)
+    return nav
 
 
-def format_daily_nav_line(trading_mode: str = None, total_value: float = None) -> str:
+def format_daily_nav_line(
+    trading_mode: str = None,
+    total_value: float = None,
+    *,
+    prices: dict | None = None,
+    cache_ttl_sec: float = _NAV_CACHE_TTL,
+) -> str:
     """One-line daily stats for cycle summary."""
     mode = trading_mode or get_bot_config().trading_mode
     history, trades = _history_and_trades(mode)
@@ -141,7 +171,7 @@ def format_daily_nav_line(trading_mode: str = None, total_value: float = None) -
     realized_today = realized_pnl_for(today)
     buys = sum(1 for t in today for _ in [0] if t.get("type") == "BUY")
     sells = sum(1 for t in today for _ in [0] if t.get("type") == "SELL")
-    nav_start = estimate_nav_at_day_start(mode)
+    nav_start = estimate_nav_at_day_start(mode, prices=prices, cache_ttl_sec=cache_ttl_sec)
     if total_value is None:
         from notifications.terminal_dashboard import _portfolio_snapshot
 
