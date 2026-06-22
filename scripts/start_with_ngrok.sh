@@ -162,7 +162,17 @@ echo ""
 echo "✅ Ready!"
 echo "   Bot:    http://127.0.0.1:5000 (pid $BOT_PID)"
 echo "   Ngrok:  $PUBLIC_URL (pid $NGROK_PID)"
-echo "   Stop:   bash scripts/stop_bot.sh"
+echo "   Stop:   bash scripts/stop_stack.sh"
 echo ""
+
+mkdir -p run
+echo "$BOT_PID" > run/aria_bot.pid
+echo "$NGROK_PID" > run/ngrok.pid
+
+if [[ "${STACK_DETACH:-}" == "1" ]]; then
+  trap - EXIT INT TERM
+  disown "$BOT_PID" "$NGROK_PID" 2>/dev/null || true
+  exit 0
+fi
 
 wait "$BOT_PID"

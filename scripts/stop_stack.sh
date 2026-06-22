@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bash scripts/stop_bot.sh 2>/dev/null || true
-for f in run/hermes.pid run/background.pid run/notification.pid; do
+for f in run/aria_bot.pid run/ngrok.pid run/hermes.pid run/background.pid run/notification.pid; do
   if [[ -f "$f" ]]; then
     pid="$(cat "$f" 2>/dev/null || true)"
     if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
