@@ -120,7 +120,23 @@ class SignalOrchestrator:
         else:
             pos = get_position(symbol, tf)
             from strategies.positions import sell_fraction_for_signal
-            fraction = sell_fraction_for_signal(analysis.action)
+
+            strategy_params = getattr(analysis, "strategy_params", None) or {}
+            if not strategy_params:
+                try:
+                    from strategies.registry import resolve_strategy_params
+
+                    strategy_params = resolve_strategy_params(
+                        {"symbol": symbol, "timeframe": tf},
+                        has_position=True,
+                        atr_pct=getattr(analysis, "atr_pct", 3.0),
+                        frozen_tier=pos.get("strategy_tier"),
+                    )
+                except Exception:
+                    strategy_params = {}
+            fraction = sell_fraction_for_signal(
+                analysis.action, symbol, tf, current_price, strategy_params,
+            )
             amount_sold = float(pos["amount"]) * fraction
             sell_signal = analysis.normalized_action or analysis.action
             order = TradeOrder(

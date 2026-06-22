@@ -520,7 +520,25 @@
     "vol_dump_min_multiplier": 1.4,
     "vol_dump_price_drop_pct": 15,
     "vol_dump_requires_prior_gain_pct": 5,
-    "vol_buy_boost_enabled": false
+    "vol_buy_boost_enabled": false,
+    "exit_ladder": {
+      "enabled": true,
+      "tiers": [
+        0.3,
+        0.3,
+        0.2,
+        0.2
+      ],
+      "min_tier_notional_usdt": 20
+    },
+    "trailing_stop": {
+      "enabled": true,
+      "mode": "live",
+      "atr_multiplier": 2.0,
+      "activation_gain_pct": 10,
+      "min_trail_pct": 8,
+      "max_trail_pct": 25
+    }
   },
   "stable_altcoin": {
     "enabled": true,

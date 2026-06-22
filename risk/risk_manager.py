@@ -428,6 +428,26 @@ class RiskManager:
         if not _is_partial_sell(order.signal) or order.price <= 0:
             return False, ""
 
+        params = self.config.strategy_params(order.symbol, timeframe)
+        try:
+            from strategies.registry import resolve_strategy_params
+
+            pos = get_position(order.symbol, timeframe)
+            params = resolve_strategy_params(
+                {"symbol": order.symbol, "timeframe": timeframe},
+                has_position=float(pos.get("amount", 0) or 0) > 0,
+                frozen_tier=pos.get("strategy_tier"),
+            )
+        except Exception:
+            pass
+        try:
+            from strategies.exit_ladder import ladder_enabled
+
+            if ladder_enabled(params):
+                return False, ""
+        except Exception:
+            pass
+
         limits = self._partial_sell_limits(order.symbol, timeframe)
         pos = get_position(order.symbol, timeframe)
         pos_value = float(pos.get("amount", 0)) * order.price

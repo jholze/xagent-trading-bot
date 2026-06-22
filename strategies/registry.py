@@ -57,6 +57,8 @@ _VOLATILE_STRUCTURE_KEYS = (
     "cmc_sell_min_confidence",
     "cmc_min_confidence",
     "cmc_min_hours_between_sells",
+    "exit_ladder",
+    "trailing_stop",
 )
 
 

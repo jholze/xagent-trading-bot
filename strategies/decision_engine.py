@@ -22,6 +22,7 @@ from strategies.market_structure import (
     evaluate_market_structure_buy_boost,
     evaluate_market_structure_sells,
 )
+from strategies.trailing_stop import evaluate_trailing_stop
 from intelligence.volatility_classifier import volatility_tier
 from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
 from strategies.registry import (
@@ -323,7 +324,10 @@ class DecisionEngine:
 
         tech_norm = normalize(technical.action)
         if is_sell(technical.action):
-            candidates.append((tech_norm, self.SELL_PRIORITY.get(tech_norm, 1), "technical"))
+            pri = self.SELL_PRIORITY.get(tech_norm, 1)
+            if "stop_loss" in technical.sources:
+                pri = 7
+            candidates.append((tech_norm, pri, "technical"))
 
         if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):
             candidates.append((SELL_FULL, 6, "x_stop_loss"))
@@ -385,6 +389,14 @@ class DecisionEngine:
                 sources.append(cand.source)
                 structure_rationales.append(cand.rationale)
 
+            trail = evaluate_trailing_stop(market, position, strategy_params)
+            if trail:
+                candidates.append((trail.action, trail.priority, trail.source))
+                sources.append(trail.source)
+                structure_rationales.append(trail.rationale)
+                if trail.shadow_only:
+                    sources.append("trailing_shadow")
+
         if not candidates:
             return HOLD, sources, technical.confidence, structure_rationales
 
@@ -398,7 +410,18 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
         return best[0], sources, max(technical.confidence, social_conf), structure_rationales
 
-    def _apply_shadow_mode(self, normalized: str, execution_action: str, strategy_params: dict) -> tuple:
+    def _apply_shadow_mode(
+        self,
+        normalized: str,
+        execution_action: str,
+        strategy_params: dict,
+        sources: list | None = None,
+    ) -> tuple:
+        sources = sources or []
+        if "trailing_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+
         profile = strategy_params.get("strategy_profile", "")
         if profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
             return normalized, execution_action, ""
@@ -475,7 +498,7 @@ class DecisionEngine:
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
         normalized, execution_action, shadow_action = self._apply_shadow_mode(
-            normalized, execution_action, strategy_params
+            normalized, execution_action, strategy_params, sources
         )
 
         rationale_parts = []
@@ -502,6 +525,8 @@ class DecisionEngine:
                 rationale_parts.append("multi-source consensus")
         if normalized == BUY_STRONG:
             rationale_parts.append("strong consensus")
+        if "trailing_stop" in sources:
+            rationale_parts.append("Trail->ATR stop")
         if shadow_action:
             rationale_parts.append(f"shadow->{shadow_action}")
 

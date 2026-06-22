@@ -86,6 +86,7 @@ def _deserialize_position(raw: dict) -> dict:
         "last_cmc_sell_at": raw.get("last_cmc_sell_at"),
         "recent_high": float(raw.get("recent_high", 0)),
         "strategy_tier": raw.get("strategy_tier"),
+        "exit_ladder_step": int(raw.get("exit_ladder_step", 0) or 0),
     }
 
 
@@ -108,6 +109,7 @@ def _serialize_positions() -> dict:
             "last_cmc_sell_at": p.get("last_cmc_sell_at"),
             "recent_high": float(p.get("recent_high", 0)),
             "strategy_tier": p.get("strategy_tier"),
+            "exit_ladder_step": int(p.get("exit_ladder_step", 0) or 0),
         }
     return data
 
@@ -204,6 +206,7 @@ def init_position(symbol, timeframe):
                 "last_cmc_sell_at": None,
                 "recent_high": 0.0,
                 "strategy_tier": None,
+                "exit_ladder_step": 0,
             }
 
 def get_position(symbol, timeframe):
@@ -247,8 +250,21 @@ def is_rsi_sell_tier_done(symbol: str, timeframe: str, tier: str) -> bool:
     return bool((pos.get("rsi_sell_tiers_done") or {}).get(tier))
 
 
-def sell_fraction_for_signal(signal: str) -> float:
+def sell_fraction_for_signal(
+    signal: str,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    price: float = 0.0,
+    strategy_params: dict | None = None,
+) -> float:
     """Map sell signal names to fraction of position to close."""
+    if symbol and timeframe and strategy_params:
+        from strategies.exit_ladder import resolve_sell_fraction
+
+        ladder_frac = resolve_sell_fraction(signal, symbol, timeframe, price, strategy_params)
+        if ladder_frac is not None:
+            return ladder_frac
+
     if signal in ("SELL_STOP_FULL", "SELL_FULL"):
         return 1.0
     if signal == "SELL_STOP_PARTIAL":
@@ -288,16 +304,30 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["last_action"] = "BUY"
             pos["rsi_sell_tiers_done"] = {}
             pos["recent_high"] = current_price
+            pos["exit_ladder_step"] = 0
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["last_trade_type"] = "BUY"
             if old_amount <= 0:
                 pos["strategy_tier"] = None
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
+            strategy_params = None
+            try:
+                from strategies.registry import resolve_strategy_params
+
+                strategy_params = resolve_strategy_params(
+                    {"symbol": symbol, "timeframe": timeframe},
+                    has_position=True,
+                    frozen_tier=pos.get("strategy_tier"),
+                )
+            except Exception:
+                strategy_params = None
             if amount_traded > 0:
                 sell_amount = min(Decimal(str(amount_traded)), pos["amount"])
             else:
-                fraction = sell_fraction_for_signal(signal)
+                fraction = sell_fraction_for_signal(
+                    signal, symbol, timeframe, current_price, strategy_params,
+                )
                 sell_amount = pos["amount"] * Decimal(str(fraction))
             peak = float(pos.get("peak_amount") or 0)
             if peak <= 0 and original_amount > 0:
@@ -319,6 +349,16 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             elif "20" in signal:
                 tiers["20"] = True
             pos["rsi_sell_tiers_done"] = tiers
+            if strategy_params:
+                from strategies.exit_ladder import advance_ladder_step
+
+                advance_ladder_step(
+                    pos,
+                    signal,
+                    strategy_params,
+                    amount_sold=float(sell_amount),
+                    amount_before=original_amount,
+                )
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
     save_positions()
