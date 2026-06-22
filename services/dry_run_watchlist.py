@@ -61,6 +61,9 @@ class DryRunWatchlistSync:
             prices = get_prices_batch(candidates)
             candidates = [sym for sym in candidates if float(prices.get(sym, 0) or 0) > 0]
 
+        volatile_tf = str(
+            self.config.volatile_altcoin_config.get("timeframe") or "1h"
+        ).strip() or "1h"
         coins = []
         for sym in candidates[:max_coins]:
             ticker = sym.split("/")[0]
@@ -68,7 +71,7 @@ class DryRunWatchlistSync:
                 "symbol": sym,
                 "ticker": ticker,
                 "name": ticker,
-                "timeframe": "4h",
+                "timeframe": volatile_tf,
                 "active": True,
                 "source": "cmc_trending",
             })

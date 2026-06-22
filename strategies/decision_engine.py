@@ -24,7 +24,12 @@ from strategies.market_structure import (
 )
 from intelligence.volatility_classifier import volatility_tier
 from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
-from strategies.registry import get_strategy, resolve_coin_config, resolve_strategy_params
+from strategies.registry import (
+    get_strategy,
+    resolve_coin_config,
+    resolve_effective_timeframe,
+    resolve_strategy_params,
+)
 
 
 class DecisionEngine:
@@ -44,13 +49,30 @@ class DecisionEngine:
         self.market = market_service or MarketService()
 
     def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
-        coin = resolve_coin_config(coin)
+        symbol = coin.get("symbol", "")
+        watchlist_tf = coin.get("timeframe", "4h")
+        tf = resolve_effective_timeframe(coin)
+        from intelligence.strategy_backtest import classify_coin
+
+        if tf == watchlist_tf and classify_coin(symbol, coin.get("strategy_params")) != "large_cap":
+            peek = self.market.fetch_indicators(symbol, "4h", current_price)
+            atr_peek = float(peek.get("atr_pct", 3.0))
+            tf_refined = resolve_effective_timeframe(coin, atr_pct=atr_peek)
+            if tf_refined != tf:
+                tf = tf_refined
+                indicators = self.market.fetch_indicators(symbol, tf, current_price)
+                atr_pct = float(indicators.get("atr_pct", 3.0))
+            else:
+                indicators = peek
+                atr_pct = atr_peek
+        else:
+            indicators = self.market.fetch_indicators(symbol, tf, current_price)
+            atr_pct = float(indicators.get("atr_pct", 3.0))
+
+        coin = resolve_coin_config({**coin, "timeframe": tf})
         symbol = coin["symbol"]
-        tf = coin.get("timeframe", "4h")
-        indicators = self.market.fetch_indicators(symbol, tf, current_price)
         pos = get_position(symbol, tf)
         has_position = float(pos["amount"]) > 0
-        atr_pct = float(indicators.get("atr_pct", 3.0))
         frozen = pos.get("strategy_tier") if has_position else None
         va_cfg = self.config.volatile_altcoin_config
         if has_position and not frozen and va_cfg.get("freeze_tier_on_entry", True):

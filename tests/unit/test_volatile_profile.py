@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from core.models import MarketContext, SignalAnalysis
 from strategies.decision_engine import DecisionEngine
-from strategies.registry import resolve_strategy_params
+from strategies.registry import resolve_effective_timeframe, resolve_strategy_params
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
 
@@ -19,6 +19,36 @@ _HERMES_H_PARAMS = {
 
 
 class TestVolatileProfile(unittest.TestCase):
+    def test_effective_timeframe_volatile_meme_without_position(self):
+        coin = {"symbol": "H/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
+        with patch(
+            "strategies.registry.get_bot_config",
+            return_value=MagicMock(
+                volatile_altcoin_config={"enabled": True, "timeframe": "1h"}
+            ),
+        ), patch("strategies.registry._has_open_position", return_value=False):
+            self.assertEqual(resolve_effective_timeframe(coin), "1h")
+
+    def test_effective_timeframe_large_cap_stays_4h(self):
+        coin = {"symbol": "BTC/USDT", "timeframe": "4h"}
+        with patch(
+            "strategies.registry.get_bot_config",
+            return_value=MagicMock(
+                volatile_altcoin_config={"enabled": True, "timeframe": "1h"}
+            ),
+        ):
+            self.assertEqual(resolve_effective_timeframe(coin), "4h")
+
+    def test_effective_timeframe_keeps_legacy_position_tf(self):
+        coin = {"symbol": "H/USDT", "timeframe": "4h"}
+        with patch(
+            "strategies.registry.get_bot_config",
+            return_value=MagicMock(
+                volatile_altcoin_config={"enabled": True, "timeframe": "1h"}
+            ),
+        ), patch("strategies.registry._has_open_position", side_effect=lambda s, tf: tf == "4h"):
+            self.assertEqual(resolve_effective_timeframe(coin), "4h")
+
     def test_resolve_volatile_profile_for_h_position(self):
         coin = {"symbol": "H/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
         with patch("strategies.registry._hermes_memory_params", return_value=dict(_HERMES_H_PARAMS)):
@@ -35,7 +65,7 @@ class TestVolatileProfile(unittest.TestCase):
             params = resolve_strategy_params(coin, has_position=False, atr_pct=49.0)
         self.assertEqual(params.get("strategy_profile"), "hermes_baseline")
         self.assertEqual(params.get("rsi_sell_30"), 70)
-        self.assertEqual(params.get("volume_multiplier"), 0.85)
+        self.assertEqual(params.get("volume_multiplier"), 1.3)
         self.assertEqual(params.get("buy_regime"), "both")
         self.assertEqual(params.get("volatility_tier"), "volatile")
 
@@ -63,7 +93,7 @@ class TestVolatileProfile(unittest.TestCase):
         with patch("strategies.registry._hermes_memory_params", return_value=None):
             params = resolve_strategy_params(coin, has_position=True, atr_pct=49.0, frozen_tier="volatile")
         self.assertEqual(params.get("strategy_profile"), "volatile_altcoin")
-        self.assertEqual(params.get("rsi_sell_30"), 67)
+        self.assertEqual(params.get("rsi_sell_30"), 68)
 
     def test_eth_explicit_not_overridden(self):
         coin = {"symbol": "ETH/USDT", "timeframe": "4h"}

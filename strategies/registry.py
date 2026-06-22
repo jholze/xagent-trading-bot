@@ -124,6 +124,64 @@ def _resolve_volatility_tier(
     return volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
 
 
+def _has_open_position(symbol: str, timeframe: str) -> bool:
+    from strategies.positions import get_position, is_open_position
+
+    return is_open_position(get_position(symbol, timeframe))
+
+
+def resolve_effective_timeframe(
+    coin: dict,
+    atr_pct: float | None = None,
+    frozen_tier: str | None = None,
+) -> str:
+    """Pick analysis timeframe: legacy positions keep their TF; volatile coins use 1h."""
+    cfg = get_bot_config()
+    symbol = coin.get("symbol", "")
+    watchlist_tf = coin.get("timeframe", "4h")
+    va_cfg = cfg.volatile_altcoin_config
+    volatile_tf = str(va_cfg.get("timeframe") or "").strip()
+
+    from intelligence.strategy_backtest import classify_coin
+
+    coin_class = classify_coin(symbol, coin.get("strategy_params"))
+    if coin_class == "large_cap":
+        return watchlist_tf
+
+    candidate_tfs = [watchlist_tf]
+    if volatile_tf:
+        candidate_tfs.extend([volatile_tf, "4h", "1h"])
+    else:
+        candidate_tfs.extend(["4h", "1h"])
+    for tf in dict.fromkeys(candidate_tfs):
+        if tf and _has_open_position(symbol, tf):
+            return tf
+
+    if not va_cfg.get("enabled", False) or not volatile_tf:
+        return watchlist_tf
+
+    if coin_class == "meme":
+        return volatile_tf
+    if va_cfg.get("micro_cap_override", True) and coin.get("market_cap_tier") == "micro":
+        return volatile_tf
+
+    volatile_sources = ("cmc_trending", "dry_run_expansion")
+    if coin.get("source") in volatile_sources:
+        if atr_pct is None:
+            return volatile_tf
+        tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+        if tier == "volatile":
+            return volatile_tf
+        return watchlist_tf
+
+    if atr_pct is not None:
+        tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+        if tier == "volatile":
+            return volatile_tf
+
+    return watchlist_tf
+
+
 def _buy_profile_source(tier: str, coin: dict, cfg) -> dict:
     from intelligence.strategy_backtest import classify_coin
 
