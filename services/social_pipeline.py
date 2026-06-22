@@ -80,7 +80,32 @@ class SocialPipeline:
                 hypothesis.symbol = symbol
             self.discovery.save_hypothesis(hypothesis)
 
+    def _claim_post(self, namespace: str, post_id: str) -> bool:
+        from bus.dedup import try_claim_id
+        from core.config import get_bot_config
+
+        arch = get_bot_config().architecture_config
+        return try_claim_id(
+            namespace,
+            post_id,
+            ttl_sec=int(arch.get("dedup_ttl_sec", 86400)),
+            key_prefix=arch.get("key_prefix", "aria:"),
+            redis_url=arch.get("redis_url"),
+        )
+
     def _already_logged(self, post_id: str) -> bool:
+        from bus.dedup import try_claim_id
+        from core.config import get_bot_config
+
+        arch = get_bot_config().architecture_config
+        if not try_claim_id(
+            "x_post",
+            post_id,
+            ttl_sec=int(arch.get("dedup_ttl_sec", 86400)),
+            key_prefix=arch.get("key_prefix", "aria:"),
+            redis_url=arch.get("redis_url"),
+        ):
+            return True
         from data_manager import load_x_posts
         return any(
             p.get("post_id") == post_id
@@ -179,7 +204,7 @@ class SocialPipeline:
                 continue
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100)
             self._cycle_cmc_signals.append(signal)
-            if post.post_id not in logged_ids:
+            if post.post_id not in logged_ids and self._claim_post("cmc_post", post.post_id):
                 log_cmc_post(signal, post.post_id)
                 logged_ids.add(post.post_id)
                 log(
@@ -254,7 +279,7 @@ class SocialPipeline:
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100.0)
             self._cycle_lc_signals.append(signal)
             sid = signal.post_id
-            if sid and sid not in logged_ids:
+            if sid and sid not in logged_ids and self._claim_post("lc_signal", sid):
                 log_lc_signal(signal, sid)
                 logged_ids.add(sid)
                 log(

@@ -147,29 +147,59 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print("Prüfe Coins + X-Signale:\n")
 
             if social_pipeline:
-                accuracy = social_pipeline.run_cycle_fetches(watchlist)
-                if not use_dashboard and (accuracy["outcomes_updated"] or accuracy["trust_updates"]):
-                    print(f"   Accuracy update: {accuracy['outcomes_updated']} outcomes, {accuracy['trust_updates']} trust scores")
+                from services.background_runtime import (
+                    get_last_accuracy,
+                    register_pipeline,
+                    request_social_fetch,
+                    run_social_cycle_sync,
+                    social_ever_fetched,
+                    social_fetch_fresh,
+                )
 
-            x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
-            cmc_signals = social_pipeline.refresh_cmc_signals() if social_pipeline else []
-            lc_signals = social_pipeline.refresh_lc_signals() if social_pipeline else []
+                register_pipeline(social_pipeline)
+                arch = bot_config.architecture_config
+                bg_social = arch.get("background_social_enabled", True)
+                max_age = float(arch.get("social_snapshot_max_age_sec", 300))
+                accuracy = {}
 
-            if bot_config.architecture_config.get("use_signal_snapshot"):
-                try:
-                    from bus.publisher import publish_signal_snapshot
-                    from bus.signals import signal_snapshot_store
+                if bg_social:
+                    if not social_ever_fetched():
+                        accuracy = run_social_cycle_sync(watchlist)
+                    elif social_fetch_fresh(max_age):
+                        accuracy = get_last_accuracy()
+                    else:
+                        request_social_fetch(watchlist)
+                        accuracy = get_last_accuracy()
+                else:
+                    accuracy = social_pipeline.run_cycle_fetches(watchlist)
 
-                    snap = signal_snapshot_store.publish(
-                        x_signals=[getattr(s, "__dict__", s) for s in (x_signals or [])[:50]],
-                        cmc_signals=[getattr(s, "__dict__", s) for s in (cmc_signals or [])[:50]],
-                        lc_signals=[getattr(s, "__dict__", s) for s in (lc_signals or [])[:50]],
-                        watchlist_symbols=active_symbols,
+                if not use_dashboard and (accuracy.get("outcomes_updated") or accuracy.get("trust_updates")):
+                    print(
+                        f"   Accuracy update: {accuracy.get('outcomes_updated', 0)} outcomes, "
+                        f"{accuracy.get('trust_updates', 0)} trust scores"
                     )
-                    arch = bot_config.architecture_config
-                    publish_signal_snapshot(snap, key_prefix=arch.get("key_prefix", "aria:"), redis_url=arch.get("redis_url"))
-                except Exception as e:
-                    log(f"Signal snapshot publish failed: {e}", "WARNING")
+
+            use_snapshot = bot_config.architecture_config.get("use_signal_snapshot")
+            if social_pipeline and use_snapshot:
+                from bus.signals import signal_snapshot_store
+
+                cached = signal_snapshot_store.get_signals(
+                    max_age_sec=float(bot_config.architecture_config.get("social_snapshot_max_age_sec", 300))
+                )
+                if cached:
+                    x_signals, cmc_signals, lc_signals = cached
+                else:
+                    x_signals = social_pipeline.refresh_signals()
+                    cmc_signals = social_pipeline.refresh_cmc_signals()
+                    lc_signals = social_pipeline.refresh_lc_signals()
+            elif social_pipeline:
+                x_signals = social_pipeline.refresh_signals()
+                cmc_signals = social_pipeline.refresh_cmc_signals()
+                lc_signals = social_pipeline.refresh_lc_signals()
+            else:
+                x_signals = analyzer.get_top_signals() if analyzer else []
+                cmc_signals = []
+                lc_signals = []
 
             if trend_engine and x_signals:
                 candidates = trend_engine.cross_validate(x_signals, run_scan=False)
@@ -304,11 +334,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             )
             send_cycle_summary(summary)
 
-            try:
-                from services.strategy_backtest_worker import tick_strategy_backtest
-                tick_strategy_backtest()
-            except Exception as e:
-                log(f"Strategy backtest tick failed: {e}", "WARNING")
+            if not bot_config.architecture_config.get("background_backtest_enabled", True):
+                try:
+                    from services.strategy_backtest_worker import tick_strategy_backtest
+
+                    tick_strategy_backtest()
+                except Exception as e:
+                    log(f"Strategy backtest tick failed: {e}", "WARNING")
 
             sleep_seconds = max(0, interval - cycle_elapsed)
             if sleep_seconds == 0 and cycle_elapsed >= interval:
@@ -344,6 +376,12 @@ if __name__ == "__main__":
 
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
+    try:
+        from services.background_runtime import register_pipeline
+
+        register_pipeline(social_pipeline)
+    except Exception as e:
+        log(f"Background runtime pipeline register skipped: {e}", "WARNING")
     sandbox = PaperSandbox()
     trend_engine = TrendEngine()
     price_thread = threading.Thread(

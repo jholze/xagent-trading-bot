@@ -250,6 +250,11 @@ class BotConfig:
             "heartbeat_ttl_sec": 120,
             "heartbeat_warn_enabled": True,
             "use_signal_snapshot": False,
+            "background_social_enabled": True,
+            "background_backtest_enabled": True,
+            "background_social_interval_sec": 0,
+            "social_snapshot_max_age_sec": 300,
+            "dedup_ttl_sec": 86400,
         }
         raw = self._raw.get("architecture", {})
         return {**defaults, **raw}

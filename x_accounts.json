@@ -1,11 +1,11 @@
 [
   {
     "handle": "CryptoCapo_",
-    "trust_score": 40.1,
+    "trust_score": 38.1,
     "enabled": true,
     "notes": "Strong macro calls",
-    "accuracy_samples": 5,
-    "hit_rate": 0.4
+    "accuracy_samples": 6,
+    "hit_rate": 0.333
   },
   {
     "handle": "Pentosh1",
@@ -55,11 +55,11 @@
   },
   {
     "handle": "TechDev_52",
-    "trust_score": 99,
+    "trust_score": 95.0,
     "enabled": true,
     "notes": "BTC & crypto cycle analysis",
-    "accuracy_samples": 5,
-    "hit_rate": 1.0
+    "accuracy_samples": 7,
+    "hit_rate": 0.857
   },
   {
     "handle": "income_sharks",
@@ -69,9 +69,11 @@
   },
   {
     "handle": "TheCryptoDog",
-    "trust_score": 75,
+    "trust_score": 62.5,
     "enabled": true,
-    "notes": "Meme and narrative plays"
+    "notes": "Meme and narrative plays",
+    "accuracy_samples": 3,
+    "hit_rate": 0.333
   },
   {
     "handle": "SmartContracter",

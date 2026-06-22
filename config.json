@@ -198,7 +198,12 @@
     "min_hours_after_sell_before_rebuy": 4.0,
     "heartbeat_ttl_sec": 120,
     "heartbeat_warn_enabled": true,
-    "use_signal_snapshot": false
+    "use_signal_snapshot": false,
+    "background_social_enabled": true,
+    "background_backtest_enabled": true,
+    "background_social_interval_sec": 0,
+    "social_snapshot_max_age_sec": 300,
+    "dedup_ttl_sec": 86400
   },
   "risk": {
     "max_daily_buys": 8,

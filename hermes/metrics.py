@@ -62,6 +62,51 @@ def enrich_sandbox_metrics(
     return metrics
 
 
+def max_drawdown_pct(equity_curve: list[float]) -> float:
+    if not equity_curve:
+        return 0.0
+    peak = equity_curve[0]
+    max_dd = 0.0
+    for value in equity_curve:
+        peak = max(peak, value)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - value) / peak * 100.0)
+    return round(max_dd, 2)
+
+
+def annualized_return_pct(total_return_pct: float, days: float) -> float:
+    if days <= 0:
+        return 0.0
+    return round(((1 + total_return_pct / 100.0) ** (365.0 / days) - 1) * 100.0, 2)
+
+
+def format_job_report(
+    *,
+    kind: str,
+    symbol: str = "",
+    days: float = 0,
+    n_trades: int = 0,
+    total_return_pct: float = 0.0,
+    sharpe: float = 0.0,
+    max_drawdown_pct: float = 0.0,
+    pnl_delta: float | None = None,
+    extra_lines: list[str] | None = None,
+) -> str:
+    """Unified Telegram summary for evaluation jobs (Phase 4)."""
+    lines = [f"📊 <b>{kind}</b>"]
+    if symbol:
+        lines.append(f"Symbol: <b>{symbol}</b>")
+    if days:
+        lines.append(f"Zeitraum: {days:.0f}d")
+    lines.append(f"Trades: {n_trades}")
+    lines.append(f"Return: {total_return_pct:+.1f}% | Sharpe: {sharpe:.2f} | Max DD: {max_drawdown_pct:.1f}%")
+    if pnl_delta is not None:
+        lines.append(f"PnL-Delta: ${pnl_delta:+.2f}")
+    for line in extra_lines or []:
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def sharpe_from_trades(trades: list) -> float:
     sells = [t for t in trades if t.get("type") == "SELL"]
     returns = []

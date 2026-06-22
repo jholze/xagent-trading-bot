@@ -1,9 +1,11 @@
 """In-process message bus (Redis optional, in-memory default)."""
 
+from bus.dedup import try_claim_id
 from bus.heartbeats import heartbeat_registry
 from bus.jobs import heavy_job_queue
 from bus.notifications import NotificationPublisher, notification_publisher
 from bus.sessions import session_manager
+from bus.signals import signal_snapshot_store
 
 __all__ = [
     "NotificationPublisher",
@@ -11,4 +13,6 @@ __all__ = [
     "heartbeat_registry",
     "heavy_job_queue",
     "session_manager",
+    "signal_snapshot_store",
+    "try_claim_id",
 ]

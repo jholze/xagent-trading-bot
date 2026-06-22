@@ -73,16 +73,22 @@ def analyze_churn(
 
 
 def format_telegram_summary(result: dict) -> str:
+    from hermes.metrics import format_job_report
+
     sym = result.get("symbol", "?")
     blocked = result.get("blocked_rebuys", 0)
     pairs = result.get("churn_pairs", 0)
     min_h = result.get("min_hours_rebuy", 4)
-    lines = [
-        f"📊 <b>Churn Replay {sym}</b>",
+    extra = [
         f"Sell→Buy-Paare: {pairs}",
-        f"Würde Rebuy-Cooldown ({min_h:.0f}h) blockieren: <b>{blocked}</b>",
+        f"Rebuy-Cooldown ({min_h:.0f}h) würde blockieren: <b>{blocked}</b>",
     ]
     for p in (result.get("pairs") or [])[:5]:
         flag = "🚫" if p.get("would_block_rebuy") else "✅"
-        lines.append(f"{flag} {p.get('gap_hours')}h nach Sell")
-    return "\n".join(lines)
+        extra.append(f"{flag} {p.get('gap_hours')}h nach Sell")
+    return format_job_report(
+        kind=f"Churn Replay {sym}",
+        symbol=sym,
+        n_trades=result.get("orders", 0),
+        extra_lines=extra,
+    )

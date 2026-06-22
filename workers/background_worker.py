@@ -12,12 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from core.config import get_bot_config
 from logger import log
 from services.architecture_runtime import ensure_started
+from services.background_runtime import ensure_started as ensure_background
 
 
 def main():
     cfg = get_bot_config()
     ensure_started(force_refresh=True)
-    log("Background worker idle (in-process queue active in monolith)", "INFO")
+    ensure_background()
+    log("Background worker running (social + backtest loop in monolith mode)", "INFO")
     while True:
         try:
             from bus.heartbeats import heartbeat_registry

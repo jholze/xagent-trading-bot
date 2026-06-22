@@ -29,9 +29,11 @@ def ensure_started(force_refresh: bool = False):
             return
 
         from bus.jobs import heavy_job_queue
+        from services.background_runtime import ensure_started as ensure_background
 
         if not heavy_job_queue.running:
             heavy_job_queue.start()
+        ensure_background()
 
         if mode == "direct":
             _started = True
@@ -66,7 +68,15 @@ def _heartbeat_tick(cfg):
         ttl_sec=ttl,
         key_prefix=prefix,
     )
-    for worker in ("price_loop", "ask_bridge", "webhook_watchdog", "heavy_job_worker", "notification_worker"):
+    for worker in (
+        "price_loop",
+        "ask_bridge",
+        "webhook_watchdog",
+        "heavy_job_worker",
+        "notification_worker",
+        "background_social",
+        "strategy_backtest",
+    ):
         heartbeat_registry.beat(worker, ttl_sec=ttl, key_prefix=prefix)
     if hermes_runs_in_process(cfg):
         heartbeat_registry.beat("hermes", ttl_sec=ttl, key_prefix=prefix)
