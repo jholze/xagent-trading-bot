@@ -203,7 +203,13 @@
     "background_backtest_enabled": true,
     "background_social_interval_sec": 0,
     "social_snapshot_max_age_sec": 300,
-    "dedup_ttl_sec": 86400
+    "dedup_ttl_sec": 86400,
+    "trading_engine_mode": "in_process",
+    "ledger_lock_enabled": true,
+    "ledger_lock_ttl_sec": 30,
+    "ledger_lock_wait_sec": 15,
+    "trade_intent_queue_enabled": false,
+    "trade_intent_async_auto_only": true
   },
   "risk": {
     "max_daily_buys": 8,

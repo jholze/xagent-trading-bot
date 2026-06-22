@@ -132,6 +132,14 @@ class SignalOrchestrator:
                 source=source,
             )
 
+        from bus.trade_intents import make_idempotency_key
+        from data_manager import resolve_ledger_scope
+
+        scope = resolve_ledger_scope(self.config.trading_mode)
+        idem = make_idempotency_key(
+            symbol, tf, order.signal or analysis.normalized_action, source, scope
+        )
+        order.idempotency_key = idem
         return self.trading.execute_order(
             order,
             tf,
@@ -139,6 +147,7 @@ class SignalOrchestrator:
             trust_score=trust_score,
             confidence=analysis.confidence,
             request_extra=request_extra or None,
+            idempotency_key=idem,
         )
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:

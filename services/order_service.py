@@ -124,6 +124,15 @@ class OrderService:
                 return o
         return None
 
+    def find_by_idempotency_key(self, key: str) -> Optional[dict]:
+        if not key:
+            return None
+        data = self._load()
+        for order in reversed(data.get("orders", [])):
+            if order.get("idempotency_key") == key:
+                return order
+        return None
+
     def create_from_request(
         self,
         order: TradeOrder,
@@ -133,9 +142,11 @@ class OrderService:
         request_extra: dict = None,
         risk: RiskDecision = None,
         telegram_token: str = None,
+        idempotency_key: str = None,
     ) -> dict:
         data = self._load()
         cfg = get_bot_config()
+        idem = idempotency_key or getattr(order, "idempotency_key", "") or ""
         record = {
             "id": telegram_token or uuid.uuid4().hex[:12],
             "display_seq": self._next_seq(data),
@@ -146,6 +157,7 @@ class OrderService:
             "order_type": "market",
             "source": order.source or "auto",
             "signal": order.signal or "",
+            "idempotency_key": idem or None,
             "trading_mode": cfg.trading_mode,
             "ledger_scope": self.scope,
             "request": {

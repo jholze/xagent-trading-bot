@@ -1,5 +1,3 @@
-import threading
-
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder, TradeResult
 from execution.factory import get_execution_adapter
@@ -8,9 +6,6 @@ from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
-
-
-_execute_lock = threading.Lock()
 
 
 class TradingService:
@@ -97,8 +92,37 @@ class TradingService:
         indicators: dict = None,
         order_id: str = None,
         request_extra: dict = None,
+        idempotency_key: str = None,
     ) -> TradeResult:
-        with _execute_lock:
+        from bus.trade_intents import make_idempotency_key
+        from data_manager import resolve_ledger_scope
+        from services.trading_engine_runtime import should_queue_intent, submit_trade_intent
+
+        scope = resolve_ledger_scope(self.config.trading_mode)
+        idem = idempotency_key or order.idempotency_key or ""
+        if not idem and source != "manual":
+            idem = make_idempotency_key(
+                order.symbol, timeframe, order.signal or order.type, source, scope
+            )
+            order.idempotency_key = idem
+
+        if should_queue_intent(source, self.config):
+            return submit_trade_intent(
+                order,
+                timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
+                order_id=order_id,
+                request_extra=request_extra,
+                idempotency_key=idem,
+                scope=scope,
+            )
+
+        from bus.locks import ledger_lock
+
+        with ledger_lock(scope, cfg=self.config):
             return self._execute_order_locked(
                 order,
                 timeframe,
@@ -108,7 +132,29 @@ class TradingService:
                 indicators=indicators,
                 order_id=order_id,
                 request_extra=request_extra,
+                idempotency_key=idem,
+                _lock_held=True,
             )
+
+    def _result_from_ledger(self, record: dict) -> TradeResult:
+        status = record.get("status", "")
+        side = (record.get("side") or "").upper()
+        symbol = record.get("symbol", "")
+        execution = record.get("execution") or {}
+        if status == "filled":
+            return TradeResult(
+                True,
+                side or "BUY",
+                symbol,
+                amount=float(execution.get("amount") or record.get("request", {}).get("amount") or 0),
+                price=float(execution.get("price") or record.get("request", {}).get("price") or 0),
+                usdt_amount=float(execution.get("usdt") or record.get("request", {}).get("usdt") or 0),
+                pnl=float(record.get("pnl") or 0),
+                message="Idempotent replay",
+                order_id=record.get("id", ""),
+            )
+        msg = record.get("error") or f"Prior order status: {status}"
+        return TradeResult(False, side or "BUY", symbol, message=msg, order_id=record.get("id", ""))
 
     def _execute_order_locked(
         self,
@@ -120,10 +166,18 @@ class TradingService:
         indicators: dict = None,
         order_id: str = None,
         request_extra: dict = None,
+        idempotency_key: str = None,
+        _lock_held: bool = False,
     ) -> TradeResult:
         self.refresh()
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
+        idem = idempotency_key or order.idempotency_key or ""
+
+        if idem and not ledger_id:
+            prior = ledger.find_by_idempotency_key(idem)
+            if prior and prior.get("status") in ("filled", "rejected", "executing", "failed"):
+                return self._result_from_ledger(prior)
 
         ok, reason = self.can_execute(source=source, trust_score=trust_score)
         if not ok:
@@ -164,6 +218,7 @@ class TradingService:
                 status="executing",
                 risk=decision,
                 request_extra=request_extra,
+                idempotency_key=idem,
             )
             ledger_id = created["id"]
             approved_order.order_id = ledger_id

@@ -255,6 +255,12 @@ class BotConfig:
             "background_social_interval_sec": 0,
             "social_snapshot_max_age_sec": 300,
             "dedup_ttl_sec": 86400,
+            "trading_engine_mode": "in_process",
+            "ledger_lock_enabled": True,
+            "ledger_lock_ttl_sec": 30,
+            "ledger_lock_wait_sec": 15,
+            "trade_intent_queue_enabled": False,
+            "trade_intent_async_auto_only": True,
         }
         raw = self._raw.get("architecture", {})
         return {**defaults, **raw}

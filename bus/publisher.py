@@ -58,6 +58,37 @@ def publish_job(
         pass
 
 
+def publish_trade_intent(intent, *, key_prefix: str = "aria:", redis_url: str | None = None):
+    client = get_redis(redis_url, key_prefix=key_prefix)
+    if not client:
+        return
+    stream = f"{key_prefix}commands.trade"
+    order = intent.order
+    payload = {
+        "intent_id": intent.intent_id,
+        "idempotency_key": intent.idempotency_key,
+        "scope": intent.scope,
+        "source": intent.source,
+        "timeframe": intent.timeframe,
+        "order": json.dumps(
+            {
+                "type": order.type,
+                "symbol": order.symbol,
+                "price": order.price,
+                "amount": order.amount,
+                "usdt_amount": order.usdt_amount,
+                "signal": order.signal,
+            },
+            default=str,
+        )[:4000],
+        "enqueued_at": intent.intent_id,
+    }
+    try:
+        client.xadd(stream, payload, maxlen=2000, approximate=True)
+    except Exception:
+        pass
+
+
 def publish_signal_snapshot(snapshot: dict, *, key_prefix: str = "aria:", redis_url: str | None = None):
     client = get_redis(redis_url, key_prefix=key_prefix)
     if not client:

@@ -30,10 +30,12 @@ def ensure_started(force_refresh: bool = False):
 
         from bus.jobs import heavy_job_queue
         from services.background_runtime import ensure_started as ensure_background
+        from services.trading_engine_runtime import ensure_started as ensure_trading_engine
 
         if not heavy_job_queue.running:
             heavy_job_queue.start()
         ensure_background()
+        ensure_trading_engine()
 
         if mode == "direct":
             _started = True
@@ -76,6 +78,7 @@ def _heartbeat_tick(cfg):
         "notification_worker",
         "background_social",
         "strategy_backtest",
+        "trading_engine",
     ):
         heartbeat_registry.beat(worker, ttl_sec=ttl, key_prefix=prefix)
     if hermes_runs_in_process(cfg):
