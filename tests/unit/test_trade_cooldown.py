@@ -85,6 +85,56 @@ class TestTradeCooldown(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertAlmostEqual(decision.order.usdt_amount, 200.0, places=2)
 
+    def test_buy_blocked_after_sell_rebuy_cooldown(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        update_position(self.symbol, self.tf, "SELL_FULL", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["last_trade_at"] = datetime.now().isoformat()
+        pos["last_trade_type"] = "SELL"
+
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("architecture", {})["min_hours_after_sell_before_rebuy"] = 4.0
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=25)
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_buys_count", return_value=0), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf)
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.code, "trade_cooldown")
+        self.assertIn("Rebuy cooldown", decision.message)
+
+    def test_buy_allowed_after_sell_rebuy_cooldown_expires(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        update_position(self.symbol, self.tf, "SELL_FULL", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["last_trade_at"] = (datetime.now() - timedelta(hours=5)).isoformat()
+        pos["last_trade_type"] = "SELL"
+
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("architecture", {})["min_hours_after_sell_before_rebuy"] = 4.0
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder(type="BUY", symbol=self.symbol, price=1.0, amount=0, usdt_amount=25)
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_buys_count", return_value=0), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf)
+
+        self.assertTrue(decision.approved)
+
     def test_buy_allowed_after_cooldown_expires(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)

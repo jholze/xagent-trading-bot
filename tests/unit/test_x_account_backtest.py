@@ -186,13 +186,13 @@ class TestXAccountBacktest(unittest.TestCase):
         self.assertTrue(handled)
         mock_send.assert_called_once()
 
-    @patch("notifications.telegram_commands.x_commands.threading.Thread")
+    @patch("notifications.telegram_commands.x_commands.heavy_job_queue.enqueue")
     @patch("notifications.telegram_commands.x_commands.send_telegram_message")
-    def test_testaccount_starts_background_thread(self, mock_send, mock_thread):
-        mock_thread.return_value = MagicMock()
+    def test_testaccount_starts_background_job(self, mock_send, mock_enqueue):
+        mock_enqueue.return_value = ("job123", None)
         handled = handle("/testaccount CryptoCapo_ 45")
         self.assertTrue(handled)
-        mock_thread.assert_called_once()
+        mock_enqueue.assert_called_once()
         mock_send.assert_called_once()
         self.assertIn("45", mock_send.call_args[0][0])
 

@@ -1,0 +1,1 @@
+"""Optional standalone workers (Redis mode); monolith uses in-process threads by default."""

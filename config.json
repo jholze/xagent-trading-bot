@@ -188,6 +188,18 @@
     }
   },
   "max_daily_trades": 8,
+  "architecture": {
+    "mode": "monolith",
+    "redis_url": "redis://127.0.0.1:6379/0",
+    "key_prefix": "aria:",
+    "notification_mode": "async",
+    "notification_rate_limit_sec": 1.0,
+    "hermes_external": false,
+    "min_hours_after_sell_before_rebuy": 4.0,
+    "heartbeat_ttl_sec": 120,
+    "heartbeat_warn_enabled": true,
+    "use_signal_snapshot": false
+  },
   "risk": {
     "max_daily_buys": 8,
     "max_daily_sells": 0,

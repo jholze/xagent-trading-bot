@@ -227,7 +227,8 @@ def send_cmc_cycle_digest(signals: list):
     for s in filtered[:8]:
         lines.append(explain_cmc_signal(s))
         lines.append("")
-    return send_telegram_message("\n".join(lines).strip())
+    from bus.schemas import PRIORITY_CYCLE
+    return send_telegram_message("\n".join(lines).strip(), priority=PRIORITY_CYCLE)
 
 
 def send_lc_cycle_digest(signals: list):
@@ -244,7 +245,8 @@ def send_lc_cycle_digest(signals: list):
     for s in filtered[:8]:
         lines.append(explain_lc_signal(s))
         lines.append("")
-    return send_telegram_message("\n".join(lines).strip())
+    from bus.schemas import PRIORITY_CYCLE
+    return send_telegram_message("\n".join(lines).strip(), priority=PRIORITY_CYCLE)
 
 
 def send_x_cycle_digest(signals: list, skip_post_ids: set = None):
@@ -267,7 +269,8 @@ def send_x_cycle_digest(signals: list, skip_post_ids: set = None):
     for s in filtered[:6]:
         lines.append(explain_x_signal(s))
         lines.append("")
-    return send_telegram_message("\n".join(lines).strip())
+    from bus.schemas import PRIORITY_CYCLE
+    return send_telegram_message("\n".join(lines).strip(), priority=PRIORITY_CYCLE)
 
 
 def send_x_recommendation_message(recommendation):
@@ -310,7 +313,8 @@ def send_cycle_summary(text: str):
     from data_manager import get_config
     if not get_config().get("observability", {}).get("notify_on_cycle", False):
         return False
-    return send_telegram_message(text)
+    from bus.schemas import PRIORITY_CYCLE
+    return send_telegram_message(text, priority=PRIORITY_CYCLE)
 
 
 def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> bool:
@@ -342,7 +346,8 @@ def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> boo
         return False
 
 
-def send_telegram_message(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """Synchronous Telegram HTTP send (used by notification worker)."""
     bot_token = _bot_token()
     target_chat = str(chat_id or _chat_id() or "").strip()
     if not bot_token or not target_chat:
@@ -372,6 +377,45 @@ def send_telegram_message(text, reply_markup=None, *, chat_id: str | int | None 
     except Exception as e:
         log(f"Error sending Telegram message: {e}", "WARNING")
         return False
+
+
+def send_telegram_message(
+    text,
+    reply_markup=None,
+    *,
+    chat_id: str | int | None = None,
+    parse_mode: str = "HTML",
+    priority: int | None = None,
+):
+    from bus.schemas import PRIORITY_CYCLE, PRIORITY_URGENT
+    from core.config import get_bot_config
+
+    prio = PRIORITY_URGENT if priority is None else int(priority)
+    cfg = get_bot_config()
+    mode = cfg.architecture_config.get("notification_mode", "async")
+
+    if mode == "async" and prio >= PRIORITY_CYCLE:
+        try:
+            from bus.notifications import notification_publisher
+            from services.architecture_runtime import ensure_started
+
+            ensure_started()
+            if notification_publisher.running:
+                notification_publisher.enqueue(
+                    text,
+                    priority=prio,
+                    chat_id=chat_id,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    kind="cycle" if prio >= PRIORITY_CYCLE else "message",
+                )
+                return True
+        except Exception as e:
+            log(f"Async notification fallback to sync: {e}", "WARNING")
+
+    return _send_telegram_direct(
+        text, reply_markup=reply_markup, chat_id=chat_id, parse_mode=parse_mode
+    )
 
 
 def send_telegram_buttons(text, buttons):

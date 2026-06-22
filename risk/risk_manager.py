@@ -491,12 +491,22 @@ class RiskManager:
 
         last_at = pos.get("last_trade_at")
         last_type = pos.get("last_trade_type")
-        if not last_at or last_type != order.type:
+        if not last_at:
             return False, ""
 
         try:
             last_ts = datetime.fromisoformat(str(last_at).replace("Z", ""))
         except Exception:
+            return False, ""
+
+        if order.type == "BUY" and last_type == "SELL":
+            blocked, reason = self._rebuy_after_sell_blocked(
+                order, timeframe, source, last_ts, params, defaults
+            )
+            if blocked:
+                return True, reason
+
+        if last_type != order.type:
             return False, ""
 
         if order.type == "BUY":
@@ -519,6 +529,32 @@ class RiskManager:
             return True, (
                 f"Trade cooldown: {elapsed:.1f}h since last {order.type} "
                 f"(min {min_hours:.1f}h)"
+            )
+        return False, ""
+
+    def _rebuy_after_sell_blocked(
+        self,
+        order: TradeOrder,
+        timeframe: str,
+        source: str,
+        last_ts: datetime,
+        params: dict,
+        defaults: dict,
+    ) -> tuple[bool, str]:
+        if source == "manual":
+            return False, ""
+        min_hours = float(
+            params.get("min_hours_after_sell_before_rebuy")
+            or defaults.get("min_hours_after_sell_before_rebuy")
+            or self.config.min_hours_after_sell_before_rebuy
+        )
+        if min_hours <= 0:
+            return False, ""
+        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+        if elapsed < min_hours:
+            return True, (
+                f"Rebuy cooldown: {elapsed:.1f}h since last SELL "
+                f"(min {min_hours:.1f}h after sell)"
             )
         return False, ""
 

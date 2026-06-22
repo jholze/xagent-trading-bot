@@ -112,6 +112,11 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
         try:
             cycle_started = time.time()
             bot_config.refresh()
+            try:
+                from services.architecture_runtime import ensure_started
+                ensure_started()
+            except Exception as e:
+                log(f"Architecture runtime tick failed: {e}", "WARNING")
             use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
 
             if not use_dashboard and os.isatty(1):
@@ -149,6 +154,22 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             x_signals = social_pipeline.refresh_signals() if social_pipeline else (analyzer.get_top_signals() if analyzer else [])
             cmc_signals = social_pipeline.refresh_cmc_signals() if social_pipeline else []
             lc_signals = social_pipeline.refresh_lc_signals() if social_pipeline else []
+
+            if bot_config.architecture_config.get("use_signal_snapshot"):
+                try:
+                    from bus.publisher import publish_signal_snapshot
+                    from bus.signals import signal_snapshot_store
+
+                    snap = signal_snapshot_store.publish(
+                        x_signals=[getattr(s, "__dict__", s) for s in (x_signals or [])[:50]],
+                        cmc_signals=[getattr(s, "__dict__", s) for s in (cmc_signals or [])[:50]],
+                        lc_signals=[getattr(s, "__dict__", s) for s in (lc_signals or [])[:50]],
+                        watchlist_symbols=active_symbols,
+                    )
+                    arch = bot_config.architecture_config
+                    publish_signal_snapshot(snap, key_prefix=arch.get("key_prefix", "aria:"), redis_url=arch.get("redis_url"))
+                except Exception as e:
+                    log(f"Signal snapshot publish failed: {e}", "WARNING")
 
             if trend_engine and x_signals:
                 candidates = trend_engine.cross_validate(x_signals, run_scan=False)
@@ -346,8 +367,15 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Ask bridge poller not started: {e}", "WARNING")
 
+    try:
+        from services.architecture_runtime import ensure_started
+        ensure_started()
+    except Exception as e:
+        log(f"Architecture runtime start failed: {e}", "WARNING")
+
     bot_config = get_bot_config()
-    if bot_config.hermes_enabled:
+    from services.architecture_runtime import hermes_runs_in_process
+    if hermes_runs_in_process(bot_config):
         from hermes.agent import HermesAgent
 
         hermes_interval = int(bot_config.hermes_config.get("cycle_interval_sec", 3600))

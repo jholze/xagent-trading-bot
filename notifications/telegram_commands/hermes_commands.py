@@ -1,6 +1,8 @@
-import threading
+import os
 
+from bus.jobs import heavy_job_queue
 from hermes.agent import HermesAgent
+from notifications.telegram_commands.command_context import current_chat_id
 from hermes.memory import store
 from notifications.telegram_commands.usage_hints import hint
 from notifications.user_explain import explain_hermes_cycle
@@ -37,8 +39,17 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/hermes_run":
-        send_telegram_message("🔄 Hermes learning cycle started…")
-        threading.Thread(target=_run_hermes_cycle, daemon=True).start()
+        chat_id = current_chat_id() or os.getenv("TELEGRAM_CHAT_ID", "")
+        job_id, err = heavy_job_queue.enqueue(
+            "hermes_run",
+            chat_id,
+            _run_hermes_cycle,
+            ttl_minutes=120,
+        )
+        if err:
+            send_telegram_message(err)
+            return True
+        send_telegram_message(f"🔄 Hermes learning cycle started (Job {job_id})…")
         return True
 
     if text.startswith("/hermes"):

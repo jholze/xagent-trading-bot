@@ -238,6 +238,37 @@ class BotConfig:
         return bool(self.hermes_config.get("enabled", False))
 
     @property
+    def architecture_config(self) -> dict:
+        defaults = {
+            "mode": "monolith",
+            "redis_url": "redis://127.0.0.1:6379/0",
+            "key_prefix": "aria:",
+            "notification_mode": "async",
+            "notification_rate_limit_sec": 1.0,
+            "hermes_external": False,
+            "min_hours_after_sell_before_rebuy": 4.0,
+            "heartbeat_ttl_sec": 120,
+            "heartbeat_warn_enabled": True,
+            "use_signal_snapshot": False,
+        }
+        raw = self._raw.get("architecture", {})
+        return {**defaults, **raw}
+
+    @property
+    def architecture_mode(self) -> str:
+        return str(self.architecture_config.get("mode", "monolith"))
+
+    @property
+    def min_hours_after_sell_before_rebuy(self) -> float:
+        arch = self.architecture_config
+        risk = self.risk_config
+        return float(
+            arch.get("min_hours_after_sell_before_rebuy")
+            or risk.get("min_hours_after_sell_before_rebuy")
+            or 4.0
+        )
+
+    @property
     def hermes_live_evidence_config(self) -> dict:
         return self.hermes_config.get("live_evidence", {})
 

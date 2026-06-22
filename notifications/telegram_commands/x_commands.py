@@ -1,7 +1,10 @@
+import os
 import threading
 from datetime import datetime
 
+from bus.jobs import heavy_job_queue
 from data_manager import get_config, load_x_accounts, load_x_posts, save_x_accounts
+from notifications.telegram_commands.command_context import current_chat_id
 from intelligence.x_account_backtest import XAccountBacktester
 from notifications.telegram_commands.command_context import activate_command
 from notifications.telegram_commands.usage_hints import hint
@@ -215,13 +218,18 @@ def handle(text: str) -> bool:
         if not handle:
             send_telegram_message(hint("testaccount"))
             return True
-        send_telegram_message(f"⏳ Backtest für @{handle} ({days} Tage) gestartet…")
-        thread = threading.Thread(
-            target=_run_backtest,
-            args=(handle, days),
-            daemon=True,
+        chat_id = current_chat_id() or os.getenv("TELEGRAM_CHAT_ID", "")
+        job_id, err = heavy_job_queue.enqueue(
+            "testaccount",
+            chat_id,
+            lambda: _run_backtest(handle, days),
+            params={"handle": handle, "days": days},
+            ttl_minutes=90,
         )
-        thread.start()
+        if err:
+            send_telegram_message(err)
+            return True
+        send_telegram_message(f"⏳ Backtest für @{handle} ({days} Tage) gestartet (Job {job_id})…")
         return True
 
     return False

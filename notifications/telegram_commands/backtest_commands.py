@@ -1,9 +1,11 @@
+import os
 from datetime import datetime, timedelta
 
+from bus.jobs import heavy_job_queue
 from data_manager import get_strategy_backtest_entry, list_strategy_targets, save_strategy_backtest_entry
 from intelligence.strategy_backtest import StrategyBacktester, coin_key
+from notifications.telegram_commands.command_context import activate_command, current_chat_id
 from services.strategy_backtest_worker import StrategyBacktestWorker
-from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 _FORCE_COOLDOWN: dict[str, datetime] = {}
@@ -115,24 +117,37 @@ def handle(text: str) -> bool:
             send_telegram_message(f"❌ {symbol} nicht in config.strategies")
             return True
         tf = entry.get("timeframe", "4h")
-        send_telegram_message(f"⏳ Backtest <b>{symbol}</b> {tf} gestartet…")
-        try:
-            backtester = StrategyBacktester()
-            result = backtester.compare_variants(symbol, tf, entry, days=days or None)
-            m = result.metrics
-            msg = (
-                f"📊 <b>{symbol}</b> {tf} ({result.days}d)\n"
-                f"Signale: {m.signal_churn} | PnL sim: ${m.pnl_sim:.1f} | Win: {m.win_rate:.0%}\n"
-                f"ATR: {m.atr_pct:.1f}% | US-vol: {m.volume_profile.us_session_volume_ratio:.0%}"
-            )
-            if result.best_variant:
-                msg += f"\nBessere Variante: +{result.improvement_pct:.1f}% — <code>{result.best_variant}</code>"
-            send_telegram_message(msg)
-            StrategyBacktestWorker.get().force_enqueue(symbol, tf)
-            StrategyBacktestWorker.get().tick()
-            _FORCE_COOLDOWN[cooldown_key] = datetime.now()
-        except Exception as e:
-            send_telegram_message(f"❌ Backtest fehlgeschlagen: {e}")
+        chat_id = current_chat_id() or os.getenv("TELEGRAM_CHAT_ID", "")
+
+        def _run_force_backtest():
+            try:
+                backtester = StrategyBacktester()
+                result = backtester.compare_variants(symbol, tf, entry, days=days or None)
+                m = result.metrics
+                msg = (
+                    f"📊 <b>{symbol}</b> {tf} ({result.days}d)\n"
+                    f"Signale: {m.signal_churn} | PnL sim: ${m.pnl_sim:.1f} | Win: {m.win_rate:.0%}\n"
+                    f"ATR: {m.atr_pct:.1f}% | US-vol: {m.volume_profile.us_session_volume_ratio:.0%}"
+                )
+                if result.best_variant:
+                    msg += f"\nBessere Variante: +{result.improvement_pct:.1f}% — <code>{result.best_variant}</code>"
+                send_telegram_message(msg)
+                StrategyBacktestWorker.get().force_enqueue(symbol, tf)
+                StrategyBacktestWorker.get().tick()
+                _FORCE_COOLDOWN[cooldown_key] = datetime.now()
+            except Exception as e:
+                send_telegram_message(f"❌ Backtest fehlgeschlagen: {e}")
+
+        job_id, err = heavy_job_queue.enqueue(
+            "backtest",
+            chat_id,
+            _run_force_backtest,
+            params={"symbol": symbol, "timeframe": tf, "days": days},
+        )
+        if err:
+            send_telegram_message(err)
+            return True
+        send_telegram_message(f"⏳ Backtest <b>{symbol}</b> {tf} gestartet (Job {job_id})…")
         return True
 
     return False

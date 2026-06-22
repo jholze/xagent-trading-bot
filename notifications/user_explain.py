@@ -128,6 +128,8 @@ def explain_risk(message: str, code: str = "") -> str:
         if key in lower:
             return de
     if code == "trade_cooldown":
+        if message and "Rebuy cooldown" in message:
+            return "Kürzlich verkauft — Re-Kauf erst nach der konfigurierten Pause (verhindert sinnloses Hin-und-Her)."
         return _RISK_MESSAGES["trade cooldown"]
     if code == "max_open_positions":
         return _RISK_MESSAGES["max open positions"]
