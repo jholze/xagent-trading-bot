@@ -255,7 +255,7 @@
     "trade_intent_async_auto_only": true
   },
   "risk": {
-    "max_daily_buys": 15,
+    "max_daily_buys": 25,
     "max_daily_dca_buys": 50,
     "max_daily_dca_usdt": 1000,
     "max_daily_sells": 0,
