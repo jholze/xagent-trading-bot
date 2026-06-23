@@ -94,14 +94,10 @@ class RiskManager:
                 code="max_open_positions",
             )
 
-        daily_buys = self._daily_buys_count()
-        max_daily_buys = self._effective_max_daily_buys()
-        if max_daily_buys > 0 and daily_buys >= max_daily_buys:
-            return RiskDecision(
-                approved=False,
-                message=f"Daily buy limit reached ({daily_buys}/{max_daily_buys})",
-                code="max_daily_trades",
-            )
+        is_dca = self._is_dca_buy(source, order)
+        buy_limit = self._daily_buy_limit_blocked(is_dca)
+        if buy_limit:
+            return buy_limit
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
@@ -191,6 +187,11 @@ class RiskManager:
                 trust_factor=factors.get("trust_factor", 1.0),
             )
 
+        if is_dca:
+            dca_usdt_limit = self._daily_dca_usdt_limit_blocked(sized)
+            if dca_usdt_limit:
+                return dca_usdt_limit
+
         resolved_source = order.source if order.source not in ("", "auto") else source
         approved = TradeOrder(
             type=order.type,
@@ -224,10 +225,14 @@ class RiskManager:
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
-            "daily_buys": self._daily_buys_count(),
+            "daily_buys": self._daily_buys_count(dca_only=False if self._dca_limits_enabled() else None),
+            "daily_dca_buys": self._daily_dca_buys_count(),
+            "daily_dca_usdt": round(self._daily_dca_usdt_sum(), 2),
             "daily_sells": self._daily_sells_count(),
             "max_daily_trades": self._effective_max_daily_buys(),
             "max_daily_buys": self._effective_max_daily_buys(),
+            "max_daily_dca_buys": self._effective_max_daily_dca_buys(),
+            "max_daily_dca_usdt": self._effective_max_daily_dca_usdt(),
             "max_daily_sells": self._effective_max_daily_sells(),
             "max_position_percent": self.config.max_position_percent,
             "base_usdt_per_trade": self._base_usdt_cap(),
@@ -271,6 +276,96 @@ class RiskManager:
     def _effective_max_daily_trades(self) -> int:
         """Backward-compatible alias for buy limit."""
         return self._effective_max_daily_buys()
+
+    def _effective_max_daily_dca_buys(self) -> int:
+        if is_dry_run_enhanced(self.config.raw):
+            defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_dca_buys") is not None:
+                return int(defaults["max_daily_dca_buys"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_dca_buys") is not None:
+            return int(risk_cfg["max_daily_dca_buys"])
+        return 0
+
+    def _effective_max_daily_dca_usdt(self) -> float:
+        if is_dry_run_enhanced(self.config.raw):
+            defaults = self.config.dry_run_defaults
+            if defaults.get("max_daily_dca_usdt") is not None:
+                return float(defaults["max_daily_dca_usdt"])
+        risk_cfg = self.config.risk_config
+        if risk_cfg.get("max_daily_dca_usdt") is not None:
+            return float(risk_cfg["max_daily_dca_usdt"])
+        return 0.0
+
+    def _dca_limits_enabled(self) -> bool:
+        return self._effective_max_daily_dca_buys() > 0
+
+    @staticmethod
+    def _is_dca_buy(source: str, order: TradeOrder) -> bool:
+        return source == "dca" or order.signal == "BUY_DCA"
+
+    @staticmethod
+    def _order_is_dca(order: dict) -> bool:
+        return (
+            str(order.get("source", "")).lower() == "dca"
+            or str(order.get("signal", "")).upper() == "BUY_DCA"
+        )
+
+    @staticmethod
+    def _filled_order_usdt(order: dict) -> float:
+        for key_path in (
+            ("risk", "approved_usdt"),
+            ("execution", "usdt"),
+            ("request", "usdt"),
+        ):
+            section, field = key_path
+            raw = (order.get(section) or {}).get(field)
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    def _daily_buy_limit_blocked(self, is_dca: bool) -> RiskDecision | None:
+        if is_dca and self._dca_limits_enabled():
+            daily_dca = self._daily_dca_buys_count()
+            max_dca = self._effective_max_daily_dca_buys()
+            if daily_dca >= max_dca:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Daily DCA limit reached ({daily_dca}/{max_dca})",
+                    code="max_daily_dca_buys",
+                )
+            return None
+
+        daily_buys = self._daily_buys_count(
+            dca_only=False if self._dca_limits_enabled() else None,
+        )
+        max_daily_buys = self._effective_max_daily_buys()
+        if max_daily_buys > 0 and daily_buys >= max_daily_buys:
+            return RiskDecision(
+                approved=False,
+                message=f"Daily buy limit reached ({daily_buys}/{max_daily_buys})",
+                code="max_daily_trades",
+            )
+        return None
+
+    def _daily_dca_usdt_limit_blocked(self, sized_usdt: float) -> RiskDecision | None:
+        max_usdt = self._effective_max_daily_dca_usdt()
+        if max_usdt <= 0:
+            return None
+        spent = self._daily_dca_usdt_sum()
+        if spent + sized_usdt > max_usdt:
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Daily DCA USDT limit reached "
+                    f"(${spent:.0f}+${sized_usdt:.0f}>${max_usdt:.0f})"
+                ),
+                code="max_daily_dca_usdt",
+            )
+        return None
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
@@ -690,19 +785,36 @@ class RiskManager:
             return side
         return ""
 
-    def _daily_trades_count(self, side: str | None = None) -> int:
-        """Count filled ledger orders in the last 24h (optional filter: buy/sell)."""
+    def _daily_trades_count(
+        self,
+        side: str | None = None,
+        *,
+        dca_only: bool | None = None,
+    ) -> int:
+        """Count filled ledger orders in the last 24h (optional buy/sell + DCA filter)."""
+        return sum(1 for _ in self._iter_daily_filled_orders(side=side, dca_only=dca_only))
+
+    def _iter_daily_filled_orders(
+        self,
+        *,
+        side: str | None = None,
+        dca_only: bool | None = None,
+    ):
         from data_manager import load_orders, resolve_ledger_scope
 
         cutoff = datetime.now() - timedelta(hours=24)
         scope = resolve_ledger_scope(self.config.trading_mode)
-        count = 0
         want = (side or "").lower() or None
         for order in load_orders(scope).get("orders", []):
             if order.get("status") != "filled":
                 continue
             order_side = self._order_side(order)
             if want and order_side != want:
+                continue
+            is_dca = self._order_is_dca(order)
+            if dca_only is True and not is_dca:
+                continue
+            if dca_only is False and is_dca:
                 continue
             ts_raw = (
                 order.get("timestamps", {}).get("filled")
@@ -714,11 +826,18 @@ class RiskManager:
             except Exception:
                 continue
             if ts >= cutoff:
-                count += 1
-        return count
+                yield order
 
-    def _daily_buys_count(self) -> int:
-        return self._daily_trades_count("buy")
+    def _daily_buys_count(self, *, dca_only: bool | None = None) -> int:
+        return self._daily_trades_count("buy", dca_only=dca_only)
+
+    def _daily_dca_buys_count(self) -> int:
+        return self._daily_buys_count(dca_only=True)
+
+    def _daily_dca_usdt_sum(self) -> float:
+        return sum(self._filled_order_usdt(order) for order in self._iter_daily_filled_orders(
+            side="buy", dca_only=True,
+        ))
 
     def _daily_sells_count(self) -> int:
         return self._daily_trades_count("sell")

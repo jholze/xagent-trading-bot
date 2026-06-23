@@ -33,6 +33,8 @@
   "dry_run_defaults": {
     "max_daily_trades": 30,
     "max_daily_buys": 30,
+    "max_daily_dca_buys": 60,
+    "max_daily_dca_usdt": 1200,
     "max_daily_sells": 50,
     "trade_cooldown_hours": 0.5,
     "cmc_min_confidence": 55,
@@ -254,6 +256,8 @@
   },
   "risk": {
     "max_daily_buys": 15,
+    "max_daily_dca_buys": 50,
+    "max_daily_dca_usdt": 1000,
     "max_daily_sells": 0,
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,

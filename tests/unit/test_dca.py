@@ -391,6 +391,92 @@ class TestDCARisk(unittest.TestCase):
         self.assertEqual(decision.code, "trade_cooldown")
         self.assertIn("DCA interval", decision.message)
 
+    def test_dca_uses_separate_daily_buy_limit(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw["risk"]["max_daily_dca_buys"] = 5
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder(
+            type="BUY",
+            symbol=self.symbol,
+            price=1.0,
+            amount=0,
+            usdt_amount=20,
+            signal="BUY_DCA",
+            source="dca",
+        )
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_dca_buys_count", return_value=5), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf, source="dca")
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.code, "max_daily_dca_buys")
+
+    def test_dca_bypasses_general_buy_limit_when_split_enabled(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw["risk"]["max_daily_dca_buys"] = 10
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder(
+            type="BUY",
+            symbol=self.symbol,
+            price=1.0,
+            amount=0,
+            usdt_amount=20,
+            signal="BUY_DCA",
+            source="dca",
+        )
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_dca_buys_count", return_value=2), \
+             patch.object(risk, "_daily_dca_usdt_sum", return_value=40.0), \
+             patch.object(risk, "_daily_buys_count", return_value=15), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf, source="dca")
+
+        self.assertTrue(decision.approved)
+
+    def test_dca_usdt_daily_cap_blocks_oversized_addon(self):
+        from core.config import BotConfig
+        from data_manager import get_config
+
+        raw = dict(get_config())
+        raw.setdefault("risk", {})["max_daily_dca_buys"] = 50
+        raw["risk"]["max_daily_dca_usdt"] = 100
+        cfg = BotConfig()
+        cfg._raw = raw
+        risk = RiskManager(cfg)
+        order = TradeOrder(
+            type="BUY",
+            symbol=self.symbol,
+            price=1.0,
+            amount=0,
+            usdt_amount=20,
+            signal="BUY_DCA",
+            source="dca",
+        )
+        with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=5000.0), \
+             patch.object(risk, "_daily_dca_buys_count", return_value=1), \
+             patch.object(risk, "_daily_dca_usdt_sum", return_value=90.0), \
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+            decision = risk.evaluate(order, self.tf, source="dca")
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.code, "max_daily_dca_usdt")
+
 
 if __name__ == "__main__":
     unittest.main()

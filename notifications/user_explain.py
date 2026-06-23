@@ -26,6 +26,8 @@ _RISK_MESSAGES = {
     "max open positions": "Maximale Anzahl offener Positionen erreicht — kein neuer Kauf möglich.",
     "daily trade limit": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",
     "max_daily_sells": "Tageslimit für Verkäufe erreicht.",
+    "max_daily_dca_buys": "Tageslimit für DCA-Nachkäufe erreicht.",
+    "max_daily_dca_usdt": "Tages-Volumenlimit für DCA-Nachkäufe erreicht.",
     "max position concentration": "Dieser Coin wäre zu groß im Portfolio — Kauf wurde begrenzt oder blockiert.",
     "trade cooldown": "Kürzlich schon gehandelt — kurze Pause gegen zu häufiges Hin und Her.",
     "no position to sell": "Keine offene Position zum Verkaufen.",
