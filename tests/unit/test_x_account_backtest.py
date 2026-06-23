@@ -68,11 +68,14 @@ class TestXAccountBacktest(unittest.TestCase):
         handle, days = _parse_testaccount_args("/testaccount")
         self.assertIsNone(handle)
 
+    @patch("intelligence.x_account_backtest.prefetch_for_posts")
     @patch("intelligence.x_account_backtest.get_indicators_at_time")
     @patch("intelligence.x_account_backtest.get_path_extremes")
     @patch("intelligence.x_account_backtest.get_price_at_time")
-    @patch("x_analyzer.ask_grok_json")
-    def test_backtest_evaluates_buy_sell_signals(self, mock_grok, mock_price, mock_extremes, mock_indicators):
+    @patch("x_analyzer.ask_grok")
+    def test_backtest_evaluates_buy_sell_signals(
+        self, mock_grok, mock_price, mock_extremes, mock_indicators, mock_prefetch,
+    ):
         mock_grok.return_value = self._batch_grok_response([
             ("p1", "BTC", "BUY"),
             ("p2", "ETH", "SELL"),
