@@ -26,7 +26,8 @@ class PortfolioService:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
-        update_position(symbol, timeframe, "BUY", price, amount)
+        signal = "BUY_DCA" if source == "dca" else "BUY"
+        update_position(symbol, timeframe, signal, price, amount)
         if sync_virtual_ledger:
             record_trade({
                 "type": "BUY",

@@ -1,6 +1,7 @@
 from core.actions import (
     ADD_WATCHLIST,
     BUY,
+    BUY_DCA,
     BUY_STRONG,
     HOLD,
     IGNORE,
@@ -22,6 +23,7 @@ from strategies.market_structure import (
     evaluate_market_structure_buy_boost,
     evaluate_market_structure_sells,
 )
+from strategies.dca import evaluate_dca_addon
 from strategies.trailing_stop import evaluate_trailing_stop
 from intelligence.volatility_classifier import volatility_tier
 from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
@@ -481,10 +483,20 @@ class DecisionEngine:
         position = get_position(coin["symbol"], market.timeframe)
         structure_rationales = []
 
+        dca_usdt = 0.0
         if market.has_position:
             normalized, sources, confidence, structure_rationales = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
+            if normalized == HOLD:
+                dca = evaluate_dca_addon(market, position, market.strategy_params)
+                if dca:
+                    normalized = BUY_DCA
+                    sources.append(dca.source)
+                    structure_rationales.append(dca.rationale)
+                    dca_usdt = dca.usdt_amount
+                    if dca.shadow_only:
+                        sources.append("dca_shadow")
         else:
             normalized, sources, confidence = self._merge_buy(
                 technical, x_signal, cmc_signal, all_social, market, lc_signal
@@ -500,6 +512,10 @@ class DecisionEngine:
         normalized, execution_action, shadow_action = self._apply_shadow_mode(
             normalized, execution_action, strategy_params, sources
         )
+        if "dca_shadow" in sources and normalized == BUY_DCA:
+            shadow_action = execution_action
+            normalized = HOLD
+            execution_action = "HOLD"
 
         rationale_parts = []
         if "technical" in sources:
@@ -527,6 +543,8 @@ class DecisionEngine:
             rationale_parts.append("strong consensus")
         if "trailing_stop" in sources:
             rationale_parts.append("Trail->ATR stop")
+        if "dca" in sources:
+            rationale_parts.append("DCA->accumulation")
         if shadow_action:
             rationale_parts.append(f"shadow->{shadow_action}")
 
@@ -541,7 +559,7 @@ class DecisionEngine:
         profile = strategy_params.get("strategy_profile", "")
         tier = strategy_params.get("volatility_tier", "")
 
-        return SignalAnalysis(
+        analysis = SignalAnalysis(
             action=execution_action,
             symbol=technical.symbol,
             timeframe=technical.timeframe,
@@ -565,6 +583,9 @@ class DecisionEngine:
             strategy_profile=profile,
             shadow_action=shadow_action,
         )
+        if dca_usdt > 0:
+            analysis.dca_usdt = dca_usdt
+        return analysis
 
     def to_recommendation(self, x_signal, analysis: SignalAnalysis, account: str, tweet_text: str, price: float) -> dict:
         recommendation = {

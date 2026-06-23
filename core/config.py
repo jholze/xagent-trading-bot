@@ -247,6 +247,8 @@ class BotConfig:
             "notification_rate_limit_sec": 1.0,
             "hermes_external": False,
             "min_hours_after_sell_before_rebuy": 4.0,
+            "rebuy_after_stop_loss_hours": 24.0,
+            "block_rebuy_if_last_sell_was_stop": True,
             "heartbeat_ttl_sec": 120,
             "heartbeat_warn_enabled": True,
             "use_signal_snapshot": False,

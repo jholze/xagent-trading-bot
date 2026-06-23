@@ -5,6 +5,7 @@ HOLD = "HOLD"
 IGNORE = "IGNORE"
 BUY = "BUY"
 BUY_STRONG = "BUY_STRONG"
+BUY_DCA = "BUY_DCA"
 SELL_PARTIAL_10 = "SELL_PARTIAL_10"
 SELL_PARTIAL_20 = "SELL_PARTIAL_20"
 SELL_PARTIAL_30 = "SELL_PARTIAL_30"
@@ -30,6 +31,7 @@ NORMALIZED_TO_LEGACY = {
     IGNORE: "IGNORE",
     BUY: "BUY",
     BUY_STRONG: "BUY",
+    BUY_DCA: "BUY_DCA",
     SELL_PARTIAL_10: "SELL_10",
     SELL_PARTIAL_20: "SELL_20",
     SELL_PARTIAL_30: "SELL_30",
@@ -60,4 +62,4 @@ def is_sell(action: str) -> bool:
 
 
 def is_buy(action: str) -> bool:
-    return action in (BUY, BUY_STRONG) or action == "BUY"
+    return action in (BUY, BUY_STRONG, BUY_DCA) or action in ("BUY", "BUY_DCA")

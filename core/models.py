@@ -45,6 +45,7 @@ class SignalAnalysis:
     volatility_tier: str = ""
     strategy_profile: str = ""
     shadow_action: str = ""
+    dca_usdt: float = 0.0
 
 
 @dataclass

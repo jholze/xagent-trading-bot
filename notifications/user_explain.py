@@ -19,6 +19,7 @@ _RATIONALE_PARTS = {
     "X+CMC consensus": "X (Twitter) und CMC-Community stimmen in die gleiche Richtung.",
     "strong consensus": "Mehrere Quellen (Technik + Social) stimmen überein — stärkeres Signal.",
     "multi_source": "Mehrere Signalquellen liefern dasselbe Bild.",
+    "DCA->accumulation": "Nachkauf (DCA) in der Akkumulationsphase — Position wird bei Dip vergrößert, Exit-Leiter bleibt unverändert.",
 }
 
 _RISK_MESSAGES = {
@@ -128,8 +129,12 @@ def explain_risk(message: str, code: str = "") -> str:
         if key in lower:
             return de
     if code == "trade_cooldown":
+        if message and "Stop-loss rebuy cooldown" in message:
+            return "Nach Stop-Loss-Verkauf gilt eine längere Pause — kein automatischer Re-Entry (verhindert Churn)."
         if message and "Rebuy cooldown" in message:
             return "Kürzlich verkauft — Re-Kauf erst nach der konfigurierten Pause (verhindert sinnloses Hin-und-Her)."
+        if message and "DCA interval" in message:
+            return "DCA-Nachkauf zu früh — Mindestabstand zwischen Nachkäufen noch nicht erreicht."
         return _RISK_MESSAGES["trade cooldown"]
     if code == "max_open_positions":
         return _RISK_MESSAGES["max open positions"]
@@ -210,7 +215,12 @@ def explain_trade(
     sources = list(getattr(analysis, "sources", None) or [])
 
     why_parts = []
-    if "BUY" in str(action):
+    if "BUY_DCA" in str(action) or "BUY_DCA" in str(normalized):
+        why_parts.append(
+            "Nachkauf (DCA) — bestehende Position wird bei Dip vergrößert, nicht neu eröffnet."
+        )
+        why_parts.append(explain_rationale(rationale))
+    elif "BUY" in str(action):
         why_parts.append(explain_rationale(rationale))
     elif "SELL" in str(action):
         tier = explain_sell_tier(action)

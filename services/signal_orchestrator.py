@@ -103,18 +103,21 @@ class SignalOrchestrator:
             source = "cmc"
         elif "lc" in (analysis.sources or []):
             source = "lc"
+        elif "dca" in (analysis.sources or []):
+            source = "dca"
         else:
             source = "auto"
         trust_score = analysis.x_confidence if source == "x" else None
 
         if "BUY" in analysis.action:
+            dca_usdt = float(getattr(analysis, "dca_usdt", 0) or 0)
             order = TradeOrder(
                 type="BUY",
                 symbol=symbol,
                 price=current_price,
                 amount=0,
-                usdt_amount=0,
-                signal=analysis.action,
+                usdt_amount=dca_usdt,
+                signal=analysis.normalized_action or analysis.action,
                 source=source,
             )
         else:

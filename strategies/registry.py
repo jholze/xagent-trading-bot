@@ -59,6 +59,7 @@ _VOLATILE_STRUCTURE_KEYS = (
     "cmc_min_hours_between_sells",
     "exit_ladder",
     "trailing_stop",
+    "dca",
 )
 
 
@@ -210,6 +211,8 @@ def _buy_profile_overlay(base: dict, coin: dict, tier: str | None, cfg) -> dict:
     for key in _BUY_PARAM_KEYS:
         if key in source:
             merged[key] = source[key]
+    if "dca" in source:
+        merged["dca"] = source["dca"]
     merged["volatility_tier"] = tier
     return merged
 

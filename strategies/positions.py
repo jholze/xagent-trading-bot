@@ -87,6 +87,10 @@ def _deserialize_position(raw: dict) -> dict:
         "recent_high": float(raw.get("recent_high", 0)),
         "strategy_tier": raw.get("strategy_tier"),
         "exit_ladder_step": int(raw.get("exit_ladder_step", 0) or 0),
+        "dca_rounds": int(raw.get("dca_rounds", 0) or 0),
+        "last_dca_at": raw.get("last_dca_at"),
+        "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
+        "last_sell_signal": raw.get("last_sell_signal"),
     }
 
 
@@ -110,6 +114,10 @@ def _serialize_positions() -> dict:
             "recent_high": float(p.get("recent_high", 0)),
             "strategy_tier": p.get("strategy_tier"),
             "exit_ladder_step": int(p.get("exit_ladder_step", 0) or 0),
+            "dca_rounds": int(p.get("dca_rounds", 0) or 0),
+            "last_dca_at": p.get("last_dca_at"),
+            "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
+            "last_sell_signal": p.get("last_sell_signal"),
         }
     return data
 
@@ -207,6 +215,10 @@ def init_position(symbol, timeframe):
                 "recent_high": 0.0,
                 "strategy_tier": None,
                 "exit_ladder_step": 0,
+                "dca_rounds": 0,
+                "last_dca_at": None,
+                "dca_total_usdt": 0.0,
+                "last_sell_signal": None,
             }
 
 def get_position(symbol, timeframe):
@@ -289,7 +301,7 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
     key = get_key(symbol, timeframe)
     with _positions_lock:
         pos = positions[key]
-        if signal == "BUY" and amount_traded > 0:
+        if signal in ("BUY", "BUY_DCA") and amount_traded > 0:
             old_amount = pos["amount"]
             old_average = pos.get("average_entry", current_price)
             new_amount = old_amount + Decimal(str(amount_traded))
@@ -298,17 +310,28 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             else:
                 pos["average_entry"] = current_price
             pos["amount"] = new_amount
-            pos["peak_amount"] = float(new_amount)
-            pos["sold_percent"] = 0.0
             pos["last_buy_price"] = current_price
-            pos["last_action"] = "BUY"
-            pos["rsi_sell_tiers_done"] = {}
-            pos["recent_high"] = current_price
-            pos["exit_ladder_step"] = 0
             pos["last_trade_at"] = datetime.now().isoformat()
-            pos["last_trade_type"] = "BUY"
-            if old_amount <= 0:
-                pos["strategy_tier"] = None
+            if signal == "BUY_DCA" and old_amount > 0:
+                pos["last_action"] = "BUY_DCA"
+                pos["last_trade_type"] = "BUY_DCA"
+                pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
+                pos["last_dca_at"] = datetime.now().isoformat()
+                usdt_added = current_price * float(amount_traded)
+                pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
+            else:
+                pos["peak_amount"] = float(new_amount)
+                pos["sold_percent"] = 0.0
+                pos["last_action"] = "BUY"
+                pos["rsi_sell_tiers_done"] = {}
+                pos["recent_high"] = current_price
+                pos["exit_ladder_step"] = 0
+                pos["last_trade_type"] = "BUY"
+                pos["dca_rounds"] = 0
+                pos["last_dca_at"] = None
+                pos["dca_total_usdt"] = 0.0
+                if old_amount <= 0:
+                    pos["strategy_tier"] = None
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
             strategy_params = None
@@ -341,6 +364,7 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["last_action"] = "SELL"
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["last_trade_type"] = "SELL"
+            pos["last_sell_signal"] = signal
             tiers = dict(pos.get("rsi_sell_tiers_done") or {})
             if "TP" in signal.upper():
                 tiers["tp"] = True

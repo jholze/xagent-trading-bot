@@ -21,6 +21,11 @@ def _is_emergency_sell(signal: str) -> bool:
     return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal
 
 
+def _is_stop_loss_sell(signal: str) -> bool:
+    signal = signal or ""
+    return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL") or "STOP" in signal
+
+
 def _is_partial_sell(signal: str) -> bool:
     signal = signal or ""
     if _is_emergency_sell(signal):
@@ -99,6 +104,24 @@ class RiskManager:
             )
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
+        if source == "dca" or order.signal == "BUY_DCA":
+            params = self.config.strategy_params(order.symbol, timeframe)
+            try:
+                from strategies.registry import resolve_strategy_params
+
+                pos = get_position(order.symbol, timeframe)
+                params = resolve_strategy_params(
+                    {"symbol": order.symbol, "timeframe": timeframe},
+                    has_position=True,
+                    frozen_tier=pos.get("strategy_tier"),
+                )
+            except Exception:
+                pass
+            dca_cfg = dict(params.get("dca") or {})
+            if order.usdt_amount:
+                base_usdt = float(order.usdt_amount)
+            elif dca_cfg.get("fixed_usdt"):
+                base_usdt = float(dca_cfg["fixed_usdt"])
         if source == "manual":
             # Telegram /buy amounts are explicit user intent — don't shrink via auto-trade multipliers.
             sized = base_usdt
@@ -519,12 +542,21 @@ class RiskManager:
         except Exception:
             return False, ""
 
-        if order.type == "BUY" and last_type == "SELL":
+        pos_amount = float(pos.get("amount", 0) or 0)
+        is_dca = order.signal == "BUY_DCA" or source == "dca"
+
+        if order.type == "BUY" and last_type == "SELL" and not (is_dca and pos_amount > 0):
             blocked, reason = self._rebuy_after_sell_blocked(
-                order, timeframe, source, last_ts, params, defaults
+                order, timeframe, source, last_ts, pos, params, defaults
             )
             if blocked:
                 return True, reason
+
+        if order.type == "BUY" and is_dca and pos_amount > 0:
+            blocked, reason = self._dca_interval_blocked(pos, params, defaults)
+            if blocked:
+                return True, reason
+            return False, ""
 
         if last_type != order.type:
             return False, ""
@@ -558,23 +590,53 @@ class RiskManager:
         timeframe: str,
         source: str,
         last_ts: datetime,
+        pos: dict,
         params: dict,
         defaults: dict,
     ) -> tuple[bool, str]:
         if source == "manual":
             return False, ""
+        arch = self.config.architecture_config
         min_hours = float(
             params.get("min_hours_after_sell_before_rebuy")
             or defaults.get("min_hours_after_sell_before_rebuy")
             or self.config.min_hours_after_sell_before_rebuy
         )
+        last_signal = str(pos.get("last_sell_signal") or "")
+        stop_sell = _is_stop_loss_sell(last_signal)
+        if arch.get("block_rebuy_if_last_sell_was_stop", False) and stop_sell:
+            min_hours = float(arch.get("rebuy_after_stop_loss_hours", 24.0))
         if min_hours <= 0:
             return False, ""
         elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
         if elapsed < min_hours:
+            label = "Stop-loss rebuy cooldown" if stop_sell else "Rebuy cooldown"
             return True, (
-                f"Rebuy cooldown: {elapsed:.1f}h since last SELL "
+                f"{label}: {elapsed:.1f}h since last SELL "
                 f"(min {min_hours:.1f}h after sell)"
+            )
+        return False, ""
+
+    def _dca_interval_blocked(
+        self,
+        pos: dict,
+        params: dict,
+        defaults: dict,
+    ) -> tuple[bool, str]:
+        dca_cfg = dict(params.get("dca") or {})
+        interval_hours = float(dca_cfg.get("interval_hours", 12))
+        last_dca = pos.get("last_dca_at")
+        if not last_dca:
+            return False, ""
+        try:
+            last_ts = datetime.fromisoformat(str(last_dca).replace("Z", ""))
+        except Exception:
+            return False, ""
+        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+        if elapsed < interval_hours:
+            return True, (
+                f"DCA interval: {elapsed:.1f}h since last DCA "
+                f"(min {interval_hours:.1f}h)"
             )
         return False, ""
 

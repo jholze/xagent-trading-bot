@@ -196,6 +196,8 @@
     "notification_rate_limit_sec": 1.0,
     "hermes_external": false,
     "min_hours_after_sell_before_rebuy": 4.0,
+    "rebuy_after_stop_loss_hours": 24,
+    "block_rebuy_if_last_sell_was_stop": true,
     "heartbeat_ttl_sec": 120,
     "heartbeat_warn_enabled": true,
     "use_signal_snapshot": false,
@@ -539,6 +541,16 @@
       "activation_gain_pct": 10,
       "min_trail_pct": 8,
       "max_trail_pct": 25
+    },
+    "dca": {
+      "enabled": true,
+      "mode": "shadow",
+      "interval_hours": 12,
+      "fixed_usdt": 20,
+      "loss_pct_min": -20,
+      "loss_pct_max": -3,
+      "sl_proximity_pct": 15,
+      "max_rounds": 3
     }
   },
   "stable_altcoin": {
@@ -547,13 +559,33 @@
     "reversal_volume_multiplier": 1.2,
     "buy_regime": "dip",
     "rsi_buy_low": 30,
-    "rsi_buy_high": 50
+    "rsi_buy_high": 50,
+    "dca": {
+      "enabled": true,
+      "mode": "shadow",
+      "interval_hours": 24,
+      "fixed_usdt": 15,
+      "loss_pct_min": -15,
+      "loss_pct_max": -2,
+      "sl_proximity_pct": 10,
+      "max_rounds": 2
+    }
   },
   "mid_cap_defaults": {
     "volume_multiplier": 0.95,
     "reversal_volume_multiplier": 1.1,
     "buy_regime": "both",
     "rsi_buy_low": 28,
-    "rsi_buy_high": 52
+    "rsi_buy_high": 52,
+    "dca": {
+      "enabled": true,
+      "mode": "shadow",
+      "interval_hours": 18,
+      "fixed_usdt": 18,
+      "loss_pct_min": -18,
+      "loss_pct_max": -2.5,
+      "sl_proximity_pct": 12,
+      "max_rounds": 2
+    }
   }
 }
