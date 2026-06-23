@@ -544,7 +544,7 @@
     },
     "dca": {
       "enabled": true,
-      "mode": "shadow",
+      "mode": "live",
       "interval_hours": 12,
       "fixed_usdt": 20,
       "loss_pct_min": -20,
@@ -562,7 +562,7 @@
     "rsi_buy_high": 50,
     "dca": {
       "enabled": true,
-      "mode": "shadow",
+      "mode": "live",
       "interval_hours": 24,
       "fixed_usdt": 15,
       "loss_pct_min": -15,
@@ -579,7 +579,7 @@
     "rsi_buy_high": 52,
     "dca": {
       "enabled": true,
-      "mode": "shadow",
+      "mode": "live",
       "interval_hours": 18,
       "fixed_usdt": 18,
       "loss_pct_min": -18,
