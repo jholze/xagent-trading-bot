@@ -14,38 +14,16 @@ BOT_ROOT = Path(__file__).resolve().parents[1]
 if str(BOT_ROOT) not in sys.path:
     sys.path.insert(0, str(BOT_ROOT))
 
+from notifications.daily_stats import (  # noqa: E402
+    cmc_posts,
+    decision_stats,
+    load_json,
+    normalize_social_action,
+    parse_ts,
+    post_timestamp,
+)
 
-def parse_ts(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "")[:26])
-
-
-def load_json(path: Path) -> dict | list:
-    with path.open(encoding="utf-8") as f:
-        return json.load(f)
-
-
-def cmc_posts(raw) -> list:
-    if isinstance(raw, list):
-        return raw
-    return raw.get("posts", raw.get("signals", []))
-
-
-def post_timestamp(post: dict) -> datetime | None:
-    for key in ("timestamp", "created_at", "fetched_at", "time"):
-        if key in post and post[key]:
-            return parse_ts(str(post[key]))
-    return None
-
-
-def normalize_action(post: dict) -> str:
-    act = (post.get("action") or post.get("signal") or post.get("recommendation") or "?").upper()
-    if "BUY" in act:
-        return "BUY"
-    if "SELL" in act:
-        return "SELL"
-    if "HOLD" in act:
-        return "HOLD"
-    return act
+normalize_action = normalize_social_action
 
 
 def fmt_trade_row(trade: dict) -> str:
@@ -176,47 +154,6 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
     return "\n".join(lines)
 
 
-def decision_day_stats(bot_dir: Path, day_start: datetime, day_end: datetime) -> dict:
-    path = bot_dir / "logs/decisions.jsonl"
-    stats = {
-        "total": 0,
-        "buy_dca": 0,
-        "buy_dca_executed": 0,
-        "buy_dca_shadow": 0,
-        "hold": 0,
-    }
-    if not path.exists():
-        return stats
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            ts_raw = rec.get("timestamp")
-            if not ts_raw:
-                continue
-            ts = parse_ts(str(ts_raw))
-            if not (day_start <= ts < day_end):
-                continue
-            stats["total"] += 1
-            action = str(rec.get("normalized_action") or rec.get("action") or "").upper()
-            shadow = str(rec.get("shadow_action") or "").upper()
-            sources = [str(s).lower() for s in (rec.get("sources") or [])]
-            if action == "BUY_DCA" or "dca" in sources:
-                stats["buy_dca"] += 1
-                if rec.get("executed"):
-                    stats["buy_dca_executed"] += 1
-            elif shadow == "BUY_DCA":
-                stats["buy_dca_shadow"] += 1
-            elif action == "HOLD":
-                stats["hold"] += 1
-    return stats
-
-
 def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = None) -> str:
     report_date = report_date or datetime.now()
     day_start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -248,7 +185,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
     rejected_orders = sum(1 for o in day_orders if o["status"] == "rejected")
 
-    dec = decision_day_stats(bot_dir, day_start, day_end)
+    dec = decision_stats(bot_dir, day_start, day_end)
     config = load_json(bot_dir / "config.json")
     live = config.get("live", {})
 

@@ -34,7 +34,7 @@ MENU_SECTIONS: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", ["positions", "buy", "sell", "orders", "risk"]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
-    ("transparenz", ["decisions", "why", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("transparenz", ["morning", "decisions", "why", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
     ("hilfe", ["menu", "help"]),

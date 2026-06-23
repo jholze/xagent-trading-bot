@@ -62,6 +62,7 @@
         {
           "title": "🔍 <b>Transparenz</b> — Was der Bot warum tut",
           "keys": [
+            "morning",
             "decisions",
             "why",
             "ask",
@@ -187,6 +188,11 @@
       "live_cancel": {
         "description": "Live-Handel abbrechen",
         "help_line": "<code>/live_cancel</code> — Live-Handel abbrechen, zurück zu Paper"
+      },
+      "morning": {
+        "description": "Morning Briefing (1× täglich)",
+        "help_line": "<code>/morning</code> — Tagesstart: Portfolio, 24h-Aktivität, Highlights",
+        "hint": "☀️ <b>/morning</b> — Morning Briefing\n\nEinmal pro Tag: Status, Portfolio, letzte 24h Trades/DCA, Highlights.\nErneuter Aufruf am selben Tag zeigt nur einen Hinweis."
       },
       "decisions": {
         "description": "Letzte Bot-Entscheidungen",
@@ -357,6 +363,7 @@
         {
           "title": "🔍 <b>Transparency</b> — What the bot does and why",
           "keys": [
+            "morning",
             "decisions",
             "why",
             "ask",
@@ -482,6 +489,11 @@
       "live_cancel": {
         "description": "Cancel live trading",
         "help_line": "<code>/live_cancel</code> — Cancel live trading, back to paper"
+      },
+      "morning": {
+        "description": "Morning briefing (once per day)",
+        "help_line": "<code>/morning</code> — Day start: portfolio, 24h activity, highlights",
+        "hint": "☀️ <b>/morning</b> — Morning briefing\n\nOnce per day: status, portfolio, last 24h trades/DCA, highlights.\nA second call the same day only shows a short notice."
       },
       "decisions": {
         "description": "Recent bot decisions",
