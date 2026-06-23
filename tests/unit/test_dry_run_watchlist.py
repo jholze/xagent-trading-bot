@@ -49,7 +49,8 @@ class TestDryRunWatchlist(unittest.TestCase):
         with patch("data_manager.load_watchlist", return_value=base), \
              patch("data_manager.uses_watchlist_expansion", return_value=False), \
              patch("data_manager.load_dry_run_overlay", return_value=overlay), \
-             patch("data_manager.is_dry_run_enhanced", return_value=True):
+             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("data_manager.trending_watchlist_live_enabled", return_value=False):
             merged = load_effective_watchlist()
         symbols = [c["symbol"] for c in merged]
         self.assertEqual(symbols, ["BTC/USDT", "PEPE/USDT"])
@@ -88,7 +89,8 @@ class TestDryRunWatchlist(unittest.TestCase):
         with patch("data_manager.load_watchlist", return_value=base), \
              patch("data_manager.uses_watchlist_expansion", return_value=True), \
              patch("data_manager.load_dry_run_expansion", return_value=expansion), \
-             patch("data_manager.is_dry_run_enhanced", return_value=False):
+             patch("data_manager.is_dry_run_enhanced", return_value=False), \
+             patch("data_manager.trending_watchlist_live_enabled", return_value=False):
             merged = load_effective_watchlist()
         symbols = [c["symbol"] for c in merged]
         self.assertEqual(symbols, ["BTC/USDT", "ETH/USDT"])
@@ -140,7 +142,8 @@ class TestDryRunWatchlist(unittest.TestCase):
         with patch("data_manager.load_watchlist", return_value=base), \
              patch("data_manager.uses_watchlist_expansion", return_value=False), \
              patch("data_manager.load_dry_run_overlay", return_value=overlay), \
-             patch("data_manager.is_dry_run_enhanced", return_value=True):
+             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("data_manager.trending_watchlist_live_enabled", return_value=False):
             merged = load_effective_watchlist()
         self.assertEqual(len(merged), 1)
 
