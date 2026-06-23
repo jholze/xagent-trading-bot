@@ -9,7 +9,8 @@ import requests
 
 from data.cmc_community_provider import CMCCommunityParser, CMCCommunitySignal, RawCMCPost
 from data.cmc_trending_provider import CMCTrendingProvider
-from data_manager import get_config, load_cmc_posts
+from core.config import get_bot_config
+from data_manager import load_cmc_posts
 from logger import log
 
 
@@ -42,7 +43,7 @@ class CMCVolatileSignalAggregator:
         return {"X-CMC_PRO_API_KEY": self.api_key, "Accept": "application/json"}
 
     def _budgets(self) -> dict:
-        cfg = get_config().get("cmc", {})
+        cfg = get_bot_config().cmc_config
         return {
             "community_trending": int(cfg.get("budget_community_trending", 12)),
             "market_trending": int(cfg.get("budget_market_trending", 12)),
@@ -83,10 +84,17 @@ class CMCVolatileSignalAggregator:
             log(f"CMC community trending fetch error: {e}", "WARNING")
             return []
 
+    def _source_priority(self) -> list:
+        return get_bot_config().trending_watchlist_config.get("source_priority") or [
+            "trending/latest",
+            "trending/gainers-losers",
+            "listings/latest",
+        ]
+
     def _fetch_market_trending_posts(self, limit: int) -> List[RawCMCPost]:
         symbols, source = self.trending_provider.fetch_trending_symbols(
             limit=limit,
-            source_priority=["trending/latest"],
+            source_priority=self._source_priority(),
         )
         posts = []
         for rank, sym in enumerate(symbols, start=1):

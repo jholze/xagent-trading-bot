@@ -62,7 +62,11 @@ class BotConfig:
             "refresh_hours": 4,
             "gate_only": True,
             "max_open_from_trending": 8,
-            "source_priority": ["trending/latest"],
+            "source_priority": [
+                "trending/latest",
+                "trending/gainers-losers",
+                "listings/latest",
+            ],
         }
         cmc_tw = self.cmc_config.get("trending_watchlist") or {}
         live_tw = self.live_config.get("trending_watchlist") or {}

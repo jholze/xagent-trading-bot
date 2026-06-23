@@ -139,7 +139,9 @@
       "gate_only": true,
       "max_open_from_trending": 8,
       "source_priority": [
-        "trending/latest"
+        "trending/latest",
+        "trending/gainers-losers",
+        "listings/latest"
       ],
       "exclude_symbols": [
         "USDT",
