@@ -89,9 +89,19 @@ class DecisionEngine:
             atr_pct=atr_pct,
             frozen_tier=frozen,
         )
+        funding_rate_pct = None
+        btc_underperf_ratio = None
         if has_position:
             update_market_snapshot(symbol, tf, current_price, atr_pct)
             pos = get_position(symbol, tf)
+            dca_cfg = dict((params or {}).get("dca") or {})
+            scoring_cfg = dict(dca_cfg.get("scoring") or {})
+            if dca_cfg.get("enabled") and scoring_cfg.get("enabled"):
+                funding_rate_pct = self.market.fetch_funding_rate(symbol)
+                lookback = float(scoring_cfg.get("btc_lookback_hours", 8))
+                btc_underperf_ratio = self.market.btc_underperformance_ratio(
+                    symbol, tf, lookback_hours=lookback
+                )
         return MarketContext(
             symbol=symbol,
             timeframe=tf,
@@ -102,6 +112,8 @@ class DecisionEngine:
             upper_bb=indicators.get("upper_bb", indicators["lower_bb"]),
             atr_pct=atr_pct,
             vol_multiplier=indicators["vol_multiplier"],
+            funding_rate_pct=funding_rate_pct,
+            btc_underperf_ratio=btc_underperf_ratio,
             has_position=has_position,
             average_entry=pos.get("average_entry", 0),
             open_positions=count_open_positions(),

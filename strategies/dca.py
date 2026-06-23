@@ -1,13 +1,24 @@
-"""DCA accumulation — add to open positions before first exit-ladder sell."""
+"""DCA accumulation — multi-factor scoring before first exit-ladder sell."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from core.actions import BUY_DCA
 from core.config import get_bot_config
 from core.models import MarketContext
+
+
+@dataclass
+class DCADecision:
+    should_dca: bool
+    score: int = 0
+    max_score: int = 10
+    breakdown: dict[str, int] = field(default_factory=dict)
+    blocked_reason: str | None = None
+    usdt_amount: float = 0.0
+    shadow_only: bool = False
 
 
 @dataclass
@@ -17,6 +28,8 @@ class DCACandidate:
     rationale: str
     usdt_amount: float
     shadow_only: bool = False
+    score: int = 0
+    breakdown: dict[str, int] = field(default_factory=dict)
 
 
 def dca_config(strategy_params: dict | None) -> dict:
@@ -71,46 +84,226 @@ def _near_stop_loss(
     return margin < buffer
 
 
-def evaluate_dca_addon(
+def _volatility_tier(strategy_params: dict | None) -> str:
+    tier = str((strategy_params or {}).get("volatility_tier") or "stable").lower()
+    return tier if tier in ("stable", "volatile") else "stable"
+
+
+def _scoring_profile(cfg: dict, strategy_params: dict | None) -> dict:
+    scoring = dict(cfg.get("scoring") or {})
+    tier = _volatility_tier(strategy_params)
+    tier_cfg = dict(scoring.get(tier) or scoring.get("stable") or {})
+    return tier_cfg
+
+
+def _score_atr_distance(
+    loss_pct: float,
+    atr_pct: float,
+    tier_cfg: dict,
+) -> int:
+    if atr_pct <= 0 or loss_pct >= 0:
+        return 0
+    drop_pct = abs(loss_pct)
+    atr_multiples = drop_pct / atr_pct
+    high = float(tier_cfg.get("atr_mult_high", 2.5))
+    low = float(tier_cfg.get("atr_mult_low", 1.8))
+    if atr_multiples >= high:
+        return 3
+    if atr_multiples >= low:
+        return 2
+    if atr_multiples >= low * 0.75:
+        return 1
+    return 0
+
+
+def _score_rsi(rsi: float, tier_cfg: dict) -> int:
+    hard = float(tier_cfg.get("rsi_hard", 30))
+    soft = float(tier_cfg.get("rsi_soft", 35))
+    if rsi < hard:
+        return 2
+    if rsi < soft:
+        return 1
+    return 0
+
+
+def _score_funding(funding_rate_pct: float | None, tier_cfg: dict) -> int:
+    if funding_rate_pct is None:
+        return 0
+    threshold = float(tier_cfg.get("funding_max_pct", -0.06))
+    if funding_rate_pct <= threshold:
+        return 2
+    if funding_rate_pct <= threshold * 0.5:
+        return 1
+    return 0
+
+
+def _score_btc_underperf(ratio: float | None, tier_cfg: dict) -> int:
+    if ratio is None or ratio < 1.0:
+        return 0
+    high = float(tier_cfg.get("btc_underperf_high", 2.0))
+    low = float(tier_cfg.get("btc_underperf_low", 1.5))
+    if ratio >= high:
+        return 2
+    if ratio >= low:
+        return 1
+    return 0
+
+
+def _score_bb_support(price: float, lower_bb: float, tier_cfg: dict) -> int:
+    if lower_bb <= 0 or price <= 0:
+        return 0
+    if not bool(tier_cfg.get("bb_support_enabled", True)):
+        return 0
+    ratio = float(tier_cfg.get("bb_support_ratio", 1.02))
+    if price <= lower_bb * ratio:
+        return 1
+    return 0
+
+
+def _evaluate_scoring(
+    market: MarketContext,
+    loss_pct: float,
+    cfg: dict,
+    strategy_params: dict | None,
+) -> DCADecision:
+    scoring = dict(cfg.get("scoring") or {})
+    tier_cfg = _scoring_profile(cfg, strategy_params)
+    breakdown: dict[str, int] = {
+        "atr_distance": _score_atr_distance(loss_pct, market.atr_pct, tier_cfg),
+        "rsi": _score_rsi(market.rsi, tier_cfg),
+        "funding": _score_funding(market.funding_rate_pct, tier_cfg),
+        "btc_underperf": _score_btc_underperf(market.btc_underperf_ratio, tier_cfg),
+        "bb_support": _score_bb_support(
+            market.current_price, market.lower_bb, tier_cfg
+        ),
+    }
+    core_keys = ("atr_distance", "rsi", "funding", "btc_underperf")
+    core_score = sum(breakdown[k] for k in core_keys)
+    total_score = core_score + breakdown["bb_support"]
+    max_score = int(scoring.get("max_score", 10))
+    min_score = int(scoring.get("min_score", 6))
+    min_core = int(scoring.get("min_core_criteria_met", 3))
+    core_met = sum(1 for k in core_keys if breakdown[k] > 0)
+
+    fixed_usdt = float(cfg.get("fixed_usdt", 20))
+    mode = str(cfg.get("mode", "shadow"))
+    passed = total_score >= min_score and core_met >= min_core
+    reason = None
+    if not passed:
+        reason = (
+            f"score {total_score}/{max_score} "
+            f"(core {core_met}/{min_core}): {breakdown}"
+        )
+
+    return DCADecision(
+        should_dca=passed,
+        score=total_score,
+        max_score=max_score,
+        breakdown=breakdown,
+        blocked_reason=reason,
+        usdt_amount=fixed_usdt,
+        shadow_only=mode == "shadow",
+    )
+
+
+def _check_hard_gates(
     market: MarketContext,
     position: dict,
     strategy_params: dict | None,
-) -> DCACandidate | None:
-    """Return a BUY_DCA candidate when accumulation-only rules pass."""
-    cfg = dca_config(strategy_params)
+    cfg: dict,
+) -> tuple[bool, str | None, float]:
     if not cfg.get("enabled", False):
-        return None
+        return False, "dca_disabled", 0.0
     if not market.has_position or market.average_entry <= 0:
-        return None
+        return False, "no_position", 0.0
     if not _in_accumulation_phase(position):
-        return None
+        return False, "not_accumulation_phase", 0.0
 
     loss_pct = _unrealized_loss_pct(market.average_entry, market.current_price)
     loss_min = float(cfg.get("loss_pct_min", -20))
     loss_max = float(cfg.get("loss_pct_max", -3))
     if loss_pct > loss_max or loss_pct < loss_min:
-        return None
+        return False, f"loss_pct {loss_pct:.1f}% outside [{loss_min}, {loss_max}]", 0.0
     if _near_stop_loss(loss_pct, strategy_params or {}, cfg):
-        return None
+        return False, "near_stop_loss", 0.0
 
     max_rounds = int(cfg.get("max_rounds", 3))
     rounds = int(position.get("dca_rounds", 0) or 0)
     if rounds >= max_rounds:
-        return None
+        return False, "max_rounds", 0.0
 
     interval_hours = float(cfg.get("interval_hours", 12))
     elapsed = _hours_since(position.get("last_dca_at"))
     if elapsed is not None and elapsed < interval_hours:
-        return None
+        return False, "interval", 0.0
+
+    return True, None, loss_pct
+
+
+def should_dca(
+    market: MarketContext,
+    position: dict,
+    strategy_params: dict | None,
+) -> DCADecision:
+    """Multi-factor DCA gate: hard accumulation rules, then optional scoring."""
+    cfg = dca_config(strategy_params)
+    ok, blocked_reason, loss_pct = _check_hard_gates(
+        market, position, strategy_params, cfg
+    )
+    if not ok:
+        return DCADecision(should_dca=False, blocked_reason=blocked_reason)
+
+    scoring_cfg = dict(cfg.get("scoring") or {})
+    if scoring_cfg.get("enabled", False):
+        decision = _evaluate_scoring(market, loss_pct, cfg, strategy_params)
+        if not decision.should_dca:
+            return decision
+        rounds = int(position.get("dca_rounds", 0) or 0)
+        max_rounds = int(cfg.get("max_rounds", 3))
+        decision.blocked_reason = None
+        return decision
 
     fixed_usdt = float(cfg.get("fixed_usdt", 20))
     mode = str(cfg.get("mode", "shadow"))
-    shadow_only = mode == "shadow"
+    return DCADecision(
+        should_dca=True,
+        score=0,
+        usdt_amount=fixed_usdt,
+        shadow_only=mode == "shadow",
+    )
+
+
+def evaluate_dca_addon(
+    market: MarketContext,
+    position: dict,
+    strategy_params: dict | None,
+) -> DCACandidate | None:
+    """Return a BUY_DCA candidate when accumulation and scoring rules pass."""
+    decision = should_dca(market, position, strategy_params)
+    if not decision.should_dca:
+        return None
+
+    cfg = dca_config(strategy_params)
+    rounds = int(position.get("dca_rounds", 0) or 0)
+    max_rounds = int(cfg.get("max_rounds", 3))
+    loss_pct = _unrealized_loss_pct(market.average_entry, market.current_price)
+
+    if decision.score > 0:
+        core = {k: v for k, v in decision.breakdown.items() if k != "bb_support" and v > 0}
+        rationale = (
+            f"DCA score {decision.score}/{decision.max_score} "
+            f"loss {loss_pct:.1f}% round {rounds + 1}/{max_rounds} "
+            f"[{', '.join(f'{k}={v}' for k, v in core.items())}]"
+        )
+    else:
+        rationale = f"DCA dip {loss_pct:.1f}% (round {rounds + 1}/{max_rounds})"
 
     return DCACandidate(
         action=BUY_DCA,
         source="dca",
-        rationale=f"DCA dip {loss_pct:.1f}% (round {rounds + 1}/{max_rounds})",
-        usdt_amount=fixed_usdt,
-        shadow_only=shadow_only,
+        rationale=rationale,
+        usdt_amount=decision.usdt_amount,
+        shadow_only=decision.shadow_only,
+        score=decision.score,
+        breakdown=dict(decision.breakdown),
     )

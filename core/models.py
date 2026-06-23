@@ -14,6 +14,8 @@ class MarketContext:
     upper_bb: float = 0.0
     atr_pct: float = 3.0
     vol_multiplier: float = 1.0
+    funding_rate_pct: float | None = None
+    btc_underperf_ratio: float | None = None
     has_position: bool = False
     average_entry: float = 0.0
     open_positions: int = 0

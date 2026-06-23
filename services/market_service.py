@@ -4,11 +4,23 @@ import talib
 
 from logger import log
 
+_TF_HOURS = {
+    "15m": 0.25,
+    "30m": 0.5,
+    "1h": 1.0,
+    "2h": 2.0,
+    "4h": 4.0,
+    "6h": 6.0,
+    "12h": 12.0,
+    "1d": 24.0,
+}
+
 
 class MarketService:
     """Unified OHLCV and indicator access with multi-exchange fallback."""
 
     EXCHANGES = ["gate", "binance", "kucoin", "bybit"]
+    FUNDING_EXCHANGES = ["gate", "binance", "bybit"]
 
     def fetch_indicators(self, symbol: str, timeframe: str, current_price: float, limit: int = 100) -> dict:
         df = self._fetch_ohlcv(symbol, timeframe, limit)
@@ -45,6 +57,69 @@ class MarketService:
             "atr": atr,
             "atr_pct": float(atr_pct),
         }
+
+    def fetch_funding_rate(self, symbol: str) -> float | None:
+        """Return perpetual funding rate in percent (e.g. -0.04 = -0.04%)."""
+        base = symbol.split("/")[0]
+        swap_symbol = f"{base}/USDT:USDT"
+        for ex_name in self.FUNDING_EXCHANGES:
+            try:
+                exchange = getattr(ccxt, ex_name)(
+                    {"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "swap"}}
+                )
+                if not exchange.has.get("fetchFundingRate"):
+                    continue
+                data = exchange.fetch_funding_rate(swap_symbol)
+                rate = data.get("fundingRate")
+                if rate is None:
+                    continue
+                return float(rate) * 100.0
+            except Exception as e:
+                log(f"{ex_name.capitalize()} funding fetch failed for {symbol}: {e}", "WARNING")
+        return None
+
+    def btc_underperformance_ratio(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_hours: float = 8.0,
+    ) -> float | None:
+        """
+        Return how much worse the coin performed vs BTC over lookback_hours.
+
+        Example: BTC -2%, coin -5% → ratio 2.5.
+        """
+        if symbol.upper().startswith("BTC/"):
+            return None
+        tf_hours = _TF_HOURS.get(timeframe, 1.0)
+        periods = max(2, int(lookback_hours / tf_hours))
+        limit = periods + 5
+        coin_df = self._fetch_ohlcv(symbol, timeframe, limit)
+        btc_df = self._fetch_ohlcv("BTC/USDT", timeframe, limit)
+        if coin_df is None or btc_df is None or len(coin_df) < periods + 1 or len(btc_df) < periods + 1:
+            return None
+
+        coin_chg = self._pct_change(coin_df, periods)
+        btc_chg = self._pct_change(btc_df, periods)
+        if coin_chg is None or btc_chg is None:
+            return None
+        if coin_chg >= btc_chg:
+            return None
+        coin_drop = abs(coin_chg)
+        btc_drop = abs(btc_chg) if btc_chg < 0 else max(abs(btc_chg), 0.5)
+        if btc_drop <= 0:
+            return coin_drop
+        return coin_drop / btc_drop
+
+    @staticmethod
+    def _pct_change(df: pd.DataFrame, periods: int) -> float | None:
+        if len(df) < periods + 1:
+            return None
+        old = float(df["close"].iloc[-(periods + 1)])
+        new = float(df["close"].iloc[-1])
+        if old <= 0:
+            return None
+        return (new / old - 1.0) * 100.0
 
     def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):
         for ex_name in self.EXCHANGES:

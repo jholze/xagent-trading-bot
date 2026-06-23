@@ -589,7 +589,36 @@
       "loss_pct_min": -20,
       "loss_pct_max": -3,
       "sl_proximity_pct": 15,
-      "max_rounds": 3
+      "max_rounds": 3,
+      "scoring": {
+        "enabled": true,
+        "min_score": 6,
+        "min_core_criteria_met": 3,
+        "max_score": 10,
+        "btc_lookback_hours": 8,
+        "volatile": {
+          "atr_mult_high": 1.8,
+          "atr_mult_low": 1.2,
+          "funding_max_pct": -0.035,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 1.5,
+          "btc_underperf_low": 1.2,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        },
+        "stable": {
+          "atr_mult_high": 2.5,
+          "atr_mult_low": 1.8,
+          "funding_max_pct": -0.06,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 2.0,
+          "btc_underperf_low": 1.5,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        }
+      }
     }
   },
   "stable_altcoin": {
@@ -607,7 +636,36 @@
       "loss_pct_min": -15,
       "loss_pct_max": -2,
       "sl_proximity_pct": 10,
-      "max_rounds": 2
+      "max_rounds": 2,
+      "scoring": {
+        "enabled": true,
+        "min_score": 6,
+        "min_core_criteria_met": 3,
+        "max_score": 10,
+        "btc_lookback_hours": 12,
+        "stable": {
+          "atr_mult_high": 3.5,
+          "atr_mult_low": 1.8,
+          "funding_max_pct": -0.06,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 2.0,
+          "btc_underperf_low": 1.5,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        },
+        "volatile": {
+          "atr_mult_high": 2.5,
+          "atr_mult_low": 1.8,
+          "funding_max_pct": -0.06,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 2.0,
+          "btc_underperf_low": 1.5,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        }
+      }
     }
   },
   "mid_cap_defaults": {
@@ -624,7 +682,36 @@
       "loss_pct_min": -18,
       "loss_pct_max": -2.5,
       "sl_proximity_pct": 12,
-      "max_rounds": 2
+      "max_rounds": 2,
+      "scoring": {
+        "enabled": true,
+        "min_score": 6,
+        "min_core_criteria_met": 3,
+        "max_score": 10,
+        "btc_lookback_hours": 8,
+        "volatile": {
+          "atr_mult_high": 1.8,
+          "atr_mult_low": 1.2,
+          "funding_max_pct": -0.035,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 1.5,
+          "btc_underperf_low": 1.2,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        },
+        "stable": {
+          "atr_mult_high": 2.5,
+          "atr_mult_low": 1.8,
+          "funding_max_pct": -0.06,
+          "rsi_soft": 35,
+          "rsi_hard": 30,
+          "btc_underperf_high": 2.0,
+          "btc_underperf_low": 1.5,
+          "bb_support_enabled": true,
+          "bb_support_ratio": 1.02
+        }
+      }
     }
   }
 }
