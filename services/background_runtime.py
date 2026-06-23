@@ -23,6 +23,17 @@ def register_pipeline(pipeline) -> None:
         _pipeline = pipeline
 
 
+def _ensure_trending_watchlist() -> None:
+    """Refresh CMC trending overlay before social fetch (idempotent, respects refresh_hours)."""
+    try:
+        from core.config import get_bot_config
+        from services.dry_run_watchlist import TrendingWatchlistSync
+
+        TrendingWatchlistSync(get_bot_config()).sync_if_needed()
+    except Exception as e:
+        log(f"Trending watchlist sync failed: {e}", "WARNING")
+
+
 def social_ever_fetched() -> bool:
     return _last_fetch_at > 0
 
@@ -46,6 +57,8 @@ def request_social_fetch(watchlist: list | None = None) -> bool:
         global _fetch_in_progress, _last_fetch_at, _last_accuracy
         _fetch_in_progress = True
         try:
+            if watchlist is None:
+                _ensure_trending_watchlist()
             wl = watchlist or load_effective_watchlist()
             accuracy = _pipeline.run_cycle_fetches(wl)
             _last_accuracy = accuracy or {}
@@ -65,6 +78,8 @@ def run_social_cycle_sync(watchlist: list | None = None) -> dict:
     global _last_fetch_at, _last_accuracy
     if _pipeline is None:
         return {}
+    if watchlist is None:
+        _ensure_trending_watchlist()
     wl = watchlist or load_effective_watchlist()
     accuracy = _pipeline.run_cycle_fetches(wl)
     _last_accuracy = accuracy or {}
@@ -118,6 +133,7 @@ def _loop():
                 arch.get("background_social_interval_sec")
                 or cfg.raw.get("update_interval", 240)
             )
+            _ensure_trending_watchlist()
             wl = load_effective_watchlist()
             if not _fetch_in_progress:
                 try:
