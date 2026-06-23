@@ -136,7 +136,7 @@
       "live_enabled": true,
       "max_coins": 15,
       "refresh_hours": 4,
-      "gate_only": true,
+      "gate_only": false,
       "max_open_from_trending": 8,
       "source_priority": [
         "trending/latest",
@@ -253,7 +253,7 @@
     "trade_intent_async_auto_only": true
   },
   "risk": {
-    "max_daily_buys": 8,
+    "max_daily_buys": 15,
     "max_daily_sells": 0,
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,
