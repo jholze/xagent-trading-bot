@@ -253,8 +253,12 @@ def handle_callback(callback_query: dict) -> bool:
             return True
         if callback_id:
             answer_callback_query(callback_id, f"/{cmd_key}")
+        from notifications.telegram_commands.command_context import clear_context, set_chat_id
         from notifications.telegram_commands.router import dispatch_command
 
+        if chat_id:
+            set_chat_id(chat_id)
+            clear_context(chat_id)
         dispatch_command(f"/{cmd_key}")
         return True
 

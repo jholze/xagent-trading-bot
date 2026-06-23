@@ -489,10 +489,11 @@ def answer_callback_query(callback_id, text=None):
 
 def handle_telegram_command(text, chat_id=None):
     """Delegates to modular command router."""
-    from notifications.telegram_commands.command_context import set_chat_id
+    from notifications.telegram_commands.command_context import clear_context, set_chat_id
 
     if chat_id is not None:
         set_chat_id(chat_id)
+        clear_context(chat_id)
     from notifications.telegram_commands.router import dispatch_command
     return dispatch_command(text)
 

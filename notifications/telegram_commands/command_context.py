@@ -213,6 +213,13 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
 
 def try_resolve(chat_id: str | int, text: str) -> bool:
     """Map short follow-up text to a slash command using active context."""
+    stripped = (text or "").strip()
+    if stripped.startswith("/"):
+        clear_context(chat_id)
+        from notifications.telegram_commands.router import dispatch_command
+
+        return dispatch_command(stripped)
+
     entry = get_context(chat_id)
     if not entry:
         return False

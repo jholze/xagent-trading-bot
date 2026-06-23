@@ -1,6 +1,5 @@
 import threading
 
-from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 
@@ -17,7 +16,6 @@ def handle(text: str) -> bool:
     if text != "/morning":
         return False
 
-    activate_command("morning")
     send_telegram_message("☀️ <b>Morning Briefing</b> wird erstellt…")
     threading.Thread(target=_run_morning, daemon=True, name="morning-cmd").start()
     return True

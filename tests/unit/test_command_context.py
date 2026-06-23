@@ -45,6 +45,13 @@ class TestCommandContext(unittest.TestCase):
             mock.assert_called_once_with("/add RAVE")
         self.assertIsNone(ctx.get_context("42"))
 
+    def test_try_resolve_slash_clears_stale_context(self):
+        ctx.set_context("42", "morning")
+        with patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock:
+            self.assertTrue(ctx.try_resolve("42", "/positions"))
+            mock.assert_called_once_with("/positions")
+        self.assertIsNone(ctx.get_context("42"))
+
 
 if __name__ == "__main__":
     unittest.main()
