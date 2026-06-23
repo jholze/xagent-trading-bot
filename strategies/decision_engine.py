@@ -139,13 +139,41 @@ class DecisionEngine:
         trust = getattr(x_signal, "trust_score", 70)
         return max(65.0, 85 - (trust - 70) * 0.5)
 
-    def _cmc_buy_threshold(self, strategy_params: dict = None) -> float:
+    def _cmc_buy_threshold(self, strategy_params: dict = None, cmc_signal=None) -> float:
+        fusion = self.config.cmc_trending_fusion_config
+        if (
+            fusion.get("enabled")
+            and cmc_signal
+            and getattr(cmc_signal, "signal_tier", "") == "trending"
+        ):
+            return float(fusion.get("min_confidence_trending", 50))
         params = strategy_params or {}
         if params.get("cmc_min_confidence") is not None:
             return float(params["cmc_min_confidence"])
         if is_dry_run_enhanced():
             return float(self.config.dry_run_defaults.get("cmc_min_confidence", 55))
         return float(self.config.cmc_config.get("min_confidence", 60))
+
+    def _cmc_trending_only_buy(self, cmc_signal, market: MarketContext, strategy_params: dict) -> bool:
+        fusion = self.config.cmc_trending_fusion_config
+        if not fusion.get("enabled") or not cmc_signal or cmc_signal.action != "BUY":
+            return False
+        if getattr(cmc_signal, "signal_tier", "") != "trending":
+            return False
+        if fusion.get("require_volatile_atr_tier", True):
+            profile = strategy_params.get("strategy_profile", "")
+            tier = strategy_params.get("volatility_tier", "")
+            if tier != "volatile" and profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
+                return False
+        rsi_cap = float(fusion.get("block_buy_if_rsi_above", 68))
+        if market.rsi and market.rsi > rsi_cap:
+            return False
+        top_n = int(fusion.get("allow_cmc_only_buy_top_n", 8))
+        rank = int(getattr(cmc_signal, "trending_rank", 0) or 0)
+        if rank <= 0 or rank > top_n:
+            return False
+        min_conf = float(fusion.get("cmc_only_buy_min_confidence", 58))
+        return float(cmc_signal.confidence) >= min_conf
 
     def _cmc_sell_threshold(self, strategy_params: dict = None, cmc_signal=None) -> float:
         params = strategy_params or {}
@@ -255,9 +283,13 @@ class DecisionEngine:
             trust = self._cmc_trust_score(cmc_signal, strategy_params)
             cmc_eff = float(cmc_signal.confidence) * (trust / 100.0)
             cmc_eff *= consensus
-            if cmc_eff >= self._cmc_buy_threshold(strategy_params):
+            if cmc_eff >= self._cmc_buy_threshold(strategy_params, cmc_signal):
                 cmc_buy = True
                 sources.append("cmc")
+            elif self._cmc_trending_only_buy(cmc_signal, market, strategy_params):
+                cmc_buy = True
+                sources.append("cmc")
+                sources.append("cmc_trending")
 
         if lc_signal and lc_signal.action == "BUY":
             trust = self._lc_trust_score(lc_signal, strategy_params)

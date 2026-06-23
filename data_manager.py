@@ -59,6 +59,7 @@ def atomic_write_json(path: str, data: dict):
 
 WATCHLIST_FILE = "watchlist.json"
 DRY_RUN_OVERLAY_FILE = "watchlist.dry_run_overlay.json"
+CMC_TRENDING_OVERLAY_FILE = "watchlist.cmc_trending_overlay.json"
 DRY_RUN_EXPANSION_FILE = "watchlist.dry_run_expansion.json"
 
 
@@ -194,6 +195,15 @@ def remove_coin(symbol):
             save_dry_run_overlay(overlay)
             return True, f"✅ {symbol} wurde entfernt."
 
+    if trending_watchlist_live_enabled():
+        overlay = load_cmc_trending_overlay()
+        overlay_coins = overlay.get("coins", [])
+        new_overlay = [c for c in overlay_coins if _watchlist_symbol(c) != symbol]
+        if len(new_overlay) < len(overlay_coins):
+            overlay["coins"] = new_overlay
+            save_cmc_trending_overlay(overlay)
+            return True, f"✅ {symbol} wurde entfernt."
+
     return False, f"{symbol} nicht in der Watchlist gefunden."
 
 
@@ -235,6 +245,33 @@ def save_dry_run_overlay(data: dict) -> bool:
         return False
 
 
+def load_cmc_trending_overlay():
+    path = get_data_file(CMC_TRENDING_OVERLAY_FILE)
+    if not os.path.exists(path):
+        return {"refreshed_at": "", "source": "", "coins": [], "added": [], "removed": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return {"refreshed_at": "", "source": "", "coins": [], "added": [], "removed": []}
+
+
+def save_cmc_trending_overlay(data: dict) -> bool:
+    path = get_data_file(CMC_TRENDING_OVERLAY_FILE)
+    try:
+        atomic_write_json(path, data)
+        return True
+    except Exception:
+        return False
+
+
+def trending_watchlist_live_enabled(config: dict = None) -> bool:
+    cfg = config or get_config()
+    tw = cfg.get("cmc", {}).get("trending_watchlist") or cfg.get("live", {}).get("trending_watchlist") or {}
+    return bool(tw.get("enabled", True) and tw.get("live_enabled", False))
+
+
 def _dedupe_watchlist_coins(coins: list) -> list:
     seen = set()
     unique = []
@@ -253,6 +290,8 @@ def load_effective_watchlist():
         coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
     if is_dry_run_enhanced():
         coins = _dedupe_watchlist_coins(coins + load_dry_run_overlay().get("coins", []))
+    if trending_watchlist_live_enabled():
+        coins = _dedupe_watchlist_coins(coins + load_cmc_trending_overlay().get("coins", []))
     return coins
 
 

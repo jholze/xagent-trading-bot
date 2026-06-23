@@ -104,6 +104,18 @@ class RiskManager:
             )
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
+        if source == "cmc":
+            fusion = self.config.cmc_trending_fusion_config
+            from data_manager import load_cmc_trending_overlay, trending_watchlist_live_enabled
+
+            trending_syms = set()
+            if trending_watchlist_live_enabled(self.config.raw):
+                trending_syms = {
+                    c.get("symbol") for c in load_cmc_trending_overlay().get("coins", [])
+                }
+            if order.symbol in trending_syms:
+                pct = float(fusion.get("trending_trade_size_pct", 50)) / 100.0
+                base_usdt = base_usdt * pct
         if source == "dca" or order.signal == "BUY_DCA":
             params = self.config.strategy_params(order.symbol, timeframe)
             try:
@@ -545,6 +557,11 @@ class RiskManager:
         pos_amount = float(pos.get("amount", 0) or 0)
         is_dca = order.signal == "BUY_DCA" or source == "dca"
 
+        if order.type == "BUY" and source == "cmc":
+            blocked, reason = self._trending_position_cap_blocked(order, timeframe)
+            if blocked:
+                return True, reason
+
         if order.type == "BUY" and last_type == "SELL" and not (is_dca and pos_amount > 0):
             blocked, reason = self._rebuy_after_sell_blocked(
                 order, timeframe, source, last_ts, pos, params, defaults
@@ -614,6 +631,32 @@ class RiskManager:
             return True, (
                 f"{label}: {elapsed:.1f}h since last SELL "
                 f"(min {min_hours:.1f}h after sell)"
+            )
+        return False, ""
+
+    def _trending_position_cap_blocked(
+        self,
+        order: TradeOrder,
+        timeframe: str,
+    ) -> tuple[bool, str]:
+        tw = self.config.trending_watchlist_config
+        cap = int(tw.get("max_open_from_trending", 0))
+        if cap <= 0 or order.type != "BUY":
+            return False, ""
+        from data_manager import load_cmc_trending_overlay, trending_watchlist_live_enabled
+        from strategies.positions import list_active_positions
+
+        if not trending_watchlist_live_enabled(self.config.raw):
+            return False, ""
+        trending_syms = {
+            c.get("symbol") for c in load_cmc_trending_overlay().get("coins", [])
+        }
+        trending_open = sum(
+            1 for pos in list_active_positions() if pos.get("symbol") in trending_syms
+        )
+        if trending_open >= cap:
+            return True, (
+                f"Trending position cap: {trending_open}/{cap} open from CMC trending"
             )
         return False, ""
 

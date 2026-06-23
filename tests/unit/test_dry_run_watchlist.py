@@ -58,10 +58,27 @@ class TestDryRunWatchlist(unittest.TestCase):
         base = [{"symbol": "BTC/USDT", "active": True}]
         with patch("data_manager.load_watchlist", return_value=base), \
              patch("data_manager.uses_watchlist_expansion", return_value=False), \
-             patch("data_manager.is_dry_run_enhanced", return_value=False):
+             patch("data_manager.is_dry_run_enhanced", return_value=False), \
+             patch("data_manager.trending_watchlist_live_enabled", return_value=False):
             merged = load_effective_watchlist()
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["symbol"], "BTC/USDT")
+
+    def test_load_effective_watchlist_merges_live_trending_overlay(self):
+        base = [{"symbol": "BTC/USDT", "active": True}]
+        overlay = {
+            "refreshed_at": datetime.now().isoformat(),
+            "source": "trending/latest",
+            "coins": [{"symbol": "WIF/USDT", "source": "cmc_trending", "active": True}],
+        }
+        with patch("data_manager.load_watchlist", return_value=base), \
+             patch("data_manager.uses_watchlist_expansion", return_value=False), \
+             patch("data_manager.is_dry_run_enhanced", return_value=False), \
+             patch("data_manager.trending_watchlist_live_enabled", return_value=True), \
+             patch("data_manager.load_cmc_trending_overlay", return_value=overlay):
+            merged = load_effective_watchlist()
+        symbols = [c["symbol"] for c in merged]
+        self.assertEqual(symbols, ["BTC/USDT", "WIF/USDT"])
 
     def test_load_effective_watchlist_merges_dry_run_expansion(self):
         base = [{"symbol": "BTC/USDT", "active": True}]

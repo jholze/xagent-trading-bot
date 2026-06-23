@@ -434,6 +434,16 @@ def explain_lc_signal(signal) -> str:
     return line
 
 
+def _cmc_tier_label(signal) -> str:
+    tier = getattr(signal, "signal_tier", "community") or "community"
+    labels = {
+        "trending": "Trending",
+        "community": "Community",
+        "quote": "Kursdaten",
+    }
+    return labels.get(tier, "Community")
+
+
 def explain_cmc_signal(signal) -> str:
     from notifications.coin_links import format_links_line, format_ticker_html
 
@@ -443,13 +453,21 @@ def explain_cmc_signal(signal) -> str:
     bull = getattr(signal, "votes_bullish", 0)
     bear = getattr(signal, "votes_bearish", 0)
     rat = getattr(signal, "rationale", "") or ""
-    act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else "Abwarten"
+    tier = _cmc_tier_label(signal)
+    rank = int(getattr(signal, "trending_rank", 0) or 0)
+    rank_part = f" #{rank}" if rank > 0 and tier == "Trending" else ""
+    if action == "BUY":
+        act_de = "bullish" if tier == "Kursdaten" else "Kauf-Stimmung"
+    elif action == "SELL":
+        act_de = "bearish" if tier == "Kursdaten" else "Verkauf-Stimmung"
+    else:
+        act_de = "neutral"
     coin_html = format_ticker_html(coin, symbol_suffix="")
     links = format_links_line(coin)
     links_part = f"\n{links}" if links else ""
     line = (
-        f"<b>{coin_html}</b> — Community tendiert zu <b>{act_de}</b> ({conf}%). "
-        f"Stimmen: {bull} bullish / {bear} bearish.{links_part}"
+        f"<b>[{tier}{rank_part}]</b> {coin_html} — <b>{act_de}</b> ({conf}%). "
+        f"Stimmen: {bull}↑/{bear}↓.{links_part}"
     )
     if rat:
         line += f"\n  {rat[:120]}"

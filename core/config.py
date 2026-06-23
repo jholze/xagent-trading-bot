@@ -55,7 +55,32 @@ class BotConfig:
 
     @property
     def trending_watchlist_config(self) -> dict:
-        return self.live_config.get("trending_watchlist", {})
+        defaults = {
+            "enabled": True,
+            "live_enabled": True,
+            "max_coins": 15,
+            "refresh_hours": 4,
+            "gate_only": True,
+            "max_open_from_trending": 8,
+            "source_priority": ["trending/latest"],
+        }
+        cmc_tw = self.cmc_config.get("trending_watchlist") or {}
+        live_tw = self.live_config.get("trending_watchlist") or {}
+        return {**defaults, **live_tw, **cmc_tw}
+
+    @property
+    def cmc_trending_fusion_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "min_confidence_trending": 50,
+            "allow_cmc_only_buy_top_n": 8,
+            "cmc_only_buy_min_confidence": 58,
+            "block_buy_if_rsi_above": 68,
+            "require_volatile_atr_tier": True,
+            "trending_trade_size_pct": 50,
+        }
+        raw = self.cmc_config.get("cmc_trending_fusion") or {}
+        return {**defaults, **raw}
 
     def is_dry_run_enhanced(self) -> bool:
         if self.trading_mode != "live":

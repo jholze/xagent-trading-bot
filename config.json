@@ -125,7 +125,44 @@
     "min_sell_notional_usdt": 15,
     "block_social_sell_if_sold_percent_above": 0.75,
     "cmc_min_hours_between_sells": 6,
-    "api_key_env": "CMC_API_KEY"
+    "api_key_env": "CMC_API_KEY",
+    "budget_community_trending": 12,
+    "budget_market_trending": 12,
+    "budget_content": 8,
+    "budget_quotes": 12,
+    "max_api_calls_per_cycle": 3,
+    "trending_watchlist": {
+      "enabled": true,
+      "live_enabled": true,
+      "max_coins": 15,
+      "refresh_hours": 4,
+      "gate_only": true,
+      "max_open_from_trending": 8,
+      "source_priority": [
+        "trending/latest"
+      ],
+      "exclude_symbols": [
+        "USDT",
+        "USDC",
+        "BTC",
+        "ETH",
+        "SOL"
+      ]
+    },
+    "cmc_trending_fusion": {
+      "enabled": true,
+      "min_confidence_trending": 50,
+      "allow_cmc_only_buy_top_n": 8,
+      "cmc_only_buy_min_confidence": 58,
+      "block_buy_if_rsi_above": 68,
+      "require_volatile_atr_tier": true,
+      "trending_trade_size_pct": 50
+    },
+    "dexscan_alerts": {
+      "enabled": true,
+      "refresh_hours": 2,
+      "max_alerts": 10
+    }
   },
   "altcoin_social": {
     "cmc_sell_min_confidence": 70,

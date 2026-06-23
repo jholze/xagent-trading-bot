@@ -21,17 +21,27 @@ class CMCTrendingProvider:
     def _headers(self) -> dict:
         return {"X-CMC_PRO_API_KEY": self.api_key, "Accept": "application/json"}
 
-    def fetch_trending_symbols(self, limit: int = 15) -> Tuple[List[str], str]:
+    def fetch_trending_symbols(
+        self,
+        limit: int = 15,
+        source_priority: List[str] | None = None,
+    ) -> Tuple[List[str], str]:
         """Return (symbols, source_label). Empty list if API unavailable."""
         if not self.api_key:
             log("CMC_API_KEY not set — skipping trending watchlist sync", "WARNING")
             return [], ""
 
-        for fetcher, source in (
-            (self._fetch_trending_latest, "trending/latest"),
-            (self._fetch_gainers_losers, "trending/gainers-losers"),
-            (self._fetch_listings_movers, "listings/latest"),
-        ):
+        fetchers = {
+            "trending/latest": (self._fetch_trending_latest, "trending/latest"),
+            "trending/gainers-losers": (self._fetch_gainers_losers, "trending/gainers-losers"),
+            "listings/latest": (self._fetch_listings_movers, "listings/latest"),
+        }
+        priority = source_priority or ["trending/latest", "trending/gainers-losers", "listings/latest"]
+        for key in priority:
+            entry = fetchers.get(key)
+            if not entry:
+                continue
+            fetcher, source = entry
             symbols = fetcher(limit)
             if symbols:
                 return symbols[:limit], source

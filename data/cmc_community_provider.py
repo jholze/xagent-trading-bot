@@ -49,6 +49,8 @@ class CMCCommunitySignal:
         self.votes_bearish = votes_bearish
         self.score = 0.0
         self.quotes_fallback = False
+        self.signal_tier = "community"
+        self.trending_rank = 0
 
 
 class CMCCommunityParser:
@@ -302,23 +304,23 @@ class CMCProApiProvider(CMCDataProvider):
             log("CMC_API_KEY not set — skipping live CMC fetch", "WARNING")
             return []
 
-        seen = {p.get("post_id") for p in load_cmc_posts().get("posts", []) if p.get("post_id")}
-        results = []
-        for post in self._fetch_trending_tokens(limit):
-            if post.post_id not in seen:
-                results.append(post)
+        from data.cmc_volatile_signals import CMCVolatileSignalAggregator
 
-        symbols = [c.get("symbol", "").split("/")[0] for c in watchlist if c.get("symbol")]
-        for post in self._fetch_content_latest(symbols, limit):
-            if post.post_id not in seen and post.post_id not in {r.post_id for r in results}:
-                results.append(post)
-
-        if not results:
-            for post in self._fetch_quotes_sentiment(symbols, limit):
-                if post.post_id not in seen:
-                    results.append(post)
-
-        return results[:limit]
+        aggregator = CMCVolatileSignalAggregator(api_key=self.api_key, parser=CMCCommunityParser())
+        signals = aggregator.fetch_signals(watchlist)
+        posts = []
+        for sig in signals[: max(limit, 40)]:
+            posts.append(RawCMCPost(
+                post_id=sig.post_id or f"cmc_{sig.coin}_{sig.action}",
+                coin=sig.coin,
+                text=sig.rationale,
+                author=getattr(sig, "account", "CMC Community"),
+                votes_bullish=sig.votes_bullish,
+                votes_bearish=sig.votes_bearish,
+            ))
+            posts[-1].trending_rank = getattr(sig, "trending_rank", 0)  # type: ignore[attr-defined]
+            posts[-1].signal_tier = getattr(sig, "signal_tier", "community")  # type: ignore[attr-defined]
+        return posts
 
 
 def get_cmc_provider(config: dict = None) -> CMCDataProvider:

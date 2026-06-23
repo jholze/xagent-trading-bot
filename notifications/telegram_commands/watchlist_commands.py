@@ -71,7 +71,11 @@ def _format_coin_line(index: int, coin: dict, trending: bool = False) -> str:
     sym_html = format_ticker_html(ticker, name=name, symbol_suffix="/USDT")
     suffix = f" ({name})" if name else ""
     inactive = "" if coin.get("active", True) else " <i>(inaktiv)</i>"
-    tag = " 📈" if trending or coin.get("source") in ("cmc_trending", "dry_run_expansion") else ""
+    if trending or coin.get("source") in ("cmc_trending", "dry_run_expansion"):
+        rank = coin.get("trending_rank")
+        tag = f" 📈Trending #{rank}" if rank else " 📈Trending"
+    else:
+        tag = ""
     return f"<b>{index}.</b> <b>{sym_html}</b>{suffix}{inactive}{tag}"
 
 

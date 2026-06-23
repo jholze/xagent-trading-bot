@@ -261,6 +261,9 @@ def resolve_strategy_params(
     if volatile_active:
         return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
 
+    if coin.get("source") == "cmc_trending" and tier == "volatile":
+        return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
+
     if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
         profile = dict(cfg.altcoin_social_config)
         if is_dry_run_enhanced():

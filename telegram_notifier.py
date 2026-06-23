@@ -223,8 +223,13 @@ def send_cmc_cycle_digest(signals: list):
     filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
     if not filtered:
         return False
-    lines = [f"<b>📊 CMC diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
-    for s in filtered[:8]:
+    max_coins = int(cfg.get("cmc_digest_max_coins", 5))
+    lines = [
+        f"<b>📊 CMC-Zyklus</b> — Beobachtung (kein Trade ohne ✅ EXECUTED)",
+        datetime.now().strftime("%H:%M:%S"),
+        "",
+    ]
+    for s in filtered[:max_coins]:
         lines.append(explain_cmc_signal(s))
         lines.append("")
     from bus.schemas import PRIORITY_CYCLE
