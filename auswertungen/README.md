@@ -96,6 +96,7 @@ Wenn eine Auswertung erklärt, **warum** der Bot verkauft oder blockiert hat:
 |-------|------|---------|
 | **Telegram** (live) | Alle 10 Min. Zyklus-Summary, bei Trades sofort | Schneller Überblick, **„Warum:“**-Erklärungen |
 | **`/decisions`** | On-demand, letzte Einträge | „Was hat der Bot wann entschieden?“ |
-| **`auswertungen/*_tag.md`** | Täglich 23:55 (Cron) | Tagesrückblick mit Tabellen, Hermes-Abschnitt |
+| **`auswertungen/*_tag.md`** | Täglich 23:55 (LaunchAgent/Cron) | Tagesrückblick mit Tabellen, Hermes-Abschnitt |
+| **Telegram Tages-Kurz** | Täglich 23:55 (`daily_report_telegram`) | Kompakte Zusammenfassung inkl. DCA-Stats |
 
 Die drei ergänzen sich: Telegram für den Moment, `/decisions` für Details, Markdown-Report für die Archivierung.

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.daily_auswertung import generate_report
+from scripts.daily_auswertung import build_telegram_daily_summary, generate_report
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hermes"
@@ -55,3 +55,12 @@ def test_generate_report_contains_hermes_section(bot_dir):
     assert "## Hermes" in report
     assert "Experimente gesamt" in report
     assert "Promoted" in report
+
+
+def test_build_telegram_daily_summary(bot_dir):
+    from datetime import datetime
+
+    summary = build_telegram_daily_summary(bot_dir, datetime(2026, 6, 14, 12, 0, 0))
+    assert "Tages-Auswertung 2026-06-14" in summary
+    assert "Portfolio" in summary
+    assert "DCA" in summary

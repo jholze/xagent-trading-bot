@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+
+BOT_ROOT = Path(__file__).resolve().parents[1]
+if str(BOT_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOT_ROOT))
 
 
 def parse_ts(value: str) -> datetime:
@@ -169,6 +174,129 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
     for reason, count in reject_reasons.most_common(3):
         lines.append(f"- {reason} ({count}×)")
     return "\n".join(lines)
+
+
+def decision_day_stats(bot_dir: Path, day_start: datetime, day_end: datetime) -> dict:
+    path = bot_dir / "logs/decisions.jsonl"
+    stats = {
+        "total": 0,
+        "buy_dca": 0,
+        "buy_dca_executed": 0,
+        "buy_dca_shadow": 0,
+        "hold": 0,
+    }
+    if not path.exists():
+        return stats
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts_raw = rec.get("timestamp")
+            if not ts_raw:
+                continue
+            ts = parse_ts(str(ts_raw))
+            if not (day_start <= ts < day_end):
+                continue
+            stats["total"] += 1
+            action = str(rec.get("normalized_action") or rec.get("action") or "").upper()
+            shadow = str(rec.get("shadow_action") or "").upper()
+            sources = [str(s).lower() for s in (rec.get("sources") or [])]
+            if action == "BUY_DCA" or "dca" in sources:
+                stats["buy_dca"] += 1
+                if rec.get("executed"):
+                    stats["buy_dca_executed"] += 1
+            elif shadow == "BUY_DCA":
+                stats["buy_dca_shadow"] += 1
+            elif action == "HOLD":
+                stats["hold"] += 1
+    return stats
+
+
+def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = None) -> str:
+    report_date = report_date or datetime.now()
+    day_start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    date_str = day_start.strftime("%Y-%m-%d")
+
+    th = load_json(bot_dir / "live_trade_history.json")
+    trades = th.get("trades", [])
+    day_trades = [t for t in trades if day_start <= parse_ts(t["timestamp"]) < day_end]
+    buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
+    sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
+    dca_buys = sum(
+        1 for t in day_trades
+        if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
+    )
+    sell_pnl_day = sum((t.get("pnl") or 0) for t in day_trades if t["type"] == "SELL")
+    cash = th.get("virtual_balance", 0)
+    realized_total = th.get("realized_pnl", 0)
+
+    positions = load_json(bot_dir / "positions.live.json").get("positions", {})
+    open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
+    _, pos_value = open_positions_table(positions)
+
+    orders_raw = load_json(bot_dir / "orders.live.json")
+    day_orders = [
+        o for o in orders_raw.get("orders", [])
+        if day_start <= parse_ts(o["timestamps"]["created"]) < day_end
+    ]
+    filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
+    rejected_orders = sum(1 for o in day_orders if o["status"] == "rejected")
+
+    dec = decision_day_stats(bot_dir, day_start, day_end)
+    config = load_json(bot_dir / "config.json")
+    live = config.get("live", {})
+
+    trade_lines = []
+    for trade in sorted(day_trades, key=lambda x: x["timestamp"])[-8:]:
+        ts = parse_ts(trade["timestamp"]).strftime("%H:%M")
+        usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
+        pnl = trade.get("pnl") or 0
+        src = trade.get("source", "?")
+        if trade["type"] == "SELL":
+            trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src}) PnL {pnl:+.1f}")
+        else:
+            trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src})")
+    if not trade_lines:
+        trade_lines.append("• — keine Trades —")
+
+    return (
+        f"<b>📊 Tages-Auswertung {date_str}</b>\n"
+        f"<i>dry_run={live.get('dry_run')} · Report in auswertungen/</i>\n\n"
+        f"<b>Portfolio</b>\n"
+        f"Cash ${cash:,.0f} · Positionen {open_count} (~${pos_value:,.0f})\n"
+        f"Realized gesamt {realized_total:+.1f} USDT · heute {sell_pnl_day:+.1f} USDT\n\n"
+        f"<b>Trades heute</b> {len(day_trades)} ({buys_day} BUY / {sells_day} SELL"
+        f"{f', davon {dca_buys} DCA' if dca_buys else ''})\n"
+        f"Orders {len(day_orders)} ({filled_orders} filled / {rejected_orders} rejected)\n\n"
+        f"<b>DCA (decisions.jsonl)</b>\n"
+        f"BUY_DCA {dec['buy_dca']} · ausgeführt {dec['buy_dca_executed']}"
+        f" · shadow {dec['buy_dca_shadow']}\n"
+        f"Entscheidungen gesamt {dec['total']} (HOLD {dec['hold']})\n\n"
+        f"<b>Letzte Trades</b>\n"
+        + "\n".join(trade_lines)
+    )
+
+
+def send_daily_telegram_summary(bot_dir: Path, report_date: datetime | None = None) -> bool:
+    config = load_json(bot_dir / "config.json")
+    if not config.get("observability", {}).get("daily_report_telegram", True):
+        return False
+    summary = build_telegram_daily_summary(bot_dir, report_date)
+    try:
+        from dotenv import load_dotenv
+        from telegram_notifier import _send_telegram_direct
+
+        load_dotenv(bot_dir / ".env", override=True)
+        return bool(_send_telegram_direct(summary))
+    except Exception as exc:
+        print(f"Telegram daily summary failed: {exc}")
+        return False
 
 
 def live_flags(config: dict) -> str:
@@ -349,6 +477,16 @@ def main() -> None:
         action="store_true",
         help="Print report to stdout instead of writing file",
     )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Send compact daily summary to Telegram",
+    )
+    parser.add_argument(
+        "--no-telegram",
+        action="store_true",
+        help="Skip Telegram even when observability.daily_report_telegram is true",
+    )
     args = parser.parse_args()
 
     bot_dir = args.bot_dir.resolve()
@@ -364,6 +502,16 @@ def main() -> None:
     out_path = out_dir / f"{report_date.strftime('%Y-%m-%d')}_tag.md"
     out_path.write_text(report, encoding="utf-8")
     print(f"Written: {out_path}")
+
+    send_telegram = args.telegram
+    if not args.no_telegram and not send_telegram:
+        cfg = load_json(bot_dir / "config.json")
+        send_telegram = bool(cfg.get("observability", {}).get("daily_report_telegram", True))
+    if send_telegram:
+        if send_daily_telegram_summary(bot_dir, report_date):
+            print("Telegram: daily summary sent")
+        else:
+            print("Telegram: daily summary not sent (disabled or failed)")
 
 
 if __name__ == "__main__":

@@ -272,6 +272,7 @@
     "terminal_dashboard": true,
     "json_logs": false,
     "notify_on_cycle": true,
+    "daily_report_telegram": true,
     "decisions_audit": true,
     "telegram_explanations": {
       "enabled": true,
