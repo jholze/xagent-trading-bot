@@ -53,7 +53,7 @@ class TestTrailingStop(unittest.TestCase):
         self.assertEqual(cand.source, "trailing_stop")
         self.assertIn("Trail", cand.rationale)
 
-    def test_skips_stable_profile(self):
+    def test_stable_profile_uses_trailing_when_configured(self):
         market = MarketContext(
             symbol="BTC/USDT",
             timeframe="4h",
@@ -63,8 +63,23 @@ class TestTrailingStop(unittest.TestCase):
             atr_pct=2.0,
         )
         params = self._params()
-        params["strategy_profile"] = "hermes_baseline"
+        params["strategy_profile"] = "hermes_baseline+stable_sell"
         params["volatility_tier"] = "stable"
+        params["trailing_stop"]["activation_gain_pct"] = 5
+        result = evaluate_trailing_stop(market, {"recent_high": 110}, params)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.source, "trailing_stop")
+
+    def test_skips_profile_without_trailing_config(self):
+        market = MarketContext(
+            symbol="BTC/USDT",
+            timeframe="4h",
+            current_price=100,
+            has_position=True,
+            average_entry=90,
+            atr_pct=2.0,
+        )
+        params = {"strategy_profile": "hermes_baseline", "volatility_tier": "stable"}
         self.assertIsNone(evaluate_trailing_stop(market, {"recent_high": 110}, params))
 
     def test_shadow_mode_flag(self):

@@ -34,33 +34,7 @@ _BUY_PARAM_KEYS = (
 )
 
 
-_VOLATILE_STRUCTURE_KEYS = (
-    "mode",
-    "bb_sell_enabled",
-    "bb_sell_upper_ratio",
-    "bb_sell_rsi_min",
-    "vol_exhaustion_sell_enabled",
-    "vol_exhaustion_max",
-    "vol_exhaustion_rsi_min",
-    "vol_exhaustion_min_gain_pct",
-    "vol_dump_sell_enabled",
-    "vol_dump_min_multiplier",
-    "vol_dump_price_drop_pct",
-    "vol_dump_requires_prior_gain_pct",
-    "vol_buy_boost_enabled",
-    "vol_buy_boost_min",
-    "rsi_sell_mode",
-    "rsi_sell_min_gain_pct",
-    "safety_tp_pct",
-    "safety_tp_min_gain_pct",
-    "cmc_sell_requires_ta",
-    "cmc_sell_min_confidence",
-    "cmc_min_confidence",
-    "cmc_min_hours_between_sells",
-    "exit_ladder",
-    "trailing_stop",
-    "dca",
-)
+from strategies.sell_profile import apply_position_sell_overlay
 
 
 def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
@@ -83,35 +57,6 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
         "hermes_baseline_updated_at": profile.get("updated_at"),
     })
     return params
-
-
-def _volatile_structure_overlay(
-    base: dict,
-    va_cfg: dict,
-    tier: str,
-    symbol: str,
-    tf: str,
-    cfg=None,
-) -> dict:
-    """Merge volatile BB/volume/CMC sell rules onto coin-specific params."""
-    merged = dict(base)
-    for key in _VOLATILE_STRUCTURE_KEYS:
-        if key in va_cfg:
-            merged[key] = va_cfg[key]
-    if is_dry_run_enhanced():
-        cfg = cfg or get_bot_config()
-        for key in ("cmc_min_confidence", "cmc_sell_min_confidence", "cmc_min_hours_between_sells"):
-            if key in cfg.dry_run_defaults:
-                merged[key] = cfg.dry_run_defaults[key]
-    merged.update({
-        "symbol": symbol,
-        "timeframe": tf,
-        "strategy_profile": "hermes_baseline+volatile",
-        "volatility_tier": tier,
-    })
-    if merged.get("take_profit_pct") is None:
-        merged.pop("take_profit_pct", None)
-    return merged
 
 
 def _resolve_volatility_tier(
@@ -252,11 +197,20 @@ def resolve_strategy_params(
     tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
     volatile_active = has_position and tier == "volatile"
 
+    stable_cfg = cfg.stable_altcoin_config
+
     if hermes_params:
         base = _buy_profile_overlay(hermes_params, coin, tier, cfg)
-        if volatile_active:
-            return _volatile_structure_overlay(base, va_cfg, tier, symbol, tf, cfg)
-        return base
+        return apply_position_sell_overlay(
+            base,
+            tier=tier,
+            has_position=has_position,
+            symbol=symbol,
+            tf=tf,
+            volatile_cfg=va_cfg,
+            stable_cfg=stable_cfg,
+            cfg=cfg,
+        )
 
     if volatile_active:
         return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
@@ -273,7 +227,17 @@ def resolve_strategy_params(
 
     params = cfg.strategy_params(symbol, tf)
     base = dict(params) if params else {}
-    return _buy_profile_overlay(base, coin, tier, cfg)
+    base = _buy_profile_overlay(base, coin, tier, cfg)
+    return apply_position_sell_overlay(
+        base,
+        tier=tier,
+        has_position=has_position,
+        symbol=symbol,
+        tf=tf,
+        volatile_cfg=va_cfg,
+        stable_cfg=stable_cfg,
+        cfg=cfg,
+    )
 
 def resolve_coin_config(coin: dict) -> dict:
     """Merge watchlist coin with matching config.strategies[] entry."""

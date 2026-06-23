@@ -367,7 +367,14 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["last_sell_signal"] = signal
             tiers = dict(pos.get("rsi_sell_tiers_done") or {})
             if "TP" in signal.upper():
-                tiers["tp"] = True
+                from strategies.take_profit import mark_triggered_tier
+
+                entry = float(pos.get("average_entry") or 0)
+                gain_pct = (
+                    (current_price / entry - 1) * 100 if entry > 0 else 0.0
+                )
+                tp_tiers = (strategy_params or {}).get("take_profit_tiers") or []
+                tiers = mark_triggered_tier(tiers, gain_pct, tp_tiers)
             elif "30" in signal:
                 tiers["30"] = True
             elif "20" in signal:

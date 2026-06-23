@@ -8,6 +8,7 @@ from strategies.positions import (
     is_rsi_sell_tier_done,
     reset_rsi_sell_tiers_if_cooled,
 )
+from strategies.take_profit import next_trigger_level
 
 
 def get_ampel_color(rsi, vol_multiplier, price, lower_bb):
@@ -38,6 +39,50 @@ def _tier_done(market: MarketContext, symbol: str, tf: str, tier: str) -> bool:
     if market.sim_state is not None:
         return bool((market.sim_state.get("rsi_sell_tiers_done") or {}).get(tier))
     return is_rsi_sell_tier_done(symbol, tf, tier)
+
+
+def _tiers_done_state(market: MarketContext, symbol: str, tf: str) -> dict:
+    if market.sim_state is not None:
+        return dict(market.sim_state.get("rsi_sell_tiers_done") or {})
+    return dict(get_position(symbol, tf).get("rsi_sell_tiers_done") or {})
+
+
+def _evaluate_take_profit(
+    action: str,
+    sources: list[str],
+    *,
+    entry: float,
+    gain_pct: float,
+    take_profit_tiers: list,
+    take_profit_pct,
+    safety_tp_pct,
+    safety_tp_min_gain: float,
+    market: MarketContext,
+    symbol: str,
+    tf: str,
+) -> tuple[str, list[str]]:
+    if action != "HOLD" or entry <= 0:
+        return action, sources
+
+    tiers_done = _tiers_done_state(market, symbol, tf)
+    if take_profit_tiers:
+        level = next_trigger_level(gain_pct, take_profit_tiers, tiers_done)
+        if level is not None:
+            return "SELL_TP", sources + [f"take_profit_{int(level)}"]
+
+    if take_profit_pct and not take_profit_tiers:
+        if gain_pct >= take_profit_pct and not _tier_done(market, symbol, tf, "tp"):
+            return "SELL_TP", sources + ["take_profit"]
+
+    if not take_profit_pct and not take_profit_tiers and safety_tp_pct:
+        if (
+            gain_pct >= safety_tp_min_gain
+            and gain_pct >= float(safety_tp_pct)
+            and not _tier_done(market, symbol, tf, "tp")
+        ):
+            return "SELL_TP", sources + ["take_profit"]
+
+    return action, sources
 
 
 def _reset_tiers_if_cooled(
@@ -83,6 +128,7 @@ class TechnicalRSIStrategy(BaseStrategy):
         rsi_sell_mode = params.get("rsi_sell_mode", "cross")
         rsi_sell_min_gain = float(params.get("rsi_sell_min_gain_pct", 0))
         take_profit_pct = params.get("take_profit_pct")
+        take_profit_tiers = params.get("take_profit_tiers") or []
         safety_tp_pct = params.get("safety_tp_pct")
         safety_tp_min_gain = float(params.get("safety_tp_min_gain_pct", 50))
 
@@ -137,19 +183,19 @@ class TechnicalRSIStrategy(BaseStrategy):
 
             gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
 
-            if action == "HOLD" and entry > 0 and take_profit_pct:
-                if gain_pct >= take_profit_pct and not _tier_done(market, symbol, tf, "tp"):
-                    action = "SELL_TP"
-                    sources.append("take_profit")
-
-            if action == "HOLD" and entry > 0 and not take_profit_pct and safety_tp_pct:
-                if (
-                    gain_pct >= safety_tp_min_gain
-                    and gain_pct >= float(safety_tp_pct)
-                    and not _tier_done(market, symbol, tf, "tp")
-                ):
-                    action = "SELL_TP"
-                    sources.append("take_profit")
+            action, sources = _evaluate_take_profit(
+                action,
+                sources,
+                entry=entry,
+                gain_pct=gain_pct,
+                take_profit_tiers=take_profit_tiers,
+                take_profit_pct=take_profit_pct,
+                safety_tp_pct=safety_tp_pct,
+                safety_tp_min_gain=safety_tp_min_gain,
+                market=market,
+                symbol=symbol,
+                tf=tf,
+            )
 
             if action == "HOLD" and entry > 0:
                 if rsi_sell_mode == "level":

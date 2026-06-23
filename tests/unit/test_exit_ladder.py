@@ -46,6 +46,23 @@ class TestExitLadder(unittest.TestCase):
         amount = resolve_sell_amount("SELL_30", self.symbol, self.tf, 1.0, self.params)
         self.assertAlmostEqual(amount, 300.0)
 
+    def test_volatile_first_tier_sells_60_percent_of_peak(self):
+        volatile_params = {
+            **self.params,
+            "exit_ladder": {
+                "enabled": True,
+                "tiers": [0.60, 0.30, 0.10],
+                "min_remainder_pct": 0.05,
+                "min_remainder_usdt_floor": 10,
+            },
+        }
+        update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
+        pos = positions[self.key]
+        pos["peak_amount"] = 1000.0
+
+        amount = resolve_sell_amount("SELL_30", self.symbol, self.tf, 1.0, volatile_params)
+        self.assertAlmostEqual(amount, 600.0)
+
     def test_terminal_tier_sells_full_remainder(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
         pos = positions[self.key]

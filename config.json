@@ -508,11 +508,11 @@
     {
       "symbol": "BTC/USDT",
       "timeframe": "4h",
-      "rsi_buy_low": 32,
+      "rsi_buy_low": 35,
       "rsi_buy_high": 50,
       "rsi_sell_30": 68,
       "rsi_sell_20": 78,
-      "volume_multiplier": 1.05,
+      "volume_multiplier": 1.25,
       "buy_regime": "dip",
       "reversal_volume_multiplier": 1.2,
       "stop_loss_pct": 50,
@@ -532,16 +532,16 @@
     "micro_cap_override": true,
     "freeze_tier_on_entry": true,
     "rsi_sell_mode": "level",
-    "rsi_sell_30": 68,
-    "rsi_sell_20": 78,
-    "rsi_sell_min_gain_pct": 15,
+    "rsi_sell_30": 62,
+    "rsi_sell_20": 75,
+    "rsi_sell_min_gain_pct": 10,
     "take_profit_pct": null,
     "safety_tp_pct": 18,
     "safety_tp_min_gain_pct": 50,
     "take_profit_tiers": [
-      60,
-      100,
-      150
+      40,
+      80,
+      120
     ],
     "rsi_buy_low": 28,
     "rsi_buy_high": 48,
@@ -554,11 +554,11 @@
     "cmc_min_hours_between_sells": 4,
     "bb_sell_enabled": true,
     "bb_sell_upper_ratio": 0.99,
-    "bb_sell_rsi_min": 62,
+    "bb_sell_rsi_min": 58,
     "vol_exhaustion_sell_enabled": true,
     "vol_exhaustion_max": 0.75,
-    "vol_exhaustion_rsi_min": 60,
-    "vol_exhaustion_min_gain_pct": 25,
+    "vol_exhaustion_rsi_min": 58,
+    "vol_exhaustion_min_gain_pct": 15,
     "vol_dump_sell_enabled": true,
     "vol_dump_min_multiplier": 1.4,
     "vol_dump_price_drop_pct": 15,
@@ -567,10 +567,9 @@
     "exit_ladder": {
       "enabled": true,
       "tiers": [
+        0.6,
         0.3,
-        0.3,
-        0.2,
-        0.2
+        0.1
       ],
       "min_remainder_pct": 0.05,
       "min_remainder_usdt_floor": 10
@@ -579,7 +578,7 @@
       "enabled": true,
       "mode": "live",
       "atr_multiplier": 2.0,
-      "activation_gain_pct": 10,
+      "activation_gain_pct": 5,
       "min_trail_pct": 8,
       "max_trail_pct": 25
     },
@@ -630,6 +629,37 @@
     "buy_regime": "dip",
     "rsi_buy_low": 30,
     "rsi_buy_high": 50,
+    "rsi_sell_mode": "level",
+    "rsi_sell_30": 68,
+    "rsi_sell_20": 78,
+    "rsi_sell_min_gain_pct": 15,
+    "take_profit_pct": null,
+    "safety_tp_pct": 18,
+    "safety_tp_min_gain_pct": 50,
+    "take_profit_tiers": [
+      60,
+      100,
+      150
+    ],
+    "exit_ladder": {
+      "enabled": true,
+      "tiers": [
+        0.3,
+        0.3,
+        0.2,
+        0.2
+      ],
+      "min_remainder_pct": 0.05,
+      "min_remainder_usdt_floor": 10
+    },
+    "trailing_stop": {
+      "enabled": true,
+      "mode": "live",
+      "atr_multiplier": 2.5,
+      "activation_gain_pct": 15,
+      "min_trail_pct": 10,
+      "max_trail_pct": 30
+    },
     "dca": {
       "enabled": true,
       "mode": "live",

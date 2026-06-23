@@ -18,14 +18,9 @@ class TrailingStopCandidate:
 
 
 def trailing_config(strategy_params: dict | None) -> dict:
+    """Return trailing-stop config when the resolved profile includes it."""
     params = strategy_params or {}
-    cfg = dict(params.get("trailing_stop") or {})
-    profile = params.get("strategy_profile", "")
-    if profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
-        return {}
-    if params.get("volatility_tier") != "volatile" and profile != "volatile_altcoin":
-        return {}
-    return cfg
+    return dict(params.get("trailing_stop") or {})
 
 
 def trailing_enabled(strategy_params: dict | None) -> bool:

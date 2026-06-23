@@ -12,12 +12,8 @@ TERMINAL_SIGNALS = frozenset(
 def ladder_config(strategy_params: dict | None) -> dict:
     params = strategy_params or {}
     cfg = dict(params.get("exit_ladder") or {})
-    if cfg.get("enabled") is not False and params.get("strategy_profile") in (
-        "volatile_altcoin",
-        "hermes_baseline+volatile",
-    ):
-        if not cfg and params.get("exit_ladder_enabled"):
-            cfg = {"enabled": True}
+    if not cfg.get("tiers") and params.get("exit_ladder_enabled"):
+        cfg = {"enabled": True}
     tiers = cfg.get("tiers")
     if isinstance(tiers, list) and tiers:
         cfg.setdefault("enabled", True)
