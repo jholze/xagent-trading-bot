@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,14 +11,19 @@ from core.build_info import format_build_line
 from core.config import get_bot_config
 from data_manager import atomic_write_json
 from notifications.daily_stats import BOT_ROOT, window_stats
+
 _STATE_FILE = BOT_ROOT / "data" / "morning_briefing.json"
+_CHUNK_LIMIT = 4000
+
+
+def _esc(text: object) -> str:
+    return html.escape(str(text), quote=False)
 
 
 def _current_chat_id() -> str:
     from notifications.telegram_commands.command_context import current_chat_id
 
     return current_chat_id()
-_CHUNK_LIMIT = 4000
 
 
 def _today_key() -> str:
@@ -120,24 +126,29 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         if trade["type"] == "SELL":
             pnl = trade.get("pnl") or 0
             trade_lines.append(
-                f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src}) PnL {pnl:+.1f}"
+                f"• {ts} {_esc(trade['type'])} {_esc(trade['symbol'])} "
+                f"${usdt:,.0f} ({_esc(src)}) PnL {pnl:+.1f}"
             )
         else:
-            trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src})")
+            trade_lines.append(
+                f"• {ts} {_esc(trade['type'])} {_esc(trade['symbol'])} "
+                f"${usdt:,.0f} ({_esc(src)})"
+            )
     if not trade_lines:
         trade_lines.append("• — keine Trades in 24h —")
 
     highlight_lines = []
     for item in stats["highlights"]:
         exec_mark = "✓" if item["executed"] else "·"
-        rat = f" — {item['rationale']}" if item["rationale"] else ""
+        rat = f" — {_esc(item['rationale'])}" if item["rationale"] else ""
         highlight_lines.append(
-            f"{exec_mark} {item['time']} {item['symbol']} {item['action']}{rat}"
+            f"{exec_mark} {_esc(item['time'])} {_esc(item['symbol'])} "
+            f"{_esc(item['action'])}{rat}"
         )
     if not highlight_lines:
         highlight_lines.append("• — keine Highlights —")
 
-    social_lines = stats["social"] or ["• — keine CMC/LC BUY/SELL —"]
+    social_lines = [_esc(line) for line in (stats["social"] or ["• — keine CMC/LC BUY/SELL —"])]
 
     total_value = float(portfolio.get("total_value", 0) or 0)
     balance = float(portfolio.get("balance", stats["cash"]) or 0)
@@ -170,9 +181,20 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         + "\n".join(trade_lines)
         + "\n\n<b>Social</b>\n"
         + "\n".join(social_lines)
-        + f"\n\n<b>{stats['hermes']}</b>"
+        + f"\n\n<b>{_esc(stats['hermes'])}</b>"
     )
     return _split_telegram(msg)
+
+
+def _send_chunk(chat_id: str | None, chunk: str) -> bool:
+    from telegram_notifier import _send_telegram_direct, send_telegram_message
+
+    if send_telegram_message(chunk, chat_id=chat_id):
+        return True
+    plain = html.unescape(chunk)
+    for tag in ("<b>", "</b>", "<i>", "</i>", "<code>", "</code>"):
+        plain = plain.replace(tag, "")
+    return bool(_send_telegram_direct(plain, chat_id=chat_id, parse_mode=None))
 
 
 def send_morning_briefing(chat_id: str | None = None) -> bool:
@@ -190,8 +212,13 @@ def send_morning_briefing(chat_id: str | None = None) -> bool:
     chunks = build_morning_briefing(cid)
     ok = True
     for chunk in chunks:
-        if not send_telegram_message(chunk, chat_id=cid):
+        if not _send_chunk(cid, chunk):
             ok = False
     if ok:
         mark_morning_sent(cid)
+    else:
+        send_telegram_message(
+            "❌ Morning Briefing konnte nicht vollständig gesendet werden. "
+            "Bitte <code>/morning</code> erneut versuchen."
+        )
     return ok

@@ -48,6 +48,49 @@ class TestMorningBriefing(unittest.TestCase):
         allowed, _ = can_send_morning("chat-1")
         self.assertTrue(allowed)
 
+    def test_build_morning_escapes_html_in_highlights(self):
+        with patch("notifications.morning_briefing.window_stats") as mock_stats:
+            mock_stats.return_value = {
+                "trades": [],
+                "orders": [],
+                "buys": 0,
+                "sells": 0,
+                "dca_buys": 0,
+                "sell_pnl": 0.0,
+                "filled_orders": 0,
+                "rejected_orders": 0,
+                "cash": 5000.0,
+                "realized_total": 0.0,
+                "open_count": 0,
+                "pos_value": 0.0,
+                "decisions": {"total": 1, "buy_dca": 0, "buy_dca_executed": 0, "buy_dca_shadow": 0},
+                "highlights": [{
+                    "time": "08:00",
+                    "symbol": "BTC/USDT",
+                    "action": "HOLD",
+                    "executed": False,
+                    "rationale": "RSI < 30 and price < lower_bb",
+                }],
+                "social": [],
+                "hermes": "folds won 0/4 (< 55%)",
+            }
+            with patch("notifications.terminal_dashboard._portfolio_snapshot", return_value={
+                "total_value": 5000.0,
+                "balance": 5000.0,
+                "open_positions": 0,
+            }), patch("services.trading_service.TradingService") as mock_trading:
+                mock_trading.return_value.risk.status_summary.return_value = {
+                    "portfolio_equity": 5000.0,
+                    "drawdown_pct": 0.0,
+                    "daily_buys": 0,
+                    "max_daily_buys": 15,
+                    "daily_sells": 0,
+                    "max_daily_sells": 0,
+                }
+                text = "\n".join(build_morning_briefing("chat-1"))
+        self.assertIn("RSI &lt; 30", text)
+        self.assertNotIn("RSI < 30", text)
+
     def test_build_morning_contains_key_sections(self):
         with patch("notifications.morning_briefing.window_stats") as mock_stats:
             mock_stats.return_value = {
