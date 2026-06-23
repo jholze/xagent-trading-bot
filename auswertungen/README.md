@@ -69,11 +69,19 @@ Jede Auswertung sollte mindestens enthalten:
 
 Vorlage: `_vorlage.md`
 
+## Bot-Verhalten nachvollziehen
+
+Wenn eine Auswertung erklärt, **warum** der Bot verkauft oder blockiert hat:
+
+- [DOCUMENTATION.md §18](../DOCUMENTATION.md#18-changelog--entscheidungshilfe-version-20) — Entscheidungsbaum, typische Verwirrung
+- `logs/decisions.jsonl` — pro Zyklus: `action`, `sources`, `exit_ladder_step`, `timeframe`, `strategy_profile`
+- Telegram: `/why SYMBOL`, `/decisions`, `/ask`
+
 ## Datenquellen (typisch)
 
 - `live_trade_history.json`
 - `orders.live.json`
-- `positions.live.json`
+- `positions.live.json` (inkl. `exit_ladder_step`, `sold_percent`)
 - `cmc_posts.json`
 - `config.json`
 - `logs/decisions.jsonl` — jede Bot-Entscheidung mit Rationale (auch in Telegram: `/decisions`)

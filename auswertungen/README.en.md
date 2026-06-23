@@ -59,11 +59,19 @@ Each report should include at minimum:
 
 Template: `_vorlage.md`
 
+## Understanding bot behavior
+
+When a report should explain **why** the bot sold or blocked:
+
+- [DOCUMENTATION.en.md §18](../DOCUMENTATION.en.md#18-changelog--decision-guide-version-20) — decision tree, common confusion
+- `logs/decisions.jsonl` — per cycle: `action`, `sources`, `exit_ladder_step`, `timeframe`, `strategy_profile`
+- Telegram: `/why SYMBOL`, `/decisions`, `/ask`
+
 ## Data sources (typical)
 
 - `live_trade_history.json`
 - `orders.live.json`
-- `positions.live.json`
+- `positions.live.json` (incl. `exit_ladder_step`, `sold_percent`)
 - `cmc_posts.json`
 - `config.json`
 - `logs/decisions.jsonl` — every bot decision with rationale (`/decisions`)

@@ -2,9 +2,11 @@
 
 **Sprache:** Deutsch · [English](HERMES_DOCUMENTATION.md)
 
-Stand: 15. Juni 2026
+Stand: 23. Juni 2026 · Bot-Version 2.0
 
-Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, wie er mit dem **Live-Bot** und dem **Volatile-Profil** zusammenspielt, und wie du alles in **Telegram nachvollziehst** — auch ohne Trading- oder Programmierkenntnisse.
+Diese Anleitung erklärt den **Hermes-Agenten** in einfacher Sprache: was er macht, wie er mit dem **Live-Bot** und dem **Volatile-Profil** (Exit Ladder, Trailing Stop, 1h-Timeframe) zusammenspielt, und wie du alles in **Telegram nachvollziehst** — auch ohne Trading- oder Programmierkenntnisse.
+
+> **Gesamtsystem:** [DOCUMENTATION.md](DOCUMENTATION.md) §6.5–6.9 (Strategien + Beispiele) · **`/ask`** für Klartext-Fragen · **`/decisions`** für jede Einzelentscheidung
 
 ---
 
@@ -48,7 +50,27 @@ Der Bot wählt in dieser Reihenfolge (siehe `strategies/registry.py`):
 
 **Volatile-Profil** (`volatile_altcoin` in `config.json`) ist **unabhängig** von Hermes: Es legt BB-/Volumen-Verkaufsregeln **oben drauf**, wenn der Coin als volatile gilt. Profilname dann: `hermes_baseline+volatile`.
 
-Aktuell: `volatile_altcoin.mode: shadow` — der Bot **zeigt** volatile Verkäufe in Telegram (`shadow->SELL_30`), führt sie aber **nicht aus**.
+Aktuell: `volatile_altcoin.mode: live` — volatile Verkaufsregeln werden **ausgeführt** (nicht nur angezeigt).
+
+---
+
+## 1d. Volatile-Verkäufe neben Hermes (seit Bot 2.0)
+
+Hermes optimiert **Parameter** (RSI-Schwellen, Stop-Loss, …). Diese **drei Mechanismen** steuern **wie viel** verkauft wird — unabhängig von Hermes:
+
+| Mechanismus | Was es tut | Beispiel |
+|-------------|------------|----------|
+| **Exit Ladder** | 4 Stufen à 30/30/20/20 % vom **Peak** der Position | Stufe 2 → 30 % vom Peak verkaufen, `exit_ladder_step: 2` |
+| **ATR-Trailing-Stop** | Ab +10 % Gewinn: Vollverkauf wenn Kurs stark vom Hoch fällt | `Trail->ATR stop (drop 12% from high)` |
+| **Struktur-Verkäufe** | BB oben, Volumen-Erschöpfung, Volumen-Dump | `market_structure` in `decisions.jsonl` |
+
+**1h-Timeframe:** Neue volatile Coins werden auf **1h-Kerzen** analysiert (`volatile_altcoin.timeframe: "1h"`). Alte Positionen (z. B. mit 4h eröffnet) behalten ihr TF.
+
+**Rebuy-Cooldown (4 h):** Nach einem Verkauf blockiert der Risk-Manager **automatische** Käufe für 4 Stunden — verhindert Sell→Buy-Churn (siehe H/USDT 22.06.). Hermes-Parameter bleiben trotzdem aktiv; nur der **Zeitpunkt** des Rebuys wird gegated.
+
+**Wichtig:** Hermes lernt **nicht** Exit-Ladder-Stufen oder Trailing-Parameter — die kommen aus `config.json` → `volatile_altcoin`. Hermes kann aber z. B. `rsi_sell_30` optimieren; die Ladder entscheidet dann, **wie viele Coins** bei einem RSI-Sell-Signal tatsächlich rausgehen.
+
+Details mit Beispielen: [DOCUMENTATION.md §6.7–6.9](DOCUMENTATION.md#67-exit-ladder--gestaffelte-teilverkäufe-volatile)
 
 ---
 
@@ -223,6 +245,7 @@ python3 hermes_agent.py --interval 3600
 | `/hermes_status` | Wie `/hermes` |
 | `/why SYMBOL` | Letzte Trade-Entscheidung — inkl. Hermes-Experiment-ID am Coin |
 | `/decisions` | Chronologisches Protokoll aller Bot-Entscheidungen |
+| `/ask` | Frage in Alltagssprache — z. B. „Warum hat H gestern verkauft?“ |
 
 ### Automatische Hermes-Nachrichten in Telegram
 
@@ -341,15 +364,29 @@ Die folgenden Geschichten basieren auf echten Bot-Läufen (Mai–Juni 2026, Enha
 | 14.06. | Rebuy @ ~0,24 $ | Nach Dip wieder eingestiegen — **dieselben Hermes-Werte**. |
 | 14.06. Abend | Zwei Teilverkäufe @ ~0,43–0,42 $ | Gestaffelte Exits (+~168 USDT). |
 | 15.06. | Verkauf @ ~0,62 $, dann Rebuy @ ~0,35 $ | Weiterer Exit (+~186 USDT), Position neu aufgebaut. |
+| 22.06. 12:55 | `SELL_STOP_FULL` (~63 USDT Rest) | Not-Stop — fast alles raus, 88 % bereits verkauft. |
+| 22.06. 13:02 | Auto-`BUY` 7 Min. später | **Churn** — damals ohne Rebuy-Cooldown. **Seit 2.0:** 4 h Pause. |
 
 **Frage:** „Hat Hermes die Strategie nach dem Verkauf verloren?“  
 **Antwort:** Nein. Memory in `baseline.json` gilt weiter — auch über Rebuys hinweg.
 
-**Mit Shadow-Mode** (`volatile_altcoin.mode: shadow`) käme in Telegram zusätzlich z. B.:
+**Frage:** „Warum wieder BUY nach Stop?“  
+**Antwort:** Technisches BUY-Signal + CMC-Stimmung — ohne Rebuy-Cooldown griff der Risk-Manager nicht. Heute: `architecture.min_hours_after_sell_before_rebuy: 4`.
+
+**Mit Exit Ladder (live, seit 2.0)** siehst du in Telegram z. B.:
 
 ```
-Warum: Kurs am oberen Bollinger-Band — Verkauf wäre sinnvoll, läuft aber nur als Shadow.
-shadow->SELL_30 | Profil: hermes_baseline+volatile
+🔴 SELL 30% EXECUTED — H/USDT
+Warum: Gewinnmitnahme — Stufe 2 der Exit-Ladder.
+Technik: exit_ladder_step: 2 | Profil: hermes_baseline+volatile
+```
+
+**Mit Trailing Stop** (bei starkem Lauf):
+
+```
+🔴 SELL FULL — SIREN/USDT
+Warum: Kurs 12 % unter lokalem Hoch — ATR-Trailing greift.
+Technik: Trail->ATR stop | trailing_stop
 ```
 
 ### Beispiel 0b — ARIA: Config schlägt Hermes
@@ -466,7 +503,9 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 - **Kein Ersatz für `strategies[]`:** Wenn du einen Coin fest in der Config hast, **gewinnt die Config** — Hermes-Memory wird dann ignoriert.
 - **Kein Garant für Gewinn:** Backtests sind historisch — Zukunft kann anders sein.
 - **Kein Multi-Parameter-Tuning:** Pro Zyklus nur **eine** Änderung (wissenschaftliche Methode).
-- **Kein Volatile-Profil:** BB-/Volumen-Strukturregeln kommen aus `volatile_altcoin` — separates System, legt sich nur oben drauf.
+- **Kein Volatile-Profil:** BB-/Volumen-Strukturregeln, Exit Ladder und Trailing Stop kommen aus `volatile_altcoin` — separates System, legt sich nur oben drauf.
+- **Kein Exit-Ladder-Tuning:** Stufen `[30,30,20,20]` sind Config, nicht Hermes-Experimente.
+- **Kein Rebuy-Cooldown-Tuning:** 4 h nach Sell ist `architecture.*`, nicht Hermes.
 - **Illiquide Coins:** Wenige Trades in 7-Tage-Folds → viele Ablehnungen (absichtlich konservativ).
 
 ---
@@ -478,6 +517,9 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 | Immer `rejected`, 0 Trades | Zu wenig Signale auf dem Coin/Zeitrahmen | Normal bei volatilen Coins — **Memory aus letztem Stand** gilt trotzdem im Live-Bot |
 | Live-Bot nutzt „falsche“ Werte | Coin in `strategies[]` eingetragen | Config-Eintrag entfernen oder anpassen — er hat Vorrang vor Memory |
 | H nutzt nicht Hermes-Werte | Expliziter `strategies[]`-Eintrag für H | H-Eintrag aus Config entfernen; Memory in `baseline.json` prüfen |
+| Verkauft „zu wenig“ / Mini-Rest bleibt | Alte Partial-Cap-Logik oder keine Ladder | Exit Ladder aktiv? `exit_ladder.enabled: true` in `volatile_altcoin` |
+| Kauf direkt nach Verkauf | Rebuy-Cooldown | Normal seit 2.0 — `/risk` zeigt `min_hours_after_sell_before_rebuy`; manueller `/buy` geht |
+| Verstehe Entscheidung nicht | Zu viele Quellen | `/why SYMBOL` oder `/ask Warum …?` oder `/decisions SYMBOL` |
 | `Grok ... unavailable` | Kein API-Key | `XAI_API_KEY` in `.env` setzen — oder Heuristik nutzen |
 | Keine Promotion trotz gutem Sharpe | Folds-Ratio unter 60 % | Strategie ist instabil über Zeitfenster — gewollt |
 | Hermes läuft nicht | `hermes.enabled: false` | In `config.json` auf `true` setzen und Bot neu starten |
@@ -535,9 +577,10 @@ python3 hermes_agent.py --once --demo
 /hermes_run
 /why SYMBOL
 /decisions
+/ask Warum hat H verkauft?
 ```
 
-**Dateien:** `hermes/` (Logik), `hermes/memory/` (Gedächtnis), `notifications/user_explain.py` (DE-Erklärungen), `config.json` → Blöcke `hermes` + `observability`.
+**Dateien:** `hermes/` (Logik), `hermes/memory/` (Gedächtnis), `strategies/exit_ladder.py`, `strategies/trailing_stop.py`, `notifications/user_explain.py` (DE-Erklärungen), `config.json` → Blöcke `hermes`, `volatile_altcoin`, `architecture`, `observability`.
 
 **Showcase (alle Nachrichtentypen):** `python3 scripts/telegram_transparency_showcase.py`
 

@@ -2,9 +2,9 @@
 
 **Sprache:** Deutsch · [English](DOCUMENTATION.en.md)
 
-Stand: 15. Juni 2026 · Version 1.9
+Stand: 23. Juni 2026 · Version 2.0
 
-Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, **Volatile-Altcoin-Profil**, **Hermes-Memory-Fallback**, Telegram-Befehle, **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
+Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, **Volatile-Altcoin-Profil** (inkl. **Exit Ladder**, **ATR-Trailing-Stop**, **1h-Timeframe**), **Runtime-Architektur** (Async-Notifications, Ledger-Lock, Rebuy-Cooldown), **Hermes-Memory-Fallback**, Telegram-Befehle (inkl. **`/ask`**), **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
 
 ---
 
@@ -80,6 +80,26 @@ flowchart TB
 | Telegram-Menü (DE/EN) | `notifications/telegram_commands/menu_i18n.py`, `locales/telegram_menu.json` | Menü, `/help`, Hinweise nach Nutzersprache |
 | Erklärungen (DE) | `notifications/user_explain.py` | Laien-Texte für Trades, Risiko, Hermes, CMC/X |
 | Entscheidungs-Log | `services/audit_trail.py` → `logs/decisions.jsonl` | Protokoll aller Bot-Entscheidungen |
+| Exit Ladder | `strategies/exit_ladder.py` | Gestaffelte Teilverkäufe (30/30/20/20 % vom Peak) |
+| Trailing Stop | `strategies/trailing_stop.py` | ATR-Skalierter Gewinn-Schutz ab +10 % |
+| Strategie-Registry | `strategies/registry.py` | Profil-Auflösung, 1h-Timeframe, Volatile-Overlay |
+| Ask-Bridge | `services/telegram_ask_bridge.py` | `/ask` → Cursor/Grok-Queue (entkoppelt vom Webhook) |
+| Notification-Bus | `services/notification_bus.py` | Async-Telegram mit Rate-Limit (Phase 3) |
+| Background-Runtime | `services/background_runtime.py` | Social/Backtest parallel zum Trading-Cycle |
+
+### Interne Runtime (Architecture Phases 0–5, Monolith)
+
+Der Bot läuft weiterhin als **ein Prozess** (`aria_bot.py`), ist intern aber für Stabilität und Performance entkoppelt:
+
+| Feature | Config (`architecture.*`) | Wirkung |
+|---------|---------------------------|---------|
+| Async-Notifications | `notification_mode: async` | Cycle-Digests blockieren Webhook/Commands weniger |
+| Background-Social | `background_social_enabled: true` | X/CMC/LC-Fetch parallel; Trading nutzt Snapshot |
+| Ledger-Lock | `ledger_lock_enabled: true` | Keine Race-Conditions bei Position/Order-Updates |
+| Rebuy-Cooldown | `min_hours_after_sell_before_rebuy: 4` | Kein Re-Entry kurz nach Sell (Anti-Churn) |
+| Ask-Bridge | `observability.ask_bridge` | `/ask` in eigener Queue, Poller alle 3 s |
+
+**Start (Produktion):** `bash scripts/start_stack.sh` — stoppt alte Prozesse, startet Bot + ngrok + Webhook. Rollback-Hinweise: [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
 
 ---
 
@@ -93,8 +113,10 @@ flowchart TB
 | Trade-Cooldown (global) | 1 h | `trade_cooldown_hours` | Mindestabstand gleicher Trade-Typ |
 | Cooldown pro Coin (Buy) | 4–6 h | `strategies[].min_hours_between_buys` | Pro Coin in `config.json` |
 | Cooldown pro Coin (Sell) | 3–4 h | `strategies[].min_hours_between_sells` | Ausgenommen: Stop-Loss / Vollverkauf |
+| **Rebuy nach Sell** | **4 h** | `architecture.min_hours_after_sell_before_rebuy` | Verhindert Sell→Buy-Churn (z. B. H/USDT) |
 | Tages-Trade-Limit | 8 / 24 h | `max_daily_trades` | Global über alle Modi |
 | RSI-Timeframe | 4 h (Standard) | `watchlist` + `strategies[]` | OHLCV-Kerzen für Indikatoren |
+| **Volatile-Timeframe** | **1 h** | `volatile_altcoin.timeframe` | Neue volatile Coins; Legacy-Positionen behalten ihr TF |
 | Sandbox Mindestdauer | 7 Tage | `sandbox.min_test_days` | Vor Promotion |
 | Sandbox Max-Laufzeit | 30 Tage | `sandbox.max_test_days` | Danach `expired` |
 | X-Backtest Standard | 60 Tage | `x_backtest.default_days` | `/testaccount` |
@@ -119,8 +141,11 @@ flowchart TB
 7. CMC- und X-Zyklus-Digest an Telegram (wenn neue Signale, `telegram_explanations` aktiv)
 8. Strategy-Backtest-Tick (adaptiv, gestaffelt, wenn `strategy_backtest.auto_run: true`)
 9. Cycle-Summary an Telegram (Entscheidungen + Social-Top, wenn `notify_on_cycle: true`)
-10. Hermes-Hintergrundthread (alle ~30 Min.) — testet Parameter; Live-Bot nutzt `hermes/memory/baseline.json` als Fallback
-11. Warten update_interval Sekunden → zurück zu 1
+10. Background-Runtime: Social-Snapshot / Backtest-Tick (parallel, nicht blockierend)
+11. Hermes-Hintergrundthread (alle ~30 Min.) — testet Parameter; Live-Bot nutzt `hermes/memory/baseline.json` als Fallback
+12. Async-Notification-Bus flusht ausstehende Telegram-Nachrichten (Rate-Limit 1 s)
+13. Ask-Bridge-Poller verarbeitet `/ask`-Queue (alle 3 s)
+14. Warten update_interval Sekunden → zurück zu 1
 ```
 
 ---
@@ -260,9 +285,13 @@ Priorität (höchste gewinnt):
 | 3 | Verlust > 67 % von stop_loss | 50 % (`SELL_STOP_PARTIAL`) |
 | 4 | Gewinn ≥ `take_profit_pct` | 30 % (`SELL_TP`) — einmalig |
 | 5 | RSI kreuzt `rsi_sell_30` von unten | 30 % — einmalig pro Tier |
-| 6 | RSI kreuzt `rsi_sell_20` von unten | 20 % — einmalig pro Tier |
-| 7 | X `price_target` erreicht | 30 % |
-| 8 | X/CMC SELL-Signal | 20–30 % je nach Confidence |
+| 6 | **ATR-Trailing-Stop** (volatile, ab +10 % Gain) | 100 % (`SELL_TRAIL_FULL`) |
+| 7 | RSI kreuzt `rsi_sell_20` von unten | 20 % — einmalig pro Tier |
+| 8 | X `price_target` erreicht | 30 % |
+| 9 | X/CMC/LC SELL-Signal | 20–30 % je nach Confidence |
+| — | **Exit Ladder** (volatile) | Ersetzt feste 30/20-%-Fractions durch Peak-basierte Stufen |
+
+**Volatile-Coins mit Exit Ladder:** Teilverkäufe folgen `[30 %, 30 %, 20 %, 20 %]` vom **Peak** der Position — nicht mehr starren RSI-Fractions. Details: Abschnitt 6.7.
 
 **Anti-Churn (neu):**
 - **RSI-Cross:** Sell nur wenn RSI die Schwelle **von unten kreuzt**, nicht wenn er dauerhaft darüber bleibt
@@ -319,12 +348,16 @@ Dann heißt das Profil `hermes_baseline+volatile`. Hermes-Werte wie `rsi_sell_30
 
 | Modus `volatile_altcoin.mode` | Bedeutung für Einsteiger |
 |-------------------------------|--------------------------|
-| `shadow` (aktuell) | Bot zeigt in Telegram, **was er verkaufen würde** (`shadow->SELL_30`), führt es aber **nicht aus** — zum Beobachten ohne Risiko. |
-| `live` | Volatile-Verkaufsregeln werden **wirklich ausgeführt**. |
+| `shadow` | Bot zeigt in Telegram, **was er verkaufen würde** (`shadow->SELL_30`), führt es aber **nicht aus** — zum Beobachten ohne Risiko. |
+| `live` (aktuell) | Volatile-Verkaufsregeln **inkl. Exit Ladder und Trailing Stop** werden ausgeführt. |
 
 **Tier-Freeze:** Beim ersten Kauf wird der Coin als `stable` oder `volatile` eingefroren (`freeze_tier_on_entry`) — damit wechselt die Strategie nicht mitten in einer Position hin und her.
 
-Relevante Dateien: `strategies/registry.py` (`resolve_strategy_params`), `intelligence/volatility_classifier.py`, `strategies/market_structure.py`.
+**1h-Timeframe:** Neue volatile Coins (Meme, Micro-Cap, CMC-Trending mit hohem ATR) werden auf **1h-Kerzen** analysiert (`volatile_altcoin.timeframe: "1h"`). Offene Positionen, die vorher mit 4h eröffnet wurden, **behalten 4h** bis zum Schließen.
+
+**Struktur-Verkäufe (live):** Bollinger oben, Volumen-Erschöpfung, Volumen-Dump — zusätzlich zu Hermes-RSI-Schwellen.
+
+Relevante Dateien: `strategies/registry.py` (`resolve_strategy_params`, `resolve_effective_timeframe`), `intelligence/volatility_classifier.py`, `strategies/market_structure.py`, `strategies/exit_ladder.py`, `strategies/trailing_stop.py`.
 
 ### 6.6 Praxis-Beispiele — H, ARIA, WLD (ca. 30 Tage, Mai–Juni 2026)
 
@@ -342,17 +375,28 @@ Die folgenden Beispiele stammen aus echten Bot-Läufen (Enhanced Dry Run). Zahle
 | 14.06. | Rebuy @ ~0,24 $ (Dip) | Position wieder aufgebaut. **Hermes-Memory bleibt aktiv** — du verlierst die optimierten Werte nicht. |
 | 14.06. Abend | Zwei CMC-Teilverkäufe @ ~0,43–0,42 $ (+~168 USDT) | Community-Stimmung + hoher Kurs → gestaffelte Gewinnmitnahme. |
 | 15.06. | Verkauf @ ~0,62 $ (+~186 USDT) | Kurs noch höher — weiterer Exit. Danach Rebuy @ ~0,35 $. |
+| 22.06. 12:55 | `SELL_STOP_FULL` (~63 USDT Rest, 88 % verkauft) | Not-Stop bei starkem Drawdown — Rest fast weg. |
+| 22.06. 13:02 | `BUY` 100 USDT (7 Min. später) | **Churn:** Rebuy direkt nach Stop — damals noch ohne 4h-Rebuy-Cooldown. |
 
 **Was ein Einsteiger daraus mitnehmen soll:**
-- Der Bot **verkauft selten alles auf einmal** — er nimmt Gewinne in Stufen (30 % / 20 %).
+- Der Bot **verkauft selten alles auf einmal** — er nimmt Gewinne in Stufen (Exit Ladder: 30/30/20/20 % vom Peak).
 - Nach **Sell + Rebuy** gelten weiterhin **dieselben Hermes-Parameter** — kein „Reset“ auf Standard.
-- Mit `volatile_altcoin.mode: shadow` würdest du **zusätzliche** Verkäufe (BB oben, Volumen-Dump) nur als `shadow->…` in Telegram sehen, ohne Ausführung.
+- **Seit 2.0:** `min_hours_after_sell_before_rebuy: 4` blockiert Käufe kurz nach Verkauf — der 13:02-Rebuy wäre heute geblockt.
+- **Exit Ladder** verhindert Mini-Reste: wenn ein Teilverkauf einen zu kleinen Rest ließe → Vollverkauf.
+- **Trailing Stop** schützt Gewinne ab +10 % — fällt der Kurs X % vom Hoch (ATR-basiert), wird alles verkauft.
 
-**Telegram-Nachricht (vereinfacht, Shadow):**
+**Telegram-Nachricht (vereinfacht, Exit Ladder):**
 ```
-🔶 SELL 30% — H/USDT (nicht ausgeführt, Shadow)
-Warum: Kurs am oberen Bollinger-Band, RSI über 62 — typisch für „zu heiß gelaufen“.
-shadow->SELL_30 | Profil: hermes_baseline+volatile
+🔴 SELL 30% EXECUTED — H/USDT
+Warum: Gewinnmitnahme — Stufe 2 der Exit-Ladder (30 % vom Peak).
+Technik: TA→SELL_30 | exit_ladder_step: 2 | Profil: hermes_baseline+volatile
+```
+
+**Telegram-Nachricht (vereinfacht, Trailing Stop):**
+```
+🔴 SELL FULL EXECUTED — SIREN/USDT
+Warum: Kurs ist 12 % vom lokalen Hoch gefallen — ATR-Trailing-Stop greift.
+Technik: Trail->ATR stop (drop 12.1% from high, trail 10.5%) | trailing_stop
 ```
 
 #### Beispiel ARIA/USDT — Explizite Config schlägt Hermes
@@ -384,6 +428,103 @@ WLD hat wie H **keinen** Config-Eintrag, aber ein Profil in `baseline.json` (Sta
 | H | ❌ Nein | ✅ Ja | ✅ bei Position | Hermes bleibt |
 | WLD | ❌ Nein | ✅ Ja | ✅ bei Position | Hermes bleibt |
 | Neuer Trending-Coin | ❌ Nein | ❌ erst nach Lernen | ✅ bei Position | Volatile oder `altcoin_social` |
+
+### 6.7 Exit Ladder — Gestaffelte Teilverkäufe (volatile)
+
+**Ziel:** Keine Zombie-Reste (z. B. 63 USDT bei 88 % bereits verkauft), aber trotzdem gestaffelte Gewinnmitnahme.
+
+**Aktiv für:** `strategy_profile` = `volatile_altcoin` oder `hermes_baseline+volatile`, wenn `exit_ladder.enabled: true`.
+
+| Stufe | Anteil vom **Peak** | Kumuliert |
+|-------|---------------------|-----------|
+| 1 | 30 % | 30 % |
+| 2 | 30 % | 60 % |
+| 3 | 20 % | 80 % |
+| 4 (terminal) | 20 % Rest | 100 % |
+
+**Min-Rest-Schwelle (relativ):** Wenn der Rest nach einem Teilverkauf unter `max(10 USDT, 5 % der Position)` fällt → **Vollverkauf** statt Mini-Lot.
+
+**Beispiel 1 — Normale Stufe 1:**
+```
+Peak: 1000 Coins @ 1 USDT = 1000 USDT
+exit_ladder_step: 0
+Signal: SELL_30 (RSI oder BB)
+→ Verkauf: 300 Coins (30 % vom Peak)
+→ exit_ladder_step wird 1
+→ Rest: 700 Coins
+```
+
+**Beispiel 2 — Mini-Rest wird vermieden:**
+```
+Noch 35 Coins @ 1 USDT (Position 35 USDT)
+Stufe 2 würde 30 Coins verkaufen, Rest 5 USDT
+5 USDT < max(10, 35×5 % = 1,75) → Floor 10 USDT
+→ Stattdessen: Vollverkauf aller 35 Coins
+```
+
+**Beispiel 3 — Stop-Loss bypassed Ladder:**
+```
+Signal: SELL_STOP_FULL (Not-Exit)
+→ Immer 100 % Rest, unabhängig von exit_ladder_step
+→ exit_ladder_step = 4 (fertig)
+```
+
+**Position-Feld:** `exit_ladder_step` in `positions.*.json` — bei alten Positionen wird der Schritt aus `sold_percent` geschätzt.
+
+**Config:**
+```json
+"exit_ladder": {
+  "enabled": true,
+  "tiers": [0.30, 0.30, 0.20, 0.20],
+  "min_remainder_pct": 0.05,
+  "min_remainder_usdt_floor": 10
+}
+```
+
+### 6.8 ATR-Trailing-Stop — Gewinn-Schutz (volatile)
+
+**Ziel:** Laufende Gewinner nicht komplett zurückgeben, wenn der Kurs vom Hoch abfällt.
+
+| Parameter | Standard | Bedeutung |
+|-----------|----------|-----------|
+| `activation_gain_pct` | 10 | Erst ab +10 % Gewinn seit Entry aktiv |
+| `atr_multiplier` | 2.0 | Trail-Breite = ATR × Multiplikator |
+| `min_trail_pct` / `max_trail_pct` | 8 / 25 | Clamp — enger bei ruhigen, weiter bei hektischen Coins |
+| `mode` | `live` | `shadow` = nur anzeigen, nicht ausführen |
+
+**Beispiel — Trailing greift:**
+```
+Entry: 0,50 USDT, recent_high: 0,65 USDT (+30 % Gain)
+ATR: 6 % → trail_pct = clamp(6×2, 8, 25) = 12 %
+Aktueller Preis: 0,57 USDT → Drop vom Hoch: (1 - 0,57/0,65) = 12,3 %
+12,3 % ≥ 12 % → SELL_TRAIL_FULL (100 %)
+```
+
+**Beispiel — Noch nicht aktiv:**
+```
+Entry: 0,50 USDT, Preis: 0,54 USDT (+8 % Gain)
+activation_gain_pct: 10 → Trailing noch inaktiv, andere Sell-Regeln gelten
+```
+
+**Priorität:** 6 in der Sell-Merge — nach RSI-30-Tier, vor RSI-20. Stop-Loss (Priorität 2) bleibt höher.
+
+### 6.9 Volatile 1h-Timeframe
+
+Volatile Altcoins reagieren schneller als 4h-Kerzen abbilden. Der Bot wechselt daher für **neue** volatile Coins auf 1h:
+
+```
+Watchlist-Eintrag: H/USDT, timeframe: 4h
+Coin-Klasse: meme / volatile (ATR > 5 %)
+Keine offene Legacy-Position
+→ resolve_effective_timeframe() → 1h
+```
+
+**Legacy-Positionen:** Wurde H mit 4h gekauft, bleibt die Analyse auf **4h**, bis die Position geschlossen ist — kein mitten-im-Trade-Timeframe-Wechsel.
+
+**Beispiel in `decisions.jsonl`:**
+```json
+{"symbol": "VELVET/USDT", "timeframe": "1h", "strategy_profile": "hermes_baseline+volatile", "action": "HOLD"}
+```
 
 ### 6.4 Allgemeine Strategie-Beispiele (Paper-Logik)
 
@@ -421,6 +562,22 @@ Neues BUY-Signal heute
 ```
 Position −16 % (stop_loss_pct: 15)
 → SELL_STOP_FULL sofort, Cooldown wird ignoriert
+```
+
+**Beispiel 5 — Rebuy nach Sell geblockt (seit 2.0):**
+```
+12:55 SELL_STOP_FULL H/USDT
+13:02 Neues BUY-Signal
+→ RiskManager: BLOCKED — „Rebuy cooldown: 0.1h since last SELL (min 4.0h after sell)“
+→ Telegram: 🟢 BUY BLOCKED + Warum auf Deutsch
+```
+
+**Beispiel 6 — Exit Ladder Stufe 3 auf großer Position:**
+```
+SIREN/USDT: Peak 800 USDT, noch 320 USDT offen, exit_ladder_step: 2
+Stufe 3 = 20 % vom Peak = 160 USDT
+Rest nach Verkauf: 160 USDT (> 5 % Schwelle)
+→ Teilverkauf 160 USDT, step → 3
 ```
 
 ---
@@ -502,6 +659,11 @@ Der Bot erklärt sich **selbst**. Du musst keine Charts lesen — die Nachrichte
 | **Hermes Memory** | Gelernte Parameter pro Coin — gelten im Live-Bot, auch nach Verkauf und erneutem Kauf (Rebuy), bis du sie in `config.strategies[]` promotest. |
 | **Volatile-Profil** | Extra-Verkaufsregeln für hektische Altcoins (Bollinger oben, Volumen-Erschöpfung, Volumen-Dump) — legt sich über Hermes- oder Standard-Parameter. |
 | **Shadow-Mode** | Bot **rechnet** volatile Verkäufe mit, führt sie aber **nicht aus** — du siehst in Telegram `shadow->SELL_30`, ohne echten Trade. |
+| **Exit Ladder** | Vier gestaffelte Verkaufsstufen (30/30/20/20 % vom Peak) — ersetzt fixe Teilverkäufe bei volatile Coins. |
+| **exit_ladder_step** | Aktuelle Stufe (0–4) in der Position — sichtbar in `/decisions` und `positions.*.json`. |
+| **Trailing Stop** | Gewinn-Schutz: ab +10 % Gewinn verkauft der Bot alles, wenn der Kurs stark vom Hoch fällt (ATR-basiert). |
+| **Rebuy-Cooldown** | 4 h Pause nach einem Verkauf, bevor der Bot wieder **automatisch** kaufen darf — gegen Sell→Buy-Churn. |
+| **`/ask`** | Frage an den Bot stellen; Antwort kommt asynchron mit Referenz-ID `#…` (Cursor/Grok-Bridge). |
 | **ATR** | Maß für Kursschwankungen. Hoher ATR (z. B. > 5 %) → Coin gilt als „volatile“. |
 | **Counterfactual** | „Was wäre passiert, wenn…?“ — Vergleich simulierter vs. echter Verkäufe. |
 
@@ -586,6 +748,19 @@ Läuft automatisch im Hauptzyklus (`strategy_backtest.auto_run`), gestaffelt (`s
 | `/hermes_last` | `/hermes_last` | Nur der letzte Hermes-Zyklus in Alltagssprache |
 | `/hermes_run` | `/hermes_run` | Einen Lern-Zyklus manuell starten |
 | `/cmc` | `/cmc` | CMC Community-Sentiment (Votes, Confidence) |
+| `/lc` | `/lc` | LunarCrush-Sentiment (Galaxy Score, AltRank) |
+| `/ask` | `/ask Warum hat H gestern verkauft?` | Frage an Cursor/Grok-Bridge — Antwort asynchron in Telegram |
+
+**`/ask` Beispiel-Ablauf:**
+```
+Du:  /ask Was bedeutet exit_ladder_step 2 bei H?
+Bot: ✅ Frage #a3f2… in Warteschlange (Cursor-Modus)
+     (Poller alle 3 s, Timeout 10 Min.)
+Bot: 💬 Antwort zu #a3f2…
+     exit_ladder_step 2 = zweite Stufe der Exit-Ladder …
+```
+
+Config: `observability.ask_bridge` (`response_mode: cursor_only`, `headless_dispatch_enabled: true`). Watcher starten: `bash scripts/start_ask_cursor_watcher.sh`.
 
 Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [English](HERMES_DOCUMENTATION.md)
 
@@ -613,8 +788,9 @@ Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [Englis
 | **Hermes Promotion** | Strategie-Parameter live übernommen + Kennzahlen |
 | **Hermes Live-Veto** | Backtest ok, aber echte Trades sprechen dagegen — Schutz aktiv |
 | **Strategie Auto-Tune** | Backtest hat Parameter verbessert — welche Werte, wann nächster Check |
+| **`/ask` Antwort** | Asynchrone Klartext-Antwort auf Nutzerfrage (Referenz-ID `#…`) |
 | **Nach jedem Trade** | Positions-Snapshot |
-| **Bot-Neustart** | Webhook-URL, Modus |
+| **Bot-Neustart** | Webhook-URL, Modus, Version + Git-Branch |
 
 #### Beispiel einer Trade-Nachricht (vereinfacht)
 
@@ -802,8 +978,20 @@ Details und Replay-Validierung: [plans/cmc-churn-fixes.md](plans/cmc-churn-fixes
 | Drawdown-Drossel | −10 % → halbe Größe | `risk.drawdown_throttle_pct` |
 | Min Trade | 5 USDT | `risk.min_trade_usdt` |
 | Slippage (Paper) | 1.5 % | `slippage_percent` |
+| **Rebuy nach Sell** | **4 h** | `architecture.min_hours_after_sell_before_rebuy` |
+| Partial-Sell-Cap | max 75 % verkauft | `risk.block_partial_sell_if_sold_percent_above` |
+| Dust-Sweep | Rest < 10 USDT → Full | `risk.dust_sweep_min_remainder_usdt` |
 
 Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator (max ×2.0).
+
+**Exit Ladder vs. Partial-Cap:** Wenn Exit Ladder aktiv ist, greift `block_partial_sell_if_sold_percent_above` **nicht** — die Ladder steuert die Stufen selbst. Dust-Sweep im RiskManager bleibt als zweite Sicherheit.
+
+**Beispiel — Rebuy blockiert:**
+```
+/risk zeigt: min_hours_after_sell_before_rebuy: 4.0
+Letzter Trade: SELL H/USDT vor 1,2 h
+Neues BUY-Signal → BLOCKED (außer manuell /ask)
+```
 
 `/risk` zeigt alle Werte live.
 
@@ -849,17 +1037,42 @@ Dynamische Größe: Trust × Confidence × ATR-Faktor × Drawdown-Multiplikator 
       "default_language": "de"
     }
   },
+  "architecture": {
+    "mode": "monolith",
+    "notification_mode": "async",
+    "min_hours_after_sell_before_rebuy": 4.0,
+    "ledger_lock_enabled": true,
+    "background_social_enabled": true
+  },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ],
   "volatile_altcoin": {
     "enabled": true,
-    "mode": "shadow",
+    "mode": "live",
+    "timeframe": "1h",
     "atr_volatile_enter_pct": 5.0,
-    "freeze_tier_on_entry": true
+    "freeze_tier_on_entry": true,
+    "exit_ladder": {
+      "enabled": true,
+      "tiers": [0.30, 0.30, 0.20, 0.20],
+      "min_remainder_pct": 0.05,
+      "min_remainder_usdt_floor": 10
+    },
+    "trailing_stop": {
+      "enabled": true,
+      "mode": "live",
+      "atr_multiplier": 2.0,
+      "activation_gain_pct": 10,
+      "min_trail_pct": 8,
+      "max_trail_pct": 25
+    }
+  },
+  "observability": {
+    "ask_bridge": { "enabled": true, "response_mode": "cursor_only" }
   }
 }
 ```
 
-`volatile_altcoin` — siehe Abschnitt 6.5. `telegram_command_menu` — siehe Abschnitt 7 (Menü-Button, Bereichs-Tastatur, DE/EN). Optional: `"button_text": "Menü"` für einen festen Button-Titel.
+`volatile_altcoin` — Abschnitte 6.5–6.9. `architecture` — Abschnitt 2. `ask_bridge` — Abschnitt 7. `telegram_command_menu` — Menü-Button, Bereichs-Tastatur, DE/EN.
 
 ### `.env` (nicht committen)
 
@@ -894,7 +1107,10 @@ XAI_API_KEY=...            # Grok
 | `x_posts.json` | Analysierte Posts + Empfehlungen |
 | `paper_strategies.json` | Sandbox-Hypothesen |
 | `paper_sandbox_history.json` | Sandbox-Portfolios |
-| `logs/decisions.jsonl` | Entscheidungs-Protokoll (jede Coin-Analyse, `/decisions`) |
+| `logs/decisions.jsonl` | Entscheidungs-Protokoll (jede Coin-Analyse, `/decisions`) — inkl. `exit_ladder_step`, `timeframe: 1h` |
+| `data/telegram_ask_queue.json` | `/ask`-Warteschlange (gitignored) |
+| `data/telegram_ask_notify.jsonl` | `/ask`-Antwort-Log |
+| `run/aria_bot.pid` | PID des laufenden Bots (`scripts/start_stack.sh`) |
 | `hermes/memory/experiments.json` | Hermes-Experiment-Historie |
 | `hermes/memory/baseline.json` | Aktuelle Hermes-Best-Parameter |
 | `data/cmc_slug_cache.json` | CMC-Slug-Cache (vom Bot befüllt, gitignored) |
@@ -906,13 +1122,19 @@ XAI_API_KEY=...            # Grok
 ## 14. Tests
 
 ```bash
-pytest tests/unit/ -v                    # 381+ Tests
+pytest tests/unit/ -v                    # 466+ Tests
+pytest tests/unit/test_exit_ladder.py -v   # Exit Ladder (Stufen, Min-Rest, Terminal)
+pytest tests/unit/test_trailing_stop.py -v  # ATR-Trailing (Activation, Clamp, Shadow)
 pytest tests/unit/test_dry_run_portfolio.py -v   # Sim-Cash + Portfolio-Invarianten
 pytest tests/unit/test_dry_run_wallet.py -v
 pytest tests/unit/test_strategy_backtest.py -v
-pytest tests/unit/test_trade_cooldown.py -v      # Cooldown + RSI-Churn
+pytest tests/unit/test_trade_cooldown.py -v      # Cooldown + Rebuy + RSI-Churn
 pytest tests/unit/test_live_gate_readiness.py -v
-pytest tests/unit/test_command_menu.py tests/unit/test_menu_commands.py tests/unit/test_menu_i18n.py -v  # Telegram-Menü DE/EN
+pytest tests/unit/test_command_menu.py tests/unit/test_menu_commands.py tests/unit/test_menu_i18n.py -v
+
+# Stack starten/stoppen
+bash scripts/start_stack.sh
+bash scripts/stop_stack.sh
 
 # Gate readiness (keys in .env required)
 python3 scripts/gate_live_smoke_test.py
@@ -924,7 +1146,7 @@ python3 scripts/reconcile_gate_positions.py
 ## 15. Go-Live Checkliste
 
 1. Bot **ohne** `--demo` starten (Demo isoliert `*.demo.json` / `orders.demo.json`)
-2. `bash scripts/start_demo_with_ngrok.sh` oder Produktiv-Start — Telegram testen
+2. `bash scripts/start_stack.sh` (Produktion) oder `bash scripts/start_demo_with_ngrok.sh` — Telegram testen
 3. Optional: `python3 scripts/telegram_transparency_showcase.py` — alle Nachrichtentypen prüfen
 4. Paper laufen lassen, `/positions` + `/orders` + `/decisions` + Cycle-Summaries prüfen
 5. `python3 scripts/gate_live_smoke_test.py` — Keys + Balance prüfen
@@ -985,8 +1207,8 @@ Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufze
 2. **Nur Code + bewusste Config** committen — keine Laufzeit-JSONs (`git status` prüfen).
 3. **Bot zum Testen neu starten** (läuft mit Code des aktuellen Branches):
    ```bash
-   bash scripts/stop_bot.sh
-   bash scripts/start_with_ngrok.sh
+   bash scripts/stop_stack.sh
+   bash scripts/start_stack.sh
    ```
 4. **Tests** vor dem Merge:
    ```bash
@@ -1012,4 +1234,67 @@ Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufze
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) (Pool, Memory-Fallback, Promotion) · GitHub Issues im Repo
+---
+
+## 18. Changelog & Entscheidungshilfe (Version 2.0)
+
+### Was ist neu seit 1.9?
+
+| Feature | Kurz | Doku |
+|---------|------|------|
+| Exit Ladder | Gestaffelte Verkäufe 30/30/20/20 % vom Peak | §6.7 |
+| ATR-Trailing-Stop | Gewinn-Schutz ab +10 % | §6.8 |
+| Volatile 1h | Schnellere Kerzen für neue volatile Coins | §6.9 |
+| Rebuy-Cooldown 4 h | Kein Auto-Kauf kurz nach Sell | §11 |
+| Runtime-Architektur | Async-Telegram, Background-Social, Ledger-Lock | §2 |
+| `/ask` | Fragen in Alltagssprache | §7 |
+| Volatile `mode: live` | Struktur-Verkäufe werden ausgeführt | §6.5 |
+
+### Entscheidungsbaum — Was der Bot wann tut
+
+```mermaid
+flowchart TD
+    START[Neuer Zyklus: Coin analysieren] --> POS{Offene Position?}
+    POS -->|Nein| BUY{BUY-Signale?}
+    BUY -->|TA + Social| REBUY{Letzter Trade = SELL?}
+    REBUY -->|Ja, unter 4h| BLOCK1[BUY BLOCKED Rebuy-Cooldown]
+    REBUY -->|Nein / Cooldown ok| RB[RiskManager Größe Limits]
+    RB --> EXEC_B[BUY ausführen]
+    BUY -->|Nein| HOLD1[HOLD]
+
+    POS -->|Ja| SELL{Sell-Signale?}
+    SELL -->|Stop-Loss| FULL1[SELL_FULL Not-Exit]
+    SELL -->|Trailing Stop aktiv| FULL2[SELL_TRAIL_FULL]
+    SELL -->|RSI / BB / CMC / LC| LADDER{Exit Ladder aktiv?}
+    LADDER -->|Ja| STEP[Stufe N vom Peak verkaufen]
+    STEP --> DUST{Rest zu klein?}
+    DUST -->|Ja| FULL3[Vollverkauf statt Mini-Rest]
+    DUST -->|Nein| PART[Teilverkauf]
+    LADDER -->|Nein| PART2[Feste 30/20-%-Fractions]
+    SELL -->|Nein| HOLD2[HOLD]
+```
+
+### „Ich verstehe nicht, was der Bot gerade macht“ — 5 Schritte
+
+1. **`/why SYMBOL`** — letzte Entscheidung für den Coin (z. B. `/why H`)
+2. **`/decisions SYMBOL`** — letzte 8 Einträge aus `logs/decisions.jsonl` mit technischen Details
+3. **`/positions`** — `sold_percent`, `exit_ladder_step`, Restmenge, PnL
+4. **`/ask …`** — Frage in normalem Deutsch, z. B. `/ask Warum wurde H um 12:55 verkauft?`
+5. **Logs:** `tail -20 logs/decisions.jsonl` — Rohdaten mit `action`, `sources`, `strategy_profile`, `timeframe`
+
+### Typische Verwirrung — schnelle Antworten
+
+| Du siehst … | Bedeutet meist … | Nachlesen |
+|-------------|------------------|-----------|
+| `BUY BLOCKED` + Rebuy cooldown | Verkauf war vor < 4 h — gewollt | §11, H-Beispiel 22.06. |
+| `exit_ladder_step: 3` | Dritte Ladder-Stufe wurde ausgeführt / als nächstes dran | §6.7 |
+| `Trail->ATR stop` | Trailing Stop hat Vollverkauf ausgelöst | §6.8 |
+| `shadow->SELL_30` | Nur Anzeige — `volatile_altcoin.mode: shadow` | §6.5 |
+| `hermes_baseline+volatile` | Hermes-Parameter + volatile Overlay aktiv | [HERMES_DOKUMENTATION.md §1b](HERMES_DOKUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profil--drei-rollen) |
+| `timeframe: 1h` | Coin wird auf 1h-Kerzen analysiert | §6.9 |
+| `TA→HOLD` trotz CMC SELL | CMC-Churn-Schutz — Technik nicht bearish genug | §10 |
+| Hermes `rejected` | Backtest hat Parameter **nicht** übernommen — Memory bleibt | [HERMES_DOKUMENTATION.md §10](HERMES_DOKUMENTATION.md#10-konkrete-beispiele-30-tage-praxis-h-aria-wld) |
+
+---
+
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub Issues im Repo

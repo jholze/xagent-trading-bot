@@ -529,7 +529,8 @@
         0.2,
         0.2
       ],
-      "min_tier_notional_usdt": 20
+      "min_remainder_pct": 0.05,
+      "min_remainder_usdt_floor": 10
     },
     "trailing_stop": {
       "enabled": true,

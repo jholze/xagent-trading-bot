@@ -5,6 +5,7 @@ from unittest.mock import patch
 from strategies.exit_ladder import (
     advance_ladder_step,
     ladder_enabled,
+    min_remainder_threshold,
     resolve_sell_amount,
     resolve_sell_fraction,
 )
@@ -24,7 +25,8 @@ class TestExitLadder(unittest.TestCase):
             "exit_ladder": {
                 "enabled": True,
                 "tiers": [0.30, 0.30, 0.20, 0.20],
-                "min_tier_notional_usdt": 20,
+                "min_remainder_pct": 0.05,
+                "min_remainder_usdt_floor": 10,
             },
         }
 
@@ -63,7 +65,32 @@ class TestExitLadder(unittest.TestCase):
         frac = resolve_sell_fraction("SELL_STOP_FULL", self.symbol, self.tf, 1.0, self.params)
         self.assertAlmostEqual(frac, 1.0)
 
-    def test_min_remainder_upgrades_to_full(self):
+    def test_min_remainder_threshold_scales_with_position(self):
+        cfg = {"min_remainder_pct": 0.05, "min_remainder_usdt_floor": 10}
+        self.assertAlmostEqual(min_remainder_threshold(cfg, 100.0), 10.0)
+        self.assertAlmostEqual(min_remainder_threshold(cfg, 10_000.0), 500.0)
+
+    def test_small_remainder_on_large_position_allows_partial(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 10_000)
+        pos = positions[self.key]
+        pos["exit_ladder_step"] = 0
+        pos["amount"] = Decimal("10000")
+        pos["peak_amount"] = 10_000.0
+
+        amount = resolve_sell_amount("SELL_30", self.symbol, self.tf, 1.0, self.params)
+        self.assertAlmostEqual(amount, 3000.0)
+
+    def test_small_remainder_on_small_position_upgrades_to_full(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = positions[self.key]
+        pos["exit_ladder_step"] = 1
+        pos["amount"] = Decimal("35")
+        pos["peak_amount"] = 100.0
+
+        amount = resolve_sell_amount("SELL_30", self.symbol, self.tf, 1.0, self.params)
+        self.assertAlmostEqual(amount, 35.0)
+
+    def test_terminal_step_sells_full_remainder(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
         pos = positions[self.key]
         pos["exit_ladder_step"] = 3

@@ -1,4 +1,4 @@
-# X-Agent Trading Bot (Version 1.9.0)
+# X-Agent Trading Bot (Version 2.0.0)
 
 **Language:** [Deutsch](README.md) · English
 
@@ -6,7 +6,7 @@
 
 **Beginner-friendly:** Every important Telegram message explains **why** the bot did something — in plain language, no trading background required.
 
-> **Full documentation:** [DOCUMENTATION.en.md](DOCUMENTATION.en.md) — architecture, strategies, **transparency & glossary**, all Telegram commands, Hermes, demo mode.
+> **Full documentation:** [DOCUMENTATION.en.md](DOCUMENTATION.en.md) — architecture, strategies, **transparency & glossary**, all Telegram commands, Hermes, demo mode. **Confused?** → [§18 decision guide](DOCUMENTATION.en.md#18-changelog--decision-guide-version-20)
 
 ---
 
@@ -27,12 +27,21 @@ In Telegram: use the menu button next to the input field (all commands) or send 
 
 ---
 
-## What's new in 1.9 (June 2026)
+## What's new in 2.0 (June 2026)
 
-- **Volatile altcoin profile** — auto-detects hectic coins (ATR, meme, micro-cap); extra sell rules (upper Bollinger, volume exhaustion, volume dump); **shadow mode** to observe without execution ([docs §6.5](DOCUMENTATION.en.md#65-strategy-selection--who-gets-which-rules))
-- **Hermes memory as live fallback** — learned params from `hermes/memory/baseline.json` apply in the bot for coins **without** a `config.strategies[]` entry (e.g. H/USDT) — across sell, rebuy, and new buys ([HERMES_DOCUMENTATION.md](HERMES_DOCUMENTATION.md))
-- **Practical examples H / ARIA / WLD** — ~30-day walkthrough in plain language ([docs §6.6](DOCUMENTATION.en.md#66-practical-examples--h-aria-wld-30-days-mayjune-2026))
-- **381 unit tests** — including volatile profile, Hermes fallback, market structure
+- **Exit Ladder** — staged partial sells `[30, 30, 20, 20] %` of peak; relative min remainder (`5 %` + 10 USDT floor) ([docs §6.7](DOCUMENTATION.en.md#67-exit-ladder--staged-partial-sells-volatile))
+- **ATR Trailing Stop** — gain protection from +10 %; full close on drop from `recent_high` ([docs §6.8](DOCUMENTATION.en.md#68-atr-trailing-stop--gain-protection-volatile))
+- **Volatile 1h timeframe** — new volatile coins on 1h candles; legacy positions keep their TF ([docs §6.9](DOCUMENTATION.en.md#69-volatile-1h-timeframe))
+- **4 h rebuy cooldown** — no buy shortly after sell (`architecture.min_hours_after_sell_before_rebuy`)
+- **Runtime architecture** — async notifications, background social, ledger lock, `/ask` bridge ([docs §2](DOCUMENTATION.en.md#2-architecture-overview), [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md))
+- **`/ask` in Telegram** — questions to Cursor/Grok, async answer with reference ID
+- **466+ unit tests** — including `test_exit_ladder`, `test_trailing_stop`, rebuy cooldown
+
+### From 1.9
+
+- **Volatile altcoin profile** — ATR/meme/micro-cap detection, structure sells — now **`mode: live`**
+- **Hermes memory as live fallback** — for coins without `strategies[]` (e.g. H/USDT)
+- **Practical examples H / ARIA / WLD** — including H churn on June 22 ([docs §6.6](DOCUMENTATION.en.md#66-practical-examples--h-aria-wld-30-days-mayjune-2026))
 
 ### From 1.8
 
@@ -99,7 +108,7 @@ All intervals: [DOCUMENTATION.en.md §3](DOCUMENTATION.en.md#3-schedules--all-in
 |------|----------|
 | Watchlist | `/list` `/add` `/remove` |
 | Trading | `/buy` `/sell` `/positions` `/orders` `/risk` `/dryrun` |
-| **Transparency** | `/decisions` `/why SYMBOL` `/hermes_last` `/hermes` `/cmc` |
+| **Transparency** | `/decisions` `/why SYMBOL` `/ask` `/hermes_last` `/hermes` `/cmc` `/lc` |
 | Backtest | `/backtest` `/backtest_results` `/backtest_lock` |
 | Mode | `/mode` `/live_confirm` `/gate` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
@@ -130,11 +139,12 @@ Details: [DOCUMENTATION.en.md §5](DOCUMENTATION.en.md#5-demo-mode---demo)
 **Priority:** `config.strategies[]` → **Hermes memory** → **volatile overlay** → trending defaults
 
 - **BUY:** price at lower BB + RSI in range + volume
-- **SELL:** stop-loss → take-profit / structure (BB, volume) → RSI tiers (cross, once each)
-- **Cooldown:** 3–6 h between trades per coin
+- **SELL:** stop-loss → take-profit / **exit ladder** / structure (BB, volume) → RSI tiers → **ATR trailing**
+- **Cooldown:** 3–6 h between trades; **4 h rebuy** after sell
+- **Volatile:** 1h timeframe, exit ladder, trailing stop (`volatile_altcoin` in `config.json`)
 - **H/USDT & co.:** No config entry needed — Hermes memory + volatile rules are enough
 
-Examples: [DOCUMENTATION.en.md §6](DOCUMENTATION.en.md#6-strategies--how-they-work) · [§6.6 H/ARIA/WLD](DOCUMENTATION.en.md#66-practical-examples--h-aria-wld-30-days-mayjune-2026)
+Examples: [DOCUMENTATION.en.md §6](DOCUMENTATION.en.md#6-strategies--how-they-work) · [§6.6–6.9](DOCUMENTATION.en.md#66-practical-examples--h-aria-wld-30-days-mayjune-2026)
 
 ---
 
@@ -158,7 +168,9 @@ HERMES_DOKUMENTATION.md  # Hermes für Einsteiger (DE)
 ## Tests
 
 ```bash
-pytest tests/unit/ -v                         # 381+ tests
+pytest tests/unit/ -v                         # 466+ tests
+pytest tests/unit/test_exit_ladder.py -v
+pytest tests/unit/test_trailing_stop.py -v
 pytest tests/unit/test_dry_run_portfolio.py -v
 pytest tests/unit/test_strategy_backtest.py -v
 python3 scripts/gate_live_smoke_test.py       # Keys + balance (.env)
@@ -186,4 +198,4 @@ python3 scripts/reconcile_gate_positions.py   # Live mode
 
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
-Last updated: 15 June 2026
+Last updated: 23 June 2026

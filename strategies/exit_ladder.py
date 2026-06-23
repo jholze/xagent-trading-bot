@@ -58,6 +58,15 @@ def current_ladder_step(position: dict, tiers: list[float]) -> int:
     return _infer_step_from_sold_percent(float(position.get("sold_percent", 0) or 0), tiers)
 
 
+def min_remainder_threshold(cfg: dict, position_usdt: float) -> float:
+    """Min economical remainder — scales with position, floored for tiny lots."""
+    pct = float(cfg.get("min_remainder_pct", 0.05))
+    floor = float(
+        cfg.get("min_remainder_usdt_floor", cfg.get("min_tier_notional_usdt", 10))
+    )
+    return max(floor, position_usdt * pct)
+
+
 def resolve_sell_amount(
     signal: str,
     symbol: str,
@@ -91,12 +100,13 @@ def resolve_sell_amount(
     target_coins = peak * tiers[step]
     sell_coins = min(amount, target_coins)
 
-    min_notional = float(cfg.get("min_tier_notional_usdt", 20))
+    position_usdt = amount * price
+    min_notional = min_remainder_threshold(cfg, position_usdt)
     remainder_usdt = max(0.0, amount - sell_coins) * price
     if 0 < remainder_usdt < min_notional:
         return amount
 
-    if sell_coins * price < min_notional and amount * price >= min_notional:
+    if sell_coins * price < min_notional and position_usdt >= min_notional:
         return amount
 
     return sell_coins

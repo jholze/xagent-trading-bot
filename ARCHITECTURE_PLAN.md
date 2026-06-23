@@ -100,7 +100,10 @@ flowchart TB
 | **`e0bb31c` LunarCrush** | Dritte Social-Quelle (`lc_weight`, `process_lc_signals`) |
 | **`56f3c73`–`e238022` volatility tiers** | `volatile` / `stable` / `mid` Buy-Overlays + `frozen_tier` in `strategies/registry.py` |
 | **`f8b8ef8` order ledger** | Zentrales `orders.*.json` mit Scopes (`demo`/`paper`/`live`), Trade-Book in `services/order_service.py` |
-| Volatile Stop-Loss (committed) | `strategies/technical_rsi_bb.py` → `SELL_STOP_PARTIAL` / `SELL_STOP_FULL` via `stop_loss_pct` (kein separates `trailing_stop`-Modul auf `main`) |
+| Exit Ladder + ATR Trailing (`2c4d5a4`) | `strategies/exit_ladder.py`, `strategies/trailing_stop.py` — Peak-basierte Teilverkäufe + Gewinn-Schutz ab +10 % |
+| Volatile 1h Timeframe (`708aa1d`) | `resolve_effective_timeframe()` in `registry.py` — neue volatile Coins auf 1h, Legacy-Positionen behalten TF |
+| Rebuy-Cooldown (`architecture.min_hours_after_sell_before_rebuy`) | `risk_manager.py` — 4 h nach Sell kein Auto-Rebuy |
+| Volatile Stop-Loss | `strategies/technical_rsi_bb.py` → `SELL_STOP_PARTIAL` / `SELL_STOP_FULL` via `stop_loss_pct` |
 | Telegram `editMessageText` | Vorhanden in `telegram_notifier.py` — noch nicht für Session-Progress verdrahtet |
 
 **Verbleibendes Problem:** Trading-Cycle-Nachrichten (`send_cycle_summary`, Digests) und Command-Progress laufen weiterhin **parallel** über `send_telegram_message` ohne zentrale Prioritäts-Queue — das UX-Problem bei `/testaccount` ist **nicht** gelöst.
