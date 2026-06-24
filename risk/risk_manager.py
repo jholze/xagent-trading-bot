@@ -141,6 +141,16 @@ class RiskManager:
                 "drawdown_multiplier": 1.0,
                 "total_multiplier": 1.0,
             }
+        elif is_dca:
+            sized = base_usdt
+            factors = {
+                "trust_factor": 1.0,
+                "conf_factor": 1.0,
+                "atr_factor": 1.0,
+                "drawdown_pct": round(self._equity_drawdown_pct(), 2),
+                "drawdown_multiplier": 1.0,
+                "total_multiplier": 1.0,
+            }
         else:
             if indicators is None:
                 indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
@@ -170,7 +180,7 @@ class RiskManager:
             sized = room
             factors["concentration_capped"] = True
 
-        balance = self._available_usdt(equity)
+        balance = self._spendable_usdt(equity, is_dca=is_dca)
         if sized > balance:
             sized = balance
             factors["balance_capped"] = True
@@ -392,6 +402,16 @@ class RiskManager:
         if uses_exchange_ledger(self.config.trading_mode):
             return fetch_usdt_balance(self.config)
         return float(load_trade_history().get("virtual_balance", fallback))
+
+    def _spendable_usdt(self, equity: float, *, is_dca: bool) -> float:
+        balance = self._available_usdt(equity)
+        if is_dca:
+            return balance
+        reserve_pct = float(self.config.risk_config.get("dca_reserve_pct", 0) or 0)
+        if reserve_pct <= 0:
+            return balance
+        reserve_floor = equity * (reserve_pct / 100.0)
+        return max(0.0, balance - reserve_floor)
 
     def _dry_run_reference_prices(self, reference_price: float = 0, symbol: str = None) -> dict:
         ref_prices = {}

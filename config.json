@@ -3,18 +3,18 @@
   "trading_mode": "live",
   "live_confirmed": true,
   "paper": {
-    "initial_capital_usdt": 5000,
+    "initial_capital_usdt": 100000,
     "backend": "local"
   },
   "live": {
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",
     "api_secret_env": "GATE_API_SECRET",
-    "max_usdt_per_trade": 200,
+    "max_usdt_per_trade": 2500,
     "require_min_trust_score": 70,
     "dry_run": true,
     "dry_run_enhanced": false,
-    "simulated_balance_usdt": 5000,
+    "simulated_balance_usdt": 100000,
     "trending_watchlist": {
       "enabled": true,
       "max_coins": 15,
@@ -31,11 +31,11 @@
     }
   },
   "dry_run_defaults": {
-    "max_daily_trades": 30,
-    "max_daily_buys": 30,
-    "max_daily_dca_buys": 60,
-    "max_daily_dca_usdt": 1200,
-    "max_daily_sells": 50,
+    "max_daily_trades": 60,
+    "max_daily_buys": 60,
+    "max_daily_dca_buys": 100,
+    "max_daily_dca_usdt": 24000,
+    "max_daily_sells": 100,
     "trade_cooldown_hours": 0.5,
     "cmc_min_confidence": 55,
     "lc_min_confidence": 38,
@@ -48,12 +48,12 @@
     "min_hours_between_buys": 1,
     "min_hours_between_sells": 3
   },
-  "initial_capital_usdt": 5000,
-  "max_usdt_per_trade": 200,
+  "initial_capital_usdt": 100000,
+  "max_usdt_per_trade": 2500,
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
-  "max_open_positions": 25,
+  "max_open_positions": 40,
   "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
@@ -62,7 +62,7 @@
   "aggression": {
     "base_confidence_threshold": 75,
     "trust_boost_per_10_points": -2,
-    "max_position_multiplier": 2.0,
+    "max_position_multiplier": 1.25,
     "min_trust_for_live": 70
   },
   "accuracy": {
@@ -123,8 +123,8 @@
     "quotes_bearish_pct": -8,
     "quotes_bullish_pct": 5,
     "quotes_fallback_sell_threshold_bonus": 10,
-    "min_position_usdt_for_social_sell": 50,
-    "min_sell_notional_usdt": 15,
+    "min_position_usdt_for_social_sell": 1000,
+    "min_sell_notional_usdt": 300,
     "block_social_sell_if_sold_percent_above": 0.75,
     "cmc_min_hours_between_sells": 6,
     "api_key_env": "CMC_API_KEY",
@@ -172,7 +172,7 @@
     "cmc_sell_min_confidence": 70,
     "cmc_min_hours_between_sells": 6,
     "cmc_sell_requires_ta": true,
-    "min_position_usdt_for_social_sell": 50
+    "min_position_usdt_for_social_sell": 1000
   },
   "strategy_backtest": {
     "enabled": true,
@@ -228,7 +228,7 @@
       }
     }
   },
-  "max_daily_trades": 8,
+  "max_daily_trades": 50,
   "architecture": {
     "mode": "monolith",
     "redis_url": "redis://127.0.0.1:6379/0",
@@ -255,21 +255,22 @@
     "trade_intent_async_auto_only": true
   },
   "risk": {
-    "max_daily_buys": 25,
-    "max_daily_dca_buys": 50,
-    "max_daily_dca_usdt": 1000,
+    "dca_reserve_pct": 18,
+    "max_daily_buys": 50,
+    "max_daily_dca_buys": 100,
+    "max_daily_dca_usdt": 20000,
     "max_daily_sells": 0,
     "drawdown_throttle_pct": 10.0,
     "drawdown_size_multiplier": 0.5,
     "atr_reference_pct": 3.0,
     "min_size_multiplier": 0.25,
-    "min_trade_usdt": 5.0,
-    "min_sell_notional_usdt": 15,
-    "min_position_usdt_for_partial_sell": 25,
+    "min_trade_usdt": 100.0,
+    "min_sell_notional_usdt": 300,
+    "min_position_usdt_for_partial_sell": 500,
     "block_partial_sell_if_sold_percent_above": 0.75,
-    "dust_sweep_max_position_usdt": 15,
+    "dust_sweep_max_position_usdt": 300,
     "dust_sweep_sold_percent_min": 0.7,
-    "dust_sweep_min_remainder_usdt": 10
+    "dust_sweep_min_remainder_usdt": 200
   },
   "update_interval": 600,
   "observability": {
@@ -369,8 +370,8 @@
       "lookback_days": 7,
       "min_live_trades": 3,
       "min_live_sell_trades": 2,
-      "live_max_loss_usdt": 10,
-      "min_live_pnl_delta_usdt": 5,
+      "live_max_loss_usdt": 200,
+      "min_live_pnl_delta_usdt": 100,
       "min_counterfactual_sells": 1,
       "require_cf_seeded": true,
       "include_manual_trades": true,
@@ -397,8 +398,8 @@
       "stop_loss_pct"
     ],
     "cycle_interval_sec": 1800,
-    "initial_capital_usdt": 1000,
-    "usdt_per_trade": 50,
+    "initial_capital_usdt": 20000,
+    "usdt_per_trade": 1000,
     "sync_to_config": true,
     "notify_on_promotion": true,
     "validation": {
@@ -420,8 +421,8 @@
   },
   "sandbox": {
     "enabled": true,
-    "initial_capital_usdt": 1000,
-    "usdt_per_trade": 50,
+    "initial_capital_usdt": 20000,
+    "usdt_per_trade": 1000,
     "min_test_days": 7,
     "max_test_days": 30,
     "promotion": {
@@ -576,7 +577,7 @@
         0.1
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 10
+      "min_remainder_usdt_floor": 200
     },
     "trailing_stop": {
       "enabled": true,
@@ -590,7 +591,7 @@
       "enabled": true,
       "mode": "live",
       "interval_hours": 12,
-      "fixed_usdt": 20,
+      "fixed_usdt": 400,
       "loss_pct_min": -20,
       "loss_pct_max": -3,
       "sl_proximity_pct": 15,
@@ -654,7 +655,7 @@
         0.2
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 10
+      "min_remainder_usdt_floor": 200
     },
     "trailing_stop": {
       "enabled": true,
@@ -668,7 +669,7 @@
       "enabled": true,
       "mode": "live",
       "interval_hours": 24,
-      "fixed_usdt": 15,
+      "fixed_usdt": 300,
       "loss_pct_min": -15,
       "loss_pct_max": -2,
       "sl_proximity_pct": 10,
@@ -714,7 +715,7 @@
       "enabled": true,
       "mode": "live",
       "interval_hours": 18,
-      "fixed_usdt": 18,
+      "fixed_usdt": 360,
       "loss_pct_min": -18,
       "loss_pct_max": -2.5,
       "sl_proximity_pct": 12,
