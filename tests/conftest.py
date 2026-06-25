@@ -72,6 +72,14 @@ def normalize_unit_test_config(monkeypatch):
     monkeypatch.setattr(data_manager, "_config_cache", cfg)
     monkeypatch.setattr(data_manager, "reload_config", _reload_config)
 
+    def _save_config(updated):
+        nonlocal cfg
+        cfg = copy.deepcopy(updated)
+        data_manager._config_cache = cfg
+        return True
+
+    monkeypatch.setattr(data_manager, "save_config", _save_config)
+
     project_root = str(Path(__file__).resolve().parent.parent)
     for mod in list(sys.modules.values()):
         if mod is None:

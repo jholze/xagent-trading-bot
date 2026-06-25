@@ -1,16 +1,16 @@
 {
-  "virtual_trading": true,
-  "trading_mode": "paper",
+  "virtual_trading": false,
+  "trading_mode": "live",
   "live_confirmed": true,
   "paper": {
-    "initial_capital_usdt": 5000,
+    "initial_capital_usdt": 100000,
     "backend": "local"
   },
   "live": {
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",
     "api_secret_env": "GATE_API_SECRET",
-    "max_usdt_per_trade": 200,
+    "max_usdt_per_trade": 2500,
     "require_min_trust_score": 70,
     "dry_run": true,
     "dry_run_enhanced": false,
@@ -48,8 +48,8 @@
     "min_hours_between_buys": 1,
     "min_hours_between_sells": 3
   },
-  "initial_capital_usdt": 5000,
-  "max_usdt_per_trade": 200,
+  "initial_capital_usdt": 100000,
+  "max_usdt_per_trade": 2500,
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
@@ -62,7 +62,7 @@
   "aggression": {
     "base_confidence_threshold": 75,
     "trust_boost_per_10_points": -2,
-    "max_position_multiplier": 2.0,
+    "max_position_multiplier": 1.25,
     "min_trust_for_live": 70
   },
   "accuracy": {
@@ -123,8 +123,8 @@
     "quotes_bearish_pct": -8,
     "quotes_bullish_pct": 5,
     "quotes_fallback_sell_threshold_bonus": 10,
-    "min_position_usdt_for_social_sell": 50,
-    "min_sell_notional_usdt": 15,
+    "min_position_usdt_for_social_sell": 1000,
+    "min_sell_notional_usdt": 300,
     "block_social_sell_if_sold_percent_above": 0.75,
     "cmc_min_hours_between_sells": 6,
     "api_key_env": "CMC_API_KEY",
@@ -261,7 +261,7 @@
     }
   },
   "risk": {
-    "dca_reserve_pct": 0,
+    "dca_reserve_pct": 18,
     "max_daily_buys": 50,
     "max_daily_dca_buys": 100,
     "max_daily_dca_usdt": 20000,
@@ -270,11 +270,11 @@
     "drawdown_size_multiplier": 0.5,
     "atr_reference_pct": 3.0,
     "min_size_multiplier": 0.25,
-    "min_trade_usdt": 5.0,
-    "min_sell_notional_usdt": 15,
-    "min_position_usdt_for_partial_sell": 25,
+    "min_trade_usdt": 100.0,
+    "min_sell_notional_usdt": 300,
+    "min_position_usdt_for_partial_sell": 500,
     "block_partial_sell_if_sold_percent_above": 0.75,
-    "dust_sweep_max_position_usdt": 15,
+    "dust_sweep_max_position_usdt": 300,
     "dust_sweep_sold_percent_min": 0.7,
     "dust_sweep_min_remainder_usdt": 200
   },
@@ -576,7 +576,7 @@
     "vol_dump_requires_prior_gain_pct": 5,
     "vol_buy_boost_enabled": false,
     "exit_ladder": {
-      "enabled": false,
+      "enabled": true,
       "tiers": [
         0.6,
         0.3,
@@ -653,7 +653,7 @@
       150
     ],
     "exit_ladder": {
-      "enabled": false,
+      "enabled": true,
       "tiers": [
         0.3,
         0.3,
