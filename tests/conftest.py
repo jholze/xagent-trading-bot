@@ -40,7 +40,11 @@ def normalize_unit_test_config(monkeypatch):
     cfg["max_usdt_per_trade"] = 200
     cfg.setdefault("live", {})["max_usdt_per_trade"] = 200
     cfg.setdefault("paper", {})["initial_capital_usdt"] = 5000
+    cfg["paper"]["backend"] = "local"
     cfg.setdefault("aggression", {})["max_position_multiplier"] = 2.0
+    arch = cfg.setdefault("architecture", {})
+    arch["ledger_backend"] = "local"
+    arch["ledger_dual_write"] = False
 
     def _disable_exit_ladders(node):
         if isinstance(node, dict):

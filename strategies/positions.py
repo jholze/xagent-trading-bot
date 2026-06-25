@@ -10,7 +10,7 @@ from logger import log
 # Basic lock to reduce risk of concurrent modifications (price loop + Flask).
 _positions_lock = threading.RLock()
 
-try:
+def _ledger_api():
     from data_manager import (
         atomic_write_json,
         load_positions_document,
@@ -18,28 +18,34 @@ try:
         resolve_positions_file,
         save_positions_document,
     )
-except Exception:
-    def resolve_ledger_scope(trading_mode=None):
-        return "paper"
 
-    def resolve_positions_file(scope):
-        return "positions.json"
+    return {
+        "atomic_write_json": atomic_write_json,
+        "load_positions_document": load_positions_document,
+        "resolve_ledger_scope": resolve_ledger_scope,
+        "resolve_positions_file": resolve_positions_file,
+        "save_positions_document": save_positions_document,
+    }
 
-    def load_positions_document(scope):
-        path = resolve_positions_file(scope)
-        if not os.path.exists(path):
-            return {"ledger_scope": scope, "positions": {}}
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
 
-    def save_positions_document(data, scope=None):
-        target = scope or "paper"
-        atomic_write_json(resolve_positions_file(target), data)
-        return True
+def resolve_ledger_scope(trading_mode=None):
+    return _ledger_api()["resolve_ledger_scope"](trading_mode)
 
-    def atomic_write_json(path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+
+def resolve_positions_file(scope):
+    return _ledger_api()["resolve_positions_file"](scope)
+
+
+def load_positions_document(scope):
+    return _ledger_api()["load_positions_document"](scope)
+
+
+def save_positions_document(data, scope=None):
+    return _ledger_api()["save_positions_document"](data, scope)
+
+
+def atomic_write_json(path, data):
+    return _ledger_api()["atomic_write_json"](path, data)
 
 # Module-level state (global mutable dictionary).
 # This is a known technical debt item. All access should go through the functions below.
