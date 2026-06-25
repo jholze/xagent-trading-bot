@@ -27,8 +27,6 @@ def main() -> int:
     cfg = copy.deepcopy(get_config())
     cfg["trading_mode"] = "paper"
     cfg.setdefault("paper", {})["backend"] = "mongo"
-    cfg.setdefault("architecture", {})["ledger_backend"] = "local"
-    cfg["architecture"]["ledger_dual_write"] = False
 
     import data_manager
 

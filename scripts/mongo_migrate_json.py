@@ -72,6 +72,26 @@ def migrate_scope(scope: str, *, dry_run: bool = False, test_db: bool = False) -
         f"imported orders={summary['orders']} positions={summary['positions']} "
         f"trades={summary['trades']} mongo={counts}"
     )
+
+    mongo_orders = store.load_orders(scope)
+    mongo_positions = store.load_positions(scope)
+    mongo_history = store.load_trade_history(scope) if history is not None else None
+    orders_match = mongo_orders.get("orders") == orders.get("orders")
+    positions_match = mongo_positions.get("positions") == positions.get("positions")
+    trades_match = (
+        mongo_history.get("trades") == history.get("trades")
+        if history is not None and mongo_history is not None
+        else True
+    )
+    summary["roundtrip"] = {
+        "orders": orders_match,
+        "positions": positions_match,
+        "trades": trades_match,
+    }
+    print(
+        f"[roundtrip] scope={scope} orders={orders_match} "
+        f"positions={positions_match} trades={trades_match}"
+    )
     return summary
 
 
