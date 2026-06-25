@@ -125,7 +125,7 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
              patch("data_manager.load_live_trade_history", return_value=live_hist), \
              patch("data_manager.is_dry_run_enhanced", return_value=True), \
-             patch("core.config.get_bot_config", return_value=mock_cfg):
+             patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Sim USDT", summary)
         self.assertIn("4,750", summary)
@@ -143,7 +143,7 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
              patch("data_manager.load_live_trade_history", return_value=live_hist), \
              patch("data_manager.is_dry_run_enhanced", return_value=False), \
-             patch("core.config.get_bot_config", return_value=mock_cfg):
+             patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Dry Run USDT", summary)
         self.assertIn("3,952", summary)
@@ -167,7 +167,7 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=positions), \
              patch("price_fetcher.get_prices_batch", return_value={"ARIA/USDT": 2.0}), \
              patch("data_manager.load_live_trade_history", return_value=live_hist), \
-             patch("core.config.get_bot_config", return_value=mock_cfg):
+             patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Gesamtwert: $1,200", summary)
 

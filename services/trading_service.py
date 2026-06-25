@@ -40,6 +40,9 @@ class TradingService:
         if mode == "off":
             return "off (analysis only)"
         backend = self.config.paper_config.get("backend", "local")
+        if backend == "mongo":
+            dual = " + JSON dual-write" if self.config.ledger_dual_write else ""
+            return f"paper (mongo ledger{dual})"
         if backend != "local":
             return f"paper ({backend})"
         return "paper (local ledger)"

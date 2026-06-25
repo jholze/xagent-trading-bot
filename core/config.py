@@ -292,9 +292,19 @@ class BotConfig:
             "ledger_lock_wait_sec": 15,
             "trade_intent_queue_enabled": False,
             "trade_intent_async_auto_only": True,
+            "ledger_backend": "local",
+            "ledger_dual_write": False,
         }
         raw = self._raw.get("architecture", {})
         return {**defaults, **raw}
+
+    @property
+    def ledger_backend(self) -> str:
+        return str(self.architecture_config.get("ledger_backend", "local"))
+
+    @property
+    def ledger_dual_write(self) -> bool:
+        return bool(self.architecture_config.get("ledger_dual_write", False))
 
     @property
     def architecture_mode(self) -> str:

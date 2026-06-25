@@ -695,7 +695,7 @@ class TestVirtualTrading(unittest.TestCase):
             )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
-            self._assert_demo_prefix_in_message(mock_post, "aria-ai")
+            self._assert_demo_prefix_in_message(mock_post, "legends-of-aria")
 
     def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch

@@ -17,6 +17,80 @@ def demo_mode_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def normalize_unit_test_config(monkeypatch):
+    """Keep unit tests independent of operator-scaled production config.json."""
+    import copy
+
+    import data_manager
+    from data_manager import load_config
+
+    cfg = copy.deepcopy(load_config())
+    cfg["trading_mode"] = "paper"
+    cfg["virtual_trading"] = True
+    risk = cfg.setdefault("risk", {})
+    risk["min_trade_usdt"] = 5.0
+    risk["min_sell_notional_usdt"] = 15
+    risk["min_position_usdt_for_partial_sell"] = 25
+    risk["dca_reserve_pct"] = 0
+    risk["dust_sweep_max_position_usdt"] = 15
+    cmc = cfg.setdefault("cmc", {})
+    cmc["min_sell_notional_usdt"] = 15
+    cmc["min_position_usdt_for_social_sell"] = 50
+    cfg["initial_capital_usdt"] = 5000
+    cfg["max_usdt_per_trade"] = 200
+    cfg.setdefault("live", {})["max_usdt_per_trade"] = 200
+    cfg.setdefault("paper", {})["initial_capital_usdt"] = 5000
+    cfg.setdefault("aggression", {})["max_position_multiplier"] = 2.0
+
+    def _disable_exit_ladders(node):
+        if isinstance(node, dict):
+            ladder = node.get("exit_ladder")
+            if isinstance(ladder, dict):
+                ladder["enabled"] = False
+            for value in node.values():
+                _disable_exit_ladders(value)
+        elif isinstance(node, list):
+            for item in node:
+                _disable_exit_ladders(item)
+
+    _disable_exit_ladders(cfg)
+    data_manager._config_cache = cfg
+    orig_get_config = data_manager.get_config
+    orig_reload_config = data_manager.reload_config
+
+    def _get_config():
+        return cfg
+
+    def _reload_config():
+        return cfg
+
+    monkeypatch.setattr(data_manager, "get_config", _get_config)
+    monkeypatch.setattr(data_manager, "_config_cache", cfg)
+    monkeypatch.setattr(data_manager, "reload_config", _reload_config)
+
+    project_root = str(Path(__file__).resolve().parent.parent)
+    for mod in list(sys.modules.values()):
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", "") or ""
+        if project_root not in mod_file:
+            continue
+        if mod.__dict__.get("get_config") is orig_get_config:
+            monkeypatch.setattr(mod, "get_config", _get_config)
+        if mod.__dict__.get("reload_config") is orig_reload_config:
+            monkeypatch.setattr(mod, "reload_config", _reload_config)
+
+    def _bot_config():
+        from core.config import BotConfig
+
+        bot = BotConfig()
+        bot._raw = copy.deepcopy(cfg)
+        return bot
+
+    monkeypatch.setattr("core.config.get_bot_config", _bot_config)
+
+
+@pytest.fixture(autouse=True)
 def telegram_credentials(monkeypatch):
     """Keep Telegram send paths testable after other tests clear env vars."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")

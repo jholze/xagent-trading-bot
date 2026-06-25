@@ -8,16 +8,34 @@ from pathlib import Path
 from logger import log
 
 # Basic lock to reduce risk of concurrent modifications (price loop + Flask).
-_positions_lock = threading.Lock()
+_positions_lock = threading.RLock()
 
 try:
-    from data_manager import atomic_write_json, resolve_ledger_scope, resolve_positions_file
+    from data_manager import (
+        atomic_write_json,
+        load_positions_document,
+        resolve_ledger_scope,
+        resolve_positions_file,
+        save_positions_document,
+    )
 except Exception:
     def resolve_ledger_scope(trading_mode=None):
         return "paper"
 
     def resolve_positions_file(scope):
         return "positions.json"
+
+    def load_positions_document(scope):
+        path = resolve_positions_file(scope)
+        if not os.path.exists(path):
+            return {"ledger_scope": scope, "positions": {}}
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def save_positions_document(data, scope=None):
+        target = scope or "paper"
+        atomic_write_json(resolve_positions_file(target), data)
+        return True
 
     def atomic_write_json(path, data):
         with open(path, "w", encoding="utf-8") as f:
@@ -135,31 +153,27 @@ def apply_positions_snapshot(snapshot: dict, scope: str = None) -> None:
 def load_positions(scope: str = None):
     global _active_scope
     target = scope or resolve_ledger_scope()
-    path = resolve_positions_file(target)
     with _positions_lock:
         positions.clear()
         _active_scope = target
-        if not os.path.exists(path):
-            return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_positions_document(target)
             for tf, p in data.get("positions", {}).items():
                 positions[tf] = _deserialize_position(p)
         except Exception as e:
-            log(f"Failed to load {path}: {e}", "ERROR")
+            log(f"Failed to load positions ({target}): {e}", "ERROR")
 
 
 def save_positions(scope: str = None):
     target = scope or _active_scope
-    path = resolve_positions_file(target)
     with _positions_lock:
         payload = _serialize_positions()
         payload["ledger_scope"] = target
         try:
-            atomic_write_json(path, payload)
+            if not save_positions_document(payload, target):
+                log(f"Failed to save positions ({target})", "ERROR")
         except Exception as e:
-            log(f"Failed to save {path}: {e}", "ERROR")
+            log(f"Failed to save positions ({target}): {e}", "ERROR")
 
 
 def _bootstrap_positions():

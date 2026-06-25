@@ -461,8 +461,14 @@ def load_demo_data():
 TRADE_HISTORY_FILE = "trade_history.json"
 LIVE_TRADE_HISTORY_FILE = "live_trade_history.json"
 
-def load_trade_history():
-    path = get_data_file(TRADE_HISTORY_FILE)
+TRADE_HISTORY_SCOPE_FILES = {
+    "paper": TRADE_HISTORY_FILE,
+    "live": LIVE_TRADE_HISTORY_FILE,
+}
+
+
+def _load_trade_history_json(scope: str = "paper") -> dict:
+    path = get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
     if not os.path.exists(path):
         return {"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}
     try:
@@ -472,13 +478,46 @@ def load_trade_history():
         log(f"Failed to load {path}: {e}", "WARNING")
         return {"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}
 
-def save_trade_history(data):
-    path = get_data_file(TRADE_HISTORY_FILE)
+
+def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
+    path = get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
     try:
         atomic_write_json(path, data)
         return True
     except Exception:
         return False
+
+
+def load_trade_history_document(scope: str = "paper", config: dict = None) -> dict:
+    cfg = config or get_config()
+    if _ledger_reads_mongo(scope, cfg):
+        try:
+            return _mongo_ledger_store(cfg).load_trade_history(scope)
+        except Exception as e:
+            log(f"Mongo trade_history load failed ({scope}): {e}", "WARNING")
+    return _load_trade_history_json(scope)
+
+
+def save_trade_history_document(data: dict, scope: str = "paper", config: dict = None) -> bool:
+    cfg = config or get_config()
+    ok = True
+    if _ledger_writes_json(scope, cfg):
+        ok = _save_trade_history_json(data, scope) and ok
+    if _ledger_writes_mongo(scope, cfg):
+        try:
+            _mongo_ledger_store(cfg).save_trade_history(data, scope)
+        except Exception as e:
+            log(f"Mongo trade_history save failed ({scope}): {e}", "ERROR")
+            ok = False
+    return ok
+
+
+def load_trade_history():
+    return load_trade_history_document("paper")
+
+
+def save_trade_history(data):
+    return save_trade_history_document(data, "paper")
 
 def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:
     """Replay dry-run trades from starting capital to derive sim USDT cash."""
@@ -546,39 +585,45 @@ def _reconcile_live_trade_sources(history: dict) -> tuple:
     return history, changed
 
 
-def load_live_trade_history():
+def _load_live_trade_history_json() -> dict:
     path = get_data_file(LIVE_TRADE_HISTORY_FILE)
     if not os.path.exists(path):
-        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
-        return _ensure_live_virtual_balance(history)
+        return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
     try:
         with open(path, "r", encoding="utf-8") as f:
             history = json.load(f)
             if history.get("total_pnl") is not None and history.get("realized_pnl") is None:
                 history["realized_pnl"] = history["total_pnl"]
-            stored_cash = history.get("virtual_balance")
-            history, reconciled = _reconcile_live_trade_sources(history)
-            history = _ensure_live_virtual_balance(history)
-            cash_drifted = (
-                stored_cash is not None
-                and abs(float(stored_cash) - float(history.get("virtual_balance", 0))) > 0.01
-            )
-            if reconciled or cash_drifted:
-                save_live_trade_history(history)
             return history
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
-        history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
-        return _ensure_live_virtual_balance(history)
+        return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+
+
+def load_live_trade_history():
+    cfg = get_config()
+    if _ledger_reads_mongo("live", cfg):
+        try:
+            history = _mongo_ledger_store(cfg).load_trade_history("live")
+        except Exception as e:
+            log(f"Mongo live trade_history load failed: {e}", "WARNING")
+            history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+    else:
+        history = _load_live_trade_history_json()
+    stored_cash = history.get("virtual_balance")
+    history, reconciled = _reconcile_live_trade_sources(history)
+    history = _ensure_live_virtual_balance(history)
+    cash_drifted = (
+        stored_cash is not None
+        and abs(float(stored_cash) - float(history.get("virtual_balance", 0))) > 0.01
+    )
+    if reconciled or cash_drifted:
+        save_live_trade_history(history)
+    return history
 
 
 def save_live_trade_history(data):
-    path = get_data_file(LIVE_TRADE_HISTORY_FILE)
-    try:
-        atomic_write_json(path, data)
-        return True
-    except Exception:
-        return False
+    return save_trade_history_document(data, "live")
 
 
 def record_live_trade(trade):
@@ -626,6 +671,44 @@ POSITIONS_SCOPE_FILES = {
     "live": "positions.live.json",
 }
 
+def resolve_ledger_backend(scope: str = None, config: dict = None) -> str:
+    cfg = config or get_config()
+    target = scope or resolve_ledger_scope()
+    if target == "paper":
+        paper_backend = (cfg.get("paper") or {}).get("backend")
+        if paper_backend:
+            return str(paper_backend)
+    arch = cfg.get("architecture", {}) or {}
+    return str(arch.get("ledger_backend", "local"))
+
+
+def ledger_dual_write_enabled(config: dict = None) -> bool:
+    cfg = config or get_config()
+    return bool((cfg.get("architecture", {}) or {}).get("ledger_dual_write", False))
+
+
+def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
+    if ledger_dual_write_enabled(config):
+        return False
+    return resolve_ledger_backend(scope, config) == "mongo"
+
+
+def _ledger_writes_json(scope: str, config: dict = None) -> bool:
+    backend = resolve_ledger_backend(scope, config)
+    return backend == "local" or ledger_dual_write_enabled(config)
+
+
+def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
+    backend = resolve_ledger_backend(scope, config)
+    return backend == "mongo" or ledger_dual_write_enabled(config)
+
+
+def _mongo_ledger_store(config: dict = None):
+    from storage.mongo_ledger import get_ledger_store
+
+    test_db = os.environ.get("MONGODB_DB", "") == "xagent_test"
+    return get_ledger_store(test=test_db, config=config)
+
 
 def resolve_orders_file(scope: str) -> str:
     if scope not in ORDERS_SCOPE_FILES:
@@ -659,7 +742,7 @@ def _empty_orders(scope: str) -> dict:
     return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
 
 
-def load_orders(scope: str):
+def _load_orders_json(scope: str) -> dict:
     path = resolve_orders_file(scope)
     if not os.path.exists(path):
         return _empty_orders(scope)
@@ -674,14 +757,95 @@ def load_orders(scope: str):
         return _empty_orders(scope)
 
 
-def save_orders(data: dict, scope: str) -> bool:
+def _save_orders_json(data: dict, scope: str) -> bool:
     path = resolve_orders_file(scope)
     try:
-        data["ledger_scope"] = scope
-        atomic_write_json(path, data)
+        payload = dict(data)
+        payload["ledger_scope"] = scope
+        atomic_write_json(path, payload)
         return True
     except Exception:
         return False
+
+
+def load_orders(scope: str):
+    cfg = get_config()
+    if _ledger_reads_mongo(scope, cfg):
+        try:
+            return _mongo_ledger_store(cfg).load_orders(scope)
+        except Exception as e:
+            log(f"Mongo orders load failed ({scope}): {e}", "WARNING")
+    return _load_orders_json(scope)
+
+
+def save_orders(data: dict, scope: str) -> bool:
+    cfg = get_config()
+    ok = True
+    if _ledger_writes_json(scope, cfg):
+        ok = _save_orders_json(data, scope) and ok
+    if _ledger_writes_mongo(scope, cfg):
+        try:
+            _mongo_ledger_store(cfg).save_orders(data, scope)
+        except Exception as e:
+            log(f"Mongo orders save failed ({scope}): {e}", "ERROR")
+            ok = False
+    return ok
+
+
+def _empty_positions(scope: str) -> dict:
+    return {"ledger_scope": scope, "positions": {}}
+
+
+def _load_positions_json(scope: str) -> dict:
+    path = resolve_positions_file(scope)
+    if not os.path.exists(path):
+        return _empty_positions(scope)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data.setdefault("positions", {})
+        data["ledger_scope"] = scope
+        return data
+    except Exception as e:
+        log(f"Failed to load {path}: {e}", "WARNING")
+        return _empty_positions(scope)
+
+
+def _save_positions_json(data: dict, scope: str) -> bool:
+    path = resolve_positions_file(scope)
+    try:
+        payload = dict(data)
+        payload["ledger_scope"] = scope
+        atomic_write_json(path, payload)
+        return True
+    except Exception:
+        return False
+
+
+def load_positions_document(scope: str = None, config: dict = None) -> dict:
+    target = scope or resolve_ledger_scope()
+    cfg = config or get_config()
+    if _ledger_reads_mongo(target, cfg):
+        try:
+            return _mongo_ledger_store(cfg).load_positions(target)
+        except Exception as e:
+            log(f"Mongo positions load failed ({target}): {e}", "WARNING")
+    return _load_positions_json(target)
+
+
+def save_positions_document(data: dict, scope: str = None, config: dict = None) -> bool:
+    target = scope or resolve_ledger_scope()
+    cfg = config or get_config()
+    ok = True
+    if _ledger_writes_json(target, cfg):
+        ok = _save_positions_json(data, target) and ok
+    if _ledger_writes_mongo(target, cfg):
+        try:
+            _mongo_ledger_store(cfg).save_positions(data, target)
+        except Exception as e:
+            log(f"Mongo positions save failed ({target}): {e}", "ERROR")
+            ok = False
+    return ok
 
 
 STRATEGY_BACKTEST_FILE = "strategy_backtest.json"
