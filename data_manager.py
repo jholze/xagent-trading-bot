@@ -72,11 +72,17 @@ def is_live_dry_run(config: dict = None) -> bool:
 
 
 def is_dry_run_enhanced(config: dict = None) -> bool:
-    """True when live + dry_run + dry_run_enhanced — never when dry_run is false."""
+    """True when dry_run_enhanced is on and (live dry-run or demo mode).
+
+    Never true when live.dry_run is false (real live trading).
+    """
     cfg = config or get_config()
-    if not is_live_dry_run(cfg):
+    live = cfg.get("live", {})
+    if not live.get("dry_run", True):
         return False
-    return bool(cfg.get("live", {}).get("dry_run_enhanced", False))
+    if not live.get("dry_run_enhanced", False):
+        return False
+    return is_live_dry_run(cfg) or is_demo_mode()
 
 
 def uses_simulated_live_portfolio(config: dict = None) -> bool:
@@ -464,19 +470,35 @@ LIVE_TRADE_HISTORY_FILE = "live_trade_history.json"
 TRADE_HISTORY_SCOPE_FILES = {
     "paper": TRADE_HISTORY_FILE,
     "live": LIVE_TRADE_HISTORY_FILE,
+    "demo": LIVE_TRADE_HISTORY_FILE,
 }
 
 
-def _load_trade_history_json(scope: str = "paper") -> dict:
+def _default_trade_history(scope: str = "paper", config: dict = None) -> dict:
+    cfg = config or get_config()
+    if scope == "live":
+        return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+    from core.portfolio_baseline import initial_capital
+
+    initial = initial_capital(scope=scope, config=cfg)
+    return {
+        "virtual_balance": initial,
+        "realized_pnl": 0.0,
+        "open_positions": 0,
+        "trades": [],
+    }
+
+
+def _load_trade_history_json(scope: str = "paper", config: dict = None) -> dict:
     path = get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
     if not os.path.exists(path):
-        return {"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}
+        return _default_trade_history(scope, config)
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
-        return {"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}
+        return _default_trade_history(scope, config)
 
 
 def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
@@ -490,12 +512,26 @@ def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
 
 def load_trade_history_document(scope: str = "paper", config: dict = None) -> dict:
     cfg = config or get_config()
-    if _ledger_reads_mongo(scope, cfg):
+    if _ledger_reads_mongo_trade_history(scope, cfg):
         try:
-            return _mongo_ledger_store(cfg).load_trade_history(scope)
+            history = _mongo_ledger_store(cfg).load_trade_history(scope)
         except Exception as e:
             log(f"Mongo trade_history load failed ({scope}): {e}", "WARNING")
-    return _load_trade_history_json(scope)
+            history = _load_trade_history_json(scope, cfg)
+    else:
+        history = _load_trade_history_json(scope, cfg)
+    history, changed = _reconcile_scoped_trade_history(history, scope, cfg)
+    if changed:
+        save_trade_history_document(history, scope, cfg)
+    return history
+
+
+def reconcile_demo_trade_history_on_startup(config: dict = None) -> dict:
+    """Refresh demo virtual_balance from JSON orders before the first trading cycle."""
+    if not is_demo_mode():
+        return {}
+    cfg = config or get_config()
+    return load_trade_history_document("demo", cfg)
 
 
 def save_trade_history_document(data: dict, scope: str = "paper", config: dict = None) -> bool:
@@ -513,11 +549,99 @@ def save_trade_history_document(data: dict, scope: str = "paper", config: dict =
 
 
 def load_trade_history():
-    return load_trade_history_document("paper")
+    return load_trade_history_document(resolve_ledger_scope())
 
 
 def save_trade_history(data):
-    return save_trade_history_document(data, "paper")
+    return save_trade_history_document(data, resolve_ledger_scope())
+
+def _filled_order_usdt(order: dict) -> float:
+    execution = order.get("execution") or {}
+    request = order.get("request") or {}
+    for section in (execution, request):
+        raw = section.get("usdt")
+        if raw is not None:
+            try:
+                val = float(raw)
+                if val > 0:
+                    return val
+            except (TypeError, ValueError):
+                pass
+    price = float(execution.get("price") or request.get("price") or 0)
+    amount = float(execution.get("amount") or request.get("amount") or 0)
+    if price > 0 and amount > 0:
+        return price * amount
+    return 0.0
+
+
+def compute_sim_cash_from_orders(orders: list, initial: float = 5000.0) -> float:
+    """Replay filled orders from starting capital to derive demo/paper USDT cash."""
+    balance = float(initial)
+    sorted_orders = sorted(
+        orders or [],
+        key=lambda o: (
+            (o.get("timestamps") or {}).get("filled")
+            or (o.get("timestamps") or {}).get("created")
+            or ""
+        ),
+    )
+    for order in sorted_orders:
+        if order.get("status") != "filled":
+            continue
+        side = (order.get("side") or "").lower()
+        usdt = _filled_order_usdt(order)
+        if side == "buy":
+            balance = max(0.0, balance - usdt)
+        elif side == "sell":
+            balance += usdt
+    return round(balance, 8)
+
+
+def compute_realized_pnl_from_orders(orders: list) -> float:
+    return round(
+        sum(
+            float(o.get("pnl") or 0)
+            for o in (orders or [])
+            if (o.get("side") or "").lower() == "sell" and o.get("status") == "filled"
+        ),
+        8,
+    )
+
+
+def _reconcile_scoped_trade_history(history: dict, scope: str, config: dict = None) -> tuple:
+    if scope != "demo":
+        return history, False
+    cfg = config or get_config()
+    from core.portfolio_baseline import initial_capital
+    from services.ledger_sync import count_open_positions_from_orders
+
+    initial = initial_capital(scope=scope, config=cfg)
+    filled = [
+        o for o in _load_orders_json(scope).get("orders", []) if o.get("status") == "filled"
+    ]
+    computed_cash = compute_sim_cash_from_orders(filled, initial)
+    computed_pnl = compute_realized_pnl_from_orders(filled)
+    changed = False
+    stored_cash = history.get("virtual_balance")
+    if stored_cash is None or abs(float(stored_cash) - computed_cash) > 0.01:
+        history["virtual_balance"] = computed_cash
+        changed = True
+    stored_pnl = history.get("realized_pnl")
+    if stored_pnl is None or abs(float(stored_pnl or 0) - computed_pnl) > 0.01:
+        history["realized_pnl"] = computed_pnl
+        changed = True
+    open_pos = count_open_positions_from_orders(scope)
+    if history.get("open_positions") != open_pos:
+        history["open_positions"] = open_pos
+        changed = True
+    if changed:
+        log(
+            f"Reconciled demo cash: ${float(stored_cash or 0):,.2f} → "
+            f"${computed_cash:,.2f} ({open_pos} open positions)",
+            "INFO",
+        )
+    return history, changed
+
 
 def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:
     """Replay dry-run trades from starting capital to derive sim USDT cash."""
@@ -641,7 +765,7 @@ def record_live_trade(trade):
 
 def record_trade(trade):
     history = load_trade_history()
-    history["trades"].append(trade)
+    history.setdefault("trades", []).append(trade)
     if trade.get("type") == "BUY":
         history["virtual_balance"] = max(0, history["virtual_balance"] - trade.get("usdt_amount", 0))
     else:
@@ -672,14 +796,11 @@ POSITIONS_SCOPE_FILES = {
 }
 
 def resolve_ledger_backend(scope: str = None, config: dict = None) -> str:
+    from storage.ledger_router import resolve_ledger_backend as _router_backend
+
     cfg = config or get_config()
     target = scope or resolve_ledger_scope()
-    if target == "paper":
-        paper_backend = (cfg.get("paper") or {}).get("backend")
-        if paper_backend:
-            return str(paper_backend)
-    arch = cfg.get("architecture", {}) or {}
-    return str(arch.get("ledger_backend", "local"))
+    return _router_backend(target, cfg)
 
 
 def ledger_dual_write_enabled(config: dict = None) -> bool:
@@ -688,17 +809,38 @@ def ledger_dual_write_enabled(config: dict = None) -> bool:
 
 
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
+    """Whether positions load from Mongo (demo positions cache always uses Mongo)."""
     if ledger_dual_write_enabled(config):
         return False
+    if scope == "demo":
+        return True
     return resolve_ledger_backend(scope, config) == "mongo"
 
 
+def _ledger_reads_mongo_orders(scope: str, config: dict = None) -> bool:
+    """Demo orders SOT is JSON (orders.demo.json), never Mongo."""
+    if scope == "demo":
+        return False
+    return _ledger_reads_mongo(scope, config)
+
+
+def _ledger_reads_mongo_trade_history(scope: str, config: dict = None) -> bool:
+    """Demo cash SOT is derived from JSON orders, not Mongo trade_history."""
+    if scope == "demo":
+        return False
+    return _ledger_reads_mongo(scope, config)
+
+
 def _ledger_writes_json(scope: str, config: dict = None) -> bool:
+    if scope == "demo":
+        return True
     backend = resolve_ledger_backend(scope, config)
     return backend == "local" or ledger_dual_write_enabled(config)
 
 
 def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
+    if scope == "demo":
+        return True
     backend = resolve_ledger_backend(scope, config)
     return backend == "mongo" or ledger_dual_write_enabled(config)
 
@@ -770,7 +912,7 @@ def _save_orders_json(data: dict, scope: str) -> bool:
 
 def load_orders(scope: str):
     cfg = get_config()
-    if _ledger_reads_mongo(scope, cfg):
+    if _ledger_reads_mongo_orders(scope, cfg):
         try:
             return _mongo_ledger_store(cfg).load_orders(scope)
         except Exception as e:

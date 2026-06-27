@@ -10,6 +10,7 @@ from core.config import get_bot_config
 from data_manager import load_trade_history, save_trade_history
 from services.portfolio_service import PortfolioService
 from strategies.positions import (
+    clear_positions_memory,
     count_open_positions,
     get_position,
     list_active_positions,
@@ -21,17 +22,23 @@ from strategies.positions import (
 class TestPortfolioEquity(unittest.TestCase):
     SYMBOL = "EQTY/USDT"
     TF = "4h"
-    INITIAL = 5000.0
+    INITIAL = 100_000.0
 
     def setUp(self):
         from decimal import Decimal
         from strategies.positions import get_key
 
+        self._reconcile_patcher = patch(
+            "data_manager._reconcile_scoped_trade_history",
+            side_effect=lambda history, scope, config=None: (history, False),
+        )
+        self._reconcile_patcher.start()
+
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
         self._trade_history_backup = load_trade_history()
-        positions.clear()
+        clear_positions_memory()
         save_positions()
         save_trade_history({
             "virtual_balance": self.INITIAL,
@@ -46,8 +53,12 @@ class TestPortfolioEquity(unittest.TestCase):
     def tearDown(self):
         from decimal import Decimal
 
-        positions.clear()
+        self._reconcile_patcher.stop()
+        clear_positions_memory()
         positions.update(self._positions_backup)
+        from strategies.positions import _recompute_open_count
+
+        _recompute_open_count()
         save_positions()
         save_trade_history(self._trade_history_backup)
 
@@ -166,7 +177,7 @@ class TestPortfolioEquity(unittest.TestCase):
             deadline = time.time() + 3
             while time.time() < deadline and not mock_send.called:
                 time.sleep(0.05)
-            mock_send.assert_called_once_with(fast=True)
+            mock_send.assert_called_once_with(fast=True, chat_id="12345")
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
@@ -185,7 +196,7 @@ class TestPortfolioEquity(unittest.TestCase):
             deadline = time.time() + 3
             while time.time() < deadline and not mock_send.called:
                 time.sleep(0.05)
-            mock_send.assert_called_once_with(fast=True)
+            mock_send.assert_called_once_with(fast=True, chat_id="12345")
 
 
 if __name__ == "__main__":

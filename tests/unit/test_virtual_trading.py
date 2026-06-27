@@ -43,7 +43,18 @@ class ColoredTestResult(unittest.TextTestResult):
 
 
 from core.config import get_bot_config
-from data_manager import get_text, load_config, load_trade_history, load_x_accounts, record_trade, save_x_accounts
+from data_manager import (
+    LIVE_TRADE_HISTORY_FILE,
+    TRADE_HISTORY_FILE,
+    get_data_file,
+    get_text,
+    load_config,
+    load_trade_history,
+    load_x_accounts,
+    record_trade,
+    resolve_ledger_scope,
+    save_x_accounts,
+)
 from services.portfolio_service import PortfolioService
 from strategies.positions import (
     count_open_positions,
@@ -70,6 +81,9 @@ class TestVirtualTrading(unittest.TestCase):
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
+        scope = resolve_ledger_scope()
+        history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
+        self._trade_history_path = get_data_file(history_base)
         self._trade_history_backup = load_trade_history()
         self._log_dir_backup = logger_mod.LOG_DIR
         self._log_file_backup = logger_mod.LOG_FILE
@@ -80,8 +94,12 @@ class TestVirtualTrading(unittest.TestCase):
         if key in positions:
             del positions[key]
         try:
-            with open("trade_history.json", "w", encoding="utf-8") as f:
-                json.dump({"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []}, f, indent=2)
+            with open(self._trade_history_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"virtual_balance": 5000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []},
+                    f,
+                    indent=2,
+                )
         except Exception:
             pass
 
@@ -976,6 +994,7 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
         raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -1000,16 +1019,24 @@ class TestVirtualTrading(unittest.TestCase):
 
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
+        raw.setdefault("risk", {})["drawdown_throttle_pct"] = 10.0
+        raw.setdefault("risk", {})["drawdown_size_multiplier"] = 0.5
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
 
-        history = load_trade_history()
-        history["virtual_balance"] = 4000.0
-        history["peak_equity"] = 5000.0
-        save_trade_history(history)
+        throttled_history = {
+            "virtual_balance": 4000.0,
+            "peak_equity": 5000.0,
+            "trades": [],
+            "open_positions": 0,
+        }
 
         with patch.object(risk.market, "fetch_indicators", return_value={"atr_pct": 3.0}), \
+             patch.object(risk, "_portfolio_equity", return_value=4000.0), \
+             patch.object(risk, "_initial_capital", return_value=5000.0), \
+             patch("risk.risk_manager.load_trade_history", return_value=throttled_history), \
              patch.object(risk, "_daily_trades_count", return_value=0):
             normal = risk.evaluate(
                 TradeOrder("BUY", "XRVM/USDT", 1.0, 0, usdt_amount=100),
@@ -1086,6 +1113,7 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
         raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
         svc = TradingService(cfg)

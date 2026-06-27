@@ -355,17 +355,26 @@ def build_context_snapshot(question: str) -> dict:
         ],
     }
     try:
-        from data_manager import load_live_trade_history
+        from data_manager import is_demo_mode, load_trade_history, reconcile_demo_trade_history_on_startup
 
-        hist = load_live_trade_history()
+        hist = (
+            reconcile_demo_trade_history_on_startup()
+            if is_demo_mode()
+            else load_trade_history()
+        )
         snapshot["open_positions"] = int(hist.get("open_positions", 0) or 0)
         snapshot["virtual_balance_usdt"] = round(float(hist.get("virtual_balance", 0) or 0), 2)
-        snapshot["realized_pnl"] = round(float(hist.get("total_pnl", 0) or 0), 2)
+        snapshot["realized_pnl"] = round(
+            float(hist.get("realized_pnl", hist.get("total_pnl", 0)) or 0), 2
+        )
     except Exception as e:
         snapshot["portfolio_error"] = str(e)
 
     try:
-        from strategies.positions import list_active_positions
+        from strategies.positions import bootstrap_positions, count_open_positions, list_active_positions
+
+        if count_open_positions() == 0:
+            bootstrap_positions()
 
         positions = []
         for pos in list_active_positions()[:12]:

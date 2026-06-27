@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -30,6 +31,9 @@ STATUS_ICONS = {
     "filled": "✅",
     "failed": "⚠️",
 }
+
+_ORDERS_READ_CACHE: dict[str, tuple[float, dict]] = {}
+_ORDERS_READ_CACHE_TTL = 2.0
 
 SOURCE_LABELS = {
     "auto": "Auto",
@@ -101,14 +105,23 @@ class OrderService:
         self._path = resolve_orders_file(self.scope)  # noqa: F841 — reserved for diagnostics
 
     def _load(self) -> dict:
-        data = load_orders(self.scope)
-        if data.get("ledger_scope") != self.scope:
-            data["ledger_scope"] = self.scope
+        now = time.time()
+        cached = _ORDERS_READ_CACHE.get(self.scope)
+        if cached and now - cached[0] < _ORDERS_READ_CACHE_TTL:
+            data = cached[1]
+        else:
+            data = load_orders(self.scope)
+            if data.get("ledger_scope") != self.scope:
+                data["ledger_scope"] = self.scope
+            _ORDERS_READ_CACHE[self.scope] = (now, data)
         return data
 
     def _save(self, data: dict) -> bool:
         data["ledger_scope"] = self.scope
-        return save_orders(data, self.scope)
+        ok = save_orders(data, self.scope)
+        if ok:
+            _ORDERS_READ_CACHE[self.scope] = (time.time(), data)
+        return ok
 
     def _next_seq(self, data: dict) -> int:
         orders = data.get("orders", [])

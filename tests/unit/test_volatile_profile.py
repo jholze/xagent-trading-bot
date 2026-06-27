@@ -106,12 +106,13 @@ class TestVolatileProfile(unittest.TestCase):
         self.assertEqual(params.get("strategy_profile"), "volatile_altcoin")
         self.assertEqual(params.get("rsi_sell_30"), 62)
 
-    def test_eth_explicit_not_overridden(self):
+    def test_explicit_strategy_keeps_rsi_but_gets_exit_ladder(self):
         coin = {"symbol": "ETH/USDT", "timeframe": "4h"}
         with patch("strategies.registry._explicit_strategy_entry", return_value={"symbol": "ETH/USDT", "rsi_sell_30": 70}):
             params = resolve_strategy_params(coin, has_position=True, atr_pct=1.7, frozen_tier="volatile")
         self.assertEqual(params.get("rsi_sell_30"), 70)
-        self.assertNotEqual(params.get("strategy_profile"), "volatile_altcoin")
+        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.6, 0.3, 0.1])
+        self.assertNotIn("take_profit_pct", params)
 
     def test_rsi_level_sell_with_min_gain(self):
         strategy = TechnicalRSIStrategy()

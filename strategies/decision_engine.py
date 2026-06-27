@@ -25,6 +25,7 @@ from strategies.market_structure import (
 )
 from strategies.dca import evaluate_dca_addon
 from strategies.trailing_stop import evaluate_trailing_stop
+from strategies.time_profit_exit import evaluate_time_profit_exit
 from intelligence.volatility_classifier import volatility_tier
 from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
 from strategies.registry import (
@@ -366,6 +367,7 @@ class DecisionEngine:
         sources = list(technical.sources)
         candidates = []
         structure_rationales = []
+        sell_source = ""
         consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
@@ -443,10 +445,19 @@ class DecisionEngine:
                 if trail.shadow_only:
                     sources.append("trailing_shadow")
 
+            tpe = evaluate_time_profit_exit(market, position, strategy_params)
+            if tpe:
+                candidates.append((tpe.action, tpe.priority, tpe.source))
+                sources.append(tpe.source)
+                structure_rationales.append(tpe.rationale)
+                if tpe.shadow_only:
+                    sources.append("time_profit_shadow")
+
         if not candidates:
-            return HOLD, sources, technical.confidence, structure_rationales
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source
 
         best = max(candidates, key=lambda c: c[1])
+        sell_source = best[2]
         social_conf = 0.0
         if x_signal:
             social_conf = max(social_conf, getattr(x_signal, "effective_confidence", 0))
@@ -454,7 +465,7 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
         if lc_signal:
             social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
-        return best[0], sources, max(technical.confidence, social_conf), structure_rationales
+        return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source
 
     def _apply_shadow_mode(
         self,
@@ -465,6 +476,9 @@ class DecisionEngine:
     ) -> tuple:
         sources = sources or []
         if "trailing_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "time_profit_shadow" in sources and is_sell(normalized):
             shadow = execution_action
             return HOLD, "HOLD", shadow
 
@@ -528,8 +542,9 @@ class DecisionEngine:
         structure_rationales = []
 
         dca_usdt = 0.0
+        sell_source = ""
         if market.has_position:
-            normalized, sources, confidence, structure_rationales = self._merge_sell(
+            normalized, sources, confidence, structure_rationales, sell_source = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
             if normalized == HOLD:
@@ -560,6 +575,10 @@ class DecisionEngine:
             shadow_action = execution_action
             normalized = HOLD
             execution_action = "HOLD"
+        if sell_source == "time_profit_exit":
+            from strategies.positions import mark_time_profit_exit_done
+
+            mark_time_profit_exit_done(coin["symbol"], market.timeframe)
 
         rationale_parts = []
         if "technical" in sources:
@@ -587,6 +606,8 @@ class DecisionEngine:
             rationale_parts.append("strong consensus")
         if "trailing_stop" in sources:
             rationale_parts.append("Trail->ATR stop")
+        if "time_profit_exit" in sources:
+            rationale_parts.append("Time->profit exit")
         if "dca" in sources:
             rationale_parts.append("DCA->accumulation")
         if shadow_action:

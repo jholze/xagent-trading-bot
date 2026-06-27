@@ -6,13 +6,15 @@ import time
 from datetime import date, datetime
 
 from core.config import get_bot_config
+from core.portfolio_baseline import initial_capital
 from data_manager import (
+    compute_sim_cash_from_orders,
     compute_sim_cash_from_trades,
     compute_sim_realized_pnl,
-    live_sim_initial_capital,
     load_live_trade_history,
     load_orders,
     load_trade_history,
+    resolve_ledger_scope,
     uses_exchange_ledger,
 )
 from notifications.telegram_commands.position_display import (
@@ -46,7 +48,7 @@ def _position_value_from_snapshot(snapshot: dict, prices: dict) -> float:
     return total
 
 
-def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
+def _filled_orders_before(cutoff_iso: str, scope: str) -> list:
     orders = [
         o
         for o in load_orders(scope).get("orders", [])
@@ -58,6 +60,24 @@ def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
         or (o.get("timestamps") or {}).get("created")
         or ""
     )
+    return orders
+
+
+def _cash_at_cutoff(
+    cutoff_iso: str,
+    scope: str,
+    initial: float,
+    pre_trades: list,
+) -> float:
+    """Derive opening cash from orders when available (matches position replay)."""
+    pre_orders = _filled_orders_before(cutoff_iso, scope)
+    if pre_orders:
+        return compute_sim_cash_from_orders(pre_orders, initial)
+    return compute_sim_cash_from_trades(pre_trades, initial)
+
+
+def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
+    orders = _filled_orders_before(cutoff_iso, scope)
     snapshot: dict = {}
     for order in orders:
         symbol = order.get("symbol", "")
@@ -120,7 +140,7 @@ def estimate_nav_at_day_start(
     """Replay ledger at today's first trade; mark open lots with current prices."""
     cfg = get_bot_config()
     mode = trading_mode or cfg.trading_mode
-    scope = "live" if uses_exchange_ledger(mode) else "paper"
+    scope = resolve_ledger_scope(mode)
     cache_key = f"{date.today().isoformat()}:{scope}"
     now = time.time()
     cached = _nav_start_cache.get(cache_key)
@@ -132,12 +152,15 @@ def estimate_nav_at_day_start(
         cutoff = min(t.get("timestamp", "") for t in today_trades)
     else:
         cutoff = f"{date.today().isoformat()}T23:59:59"
-    initial = live_sim_initial_capital(cfg.raw) if uses_exchange_ledger(mode) else float(
-        cfg.initial_capital_usdt or 5000
+    history, all_trades = _history_and_trades(mode)
+    initial = initial_capital(
+        scope=scope,
+        config=cfg.raw,
+        history=history,
+        trading_mode=mode,
     )
-    all_trades = _history_and_trades(mode)[1]
     pre = [t for t in all_trades if (t.get("timestamp") or "") < cutoff]
-    cash = compute_sim_cash_from_trades(pre, initial)
+    cash = _cash_at_cutoff(cutoff, scope, initial, pre)
     snap = _snapshot_from_orders_before(cutoff, scope)
     symbols = sorted(
         {key.rpartition("_")[0].replace("_", "/") for key in snap if snap[key].get("amount", 0) > 1e-12}

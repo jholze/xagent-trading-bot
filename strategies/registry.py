@@ -33,6 +33,21 @@ _BUY_PARAM_KEYS = (
     "reversal_rsi_cross_high",
 )
 
+_EXPLICIT_PRESERVE_KEYS = (
+    "rsi_sell_mode",
+    "rsi_sell_30",
+    "rsi_sell_20",
+    "rsi_sell_min_gain_pct",
+    "stop_loss_pct",
+    "rsi_buy_low",
+    "rsi_buy_high",
+    "volume_multiplier",
+    "reversal_volume_multiplier",
+    "buy_regime",
+    "min_hours_between_buys",
+    "min_hours_between_sells",
+)
+
 
 from strategies.sell_profile import apply_position_sell_overlay
 
@@ -188,16 +203,30 @@ def resolve_strategy_params(
     symbol = coin.get("symbol", "")
     tf = coin.get("timeframe", "4h")
 
-    explicit = _explicit_strategy_entry(symbol, tf)
-    if explicit:
-        return dict(explicit)
-
-    hermes_params = _hermes_memory_params(symbol, tf)
     va_cfg = cfg.volatile_altcoin_config
     tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
-    volatile_active = has_position and tier == "volatile"
-
     stable_cfg = cfg.stable_altcoin_config
+
+    explicit = _explicit_strategy_entry(symbol, tf)
+    if explicit:
+        base = dict(explicit)
+        preserved = {k: base[k] for k in _EXPLICIT_PRESERVE_KEYS if k in base}
+        base = _buy_profile_overlay(base, coin, tier, cfg)
+        result = apply_position_sell_overlay(
+            base,
+            tier=tier,
+            has_position=has_position,
+            symbol=symbol,
+            tf=tf,
+            volatile_cfg=va_cfg,
+            stable_cfg=stable_cfg,
+            cfg=cfg,
+        )
+        result.update(preserved)
+        return result
+
+    hermes_params = _hermes_memory_params(symbol, tf)
+    volatile_active = has_position and tier == "volatile"
 
     if hermes_params:
         base = _buy_profile_overlay(hermes_params, coin, tier, cfg)

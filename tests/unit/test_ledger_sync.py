@@ -9,13 +9,20 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from data_manager import load_orders, resolve_ledger_scope, resolve_positions_file
 from services.ledger_sync import (
+    backfill_orders_from_trade_history,
     count_open_positions_from_orders,
     on_trading_mode_change,
     rebuild_positions_from_orders,
     sync_positions_on_startup,
 )
 from services.order_service import OrderService
-from strategies.positions import count_open_positions, get_active_scope, get_position, positions
+from strategies.positions import (
+    bootstrap_positions,
+    count_open_positions,
+    get_active_scope,
+    get_position,
+    positions,
+)
 
 
 class TestLedgerSync(unittest.TestCase):
@@ -39,12 +46,40 @@ class TestLedgerSync(unittest.TestCase):
 
         self.orders_patch = patch("data_manager.ORDERS_SCOPE_FILES", self.orders_files)
         self.positions_patch = patch("data_manager.POSITIONS_SCOPE_FILES", self.positions_files)
+        self.router_orders_patch = patch(
+            "storage.ledger_router.ORDERS_SCOPE_FILES", self.orders_files
+        )
+        self.router_positions_patch = patch(
+            "storage.ledger_router.POSITIONS_SCOPE_FILES", self.positions_files
+        )
+        from storage.ledger_router import JsonLedgerStore
+
+        self.resolve_store_patch = patch(
+            "data_manager.resolve_store",
+            side_effect=lambda scope, cfg=None: JsonLedgerStore(cfg),
+        )
         self.orders_patch.start()
         self.positions_patch.start()
+        self.router_orders_patch.start()
+        self.router_positions_patch.start()
+        self.resolve_store_patch.start()
+        from storage import ledger_router
+        from services import order_service
+
+        ledger_router._store_cache.clear()
+        order_service._ORDERS_READ_CACHE.clear()
 
     def tearDown(self):
+        self.resolve_store_patch.stop()
+        self.router_positions_patch.stop()
+        self.router_orders_patch.stop()
         self.positions_patch.stop()
         self.orders_patch.stop()
+        from storage import ledger_router
+        from services import order_service
+
+        ledger_router._store_cache.clear()
+        order_service._ORDERS_READ_CACHE.clear()
         positions.clear()
         positions.update(self._positions_backup)
 
@@ -133,10 +168,74 @@ class TestLedgerSync(unittest.TestCase):
         with patch("data_manager.is_demo_mode", return_value=False), \
              patch("data_manager.get_config", return_value={"trading_mode": "live"}), \
              patch("services.ledger_sync.migrate_legacy_positions"):
+            bootstrap_positions()
             sync_positions_on_startup()
 
         self.assertEqual(count_open_positions_from_orders("live"), count_open_positions())
         self.assertGreater(float(get_position("ARIA/USDT", "4h")["amount"]), 0)
+
+    def test_sync_preserves_legacy_positions_when_ledger_exceeds_orders(self):
+        import json
+
+        with open(self.positions_files["paper"], "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "ledger_scope": "paper",
+                    "positions": {
+                        "CAT_USDT_4h": {
+                            "amount": 1_000_000.0,
+                            "peak_amount": 1_000_000.0,
+                            "sold_percent": 0.0,
+                            "average_entry": 0.01,
+                            "realized_pnl": 0.0,
+                            "last_buy_price": 1.5e-06,
+                            "last_ampel": "🟡",
+                            "last_rsi": 45.0,
+                        }
+                    },
+                },
+                f,
+            )
+        with open(self.orders_files["paper"], "w", encoding="utf-8") as f:
+            json.dump({"ledger_scope": "paper", "orders": [], "migrated_from_trades": False}, f)
+
+        with patch("data_manager.is_demo_mode", return_value=False), \
+             patch("data_manager.get_config", return_value={"trading_mode": "paper"}), \
+             patch("services.ledger_sync.migrate_legacy_positions"):
+            bootstrap_positions()
+            sync_positions_on_startup()
+
+        self.assertGreater(count_open_positions(), count_open_positions_from_orders("paper"))
+        self.assertGreater(float(get_position("CAT/USDT", "4h")["amount"]), 0)
+
+    def test_backfill_orders_from_trade_history_uses_trade_order_id(self):
+        import json
+
+        trade_path = os.path.join(self.tmp.name, "trade_history.json")
+        with open(trade_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "trades": [
+                        {
+                            "type": "BUY",
+                            "symbol": "CAT/USDT",
+                            "price": 1.5e-06,
+                            "amount": 100.0,
+                            "usdt_amount": 50.0,
+                            "order_id": "legacy-cat-01",
+                            "timestamp": "2026-06-24T10:00:00",
+                            "mode": "live",
+                        }
+                    ]
+                },
+                f,
+            )
+        with patch("data_manager.TRADE_HISTORY_FILE", "trade_history.json"), \
+             patch("data_manager.get_data_file", side_effect=lambda name: trade_path if name == "trade_history.json" else os.path.join(self.tmp.name, name)):
+            added = backfill_orders_from_trade_history("paper")
+        self.assertEqual(added, 1)
+        orders = load_orders("paper").get("orders", [])
+        self.assertEqual(orders[-1]["id"], "legacy-cat-01")
 
 
 if __name__ == "__main__":

@@ -37,15 +37,16 @@ class TestDailyPortfolio(unittest.TestCase):
         self.assertNotIn("⚠️ 100%", card)
 
     def test_portfolio_summary_nav_minus_initial(self):
-        msg = format_portfolio_summary(
-            {"virtual_balance": 3952.19, "realized_pnl": -111.82},
-            total_unreal=18.5,
-            position_count=4,
-            cash_balance=3952.19,
-            positions_market_value=868.0,
-        )
+        with patch("notifications.telegram_commands.position_display.initial_capital", return_value=5000.0):
+            msg = format_portfolio_summary(
+                {"virtual_balance": 3952.19, "realized_pnl": -111.82},
+                total_unreal=18.5,
+                position_count=4,
+                cash_balance=3952.19,
+                positions_market_value=868.0,
+            )
         self.assertIn("Gesamt-PnL", msg)
-        self.assertIn("$-179.8", msg)
+        self.assertIn("$-93.3", msg)
 
     def test_realized_pnl_for_sells_only(self):
         trades = [
@@ -63,6 +64,78 @@ class TestDailyPortfolio(unittest.TestCase):
         ), patch("notifications.daily_portfolio.trades_today", return_value=[]):
             line = format_daily_nav_line(total_value=5000.0)
         self.assertEqual(line, "")
+
+    def test_nav_at_day_start_uses_resolved_ledger_scope(self):
+        """Demo scope must not replay positions from empty paper orders."""
+        today = date.today().isoformat()
+        trades = [
+            {"timestamp": f"{today}T08:00:00", "type": "BUY", "mode": "live"},
+            {"timestamp": "2026-06-24T10:00:00", "type": "BUY", "mode": "live"},
+        ]
+        snap = {"CAT_USDT_4h": {"amount": 100.0, "peak_amount": 100.0, "average_entry": 1.0}}
+        with patch(
+            "notifications.daily_portfolio._history_and_trades",
+            return_value=({"trades": trades, "virtual_balance": 9000}, trades),
+        ), patch("notifications.daily_portfolio.trades_today", return_value=[trades[0]]), \
+             patch("notifications.daily_portfolio.resolve_ledger_scope", return_value="demo"), \
+             patch("notifications.daily_portfolio.initial_capital", return_value=10000.0), \
+             patch("notifications.daily_portfolio._cash_at_cutoff", return_value=5000.0), \
+             patch("notifications.daily_portfolio._snapshot_from_orders_before", return_value=snap) as mock_snap, \
+             patch("notifications.daily_portfolio.get_prices_batch", return_value={"CAT/USDT": 2.0}):
+            import notifications.daily_portfolio as dp
+
+            dp._nav_start_cache.clear()
+            nav = dp.estimate_nav_at_day_start("paper")
+        mock_snap.assert_called_once()
+        self.assertEqual(mock_snap.call_args[0][1], "demo")
+        self.assertAlmostEqual(nav, 5200.0)
+
+    def test_nav_at_day_start_uses_orders_cash_when_trades_incomplete(self):
+        """Demo trade_history may only list today's fills; cash must replay orders."""
+        today = date.today().isoformat()
+        today_trades = [
+            {"timestamp": f"{today}T13:50:50", "type": "BUY", "usdt_amount": 1250.0},
+        ]
+        pre_orders = [
+            {
+                "status": "filled",
+                "side": "buy",
+                "timestamps": {"filled": "2026-06-26T10:00:00"},
+                "execution": {"usdt": 1000.0},
+            }
+        ]
+        snap = {"CAT_USDT_4h": {"amount": 100.0, "peak_amount": 100.0, "average_entry": 1.0}}
+        with patch(
+            "notifications.daily_portfolio.trades_today",
+            return_value=today_trades,
+        ), patch(
+            "notifications.daily_portfolio._history_and_trades",
+            return_value=({"trades": today_trades, "virtual_balance": 45000}, today_trades),
+        ), patch(
+            "notifications.daily_portfolio.resolve_ledger_scope",
+            return_value="demo",
+        ), patch(
+            "notifications.daily_portfolio.initial_capital",
+            return_value=100000.0,
+        ), patch(
+            "notifications.daily_portfolio._filled_orders_before",
+            return_value=pre_orders,
+        ), patch(
+            "notifications.daily_portfolio.compute_sim_cash_from_orders",
+            return_value=46500.0,
+        ) as mock_cash, patch(
+            "notifications.daily_portfolio._snapshot_from_orders_before",
+            return_value=snap,
+        ), patch(
+            "notifications.daily_portfolio.get_prices_batch",
+            return_value={"CAT/USDT": 2.0},
+        ):
+            import notifications.daily_portfolio as dp
+
+            dp._nav_start_cache.clear()
+            nav = dp.estimate_nav_at_day_start("paper")
+        mock_cash.assert_called_once_with(pre_orders, 100000.0)
+        self.assertAlmostEqual(nav, 46700.0)
 
     def test_format_daily_nav_line_with_trades(self):
         today = date.today().isoformat()

@@ -134,17 +134,15 @@ def count_open_positions_from_orders(scope: str) -> int:
 
 def rebuild_positions_from_orders(scope: str) -> int:
     """Rebuild in-memory positions for *scope* from filled orders only."""
-    from strategies.positions import apply_positions_snapshot, save_positions
-
-    from data_manager import load_orders
+    from strategies.positions import apply_positions_snapshot, flush_positions, is_open_position
 
     snapshot = _build_positions_snapshot_from_orders(scope)
+    from data_manager import load_orders
+
     orders = [o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"]
 
     apply_positions_snapshot(snapshot, scope=scope)
-    save_positions(scope=scope)
-    from strategies.positions import is_open_position
-
+    flush_positions(scope, force=True)
     open_count = sum(1 for p in snapshot.values() if is_open_position(p))
     log(
         f"Rebuilt positions for scope={scope} from {len(orders)} filled order(s), "
@@ -156,29 +154,25 @@ def rebuild_positions_from_orders(scope: str) -> int:
 
 def activate_ledger_scope(scope: str, *, rebuild: bool = False) -> int:
     """Switch active in-memory positions to *scope*."""
-    from strategies.positions import load_positions
+    from strategies.positions import bootstrap_positions, count_open_positions
 
     migrate_legacy_positions()
-    if rebuild or not os.path.exists(
-        __import__("data_manager").resolve_positions_file(scope)
-    ):
+    if rebuild:
         return rebuild_positions_from_orders(scope)
-    load_positions(scope=scope)
-    from strategies.positions import count_open_positions
-
+    bootstrap_positions(scope=scope)
     return count_open_positions()
 
 
 def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
     """Persist outgoing ledger and load the target ledger without cross-contamination."""
-    from strategies.positions import count_open_positions, get_active_scope, save_positions
+    from strategies.positions import count_open_positions, flush_positions, get_active_scope
 
     old_scope = _scope_for_trading_mode(old_mode)
     new_scope = _scope_for_trading_mode(new_mode)
     if old_scope == new_scope:
         return ""
 
-    save_positions(scope=old_scope)
+    flush_positions(scope=old_scope, force=True)
     open_count = activate_ledger_scope(new_scope, rebuild=True)
     active = get_active_scope()
     if active != new_scope:
@@ -191,7 +185,7 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
 
 def reconcile_peak_amounts(scope: str) -> bool:
     """Backfill peak_amount and sold_percent from filled orders for open lots."""
-    from strategies.positions import _positions_lock, has_position_amount, positions, save_positions
+    from strategies.positions import _positions_lock, flush_positions, has_position_amount, positions
 
     order_snap = _build_positions_snapshot_from_orders(scope)
     changed = False
@@ -218,34 +212,108 @@ def reconcile_peak_amounts(scope: str) -> bool:
                 pos["sold_percent"] = sold
                 changed = True
     if changed:
-        save_positions(scope=scope)
+        flush_positions(scope=scope, force=True)
         log(f"Reconciled peak_amount for scope={scope}", "INFO")
     return changed
 
 
+def backfill_orders_from_trade_history(scope: str) -> int:
+    """One-off: create filled orders for trades missing from the order ledger."""
+    from data_manager import load_orders, load_trade_history_document, save_orders
+
+    data = load_orders(scope)
+    orders = list(data.get("orders", []))
+    known_ids = {o.get("id") for o in orders if o.get("id")}
+    trades = load_trade_history_document(scope).get("trades", [])
+    seq = max([int(o.get("display_seq", 0)) for o in orders], default=0)
+    added = 0
+
+    for trade in trades:
+        order_id = trade.get("order_id") or ""
+        if not order_id or order_id in known_ids:
+            continue
+        ts = trade.get("timestamp", "")
+        side = (trade.get("type") or "buy").lower()
+        seq += 1
+        orders.append(
+            {
+                "id": order_id,
+                "display_seq": seq,
+                "status": "filled",
+                "side": side,
+                "symbol": trade.get("symbol", ""),
+                "timeframe": trade.get("timeframe", "4h"),
+                "order_type": "market",
+                "source": trade.get("source", "auto"),
+                "signal": trade.get("signal", ""),
+                "trading_mode": trade.get("mode", scope if scope != "demo" else "paper"),
+                "ledger_scope": scope,
+                "legacy_trade_ts": ts,
+                "request": {
+                    "price": float(trade.get("price", 0)),
+                    "amount": float(trade.get("amount", 0)),
+                    "usdt": float(trade.get("usdt_amount", 0) or 0) or None,
+                },
+                "risk": {
+                    "approved": True,
+                    "message": "Backfilled from trade history",
+                    "code": "",
+                    "size_multiplier": 1.0,
+                },
+                "execution": {
+                    "price": float(trade.get("price", 0)),
+                    "amount": float(trade.get("amount", 0)),
+                    "usdt": float(
+                        trade.get("usdt_amount") or trade.get("usdt_received") or 0
+                    ),
+                    "exchange_order_id": trade.get("exchange_order_id"),
+                },
+                "pnl": trade.get("pnl"),
+                "error": None,
+                "timestamps": {"created": ts or "", "updated": ts or "", "filled": ts or ""},
+            }
+        )
+        known_ids.add(order_id)
+        added += 1
+
+    if added:
+        data["orders"] = orders
+        data["ledger_scope"] = scope
+        save_orders(data, scope)
+        log(f"Backfilled {added} order(s) from trade history for scope={scope}", "INFO")
+    return added
+
+
+def _preserve_legacy_cache_lots(scope: str) -> None:
+    """Paper/live only: keep material cache lots not yet represented in orders SOT."""
+    if scope == "demo":
+        return
+    from data_manager import load_positions_document
+    from strategies.positions import (
+        DUST_AMOUNT_EPSILON,
+        _deserialize_position,
+        _positions_lock,
+        _recompute_open_count,
+        positions,
+    )
+
+    cache_positions = load_positions_document(scope).get("positions", {}) or {}
+    order_snap = _build_positions_snapshot_from_orders(scope)
+    with _positions_lock:
+        for key, cached in cache_positions.items():
+            if key in order_snap or key in positions:
+                continue
+            if float(cached.get("amount", 0) or 0) <= DUST_AMOUNT_EPSILON:
+                continue
+            positions[key] = _deserialize_position(dict(cached))
+        _recompute_open_count()
+
+
 def sync_positions_on_startup() -> None:
-    """Ensure startup uses the correct scoped ledger without cross-contamination."""
-    from data_manager import get_config, resolve_ledger_scope, resolve_positions_file
-    from strategies.positions import count_open_positions, load_positions, save_positions
+    """Reconcile peak_amount cache after bootstrap (no wipe/rebuild)."""
+    from data_manager import get_config, resolve_ledger_scope
 
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
-    path = resolve_positions_file(scope)
-    if not os.path.exists(path):
-        activate_ledger_scope(scope, rebuild=True)
-        return
-
-    load_positions(scope=scope)
-    ledger_open = count_open_positions()
-    order_open = count_open_positions_from_orders(scope)
-    if ledger_open != order_open:
-        log(
-            f"Position drift detected for scope={scope} "
-            f"(ledger={ledger_open}, orders={order_open}); rebuilding from orders",
-            "WARNING",
-        )
-        rebuild_positions_from_orders(scope)
-        return
-
+    _preserve_legacy_cache_lots(scope)
     reconcile_peak_amounts(scope)
-    save_positions(scope=scope)

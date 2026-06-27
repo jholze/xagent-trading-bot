@@ -82,7 +82,7 @@ def test_orders_local_vs_mongo_equivalent(tmp_path, monkeypatch, mongo_test_env,
     assert local_loaded["orders"] == mongo_loaded["orders"]
 
 
-def test_dual_write_reads_json_while_mongo_has_copy(
+def test_dual_write_reads_mongo_authoritative(
     monkeypatch, mongo_test_env,
 ):
     from data_manager import get_config
@@ -163,12 +163,20 @@ def _isolated_ledger_paths(tmp_path):
 
 def _apply_backend_config(monkeypatch, cfg: dict, paths: dict):
     import data_manager
+    import storage.ledger_router as ledger_router
 
     monkeypatch.setattr(data_manager, "_config_cache", cfg)
     monkeypatch.setattr(data_manager, "get_config", lambda: cfg)
     monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", paths["orders"])
     monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", paths["positions"])
-    monkeypatch.setattr(data_manager, "TRADE_HISTORY_SCOPE_FILES", paths["history"])
+    monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", paths["orders"])
+    monkeypatch.setattr(ledger_router, "POSITIONS_SCOPE_FILES", paths["positions"])
+    monkeypatch.setattr(data_manager, "TRADE_HISTORY_FILE", paths["history"]["paper"])
+    monkeypatch.setattr(data_manager, "LIVE_TRADE_HISTORY_FILE", paths["history"]["live"])
+    ledger_router._store_cache.clear()
+    from services import order_service
+
+    order_service._ORDERS_READ_CACHE.clear()
     monkeypatch.setattr(data_manager, "is_demo_mode", lambda: False)
     monkeypatch.setattr(data_manager, "resolve_ledger_scope", lambda trading_mode=None: "paper")
 
@@ -220,6 +228,11 @@ def _run_buy_sell_cycle(monkeypatch, cfg: dict, paths: dict):
     from strategies.positions import load_positions
 
     positions.clear()
+    save_orders(
+        {"ledger_scope": "paper", "orders": [], "migrated_from_trades": False},
+        "paper",
+    )
+    save_positions_document({"ledger_scope": "paper", "positions": {}}, "paper", config=cfg)
     load_positions("paper")
 
     empty_history = {

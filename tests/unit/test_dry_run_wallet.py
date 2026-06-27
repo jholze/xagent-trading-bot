@@ -33,9 +33,13 @@ class TestDryRunWallet(unittest.TestCase):
         return cfg
 
     def test_is_dry_run_enhanced_requires_all_flags(self):
-        self.assertFalse(is_dry_run_enhanced({"trading_mode": "paper", "live": {"dry_run": True, "dry_run_enhanced": True}}))
-        self.assertFalse(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": False, "dry_run_enhanced": True}}))
-        self.assertTrue(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}))
+        paper_enhanced = {"trading_mode": "paper", "live": {"dry_run": True, "dry_run_enhanced": True}}
+        with patch("data_manager.is_demo_mode", return_value=False):
+            self.assertFalse(is_dry_run_enhanced(paper_enhanced))
+            self.assertFalse(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": False, "dry_run_enhanced": True}}))
+            self.assertTrue(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}))
+        with patch("data_manager.is_demo_mode", return_value=True):
+            self.assertTrue(is_dry_run_enhanced(paper_enhanced))
 
     def test_record_live_trade_updates_virtual_balance(self):
         with tempfile.TemporaryDirectory() as tmp:

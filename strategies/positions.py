@@ -1,59 +1,61 @@
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from decimal import Decimal
-from pathlib import Path
 
 from logger import log
+from storage.ledger_router import (
+    ORDERS_SCOPE_FILES,
+    POSITIONS_SCOPE_FILES,
+)
+from data_manager import (
+    atomic_write_json,
+    load_positions_document,
+    resolve_ledger_scope,
+    save_positions_document,
+)
 
 # Basic lock to reduce risk of concurrent modifications (price loop + Flask).
 _positions_lock = threading.RLock()
 
-def _ledger_api():
-    from data_manager import (
-        atomic_write_json,
-        load_positions_document,
-        resolve_ledger_scope,
-        resolve_positions_file,
-        save_positions_document,
-    )
+_FLUSH_DEBOUNCE_SEC = 5.0
+_flush_timer: threading.Timer | None = None
+_flush_timer_lock = threading.RLock()
+_open_positions_count = 0
 
-    return {
-        "atomic_write_json": atomic_write_json,
-        "load_positions_document": load_positions_document,
-        "resolve_ledger_scope": resolve_ledger_scope,
-        "resolve_positions_file": resolve_positions_file,
-        "save_positions_document": save_positions_document,
-    }
-
-
-def resolve_ledger_scope(trading_mode=None):
-    return _ledger_api()["resolve_ledger_scope"](trading_mode)
-
-
-def resolve_positions_file(scope):
-    return _ledger_api()["resolve_positions_file"](scope)
-
-
-def load_positions_document(scope):
-    return _ledger_api()["load_positions_document"](scope)
-
-
-def save_positions_document(data, scope=None):
-    return _ledger_api()["save_positions_document"](data, scope)
-
-
-def atomic_write_json(path, data):
-    return _ledger_api()["atomic_write_json"](path, data)
-
-# Module-level state (global mutable dictionary).
-# This is a known technical debt item. All access should go through the functions below.
 positions = {}
 _active_scope = "paper"
 
 DUST_AMOUNT_EPSILON = 1e-12
 MIN_OPEN_POSITION_USDT = 1.0
+
+_CACHE_FIELDS = (
+    "strategy_tier",
+    "exit_ladder_step",
+    "dca_rounds",
+    "last_dca_at",
+    "dca_total_usdt",
+    "last_sell_signal",
+    "rsi_sell_tiers_done",
+    "last_cmc_sell_at",
+    "recent_high",
+    "last_ampel",
+    "last_rsi",
+    "first_buy_at",
+    "time_profit_exit_done",
+)
+
+
+def resolve_positions_file(scope):
+    if scope not in POSITIONS_SCOPE_FILES:
+        raise ValueError(f"Invalid ledger scope: {scope}")
+    if scope == "demo":
+        from data_manager import get_data_file
+
+        return get_data_file("positions.json")
+    return POSITIONS_SCOPE_FILES[scope]
 
 
 def position_notional_usdt(pos: dict) -> float:
@@ -115,6 +117,8 @@ def _deserialize_position(raw: dict) -> dict:
         "last_dca_at": raw.get("last_dca_at"),
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
         "last_sell_signal": raw.get("last_sell_signal"),
+        "first_buy_at": raw.get("first_buy_at"),
+        "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
     }
 
 
@@ -142,8 +146,34 @@ def _serialize_positions() -> dict:
             "last_dca_at": p.get("last_dca_at"),
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
             "last_sell_signal": p.get("last_sell_signal"),
+            "first_buy_at": p.get("first_buy_at"),
+            "time_profit_exit_done": bool(p.get("time_profit_exit_done", False)),
         }
     return data
+
+
+def _recompute_open_count() -> None:
+    """Recompute open-position counter; caller must hold _positions_lock."""
+    global _open_positions_count
+    _open_positions_count = sum(1 for p in positions.values() if is_open_position(p))
+
+
+def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) -> dict:
+    """Pure derive: amounts from orders SOT; merge cache-only fields (no orphan cache lots)."""
+    merged = {}
+    cache_positions = cache_doc.get("positions", {}) or {}
+    for key, snap in order_snap.items():
+        pos = dict(snap)
+        cached = cache_positions.get(key) or {}
+        for field in _CACHE_FIELDS:
+            if field in cached and cached[field] is not None:
+                pos[field] = cached[field]
+        merged[key] = pos
+    return merged
+
+
+def _merge_cache_fields(order_snap: dict, cache_doc: dict) -> dict:
+    return derive_positions_from_orders_and_cache(order_snap, cache_doc)
 
 
 def apply_positions_snapshot(snapshot: dict, scope: str = None) -> None:
@@ -154,23 +184,52 @@ def apply_positions_snapshot(snapshot: dict, scope: str = None) -> None:
         for key, raw in snapshot.items():
             positions[key] = _deserialize_position(raw)
         _active_scope = target
+        _recompute_open_count()
 
 
 def load_positions(scope: str = None):
+    """Load positions: amounts from orders (source of truth), cache fields from ledger doc."""
     global _active_scope
+    from services.ledger_sync import _build_positions_snapshot_from_orders
+
     target = scope or resolve_ledger_scope()
     with _positions_lock:
         positions.clear()
         _active_scope = target
         try:
-            data = load_positions_document(target)
-            for tf, p in data.get("positions", {}).items():
-                positions[tf] = _deserialize_position(p)
+            order_snap = _build_positions_snapshot_from_orders(target)
+            cache_doc = load_positions_document(target)
+            merged = derive_positions_from_orders_and_cache(order_snap, cache_doc)
+            for key, raw in merged.items():
+                positions[key] = _deserialize_position(raw)
+            _recompute_open_count()
         except Exception as e:
             log(f"Failed to load positions ({target}): {e}", "ERROR")
+        snapshot = {k: dict(v) for k, v in positions.items()}
+    return snapshot
 
 
-def save_positions(scope: str = None):
+def bootstrap_positions(scope: str = None) -> None:
+    """Explicit startup load (not at import time)."""
+    load_positions(scope=scope)
+
+
+def clear_positions_memory() -> None:
+    """Reset in-memory positions and the open-position counter (tests / scope prep)."""
+    with _positions_lock:
+        positions.clear()
+        _recompute_open_count()
+
+
+def _cancel_flush_timer() -> None:
+    global _flush_timer
+    with _flush_timer_lock:
+        if _flush_timer is not None:
+            _flush_timer.cancel()
+            _flush_timer = None
+
+
+def _do_save_positions(scope: str) -> None:
     target = scope or _active_scope
     with _positions_lock:
         payload = _serialize_positions()
@@ -182,14 +241,28 @@ def save_positions(scope: str = None):
             log(f"Failed to save positions ({target}): {e}", "ERROR")
 
 
-def _bootstrap_positions():
-    try:
-        load_positions(scope=resolve_ledger_scope())
-    except Exception as e:
-        log(f"Position bootstrap failed: {e}", "WARNING")
+def flush_positions(scope: str = None, *, force: bool = False) -> None:
+    """Persist positions; debounced unless force=True (trade/shutdown)."""
+    global _flush_timer
+    target = scope or _active_scope
+    if force:
+        _cancel_flush_timer()
+        _do_save_positions(target)
+        return
+
+    def _delayed():
+        _do_save_positions(target)
+
+    with _flush_timer_lock:
+        _cancel_flush_timer()
+        _flush_timer = threading.Timer(_FLUSH_DEBOUNCE_SEC, _delayed)
+        _flush_timer.daemon = True
+        _flush_timer.start()
 
 
-_bootstrap_positions()
+def save_positions(scope: str = None):
+    flush_positions(scope, force=True)
+
 
 def update_market_snapshot(symbol: str, timeframe: str, current_price: float, atr_pct: float = 0.0):
     init_position(symbol, timeframe)
@@ -197,7 +270,6 @@ def update_market_snapshot(symbol: str, timeframe: str, current_price: float, at
     with _positions_lock:
         pos = positions[key]
         pos["recent_high"] = max(float(pos.get("recent_high") or 0), current_price)
-    save_positions()
 
 
 def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
@@ -208,11 +280,12 @@ def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
     with _positions_lock:
         if not positions[key].get("strategy_tier"):
             positions[key]["strategy_tier"] = tier
-    save_positions()
+    flush_positions()
 
 
 def get_key(symbol, timeframe):
     return f"{symbol.replace('/', '_')}_{timeframe}"
+
 
 def init_position(symbol, timeframe):
     key = get_key(symbol, timeframe)
@@ -239,12 +312,23 @@ def init_position(symbol, timeframe):
                 "last_dca_at": None,
                 "dca_total_usdt": 0.0,
                 "last_sell_signal": None,
+                "first_buy_at": None,
+                "time_profit_exit_done": False,
             }
+
 
 def get_position(symbol, timeframe):
     init_position(symbol, timeframe)
     with _positions_lock:
         return positions[get_key(symbol, timeframe)]
+
+
+def set_position_field(symbol: str, timeframe: str, field: str, value) -> None:
+    """Update one position field under the positions lock."""
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        positions[key][field] = value
 
 
 def reset_rsi_sell_tiers_if_cooled(
@@ -274,12 +358,23 @@ def reset_rsi_sell_tiers_if_cooled(
         if changed:
             pos["rsi_sell_tiers_done"] = tiers
     if changed:
-        save_positions()
+        flush_positions()
 
 
 def is_rsi_sell_tier_done(symbol: str, timeframe: str, tier: str) -> bool:
     pos = get_position(symbol, timeframe)
     return bool((pos.get("rsi_sell_tiers_done") or {}).get(tier))
+
+
+def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        if pos.get("time_profit_exit_done"):
+            return
+        pos["time_profit_exit_done"] = True
+    flush_positions()
 
 
 def sell_fraction_for_signal(
@@ -319,14 +414,19 @@ def sell_fraction_for_signal(
 def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
+    was_open = False
     with _positions_lock:
         pos = positions[key]
+        was_open = is_open_position(pos)
         if signal in ("BUY", "BUY_DCA") and amount_traded > 0:
             old_amount = pos["amount"]
             old_average = pos.get("average_entry", current_price)
             new_amount = old_amount + Decimal(str(amount_traded))
             if old_amount > 0:
-                pos["average_entry"] = float((old_average * float(old_amount) + current_price * float(amount_traded)) / float(new_amount))
+                pos["average_entry"] = float(
+                    (old_average * float(old_amount) + current_price * float(amount_traded))
+                    / float(new_amount)
+                )
             else:
                 pos["average_entry"] = current_price
             pos["amount"] = new_amount
@@ -350,6 +450,8 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["dca_rounds"] = 0
                 pos["last_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
+                pos["time_profit_exit_done"] = False
+                pos["first_buy_at"] = datetime.now().isoformat()
                 if old_amount <= 0:
                     pos["strategy_tier"] = None
         elif "SELL" in signal:
@@ -412,31 +514,19 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 )
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
-    save_positions()
-    _sync_open_positions_count()
-
-
-def _sync_open_positions_count():
-    try:
-        from data_manager import load_live_trade_history, load_trade_history, save_trade_history, uses_exchange_ledger
-
-        open_count = count_open_positions()
-        if uses_exchange_ledger():
-            history = load_live_trade_history()
-            history["open_positions"] = open_count
-            from data_manager import save_live_trade_history
-            save_live_trade_history(history)
-        else:
-            history = load_trade_history()
-            history["open_positions"] = open_count
-            save_trade_history(history)
-    except Exception as e:
-        log(f"Failed to sync open_positions count: {e}", "WARNING")
+        is_open_now = is_open_position(pos)
+        global _open_positions_count
+        if was_open and not is_open_now:
+            _open_positions_count = max(0, _open_positions_count - 1)
+        elif not was_open and is_open_now:
+            _open_positions_count += 1
+    flush_positions(force=True)
 
 
 def count_open_positions():
     with _positions_lock:
-        return sum(1 for p in positions.values() if is_open_position(p))
+        return _open_positions_count
+
 
 def get_total_aria():
     with _positions_lock:
@@ -444,6 +534,7 @@ def get_total_aria():
         for pos in positions.values():
             total += pos["amount"]
         return total
+
 
 def list_active_positions():
     with _positions_lock:

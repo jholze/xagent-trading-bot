@@ -1,7 +1,13 @@
 from datetime import datetime, timedelta
 
 from core.config import get_bot_config
-from data_manager import load_effective_watchlist, load_trade_history, load_x_accounts
+from core.portfolio_baseline import initial_capital
+from data_manager import (
+    load_effective_watchlist,
+    load_trade_history,
+    load_x_accounts,
+    resolve_ledger_scope,
+)
 from services.order_service import OrderService, format_order_line, ledger_label
 from intelligence.accuracy_tracker import AccuracyTracker
 from price_fetcher import get_prices
@@ -22,6 +28,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     from data_manager import (
         is_dry_run_enhanced,
         load_live_trade_history,
+        load_trade_history,
         uses_exchange_ledger,
         uses_simulated_live_portfolio,
     )
@@ -34,6 +41,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
 
     cfg = get_bot_config()
     mode = trading_mode or cfg.trading_mode
+    scope = resolve_ledger_scope(mode)
 
     if uses_exchange_ledger(mode):
         history = load_live_trade_history()
@@ -54,10 +62,15 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     else:
         history = load_trade_history()
         balance = float(history.get("virtual_balance", 0))
-        realized = float(history.get("realized_pnl", 0))
+        realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
         balance_label = "Balance"
 
     active = list_active_positions()
+    if not active and int(history.get("open_positions", 0) or 0) > 0:
+        from strategies.positions import bootstrap_positions
+
+        bootstrap_positions(scope)
+        active = list_active_positions()
     symbols = [position_symbol(p) for p in active]
     prices = get_prices_batch(symbols, fallbacks=build_price_fallbacks(active)) if symbols else {}
 
@@ -69,6 +82,14 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         unrealized += metrics["unreal"]
         positions_market_value += metrics["value_usdt"]
 
+    baseline = initial_capital(
+        scope=scope,
+        config=cfg.raw,
+        history=history,
+        trading_mode=mode,
+    )
+    total_pnl = realized + unrealized
+
     return {
         "history": history,
         "balance": balance,
@@ -77,6 +98,10 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         "unrealized": unrealized,
         "positions_market_value": positions_market_value,
         "total_value": balance + positions_market_value,
+        "initial_capital": baseline,
+        "ledger_scope": scope,
+        "total_pnl": total_pnl,
+        "pnl_pct": (total_pnl / baseline * 100) if baseline > 0 else 0.0,
     }
 
 
@@ -223,19 +248,21 @@ def build_cycle_summary(
     balance = snap["balance"]
     balance_label = snap["balance_label"]
     realized = snap["realized"]
+    unrealized = snap["unrealized"]
     total_value = snap["total_value"]
+    nav_pnl = float(snap.get("total_pnl", float(realized or 0) + float(unrealized or 0)))
+    pnl_pct = float(snap.get("pnl_pct", 0.0))
+    scope = snap.get("ledger_scope", resolve_ledger_scope(trading_mode))
 
     executed = [r for r in (coin_results or []) if r.get("executed")]
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
 
-    initial = float(get_bot_config().initial_capital_usdt or 5000)
-    nav_pnl = float(total_value or 0) - initial
     lines = [
         f"<b>📋 Zyklus-Zusammenfassung</b> — {datetime.now().strftime('%H:%M:%S')}",
-        f"Modus: <b>{trading_mode.upper()}</b>",
+        f"Modus: <b>{trading_mode.upper()}</b> · Ledger: <b>{scope.upper()}</b>",
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | "
-        f"PnL: ${nav_pnl:+,.0f} (real. ${float(realized or 0):,.1f})",
+        f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, real. ${float(realized or 0):,.1f})",
         f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC | {lc_signal_count} LC",
     ]
     try:

@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from flask import Flask, request
 
 import argparse
+import atexit
+import signal
 
 from logger import log
 
@@ -66,8 +68,47 @@ trading_mode = config.get("trading_mode", "paper" if config.get("virtual_trading
 print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DEMO_MODE") == "1" else ""))
 
 try:
+    from storage.mongo_client import assert_safe_demo_mongo_db, log_ledger_startup
+
+    assert_safe_demo_mongo_db()
+    log_ledger_startup()
+except SystemExit:
+    raise
+except Exception as e:
+    log(f"Ledger startup guard failed: {e}", "WARNING")
+
+
+def _flush_positions_on_exit(*_args) -> None:
+    try:
+        from strategies.positions import flush_positions, get_active_scope
+
+        flush_positions(scope=get_active_scope(), force=True)
+    except Exception as e:
+        log(f"Position flush on exit failed: {e}", "WARNING")
+
+
+atexit.register(_flush_positions_on_exit)
+
+
+def _handle_shutdown(_signum, _frame) -> None:
+    _flush_positions_on_exit()
+    raise SystemExit(0)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _handle_shutdown)
+    except Exception:
+        pass
+
+try:
+    from data_manager import reconcile_demo_trade_history_on_startup
     from services.ledger_sync import sync_positions_on_startup
+    from strategies.positions import bootstrap_positions
+
+    bootstrap_positions()
     sync_positions_on_startup()
+    reconcile_demo_trade_history_on_startup()
 except Exception as e:
     log(f"Ledger position sync on startup failed: {e}", "WARNING")
 
@@ -77,6 +118,11 @@ app = Flask(__name__)
 
 @app.route("/health", methods=["GET"])
 def health():
+    return "OK", 200
+
+
+@app.route("/", methods=["GET"])
+def webhook_get():
     return "OK", 200
 
 
@@ -256,9 +302,14 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                         )
 
             active_coins = [coin for coin in watchlist if coin.get("active", True)]
-            price_map = get_prices_batch([coin["symbol"] for coin in active_coins])
+            from core.cycle_order import order_watchlist_positions_first
+            from strategies.positions import list_active_positions
 
-            for coin in active_coins:
+            open_positions = list_active_positions()
+            scan_coins = order_watchlist_positions_first(active_coins, open_positions)
+            price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
+
+            for coin in scan_coins:
                 symbol = coin["symbol"]
                 if not use_dashboard:
                     print(f"→ {symbol}")
@@ -278,7 +329,11 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
             if cycle_elapsed > 30:
-                log(f"Cycle completed in {cycle_elapsed}s ({len(active_coins)} coins)", "INFO")
+                log(
+                    f"Cycle completed in {cycle_elapsed}s "
+                    f"({len(scan_coins)} coins, {len(open_positions)} positions first)",
+                    "INFO",
+                )
 
             if use_dashboard:
                 render_cycle_dashboard(

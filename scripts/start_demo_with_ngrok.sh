@@ -46,7 +46,8 @@ wait_for_port_free() {
 wait_for_port_free 5000
 wait_for_port_free 4040
 
-echo "🧪 Starting bot (demo mode)..."
+echo "🧪 Starting bot (demo mode, Mongo DB: xagent_test)..."
+export MONGODB_DB=xagent_test
 DEMO_MODE=1 python3 aria_bot.py --demo &
 BOT_PID=$!
 
@@ -172,6 +173,7 @@ if token and chat:
         '✅ <b>Bot + ngrok neu gestartet</b>\n\n'
         f'<b>Webhook:</b> ${PUBLIC_URL}\n'
         '<b>Modus:</b> Paper (Demo)\n'
+        '<b>Mongo:</b> xagent_test\n'
         f'{format_build_line()}\n\n'
         'Sende /help zum Testen.'
     )
@@ -180,7 +182,7 @@ if token and chat:
 
 echo ""
 echo "✅ Ready!"
-echo "   Bot:    http://127.0.0.1:5000 (demo mode, pid $BOT_PID)"
+echo "   Bot:    http://127.0.0.1:5000 (demo mode, Mongo xagent_test, pid $BOT_PID)"
 echo "   Ngrok:  $PUBLIC_URL (pid $NGROK_PID)"
 echo "   Webhook: $REGISTERED_URL"
 echo "   Telegram: send /help to your bot"

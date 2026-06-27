@@ -26,6 +26,23 @@ def get_ngrok_public_url() -> str | None:
     return None
 
 
+def probe_webhook_url(public_url: str) -> bool:
+    """POST like Telegram does; confirms ngrok → Flask path is alive."""
+    try:
+        response = requests.post(
+            f"{public_url.rstrip('/')}/",
+            json={"update_id": 0},
+            headers={
+                "Content-Type": "application/json",
+                "ngrok-skip-browser-warning": "true",
+            },
+            timeout=8,
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
 def ensure_webhook_registered() -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -46,11 +63,14 @@ def ensure_webhook_registered() -> bool:
         registered = (info.get("url") or "").rstrip("/")
         expected = public_url.rstrip("/")
         last_error = info.get("last_error_message") or ""
+        probe_ok = probe_webhook_url(public_url)
 
-        if registered == expected and not last_error:
+        if registered == expected and probe_ok:
             return True
 
         reason = last_error or f"url mismatch ({registered} != {webhook_url})"
+        if registered == expected and not probe_ok:
+            reason = "tunnel probe failed"
         log(f"Webhook watchdog re-registering: {reason}", "WARNING")
         set_resp = requests.post(
             f"{api_base}/setWebhook",
@@ -63,7 +83,7 @@ def ensure_webhook_registered() -> bool:
         )
         if set_resp.status_code == 200 and set_resp.json().get("ok"):
             log(f"Webhook restored: {webhook_url}", "INFO")
-            return True
+            return probe_webhook_url(public_url)
         log(f"Webhook re-register failed: {set_resp.text[:200]}", "WARNING")
     except Exception as e:
         log(f"Webhook watchdog error: {e}", "WARNING")

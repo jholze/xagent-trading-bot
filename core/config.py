@@ -1,4 +1,4 @@
-from data_manager import get_config, reload_config
+from data_manager import get_config, is_dry_run_enhanced as _is_dry_run_enhanced, reload_config
 from logger import log
 
 
@@ -87,11 +87,7 @@ class BotConfig:
         return {**defaults, **raw}
 
     def is_dry_run_enhanced(self) -> bool:
-        if self.trading_mode != "live":
-            return False
-        if not self.live_config.get("dry_run", True):
-            return False
-        return bool(self.live_config.get("dry_run_enhanced", False))
+        return _is_dry_run_enhanced(self._raw)
 
     @property
     def paper_config(self) -> dict:

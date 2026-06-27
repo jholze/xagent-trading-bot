@@ -230,7 +230,7 @@ class RiskManager:
         initial = self._initial_capital()
         drawdown_pct = self._equity_drawdown_pct()
         throttle_at = float(self.config.risk_config.get("drawdown_throttle_pct", 10.0))
-        cash = self._available_usdt(equity)
+        cash = self._available_usdt()
         return {
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
@@ -385,10 +385,14 @@ class RiskManager:
         return self.config.max_usdt_per_trade
 
     def _initial_capital(self) -> float:
-        paper = self.config.paper_config.get("initial_capital_usdt")
-        if paper:
-            return float(paper)
-        return float(self.config.raw.get("initial_capital_usdt", 5000))
+        from core.portfolio_baseline import initial_capital
+        from data_manager import resolve_ledger_scope
+
+        return initial_capital(
+            scope=resolve_ledger_scope(self.config.trading_mode),
+            config=self.config.raw,
+            trading_mode=self.config.trading_mode,
+        )
 
     def _primary_history(self) -> dict:
         if uses_exchange_ledger(self.config.trading_mode):
@@ -423,21 +427,10 @@ class RiskManager:
         return ref_prices
 
     def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float:
-        if is_live_dry_run(self.config.raw):
-            return fetch_portfolio_equity(
-                self.config,
-                reference_prices=self._dry_run_reference_prices(reference_price, symbol),
-            )
-        if uses_exchange_ledger(self.config.trading_mode):
-            return fetch_portfolio_equity(self.config)
-        history = load_trade_history()
-        balance = float(history.get("virtual_balance", self._initial_capital()))
-        unrealized = 0.0
-        for pos in list_active_positions():
-            entry = pos.get("average_entry", 0) or pos.get("entry_price", 0)
-            price = reference_price if reference_price > 0 else entry
-            unrealized += (price - entry) * pos.get("amount", 0)
-        return max(balance + unrealized, balance)
+        return fetch_portfolio_equity(
+            self.config,
+            reference_prices=self._dry_run_reference_prices(reference_price, symbol),
+        )
 
     def _equity_drawdown_pct(self, reference_price: float = 0, symbol: str = None) -> float:
         if is_live_dry_run(self.config.raw):

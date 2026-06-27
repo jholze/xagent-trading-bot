@@ -65,9 +65,9 @@ class PortfolioService:
         pnl = (price - entry) * amount
         update_position(symbol, timeframe, signal, price, amount)
         if source == "cmc":
-            pos = get_position(symbol, timeframe)
-            pos["last_cmc_sell_at"] = datetime.now().isoformat()
-            from strategies.positions import save_positions
+            from strategies.positions import save_positions, set_position_field
+
+            set_position_field(symbol, timeframe, "last_cmc_sell_at", datetime.now().isoformat())
             save_positions()
         if sync_virtual_ledger:
             record_trade({

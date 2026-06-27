@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -14,6 +15,61 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 def demo_mode_env(monkeypatch):
     """Unit tests run with isolated demo JSON paths when touching data files."""
     monkeypatch.setenv("DEMO_MODE", "1")
+
+
+@pytest.fixture(autouse=True)
+def isolate_demo_ledger_files(tmp_path, monkeypatch):
+    """Keep unit tests from mutating operator orders.demo.json (XRVM etc.)."""
+    import data_manager
+    import storage.ledger_router as ledger_router
+
+    orders_path = str(tmp_path / "orders.demo.json")
+    positions_path = str(tmp_path / "positions.demo.json")
+    history_path = str(tmp_path / "live_trade_history.demo.json")
+
+    for src, dst in (
+        (data_manager.ORDERS_SCOPE_FILES.get("demo"), orders_path),
+        (data_manager.POSITIONS_SCOPE_FILES.get("demo"), positions_path),
+        (data_manager.get_data_file(data_manager.LIVE_TRADE_HISTORY_FILE), history_path),
+    ):
+        if src and os.path.exists(src):
+            shutil.copy2(src, dst)
+        elif "orders" in dst:
+            Path(dst).write_text(
+                json.dumps({"ledger_scope": "demo", "orders": [], "migrated_from_trades": False}),
+                encoding="utf-8",
+            )
+        elif "positions" in dst:
+            Path(dst).write_text(
+                json.dumps({"ledger_scope": "demo", "positions": {}}),
+                encoding="utf-8",
+            )
+        else:
+            Path(dst).write_text(json.dumps({"trades": []}), encoding="utf-8")
+
+    orders_files = dict(data_manager.ORDERS_SCOPE_FILES)
+    orders_files["demo"] = orders_path
+    positions_files = dict(data_manager.POSITIONS_SCOPE_FILES)
+    positions_files["demo"] = positions_path
+
+    monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", orders_files)
+    monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", positions_files)
+    monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", orders_files)
+    monkeypatch.setattr(ledger_router, "POSITIONS_SCOPE_FILES", positions_files)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def clear_ledger_caches():
+    """Prevent OrderService / resolve_store caches from leaking across tests."""
+    from services import order_service
+    from storage import ledger_router
+
+    order_service._ORDERS_READ_CACHE.clear()
+    ledger_router._store_cache.clear()
+    yield
+    order_service._ORDERS_READ_CACHE.clear()
+    ledger_router._store_cache.clear()
 
 
 @pytest.fixture(autouse=True)

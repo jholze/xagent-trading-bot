@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from notifications.telegram_commands.position_display import (
     _trade_line,
+    chunk_positions_message,
     format_portfolio_summary,
     format_position_card,
     format_positions_message,
@@ -39,16 +40,18 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Letzte Aktion", card)
 
     def test_portfolio_summary_german_labels(self):
-        msg = format_portfolio_summary(
-            {"virtual_balance": 4911, "realized_pnl": 12.5},
-            total_unreal=25.0,
-            position_count=2,
-            mode_label="paper (local ledger)",
-            positions_market_value=89.0,
-        )
+        with patch("notifications.telegram_commands.position_display.initial_capital", return_value=5000.0):
+            msg = format_portfolio_summary(
+                {"virtual_balance": 4911, "realized_pnl": 12.5},
+                total_unreal=25.0,
+                position_count=2,
+                mode_label="paper (local ledger)",
+                positions_market_value=89.0,
+            )
         self.assertIn("Gesamtwert", msg)
         self.assertIn("$5,000", msg)
         self.assertIn("Gesamt-PnL", msg)
+        self.assertIn("$+37.5", msg)
         self.assertIn("Positionen (2)", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
@@ -183,6 +186,70 @@ class TestPositionDisplay(unittest.TestCase):
         }
         msg = format_position_card(1, p, 0.0, numbered=True, price_source="missing")
         self.assertIn("Kein Live-Kurs", msg)
+
+    def test_chunk_positions_message_splits_at_card_boundaries(self):
+        card = format_position_card(
+            1,
+            {"symbol": "SOL/USDT", "amount": 10, "average_entry": 1.0, "sold_percent": 0},
+            1.2,
+            numbered=True,
+            show_trade_tree=True,
+            position_orders=[],
+        )
+        cards = []
+        for i in range(1, 13):
+            cards.append(card.replace("<b>1.</b>", f"<b>{i}.</b>", 1))
+        header = "<b>📊 Portfolio</b>\n\n<b>Positionen (12)</b>"
+        msg = header + "\n\n" + "\n\n".join(cards)
+        chunks = chunk_positions_message(msg, limit=1200)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 4096)
+        self.assertIn("(1/", chunks[0])
+        self.assertIn("(2/", chunks[1])
+
+    def test_format_position_card_trade_tree_mode(self):
+        p = {
+            "symbol": "TRUMP/USDT",
+            "timeframe": "4h",
+            "amount": 700,
+            "average_entry": 1.0,
+            "realized_pnl": 30,
+            "sold_percent": 0.3,
+        }
+        orders = [
+            {
+                "status": "filled",
+                "side": "buy",
+                "signal": "",
+                "source": "auto",
+                "execution": {"price": 1.0, "amount": 1000, "usdt": 1000},
+                "timestamps": {"filled": "2026-06-24T14:10:00"},
+            },
+            {
+                "status": "filled",
+                "side": "sell",
+                "signal": "SELL_30",
+                "source": "auto",
+                "pnl": 30,
+                "execution": {"price": 1.1, "amount": 300, "usdt": 330},
+                "timestamps": {"filled": "2026-06-27T11:05:00"},
+            },
+        ]
+        msg = format_position_card(
+            1,
+            p,
+            1.2,
+            numbered=True,
+            show_trade_tree=True,
+            position_orders=orders,
+        )
+        self.assertIn("Gesamt", msg)
+        self.assertIn("Σ", msg)
+        self.assertIn("Entry", msg)
+        self.assertIn("Verkauf 30%", msg)
+        self.assertIn("├─", msg)
+        self.assertNotIn("Bereits verkauft", msg)
 
     def test_send_positions_snapshot_includes_trade_banner(self):
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)

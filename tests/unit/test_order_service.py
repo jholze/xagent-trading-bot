@@ -20,6 +20,9 @@ from services.order_service import (
 
 class TestOrderService(unittest.TestCase):
     def setUp(self):
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", {
@@ -32,8 +35,11 @@ class TestOrderService(unittest.TestCase):
         self.scope.start()
 
     def tearDown(self):
+        from services import order_service
+
         self.scope.stop()
         self.scope_patch.stop()
+        order_service._ORDERS_READ_CACHE.clear()
 
     def test_create_and_list_orders(self):
         svc = OrderService("paper")

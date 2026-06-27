@@ -37,6 +37,7 @@ VOLATILE_EXTRA_KEYS = (
     "cmc_min_confidence",
     "cmc_min_hours_between_sells",
     "dca",
+    "time_profit_exit",
 )
 
 

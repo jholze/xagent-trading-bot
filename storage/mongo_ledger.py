@@ -45,11 +45,14 @@ class MongoLedgerStore:
     def __init__(self, *, test: bool = False, config: dict | None = None):
         self._test = test
         self._config = config
-        self._db = get_database(test=test, config=config)
 
     @property
     def database_name(self) -> str:
         return resolve_database_name(test=self._test, config=self._config)
+
+    @property
+    def _db(self):
+        return get_database(test=self._test, config=self._config)
 
     def _collection(self, name: str):
         return self._db[name]
@@ -64,7 +67,7 @@ class MongoLedgerStore:
         return data
 
     def save_orders(self, data: dict, scope: str) -> bool:
-        payload = copy.deepcopy(data)
+        payload = dict(data)
         payload["_id"] = scope
         payload["ledger_scope"] = scope
         self._collection(ORDERS_COLLECTION).replace_one(
@@ -82,7 +85,7 @@ class MongoLedgerStore:
         return data
 
     def save_positions(self, data: dict, scope: str) -> bool:
-        payload = copy.deepcopy(data)
+        payload = dict(data)
         payload["_id"] = scope
         payload["ledger_scope"] = scope
         self._collection(POSITIONS_COLLECTION).replace_one(
@@ -99,7 +102,7 @@ class MongoLedgerStore:
         return data
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
-        payload = copy.deepcopy(data)
+        payload = dict(data)
         payload["_id"] = scope
         self._collection(TRADE_HISTORY_COLLECTION).replace_one(
             {"_id": scope}, payload, upsert=True

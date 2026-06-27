@@ -274,7 +274,7 @@ class TestDCADecisionEngine(unittest.TestCase):
             },
         )
         engine = DecisionEngine()
-        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [])):
+        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "")):
             analysis = engine.evaluate_with_market(
                 {"symbol": self.symbol, "timeframe": self.tf},
                 market,
@@ -398,6 +398,7 @@ class TestDCARisk(unittest.TestCase):
         raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_buys"] = 1
         raw["risk"]["max_daily_dca_buys"] = 5
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -426,6 +427,7 @@ class TestDCARisk(unittest.TestCase):
         raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_buys"] = 1
         raw["risk"]["max_daily_dca_buys"] = 10
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -455,6 +457,7 @@ class TestDCARisk(unittest.TestCase):
         raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_dca_buys"] = 50
         raw["risk"]["max_daily_dca_usdt"] = 100
+        raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)

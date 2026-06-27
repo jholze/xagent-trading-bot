@@ -1,5 +1,13 @@
+import re
+
 from core.config import get_bot_config
-from data_manager import is_dry_run_enhanced, uses_exchange_ledger, uses_simulated_live_portfolio
+from core.portfolio_baseline import initial_capital
+from data_manager import (
+    is_dry_run_enhanced,
+    resolve_ledger_scope,
+    uses_exchange_ledger,
+    uses_simulated_live_portfolio,
+)
 from services.gate_balance import fetch_spot_holdings, fetch_usdt_balance, format_holdings_lines
 from services.order_service import source_label
 
@@ -105,6 +113,76 @@ def _position_amount_label(amount: float) -> str:
     return format_token_amount(amount)
 
 
+def _positions_display_config() -> tuple[bool, int]:
+    cfg = get_bot_config().observability_config
+    show_tree = bool(cfg.get("positions_show_trade_tree", True))
+    max_events = int(cfg.get("positions_max_events_per_coin", 6) or 6)
+    return show_tree, max(1, max_events)
+
+
+_TELEGRAM_CHUNK_LIMIT = 3900
+_POSITION_CARD_SPLIT = re.compile(r"\n\n(?=<b>\d+\.</b>)")
+
+
+def _hard_split_telegram(text: str, limit: int) -> list[str]:
+    chunks: list[str] = []
+    while text:
+        chunks.append(text[:limit])
+        text = text[limit:]
+    return chunks or [""]
+
+
+def chunk_positions_message(msg: str, limit: int = _TELEGRAM_CHUNK_LIMIT) -> list[str]:
+    """Split /positions HTML at position-card boundaries for Telegram's 4096 limit."""
+    body = (msg or "").strip()
+    if len(body) <= limit:
+        return [body]
+
+    parts = _POSITION_CARD_SPLIT.split(body)
+    if len(parts) <= 1:
+        return _hard_split_telegram(body, limit)
+
+    header, *cards = parts
+    chunks: list[str] = []
+    current = header.strip()
+    continued = False
+
+    for card in cards:
+        card = card.strip()
+        if not card:
+            continue
+        sep = "\n\n" if current else ""
+        candidate = f"{current}{sep}{card}" if current else card
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        prefix = "<i>📊 Positionen (Fortsetzung)</i>\n\n" if continued or chunks else ""
+        continued = True
+        candidate = f"{prefix}{card}"
+        if len(candidate) > limit:
+            for piece in _hard_split_telegram(candidate, limit):
+                chunks.append(piece)
+            current = ""
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    if len(chunks) <= 1:
+        return chunks
+
+    total = len(chunks)
+    tagged: list[str] = []
+    for i, chunk in enumerate(chunks):
+        tag = f"\n\n<i>({i + 1}/{total})</i>"
+        room = limit - len(tag)
+        tagged.append((chunk[:room] if len(chunk) > room else chunk) + tag)
+    return tagged
+
+
 def format_position_card(
     index: int,
     p: dict,
@@ -112,6 +190,9 @@ def format_position_card(
     numbered: bool = False,
     *,
     price_source: str = None,
+    show_trade_tree: bool = False,
+    position_orders: list | None = None,
+    max_events: int = 6,
 ) -> str:
     from price_fetcher import format_usdt_price
 
@@ -123,6 +204,21 @@ def format_position_card(
 
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
+
+    header = f"{prefix}<b>{ticker_html}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>"
+
+    if show_trade_tree:
+        from notifications.telegram_commands.position_ledger import build_position_trade_tree
+
+        tree_lines = build_position_trade_tree(
+            p,
+            mark_price=m["price"] if price_source != "missing" else 0.0,
+            orders=position_orders or [],
+            max_events=max_events,
+        )
+        if price_source == "missing" and m["value_usdt"] <= 0:
+            tree_lines.append("   └─ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>")
+        return header + "\n" + "\n".join(tree_lines)
 
     sold_line = ""
     if m["sold_pct"] > 0 or m["sold_warn"]:
@@ -144,7 +240,7 @@ def format_position_card(
         missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
     return (
-        f"{prefix}<b>{ticker_html}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>\n"
+        f"{header}\n"
         f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
         f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
         f"{sold_line}{last_line}{missing_line}"
@@ -195,8 +291,14 @@ def format_portfolio_summary(
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
     total_value = balance + float(positions_market_value or 0)
-    initial = float(get_bot_config().initial_capital_usdt or 5000)
-    total_pnl = total_value - initial
+    cfg = get_bot_config()
+    initial = initial_capital(
+        scope=resolve_ledger_scope(cfg.trading_mode),
+        config=cfg.raw,
+        history=history,
+        trading_mode=cfg.trading_mode,
+    )
+    total_pnl = realized + float(total_unreal or 0)
     pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0.0
     pnl_icon = _pnl_emoji(total_pnl)
 
@@ -292,16 +394,33 @@ def format_positions_message(
         msg += "\n\n<b>Gate Spot-Bestände</b>\n"
         msg += "\n".join(format_holdings_lines(gate_holdings, prices))
 
+    show_tree, max_events = _positions_display_config()
+    orders_grouped = {}
+    if show_tree:
+        from data_manager import resolve_ledger_scope
+        from notifications.telegram_commands.position_ledger import orders_by_position_key
+
+        orders_grouped = orders_by_position_key(resolve_ledger_scope())
+
     cards = []
     sources = price_sources or {}
     for i, (p, price) in enumerate(rows, 1):
         sym = position_symbol(p)
+        tf = p.get("timeframe", "4h")
+        order_key = f"{sym}|{tf}"
         cards.append(format_position_card(
-            i, p, price, numbered=numbered, price_source=sources.get(sym),
+            i,
+            p,
+            price,
+            numbered=numbered,
+            price_source=sources.get(sym),
+            show_trade_tree=show_tree,
+            position_orders=orders_grouped.get(order_key, []),
+            max_events=max_events,
         ))
     msg += "\n\n".join(cards)
 
-    if include_trades:
+    if include_trades and not show_tree:
         msg += "\n\n<b>Letzte Trades</b>\n"
         trades = history.get("trades", [])[-5:]
         if not trades:
@@ -336,6 +455,11 @@ def load_trade_history_safe() -> dict:
 
 
 def resolve_portfolio_context(*, fast: bool = False) -> dict:
+    from strategies.positions import bootstrap_positions, count_open_positions
+
+    if count_open_positions() == 0:
+        bootstrap_positions()
+
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
@@ -387,7 +511,13 @@ def format_trade_banner(result) -> str:
     )
 
 
-def send_positions_snapshot(trade_result=None, mode_label: str = None, *, fast: bool = True) -> bool:
+def send_positions_snapshot(
+    trade_result=None,
+    mode_label: str = None,
+    *,
+    fast: bool = True,
+    chat_id: str | int | None = None,
+) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -395,6 +525,11 @@ def send_positions_snapshot(trade_result=None, mode_label: str = None, *, fast: 
     from services.trading_service import TradingService
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
+
+    from strategies.positions import bootstrap_positions, count_open_positions
+
+    if count_open_positions() == 0:
+        bootstrap_positions()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_active = pool.submit(list_active_positions)
@@ -428,4 +563,10 @@ def send_positions_snapshot(trade_result=None, mode_label: str = None, *, fast: 
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"
-    return send_telegram_message(msg)
+
+    chunks = chunk_positions_message(msg)
+    ok = True
+    for chunk in chunks:
+        if not send_telegram_message(chunk, chat_id=chat_id):
+            ok = False
+    return ok
