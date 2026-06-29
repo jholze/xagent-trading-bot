@@ -25,55 +25,89 @@ def _load_trades(path: str) -> list:
     return data.get("trades", [])
 
 
-def migrate_scope(scope: str, trade_path: str, default_mode: str) -> int:
-    data = load_orders(scope)
+def _existing_legacy_timestamps(data: dict) -> set:
     if data.get("migrated_from_trades"):
-        existing = {o.get("legacy_trade_ts") for o in data.get("orders", []) if o.get("legacy_trade_ts")}
-    else:
-        existing = set()
+        return {
+            o.get("legacy_trade_ts")
+            for o in data.get("orders", [])
+            if o.get("legacy_trade_ts")
+        }
+    return set()
+
+
+def preview_migrate_scope(scope: str, trade_path: str, default_mode: str) -> int:
+    """Count trades that would be migrated without writing."""
+    del default_mode  # signature parity with migrate_scope
+    data = load_orders(scope)
+    existing = _existing_legacy_timestamps(data)
+    pending = 0
+    for t in _load_trades(trade_path):
+        if t.get("timestamp", "") not in existing:
+            pending += 1
+    return pending
+
+
+def _trade_to_order_record(t: dict, *, scope: str, default_mode: str, seq: int) -> dict:
+    ts = t.get("timestamp", "")
+    side = (t.get("type") or "buy").lower()
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "display_seq": seq,
+        "status": "filled",
+        "side": side,
+        "symbol": t.get("symbol", ""),
+        "timeframe": "4h",
+        "order_type": "market",
+        "source": t.get("source", "auto"),
+        "signal": t.get("signal", ""),
+        "trading_mode": t.get("mode", default_mode),
+        "ledger_scope": scope,
+        "legacy_trade_ts": ts,
+        "request": {
+            "price": float(t.get("price", 0)),
+            "amount": float(t.get("amount", 0)),
+            "usdt": float(t.get("usdt_amount", 0) or 0) or None,
+        },
+        "risk": {"approved": True, "message": "Migrated", "code": "", "size_multiplier": 1.0},
+        "execution": {
+            "price": float(t.get("price", 0)),
+            "amount": float(t.get("amount", 0)),
+            "usdt": float(t.get("usdt_amount") or t.get("usdt_received") or 0),
+            "exchange_order_id": t.get("exchange_order_id"),
+        },
+        "pnl": t.get("pnl"),
+        "error": None,
+        "timestamps": {"created": ts or "", "updated": ts or "", "filled": ts or ""},
+    }
+
+
+def migrate_scope(
+    scope: str,
+    trade_path: str,
+    default_mode: str,
+    *,
+    dry_run: bool = False,
+) -> int:
+    data = load_orders(scope)
+    existing = _existing_legacy_timestamps(data)
+    if not data.get("migrated_from_trades"):
         data["orders"] = []
 
-    trades = _load_trades(trade_path)
     added = 0
     seq = max([int(o.get("display_seq", 0)) for o in data.get("orders", [])], default=0)
 
-    for t in trades:
+    for t in _load_trades(trade_path):
         ts = t.get("timestamp", "")
         if ts in existing:
             continue
         seq += 1
-        side = (t.get("type") or "buy").lower()
-        record = {
-            "id": uuid.uuid4().hex[:12],
-            "display_seq": seq,
-            "status": "filled",
-            "side": side,
-            "symbol": t.get("symbol", ""),
-            "timeframe": "4h",
-            "order_type": "market",
-            "source": t.get("source", "auto"),
-            "signal": t.get("signal", ""),
-            "trading_mode": t.get("mode", default_mode),
-            "ledger_scope": scope,
-            "legacy_trade_ts": ts,
-            "request": {
-                "price": float(t.get("price", 0)),
-                "amount": float(t.get("amount", 0)),
-                "usdt": float(t.get("usdt_amount", 0) or 0) or None,
-            },
-            "risk": {"approved": True, "message": "Migrated", "code": "", "size_multiplier": 1.0},
-            "execution": {
-                "price": float(t.get("price", 0)),
-                "amount": float(t.get("amount", 0)),
-                "usdt": float(t.get("usdt_amount") or t.get("usdt_received") or 0),
-                "exchange_order_id": t.get("exchange_order_id"),
-            },
-            "pnl": t.get("pnl"),
-            "error": None,
-            "timestamps": {"created": ts or "", "updated": ts or "", "filled": ts or ""},
-        }
-        data.setdefault("orders", []).append(record)
+        data.setdefault("orders", []).append(
+            _trade_to_order_record(t, scope=scope, default_mode=default_mode, seq=seq)
+        )
         added += 1
+
+    if dry_run:
+        return added
 
     data["migrated_from_trades"] = True
     data["ledger_scope"] = scope

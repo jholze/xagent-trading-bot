@@ -186,7 +186,7 @@ def _normalize_positions(positions: dict) -> dict:
         key: {
             k: (float(v) if k == "amount" else v)
             for k, v in value.items()
-            if k not in ("last_trade_at", "last_dca_at")
+            if k not in ("last_trade_at", "last_dca_at", "first_buy_at")
         }
         for key, value in positions.items()
     }
