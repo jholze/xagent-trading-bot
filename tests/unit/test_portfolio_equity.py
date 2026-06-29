@@ -165,38 +165,31 @@ class TestPortfolioEquity(unittest.TestCase):
         self.assertAlmostEqual(history["virtual_balance"], expected_balance, places=2)
         self.assertAlmostEqual(history["realized_pnl"], sell["pnl"], places=2)
 
+    def _run_positions_command_sync(self, mock_send):
+        import threading
+
+        from notifications.telegram_commands.portfolio_commands import handle
+
+        def _start_sync(self):
+            self._target(*self._args, **self._kwargs)
+
+        with patch.object(threading.Thread, "start", _start_sync):
+            handle("/positions")
+        mock_send.assert_called_once_with(fast=True, chat_id="12345")
+
     def test_portfolio_command_reports_correct_total_value(self):
         svc = self._service()
         svc.execute_buy(self.SYMBOL, self.TF, 2.0, 100.0)
 
         with patch("notifications.telegram_commands.portfolio_commands.send_positions_snapshot") as mock_send:
-            from notifications.telegram_commands.portfolio_commands import handle
-            import time
-
-            handle("/positions")
-            deadline = time.time() + 3
-            while time.time() < deadline and not mock_send.called:
-                time.sleep(0.05)
-            mock_send.assert_called_once_with(fast=True, chat_id="12345")
+            self._run_positions_command_sync(mock_send)
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
         svc.execute_buy(self.SYMBOL, self.TF, 1.0, 100.0)
 
-        from unittest.mock import MagicMock
-
-        mock_cfg = MagicMock()
-        mock_cfg.initial_capital_usdt = 1000.0
-
         with patch("notifications.telegram_commands.portfolio_commands.send_positions_snapshot") as mock_send:
-            from notifications.telegram_commands.portfolio_commands import handle
-            import time
-
-            handle("/positions")
-            deadline = time.time() + 3
-            while time.time() < deadline and not mock_send.called:
-                time.sleep(0.05)
-            mock_send.assert_called_once_with(fast=True, chat_id="12345")
+            self._run_positions_command_sync(mock_send)
 
 
 if __name__ == "__main__":
