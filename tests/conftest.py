@@ -27,64 +27,35 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
     positions_path = str(tmp_path / "positions.demo.json")
     history_path = str(tmp_path / "live_trade_history.demo.json")
 
-    Path(orders_path).write_text(
-        json.dumps({"ledger_scope": "demo", "orders": [], "migrated_from_trades": False}),
-        encoding="utf-8",
-    )
-    Path(positions_path).write_text(
-        json.dumps({"ledger_scope": "demo", "positions": {}}),
-        encoding="utf-8",
-    )
-    Path(history_path).write_text(
-        json.dumps(
-            {
-                "virtual_balance": 5000.0,
-                "realized_pnl": 0.0,
-                "open_positions": 0,
-                "trades": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+    for src, dst in (
+        (data_manager.ORDERS_SCOPE_FILES.get("demo"), orders_path),
+        (data_manager.POSITIONS_SCOPE_FILES.get("demo"), positions_path),
+        (data_manager.get_data_file(data_manager.LIVE_TRADE_HISTORY_FILE), history_path),
+    ):
+        if src and os.path.exists(src):
+            shutil.copy2(src, dst)
+        elif "orders" in dst:
+            Path(dst).write_text(
+                json.dumps({"ledger_scope": "demo", "orders": [], "migrated_from_trades": False}),
+                encoding="utf-8",
+            )
+        elif "positions" in dst:
+            Path(dst).write_text(
+                json.dumps({"ledger_scope": "demo", "positions": {}}),
+                encoding="utf-8",
+            )
+        else:
+            Path(dst).write_text(json.dumps({"trades": []}), encoding="utf-8")
 
     orders_files = dict(data_manager.ORDERS_SCOPE_FILES)
     orders_files["demo"] = orders_path
     positions_files = dict(data_manager.POSITIONS_SCOPE_FILES)
     positions_files["demo"] = positions_path
 
-    history_files = dict(data_manager.TRADE_HISTORY_SCOPE_FILES)
-    history_files["paper"] = "trade_history.json"
-    history_files["demo"] = "live_trade_history.json"
-
     monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", positions_files)
-    monkeypatch.setattr(data_manager, "TRADE_HISTORY_SCOPE_FILES", history_files)
     monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(ledger_router, "POSITIONS_SCOPE_FILES", positions_files)
-
-    paper_history_path = str(tmp_path / "trade_history.demo.json")
-
-    def _demo_data_file(base_name: str) -> str:
-        if base_name == "live_trade_history.json":
-            return history_path
-        if base_name == "trade_history.json":
-            return paper_history_path
-        if base_name.endswith(".demo.json"):
-            return base_name
-        return base_name.replace(".json", ".demo.json") if base_name.endswith(".json") else base_name
-
-    Path(paper_history_path).write_text(
-        json.dumps(
-            {
-                "virtual_balance": 5000.0,
-                "realized_pnl": 0.0,
-                "open_positions": 0,
-                "trades": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(data_manager, "get_data_file", _demo_data_file)
     yield
 
 

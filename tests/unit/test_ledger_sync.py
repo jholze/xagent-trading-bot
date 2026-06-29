@@ -55,7 +55,7 @@ class TestLedgerSync(unittest.TestCase):
         from storage.ledger_router import JsonLedgerStore
 
         self.resolve_store_patch = patch(
-            "data_manager.resolve_store",
+            "storage.ledger_router.resolve_store",
             side_effect=lambda scope, cfg=None: JsonLedgerStore(cfg),
         )
         self.orders_patch.start()
