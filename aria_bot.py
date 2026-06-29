@@ -447,6 +447,13 @@ if __name__ == "__main__":
     price_thread.start()
 
     try:
+        from services.entry_sensor_loop import start_entry_sensor_loop
+
+        start_entry_sensor_loop(orchestrator)
+    except Exception as e:
+        log(f"15m entry sensor loop not started: {e}", "WARNING")
+
+    try:
         from services.webhook_watchdog import start_webhook_watchdog
 
         start_webhook_watchdog()

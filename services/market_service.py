@@ -121,6 +121,64 @@ class MarketService:
             return None
         return (new / old - 1.0) * 100.0
 
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100):
+        """Public OHLCV fetch (same pipeline as fetch_indicators)."""
+        return self._fetch_ohlcv(symbol, timeframe, limit)
+
+    @staticmethod
+    def compute_15m_sensor_metrics(
+        df: pd.DataFrame,
+        *,
+        ema_period: int = 9,
+        vol_avg_period: int = 20,
+    ) -> dict | None:
+        """Derive 15m volume/movement metrics from OHLCV (no network)."""
+        if df is None or df.empty or len(df) < vol_avg_period + 2:
+            return None
+        close = df["close"]
+        ema = talib.EMA(close, timeperiod=ema_period)
+        vol_avg = df["volume"].rolling(window=vol_avg_period).mean()
+        atr = talib.ATR(df["high"], df["low"], close, timeperiod=14)
+        if pd.isna(ema.iloc[-1]) or pd.isna(vol_avg.iloc[-1]) or pd.isna(atr.iloc[-1]):
+            return None
+
+        volume = float(df["volume"].iloc[-1])
+        vol_avg_val = float(vol_avg.iloc[-1])
+        volume_spike_ratio = volume / vol_avg_val if vol_avg_val > 0 else 0.0
+
+        ema_cur = float(ema.iloc[-1])
+        ema_prev = float(ema.iloc[-2])
+        close_val = float(close.iloc[-1])
+        close_prev = float(close.iloc[-2])
+        price_momentum = close_val > ema_cur and close_prev <= ema_prev
+
+        atr_val = float(atr.iloc[-1])
+        open_val = float(df["open"].iloc[-1])
+        body = abs(close_val - open_val)
+        body_atr_ratio = body / atr_val if atr_val > 0 else 0.0
+        swing_low_5 = float(df["low"].tail(5).min())
+
+        return {
+            "volume_spike_ratio": float(volume_spike_ratio),
+            "ema9": ema_cur,
+            "ema_prev": ema_prev,
+            "price_momentum": bool(price_momentum),
+            "body_atr_ratio": float(body_atr_ratio),
+            "atr_15m": atr_val,
+            "swing_low_5": swing_low_5,
+            "close": close_val,
+        }
+
+    def fetch_15m_sensor_metrics(self, symbol: str, cfg: dict | None = None) -> dict | None:
+        cfg = cfg or {}
+        vol_avg_period = int(cfg.get("vol_avg_period", 20))
+        ema_period = int(cfg.get("ema_period", 9))
+        limit = vol_avg_period + 30
+        df = self._fetch_ohlcv(symbol, "15m", limit)
+        return self.compute_15m_sensor_metrics(
+            df, ema_period=ema_period, vol_avg_period=vol_avg_period
+        )
+
     def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):
         for ex_name in self.EXCHANGES:
             try:

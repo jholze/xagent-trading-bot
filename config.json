@@ -53,7 +53,7 @@
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
-  "max_open_positions": 40,
+  "max_open_positions": 30,
   "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
@@ -606,6 +606,8 @@
       "loss_pct_min": -20,
       "loss_pct_max": -3,
       "sl_proximity_pct": 15,
+      "stop_loss_widen_pct_per_round": 6,
+      "pause_partial_stop_during_dca": true,
       "max_rounds": 3,
       "scoring": {
         "enabled": true,
@@ -684,6 +686,8 @@
       "loss_pct_min": -15,
       "loss_pct_max": -2,
       "sl_proximity_pct": 10,
+      "stop_loss_widen_pct_per_round": 5,
+      "pause_partial_stop_during_dca": true,
       "max_rounds": 2,
       "scoring": {
         "enabled": true,
@@ -730,6 +734,8 @@
       "loss_pct_min": -18,
       "loss_pct_max": -2.5,
       "sl_proximity_pct": 12,
+      "stop_loss_widen_pct_per_round": 6,
+      "pause_partial_stop_during_dca": true,
       "max_rounds": 2,
       "scoring": {
         "enabled": true,
@@ -761,5 +767,23 @@
         }
       }
     }
+  },
+  "entry_sensor_15m": {
+    "enabled": true,
+    "mode": "shadow",
+    "timeframe": "15m",
+    "poll_interval_sec": 20,
+    "market_cap_min_usd": 5000000,
+    "market_cap_max_usd": 100000000,
+    "watch_ttl_hours": 24,
+    "setup_modes": ["buy_signal", "setup_zone", "trending"],
+    "vol_spike_mult": 2.0,
+    "vol_avg_period": 20,
+    "ema_period": 9,
+    "require_ema_breakout": false,
+    "block_buy_if_rsi_4h_above": 75,
+    "fakeout_min_body_atr_ratio": 0.3,
+    "cooldown_after_reject_hours": 2,
+    "max_watched_coins": 15
   }
 }

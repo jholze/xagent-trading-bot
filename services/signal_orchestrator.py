@@ -105,6 +105,8 @@ class SignalOrchestrator:
             source = "lc"
         elif "dca" in (analysis.sources or []):
             source = "dca"
+        elif "entry_sensor_15m" in (analysis.sources or []):
+            source = "entry_sensor_15m"
         else:
             source = "auto"
         trust_score = analysis.x_confidence if source == "x" else None

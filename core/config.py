@@ -326,6 +326,37 @@ class BotConfig:
                 return entry
         return {}
 
+    @property
+    def entry_sensor_15m_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "mode": "shadow",
+            "timeframe": "15m",
+            "poll_interval_sec": 20,
+            "market_cap_min_usd": 5_000_000,
+            "market_cap_max_usd": 100_000_000,
+            "watch_ttl_hours": 24,
+            "setup_modes": ["buy_signal", "setup_zone", "trending"],
+            "vol_spike_mult": 2.0,
+            "vol_avg_period": 20,
+            "ema_period": 9,
+            "require_ema_breakout": False,
+            "block_buy_if_rsi_4h_above": 75,
+            "fakeout_min_body_atr_ratio": 0.3,
+            "cooldown_after_reject_hours": 2,
+            "max_watched_coins": 15,
+        }
+        raw = self._raw.get("entry_sensor_15m", {})
+        return {**defaults, **raw}
+
+    @property
+    def entry_sensor_15m_enabled(self) -> bool:
+        return bool(self.entry_sensor_15m_config.get("enabled", False))
+
+    @property
+    def entry_sensor_15m_mode(self) -> str:
+        return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
+
 
 def get_bot_config() -> BotConfig:
     return BotConfig()

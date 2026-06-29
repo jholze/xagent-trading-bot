@@ -34,6 +34,12 @@ from strategies.registry import (
     resolve_effective_timeframe,
     resolve_strategy_params,
 )
+from strategies.entry_sensor_15m import (
+    ENTRY_SENSOR_SOURCE,
+    consume_pending_sensor_result,
+    evaluate_entry_sensor_15m,
+)
+from strategies import watch_15m_state
 
 
 class DecisionEngine:
@@ -51,6 +57,111 @@ class DecisionEngine:
     def __init__(self, market_service: MarketService = None):
         self.config = get_bot_config()
         self.market = market_service or MarketService()
+
+    def _entry_sensor_cfg(self) -> dict:
+        return self.config.entry_sensor_15m_config
+
+    def _in_setup_zone(self, market: MarketContext, strategy_params: dict) -> bool:
+        modes = self._entry_sensor_cfg().get("setup_modes") or []
+        if "setup_zone" not in modes:
+            return False
+        rsi_low = float(strategy_params.get("rsi_buy_low", 25))
+        rsi_high = float(strategy_params.get("rsi_buy_high", 55))
+        profile = str(strategy_params.get("strategy_profile", ""))
+        tier = str(strategy_params.get("volatility_tier", market.strategy_params.get("volatility_tier", "")))
+        volatile = tier == "volatile" or "volatile" in profile
+        if not volatile:
+            return False
+        return rsi_low <= float(market.rsi) <= rsi_high
+
+    def _sync_watch_15m_state(
+        self,
+        symbol: str,
+        market: MarketContext,
+        technical: SignalAnalysis,
+        normalized: str,
+        position: dict,
+    ) -> None:
+        cfg = self._entry_sensor_cfg()
+        if not cfg.get("enabled", True):
+            return
+        sold = float(position.get("sold_percent", 0) or 0)
+        if market.has_position and sold >= 0.01:
+            watch_15m_state.clear_watch(symbol)
+            return
+        if is_sell(normalized) or is_sell(technical.action):
+            watch_15m_state.clear_watch(symbol)
+            return
+
+        tech_norm = normalize(technical.action)
+        tech_buy = is_buy(tech_norm)
+        setup = self._in_setup_zone(market, market.strategy_params or {})
+        modes = cfg.get("setup_modes") or []
+        trending = "trending" in modes and "cmc_trending" in (technical.sources or [])
+        should_watch = (
+            (tech_buy and "buy_signal" in modes)
+            or setup
+            or trending
+            or is_buy(normalized)
+        )
+        if not should_watch or market.has_position:
+            return
+        if watch_15m_state.max_watched_reached(int(cfg.get("max_watched_coins", 15))):
+            return
+        reason = "buy_signal" if tech_buy else ("setup_zone" if setup else "trending")
+        watch_15m_state.set_watch(
+            symbol,
+            market.timeframe,
+            reason=reason,
+            ttl_hours=float(cfg.get("watch_ttl_hours", 24)),
+        )
+
+    def _apply_entry_sensor_buy(
+        self,
+        normalized: str,
+        sources: list,
+        confidence: float,
+        symbol: str,
+        market: MarketContext,
+        technical: SignalAnalysis,
+    ) -> tuple:
+        cfg = self._entry_sensor_cfg()
+        if not cfg.get("enabled", True) or market.has_position:
+            return normalized, sources, confidence, "", ""
+        if is_sell(normalized) or normalized == BUY_DCA:
+            return normalized, sources, confidence, "", ""
+
+        pending = consume_pending_sensor_result(symbol)
+        sensor = pending
+        if sensor is None and watch_15m_state.is_watched(symbol):
+            metrics = self.market.fetch_15m_sensor_metrics(symbol, cfg)
+            tech_norm = normalize(technical.action)
+            sensor = evaluate_entry_sensor_15m(
+                watched=True,
+                metrics=metrics,
+                cfg=cfg,
+                rsi_4h=float(market.rsi),
+                hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
+                tech_already_buy=is_buy(tech_norm),
+            )
+
+        if sensor is None or not sensor.triggered:
+            return normalized, sources, confidence, "", ""
+
+        out_sources = list(sources)
+        out_sources.append(ENTRY_SENSOR_SOURCE)
+        new_conf = max(confidence, confidence + sensor.confidence_boost)
+        rationale_extra = sensor.rationale
+
+        if sensor.shadow_only:
+            out_sources.append("entry_sensor_shadow")
+            return HOLD, out_sources, new_conf, rationale_extra, sensor.action
+
+        if normalized == HOLD:
+            return sensor.action, out_sources, new_conf, rationale_extra, ""
+        if is_buy(normalized) and sensor.action == BUY_STRONG:
+            return BUY_STRONG, out_sources, new_conf, rationale_extra, ""
+        return normalized, out_sources, new_conf, rationale_extra, ""
 
     def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
         symbol = coin.get("symbol", "")
@@ -543,6 +654,7 @@ class DecisionEngine:
 
         dca_usdt = 0.0
         sell_source = ""
+        sensor_shadow = ""
         if market.has_position:
             normalized, sources, confidence, structure_rationales, sell_source = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
@@ -565,12 +677,34 @@ class DecisionEngine:
                 if is_buy(tech_norm):
                     normalized = tech_norm
                     sources = list(technical.sources)
+            sensor_rationale = ""
+            sensor_shadow = ""
+            normalized, sources, confidence, sensor_rationale, sensor_shadow = self._apply_entry_sensor_buy(
+                normalized,
+                sources,
+                confidence,
+                coin["symbol"],
+                market,
+                technical,
+            )
+            if sensor_rationale:
+                structure_rationales.append(sensor_rationale)
+            self._sync_watch_15m_state(
+                coin["symbol"], market, technical, normalized, position
+            )
+
+        if market.has_position:
+            self._sync_watch_15m_state(
+                coin["symbol"], market, technical, normalized, position
+            )
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
         normalized, execution_action, shadow_action = self._apply_shadow_mode(
             normalized, execution_action, strategy_params, sources
         )
+        if "entry_sensor_shadow" in sources and sensor_shadow and not shadow_action:
+            shadow_action = sensor_shadow
         if "dca_shadow" in sources and normalized == BUY_DCA:
             shadow_action = execution_action
             normalized = HOLD
@@ -610,6 +744,8 @@ class DecisionEngine:
             rationale_parts.append("Time->profit exit")
         if "dca" in sources:
             rationale_parts.append("DCA->accumulation")
+        if ENTRY_SENSOR_SOURCE in sources:
+            rationale_parts.append("15m->vol entry")
         if shadow_action:
             rationale_parts.append(f"shadow->{shadow_action}")
 
