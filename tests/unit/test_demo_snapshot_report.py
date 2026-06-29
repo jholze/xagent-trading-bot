@@ -1,9 +1,10 @@
 """Unit tests for pure demo snapshot report builder + thin CLI integration."""
 
+import io
 import os
-import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -134,20 +135,33 @@ class TestBuildReportFromReads(unittest.TestCase):
 
 class TestSnapshotCliIntegration(unittest.TestCase):
     def test_dry_run_cli_exit_zero_and_invariants(self):
-        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        proc = subprocess.run(
-            [sys.executable, "scripts/mongo_snapshot_demo.py", "--dry-run", "--test-db"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "MONGODB_DB": "xagent_test"},
-        )
-        out = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 0, out)
+        """Exercise CLI main() without depending on operator demo ledger drift."""
+        from scripts.mongo_snapshot_demo import main
+
+        equity = {
+            "equity_nav": 100_000.0,
+            "nav_day_start": 99_500.0,
+            "nav_delta": 500.0,
+            "open_positions": EXPECTED_OPEN_POSITIONS,
+            "load_positions_keys": EXPECTED_OPEN_POSITIONS,
+        }
+        buf = io.StringIO()
+        with patch.dict(os.environ, {"MONGODB_DB": "xagent_test"}, clear=False), \
+             patch("services.demo_snapshot_report._equity_metrics", return_value=equity), \
+             patch(
+                 "services.demo_snapshot_report.count_open_positions_from_orders",
+                 return_value=EXPECTED_OPEN_POSITIONS,
+             ), \
+             patch.object(sys, "argv", ["mongo_snapshot_demo.py", "--dry-run", "--test-db"]), \
+             patch("sys.stdout", buf):
+            rc = main()
+
+        out = buf.getvalue()
+        self.assertEqual(rc, 0, out)
         self.assertIn("[invariants-ok]", out)
         self.assertIn("[migrate]", out)
-        self.assertIn("open_positions=25", out)
-        self.assertIn("load_positions_keys=25", out)
+        self.assertIn(f"open_positions={EXPECTED_OPEN_POSITIONS}", out)
+        self.assertIn(f"load_positions_keys={EXPECTED_OPEN_POSITIONS}", out)
 
 
 if __name__ == "__main__":
