@@ -129,6 +129,24 @@ def normalize_unit_test_config(monkeypatch):
                 _disable_exit_ladders(item)
 
     _disable_exit_ladders(cfg)
+    cfg.setdefault("volatile_altcoin", {})["mode"] = "active"
+    cfg["entry_sensor_15m"] = {
+        "enabled": True,
+        "mode": "active",
+        "timeframe": "15m",
+        "poll_interval_sec": 20,
+        "vol_spike_mult": 2.0,
+        "vol_avg_period": 20,
+        "ema_period": 9,
+        "require_ema_breakout": False,
+        "block_buy_if_rsi_4h_above": 75,
+        "fakeout_min_body_atr_ratio": 0.3,
+        "cooldown_after_reject_hours": 2,
+        "max_watched_coins": 15,
+        "min_poll_gap_sec_per_coin": 20,
+        "setup_modes": ["buy_signal", "setup_zone", "trending"],
+        "watch_ttl_hours": 24,
+    }
     data_manager._config_cache = cfg
     orig_get_config = data_manager.get_config
     orig_reload_config = data_manager.reload_config
@@ -166,11 +184,10 @@ def normalize_unit_test_config(monkeypatch):
     def _bot_config():
         from core.config import BotConfig
 
-        bot = BotConfig()
-        bot._raw = copy.deepcopy(cfg)
-        return bot
+        return BotConfig(raw=copy.deepcopy(cfg))
 
     monkeypatch.setattr("core.config.get_bot_config", _bot_config)
+    monkeypatch.setattr("strategies.decision_engine.get_bot_config", _bot_config)
 
 
 @pytest.fixture(autouse=True)

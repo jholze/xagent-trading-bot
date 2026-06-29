@@ -5,13 +5,13 @@ import pytest
 
 from core.actions import BUY, BUY_STRONG, HOLD
 from core.config import BotConfig
-from core.models import RiskDecision, TradeOrder
+
 from services.market_service import MarketService
 from strategies.entry_sensor_15m import (
     ENTRY_SENSOR_SOURCE,
     clear_pending_for_tests,
     evaluate_entry_sensor_15m,
-    set_pending_sensor_result,
+    set_pending_sensor_metrics,
 )
 from strategies import watch_15m_state
 
@@ -47,12 +47,17 @@ HOLD_INDICATORS = {
     "atr_pct": 3.0,
 }
 
+SPIKE_METRICS = {
+    "volume_spike_ratio": 2.8,
+    "body_atr_ratio": 0.55,
+    "price_momentum": True,
+}
+
 VOLATILE_COIN = {
-    "symbol": "SENSOR15/USDT",
+    "symbol": "XENTRY15/USDT",
     "timeframe": "4h",
     "active": True,
     "strategy_params": {
-        "strategy_profile": "hermes_baseline+volatile",
         "rsi_buy_low": 25,
         "rsi_buy_high": 55,
         "volume_multiplier": 1.5,
@@ -145,17 +150,10 @@ class TestWatch15mState:
 
 
 class TestDecisionEngineSensorIntegration:
-    def test_evaluate_lifts_hold_to_buy_with_pending_sensor(self, monkeypatch):
+    def test_evaluate_lifts_hold_to_buy_with_pending_metrics(self):
         from strategies.decision_engine import DecisionEngine
 
-        clear_pending_for_tests()
-        pending = evaluate_entry_sensor_15m(
-            watched=True,
-            metrics={"volume_spike_ratio": 2.8, "body_atr_ratio": 0.5},
-            cfg={**DEFAULT_CFG, "mode": "active"},
-            rsi_4h=HOLD_INDICATORS["rsi"],
-        )
-        set_pending_sensor_result(VOLATILE_COIN["symbol"], pending)
+        set_pending_sensor_metrics(VOLATILE_COIN["symbol"], SPIKE_METRICS)
         watch_15m_state.set_watch(
             VOLATILE_COIN["symbol"],
             VOLATILE_COIN["timeframe"],
@@ -163,10 +161,9 @@ class TestDecisionEngineSensorIntegration:
         )
 
         engine = DecisionEngine()
-        monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
         with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
-        ):
+        ), patch.object(engine.market, "fetch_funding_rate", return_value=None):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
 
         assert analysis.action == BUY
@@ -174,18 +171,32 @@ class TestDecisionEngineSensorIntegration:
         assert ENTRY_SENSOR_SOURCE in (analysis.sources or [])
         assert "vol spike" in (analysis.rationale or "")
 
+    def test_pending_metrics_revalidated_with_fresh_rsi(self):
+        from strategies.decision_engine import DecisionEngine
+
+        set_pending_sensor_metrics(VOLATILE_COIN["symbol"], SPIKE_METRICS)
+        watch_15m_state.set_watch(
+            VOLATILE_COIN["symbol"],
+            VOLATILE_COIN["timeframe"],
+            rsi_4h=42.0,
+        )
+
+        engine = DecisionEngine()
+        hot_rsi = {**HOLD_INDICATORS, "rsi": 80.0}
+        with patch.object(engine.market, "fetch_indicators", return_value=hot_rsi), patch.object(
+            engine.market, "fetch_15m_sensor_metrics", return_value=None
+        ):
+            analysis = engine.evaluate(VOLATILE_COIN, 1.0)
+
+        assert analysis.action == HOLD
+        assert ENTRY_SENSOR_SOURCE not in (analysis.sources or [])
+
     def test_evaluate_shadow_annotates_without_buy(self, monkeypatch):
         from strategies.decision_engine import DecisionEngine
 
-        clear_pending_for_tests()
-        set_pending_sensor_result(
+        set_pending_sensor_metrics(
             VOLATILE_COIN["symbol"],
-            evaluate_entry_sensor_15m(
-                watched=True,
-                metrics={"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
-                cfg={**DEFAULT_CFG, "mode": "shadow"},
-                rsi_4h=HOLD_INDICATORS["rsi"],
-            ),
+            {"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
         )
         watch_15m_state.set_watch(
             VOLATILE_COIN["symbol"],
@@ -193,11 +204,11 @@ class TestDecisionEngineSensorIntegration:
             rsi_4h=HOLD_INDICATORS["rsi"],
         )
 
+        monkeypatch.setattr("strategies.decision_engine.get_bot_config", _shadow_sensor_config)
         engine = DecisionEngine()
-        monkeypatch.setattr("core.config.get_bot_config", _shadow_sensor_config)
         with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
-        ):
+        ), patch.object(engine.market, "fetch_funding_rate", return_value=None):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
 
         assert analysis.action == HOLD
@@ -206,19 +217,14 @@ class TestDecisionEngineSensorIntegration:
     def test_evaluate_shadow_keeps_existing_buy(self, monkeypatch):
         from strategies.decision_engine import DecisionEngine
 
-        clear_pending_for_tests()
-        set_pending_sensor_result(
+        set_pending_sensor_metrics(
             VOLATILE_COIN["symbol"],
-            evaluate_entry_sensor_15m(
-                watched=True,
-                metrics={"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
-                cfg={**DEFAULT_CFG, "mode": "shadow"},
-                rsi_4h=35,
-            ),
+            {"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
         )
         indicators = {**HOLD_INDICATORS, "rsi": 35.0, "lower_bb": 1.02, "vol_multiplier": 2.0}
+        watch_15m_state.set_watch(VOLATILE_COIN["symbol"], VOLATILE_COIN["timeframe"], rsi_4h=35.0)
+        monkeypatch.setattr("strategies.decision_engine.get_bot_config", _shadow_sensor_config)
         engine = DecisionEngine()
-        monkeypatch.setattr("core.config.get_bot_config", _shadow_sensor_config)
         with patch.object(engine.market, "fetch_indicators", return_value=indicators), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ):
@@ -229,17 +235,10 @@ class TestDecisionEngineSensorIntegration:
 
 
 class TestActiveOrchestratorPath:
-    def test_process_coin_executes_buy_via_risk_manager(self, monkeypatch):
+    def test_process_coin_executes_via_real_risk_manager(self):
         from services.signal_orchestrator import SignalOrchestrator
 
-        clear_pending_for_tests()
-        pending = evaluate_entry_sensor_15m(
-            watched=True,
-            metrics={"volume_spike_ratio": 2.8, "body_atr_ratio": 0.55},
-            cfg={**DEFAULT_CFG, "mode": "active"},
-            rsi_4h=HOLD_INDICATORS["rsi"],
-        )
-        set_pending_sensor_result(VOLATILE_COIN["symbol"], pending)
+        set_pending_sensor_metrics(VOLATILE_COIN["symbol"], SPIKE_METRICS)
         watch_15m_state.set_watch(
             VOLATILE_COIN["symbol"],
             VOLATILE_COIN["timeframe"],
@@ -247,21 +246,25 @@ class TestActiveOrchestratorPath:
         )
 
         orch = SignalOrchestrator()
-        buy_order = TradeOrder(
-            type="BUY",
-            symbol=VOLATILE_COIN["symbol"],
-            price=1.0,
-            amount=0,
-            usdt_amount=50,
-        )
-        monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
+        risk_outcomes = []
+        real_risk_eval = orch.trading.risk.evaluate
+
+        def _capture_risk(*args, **kwargs):
+            decision = real_risk_eval(*args, **kwargs)
+            risk_outcomes.append(decision)
+            return decision
+
         with patch.object(orch.decision_engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             orch.decision_engine.market, "fetch_15m_sensor_metrics", return_value=None
-        ), patch.object(
-            orch.trading.risk, "evaluate", return_value=RiskDecision(approved=True, order=buy_order)
+        ), patch.object(orch.decision_engine.market, "fetch_funding_rate", return_value=None), patch.object(
+            orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
+        ), patch.object(orch.trading.risk.market, "fetch_funding_rate", return_value=None), patch.object(
+            orch.trading.risk, "evaluate", side_effect=_capture_risk
         ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
             result = orch.process_coin(VOLATILE_COIN, 1.0, quiet=True)
 
+        assert risk_outcomes
+        assert risk_outcomes[-1].approved is True
         assert result["action"] == BUY
         assert result["executed"] is True
         assert ENTRY_SENSOR_SOURCE in result["sources"]
@@ -301,12 +304,12 @@ class TestEntrySensorLoop:
         orch = MagicMock()
         orch.market = FakeMarket()
         watch_15m_state.set_watch(
-            "SENSOR15/USDT",
+            "XENTRY15/USDT",
             "4h",
             rsi_4h=45,
             tech_buy=False,
         )
-        monkeypatch.setattr(entry_sensor_loop, "get_prices_batch", lambda symbols: {"SENSOR15/USDT": 1.0})
+        monkeypatch.setattr(entry_sensor_loop, "get_prices_batch", lambda symbols: {"XENTRY15/USDT": 1.0})
         monkeypatch.setattr(
             entry_sensor_loop,
             "_coin_by_symbol",
@@ -331,3 +334,57 @@ class TestEntrySensorLoop:
 
         assert len(fetch_calls) == 1
         assert fetch_calls[0][1] == "15m"
+
+    def test_poll_once_active_hands_metrics_to_process_coin(self, monkeypatch):
+        from services import entry_sensor_loop
+        from tests.unit.test_market_service_15m import _sample_15m_df
+
+        entry_sensor_loop.reset_poll_state_for_tests()
+        metrics_calls = []
+        process_calls = []
+
+        class FakeMarket:
+            def fetch_ohlcv(self, symbol, timeframe, limit):
+                return _sample_15m_df(30, spike_last=True)
+
+            def compute_15m_sensor_metrics(self, df, **kwargs):
+                return SPIKE_METRICS
+
+        orch = MagicMock()
+        orch.market = FakeMarket()
+        orch.process_coin = lambda coin, price, **kw: process_calls.append((coin["symbol"], price)) or {
+            "action": "BUY",
+            "executed": True,
+        }
+
+        watch_15m_state.set_watch("XENTRY15/USDT", "4h", rsi_4h=45, tech_buy=False)
+        monkeypatch.setattr(entry_sensor_loop, "get_prices_batch", lambda symbols: {"XENTRY15/USDT": 1.0})
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol: {"symbol": symbol, "timeframe": "4h", "active": True},
+        )
+        monkeypatch.setattr(
+            "core.config.get_bot_config",
+            lambda: BotConfig(
+                raw={
+                    "entry_sensor_15m": {
+                        **DEFAULT_CFG,
+                        "mode": "active",
+                        "fakeout_min_body_atr_ratio": 0.01,
+                        "poll_interval_sec": 20,
+                        "min_poll_gap_sec_per_coin": 20,
+                    }
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "set_pending_sensor_metrics",
+            lambda sym, m: metrics_calls.append(sym),
+        )
+
+        entry_sensor_loop._poll_once(orch)
+
+        assert metrics_calls == ["XENTRY15/USDT"]
+        assert process_calls and process_calls[0][0] == "XENTRY15/USDT"

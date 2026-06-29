@@ -36,7 +36,7 @@ from strategies.registry import (
 )
 from strategies.entry_sensor_15m import (
     ENTRY_SENSOR_SOURCE,
-    consume_pending_sensor_result,
+    consume_pending_sensor_metrics,
     evaluate_entry_sensor_15m,
 )
 from strategies import watch_15m_state
@@ -138,19 +138,21 @@ class DecisionEngine:
         if is_sell(normalized) or normalized == BUY_DCA:
             return normalized, sources, confidence, "", ""
 
-        pending = consume_pending_sensor_result(symbol)
-        sensor = pending
-        if sensor is None and watch_15m_state.is_watched(symbol):
+        if not watch_15m_state.is_watched(symbol):
+            return normalized, sources, confidence, "", ""
+
+        metrics = consume_pending_sensor_metrics(symbol)
+        if metrics is None:
             metrics = self.market.fetch_15m_sensor_metrics(symbol, cfg)
-            tech_norm = normalize(technical.action)
-            sensor = evaluate_entry_sensor_15m(
-                watched=True,
-                metrics=metrics,
-                cfg=cfg,
-                rsi_4h=float(market.rsi),
-                hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
-                tech_already_buy=is_buy(tech_norm),
-            )
+        tech_norm = normalize(technical.action)
+        sensor = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics=metrics,
+            cfg=cfg,
+            rsi_4h=float(market.rsi),
+            hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
+            tech_already_buy=is_buy(tech_norm),
+        )
 
         if sensor is None or not sensor.triggered:
             return normalized, sources, confidence, "", ""

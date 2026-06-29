@@ -9,7 +9,7 @@ from core.config import get_bot_config
 from data_manager import load_effective_watchlist
 from logger import log
 from price_fetcher import get_prices_batch
-from strategies.entry_sensor_15m import evaluate_entry_sensor_15m, set_pending_sensor_result
+from strategies.entry_sensor_15m import evaluate_entry_sensor_15m, set_pending_sensor_metrics
 from strategies import watch_15m_state
 
 _loop_thread: threading.Thread | None = None
@@ -94,10 +94,10 @@ def _poll_once(orchestrator) -> None:
         if not result.triggered:
             continue
 
-        set_pending_sensor_result(symbol, result)
         mode = str(cfg.get("mode", "shadow")).strip().lower()
 
         if mode == "active":
+            set_pending_sensor_metrics(symbol, metrics)
             try:
                 orchestrator.process_coin(coin, price, quiet=True)
                 log(f"15m sensor active buy path for {symbol}: {result.rationale}", "INFO")

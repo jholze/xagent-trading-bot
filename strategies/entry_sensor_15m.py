@@ -9,7 +9,8 @@ from core.actions import BUY, BUY_STRONG
 
 ENTRY_SENSOR_SOURCE = "entry_sensor_15m"
 
-_pending: dict[str, "EntrySensor15mResult"] = {}
+_pending_results: dict[str, "EntrySensor15mResult"] = {}
+_pending_metrics: dict[str, dict] = {}
 
 
 @dataclass
@@ -22,20 +23,27 @@ class EntrySensor15mResult:
     volume_spike_ratio: float = 0.0
 
 
+def set_pending_sensor_metrics(symbol: str, metrics: dict) -> None:
+    """Loop hands off fresh 15m metrics; DecisionEngine re-evaluates with live 4h RSI."""
+    _pending_metrics[symbol] = dict(metrics)
+
+
+def consume_pending_sensor_metrics(symbol: str) -> dict | None:
+    return _pending_metrics.pop(symbol, None)
+
+
 def set_pending_sensor_result(symbol: str, result: EntrySensor15mResult) -> None:
-    _pending[symbol] = result
-
-
-def get_pending_sensor_result(symbol: str) -> EntrySensor15mResult | None:
-    return _pending.get(symbol)
+    """Test helper — prefer set_pending_sensor_metrics in production paths."""
+    _pending_results[symbol] = result
 
 
 def consume_pending_sensor_result(symbol: str) -> EntrySensor15mResult | None:
-    return _pending.pop(symbol, None)
+    return _pending_results.pop(symbol, None)
 
 
 def clear_pending_for_tests() -> None:
-    _pending.clear()
+    _pending_results.clear()
+    _pending_metrics.clear()
 
 
 def evaluate_entry_sensor_15m(
