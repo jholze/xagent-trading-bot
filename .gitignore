@@ -61,6 +61,7 @@ cmc_posts.json
 paper_sandbox_history.json
 paper_strategies.json
 watchlist.dry_run_overlay.json
+watchlist.cmc_trending_overlay.json
 watch_15m_state.json
 run/
 docs/superpowers/
