@@ -345,6 +345,7 @@ class BotConfig:
             "fakeout_min_body_atr_ratio": 0.3,
             "cooldown_after_reject_hours": 2,
             "max_watched_coins": 15,
+            "min_poll_gap_sec_per_coin": 20,
         }
         raw = self._raw.get("entry_sensor_15m", {})
         return {**defaults, **raw}

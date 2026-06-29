@@ -1,12 +1,11 @@
-import json
-import os
+import copy
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
 from core.actions import BUY, BUY_STRONG, HOLD
-from core.models import MarketContext, SignalAnalysis
+from core.config import BotConfig
+from core.models import RiskDecision, TradeOrder
 from services.market_service import MarketService
 from strategies.entry_sensor_15m import (
     ENTRY_SENSOR_SOURCE,
@@ -37,6 +36,45 @@ DEFAULT_CFG = {
     "cooldown_after_reject_hours": 2,
     "require_ema_breakout": False,
 }
+
+HOLD_INDICATORS = {
+    "rsi": 42.0,
+    "lower_bb": 0.95,
+    "middle_bb": 1.0,
+    "upper_bb": 1.05,
+    "vol_multiplier": 1.0,
+    "atr": 0.03,
+    "atr_pct": 3.0,
+}
+
+VOLATILE_COIN = {
+    "symbol": "SENSOR15/USDT",
+    "timeframe": "4h",
+    "active": True,
+    "strategy_params": {
+        "strategy_profile": "hermes_baseline+volatile",
+        "rsi_buy_low": 25,
+        "rsi_buy_high": 55,
+        "volume_multiplier": 1.5,
+        "stop_loss_pct": 50,
+    },
+}
+
+
+def _active_sensor_config():
+    import data_manager
+
+    raw = copy.deepcopy(data_manager.get_config())
+    raw["entry_sensor_15m"] = {**DEFAULT_CFG, "mode": "active"}
+    return BotConfig(raw=raw)
+
+
+def _shadow_sensor_config():
+    import data_manager
+
+    raw = copy.deepcopy(data_manager.get_config())
+    raw["entry_sensor_15m"] = {**DEFAULT_CFG, "mode": "shadow"}
+    return BotConfig(raw=raw)
 
 
 class TestEvaluateEntrySensor15m:
@@ -106,131 +144,128 @@ class TestWatch15mState:
         assert watch_15m_state.is_watched("XPL/USDT")
 
 
-class TestDecisionEngineSensorMerge:
-    def test_hold_lifted_to_buy_via_pending_sensor(self, monkeypatch):
+class TestDecisionEngineSensorIntegration:
+    def test_evaluate_lifts_hold_to_buy_with_pending_sensor(self, monkeypatch):
+        from strategies.decision_engine import DecisionEngine
+
+        clear_pending_for_tests()
+        pending = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics={"volume_spike_ratio": 2.8, "body_atr_ratio": 0.5},
+            cfg={**DEFAULT_CFG, "mode": "active"},
+            rsi_4h=HOLD_INDICATORS["rsi"],
+        )
+        set_pending_sensor_result(VOLATILE_COIN["symbol"], pending)
+        watch_15m_state.set_watch(
+            VOLATILE_COIN["symbol"],
+            VOLATILE_COIN["timeframe"],
+            rsi_4h=HOLD_INDICATORS["rsi"],
+        )
+
+        engine = DecisionEngine()
+        monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
+        with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            engine.market, "fetch_15m_sensor_metrics", return_value=None
+        ):
+            analysis = engine.evaluate(VOLATILE_COIN, 1.0)
+
+        assert analysis.action == BUY
+        assert analysis.timeframe == "4h"
+        assert ENTRY_SENSOR_SOURCE in (analysis.sources or [])
+        assert "vol spike" in (analysis.rationale or "")
+
+    def test_evaluate_shadow_annotates_without_buy(self, monkeypatch):
         from strategies.decision_engine import DecisionEngine
 
         clear_pending_for_tests()
         set_pending_sensor_result(
-            "VELVET/USDT",
-            evaluate_entry_sensor_15m(
-                watched=True,
-                metrics={"volume_spike_ratio": 2.8, "body_atr_ratio": 0.5},
-                cfg={**DEFAULT_CFG, "mode": "active"},
-                rsi_4h=45,
-            ),
-        )
-
-        engine = DecisionEngine(market_service=MagicMock())
-        engine._entry_sensor_cfg = lambda: {**DEFAULT_CFG, "mode": "active"}
-
-        market = MarketContext(
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            current_price=1.0,
-            rsi=45,
-            has_position=False,
-            open_positions=0,
-            strategy_params={"strategy_profile": "hermes_baseline+volatile", "rsi_buy_low": 25, "rsi_buy_high": 55},
-        )
-        technical = SignalAnalysis(
-            action="HOLD",
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            rsi=45,
-            lower_bb=0.9,
-            vol_multiplier=1.0,
-            ampel_emoji="🟡",
-            ampel_text="HOLD",
-            sources=["technical"],
-        )
-
-        norm, sources, conf, rationale, shadow = engine._apply_entry_sensor_buy(
-            HOLD, ["technical"], 50.0, "VELVET/USDT", market, technical
-        )
-        assert norm == BUY
-        assert ENTRY_SENSOR_SOURCE in sources
-        assert shadow == ""
-        assert "vol spike" in rationale
-
-    def test_sensor_shadow_does_not_downgrade_existing_buy(self):
-        from strategies.decision_engine import DecisionEngine
-
-        engine = DecisionEngine(market_service=MagicMock())
-        market = MarketContext(
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            current_price=1.0,
-            rsi=45,
-            has_position=False,
-            open_positions=0,
-            strategy_params={"strategy_profile": "hermes_baseline+volatile"},
-        )
-        technical = SignalAnalysis(
-            action="HOLD",
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            rsi=45,
-            lower_bb=0.9,
-            vol_multiplier=1.0,
-            ampel_emoji="🟡",
-            ampel_text="HOLD",
-        )
-        set_pending_sensor_result(
-            "VELVET/USDT",
+            VOLATILE_COIN["symbol"],
             evaluate_entry_sensor_15m(
                 watched=True,
                 metrics={"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
                 cfg={**DEFAULT_CFG, "mode": "shadow"},
-                rsi_4h=45,
+                rsi_4h=HOLD_INDICATORS["rsi"],
             ),
         )
-        norm, sources, _, _, shadow = engine._apply_entry_sensor_buy(
-            BUY, ["lc"], 60.0, "VELVET/USDT", market, technical
+        watch_15m_state.set_watch(
+            VOLATILE_COIN["symbol"],
+            VOLATILE_COIN["timeframe"],
+            rsi_4h=HOLD_INDICATORS["rsi"],
         )
-        assert norm == BUY
-        assert shadow == BUY
-        assert "entry_sensor_shadow" in sources
 
-    def test_sensor_shadow_does_not_buy(self):
+        engine = DecisionEngine()
+        monkeypatch.setattr("core.config.get_bot_config", _shadow_sensor_config)
+        with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            engine.market, "fetch_15m_sensor_metrics", return_value=None
+        ):
+            analysis = engine.evaluate(VOLATILE_COIN, 1.0)
+
+        assert analysis.action == HOLD
+        assert "entry_sensor_shadow" in (analysis.sources or [])
+
+    def test_evaluate_shadow_keeps_existing_buy(self, monkeypatch):
         from strategies.decision_engine import DecisionEngine
 
-        engine = DecisionEngine(market_service=MagicMock())
-        cfg = {**DEFAULT_CFG, "mode": "shadow"}
-        market = MarketContext(
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            current_price=1.0,
-            rsi=45,
-            has_position=False,
-            open_positions=0,
-            strategy_params={},
-        )
-        technical = SignalAnalysis(
-            action="HOLD",
-            symbol="VELVET/USDT",
-            timeframe="4h",
-            rsi=45,
-            lower_bb=0.9,
-            vol_multiplier=1.0,
-            ampel_emoji="🟡",
-            ampel_text="HOLD",
-        )
+        clear_pending_for_tests()
         set_pending_sensor_result(
-            "VELVET/USDT",
+            VOLATILE_COIN["symbol"],
             evaluate_entry_sensor_15m(
                 watched=True,
                 metrics={"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
-                cfg=cfg,
-                rsi_4h=45,
+                cfg={**DEFAULT_CFG, "mode": "shadow"},
+                rsi_4h=35,
             ),
         )
-        norm, sources, _, _, shadow = engine._apply_entry_sensor_buy(
-            HOLD, [], 40.0, "VELVET/USDT", market, technical
+        indicators = {**HOLD_INDICATORS, "rsi": 35.0, "lower_bb": 1.02, "vol_multiplier": 2.0}
+        engine = DecisionEngine()
+        monkeypatch.setattr("core.config.get_bot_config", _shadow_sensor_config)
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), patch.object(
+            engine.market, "fetch_15m_sensor_metrics", return_value=None
+        ):
+            analysis = engine.evaluate(VOLATILE_COIN, 1.0)
+
+        assert analysis.action == BUY
+        assert "entry_sensor_shadow" in (analysis.sources or [])
+
+
+class TestActiveOrchestratorPath:
+    def test_process_coin_executes_buy_via_risk_manager(self, monkeypatch):
+        from services.signal_orchestrator import SignalOrchestrator
+
+        clear_pending_for_tests()
+        pending = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics={"volume_spike_ratio": 2.8, "body_atr_ratio": 0.55},
+            cfg={**DEFAULT_CFG, "mode": "active"},
+            rsi_4h=HOLD_INDICATORS["rsi"],
         )
-        assert norm == HOLD
-        assert shadow == BUY
-        assert "entry_sensor_shadow" in sources
+        set_pending_sensor_result(VOLATILE_COIN["symbol"], pending)
+        watch_15m_state.set_watch(
+            VOLATILE_COIN["symbol"],
+            VOLATILE_COIN["timeframe"],
+            rsi_4h=HOLD_INDICATORS["rsi"],
+        )
+
+        orch = SignalOrchestrator()
+        buy_order = TradeOrder(
+            type="BUY",
+            symbol=VOLATILE_COIN["symbol"],
+            price=1.0,
+            amount=0,
+            usdt_amount=50,
+        )
+        monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
+        with patch.object(orch.decision_engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            orch.decision_engine.market, "fetch_15m_sensor_metrics", return_value=None
+        ), patch.object(
+            orch.trading.risk, "evaluate", return_value=RiskDecision(approved=True, order=buy_order)
+        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
+            result = orch.process_coin(VOLATILE_COIN, 1.0, quiet=True)
+
+        assert result["action"] == BUY
+        assert result["executed"] is True
+        assert ENTRY_SENSOR_SOURCE in result["sources"]
+        assert VOLATILE_COIN["timeframe"] == "4h"
 
 
 class TestEntrySensorLoop:
@@ -247,3 +282,52 @@ class TestEntrySensorLoop:
         assert thread is not None
         assert thread.name == "entry-sensor-15m"
         entry_sensor_loop.stop_entry_sensor_loop()
+
+    def test_poll_once_uses_single_ohlcv_and_rate_limit(self, monkeypatch):
+        from services import entry_sensor_loop
+        from tests.unit.test_market_service_15m import _sample_15m_df
+
+        entry_sensor_loop.reset_poll_state_for_tests()
+        fetch_calls = []
+
+        class FakeMarket:
+            def fetch_ohlcv(self, symbol, timeframe, limit):
+                fetch_calls.append((symbol, timeframe, limit))
+                return _sample_15m_df(30, spike_last=True)
+
+            def compute_15m_sensor_metrics(self, df, **kwargs):
+                return MarketService.compute_15m_sensor_metrics(df, **kwargs)
+
+        orch = MagicMock()
+        orch.market = FakeMarket()
+        watch_15m_state.set_watch(
+            "SENSOR15/USDT",
+            "4h",
+            rsi_4h=45,
+            tech_buy=False,
+        )
+        monkeypatch.setattr(entry_sensor_loop, "get_prices_batch", lambda symbols: {"SENSOR15/USDT": 1.0})
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol: {"symbol": symbol, "timeframe": "4h", "active": True},
+        )
+        monkeypatch.setattr(
+            "core.config.get_bot_config",
+            lambda: BotConfig(
+                raw={
+                    "entry_sensor_15m": {
+                        **DEFAULT_CFG,
+                        "mode": "shadow",
+                        "poll_interval_sec": 20,
+                        "min_poll_gap_sec_per_coin": 20,
+                    }
+                }
+            ),
+        )
+
+        entry_sensor_loop._poll_once(orch)
+        entry_sensor_loop._poll_once(orch)
+
+        assert len(fetch_calls) == 1
+        assert fetch_calls[0][1] == "15m"

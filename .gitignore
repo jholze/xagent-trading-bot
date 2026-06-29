@@ -61,6 +61,8 @@ cmc_posts.json
 paper_sandbox_history.json
 paper_strategies.json
 watchlist.dry_run_overlay.json
+watch_15m_state.json
+run/
 strategy_backtest.json
 data/cmc_slug_cache.json
 lc_signals.json

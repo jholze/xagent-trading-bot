@@ -119,6 +119,8 @@ class DecisionEngine:
             market.timeframe,
             reason=reason,
             ttl_hours=float(cfg.get("watch_ttl_hours", 24)),
+            rsi_4h=float(market.rsi),
+            tech_buy=tech_buy,
         )
 
     def _apply_entry_sensor_buy(

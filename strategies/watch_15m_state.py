@@ -63,16 +63,22 @@ def set_watch(
     *,
     reason: str = "",
     ttl_hours: float = 24.0,
+    rsi_4h: float | None = None,
+    tech_buy: bool = False,
 ) -> None:
     data = _load()
     now = datetime.now()
-    data["coins"][symbol] = {
+    entry = {
         "symbol": symbol,
         "timeframe": timeframe,
         "reason": reason,
         "watched_at": now.isoformat(),
         "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
+        "tech_buy": bool(tech_buy),
     }
+    if rsi_4h is not None:
+        entry["rsi_4h"] = float(rsi_4h)
+    data["coins"][symbol] = entry
     _save(data)
 
 
