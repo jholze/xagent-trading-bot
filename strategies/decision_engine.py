@@ -85,6 +85,11 @@ class DecisionEngine:
         cfg = self._entry_sensor_cfg()
         if not cfg.get("enabled", True):
             return
+        from intelligence.strategy_backtest import classify_coin
+
+        if classify_coin(symbol, market.strategy_params) == "large_cap":
+            watch_15m_state.clear_watch(symbol)
+            return
         sold = float(position.get("sold_percent", 0) or 0)
         if market.has_position and sold >= 0.01:
             watch_15m_state.clear_watch(symbol)
@@ -155,7 +160,9 @@ class DecisionEngine:
 
         if sensor.shadow_only:
             out_sources.append("entry_sensor_shadow")
-            return HOLD, out_sources, new_conf, rationale_extra, sensor.action
+            if normalized == HOLD:
+                return HOLD, out_sources, new_conf, rationale_extra, sensor.action
+            return normalized, out_sources, new_conf, rationale_extra, sensor.action
 
         if normalized == HOLD:
             return sensor.action, out_sources, new_conf, rationale_extra, ""

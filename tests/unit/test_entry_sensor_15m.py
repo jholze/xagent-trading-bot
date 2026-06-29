@@ -153,6 +153,45 @@ class TestDecisionEngineSensorMerge:
         assert shadow == ""
         assert "vol spike" in rationale
 
+    def test_sensor_shadow_does_not_downgrade_existing_buy(self):
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine(market_service=MagicMock())
+        market = MarketContext(
+            symbol="VELVET/USDT",
+            timeframe="4h",
+            current_price=1.0,
+            rsi=45,
+            has_position=False,
+            open_positions=0,
+            strategy_params={"strategy_profile": "hermes_baseline+volatile"},
+        )
+        technical = SignalAnalysis(
+            action="HOLD",
+            symbol="VELVET/USDT",
+            timeframe="4h",
+            rsi=45,
+            lower_bb=0.9,
+            vol_multiplier=1.0,
+            ampel_emoji="🟡",
+            ampel_text="HOLD",
+        )
+        set_pending_sensor_result(
+            "VELVET/USDT",
+            evaluate_entry_sensor_15m(
+                watched=True,
+                metrics={"volume_spike_ratio": 3.0, "body_atr_ratio": 0.6},
+                cfg={**DEFAULT_CFG, "mode": "shadow"},
+                rsi_4h=45,
+            ),
+        )
+        norm, sources, _, _, shadow = engine._apply_entry_sensor_buy(
+            BUY, ["lc"], 60.0, "VELVET/USDT", market, technical
+        )
+        assert norm == BUY
+        assert shadow == BUY
+        assert "entry_sensor_shadow" in sources
+
     def test_sensor_shadow_does_not_buy(self):
         from strategies.decision_engine import DecisionEngine
 
