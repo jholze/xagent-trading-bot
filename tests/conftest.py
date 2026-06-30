@@ -11,7 +11,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
 # Operator WIP tests on disk but outside 15m feature scope (gitignored).
-collect_ignore = ["test_dca_stop_loss.py", "test_order_detail_view.py"]
+collect_ignore = [
+    "unit/test_dca_stop_loss.py",
+    "unit/test_order_detail_view.py",
+]
 
 
 @pytest.fixture(autouse=True)
