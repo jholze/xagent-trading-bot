@@ -95,7 +95,7 @@ def _install_paper_harness():
         "mode": "active",
         "vol_spike_mult": 2.0,
         "block_buy_if_rsi_4h_above": 75,
-        "fakeout_min_body_atr_ratio": 0.3,
+        "fakeout_min_body_atr_ratio": 0.01,
         "cooldown_after_reject_hours": 2,
         "require_ema_breakout": False,
         "poll_interval_sec": 20,
@@ -146,6 +146,9 @@ def main() -> int:
     from services import entry_sensor_loop
 
     clear_pending_for_tests()
+    watch_15m_state.reset_cache_for_tests()
+    watch_path = str(tmp / "watch_15m_state.demo.json")
+    watch_15m_state._state_path = lambda: watch_path  # type: ignore[attr-defined]
     watch_15m_state.reset_cache_for_tests()
     entry_sensor_loop.reset_poll_state_for_tests()
     watch_15m_state.set_watch(

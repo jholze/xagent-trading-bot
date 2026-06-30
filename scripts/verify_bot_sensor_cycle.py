@@ -48,6 +48,7 @@ def _install_harness():
     cfg.setdefault("entry_sensor_15m", {})
     cfg["entry_sensor_15m"]["enabled"] = True
     cfg["entry_sensor_15m"]["mode"] = "active"
+    cfg["entry_sensor_15m"]["fakeout_min_body_atr_ratio"] = 0.01
     data_manager._config_cache = cfg
     data_manager.get_config = lambda: cfg
     import core.config as core_config
@@ -57,7 +58,8 @@ def _install_harness():
 
 
 def main() -> int:
-    os.environ.setdefault("DEMO_MODE", "1")
+    os.environ["DEMO_MODE"] = "1"
+    os.environ["MONGODB_DB"] = "xagent_test"
     tmp = Path(tempfile.mkdtemp(prefix="verify-bot-cycle-"))
     orders = tmp / "orders.demo.json"
     positions = tmp / "positions.demo.json"
@@ -80,6 +82,7 @@ def main() -> int:
     ledger_router.POSITIONS_SCOPE_FILES = positions_files
 
     cfg = _install_harness()
+    os.environ["MONGODB_DB"] = "xagent_test"
     import aria_bot  # noqa: F401
 
     print(f"aria_bot import clean, demo={os.environ.get('DEMO_MODE')}")
@@ -89,6 +92,8 @@ def main() -> int:
     from services import entry_sensor_loop
 
     clear_pending_for_tests()
+    watch_path = str(tmp / "watch_15m_state.demo.json")
+    watch_15m_state._state_path = lambda: watch_path  # type: ignore[attr-defined]
     watch_15m_state.reset_cache_for_tests()
     entry_sensor_loop.reset_poll_state_for_tests()
     watch_15m_state.set_watch(COIN["symbol"], COIN["timeframe"], rsi_4h=42.0)
