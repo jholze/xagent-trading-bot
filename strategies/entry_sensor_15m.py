@@ -46,6 +46,21 @@ def clear_pending_for_tests() -> None:
     _pending_metrics.clear()
 
 
+def passes_vol_spike_prefilter(metrics: dict | None, cfg: dict) -> bool:
+    """Cheap 15m-only gate for the poll loop; RSI/tech_buy decided in DecisionEngine."""
+    if not metrics:
+        return False
+    vol_mult = float(cfg.get("vol_spike_mult", 2.0))
+    if float(metrics.get("volume_spike_ratio", 0)) < vol_mult:
+        return False
+    min_body = float(cfg.get("fakeout_min_body_atr_ratio", 0.3))
+    if float(metrics.get("body_atr_ratio", 0)) < min_body:
+        return False
+    if cfg.get("require_ema_breakout", False) and not metrics.get("price_momentum"):
+        return False
+    return True
+
+
 def evaluate_entry_sensor_15m(
     *,
     watched: bool,

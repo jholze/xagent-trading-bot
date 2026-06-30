@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gating exercise: 15m sensor via real DecisionEngine + RiskManager (paper harness)."""
+"""Gating exercise: 15m sensor via entry_sensor_loop._poll_once → real RiskManager."""
 
 from __future__ import annotations
 
@@ -17,12 +17,7 @@ sys.path.insert(0, str(ROOT))
 from core.actions import BUY
 from core.config import BotConfig
 from services.signal_orchestrator import SignalOrchestrator
-from strategies.decision_engine import DecisionEngine
-from strategies.entry_sensor_15m import (
-    ENTRY_SENSOR_SOURCE,
-    clear_pending_for_tests,
-    set_pending_sensor_metrics,
-)
+from strategies.entry_sensor_15m import ENTRY_SENSOR_SOURCE, clear_pending_for_tests
 from strategies import watch_15m_state
 
 SPIKE_METRICS = {
@@ -119,74 +114,95 @@ def _install_paper_harness():
     return BotConfig(raw=copy.deepcopy(cfg))
 
 
+class _LoopMarket:
+    """Deterministic 15m spike + live 4h indicators for loop exercise."""
+
+    def fetch_ohlcv(self, symbol, timeframe, limit):
+        from tests.unit.test_market_service_15m import _sample_15m_df
+
+        return _sample_15m_df(30, spike_last=True)
+
+    def compute_15m_sensor_metrics(self, df, **kwargs):
+        from services.market_service import MarketService
+
+        return MarketService.compute_15m_sensor_metrics(df, **kwargs)
+
+    def fetch_indicators(self, symbol, timeframe, price):
+        return INDICATORS
+
+    def fetch_funding_rate(self, symbol):
+        return None
+
+    def fetch_15m_sensor_metrics(self, symbol, cfg):
+        return None
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="verify-15m-"))
     _isolate_ledger(tmp)
     bot = _install_paper_harness()
     print(f"trading_mode={bot.trading_mode} virtual_trading={bot.virtual_trading} ledger_tmp={tmp}")
 
+    from services import entry_sensor_loop
+
     clear_pending_for_tests()
     watch_15m_state.reset_cache_for_tests()
-    set_pending_sensor_metrics(COIN["symbol"], SPIKE_METRICS)
+    entry_sensor_loop.reset_poll_state_for_tests()
     watch_15m_state.set_watch(
         COIN["symbol"],
         COIN["timeframe"],
         reason="setup_zone",
-        rsi_4h=INDICATORS["rsi"],
+        rsi_4h=42.0,
         tech_buy=False,
     )
 
-    engine = DecisionEngine()
-    with patch.object(engine.market, "fetch_indicators", return_value=INDICATORS), patch.object(
-        engine.market, "fetch_15m_sensor_metrics", return_value=None
-    ):
-        analysis = engine.evaluate(COIN, 1.0)
-
-    print(
-        f"[decision] action={analysis.action} tf={analysis.timeframe} "
-        f"sources={analysis.sources} rationale={analysis.rationale}"
-    )
-    assert analysis.action == BUY
-    assert analysis.timeframe == "4h"
-    assert ENTRY_SENSOR_SOURCE in (analysis.sources or [])
-
     orch = SignalOrchestrator()
-    set_pending_sensor_metrics(COIN["symbol"], SPIKE_METRICS)
+    loop_market = _LoopMarket()
+    orch.market = loop_market
+    orch.decision_engine.market = loop_market
+
     risk_outcomes = []
+    process_outcomes = []
     real_risk_eval = orch.trading.risk.evaluate
+    real_process = orch.process_coin
 
     def _capture_risk(*args, **kwargs):
         decision = real_risk_eval(*args, **kwargs)
         risk_outcomes.append(decision)
         return decision
 
-    with patch.object(orch.decision_engine.market, "fetch_indicators", return_value=INDICATORS), patch.object(
-        orch.decision_engine.market, "fetch_15m_sensor_metrics", return_value=None
+    def _capture_process(coin, price, **kwargs):
+        out = real_process(coin, price, **kwargs)
+        process_outcomes.append(out)
+        return out
+
+    orch.process_coin = _capture_process
+
+    with patch.object(entry_sensor_loop, "get_prices_batch", lambda symbols: {COIN["symbol"]: 1.0}), patch.object(
+        entry_sensor_loop, "_coin_by_symbol", lambda symbol: dict(COIN)
     ), patch.object(orch.trading.risk.market, "fetch_indicators", return_value=INDICATORS), patch.object(
         orch.trading.risk, "evaluate", side_effect=_capture_risk
     ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
-        result = orch.process_coin(COIN, 1.0, quiet=True)
+        print("[loop] poll_once start watched=", watch_15m_state.list_watched())
+        entry_sensor_loop._poll_once(orch)
 
+    assert risk_outcomes, "loop._poll_once must reach real RiskManager.evaluate"
+    assert process_outcomes, "loop._poll_once must call orchestrator.process_coin"
     risk_decision = risk_outcomes[-1]
+    result = process_outcomes[-1]
     print(
         f"[risk] approved={risk_decision.approved} code={risk_decision.code} "
         f"message={risk_decision.message}"
     )
     print(
-        f"[orchestrator] action={result['action']} tf=4h executed={result['executed']} "
+        f"[orchestrator] action={result['action']} executed={result['executed']} "
         f"sources={result['sources']} order_type={result.get('order_type')}"
     )
-    assert risk_outcomes
     assert risk_decision.approved is True
     assert result["action"] == BUY
     assert result["executed"] is True
     assert ENTRY_SENSOR_SOURCE in result["sources"]
-
-    from services import entry_sensor_loop
-
-    entry_sensor_loop.reset_poll_state_for_tests()
-    print("[loop] import_ok module=services.entry_sensor_loop")
-    print("[verify-ok] sensor HOLD->BUY tf=4h real RiskManager approved")
+    print("[loop-verify-ok] poll_once→HOLD lift→BUY tf=4h real RiskManager approved")
     return 0
 
 

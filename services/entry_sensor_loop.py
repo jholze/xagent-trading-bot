@@ -5,11 +5,17 @@ from __future__ import annotations
 import threading
 import time
 
+from core.actions import is_buy
 from core.config import get_bot_config
 from data_manager import load_effective_watchlist
 from logger import log
 from price_fetcher import get_prices_batch
-from strategies.entry_sensor_15m import evaluate_entry_sensor_15m, set_pending_sensor_metrics
+from strategies.entry_sensor_15m import (
+    ENTRY_SENSOR_SOURCE,
+    evaluate_entry_sensor_15m,
+    passes_vol_spike_prefilter,
+    set_pending_sensor_metrics,
+)
 from strategies import watch_15m_state
 
 _loop_thread: threading.Thread | None = None
@@ -42,6 +48,57 @@ def reset_poll_state_for_tests() -> None:
     _last_poll_at.clear()
 
 
+def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict, market_svc) -> None:
+    """Shadow annotation uses live 4h RSI — not the snapshot stored at set_watch."""
+    tf = str(coin.get("timeframe") or "4h")
+    indicators = market_svc.fetch_indicators(symbol, tf, price)
+    rsi_4h = float(indicators.get("rsi", 45))
+    result = evaluate_entry_sensor_15m(
+        watched=True,
+        metrics=metrics,
+        cfg=cfg,
+        rsi_4h=rsi_4h,
+        hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
+        tech_already_buy=False,
+    )
+    if result.triggered:
+        log(
+            f"15m sensor shadow {symbol}: {result.rationale} ({result.action})",
+            "INFO",
+        )
+    elif result.rationale:
+        log(f"15m sensor shadow skip {symbol}: {result.rationale}", "INFO")
+
+
+def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
+    """Hand off fresh 15m metrics; DecisionEngine re-evaluates with live RSI + tech action."""
+    set_pending_sensor_metrics(symbol, metrics)
+    try:
+        outcome = orchestrator.process_coin(coin, price, quiet=True)
+    except Exception as e:
+        log(f"15m sensor execute failed for {symbol}: {e}", "ERROR")
+        watch_15m_state.record_sensor_reject(symbol)
+        return
+
+    sources = outcome.get("sources") or []
+    executed = bool(outcome.get("executed"))
+    if executed and ENTRY_SENSOR_SOURCE in sources and is_buy(outcome.get("action", "")):
+        log(
+            f"15m sensor active buy executed for {symbol}: "
+            f"action={outcome.get('action')} sources={sources}",
+            "INFO",
+        )
+        return
+
+    if ENTRY_SENSOR_SOURCE in sources and not executed:
+        watch_15m_state.record_sensor_reject(symbol)
+        log(
+            f"15m sensor buy blocked for {symbol}: "
+            f"action={outcome.get('action')} msg={outcome.get('trade_message', '')}",
+            "INFO",
+        )
+
+
 def _poll_once(orchestrator) -> None:
     cfg = get_bot_config().entry_sensor_15m_config
     if not cfg.get("enabled", True):
@@ -59,6 +116,7 @@ def _poll_once(orchestrator) -> None:
     ema_period = int(cfg.get("ema_period", 9))
     ohlcv_limit = vol_avg_period + 30
     poll_now = time.monotonic()
+    mode = str(cfg.get("mode", "shadow")).strip().lower()
 
     for entry in watched:
         symbol = entry["symbol"]
@@ -79,36 +137,18 @@ def _poll_once(orchestrator) -> None:
             ema_period=ema_period,
             vol_avg_period=vol_avg_period,
         )
-        rsi_4h = float(entry.get("rsi_4h") or 45)
-        tech_already_buy = bool(entry.get("tech_buy", False))
-
-        result = evaluate_entry_sensor_15m(
-            watched=True,
-            metrics=metrics,
-            cfg=cfg,
-            rsi_4h=rsi_4h,
-            hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
-            tech_already_buy=tech_already_buy,
-        )
-
-        if not result.triggered:
+        if not passes_vol_spike_prefilter(metrics, cfg):
             continue
 
-        mode = str(cfg.get("mode", "shadow")).strip().lower()
+        cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
+        hours_since = watch_15m_state.hours_since_sensor_reject(symbol)
+        if hours_since is not None and hours_since < cooldown_h:
+            continue
 
         if mode == "active":
-            set_pending_sensor_metrics(symbol, metrics)
-            try:
-                orchestrator.process_coin(coin, price, quiet=True)
-                log(f"15m sensor active buy path for {symbol}: {result.rationale}", "INFO")
-            except Exception as e:
-                log(f"15m sensor execute failed for {symbol}: {e}", "ERROR")
-                watch_15m_state.record_sensor_reject(symbol)
+            _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
-            log(
-                f"15m sensor shadow {symbol}: {result.rationale} ({result.action})",
-                "INFO",
-            )
+            _shadow_log(symbol, coin, price, metrics, cfg, market_svc)
 
 
 def _loop_main(orchestrator) -> None:
