@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from storage.mongo_ledger import MongoLedgerStore
 SCOPE_HISTORY_FILES = {
     "paper": TRADE_HISTORY_FILE,
     "live": LIVE_TRADE_HISTORY_FILE,
+    "demo": f"{LIVE_TRADE_HISTORY_FILE.replace('.json', '.demo.json')}",
 }
 
 
@@ -103,8 +105,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.scope == "demo":
-        print("demo scope uses ephemeral files — skipping migration")
-        return 0
+        os.environ.setdefault("DEMO_MODE", "1")
 
     try:
         migrate_scope(args.scope, dry_run=args.dry_run, test_db=args.test_db)

@@ -810,6 +810,10 @@ def ledger_dual_write_enabled(config: dict = None) -> bool:
     return bool((cfg.get("architecture", {}) or {}).get("ledger_dual_write", False))
 
 
+def _demo_ledger_backend_is_mongo(config: dict = None) -> bool:
+    return resolve_ledger_backend("demo", config) == "mongo"
+
+
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
     """Whether positions load from Mongo (demo positions cache always uses Mongo)."""
     if ledger_dual_write_enabled(config):
@@ -820,22 +824,20 @@ def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
 
 
 def _ledger_reads_mongo_orders(scope: str, config: dict = None) -> bool:
-    """Demo orders SOT is JSON (orders.demo.json), never Mongo."""
     if scope == "demo":
-        return False
+        return _demo_ledger_backend_is_mongo(config)
     return _ledger_reads_mongo(scope, config)
 
 
 def _ledger_reads_mongo_trade_history(scope: str, config: dict = None) -> bool:
-    """Demo cash SOT is derived from JSON orders, not Mongo trade_history."""
     if scope == "demo":
-        return False
+        return _demo_ledger_backend_is_mongo(config)
     return _ledger_reads_mongo(scope, config)
 
 
 def _ledger_writes_json(scope: str, config: dict = None) -> bool:
     if scope == "demo":
-        return True
+        return not _demo_ledger_backend_is_mongo(config)
     backend = resolve_ledger_backend(scope, config)
     return backend == "local" or ledger_dual_write_enabled(config)
 

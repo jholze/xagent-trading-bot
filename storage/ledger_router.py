@@ -316,8 +316,14 @@ def resolve_store(scope: str, config: dict | None = None) -> LedgerStore:
     cached = _store_cache.get(key)
     if cached and now - cached[0] < _STORE_CACHE_TTL:
         return cached[1]
-    if scope == "demo" or backend == "demo_hybrid":
-        store: LedgerStore = DemoLedgerStore(cfg)
+    if scope == "demo":
+        store: LedgerStore = (
+            MongoLedgerStoreAdapter(cfg)
+            if backend == "mongo"
+            else DemoLedgerStore(cfg)
+        )
+    elif backend == "demo_hybrid":
+        store = DemoLedgerStore(cfg)
     elif dual:
         store = DualWriteLedgerStore(cfg)
     elif backend == "mongo":
