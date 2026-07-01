@@ -35,6 +35,7 @@ _CACHE_FIELDS = (
     "strategy_tier",
     "exit_ladder_step",
     "dca_rounds",
+    "dca_max_rounds",
     "last_dca_at",
     "dca_total_usdt",
     "last_sell_signal",
@@ -114,6 +115,7 @@ def _deserialize_position(raw: dict) -> dict:
         "strategy_tier": raw.get("strategy_tier"),
         "exit_ladder_step": int(raw.get("exit_ladder_step", 0) or 0),
         "dca_rounds": int(raw.get("dca_rounds", 0) or 0),
+        "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
         "last_dca_at": raw.get("last_dca_at"),
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
         "last_sell_signal": raw.get("last_sell_signal"),
@@ -143,6 +145,7 @@ def _serialize_positions() -> dict:
             "strategy_tier": p.get("strategy_tier"),
             "exit_ladder_step": int(p.get("exit_ladder_step", 0) or 0),
             "dca_rounds": int(p.get("dca_rounds", 0) or 0),
+            "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
             "last_dca_at": p.get("last_dca_at"),
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
             "last_sell_signal": p.get("last_sell_signal"),
@@ -309,6 +312,7 @@ def init_position(symbol, timeframe):
                 "strategy_tier": None,
                 "exit_ladder_step": 0,
                 "dca_rounds": 0,
+                "dca_max_rounds": 0,
                 "last_dca_at": None,
                 "dca_total_usdt": 0.0,
                 "last_sell_signal": None,
@@ -448,6 +452,7 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["exit_ladder_step"] = 0
                 pos["last_trade_type"] = "BUY"
                 pos["dca_rounds"] = 0
+                pos["dca_max_rounds"] = 0
                 pos["last_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
                 pos["time_profit_exit_done"] = False

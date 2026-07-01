@@ -64,6 +64,56 @@ def _in_accumulation_phase(position: dict) -> bool:
     return step == 0 and sold < 0.01
 
 
+def effective_stop_loss_thresholds(
+    position: dict,
+    strategy_params: dict | None,
+    base_stop_loss_pct: float,
+) -> tuple[float, float | None, bool]:
+    """Return (full_stop_pct, partial_stop_pct_or_none, in_grace_period)."""
+    params = strategy_params or {}
+    dca_cfg = dca_config(params)
+    stop_loss_pct = float(params.get("stop_loss_pct") or base_stop_loss_pct)
+
+    if params.get("partial_stop_pct") is not None:
+        partial_stop = float(params["partial_stop_pct"])
+    else:
+        partial_ratio = float(params.get("partial_stop_ratio", 0.67))
+        partial_stop = stop_loss_pct * partial_ratio
+
+    dca_rounds = int(position.get("dca_rounds", 0) or 0)
+    widen = float(dca_cfg.get("stop_loss_widen_pct_per_round", 0))
+    full_stop = stop_loss_pct + dca_rounds * widen
+
+    grace_hours = float(dca_cfg.get("grace_hours_after_dca", 0))
+    if grace_hours <= 0:
+        grace_hours = float(dca_cfg.get("interval_hours", 12))
+
+    elapsed = _hours_since(position.get("last_dca_at"))
+    in_grace = (
+        dca_rounds > 0
+        and position.get("last_dca_at")
+        and elapsed is not None
+        and elapsed < grace_hours
+    )
+
+    if dca_cfg.get("pause_partial_stop_during_dca", True) and dca_rounds > 0:
+        partial_effective: float | None = None
+    else:
+        partial_effective = partial_stop
+
+    return full_stop, partial_effective, in_grace
+
+
+def _effective_max_dca_rounds(position: dict, cfg: dict) -> int:
+    """Freeze max DCA rounds on first use so tier flips cannot grant extra rounds."""
+    cfg_max = int(cfg.get("max_rounds", 3))
+    frozen = int(position.get("dca_max_rounds", 0) or 0)
+    if frozen <= 0:
+        position["dca_max_rounds"] = cfg_max
+        return cfg_max
+    return frozen
+
+
 def _near_stop_loss(
     loss_pct: float,
     strategy_params: dict,
@@ -227,7 +277,7 @@ def _check_hard_gates(
     if _near_stop_loss(loss_pct, strategy_params or {}, cfg):
         return False, "near_stop_loss", 0.0
 
-    max_rounds = int(cfg.get("max_rounds", 3))
+    max_rounds = _effective_max_dca_rounds(position, cfg)
     rounds = int(position.get("dca_rounds", 0) or 0)
     if rounds >= max_rounds:
         return False, "max_rounds", 0.0
@@ -285,7 +335,7 @@ def evaluate_dca_addon(
 
     cfg = dca_config(strategy_params)
     rounds = int(position.get("dca_rounds", 0) or 0)
-    max_rounds = int(cfg.get("max_rounds", 3))
+    max_rounds = _effective_max_dca_rounds(position, cfg)
     loss_pct = _unrealized_loss_pct(market.average_entry, market.current_price)
 
     if decision.score > 0:

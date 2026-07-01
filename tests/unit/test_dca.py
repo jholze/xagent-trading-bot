@@ -188,6 +188,45 @@ class TestDCAModule(unittest.TestCase):
         cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, self.params)
         self.assertIsNone(cand)
 
+    def test_tier_flip_does_not_grant_extra_dca_rounds(self):
+        """WLD-style path: volatile max 3, then stable max 2 must not allow round 4+."""
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["dca_rounds"] = 3
+        pos["dca_max_rounds"] = 3
+
+        stable_params = dict(self.params)
+        stable_params["volatility_tier"] = "stable"
+        stable_params["dca"] = _scoring_dca_cfg()
+        stable_params["dca"]["max_rounds"] = 2
+
+        cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, stable_params)
+        self.assertIsNone(cand)
+
+    def test_dca_max_rounds_frozen_on_first_check(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+
+        volatile_params = dict(self.params)
+        volatile_params["dca"] = _scoring_dca_cfg()
+        volatile_params["dca"]["max_rounds"] = 3
+
+        evaluate_dca_addon(self._market(1.0, 0.92), pos, volatile_params)
+        self.assertEqual(pos["dca_max_rounds"], 3)
+
+        stable_params = dict(self.params)
+        stable_params["volatility_tier"] = "stable"
+        stable_params["dca"] = _scoring_dca_cfg()
+        stable_params["dca"]["max_rounds"] = 2
+        pos["dca_rounds"] = 2
+
+        cand = evaluate_dca_addon(self._market(1.0, 0.90), pos, stable_params)
+        self.assertIsNotNone(cand)
+
+        pos["dca_rounds"] = 3
+        cand = evaluate_dca_addon(self._market(1.0, 0.88), pos, stable_params)
+        self.assertIsNone(cand)
+
     def test_buy_dca_preserves_ladder_state(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
         pos = get_position(self.symbol, self.tf)

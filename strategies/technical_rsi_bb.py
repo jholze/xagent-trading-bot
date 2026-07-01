@@ -8,6 +8,7 @@ from strategies.positions import (
     is_rsi_sell_tier_done,
     reset_rsi_sell_tiers_if_cooled,
 )
+from strategies.dca import effective_stop_loss_thresholds
 from strategies.take_profit import next_trigger_level
 
 
@@ -122,7 +123,6 @@ class TechnicalRSIStrategy(BaseStrategy):
         rsi_buy_high = params.get("rsi_buy_high", 48)
         volume_multiplier_min = params.get("volume_multiplier", 1.2)
         stop_loss_pct = params.get("stop_loss_pct", config.stop_loss_pct)
-        partial_stop = stop_loss_pct * 0.67
         rsi_sell_30 = params.get("rsi_sell_30", 70)
         rsi_sell_20 = params.get("rsi_sell_20", 80)
         rsi_sell_mode = params.get("rsi_sell_mode", "cross")
@@ -174,12 +174,16 @@ class TechnicalRSIStrategy(BaseStrategy):
             entry = market.average_entry
             if entry > 0:
                 loss_pct = (market.current_price / entry - 1) * -100
-                if loss_pct > stop_loss_pct:
-                    action = "SELL_STOP_FULL"
-                    sources.append("stop_loss")
-                elif loss_pct > partial_stop:
-                    action = "SELL_STOP_PARTIAL"
-                    sources.append("stop_loss")
+                full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
+                    pos, params, float(stop_loss_pct)
+                )
+                if not in_grace:
+                    if loss_pct > full_stop:
+                        action = "SELL_STOP_FULL"
+                        sources.append("stop_loss")
+                    elif partial_stop is not None and loss_pct > partial_stop:
+                        action = "SELL_STOP_PARTIAL"
+                        sources.append("stop_loss")
 
             gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
 

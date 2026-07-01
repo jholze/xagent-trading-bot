@@ -572,6 +572,7 @@
     "vol_dump_price_drop_pct": 15,
     "vol_dump_requires_prior_gain_pct": 5,
     "vol_buy_boost_enabled": false,
+    "partial_stop_pct": 25,
     "exit_ladder": {
       "enabled": true,
       "tiers": [
@@ -607,6 +608,9 @@
       "loss_pct_max": -3,
       "sl_proximity_pct": 15,
       "max_rounds": 3,
+      "grace_hours_after_dca": 12,
+      "pause_partial_stop_during_dca": true,
+      "stop_loss_widen_pct_per_round": 6,
       "scoring": {
         "enabled": true,
         "min_score": 6,
@@ -685,6 +689,9 @@
       "loss_pct_max": -2,
       "sl_proximity_pct": 10,
       "max_rounds": 2,
+      "grace_hours_after_dca": 24,
+      "pause_partial_stop_during_dca": true,
+      "stop_loss_widen_pct_per_round": 5,
       "scoring": {
         "enabled": true,
         "min_score": 6,

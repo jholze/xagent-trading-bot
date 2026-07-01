@@ -68,7 +68,6 @@ docs/superpowers/
 data/telegram_ask_pending *.json
 data/telegram_ask_agent_inbox *.json
 notifications/telegram_commands/order_detail_view.py
-tests/unit/test_dca_stop_loss.py
 tests/unit/test_order_detail_view.py
 strategy_backtest.json
 data/cmc_slug_cache.json
