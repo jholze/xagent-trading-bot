@@ -39,6 +39,35 @@ class TestTradingCommands(unittest.TestCase):
             self.assertEqual(kwargs["symbol"], "RAVE/USDT")
             self.assertEqual(kwargs["timeframe"], "1h")
             self.assertAlmostEqual(kwargs["pct"], 0.3)
+            self.assertAlmostEqual(kwargs["amount"], 300.0)
+
+    def test_sell_1h_position_reads_1h_ledger_not_4h(self):
+        """Regression: hardcoded 4h looked up empty ledger while real hold was on 1h."""
+        active = [
+            {"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 500.0, "average_entry": 0.4},
+        ]
+        looked_up = []
+
+        def _get_position(sym, tf):
+            looked_up.append((sym, tf))
+            if tf == "4h":
+                return {"amount": 0.0}
+            if tf == "1h":
+                return {"amount": 500.0}
+            return {"amount": 0.0}
+
+        with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"RAVE/USDT": 0.65}), \
+             patch("notifications.telegram_commands.trading_commands.get_position", side_effect=_get_position), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
+             patch("notifications.telegram_commands.trading_commands.send_telegram_message"):
+            self.assertTrue(trading_commands.handle("/sell RAVE 50"))
+
+        self.assertEqual(looked_up, [("RAVE/USDT", "1h")])
+        mock_confirm.assert_called_once()
+        kwargs = mock_confirm.call_args.kwargs
+        self.assertEqual(kwargs["timeframe"], "1h")
+        self.assertAlmostEqual(kwargs["amount"], 250.0)
 
     def test_sell_by_number_uses_position_timeframe(self):
         active = [
@@ -54,6 +83,39 @@ class TestTradingCommands(unittest.TestCase):
             kwargs = mock_confirm.call_args.kwargs
             self.assertEqual(kwargs["symbol"], "BTC/USDT")
             self.assertEqual(kwargs["timeframe"], "4h")
+            self.assertAlmostEqual(kwargs["amount"], 0.05)
+
+    def test_sell_unknown_symbol_does_not_confirm(self):
+        active = [{"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 100.0, "average_entry": 0.5}]
+        with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"RAVE/USDT": 0.65}), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
+             patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send:
+            self.assertTrue(trading_commands.handle("/sell PHANTOM 30"))
+            mock_confirm.assert_not_called()
+            self.assertIn("PHANTOM", mock_send.call_args[0][0])
+
+    def test_sell_follow_up_symbol_via_context(self):
+        import tempfile
+        from pathlib import Path
+        from notifications.telegram_commands import command_context as ctx
+
+        tmp = tempfile.TemporaryDirectory()
+        ctx._CONTEXT_FILE = Path(tmp.name) / "ctx.json"
+        try:
+            with patch("notifications.telegram_commands.trading_commands.list_active_positions") as mock_active, \
+                 patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"RAVE/USDT": 0.65}), \
+                 patch("notifications.telegram_commands.trading_commands.get_position", return_value={"amount": 200.0}), \
+                 patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm:
+                mock_active.return_value = [
+                    {"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 200.0, "average_entry": 0.5},
+                ]
+                ctx.set_context("99", "sell")
+                self.assertTrue(ctx.try_resolve("99", "RAVE 25"))
+                mock_confirm.assert_called_once()
+                self.assertEqual(mock_confirm.call_args.kwargs["timeframe"], "1h")
+        finally:
+            tmp.cleanup()
 
     def test_callback_delegates_to_manual_flow(self):
         with patch("notifications.telegram_commands.manual_order_flow.handle_callback", return_value=True) as mock_cb:
