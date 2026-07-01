@@ -496,4 +496,7 @@ if __name__ == "__main__":
 
     print(get_text("webhook_started"))
 
-    app.run(port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    print(f"Listening on {host}:{port}")
+    app.run(host=host, port=port, threaded=True)

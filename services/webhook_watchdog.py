@@ -1,4 +1,4 @@
-"""Keep Telegram webhook aligned with the local ngrok tunnel."""
+"""Keep Telegram webhook aligned with ngrok (local) or Railway public URL (cloud)."""
 
 import os
 import time
@@ -9,6 +9,17 @@ from logger import log
 
 _NGROK_API = "http://127.0.0.1:4040/api/tunnels"
 _CHECK_INTERVAL_SEC = 300
+
+
+def resolve_public_base_url() -> str | None:
+    """Static Railway/custom URL takes precedence over ngrok."""
+    base = (os.getenv("WEBHOOK_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        return base if base.startswith("http") else f"https://{base}"
+    domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+    if domain:
+        return f"https://{domain}"
+    return None
 
 
 def get_ngrok_public_url() -> str | None:
@@ -26,16 +37,20 @@ def get_ngrok_public_url() -> str | None:
     return None
 
 
+def get_webhook_public_url() -> str | None:
+    return resolve_public_base_url() or get_ngrok_public_url()
+
+
 def probe_webhook_url(public_url: str) -> bool:
-    """POST like Telegram does; confirms ngrok → Flask path is alive."""
+    """POST like Telegram does; confirms public URL → Flask path is alive."""
     try:
+        headers = {"Content-Type": "application/json"}
+        if "ngrok" in public_url:
+            headers["ngrok-skip-browser-warning"] = "true"
         response = requests.post(
             f"{public_url.rstrip('/')}/",
             json={"update_id": 0},
-            headers={
-                "Content-Type": "application/json",
-                "ngrok-skip-browser-warning": "true",
-            },
+            headers=headers,
             timeout=8,
         )
         return response.status_code == 200
@@ -48,7 +63,7 @@ def ensure_webhook_registered() -> bool:
     if not token:
         return False
 
-    public_url = get_ngrok_public_url()
+    public_url = get_webhook_public_url()
     if not public_url:
         return False
 
@@ -70,7 +85,7 @@ def ensure_webhook_registered() -> bool:
 
         reason = last_error or f"url mismatch ({registered} != {webhook_url})"
         if registered == expected and not probe_ok:
-            reason = "tunnel probe failed"
+            reason = "webhook probe failed"
         log(f"Webhook watchdog re-registering: {reason}", "WARNING")
         set_resp = requests.post(
             f"{api_base}/setWebhook",
@@ -91,7 +106,11 @@ def ensure_webhook_registered() -> bool:
 
 
 def start_webhook_watchdog(interval_sec: int = _CHECK_INTERVAL_SEC):
-    """Daemon thread: re-register Telegram webhook when ngrok URL drifts or errors."""
+    """Daemon thread: re-register Telegram webhook when URL drifts or errors."""
+
+    if not get_webhook_public_url():
+        log("Webhook watchdog skipped (no public URL — set WEBHOOK_BASE_URL or run ngrok)", "INFO")
+        return None
 
     def _loop():
         while True:

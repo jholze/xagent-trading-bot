@@ -107,6 +107,10 @@ class TestDemoLedgerStore(unittest.TestCase):
     def test_resolve_ledger_backend_demo_is_hybrid(self):
         self.assertEqual(resolve_ledger_backend("demo", self.cfg), "demo_hybrid")
 
+    def test_resolve_ledger_backend_demo_env_override(self):
+        with patch.dict(os.environ, {"DEMO_LEDGER_BACKEND": "mongo"}):
+            self.assertEqual(resolve_ledger_backend("demo", self.cfg), "mongo")
+
     def test_demo_store_reads_orders_from_json_not_empty_mongo(self):
         store = resolve_store("demo", self.cfg)
         self.assertIsInstance(store, DemoLedgerStore)

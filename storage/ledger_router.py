@@ -38,6 +38,9 @@ class LedgerStore(Protocol):
 
 def resolve_ledger_backend(scope: str, config: dict) -> str:
     if scope == "demo":
+        env_backend = os.environ.get("DEMO_LEDGER_BACKEND", "").strip()
+        if env_backend:
+            return env_backend
         demo_backend = (config.get("demo") or {}).get("backend")
         if demo_backend:
             return str(demo_backend)
