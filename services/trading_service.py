@@ -32,6 +32,11 @@ class TradingService:
         return get_execution_adapter(self.config, self.portfolio)
 
     def mode_label(self) -> str:
+        from data_manager import is_demo_mode, resolve_ledger_backend
+
+        if is_demo_mode():
+            backend = resolve_ledger_backend("demo", self.config.raw)
+            return f"demo ({backend} ledger)"
         mode = self.config.trading_mode
         if mode == "live":
             confirmed = "CONFIRMED" if self.config.live_confirmed else "needs /live_confirm"

@@ -617,7 +617,7 @@ def _reconcile_scoped_trade_history(history: dict, scope: str, config: dict = No
 
     initial = initial_capital(scope=scope, config=cfg)
     filled = [
-        o for o in _load_orders_json(scope).get("orders", []) if o.get("status") == "filled"
+        o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"
     ]
     computed_cash = compute_sim_cash_from_orders(filled, initial)
     computed_pnl = compute_realized_pnl_from_orders(filled)
