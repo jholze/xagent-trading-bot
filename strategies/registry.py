@@ -79,12 +79,21 @@ def _resolve_volatility_tier(
     atr_pct: float,
     va_cfg: dict,
     frozen_tier: str | None = None,
+    range_24h_pct: float | None = None,
+    change_24h_pct: float | None = None,
 ) -> str | None:
     if not va_cfg.get("enabled", False):
         return None
     from intelligence.volatility_classifier import volatility_tier
 
-    return volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+    return volatility_tier(
+        coin,
+        atr_pct,
+        va_cfg,
+        frozen_tier=frozen_tier,
+        range_24h_pct=range_24h_pct,
+        change_24h_pct=change_24h_pct,
+    )
 
 
 def _has_open_position(symbol: str, timeframe: str) -> bool:
@@ -97,6 +106,8 @@ def resolve_effective_timeframe(
     coin: dict,
     atr_pct: float | None = None,
     frozen_tier: str | None = None,
+    range_24h_pct: float | None = None,
+    change_24h_pct: float | None = None,
 ) -> str:
     """Pick analysis timeframe: legacy positions keep their TF; volatile coins use 1h."""
     cfg = get_bot_config()
@@ -132,13 +143,19 @@ def resolve_effective_timeframe(
     if coin.get("source") in volatile_sources:
         if atr_pct is None:
             return volatile_tf
-        tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+        tier = _resolve_volatility_tier(
+            coin, atr_pct, va_cfg, frozen_tier=frozen_tier,
+            range_24h_pct=range_24h_pct, change_24h_pct=change_24h_pct,
+        )
         if tier == "volatile":
             return volatile_tf
         return watchlist_tf
 
     if atr_pct is not None:
-        tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+        tier = _resolve_volatility_tier(
+            coin, atr_pct, va_cfg, frozen_tier=frozen_tier,
+            range_24h_pct=range_24h_pct, change_24h_pct=change_24h_pct,
+        )
         if tier == "volatile":
             return volatile_tf
 
@@ -197,6 +214,8 @@ def resolve_strategy_params(
     has_position: bool = False,
     atr_pct: float = 3.0,
     frozen_tier: str | None = None,
+    range_24h_pct: float | None = None,
+    change_24h_pct: float | None = None,
 ) -> dict:
     """Pick strategy params: strategies[] > Hermes memory > volatile > altcoin_social > defaults."""
     cfg = get_bot_config()
@@ -204,7 +223,10 @@ def resolve_strategy_params(
     tf = coin.get("timeframe", "4h")
 
     va_cfg = cfg.volatile_altcoin_config
-    tier = _resolve_volatility_tier(coin, atr_pct, va_cfg, frozen_tier=frozen_tier)
+    tier = _resolve_volatility_tier(
+        coin, atr_pct, va_cfg, frozen_tier=frozen_tier,
+        range_24h_pct=range_24h_pct, change_24h_pct=change_24h_pct,
+    )
     stable_cfg = cfg.stable_altcoin_config
 
     explicit = _explicit_strategy_entry(symbol, tf)

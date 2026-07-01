@@ -196,7 +196,12 @@ class DecisionEngine:
         if tf == watchlist_tf and classify_coin(symbol, coin.get("strategy_params")) != "large_cap":
             peek = self.market.fetch_indicators(symbol, "4h", current_price)
             atr_peek = float(peek.get("atr_pct", 3.0))
-            tf_refined = resolve_effective_timeframe(coin, atr_pct=atr_peek)
+            tf_refined = resolve_effective_timeframe(
+                coin,
+                atr_pct=atr_peek,
+                range_24h_pct=peek.get("range_24h_pct"),
+                change_24h_pct=peek.get("change_24h_pct"),
+            )
             if tf_refined != tf:
                 tf = tf_refined
                 indicators = self.market.fetch_indicators(symbol, tf, current_price)
@@ -208,6 +213,9 @@ class DecisionEngine:
             indicators = self.market.fetch_indicators(symbol, tf, current_price)
             atr_pct = float(indicators.get("atr_pct", 3.0))
 
+        range_24h_pct = indicators.get("range_24h_pct")
+        change_24h_pct = indicators.get("change_24h_pct")
+
         coin = resolve_coin_config({**coin, "timeframe": tf})
         symbol = coin["symbol"]
         pos = get_position(symbol, tf)
@@ -215,7 +223,11 @@ class DecisionEngine:
         frozen = pos.get("strategy_tier") if has_position else None
         va_cfg = self.config.volatile_altcoin_config
         if has_position and not frozen and va_cfg.get("freeze_tier_on_entry", True):
-            tier = volatility_tier(coin, atr_pct, va_cfg)
+            tier = volatility_tier(
+                coin, atr_pct, va_cfg,
+                range_24h_pct=range_24h_pct,
+                change_24h_pct=change_24h_pct,
+            )
             lock_strategy_tier(symbol, tf, tier)
             frozen = tier
             pos = get_position(symbol, tf)
@@ -224,6 +236,8 @@ class DecisionEngine:
             has_position=has_position,
             atr_pct=atr_pct,
             frozen_tier=frozen,
+            range_24h_pct=range_24h_pct,
+            change_24h_pct=change_24h_pct,
         )
         funding_rate_pct = None
         btc_underperf_ratio = None

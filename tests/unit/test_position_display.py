@@ -221,6 +221,19 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("(1/", chunks[0])
         self.assertIn("(2/", chunks[1])
 
+    def test_chunk_positions_compact_skips_page_tags(self):
+        header = "<b>📊 Portfolio</b>\n\n"
+        lines = [
+            f"<b>{i}.</b> COIN{i}/USDT <i>4h</i> 🟢 <code>+1.0%</code> · <b>$100</b> · PnL <b>$+1</b>"
+            for i in range(1, 60)
+        ]
+        msg = header + "\n".join(lines)
+        chunks = chunk_positions_message(msg, limit=800, annotate_pages=False)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertNotIn("(1/", chunk)
+            self.assertNotIn("(2/", chunk)
+
     def test_format_position_card_trade_tree_mode(self):
         p = {
             "symbol": "TRUMP/USDT",

@@ -537,6 +537,30 @@
     "atr_volatile_enter_pct": 5.0,
     "atr_stable_exit_pct": 3.5,
     "atr_bars_confirm": 3,
+    "tier_scoring": {
+      "enabled": true,
+      "volatile_enter_score": 4,
+      "volatile_exit_score": 2,
+      "atr_bands": [
+        {"min_pct": 10.0, "points": 4},
+        {"min_pct": 6.0, "points": 3},
+        {"min_pct": 5.0, "points": 2},
+        {"min_pct": 4.0, "points": 1}
+      ],
+      "class_points": {
+        "meme": 2,
+        "mid_cap": 0,
+        "large_cap": -99
+      },
+      "source_points": {
+        "dry_run_expansion": 1,
+        "cmc_trending": 1
+      },
+      "range_24h_min_pct": 12.0,
+      "range_24h_points": 1,
+      "change_24h_down_pct": -5.0,
+      "change_24h_down_points": 1
+    },
     "micro_cap_override": true,
     "freeze_tier_on_entry": true,
     "rsi_sell_mode": "level",

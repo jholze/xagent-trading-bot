@@ -28,7 +28,10 @@ class _Event:
     price: float
     source: str
     signal: str
+    cycle: int = 1
+    display_seq: int | None = None
     realized_usd: float | None = None
+    cycle_closed: bool = False
     open_qty: float = 0.0
     open_pct: float = 0.0
     open_usd: float = 0.0
@@ -85,16 +88,24 @@ def _sell_label(signal: str) -> str:
     return "Verkauf"
 
 
-def _buy_label(signal: str, dca_index: int) -> str:
+def _open_qty(lots: list[_Lot]) -> float:
+    return sum(lot.remaining for lot in lots if lot.remaining > 1e-12)
+
+
+def _buy_label(signal: str, dca_index: int, *, new_cycle: bool = False) -> str:
     sig = (signal or "").upper()
     if sig == "BUY_DCA" or "DCA" in sig:
         return f"DCA #{dca_index}"
+    if new_cycle:
+        return "Entry (neu)"
     return "Entry"
 
 
 def _event_icon(kind: str, label: str) -> str:
     if kind == "sell":
         return "🔴"
+    if label == "Entry (neu)":
+        return "🔄"
     if label.startswith("DCA"):
         return "🔵"
     return "🟢"
@@ -130,6 +141,7 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
     lots: list[_Lot] = []
     events: list[_Event] = []
     dca_count = 0
+    cycle = 1
 
     for order in orders:
         side = (order.get("side") or "").lower()
@@ -141,11 +153,18 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
         source = source_label(order.get("source", "auto"))
 
         if side == "buy" and amount > 0 and price > 0:
-            if signal.upper() == "BUY_DCA" or "DCA" in signal.upper():
+            was_closed = _open_qty(lots) <= 1e-12
+            new_cycle = was_closed and bool(events)
+            if new_cycle:
+                cycle += 1
+                dca_count = 0
+            sig_upper = signal.upper()
+            is_dca = sig_upper == "BUY_DCA" or "DCA" in sig_upper
+            if is_dca and not was_closed:
                 dca_count += 1
                 label = _buy_label(signal, dca_count)
             else:
-                label = _buy_label(signal, dca_count)
+                label = _buy_label(signal, dca_count, new_cycle=new_cycle)
             lot = _Lot(qty=amount, price=price, usdt=usdt, signal=signal, source=source, ts=ts, remaining=amount)
             lots.append(lot)
             events.append(
@@ -157,6 +176,8 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
                     price=price,
                     source=source,
                     signal=signal,
+                    cycle=cycle,
+                    display_seq=order.get("display_seq"),
                     lot=lot,
                 )
             )
@@ -181,7 +202,10 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
                     price=price,
                     source=source,
                     signal=signal,
+                    cycle=cycle,
+                    display_seq=order.get("display_seq"),
                     realized_usd=realized,
+                    cycle_closed=_open_qty(lots) <= 1e-12,
                 )
             )
 
@@ -196,9 +220,13 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             "price": ev.price,
             "source": ev.source,
             "signal": ev.signal,
+            "display_seq": ev.display_seq,
+            "cycle": ev.cycle,
         }
         if ev.kind == "sell":
             row["realized_usd"] = ev.realized_usd if ev.realized_usd is not None else 0.0
+            if ev.cycle_closed:
+                row["cycle_closed"] = True
         elif ev.lot and mark > 0 and ev.lot.remaining > 1e-12:
             row["open_qty"] = ev.lot.remaining
             row["open_pct"] = (mark / ev.lot.price - 1) * 100 if ev.lot.price > 0 else 0.0
@@ -211,6 +239,28 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             row["closed"] = True
         out.append(row)
     return out
+
+
+def cycle_for_display_seq(events: list[dict], display_seq: int | None) -> int:
+    if not events:
+        return 1
+    if display_seq:
+        for ev in events:
+            if ev.get("display_seq") == display_seq:
+                return int(ev.get("cycle", 1))
+    return int(events[-1].get("cycle", 1))
+
+
+def events_for_cycle(events: list[dict], cycle: int) -> list[dict]:
+    return [ev for ev in events if int(ev.get("cycle", 1)) == cycle]
+
+
+def cycle_realized_usd(events: list[dict]) -> float:
+    return sum(float(ev.get("realized_usd", 0) or 0) for ev in events if ev.get("kind") == "sell")
+
+
+def cycle_unreal_usd(events: list[dict]) -> float:
+    return sum(float(ev.get("open_usd", 0) or 0) for ev in events if ev.get("kind") == "entry")
 
 
 def _branch_char(index: int, total: int) -> str:
@@ -278,28 +328,41 @@ def build_position_trade_tree(
     amount = float(position.get("amount", 0) or 0)
     entry = float(position.get("average_entry", position.get("entry_price", 0)) or 0)
     mark = float(mark_price or 0)
-    unreal = (mark - entry) * amount if entry > 0 and mark > 0 else 0.0
-    value_usdt = mark * amount if mark > 0 else 0.0
-    realized = float(position.get("realized_pnl", 0) or 0)
 
-    events = replay_position_events(orders, mark_price=mark)
+    all_events = replay_position_events(orders, mark_price=mark)
+    current_cycle = int(all_events[-1].get("cycle", 1)) if all_events else 1
+    events = events_for_cycle(all_events, current_cycle)
+    prior_cycles = current_cycle - 1
+
+    realized = cycle_realized_usd(events)
+    unreal = (mark - entry) * amount if entry > 0 and mark > 0 and amount > 0 else cycle_unreal_usd(events)
+    value_usdt = mark * amount if mark > 0 and amount > 0 else 0.0
+
     hidden = max(0, len(events) - max_events)
     visible = events[-max_events:] if hidden else events
 
     lines: list[str] = []
-    total_branches = 1 + len(visible) + (1 if hidden else 0)
+    extra = (1 if prior_cycles else 0) + (1 if hidden else 0)
+    total_branches = 1 + len(visible) + extra
     idx = 0
     lines.append(f"   {_branch_char(idx, total_branches)} {format_gesamt_line(
         value_usdt=value_usdt, unreal_usd=unreal, realized_usd=realized,
     )}")
     idx += 1
 
-    for i, ev in enumerate(visible):
+    if prior_cycles:
+        lines.append(
+            f"   {_branch_char(idx, total_branches)} "
+            f"<i>··· {prior_cycles} frühere Zyklen ausgeblendet ···</i>"
+        )
+        idx += 1
+
+    for ev in visible:
         branch = _branch_char(idx, total_branches)
         idx += 1
         lines.append(f"   {branch} {format_event_line(ev)}")
 
     if hidden:
-        lines.append(f"   └─ … +{hidden} ältere Transaktionen")
+        lines.append(f"   └─ … +{hidden} ältere Transaktionen im Zyklus")
 
     return lines

@@ -165,7 +165,12 @@ def _hard_split_telegram(text: str, limit: int) -> list[str]:
     return chunks or [""]
 
 
-def chunk_positions_message(msg: str, limit: int = _TELEGRAM_CHUNK_LIMIT) -> list[str]:
+def chunk_positions_message(
+    msg: str,
+    limit: int = _TELEGRAM_CHUNK_LIMIT,
+    *,
+    annotate_pages: bool = True,
+) -> list[str]:
     """Split /positions HTML at position-card boundaries for Telegram's 4096 limit."""
     body = (msg or "").strip()
     if len(body) <= limit:
@@ -204,7 +209,7 @@ def chunk_positions_message(msg: str, limit: int = _TELEGRAM_CHUNK_LIMIT) -> lis
     if current:
         chunks.append(current)
 
-    if len(chunks) <= 1:
+    if len(chunks) <= 1 or not annotate_pages:
         return chunks
 
     total = len(chunks)
@@ -732,7 +737,7 @@ def send_positions_snapshot(
         if trade_result.order_type == "SELL":
             msg = f"{msg}\n\n{format_sell_trade_detail(trade_result)}"
 
-    chunks = chunk_positions_message(msg)
+    chunks = chunk_positions_message(msg, annotate_pages=(level == "full"))
     ok = True
     for chunk in chunks:
         if not send_telegram_message(chunk, chat_id=chat_id):

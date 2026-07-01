@@ -15,6 +15,17 @@ _TF_HOURS = {
     "1d": 24.0,
 }
 
+_24H_BARS = {
+    "15m": 96,
+    "30m": 48,
+    "1h": 24,
+    "2h": 12,
+    "4h": 6,
+    "6h": 4,
+    "12h": 2,
+    "1d": 1,
+}
+
 
 class MarketService:
     """Unified OHLCV and indicator access with multi-exchange fallback."""
@@ -42,6 +53,7 @@ class MarketService:
         close = float(df["close"].iloc[-1])
         atr = float(talib.ATR(df["high"], df["low"], df["close"], timeperiod=14).iloc[-1])
         atr_pct = (atr / close * 100.0) if close > 0 else 3.0
+        range_24h_pct, change_24h_pct = self._compute_24h_metrics(df, timeframe)
         if "upper" not in df.columns:
             upper, middle, lower = talib.BBANDS(df["close"], timeperiod=20)
             df["upper"], df["middle"], df["lower"] = upper, middle, lower
@@ -56,7 +68,25 @@ class MarketService:
             "vol_multiplier": float(vol_multiplier),
             "atr": atr,
             "atr_pct": float(atr_pct),
+            "range_24h_pct": range_24h_pct,
+            "change_24h_pct": change_24h_pct,
         }
+
+    @staticmethod
+    def _compute_24h_metrics(df: pd.DataFrame, timeframe: str) -> tuple[float | None, float | None]:
+        bars = _24H_BARS.get(timeframe, 24)
+        if df is None or df.empty or len(df) < bars + 1:
+            return None, None
+        window = df.tail(bars)
+        low = float(window["low"].min())
+        high = float(window["high"].max())
+        close_now = float(df["close"].iloc[-1])
+        close_old = float(df["close"].iloc[-(bars + 1)])
+        if close_now <= 0 or close_old <= 0 or low <= 0:
+            return None, None
+        range_pct = (high - low) / close_now * 100.0
+        change_pct = (close_now / close_old - 1.0) * 100.0
+        return float(range_pct), float(change_pct)
 
     def fetch_funding_rate(self, symbol: str) -> float | None:
         """Return perpetual funding rate in percent (e.g. -0.04 = -0.04%)."""

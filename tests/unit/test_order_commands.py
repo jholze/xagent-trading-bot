@@ -40,7 +40,7 @@ class TestOrderCommands(unittest.TestCase):
         self.scope_patch.stop()
 
     def test_orders_lists_page(self):
-        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders"))
             msg = mock_send.call_args[0][0]
             self.assertIn("Orderbuch", msg)
@@ -49,14 +49,14 @@ class TestOrderCommands(unittest.TestCase):
             self.assertNotIn("PENDING_CONFIRMATION", msg)
 
     def test_orders_detail_by_number(self):
-        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders 1"))
             msg = mock_send.call_args[0][0]
             self.assertIn("Order #1", msg)
             self.assertIn("ARIA", msg)
 
     def test_orders_page_command(self):
-        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders page 1"))
             self.assertIn("Seite", mock_send.call_args[0][0])
 
@@ -66,12 +66,29 @@ class TestOrderCommands(unittest.TestCase):
             self.assertIn("/orders", mock_send.call_args[0][0])
 
     def test_pagination_callback(self):
-        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send, \
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send, \
              patch("notifications.telegram_commands.order_commands.answer_callback_query"):
             self.assertTrue(order_commands.handle_callback({
                 "id": "cb1", "data": "orders_page:paper:1",
             }))
             self.assertIn("Orderbuch", mock_send.call_args[0][0])
+
+    def test_orders_page_has_clickable_number_buttons(self):
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn:
+            order_commands.send_orders_page(1)
+            mock_btn.assert_called_once()
+            buttons = mock_btn.call_args[0][1]
+            self.assertTrue(any(b.get("callback_data", "").startswith("order_detail:") for row in buttons for b in row))
+
+    def test_order_detail_callback(self):
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
+             patch("notifications.telegram_commands.order_commands.answer_callback_query"):
+            self.assertTrue(order_commands.handle_callback({
+                "id": "cb2", "data": "order_detail:paper:1",
+            }))
+            mock_btn.assert_called_once()
+            msg = mock_btn.call_args[0][0]
+            self.assertIn("Order #1", msg)
 
     def test_router_dispatches_orders_callback(self):
         from notifications.telegram_commands.router import dispatch_callback
