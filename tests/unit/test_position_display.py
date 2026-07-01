@@ -10,8 +10,10 @@ from notifications.telegram_commands.position_display import (
     chunk_positions_message,
     format_portfolio_summary,
     format_position_card,
+    format_position_compact_line,
     format_positions_message,
     format_sell_list_message,
+    format_sell_trade_detail,
     format_trade_banner,
     resolve_portfolio_context,
     resolve_position_by_display_index,
@@ -262,18 +264,94 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("├─", msg)
         self.assertNotIn("Bereits verkauft", msg)
 
-    def test_send_positions_snapshot_includes_trade_banner(self):
+    def test_compact_positions_message_one_line_per_coin(self):
+        active = [
+            {"symbol": "BTC/USDT", "amount": 1, "average_entry": 90000, "sold_percent": 0, "timeframe": "4h"},
+            {"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0, "timeframe": "1h"},
+        ]
+        prices = {"BTC/USDT": 95000.0, "ARIA/USDT": 0.05}
+        msg = format_positions_message(
+            active, prices, {"virtual_balance": 1000, "trades": []}, detail_level="compact",
+        )
+        self.assertIn("Positionen (2)", msg)
+        self.assertIn("BTC", msg)
+        self.assertIn("ARIA", msg)
+        self.assertNotIn("Entry", msg)
+
+    def test_summary_positions_message_omits_position_cards(self):
+        active = [{"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0}]
+        msg = format_positions_message(
+            active, {"ARIA/USDT": 0.05}, {"virtual_balance": 1000, "trades": []}, detail_level="summary",
+        )
+        self.assertIn("Gesamtwert", msg)
+        self.assertNotIn("Positionen (1)", msg)
+        self.assertNotIn("Entry", msg)
+
+    def test_format_sell_trade_detail_shows_remaining_position(self):
+        result = TradeResult(
+            True, "SELL", "HMSTR/USDT", amount=1000, price=0.0001873, usdt_amount=913, pnl=65.8,
+            order_id="ord-1",
+        )
+        with patch(
+            "notifications.telegram_commands.position_display._lookup_order_timeframe",
+            return_value="4h",
+        ), patch(
+            "notifications.telegram_commands.position_display._lookup_order_source",
+            return_value="Manuell",
+        ), patch(
+            "strategies.positions.get_position",
+            return_value={"amount": 4946988.5, "sold_percent": 0.3, "average_entry": 0.000186},
+        ):
+            msg = format_sell_trade_detail(result)
+        self.assertIn("Verkauf", msg)
+        self.assertIn("Verbleibend", msg)
+        self.assertIn("Manuell", msg)
+        self.assertIn("+65.8", msg)
+
+    def test_send_positions_snapshot_after_sell_is_summary_only(self):
+        result = TradeResult(
+            True, "SELL", "HMSTR/USDT", amount=1000, price=0.0001873, usdt_amount=913, pnl=65.8,
+            order_id="ord-1",
+        )
+        active = [{"symbol": "HMSTR/USDT", "amount": 1e6, "average_entry": 0.00018, "sold_percent": 0.1}]
+        with patch("telegram_notifier.send_telegram_message") as mock_send, \
+             patch("price_fetcher.get_prices_batch", return_value=({"HMSTR/USDT": 0.00019}, {})), \
+             patch("strategies.positions.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.position_display.resolve_portfolio_context", return_value={
+                 "history": {"virtual_balance": 20000, "realized_pnl": 3000, "trades": []},
+                 "cash_balance": 20000.0,
+                 "cash_label": "Cash (Sim)",
+                 "gate_holdings": None,
+             }), patch("services.trading_service.TradingService") as mock_svc, \
+             patch("notifications.telegram_commands.position_display._lookup_order_timeframe", return_value="4h"), \
+             patch("notifications.telegram_commands.position_display._lookup_order_source", return_value="Manuell"), \
+             patch("strategies.positions.get_position", return_value={"amount": 900000, "sold_percent": 0.2}):
+            mock_svc.return_value.mode_label.return_value = "paper"
+            send_positions_snapshot(trade_result=result)
+            msg = mock_send.call_args[0][0]
+            self.assertIn("Verkauf ausgeführt", msg)
+            self.assertIn("Gesamtwert", msg)
+            self.assertIn("Verkauf —", msg)
+            self.assertNotIn("Letzte Trades", msg)
+            self.assertLess(len(msg), 1500)
+
+    def test_send_positions_snapshot_after_buy_is_summary_without_cards(self):
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=50, price=0.04, usdt_amount=2)
         with patch("telegram_notifier.send_telegram_message") as mock_send, \
              patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
              patch("strategies.positions.list_active_positions", return_value=[]), \
-             patch("data_manager.load_trade_history", return_value={"virtual_balance": 5000, "trades": []}), \
-             patch("services.trading_service.TradingService") as mock_svc:
+             patch("notifications.telegram_commands.position_display.resolve_portfolio_context", return_value={
+                 "history": {"virtual_balance": 5000, "trades": []},
+                 "cash_balance": 5000.0,
+                 "cash_label": "Cash",
+                 "gate_holdings": None,
+             }), patch("services.trading_service.TradingService") as mock_svc:
             mock_svc.return_value.mode_label.return_value = "paper"
             send_positions_snapshot(trade_result=result)
             msg = mock_send.call_args[0][0]
             self.assertIn("Kauf ausgeführt", msg)
-            self.assertIn("Letzte Trades", msg)
+            self.assertIn("Gesamtwert", msg)
+            self.assertNotIn("Letzte Trades", msg)
 
 
 if __name__ == "__main__":

@@ -30,9 +30,13 @@ from telegram_notifier import (
     send_telegram_buttons,
 )
 
+_COMMAND_DISPATCH: dict[str, str] = {
+    "positions_full": "/positions full",
+}
+
 MENU_SECTIONS: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
-    ("handel", ["positions", "buy", "sell", "orders", "risk"]),
+    ("handel", ["positions", "positions_full", "buy", "sell", "orders", "risk"]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
     ("transparenz", ["morning", "decisions", "why", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
@@ -46,6 +50,11 @@ _ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS for k in keys]
 
 def all_menu_command_keys() -> list[str]:
     return list(_ALL_COMMAND_KEYS)
+
+
+def command_dispatch_text(key: str) -> str:
+    """Telegram text for a menu key (supports multi-word commands)."""
+    return _COMMAND_DISPATCH.get(key, f"/{key}")
 
 
 def _reply_keyboard_enabled() -> bool:
@@ -74,7 +83,7 @@ def _section_reply_rows(section_id: str, lang: str | None = None) -> list[list[s
     rows: list[list[str]] = []
     row: list[str] = []
     for key in _SECTION_KEYS[section_id]:
-        row.append(f"/{key}")
+        row.append(command_dispatch_text(key))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -125,7 +134,7 @@ def _section_text(section_id: str, lang: str | None = None) -> str:
     lang = lang or current_language()
     lines = [f"<b>{section_title(section_id, lang)}</b>", "", section_pick(lang)]
     for key in _SECTION_KEYS[section_id]:
-        lines.append(f"• <code>/{key}</code> — {_command_label(key, lang)}")
+        lines.append(f"• <code>{command_dispatch_text(key)}</code> — {_command_label(key, lang)}")
     return "\n".join(lines)
 
 
@@ -251,15 +260,16 @@ def handle_callback(callback_query: dict) -> bool:
             if callback_id:
                 answer_callback_query(callback_id, callback_unknown_command())
             return True
+        cmd_text = command_dispatch_text(cmd_key)
         if callback_id:
-            answer_callback_query(callback_id, f"/{cmd_key}")
+            answer_callback_query(callback_id, cmd_text)
         from notifications.telegram_commands.command_context import clear_context, set_chat_id
         from notifications.telegram_commands.router import dispatch_command
 
         if chat_id:
             set_chat_id(chat_id)
             clear_context(chat_id)
-        dispatch_command(f"/{cmd_key}")
+        dispatch_command(cmd_text)
         return True
 
     return False

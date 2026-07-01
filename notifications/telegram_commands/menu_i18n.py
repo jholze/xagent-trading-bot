@@ -228,9 +228,11 @@ def build_section_help_message(section_id: str, lang: str | None = None) -> str:
     if help_cfg.get("intro"):
         lines.append(help_cfg["intro"])
         lines.append("")
+    from notifications.telegram_commands.menu_commands import command_dispatch_text
+
     for key in keys:
         item = help_cfg.get("items", {}).get(key, {})
-        lines.append(f"<b>/{key}</b> — {command_description(key, lang)}")
+        lines.append(f"<b>{command_dispatch_text(key)}</b> — {command_description(key, lang)}")
         if item.get("usage"):
             lines.append(f"  {item['usage']}")
         if item.get("example"):

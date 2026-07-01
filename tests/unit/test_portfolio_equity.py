@@ -174,8 +174,8 @@ class TestPortfolioEquity(unittest.TestCase):
         ) as mock_send:
             from notifications.telegram_commands.portfolio_commands import _build_positions
 
-            _build_positions("12345")
-            mock_send.assert_called_once_with(fast=True, chat_id="12345")
+            _build_positions("12345", detail_level="compact")
+            mock_send.assert_called_once_with(fast=True, chat_id="12345", detail_level="compact")
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
@@ -186,8 +186,8 @@ class TestPortfolioEquity(unittest.TestCase):
         ) as mock_send:
             from notifications.telegram_commands.portfolio_commands import _build_positions
 
-            _build_positions("12345")
-            mock_send.assert_called_once_with(fast=True, chat_id="12345")
+            _build_positions("12345", detail_level="compact")
+            mock_send.assert_called_once_with(fast=True, chat_id="12345", detail_level="compact")
 
 
 if __name__ == "__main__":

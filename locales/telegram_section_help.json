@@ -30,8 +30,12 @@
         "intro": "Kaufen, verkaufen, Portfolio und Risiko — mit Bestätigung durch den Risk Manager.",
         "items": {
           "positions": {
-            "usage": "Portfolio mit Kursen, PnL, offenen Positionen und letzten Trades.",
+            "usage": "Kompakte Portfolio-Übersicht — eine Zeile pro offener Position.",
             "example": "<code>/positions</code>"
+          },
+          "positions_full": {
+            "usage": "Volle Details: Trade-Bäume, Entry, letzte Trades.",
+            "example": "<code>/positions full</code>"
           },
           "buy": {
             "usage": "Zuerst /buy → nummerierte Liste. Danach nur: <code>1 25</code> (Nr. + USDT).",
@@ -221,8 +225,12 @@
         "intro": "Buy, sell, portfolio and risk — with Risk Manager confirmation.",
         "items": {
           "positions": {
-            "usage": "Portfolio with prices, PnL, open positions and recent trades.",
+            "usage": "Compact portfolio overview — one line per open position.",
             "example": "<code>/positions</code>"
+          },
+          "positions_full": {
+            "usage": "Full details: trade trees, entry prices, recent trades.",
+            "example": "<code>/positions full</code>"
           },
           "buy": {
             "usage": "First /buy → numbered list. Then send only: <code>1 25</code> (no. + USDT).",

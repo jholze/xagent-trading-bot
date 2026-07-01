@@ -280,6 +280,92 @@ def format_position_card(
     )
 
 
+def format_position_compact_line(
+    index: int,
+    p: dict,
+    price: float,
+    *,
+    price_source: str = None,
+) -> str:
+    from notifications.coin_links import format_ticker_html
+
+    sym = position_symbol(p)
+    ticker_html = format_ticker_html(sym.split("/")[0], symbol_suffix="")
+    m = _position_metrics(p, price)
+    icon = _pnl_emoji(m["unreal"])
+    missing = " · <i>kein Kurs</i>" if price_source == "missing" and m["value_usdt"] <= 0 else ""
+    tf = p.get("timeframe", "4h")
+    return (
+        f"<b>{index}.</b> {ticker_html} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
+        f"· <b>${m['value_usdt']:.0f}</b> · PnL <b>${m['unreal']:+.0f}</b>{missing}"
+    )
+
+
+def _lookup_order_timeframe(order_id: str) -> str | None:
+    if not order_id:
+        return None
+    from data_manager import load_orders, resolve_ledger_scope
+
+    for order in load_orders(resolve_ledger_scope()).get("orders", []):
+        if order.get("id") == order_id:
+            return str(order.get("timeframe") or "4h")
+    return None
+
+
+def _lookup_order_source(order_id: str) -> str:
+    if not order_id:
+        return "manual"
+    from data_manager import load_orders, resolve_ledger_scope
+
+    for order in load_orders(resolve_ledger_scope()).get("orders", []):
+        if order.get("id") == order_id:
+            return source_label(order.get("source", "manual"))
+    return "manual"
+
+
+def format_sell_trade_detail(result) -> str:
+    from price_fetcher import format_token_amount, format_usdt_price
+    from strategies.positions import get_position
+
+    sym = result.symbol or ""
+    tf = _lookup_order_timeframe(getattr(result, "order_id", "")) or "4h"
+    amount = float(result.amount or 0)
+    price = float(result.price or 0)
+    usdt = float(result.usdt_amount or 0)
+    pnl = float(result.pnl or 0) if result.pnl is not None else 0.0
+    ticker = sym.replace("/USDT", "")
+    from notifications.coin_links import format_ticker_html
+
+    ticker_html = format_ticker_html(ticker, symbol_suffix="")
+    entry = (price - (pnl / amount)) if amount > 0 and pnl else 0.0
+    trade_pct = ((price / entry) - 1) * 100 if entry > 0 and price > 0 else 0.0
+
+    pos = get_position(sym, tf)
+    remaining = float(pos.get("amount", 0) or 0)
+    sold_pct = float(pos.get("sold_percent", 0) or 0) * 100
+    src = _lookup_order_source(getattr(result, "order_id", ""))
+
+    lines = [
+        f"<b>Verkauf — {ticker_html}</b>",
+        (
+            f"   └ <code>{format_token_amount(amount)}</code> @ "
+            f"{format_usdt_price(price)} · <b>${usdt:.0f}</b>"
+        ),
+    ]
+    if entry > 0:
+        lines.append(
+            f"   └ Entry {format_usdt_price(entry)} · Trade-PnL "
+            f"<b>${pnl:+.1f}</b> (<code>{trade_pct:+.1f}%</code>)"
+        )
+    elif pnl:
+        lines.append(f"   └ Trade-PnL <b>${pnl:+.1f}</b>")
+
+    remain_part = f"<code>{format_token_amount(remaining)}</code> {ticker}" if remaining > 0 else "<i>geschlossen</i>"
+    sold_note = f" · {sold_pct:.0f}% verkauft" if sold_pct > 0 else ""
+    lines.append(f"   └ Verbleibend {remain_part}{sold_note} · {tf} · <i>{src}</i>")
+    return "\n".join(lines)
+
+
 def _trade_quantity_label(t: dict) -> str:
     from price_fetcher import format_token_amount
 
@@ -320,6 +406,7 @@ def format_portfolio_summary(
     positions_market_value: float = 0.0,
     prices: dict = None,
     fast_daily_nav: bool = False,
+    include_position_header: bool = True,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
@@ -350,7 +437,7 @@ def format_portfolio_summary(
     except Exception:
         pass
 
-    return (
+    body = (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
         f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
@@ -358,9 +445,11 @@ def format_portfolio_summary(
         f"<i>vs. Start ${initial:,.0f}</i>\n"
         f"📈 Unrealisiert <b>${total_unreal:+.1f}</b> · "
         f"✅ Realisiert <b>${realized:+.1f}</b>\n"
-        f"{daily_line}\n"
-        f"<b>Positionen ({position_count})</b>"
+        f"{daily_line}"
     )
+    if include_position_header:
+        body += f"<b>Positionen ({position_count})</b>"
+    return body.rstrip() + ("\n" if body else "")
 
 
 def format_positions_message(
@@ -377,8 +466,24 @@ def format_positions_message(
     gate_holdings: list = None,
     price_sources: dict = None,
     fast_daily_nav: bool = False,
+    detail_level: str = "full",
 ) -> str:
+    level = (detail_level or "full").strip().lower()
+
     if not active:
+        if level == "summary" and not title:
+            return format_portfolio_summary(
+                history,
+                0.0,
+                0,
+                mode_label,
+                cash_balance=cash_balance,
+                cash_label=cash_label,
+                positions_market_value=0.0,
+                prices=prices,
+                fast_daily_nav=fast_daily_nav,
+                include_position_header=False,
+            )
         cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
         empty = (
             "<b>📊 Portfolio</b>\n\n"
@@ -421,11 +526,27 @@ def format_positions_message(
             positions_market_value=positions_market_value,
             prices=prices,
             fast_daily_nav=fast_daily_nav,
+            include_position_header=level != "summary",
         ) + "\n"
 
     if gate_holdings:
         msg += "\n\n<b>Gate Spot-Bestände</b>\n"
         msg += "\n".join(format_holdings_lines(gate_holdings, prices))
+
+    if level == "summary":
+        return msg.rstrip()
+
+    sources = price_sources or {}
+    if level == "compact":
+        compact_lines = [
+            format_position_compact_line(
+                i, p, price, price_source=sources.get(position_symbol(p)),
+            )
+            for i, (p, price) in enumerate(rows, 1)
+        ]
+        if compact_lines:
+            msg += "\n".join(compact_lines)
+        return msg.rstrip()
 
     show_tree, max_events = _positions_display_config()
     orders_grouped = {}
@@ -436,7 +557,6 @@ def format_positions_message(
         orders_grouped = orders_by_position_key(resolve_ledger_scope())
 
     cards = []
-    sources = price_sources or {}
     for i, (p, price) in enumerate(rows, 1):
         sym = position_symbol(p)
         tf = p.get("timeframe", "4h")
@@ -546,12 +666,21 @@ def format_trade_banner(result) -> str:
     )
 
 
+def _resolve_snapshot_detail_level(trade_result, detail_level: str | None) -> str:
+    if detail_level:
+        return detail_level
+    if trade_result is not None and getattr(trade_result, "executed", False):
+        return "summary"
+    return "compact"
+
+
 def send_positions_snapshot(
     trade_result=None,
     mode_label: str = None,
     *,
     fast: bool = True,
     chat_id: str | int | None = None,
+    detail_level: str | None = None,
 ) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
     from concurrent.futures import ThreadPoolExecutor
@@ -584,20 +713,24 @@ def send_positions_snapshot(
     else:
         prices, price_sources = {}, {}
     mode = mode_label or TradingService().mode_label()
+    level = _resolve_snapshot_detail_level(trade_result, detail_level)
     msg = format_positions_message(
         active,
         prices,
         ctx["history"],
         mode_label=mode,
-        include_trades=True,
+        include_trades=(level == "full"),
         cash_balance=ctx["cash_balance"],
         cash_label=ctx["cash_label"],
         gate_holdings=ctx.get("gate_holdings"),
         price_sources=price_sources,
         fast_daily_nav=fast,
+        detail_level=level,
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"
+        if trade_result.order_type == "SELL":
+            msg = f"{msg}\n\n{format_sell_trade_detail(trade_result)}"
 
     chunks = chunk_positions_message(msg)
     ok = True

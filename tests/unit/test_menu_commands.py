@@ -16,7 +16,8 @@ from notifications.telegram_commands.menu_i18n import back_label, help_label, se
 class TestMenuCommands(unittest.TestCase):
     def test_all_commands_in_sections(self):
         keys = all_menu_command_keys()
-        self.assertEqual(len(keys), 39)
+        self.assertEqual(len(keys), 40)
+        self.assertIn("positions_full", keys)
         self.assertIn("lc", keys)
         self.assertIn("sandbox_results", keys)
         self.assertIn("backtest_lock", keys)
@@ -31,6 +32,7 @@ class TestMenuCommands(unittest.TestCase):
     def test_section_reply_rows_include_commands_and_back(self):
         rows = _section_reply_rows("handel")
         flat = [cell for row in rows for cell in row]
+        self.assertIn("/positions full", flat)
         self.assertIn("/buy", flat)
         self.assertIn(back_label("de"), flat)
         self.assertIn(help_label("de"), flat)
@@ -60,6 +62,13 @@ class TestMenuCommands(unittest.TestCase):
              patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock_dispatch:
             self.assertTrue(handle_callback(cb))
             mock_dispatch.assert_called_once_with("/positions")
+
+    def test_callback_run_dispatches_positions_full(self):
+        cb = {"id": "cq3", "data": "menu:run:positions_full", "message": {"chat": {"id": 1}, "message_id": 2}}
+        with patch("notifications.telegram_commands.menu_commands.answer_callback_query"), \
+             patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock_dispatch:
+            self.assertTrue(handle_callback(cb))
+            mock_dispatch.assert_called_once_with("/positions full")
 
 
 if __name__ == "__main__":

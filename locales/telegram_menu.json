@@ -31,6 +31,7 @@
             "buy",
             "sell",
             "positions",
+            "positions_full",
             "orders",
             "risk"
           ]
@@ -139,8 +140,12 @@
         "hint": "❌ <b>/remove</b> — Coin von der Liste entfernen\n\nZuerst <code>/list</code> senden, dann Nummer wählen.\nBeispiel: <code>/remove 2</code>"
       },
       "positions": {
-        "description": "Portfolio, Kurse und PnL",
-        "help_line": "<code>/positions</code> oder <code>/portfolio</code> — Portfolio mit Kurse, PnL und letzte Trades"
+        "description": "Portfolio-Kurzliste",
+        "help_line": "<code>/positions</code> — Kompakte Übersicht (1 Zeile pro Coin)"
+      },
+      "positions_full": {
+        "description": "Portfolio mit Trade-Details",
+        "help_line": "<code>/positions full</code> — Volle Details mit Trade-Bäumen"
       },
       "buy": {
         "description": "Coin kaufen",
@@ -332,6 +337,7 @@
             "buy",
             "sell",
             "positions",
+            "positions_full",
             "orders",
             "risk"
           ]
@@ -440,8 +446,12 @@
         "hint": "❌ <b>/remove</b> — Remove coin from list\n\nSend <code>/list</code> first, then pick a number.\nExample: <code>/remove 2</code>"
       },
       "positions": {
-        "description": "Portfolio, prices and PnL",
-        "help_line": "<code>/positions</code> or <code>/portfolio</code> — Portfolio with prices, PnL and recent trades"
+        "description": "Portfolio compact list",
+        "help_line": "<code>/positions</code> — Compact overview (one line per coin)"
+      },
+      "positions_full": {
+        "description": "Portfolio with trade details",
+        "help_line": "<code>/positions full</code> — Full details with trade trees"
       },
       "buy": {
         "description": "Buy coin",
