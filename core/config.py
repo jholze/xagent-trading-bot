@@ -336,7 +336,7 @@ class BotConfig:
             "market_cap_min_usd": 5_000_000,
             "market_cap_max_usd": 100_000_000,
             "watch_ttl_hours": 24,
-            "setup_modes": ["buy_signal", "setup_zone", "trending"],
+            "setup_modes": ["buy_signal", "setup_zone", "trending", "watchlist"],
             "vol_spike_mult": 2.0,
             "vol_avg_period": 20,
             "ema_period": 9,
@@ -344,7 +344,7 @@ class BotConfig:
             "block_buy_if_rsi_4h_above": 75,
             "fakeout_min_body_atr_ratio": 0.3,
             "cooldown_after_reject_hours": 2,
-            "max_watched_coins": 15,
+            "max_watched_coins": 40,
             "min_poll_gap_sec_per_coin": 20,
         }
         raw = self._raw.get("entry_sensor_15m", {})

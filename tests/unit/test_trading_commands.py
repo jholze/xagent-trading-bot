@@ -25,6 +25,25 @@ class TestTradingCommands(unittest.TestCase):
             self.assertTrue(trading_commands.handle("/buy 1 200"))
             mock_confirm.assert_called_once()
 
+    def test_sell_list_chunks_long_message(self):
+        active = [
+            {
+                "symbol": f"COIN{i}/USDT",
+                "timeframe": "1h",
+                "amount": 1000.0,
+                "average_entry": 0.5,
+            }
+            for i in range(50)
+        ]
+        prices = {f"COIN{i}/USDT": 0.65 for i in range(50)}
+        with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value=prices), \
+             patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send:
+            self.assertTrue(trading_commands.handle("/sell"))
+            self.assertGreater(mock_send.call_count, 1)
+            for call in mock_send.call_args_list:
+                self.assertLessEqual(len(call[0][0]), 4096)
+
     def test_sell_by_symbol_requests_confirmation(self):
         active = [
             {"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 1000.0, "average_entry": 0.5},

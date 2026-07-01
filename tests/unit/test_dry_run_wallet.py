@@ -50,6 +50,7 @@ class TestDryRunWallet(unittest.TestCase):
             }
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
                  patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
@@ -72,6 +73,7 @@ class TestDryRunWallet(unittest.TestCase):
             }
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=False), \
                  patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):

@@ -155,3 +155,38 @@ def max_watched_reached(max_coins: int) -> bool:
         return False
     prune_ttl()
     return len(_load()["coins"]) >= max_coins
+
+
+def seed_from_watchlist(cfg: dict) -> int:
+    """Fill 15m watch list from active watchlist coins (no open position, not large cap)."""
+    modes = cfg.get("setup_modes") or []
+    if "watchlist" not in modes or not cfg.get("enabled", True):
+        return 0
+
+    from data_manager import load_effective_watchlist
+    from intelligence.strategy_backtest import classify_coin
+    from strategies.positions import list_active_positions
+
+    max_coins = int(cfg.get("max_watched_coins", 15))
+    ttl_hours = float(cfg.get("watch_ttl_hours", 24))
+    prune_ttl()
+    held = {p["symbol"] for p in list_active_positions()}
+    added = 0
+    for coin in load_effective_watchlist():
+        if max_watched_reached(max_coins):
+            break
+        if not coin.get("active", True):
+            continue
+        sym = coin.get("symbol", "")
+        if not sym or sym in held or is_watched(sym):
+            continue
+        if classify_coin(sym, coin) == "large_cap":
+            continue
+        set_watch(
+            sym,
+            str(coin.get("timeframe") or "4h"),
+            reason="watchlist",
+            ttl_hours=ttl_hours,
+        )
+        added += 1
+    return added

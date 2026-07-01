@@ -5,6 +5,7 @@ from notifications.telegram_commands.utils import safe_float, safe_int
 from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
 from notifications.telegram_commands.position_display import (
+    chunk_positions_message,
     format_sell_list_message,
     position_symbol,
     resolve_position_by_display_index,
@@ -83,7 +84,8 @@ def handle(text: str) -> bool:
             symbols = [position_symbol(p) for p in active]
             prices = get_prices_batch(symbols)
             activate_command("sell")
-            send_telegram_message(format_sell_list_message(active, prices))
+            for chunk in chunk_positions_message(format_sell_list_message(active, prices)):
+                send_telegram_message(chunk)
             return True
 
         active = list_active_positions()

@@ -153,6 +153,36 @@ class TestWatch15mState:
         watch_15m_state.reset_cache_for_tests()
         assert watch_15m_state.is_watched("XPL/USDT")
 
+    def test_seed_from_watchlist_skips_held_and_large_cap(self, monkeypatch):
+        watch_15m_state.reset_cache_for_tests()
+        cfg = {
+            **DEFAULT_CFG,
+            "setup_modes": ["watchlist"],
+            "max_watched_coins": 10,
+        }
+        wl = [
+            {"symbol": "BEAT/USDT", "active": True, "timeframe": "4h"},
+            {"symbol": "BTC/USDT", "active": True, "timeframe": "4h"},
+            {"symbol": "H/USDT", "active": True, "timeframe": "4h"},
+        ]
+        monkeypatch.setattr(
+            "data_manager.load_effective_watchlist",
+            lambda: wl,
+        )
+        monkeypatch.setattr(
+            "strategies.positions.list_active_positions",
+            lambda: [{"symbol": "BEAT/USDT"}],
+        )
+        with patch(
+            "intelligence.strategy_backtest.classify_coin",
+            lambda sym, _: "large_cap" if sym == "BTC/USDT" else "mid_cap",
+        ):
+            added = watch_15m_state.seed_from_watchlist(cfg)
+        assert added == 1
+        assert not watch_15m_state.is_watched("BEAT/USDT")
+        assert not watch_15m_state.is_watched("BTC/USDT")
+        assert watch_15m_state.is_watched("H/USDT")
+
 
 class TestDecisionEngineSensorIntegration:
     def test_evaluate_lifts_hold_to_buy_with_pending_metrics(self):

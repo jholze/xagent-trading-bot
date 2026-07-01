@@ -21,6 +21,8 @@ from strategies import watch_15m_state
 _loop_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _last_poll_at: dict[str, float] = {}
+_last_watch_seed_at: float = 0.0
+_WATCH_SEED_INTERVAL_SEC = 600.0
 
 
 def _coin_by_symbol(symbol: str) -> dict | None:
@@ -45,7 +47,21 @@ def _should_poll_symbol(symbol: str, cfg: dict, now: float | None = None) -> boo
 
 
 def reset_poll_state_for_tests() -> None:
+    global _last_watch_seed_at
     _last_poll_at.clear()
+    _last_watch_seed_at = 0.0
+
+
+def _maybe_seed_watches(cfg: dict, *, force: bool = False) -> int:
+    global _last_watch_seed_at
+    if "watchlist" not in (cfg.get("setup_modes") or []):
+        return 0
+    now = time.monotonic()
+    if not force and now - _last_watch_seed_at < _WATCH_SEED_INTERVAL_SEC:
+        return 0
+    added = watch_15m_state.seed_from_watchlist(cfg)
+    _last_watch_seed_at = now
+    return added
 
 
 def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict, market_svc) -> None:
@@ -106,6 +122,11 @@ def _poll_once(orchestrator) -> None:
 
     watch_15m_state.prune_ttl()
     watched = watch_15m_state.list_watched()
+    if not watched:
+        _maybe_seed_watches(cfg, force=True)
+        watched = watch_15m_state.list_watched()
+    else:
+        _maybe_seed_watches(cfg)
     if not watched:
         return
 
@@ -179,9 +200,11 @@ def start_entry_sensor_loop(orchestrator) -> threading.Thread | None:
         name="entry-sensor-15m",
     )
     _loop_thread.start()
+    seeded = _maybe_seed_watches(cfg, force=True)
     log(
         f"15m entry sensor loop started (mode={cfg.get('mode', 'shadow')}, "
-        f"interval={cfg.get('poll_interval_sec', 20)}s)",
+        f"interval={cfg.get('poll_interval_sec', 20)}s"
+        f"{f', seeded {seeded} watches' if seeded else ''})",
         "INFO",
     )
     return _loop_thread

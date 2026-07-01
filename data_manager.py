@@ -725,6 +725,8 @@ def _load_live_trade_history_json() -> dict:
 
 
 def load_live_trade_history():
+    if is_demo_mode():
+        return load_trade_history_document("demo")
     cfg = get_config()
     if _ledger_reads_mongo("live", cfg):
         try:

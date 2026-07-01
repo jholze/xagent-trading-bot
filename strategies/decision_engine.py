@@ -103,17 +103,30 @@ class DecisionEngine:
         setup = self._in_setup_zone(market, market.strategy_params or {})
         modes = cfg.get("setup_modes") or []
         trending = "trending" in modes and "cmc_trending" in (technical.sources or [])
+        on_watchlist = "watchlist" in modes and any(
+            c.get("symbol") == symbol and c.get("active", True)
+            for c in load_effective_watchlist()
+        )
         should_watch = (
             (tech_buy and "buy_signal" in modes)
             or setup
             or trending
             or is_buy(normalized)
+            or on_watchlist
         )
         if not should_watch or market.has_position:
             return
         if watch_15m_state.max_watched_reached(int(cfg.get("max_watched_coins", 15))):
             return
-        reason = "buy_signal" if tech_buy else ("setup_zone" if setup else "trending")
+        reason = (
+            "buy_signal"
+            if tech_buy
+            else "setup_zone"
+            if setup
+            else "trending"
+            if trending
+            else "watchlist"
+        )
         watch_15m_state.set_watch(
             symbol,
             market.timeframe,

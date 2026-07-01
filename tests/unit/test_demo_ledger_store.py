@@ -10,11 +10,15 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from data_manager import (
+    compute_sim_cash_from_orders,
+    load_live_trade_history,
     load_orders,
     load_positions_document,
+    load_trade_history,
     load_trade_history_document,
     reconcile_demo_trade_history_on_startup,
     resolve_ledger_scope,
+    _load_orders_json,
 )
 from storage.ledger_router import DemoLedgerStore, resolve_ledger_backend, resolve_store
 from strategies.positions import bootstrap_positions, clear_positions_memory, count_open_positions
@@ -162,6 +166,39 @@ class TestDemoLedgerStore(unittest.TestCase):
         self.assertAlmostEqual(history["virtual_balance"], expected_cash, places=2)
         self.assertNotAlmostEqual(history["virtual_balance"], 4000.0, places=2)
         self.assertEqual(reconcile_demo_trade_history_on_startup(self.cfg)["virtual_balance"], history["virtual_balance"])
+
+    def test_load_live_trade_history_in_demo_matches_order_reconciled_cash(self):
+        """Regression: demo portfolio read live Mongo ledger and showed stale $100k cash."""
+        history_path = os.path.join(self.tmp.name, "live_trade_history.demo.json")
+        with open(history_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"virtual_balance": 100000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []},
+                f,
+            )
+        with patch.dict(os.environ, {"DEMO_MODE": "1"}), \
+             patch("data_manager.LIVE_TRADE_HISTORY_FILE", "live_trade_history.demo.json"), \
+             patch("data_manager.get_data_file", side_effect=lambda name: history_path if "live_trade" in name else self.orders_path), \
+             patch("data_manager._ledger_reads_mongo_trade_history", return_value=False), \
+             patch(
+                 "data_manager._mongo_ledger_store",
+             ) as mock_mongo:
+            mock_mongo.return_value.load_trade_history.return_value = {
+                "virtual_balance": 100000.0,
+                "realized_pnl": 0.0,
+                "trades": [],
+            }
+            from core.portfolio_baseline import initial_capital
+
+            initial = initial_capital(scope="demo", config=self.cfg)
+            filled = [
+                o for o in _load_orders_json("demo").get("orders", []) if o.get("status") == "filled"
+            ]
+            expected_cash = compute_sim_cash_from_orders(filled, initial)
+            live_hist = load_live_trade_history()
+            scoped_hist = load_trade_history()
+        self.assertAlmostEqual(live_hist["virtual_balance"], expected_cash, places=2)
+        self.assertAlmostEqual(scoped_hist["virtual_balance"], expected_cash, places=2)
+        self.assertNotAlmostEqual(live_hist["virtual_balance"], 100000.0, places=2)
 
 
 if __name__ == "__main__":
