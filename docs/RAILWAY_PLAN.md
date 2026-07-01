@@ -162,18 +162,26 @@ Keep secrets out of `config.json`; use env overrides in `core/config.py` where n
 
 ## Quick deploy (step by step)
 
-### 1. MongoDB Atlas
+### 1. MongoDB auf Railway (empfohlen)
 
-- Create cluster (M0 free tier is enough for demo)
-- Database: `xagent_test` (same as local demo)
-- Network access: allow Railway egress (`0.0.0.0/0` initially)
-- Copy `MONGODB_URI`
+Im Railway-Projekt: **+ New → Database → MongoDB** (oder CLI: `railway add --database mongo`).
 
-**One-time seed** from your Mac (optional, if you want existing orders/positions):
+Der Mongo-Service stellt bereit: `MONGO_URL`, `MONGOHOST`, `MONGOPORT`, …
+
+Im **Bot-Service** → Variables → **Add Reference**:
+
+- Variable: `MONGO_URL`
+- Referenz: Mongo-Service → `MONGO_URL`
+
+`storage/mongo_client.py` nutzt `MONGODB_URI` oder `MONGO_URL`.
+
+Zusätzlich setzen: `MONGODB_DB=xagent_test`
+
+**Optional — lokale Demo-Daten importieren** (nach erstem Deploy, von deinem Mac):
 
 ```bash
-cd /path/to/trading_bot
-export MONGODB_URI='mongodb+srv://...'
+# MONGO_URL aus Railway Bot-Service kopieren (oder railway run)
+export MONGO_URL='mongodb://...'
 export MONGODB_DB=xagent_test
 python3 scripts/mongo_migrate_json.py --scope demo --test-db
 ```

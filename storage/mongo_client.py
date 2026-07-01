@@ -28,6 +28,7 @@ def resolve_mongo_uri(config: dict | None = None) -> str:
     cfg = mongo_config(config)
     return (
         os.environ.get("MONGODB_URI")
+        or os.environ.get("MONGO_URL")  # Railway Mongo plugin
         or cfg.get("uri")
         or DEFAULT_URI
     )
