@@ -52,6 +52,39 @@ def resolve_position_by_display_index(active: list, prices: dict, index: int):
     return None
 
 
+def normalize_position_symbol_query(raw: str) -> str:
+    """Accept RAVE, rave/usdt, RAVE/USDT → canonical pair."""
+    s = (raw or "").strip().upper()
+    if not s:
+        return ""
+    if "/" in s:
+        base, _, quote = s.partition("/")
+        return f"{base}/{quote or 'USDT'}"
+    return f"{s}/USDT"
+
+
+def resolve_position_by_symbol(active: list, query: str, prices: dict | None = None):
+    """Find open position by ticker or pair (e.g. RAVE or RAVE/USDT)."""
+    sym = normalize_position_symbol_query(query)
+    if not sym:
+        return None
+    matches = [p for p in active if position_symbol(p).upper() == sym]
+    if not matches:
+        ticker = sym.replace("/USDT", "")
+        matches = [
+            p for p in active
+            if position_symbol(p).upper().replace("/USDT", "") == ticker
+        ]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    if prices:
+        sorted_matches = sort_positions_by_value(matches, prices)
+        return sorted_matches[0]
+    return matches[0]
+
+
 def _entry_fallback_price(p: dict) -> float:
     for key in ("average_entry", "entry_price", "last_buy_price"):
         value = float(p.get(key, 0) or 0)
@@ -443,7 +476,7 @@ def format_sell_list_message(active: list, prices: dict) -> str:
     )
     from notifications.telegram_commands.menu_i18n import context_footer, current_language
 
-    return msg + "\n\n" + context_footer("sell", current_language(), example="1 30")
+    return msg + "\n\n" + context_footer("sell", current_language(), example="RAVE 30")
 
 
 def load_trade_history_safe() -> dict:

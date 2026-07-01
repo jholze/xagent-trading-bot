@@ -151,11 +151,10 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         return f"/buy {sym} {usdt}"
 
     if command == "sell":
-        if not parts[0].replace(".", "").isdigit():
-            return None
-        num = parts[0]
         pct = parts[1] if len(parts) > 1 else "50"
-        return f"/sell {num} {pct}"
+        if parts[0].replace(".", "").isdigit():
+            return f"/sell {parts[0]} {pct}"
+        return f"/sell {parts[0].upper()} {pct}"
 
     if command == "add":
         return f"/add {parts[0].upper()}"

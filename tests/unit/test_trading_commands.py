@@ -25,6 +25,36 @@ class TestTradingCommands(unittest.TestCase):
             self.assertTrue(trading_commands.handle("/buy 1 200"))
             mock_confirm.assert_called_once()
 
+    def test_sell_by_symbol_requests_confirmation(self):
+        active = [
+            {"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 1000.0, "average_entry": 0.5},
+        ]
+        with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"RAVE/USDT": 0.65}), \
+             patch("notifications.telegram_commands.trading_commands.get_position", return_value={"amount": 1000.0}), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm:
+            self.assertTrue(trading_commands.handle("/sell RAVE 30"))
+            mock_confirm.assert_called_once()
+            kwargs = mock_confirm.call_args.kwargs
+            self.assertEqual(kwargs["symbol"], "RAVE/USDT")
+            self.assertEqual(kwargs["timeframe"], "1h")
+            self.assertAlmostEqual(kwargs["pct"], 0.3)
+
+    def test_sell_by_number_uses_position_timeframe(self):
+        active = [
+            {"symbol": "SOL/USDT", "timeframe": "1h", "amount": 10.0, "average_entry": 100.0},
+            {"symbol": "BTC/USDT", "timeframe": "4h", "amount": 0.1, "average_entry": 90000.0},
+        ]
+        prices = {"SOL/USDT": 150.0, "BTC/USDT": 95000.0}
+        with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
+             patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value=prices), \
+             patch("notifications.telegram_commands.trading_commands.get_position", return_value={"amount": 0.1}), \
+             patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm:
+            self.assertTrue(trading_commands.handle("/sell 1 50"))
+            kwargs = mock_confirm.call_args.kwargs
+            self.assertEqual(kwargs["symbol"], "BTC/USDT")
+            self.assertEqual(kwargs["timeframe"], "4h")
+
     def test_callback_delegates_to_manual_flow(self):
         with patch("notifications.telegram_commands.manual_order_flow.handle_callback", return_value=True) as mock_cb:
             self.assertTrue(trading_commands.handle_callback({"data": "manual_ok:abc"}))

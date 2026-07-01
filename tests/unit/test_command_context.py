@@ -45,6 +45,10 @@ class TestCommandContext(unittest.TestCase):
             mock.assert_called_once_with("/add RAVE")
         self.assertIsNone(ctx.get_context("42"))
 
+    def test_build_sell_command_with_symbol(self):
+        built = ctx._build_command("sell", "RAVE 30", {})
+        self.assertEqual(built, "/sell RAVE 30")
+
     def test_try_resolve_slash_clears_stale_context(self):
         ctx.set_context("42", "morning")
         with patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock:

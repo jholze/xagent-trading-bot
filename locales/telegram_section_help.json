@@ -39,8 +39,8 @@
             "tips": "Ohne USDT-Betrag wird der Standard aus config verwendet. Risk-Vorschau mit Bestätigen-Button."
           },
           "sell": {
-            "usage": "Zuerst /sell → Positionsliste. Danach nur: <code>1 30</code> (Nr. + Prozent).",
-            "example": "<code>1 50</code> = 50 % von Position 1 verkaufen"
+            "usage": "Direkt: <code>/sell RAVE 30</code> — oder Liste mit <code>/sell</code>, dann <code>1 30</code>.",
+            "example": "<code>/sell RAVE 50</code> oder <code>1 30</code> nach der Liste"
           },
           "orders": {
             "usage": "Order-Ledger. Danach: <code>3</code> für Details oder <code>page 2</code>",
@@ -229,8 +229,8 @@
             "example": "<code>1 200</code> or <code>ARIA 50</code>"
           },
           "sell": {
-            "usage": "First /sell → position list. Then only: <code>1 30</code> (no. + percent).",
-            "example": "<code>1 50</code> = sell 50% of position 1"
+            "usage": "Direct: <code>/sell RAVE 30</code> — or list via <code>/sell</code>, then <code>1 30</code>.",
+            "example": "<code>/sell RAVE 50</code> or <code>1 30</code> after the list"
           },
           "orders": {
             "usage": "Order ledger. Then: <code>3</code> for details or <code>page 2</code>"

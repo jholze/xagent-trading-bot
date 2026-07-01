@@ -150,9 +150,9 @@
       },
       "sell": {
         "description": "Position verkaufen",
-        "help_line": "<code>/sell NUMMER PROZENT</code> — Verkaufen (Nummer aus <code>/positions</code> oder <code>/sell</code>, z.B. <code>/sell 1 30</code>)",
-        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer + Prozent)",
-        "hint": "❌ <b>/sell</b> — Position verkaufen\n\nZuerst <code>/sell</code> → Positionsliste.\nDann nur noch Nummer + Prozent, z.B. <code>1 30</code>."
+        "help_line": "<code>/sell SYMBOL PROZENT</code> oder <code>/sell NUMMER PROZENT</code> — z.B. <code>/sell RAVE 30</code> oder <code>/sell 1 30</code>",
+        "context_footer": "Danach nur noch: <code>{example}</code> (Symbol oder Nummer + Prozent)",
+        "hint": "❌ <b>/sell</b> — Position verkaufen\n\nDirekt: <code>/sell RAVE 30</code> (30 % verkaufen)\nOder Liste: <code>/sell</code> → dann <code>1 30</code>"
       },
       "orders": {
         "description": "Auftragshistorie",
@@ -451,9 +451,9 @@
       },
       "sell": {
         "description": "Sell position",
-        "help_line": "<code>/sell NUMBER PERCENT</code> — Sell (number from <code>/positions</code> or <code>/sell</code>, e.g. <code>/sell 1 30</code>)",
-        "context_footer": "Then send only: <code>{example}</code> (number + percent)",
-        "hint": "❌ <b>/sell</b> — Sell position\n\nFirst <code>/sell</code> → position list.\nThen number + percent only, e.g. <code>1 30</code>."
+        "help_line": "<code>/sell SYMBOL PERCENT</code> or <code>/sell NUMBER PERCENT</code> — e.g. <code>/sell RAVE 30</code> or <code>/sell 1 30</code>",
+        "context_footer": "Then send only: <code>{example}</code> (symbol or number + percent)",
+        "hint": "❌ <b>/sell</b> — Sell position\n\nDirect: <code>/sell RAVE 30</code> (sell 30%)\nOr list: <code>/sell</code> → then <code>1 30</code>"
       },
       "orders": {
         "description": "Order history",

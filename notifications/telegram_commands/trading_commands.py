@@ -8,6 +8,7 @@ from notifications.telegram_commands.position_display import (
     format_sell_list_message,
     position_symbol,
     resolve_position_by_display_index,
+    resolve_position_by_symbol,
 )
 from notifications.telegram_commands.manual_order_flow import (
     request_buy_confirmation,
@@ -85,33 +86,60 @@ def handle(text: str) -> bool:
             send_telegram_message(format_sell_list_message(active, prices))
             return True
 
-        idx = safe_int(parts[1]) - 1
-        pct = safe_float(parts[2]) / 100 if len(parts) > 2 else 0.5
-        if idx is None or pct is None or pct <= 0 or pct > 1:
-            send_telegram_message("❌ Invalid number. Usage: /sell NUMBER PERCENT (e.g. /sell 1 30)")
+        active = list_active_positions()
+        if not active:
+            send_telegram_message("❌ No active positions to sell.")
             return True
 
-        active = list_active_positions()
+        arg = parts[1]
+        pct = safe_float(parts[2]) / 100 if len(parts) > 2 else 0.5
+        if pct is None or pct <= 0 or pct > 1:
+            send_telegram_message(
+                "❌ Ungültiger Anteil. Nutzung: <code>/sell SYMBOL PROZENT</code> "
+                "(z.B. <code>/sell RAVE 30</code> oder <code>/sell 1 30</code>)"
+            )
+            return True
+
         symbols = [position_symbol(p) for p in active]
         prices = get_prices_batch(symbols)
-        p = resolve_position_by_display_index(active, prices, idx)
-        if p:
-            sym = position_symbol(p)
-            price = prices.get(sym) or get_prices(sym)[0]
-            if price > 0:
-                pos = get_position(sym, "4h")
-                amount_sold = float(pos.get("amount", 0)) * pct
-                if amount_sold > 0:
-                    request_sell_confirmation(
-                        _trading,
-                        symbol=sym,
-                        timeframe="4h",
-                        price=price,
-                        amount=amount_sold,
-                        pct=pct,
-                    )
-                    return True
-        send_telegram_message("❌ Invalid selection. First run /sell to list positions.")
+
+        if arg.replace(".", "").isdigit():
+            idx = safe_int(arg) - 1
+            if idx is None:
+                send_telegram_message(hint("sell"))
+                return True
+            p = resolve_position_by_display_index(active, prices, idx)
+        else:
+            p = resolve_position_by_symbol(active, arg, prices)
+
+        if not p:
+            send_telegram_message(
+                f"❌ Keine offene Position für <code>{arg.upper()}</code>. "
+                "Nutze <code>/positions</code> oder <code>/sell</code> für die Liste."
+            )
+            return True
+
+        sym = position_symbol(p)
+        tf = p.get("timeframe") or "4h"
+        price = prices.get(sym) or get_prices(sym)[0]
+        if not price or price <= 0:
+            send_telegram_message(f"❌ Kurs für {sym} nicht verfügbar.")
+            return True
+
+        pos = get_position(sym, tf)
+        amount_sold = float(pos.get("amount", 0)) * pct
+        if amount_sold <= 0:
+            send_telegram_message(f"❌ Keine verkaufbare Menge für {sym} ({tf}).")
+            return True
+
+        request_sell_confirmation(
+            _trading,
+            symbol=sym,
+            timeframe=tf,
+            price=price,
+            amount=amount_sold,
+            pct=pct,
+        )
         return True
 
     return False

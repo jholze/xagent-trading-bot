@@ -15,6 +15,7 @@ from notifications.telegram_commands.position_display import (
     format_trade_banner,
     resolve_portfolio_context,
     resolve_position_by_display_index,
+    resolve_position_by_symbol,
     send_positions_snapshot,
     sort_positions_by_value,
 )
@@ -90,7 +91,7 @@ class TestPositionDisplay(unittest.TestCase):
     def test_sell_list_includes_command_hint(self):
         active = [{"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0}]
         msg = format_sell_list_message(active, {"ARIA/USDT": 0.05})
-        self.assertIn("1 30", msg)
+        self.assertIn("RAVE 30", msg)
         self.assertIn("Danach nur noch", msg)
         self.assertIn("1.", msg)
 
@@ -114,6 +115,16 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("<b>2.</b>", positions_msg)
         self.assertLess(positions_msg.index("BTC"), positions_msg.index("SOL"))
         self.assertLess(sell_msg.index("BTC"), sell_msg.index("SOL"))
+
+    def test_resolve_position_by_symbol(self):
+        active = [
+            {"symbol": "RAVE/USDT", "timeframe": "1h", "amount": 100.0},
+            {"symbol": "BTC/USDT", "timeframe": "4h", "amount": 0.01},
+        ]
+        prices = {"RAVE/USDT": 0.6, "BTC/USDT": 90000.0}
+        p = resolve_position_by_symbol(active, "RAVE", prices)
+        self.assertEqual(p["symbol"], "RAVE/USDT")
+        self.assertEqual(p["timeframe"], "1h")
 
     def test_sell_index_matches_display_order(self):
         """Display #2 must resolve to second-highest value, not raw list order."""
