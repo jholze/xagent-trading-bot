@@ -924,8 +924,29 @@ def load_orders(scope: str):
     return _load_orders_json(scope)
 
 
+def _reject_demo_mongo_orders_downgrade(data: dict, scope: str, cfg: dict) -> bool:
+    """Block accidental wipe when Mongo has a full demo book but memory is nearly empty."""
+    if scope != "demo" or not _demo_ledger_backend_is_mongo(cfg):
+        return False
+    try:
+        existing = _mongo_ledger_store(cfg).load_orders(scope)
+        old_count = len(existing.get("orders", []))
+        new_count = len(data.get("orders", []))
+        if old_count >= 50 and new_count < max(10, old_count // 2):
+            log(
+                f"Blocked demo Mongo orders downgrade ({old_count} → {new_count})",
+                "ERROR",
+            )
+            return True
+    except Exception as e:
+        log(f"Demo orders downgrade guard failed: {e}", "WARNING")
+    return False
+
+
 def save_orders(data: dict, scope: str) -> bool:
     cfg = get_config()
+    if _reject_demo_mongo_orders_downgrade(data, scope, cfg):
+        return False
     ok = True
     if _ledger_writes_json(scope, cfg):
         ok = _save_orders_json(data, scope) and ok

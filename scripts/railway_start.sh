@@ -34,6 +34,9 @@ if not ping_database():
 print("MongoDB OK")
 PY
 
+echo "Seeding demo Mongo ledger if needed..."
+python3 scripts/railway_seed_demo_mongo.py || echo "WARN: demo Mongo seed skipped"
+
 # Register Telegram webhook (Railway public domain — replaces ngrok)
 if [[ -n "${WEBHOOK_BASE_URL:-}" || -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]]; then
   echo "Registering Telegram webhook..."
