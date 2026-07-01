@@ -1,0 +1,715 @@
+{
+  "virtual_balance": 4950.0,
+  "realized_pnl": 0,
+  "open_positions": 1,
+  "trades": [
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 50.0,
+      "usdt_amount": 50,
+      "source": "manual",
+      "order_id": "14ae9ebfcf3c",
+      "timestamp": "2026-06-29T18:05:04.579824"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 50.0,
+      "usdt_amount": 50,
+      "source": "manual",
+      "order_id": "b4a4192a24b9",
+      "timestamp": "2026-06-29T18:05:49.347242"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 50.0,
+      "usdt_amount": 50,
+      "source": "manual",
+      "order_id": "3324859963aa",
+      "timestamp": "2026-06-29T18:33:55.781786"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 50.0,
+      "usdt_amount": 50,
+      "source": "manual",
+      "order_id": "cda46602bd69",
+      "timestamp": "2026-06-29T19:01:52.257719"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "b8f271b36222",
+      "timestamp": "2026-06-29T19:33:56.602911"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SENSOR15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "649602d8cd0d",
+      "timestamp": "2026-06-29T19:33:58.298867"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "80dd68dce4c3",
+      "timestamp": "2026-06-29T19:52:26.037707"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "9e73ff10eee1",
+      "timestamp": "2026-06-29T19:52:47.848117"
+    },
+    {
+      "type": "SELL",
+      "symbol": "HYPE/USDT",
+      "price": 66.434,
+      "amount": 10.13624543270022,
+      "usdt_received": 663.2904591398662,
+      "pnl": 57.533329076006396,
+      "source": "manual",
+      "order_id": "9606bc343542",
+      "timestamp": "2026-06-29T19:58:46.206996"
+    },
+    {
+      "type": "SELL",
+      "symbol": "SPCX/USDT",
+      "price": 143.85,
+      "amount": 6.0291359096830215,
+      "usdt_received": 854.281832598784,
+      "pnl": 34.18520060790266,
+      "source": "manual",
+      "order_id": "0511e5e5f3d2",
+      "timestamp": "2026-06-29T20:18:34.804947"
+    },
+    {
+      "type": "BUY",
+      "symbol": "ETH/USDT",
+      "price": 1631.4,
+      "amount": 1.915532671325242,
+      "usdt_amount": 3125.0,
+      "source": "lc",
+      "order_id": "2a75433d6831",
+      "timestamp": "2026-06-29T20:20:59.003681"
+    },
+    {
+      "type": "SELL",
+      "symbol": "HMSTR/USDT",
+      "price": 0.0001898,
+      "amount": 3710241.379310345,
+      "usdt_received": 693.6407565862069,
+      "pnl": 58.62181379310346,
+      "source": "manual",
+      "order_id": "0cbe68b9e4a6",
+      "timestamp": "2026-06-29T23:11:05.866975"
+    },
+    {
+      "type": "SELL",
+      "symbol": "HYPE/USDT",
+      "price": 66.586,
+      "amount": 10.13624543270022,
+      "usdt_received": 664.8080578060501,
+      "pnl": 59.07403838177684,
+      "source": "manual",
+      "order_id": "8ac5493cf5be",
+      "timestamp": "2026-06-29T23:30:51.940023"
+    },
+    {
+      "type": "SELL",
+      "symbol": "LIT/USDT",
+      "price": 1.8405,
+      "amount": 320.7353189572659,
+      "usdt_received": 581.4586542227353,
+      "pnl": 20.65535454084793,
+      "source": "manual",
+      "order_id": "bde4f775d68d",
+      "timestamp": "2026-06-30T00:47:09.570323"
+    },
+    {
+      "type": "SELL",
+      "symbol": "STG/USDT",
+      "price": 0.1647,
+      "amount": 7971.938775510204,
+      "usdt_received": 1293.2836415816328,
+      "pnl": 62.97831632653076,
+      "source": "manual",
+      "order_id": "d15ba4f65c69",
+      "timestamp": "2026-06-30T02:01:00.206507"
+    },
+    {
+      "type": "BUY",
+      "symbol": "GNC/USDT",
+      "price": 8.607e-08,
+      "amount": 36307656558.61508,
+      "usdt_amount": 3125.0,
+      "source": "manual",
+      "order_id": "ecf6b9ff6591",
+      "timestamp": "2026-06-30T03:37:30.180301"
+    },
+    {
+      "type": "SELL",
+      "symbol": "H/USDT",
+      "price": 0.07559,
+      "amount": 12879.95878413189,
+      "usdt_received": 958.9921432251416,
+      "pnl": 223.5960844925297,
+      "source": "manual",
+      "order_id": "26c4f9fb3cb0",
+      "timestamp": "2026-06-30T04:08:03.577448"
+    },
+    {
+      "type": "SELL",
+      "symbol": "LIT/USDT",
+      "price": 1.8523,
+      "amount": 320.7353189572659,
+      "usdt_received": 585.1865608349756,
+      "pnl": 24.440031304543677,
+      "source": "manual",
+      "order_id": "7045d66a0889",
+      "timestamp": "2026-06-30T04:25:27.115822"
+    },
+    {
+      "type": "BUY",
+      "symbol": "HIGH/USDT",
+      "price": 0.03943,
+      "amount": 30596.24651280751,
+      "usdt_amount": 1206.41,
+      "source": "cmc",
+      "order_id": "1daf630c9c03",
+      "timestamp": "2026-06-30T04:30:02.016372"
+    },
+    {
+      "type": "SELL",
+      "symbol": "LIT/USDT",
+      "price": 1.8682,
+      "amount": 213.8235459715106,
+      "usdt_received": 393.4731713552165,
+      "pnl": 19.693148583976143,
+      "source": "manual",
+      "order_id": "72fa25b2f269",
+      "timestamp": "2026-06-30T07:41:04.176184"
+    },
+    {
+      "type": "BUY",
+      "symbol": "LAB/USDT",
+      "price": 13.919,
+      "amount": 28.73769667361161,
+      "usdt_amount": 400.0,
+      "source": "dca",
+      "order_id": "b4fdf31679de",
+      "timestamp": "2026-06-30T09:43:41.041004"
+    },
+    {
+      "type": "BUY",
+      "symbol": "NUTS/USDT",
+      "price": 0.001135,
+      "amount": 2753303.9647577093,
+      "usdt_amount": 3125.0,
+      "source": "manual",
+      "order_id": "3d38a91d98b5",
+      "timestamp": "2026-06-30T09:48:00.327533"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SKYAI/USDT",
+      "price": 0.1128,
+      "amount": 11081.560283687944,
+      "usdt_amount": 1250.0,
+      "source": "manual",
+      "order_id": "9a91f679580c",
+      "timestamp": "2026-06-30T10:47:19.940044"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "3d093f2ea4ef",
+      "timestamp": "2026-06-30T11:06:53.618839"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "b2e02e16090a",
+      "timestamp": "2026-06-30T11:36:06.929030"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "c4ecfc02317f",
+      "timestamp": "2026-06-30T11:36:09.063755"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "6c867dab04e9",
+      "timestamp": "2026-06-30T11:36:42.645077"
+    },
+    {
+      "type": "BUY",
+      "symbol": "TRX/USDT",
+      "price": 0.3183,
+      "amount": 1131.008482563619,
+      "usdt_amount": 360.0,
+      "source": "dca",
+      "order_id": "5759e6e82697",
+      "timestamp": "2026-06-30T11:49:52.118662"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "808db3498df3",
+      "timestamp": "2026-06-30T12:14:06.605694"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "e656ce4c2af0",
+      "timestamp": "2026-06-30T12:14:06.860414"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 2572.76,
+      "usdt_amount": 2572.76,
+      "source": "entry_sensor_15m",
+      "order_id": "009cbd9b45d7",
+      "timestamp": "2026-06-30T12:15:00.442529"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 2572.76,
+      "usdt_amount": 2572.76,
+      "source": "entry_sensor_15m",
+      "order_id": "1e408fa70a8e",
+      "timestamp": "2026-06-30T12:15:04.567303"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "79ff62031c5c",
+      "timestamp": "2026-06-30T12:15:16.518919"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "b55b9872c952",
+      "timestamp": "2026-06-30T12:15:16.711056"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "c2b235575b9c",
+      "timestamp": "2026-06-30T12:15:59.022955"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "553ed33acb3f",
+      "timestamp": "2026-06-30T12:15:59.145537"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "543563b27e61",
+      "timestamp": "2026-06-30T12:47:39.010305"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "1b7d56ca0979",
+      "timestamp": "2026-06-30T12:47:39.124734"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 2572.76,
+      "usdt_amount": 2572.76,
+      "source": "entry_sensor_15m",
+      "order_id": "fe857b0af56b",
+      "timestamp": "2026-06-30T13:20:30.429273"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "44849e8c6ffb",
+      "timestamp": "2026-06-30T13:20:30.484346"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "6549bc3d9357",
+      "timestamp": "2026-06-30T13:20:30.624591"
+    },
+    {
+      "type": "SELL",
+      "symbol": "H/USDT",
+      "price": 0.07457,
+      "amount": 8586.63918942126,
+      "usdt_received": 630.7010990898161,
+      "pnl": 140.30568435514337,
+      "source": "auto",
+      "order_id": "bedc5766c1c3",
+      "timestamp": "2026-06-30T13:24:54.770327"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "14e2c837e1b6",
+      "timestamp": "2026-06-30T13:29:19.507051"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "20417324bae2",
+      "timestamp": "2026-06-30T13:29:19.635699"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 2572.76,
+      "usdt_amount": 2572.76,
+      "source": "entry_sensor_15m",
+      "order_id": "993d13fc5fac",
+      "timestamp": "2026-06-30T13:30:47.838339"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "e34b78f87a7d",
+      "timestamp": "2026-06-30T13:30:49.704041"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "763f8e786ee0",
+      "timestamp": "2026-06-30T13:30:49.804188"
+    },
+    {
+      "type": "BUY",
+      "symbol": "NEAR/USDT",
+      "price": 1.775,
+      "amount": 202.81690140845072,
+      "usdt_amount": 360.0,
+      "source": "dca",
+      "order_id": "0f0ebcd615e9",
+      "timestamp": "2026-06-30T15:15:26.364337"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XPL/USDT",
+      "price": 0.09014,
+      "amount": 3993.7874417572666,
+      "usdt_amount": 360.0,
+      "source": "dca",
+      "order_id": "67569def7c68",
+      "timestamp": "2026-06-30T15:39:11.766684"
+    },
+    {
+      "type": "SELL",
+      "symbol": "LIT/USDT",
+      "price": 1.9215,
+      "amount": 213.8235459715106,
+      "usdt_received": 404.6990144304938,
+      "pnl": 31.089943584257636,
+      "source": "auto",
+      "order_id": "6d720464bd89",
+      "timestamp": "2026-06-30T16:00:42.947213"
+    },
+    {
+      "type": "SELL",
+      "symbol": "SPCX/USDT",
+      "price": 149.85,
+      "amount": 6.0291359096830215,
+      "usdt_received": 889.9140258250108,
+      "pnl": 70.36001606600078,
+      "source": "auto",
+      "order_id": "9777f21142cc",
+      "timestamp": "2026-06-30T16:43:29.199249"
+    },
+    {
+      "type": "BUY",
+      "symbol": "SIREN/USDT",
+      "price": 0.08888,
+      "amount": 14063.906390639064,
+      "usdt_amount": 1250.0,
+      "source": "auto",
+      "order_id": "310b5939e5bc",
+      "timestamp": "2026-06-30T16:47:41.154078"
+    },
+    {
+      "type": "BUY",
+      "symbol": "BEAT/USDT",
+      "price": 2.7047,
+      "amount": 462.158464894443,
+      "usdt_amount": 1250.0,
+      "source": "auto",
+      "order_id": "492cd3c3fbbe",
+      "timestamp": "2026-06-30T17:30:37.460474"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XAI/USDT",
+      "price": 0.006981,
+      "amount": 447643.6040681851,
+      "usdt_amount": 3125.0,
+      "source": "auto",
+      "order_id": "74101ffca2c8",
+      "timestamp": "2026-06-30T22:34:14.043540"
+    },
+    {
+      "type": "SELL",
+      "symbol": "BEAT/USDT",
+      "price": 2.9714,
+      "amount": 277.2950789366658,
+      "usdt_received": 811.5952785891226,
+      "pnl": 73.95459755240881,
+      "source": "auto",
+      "order_id": "081a30e33adb",
+      "timestamp": "2026-06-30T22:51:20.596061"
+    },
+    {
+      "type": "BUY",
+      "symbol": "LIT/USDT",
+      "price": 1.8333,
+      "amount": 932.4824087710685,
+      "usdt_amount": 1709.52,
+      "source": "auto",
+      "order_id": "c042e46e56d2",
+      "timestamp": "2026-06-30T22:54:47.525345"
+    },
+    {
+      "type": "BUY",
+      "symbol": "U/USDT",
+      "price": 1.0,
+      "amount": 3125.0,
+      "usdt_amount": 3125.0,
+      "source": "auto",
+      "order_id": "ebc0477d8845",
+      "timestamp": "2026-06-30T23:00:52.254465"
+    },
+    {
+      "type": "BUY",
+      "symbol": "STG/USDT",
+      "price": 0.1642,
+      "amount": 9834.226552984164,
+      "usdt_amount": 1614.78,
+      "source": "auto",
+      "order_id": "a78b8e44c2a3",
+      "timestamp": "2026-06-30T23:22:39.797509"
+    },
+    {
+      "type": "SELL",
+      "symbol": "ADA/USDT",
+      "price": 0.15116,
+      "amount": 5479.787018939138,
+      "usdt_received": 815.8997366960973,
+      "pnl": 15.288605782840124,
+      "source": "auto",
+      "order_id": "404a1eb3e695",
+      "timestamp": "2026-07-01T06:41:31.619796"
+    },
+    {
+      "type": "SELL",
+      "symbol": "BEAT/USDT",
+      "price": 3.4276,
+      "amount": 184.8633859577772,
+      "usdt_received": 624.133175583244,
+      "pnl": 133.63774170887717,
+      "source": "auto",
+      "order_id": "36fe2dfea341",
+      "timestamp": "2026-07-01T06:55:44.317045"
+    },
+    {
+      "type": "SELL",
+      "symbol": "U/USDT",
+      "price": 1.0002,
+      "amount": 937.5,
+      "usdt_received": 923.6221875,
+      "pnl": 0.18749999999997935,
+      "source": "auto",
+      "order_id": "c119d8a9803e",
+      "timestamp": "2026-07-01T06:57:56.722427"
+    },
+    {
+      "type": "BUY",
+      "symbol": "LIKE/USDT",
+      "price": 0.000811,
+      "amount": 3853267.5709001236,
+      "usdt_amount": 3125.0,
+      "source": "auto",
+      "order_id": "7d6ca25e3070",
+      "timestamp": "2026-07-01T08:03:45.673229"
+    },
+    {
+      "type": "BUY",
+      "symbol": "RAVE/USDT",
+      "price": 0.4388,
+      "amount": 2848.6782133090246,
+      "usdt_amount": 1250.0,
+      "source": "auto",
+      "order_id": "bb812d49ba1b",
+      "timestamp": "2026-07-01T09:31:54.874163"
+    },
+    {
+      "type": "SELL",
+      "symbol": "ADA/USDT",
+      "price": 0.15054,
+      "amount": 5479.787018939138,
+      "usdt_received": 812.5532307636314,
+      "pnl": 11.891137831097957,
+      "source": "auto",
+      "order_id": "e6e9f82cd784",
+      "timestamp": "2026-07-01T12:04:20.198932"
+    },
+    {
+      "type": "BUY",
+      "symbol": "ARIA/USDT",
+      "price": 0.02687,
+      "amount": 54749.16263490881,
+      "usdt_amount": 1471.11,
+      "source": "entry_sensor_15m",
+      "order_id": "08a688dc969d",
+      "timestamp": "2026-07-01T12:41:39.461365"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "1914a66bce21",
+      "timestamp": "2026-07-01T16:09:57.541825"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "c3a8959f2751",
+      "timestamp": "2026-07-01T16:09:57.664789"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "17faa405dfc3",
+      "timestamp": "2026-07-01T16:53:29.205929"
+    },
+    {
+      "type": "BUY",
+      "symbol": "XENTRY15/USDT",
+      "price": 1.0,
+      "amount": 203.2,
+      "usdt_amount": 203.2,
+      "source": "entry_sensor_15m",
+      "order_id": "8c27b3accf46",
+      "timestamp": "2026-07-01T16:53:29.346947"
+    }
+  ],
+  "total_pnl": 0
+}

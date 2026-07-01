@@ -47,7 +47,7 @@ def main() -> int:
         print("[seed] bundled orders.json missing or too small")
         return 1
 
-    history = _load_seed("trade_history.json")
+    history = _load_seed("history.json")
     orders["ledger_scope"] = SCOPE
     store.save_orders(orders, SCOPE)
     if history:
