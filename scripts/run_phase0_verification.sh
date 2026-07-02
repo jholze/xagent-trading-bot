@@ -7,7 +7,7 @@ mkdir -p "$SCRATCH"
 cd "$ROOT"
 
 BOT_SNIPPET='import os
-os.environ.pop("MONGODB_DB", None)
+os.environ["MONGODB_DB"] = "xagent_test"
 os.environ.setdefault("DEMO_MODE", "1")
 import aria_bot
 from data_manager import resolve_ledger_scope, load_orders, load_positions_document, get_config

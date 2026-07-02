@@ -102,13 +102,14 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
         pass
 
 try:
-    from data_manager import reconcile_demo_trade_history_on_startup
+    from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
     from services.ledger_sync import sync_positions_on_startup
-    from strategies.positions import bootstrap_positions
+    from strategies.positions import bootstrap_positions, flush_positions
 
     bootstrap_positions()
     sync_positions_on_startup()
     reconcile_demo_trade_history_on_startup()
+    flush_positions(scope=resolve_ledger_scope(), force=True)
 except Exception as e:
     log(f"Ledger position sync on startup failed: {e}", "WARNING")
 
