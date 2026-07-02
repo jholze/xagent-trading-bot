@@ -197,9 +197,11 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                 json.dump(payload, f)
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
-                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
+                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)), \
+                 patch("data_manager.save_live_trade_history"):
                 history = load_live_trade_history()
             self.assertAlmostEqual(history["virtual_balance"], 4900.0)
 
@@ -222,9 +224,11 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                 json.dump(payload, f)
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=False), \
-                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
+                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)), \
+                 patch("data_manager.save_live_trade_history"):
                 history = load_live_trade_history()
             self.assertAlmostEqual(history["virtual_balance"], 4500.0)
 
