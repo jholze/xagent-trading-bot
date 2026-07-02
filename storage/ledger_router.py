@@ -181,23 +181,28 @@ class MongoLedgerStoreAdapter:
     def __init__(self, config: dict | None = None):
         self._store = _mongo_store(config or {})
 
+    def _tenant_id(self) -> str:
+        from core.tenant_context import resolve_tenant_id
+
+        return resolve_tenant_id()
+
     def load_orders(self, scope: str) -> dict:
-        return self._store.load_orders(scope)
+        return self._store.load_orders(scope, tenant_id=self._tenant_id())
 
     def save_orders(self, data: dict, scope: str) -> bool:
-        return self._store.save_orders(data, scope)
+        return self._store.save_orders(data, scope, tenant_id=self._tenant_id())
 
     def load_positions(self, scope: str) -> dict:
-        return self._store.load_positions(scope)
+        return self._store.load_positions(scope, tenant_id=self._tenant_id())
 
     def save_positions(self, data: dict, scope: str) -> bool:
-        return self._store.save_positions(data, scope)
+        return self._store.save_positions(data, scope, tenant_id=self._tenant_id())
 
     def load_trade_history(self, scope: str) -> dict:
-        return self._store.load_trade_history(scope)
+        return self._store.load_trade_history(scope, tenant_id=self._tenant_id())
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
-        return self._store.save_trade_history(data, scope)
+        return self._store.save_trade_history(data, scope, tenant_id=self._tenant_id())
 
 
 class DemoLedgerStore:

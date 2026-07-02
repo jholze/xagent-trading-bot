@@ -78,6 +78,10 @@ class DryRunPortfolioHarness:
             patch("data_manager.get_config", return_value=self.raw),
             patch("data_manager.is_dry_run_enhanced", return_value=True),
             patch("data_manager.is_demo_mode", return_value=False),
+            patch("data_manager._ledger_reads_mongo", return_value=False),
+            patch("data_manager._ledger_reads_mongo_orders", return_value=False),
+            patch("data_manager._ledger_reads_mongo_trade_history", return_value=False),
+            patch("data_manager._ledger_writes_mongo", return_value=False),
             patch("data_manager.resolve_ledger_scope", return_value="live"),
             patch("data_manager.POSITIONS_SCOPE_FILES", {
                 "demo": os.path.join(self.tmp.name, "positions.demo.json"),
@@ -197,6 +201,8 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                 json.dump(payload, f)
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
+                 patch("data_manager._ledger_reads_mongo", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
                  patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
@@ -222,6 +228,8 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                 json.dump(payload, f)
             with patch("data_manager.get_data_file", return_value=path), \
                  patch("data_manager.get_config", return_value=cfg), \
+                 patch("data_manager.is_demo_mode", return_value=False), \
+                 patch("data_manager._ledger_reads_mongo", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=False), \
                  patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):

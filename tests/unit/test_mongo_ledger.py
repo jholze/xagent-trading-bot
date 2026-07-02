@@ -72,3 +72,38 @@ def test_paper_scope_empty_defaults(mongo_store):
     assert orders["orders"] == []
     assert positions["positions"] == {}
     assert history["trades"] == []
+
+
+def test_tenant_compound_key_roundtrip(mongo_store):
+    from core.tenant_context import DEFAULT_TENANT
+    from storage.tenant_keys import compound_ledger_id
+
+    payload = {"orders": [{"symbol": "TEN/USDT"}], "migrated_from_trades": False}
+    mongo_store.save_orders(payload, "paper", tenant_id="tenant_x")
+    doc = mongo_store._collection("orders").find_one(
+        {"_id": compound_ledger_id("tenant_x", "paper")}
+    )
+    assert doc is not None
+    assert doc["tenant_id"] == "tenant_x"
+    loaded = mongo_store.load_orders("paper", tenant_id="tenant_x")
+    assert loaded["orders"][0]["symbol"] == "TEN/USDT"
+    default_loaded = mongo_store.load_orders("paper", tenant_id=DEFAULT_TENANT)
+    assert default_loaded["orders"] == []
+
+
+def test_legacy_scope_fallback_for_default(mongo_store):
+    from core.tenant_context import DEFAULT_TENANT
+
+    coll = mongo_store._collection("orders")
+    coll.replace_one(
+        {"_id": "live"},
+        {
+            "_id": "live",
+            "ledger_scope": "live",
+            "orders": [{"symbol": "OLD/LIVE"}],
+            "migrated_from_trades": True,
+        },
+        upsert=True,
+    )
+    loaded = mongo_store.load_orders("live", tenant_id=DEFAULT_TENANT)
+    assert loaded["orders"][0]["symbol"] == "OLD/LIVE"

@@ -5,19 +5,26 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 from storage.mongo_client import get_database, resolve_database_name
+from storage.tenant_keys import compound_ledger_id, is_legacy_doc
 
 ORDERS_COLLECTION = "orders"
 POSITIONS_COLLECTION = "positions"
 TRADE_HISTORY_COLLECTION = "trade_history"
 
 
-def _empty_orders(scope: str) -> dict:
-    return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
+def _empty_orders(scope: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+    return {
+        "tenant_id": tenant_id,
+        "ledger_scope": scope,
+        "orders": [],
+        "migrated_from_trades": False,
+    }
 
 
-def _empty_positions(scope: str) -> dict:
-    return {"ledger_scope": scope, "positions": {}}
+def _empty_positions(scope: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+    return {"tenant_id": tenant_id, "ledger_scope": scope, "positions": {}}
 
 
 def _empty_trade_history(scope: str) -> dict:
@@ -40,7 +47,7 @@ def _strip_id(doc: dict | None) -> dict:
 
 
 class MongoLedgerStore:
-    """Scope-keyed ledger documents mirroring JSON ledger files."""
+    """Tenant + scope keyed ledger documents mirroring JSON ledger files."""
 
     def __init__(self, *, test: bool = False, config: dict | None = None):
         self._test = test
@@ -57,63 +64,98 @@ class MongoLedgerStore:
     def _collection(self, name: str):
         return self._db[name]
 
-    def load_orders(self, scope: str) -> dict:
-        doc = self._collection(ORDERS_COLLECTION).find_one({"_id": scope})
+    def _resolve_tenant(self, tenant_id: str | None) -> str:
+        return resolve_tenant_id(tenant_id)
+
+    def _find_doc(self, collection: str, scope: str, tenant_id: str | None = None) -> dict | None:
+        tid = self._resolve_tenant(tenant_id)
+        coll = self._collection(collection)
+        compound_id = compound_ledger_id(tid, scope)
+        doc = coll.find_one({"_id": compound_id})
+        if doc:
+            return doc
+        if tid == DEFAULT_TENANT:
+            legacy = coll.find_one({"_id": scope})
+            if legacy and is_legacy_doc(legacy):
+                return legacy
+        return None
+
+    def _prepare_payload(
+        self, data: dict, scope: str, tenant_id: str | None = None
+    ) -> dict:
+        tid = self._resolve_tenant(tenant_id)
+        payload = dict(data)
+        payload["_id"] = compound_ledger_id(tid, scope)
+        payload["tenant_id"] = tid
+        payload["ledger_scope"] = scope
+        return payload
+
+    def load_orders(self, scope: str, tenant_id: str | None = None) -> dict:
+        tid = self._resolve_tenant(tenant_id)
+        doc = self._find_doc(ORDERS_COLLECTION, scope, tid)
         if not doc:
-            return _empty_orders(scope)
+            return _empty_orders(scope, tid)
         data = _strip_id(doc)
         data.setdefault("orders", [])
         data["ledger_scope"] = scope
+        data.setdefault("tenant_id", tid)
         return data
 
-    def save_orders(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
-        payload["_id"] = scope
-        payload["ledger_scope"] = scope
+    def save_orders(
+        self, data: dict, scope: str, tenant_id: str | None = None
+    ) -> bool:
+        payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(ORDERS_COLLECTION).replace_one(
-            {"_id": scope}, payload, upsert=True
+            {"_id": payload["_id"]}, payload, upsert=True
         )
         return True
 
-    def load_positions(self, scope: str) -> dict:
-        doc = self._collection(POSITIONS_COLLECTION).find_one({"_id": scope})
+    def load_positions(self, scope: str, tenant_id: str | None = None) -> dict:
+        tid = self._resolve_tenant(tenant_id)
+        doc = self._find_doc(POSITIONS_COLLECTION, scope, tid)
         if not doc:
-            return _empty_positions(scope)
+            return _empty_positions(scope, tid)
         data = _strip_id(doc)
         data.setdefault("positions", {})
         data["ledger_scope"] = scope
+        data.setdefault("tenant_id", tid)
         return data
 
-    def save_positions(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
-        payload["_id"] = scope
-        payload["ledger_scope"] = scope
+    def save_positions(
+        self, data: dict, scope: str, tenant_id: str | None = None
+    ) -> bool:
+        payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(POSITIONS_COLLECTION).replace_one(
-            {"_id": scope}, payload, upsert=True
+            {"_id": payload["_id"]}, payload, upsert=True
         )
         return True
 
-    def load_trade_history(self, scope: str) -> dict:
-        doc = self._collection(TRADE_HISTORY_COLLECTION).find_one({"_id": scope})
+    def load_trade_history(self, scope: str, tenant_id: str | None = None) -> dict:
+        doc = self._find_doc(TRADE_HISTORY_COLLECTION, scope, tenant_id)
         if not doc:
             return _empty_trade_history(scope)
         data = _strip_id(doc)
         data.setdefault("trades", [])
         return data
 
-    def save_trade_history(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
-        payload["_id"] = scope
+    def save_trade_history(
+        self, data: dict, scope: str, tenant_id: str | None = None
+    ) -> bool:
+        payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(TRADE_HISTORY_COLLECTION).replace_one(
-            {"_id": scope}, payload, upsert=True
+            {"_id": payload["_id"]}, payload, upsert=True
         )
         return True
 
-    def count_documents(self) -> dict[str, int]:
+    def count_documents(self, tenant_id: str | None = None) -> dict[str, int]:
+        tid = self._resolve_tenant(tenant_id)
+        filt: dict[str, Any] = {"tenant_id": tid}
         return {
-            "orders": self._collection(ORDERS_COLLECTION).count_documents({}),
-            "positions": self._collection(POSITIONS_COLLECTION).count_documents({}),
-            "trade_history": self._collection(TRADE_HISTORY_COLLECTION).count_documents({}),
+            "orders": self._collection(ORDERS_COLLECTION).count_documents(filt),
+            "positions": self._collection(POSITIONS_COLLECTION).count_documents(filt),
+            "trade_history": self._collection(TRADE_HISTORY_COLLECTION).count_documents(
+                filt
+            ),
         }
 
 

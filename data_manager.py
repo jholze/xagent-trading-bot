@@ -510,11 +510,16 @@ def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
         return False
 
 
-def load_trade_history_document(scope: str = "paper", config: dict = None) -> dict:
+def load_trade_history_document(
+    scope: str = "paper", config: dict = None, tenant_id: str | None = None
+) -> dict:
+    from core.tenant_context import resolve_tenant_id
+
     cfg = config or get_config()
+    tid = resolve_tenant_id(tenant_id)
     if _ledger_reads_mongo_trade_history(scope, cfg):
         try:
-            history = _mongo_ledger_store(cfg).load_trade_history(scope)
+            history = _mongo_ledger_store(cfg).load_trade_history(scope, tenant_id=tid)
         except Exception as e:
             log(f"Mongo trade_history load failed ({scope}): {e}", "WARNING")
             history = _load_trade_history_json(scope, cfg)
@@ -534,14 +539,19 @@ def reconcile_demo_trade_history_on_startup(config: dict = None) -> dict:
     return load_trade_history_document("demo", cfg)
 
 
-def save_trade_history_document(data: dict, scope: str = "paper", config: dict = None) -> bool:
+def save_trade_history_document(
+    data: dict, scope: str = "paper", config: dict = None, tenant_id: str | None = None
+) -> bool:
+    from core.tenant_context import resolve_tenant_id
+
     cfg = config or get_config()
+    tid = resolve_tenant_id(tenant_id)
     ok = True
     if _ledger_writes_json(scope, cfg):
         ok = _save_trade_history_json(data, scope) and ok
     if _ledger_writes_mongo(scope, cfg):
         try:
-            _mongo_ledger_store(cfg).save_trade_history(data, scope)
+            _mongo_ledger_store(cfg).save_trade_history(data, scope, tenant_id=tid)
         except Exception as e:
             log(f"Mongo trade_history save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -730,7 +740,11 @@ def load_live_trade_history():
     cfg = get_config()
     if _ledger_reads_mongo("live", cfg):
         try:
-            history = _mongo_ledger_store(cfg).load_trade_history("live")
+            from core.tenant_context import resolve_tenant_id
+
+            history = _mongo_ledger_store(cfg).load_trade_history(
+                "live", tenant_id=resolve_tenant_id()
+            )
         except Exception as e:
             log(f"Mongo live trade_history load failed: {e}", "WARNING")
             history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
@@ -914,11 +928,14 @@ def _save_orders_json(data: dict, scope: str) -> bool:
         return False
 
 
-def load_orders(scope: str):
+def load_orders(scope: str, tenant_id: str | None = None):
+    from core.tenant_context import resolve_tenant_id
+
     cfg = get_config()
+    tid = resolve_tenant_id(tenant_id)
     if _ledger_reads_mongo_orders(scope, cfg):
         try:
-            return _mongo_ledger_store(cfg).load_orders(scope)
+            return _mongo_ledger_store(cfg).load_orders(scope, tenant_id=tid)
         except Exception as e:
             log(f"Mongo orders load failed ({scope}): {e}", "WARNING")
     return _load_orders_json(scope)
@@ -943,8 +960,11 @@ def _reject_demo_mongo_orders_downgrade(data: dict, scope: str, cfg: dict) -> bo
     return False
 
 
-def save_orders(data: dict, scope: str) -> bool:
+def save_orders(data: dict, scope: str, tenant_id: str | None = None) -> bool:
+    from core.tenant_context import resolve_tenant_id
+
     cfg = get_config()
+    tid = resolve_tenant_id(tenant_id)
     if _reject_demo_mongo_orders_downgrade(data, scope, cfg):
         return False
     ok = True
@@ -952,7 +972,7 @@ def save_orders(data: dict, scope: str) -> bool:
         ok = _save_orders_json(data, scope) and ok
     if _ledger_writes_mongo(scope, cfg):
         try:
-            _mongo_ledger_store(cfg).save_orders(data, scope)
+            _mongo_ledger_store(cfg).save_orders(data, scope, tenant_id=tid)
         except Exception as e:
             log(f"Mongo orders save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -989,26 +1009,36 @@ def _save_positions_json(data: dict, scope: str) -> bool:
         return False
 
 
-def load_positions_document(scope: str = None, config: dict = None) -> dict:
+def load_positions_document(
+    scope: str = None, config: dict = None, tenant_id: str | None = None
+) -> dict:
+    from core.tenant_context import resolve_tenant_id
+
     target = scope or resolve_ledger_scope()
     cfg = config or get_config()
+    tid = resolve_tenant_id(tenant_id)
     if _ledger_reads_mongo(target, cfg):
         try:
-            return _mongo_ledger_store(cfg).load_positions(target)
+            return _mongo_ledger_store(cfg).load_positions(target, tenant_id=tid)
         except Exception as e:
             log(f"Mongo positions load failed ({target}): {e}", "WARNING")
     return _load_positions_json(target)
 
 
-def save_positions_document(data: dict, scope: str = None, config: dict = None) -> bool:
+def save_positions_document(
+    data: dict, scope: str = None, config: dict = None, tenant_id: str | None = None
+) -> bool:
+    from core.tenant_context import resolve_tenant_id
+
     target = scope or resolve_ledger_scope()
     cfg = config or get_config()
+    tid = resolve_tenant_id(tenant_id)
     ok = True
     if _ledger_writes_json(target, cfg):
         ok = _save_positions_json(data, target) and ok
     if _ledger_writes_mongo(target, cfg):
         try:
-            _mongo_ledger_store(cfg).save_positions(data, target)
+            _mongo_ledger_store(cfg).save_positions(data, target, tenant_id=tid)
         except Exception as e:
             log(f"Mongo positions save failed ({target}): {e}", "ERROR")
             ok = False

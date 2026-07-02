@@ -1,0 +1,102 @@
+"""Tenant context for multi-tenant ledger isolation (Phase 0)."""
+
+from __future__ import annotations
+
+import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Iterator
+
+DEFAULT_TENANT = "default"
+
+
+@dataclass(frozen=True)
+class TenantContext:
+    tenant_id: str
+    scope: str
+    owner_chat_id: str = ""
+    bot_token: str = ""
+    redis_prefix: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.tenant_id:
+            raise ValueError("tenant_id is required")
+        if not self.scope:
+            raise ValueError("scope is required")
+        if not self.redis_prefix:
+            object.__setattr__(self, "redis_prefix", f"aria:{self.tenant_id}:")
+
+
+_ctx: ContextVar[TenantContext | None] = ContextVar("tenant_ctx", default=None)
+
+
+def current_tenant_context() -> TenantContext | None:
+    return _ctx.get()
+
+
+def resolve_tenant_id(tenant_id: str | None = None) -> str:
+    if tenant_id:
+        return tenant_id
+    ctx = _ctx.get()
+    if ctx is not None:
+        return ctx.tenant_id
+    return DEFAULT_TENANT
+
+
+def resolve_tenant_scope(scope: str | None = None) -> str:
+    if scope:
+        return scope
+    ctx = _ctx.get()
+    if ctx is not None:
+        return ctx.scope
+    from data_manager import resolve_ledger_scope
+
+    return resolve_ledger_scope()
+
+
+def require_tenant() -> TenantContext:
+    ctx = _ctx.get()
+    if ctx is None:
+        raise RuntimeError("No tenant context — bug in call chain")
+    return ctx
+
+
+def tenant_scope_tuple(
+    *,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> tuple[str, str]:
+    return resolve_tenant_id(tenant_id), resolve_tenant_scope(scope)
+
+
+@contextmanager
+def tenant_context(
+    tenant_id: str,
+    *,
+    scope: str | None = None,
+    owner_chat_id: str = "",
+    bot_token: str = "",
+) -> Iterator[TenantContext]:
+    from data_manager import resolve_ledger_scope
+
+    resolved_scope = scope or resolve_ledger_scope()
+    ctx = TenantContext(
+        tenant_id=tenant_id,
+        scope=resolved_scope,
+        owner_chat_id=owner_chat_id,
+        bot_token=bot_token,
+    )
+    token = _ctx.set(ctx)
+    try:
+        yield ctx
+    finally:
+        _ctx.reset(token)
+
+
+def multi_tenant_enabled() -> bool:
+    return os.environ.get("MULTI_TENANT_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
