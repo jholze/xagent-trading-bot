@@ -8,6 +8,16 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
+from storage.mongo_client import close_client, force_local_test_mongo
+
+force_local_test_mongo()
+
+
+def pytest_configure(config):
+    force_local_test_mongo()
+    close_client()
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
 # Operator WIP tests on disk but outside 15m feature scope (gitignored).
@@ -15,6 +25,18 @@ collect_ignore = [
     "unit/test_dca_stop_loss.py",
     "unit/test_order_detail_view.py",
 ]
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_mongo(monkeypatch):
+    """Keep all Mongo tests on localhost xagent_test; block inherited MONGO_URL."""
+    monkeypatch.delenv("MONGO_URL", raising=False)
+    monkeypatch.setenv("MONGODB_URI", "mongodb://127.0.0.1:27017")
+    monkeypatch.setenv("MONGODB_DB", "xagent_test")
+    monkeypatch.setenv("MONGODB_TEST_DB", "xagent_test")
+    close_client()
+    yield
+    close_client()
 
 
 @pytest.fixture(autouse=True)

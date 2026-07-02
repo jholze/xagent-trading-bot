@@ -46,8 +46,9 @@ wait_for_port_free() {
 wait_for_port_free 5000
 wait_for_port_free 4040
 
-echo "🧪 Starting bot (demo mode, Mongo DB: xagent_test)..."
-export MONGODB_DB=xagent_test
+echo "🧪 Starting bot (demo mode, local Mongo DB: xagent_test)..."
+# shellcheck disable=SC1091
+source "$(dirname "$0")/dev_local_mongo.sh"
 DEMO_MODE=1 python3 aria_bot.py --demo &
 BOT_PID=$!
 
