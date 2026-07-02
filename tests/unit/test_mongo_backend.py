@@ -330,9 +330,9 @@ def test_migration_json_matches_mongo_content(tmp_path, monkeypatch, mongo_test_
     )
 
     summary = migrate_scope(scope, dry_run=False, test_db=True)
-    assert summary["mongo_counts"]["orders"] == 1
-    assert summary["mongo_counts"]["positions"] == 1
-    assert summary["mongo_counts"]["trade_history"] == 1
+    assert summary["roundtrip"]["orders"] is True
+    assert summary["roundtrip"]["positions"] is True
+    assert summary["roundtrip"]["trades"] is True
 
     mongo_cfg = _mongo_config(base)
     monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
