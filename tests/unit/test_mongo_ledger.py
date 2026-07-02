@@ -91,6 +91,16 @@ def test_tenant_compound_key_roundtrip(mongo_store):
     assert default_loaded["orders"] == []
 
 
+def test_trade_history_includes_tenant_fields(mongo_store):
+    from core.tenant_context import DEFAULT_TENANT
+
+    mongo_store.save_trade_history({"trades": [{"symbol": "H/USDT"}]}, "paper")
+    loaded = mongo_store.load_trade_history("paper", tenant_id=DEFAULT_TENANT)
+    assert loaded["tenant_id"] == DEFAULT_TENANT
+    assert loaded["ledger_scope"] == "paper"
+    assert loaded["trades"][0]["symbol"] == "H/USDT"
+
+
 def test_legacy_scope_fallback_for_default(mongo_store):
     from core.tenant_context import DEFAULT_TENANT
 

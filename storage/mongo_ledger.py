@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled, resolve_tenant_id
 from storage.mongo_client import get_database, resolve_database_name
 from storage.tenant_keys import compound_ledger_id, is_legacy_doc
 
@@ -27,15 +27,17 @@ def _empty_positions(scope: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     return {"tenant_id": tenant_id, "ledger_scope": scope, "positions": {}}
 
 
-def _empty_trade_history(scope: str) -> dict:
+def _empty_trade_history(scope: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+    base = {"tenant_id": tenant_id, "ledger_scope": scope, "trades": []}
     if scope == "live":
-        return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
-    return {
+        base.update({"total_pnl": 0.0, "realized_pnl": 0.0})
+        return base
+    base.update({
         "virtual_balance": 5000.0,
         "realized_pnl": 0.0,
         "open_positions": 0,
-        "trades": [],
-    }
+    })
+    return base
 
 
 def _strip_id(doc: dict | None) -> dict:
@@ -74,7 +76,7 @@ class MongoLedgerStore:
         doc = coll.find_one({"_id": compound_id})
         if doc:
             return doc
-        if tid == DEFAULT_TENANT:
+        if tid == DEFAULT_TENANT and not multi_tenant_enabled():
             legacy = coll.find_one({"_id": scope})
             if legacy and is_legacy_doc(legacy):
                 return legacy
@@ -131,11 +133,14 @@ class MongoLedgerStore:
         return True
 
     def load_trade_history(self, scope: str, tenant_id: str | None = None) -> dict:
-        doc = self._find_doc(TRADE_HISTORY_COLLECTION, scope, tenant_id)
+        tid = self._resolve_tenant(tenant_id)
+        doc = self._find_doc(TRADE_HISTORY_COLLECTION, scope, tid)
         if not doc:
-            return _empty_trade_history(scope)
+            return _empty_trade_history(scope, tid)
         data = _strip_id(doc)
         data.setdefault("trades", [])
+        data["ledger_scope"] = scope
+        data.setdefault("tenant_id", tid)
         return data
 
     def save_trade_history(

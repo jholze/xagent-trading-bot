@@ -21,7 +21,7 @@ SCOPES = ("demo", "paper", "live")
 def migrate(*, test: bool = False, dry_run: bool = False) -> dict:
     ensure_default_tenant(test=test)
     db = get_database(test=test)
-    stats: dict = {"migrated": 0, "skipped": 0, "scopes": []}
+    stats: dict = {"migrated": 0, "skipped": 0, "legacy_deleted": 0, "scopes": []}
 
     for coll_name in COLLECTIONS:
         coll = db[coll_name]
@@ -38,6 +38,12 @@ def migrate(*, test: bool = False, dry_run: bool = False) -> dict:
             payload["_id"] = compound_id
             label = f"{coll_name}:{compound_id}"
             if existing:
+                if dry_run:
+                    stats["scopes"].append(f"{label}:legacy_cleanup")
+                else:
+                    coll.delete_one({"_id": scope})
+                    stats["legacy_deleted"] += 1
+                    stats["scopes"].append(f"{label}:legacy_cleanup")
                 stats["skipped"] += 1
                 continue
             if dry_run:
@@ -45,7 +51,9 @@ def migrate(*, test: bool = False, dry_run: bool = False) -> dict:
                 stats["scopes"].append(label)
                 continue
             coll.replace_one({"_id": compound_id}, payload, upsert=True)
+            coll.delete_one({"_id": scope})
             stats["migrated"] += 1
+            stats["legacy_deleted"] += 1
             stats["scopes"].append(label)
 
     return stats
@@ -61,7 +69,10 @@ def main() -> int:
     stats = migrate(test=args.test, dry_run=args.dry_run)
     mode = "dry-run" if args.dry_run else "apply"
     print(f"migrate_single_to_tenant [{mode}] tenant={DEFAULT_TENANT}")
-    print(f"migrated={stats['migrated']} skipped={stats['skipped']}")
+    print(
+        f"migrated={stats['migrated']} skipped={stats['skipped']} "
+        f"legacy_deleted={stats['legacy_deleted']}"
+    )
     for label in stats["scopes"]:
         print(f"  {label}")
     print("OK")
