@@ -117,3 +117,22 @@ def test_legacy_scope_fallback_for_default(mongo_store):
     )
     loaded = mongo_store.load_orders("live", tenant_id=DEFAULT_TENANT)
     assert loaded["orders"][0]["symbol"] == "OLD/LIVE"
+
+
+def test_legacy_fallback_disabled_when_multi_tenant_enabled(mongo_store, monkeypatch):
+    from core.tenant_context import DEFAULT_TENANT
+
+    monkeypatch.setenv("MULTI_TENANT_ENABLED", "1")
+    coll = mongo_store._collection("orders")
+    coll.replace_one(
+        {"_id": "paper"},
+        {
+            "_id": "paper",
+            "ledger_scope": "paper",
+            "orders": [{"symbol": "LEGACY/PAPER"}],
+            "migrated_from_trades": False,
+        },
+        upsert=True,
+    )
+    loaded = mongo_store.load_orders("paper", tenant_id=DEFAULT_TENANT)
+    assert loaded["orders"] == []
