@@ -23,28 +23,37 @@ def main() -> int:
     if not token or not chat:
         print(
             "⚠️  Startup Telegram skipped — set TELEGRAM_BOT_TOKEN and "
-            "TELEGRAM_CHAT_ID in .env.local (bash scripts/get_telegram_chat_id.sh)",
+            "TELEGRAM_CHAT_ID (.env or .env.local; bash scripts/get_telegram_chat_id.sh)",
             file=sys.stderr,
         )
         return 1
 
-    public_url = (os.getenv("PUBLIC_URL") or (sys.argv[1] if len(sys.argv) > 1 else "")).strip()
-    if not public_url:
-        print("⚠️  Startup Telegram skipped — no PUBLIC_URL", file=sys.stderr)
-        return 1
-
-    from core.build_info import format_build_line
-
     import requests
 
-    text = (
-        "✅ <b>Bot + ngrok neu gestartet</b>\n\n"
-        f"<b>Webhook:</b> {public_url}\n"
-        "<b>Modus:</b> Paper (Demo)\n"
-        "<b>Mongo:</b> xagent_test\n"
-        f"{format_build_line()}\n\n"
-        "Sende /help zum Testen."
-    )
+    custom = os.getenv("NOTIFY_TEXT", "").strip()
+    if "--text" in sys.argv:
+        idx = sys.argv.index("--text")
+        if idx + 1 < len(sys.argv):
+            custom = sys.argv[idx + 1].strip()
+
+    if custom:
+        text = custom
+    else:
+        public_url = (os.getenv("PUBLIC_URL") or (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else "")).strip()
+        if not public_url:
+            print("⚠️  Startup Telegram skipped — no PUBLIC_URL", file=sys.stderr)
+            return 1
+
+        from core.build_info import format_build_line
+
+        text = (
+            "✅ <b>Bot + ngrok neu gestartet</b>\n\n"
+            f"<b>Webhook:</b> {public_url}\n"
+            "<b>Modus:</b> Paper (Demo)\n"
+            "<b>Mongo:</b> xagent_test\n"
+            f"{format_build_line()}\n\n"
+            "Sende /help zum Testen."
+        )
     resp = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
         json={"chat_id": int(chat), "text": text, "parse_mode": "HTML"},
