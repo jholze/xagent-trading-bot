@@ -8,7 +8,8 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-# Prod token only — never load .env.local
+# Prod token only — never load .env.local (avoid dev token override in shell)
+unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 # shellcheck disable=SC1091
 set -a
 source .env
