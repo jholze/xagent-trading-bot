@@ -31,6 +31,12 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   exit 1
 fi
 
+PROD_BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$BOT_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+if [[ -n "$PROD_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" == "$PROD_BOT_TOKEN" ]]; then
+  fail "Refusing local restart with production TELEGRAM_BOT_TOKEN — check .env.local"
+fi
+echo "Telegram webhook will use dev bot token (${TELEGRAM_BOT_TOKEN%%:*}:…)"
+
 notify_telegram() {
   local text="$1"
   if ! python3 "$BOT_DIR/scripts/notify_local_restart.py" --text "$text"; then

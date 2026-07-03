@@ -459,7 +459,10 @@ if __name__ == "__main__":
     try:
         from services.webhook_watchdog import start_webhook_watchdog
 
-        start_webhook_watchdog()
+        if os.environ.get("DEMO_MODE") == "1" and not os.environ.get("WEBHOOK_BASE_URL"):
+            log("Webhook watchdog skipped in local demo (ngrok managed by start script)", "INFO")
+        else:
+            start_webhook_watchdog()
     except Exception as e:
         log(f"Webhook watchdog not started: {e}", "WARNING")
 
