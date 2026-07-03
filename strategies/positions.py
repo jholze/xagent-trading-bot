@@ -46,6 +46,10 @@ _CACHE_FIELDS = (
     "last_rsi",
     "first_buy_at",
     "time_profit_exit_done",
+    "profit_armed_at",
+    "trail_tp_steps",
+    "last_trail_tp_at",
+    "profit_max_lifetime_done",
 )
 
 
@@ -121,6 +125,10 @@ def _deserialize_position(raw: dict) -> dict:
         "last_sell_signal": raw.get("last_sell_signal"),
         "first_buy_at": raw.get("first_buy_at"),
         "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
+        "profit_armed_at": raw.get("profit_armed_at"),
+        "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),
+        "last_trail_tp_at": raw.get("last_trail_tp_at"),
+        "profit_max_lifetime_done": bool(raw.get("profit_max_lifetime_done", False)),
     }
 
 
@@ -151,6 +159,10 @@ def _serialize_positions() -> dict:
             "last_sell_signal": p.get("last_sell_signal"),
             "first_buy_at": p.get("first_buy_at"),
             "time_profit_exit_done": bool(p.get("time_profit_exit_done", False)),
+            "profit_armed_at": p.get("profit_armed_at"),
+            "trail_tp_steps": int(p.get("trail_tp_steps", 0) or 0),
+            "last_trail_tp_at": p.get("last_trail_tp_at"),
+            "profit_max_lifetime_done": bool(p.get("profit_max_lifetime_done", False)),
         }
     return data
 
@@ -318,6 +330,10 @@ def init_position(symbol, timeframe):
                 "last_sell_signal": None,
                 "first_buy_at": None,
                 "time_profit_exit_done": False,
+                "profit_armed_at": None,
+                "trail_tp_steps": 0,
+                "last_trail_tp_at": None,
+                "profit_max_lifetime_done": False,
             }
 
 
@@ -378,6 +394,28 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
         if pos.get("time_profit_exit_done"):
             return
         pos["time_profit_exit_done"] = True
+    flush_positions()
+
+
+def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: float) -> None:
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        pos["trail_tp_steps"] = int(pos.get("trail_tp_steps", 0) or 0) + 1
+        pos["last_trail_tp_at"] = datetime.now().isoformat()
+        pos["recent_high"] = float(current_price)
+    flush_positions()
+
+
+def mark_profit_max_lifetime_done(symbol: str, timeframe: str) -> None:
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        if pos.get("profit_max_lifetime_done"):
+            return
+        pos["profit_max_lifetime_done"] = True
     flush_positions()
 
 
@@ -456,6 +494,10 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["last_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
                 pos["time_profit_exit_done"] = False
+                pos["profit_armed_at"] = None
+                pos["trail_tp_steps"] = 0
+                pos["last_trail_tp_at"] = None
+                pos["profit_max_lifetime_done"] = False
                 pos["first_buy_at"] = datetime.now().isoformat()
                 if old_amount <= 0:
                     pos["strategy_tier"] = None

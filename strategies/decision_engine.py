@@ -25,9 +25,19 @@ from strategies.market_structure import (
 )
 from strategies.dca import evaluate_dca_addon
 from strategies.trailing_stop import evaluate_trailing_stop
+from strategies.trailing_take_profit import evaluate_trailing_take_profit
 from strategies.time_profit_exit import evaluate_time_profit_exit
+from strategies.profit_max_lifetime import evaluate_profit_max_lifetime, sync_profit_armed_at
 from intelligence.volatility_classifier import volatility_tier
-from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
+from strategies.positions import (
+    count_open_positions,
+    flush_positions,
+    get_position,
+    lock_strategy_tier,
+    mark_profit_max_lifetime_done,
+    mark_trailing_take_profit_step,
+    update_market_snapshot,
+)
 from strategies.registry import (
     get_strategy,
     resolve_coin_config,
@@ -586,6 +596,25 @@ class DecisionEngine:
                 sources.append(cand.source)
                 structure_rationales.append(cand.rationale)
 
+            if sync_profit_armed_at(market, position, strategy_params):
+                flush_positions()
+
+            trail_tp = evaluate_trailing_take_profit(market, position, strategy_params)
+            if trail_tp:
+                candidates.append((trail_tp.action, trail_tp.priority, trail_tp.source))
+                sources.append(trail_tp.source)
+                structure_rationales.append(trail_tp.rationale)
+                if trail_tp.shadow_only:
+                    sources.append("trailing_take_profit_shadow")
+
+            life = evaluate_profit_max_lifetime(market, position, strategy_params)
+            if life:
+                candidates.append((life.action, life.priority, life.source))
+                sources.append(life.source)
+                structure_rationales.append(life.rationale)
+                if life.shadow_only:
+                    sources.append("profit_max_lifetime_shadow")
+
             trail = evaluate_trailing_stop(market, position, strategy_params)
             if trail:
                 candidates.append((trail.action, trail.priority, trail.source))
@@ -625,6 +654,12 @@ class DecisionEngine:
     ) -> tuple:
         sources = sources or []
         if "trailing_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "trailing_take_profit_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "profit_max_lifetime_shadow" in sources and is_sell(normalized):
             shadow = execution_action
             return HOLD, "HOLD", shadow
         if "time_profit_shadow" in sources and is_sell(normalized):
@@ -751,6 +786,10 @@ class DecisionEngine:
             from strategies.positions import mark_time_profit_exit_done
 
             mark_time_profit_exit_done(coin["symbol"], market.timeframe)
+        if sell_source == "trailing_take_profit":
+            mark_trailing_take_profit_step(coin["symbol"], market.timeframe, market.current_price)
+        if sell_source == "profit_max_lifetime":
+            mark_profit_max_lifetime_done(coin["symbol"], market.timeframe)
 
         rationale_parts = []
         if "technical" in sources:
@@ -778,6 +817,10 @@ class DecisionEngine:
             rationale_parts.append("strong consensus")
         if "trailing_stop" in sources:
             rationale_parts.append("Trail->ATR stop")
+        if "trailing_take_profit" in sources:
+            rationale_parts.append("Trail->take profit")
+        if "profit_max_lifetime" in sources:
+            rationale_parts.append("Life->max profit")
         if "time_profit_exit" in sources:
             rationale_parts.append("Time->profit exit")
         if "dca" in sources:

@@ -15,6 +15,8 @@ BASE_SELL_KEYS = (
     "safety_tp_min_gain_pct",
     "exit_ladder",
     "trailing_stop",
+    "trailing_take_profit",
+    "profit_max_lifetime",
 )
 
 VOLATILE_EXTRA_KEYS = (

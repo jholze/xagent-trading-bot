@@ -16,6 +16,63 @@ def _normalize_dt(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _bar_ms(timeframe: str) -> int:
+    return 14_400_000 if timeframe == "4h" else 3_600_000
+
+
+def _gate_exchange():
+    return ccxt.gate({"enableRateLimit": True})
+
+
+def _dedupe_bars(bars: list) -> list:
+    by_ts: dict[int, list] = {}
+    for bar in bars:
+        by_ts[int(bar[0])] = bar
+    return [by_ts[ts] for ts in sorted(by_ts)]
+
+
+def _fetch_ohlcv_range(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    timeframe: str = "1h",
+) -> list:
+    start = _normalize_dt(start)
+    end = _normalize_dt(end)
+    key = (symbol, start.isoformat(), end.isoformat(), timeframe)
+    if key in _ohlcv_cache:
+        return _ohlcv_cache[key]
+
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    bar_ms = _bar_ms(timeframe)
+    since_ms = start_ms
+    merged: list = []
+
+    try:
+        exchange = _gate_exchange()
+        while since_ms < end_ms:
+            chunk = exchange.fetch_ohlcv(
+                symbol, timeframe=timeframe, since=since_ms, limit=1000,
+            )
+            if not chunk:
+                break
+            merged.extend(chunk)
+            last_ts = int(chunk[-1][0])
+            if last_ts <= since_ms:
+                break
+            since_ms = last_ts + bar_ms
+            if len(chunk) < 1000:
+                break
+    except Exception as e:
+        log(f"Historical OHLCV fetch failed for {symbol}: {e}", "WARNING")
+        return []
+
+    bars = [b for b in _dedupe_bars(merged) if start_ms <= int(b[0]) <= end_ms]
+    _ohlcv_cache[key] = bars
+    return bars
+
+
 def _fetch_ohlcv_window(
     symbol: str,
     dt: datetime,
@@ -23,21 +80,10 @@ def _fetch_ohlcv_window(
     hours_after: int = 200,
     timeframe: str = "1h",
 ):
-    key = (symbol, _normalize_dt(dt).strftime("%Y-%m-%d"), timeframe, hours_after)
-    if key in _ohlcv_cache:
-        return _ohlcv_cache[key]
-
-    exchange = ccxt.gate({"enableRateLimit": True})
-    since_ms = int((_normalize_dt(dt) - timedelta(hours=hours_before)).timestamp() * 1000)
-    bar_hours = 4 if timeframe == "4h" else 1
-    limit = min(int((hours_before + hours_after) / bar_hours) + 5, 1000)
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=limit)
-        _ohlcv_cache[key] = bars
-        return bars
-    except Exception as e:
-        log(f"Historical OHLCV fetch failed for {symbol}: {e}", "WARNING")
-        return []
+    anchor = _normalize_dt(dt)
+    start = anchor - timedelta(hours=hours_before)
+    end = anchor + timedelta(hours=hours_after)
+    return _fetch_ohlcv_range(symbol, start, end, timeframe=timeframe)
 
 
 def _bars_up_to(bars: list, target: datetime) -> list:
@@ -140,15 +186,18 @@ def get_indicators_at_time(symbol: str, dt: datetime, timeframe: str = "4h") -> 
 
 def prefetch_for_posts(symbol_times: list[tuple[str, datetime]], hold_days: int = 7):
     """Warm OHLCV cache for upcoming point-in-time and path lookups."""
-    seen: set[tuple] = set()
+    seen: set[tuple[str, str]] = set()
     hours_after = hold_days * 24 + 8
     for symbol, dt in symbol_times:
-        key = (symbol, _normalize_dt(dt).strftime("%Y-%m-%d"), "1h", hours_after)
-        if key in seen:
+        anchor = _normalize_dt(dt)
+        start = (anchor - timedelta(hours=4)).isoformat()
+        end = (anchor + timedelta(hours=hours_after)).isoformat()
+        dedupe_key = (symbol, start, end, "1h")
+        if dedupe_key in seen:
             continue
-        seen.add(key)
-        _fetch_ohlcv_window(symbol, dt, hours_after=hours_after)
-        _fetch_ohlcv_window(symbol, dt, hours_after=2, timeframe="4h")
+        seen.add(dedupe_key)
+        _fetch_ohlcv_window(symbol, dt, hours_before=4, hours_after=hours_after)
+        _fetch_ohlcv_window(symbol, dt, hours_before=4, hours_after=2, timeframe="4h")
 
 
 def clear_cache():
