@@ -1,4 +1,4 @@
-"""Fixed-percent trailing take-profit with partial sells."""
+"""Fixed-percent trailing take-profit — sell sizing via exit ladder."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 
 from core.actions import SELL_FULL, SELL_PARTIAL_30
 from core.models import MarketContext
+from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_enabled
 
 
 @dataclass
@@ -47,6 +48,26 @@ def _hours_since(iso_ts: str | None, now: datetime) -> float | None:
     return (now - last_ts).total_seconds() / 3600.0
 
 
+def _resolve_action(position: dict, strategy_params: dict | None) -> str | None:
+    """Partial sells use exit ladder tiers; terminal step is full close."""
+    if ladder_enabled(strategy_params):
+        tiers = ladder_config(strategy_params).get("tiers") or []
+        if not tiers:
+            return None
+        step = current_ladder_step(position, tiers)
+        if step >= len(tiers):
+            return None
+        if step >= len(tiers) - 1:
+            return SELL_FULL
+        return SELL_PARTIAL_30
+
+    max_steps = int(trailing_take_profit_config(strategy_params).get("max_steps", 3))
+    steps = int(position.get("trail_tp_steps", 0) or 0)
+    if steps >= max_steps:
+        return None
+    return SELL_FULL if steps >= max_steps - 1 else SELL_PARTIAL_30
+
+
 def evaluate_trailing_take_profit(
     market: MarketContext,
     position: dict,
@@ -63,9 +84,8 @@ def evaluate_trailing_take_profit(
     if not market.has_position or market.average_entry <= 0:
         return None
 
-    max_steps = int(cfg.get("max_steps", 3))
-    steps = int(position.get("trail_tp_steps", 0) or 0)
-    if steps >= max_steps:
+    action = _resolve_action(position, strategy_params)
+    if not action:
         return None
 
     arm_gain = float(cfg.get("arm_gain_pct", 15.0))
@@ -91,14 +111,13 @@ def evaluate_trailing_take_profit(
     if elapsed is not None and elapsed < cooldown_h:
         return None
 
-    action = SELL_FULL if steps >= max_steps - 1 else SELL_PARTIAL_30
     shadow = mode == "shadow"
     return TrailingTakeProfitCandidate(
         action=action,
         source="trailing_take_profit",
         priority=5,
         rationale=(
-            f"TrailTP->{action} (drop {drop_pct:.1f}% from high, gain={gain:.1f}%, step {steps + 1}/{max_steps})"
+            f"TrailTP->{action} (drop {drop_pct:.1f}% from high, gain={gain:.1f}%, exit_ladder)"
         ),
         shadow_only=shadow,
     )

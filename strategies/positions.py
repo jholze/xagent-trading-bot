@@ -398,11 +398,11 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
 
 
 def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: float) -> None:
+    """Cooldown + reset recent_high after trail TP; sizing stays on exit ladder."""
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     with _positions_lock:
         pos = positions[key]
-        pos["trail_tp_steps"] = int(pos.get("trail_tp_steps", 0) or 0) + 1
         pos["last_trail_tp_at"] = datetime.now().isoformat()
         pos["recent_high"] = float(current_price)
     flush_positions()

@@ -10,6 +10,12 @@ class TestTrailingTakeProfit(unittest.TestCase):
     def _params(self, **overrides):
         base = {
             "strategy_profile": "volatile_altcoin",
+            "exit_ladder": {
+                "enabled": True,
+                "tiers": [0.6, 0.3, 0.1],
+                "min_remainder_pct": 0.05,
+                "min_remainder_usdt_floor": 200,
+            },
             "trailing_take_profit": {
                 "enabled": True,
                 "mode": "live",
@@ -36,13 +42,13 @@ class TestTrailingTakeProfit(unittest.TestCase):
         return MarketContext(**defaults)
 
     def test_no_trigger_before_arm_gain(self):
-        pos = {"recent_high": 1.14, "trail_tp_steps": 0}
+        pos = {"recent_high": 1.14, "exit_ladder_step": 0}
         self.assertIsNone(
             evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
         )
 
-    def test_triggers_partial_on_pullback_when_armed(self):
-        pos = {"recent_high": 1.20, "trail_tp_steps": 0}
+    def test_triggers_partial_via_exit_ladder(self):
+        pos = {"recent_high": 1.20, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}
         cand = evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
         self.assertIsNotNone(cand)
         self.assertEqual(cand.action, SELL_PARTIAL_30)
@@ -52,7 +58,7 @@ class TestTrailingTakeProfit(unittest.TestCase):
         now = datetime(2026, 7, 1, 12, 0, 0)
         pos = {
             "recent_high": 1.20,
-            "trail_tp_steps": 1,
+            "exit_ladder_step": 1,
             "last_trail_tp_at": (now - timedelta(hours=2)).isoformat(),
         }
         self.assertIsNone(
@@ -61,13 +67,13 @@ class TestTrailingTakeProfit(unittest.TestCase):
             )
         )
 
-    def test_last_step_sells_full_remainder(self):
-        pos = {"recent_high": 1.20, "trail_tp_steps": 2}
+    def test_last_ladder_step_sells_full(self):
+        pos = {"recent_high": 1.20, "exit_ladder_step": 2}
         cand = evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
         self.assertEqual(cand.action, SELL_FULL)
 
     def test_skips_when_gain_below_min(self):
-        pos = {"recent_high": 1.20, "trail_tp_steps": 0}
+        pos = {"recent_high": 1.20, "exit_ladder_step": 0}
         self.assertIsNone(
             evaluate_trailing_take_profit(self._market(current_price=1.05), pos, self._params())
         )
