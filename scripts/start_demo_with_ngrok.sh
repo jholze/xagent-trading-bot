@@ -170,28 +170,7 @@ from notifications.telegram_commands.command_menu import register_bot_commands
 register_bot_commands()
 " 2>/dev/null || echo "   (command menu registration skipped)"
 
-python3 -c "
-import os, requests
-from pathlib import Path
-from dotenv import load_dotenv
-root = Path.cwd()
-load_dotenv(root / ".env")
-load_dotenv(root / ".env.local", override=True)
-from core.build_info import format_build_line
-token = os.getenv('TELEGRAM_BOT_TOKEN')
-chat = os.getenv('TELEGRAM_CHAT_ID')
-if token and chat:
-    url = f'https://api.telegram.org/bot{token}/sendMessage'
-    text = (
-        '✅ <b>Bot + ngrok neu gestartet</b>\n\n'
-        f'<b>Webhook:</b> ${PUBLIC_URL}\n'
-        '<b>Modus:</b> Paper (Demo)\n'
-        '<b>Mongo:</b> xagent_test\n'
-        f'{format_build_line()}\n\n'
-        'Sende /help zum Testen.'
-    )
-    requests.post(url, json={'chat_id': int(chat), 'text': text, 'parse_mode': 'HTML'}, timeout=10)
-" 2>/dev/null || true
+PUBLIC_URL="$PUBLIC_URL" python3 scripts/notify_local_restart.py "$PUBLIC_URL" || true
 
 echo ""
 echo "✅ Ready!"
