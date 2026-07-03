@@ -1,5 +1,6 @@
 # Secrets and sensitive files
 .env
+.env.local
 *.log
 aria_bot.log
 logs/

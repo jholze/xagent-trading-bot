@@ -4,15 +4,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [[ ! -f .env ]]; then
-  echo "❌ .env missing (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID required)"
+  echo "❌ .env missing (API keys)"
+  exit 1
+fi
+
+if [[ ! -f .env.local ]]; then
+  echo "❌ .env.local missing — copy .env.local.example and add your DEV bot token"
+  echo "   Production Railway bot must stay separate. See: bash scripts/get_telegram_chat_id.sh"
   exit 1
 fi
 
 # shellcheck disable=SC1091
-source .env
+source "$(dirname "$0")/source_bot_env.sh"
 
 if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
-  echo "❌ TELEGRAM_BOT_TOKEN not set in .env"
+  echo "❌ TELEGRAM_BOT_TOKEN not set in .env.local"
   exit 1
 fi
 
@@ -155,16 +161,22 @@ fi
 
 echo "📋 Registering Telegram command menu..."
 python3 -c "
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+root = Path.cwd()
+load_dotenv(root / ".env")
+load_dotenv(root / ".env.local", override=True)
 from notifications.telegram_commands.command_menu import register_bot_commands
 register_bot_commands()
 " 2>/dev/null || echo "   (command menu registration skipped)"
 
 python3 -c "
 import os, requests
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+root = Path.cwd()
+load_dotenv(root / ".env")
+load_dotenv(root / ".env.local", override=True)
 from core.build_info import format_build_line
 token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat = os.getenv('TELEGRAM_CHAT_ID')

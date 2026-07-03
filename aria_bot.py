@@ -10,10 +10,13 @@ from flask import Flask, request
 import argparse
 import atexit
 import signal
+from pathlib import Path
 
 from logger import log
 
-load_dotenv()
+_ROOT = Path(__file__).resolve().parent
+load_dotenv(_ROOT / ".env")
+load_dotenv(_ROOT / ".env.local", override=True)
 
 # Demo mode handling
 parser = argparse.ArgumentParser(description="X-Agent Trading Bot")
