@@ -17,12 +17,18 @@ echo ""
 python3 - <<'PY'
 import json
 import os
+import subprocess
 import sys
-import urllib.request
 
 token = os.environ["TELEGRAM_BOT_TOKEN"]
-with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getUpdates", timeout=15) as resp:
-    data = json.load(resp)
+proc = subprocess.run(
+    ["curl", "-sS", f"https://api.telegram.org/bot{token}/getUpdates"],
+    capture_output=True,
+    text=True,
+    timeout=20,
+    check=True,
+)
+data = json.loads(proc.stdout)
 
 if not data.get("ok"):
     print("getUpdates failed:", data, file=sys.stderr)
