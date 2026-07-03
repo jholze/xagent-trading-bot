@@ -18,6 +18,11 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+if [[ ! -f .env.local ]]; then
+  echo "FAIL: .env.local missing — local restart must use DEV bot token (not Railway prod)"
+  exit 1
+fi
+
 # shellcheck disable=SC1091
 source "$BOT_DIR/scripts/source_bot_env.sh"
 
