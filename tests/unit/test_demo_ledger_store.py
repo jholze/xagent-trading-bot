@@ -96,6 +96,7 @@ class TestDemoLedgerStore(unittest.TestCase):
         clear_positions_memory()
 
     def tearDown(self):
+        os.environ.pop("DEMO_LEDGER_BACKEND", None)
         for p in reversed(self.patches):
             p.stop()
         from storage import ledger_router
@@ -104,14 +105,24 @@ class TestDemoLedgerStore(unittest.TestCase):
         ledger_router._store_cache.clear()
         order_service._ORDERS_READ_CACHE.clear()
 
-    def test_resolve_ledger_backend_demo_is_hybrid(self):
-        self.assertEqual(resolve_ledger_backend("demo", self.cfg), "demo_hybrid")
+    def test_resolve_ledger_backend_demo_defaults_mongo(self):
+        self.assertEqual(resolve_ledger_backend("demo", self.cfg), "mongo")
 
-    def test_resolve_ledger_backend_demo_env_override(self):
-        with patch.dict(os.environ, {"DEMO_LEDGER_BACKEND": "mongo"}):
-            self.assertEqual(resolve_ledger_backend("demo", self.cfg), "mongo")
+    def test_resolve_ledger_backend_demo_hybrid_env_override(self):
+        with patch.dict(os.environ, {"DEMO_LEDGER_BACKEND": "demo_hybrid"}):
+            from storage import ledger_router
+
+            ledger_router._store_cache.clear()
+            self.assertEqual(resolve_ledger_backend("demo", self.cfg), "demo_hybrid")
+
+    def _use_demo_hybrid(self):
+        os.environ["DEMO_LEDGER_BACKEND"] = "demo_hybrid"
+        from storage import ledger_router
+
+        ledger_router._store_cache.clear()
 
     def test_demo_store_reads_orders_from_json_not_empty_mongo(self):
+        self._use_demo_hybrid()
         store = resolve_store("demo", self.cfg)
         self.assertIsInstance(store, DemoLedgerStore)
 
@@ -130,11 +141,13 @@ class TestDemoLedgerStore(unittest.TestCase):
             self.assertEqual(orders["orders"][0]["symbol"], "ARIA/USDT")
 
     def test_bootstrap_positions_derives_from_demo_json_orders(self):
+        self._use_demo_hybrid()
         bootstrap_positions(scope="demo")
         self.assertGreater(count_open_positions(), 0)
         self.assertEqual(load_orders("demo")["orders"][0]["status"], "filled")
 
     def test_load_positions_document_prefers_mongo_cache_when_populated(self):
+        self._use_demo_hybrid()
         store = resolve_store("demo", self.cfg)
         mongo_cache = {
             "ledger_scope": "demo",
@@ -147,6 +160,7 @@ class TestDemoLedgerStore(unittest.TestCase):
         self.assertIn("CACHE_USDT_4h", doc["positions"])
 
     def test_save_positions_writes_json_only_not_mongo(self):
+        self._use_demo_hybrid()
         store = resolve_store("demo", self.cfg)
         payload = {"ledger_scope": "demo", "positions": {"X_USDT_4h": {"amount": 1.0}}}
         with patch.object(store._mongo, "save_positions") as mock_mongo_save:
@@ -154,6 +168,7 @@ class TestDemoLedgerStore(unittest.TestCase):
             mock_mongo_save.assert_not_called()
 
     def test_demo_cash_reconciled_from_json_orders_not_stale_mongo(self):
+        self._use_demo_hybrid()
         history_path = os.path.join(self.tmp.name, "live_trade_history.demo.json")
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(
@@ -173,6 +188,7 @@ class TestDemoLedgerStore(unittest.TestCase):
 
     def test_load_live_trade_history_in_demo_matches_order_reconciled_cash(self):
         """Regression: demo portfolio read live Mongo ledger and showed stale $100k cash."""
+        self._use_demo_hybrid()
         history_path = os.path.join(self.tmp.name, "live_trade_history.demo.json")
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(

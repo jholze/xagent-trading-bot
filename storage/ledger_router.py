@@ -44,7 +44,7 @@ def resolve_ledger_backend(scope: str, config: dict) -> str:
         demo_backend = (config.get("demo") or {}).get("backend")
         if demo_backend:
             return str(demo_backend)
-        return "demo_hybrid"
+        return "mongo"
     if scope == "paper":
         paper_backend = (config.get("paper") or {}).get("backend")
         if paper_backend:

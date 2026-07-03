@@ -65,7 +65,11 @@ done
 
 # shellcheck disable=SC1091
 source "$BOT_DIR/scripts/dev_local_mongo.sh"
-nohup env DEMO_MODE=1 python3 "$BOT_DIR/aria_bot.py" >>"$BOT_DIR/logs/bot_restart.log" 2>&1 &
+export DEMO_LEDGER_BACKEND=mongo
+bash "$BOT_DIR/scripts/sync_demo_ledger_from_railway.sh" || echo "WARN: demo ledger sync skipped"
+
+nohup env DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 "$BOT_DIR/aria_bot.py" --demo \
+  >>"$BOT_DIR/logs/bot_restart.log" 2>&1 &
 BOT_PID=$!
 echo "$BOT_PID" >"$BOT_DIR/run/aria_bot.pid"
 echo "Bot starting pid=$BOT_PID"

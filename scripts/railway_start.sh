@@ -37,6 +37,19 @@ PY
 echo "Seeding demo Mongo ledger if needed..."
 python3 scripts/railway_seed_demo_mongo.py || echo "WARN: demo Mongo seed skipped"
 
+echo "Reconciling demo ledger (positions + cash)..."
+python3 - <<'PY' || echo "WARN: demo ledger reconcile skipped"
+import os, sys
+sys.path.insert(0, ".")
+os.environ.setdefault("DEMO_MODE", "1")
+os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
+from data_manager import reconcile_demo_trade_history_on_startup
+from services.ledger_sync import sync_positions_on_startup
+sync_positions_on_startup()
+reconcile_demo_trade_history_on_startup()
+print("Demo ledger reconcile OK")
+PY
+
 # Register Telegram webhook (Railway public domain — replaces ngrok)
 if [[ -n "${WEBHOOK_BASE_URL:-}" || -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]]; then
   echo "Registering Telegram webhook..."

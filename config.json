@@ -2,6 +2,9 @@
   "virtual_trading": true,
   "trading_mode": "live",
   "live_confirmed": true,
+  "demo": {
+    "backend": "mongo"
+  },
   "paper": {
     "initial_capital_usdt": 100000,
     "backend": "local"

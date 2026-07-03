@@ -52,10 +52,12 @@ wait_for_port_free() {
 wait_for_port_free 5000
 wait_for_port_free 4040
 
-echo "🧪 Starting bot (demo mode, local Mongo DB: xagent_test)..."
+echo "🧪 Starting bot (demo mode, Mongo ledger: xagent_test)..."
 # shellcheck disable=SC1091
 source "$(dirname "$0")/dev_local_mongo.sh"
-DEMO_MODE=1 python3 aria_bot.py --demo &
+export DEMO_LEDGER_BACKEND=mongo
+bash "$(dirname "$0")/sync_demo_ledger_from_railway.sh" || echo "WARN: demo ledger sync skipped"
+DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 aria_bot.py --demo &
 BOT_PID=$!
 
 echo "⏳ Waiting for bot on :5000..."
