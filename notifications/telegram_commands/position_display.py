@@ -155,6 +155,7 @@ def _positions_display_config() -> tuple[bool, int]:
 
 _TELEGRAM_CHUNK_LIMIT = 3900
 _POSITION_CARD_SPLIT = re.compile(r"\n\n(?=<b>\d+\.</b>)")
+_COMPACT_LINE_SPLIT = re.compile(r"\n(?=<b>\d+\.</b>)")
 
 
 def _hard_split_telegram(text: str, limit: int) -> list[str]:
@@ -176,7 +177,8 @@ def chunk_positions_message(
     if len(body) <= limit:
         return [body]
 
-    parts = _POSITION_CARD_SPLIT.split(body)
+    split_re = _COMPACT_LINE_SPLIT if not annotate_pages else _POSITION_CARD_SPLIT
+    parts = split_re.split(body)
     if len(parts) <= 1:
         return _hard_split_telegram(body, limit)
 
@@ -184,12 +186,13 @@ def chunk_positions_message(
     chunks: list[str] = []
     current = header.strip()
     continued = False
+    line_sep = "\n" if not annotate_pages else "\n\n"
 
     for card in cards:
         card = card.strip()
         if not card:
             continue
-        sep = "\n\n" if current else ""
+        sep = line_sep if current else ""
         candidate = f"{current}{sep}{card}" if current else card
         if len(candidate) <= limit:
             current = candidate
@@ -614,12 +617,17 @@ def load_trade_history_safe() -> dict:
     return load_trade_history()
 
 
-def resolve_portfolio_context(*, fast: bool = False) -> dict:
-    from strategies.positions import bootstrap_positions, count_open_positions
+def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
+    """Reload positions from order ledger before /portfolio (orders are source of truth)."""
+    from strategies.positions import bootstrap_positions, count_open_positions, load_positions
 
-    if count_open_positions() == 0:
+    if fast:
+        load_positions()
+    elif count_open_positions() == 0:
         bootstrap_positions()
 
+
+def resolve_portfolio_context(*, fast: bool = False) -> dict:
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
@@ -695,10 +703,7 @@ def send_positions_snapshot(
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
-    from strategies.positions import bootstrap_positions, count_open_positions
-
-    if count_open_positions() == 0:
-        bootstrap_positions()
+    _refresh_positions_for_snapshot(fast=fast)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_active = pool.submit(list_active_positions)
