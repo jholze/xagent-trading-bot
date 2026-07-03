@@ -1,4 +1,5 @@
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from queue import Queue
@@ -31,6 +32,7 @@ class SocialPipeline:
         self._cycle_signals = []
         self._cycle_cmc_signals = []
         self._cycle_lc_signals = []
+        self._last_lc_fetch_at = 0.0
         self._last_lc_digest_sig = ""
         self._notified_post_ids = set()
         self._last_cmc_digest_sig = ""
@@ -258,6 +260,18 @@ class SocialPipeline:
         merged = sorted(by_coin.values(), key=lambda s: getattr(s, "confidence", 0), reverse=True)
         return merged
 
+    def _lc_fetch_interval_sec(self, lc_cfg: dict) -> int:
+        interval = lc_cfg.get("fetch_interval_sec")
+        if interval is None:
+            interval = lc_cfg.get("cache_ttl_sec", 900)
+        return max(0, int(interval))
+
+    def _should_skip_lc_fetch(self, lc_cfg: dict) -> bool:
+        interval = self._lc_fetch_interval_sec(lc_cfg)
+        if interval <= 0 or self._last_lc_fetch_at <= 0:
+            return False
+        return (time.time() - self._last_lc_fetch_at) < interval
+
     def process_lc_signals(self, watchlist: list = None) -> list:
         from core.config import get_bot_config
 
@@ -266,6 +280,10 @@ class SocialPipeline:
         if not lc_cfg.get("enabled", True):
             return []
 
+        if self._should_skip_lc_fetch(lc_cfg):
+            return list(self._cycle_lc_signals)
+
+        self._last_lc_fetch_at = time.time()
         watchlist = watchlist or load_effective_watchlist()
         raw_metrics = self.lc_provider.fetch_for_watchlist(watchlist)
         self._cycle_lc_signals = []
