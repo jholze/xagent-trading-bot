@@ -113,31 +113,11 @@ class VariantResult:
 
 
 def _load_demo_orders() -> tuple[list, str]:
-    """Prefer live demo ledger; fall back to JSON when Mongo book is sparse."""
-    from data_manager import _load_orders_json, load_orders
+    """Load demo orders from the active ledger backend (Mongo when configured)."""
+    from data_manager import load_orders
 
     doc = load_orders("demo")
-    orders = list(doc.get("orders") or [])
-    source = "ledger"
-    s15 = [
-        o for o in orders
-        if o.get("source") == "entry_sensor_15m"
-        and o.get("status") == "filled"
-        and (o.get("side") or "").lower() == "buy"
-    ]
-    if len(s15) < 5:
-        json_doc = _load_orders_json("demo")
-        json_orders = list(json_doc.get("orders") or [])
-        json_s15 = [
-            o for o in json_orders
-            if o.get("source") == "entry_sensor_15m"
-            and o.get("status") == "filled"
-            and (o.get("side") or "").lower() == "buy"
-        ]
-        if len(json_s15) > len(s15):
-            orders = json_orders
-            source = "orders.demo.json"
-    return orders, source
+    return list(doc.get("orders") or []), "ledger"
 
 
 def load_lots() -> tuple[list[Lot], str]:
@@ -368,7 +348,7 @@ def main() -> int:
     lots, order_source = load_lots()
     print(f"Loaded {len(lots)} entry_sensor_15m lots ({DAYS}d) from {order_source}")
     if not lots:
-        print("No entry_sensor_15m lots — sync demo Mongo or check orders.demo.json")
+        print("No entry_sensor_15m lots — sync demo Mongo: scripts/sync_demo_ledger_from_railway.sh")
         return 1
     quick = [l for l in lots if l.first_sell_mins is not None and l.first_sell_mins <= WHIPSAW_MAX_MIN]
     print(f"Quick sells (<={WHIPSAW_MAX_MIN:.0f}m): {len(quick)}")

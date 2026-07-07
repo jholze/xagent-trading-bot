@@ -22,7 +22,7 @@ def _matches(symbol: str) -> bool:
 
 
 def _save_demo_positions_cache(pos_doc: dict) -> None:
-    """Demo ledger reads positions from Mongo but DemoLedgerStore.save_positions is JSON-only."""
+    """Persist demo positions cache directly to Mongo (export-only JSON is not authoritative)."""
     from storage.mongo_ledger import MongoLedgerStore
 
     MongoLedgerStore().save_positions(pos_doc, SCOPE)

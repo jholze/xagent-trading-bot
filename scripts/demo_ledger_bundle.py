@@ -20,11 +20,15 @@ def _ensure_demo_mongo() -> None:
     os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
 
 
+def _ledger_store():
+    from data_manager import get_config, _mongo_ledger_store
+
+    return _mongo_ledger_store(get_config())
+
+
 def export_bundle() -> dict:
     _ensure_demo_mongo()
-    from storage.ledger_router import resolve_store
-
-    store = resolve_store(SCOPE)
+    store = _ledger_store()
     return {
         "scope": SCOPE,
         "orders": store.load_orders(SCOPE),
@@ -35,10 +39,9 @@ def export_bundle() -> dict:
 
 def import_bundle(payload: dict) -> dict:
     _ensure_demo_mongo()
-    from storage.ledger_router import resolve_store
     from strategies.positions import bootstrap_positions, flush_positions
 
-    store = resolve_store(SCOPE)
+    store = _ledger_store()
     orders = payload.get("orders") or {}
     positions = payload.get("positions") or {}
     history = payload.get("trade_history") or {}

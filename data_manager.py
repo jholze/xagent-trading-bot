@@ -516,7 +516,13 @@ def load_trade_history_document(scope: str = "paper", config: dict = None) -> di
         try:
             history = _mongo_ledger_store(cfg).load_trade_history(scope)
         except Exception as e:
-            log(f"Mongo trade_history load failed ({scope}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(scope, cfg):
+                log(
+                    f"Demo Mongo trade_history load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo trade_history load failed ({scope}), falling back to JSON: {e}", "WARNING")
             history = _load_trade_history_json(scope, cfg)
     else:
         history = _load_trade_history_json(scope, cfg)
@@ -527,7 +533,7 @@ def load_trade_history_document(scope: str = "paper", config: dict = None) -> di
 
 
 def reconcile_demo_trade_history_on_startup(config: dict = None) -> dict:
-    """Refresh demo virtual_balance from JSON orders before the first trading cycle."""
+    """Refresh demo virtual_balance from ledger orders before the first trading cycle."""
     if not is_demo_mode():
         return {}
     cfg = config or get_config()
@@ -814,6 +820,22 @@ def _demo_ledger_backend_is_mongo(config: dict = None) -> bool:
     return resolve_ledger_backend("demo", config) == "mongo"
 
 
+def _demo_json_fallback_enabled() -> bool:
+    return os.environ.get("DEMO_LEDGER_JSON_FALLBACK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _should_refuse_demo_json_fallback(scope: str, cfg: dict) -> bool:
+    return (
+        scope == "demo"
+        and _demo_ledger_backend_is_mongo(cfg)
+        and not _demo_json_fallback_enabled()
+    )
+
+
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
     """Whether positions load from Mongo."""
     if ledger_dual_write_enabled(config):
@@ -920,7 +942,13 @@ def load_orders(scope: str):
         try:
             return _mongo_ledger_store(cfg).load_orders(scope)
         except Exception as e:
-            log(f"Mongo orders load failed ({scope}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(scope, cfg):
+                log(
+                    f"Demo Mongo orders load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo orders load failed ({scope}), falling back to JSON: {e}", "WARNING")
     return _load_orders_json(scope)
 
 
@@ -996,7 +1024,13 @@ def load_positions_document(scope: str = None, config: dict = None) -> dict:
         try:
             return _mongo_ledger_store(cfg).load_positions(target)
         except Exception as e:
-            log(f"Mongo positions load failed ({target}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(target, cfg):
+                log(
+                    f"Demo Mongo positions load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo positions load failed ({target}), falling back to JSON: {e}", "WARNING")
     return _load_positions_json(target)
 
 

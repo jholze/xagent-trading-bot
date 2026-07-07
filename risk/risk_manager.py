@@ -3,10 +3,12 @@ from datetime import datetime, timedelta
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
 from data_manager import (
+    is_demo_mode,
     is_dry_run_enhanced,
     is_live_dry_run,
     load_live_trade_history,
     load_trade_history,
+    resolve_ledger_backend,
     simulated_balance_usdt,
     uses_exchange_ledger,
 )
@@ -59,7 +61,12 @@ class RiskManager:
     ) -> RiskDecision:
         from core.test_symbols import is_phantom_test_symbol
 
-        if is_phantom_test_symbol(order.symbol):
+        cfg = self.config.raw if hasattr(self.config, "raw") else self.config
+        if (
+            is_demo_mode()
+            and resolve_ledger_backend("demo", cfg) == "mongo"
+            and is_phantom_test_symbol(order.symbol)
+        ):
             return RiskDecision(
                 approved=False,
                 message=f"Phantom test symbol blocked: {order.symbol}",

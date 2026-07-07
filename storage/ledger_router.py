@@ -40,9 +40,18 @@ def resolve_ledger_backend(scope: str, config: dict) -> str:
     if scope == "demo":
         env_backend = os.environ.get("DEMO_LEDGER_BACKEND", "").strip()
         if env_backend:
+            if env_backend == "demo_hybrid":
+                log(
+                    "DEMO_LEDGER_BACKEND=demo_hybrid is deprecated; using mongo",
+                    "WARNING",
+                )
+                return "mongo"
             return env_backend
         demo_backend = (config.get("demo") or {}).get("backend")
         if demo_backend:
+            if str(demo_backend) == "demo_hybrid":
+                log("demo.backend=demo_hybrid is deprecated; using mongo", "WARNING")
+                return "mongo"
             return str(demo_backend)
         return "mongo"
     if scope == "paper":
@@ -196,50 +205,6 @@ class MongoLedgerStoreAdapter:
         return self._store.save_trade_history(data, scope)
 
 
-class DemoLedgerStore:
-    """Demo scope: orders/trade_history SOT in JSON; positions cache in Mongo (+ JSON fallback)."""
-
-    def __init__(self, config: dict | None = None):
-        cfg = config or {}
-        self._json = JsonLedgerStore(cfg)
-        self._mongo = MongoLedgerStoreAdapter(cfg)
-
-    def load_orders(self, scope: str) -> dict:
-        return self._json.load_orders(scope)
-
-    def save_orders(self, data: dict, scope: str) -> bool:
-        ok = self._json.save_orders(data, scope)
-        try:
-            ok = self._mongo.save_orders(data, scope) and ok
-        except Exception as e:
-            log(f"Mongo orders save failed ({scope}): {e}", "WARNING")
-        return ok
-
-    def load_positions(self, scope: str) -> dict:
-        try:
-            doc = self._mongo.load_positions(scope)
-            if doc.get("positions"):
-                return doc
-        except Exception as e:
-            log(f"Mongo positions load failed ({scope}), falling back to JSON: {e}", "WARNING")
-        return self._json.load_positions(scope)
-
-    def save_positions(self, data: dict, scope: str) -> bool:
-        # Demo Mongo positions doc is read-only cache; never overwrite stable portfolio.
-        return self._json.save_positions(data, scope)
-
-    def load_trade_history(self, scope: str) -> dict:
-        return self._json.load_trade_history(scope)
-
-    def save_trade_history(self, data: dict, scope: str) -> bool:
-        ok = self._json.save_trade_history(data, scope)
-        try:
-            ok = self._mongo.save_trade_history(data, scope) and ok
-        except Exception as e:
-            log(f"Mongo trade_history save failed ({scope}): {e}", "WARNING")
-        return ok
-
-
 class DualWriteLedgerStore:
     """Write JSON + Mongo; read from Mongo (authoritative)."""
 
@@ -312,14 +277,8 @@ def resolve_store(scope: str, config: dict | None = None) -> LedgerStore:
     cached = _store_cache.get(key)
     if cached and now - cached[0] < _STORE_CACHE_TTL:
         return cached[1]
-    if scope == "demo":
-        store: LedgerStore = (
-            MongoLedgerStoreAdapter(cfg)
-            if backend == "mongo"
-            else DemoLedgerStore(cfg)
-        )
-    elif backend == "demo_hybrid":
-        store = DemoLedgerStore(cfg)
+    if scope == "demo" or backend == "demo_hybrid":
+        store = MongoLedgerStoreAdapter(cfg)
     elif dual:
         store = DualWriteLedgerStore(cfg)
     elif backend == "mongo":
@@ -331,11 +290,11 @@ def resolve_store(scope: str, config: dict | None = None) -> LedgerStore:
 
 
 def reads_mongo(scope: str, config: dict | None = None) -> bool:
-    from data_manager import get_config
+    from data_manager import get_config, resolve_ledger_backend as dm_resolve_backend
 
     cfg = config or get_config()
     if scope == "demo":
-        return True
+        return dm_resolve_backend("demo", cfg) == "mongo"
     if ledger_dual_write_enabled(cfg):
         return True
     return resolve_ledger_backend(scope, cfg) == "mongo"
