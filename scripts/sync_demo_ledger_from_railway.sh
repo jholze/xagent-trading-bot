@@ -16,16 +16,35 @@ export DEMO_LEDGER_BACKEND=mongo
 BUNDLE="$(mktemp)"
 trap 'rm -f "$BUNDLE"' EXIT
 
-echo "Syncing demo ledger Railway → local Mongo (${MONGODB_DB})..."
-if ! railway run -- python3 scripts/demo_ledger_bundle.py export >"$BUNDLE" 2>/dev/null; then
+echo "Fetching Railway Mongo public URL (MongoDB-mPbb)..."
+MONGO_PUBLIC="$(
+  railway variables --service MongoDB-mPbb --json 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('MONGO_PUBLIC_URL',''))"
+)"
+if [[ -z "$MONGO_PUBLIC" ]]; then
+  echo "WARN: MONGO_PUBLIC_URL missing — local ledger unchanged"
+  exit 0
+fi
+
+echo "Exporting live demo ledger from Railway → bundle..."
+# IMPORTANT: unset local MONGODB_URI so resolve_mongo_uri() uses MONGO_URL (public proxy).
+# railway run + dev_local_mongo would otherwise export localhost by mistake.
+if ! env -u MONGODB_URI \
+  MONGO_URL="$MONGO_PUBLIC" \
+  MONGODB_DB="${MONGODB_DB:-xagent_test}" \
+  DEMO_MODE=1 \
+  DEMO_LEDGER_BACKEND=mongo \
+  python3 scripts/demo_ledger_bundle.py export >"$BUNDLE" 2>/dev/null; then
   echo "WARN: Railway export failed — local ledger unchanged"
   exit 0
 fi
 
-if ! python3 -c "import json; json.load(open('$BUNDLE'))" 2>/dev/null; then
-  echo "WARN: Invalid export bundle — local ledger unchanged"
+if ! python3 -c "import json; d=json.load(open('$BUNDLE')); assert len(d.get('orders',{}).get('orders',[]))>0" 2>/dev/null; then
+  echo "WARN: Invalid/empty export bundle — local ledger unchanged"
   exit 0
 fi
 
+ORDER_COUNT="$(python3 -c "import json; print(len(json.load(open('$BUNDLE'))['orders']['orders']))")"
+echo "Importing ${ORDER_COUNT} orders into local Mongo (${MONGODB_DB})..."
 python3 scripts/demo_ledger_bundle.py import --file "$BUNDLE"
-echo "Demo ledger sync OK"
+echo "Demo ledger sync OK (${ORDER_COUNT} orders)"
