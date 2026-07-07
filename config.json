@@ -689,15 +689,20 @@
       "enabled": true,
       "mode": "live",
       "interval_hours": 12,
-      "fixed_usdt": 400,
+      "fixed_usdt": 500,
       "sizing": {
         "enabled": true,
-        "min_multiplier": 0.45,
+        "base_mode": "max",
+        "notional_ratio": 0.30,
+        "recovery_notional_ratio": 0.18,
+        "min_multiplier": 0.55,
         "max_multiplier": 1.0,
         "loss_depth_boost": 0.15,
         "round_decay": 0.12,
-        "min_usdt": 100,
-        "max_usdt": 420
+        "min_usdt": 300,
+        "max_usdt": 1200,
+        "recovery_min_usdt": 200,
+        "recovery_max_usdt": 550
       },
       "portfolio": {
         "enabled": true,

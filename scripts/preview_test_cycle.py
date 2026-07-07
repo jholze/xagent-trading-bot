@@ -125,7 +125,7 @@ def main() -> int:
         f"Portfolio-DCA: enabled={port_cfg.get('enabled')} mode={port_cfg.get('mode')} "
         f"max_buys={port_cfg.get('max_buys_per_cycle')} score≥{port_cfg.get('min_dca_score')}"
     )
-    print("Loss-Zone -3%..-20%, Sizing $100–420, Cash-Buffer $300")
+    print("Loss-Zone -3%..-20%, Sizing $300–1200 (30% Positionswert), Cash-Buffer $300")
     print(f"Neue Einstiege: {'BLOCKIERT' if len(active) >= bot.max_open_positions else 'möglich'}")
 
     print("\n=== VERLIERER in DCA-Zone (-3%..-20%) ===")

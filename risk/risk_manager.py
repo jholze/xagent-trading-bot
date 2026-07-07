@@ -149,7 +149,8 @@ class RiskManager:
                 from strategies.dca_recovery import recovery_config, recovery_usdt_amount
 
                 rec_cfg = recovery_config(params)
-                base_usdt = recovery_usdt_amount(rec_cfg, params)
+                pos = get_position(order.symbol, timeframe)
+                base_usdt = recovery_usdt_amount(rec_cfg, params, position=pos)
             elif dca_cfg.get("fixed_usdt"):
                 base_usdt = float(dca_cfg["fixed_usdt"])
         if source == "manual":

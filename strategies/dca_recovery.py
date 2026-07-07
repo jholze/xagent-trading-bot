@@ -96,7 +96,10 @@ def recovery_usdt_amount(
     score: int = 0,
     loss_pct: float = 0.0,
     round_index: int = 0,
+    position: dict | None = None,
+    market=None,
 ) -> float:
+    from strategies.dca import _position_notional_for_sizing
     from strategies.dca_sizing import compute_dca_usdt
 
     dca = dca_config(strategy_params)
@@ -114,6 +117,7 @@ def recovery_usdt_amount(
         dca_cfg=dca,
         is_recovery=True,
         recovery_ratio=ratio,
+        position_notional_usdt=_position_notional_for_sizing(position, market),
     )
 
 
@@ -203,13 +207,25 @@ def should_dca_recovery(market, position: dict, strategy_params: dict | None) ->
         elif not decision.should_dca:
             return decision
         decision.usdt_amount = recovery_usdt_amount(
-            cfg, strategy_params, score=decision.score, loss_pct=loss_pct, round_index=rounds,
+            cfg,
+            strategy_params,
+            score=decision.score,
+            loss_pct=loss_pct,
+            round_index=rounds,
+            position=position,
+            market=market,
         )
         decision.shadow_only = mode == "shadow"
         return decision
 
     usdt_amount = recovery_usdt_amount(
-        cfg, strategy_params, score=0, loss_pct=loss_pct, round_index=rounds,
+        cfg,
+        strategy_params,
+        score=0,
+        loss_pct=loss_pct,
+        round_index=rounds,
+        position=position,
+        market=market,
     )
     return DCADecision(
         should_dca=True,

@@ -8,6 +8,7 @@ from datetime import datetime
 from core.actions import BUY_DCA
 from core.config import get_bot_config
 from core.models import MarketContext
+from strategies.positions import position_notional_usdt
 
 
 @dataclass
@@ -139,6 +140,17 @@ def _near_stop_loss(
     return margin < buffer
 
 
+def _position_notional_for_sizing(position: dict | None, market: MarketContext | None = None) -> float:
+    if not position:
+        return 0.0
+    amount = float(position.get("amount", 0) or 0)
+    if amount <= 0:
+        return 0.0
+    if market and float(market.current_price or 0) > 0:
+        return amount * float(market.current_price)
+    return position_notional_usdt(position)
+
+
 def _volatility_tier(strategy_params: dict | None) -> str:
     tier = str((strategy_params or {}).get("volatility_tier") or "stable").lower()
     return tier if tier in ("stable", "volatile") else "stable"
@@ -263,6 +275,7 @@ def _evaluate_scoring(
         round_index=rounds,
         max_rounds=int(cfg.get("max_rounds", 3)),
         dca_cfg=cfg,
+        position_notional_usdt=_position_notional_for_sizing(position, market),
     ) if passed else fixed_usdt
 
     return DCADecision(
@@ -345,6 +358,7 @@ def should_dca(
         round_index=rounds,
         max_rounds=int(cfg.get("max_rounds", 3)),
         dca_cfg=cfg,
+        position_notional_usdt=_position_notional_for_sizing(position, market),
     )
     return DCADecision(
         should_dca=True,
