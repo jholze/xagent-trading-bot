@@ -95,6 +95,18 @@ def _build_market(symbol: str, tf: str, price: float, position: dict, strategy_p
 
     market_svc = MarketService()
     indicators = market_svc.fetch_indicators(symbol, tf, price)
+
+    funding_rate_pct = None
+    btc_underperf_ratio = None
+    dca_cfg = dict((strategy_params or {}).get("dca") or {})
+    scoring_cfg = dict(dca_cfg.get("scoring") or {})
+    if dca_cfg.get("enabled") and scoring_cfg.get("enabled"):
+        funding_rate_pct = market_svc.fetch_funding_rate(symbol)
+        lookback = float(scoring_cfg.get("btc_lookback_hours", 8))
+        btc_underperf_ratio = market_svc.btc_underperformance_ratio(
+            symbol, tf, lookback_hours=lookback
+        )
+
     return MarketContext(
         symbol=symbol,
         timeframe=tf,
@@ -102,8 +114,8 @@ def _build_market(symbol: str, tf: str, price: float, position: dict, strategy_p
         rsi=float(indicators.get("rsi", 50)),
         lower_bb=float(indicators.get("lower_bb", price)),
         atr_pct=float(indicators.get("atr_pct", 3.0)),
-        funding_rate_pct=indicators.get("funding_rate_pct"),
-        btc_underperf_ratio=indicators.get("btc_underperf_ratio"),
+        funding_rate_pct=funding_rate_pct,
+        btc_underperf_ratio=btc_underperf_ratio,
         has_position=True,
         average_entry=float(position.get("average_entry", 0) or 0),
         open_positions=1,

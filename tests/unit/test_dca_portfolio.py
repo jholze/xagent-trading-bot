@@ -10,6 +10,7 @@ from core.actions import BUY_DCA
 from core.models import MarketContext
 from strategies.dca import DCACandidate
 from strategies.dca_portfolio import (
+    _build_market,
     _target_priority,
     build_portfolio_dca_plan,
     find_funding_sell,
@@ -82,6 +83,30 @@ class TestDCAPortfolio(unittest.TestCase):
         cfg = portfolio_config({})
         self.assertIn("enabled", cfg)
         self.assertIn("cash_buffer_usdt", cfg)
+
+    def test_build_market_fetches_funding_and_btc_underperf(self):
+        strategy_params = {
+            "dca": {
+                "enabled": True,
+                "scoring": {"enabled": True, "btc_lookback_hours": 8},
+            },
+        }
+        position = {"average_entry": 1.0, "amount": 100.0}
+        with patch("services.market_service.MarketService") as mock_cls:
+            svc = mock_cls.return_value
+            svc.fetch_indicators.return_value = {
+                "rsi": 28.0,
+                "lower_bb": 0.9,
+                "atr_pct": 3.0,
+            }
+            svc.fetch_funding_rate.return_value = -0.04
+            svc.btc_underperformance_ratio.return_value = 2.0
+            ctx = _build_market("ARIA/USDT", "4h", 0.92, position, strategy_params)
+
+        svc.fetch_funding_rate.assert_called_once_with("ARIA/USDT")
+        svc.btc_underperformance_ratio.assert_called_once_with("ARIA/USDT", "4h", lookback_hours=8)
+        self.assertEqual(ctx.funding_rate_pct, -0.04)
+        self.assertEqual(ctx.btc_underperf_ratio, 2.0)
 
 
 if __name__ == "__main__":
