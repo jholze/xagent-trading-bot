@@ -28,6 +28,7 @@ def _scoring_dca_cfg(mode: str = "live") -> dict:
         "loss_pct_max": -3,
         "sl_proximity_pct": 15,
         "max_rounds": 3,
+        "min_remainder_usdt": 50,
         "sizing": {"min_usdt": 10, "max_usdt": 25, "min_multiplier": 0.5, "max_multiplier": 1.0},
         "scoring": {
             "enabled": True,
@@ -158,14 +159,15 @@ class TestDCAModule(unittest.TestCase):
         self.assertIsNotNone(cand)
         self.assertEqual(cand.score, 0)
 
-    def test_dca_blocked_after_ladder_started(self):
+    def test_dca_allowed_after_partial_sell(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)
         pos["exit_ladder_step"] = 1
         pos["sold_percent"] = 0.3
 
         cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, self.params)
-        self.assertIsNone(cand)
+        self.assertIsNotNone(cand)
+        self.assertIn("sold 30%", cand.rationale)
 
     def test_dca_blocked_when_gain(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)

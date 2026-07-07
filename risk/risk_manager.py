@@ -830,28 +830,16 @@ class RiskManager:
         *,
         source: str = "dca",
     ) -> tuple[bool, str]:
-        if source == "dca_recovery":
-            from strategies.dca_recovery import recovery_config
+        from strategies.dca import _hours_since_last_dca
 
-            rec_cfg = recovery_config(params)
-            interval_hours = float(rec_cfg.get("interval_hours", 8))
-            last_dca = pos.get("last_dca_recovery_at")
-            label = "Recovery DCA"
-        else:
-            dca_cfg = dict(params.get("dca") or {})
-            interval_hours = float(dca_cfg.get("interval_hours", 12))
-            last_dca = pos.get("last_dca_at")
-            label = "DCA"
-        if not last_dca:
+        dca_cfg = dict(params.get("dca") or {})
+        interval_hours = float(dca_cfg.get("interval_hours", 12))
+        elapsed = _hours_since_last_dca(pos)
+        if elapsed is None:
             return False, ""
-        try:
-            last_ts = datetime.fromisoformat(str(last_dca).replace("Z", ""))
-        except Exception:
-            return False, ""
-        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
         if elapsed < interval_hours:
             return True, (
-                f"{label} interval: {elapsed:.1f}h since last DCA "
+                f"DCA interval: {elapsed:.1f}h since last DCA "
                 f"(min {interval_hours:.1f}h)"
             )
         return False, ""

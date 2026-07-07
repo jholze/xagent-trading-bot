@@ -24,7 +24,7 @@ from strategies.market_structure import (
     evaluate_market_structure_sells,
 )
 from strategies.dca import evaluate_dca_addon
-from strategies.dca_recovery import evaluate_dca_recovery
+
 from strategies.sell_rotation_policy import (
     apply_rotation_sell_filters,
     audit_to_dict,
@@ -791,8 +791,6 @@ class DecisionEngine:
             )
             if normalized == HOLD:
                 dca = evaluate_dca_addon(market, position, market.strategy_params)
-                if not dca:
-                    dca = evaluate_dca_recovery(market, position, market.strategy_params)
                 if dca:
                     from strategies.dca_portfolio import should_defer_per_coin_dca
 

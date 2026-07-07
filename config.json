@@ -694,15 +694,12 @@
         "enabled": true,
         "base_mode": "max",
         "notional_ratio": 0.30,
-        "recovery_notional_ratio": 0.18,
         "min_multiplier": 0.55,
         "max_multiplier": 1.0,
         "loss_depth_boost": 0.15,
         "round_decay": 0.12,
         "min_usdt": 300,
-        "max_usdt": 1200,
-        "recovery_min_usdt": 200,
-        "recovery_max_usdt": 550
+        "max_usdt": 1200
       },
       "portfolio": {
         "enabled": true,
@@ -714,10 +711,14 @@
         "stale_winner_min_hours": 36,
         "stale_winner_max_gain_pct": 8
       },
-      "loss_pct_min": -20,
+      "loss_pct_min": -25,
       "loss_pct_max": -3,
+      "max_sold_percent": 0.85,
+      "min_remainder_usdt": 150,
+      "cascade_min_drop_pct": 4.0,
+      "cascade_score_discount": 1,
       "sl_proximity_pct": 15,
-      "max_rounds": 3,
+      "max_rounds": 4,
       "grace_hours_after_dca": 12,
       "pause_partial_stop_during_dca": true,
       "stop_loss_widen_pct_per_round": 6,
@@ -751,19 +752,7 @@
         }
       },
       "recovery": {
-        "enabled": true,
-        "mode": "live",
-        "interval_hours": 8,
-        "max_rounds": 2,
-        "loss_pct_min": -25,
-        "loss_pct_max": -2,
-        "max_sold_percent": 0.85,
-        "min_remainder_usdt": 150,
-        "remainder_size_ratio": 0.35,
-        "sl_proximity_pct": 12,
-        "cascade_min_drop_pct": 4.0,
-        "cascade_score_discount": 1,
-        "scoring_inherit": true
+        "enabled": false
       }
     }
   },

@@ -512,18 +512,12 @@ def update_position(
             pos["last_buy_price"] = current_price
             pos["last_trade_at"] = datetime.now().isoformat()
             if signal == "BUY_DCA" and old_amount > 0:
-                from strategies.dca_recovery import in_recovery_phase
-
                 pos["last_action"] = "BUY_DCA"
                 pos["last_trade_type"] = "BUY_DCA"
                 usdt_added = current_price * float(amount_traded)
-                if in_recovery_phase(pos):
-                    pos["dca_recovery_rounds"] = int(pos.get("dca_recovery_rounds", 0) or 0) + 1
-                    pos["last_dca_recovery_at"] = datetime.now().isoformat()
-                    pos["last_recovery_ref_price"] = current_price
-                else:
-                    pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
-                    pos["last_dca_at"] = datetime.now().isoformat()
+                pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
+                pos["last_dca_at"] = datetime.now().isoformat()
+                pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
             else:
                 pos["peak_amount"] = float(new_amount)

@@ -28,14 +28,14 @@ from tests.unit.test_dca import _scoring_dca_cfg
 
 def _recovery_cfg(mode: str = "live") -> dict:
     return {
-        "enabled": True,
+        "enabled": False,
         "mode": mode,
         "interval_hours": 8,
         "max_rounds": 2,
         "loss_pct_min": -25,
         "loss_pct_max": -2,
         "max_sold_percent": 0.85,
-        "min_remainder_usdt": 150,
+        "min_remainder_usdt": 50,
         "remainder_size_ratio": 0.35,
         "sl_proximity_pct": 12,
         "cascade_min_drop_pct": 4.0,
@@ -89,10 +89,10 @@ class TestDCARecoveryModule(unittest.TestCase):
         pos["average_entry"] = 1.0
         return pos
 
-    def test_recovery_enabled(self):
+    def test_recovery_enabled_follows_dca_enabled(self):
         self.assertTrue(recovery_enabled(self.params))
         off = dict(self.params)
-        off["dca"] = {**_scoring_dca_cfg(), "recovery": {"enabled": False}}
+        off["dca"] = {**_scoring_dca_cfg(), "enabled": False}
         self.assertFalse(recovery_enabled(off))
 
     def test_in_recovery_phase(self):
@@ -107,16 +107,16 @@ class TestDCARecoveryModule(unittest.TestCase):
         cand = evaluate_dca_recovery(self._market(1.0, 0.92), pos, self.params)
         self.assertIsNotNone(cand)
         self.assertEqual(cand.action, BUY_DCA)
-        self.assertEqual(cand.source, "dca_recovery")
+        self.assertEqual(cand.source, "dca")
         self.assertGreater(cand.usdt_amount, 0)
-        self.assertLess(cand.usdt_amount, 25.0)
 
-    def test_recovery_blocked_in_accumulation(self):
+    def test_unified_dca_works_in_accumulation(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
         pos = get_position(self.symbol, self.tf)
         pos["average_entry"] = 1.0
         cand = evaluate_dca_recovery(self._market(1.0, 0.92), pos, self.params)
-        self.assertIsNone(cand)
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.source, "dca")
 
     def test_recovery_blocked_when_gain_positive(self):
         pos = self._partial_tail_pos()
@@ -130,8 +130,8 @@ class TestDCARecoveryModule(unittest.TestCase):
 
     def test_recovery_blocked_within_interval(self):
         pos = self._partial_tail_pos()
-        pos["last_dca_recovery_at"] = datetime.now().isoformat()
-        pos["dca_recovery_rounds"] = 1
+        pos["last_dca_at"] = datetime.now().isoformat()
+        pos["dca_rounds"] = 1
         cand = evaluate_dca_recovery(self._market(1.0, 0.92), pos, self.params)
         self.assertIsNone(cand)
 
@@ -141,9 +141,8 @@ class TestDCARecoveryModule(unittest.TestCase):
         pos = get_position(self.symbol, self.tf)
         self.assertEqual(pos["exit_ladder_step"], 1)
         self.assertAlmostEqual(float(pos["sold_percent"]), 0.30, places=2)
-        self.assertEqual(pos["dca_rounds"], 0)
-        self.assertEqual(pos["dca_recovery_rounds"], 1)
-        self.assertIsNotNone(pos["last_dca_recovery_at"])
+        self.assertEqual(pos["dca_rounds"], 1)
+        self.assertIsNotNone(pos["last_dca_at"])
         self.assertAlmostEqual(float(pos["last_recovery_ref_price"]), 0.9)
 
     def test_effective_stop_counts_recovery_rounds(self):
@@ -172,7 +171,7 @@ class TestDCARecoveryDecisionEngine(unittest.TestCase):
         positions.clear()
         positions.update(self._backup)
 
-    def test_decision_engine_prefers_accumulation_then_recovery(self):
+    def test_decision_engine_unified_dca_on_partial_tail(self):
         market = MarketContext(
             symbol=self.symbol,
             timeframe=self.tf,
@@ -199,7 +198,7 @@ class TestDCARecoveryDecisionEngine(unittest.TestCase):
                 market,
             )
         self.assertEqual(analysis.action, "BUY_DCA")
-        self.assertIn("dca_recovery", analysis.sources)
+        self.assertIn("dca", analysis.sources)
 
 
 class TestDCARecoveryRisk(unittest.TestCase):
@@ -213,11 +212,11 @@ class TestDCARecoveryRisk(unittest.TestCase):
         positions.clear()
         positions.update(self._backup)
 
-    def test_recovery_interval_uses_last_dca_recovery_at(self):
+    def test_dca_interval_uses_last_dca_at(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
         pos = get_position(self.symbol, self.tf)
         pos["sold_percent"] = 0.30
-        pos["last_dca_recovery_at"] = datetime.now().isoformat()
+        pos["last_dca_at"] = datetime.now().isoformat()
 
         from core.config import BotConfig
         from data_manager import get_config
@@ -242,7 +241,7 @@ class TestDCARecoveryRisk(unittest.TestCase):
 
         self.assertFalse(decision.approved)
         self.assertEqual(decision.code, "trade_cooldown")
-        self.assertIn("Recovery DCA", decision.message)
+        self.assertIn("DCA interval", decision.message)
 
     def test_recovery_counts_toward_daily_dca_limit(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)

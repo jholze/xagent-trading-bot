@@ -9,7 +9,7 @@ from core.actions import BUY_DCA, SELL_FULL
 from core.config import get_bot_config
 from core.models import MarketContext, TradeOrder
 from strategies.dca import DCACandidate, evaluate_dca_addon
-from strategies.dca_recovery import evaluate_dca_recovery
+
 from strategies.positions import get_key, get_position, position_notional_usdt
 from strategies.registry import resolve_coin_config, resolve_strategy_params
 from strategies.sell_rotation_policy import (
@@ -86,8 +86,7 @@ def _hours_since(iso_ts: str | None) -> float | None:
 def _target_priority(candidate: DCACandidate, loss_pct: float) -> float:
     score = float(candidate.score or 0)
     loss_urgency = min(3.0, abs(min(0.0, loss_pct)) / 5.0)
-    recovery_boost = 0.5 if candidate.source == "dca_recovery" else 0.0
-    return score * 2.0 + loss_urgency + recovery_boost
+    return score * 2.0 + loss_urgency
 
 
 def _build_market(symbol: str, tf: str, price: float, position: dict, strategy_params: dict) -> MarketContext:
@@ -158,32 +157,27 @@ def collect_dca_targets(
             continue
         market = _build_market(symbol, tf, price, pos, strategy_params)
 
-        for evaluator, source in (
-            (evaluate_dca_addon, "dca"),
-            (evaluate_dca_recovery, "dca_recovery"),
-        ):
-            cand = evaluator(market, pos, strategy_params)
-            if not cand:
-                continue
-            loss_pct = (price / float(pos.get("average_entry", price) or price) - 1.0) * 100.0
-            if (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
-                continue
-            priority = _target_priority(cand, loss_pct)
-            if priority < float(port_cfg.get("min_priority_score", 0)):
-                continue
-            targets.append(
-                DCATarget(
-                    symbol=symbol,
-                    timeframe=tf,
-                    source=source,
-                    candidate=cand,
-                    priority=priority,
-                    usdt_needed=float(cand.usdt_amount or 0),
-                    loss_pct=loss_pct,
-                    score=int(cand.score or 0),
-                )
+        cand = evaluate_dca_addon(market, pos, strategy_params)
+        if not cand:
+            continue
+        loss_pct = (price / float(pos.get("average_entry", price) or price) - 1.0) * 100.0
+        if (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
+            continue
+        priority = _target_priority(cand, loss_pct)
+        if priority < float(port_cfg.get("min_priority_score", 0)):
+            continue
+        targets.append(
+            DCATarget(
+                symbol=symbol,
+                timeframe=tf,
+                source="dca",
+                candidate=cand,
+                priority=priority,
+                usdt_needed=float(cand.usdt_amount or 0),
+                loss_pct=loss_pct,
+                score=int(cand.score or 0),
             )
-            break
+        )
 
     targets.sort(key=lambda t: t.priority, reverse=True)
     return targets
