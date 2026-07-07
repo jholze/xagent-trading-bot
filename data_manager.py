@@ -815,11 +815,11 @@ def _demo_ledger_backend_is_mongo(config: dict = None) -> bool:
 
 
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
-    """Whether positions load from Mongo (demo positions cache always uses Mongo)."""
+    """Whether positions load from Mongo."""
     if ledger_dual_write_enabled(config):
         return False
     if scope == "demo":
-        return True
+        return _demo_ledger_backend_is_mongo(config)
     return resolve_ledger_backend(scope, config) == "mongo"
 
 
@@ -844,16 +844,16 @@ def _ledger_writes_json(scope: str, config: dict = None) -> bool:
 
 def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
     if scope == "demo":
-        return True
+        return _demo_ledger_backend_is_mongo(config)
     backend = resolve_ledger_backend(scope, config)
     return backend == "mongo" or ledger_dual_write_enabled(config)
 
 
 def _mongo_ledger_store(config: dict = None):
+    from storage.mongo_client import is_pytest_running
     from storage.mongo_ledger import get_ledger_store
 
-    test_db = os.environ.get("MONGODB_DB", "") == "xagent_test"
-    return get_ledger_store(test=test_db, config=config)
+    return get_ledger_store(test=is_pytest_running(), config=config)
 
 
 def resolve_orders_file(scope: str) -> str:

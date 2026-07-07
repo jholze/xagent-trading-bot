@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test: Mongo connectivity and basic write/read/delete on xagent_test."""
+"""Smoke test: Mongo connectivity and basic write/read/delete on xagent_pytest."""
 
 from __future__ import annotations
 

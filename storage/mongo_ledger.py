@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from storage.mongo_client import get_database, resolve_database_name
+from storage.mongo_client import assert_safe_dev_db_mutation, get_database, resolve_database_name
 
 ORDERS_COLLECTION = "orders"
 POSITIONS_COLLECTION = "positions"
@@ -54,6 +54,9 @@ class MongoLedgerStore:
     def _db(self):
         return get_database(test=self._test, config=self._config)
 
+    def _guard_dev_db(self) -> None:
+        assert_safe_dev_db_mutation(self.database_name, action="write")
+
     def _collection(self, name: str):
         return self._db[name]
 
@@ -67,6 +70,7 @@ class MongoLedgerStore:
         return data
 
     def save_orders(self, data: dict, scope: str) -> bool:
+        self._guard_dev_db()
         payload = dict(data)
         payload["_id"] = scope
         payload["ledger_scope"] = scope
@@ -85,6 +89,7 @@ class MongoLedgerStore:
         return data
 
     def save_positions(self, data: dict, scope: str) -> bool:
+        self._guard_dev_db()
         payload = dict(data)
         payload["_id"] = scope
         payload["ledger_scope"] = scope
@@ -102,6 +107,7 @@ class MongoLedgerStore:
         return data
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
+        self._guard_dev_db()
         payload = dict(data)
         payload["_id"] = scope
         self._collection(TRADE_HISTORY_COLLECTION).replace_one(

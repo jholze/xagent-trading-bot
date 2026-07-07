@@ -58,13 +58,9 @@ def ledger_dual_write_enabled(config: dict) -> bool:
 
 
 def _mongo_test_mode(config: dict | None = None) -> bool:
-    if os.environ.get("MONGODB_DB", "") == "xagent_test":
-        return True
-    from data_manager import is_demo_mode
+    from storage.mongo_client import is_pytest_running
 
-    if is_demo_mode():
-        return True
-    return False
+    return is_pytest_running()
 
 
 def _mongo_store(config: dict):
