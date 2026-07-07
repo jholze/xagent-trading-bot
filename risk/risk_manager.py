@@ -57,6 +57,15 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
+        from core.test_symbols import is_phantom_test_symbol
+
+        if is_phantom_test_symbol(order.symbol):
+            return RiskDecision(
+                approved=False,
+                message=f"Phantom test symbol blocked: {order.symbol}",
+                code="phantom_symbol",
+            )
+
         if order.type == "SELL":
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:

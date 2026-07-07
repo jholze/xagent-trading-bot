@@ -6423,47 +6423,6 @@
       }
     },
     {
-      "id": "649602d8cd0d",
-      "display_seq": 180,
-      "status": "filled",
-      "side": "buy",
-      "symbol": "SENSOR15/USDT",
-      "timeframe": "4h",
-      "order_type": "market",
-      "source": "entry_sensor_15m",
-      "signal": "BUY",
-      "idempotency_key": "demo:SENSOR15/USDT:4h:BUY:entry_sensor_15m:2026062919",
-      "trading_mode": "paper",
-      "ledger_scope": "demo",
-      "request": {
-        "price": 1.0,
-        "amount": null,
-        "usdt": 203.2
-      },
-      "risk": {
-        "approved": true,
-        "message": "Approved",
-        "code": "",
-        "size_multiplier": 1.016,
-        "approved_usdt": 203.2,
-        "checked_at": "2026-06-29T19:33:58.283787"
-      },
-      "execution": {
-        "price": 1.0,
-        "amount": 203.2,
-        "usdt": 203.2,
-        "exchange_order_id": "",
-        "fee": null
-      },
-      "pnl": null,
-      "error": null,
-      "timestamps": {
-        "created": "2026-06-29T19:33:58.283795",
-        "updated": "2026-06-29T19:33:58.303133",
-        "filled": "2026-06-29T19:33:58.303137"
-      }
-    },
-    {
       "id": "9606bc343542",
       "display_seq": 181,
       "status": "filled",
