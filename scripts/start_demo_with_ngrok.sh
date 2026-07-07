@@ -52,11 +52,18 @@ wait_for_port_free() {
 wait_for_port_free 5000
 wait_for_port_free 4040
 
+echo "🔴 Ensuring Redis (price cache)..."
+bash "$(dirname "$0")/ensure_redis.sh" || {
+  echo "❌ Redis not running — run: brew install redis && brew services start redis"
+  exit 1
+}
+
 echo "🧪 Starting bot (demo mode, Mongo ledger: xagent_test)..."
 # shellcheck disable=SC1091
 source "$(dirname "$0")/dev_local_mongo.sh"
 export DEMO_LEDGER_BACKEND=mongo
 bash "$(dirname "$0")/sync_demo_ledger_from_railway.sh" || echo "WARN: demo ledger sync skipped"
+export BOT_STACK="${BOT_STACK:-local}"
 DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 aria_bot.py --demo &
 BOT_PID=$!
 

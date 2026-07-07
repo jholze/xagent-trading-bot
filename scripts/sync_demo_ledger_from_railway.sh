@@ -16,9 +16,25 @@ export DEMO_LEDGER_BACKEND=mongo
 BUNDLE="$(mktemp)"
 trap 'rm -f "$BUNDLE"' EXIT
 
-echo "Fetching Railway Mongo public URL (MongoDB-mPbb)..."
+# BOT_STACK=test → test Mongo (MongoDB-AeF7); default production (MongoDB-mPbb)
+MONGO_SERVICE="${RAILWAY_MONGO_SERVICE:-}"
+if [[ -z "$MONGO_SERVICE" ]]; then
+  case "${BOT_STACK:-production}" in
+    test) MONGO_SERVICE="MongoDB-AeF7" ;;
+    *) MONGO_SERVICE="MongoDB-mPbb" ;;
+  esac
+fi
+RAILWAY_ENV="${RAILWAY_ENVIRONMENT:-}"
+if [[ -z "$RAILWAY_ENV" ]]; then
+  case "${BOT_STACK:-production}" in
+    test) RAILWAY_ENV="test" ;;
+    *) RAILWAY_ENV="production" ;;
+  esac
+fi
+
+echo "Fetching Railway Mongo public URL (${MONGO_SERVICE}, env=${RAILWAY_ENV})..."
 MONGO_PUBLIC="$(
-  railway variables --service MongoDB-mPbb --json 2>/dev/null \
+  railway variables --service "$MONGO_SERVICE" --environment "$RAILWAY_ENV" --json 2>/dev/null \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('MONGO_PUBLIC_URL',''))"
 )"
 if [[ -z "$MONGO_PUBLIC" ]]; then

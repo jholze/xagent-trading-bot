@@ -48,6 +48,7 @@ class SignalAnalysis:
     strategy_profile: str = ""
     shadow_action: str = ""
     dca_usdt: float = 0.0
+    sell_policy_audit: dict = field(default_factory=dict)
 
 
 @dataclass

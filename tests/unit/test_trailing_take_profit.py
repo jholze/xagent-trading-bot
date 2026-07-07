@@ -78,6 +78,12 @@ class TestTrailingTakeProfit(unittest.TestCase):
             evaluate_trailing_take_profit(self._market(current_price=1.05), pos, self._params())
         )
 
+    def test_completed_ladder_returns_full_close(self):
+        pos = {"recent_high": 1.20, "exit_ladder_step": 3}
+        cand = evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.action, SELL_FULL)
+
 
 if __name__ == "__main__":
     unittest.main()

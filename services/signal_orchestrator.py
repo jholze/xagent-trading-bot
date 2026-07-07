@@ -7,10 +7,13 @@ from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
-from core.actions import is_buy, is_sell
+from core.actions import BUY_DCA, SELL_FULL, is_buy, is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
+from strategies.dca_portfolio import build_portfolio_dca_plan, portfolio_config
 from strategies.registry import resolve_coin_config
+from strategies.positions import get_position
+from logger import log
 from notifications.user_explain import (
     explain_hold_with_social,
     explain_trade,
@@ -110,6 +113,8 @@ class SignalOrchestrator:
             source = "cmc"
         elif "lc" in (analysis.sources or []):
             source = "lc"
+        elif "dca_recovery" in (analysis.sources or []):
+            source = "dca_recovery"
         elif "dca" in (analysis.sources or []):
             source = "dca"
         elif "entry_sensor_15m" in (analysis.sources or []):
@@ -314,8 +319,15 @@ class SignalOrchestrator:
                 },
             )
             if hold_why:
-                from telegram_notifier import send_hold_explanation_message
-                send_hold_explanation_message(symbol, hold_why, explained.get("tech_line", ""))
+                from services.cycle_notification_policy import cycle_notification_policy
+
+                confidence = cycle_notification_policy.social_confidence_from_context(social_ctx)
+                cycle_notification_policy.offer_hold_explanation(
+                    symbol,
+                    hold_why,
+                    tech_line=explained.get("tech_line", ""),
+                    confidence=confidence,
+                )
 
         pos["last_ampel"] = analysis.ampel_emoji
         pos["last_rsi"] = analysis.rsi
@@ -360,3 +372,129 @@ class SignalOrchestrator:
             "unrealized": unrealized,
             "why_de": explained.get("why_de", ""),
         }
+
+    def run_portfolio_dca_pass(
+        self,
+        coins: list[dict],
+        price_map: dict[str, float],
+        *,
+        quiet: bool = False,
+    ) -> dict:
+        """Rank DCA targets portfolio-wide; optionally fund via rotation sell."""
+        from risk.risk_manager import RiskManager
+
+        port_cfg = portfolio_config({})
+        volatile_dca = (self.config.raw.get("volatile_altcoin") or {}).get("dca") or {}
+        port_cfg = {**port_cfg, **portfolio_config(volatile_dca)}
+        if not port_cfg.get("enabled"):
+            return {"skipped": True, "reason": "portfolio_disabled"}
+
+        risk = RiskManager(self.config, self.market)
+        cash = risk._available_usdt()
+        plan = build_portfolio_dca_plan(coins, price_map, cash_available=cash, config_raw=self.config.raw)
+        result = {"plan": plan.audit, "executed": False}
+
+        if not plan.buy:
+            return result
+
+        live = str(port_cfg.get("mode", "shadow")).lower() == "live"
+        if plan.shadow_only or not live:
+            result["shadow"] = True
+            log(
+                f"DCA portfolio shadow: {plan.buy.symbol} ${plan.buy.usdt_needed:.0f} "
+                f"score={plan.buy.score} funding={getattr(plan.funding_sell, 'symbol', None)}",
+                "INFO",
+            )
+            return result
+
+        self.trading.refresh()
+
+        if plan.funding_sell:
+            fs = plan.funding_sell
+            pos = get_position(fs.symbol, fs.timeframe)
+            amount = float(pos.get("amount", 0) or 0)
+            if amount > 0:
+                price = float(price_map.get(fs.symbol, 0) or 0)
+                sell_order = TradeOrder(
+                    type="SELL",
+                    symbol=fs.symbol,
+                    price=price,
+                    amount=amount,
+                    signal=SELL_FULL,
+                    source=f"dca_fund_{fs.source}",
+                )
+                sell_result = self.trading.execute_order(
+                    sell_order,
+                    fs.timeframe,
+                    source=sell_order.source,
+                )
+                result["funding_sell"] = {
+                    "symbol": fs.symbol,
+                    "executed": bool(sell_result.executed),
+                    "message": sell_result.message,
+                    "source": fs.source,
+                }
+                if sell_result.executed:
+                    cash = risk._available_usdt()
+                    log(
+                        f"DCA fund-sell {fs.symbol} ({fs.source}) → cash for {plan.buy.symbol}",
+                        "INFO",
+                    )
+
+        buy = plan.buy
+        price = float(price_map.get(buy.symbol, 0) or 0)
+        if price <= 0:
+            return result
+
+        buy_order = TradeOrder(
+            type="BUY",
+            symbol=buy.symbol,
+            price=price,
+            amount=0,
+            usdt_amount=buy.usdt_needed,
+            signal=BUY_DCA,
+            source=buy.source,
+        )
+        buy_result = self.trading.execute_order(
+            buy_order,
+            buy.timeframe,
+            source=buy.source,
+            confidence=buy.score,
+        )
+        result["executed"] = bool(buy_result.executed)
+        result["buy"] = {
+            "symbol": buy.symbol,
+            "usdt": buy.usdt_needed,
+            "score": buy.score,
+            "message": buy_result.message,
+        }
+        if buy_result.executed and self.notify_callback:
+            coin = next((c for c in coins if c.get("symbol") == buy.symbol), {"symbol": buy.symbol})
+            rationale = buy.candidate.rationale
+            if plan.funding_sell:
+                rationale = (
+                    f"Portfolio-DCA: {plan.funding_sell.symbol} verkauft → "
+                    f"{buy.symbol} aufgestockt ({rationale})"
+                )
+            self.notify_callback(
+                "BUY_DCA",
+                coin,
+                price,
+                0,
+                0,
+                0,
+                "🟢",
+                "DCA",
+                executed=True,
+                trade_message=buy_result.message,
+                trade_result=buy_result,
+                sources=[buy.source, "dca_portfolio"],
+                timeframe=buy.timeframe,
+                why_de=rationale,
+            )
+        if not quiet:
+            print(
+                f"Portfolio DCA: {buy.symbol} ${buy.usdt_needed:.0f} "
+                f"(score {buy.score}) fund={getattr(plan.funding_sell, 'symbol', '-')}"
+            )
+        return result

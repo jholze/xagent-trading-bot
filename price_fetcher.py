@@ -227,6 +227,7 @@ def get_prices_batch(
     now = time.time()
     result = {}
     missing = []
+    redis_sources: dict[str, str] = {}
 
     for sym in unique:
         cached = _cache_get(sym, now)
@@ -235,14 +236,31 @@ def get_prices_batch(
         else:
             missing.append(sym)
 
+    if missing:
+        try:
+            from bus.price_cache import price_cache_enabled, price_cache_from_config
+
+            if price_cache_enabled():
+                cache = price_cache_from_config()
+                if cache.available():
+                    for sym, entry in cache.get_many(missing).items():
+                        result[sym] = entry.price
+                        _cache_set(sym, entry.price, now)
+                        redis_sources[sym] = "redis"
+                    missing = [sym for sym in missing if sym not in result]
+        except Exception:
+            pass
+
     if not missing:
         for sym in unique:
             result.setdefault(sym, 0.0)
         sources = _apply_price_fallbacks(unique, result, fallbacks)
+        sources.update(redis_sources)
         if return_sources:
             return result, sources
         return result
 
+    network_missing = list(missing)
     gate_hits = _fetch_gate_bulk(missing)
     for sym, price in gate_hits.items():
         result[sym] = price
@@ -273,7 +291,26 @@ def get_prices_batch(
     for sym in unique:
         result.setdefault(sym, 0.0)
 
+    try:
+        from bus.price_cache import price_cache_enabled, price_cache_from_config
+
+        if price_cache_enabled() and network_missing:
+            cache = price_cache_from_config()
+            if cache.available():
+                live_sources = {}
+                to_store = {}
+                for sym in network_missing:
+                    price = float(result.get(sym, 0) or 0)
+                    if price > 0:
+                        to_store[sym] = price
+                        live_sources[sym] = "live"
+                if to_store:
+                    cache.set_many(to_store, sources=live_sources)
+    except Exception:
+        pass
+
     sources = _apply_price_fallbacks(unique, result, fallbacks)
+    sources.update(redis_sources)
     if return_sources:
         return result, sources
     return result

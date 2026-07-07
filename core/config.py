@@ -205,6 +205,22 @@ class BotConfig:
         return bool(self.observability_config.get("notify_on_cycle", False))
 
     @property
+    def cycle_notifications_config(self) -> dict:
+        defaults = {
+            "mode": "delta",
+            "send_on_trade": True,
+            "send_on_blocked": True,
+            "send_on_nav_delta_pct": 0.5,
+            "send_on_new_decision": True,
+            "hold_explanation_max_per_cycle": 1,
+            "hold_explanation_cooldown_hours": 6,
+            "digest_merge": True,
+            "notify_hermes_rejected": False,
+        }
+        raw = self.observability_config.get("cycle_notifications", {})
+        return {**defaults, **raw}
+
+    @property
     def decisions_audit_enabled(self) -> bool:
         return bool(self.observability_config.get("decisions_audit", True))
 
@@ -277,6 +293,16 @@ class BotConfig:
             "heartbeat_ttl_sec": 120,
             "heartbeat_warn_enabled": True,
             "use_signal_snapshot": False,
+            "price_cache_enabled": True,
+            "price_cache_ttl_sec": 120,
+            "ohlcv_cache_enabled": True,
+            "ohlcv_cache_ttl_sec": {"15m": 60, "1h": 90, "4h": 120},
+            "funding_cache_ttl_sec": 300,
+            "coin_query_webhook_enabled": True,
+            "signal_webhook_enabled": True,
+            "signal_webhook_token": "",
+            "signal_event_ttl_sec": 3600,
+            "signal_webhook_rate_limit_per_min": 10,
             "background_social_enabled": True,
             "background_backtest_enabled": True,
             "background_social_interval_sec": 0,

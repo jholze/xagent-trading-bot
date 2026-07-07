@@ -28,7 +28,7 @@ class PortfolioService:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
-        signal = "BUY_DCA" if source == "dca" else "BUY"
+        signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
         effective_entry_source = entry_source or (source if source == "entry_sensor_15m" else None)
         update_position(
             symbol,

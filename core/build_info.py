@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -21,15 +22,23 @@ def _git(*args: str) -> str:
 
 
 def get_build_info() -> dict:
-    commit = _git("rev-parse", "--short", "HEAD") or "unknown"
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "unknown"
-    dirty = bool(_git("status", "--porcelain"))
+    commit = (
+        (os.getenv("GIT_COMMIT") or "").strip()
+        or (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
+        or _git("rev-parse", "--short", "HEAD")
+        or "unknown"
+    )
+    branch = (
+        (os.getenv("GIT_BRANCH") or "").strip()
+        or (os.getenv("RAILWAY_GIT_BRANCH") or "").strip()
+        or _git("rev-parse", "--abbrev-ref", "HEAD")
+        or "unknown"
+    )
+    dirty = os.getenv("GIT_DIRTY") == "1" or bool(_git("status", "--porcelain"))
     return {"commit": commit, "branch": branch, "dirty": dirty}
 
 
 def format_build_line(html: bool = True) -> str:
-    info = get_build_info()
-    dirty = " *" if info["dirty"] else ""
-    if html:
-        return f"Version: <code>{info['commit']}{dirty}</code> · Branch: <code>{info['branch']}</code>"
-    return f"Version: {info['commit']}{dirty} · Branch: {info['branch']}"
+    from core.runtime_identity import format_build_line as _identity_build_line
+
+    return _identity_build_line(html=html)

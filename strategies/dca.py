@@ -81,22 +81,27 @@ def effective_stop_loss_thresholds(
         partial_stop = stop_loss_pct * partial_ratio
 
     dca_rounds = int(position.get("dca_rounds", 0) or 0)
+    recovery_rounds = int(position.get("dca_recovery_rounds", 0) or 0)
+    total_dca_rounds = dca_rounds + recovery_rounds
     widen = float(dca_cfg.get("stop_loss_widen_pct_per_round", 0))
-    full_stop = stop_loss_pct + dca_rounds * widen
+    full_stop = stop_loss_pct + total_dca_rounds * widen
 
     grace_hours = float(dca_cfg.get("grace_hours_after_dca", 0))
     if grace_hours <= 0:
         grace_hours = float(dca_cfg.get("interval_hours", 12))
 
-    elapsed = _hours_since(position.get("last_dca_at"))
+    grace_elapsed: float | None = None
+    for ts_key in ("last_dca_recovery_at", "last_dca_at"):
+        elapsed = _hours_since(position.get(ts_key))
+        if elapsed is not None and (grace_elapsed is None or elapsed < grace_elapsed):
+            grace_elapsed = elapsed
     in_grace = (
-        dca_rounds > 0
-        and position.get("last_dca_at")
-        and elapsed is not None
-        and elapsed < grace_hours
+        total_dca_rounds > 0
+        and grace_elapsed is not None
+        and grace_elapsed < grace_hours
     )
 
-    if dca_cfg.get("pause_partial_stop_during_dca", True) and dca_rounds > 0:
+    if dca_cfg.get("pause_partial_stop_during_dca", True) and total_dca_rounds > 0:
         partial_effective: float | None = None
     else:
         partial_effective = partial_stop
@@ -215,6 +220,7 @@ def _evaluate_scoring(
     loss_pct: float,
     cfg: dict,
     strategy_params: dict | None,
+    position: dict | None = None,
 ) -> DCADecision:
     scoring = dict(cfg.get("scoring") or {})
     tier_cfg = _scoring_profile(cfg, strategy_params)
@@ -245,13 +251,27 @@ def _evaluate_scoring(
             f"(core {core_met}/{min_core}): {breakdown}"
         )
 
+    from strategies.dca_sizing import compute_dca_usdt
+
+    rounds = int((position or {}).get("dca_rounds", 0) or 0)
+    usdt_amount = compute_dca_usdt(
+        base_usdt=fixed_usdt,
+        score=total_score,
+        max_score=max_score,
+        min_score=min_score,
+        loss_pct=loss_pct,
+        round_index=rounds,
+        max_rounds=int(cfg.get("max_rounds", 3)),
+        dca_cfg=cfg,
+    ) if passed else fixed_usdt
+
     return DCADecision(
         should_dca=passed,
         score=total_score,
         max_score=max_score,
         breakdown=breakdown,
         blocked_reason=reason,
-        usdt_amount=fixed_usdt,
+        usdt_amount=usdt_amount,
         shadow_only=mode == "shadow",
     )
 
@@ -305,20 +325,31 @@ def should_dca(
 
     scoring_cfg = dict(cfg.get("scoring") or {})
     if scoring_cfg.get("enabled", False):
-        decision = _evaluate_scoring(market, loss_pct, cfg, strategy_params)
+        decision = _evaluate_scoring(market, loss_pct, cfg, strategy_params, position)
         if not decision.should_dca:
             return decision
-        rounds = int(position.get("dca_rounds", 0) or 0)
-        max_rounds = int(cfg.get("max_rounds", 3))
         decision.blocked_reason = None
         return decision
 
     fixed_usdt = float(cfg.get("fixed_usdt", 20))
     mode = str(cfg.get("mode", "shadow"))
+    from strategies.dca_sizing import compute_dca_usdt
+
+    rounds = int(position.get("dca_rounds", 0) or 0)
+    usdt_amount = compute_dca_usdt(
+        base_usdt=fixed_usdt,
+        score=0,
+        max_score=int(scoring_cfg.get("max_score", 10)),
+        min_score=int(scoring_cfg.get("min_score", 6)),
+        loss_pct=loss_pct,
+        round_index=rounds,
+        max_rounds=int(cfg.get("max_rounds", 3)),
+        dca_cfg=cfg,
+    )
     return DCADecision(
         should_dca=True,
         score=0,
-        usdt_amount=fixed_usdt,
+        usdt_amount=usdt_amount,
         shadow_only=mode == "shadow",
     )
 

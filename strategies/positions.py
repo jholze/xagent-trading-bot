@@ -38,6 +38,10 @@ _CACHE_FIELDS = (
     "dca_max_rounds",
     "last_dca_at",
     "dca_total_usdt",
+    "dca_recovery_rounds",
+    "dca_recovery_max_rounds",
+    "last_dca_recovery_at",
+    "last_recovery_ref_price",
     "last_sell_signal",
     "rsi_sell_tiers_done",
     "last_cmc_sell_at",
@@ -125,6 +129,10 @@ def _deserialize_position(raw: dict) -> dict:
         "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
         "last_dca_at": raw.get("last_dca_at"),
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
+        "dca_recovery_rounds": int(raw.get("dca_recovery_rounds", 0) or 0),
+        "dca_recovery_max_rounds": int(raw.get("dca_recovery_max_rounds", 0) or 0),
+        "last_dca_recovery_at": raw.get("last_dca_recovery_at"),
+        "last_recovery_ref_price": float(raw.get("last_recovery_ref_price", 0) or 0),
         "last_sell_signal": raw.get("last_sell_signal"),
         "first_buy_at": raw.get("first_buy_at"),
         "entry_source": raw.get("entry_source"),
@@ -162,6 +170,10 @@ def _serialize_positions() -> dict:
             "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
             "last_dca_at": p.get("last_dca_at"),
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
+            "dca_recovery_rounds": int(p.get("dca_recovery_rounds", 0) or 0),
+            "dca_recovery_max_rounds": int(p.get("dca_recovery_max_rounds", 0) or 0),
+            "last_dca_recovery_at": p.get("last_dca_recovery_at"),
+            "last_recovery_ref_price": float(p.get("last_recovery_ref_price", 0) or 0),
             "last_sell_signal": p.get("last_sell_signal"),
             "first_buy_at": p.get("first_buy_at"),
             "entry_source": p.get("entry_source"),
@@ -336,6 +348,10 @@ def init_position(symbol, timeframe):
                 "dca_max_rounds": 0,
                 "last_dca_at": None,
                 "dca_total_usdt": 0.0,
+                "dca_recovery_rounds": 0,
+                "dca_recovery_max_rounds": 0,
+                "last_dca_recovery_at": None,
+                "last_recovery_ref_price": 0.0,
                 "last_sell_signal": None,
                 "first_buy_at": None,
                 "entry_source": None,
@@ -496,11 +512,18 @@ def update_position(
             pos["last_buy_price"] = current_price
             pos["last_trade_at"] = datetime.now().isoformat()
             if signal == "BUY_DCA" and old_amount > 0:
+                from strategies.dca_recovery import in_recovery_phase
+
                 pos["last_action"] = "BUY_DCA"
                 pos["last_trade_type"] = "BUY_DCA"
-                pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
-                pos["last_dca_at"] = datetime.now().isoformat()
                 usdt_added = current_price * float(amount_traded)
+                if in_recovery_phase(pos):
+                    pos["dca_recovery_rounds"] = int(pos.get("dca_recovery_rounds", 0) or 0) + 1
+                    pos["last_dca_recovery_at"] = datetime.now().isoformat()
+                    pos["last_recovery_ref_price"] = current_price
+                else:
+                    pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
+                    pos["last_dca_at"] = datetime.now().isoformat()
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
             else:
                 pos["peak_amount"] = float(new_amount)
@@ -514,6 +537,10 @@ def update_position(
                 pos["dca_max_rounds"] = 0
                 pos["last_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
+                pos["dca_recovery_rounds"] = 0
+                pos["dca_recovery_max_rounds"] = 0
+                pos["last_dca_recovery_at"] = None
+                pos["last_recovery_ref_price"] = 0.0
                 pos["time_profit_exit_done"] = False
                 pos["profit_armed_at"] = None
                 pos["trail_tp_steps"] = 0
@@ -599,6 +626,36 @@ def update_position(
 def count_open_positions():
     with _positions_lock:
         return _open_positions_count
+
+
+def count_open_full_slots(config_raw: dict | None = None) -> int:
+    from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
+
+    if config_raw is None:
+        from core.config import get_bot_config
+
+        config_raw = get_bot_config().raw
+    cfg = rotation_config(config_raw)
+    with _positions_lock:
+        return sum(
+            1 for p in positions.values()
+            if is_open_position(p) and not _is_tail(p, cfg)
+        )
+
+
+def count_open_tail_slots(config_raw: dict | None = None) -> int:
+    from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
+
+    if config_raw is None:
+        from core.config import get_bot_config
+
+        config_raw = get_bot_config().raw
+    cfg = rotation_config(config_raw)
+    with _positions_lock:
+        return sum(
+            1 for p in positions.values()
+            if is_open_position(p) and _is_tail(p, cfg)
+        )
 
 
 def get_total_aria():

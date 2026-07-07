@@ -44,16 +44,15 @@ def main() -> int:
             print("⚠️  Startup Telegram skipped — no PUBLIC_URL", file=sys.stderr)
             return 1
 
-        from core.build_info import format_build_line
+        from core.runtime_identity import format_build_line, format_startup_message
 
-        text = (
-            "✅ <b>Bot + ngrok neu gestartet</b>\n\n"
-            f"<b>Webhook:</b> {public_url}\n"
-            "<b>Modus:</b> Paper (Demo)\n"
-            "<b>Mongo:</b> xagent_test\n"
-            f"{format_build_line()}\n\n"
-            "Sende /help zum Testen."
+        os.environ.setdefault("BOT_STACK", "local")
+        text = format_startup_message().replace(
+            "Details: <code>/stand</code>",
+            f"<b>Webhook:</b> {public_url}\n\nDetails: <code>/mode</code>",
         )
+        if format_build_line() not in text:
+            text += f"\n\n{format_build_line()}"
     resp = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
         json={"chat_id": int(chat), "text": text, "parse_mode": "HTML"},

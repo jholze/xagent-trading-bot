@@ -24,6 +24,12 @@ from strategies.market_structure import (
     evaluate_market_structure_sells,
 )
 from strategies.dca import evaluate_dca_addon
+from strategies.dca_recovery import evaluate_dca_recovery
+from strategies.sell_rotation_policy import (
+    apply_rotation_sell_filters,
+    audit_to_dict,
+    policy_shadow_active,
+)
 from strategies.trailing_stop import evaluate_trailing_stop
 from strategies.trailing_take_profit import evaluate_trailing_take_profit
 from strategies.time_profit_exit import evaluate_time_profit_exit
@@ -526,6 +532,7 @@ class DecisionEngine:
         candidates = []
         structure_rationales = []
         sell_source = ""
+        sell_policy_audit = {}
         consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
@@ -631,8 +638,22 @@ class DecisionEngine:
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
 
+        if market and position and candidates:
+            candidates, policy_audit = apply_rotation_sell_filters(
+                candidates,
+                market,
+                position,
+                strategy_params,
+                self.config.raw,
+            )
+            sell_policy_audit = audit_to_dict(policy_audit)
+            if policy_audit.trail_exclusive_blocked:
+                structure_rationales.append(
+                    "Trail-exclusive blocked: " + ", ".join(policy_audit.trail_exclusive_blocked)
+                )
+
         if not candidates:
-            return HOLD, sources, technical.confidence, structure_rationales, sell_source
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
 
         if market and position:
             from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
@@ -667,7 +688,7 @@ class DecisionEngine:
             structure_rationales.extend(blocked)
 
         if not candidates:
-            return HOLD, sources, technical.confidence, structure_rationales, sell_source
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
 
         best = max(candidates, key=lambda c: c[1])
         sell_source = best[2]
@@ -678,7 +699,7 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
         if lc_signal:
             social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
-        return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source
+        return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source, sell_policy_audit
 
     def _apply_shadow_mode(
         self,
@@ -762,20 +783,41 @@ class DecisionEngine:
 
         dca_usdt = 0.0
         sell_source = ""
+        sell_policy_audit: dict = {}
         sensor_shadow = ""
         if market.has_position:
-            normalized, sources, confidence, structure_rationales, sell_source = self._merge_sell(
+            normalized, sources, confidence, structure_rationales, sell_source, sell_policy_audit = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
             if normalized == HOLD:
                 dca = evaluate_dca_addon(market, position, market.strategy_params)
+                if not dca:
+                    dca = evaluate_dca_recovery(market, position, market.strategy_params)
                 if dca:
-                    normalized = BUY_DCA
-                    sources.append(dca.source)
-                    structure_rationales.append(dca.rationale)
-                    dca_usdt = dca.usdt_amount
-                    if dca.shadow_only:
-                        sources.append("dca_shadow")
+                    from strategies.dca_portfolio import should_defer_per_coin_dca
+
+                    defer = (
+                        not dca.shadow_only
+                        and should_defer_per_coin_dca(market.strategy_params, self.config.raw)
+                    )
+                    if defer:
+                        sources.append(dca.source)
+                        sources.append("dca_portfolio_deferred")
+                        structure_rationales.append(
+                            f"[portfolio] {dca.rationale} (${dca.usdt_amount:.0f})"
+                        )
+                    else:
+                        normalized = BUY_DCA
+                        sources.append(dca.source)
+                        structure_rationales.append(dca.rationale)
+                        dca_usdt = dca.usdt_amount
+                        if dca.shadow_only:
+                            shadow_tag = (
+                                "dca_recovery_shadow"
+                                if dca.source == "dca_recovery"
+                                else "dca_shadow"
+                            )
+                            sources.append(shadow_tag)
         else:
             normalized, sources, confidence = self._merge_buy(
                 technical, x_signal, cmc_signal, all_social, market, lc_signal
@@ -813,8 +855,19 @@ class DecisionEngine:
         )
         if "entry_sensor_shadow" in sources and sensor_shadow and not shadow_action:
             shadow_action = sensor_shadow
-        if "dca_shadow" in sources and normalized == BUY_DCA:
+        if ("dca_shadow" in sources or "dca_recovery_shadow" in sources) and normalized == BUY_DCA:
             shadow_action = execution_action
+            normalized = HOLD
+            execution_action = "HOLD"
+        stop_sources = {"x_stop_loss", "stop_loss", "technical"}
+        is_stop_sell = (
+            "STOP" in (normalized or "").upper()
+            or bool(stop_sources.intersection(sources))
+        )
+        if policy_shadow_active(self.config.raw) and is_sell(normalized) and not is_stop_sell:
+            if not shadow_action:
+                shadow_action = execution_action
+            sources.append("sell_policy_shadow")
             normalized = HOLD
             execution_action = "HOLD"
         if sell_source == "time_profit_exit":
@@ -899,6 +952,7 @@ class DecisionEngine:
             volatility_tier=tier,
             strategy_profile=profile,
             shadow_action=shadow_action,
+            sell_policy_audit=sell_policy_audit,
         )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt

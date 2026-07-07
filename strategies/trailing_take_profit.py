@@ -56,7 +56,7 @@ def _resolve_action(position: dict, strategy_params: dict | None) -> str | None:
             return None
         step = current_ladder_step(position, tiers)
         if step >= len(tiers):
-            return None
+            return SELL_FULL
         if step >= len(tiers) - 1:
             return SELL_FULL
         return SELL_PARTIAL_30

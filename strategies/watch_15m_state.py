@@ -57,6 +57,11 @@ def reset_cache_for_tests() -> None:
         _cache = None
 
 
+def clear_all_watches_for_tests() -> None:
+    reset_cache_for_tests()
+    _save(_default_state())
+
+
 def set_watch(
     symbol: str,
     timeframe: str,
@@ -65,6 +70,10 @@ def set_watch(
     ttl_hours: float = 24.0,
     rsi_4h: float | None = None,
     tech_buy: bool = False,
+    priority_poll: bool = False,
+    webhook_strength: float | None = None,
+    webhook_source: str | None = None,
+    webhook_event_type: str | None = None,
 ) -> None:
     data = _load()
     now = datetime.now()
@@ -75,11 +84,37 @@ def set_watch(
         "watched_at": now.isoformat(),
         "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
         "tech_buy": bool(tech_buy),
+        "priority_poll": bool(priority_poll),
     }
     if rsi_4h is not None:
         entry["rsi_4h"] = float(rsi_4h)
+    if webhook_strength is not None:
+        entry["webhook_strength"] = float(webhook_strength)
+    if webhook_source:
+        entry["webhook_source"] = str(webhook_source)
+    if webhook_event_type:
+        entry["webhook_event_type"] = str(webhook_event_type)
     data["coins"][symbol] = entry
     _save(data)
+
+
+def is_webhook_watch(entry: dict | None) -> bool:
+    if not entry:
+        return False
+    reason = str(entry.get("reason") or "")
+    return reason.startswith("webhook:") or bool(entry.get("webhook_source"))
+
+
+def consume_priority_poll(symbol: str) -> bool:
+    """Return True once if this symbol has a one-shot priority poll flag."""
+    data = _load()
+    entry = data["coins"].get(symbol)
+    if not entry or not entry.get("priority_poll"):
+        return False
+    entry["priority_poll"] = False
+    data["coins"][symbol] = entry
+    _save(data)
+    return True
 
 
 def clear_watch(symbol: str) -> None:

@@ -63,6 +63,8 @@ for port in 5000 4040; do
   lsof -ti tcp:"$port" >/dev/null 2>&1 && fail "Port $port still in use"
 done
 
+bash "$BOT_DIR/scripts/ensure_redis.sh" || fail "Redis not running — price cache requires Redis"
+
 # shellcheck disable=SC1091
 source "$BOT_DIR/scripts/dev_local_mongo.sh"
 export DEMO_LEDGER_BACKEND=mongo

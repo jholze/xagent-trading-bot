@@ -28,6 +28,7 @@ def _scoring_dca_cfg(mode: str = "live") -> dict:
         "loss_pct_max": -3,
         "sl_proximity_pct": 15,
         "max_rounds": 3,
+        "sizing": {"min_usdt": 10, "max_usdt": 25, "min_multiplier": 0.5, "max_multiplier": 1.0},
         "scoring": {
             "enabled": True,
             "min_score": 6,
@@ -116,7 +117,8 @@ class TestDCAModule(unittest.TestCase):
         cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, self.params)
         self.assertIsNotNone(cand)
         self.assertEqual(cand.action, BUY_DCA)
-        self.assertAlmostEqual(cand.usdt_amount, 20.0)
+        self.assertGreaterEqual(cand.usdt_amount, 9.0)
+        self.assertLessEqual(cand.usdt_amount, 25.0)
         self.assertGreaterEqual(cand.score, 6)
 
     def test_scoring_blocks_weak_signal(self):
@@ -313,7 +315,7 @@ class TestDCADecisionEngine(unittest.TestCase):
             },
         )
         engine = DecisionEngine()
-        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "")):
+        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "", {})):
             analysis = engine.evaluate_with_market(
                 {"symbol": self.symbol, "timeframe": self.tf},
                 market,

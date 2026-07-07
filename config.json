@@ -237,6 +237,20 @@
     "mode": "monolith",
     "redis_url": "redis://127.0.0.1:6379/0",
     "key_prefix": "aria:",
+    "price_cache_enabled": true,
+    "price_cache_ttl_sec": 120,
+    "ohlcv_cache_enabled": true,
+    "ohlcv_cache_ttl_sec": {
+      "15m": 60,
+      "1h": 90,
+      "4h": 120
+    },
+    "funding_cache_ttl_sec": 300,
+    "coin_query_webhook_enabled": true,
+    "signal_webhook_enabled": true,
+    "signal_webhook_token": "",
+    "signal_event_ttl_sec": 3600,
+    "signal_webhook_rate_limit_per_min": 10,
     "notification_mode": "async",
     "notification_rate_limit_sec": 1.0,
     "hermes_external": false,
@@ -278,15 +292,42 @@
     "min_sell_notional_usdt": 300,
     "min_position_usdt_for_partial_sell": 500,
     "block_partial_sell_if_sold_percent_above": 0.75,
-    "dust_sweep_max_position_usdt": 300,
-    "dust_sweep_sold_percent_min": 0.7,
-    "dust_sweep_min_remainder_usdt": 200
+    "dust_sweep_max_position_usdt": 500,
+    "dust_sweep_sold_percent_min": 0.5,
+    "dust_sweep_min_remainder_usdt": 100
+  },
+  "sell_policy": {
+    "mode": "active",
+    "shadow_log_decisions": true,
+    "rotation": {
+      "trail_exclusive": true,
+      "evict_min_gain_pct": 0,
+      "arm_gain_pct": 12,
+      "arm_gain_pct_stable": 15,
+      "tail_idle_hours": 24,
+      "tail_exempt_sold_pct": 0.5,
+      "tail_exempt_notional_usdt": 800,
+      "trail_exit_full_close": true
+    }
   },
   "update_interval": 120,
   "observability": {
     "terminal_dashboard": true,
     "json_logs": false,
     "notify_on_cycle": true,
+    "cycle_notifications": {
+      "mode": "delta",
+      "send_on_trade": true,
+      "send_on_blocked": true,
+      "send_on_nav_delta_pct": 0.5,
+      "send_on_new_decision": true,
+      "hold_explanation_max_per_cycle": 1,
+      "hold_explanation_cooldown_hours": 6,
+      "digest_merge": true,
+      "notify_hermes_rejected": false
+    },
+    "display_timezone": "Europe/Berlin",
+    "telegram_startup_notify": true,
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
     "decisions_audit": true,
@@ -297,7 +338,7 @@
       "verbosity": "verbose",
       "language": "de",
       "show_technical_codes": true,
-      "notify_hermes_every_cycle": true,
+      "notify_hermes_every_cycle": false,
       "notify_cmc_digest": true,
       "notify_lc_digest": true,
       "notify_x_digest": true,
@@ -604,12 +645,12 @@
     "exit_ladder": {
       "enabled": true,
       "tiers": [
-        0.6,
-        0.3,
-        0.1
+        0.35,
+        0.35,
+        0.3
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 200
+      "min_remainder_usdt_floor": 100
     },
     "trailing_stop": {
       "enabled": true,
@@ -623,7 +664,7 @@
       "enabled": true,
       "mode": "live",
       "trail_pct": 6,
-      "arm_gain_pct": 15,
+      "arm_gain_pct": 12,
       "min_gain_pct": 10,
       "max_steps": 3,
       "cooldown_hours": 6
@@ -649,6 +690,25 @@
       "mode": "live",
       "interval_hours": 12,
       "fixed_usdt": 400,
+      "sizing": {
+        "enabled": true,
+        "min_multiplier": 0.45,
+        "max_multiplier": 1.0,
+        "loss_depth_boost": 0.15,
+        "round_decay": 0.12,
+        "min_usdt": 100,
+        "max_usdt": 420
+      },
+      "portfolio": {
+        "enabled": true,
+        "mode": "live",
+        "max_buys_per_cycle": 1,
+        "max_funding_sells_per_cycle": 1,
+        "min_dca_score": 6,
+        "cash_buffer_usdt": 300,
+        "stale_winner_min_hours": 36,
+        "stale_winner_max_gain_pct": 8
+      },
       "loss_pct_min": -20,
       "loss_pct_max": -3,
       "sl_proximity_pct": 15,
@@ -684,6 +744,21 @@
           "bb_support_enabled": true,
           "bb_support_ratio": 1.02
         }
+      },
+      "recovery": {
+        "enabled": true,
+        "mode": "live",
+        "interval_hours": 8,
+        "max_rounds": 2,
+        "loss_pct_min": -25,
+        "loss_pct_max": -2,
+        "max_sold_percent": 0.85,
+        "min_remainder_usdt": 150,
+        "remainder_size_ratio": 0.35,
+        "sl_proximity_pct": 12,
+        "cascade_min_drop_pct": 4.0,
+        "cascade_score_discount": 1,
+        "scoring_inherit": true
       }
     }
   },
@@ -711,11 +786,10 @@
       "tiers": [
         0.3,
         0.3,
-        0.2,
-        0.2
+        0.4
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 200
+      "min_remainder_usdt_floor": 150
     },
     "trailing_stop": {
       "enabled": true,
@@ -782,6 +856,21 @@
           "bb_support_enabled": true,
           "bb_support_ratio": 1.02
         }
+      },
+      "recovery": {
+        "enabled": true,
+        "mode": "live",
+        "interval_hours": 18,
+        "max_rounds": 1,
+        "loss_pct_min": -15,
+        "loss_pct_max": -2,
+        "max_sold_percent": 0.85,
+        "min_remainder_usdt": 150,
+        "remainder_size_ratio": 0.3,
+        "sl_proximity_pct": 10,
+        "cascade_min_drop_pct": 4.0,
+        "cascade_score_discount": 1,
+        "scoring_inherit": true
       }
     }
   },
@@ -869,6 +958,7 @@
     "fakeout_min_body_atr_ratio": 0.3,
     "cooldown_after_reject_hours": 2,
     "max_watched_coins": 40,
-    "min_poll_gap_sec_per_coin": 20
+    "min_poll_gap_sec_per_coin": 20,
+    "webhook_priority_poll": true
   }
 }

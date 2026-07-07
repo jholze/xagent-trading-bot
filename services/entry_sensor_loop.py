@@ -26,10 +26,16 @@ _last_watch_seed_at: float = 0.0
 _WATCH_SEED_INTERVAL_SEC = 600.0
 
 
-def _coin_by_symbol(symbol: str) -> dict | None:
+def _coin_by_symbol(symbol: str, entry: dict | None = None) -> dict | None:
     for coin in load_effective_watchlist():
         if coin.get("symbol") == symbol and coin.get("active", True):
             return coin
+    if entry and watch_15m_state.is_webhook_watch(entry):
+        return {
+            "symbol": symbol,
+            "timeframe": str(entry.get("timeframe") or "4h"),
+            "active": True,
+        }
     return None
 
 
@@ -39,12 +45,23 @@ def _min_poll_gap_sec(cfg: dict) -> float:
 
 def _should_poll_symbol(symbol: str, cfg: dict, now: float | None = None) -> bool:
     now = now if now is not None else time.monotonic()
+    if cfg.get("webhook_priority_poll", True) and watch_15m_state.consume_priority_poll(symbol):
+        _last_poll_at[symbol] = now
+        return True
     gap = _min_poll_gap_sec(cfg)
     last = _last_poll_at.get(symbol, 0.0)
     if now - last < gap:
         return False
     _last_poll_at[symbol] = now
     return True
+
+
+def _sort_watched_for_poll(watched: list[dict]) -> list[dict]:
+    def _key(entry: dict) -> tuple[int, str]:
+        webhook = 0 if watch_15m_state.is_webhook_watch(entry) else 1
+        return (webhook, str(entry.get("symbol") or ""))
+
+    return sorted(watched, key=_key)
 
 
 def reset_poll_state_for_tests() -> None:
@@ -143,6 +160,7 @@ def _poll_once(orchestrator) -> None:
     if not watched:
         return
 
+    watched = _sort_watched_for_poll(watched)
     symbols = [w["symbol"] for w in watched]
     prices = get_prices_batch(symbols)
     market_svc = orchestrator.market
@@ -157,7 +175,7 @@ def _poll_once(orchestrator) -> None:
         if not _should_poll_symbol(symbol, cfg, poll_now):
             continue
 
-        coin = _coin_by_symbol(symbol)
+        coin = _coin_by_symbol(symbol, entry)
         if not coin:
             continue
 
