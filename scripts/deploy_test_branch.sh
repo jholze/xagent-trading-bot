@@ -40,23 +40,18 @@ echo "Service: ${SERVICE_NAME} (${ENV_NAME})"
 railway environment link "${ENV_NAME}" >/dev/null 2>&1 || railway environment link "${ENV_NAME}"
 railway service link "${SERVICE_NAME}" >/dev/null 2>&1 || railway service link "${SERVICE_NAME}"
 
-echo "Ensuring GitHub source on branch ${BRANCH}..."
-railway service source connect \
-  --repo "${REPO}" \
-  --branch "${BRANCH}" \
-  --service "${SERVICE_NAME}" 2>/dev/null \
-  || true
-
 COMMIT="$(git rev-parse --short HEAD)"
 echo "Pushing ${BRANCH} @ ${COMMIT} to origin..."
 git push origin "${BRANCH}"
 
-echo "Pinning deploy revision on Railway (CLI deploys lack RAILWAY_GIT_* runtime vars)..."
+echo "Pinning deploy revision on Railway..."
 railway variable set "GIT_COMMIT=${COMMIT}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 railway variable set "GIT_BRANCH=${BRANCH}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
+railway variable set "BOT_STACK=test" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 
-echo "Deploying from source (not local upload)..."
-railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes
+# Upload exact git HEAD (clean tree). redeploy --from-source was still building main.
+echo "Deploying commit ${COMMIT} (railway up = pinned branch snapshot)..."
+railway up --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --detach
 
 echo "Waiting for health..."
 for i in $(seq 1 30); do
