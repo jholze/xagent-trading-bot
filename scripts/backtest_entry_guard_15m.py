@@ -112,11 +112,38 @@ class VariantResult:
     details: list = field(default_factory=list)
 
 
-def load_lots() -> list[Lot]:
-    from data_manager import load_orders
+def _load_demo_orders() -> tuple[list, str]:
+    """Prefer live demo ledger; fall back to JSON when Mongo book is sparse."""
+    from data_manager import _load_orders_json, load_orders
 
+    doc = load_orders("demo")
+    orders = list(doc.get("orders") or [])
+    source = "ledger"
+    s15 = [
+        o for o in orders
+        if o.get("source") == "entry_sensor_15m"
+        and o.get("status") == "filled"
+        and (o.get("side") or "").lower() == "buy"
+    ]
+    if len(s15) < 5:
+        json_doc = _load_orders_json("demo")
+        json_orders = list(json_doc.get("orders") or [])
+        json_s15 = [
+            o for o in json_orders
+            if o.get("source") == "entry_sensor_15m"
+            and o.get("status") == "filled"
+            and (o.get("side") or "").lower() == "buy"
+        ]
+        if len(json_s15) > len(s15):
+            orders = json_orders
+            source = "orders.demo.json"
+    return orders, source
+
+
+def load_lots() -> tuple[list[Lot], str]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS)
-    orders = [o for o in load_orders("demo").get("orders", []) if o.get("status") == "filled"]
+    orders, order_source = _load_demo_orders()
+    orders = [o for o in orders if o.get("status") == "filled"]
     buys = [
         o for o in orders
         if o.get("source") == "entry_sensor_15m" and (o.get("side") or "").lower() == "buy"
@@ -147,7 +174,7 @@ def load_lots() -> list[Lot]:
             lot.first_sell_mins, lot.first_sell_ts = first[0], first[1]
             lot.first_sell_pnl, lot.first_sell_signal, lot.first_sell_source = first[2], first[3], first[4]
         lots.append(lot)
-    return lots
+    return lots, order_source
 
 
 def simulate_lot_guard(lot: Lot, cfg: dict, *, arch_only: bool = False) -> dict:
@@ -338,8 +365,11 @@ def grid_search(lots: list[Lot]) -> tuple[dict, list[VariantResult]]:
 
 
 def main() -> int:
-    lots = load_lots()
-    print(f"Loaded {len(lots)} entry_sensor_15m lots ({DAYS}d)")
+    lots, order_source = load_lots()
+    print(f"Loaded {len(lots)} entry_sensor_15m lots ({DAYS}d) from {order_source}")
+    if not lots:
+        print("No entry_sensor_15m lots — sync demo Mongo or check orders.demo.json")
+        return 1
     quick = [l for l in lots if l.first_sell_mins is not None and l.first_sell_mins <= WHIPSAW_MAX_MIN]
     print(f"Quick sells (<={WHIPSAW_MAX_MIN:.0f}m): {len(quick)}")
     for l in quick:
@@ -358,7 +388,15 @@ def main() -> int:
         )
 
     pump_results = [r for r in results if r.name.startswith("pump_")]
-    winner = max(pump_results, key=lambda r: (r.whipsaw_blocked, -r.false_blocks, r.whipsaw_saved_usd)) if pump_results else results[0]
+    if pump_results:
+        winner = max(
+            pump_results,
+            key=lambda r: (r.whipsaw_blocked, -r.false_blocks, r.whipsaw_saved_usd),
+        )
+    elif quick:
+        winner = next((r for r in results if r.name == "arch_only"), results[0])
+    else:
+        winner = results[0]
     best_cfg = deepcopy(entry_guard_config())
     best_cfg.update({
         "vol_spike_mult": 2.0,
@@ -377,7 +415,7 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d")
     report = out_dir / f"entry_guard_backtest_{stamp}.json"
     report.write_text(
-        json.dumps({"winner": winner.name, "config": best_cfg, "results": [
+        json.dumps({"order_source": order_source, "winner": winner.name, "config": best_cfg, "results": [
             {
                 "name": r.name,
                 "whipsaw_blocked": r.whipsaw_blocked,

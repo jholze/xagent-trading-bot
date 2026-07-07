@@ -1,4 +1,5 @@
 {
+  "order_source": "orders.demo.json",
   "winner": "pump_v1.8_e0.85_m10.0",
   "config": {
     "enabled": true,
@@ -33,72 +34,72 @@
   "results": [
     {
       "name": "baseline",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "arch_only",
-      "whipsaw_blocked": 9,
-      "whipsaw_total": 9,
-      "saved": 6.113438053409168,
-      "missed": 33.839285041211
+      "whipsaw_blocked": 1,
+      "whipsaw_total": 1,
+      "saved": 0.0,
+      "missed": 21.03871428571424
     },
     {
       "name": "pump_v1.8_e0.85_m10.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v1.8_e0.85_m12.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v1.8_e0.9_m10.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v1.8_e0.9_m12.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v2.0_e0.85_m10.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v2.0_e0.85_m12.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v2.0_e0.9_m10.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     },
     {
       "name": "pump_v2.0_e0.9_m12.0",
-      "whipsaw_blocked": 1,
-      "whipsaw_total": 9,
-      "saved": 4.467324710687608,
+      "whipsaw_blocked": 0,
+      "whipsaw_total": 1,
+      "saved": 0.0,
       "missed": 0.0
     }
   ]
