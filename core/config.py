@@ -358,6 +358,30 @@ class BotConfig:
     def entry_sensor_15m_mode(self) -> str:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
 
+    @property
+    def entry_guard_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "sources": ["entry_sensor_15m"],
+            "fresh_entry_window_minutes": 120,
+            "vol_spike_mult": 2.0,
+            "vol_exhaustion_15m_max": 0.85,
+            "exhaustion_min_gain_pct": 5.0,
+            "mega_pump_gain_pct": 12.0,
+            "block_loss_sells_minutes": 15,
+            "by_tier": {
+                "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
+                "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
+                "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
+                "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12},
+            },
+        }
+        raw = self._raw.get("entry_guard") or {}
+        merged = {**defaults, **raw}
+        if raw.get("by_tier"):
+            merged["by_tier"] = {**defaults["by_tier"], **raw["by_tier"]}
+        return merged
+
 
 def get_bot_config() -> BotConfig:
     return BotConfig()

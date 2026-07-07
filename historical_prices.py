@@ -17,7 +17,12 @@ def _normalize_dt(dt: datetime) -> datetime:
 
 
 def _bar_ms(timeframe: str) -> int:
-    return 14_400_000 if timeframe == "4h" else 3_600_000
+    return {
+        "15m": 900_000,
+        "30m": 1_800_000,
+        "1h": 3_600_000,
+        "4h": 14_400_000,
+    }.get(timeframe, 3_600_000)
 
 
 def _gate_exchange():

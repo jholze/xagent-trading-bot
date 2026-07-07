@@ -100,8 +100,7 @@ class DecisionEngine:
         if classify_coin(symbol, market.strategy_params) == "large_cap":
             watch_15m_state.clear_watch(symbol)
             return
-        sold = float(position.get("sold_percent", 0) or 0)
-        if market.has_position and sold >= 0.01:
+        if market.has_position:
             watch_15m_state.clear_watch(symbol)
             return
         if is_sell(normalized) or is_sell(technical.action):
@@ -591,6 +590,7 @@ class DecisionEngine:
                     sources.append("lc")
 
         if market and position:
+            ta_bearish = is_sell(technical.action)
             for cand in evaluate_market_structure_sells(market, strategy_params, position):
                 candidates.append((cand.action, cand.priority, cand.source))
                 sources.append(cand.source)
@@ -630,6 +630,41 @@ class DecisionEngine:
                 structure_rationales.append(tpe.rationale)
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
+
+        if not candidates:
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source
+
+        if market and position:
+            from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
+
+            gain_pct = (
+                (market.current_price / market.average_entry - 1) * 100
+                if market.average_entry > 0 else 0.0
+            )
+            metrics_15m = None
+            if is_fresh_guarded_entry(position):
+                try:
+                    metrics_15m = self.market.fetch_15m_sensor_metrics(
+                        market.symbol, self._entry_sensor_cfg(),
+                    )
+                except Exception:
+                    metrics_15m = None
+                if not metrics_15m:
+                    stored_ratio = float(position.get("entry_15m_vol_ratio") or 0)
+                    if stored_ratio > 0:
+                        metrics_15m = {
+                            "volume_spike_ratio": stored_ratio,
+                            "price_momentum": True,
+                        }
+            candidates, blocked = filter_sell_candidates(
+                candidates,
+                position=position,
+                strategy_params=strategy_params,
+                gain_pct=gain_pct,
+                ta_bearish=is_sell(technical.action),
+                metrics_15m=metrics_15m,
+            )
+            structure_rationales.extend(blocked)
 
         if not candidates:
             return HOLD, sources, technical.confidence, structure_rationales, sell_source

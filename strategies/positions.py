@@ -45,6 +45,9 @@ _CACHE_FIELDS = (
     "last_ampel",
     "last_rsi",
     "first_buy_at",
+    "entry_source",
+    "entry_at",
+    "entry_15m_vol_ratio",
     "time_profit_exit_done",
     "profit_armed_at",
     "trail_tp_steps",
@@ -124,6 +127,9 @@ def _deserialize_position(raw: dict) -> dict:
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
         "last_sell_signal": raw.get("last_sell_signal"),
         "first_buy_at": raw.get("first_buy_at"),
+        "entry_source": raw.get("entry_source"),
+        "entry_at": raw.get("entry_at"),
+        "entry_15m_vol_ratio": float(raw.get("entry_15m_vol_ratio", 0) or 0) or None,
         "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
         "profit_armed_at": raw.get("profit_armed_at"),
         "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),
@@ -158,6 +164,9 @@ def _serialize_positions() -> dict:
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
             "last_sell_signal": p.get("last_sell_signal"),
             "first_buy_at": p.get("first_buy_at"),
+            "entry_source": p.get("entry_source"),
+            "entry_at": p.get("entry_at"),
+            "entry_15m_vol_ratio": p.get("entry_15m_vol_ratio"),
             "time_profit_exit_done": bool(p.get("time_profit_exit_done", False)),
             "profit_armed_at": p.get("profit_armed_at"),
             "trail_tp_steps": int(p.get("trail_tp_steps", 0) or 0),
@@ -329,6 +338,9 @@ def init_position(symbol, timeframe):
                 "dca_total_usdt": 0.0,
                 "last_sell_signal": None,
                 "first_buy_at": None,
+                "entry_source": None,
+                "entry_at": None,
+                "entry_15m_vol_ratio": None,
                 "time_profit_exit_done": False,
                 "profit_armed_at": None,
                 "trail_tp_steps": 0,
@@ -453,7 +465,16 @@ def sell_fraction_for_signal(
     return 0.2
 
 
-def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
+def update_position(
+    symbol,
+    timeframe,
+    signal,
+    current_price,
+    amount_traded=0,
+    *,
+    entry_source: str | None = None,
+    entry_15m_vol_ratio: float | None = None,
+):
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     was_open = False
@@ -499,6 +520,11 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["last_trail_tp_at"] = None
                 pos["profit_max_lifetime_done"] = False
                 pos["first_buy_at"] = datetime.now().isoformat()
+                if entry_source:
+                    pos["entry_source"] = entry_source
+                    pos["entry_at"] = pos["first_buy_at"]
+                if entry_15m_vol_ratio is not None:
+                    pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
                 if old_amount <= 0:
                     pos["strategy_tier"] = None
         elif "SELL" in signal:

@@ -7,7 +7,7 @@ from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
-from core.actions import is_sell
+from core.actions import is_buy, is_sell
 from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 from strategies.registry import resolve_coin_config
@@ -81,7 +81,14 @@ class SignalOrchestrator:
                 ctx["hermes"] = {"experiment_id": sp.get("hermes_experiment_id")}
         return ctx
 
-    def execute_if_needed(self, analysis, coin: dict, current_price: float, x_signals=None):
+    def execute_if_needed(
+        self,
+        analysis,
+        coin: dict,
+        current_price: float,
+        x_signals=None,
+        sensor_metrics: dict | None = None,
+    ):
         if analysis is None or analysis.action == "HOLD":
             return None
 
@@ -113,6 +120,10 @@ class SignalOrchestrator:
 
         if "BUY" in analysis.action:
             dca_usdt = float(getattr(analysis, "dca_usdt", 0) or 0)
+            vol_ratio = None
+            if sensor_metrics and source == "entry_sensor_15m":
+                raw_ratio = float(sensor_metrics.get("volume_spike_ratio", 0) or 0)
+                vol_ratio = raw_ratio if raw_ratio > 0 else None
             order = TradeOrder(
                 type="BUY",
                 symbol=symbol,
@@ -121,6 +132,7 @@ class SignalOrchestrator:
                 usdt_amount=dca_usdt,
                 signal=analysis.normalized_action or analysis.action,
                 source=source,
+                entry_15m_vol_ratio=vol_ratio,
             )
         else:
             pos = get_position(symbol, tf)
@@ -170,6 +182,59 @@ class SignalOrchestrator:
             request_extra=request_extra or None,
             idempotency_key=idem,
         )
+
+    def process_entry_sensor(
+        self,
+        coin: dict,
+        current_price: float,
+        sensor_metrics: dict | None = None,
+        quiet: bool = True,
+    ) -> dict:
+        """15m sensor loop: analyze and execute BUY only — never sell from this path."""
+        if not current_price:
+            return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
+
+        analysis = self.analyze(coin, current_price)
+        if analysis is None:
+            return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
+
+        trade_result = None
+        if is_buy(analysis.action):
+            trade_result = self.execute_if_needed(
+                analysis, coin, current_price, sensor_metrics=sensor_metrics,
+            )
+        self.audit.record(coin, analysis, trade_result, current_price)
+
+        symbol = coin["symbol"]
+        tf = analysis.timeframe
+        pos = get_position(symbol, tf)
+        has_position = float(pos.get("amount", 0)) > 0
+
+        trade_executed = bool(trade_result.executed) if trade_result else False
+        reported_action = analysis.action if is_buy(analysis.action) else "HOLD"
+        reported_normalized = (
+            analysis.normalized_action if is_buy(analysis.action) else "HOLD"
+        )
+
+        if not quiet:
+            executed = f" | Executed: {trade_result.order_type}" if trade_executed else ""
+            print(
+                f"{symbol} [15m-entry] → {reported_action} | sources={analysis.sources}"
+                f"{executed}\n"
+            )
+
+        return {
+            "action": reported_action,
+            "normalized_action": reported_normalized,
+            "symbol": symbol,
+            "rationale": analysis.rationale,
+            "sources": list(analysis.sources or []),
+            "confidence": analysis.confidence,
+            "executed": trade_executed,
+            "order_type": trade_result.order_type if trade_result else None,
+            "trade_message": trade_result.message if trade_result else "",
+            "has_position": has_position,
+        }
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:
         if not current_price:

@@ -831,6 +831,22 @@
       }
     }
   },
+  "entry_guard": {
+    "enabled": true,
+    "sources": ["entry_sensor_15m"],
+    "fresh_entry_window_minutes": 120,
+    "vol_spike_mult": 2.0,
+    "vol_exhaustion_15m_max": 0.85,
+    "exhaustion_min_gain_pct": 5,
+    "mega_pump_gain_pct": 12,
+    "block_loss_sells_minutes": 15,
+    "by_tier": {
+      "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
+      "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
+      "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
+      "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12}
+    }
+  },
   "entry_sensor_15m": {
     "enabled": true,
     "mode": "active",

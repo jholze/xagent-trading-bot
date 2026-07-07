@@ -16,6 +16,7 @@ from strategies.entry_sensor_15m import (
     passes_vol_spike_prefilter,
     set_pending_sensor_metrics,
 )
+from strategies.positions import get_position, is_open_position
 from strategies import watch_15m_state
 
 _loop_thread: threading.Thread | None = None
@@ -86,11 +87,22 @@ def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict,
         log(f"15m sensor shadow skip {symbol}: {result.rationale}", "INFO")
 
 
+def _has_open_position(symbol: str, coin: dict) -> bool:
+    tf = str(coin.get("timeframe") or "4h")
+    return is_open_position(get_position(symbol, tf))
+
+
 def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
-    """Hand off fresh 15m metrics; DecisionEngine re-evaluates with live RSI + tech action."""
+    """Hand off fresh 15m metrics; entry-only path — never sell from this loop."""
+    if _has_open_position(symbol, coin):
+        watch_15m_state.clear_watch(symbol)
+        return
+
     set_pending_sensor_metrics(symbol, metrics)
     try:
-        outcome = orchestrator.process_coin(coin, price, quiet=True)
+        outcome = orchestrator.process_entry_sensor(
+            coin, price, sensor_metrics=metrics, quiet=True,
+        )
     except Exception as e:
         log(f"15m sensor execute failed for {symbol}: {e}", "ERROR")
         watch_15m_state.record_sensor_reject(symbol)
@@ -99,6 +111,7 @@ def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics
     sources = outcome.get("sources") or []
     executed = bool(outcome.get("executed"))
     if executed and ENTRY_SENSOR_SOURCE in sources and is_buy(outcome.get("action", "")):
+        watch_15m_state.clear_watch(symbol)
         log(
             f"15m sensor active buy executed for {symbol}: "
             f"action={outcome.get('action')} sources={sources}",
@@ -146,6 +159,10 @@ def _poll_once(orchestrator) -> None:
 
         coin = _coin_by_symbol(symbol)
         if not coin:
+            continue
+
+        if _has_open_position(symbol, coin):
+            watch_15m_state.clear_watch(symbol)
             continue
 
         price = float(prices.get(symbol) or 0)
