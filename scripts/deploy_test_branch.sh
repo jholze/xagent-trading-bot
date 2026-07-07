@@ -48,8 +48,8 @@ railway service source connect \
   || true
 
 echo "Removing stale GIT_COMMIT/GIT_BRANCH overrides (Railway sets RAILWAY_GIT_* on git deploy)..."
-railway variable delete GIT_COMMIT --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --yes 2>/dev/null || true
-railway variable delete GIT_BRANCH --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --yes 2>/dev/null || true
+railway variable delete GIT_COMMIT -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
+railway variable delete GIT_BRANCH -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
 
 echo "Pushing ${BRANCH} to origin..."
 git push origin "${BRANCH}"
