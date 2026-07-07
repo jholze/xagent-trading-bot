@@ -195,7 +195,7 @@ def format_startup_message() -> str:
 
     when = format_display_with_zone()
     lines = [
-        f"<b>{info['stack_emoji']} Bot gestartet — {info['stack_label']}</b>",
+        f"<b>Bot gestartet — {info['stack_label']}</b>",
         "",
         f"<code>{info['commit']}{dirty}</code> · <code>{info['branch']}</code>",
     ]
