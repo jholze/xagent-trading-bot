@@ -47,12 +47,13 @@ railway service source connect \
   --service "${SERVICE_NAME}" 2>/dev/null \
   || true
 
-echo "Removing stale GIT_COMMIT/GIT_BRANCH overrides (Railway sets RAILWAY_GIT_* on git deploy)..."
-railway variable delete GIT_COMMIT -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
-railway variable delete GIT_BRANCH -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
-
-echo "Pushing ${BRANCH} to origin..."
+COMMIT="$(git rev-parse --short HEAD)"
+echo "Pushing ${BRANCH} @ ${COMMIT} to origin..."
 git push origin "${BRANCH}"
+
+echo "Pinning deploy revision on Railway (CLI deploys lack RAILWAY_GIT_* runtime vars)..."
+railway variable set "GIT_COMMIT=${COMMIT}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
+railway variable set "GIT_BRANCH=${BRANCH}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 
 echo "Deploying from source (not local upload)..."
 railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes

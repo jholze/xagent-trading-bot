@@ -21,10 +21,18 @@ def _git(*args: str) -> str:
         return ""
 
 
+def _short_sha(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    return raw[:7] if len(raw) > 12 else raw
+
+
 def get_build_info() -> dict:
+    railway_sha = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()
     commit = (
-        (os.getenv("GIT_COMMIT") or "").strip()
-        or (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
+        _short_sha(os.getenv("GIT_COMMIT") or "")
+        or _short_sha(railway_sha)
         or _git("rev-parse", "--short", "HEAD")
         or "unknown"
     )
@@ -34,7 +42,13 @@ def get_build_info() -> dict:
         or _git("rev-parse", "--abbrev-ref", "HEAD")
         or "unknown"
     )
-    dirty = os.getenv("GIT_DIRTY") == "1" or bool(_git("status", "--porcelain"))
+    if branch == "HEAD":
+        branch = "unknown"
+    on_railway = bool(os.getenv("RAILWAY_DEPLOY") or os.getenv("RAILWAY_ENVIRONMENT"))
+    dirty = (
+        not on_railway
+        and (os.getenv("GIT_DIRTY") == "1" or bool(_git("status", "--porcelain")))
+    )
     return {"commit": commit, "branch": branch, "dirty": dirty}
 
 

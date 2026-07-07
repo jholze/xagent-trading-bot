@@ -4,6 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== X-Agent Railway start ==="
+python3 - <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, ".")
+from core.build_info import get_build_info
+b = get_build_info()
+print(f"Build revision: {b['commit']} @ {b['branch']}" + (" (dirty)" if b['dirty'] else ""))
+PY
 
 # Demo mode (same as local scripts/start_demo_with_ngrok.sh)
 export DEMO_MODE=1

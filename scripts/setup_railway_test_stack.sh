@@ -198,9 +198,13 @@ railway service source connect \
   --branch "${BRANCH}" \
   --service "${SERVICE_NAME}" 2>/dev/null || true
 
-echo "Removing stale GIT_COMMIT/GIT_BRANCH overrides..."
-railway variable delete GIT_COMMIT -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
-railway variable delete GIT_BRANCH -s "${SERVICE_NAME}" -e "${ENV_NAME}" 2>/dev/null || true
+if git status --porcelain | grep -q .; then
+  DEPLOY_COMMIT="unknown"
+else
+  DEPLOY_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+fi
+set_var "GIT_COMMIT=${DEPLOY_COMMIT}"
+set_var "GIT_BRANCH=${BRANCH}"
 
 echo "Deploy from git (push branch first, then run scripts/deploy_test_branch.sh)..."
 if git status --porcelain | grep -q .; then
