@@ -206,14 +206,8 @@ fi
 set_var "GIT_COMMIT=${DEPLOY_COMMIT}"
 set_var "GIT_BRANCH=${BRANCH}"
 
-echo "Deploy from git (push branch first, then run scripts/deploy_test_branch.sh)..."
-if git status --porcelain | grep -q .; then
-  echo "WARN: uncommitted changes — skipping git deploy; push + deploy_test_branch.sh when ready"
-else
-  git push origin "${BRANCH}" 2>/dev/null || echo "WARN: git push failed — run manually"
-  railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes 2>&1 \
-    || echo "WARN: redeploy failed — run: bash scripts/deploy_test_branch.sh"
-fi
+echo "Deploy from git: bash scripts/deploy_test_branch.sh"
+echo "  (push → GitHub Actions → Railway; no redeploy --from-source)"
 
 echo ""
 echo "=== Test stack ready ==="
