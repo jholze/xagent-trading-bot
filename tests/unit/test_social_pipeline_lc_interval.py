@@ -59,6 +59,26 @@ class TestSocialPipelineLcInterval(unittest.TestCase):
 
         pipeline.lc_provider.fetch_for_watchlist.assert_called_once()
 
+    @patch("core.config.get_bot_config")
+    @patch("services.social_pipeline.load_effective_watchlist")
+    def test_force_lc_fetch_bypasses_interval(self, mock_watchlist, mock_cfg):
+        mock_watchlist.return_value = [{"symbol": "BTC/USDT"}]
+        mock_cfg.return_value.lunarcrush_config = {
+            "enabled": True,
+            "fetch_interval_sec": 1800,
+            "cache_ttl_sec": 1800,
+            "thresholds": {},
+            "trust_score": 72,
+        }
+
+        pipeline = self._pipeline()
+        pipeline.lc_provider.fetch_for_watchlist = MagicMock(return_value=[])
+        pipeline._last_lc_fetch_at = time.time()
+
+        pipeline.process_lc_signals(force=True)
+
+        pipeline.lc_provider.fetch_for_watchlist.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

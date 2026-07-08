@@ -33,6 +33,7 @@ class SocialPipeline:
         self._cycle_cmc_signals = []
         self._cycle_lc_signals = []
         self._last_lc_fetch_at = 0.0
+        self._last_lc_metrics_count = 0
         self._last_lc_digest_sig = ""
         self._notified_post_ids = set()
         self._last_cmc_digest_sig = ""
@@ -274,7 +275,7 @@ class SocialPipeline:
             return False
         return (time.time() - self._last_lc_fetch_at) < interval
 
-    def process_lc_signals(self, watchlist: list = None) -> list:
+    def process_lc_signals(self, watchlist: list = None, *, force: bool = False) -> list:
         from core.config import get_bot_config
 
         cfg = get_bot_config()
@@ -282,12 +283,13 @@ class SocialPipeline:
         if not lc_cfg.get("enabled", True):
             return []
 
-        if self._should_skip_lc_fetch(lc_cfg):
+        if not force and self._should_skip_lc_fetch(lc_cfg):
             return list(self._cycle_lc_signals)
 
         self._last_lc_fetch_at = time.time()
         watchlist = watchlist or load_effective_watchlist()
         raw_metrics = self.lc_provider.fetch_for_watchlist(watchlist)
+        self._last_lc_metrics_count = len(raw_metrics)
         self._cycle_lc_signals = []
         thresholds = dict(lc_cfg.get("thresholds", {}))
         thresholds["trust_score"] = float(lc_cfg.get("trust_score", 72))
