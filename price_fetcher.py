@@ -316,6 +316,42 @@ def get_prices_batch(
     return result
 
 
+def get_gate_prices_batch(symbols: list[str]) -> dict[str, float]:
+    """Gate.io spot prices only — no CoinGecko, cache, or entry fallbacks."""
+    if not symbols:
+        return {}
+    unique = list(dict.fromkeys(symbols))
+    result = {sym: 0.0 for sym in unique}
+    for sym, price in _fetch_gate_bulk(unique).items():
+        result[sym] = float(price)
+    for sym in unique:
+        if result[sym] > 0:
+            continue
+        price = _fetch_gate_single(sym)
+        if price:
+            result[sym] = float(price)
+    return result
+
+
+def is_gate_tradeable(symbol: str, *, gate_price: float | None = None) -> bool:
+    if gate_price is not None:
+        return float(gate_price or 0) > 0
+    return float(get_gate_prices_batch([symbol]).get(symbol, 0) or 0) > 0
+
+
+def passes_gate_filter(
+    symbol: str,
+    cfg: dict,
+    *,
+    gate_price: float | None = None,
+) -> tuple[bool, str]:
+    if not cfg.get("gate_only", True):
+        return True, ""
+    if is_gate_tradeable(symbol, gate_price=gate_price):
+        return True, ""
+    return False, "not listed on Gate.io"
+
+
 def get_prices(symbol="ARIA/USDT"):
     """
     Robust multi-coin price fetcher with CoinGecko mapping + Gate.io fallback.

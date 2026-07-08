@@ -151,6 +151,16 @@ class DecisionEngine:
             return
         if watch_15m_state.max_watched_reached(int(cfg.get("max_watched_coins", 15))):
             return
+        from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
+        from price_fetcher import passes_gate_filter
+
+        mcap = resolve_market_cap_usd(symbol, market.strategy_params or {})
+        mcap_ok, _ = passes_market_cap_filter(mcap, cfg)
+        if not mcap_ok:
+            return
+        gate_ok, _ = passes_gate_filter(symbol, cfg)
+        if not gate_ok:
+            return
         reason = (
             "buy_signal"
             if tech_buy
@@ -191,6 +201,13 @@ class DecisionEngine:
         if metrics is None:
             metrics = self.market.fetch_15m_sensor_metrics(symbol, cfg)
         tech_norm = normalize(technical.action)
+        from data.cmc_market_cap import resolve_market_cap_usd
+        from price_fetcher import is_gate_tradeable
+
+        gate_tradeable = None
+        if cfg.get("gate_only", True):
+            gate_tradeable = is_gate_tradeable(symbol)
+
         sensor = evaluate_entry_sensor_15m(
             watched=True,
             metrics=metrics,
@@ -198,6 +215,8 @@ class DecisionEngine:
             rsi_4h=float(market.rsi),
             hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
             tech_already_buy=is_buy(tech_norm),
+            market_cap_usd=resolve_market_cap_usd(symbol, market.strategy_params or {}),
+            gate_tradeable=gate_tradeable,
         )
 
         if sensor is None or not sensor.triggered:

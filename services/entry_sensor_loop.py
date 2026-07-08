@@ -9,7 +9,7 @@ from core.actions import is_buy
 from core.config import get_bot_config
 from data_manager import load_effective_watchlist
 from logger import log
-from price_fetcher import get_prices_batch
+from price_fetcher import get_gate_prices_batch, get_prices_batch
 from strategies.entry_sensor_15m import (
     ENTRY_SENSOR_SOURCE,
     evaluate_entry_sensor_15m,
@@ -162,7 +162,8 @@ def _poll_once(orchestrator) -> None:
 
     watched = _sort_watched_for_poll(watched)
     symbols = [w["symbol"] for w in watched]
-    prices = get_prices_batch(symbols)
+    gate_only = cfg.get("gate_only", True)
+    prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
     market_svc = orchestrator.market
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
     ema_period = int(cfg.get("ema_period", 9))
@@ -185,6 +186,8 @@ def _poll_once(orchestrator) -> None:
 
         price = float(prices.get(symbol) or 0)
         if price <= 0:
+            if gate_only:
+                log(f"15m sensor skip {symbol}: not on Gate.io", "INFO")
             continue
 
         df = market_svc.fetch_ohlcv(symbol, "15m", ohlcv_limit)
@@ -194,6 +197,14 @@ def _poll_once(orchestrator) -> None:
             vol_avg_period=vol_avg_period,
         )
         if not passes_vol_spike_prefilter(metrics, cfg):
+            continue
+
+        from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
+
+        mcap = resolve_market_cap_usd(symbol, coin)
+        mcap_ok, mcap_reason = passes_market_cap_filter(mcap, cfg)
+        if not mcap_ok:
+            log(f"15m sensor skip {symbol}: {mcap_reason}", "INFO")
             continue
 
         cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))

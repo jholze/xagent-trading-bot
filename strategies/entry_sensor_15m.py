@@ -69,6 +69,8 @@ def evaluate_entry_sensor_15m(
     rsi_4h: float,
     hours_since_reject: float | None = None,
     tech_already_buy: bool = False,
+    market_cap_usd: float | None = None,
+    gate_tradeable: bool | None = None,
     now: datetime | None = None,
 ) -> EntrySensor15mResult:
     """Evaluate 15m sensor; pure function — no I/O or position side effects."""
@@ -80,6 +82,23 @@ def evaluate_entry_sensor_15m(
         return EntrySensor15mResult(triggered=False, shadow_only=shadow_only)
     if not watched or not metrics:
         return EntrySensor15mResult(triggered=False, shadow_only=shadow_only)
+
+    from data.cmc_market_cap import passes_market_cap_filter
+
+    mcap_ok, mcap_reason = passes_market_cap_filter(market_cap_usd, cfg)
+    if not mcap_ok:
+        return EntrySensor15mResult(
+            triggered=False,
+            shadow_only=shadow_only,
+            rationale=mcap_reason,
+        )
+
+    if cfg.get("gate_only", True) and gate_tradeable is False:
+        return EntrySensor15mResult(
+            triggered=False,
+            shadow_only=shadow_only,
+            rationale="not listed on Gate.io",
+        )
 
     cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
     if hours_since_reject is not None and hours_since_reject < cooldown_h:

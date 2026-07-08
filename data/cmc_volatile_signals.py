@@ -7,7 +7,7 @@ from typing import List
 
 import requests
 
-from data.cmc_capabilities import endpoint_available, probe_capabilities, quotes_batch_size
+from data.cmc_capabilities import endpoint_available, filter_source_priority, probe_capabilities, quotes_batch_size
 from data.cmc_community_provider import CMCCommunityParser, CMCCommunitySignal, RawCMCPost
 from data.cmc_trending_provider import CMCTrendingProvider
 from core.config import get_bot_config
@@ -101,13 +101,42 @@ class CMCVolatileSignalAggregator:
     def _fetch_market_trending_posts(self, limit: int) -> List[RawCMCPost]:
         cfg = get_bot_config().cmc_config
         include_losers = bool(cfg.get("listings_include_losers", True))
+        caps = self._capabilities()
+        priority = self._source_priority()
+        filtered = filter_source_priority(priority, caps, api_key=self.api_key)
+        posts = []
+
+        if filtered == ["listings/latest"] or (
+            filtered and filtered[0] == "listings/latest"
+            and not any(endpoint_available(e, caps) for e in ("trending/latest", "trending/gainers-losers"))
+        ):
+            details = self.trending_provider.fetch_listings_momentum_details(limit)
+            for rank, row in enumerate(details, start=1):
+                sym = row["symbol"]
+                pct = float(row["pct_change_24h"])
+                mcap_m = row["market_cap"] / 1_000_000
+                bull = min(95, 55 + int(pct))
+                bear = max(5, 100 - bull)
+                posts.append(RawCMCPost(
+                    post_id=f"cmc_mkt_trend_{sym}_{rank}",
+                    coin=sym,
+                    text=(
+                        f"{sym} +{pct:.1f}% in 24h, mcap ${mcap_m:.1f}M "
+                        f"(CMC listings mcap-band momentum)"
+                    ),
+                    author="CMC Market Trending",
+                    votes_bullish=bull,
+                    votes_bearish=bear,
+                ))
+                posts[-1].trending_rank = rank  # type: ignore[attr-defined]
+            return posts
+
         symbols, source = self.trending_provider.fetch_trending_symbols(
             limit=limit,
-            source_priority=self._source_priority(),
+            source_priority=priority,
             include_losers=include_losers,
-            capabilities=self._capabilities(),
+            capabilities=caps,
         )
-        posts = []
         for rank, sym in enumerate(symbols, start=1):
             posts.append(RawCMCPost(
                 post_id=f"cmc_mkt_trend_{sym}_{rank}",
@@ -216,8 +245,30 @@ class CMCVolatileSignalAggregator:
             for c in watchlist
             if c.get("source") not in ("cmc_trending",)
         ]
-        quote_symbols = list(dict.fromkeys(trending_bases + core_bases))
+        cmc_cfg = get_bot_config().cmc_config
+        if cmc_cfg.get("quotes_include_trending_movers", False):
+            quote_symbols = list(dict.fromkeys(trending_bases + core_bases))
+        else:
+            quote_symbols = list(dict.fromkeys(core_bases))
         for post in self._fetch_quotes(quote_symbols, budgets["quotes"]):
             add_post(post, "quote")
+
+        tw_cfg = get_bot_config().trending_watchlist_config
+        if tw_cfg.get("gate_only", True) and results:
+            from price_fetcher import get_gate_prices_batch, passes_gate_filter
+
+            pairs = [f"{s.coin}/USDT" for s in results if getattr(s, "coin", "")]
+            gate_prices = get_gate_prices_batch(pairs)
+            filtered = []
+            for signal in results:
+                pair = f"{signal.coin}/USDT"
+                gate_ok, _ = passes_gate_filter(
+                    pair,
+                    tw_cfg,
+                    gate_price=gate_prices.get(pair, 0),
+                )
+                if gate_ok:
+                    filtered.append(signal)
+            return filtered
 
         return results

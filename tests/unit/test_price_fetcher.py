@@ -10,7 +10,9 @@ from price_fetcher import (
     _price_cache,
     format_token_amount,
     format_usdt_price,
+    get_gate_prices_batch,
     get_prices_batch,
+    passes_gate_filter,
 )
 
 
@@ -71,6 +73,22 @@ class TestPriceFetcher(unittest.TestCase):
     def test_format_token_amount_micro_cap(self):
         self.assertEqual(format_token_amount(32597.3574), "32,597.3574")
         self.assertIn("330,250,990", format_token_amount(330250990.75))
+
+    def test_get_gate_prices_batch_ignores_coingecko_fallback(self):
+        with patch("price_fetcher._fetch_gate_bulk", return_value={"PEPE/USDT": 0.00001}):
+            prices = get_gate_prices_batch(["PEPE/USDT", "FAKE/USDT"])
+        self.assertAlmostEqual(prices["PEPE/USDT"], 0.00001)
+        self.assertEqual(prices["FAKE/USDT"], 0.0)
+
+    def test_passes_gate_filter_respects_gate_only(self):
+        cfg = {"gate_only": True}
+        ok, reason = passes_gate_filter("FAKE/USDT", cfg, gate_price=0)
+        self.assertFalse(ok)
+        self.assertIn("Gate.io", reason)
+        ok, _ = passes_gate_filter("PEPE/USDT", cfg, gate_price=0.01)
+        self.assertTrue(ok)
+        ok, _ = passes_gate_filter("FAKE/USDT", {"gate_only": False}, gate_price=0)
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":

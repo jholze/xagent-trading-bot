@@ -325,7 +325,10 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print("=" * 90)
 
             try:
+                from data_manager import prune_non_gate_watchlist_sources
                 from services.dry_run_watchlist import DryRunWatchlistSync
+
+                prune_non_gate_watchlist_sources(bot_config.raw)
                 DryRunWatchlistSync(bot_config).sync_if_needed()
             except Exception as e:
                 log(f"Dry-run watchlist sync failed: {e}", "WARNING")

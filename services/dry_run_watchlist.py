@@ -18,7 +18,7 @@ from data_manager import (
     trending_watchlist_live_enabled,
 )
 from logger import log
-from price_fetcher import get_prices_batch
+from price_fetcher import get_gate_prices_batch
 
 
 class TrendingWatchlistSync:
@@ -85,7 +85,7 @@ class TrendingWatchlistSync:
 
         if tw_cfg.get("gate_only", True) and candidates:
             syms = [sym for sym, _ in candidates]
-            prices = get_prices_batch(syms)
+            prices = get_gate_prices_batch(syms)
             candidates = [(sym, rank) for sym, rank in candidates if float(prices.get(sym, 0) or 0) > 0]
 
         volatile_tf = str(

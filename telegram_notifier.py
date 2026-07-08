@@ -219,7 +219,11 @@ def send_cmc_cycle_digest(signals: list):
     if not cfg.get("enabled") or not cfg.get("notify_cmc_digest"):
         return False
     min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
-    filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
+    filtered = [
+        s for s in signals
+        if getattr(s, "confidence", 0) >= min_conf
+        and getattr(s, "signal_tier", "") != "quote"
+    ]
     if not filtered:
         return False
     max_coins = int(cfg.get("cmc_digest_max_coins", 5))
@@ -336,7 +340,11 @@ def send_merged_social_digest(
 
     if cfg.get("notify_cmc_digest"):
         min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
-        cmc_filtered = [s for s in cmc_signals if getattr(s, "confidence", 0) >= min_conf]
+        cmc_filtered = [
+            s for s in cmc_signals
+            if getattr(s, "confidence", 0) >= min_conf
+            and getattr(s, "signal_tier", "") != "quote"
+        ]
         if cmc_filtered:
             max_coins = int(cfg.get("cmc_digest_max_coins", 5))
             lines = ["<b>📊 CMC</b>"]

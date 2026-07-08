@@ -27,8 +27,10 @@ def _ensure_trending_watchlist() -> None:
     """Refresh CMC trending overlay before social fetch (idempotent, respects refresh_hours)."""
     try:
         from core.config import get_bot_config
+        from data_manager import prune_non_gate_watchlist_sources
         from services.dry_run_watchlist import TrendingWatchlistSync
 
+        prune_non_gate_watchlist_sources()
         TrendingWatchlistSync(get_bot_config()).sync_if_needed()
     except Exception as e:
         log(f"Trending watchlist sync failed: {e}", "WARNING")
