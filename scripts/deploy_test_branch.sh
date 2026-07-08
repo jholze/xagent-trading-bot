@@ -59,14 +59,8 @@ railway variable set "GIT_BRANCH=${BRANCH}" -s "${SERVICE_NAME}" -e "${ENV_NAME}
 railway variable set "BOT_STACK=test" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 
 # Push triggers GitHub webhook deploy (injects RAILWAY_GIT_COMMIT_SHA / RAILWAY_GIT_BRANCH).
-# Redeploy only if webhook auto-deploy is disabled (RAILWAY_PUSH_ONLY=1 skips redeploy).
-if [[ "${RAILWAY_PUSH_ONLY:-}" != "1" ]]; then
-  echo "Triggering deploy from linked git source @ ${COMMIT}..."
-  railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes \
-    || echo "WARN: redeploy failed — GitHub push may still trigger a build; check Railway dashboard"
-else
-  echo "RAILWAY_PUSH_ONLY=1 — waiting for GitHub webhook deploy only"
-fi
+# Do NOT use redeploy --from-source here — it has pulled the wrong branch before.
+echo "Waiting for GitHub webhook deploy (no railway up / no redeploy --from-source)..."
 
 echo "Waiting for health (build may take several minutes)..."
 for i in $(seq 1 45); do
