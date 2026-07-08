@@ -207,7 +207,7 @@ set_var "GIT_COMMIT=${DEPLOY_COMMIT}"
 set_var "GIT_BRANCH=${BRANCH}"
 
 echo "Deploy from git: bash scripts/deploy_test_branch.sh"
-echo "  (push → GitHub Actions → Railway; no redeploy --from-source)"
+echo "  (push → Railway GitHub webhook; no RAILWAY_TOKEN, no redeploy --from-source)"
 
 echo ""
 echo "=== Test stack ready ==="

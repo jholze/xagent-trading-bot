@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Trigger xagent-test deploy for a specific git commit (Railway GraphQL).
-# Used by .github/workflows/deploy-xagent-test.yml after git push.
+# Optional: trigger xagent-test deploy via Railway GraphQL (Account Token required).
+# Normal flow uses Railway GitHub integration + scripts/deploy_test_branch.sh instead.
 set -euo pipefail
 
 RAILWAY_TOKEN="${RAILWAY_TOKEN:?RAILWAY_TOKEN required}"

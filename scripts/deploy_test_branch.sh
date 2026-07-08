@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Deploy xagent-test: git push → GitHub Actions → Railway (commit-pinned).
-# No railway up, no redeploy --from-source (wrong branch risk).
+# Deploy xagent-test: git push → Railway GitHub integration (branch trigger).
+# Requires Railway service source: repo + branch (Dashboard or setup_railway_test_stack.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_NAME="${RAILWAY_TEST_ENV:-test}"
 SERVICE_NAME="${RAILWAY_TEST_SERVICE:-xagent-test}"
 BRANCH="${RAILWAY_TEST_BRANCH:-feature/entry-guard-15m}"
-REPO="${RAILWAY_TEST_REPO:-jholze/xagent-trading-bot}"
 HEALTH_URL="${RAILWAY_TEST_HEALTH_URL:-https://xagent-test-test.up.railway.app/health}"
 HEALTH_DETAIL_URL="${RAILWAY_TEST_HEALTH_DETAIL_URL:-https://xagent-test-test.up.railway.app/health/detail}"
-WORKFLOW_FILE=".github/workflows/deploy-xagent-test.yml"
 
 if ! command -v railway >/dev/null 2>&1; then
   echo "ERROR: railway CLI missing"
@@ -36,18 +34,13 @@ if [[ -n "$DIRTY" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$WORKFLOW_FILE" ]]; then
-  echo "ERROR: missing ${WORKFLOW_FILE} — GitHub Actions deploy workflow required"
-  exit 1
-fi
-
 echo "=== Deploy test via git push ==="
 echo "Branch:   ${BRANCH}"
 echo "Service:  ${SERVICE_NAME} (${ENV_NAME})"
-echo "Flow:     push → GitHub Actions → Railway serviceInstanceDeployV2"
+echo "Flow:     push → Railway GitHub webhook (no RAILWAY_TOKEN / no GitHub Actions)"
 echo ""
-echo "Note: Railway GitHub webhook trigger is not configured (repoTriggers empty)."
-echo "      Deploy is handled by ${WORKFLOW_FILE}"
+echo "Railway must have repo + branch connected on service ${SERVICE_NAME}."
+echo "  Dashboard: Service → Settings → Source → GitHub repo + branch"
 
 railway environment link "${ENV_NAME}" >/dev/null 2>&1 || railway environment link "${ENV_NAME}"
 railway service link "${SERVICE_NAME}" >/dev/null 2>&1 || railway service link "${SERVICE_NAME}"
@@ -60,10 +53,16 @@ echo "Pushing ${BRANCH} @ ${SHORT} to origin..."
 git push origin "${BRANCH}"
 
 echo ""
-echo "Waiting for GitHub Actions + Railway build (up to ~10 min)..."
+echo "Syncing backup build vars (GIT_COMMIT / GIT_BRANCH)..."
+env -u RAILWAY_TOKEN railway variables set \
+  "GIT_COMMIT=${SHORT}" \
+  "GIT_BRANCH=${BRANCH}" \
+  --skip-deploys 2>/dev/null || true
+
+echo ""
+echo "Waiting for Railway build (up to ~10 min)..."
 DEPLOY_SEEN=""
 for i in $(seq 1 60); do
-  # Poll Railway deployments for our commit
   if DEPLOY_JSON="$(railway deployment list --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --json 2>/dev/null)"; then
     DEPLOY_STATUS="$(echo "$DEPLOY_JSON" | python3 -c "
 import json,sys
@@ -84,7 +83,7 @@ for d in items[:8]:
       fi
       if [[ "$DEPLOY_STATUS" == "FAILED" || "$DEPLOY_STATUS" == "CRASHED" ]]; then
         echo "ERROR: deployment ${DEPLOY_STATUS}"
-        echo "  gh run list --branch ${BRANCH} --workflow deploy-xagent-test.yml"
+        echo "  railway logs --service ${SERVICE_NAME} --environment ${ENV_NAME}"
         exit 1
       fi
     else
@@ -92,7 +91,6 @@ for d in items[:8]:
     fi
   fi
 
-  # Early success if health already shows our commit
   if command -v jq >/dev/null 2>&1 && curl -sf -m 10 "${HEALTH_DETAIL_URL}" >/dev/null 2>&1; then
     LIVE="$(curl -sf -m 10 "${HEALTH_DETAIL_URL}" 2>/dev/null | jq -r '.build.commit // empty' || true)"
     if [[ "$LIVE" == "$SHORT" ]]; then
@@ -110,8 +108,8 @@ done
 if [[ -z "$DEPLOY_SEEN" ]]; then
   echo ""
   echo "ERROR: no Railway deployment started within 10 minutes."
-  echo "  Check GitHub Actions: gh run list --branch ${BRANCH} --workflow deploy-xagent-test.yml"
-  echo "  Ensure secret RAILWAY_TOKEN is set on ${REPO}"
+  echo "  Check Railway Dashboard → ${SERVICE_NAME} → Deployments"
+  echo "  Ensure GitHub source is connected and branch trigger is ${BRANCH}"
   exit 1
 fi
 
