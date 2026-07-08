@@ -143,12 +143,37 @@ def health_detail():
         signal_events = recent_events(10)
     except Exception:
         signal_events = []
+    try:
+        from core.runtime_identity import get_runtime_identity
+
+        identity = get_runtime_identity()
+    except Exception:
+        identity = {}
+    try:
+        from bus.eval_queue import eval_queue_enabled, peek_eval_queue, queue_depth
+        from services.eval_queue_runtime import worker_stats
+
+        eval_queue = {
+            "enabled": eval_queue_enabled(),
+            "depth": queue_depth(),
+            "worker": worker_stats(),
+            "peek": peek_eval_queue(5) if eval_queue_enabled() else [],
+        }
+    except Exception:
+        eval_queue = {}
     return jsonify({
         "status": "OK",
         "redis": cache.available(),
         "price_cache_last_refresh": meta,
         "ohlcv_cache": ohlcv_stats,
         "signal_webhook_recent": signal_events,
+        "eval_queue": eval_queue,
+        "build": {
+            "commit": identity.get("commit"),
+            "branch": identity.get("branch"),
+            "stack": identity.get("stack"),
+            "service": identity.get("service"),
+        },
     }), 200
 
 
@@ -431,35 +456,55 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             scan_coins = order_watchlist_positions_first(active_coins, open_positions)
             price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
+            from bus.eval_queue import eval_queue_enabled
+
+            use_eval_queue = eval_queue_enabled(bot_config.raw)
+
             if orchestrator:
                 try:
                     orchestrator.run_portfolio_dca_pass(scan_coins, price_map, quiet=use_dashboard)
                 except Exception as e:
                     log(f"Portfolio DCA pass failed: {e}", "WARNING")
 
-            for coin in scan_coins:
-                symbol = coin["symbol"]
-                if not use_dashboard:
-                    print(f"→ {symbol}")
+            if use_eval_queue and orchestrator:
+                from services.eval_queue_runtime import get_recent_coin_results, seed_meta_producers
 
-                price = float(price_map.get(symbol, 0) or 0)
-                if orchestrator:
-                    result = orchestrator.process_coin(
-                        coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
-                    )
-                    coin_results.append(result)
-                else:
-                    from strategies.core_strategy import check_signal
-                    check_signal(coin, price, x_signals, notify_callback=send_signal_message)
+                seed_meta_producers(
+                    watchlist=active_coins,
+                    open_positions=open_positions,
+                    x_signals=x_signals,
+                    cmc_signals=cmc_signals,
+                    lc_signals=lc_signals,
+                    config_raw=bot_config.raw,
+                )
+                coin_results = get_recent_coin_results(cycle_started)
                 if not use_dashboard:
-                    print()
+                    print(f"Redis eval queue aktiv — {len(coin_results)} Ergebnisse im Zyklus")
+            else:
+                for coin in scan_coins:
+                    symbol = coin["symbol"]
+                    if not use_dashboard:
+                        print(f"→ {symbol}")
+
+                    price = float(price_map.get(symbol, 0) or 0)
+                    if orchestrator:
+                        result = orchestrator.process_coin(
+                            coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
+                        )
+                        coin_results.append(result)
+                    else:
+                        from strategies.core_strategy import check_signal
+                        check_signal(coin, price, x_signals, notify_callback=send_signal_message)
+                    if not use_dashboard:
+                        print()
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
             if cycle_elapsed > 30:
+                mode_label = "eval_queue" if use_eval_queue else f"{len(scan_coins)} coins"
                 log(
                     f"Cycle completed in {cycle_elapsed}s "
-                    f"({len(scan_coins)} coins, {len(open_positions)} positions first)",
+                    f"({mode_label}, {len(open_positions)} positions first)",
                     "INFO",
                 )
                 try:
@@ -594,6 +639,12 @@ if __name__ == "__main__":
         log(f"Telegram command menu registration skipped: {e}", "WARNING")
 
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
+    try:
+        from services.architecture_runtime import register_eval_orchestrator
+
+        register_eval_orchestrator(orchestrator)
+    except Exception as e:
+        log(f"Eval queue worker register skipped: {e}", "WARNING")
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
     try:
         from services.background_runtime import register_pipeline

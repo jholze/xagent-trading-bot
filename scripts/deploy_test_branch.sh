@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy xagent-test from a git branch (not local railway up upload).
-# Safe: only touches Railway environment "test" / service "xagent-test".
+# Deploy xagent-test via git push (GitHub → Railway). No railway up.
+# /mode uses RAILWAY_GIT_* from the webhook build; GIT_COMMIT/GIT_BRANCH are backup.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,6 +9,7 @@ SERVICE_NAME="${RAILWAY_TEST_SERVICE:-xagent-test}"
 BRANCH="${RAILWAY_TEST_BRANCH:-feature/entry-guard-15m}"
 REPO="${RAILWAY_TEST_REPO:-jholze/xagent-trading-bot}"
 HEALTH_URL="${RAILWAY_TEST_HEALTH_URL:-https://xagent-test-test.up.railway.app/health}"
+HEALTH_DETAIL_URL="${RAILWAY_TEST_HEALTH_DETAIL_URL:-https://xagent-test-test.up.railway.app/health/detail}"
 
 if ! command -v railway >/dev/null 2>&1; then
   echo "ERROR: railway CLI missing"
@@ -33,34 +34,56 @@ if [[ -n "$DIRTY" ]]; then
   exit 1
 fi
 
-echo "=== Deploy test from git ==="
+echo "=== Deploy test from git push ==="
 echo "Branch:  ${BRANCH}"
 echo "Service: ${SERVICE_NAME} (${ENV_NAME})"
+echo "Repo:    ${REPO} (source must be linked to this branch)"
 
 railway environment link "${ENV_NAME}" >/dev/null 2>&1 || railway environment link "${ENV_NAME}"
 railway service link "${SERVICE_NAME}" >/dev/null 2>&1 || railway service link "${SERVICE_NAME}"
 
 COMMIT="$(git rev-parse --short HEAD)"
+
+echo "Ensuring GitHub source is linked to ${BRANCH}..."
+railway service source connect \
+  --repo "${REPO}" \
+  --branch "${BRANCH}" \
+  --service "${SERVICE_NAME}" 2>/dev/null || true
+
 echo "Pushing ${BRANCH} @ ${COMMIT} to origin..."
 git push origin "${BRANCH}"
 
-echo "Pinning deploy revision on Railway..."
+echo "Syncing backup build vars (runtime fallback for /mode)..."
 railway variable set "GIT_COMMIT=${COMMIT}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 railway variable set "GIT_BRANCH=${BRANCH}" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 railway variable set "BOT_STACK=test" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --skip-deploys
 
-# Upload exact git HEAD (clean tree). redeploy --from-source was still building main.
-echo "Deploying commit ${COMMIT} (railway up = pinned branch snapshot)..."
-railway up --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --detach
+# Push triggers GitHub webhook deploy (injects RAILWAY_GIT_COMMIT_SHA / RAILWAY_GIT_BRANCH).
+# Redeploy only if webhook auto-deploy is disabled (RAILWAY_PUSH_ONLY=1 skips redeploy).
+if [[ "${RAILWAY_PUSH_ONLY:-}" != "1" ]]; then
+  echo "Triggering deploy from linked git source @ ${COMMIT}..."
+  railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes --detach \
+    || echo "WARN: redeploy failed — GitHub push may still trigger a build; check Railway dashboard"
+else
+  echo "RAILWAY_PUSH_ONLY=1 — waiting for GitHub webhook deploy only"
+fi
 
-echo "Waiting for health..."
-for i in $(seq 1 30); do
+echo "Waiting for health (build may take several minutes)..."
+for i in $(seq 1 45); do
   if curl -sf -m 10 "${HEALTH_URL}" >/dev/null 2>&1; then
+    BUILD_COMMIT=""
+    if command -v jq >/dev/null 2>&1; then
+      BUILD_COMMIT="$(curl -sf -m 10 "${HEALTH_DETAIL_URL}" 2>/dev/null | jq -r '.build.commit // empty' || true)"
+    fi
     echo "Health OK: ${HEALTH_URL}"
-    echo ""
-    echo "Verify in Telegram: /mode"
-    echo "  Expect: commit from git, branch ${BRANCH}, no * (dirty)"
-    exit 0
+    if [[ -n "${BUILD_COMMIT}" && "${BUILD_COMMIT}" != "${COMMIT}" && "${BUILD_COMMIT}" != "unknown" ]]; then
+      echo "WARN: /health/detail build.commit=${BUILD_COMMIT} != pushed ${COMMIT} — deploy may still be rolling"
+    else
+      echo ""
+      echo "Verify in Telegram: /mode"
+      echo "  Expect: ${COMMIT} · ${BRANCH} · test (no * dirty)"
+      exit 0
+    fi
   fi
   sleep 10
 done

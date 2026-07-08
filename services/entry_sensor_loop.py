@@ -202,6 +202,13 @@ def _poll_once(orchestrator) -> None:
             continue
 
         if mode == "active":
+            from bus.eval_queue import eval_queue_enabled
+            from services.eval_queue_runtime import enqueue_entry_15m_eval
+
+            tf = str(coin.get("timeframe") or "4h")
+            if eval_queue_enabled():
+                if enqueue_entry_15m_eval(symbol, tf):
+                    continue
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
             _shadow_log(symbol, coin, price, metrics, cfg, market_svc)

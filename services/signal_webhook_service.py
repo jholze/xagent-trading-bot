@@ -118,9 +118,22 @@ def process_signal_webhook(
         webhook_event_type=signal.event_type,
     )
 
+    eval_enqueued = False
+    try:
+        from bus.eval_queue import eval_queue_enabled
+        from services.eval_queue_runtime import enqueue_webhook_eval
+
+        if eval_queue_enabled(config_raw):
+            eval_enqueued = enqueue_webhook_eval(
+                signal.symbol, timeframe, config_raw=config_raw,
+            )
+    except Exception as e:
+        log(f"signal_webhook eval enqueue failed {signal.symbol}: {e}", "WARNING")
+
     log(
         f"signal_webhook accepted {signal.source} {signal.symbol} "
-        f"{signal.event_type} strength={signal.strength:.2f}",
+        f"{signal.event_type} strength={signal.strength:.2f}"
+        f"{f' eval_queued={eval_enqueued}' if eval_enqueued else ''}",
         "INFO",
     )
 
