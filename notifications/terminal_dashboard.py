@@ -88,20 +88,24 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         history=history,
         trading_mode=mode,
     )
-    total_pnl = realized + unrealized
+    total_value = balance + positions_market_value
+    from core.portfolio_baseline import split_nav_pnl_for_display
+
+    pnl = split_nav_pnl_for_display(total_value, baseline, unrealized)
 
     return {
         "history": history,
         "balance": balance,
         "balance_label": balance_label,
-        "realized": realized,
-        "unrealized": unrealized,
+        "realized": pnl["realized"],
+        "realized_ledger": realized,
+        "unrealized": pnl["unrealized"],
         "positions_market_value": positions_market_value,
-        "total_value": balance + positions_market_value,
+        "total_value": total_value,
         "initial_capital": baseline,
         "ledger_scope": scope,
-        "total_pnl": total_pnl,
-        "pnl_pct": (total_pnl / baseline * 100) if baseline > 0 else 0.0,
+        "total_pnl": pnl["total_pnl"],
+        "pnl_pct": pnl["pnl_pct"],
     }
 
 

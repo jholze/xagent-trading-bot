@@ -34,3 +34,26 @@ def initial_capital(
     if paper:
         return float(paper)
     return float(cfg.get("initial_capital_usdt", 5000))
+
+
+def nav_total_pnl(total_value: float, initial_capital: float) -> float:
+    """Portfolio PnL from NAV: cash + marked positions minus starting capital."""
+    return float(total_value) - float(initial_capital)
+
+
+def split_nav_pnl_for_display(
+    total_value: float,
+    initial_capital: float,
+    unrealized: float,
+) -> dict[str, float]:
+    """Split NAV PnL for UI; realized is residual so components sum to total_pnl."""
+    unreal = float(unrealized or 0)
+    total_pnl = nav_total_pnl(total_value, initial_capital)
+    realized = total_pnl - unreal
+    pct = (total_pnl / float(initial_capital) * 100.0) if initial_capital > 0 else 0.0
+    return {
+        "total_pnl": total_pnl,
+        "unrealized": unreal,
+        "realized": realized,
+        "pnl_pct": pct,
+    }
