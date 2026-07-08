@@ -224,7 +224,6 @@ def filter_sell_candidates(
         return [], []
 
     cfg = cfg or entry_guard_config()
-    shadow = str(cfg.get("mode", "live")).strip().lower() == "shadow"
     kept: list[tuple] = []
     blocked: list[str] = []
     for action, priority, source in candidates:
@@ -238,9 +237,8 @@ def filter_sell_candidates(
             metrics_15m=metrics_15m,
             cfg=cfg,
         )
-        if allowed or shadow:
+        if allowed:
             kept.append((action, priority, source))
-        if not allowed and reason:
-            tag = f"EntryGuard->{source}: {reason}"
-            blocked.append(f"{tag} (shadow)" if shadow else tag)
+        elif reason:
+            blocked.append(f"EntryGuard->{source}: {reason}")
     return kept, blocked
