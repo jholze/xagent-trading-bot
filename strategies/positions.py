@@ -194,6 +194,15 @@ def _recompute_open_count() -> None:
     _open_positions_count = sum(1 for p in positions.values() if is_open_position(p))
 
 
+_DCA_ORDER_PRIORITY_FIELDS = (
+    "dca_rounds",
+    "dca_recovery_rounds",
+    "last_dca_at",
+    "last_dca_recovery_at",
+    "dca_total_usdt",
+)
+
+
 def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) -> dict:
     """Pure derive: amounts from orders SOT; merge cache-only fields (no orphan cache lots)."""
     merged = {}
@@ -202,8 +211,21 @@ def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) ->
         pos = dict(snap)
         cached = cache_positions.get(key) or {}
         for field in _CACHE_FIELDS:
+            if field in _DCA_ORDER_PRIORITY_FIELDS:
+                continue
             if field in cached and cached[field] is not None:
                 pos[field] = cached[field]
+        for field in _DCA_ORDER_PRIORITY_FIELDS:
+            order_val = snap.get(field)
+            cached_val = cached.get(field)
+            if field in ("dca_rounds", "dca_recovery_rounds"):
+                best = max(int(order_val or 0), int(cached_val or 0))
+                if best > 0 or cached_val is not None or order_val is not None:
+                    pos[field] = best
+            elif order_val is not None:
+                pos[field] = order_val
+            elif cached_val is not None:
+                pos[field] = cached_val
         merged[key] = pos
     return merged
 
@@ -447,6 +469,15 @@ def mark_profit_max_lifetime_done(symbol: str, timeframe: str) -> None:
     flush_positions()
 
 
+def _is_dca_buy_signal(signal: str) -> bool:
+    return (signal or "").upper() == "BUY_DCA"
+
+
+def _is_addon_buy(old_amount, position: dict) -> bool:
+    """True when adding to an existing open lot (must preserve DCA / ladder state)."""
+    return float(old_amount) > 0
+
+
 def sell_fraction_for_signal(
     signal: str,
     symbol: str | None = None,
@@ -511,7 +542,7 @@ def update_position(
             pos["amount"] = new_amount
             pos["last_buy_price"] = current_price
             pos["last_trade_at"] = datetime.now().isoformat()
-            if signal == "BUY_DCA" and old_amount > 0:
+            if _is_dca_buy_signal(signal) and _is_addon_buy(old_amount, pos):
                 pos["last_action"] = "BUY_DCA"
                 pos["last_trade_type"] = "BUY_DCA"
                 usdt_added = current_price * float(amount_traded)
@@ -519,6 +550,29 @@ def update_position(
                 pos["last_dca_at"] = datetime.now().isoformat()
                 pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
+                if not int(pos.get("dca_max_rounds", 0) or 0):
+                    from strategies.dca import dca_config as _dca_cfg
+
+                    params = None
+                    try:
+                        from strategies.registry import resolve_strategy_params
+
+                        params = resolve_strategy_params(
+                            {"symbol": symbol, "timeframe": timeframe},
+                            has_position=True,
+                            frozen_tier=pos.get("strategy_tier"),
+                        )
+                    except Exception:
+                        params = None
+                    cfg = _dca_cfg(params)
+                    pos["dca_max_rounds"] = int(cfg.get("max_rounds", 3))
+            elif _is_addon_buy(old_amount, pos):
+                pos["last_action"] = "BUY"
+                pos["last_trade_type"] = "BUY"
+                if entry_source and not pos.get("entry_source"):
+                    pos["entry_source"] = entry_source
+                if entry_15m_vol_ratio is not None:
+                    pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
             else:
                 pos["peak_amount"] = float(new_amount)
                 pos["sold_percent"] = 0.0
@@ -546,8 +600,7 @@ def update_position(
                     pos["entry_at"] = pos["first_buy_at"]
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
-                if old_amount <= 0:
-                    pos["strategy_tier"] = None
+                pos["strategy_tier"] = None
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
             strategy_params = None

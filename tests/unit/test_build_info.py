@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -38,6 +39,26 @@ class TestBuildInfo(unittest.TestCase):
             info = get_build_info()
         self.assertEqual(info["commit"], "d0beb8f")
         self.assertEqual(info["branch"], "main")
+
+    def test_reads_baked_meta_without_env_or_git(self):
+        meta_path = Path(__file__).resolve().parents[2] / "core" / "build_meta.json"
+        backup = meta_path.read_text(encoding="utf-8") if meta_path.exists() else None
+        try:
+            meta_path.write_text(
+                '{"commit": "deadbeef", "branch": "feature/test"}\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"GIT_COMMIT": "", "GIT_BRANCH": ""}, clear=False), patch(
+                "core.build_info._git", return_value=""
+            ):
+                info = get_build_info()
+            self.assertEqual(info["commit"], "deadbeef")
+            self.assertEqual(info["branch"], "feature/test")
+        finally:
+            if backup is None:
+                meta_path.unlink(missing_ok=True)
+            else:
+                meta_path.write_text(backup, encoding="utf-8")
 
 
 if __name__ == "__main__":

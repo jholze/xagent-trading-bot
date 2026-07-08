@@ -22,6 +22,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# core/build_meta.json is written before deploy (scripts/write_build_meta.py).
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 

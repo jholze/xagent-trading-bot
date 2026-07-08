@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== X-Agent Railway start ==="
+python3 scripts/write_build_meta.py 2>/dev/null || true
 python3 - <<'PY' 2>/dev/null || true
 import sys
 sys.path.insert(0, ".")

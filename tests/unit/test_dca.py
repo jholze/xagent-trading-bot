@@ -247,6 +247,53 @@ class TestDCAModule(unittest.TestCase):
         self.assertIsNotNone(pos["last_dca_at"])
         self.assertGreater(float(pos["amount"]), 1000)
 
+    def test_entry_sensor_addon_preserves_dca_rounds(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
+        update_position(self.symbol, self.tf, "BUY_DCA", 0.9, 50)
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["dca_rounds"], 1)
+        last_dca = pos["last_dca_at"]
+        peak = float(pos["peak_amount"])
+
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.1,
+            30,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["dca_rounds"], 1)
+        self.assertEqual(pos["last_dca_at"], last_dca)
+        self.assertAlmostEqual(float(pos["peak_amount"]), peak)
+        self.assertEqual(pos["entry_source"], "entry_sensor_15m")
+        self.assertIsNone(pos.get("entry_at"))
+
+    def test_entry_sensor_addon_does_not_retag_entry_at(self):
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.0,
+            1000,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        entry_at = pos["entry_at"]
+        self.assertIsNotNone(entry_at)
+
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.1,
+            50,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["entry_at"], entry_at)
+
 
 class TestDCAMarketService(unittest.TestCase):
     def test_btc_underperformance_ratio(self):
