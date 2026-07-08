@@ -62,7 +62,7 @@ railway variable set "BOT_STACK=test" -s "${SERVICE_NAME}" -e "${ENV_NAME}" --sk
 # Redeploy only if webhook auto-deploy is disabled (RAILWAY_PUSH_ONLY=1 skips redeploy).
 if [[ "${RAILWAY_PUSH_ONLY:-}" != "1" ]]; then
   echo "Triggering deploy from linked git source @ ${COMMIT}..."
-  railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes --detach \
+  railway redeploy --service "${SERVICE_NAME}" --environment "${ENV_NAME}" --from-source --yes \
     || echo "WARN: redeploy failed — GitHub push may still trigger a build; check Railway dashboard"
 else
   echo "RAILWAY_PUSH_ONLY=1 — waiting for GitHub webhook deploy only"
