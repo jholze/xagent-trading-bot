@@ -58,13 +58,30 @@ class TestSellRotationPolicy(unittest.TestCase):
     def test_allows_eviction_when_plus(self):
         self.assertTrue(can_rotation_evict(self._market(1.0, 1.05), {}, self.cfg))
 
-    def test_trail_exclusive_blocks_bb_below_arm(self):
+    def test_trail_exclusive_blocks_bb_when_trail_armed(self):
+        market = self._market(1.0, 1.20)
+        pos = {"recent_high": 1.20}
+        cands = [(SELL_PARTIAL_30, 3, "bb_upper")]
+        params = {
+            "trailing_take_profit": {
+                "enabled": True,
+                "mode": "live",
+                "arm_gain_pct": 15,
+            },
+        }
+        kept, blocked = filter_trail_exclusive(
+            cands, market, pos, self.cfg, strategy_params=params,
+        )
+        self.assertEqual(kept, [])
+        self.assertEqual(blocked, ["bb_upper"])
+
+    def test_trail_exclusive_passes_without_trail_config(self):
         market = self._market(1.0, 1.05)
         pos = {}
         cands = [(SELL_PARTIAL_30, 3, "bb_upper")]
         kept, blocked = filter_trail_exclusive(cands, market, pos, self.cfg)
-        self.assertEqual(kept, [])
-        self.assertEqual(blocked, ["bb_upper"])
+        self.assertEqual(kept, cands)
+        self.assertEqual(blocked, [])
 
     def test_ladder_terminal_on_completed_ladder(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)

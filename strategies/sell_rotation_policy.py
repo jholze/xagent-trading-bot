@@ -22,6 +22,9 @@ POLICY_DEFAULTS = {
     "trail_exclusive": True,
     "evict_min_gain_pct": 0.0,
     "arm_gain_pct": 12.0,
+    "pre_arm_ta_allowed": True,
+    "pre_arm_min_gain_pct": 10.0,
+    "pre_arm_max_gain_pct": 15.0,
     "tail_idle_hours": 24.0,
     "tail_exempt_sold_pct": 0.50,
     "tail_exempt_notional_usdt": 800.0,
@@ -192,13 +195,52 @@ def evaluate_tail_idle_close(
     )
 
 
+def _trail_tp_config(strategy_params: dict | None) -> dict:
+    return dict((strategy_params or {}).get("trailing_take_profit") or {})
+
+
+def _trail_tp_live_enabled(strategy_params: dict | None) -> bool:
+    trail_cfg = _trail_tp_config(strategy_params)
+    if not trail_cfg.get("enabled", False):
+        return False
+    mode = str(trail_cfg.get("mode", "live")).strip().lower()
+    return mode not in ("off", "disabled", "shadow")
+
+
+def _peak_gain_pct(market: MarketContext, position: dict) -> float:
+    entry = market.average_entry
+    if entry <= 0:
+        return 0.0
+    recent_high = float(position.get("recent_high") or 0) or market.current_price
+    return (recent_high / entry - 1) * 100
+
+
+def trail_replacement_armed(
+    strategy_params: dict | None,
+    market: MarketContext,
+    position: dict,
+) -> bool:
+    """True when live trailing_take_profit is configured and peak gain reached arm threshold."""
+    if not _trail_tp_live_enabled(strategy_params):
+        return False
+    arm_gain = float(_trail_tp_config(strategy_params).get("arm_gain_pct", 15.0))
+    return _peak_gain_pct(market, position) >= arm_gain
+
+
 def filter_trail_exclusive(
     candidates: list[tuple],
     market: MarketContext,
     position: dict,
     cfg: dict,
+    strategy_params: dict | None = None,
 ) -> tuple[list[tuple], list[str]]:
     if not cfg.get("trail_exclusive", True):
+        return candidates, []
+
+    if not _trail_tp_live_enabled(strategy_params):
+        return candidates, []
+
+    if not trail_replacement_armed(strategy_params, market, position):
         return candidates, []
 
     gain = rotation_gain_pct(market)
@@ -233,7 +275,9 @@ def apply_rotation_sell_filters(
     audit = SellPolicyAudit()
     audit.tail_exempt = is_tail_position(position, cfg)
 
-    filtered, blocked = filter_trail_exclusive(candidates, market, position, cfg)
+    filtered, blocked = filter_trail_exclusive(
+        candidates, market, position, cfg, strategy_params=strategy_params,
+    )
     audit.trail_exclusive_blocked = blocked
 
     for extra in (
