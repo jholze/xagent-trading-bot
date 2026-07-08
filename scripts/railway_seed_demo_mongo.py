@@ -42,6 +42,12 @@ def main() -> int:
     if order_count >= MIN_ORDERS:
         print(f"[seed] demo orders={order_count} — no seed needed")
         return 0
+    if order_count > 0:
+        print(
+            f"[seed] demo orders={order_count} — keeping existing ledger "
+            f"(fresh_start only when empty)"
+        )
+        return 0
 
     orders = _load_seed("orders.json")
     history = _load_seed("history.json")
