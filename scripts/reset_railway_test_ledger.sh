@@ -30,7 +30,7 @@ if [[ "$YES" == "1" ]]; then
 fi
 
 echo "Resetting Railway test ledger to \$${BALANCE}..."
-env -u MONGODB_URI \
+env -u MONGODB_URI -u PYTEST_RUNNING -u PYTEST_CURRENT_TEST \
   MONGO_URL="$MONGO_PUBLIC" \
   MONGODB_DB="${MONGODB_DB:-xagent_test}" \
   DEMO_MODE=1 \

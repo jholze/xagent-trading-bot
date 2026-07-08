@@ -35,14 +35,16 @@ def fresh_bundle(balance_usdt: float) -> dict:
 
 def reset_demo_ledger(balance_usdt: float) -> dict:
     _ensure_demo_mongo()
-    from data_manager import get_config, _mongo_ledger_store
+    from data_manager import get_config
     from storage.mongo_client import assert_safe_demo_mongo_db
+    from storage.mongo_ledger import get_ledger_store
     from services.ledger_sync import sync_positions_on_startup
     from strategies.positions import bootstrap_positions, flush_positions
 
     db = assert_safe_demo_mongo_db()
     payload = fresh_bundle(balance_usdt)
-    store = _mongo_ledger_store(get_config())
+    # Never use pytest DB (xagent_pytest) for operator resets.
+    store = get_ledger_store(test=False, config=get_config())
     store.save_orders(payload["orders"], SCOPE)
     store.save_trade_history(payload["trade_history"], SCOPE)
     store.save_positions(payload["positions"], SCOPE)
@@ -76,10 +78,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.yes:
-        from data_manager import get_config, _mongo_ledger_store
+        from data_manager import get_config
+        from storage.mongo_ledger import get_ledger_store
 
         _ensure_demo_mongo()
-        store = _mongo_ledger_store(get_config())
+        store = get_ledger_store(test=False, config=get_config())
         orders = len((store.load_orders(SCOPE).get("orders") or []))
         positions = len((store.load_positions(SCOPE).get("positions") or {}))
         cash = store.load_trade_history(SCOPE).get("virtual_balance")

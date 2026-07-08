@@ -35,7 +35,8 @@ def main() -> int:
         print("[seed] Mongo ping failed — skipping")
         return 1
 
-    store = MongoLedgerStore(test=resolve_database_name() == "xagent_test")
+    # test=True targets xagent_pytest — never use for Railway xagent_test ledger.
+    store = MongoLedgerStore(test=False)
     existing = store.load_orders(SCOPE)
     order_count = len(existing.get("orders", []))
     if order_count >= MIN_ORDERS:
