@@ -53,13 +53,6 @@ echo "Pushing ${BRANCH} @ ${SHORT} to origin..."
 git push origin "${BRANCH}"
 
 echo ""
-echo "Syncing backup build vars (GIT_COMMIT / GIT_BRANCH)..."
-env -u RAILWAY_TOKEN railway variables set \
-  "GIT_COMMIT=${SHORT}" \
-  "GIT_BRANCH=${BRANCH}" \
-  --skip-deploys 2>/dev/null || true
-
-echo ""
 echo "Waiting for Railway build (up to ~10 min)..."
 DEPLOY_SEEN=""
 for i in $(seq 1 60); do

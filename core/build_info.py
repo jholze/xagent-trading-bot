@@ -44,16 +44,18 @@ def _short_sha(value: str) -> str:
 def get_build_info() -> dict:
     baked = _read_baked_meta()
     railway_sha = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()
+    railway_branch = (os.getenv("RAILWAY_GIT_BRANCH") or "").strip()
+    # Railway GitHub deploy sets RAILWAY_GIT_*; stale GIT_COMMIT/GIT_BRANCH must not override.
     commit = (
-        _short_sha(os.getenv("GIT_COMMIT") or "")
-        or _short_sha(railway_sha)
+        _short_sha(railway_sha)
+        or _short_sha(os.getenv("GIT_COMMIT") or "")
         or baked["commit"]
         or _git("rev-parse", "--short", "HEAD")
         or "unknown"
     )
     branch = (
-        (os.getenv("GIT_BRANCH") or "").strip()
-        or (os.getenv("RAILWAY_GIT_BRANCH") or "").strip()
+        railway_branch
+        or (os.getenv("GIT_BRANCH") or "").strip()
         or baked["branch"]
         or _git("rev-parse", "--abbrev-ref", "HEAD")
         or "unknown"
