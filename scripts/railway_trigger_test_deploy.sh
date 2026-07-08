@@ -23,6 +23,31 @@ echo "Service:  xagent-test (test)"
 echo "Branch:   ${BRANCH}"
 echo "Commit:   ${SHORT_SHA} (${COMMIT_SHA})"
 
+# OAuth/CLI tokens authenticate { me } but cannot run serviceInstanceDeployV2.
+# Use an Account Token from https://railway.com/account/tokens (not ~/.railway/config.json).
+python3 - <<'PY' || {
+import json, os, subprocess, sys
+token = os.environ.get("RAILWAY_TOKEN", "")
+if not token:
+    sys.exit(1)
+body = json.dumps({"query": "query { me { email } }"})
+proc = subprocess.run(
+    ["curl", "-sS", "-X", "POST", "https://backboard.railway.com/graphql/v2",
+     "-H", f"Authorization: Bearer {token}",
+     "-H", "Content-Type: application/json", "-d", body],
+    capture_output=True, text=True, check=True,
+)
+data = json.loads(proc.stdout)
+if data.get("errors") or not (data.get("data") or {}).get("me"):
+    sys.exit(1)
+PY
+  echo "ERROR: RAILWAY_TOKEN invalid or missing."
+  echo "  Create an Account Token: https://railway.com/account/tokens"
+  echo "  gh secret set RAILWAY_TOKEN -R jholze/xagent-trading-bot"
+  echo "  Do NOT use the CLI OAuth accessToken from ~/.railway/config.json."
+  exit 1
+}
+
 export PROJECT_ID SERVICE_ID ENV_ID COMMIT_SHA BRANCH RAILWAY_TOKEN
 RESULT="$(python3 - <<'PY'
 import json
@@ -105,7 +130,12 @@ for name, value in [
 
 print(deploy_id)
 PY
-)"
+)" || {
+  echo "ERROR: serviceInstanceDeployV2 failed (Not Authorized)."
+  echo "  RAILWAY_TOKEN must be an Account Token from https://railway.com/account/tokens"
+  echo "  Fallback: env -u RAILWAY_TOKEN railway up -d -y  (from feature/entry-guard-15m)"
+  exit 1
+}
 
 echo "Deployment started: ${RESULT}"
 echo "Done. Track: railway deployment list --service xagent-test --environment test"
