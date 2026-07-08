@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SEED_DIR = ROOT / "data" / "railway_seed"
 SCOPE = "demo"
-MIN_ORDERS = 50
+MIN_ORDERS = 50  # legacy bundle only; fresh_start bundles may have 0 orders
 
 sys.path.insert(0, str(ROOT))
 
@@ -43,11 +43,12 @@ def main() -> int:
         return 0
 
     orders = _load_seed("orders.json")
-    if not orders or len(orders.get("orders", [])) < MIN_ORDERS:
-        print("[seed] bundled orders.json missing or too small")
-        return 1
-
     history = _load_seed("history.json")
+    fresh = bool(orders and orders.get("fresh_start")) or bool(history and history.get("fresh_start"))
+    order_rows = len((orders or {}).get("orders", []))
+    if not orders or (not fresh and order_rows < MIN_ORDERS):
+        print("[seed] bundled orders.json missing or too small — keeping current ledger")
+        return 0
     orders["ledger_scope"] = SCOPE
     store.save_orders(orders, SCOPE)
     if history:
