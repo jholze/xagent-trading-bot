@@ -15,9 +15,12 @@ from core.actions import (
     normalize,
     to_execution_action,
 )
+import time
+
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from data_manager import is_dry_run_enhanced, load_effective_watchlist
+from logger import log
 from services.market_service import MarketService
 from strategies.market_structure import (
     evaluate_market_structure_buy_boost,
@@ -56,6 +59,24 @@ from strategies.entry_sensor_15m import (
     evaluate_entry_sensor_15m,
 )
 from strategies import watch_15m_state
+from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
+
+_WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
+_WATCHLIST_TTL_SEC = 60.0
+
+
+def _active_watchlist_symbols() -> frozenset[str]:
+    global _WATCHLIST_CACHE
+    now = time.time()
+    if _WATCHLIST_CACHE and now - _WATCHLIST_CACHE[0] < _WATCHLIST_TTL_SEC:
+        return _WATCHLIST_CACHE[1]
+    symbols = frozenset(
+        c.get("symbol")
+        for c in load_effective_watchlist()
+        if c.get("active", True) and c.get("symbol")
+    )
+    _WATCHLIST_CACHE = (now, symbols)
+    return symbols
 
 
 class DecisionEngine:
@@ -118,10 +139,7 @@ class DecisionEngine:
         setup = self._in_setup_zone(market, market.strategy_params or {})
         modes = cfg.get("setup_modes") or []
         trending = "trending" in modes and "cmc_trending" in (technical.sources or [])
-        on_watchlist = "watchlist" in modes and any(
-            c.get("symbol") == symbol and c.get("active", True)
-            for c in load_effective_watchlist()
-        )
+        on_watchlist = "watchlist" in modes and symbol in _active_watchlist_symbols()
         should_watch = (
             (tech_buy and "buy_signal" in modes)
             or setup
@@ -187,7 +205,7 @@ class DecisionEngine:
 
         out_sources = list(sources)
         out_sources.append(ENTRY_SENSOR_SOURCE)
-        new_conf = max(confidence, confidence + sensor.confidence_boost)
+        new_conf = confidence + sensor.confidence_boost
         rationale_extra = sensor.rationale
 
         if sensor.shadow_only:
@@ -494,9 +512,6 @@ class DecisionEngine:
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
             if tech_buy and social_count >= 1:
-                if social_count >= 2:
-                    sources.append("multi_source")
-                    return BUY_STRONG, sources, max(technical.confidence, blended)
                 return BUY, sources, max(technical.confidence, blended)
             if social_count >= 2:
                 sources.append("multi_source")
@@ -656,8 +671,6 @@ class DecisionEngine:
             return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
 
         if market and position:
-            from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
-
             gain_pct = (
                 (market.current_price / market.average_entry - 1) * 100
                 if market.average_entry > 0 else 0.0
@@ -668,14 +681,23 @@ class DecisionEngine:
                     metrics_15m = self.market.fetch_15m_sensor_metrics(
                         market.symbol, self._entry_sensor_cfg(),
                     )
-                except Exception:
+                except Exception as exc:
+                    log(
+                        f"entry_guard: 15m metrics fetch failed {market.symbol}: {exc}",
+                        "WARNING",
+                    )
                     metrics_15m = None
                 if not metrics_15m:
                     stored_ratio = float(position.get("entry_15m_vol_ratio") or 0)
                     if stored_ratio > 0:
+                        stored_momentum = position.get("entry_15m_momentum")
                         metrics_15m = {
                             "volume_spike_ratio": stored_ratio,
-                            "price_momentum": True,
+                            "price_momentum": (
+                                bool(stored_momentum)
+                                if stored_momentum is not None
+                                else False
+                            ),
                         }
             candidates, blocked = filter_sell_candidates(
                 candidates,
@@ -837,14 +859,10 @@ class DecisionEngine:
             )
             if sensor_rationale:
                 structure_rationales.append(sensor_rationale)
-            self._sync_watch_15m_state(
-                coin["symbol"], market, technical, normalized, position
-            )
 
-        if market.has_position:
-            self._sync_watch_15m_state(
-                coin["symbol"], market, technical, normalized, position
-            )
+        self._sync_watch_15m_state(
+            coin["symbol"], market, technical, normalized, position
+        )
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}

@@ -9,12 +9,14 @@ from core.actions import SELL_FULL, is_sell
 from core.models import MarketContext
 from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_enabled
 from strategies.positions import is_open_position, position_notional_usdt
+from strategies.sell_sources import (
+    STRUCTURE_SOURCES,
+    TRAIL_EXCLUSIVE_BLOCK_SOURCES,
+    TRAIL_ROTATION_SOURCES,
+)
 
-STRUCTURE_SOURCES = frozenset({"bb_upper", "vol_exhaustion", "vol_dump"})
-TRAIL_SOURCES = frozenset({"trailing_take_profit", "profit_max_lifetime", "time_profit_exit"})
-BLOCKED_BELOW_ARM = STRUCTURE_SOURCES | frozenset({
-    "technical", "cmc", "lc", "x", "x_take_profit", "rsi",
-})
+TRAIL_SOURCES = TRAIL_ROTATION_SOURCES
+BLOCKED_BELOW_ARM = TRAIL_EXCLUSIVE_BLOCK_SOURCES
 
 POLICY_DEFAULTS = {
     "mode": "shadow",

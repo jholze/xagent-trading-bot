@@ -135,6 +135,38 @@ class TestEntryGuardDecisionEngine(unittest.TestCase):
         self.assertEqual(sell_source, "bb_upper")
         self.assertFalse(any("EntryGuard" in r for r in rationales))
 
+    def test_stored_vol_ratio_without_momentum_does_not_block_on_fetch_failure(self):
+        """Fallback must not fabricate continuation when live 15m metrics are unavailable."""
+        engine = DecisionEngine()
+        market = _bb_upper_market()
+        market.current_price = 1.10
+        position = _fresh_15m_position()
+        position["entry_15m_vol_ratio"] = 2.8
+        technical = _technical_hold()
+
+        rotation_passthrough = lambda cands, *args, **kwargs: (cands, SellPolicyAudit())
+        with patch("strategies.decision_engine.get_position", return_value=position), patch(
+            "strategies.decision_engine.apply_rotation_sell_filters",
+            side_effect=rotation_passthrough,
+        ), patch.object(
+            engine.market,
+            "fetch_15m_sensor_metrics",
+            side_effect=RuntimeError("network"),
+        ):
+            action, _, _, rationales, sell_source, _ = engine._merge_sell(
+                technical,
+                None,
+                None,
+                [],
+                market,
+                position,
+                None,
+            )
+
+        self.assertEqual(action, SELL_PARTIAL_30)
+        self.assertEqual(sell_source, "bb_upper")
+        self.assertFalse(any("EntryGuard" in r for r in rationales))
+
 
 if __name__ == "__main__":
     unittest.main()

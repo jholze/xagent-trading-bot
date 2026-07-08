@@ -105,16 +105,20 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
         watch_15m_state.clear_watch(job.symbol)
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 
+    from strategies.entry_sensor_15m import consume_pending_sensor_metrics
+
     market_svc = orchestrator.market
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
     ema_period = int(cfg.get("ema_period", 9))
     ohlcv_limit = vol_avg_period + 30
-    df = market_svc.fetch_ohlcv(job.symbol, "15m", ohlcv_limit)
-    metrics = market_svc.compute_15m_sensor_metrics(
-        df,
-        ema_period=ema_period,
-        vol_avg_period=vol_avg_period,
-    )
+    metrics = consume_pending_sensor_metrics(job.symbol)
+    if not metrics:
+        df = market_svc.fetch_ohlcv(job.symbol, "15m", ohlcv_limit)
+        metrics = market_svc.compute_15m_sensor_metrics(
+            df,
+            ema_period=ema_period,
+            vol_avg_period=vol_avg_period,
+        )
     if not passes_vol_spike_prefilter(metrics, cfg):
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 

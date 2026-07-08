@@ -396,6 +396,7 @@ class BotConfig:
     def entry_guard_config(self) -> dict:
         defaults = {
             "enabled": True,
+            "mode": "live",
             "sources": ["entry_sensor_15m"],
             "fresh_entry_window_minutes": 120,
             "vol_spike_mult": 2.0,

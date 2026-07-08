@@ -12,7 +12,6 @@ from strategies.positions import get_position
 from strategies.decision_engine import DecisionEngine
 from strategies.dca_portfolio import build_portfolio_dca_plan, portfolio_config
 from strategies.registry import resolve_coin_config
-from strategies.positions import get_position
 from logger import log
 from notifications.user_explain import (
     explain_hold_with_social,

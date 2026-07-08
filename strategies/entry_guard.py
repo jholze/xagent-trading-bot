@@ -6,16 +6,12 @@ from datetime import datetime
 from enum import Enum
 
 from core.actions import is_sell
-
-STRUCTURE_SOURCES = frozenset({"bb_upper", "vol_exhaustion", "vol_dump"})
-TRAILING_SOURCES = frozenset({
-    "trailing_take_profit",
-    "trailing_stop",
-    "profit_max_lifetime",
-    "time_profit_exit",
-})
-SOCIAL_SOURCES = frozenset({"cmc", "lc", "x", "x_take_profit"})
-STOP_SOURCES = frozenset({"x_stop_loss", "stop_loss", "technical"})
+from strategies.sell_sources import (
+    SOCIAL_SOURCES,
+    STOP_SOURCES,
+    STRUCTURE_SOURCES,
+    TRAILING_SOURCES,
+)
 
 
 class Pump15mState(str, Enum):
@@ -53,26 +49,15 @@ def _minutes_since(iso_ts: str | None, as_of: datetime | None = None) -> float |
 def entry_guard_config(config: dict | None = None) -> dict:
     from core.config import get_bot_config
 
-    defaults = {
-        "enabled": True,
-        "sources": ["entry_sensor_15m"],
-        "fresh_entry_window_minutes": 120,
-        "vol_spike_mult": 2.0,
-        "vol_exhaustion_15m_max": 0.85,
-        "exhaustion_min_gain_pct": 5.0,
-        "mega_pump_gain_pct": 12.0,
-        "block_loss_sells_minutes": 15,
-        "by_tier": {
-            "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
-            "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
-            "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
-            "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12},
-        },
-    }
-    raw = (config or get_bot_config().raw).get("entry_guard") or {}
-    merged = {**defaults, **raw}
+    if config is None:
+        return get_bot_config().entry_guard_config
+    raw = (config.get("entry_guard") or {})
+    merged = {**get_bot_config().entry_guard_config, **raw}
     if raw.get("by_tier"):
-        merged["by_tier"] = {**defaults["by_tier"], **raw["by_tier"]}
+        merged["by_tier"] = {
+            **get_bot_config().entry_guard_config.get("by_tier", {}),
+            **raw["by_tier"],
+        }
     return merged
 
 
@@ -239,6 +224,7 @@ def filter_sell_candidates(
         return [], []
 
     cfg = cfg or entry_guard_config()
+    shadow = str(cfg.get("mode", "live")).strip().lower() == "shadow"
     kept: list[tuple] = []
     blocked: list[str] = []
     for action, priority, source in candidates:
@@ -252,8 +238,9 @@ def filter_sell_candidates(
             metrics_15m=metrics_15m,
             cfg=cfg,
         )
-        if allowed:
+        if allowed or shadow:
             kept.append((action, priority, source))
-        elif reason:
-            blocked.append(f"EntryGuard->{source}: {reason}")
+        if not allowed and reason:
+            tag = f"EntryGuard->{source}: {reason}"
+            blocked.append(f"{tag} (shadow)" if shadow else tag)
     return kept, blocked

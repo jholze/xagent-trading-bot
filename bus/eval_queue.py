@@ -277,6 +277,15 @@ def last_processed_at(symbol: str, timeframe: str, config_raw: dict | None = Non
         return None
 
 
-def reset_eval_queue_for_tests() -> None:
+def reset_eval_queue_for_tests(config_raw: dict | None = None) -> None:
     """Clear eval queue keys (unit tests with mocked Redis)."""
-    pass
+    client = _client(config_raw)
+    if not client:
+        return
+    arch = _arch(config_raw)
+    prefix = str(arch.get("key_prefix", "aria:"))
+    queue_key, meta_key, processed_key = _keys(prefix)
+    try:
+        client.delete(queue_key, meta_key, processed_key)
+    except Exception:
+        pass
