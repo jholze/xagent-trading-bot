@@ -19,6 +19,75 @@ def load_json(path: Path) -> dict | list:
         return json.load(f)
 
 
+def _stats_ledger_scope() -> str:
+    from data_manager import get_config, is_demo_mode, resolve_ledger_scope
+
+    if is_demo_mode():
+        return "demo"
+    return resolve_ledger_scope(get_config().get("trading_mode", "live"))
+
+
+def load_trade_history_doc() -> dict:
+    """Trade history from active ledger (Mongo or JSON), with legacy file fallback."""
+    try:
+        from data_manager import is_demo_mode, load_live_trade_history, load_trade_history
+
+        if is_demo_mode():
+            return load_trade_history() or {}
+        return load_live_trade_history() or {}
+    except Exception:
+        pass
+    for name in (
+        "live_trade_history.json",
+        "live_trade_history.demo.json",
+        "trade_history.json",
+    ):
+        path = BOT_ROOT / name
+        if not path.exists():
+            continue
+        try:
+            return load_json(path)
+        except Exception:
+            continue
+    return {"trades": [], "virtual_balance": 0.0, "realized_pnl": 0.0, "total_pnl": 0.0}
+
+
+def load_orders_doc() -> dict:
+    """Orders from active ledger scope, with legacy JSON fallback."""
+    try:
+        from data_manager import load_orders
+
+        return load_orders(_stats_ledger_scope()) or {"orders": []}
+    except Exception:
+        pass
+    scope = _stats_ledger_scope()
+    candidates = {
+        "demo": ("orders.demo.json",),
+        "paper": ("orders.paper.json",),
+        "live": ("orders.live.json",),
+    }.get(scope, ("orders.live.json", "orders.paper.json"))
+    for name in candidates:
+        path = BOT_ROOT / name
+        if not path.exists():
+            continue
+        try:
+            return load_json(path)
+        except Exception:
+            continue
+    return {"orders": []}
+
+
+def _order_window_ts(order: dict) -> datetime | None:
+    ts = order.get("timestamps") or {}
+    raw = ts.get("created") or ts.get("filled") or ts.get("updated")
+    if not raw:
+        return None
+    try:
+        return parse_ts(str(raw))
+    except Exception:
+        return None
+
+
 def cmc_posts(raw) -> list:
     if isinstance(raw, list):
         return raw
@@ -44,16 +113,38 @@ def normalize_social_action(post: dict) -> str:
 
 
 def open_positions_summary(bot_dir: Path | None = None) -> tuple[int, float]:
+    try:
+        from strategies.positions import bootstrap_positions, list_active_positions
+
+        scope = _stats_ledger_scope()
+        bootstrap_positions(scope=scope)
+        active = list_active_positions()
+        total = sum(
+            float(p.get("amount") or 0)
+            * float(p.get("average_entry") or p.get("entry_price") or 0)
+            for p in active
+        )
+        return len(active), total
+    except Exception:
+        pass
     root = bot_dir or BOT_ROOT
-    positions = load_json(root / "positions.live.json").get("positions", {})
-    open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
-    total = 0.0
-    for pos in positions.values():
-        amt = float(pos.get("amount") or 0)
-        if amt <= 0:
+    for name in ("positions.live.json", "positions.demo.json", "positions.json"):
+        path = root / name
+        if not path.exists():
             continue
-        total += amt * float(pos.get("average_entry") or 0)
-    return open_count, total
+        try:
+            positions = load_json(path).get("positions", {})
+        except Exception:
+            continue
+        open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
+        total = 0.0
+        for pos in positions.values():
+            amt = float(pos.get("amount") or 0)
+            if amt <= 0:
+                continue
+            total += amt * float(pos.get("average_entry") or 0)
+        return open_count, total
+    return 0, 0.0
 
 
 def trades_in_window(
@@ -61,9 +152,20 @@ def trades_in_window(
     since: datetime,
     until: datetime,
 ) -> list[dict]:
-    th = load_json(bot_dir / "live_trade_history.json")
+    th = load_trade_history_doc()
     trades = th.get("trades", [])
-    return [t for t in trades if since <= parse_ts(t["timestamp"]) < until]
+    out = []
+    for trade in trades:
+        ts_raw = trade.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = parse_ts(str(ts_raw))
+        except Exception:
+            continue
+        if since <= ts < until:
+            out.append(trade)
+    return out
 
 
 def orders_in_window(
@@ -71,11 +173,13 @@ def orders_in_window(
     since: datetime,
     until: datetime,
 ) -> list[dict]:
-    orders_raw = load_json(bot_dir / "orders.live.json")
-    return [
-        o for o in orders_raw.get("orders", [])
-        if since <= parse_ts(o["timestamps"]["created"]) < until
-    ]
+    orders_raw = load_orders_doc()
+    out = []
+    for order in orders_raw.get("orders", []):
+        ts = _order_window_ts(order)
+        if ts and since <= ts < until:
+            out.append(order)
+    return out
 
 
 def decision_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
@@ -265,7 +369,7 @@ def hermes_brief_line(bot_dir: Path) -> str:
 def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
     window_trades = trades_in_window(bot_dir, since, until)
     window_orders = orders_in_window(bot_dir, since, until)
-    th = load_json(bot_dir / "live_trade_history.json")
+    th = load_trade_history_doc()
     buys = sum(1 for t in window_trades if t["type"] == "BUY")
     sells = sum(1 for t in window_trades if t["type"] == "SELL")
     dca_buys = sum(

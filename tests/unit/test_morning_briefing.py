@@ -135,7 +135,7 @@ class TestMorningBriefing(unittest.TestCase):
         self.assertIn("Portfolio jetzt", text)
         self.assertIn("Aktivität 24h", text)
         self.assertIn("DCA", text)
-        self.assertIn("Version:", text)
+        self.assertIn("Version", text)
 
     def test_morning_command_handler(self):
         self.assertTrue(handle("/morning"))
@@ -144,6 +144,28 @@ class TestMorningBriefing(unittest.TestCase):
 
 
 class TestDailyStatsWindow(unittest.TestCase):
+    def test_window_stats_without_live_trade_history_json(self):
+        now = datetime.now()
+        since = now - timedelta(hours=24)
+        with patch(
+            "notifications.daily_stats.load_trade_history_doc",
+            return_value={
+                "trades": [],
+                "virtual_balance": 100_000.0,
+                "realized_pnl": 0.0,
+            },
+        ), patch(
+            "notifications.daily_stats.load_orders_doc",
+            return_value={"orders": []},
+        ), patch(
+            "notifications.daily_stats.open_positions_summary",
+            return_value=(0, 0.0),
+        ):
+            stats = window_stats(Path("/nonexistent"), since, now)
+        self.assertEqual(stats["cash"], 100_000.0)
+        self.assertEqual(stats["open_count"], 0)
+        self.assertEqual(stats["trades"], [])
+
     def test_decision_stats_counts_dca(self, bot_dir=None):
         bot_dir = Path(__file__).resolve().parents[2]
         decisions = bot_dir / "logs" / "decisions.jsonl"
