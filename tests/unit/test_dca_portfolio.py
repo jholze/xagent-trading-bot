@@ -80,9 +80,77 @@ class TestDCAPortfolio(unittest.TestCase):
         self.assertEqual(funding.symbol, "TAIL/USDT")
 
     def test_portfolio_config_defaults(self):
-        cfg = portfolio_config({})
+        cfg = portfolio_config({}, config_raw={})
         self.assertIn("enabled", cfg)
         self.assertIn("cash_buffer_usdt", cfg)
+        self.assertFalse(cfg["enabled"])
+
+    def test_portfolio_config_inherits_global_when_coin_missing_portfolio(self):
+        config_raw = {
+            "volatile_altcoin": {
+                "dca": {
+                    "portfolio": {
+                        "enabled": True,
+                        "mode": "live",
+                        "min_dca_score": 6,
+                        "cash_buffer_usdt": 400,
+                    }
+                }
+            }
+        }
+        cfg = portfolio_config({"enabled": True, "mode": "live"}, config_raw=config_raw)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["mode"], "live")
+        self.assertEqual(cfg["min_dca_score"], 6)
+        self.assertEqual(cfg["cash_buffer_usdt"], 400)
+
+    def test_portfolio_config_coin_can_disable_global(self):
+        config_raw = {
+            "volatile_altcoin": {
+                "dca": {"portfolio": {"enabled": True, "mode": "live"}},
+            }
+        }
+        cfg = portfolio_config({"portfolio": {"enabled": False}}, config_raw=config_raw)
+        self.assertFalse(cfg["enabled"])
+
+    def test_collect_dca_targets_includes_coin_without_per_coin_portfolio_block(self):
+        from strategies.dca_portfolio import collect_dca_targets
+
+        update_position("GNC/USDT", "1h", "BUY", 1000.0, 360.0)
+        pos = get_position("GNC/USDT", "1h")
+        pos["average_entry"] = 1.0
+
+        coins = [{"symbol": "GNC/USDT", "timeframe": "1h", "source": "cmc_trending", "active": True}]
+        price_map = {"GNC/USDT": 0.85}
+        config_raw = {
+            "volatile_altcoin": {
+                "dca": {
+                    "portfolio": {"enabled": True, "mode": "live", "min_dca_score": 6},
+                }
+            }
+        }
+        candidate = DCACandidate(BUY_DCA, "dca", "dip", 360.0, score=7)
+
+        with patch("strategies.dca_portfolio.evaluate_dca_addon", return_value=candidate), patch(
+            "strategies.dca_portfolio._build_market",
+            return_value=MarketContext(
+                symbol="GNC/USDT",
+                timeframe="1h",
+                current_price=0.85,
+                rsi=35.0,
+                lower_bb=0.8,
+                atr_pct=3.0,
+                has_position=True,
+                average_entry=1.0,
+                open_positions=1,
+                strategy_params={},
+            ),
+        ):
+            targets = collect_dca_targets(coins, price_map, config_raw=config_raw)
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].symbol, "GNC/USDT")
+        self.assertEqual(targets[0].score, 7)
 
     def test_build_market_fetches_funding_and_btc_underperf(self):
         strategy_params = {

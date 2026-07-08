@@ -52,7 +52,7 @@ class PortfolioDCAPlan:
     audit: dict = field(default_factory=dict)
 
 
-def portfolio_config(dca_cfg: dict | None) -> dict:
+def portfolio_config(dca_cfg: dict | None, *, config_raw: dict | None = None) -> dict:
     defaults = {
         "enabled": False,
         "mode": "shadow",
@@ -65,12 +65,22 @@ def portfolio_config(dca_cfg: dict | None) -> dict:
         "stale_winner_max_gain_pct": 8.0,
         "stale_winner_min_notional_usdt": 200.0,
     }
-    raw = dict((dca_cfg or {}).get("portfolio") or {})
-    return {**defaults, **raw}
+    if config_raw is None:
+        try:
+            config_raw = get_bot_config().raw
+        except Exception:
+            config_raw = {}
+
+    global_port = dict(
+        ((config_raw.get("volatile_altcoin") or {}).get("dca") or {}).get("portfolio") or {}
+    )
+    coin_port = dict((dca_cfg or {}).get("portfolio") or {})
+    return {**defaults, **global_port, **coin_port}
 
 
-def portfolio_enabled(strategy_params: dict | None) -> bool:
-    return bool(portfolio_config((strategy_params or {}).get("dca") if "dca" in (strategy_params or {}) else None))
+def portfolio_enabled(strategy_params: dict | None, *, config_raw: dict | None = None) -> bool:
+    dca = (strategy_params or {}).get("dca") if "dca" in (strategy_params or {}) else None
+    return bool(portfolio_config(dca, config_raw=config_raw).get("enabled"))
 
 
 def _hours_since(iso_ts: str | None) -> float | None:
@@ -142,9 +152,10 @@ def collect_dca_targets(
             continue
 
         strategy_params = coin_cfg.get("strategy_params") or {}
+        cfg_root = config_raw if config_raw is not None else get_bot_config().raw
         try:
             strategy_params = resolve_strategy_params(
-                {"symbol": symbol, "timeframe": tf},
+                coin_cfg,
                 has_position=True,
                 frozen_tier=pos.get("strategy_tier"),
             )
@@ -152,7 +163,7 @@ def collect_dca_targets(
             pass
 
         dca_cfg = dict(strategy_params.get("dca") or {})
-        port_cfg = portfolio_config(dca_cfg)
+        port_cfg = portfolio_config(dca_cfg, config_raw=cfg_root)
         if not port_cfg.get("enabled"):
             continue
         market = _build_market(symbol, tf, price, pos, strategy_params)
@@ -231,7 +242,7 @@ def find_funding_sell(
     config_raw: dict | None = None,
 ) -> FundingSell | None:
     cfg_root = get_bot_config().raw if config_raw is None else config_raw
-    port_cfg = portfolio_config({})
+    port_cfg = portfolio_config({}, config_raw=cfg_root)
     shortfall = max(0.0, cash_needed - max(0.0, cash_available - float(port_cfg.get("cash_buffer_usdt", 300.0))))
     if shortfall <= 0:
         return None
@@ -254,7 +265,7 @@ def find_funding_sell(
         strategy_params = coin_cfg.get("strategy_params") or {}
         try:
             strategy_params = resolve_strategy_params(
-                {"symbol": symbol, "timeframe": tf},
+                coin_cfg,
                 has_position=True,
                 frozen_tier=pos.get("strategy_tier"),
             )
@@ -318,7 +329,7 @@ def build_portfolio_dca_plan(
     config_raw: dict | None = None,
 ) -> PortfolioDCAPlan:
     cfg_root = get_bot_config().raw if config_raw is None else config_raw
-    port_cfg = portfolio_config({})
+    port_cfg = portfolio_config({}, config_raw=cfg_root)
     plan = PortfolioDCAPlan(audit={"targets": 0, "cash_available": cash_available})
 
     targets = collect_dca_targets(coins, price_map, config_raw=cfg_root)
@@ -354,6 +365,7 @@ def build_portfolio_dca_plan(
 
 def should_defer_per_coin_dca(strategy_params: dict | None, config_raw: dict | None = None) -> bool:
     """Defer only when this coin's merged strategy_params enable portfolio DCA live."""
+    cfg_root = get_bot_config().raw if config_raw is None else config_raw
     dca = dict((strategy_params or {}).get("dca") or {})
-    port = portfolio_config(dca)
+    port = portfolio_config(dca, config_raw=cfg_root)
     return bool(port.get("enabled")) and str(port.get("mode", "shadow")).lower() == "live"
