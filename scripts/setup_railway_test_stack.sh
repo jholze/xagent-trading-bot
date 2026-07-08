@@ -203,9 +203,6 @@ if git status --porcelain | grep -q .; then
 else
   DEPLOY_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 fi
-set_var "GIT_COMMIT=${DEPLOY_COMMIT}"
-set_var "GIT_BRANCH=${BRANCH}"
-
 echo "Deploy from git: bash scripts/deploy_test_branch.sh"
 echo "  (push → Railway GitHub webhook; no RAILWAY_TOKEN, no redeploy --from-source)"
 
