@@ -35,7 +35,8 @@ def fresh_bundle(balance_usdt: float) -> dict:
 
 def reset_demo_ledger(balance_usdt: float) -> dict:
     _ensure_demo_mongo()
-    from data_manager import assert_safe_demo_mongo_db, get_config, _mongo_ledger_store
+    from data_manager import get_config, _mongo_ledger_store
+    from storage.mongo_client import assert_safe_demo_mongo_db
     from services.ledger_sync import sync_positions_on_startup
     from strategies.positions import bootstrap_positions, flush_positions
 
