@@ -3,17 +3,19 @@ from datetime import datetime, timedelta
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
 from data_manager import (
+    is_demo_mode,
     is_dry_run_enhanced,
     is_live_dry_run,
     load_live_trade_history,
     load_trade_history,
+    resolve_ledger_backend,
     simulated_balance_usdt,
     uses_exchange_ledger,
 )
 from services.gate_balance import fetch_portfolio_equity, fetch_usdt_balance
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
-from strategies.positions import count_open_positions, get_position, list_active_positions
+from strategies.positions import count_open_full_slots, count_open_positions, get_position, list_active_positions
 
 
 def _is_emergency_sell(signal: str) -> bool:
@@ -57,6 +59,20 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
+        from core.test_symbols import is_phantom_test_symbol
+
+        cfg = self.config.raw if hasattr(self.config, "raw") else self.config
+        if (
+            is_demo_mode()
+            and resolve_ledger_backend("demo", cfg) == "mongo"
+            and is_phantom_test_symbol(order.symbol)
+        ):
+            return RiskDecision(
+                approved=False,
+                message=f"Phantom test symbol blocked: {order.symbol}",
+                code="phantom_symbol",
+            )
+
         if order.type == "SELL":
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
@@ -87,7 +103,8 @@ class RiskManager:
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
 
-        if not has_position and count_open_positions() >= self.config.max_open_positions:
+        open_slots = count_open_full_slots(self.config.raw)
+        if not has_position and open_slots >= self.config.max_open_positions:
             return RiskDecision(
                 approved=False,
                 message=f"Max open positions reached ({self.config.max_open_positions})",
@@ -112,7 +129,7 @@ class RiskManager:
             if order.symbol in trending_syms:
                 pct = float(fusion.get("trending_trade_size_pct", 50)) / 100.0
                 base_usdt = base_usdt * pct
-        if source == "dca" or order.signal == "BUY_DCA":
+        if source in ("dca", "dca_recovery") or order.signal == "BUY_DCA":
             params = self.config.strategy_params(order.symbol, timeframe)
             try:
                 from strategies.registry import resolve_strategy_params
@@ -128,6 +145,12 @@ class RiskManager:
             dca_cfg = dict(params.get("dca") or {})
             if order.usdt_amount:
                 base_usdt = float(order.usdt_amount)
+            elif source == "dca_recovery":
+                from strategies.dca_recovery import recovery_config, recovery_usdt_amount
+
+                rec_cfg = recovery_config(params)
+                pos = get_position(order.symbol, timeframe)
+                base_usdt = recovery_usdt_amount(rec_cfg, params, position=pos)
             elif dca_cfg.get("fixed_usdt"):
                 base_usdt = float(dca_cfg["fixed_usdt"])
         if source == "manual":
@@ -312,14 +335,12 @@ class RiskManager:
 
     @staticmethod
     def _is_dca_buy(source: str, order: TradeOrder) -> bool:
-        return source == "dca" or order.signal == "BUY_DCA"
+        return source in ("dca", "dca_recovery") or order.signal == "BUY_DCA"
 
     @staticmethod
     def _order_is_dca(order: dict) -> bool:
-        return (
-            str(order.get("source", "")).lower() == "dca"
-            or str(order.get("signal", "")).upper() == "BUY_DCA"
-        )
+        src = str(order.get("source", "")).lower()
+        return src in ("dca", "dca_recovery") or str(order.get("signal", "")).upper() == "BUY_DCA"
 
     @staticmethod
     def _filled_order_usdt(order: dict) -> float:
@@ -543,15 +564,48 @@ class RiskManager:
         notional = float(order.amount) * order.price
         remainder = pos_value - notional
 
+        dust_min = limits["dust_sweep_min_remainder_usdt"]
+        if sold_pct >= 0.50:
+            dust_min = min(dust_min, 100.0)
+        if sold_pct >= 0.70:
+            limits["dust_sweep_max_position_usdt"] = max(
+                limits["dust_sweep_max_position_usdt"], 500.0,
+            )
+
         sweep = (
             pos_value <= limits["dust_sweep_max_position_usdt"]
             or (
                 sold_pct >= limits["dust_sweep_sold_percent_min"]
                 and pos_value <= limits["min_position_usdt"]
             )
-            or (0 < remainder < limits["dust_sweep_min_remainder_usdt"])
+            or (0 < remainder < dust_min)
         )
         if not sweep:
+            return order
+
+        from core.models import MarketContext
+        from strategies.registry import resolve_strategy_params
+        from strategies.sell_rotation_policy import can_rotation_evict, rotation_config
+
+        sparams = None
+        try:
+            sparams = resolve_strategy_params(
+                {"symbol": order.symbol, "timeframe": timeframe},
+                has_position=True,
+                frozen_tier=pos.get("strategy_tier"),
+            )
+        except Exception:
+            pass
+        cfg = rotation_config(self.config.raw, sparams)
+        entry = float(pos.get("average_entry", 0) or order.price)
+        market = MarketContext(
+            symbol=order.symbol,
+            timeframe=timeframe,
+            current_price=order.price,
+            has_position=True,
+            average_entry=entry,
+        )
+        if not can_rotation_evict(market, pos, cfg):
             return order
 
         return TradeOrder(
@@ -663,7 +717,7 @@ class RiskManager:
             return False, ""
 
         pos_amount = float(pos.get("amount", 0) or 0)
-        is_dca = order.signal == "BUY_DCA" or source == "dca"
+        is_dca = order.signal == "BUY_DCA" or source in ("dca", "dca_recovery")
 
         if order.type == "BUY" and source == "cmc":
             blocked, reason = self._trending_position_cap_blocked(order, timeframe)
@@ -678,7 +732,7 @@ class RiskManager:
                 return True, reason
 
         if order.type == "BUY" and is_dca and pos_amount > 0:
-            blocked, reason = self._dca_interval_blocked(pos, params, defaults)
+            blocked, reason = self._dca_interval_blocked(pos, params, defaults, source=source)
             if blocked:
                 return True, reason
             return False, ""
@@ -773,17 +827,16 @@ class RiskManager:
         pos: dict,
         params: dict,
         defaults: dict,
+        *,
+        source: str = "dca",
     ) -> tuple[bool, str]:
+        from strategies.dca import _hours_since_last_dca
+
         dca_cfg = dict(params.get("dca") or {})
         interval_hours = float(dca_cfg.get("interval_hours", 12))
-        last_dca = pos.get("last_dca_at")
-        if not last_dca:
+        elapsed = _hours_since_last_dca(pos)
+        if elapsed is None:
             return False, ""
-        try:
-            last_ts = datetime.fromisoformat(str(last_dca).replace("Z", ""))
-        except Exception:
-            return False, ""
-        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
         if elapsed < interval_hours:
             return True, (
                 f"DCA interval: {elapsed:.1f}h since last DCA "

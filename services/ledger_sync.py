@@ -37,6 +37,61 @@ def migrate_legacy_positions() -> None:
         log(f"Legacy positions migration failed: {e}", "WARNING")
 
 
+def _is_dca_order(order: dict) -> bool:
+    signal = (order.get("signal") or "").upper()
+    source = (order.get("source") or "").lower()
+    return signal == "BUY_DCA" or source in ("dca", "dca_recovery")
+
+
+def _empty_order_position() -> dict:
+    return {
+        "amount": 0.0,
+        "peak_amount": 0.0,
+        "sold_percent": 0.0,
+        "average_entry": 0.0,
+        "realized_pnl": 0.0,
+        "last_buy_price": 0.0,
+        "last_ampel": "🟡",
+        "last_rsi": 45.0,
+        "last_action": None,
+        "last_trade_at": None,
+        "last_trade_type": None,
+        "rsi_sell_tiers_done": {},
+        "dca_rounds": 0,
+        "dca_max_rounds": 0,
+        "last_dca_at": None,
+        "dca_total_usdt": 0.0,
+        "dca_recovery_rounds": 0,
+        "dca_recovery_max_rounds": 0,
+        "last_dca_recovery_at": None,
+        "entry_source": None,
+        "entry_at": None,
+        "exit_ladder_step": 0,
+    }
+
+
+def _reset_position_cycle(pos: dict, *, amount: float, price: float, trade_ts: str | None) -> None:
+    pos["amount"] = amount
+    pos["peak_amount"] = amount
+    pos["sold_percent"] = 0.0
+    pos["average_entry"] = price
+    pos["last_buy_price"] = price
+    pos["last_action"] = "BUY"
+    pos["last_trade_type"] = "BUY"
+    pos["last_trade_at"] = trade_ts
+    pos["rsi_sell_tiers_done"] = {}
+    pos["exit_ladder_step"] = 0
+    pos["dca_rounds"] = 0
+    pos["dca_max_rounds"] = 0
+    pos["last_dca_at"] = None
+    pos["dca_total_usdt"] = 0.0
+    pos["dca_recovery_rounds"] = 0
+    pos["dca_recovery_max_rounds"] = 0
+    pos["last_dca_recovery_at"] = None
+    pos["entry_source"] = None
+    pos["entry_at"] = None
+
+
 def _build_positions_snapshot_from_orders(scope: str) -> dict:
     """Derive position state from filled orders for *scope*."""
     from data_manager import load_orders
@@ -62,23 +117,7 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
         if not symbol:
             continue
         key = get_key(symbol, timeframe)
-        pos = snapshot.setdefault(
-            key,
-            {
-                "amount": 0.0,
-                "peak_amount": 0.0,
-                "sold_percent": 0.0,
-                "average_entry": 0.0,
-                "realized_pnl": 0.0,
-                "last_buy_price": 0.0,
-                "last_ampel": "🟡",
-                "last_rsi": 45.0,
-                "last_action": None,
-                "last_trade_at": None,
-                "last_trade_type": None,
-                "rsi_sell_tiers_done": {},
-            },
-        )
+        pos = snapshot.setdefault(key, _empty_order_position())
 
         side = (order.get("side") or "").lower()
         execution = order.get("execution") or {}
@@ -89,24 +128,40 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
             order.get("timestamps", {}).get("filled")
             or order.get("timestamps", {}).get("created")
         )
+        source = (order.get("source") or "").lower()
 
         if side == "buy" and amount > 0 and price > 0:
             old_amount = pos["amount"]
             new_amount = old_amount + amount
-            if old_amount > 0:
+            if old_amount <= 0:
+                _reset_position_cycle(pos, amount=new_amount, price=price, trade_ts=trade_ts)
+                if source == "entry_sensor_15m":
+                    pos["entry_source"] = "entry_sensor_15m"
+                    pos["entry_at"] = trade_ts
+            elif _is_dca_order(order):
                 pos["average_entry"] = (
                     pos["average_entry"] * old_amount + price * amount
                 ) / new_amount
+                pos["amount"] = new_amount
+                pos["last_buy_price"] = price
+                pos["last_action"] = "BUY_DCA"
+                pos["last_trade_type"] = "BUY_DCA"
+                pos["last_trade_at"] = trade_ts
+                pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
+                pos["last_dca_at"] = trade_ts
+                pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + price * amount
             else:
-                pos["average_entry"] = price
-            pos["amount"] = new_amount
-            pos["peak_amount"] = new_amount
-            pos["sold_percent"] = 0.0
-            pos["last_buy_price"] = price
-            pos["last_action"] = "BUY"
-            pos["last_trade_type"] = "BUY"
-            pos["last_trade_at"] = trade_ts
-            pos["rsi_sell_tiers_done"] = {}
+                pos["average_entry"] = (
+                    pos["average_entry"] * old_amount + price * amount
+                ) / new_amount
+                pos["amount"] = new_amount
+                pos["last_buy_price"] = price
+                pos["last_action"] = "BUY"
+                pos["last_trade_type"] = "BUY"
+                pos["last_trade_at"] = trade_ts
+                if source == "entry_sensor_15m":
+                    pos["entry_source"] = "entry_sensor_15m"
+                    pos["entry_at"] = trade_ts
         elif side == "sell" and amount > 0:
             original = pos["amount"]
             sell_amount = min(amount, original) if original > 0 else amount
@@ -133,10 +188,18 @@ def count_open_positions_from_orders(scope: str) -> int:
 
 
 def rebuild_positions_from_orders(scope: str) -> int:
-    """Rebuild in-memory positions for *scope* from filled orders only."""
-    from strategies.positions import apply_positions_snapshot, flush_positions, is_open_position
+    """Rebuild in-memory positions for *scope* from orders + position cache merge."""
+    from data_manager import load_orders, load_positions_document
+    from strategies.positions import (
+        apply_positions_snapshot,
+        derive_positions_from_orders_and_cache,
+        flush_positions,
+        is_open_position,
+    )
 
-    snapshot = _build_positions_snapshot_from_orders(scope)
+    order_snap = _build_positions_snapshot_from_orders(scope)
+    cache_doc = load_positions_document(scope)
+    snapshot = derive_positions_from_orders_and_cache(order_snap, cache_doc)
     from data_manager import load_orders
 
     orders = [o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"]
@@ -181,6 +244,65 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
         f"Ledger: <b>{old_scope.upper()}</b> → <b>{new_scope.upper()}</b>\n"
         f"Positionen aus Orders neu aufgebaut: <b>{open_count}</b> offen"
     )
+
+
+def reconcile_recent_highs(
+    scope: str,
+    price_map: dict | None = None,
+    *,
+    use_ohlcv: bool = False,
+) -> bool:
+    """Backfill recent_high from live marks (and optional OHLCV) for open lots."""
+    from strategies.positions import (
+        flush_positions,
+        get_position,
+        has_position_amount,
+        list_active_positions,
+        update_market_snapshot,
+    )
+
+    open_lots = list_active_positions()
+    if not open_lots:
+        return False
+
+    prices = dict(price_map or {})
+    missing = sorted(
+        {
+            p["symbol"]
+            for p in open_lots
+            if float(prices.get(p["symbol"], 0) or 0) <= 0
+        }
+    )
+    if missing:
+        from price_fetcher import get_prices_batch
+
+        prices.update(get_prices_batch(missing))
+
+    market_svc = None
+    if use_ohlcv:
+        from services.market_service import MarketService
+
+        market_svc = MarketService()
+
+    changed = False
+    for lot in open_lots:
+        sym = lot.get("symbol", "")
+        tf = lot.get("timeframe", "4h")
+        price = float(prices.get(sym, 0) or 0)
+        if price <= 0 or not has_position_amount(lot):
+            continue
+        peak_hint = None
+        if market_svc is not None:
+            pos = get_position(sym, tf)
+            since = pos.get("first_buy_at") or pos.get("entry_at")
+            peak_hint = market_svc.infer_ohlcv_peak_price(sym, tf, since)
+        if update_market_snapshot(sym, tf, price, peak_hint=peak_hint):
+            changed = True
+
+    if changed:
+        flush_positions(scope=scope, force=True)
+        log(f"Reconciled recent_high for scope={scope}", "INFO")
+    return changed
 
 
 def reconcile_peak_amounts(scope: str) -> bool:
@@ -310,10 +432,14 @@ def _preserve_legacy_cache_lots(scope: str) -> None:
 
 
 def sync_positions_on_startup() -> None:
-    """Reconcile peak_amount cache after bootstrap (no wipe/rebuild)."""
+    """Reconcile peak_amount + recent_high cache after bootstrap (no wipe/rebuild)."""
     from data_manager import get_config, resolve_ledger_scope
 
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
     _preserve_legacy_cache_lots(scope)
     reconcile_peak_amounts(scope)
+    try:
+        reconcile_recent_highs(scope, use_ohlcv=True)
+    except Exception as exc:
+        log(f"recent_high reconcile skipped for scope={scope}: {exc}", "WARNING")

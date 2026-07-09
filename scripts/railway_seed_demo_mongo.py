@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SEED_DIR = ROOT / "data" / "railway_seed"
 SCOPE = "demo"
-MIN_ORDERS = 50
+MIN_ORDERS = 50  # legacy bundle only; fresh_start bundles may have 0 orders
 
 sys.path.insert(0, str(ROOT))
 
@@ -28,26 +28,37 @@ def _load_seed(name: str) -> dict | None:
 
 
 def main() -> int:
+    from scripts.operator_mongo import prepare_operator_mongo
     from storage.mongo_client import ping_database, resolve_database_name
     from storage.mongo_ledger import MongoLedgerStore
+
+    prepare_operator_mongo()
 
     if not ping_database():
         print("[seed] Mongo ping failed — skipping")
         return 1
 
-    store = MongoLedgerStore(test=resolve_database_name() == "xagent_test")
+    # test=True targets xagent_pytest — never use for Railway xagent_test ledger.
+    store = MongoLedgerStore(test=False)
     existing = store.load_orders(SCOPE)
     order_count = len(existing.get("orders", []))
     if order_count >= MIN_ORDERS:
         print(f"[seed] demo orders={order_count} — no seed needed")
         return 0
+    if order_count > 0:
+        print(
+            f"[seed] demo orders={order_count} — keeping existing ledger "
+            f"(fresh_start only when empty)"
+        )
+        return 0
 
     orders = _load_seed("orders.json")
-    if not orders or len(orders.get("orders", [])) < MIN_ORDERS:
-        print("[seed] bundled orders.json missing or too small")
-        return 1
-
     history = _load_seed("history.json")
+    fresh = bool(orders and orders.get("fresh_start")) or bool(history and history.get("fresh_start"))
+    order_rows = len((orders or {}).get("orders", []))
+    if not orders or (not fresh and order_rows < MIN_ORDERS):
+        print("[seed] bundled orders.json missing or too small — keeping current ledger")
+        return 0
     orders["ledger_scope"] = SCOPE
     store.save_orders(orders, SCOPE)
     if history:

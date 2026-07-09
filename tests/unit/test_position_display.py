@@ -6,6 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from notifications.telegram_commands.position_display import (
+    _refresh_positions_for_snapshot,
     _trade_line,
     chunk_positions_message,
     format_portfolio_summary,
@@ -54,7 +55,7 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Gesamtwert", msg)
         self.assertIn("$5,000", msg)
         self.assertIn("Gesamt-PnL", msg)
-        self.assertIn("$+37.5", msg)
+        self.assertIn("$+0.0", msg)
         self.assertIn("Positionen (2)", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
@@ -233,6 +234,39 @@ class TestPositionDisplay(unittest.TestCase):
         for chunk in chunks:
             self.assertNotIn("(1/", chunk)
             self.assertNotIn("(2/", chunk)
+            self.assertLessEqual(len(chunk), 800)
+            self.assertTrue(chunk.startswith("<b>") or chunk.startswith("<i>"))
+
+    def test_refresh_positions_for_snapshot_fast_calls_load(self):
+        with patch("strategies.positions.load_positions") as mock_load, \
+             patch("strategies.positions.bootstrap_positions") as mock_boot:
+            _refresh_positions_for_snapshot(fast=True)
+            mock_load.assert_called_once_with()
+            mock_boot.assert_not_called()
+
+    def test_send_positions_snapshot_fast_refreshes_before_listing(self):
+        call_order = []
+
+        def _load():
+            call_order.append("load")
+
+        def _list():
+            call_order.append("list")
+            return []
+
+        with patch("telegram_notifier.send_telegram_message"), \
+             patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
+             patch("strategies.positions.load_positions", side_effect=_load), \
+             patch("strategies.positions.list_active_positions", side_effect=_list), \
+             patch("notifications.telegram_commands.position_display.resolve_portfolio_context", return_value={
+                 "history": {"virtual_balance": 5000, "trades": []},
+                 "cash_balance": 5000.0,
+                 "cash_label": "Cash",
+                 "gate_holdings": None,
+             }), patch("services.trading_service.TradingService") as mock_svc:
+            mock_svc.return_value.mode_label.return_value = "demo"
+            send_positions_snapshot(fast=True, detail_level="compact")
+        self.assertEqual(call_order, ["load", "list"])
 
     def test_format_position_card_trade_tree_mode(self):
         p = {

@@ -35,6 +35,40 @@ class TestMarketStructure(unittest.TestCase):
         sources = [c.source for c in cands]
         self.assertIn("bb_upper", sources)
 
+    def test_bb_upper_blocked_below_min_gain(self):
+        pos = {"rsi_sell_tiers_done": {}, "recent_high": 0.3036}
+        market = self._market(
+            current_price=0.3036,
+            rsi=65.0,
+            upper_bb=0.305,
+            average_entry=0.3036,
+        )
+        params = {
+            "bb_sell_enabled": True,
+            "bb_sell_upper_ratio": 0.99,
+            "bb_sell_rsi_min": 58,
+            "bb_sell_min_gain_pct": 12,
+            "vol_exhaustion_sell_enabled": False,
+            "vol_dump_sell_enabled": False,
+        }
+        cands = evaluate_market_structure_sells(market, params, pos)
+        self.assertEqual(cands, [])
+
+    def test_bb_upper_requires_ta_when_configured(self):
+        pos = {"rsi_sell_tiers_done": {}, "recent_high": 0.636}
+        params = {
+            "bb_sell_enabled": True,
+            "bb_sell_upper_ratio": 0.99,
+            "bb_sell_rsi_min": 62,
+            "bb_sell_requires_ta": True,
+            "vol_exhaustion_sell_enabled": False,
+            "vol_dump_sell_enabled": False,
+        }
+        cands = evaluate_market_structure_sells(self._market(), params, pos, ta_bearish=False)
+        self.assertEqual(cands, [])
+        cands_ta = evaluate_market_structure_sells(self._market(), params, pos, ta_bearish=True)
+        self.assertTrue(any(c.source == "bb_upper" for c in cands_ta))
+
     def test_vol_exhaustion_at_peak(self):
         pos = {"rsi_sell_tiers_done": {}, "recent_high": 0.636}
         params = {

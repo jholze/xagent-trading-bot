@@ -274,7 +274,17 @@ def resolve_strategy_params(
         if is_dry_run_enhanced():
             profile.update(cfg.dry_run_defaults)
         profile.update({"symbol": symbol, "timeframe": tf})
-        return _buy_profile_overlay(profile, coin, tier, cfg)
+        profile = _buy_profile_overlay(profile, coin, tier, cfg)
+        return apply_position_sell_overlay(
+            profile,
+            tier=tier,
+            has_position=has_position,
+            symbol=symbol,
+            tf=tf,
+            volatile_cfg=va_cfg,
+            stable_cfg=stable_cfg,
+            cfg=cfg,
+        )
 
     params = cfg.strategy_params(symbol, tf)
     base = dict(params) if params else {}

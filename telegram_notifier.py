@@ -1,9 +1,8 @@
 import os
-from datetime import datetime
-
 import requests
 
-from data_manager import is_demo_mode
+from core.runtime_identity import message_prefix
+from core.time_utils import format_display_hms
 from strategies.positions import get_position
 from logger import log
 
@@ -172,7 +171,7 @@ def send_signal_message(
 <b>Preis:</b> ${price_str}
 <b>RSI:</b> {rsi_str}
 {ampel_line}{why_line}{conf_line}{source_line}{social_block}{extra}{blocked_line}{exec_line}{tech_block}
-🕒 {datetime.now().strftime("%H:%M:%S")}
+🕒 {format_display_hms()}
 """
     buttons = inline_link_buttons(ticker, name=name)
     reply_markup = {"inline_keyboard": buttons} if buttons else None
@@ -206,7 +205,7 @@ def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = "")
         f"👀 <b>Kein Trade</b> — {symbol_html}\n"
         f"{links_block}\n"
         f"<b>Warum:</b> {why_de}{tech_block}\n"
-        f"🕒 {datetime.now().strftime('%H:%M:%S')}"
+        f"🕒 {format_display_hms()}"
     )
     buttons = inline_link_buttons(ticker)
     reply_markup = {"inline_keyboard": buttons} if buttons else None
@@ -220,13 +219,17 @@ def send_cmc_cycle_digest(signals: list):
     if not cfg.get("enabled") or not cfg.get("notify_cmc_digest"):
         return False
     min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
-    filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
+    filtered = [
+        s for s in signals
+        if getattr(s, "confidence", 0) >= min_conf
+        and getattr(s, "signal_tier", "") != "quote"
+    ]
     if not filtered:
         return False
     max_coins = int(cfg.get("cmc_digest_max_coins", 5))
     lines = [
         f"<b>📊 CMC-Zyklus</b> — Beobachtung (kein Trade ohne ✅ EXECUTED)",
-        datetime.now().strftime("%H:%M:%S"),
+        format_display_hms(),
         "",
     ]
     for s in filtered[:max_coins]:
@@ -246,7 +249,7 @@ def send_lc_cycle_digest(signals: list):
     filtered = [s for s in signals if getattr(s, "confidence", 0) >= min_conf]
     if not filtered:
         return False
-    lines = [f"<b>🌙 LunarCrush diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
+    lines = [f"<b>🌙 LunarCrush diesen Zyklus</b> — {format_display_hms()}", ""]
     for s in filtered[:8]:
         lines.append(explain_lc_signal(s))
         lines.append("")
@@ -270,7 +273,7 @@ def send_x_cycle_digest(signals: list, skip_post_ids: set = None):
             filtered.append(s)
     if not filtered:
         return False
-    lines = [f"<b>🐦 X-Signale diesen Zyklus</b> — {datetime.now().strftime('%H:%M:%S')}", ""]
+    lines = [f"<b>🐦 X-Signale diesen Zyklus</b> — {format_display_hms()}", ""]
     for s in filtered[:6]:
         lines.append(explain_x_signal(s))
         lines.append("")
@@ -306,18 +309,104 @@ def send_x_recommendation_message(recommendation):
 <b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {recommendation.get("trust_at_signal", "—")}
 <b>Warum:</b> {recommendation.get("rationale", "—")}{target_lines}
 
-🕒 {datetime.now().strftime("%H:%M:%S")}
+🕒 {format_display_hms()}
 """
     buttons = inline_link_buttons(coin)
     reply_markup = {"inline_keyboard": buttons} if buttons else None
     send_telegram_message(msg.strip(), reply_markup=reply_markup)
 
 
-def send_cycle_summary(text: str):
-    """Send end-of-cycle summary (respects notify_on_cycle config)."""
+def send_merged_social_digest(
+    cmc_signals: list,
+    lc_signals: list,
+    x_signals: list,
+    *,
+    skip_post_ids: set | None = None,
+):
+    """Single Telegram message for CMC + LC + X cycle digests."""
+    from notifications.user_explain import (
+        explain_cmc_signal,
+        explain_lc_signal,
+        explain_x_signal,
+        explanations_config,
+    )
+
+    cfg = explanations_config()
+    if not cfg.get("enabled"):
+        return False
+
+    skip = skip_post_ids or set()
+    sections: list[str] = []
+
+    if cfg.get("notify_cmc_digest"):
+        min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
+        cmc_filtered = [
+            s for s in cmc_signals
+            if getattr(s, "confidence", 0) >= min_conf
+            and getattr(s, "signal_tier", "") != "quote"
+        ]
+        if cmc_filtered:
+            max_coins = int(cfg.get("cmc_digest_max_coins", 5))
+            lines = ["<b>📊 CMC</b>"]
+            for s in cmc_filtered[:max_coins]:
+                lines.append(explain_cmc_signal(s))
+            sections.append("\n".join(lines))
+
+    if cfg.get("notify_lc_digest"):
+        min_conf = int(cfg.get("lc_digest_min_confidence", 55))
+        lc_filtered = [s for s in lc_signals if getattr(s, "confidence", 0) >= min_conf]
+        if lc_filtered:
+            lines = ["<b>🌙 LunarCrush</b>"]
+            for s in lc_filtered[:8]:
+                lines.append(explain_lc_signal(s))
+            sections.append("\n".join(lines))
+
+    if cfg.get("notify_x_digest"):
+        min_eff = float(cfg.get("x_digest_min_effective_confidence", 70))
+        x_filtered = []
+        for s in x_signals:
+            eff = getattr(s, "effective_confidence", getattr(s, "confidence", 0))
+            pid = getattr(s, "post_id", None)
+            if eff >= min_eff and pid not in skip:
+                x_filtered.append(s)
+        if x_filtered:
+            lines = ["<b>🐦 X</b>"]
+            for s in x_filtered[:6]:
+                lines.append(explain_x_signal(s))
+            sections.append("\n".join(lines))
+
+    if not sections:
+        return False
+
+    header = f"<b>📡 Social diesen Zyklus</b> — {format_display_hms()}\n<i>Beobachtung — kein Trade ohne ✅ EXECUTED</i>"
+    body = "\n\n".join(sections)
+    from bus.schemas import PRIORITY_CYCLE
+    return send_telegram_message(f"{header}\n\n{body}".strip(), priority=PRIORITY_CYCLE)
+
+
+def send_cycle_summary(text: str, *, cycle_ctx: dict | None = None):
+    """Send end-of-cycle summary (notify_on_cycle + optional delta gating)."""
     from data_manager import get_config
+
     if not get_config().get("observability", {}).get("notify_on_cycle", False):
         return False
+
+    if cycle_ctx is not None:
+        from logger import log
+        from services.cycle_notification_policy import cycle_notification_policy
+
+        total_value = float(cycle_ctx.get("total_value", 0) or 0)
+        coin_results = cycle_ctx.get("coin_results")
+        if not cycle_notification_policy.should_send_summary(
+            coin_results=coin_results,
+            total_value=total_value,
+        ):
+            log(cycle_notification_policy.skip_reason(
+                coin_results=coin_results,
+                total_value=total_value,
+            ), "DEBUG")
+            return False
+
     from bus.schemas import PRIORITY_CYCLE
     return send_telegram_message(text, priority=PRIORITY_CYCLE)
 
@@ -329,8 +418,9 @@ def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> boo
         print("⚠️ Telegram not configured")
         return False
 
-    if is_demo_mode():
-        caption = "🧪 [DEMO] " + caption
+    prefix = message_prefix()
+    if prefix:
+        caption = prefix + caption
 
     url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
     try:
@@ -359,8 +449,9 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
         print("⚠️ Telegram not configured")
         return False
 
-    if is_demo_mode():
-        text = "🧪 [DEMO] " + text
+    prefix = message_prefix()
+    if prefix:
+        text = prefix + text
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": target_chat, "text": text}
@@ -450,8 +541,9 @@ def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
     if not bot_token or not chat_id or not message_id:
         return False
 
-    if is_demo_mode():
-        text = "🧪 [DEMO] " + text
+    prefix = message_prefix()
+    if prefix:
+        text = prefix + text
 
     url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
     payload = {

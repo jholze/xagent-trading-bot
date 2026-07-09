@@ -16,8 +16,12 @@ class TestCMCTrendingProvider(unittest.TestCase):
         mock_resp.json.return_value = {
             "data": [{"symbol": "PEPE"}, {"symbol": "DOGE"}],
         }
+        caps = {"endpoints": {"trending/latest": True, "listings/latest": True}}
         with patch("data.cmc_trending_provider.requests.get", return_value=mock_resp):
-            symbols, source = provider.fetch_trending_symbols(limit=5)
+            symbols, source = provider.fetch_trending_symbols(
+                limit=5,
+                capabilities=caps,
+            )
         self.assertEqual(symbols, ["PEPE", "DOGE"])
         self.assertEqual(source, "trending/latest")
 
@@ -38,8 +42,18 @@ class TestCMCTrendingProvider(unittest.TestCase):
                 return fail_resp
             return ok_resp
 
+        caps = {
+            "endpoints": {
+                "trending/latest": True,
+                "trending/gainers-losers": True,
+                "listings/latest": True,
+            }
+        }
         with patch("data.cmc_trending_provider.requests.get", side_effect=side_effect):
-            symbols, source = provider.fetch_trending_symbols(limit=5)
+            symbols, source = provider.fetch_trending_symbols(
+                limit=5,
+                capabilities=caps,
+            )
         self.assertEqual(symbols, ["WIF", "BONK"])
         self.assertEqual(source, "trending/gainers-losers")
 
@@ -50,8 +64,26 @@ class TestCMCTrendingProvider(unittest.TestCase):
         listings_resp.status_code = 200
         listings_resp.json.return_value = {
             "data": [
-                {"symbol": "LOW", "quote": {"USD": {"percent_change_24h": 1}}},
-                {"symbol": "HIGH", "quote": {"USD": {"percent_change_24h": 25}}},
+                {
+                    "symbol": "HIGH",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 25,
+                            "market_cap": 20_000_000,
+                            "volume_24h": 2_000_000,
+                        }
+                    },
+                },
+                {
+                    "symbol": "LOW",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 1,
+                            "market_cap": 20_000_000,
+                            "volume_24h": 2_000_000,
+                        }
+                    },
+                },
             ],
         }
 
@@ -60,10 +92,158 @@ class TestCMCTrendingProvider(unittest.TestCase):
                 return listings_resp
             return fail_resp
 
+        caps = {
+            "endpoints": {
+                "trending/latest": False,
+                "trending/gainers-losers": False,
+                "listings/latest": True,
+            }
+        }
         with patch("data.cmc_trending_provider.requests.get", side_effect=side_effect):
-            symbols, source = provider.fetch_trending_symbols(limit=5)
+            symbols, source = provider.fetch_trending_symbols(
+                limit=5,
+                capabilities=caps,
+            )
         self.assertEqual(symbols[0], "HIGH")
         self.assertEqual(source, "listings/latest")
+
+    def test_listings_only_skips_trending_probe(self):
+        provider = CMCTrendingProvider(api_key="test-key")
+        listings_resp = MagicMock()
+        listings_resp.status_code = 200
+        listings_resp.json.return_value = {
+            "data": [
+                {
+                    "symbol": "AAA",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 20,
+                            "market_cap": 30_000_000,
+                            "volume_24h": 3_000_000,
+                        }
+                    },
+                },
+                {
+                    "symbol": "BBB",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": -15,
+                            "market_cap": 30_000_000,
+                            "volume_24h": 3_000_000,
+                        }
+                    },
+                },
+            ],
+        }
+
+        def side_effect(url, **kwargs):
+            self.assertIn("listings/latest", url)
+            return listings_resp
+
+        caps = {
+            "endpoints": {
+                "trending/latest": False,
+                "trending/gainers-losers": False,
+                "listings/latest": True,
+            }
+        }
+        with patch("data.cmc_trending_provider.requests.get", side_effect=side_effect):
+            symbols, source = provider.fetch_trending_symbols(
+                limit=5,
+                source_priority=["listings/latest"],
+                capabilities=caps,
+            )
+        self.assertEqual(source, "listings/latest")
+        self.assertIn("AAA", symbols)
+
+    def test_mcap_band_excludes_zero_mcap_pumps(self):
+        provider = CMCTrendingProvider(api_key="test-key")
+        listings_resp = MagicMock()
+        listings_resp.status_code = 200
+        listings_resp.json.return_value = {
+            "data": [
+                {
+                    "symbol": "BOBO",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 199000,
+                            "market_cap": 0,
+                            "volume_24h": 1,
+                        }
+                    },
+                },
+                {
+                    "symbol": "MAGMA",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 10.3,
+                            "market_cap": 70_400_000,
+                            "volume_24h": 4_600_000,
+                        }
+                    },
+                },
+            ],
+        }
+        caps = {
+            "endpoints": {
+                "trending/latest": False,
+                "trending/gainers-losers": False,
+                "listings/latest": True,
+            }
+        }
+        with patch("data.cmc_trending_provider.requests.get", return_value=listings_resp):
+            symbols, source = provider.fetch_trending_symbols(
+                limit=5,
+                source_priority=["listings/latest"],
+                capabilities=caps,
+            )
+        self.assertEqual(source, "listings/latest")
+        self.assertEqual(symbols, ["MAGMA"])
+        self.assertNotIn("BOBO", symbols)
+
+    def test_mcap_min_only_allows_large_caps(self):
+        provider = CMCTrendingProvider(api_key="test-key")
+        listings_resp = MagicMock()
+        listings_resp.status_code = 200
+        listings_resp.json.return_value = {
+            "data": [
+                {
+                    "symbol": "HUGE",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 8.0,
+                            "market_cap": 5_000_000_000,
+                            "volume_24h": 50_000_000,
+                        }
+                    },
+                },
+                {
+                    "symbol": "TINY",
+                    "quote": {
+                        "USD": {
+                            "percent_change_24h": 50.0,
+                            "market_cap": 500_000,
+                            "volume_24h": 1_000_000,
+                        }
+                    },
+                },
+            ],
+        }
+        caps = {
+            "endpoints": {
+                "trending/latest": False,
+                "trending/gainers-losers": False,
+                "listings/latest": True,
+            }
+        }
+        with patch("data.cmc_trending_provider.requests.get", return_value=listings_resp):
+            symbols, _ = provider.fetch_trending_symbols(
+                limit=5,
+                source_priority=["listings/latest"],
+                capabilities=caps,
+            )
+        self.assertEqual(symbols, ["HUGE"])
+        self.assertNotIn("TINY", symbols)
 
     def test_empty_without_api_key(self):
         with patch.dict(os.environ, {}, clear=True):

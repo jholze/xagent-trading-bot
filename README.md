@@ -126,12 +126,15 @@ Vollständige Liste mit Glossar: [DOCUMENTATION.md §7](DOCUMENTATION.md#7-teleg
 ## Demo-Modus
 
 ```bash
-python3 aria_bot.py --demo
+source scripts/dev_local_mongo.sh
+DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 aria_bot.py --demo
 ```
 
-- Separate `*.demo.json` Dateien (echtes Portfolio unberührt)
-- `🧪 [DEMO]` Prefix in Telegram
-- Gleiche `config.json` und Strategien
+- **Ledger:** Mongo (`xagent_test`) ist Source of Truth — Orders, Positionen, Cash
+- `*.demo.json` sind nur noch optionale Export-Backups (`demo_ledger_bundle.py export`)
+- Notfall bei Mongo-Ausfall: `DEMO_LEDGER_JSON_FALLBACK=1` (stellt JSON-Fallback wieder her)
+- Stale JSON archivieren: `scripts/cleanup_stale_demo_json.sh`
+- `🧪 [DEMO]` Prefix in Telegram; gleiche `config.json` und Strategien
 
 Details: [DOCUMENTATION.md §5](DOCUMENTATION.md#5-demo-modus---demo)
 

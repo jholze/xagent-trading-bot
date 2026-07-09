@@ -9,17 +9,21 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from data_manager import load_orders, resolve_ledger_scope, resolve_positions_file
 from services.ledger_sync import (
+    _build_positions_snapshot_from_orders,
     backfill_orders_from_trade_history,
     count_open_positions_from_orders,
     on_trading_mode_change,
     rebuild_positions_from_orders,
+    reconcile_recent_highs,
     sync_positions_on_startup,
 )
 from services.order_service import OrderService
 from strategies.positions import (
+    _positions_lock,
     bootstrap_positions,
     count_open_positions,
     get_active_scope,
+    get_key,
     get_position,
     positions,
 )
@@ -150,6 +154,28 @@ class TestLedgerSync(unittest.TestCase):
         with patch("data_manager.is_demo_mode", return_value=True):
             self.assertEqual(resolve_ledger_scope(), "demo")
 
+    def _filled_dca_buy(self, scope, symbol, price, amount):
+        from core.models import TradeOrder
+
+        svc = OrderService(scope)
+        order = svc.create_from_request(
+            TradeOrder(
+                "BUY",
+                symbol,
+                price,
+                amount,
+                usdt_amount=price * amount,
+                source="dca",
+                signal="BUY_DCA",
+            ),
+            telegram_token=f"{scope}_dca_{symbol}_{price}",
+        )
+        svc.update_status(
+            order["id"],
+            "filled",
+            execution={"price": price, "amount": amount, "usdt": price * amount},
+        )
+
     def test_partial_sell_peak_amount_from_orders(self):
         self._filled_buy("paper", "XPL/USDT", 1.0, 100.0)
         self._filled_sell("paper", "XPL/USDT", 1.2, 30.0)
@@ -159,6 +185,45 @@ class TestLedgerSync(unittest.TestCase):
         self.assertAlmostEqual(float(pos["amount"]), 70.0, places=2)
         self.assertAlmostEqual(float(pos["peak_amount"]), 100.0, places=2)
         self.assertAlmostEqual(pos["sold_percent"], 0.3, places=2)
+
+    def test_rebuild_preserves_dca_rounds_from_orders(self):
+        self._filled_buy("paper", "LAB/USDT", 12.0, 100.0)
+        self._filled_dca_buy("paper", "LAB/USDT", 10.0, 40.0)
+
+        import json
+
+        with open(self.positions_files["paper"], "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "ledger_scope": "paper",
+                    "positions": {
+                        "LAB_USDT_4h": {
+                            "amount": 140.0,
+                            "peak_amount": 140.0,
+                            "sold_percent": 0.0,
+                            "average_entry": 11.43,
+                            "dca_rounds": 0,
+                            "last_dca_at": None,
+                        }
+                    },
+                },
+                f,
+            )
+
+        rebuild_positions_from_orders("paper")
+        pos = get_position("LAB/USDT", "4h")
+        self.assertEqual(pos["dca_rounds"], 1)
+        self.assertIsNotNone(pos["last_dca_at"])
+
+    def test_order_snapshot_infers_dca_without_stale_cache(self):
+        self._filled_buy("paper", "SKYAI/USDT", 0.05, 1000.0)
+        self._filled_dca_buy("paper", "SKYAI/USDT", 0.04, 500.0)
+        self._filled_dca_buy("paper", "SKYAI/USDT", 0.03, 500.0)
+
+        snap = _build_positions_snapshot_from_orders("paper")
+        pos = snap["SKYAI_USDT_4h"]
+        self.assertEqual(pos["dca_rounds"], 2)
+        self.assertIsNotNone(pos["last_dca_at"])
 
     def test_sync_positions_on_startup_rebuilds_on_drift(self):
         self._filled_buy("live", "ARIA/USDT", 0.05, 1000)
@@ -236,6 +301,23 @@ class TestLedgerSync(unittest.TestCase):
         self.assertEqual(added, 1)
         orders = load_orders("paper").get("orders", [])
         self.assertEqual(orders[-1]["id"], "legacy-cat-01")
+
+    def test_reconcile_recent_highs_updates_stale_peak(self):
+        self._filled_buy("paper", "MAGMA/USDT", 0.34, 1000.0)
+        rebuild_positions_from_orders("paper")
+        key = get_key("MAGMA/USDT", "4h")
+        with _positions_lock:
+            positions[key]["recent_high"] = 0.35
+
+        with patch("strategies.positions.save_positions_document", return_value=True) as mock_save:
+            changed = reconcile_recent_highs(
+                "paper",
+                price_map={"MAGMA/USDT": 0.39},
+            )
+
+        self.assertTrue(changed)
+        mock_save.assert_called()
+        self.assertEqual(float(get_position("MAGMA/USDT", "4h")["recent_high"]), 0.39)
 
 
 if __name__ == "__main__":

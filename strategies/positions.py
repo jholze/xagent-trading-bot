@@ -68,6 +68,10 @@ _CACHE_FIELDS = (
     "dca_max_rounds",
     "last_dca_at",
     "dca_total_usdt",
+    "dca_recovery_rounds",
+    "dca_recovery_max_rounds",
+    "last_dca_recovery_at",
+    "last_recovery_ref_price",
     "last_sell_signal",
     "rsi_sell_tiers_done",
     "last_cmc_sell_at",
@@ -75,7 +79,14 @@ _CACHE_FIELDS = (
     "last_ampel",
     "last_rsi",
     "first_buy_at",
+    "entry_source",
+    "entry_at",
+    "entry_15m_vol_ratio",
     "time_profit_exit_done",
+    "profit_armed_at",
+    "trail_tp_steps",
+    "last_trail_tp_at",
+    "profit_max_lifetime_done",
 )
 
 
@@ -148,9 +159,20 @@ def _deserialize_position(raw: dict) -> dict:
         "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
         "last_dca_at": raw.get("last_dca_at"),
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
+        "dca_recovery_rounds": int(raw.get("dca_recovery_rounds", 0) or 0),
+        "dca_recovery_max_rounds": int(raw.get("dca_recovery_max_rounds", 0) or 0),
+        "last_dca_recovery_at": raw.get("last_dca_recovery_at"),
+        "last_recovery_ref_price": float(raw.get("last_recovery_ref_price", 0) or 0),
         "last_sell_signal": raw.get("last_sell_signal"),
         "first_buy_at": raw.get("first_buy_at"),
+        "entry_source": raw.get("entry_source"),
+        "entry_at": raw.get("entry_at"),
+        "entry_15m_vol_ratio": float(raw.get("entry_15m_vol_ratio", 0) or 0) or None,
         "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
+        "profit_armed_at": raw.get("profit_armed_at"),
+        "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),
+        "last_trail_tp_at": raw.get("last_trail_tp_at"),
+        "profit_max_lifetime_done": bool(raw.get("profit_max_lifetime_done", False)),
     }
 
 
@@ -179,9 +201,20 @@ def _serialize_positions() -> dict:
             "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
             "last_dca_at": p.get("last_dca_at"),
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
+            "dca_recovery_rounds": int(p.get("dca_recovery_rounds", 0) or 0),
+            "dca_recovery_max_rounds": int(p.get("dca_recovery_max_rounds", 0) or 0),
+            "last_dca_recovery_at": p.get("last_dca_recovery_at"),
+            "last_recovery_ref_price": float(p.get("last_recovery_ref_price", 0) or 0),
             "last_sell_signal": p.get("last_sell_signal"),
             "first_buy_at": p.get("first_buy_at"),
+            "entry_source": p.get("entry_source"),
+            "entry_at": p.get("entry_at"),
+            "entry_15m_vol_ratio": p.get("entry_15m_vol_ratio"),
             "time_profit_exit_done": bool(p.get("time_profit_exit_done", False)),
+            "profit_armed_at": p.get("profit_armed_at"),
+            "trail_tp_steps": int(p.get("trail_tp_steps", 0) or 0),
+            "last_trail_tp_at": p.get("last_trail_tp_at"),
+            "profit_max_lifetime_done": bool(p.get("profit_max_lifetime_done", False)),
         }
     return data
 
@@ -195,6 +228,15 @@ def _recompute_open_count() -> None:
     _open_positions_count = count
 
 
+_DCA_ORDER_PRIORITY_FIELDS = (
+    "dca_rounds",
+    "dca_recovery_rounds",
+    "last_dca_at",
+    "last_dca_recovery_at",
+    "dca_total_usdt",
+)
+
+
 def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) -> dict:
     """Pure derive: amounts from orders SOT; merge cache-only fields (no orphan cache lots)."""
     merged = {}
@@ -203,8 +245,21 @@ def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) ->
         pos = dict(snap)
         cached = cache_positions.get(key) or {}
         for field in _CACHE_FIELDS:
+            if field in _DCA_ORDER_PRIORITY_FIELDS:
+                continue
             if field in cached and cached[field] is not None:
                 pos[field] = cached[field]
+        for field in _DCA_ORDER_PRIORITY_FIELDS:
+            order_val = snap.get(field)
+            cached_val = cached.get(field)
+            if field in ("dca_rounds", "dca_recovery_rounds"):
+                best = max(int(order_val or 0), int(cached_val or 0))
+                if best > 0 or cached_val is not None or order_val is not None:
+                    pos[field] = best
+            elif order_val is not None:
+                pos[field] = order_val
+            elif cached_val is not None:
+                pos[field] = cached_val
         merged[key] = pos
     return merged
 
@@ -305,14 +360,31 @@ def save_positions(scope: str = None):
     flush_positions(scope, force=True)
 
 
-def update_market_snapshot(symbol: str, timeframe: str, current_price: float, atr_pct: float = 0.0):
+def update_market_snapshot(
+    symbol: str,
+    timeframe: str,
+    current_price: float,
+    atr_pct: float = 0.0,
+    *,
+    peak_hint: float | None = None,
+) -> bool:
+    """Bump recent_high when price makes a new peak. Returns True if peak changed."""
     _activate(_resolve_store_key())
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     store = _active_store()
+    changed = False
+    candidate = max(float(current_price), float(peak_hint or 0))
     with _positions_lock:
         pos = store[key]
-        pos["recent_high"] = max(float(pos.get("recent_high") or 0), current_price)
+        old_high = float(pos.get("recent_high") or 0)
+        new_high = max(old_high, candidate)
+        if new_high > old_high:
+            pos["recent_high"] = new_high
+            changed = True
+    if changed:
+        flush_positions()
+    return changed
 
 
 def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
@@ -359,9 +431,20 @@ def init_position(symbol, timeframe):
                 "dca_max_rounds": 0,
                 "last_dca_at": None,
                 "dca_total_usdt": 0.0,
+                "dca_recovery_rounds": 0,
+                "dca_recovery_max_rounds": 0,
+                "last_dca_recovery_at": None,
+                "last_recovery_ref_price": 0.0,
                 "last_sell_signal": None,
                 "first_buy_at": None,
+                "entry_source": None,
+                "entry_at": None,
+                "entry_15m_vol_ratio": None,
                 "time_profit_exit_done": False,
+                "profit_armed_at": None,
+                "trail_tp_steps": 0,
+                "last_trail_tp_at": None,
+                "profit_max_lifetime_done": False,
             }
 
 
@@ -429,6 +512,37 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
     flush_positions()
 
 
+def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: float) -> None:
+    """Cooldown + reset recent_high after trail TP; sizing stays on exit ladder."""
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        pos["last_trail_tp_at"] = datetime.now().isoformat()
+        pos["recent_high"] = float(current_price)
+    flush_positions()
+
+
+def mark_profit_max_lifetime_done(symbol: str, timeframe: str) -> None:
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = positions[key]
+        if pos.get("profit_max_lifetime_done"):
+            return
+        pos["profit_max_lifetime_done"] = True
+    flush_positions()
+
+
+def _is_dca_buy_signal(signal: str) -> bool:
+    return (signal or "").upper() == "BUY_DCA"
+
+
+def _is_addon_buy(old_amount, position: dict) -> bool:
+    """True when adding to an existing open lot (must preserve DCA / ladder state)."""
+    return float(old_amount) > 0
+
+
 def sell_fraction_for_signal(
     signal: str,
     symbol: str | None = None,
@@ -463,7 +577,16 @@ def sell_fraction_for_signal(
     return 0.2
 
 
-def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
+def update_position(
+    symbol,
+    timeframe,
+    signal,
+    current_price,
+    amount_traded=0,
+    *,
+    entry_source: str | None = None,
+    entry_15m_vol_ratio: float | None = None,
+):
     global _open_positions_count
     _activate(_resolve_store_key())
     init_position(symbol, timeframe)
@@ -487,13 +610,37 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
             pos["amount"] = new_amount
             pos["last_buy_price"] = current_price
             pos["last_trade_at"] = datetime.now().isoformat()
-            if signal == "BUY_DCA" and old_amount > 0:
+            if _is_dca_buy_signal(signal) and _is_addon_buy(old_amount, pos):
                 pos["last_action"] = "BUY_DCA"
                 pos["last_trade_type"] = "BUY_DCA"
+                usdt_added = current_price * float(amount_traded)
                 pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
                 pos["last_dca_at"] = datetime.now().isoformat()
-                usdt_added = current_price * float(amount_traded)
+                pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
+                if not int(pos.get("dca_max_rounds", 0) or 0):
+                    from strategies.dca import dca_config as _dca_cfg
+
+                    params = None
+                    try:
+                        from strategies.registry import resolve_strategy_params
+
+                        params = resolve_strategy_params(
+                            {"symbol": symbol, "timeframe": timeframe},
+                            has_position=True,
+                            frozen_tier=pos.get("strategy_tier"),
+                        )
+                    except Exception:
+                        params = None
+                    cfg = _dca_cfg(params)
+                    pos["dca_max_rounds"] = int(cfg.get("max_rounds", 3))
+            elif _is_addon_buy(old_amount, pos):
+                pos["last_action"] = "BUY"
+                pos["last_trade_type"] = "BUY"
+                if entry_source and not pos.get("entry_source"):
+                    pos["entry_source"] = entry_source
+                if entry_15m_vol_ratio is not None:
+                    pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
             else:
                 pos["peak_amount"] = float(new_amount)
                 pos["sold_percent"] = 0.0
@@ -506,10 +653,22 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
                 pos["dca_max_rounds"] = 0
                 pos["last_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
+                pos["dca_recovery_rounds"] = 0
+                pos["dca_recovery_max_rounds"] = 0
+                pos["last_dca_recovery_at"] = None
+                pos["last_recovery_ref_price"] = 0.0
                 pos["time_profit_exit_done"] = False
+                pos["profit_armed_at"] = None
+                pos["trail_tp_steps"] = 0
+                pos["last_trail_tp_at"] = None
+                pos["profit_max_lifetime_done"] = False
                 pos["first_buy_at"] = datetime.now().isoformat()
-                if old_amount <= 0:
-                    pos["strategy_tier"] = None
+                if entry_source:
+                    pos["entry_source"] = entry_source
+                    pos["entry_at"] = pos["first_buy_at"]
+                if entry_15m_vol_ratio is not None:
+                    pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
+                pos["strategy_tier"] = None
         elif "SELL" in signal:
             original_amount = float(pos["amount"])
             strategy_params = None
@@ -583,6 +742,36 @@ def update_position(symbol, timeframe, signal, current_price, amount_traded=0):
 def count_open_positions():
     with _positions_lock:
         return _open_positions_count
+
+
+def count_open_full_slots(config_raw: dict | None = None) -> int:
+    from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
+
+    if config_raw is None:
+        from core.config import get_bot_config
+
+        config_raw = get_bot_config().raw
+    cfg = rotation_config(config_raw)
+    with _positions_lock:
+        return sum(
+            1 for p in positions.values()
+            if is_open_position(p) and not _is_tail(p, cfg)
+        )
+
+
+def count_open_tail_slots(config_raw: dict | None = None) -> int:
+    from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
+
+    if config_raw is None:
+        from core.config import get_bot_config
+
+        config_raw = get_bot_config().raw
+    cfg = rotation_config(config_raw)
+    with _positions_lock:
+        return sum(
+            1 for p in positions.values()
+            if is_open_position(p) and _is_tail(p, cfg)
+        )
 
 
 def get_total_aria():

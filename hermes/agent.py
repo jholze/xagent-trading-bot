@@ -250,11 +250,22 @@ class HermesAgent:
         from notifications.user_explain import explanations_config, explain_hermes_cycle
 
         cfg = explanations_config(self.config)
-        if not cfg.get("notify_hermes_every_cycle", True):
-            return
         if promoted:
             return
         if record.get("live_veto"):
+            return
+
+        cycle_cfg = self.config.observability_config.get("cycle_notifications", {})
+        verdict = (record.get("verdict") or "").lower()
+        notify_rejected = bool(
+            cycle_cfg.get(
+                "notify_hermes_rejected",
+                cfg.get("notify_hermes_rejected", False),
+            )
+        )
+        if verdict == "rejected" and not notify_rejected:
+            return
+        if not cfg.get("notify_hermes_every_cycle", True) and verdict != "promoted":
             return
         try:
             from telegram_notifier import send_telegram_message

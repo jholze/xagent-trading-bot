@@ -130,15 +130,23 @@ class DryRunPortfolioHarness:
         return load_live_trade_history()
 
     def assert_portfolio_invariant(self, prices: dict, tol: float = 0.05) -> None:
+        from core.portfolio_baseline import split_nav_pnl_for_display
+
         history = self.history()
         cash = float(history["virtual_balance"])
         active = list_active_positions()
         market_value = _position_market_value(active, prices)
         unreal = _unrealized_pnl(active, prices)
-        realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
         total = cash + market_value
+        pnl = split_nav_pnl_for_display(total, self.initial, unreal)
 
-        self._assert_close(total, self.initial + realized + unreal, tol, "equity identity")
+        self._assert_close(total, self.initial + pnl["total_pnl"], tol, "nav identity")
+        self._assert_close(
+            pnl["realized"] + pnl["unrealized"],
+            pnl["total_pnl"],
+            tol,
+            "pnl split",
+        )
         self._assert_close(
             compute_sim_cash_from_trades(history.get("trades", []), self.initial),
             cash,
@@ -205,7 +213,8 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                  patch("data_manager._ledger_reads_mongo", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
-                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
+                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)), \
+                 patch("data_manager.save_live_trade_history"):
                 history = load_live_trade_history()
             self.assertAlmostEqual(history["virtual_balance"], 4900.0)
 
@@ -232,7 +241,8 @@ class TestDryRunPortfolioMath(unittest.TestCase):
                  patch("data_manager._ledger_reads_mongo", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=False), \
-                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)):
+                 patch("data_manager._reconcile_live_trade_sources", return_value=(payload, False)), \
+                 patch("data_manager.save_live_trade_history"):
                 history = load_live_trade_history()
             self.assertAlmostEqual(history["virtual_balance"], 4500.0)
 
@@ -306,8 +316,13 @@ class TestDryRunPortfolioFlows(unittest.TestCase):
         self.assertIn("Cash (Sim)", msg)
         self.assertIn(f"${cash:,.2f}", msg)
         market = _position_market_value(active, prices)
-        realized = float(history.get("realized_pnl", 0))
-        self.assertAlmostEqual(cash + market, self.harness.initial + realized + unreal, places=1)
+        from core.portfolio_baseline import nav_total_pnl
+
+        self.assertAlmostEqual(
+            nav_total_pnl(cash + market, self.harness.initial),
+            unreal,
+            places=1,
+        )
 
     def test_risk_manager_equity_matches_sim_portfolio(self):
         self.harness.execute_buy("CAT/USDT", 500, 1.514e-06)

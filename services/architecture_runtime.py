@@ -36,6 +36,7 @@ def ensure_started(force_refresh: bool = False):
             heavy_job_queue.start()
         ensure_background()
         ensure_trading_engine()
+        _ensure_eval_worker()
 
         if mode == "direct":
             _started = True
@@ -58,6 +59,31 @@ def ensure_started(force_refresh: bool = False):
         log("Architecture runtime: async notification worker active", "INFO")
 
 
+def _ensure_eval_worker():
+    try:
+        from bus.eval_queue import eval_queue_enabled
+        if not eval_queue_enabled():
+            return
+        from services.eval_queue_runtime import _orchestrator, ensure_started
+
+        if _orchestrator is not None:
+            ensure_started(_orchestrator)
+    except Exception as e:
+        log(f"Eval worker ensure failed: {e}", "WARNING")
+
+
+def register_eval_orchestrator(orchestrator) -> None:
+    """Bind orchestrator for eval worker (call once at bot startup)."""
+    try:
+        from bus.eval_queue import eval_queue_enabled
+        from services.eval_queue_runtime import ensure_started
+
+        if eval_queue_enabled():
+            ensure_started(orchestrator)
+    except Exception as e:
+        log(f"Eval worker register failed: {e}", "WARNING")
+
+
 def _heartbeat_tick(cfg):
     from bus.heartbeats import heartbeat_registry
 
@@ -72,6 +98,7 @@ def _heartbeat_tick(cfg):
     )
     for worker in (
         "price_loop",
+        "eval_worker",
         "ask_bridge",
         "webhook_watchdog",
         "heavy_job_worker",

@@ -28,6 +28,8 @@ def _scoring_dca_cfg(mode: str = "live") -> dict:
         "loss_pct_max": -3,
         "sl_proximity_pct": 15,
         "max_rounds": 3,
+        "min_remainder_usdt": 50,
+        "sizing": {"min_usdt": 10, "max_usdt": 25, "min_multiplier": 0.5, "max_multiplier": 1.0},
         "scoring": {
             "enabled": True,
             "min_score": 6,
@@ -116,7 +118,8 @@ class TestDCAModule(unittest.TestCase):
         cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, self.params)
         self.assertIsNotNone(cand)
         self.assertEqual(cand.action, BUY_DCA)
-        self.assertAlmostEqual(cand.usdt_amount, 20.0)
+        self.assertGreaterEqual(cand.usdt_amount, 9.0)
+        self.assertLessEqual(cand.usdt_amount, 25.0)
         self.assertGreaterEqual(cand.score, 6)
 
     def test_scoring_blocks_weak_signal(self):
@@ -156,14 +159,15 @@ class TestDCAModule(unittest.TestCase):
         self.assertIsNotNone(cand)
         self.assertEqual(cand.score, 0)
 
-    def test_dca_blocked_after_ladder_started(self):
+    def test_dca_allowed_after_partial_sell(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)
         pos["exit_ladder_step"] = 1
         pos["sold_percent"] = 0.3
 
         cand = evaluate_dca_addon(self._market(1.0, 0.92), pos, self.params)
-        self.assertIsNone(cand)
+        self.assertIsNotNone(cand)
+        self.assertIn("sold 30%", cand.rationale)
 
     def test_dca_blocked_when_gain(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
@@ -243,6 +247,53 @@ class TestDCAModule(unittest.TestCase):
         self.assertIsNotNone(pos["last_dca_at"])
         self.assertGreater(float(pos["amount"]), 1000)
 
+    def test_entry_sensor_addon_preserves_dca_rounds(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 1000)
+        update_position(self.symbol, self.tf, "BUY_DCA", 0.9, 50)
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["dca_rounds"], 1)
+        last_dca = pos["last_dca_at"]
+        peak = float(pos["peak_amount"])
+
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.1,
+            30,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["dca_rounds"], 1)
+        self.assertEqual(pos["last_dca_at"], last_dca)
+        self.assertAlmostEqual(float(pos["peak_amount"]), peak)
+        self.assertEqual(pos["entry_source"], "entry_sensor_15m")
+        self.assertIsNone(pos.get("entry_at"))
+
+    def test_entry_sensor_addon_does_not_retag_entry_at(self):
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.0,
+            1000,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        entry_at = pos["entry_at"]
+        self.assertIsNotNone(entry_at)
+
+        update_position(
+            self.symbol,
+            self.tf,
+            "BUY",
+            1.1,
+            50,
+            entry_source="entry_sensor_15m",
+        )
+        pos = get_position(self.symbol, self.tf)
+        self.assertEqual(pos["entry_at"], entry_at)
+
 
 class TestDCAMarketService(unittest.TestCase):
     def test_btc_underperformance_ratio(self):
@@ -313,7 +364,7 @@ class TestDCADecisionEngine(unittest.TestCase):
             },
         )
         engine = DecisionEngine()
-        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "")):
+        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "", {})):
             analysis = engine.evaluate_with_market(
                 {"symbol": self.symbol, "timeframe": self.tf},
                 market,

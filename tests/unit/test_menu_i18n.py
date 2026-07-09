@@ -72,6 +72,7 @@ class TestMenuI18n(unittest.TestCase):
     def test_section_help_message(self):
         de = build_section_help_message("transparenz", "de")
         en = build_section_help_message("transparenz", "en")
+        self.assertIn("/stack", de)
         self.assertIn("/lc", de)
         self.assertIn("LunarCrush", de)
         self.assertIn("/lc", en)

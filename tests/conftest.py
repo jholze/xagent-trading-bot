@@ -9,13 +9,17 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
-from storage.mongo_client import close_client, force_local_test_mongo
+from storage.mongo_client import DEV_DB_NAME, TEST_DB_NAME, close_client, force_local_test_mongo
 
-force_local_test_mongo()
+os.environ["PYTEST_RUNNING"] = "1"
+force_local_test_mongo(dev=False)
+os.environ["MONGODB_DB"] = TEST_DB_NAME
 
 
 def pytest_configure(config):
-    force_local_test_mongo()
+    os.environ["PYTEST_RUNNING"] = "1"
+    force_local_test_mongo(dev=False)
+    os.environ["MONGODB_DB"] = TEST_DB_NAME
     close_client()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
@@ -29,11 +33,13 @@ collect_ignore = [
 
 @pytest.fixture(autouse=True)
 def isolate_test_mongo(monkeypatch):
-    """Keep all Mongo tests on localhost xagent_test; block inherited MONGO_URL."""
+    """Pytest uses isolated xagent_pytest — never the operator dev ledger xagent_test."""
     monkeypatch.delenv("MONGO_URL", raising=False)
+    monkeypatch.delenv("DEMO_LEDGER_BACKEND", raising=False)
+    monkeypatch.setenv("PYTEST_RUNNING", "1")
     monkeypatch.setenv("MONGODB_URI", "mongodb://127.0.0.1:27017")
-    monkeypatch.setenv("MONGODB_DB", "xagent_test")
-    monkeypatch.setenv("MONGODB_TEST_DB", "xagent_test")
+    monkeypatch.setenv("MONGODB_DB", TEST_DB_NAME)
+    monkeypatch.setenv("MONGODB_TEST_DB", TEST_DB_NAME)
     close_client()
     yield
     close_client()
@@ -140,6 +146,7 @@ def normalize_unit_test_config(monkeypatch):
     cfg.setdefault("live", {})["max_usdt_per_trade"] = 200
     cfg.setdefault("paper", {})["initial_capital_usdt"] = 5000
     cfg["paper"]["backend"] = "local"
+    cfg.setdefault("demo", {})["backend"] = "local"
     cfg.setdefault("aggression", {})["max_position_multiplier"] = 2.0
     arch = cfg.setdefault("architecture", {})
     arch["ledger_backend"] = "local"

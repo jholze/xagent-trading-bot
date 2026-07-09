@@ -4,15 +4,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [[ ! -f .env ]]; then
-  echo "❌ .env missing (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID required)"
+  echo "❌ .env missing (API keys)"
+  exit 1
+fi
+
+if [[ ! -f .env.local ]]; then
+  echo "❌ .env.local missing — copy .env.local.example and add your DEV bot token"
+  echo "   Production Railway bot must stay separate. See: bash scripts/get_telegram_chat_id.sh"
   exit 1
 fi
 
 # shellcheck disable=SC1091
-source .env
+source "$(dirname "$0")/source_bot_env.sh"
 
 if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
-  echo "❌ TELEGRAM_BOT_TOKEN not set in .env"
+  echo "❌ TELEGRAM_BOT_TOKEN not set in .env.local"
   exit 1
 fi
 
@@ -46,10 +52,19 @@ wait_for_port_free() {
 wait_for_port_free 5000
 wait_for_port_free 4040
 
-echo "🧪 Starting bot (demo mode, local Mongo DB: xagent_test)..."
+echo "🔴 Ensuring Redis (price cache)..."
+bash "$(dirname "$0")/ensure_redis.sh" || {
+  echo "❌ Redis not running — run: brew install redis && brew services start redis"
+  exit 1
+}
+
+echo "🧪 Starting bot (demo mode, Mongo ledger: xagent_test)..."
 # shellcheck disable=SC1091
 source "$(dirname "$0")/dev_local_mongo.sh"
-DEMO_MODE=1 python3 aria_bot.py --demo &
+export DEMO_LEDGER_BACKEND=mongo
+bash "$(dirname "$0")/sync_demo_ledger_from_railway.sh" || echo "WARN: demo ledger sync skipped"
+export BOT_STACK="${BOT_STACK:-local}"
+DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 aria_bot.py --demo &
 BOT_PID=$!
 
 echo "⏳ Waiting for bot on :5000..."
@@ -155,31 +170,16 @@ fi
 
 echo "📋 Registering Telegram command menu..."
 python3 -c "
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+root = Path.cwd()
+load_dotenv(root / ".env")
+load_dotenv(root / ".env.local", override=True)
 from notifications.telegram_commands.command_menu import register_bot_commands
 register_bot_commands()
 " 2>/dev/null || echo "   (command menu registration skipped)"
 
-python3 -c "
-import os, requests
-from dotenv import load_dotenv
-load_dotenv()
-from core.build_info import format_build_line
-token = os.getenv('TELEGRAM_BOT_TOKEN')
-chat = os.getenv('TELEGRAM_CHAT_ID')
-if token and chat:
-    url = f'https://api.telegram.org/bot{token}/sendMessage'
-    text = (
-        '✅ <b>Bot + ngrok neu gestartet</b>\n\n'
-        f'<b>Webhook:</b> ${PUBLIC_URL}\n'
-        '<b>Modus:</b> Paper (Demo)\n'
-        '<b>Mongo:</b> xagent_test\n'
-        f'{format_build_line()}\n\n'
-        'Sende /help zum Testen.'
-    )
-    requests.post(url, json={'chat_id': int(chat), 'text': text, 'parse_mode': 'HTML'}, timeout=10)
-" 2>/dev/null || true
+PUBLIC_URL="$PUBLIC_URL" python3 scripts/notify_local_restart.py "$PUBLIC_URL" || true
 
 echo ""
 echo "✅ Ready!"

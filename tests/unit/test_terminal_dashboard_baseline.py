@@ -27,7 +27,9 @@ class TestTerminalDashboardBaseline(unittest.TestCase):
         mock_baseline.assert_called_once()
         self.assertEqual(snap["ledger_scope"], "demo")
         self.assertEqual(snap["initial_capital"], 50000.0)
-        self.assertAlmostEqual(snap["pnl_pct"], 0.2, places=2)
+        self.assertAlmostEqual(snap["total_pnl"], -10000.0, places=2)
+        self.assertAlmostEqual(snap["pnl_pct"], -20.0, places=2)
+        self.assertAlmostEqual(snap["realized"], -10000.0, places=2)
 
 
 if __name__ == "__main__":

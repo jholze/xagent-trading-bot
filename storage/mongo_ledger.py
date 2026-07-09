@@ -6,7 +6,7 @@ import copy
 from typing import Any
 
 from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled, resolve_tenant_id
-from storage.mongo_client import get_database, resolve_database_name
+from storage.mongo_client import assert_safe_dev_db_mutation, get_database, resolve_database_name
 from storage.tenant_keys import compound_ledger_id, is_legacy_doc
 
 ORDERS_COLLECTION = "orders"
@@ -63,6 +63,9 @@ class MongoLedgerStore:
     def _db(self):
         return get_database(test=self._test, config=self._config)
 
+    def _guard_dev_db(self) -> None:
+        assert_safe_dev_db_mutation(self.database_name, action="write")
+
     def _collection(self, name: str):
         return self._db[name]
 
@@ -106,6 +109,7 @@ class MongoLedgerStore:
     def save_orders(
         self, data: dict, scope: str, tenant_id: str | None = None
     ) -> bool:
+        self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(ORDERS_COLLECTION).replace_one(
             {"_id": payload["_id"]}, payload, upsert=True
@@ -126,6 +130,7 @@ class MongoLedgerStore:
     def save_positions(
         self, data: dict, scope: str, tenant_id: str | None = None
     ) -> bool:
+        self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(POSITIONS_COLLECTION).replace_one(
             {"_id": payload["_id"]}, payload, upsert=True
@@ -146,6 +151,7 @@ class MongoLedgerStore:
     def save_trade_history(
         self, data: dict, scope: str, tenant_id: str | None = None
     ) -> bool:
+        self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
         self._collection(TRADE_HISTORY_COLLECTION).replace_one(
             {"_id": payload["_id"]}, payload, upsert=True

@@ -289,6 +289,117 @@ def _dedupe_watchlist_coins(coins: list) -> list:
     return unique
 
 
+def prune_watchlist_coins_gate_only(
+    coins: list,
+    *,
+    gate_prices: dict | None = None,
+    gate_only: bool = True,
+) -> tuple[list, list[str]]:
+    """Drop coins with no Gate.io USDT price. Returns (kept, removed_symbols)."""
+    if not gate_only or not coins:
+        return list(coins), []
+    from price_fetcher import get_gate_prices_batch, passes_gate_filter
+
+    symbols = [c.get("symbol") for c in coins if c.get("symbol")]
+    prices = gate_prices if gate_prices is not None else get_gate_prices_batch(symbols)
+    cfg = {"gate_only": True}
+    kept, removed = [], []
+    for coin in coins:
+        sym = coin.get("symbol", "")
+        if not sym:
+            continue
+        ok, _ = passes_gate_filter(sym, cfg, gate_price=prices.get(sym, 0))
+        if ok:
+            kept.append(coin)
+        else:
+            removed.append(sym)
+    return kept, removed
+
+
+def prune_non_gate_watchlist_sources(config: dict = None) -> dict:
+    """
+    Remove non-Gate coins from overlay/expansion JSON (and optionally base watchlist).
+    Idempotent; safe to call each bot cycle when gate_only is enabled.
+    """
+    from core.config import BotConfig, get_bot_config
+
+    bot_cfg = BotConfig(raw=config) if config is not None else get_bot_config()
+    cfg = bot_cfg.raw
+    tw = bot_cfg.trending_watchlist_config
+    if not tw.get("gate_only", True) or not tw.get("prune_non_gate", True):
+        return {"removed": [], "by_source": {}}
+
+    all_symbols: list[str] = []
+    sources: list[tuple[str, list]] = []
+
+    if tw.get("prune_base_watchlist", False):
+        base = load_watchlist()
+        sources.append(("base", base))
+        all_symbols.extend(c.get("symbol") for c in base if c.get("symbol"))
+
+    if uses_watchlist_expansion(cfg):
+        expansion = load_dry_run_expansion()
+        exp_coins = expansion.get("coins", [])
+        sources.append(("expansion", exp_coins))
+        all_symbols.extend(c.get("symbol") for c in exp_coins if c.get("symbol"))
+
+    if is_dry_run_enhanced(cfg):
+        overlay = load_dry_run_overlay()
+        ov_coins = overlay.get("coins", [])
+        sources.append(("dry_run_overlay", ov_coins))
+        all_symbols.extend(c.get("symbol") for c in ov_coins if c.get("symbol"))
+
+    if trending_watchlist_live_enabled(cfg):
+        overlay = load_cmc_trending_overlay()
+        ov_coins = overlay.get("coins", [])
+        sources.append(("cmc_trending_overlay", ov_coins))
+        all_symbols.extend(c.get("symbol") for c in ov_coins if c.get("symbol"))
+
+    if not all_symbols:
+        return {"removed": [], "by_source": {}}
+
+    from price_fetcher import get_gate_prices_batch
+
+    gate_prices = get_gate_prices_batch(list(dict.fromkeys(all_symbols)))
+    removed_all: list[str] = []
+    by_source: dict[str, list[str]] = {}
+
+    for label, coins in sources:
+        kept, removed = prune_watchlist_coins_gate_only(
+            coins,
+            gate_prices=gate_prices,
+            gate_only=True,
+        )
+        if not removed:
+            continue
+        by_source[label] = removed
+        removed_all.extend(removed)
+        if label == "base":
+            save_watchlist(kept)
+        elif label == "expansion":
+            expansion = load_dry_run_expansion()
+            expansion["coins"] = kept
+            save_dry_run_expansion(expansion)
+        elif label == "dry_run_overlay":
+            overlay = load_dry_run_overlay()
+            overlay["coins"] = kept
+            overlay.setdefault("gate_pruned", []).extend(removed)
+            save_dry_run_overlay(overlay)
+        elif label == "cmc_trending_overlay":
+            overlay = load_cmc_trending_overlay()
+            overlay["coins"] = kept
+            overlay.setdefault("gate_pruned", []).extend(removed)
+            save_cmc_trending_overlay(overlay)
+
+    if removed_all:
+        log(
+            f"Gate watchlist prune: -{len(removed_all)} coins "
+            f"({', '.join(f'{k}:{len(v)}' for k, v in by_source.items())})",
+            "INFO",
+        )
+    return {"removed": removed_all, "by_source": by_source}
+
+
 def load_effective_watchlist():
     """Base watchlist + dry-run/demo expansion + optional CMC trending overlay."""
     coins = list(load_watchlist())
@@ -521,7 +632,13 @@ def load_trade_history_document(
         try:
             history = _mongo_ledger_store(cfg).load_trade_history(scope, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo trade_history load failed ({scope}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(scope, cfg):
+                log(
+                    f"Demo Mongo trade_history load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo trade_history load failed ({scope}), falling back to JSON: {e}", "WARNING")
             history = _load_trade_history_json(scope, cfg)
     else:
         history = _load_trade_history_json(scope, cfg)
@@ -532,7 +649,7 @@ def load_trade_history_document(
 
 
 def reconcile_demo_trade_history_on_startup(config: dict = None) -> dict:
-    """Refresh demo virtual_balance from JSON orders before the first trading cycle."""
+    """Refresh demo virtual_balance from ledger orders before the first trading cycle."""
     if not is_demo_mode():
         return {}
     cfg = config or get_config()
@@ -828,12 +945,28 @@ def _demo_ledger_backend_is_mongo(config: dict = None) -> bool:
     return resolve_ledger_backend("demo", config) == "mongo"
 
 
+def _demo_json_fallback_enabled() -> bool:
+    return os.environ.get("DEMO_LEDGER_JSON_FALLBACK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _should_refuse_demo_json_fallback(scope: str, cfg: dict) -> bool:
+    return (
+        scope == "demo"
+        and _demo_ledger_backend_is_mongo(cfg)
+        and not _demo_json_fallback_enabled()
+    )
+
+
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
-    """Whether positions load from Mongo (demo positions cache always uses Mongo)."""
+    """Whether positions load from Mongo."""
     if ledger_dual_write_enabled(config):
         return False
     if scope == "demo":
-        return True
+        return _demo_ledger_backend_is_mongo(config)
     return resolve_ledger_backend(scope, config) == "mongo"
 
 
@@ -858,16 +991,16 @@ def _ledger_writes_json(scope: str, config: dict = None) -> bool:
 
 def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
     if scope == "demo":
-        return True
+        return _demo_ledger_backend_is_mongo(config)
     backend = resolve_ledger_backend(scope, config)
     return backend == "mongo" or ledger_dual_write_enabled(config)
 
 
 def _mongo_ledger_store(config: dict = None):
+    from storage.mongo_client import use_isolated_pytest_database
     from storage.mongo_ledger import get_ledger_store
 
-    test_db = os.environ.get("MONGODB_DB", "") == "xagent_test"
-    return get_ledger_store(test=test_db, config=config)
+    return get_ledger_store(test=use_isolated_pytest_database(config), config=config)
 
 
 def resolve_orders_file(scope: str) -> str:
@@ -937,7 +1070,13 @@ def load_orders(scope: str, tenant_id: str | None = None):
         try:
             return _mongo_ledger_store(cfg).load_orders(scope, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo orders load failed ({scope}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(scope, cfg):
+                log(
+                    f"Demo Mongo orders load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo orders load failed ({scope}), falling back to JSON: {e}", "WARNING")
     return _load_orders_json(scope)
 
 
@@ -1021,7 +1160,13 @@ def load_positions_document(
         try:
             return _mongo_ledger_store(cfg).load_positions(target, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo positions load failed ({target}): {e}", "WARNING")
+            if _should_refuse_demo_json_fallback(target, cfg):
+                log(
+                    f"Demo Mongo positions load failed, refusing JSON fallback: {e}",
+                    "ERROR",
+                )
+                raise
+            log(f"Mongo positions load failed ({target}), falling back to JSON: {e}", "WARNING")
     return _load_positions_json(target)
 
 

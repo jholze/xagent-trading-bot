@@ -34,6 +34,18 @@ def _sell(ts, usdt, price, amount, pnl, signal="SELL_30", source="auto"):
 
 
 class TestPositionLedger(unittest.TestCase):
+    def test_partial_sell_without_mark_not_marked_closed(self):
+        orders = [
+            _buy("2026-07-07T03:00:00", 3125, 0.3036, 10293),
+            _sell("2026-07-09T08:29:00", 923, 0.3036, 3040, 0.0, signal="SELL_PARTIAL_30"),
+        ]
+        events = replay_position_events(orders, mark_price=0.0)
+        self.assertEqual(events[0]["label"], "Entry")
+        self.assertTrue(events[0].get("mark_unavailable"))
+        self.assertNotIn("closed", events[0])
+        self.assertAlmostEqual(events[0]["remaining_qty"], 7253.0, places=0)
+        self.assertAlmostEqual(events[1]["realized_usd"], 0.0)
+
     def test_replay_fifo_partial_sell_reduces_lot_open_qty(self):
         orders = [
             _buy("2026-06-24T10:00:00", 1000, 1.0, 1000),

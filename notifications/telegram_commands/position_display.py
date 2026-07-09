@@ -1,7 +1,7 @@
 import re
 
 from core.config import get_bot_config
-from core.portfolio_baseline import initial_capital
+from core.portfolio_baseline import initial_capital, split_nav_pnl_for_display
 from data_manager import (
     is_dry_run_enhanced,
     resolve_ledger_scope,
@@ -155,6 +155,7 @@ def _positions_display_config() -> tuple[bool, int]:
 
 _TELEGRAM_CHUNK_LIMIT = 3900
 _POSITION_CARD_SPLIT = re.compile(r"\n\n(?=<b>\d+\.</b>)")
+_COMPACT_LINE_SPLIT = re.compile(r"\n(?=<b>\d+\.</b>)")
 
 
 def _hard_split_telegram(text: str, limit: int) -> list[str]:
@@ -176,7 +177,8 @@ def chunk_positions_message(
     if len(body) <= limit:
         return [body]
 
-    parts = _POSITION_CARD_SPLIT.split(body)
+    split_re = _COMPACT_LINE_SPLIT if not annotate_pages else _POSITION_CARD_SPLIT
+    parts = split_re.split(body)
     if len(parts) <= 1:
         return _hard_split_telegram(body, limit)
 
@@ -184,12 +186,13 @@ def chunk_positions_message(
     chunks: list[str] = []
     current = header.strip()
     continued = False
+    line_sep = "\n" if not annotate_pages else "\n\n"
 
     for card in cards:
         card = card.strip()
         if not card:
             continue
-        sep = "\n\n" if current else ""
+        sep = line_sep if current else ""
         candidate = f"{current}{sep}{card}" if current else card
         if len(candidate) <= limit:
             current = candidate
@@ -414,7 +417,6 @@ def format_portfolio_summary(
     include_position_header: bool = True,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
-    realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
     total_value = balance + float(positions_market_value or 0)
     cfg = get_bot_config()
     initial = initial_capital(
@@ -423,8 +425,11 @@ def format_portfolio_summary(
         history=history,
         trading_mode=cfg.trading_mode,
     )
-    total_pnl = realized + float(total_unreal or 0)
-    pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0.0
+    pnl = split_nav_pnl_for_display(total_value, initial, float(total_unreal or 0))
+    total_pnl = pnl["total_pnl"]
+    realized = pnl["realized"]
+    unrealized = pnl["unrealized"]
+    pnl_pct = pnl["pnl_pct"]
     pnl_icon = _pnl_emoji(total_pnl)
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
@@ -448,7 +453,7 @@ def format_portfolio_summary(
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"📈 Unrealisiert <b>${total_unreal:+.1f}</b> · "
+        f"📈 Unrealisiert <b>${unrealized:+.1f}</b> · "
         f"✅ Realisiert <b>${realized:+.1f}</b>\n"
         f"{daily_line}"
     )
@@ -614,12 +619,17 @@ def load_trade_history_safe() -> dict:
     return load_trade_history()
 
 
-def resolve_portfolio_context(*, fast: bool = False) -> dict:
-    from strategies.positions import bootstrap_positions, count_open_positions
+def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
+    """Reload positions from order ledger before /portfolio (orders are source of truth)."""
+    from strategies.positions import bootstrap_positions, count_open_positions, load_positions
 
-    if count_open_positions() == 0:
+    if fast:
+        load_positions()
+    elif count_open_positions() == 0:
         bootstrap_positions()
 
+
+def resolve_portfolio_context(*, fast: bool = False) -> dict:
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
@@ -695,10 +705,7 @@ def send_positions_snapshot(
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
-    from strategies.positions import bootstrap_positions, count_open_positions
-
-    if count_open_positions() == 0:
-        bootstrap_positions()
+    _refresh_positions_for_snapshot(fast=fast)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_active = pool.submit(list_active_positions)

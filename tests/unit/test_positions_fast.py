@@ -38,13 +38,32 @@ class TestPositionsFastPath(unittest.TestCase):
         self.assertEqual(set(merged.keys()), {"ARIA_USDT_4h"})
         self.assertEqual(merged["ARIA_USDT_4h"]["recent_high"], 1.5)
 
-    def test_update_market_snapshot_does_not_save_positions(self):
+    def test_update_market_snapshot_persists_new_peak(self):
         clear_positions_memory()
-        with patch("strategies.positions.save_positions_document") as mock_save:
-            update_market_snapshot("FAST/USDT", "4h", 1.25)
-            mock_save.assert_not_called()
+        with patch("strategies.positions.save_positions_document", return_value=True) as mock_save:
+            self.assertTrue(update_market_snapshot("FAST/USDT", "4h", 1.25))
+            flush_positions(force=True)
+            mock_save.assert_called()
         pos = get_position("FAST/USDT", "4h")
         self.assertEqual(float(pos["recent_high"]), 1.25)
+
+    def test_update_market_snapshot_uses_peak_hint(self):
+        clear_positions_memory()
+        with patch("strategies.positions.save_positions_document", return_value=True):
+            self.assertTrue(
+                update_market_snapshot("HINT/USDT", "4h", 1.10, peak_hint=1.25)
+            )
+            flush_positions(force=True)
+        self.assertEqual(float(get_position("HINT/USDT", "4h")["recent_high"]), 1.25)
+
+    def test_update_market_snapshot_skips_save_when_peak_unchanged(self):
+        clear_positions_memory()
+        with patch("strategies.positions.save_positions_document", return_value=True):
+            update_market_snapshot("FAST/USDT", "4h", 1.25)
+            flush_positions(force=True)
+        with patch("strategies.positions.save_positions_document") as mock_save:
+            self.assertFalse(update_market_snapshot("FAST/USDT", "4h", 1.20))
+            mock_save.assert_not_called()
 
     def test_flush_positions_force_on_trade(self):
         clear_positions_memory()

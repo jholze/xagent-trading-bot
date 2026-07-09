@@ -96,11 +96,30 @@ def handle(text: str) -> bool:
     trading = TradingService(cfg)
     adapter = GateExecutionAdapter(cfg)
 
+    from data_manager import is_demo_mode, resolve_ledger_backend, resolve_ledger_scope
+    from storage.mongo_client import (
+        is_local_mongo_uri,
+        mongo_uri_host,
+        resolve_database_name,
+        resolve_mongo_uri,
+    )
+
     msg = (
         f"<b>🔗 Gate.io Status</b>\n\n"
         f"<b>Bot-Modus:</b> {trading.mode_label()}\n"
-        f"{format_build_line()}\n\n"
+        f"{format_build_line()}\n"
     )
+    if is_demo_mode():
+        scope = resolve_ledger_scope()
+        backend = resolve_ledger_backend(scope, cfg.raw)
+        host = mongo_uri_host(resolve_mongo_uri(cfg.raw))
+        db = resolve_database_name(config=cfg.raw)
+        where = "lokal" if is_local_mongo_uri(config=cfg.raw) else "remote"
+        msg += (
+            f"<b>Ledger:</b> <code>{scope}</code> · {backend}\n"
+            f"<b>Mongo ({where}):</b> <code>{host}</code> / <code>{db}</code>\n"
+        )
+    msg += "\n"
     msg += _gate_section("Mainnet (Live)", cfg.live_config, adapter, bot_config=cfg)
     msg += "\n\n"
 

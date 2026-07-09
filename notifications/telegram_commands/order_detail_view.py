@@ -134,7 +134,11 @@ def _position_trail_block(
     except Exception:
         pass
 
-    all_events = replay_position_events(filled, mark_price=mark)
+    display_mark = mark
+    if display_mark <= 0 and amount > 0 and entry > 0:
+        display_mark = entry
+
+    all_events = replay_position_events(filled, mark_price=display_mark)
     view_cycle = cycle_for_display_seq(all_events, selected_seq)
     events = events_for_cycle(all_events, view_cycle)
     current_cycle = int(all_events[-1].get("cycle", 1)) if all_events else 1
@@ -142,13 +146,13 @@ def _position_trail_block(
     is_current_cycle = view_cycle == current_cycle
 
     realized = cycle_realized_usd(events)
-    if is_current_cycle and amount > 0 and entry > 0 and mark > 0:
-        unreal = (mark - entry) * amount
-        value_usdt = mark * amount
+    if is_current_cycle and amount > 0 and entry > 0 and display_mark > 0:
+        unreal = (display_mark - entry) * amount
+        value_usdt = display_mark * amount
     else:
         unreal = cycle_unreal_usd(events)
         value_usdt = sum(
-            float(ev.get("open_qty", 0) or 0) * mark
+            float(ev.get("open_qty", 0) or 0) * display_mark
             for ev in events
             if ev.get("kind") == "entry" and float(ev.get("open_qty", 0) or 0) > 0
         )
@@ -195,11 +199,12 @@ def _position_trail_block(
         f"Σ Zyklus {view_cycle} · Real <b>${realized:+.0f}</b> · Unreal <b>${unreal:+.0f}</b> · "
         f"Gesamt <b>${total_pnl:+.0f}</b>",
     ])
-    if is_current_cycle and amount > 0 and mark > 0:
-        pct = (mark / entry - 1) * 100 if entry > 0 else 0.0
+    if is_current_cycle and amount > 0 and display_mark > 0:
+        pct = (display_mark / entry - 1) * 100 if entry > 0 else 0.0
+        mark_note = " (Entry-Schätzung)" if mark <= 0 else ""
         lines.append(
             f"Offen · <code>{amount:.4f}</code> @ Entry {_fmt_price(entry)} · "
-            f"Mark {_fmt_price(mark)} · <code>{pct:+.1f}%</code>"
+            f"Mark {_fmt_price(display_mark)}{mark_note} · <code>{pct:+.1f}%</code>"
         )
     elif not is_current_cycle or amount <= 0:
         lines.append("<i>Position in diesem Zyklus geschlossen.</i>")

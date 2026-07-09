@@ -19,7 +19,7 @@ from data_manager import (
     save_positions_document,
 )
 from services.order_service import OrderService
-from storage.mongo_client import drop_database
+from storage.mongo_client import TEST_DB_NAME, drop_database
 from storage.mongo_ledger import MongoLedgerStore
 from storage.tenant_keys import compound_ledger_id
 from strategies.positions import (
@@ -33,7 +33,8 @@ from strategies.positions import (
 
 class TestTenantIsolationMongo(unittest.TestCase):
     def setUp(self):
-        os.environ["MONGODB_DB"] = "xagent_test"
+        os.environ["PYTEST_RUNNING"] = "1"
+        os.environ["MONGODB_DB"] = TEST_DB_NAME
         drop_database(test=True)
         self.store = MongoLedgerStore(test=True)
 
@@ -136,7 +137,8 @@ class TestMigrateSingleToTenant(unittest.TestCase):
 
 class TestTenantIsolationMongoContext(unittest.TestCase):
     def setUp(self):
-        os.environ["MONGODB_DB"] = "xagent_test"
+        os.environ["PYTEST_RUNNING"] = "1"
+        os.environ["MONGODB_DB"] = TEST_DB_NAME
         drop_database(test=True)
         self.cfg = {
             "trading_mode": "paper",

@@ -23,6 +23,12 @@ def resolve_public_base_url() -> str | None:
 
 
 def register_webhook(*, drop_pending: bool = False) -> bool:
+    # Never pick up a dev token from .env.local when this runs for Railway prod.
+    if not os.getenv("TELEGRAM_BOT_TOKEN"):
+        from dotenv import load_dotenv
+        from pathlib import Path
+
+        load_dotenv(Path(ROOT) / ".env")
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         print("TELEGRAM_BOT_TOKEN not set — webhook registration skipped", file=sys.stderr)

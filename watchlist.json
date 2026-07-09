@@ -41,13 +41,6 @@
       "name": "ZBT",
       "timeframe": "4h",
       "active": true
-    },
-    {
-      "symbol": "CAT/USDT",
-      "ticker": "CAT",
-      "name": "Cat",
-      "timeframe": "4h",
-      "active": true
     }
   ]
 }

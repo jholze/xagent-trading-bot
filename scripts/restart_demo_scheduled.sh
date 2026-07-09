@@ -18,38 +18,37 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+if [[ ! -f .env.local ]]; then
+  echo "FAIL: .env.local missing — local restart must use DEV bot token (not Railway prod)"
+  exit 1
+fi
+
 # shellcheck disable=SC1091
-source .env
+source "$BOT_DIR/scripts/source_bot_env.sh"
 
 if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   echo "FAIL: TELEGRAM_BOT_TOKEN not set"
   exit 1
 fi
 
+PROD_BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$BOT_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+if [[ -n "$PROD_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" == "$PROD_BOT_TOKEN" ]]; then
+  fail "Refusing local restart with production TELEGRAM_BOT_TOKEN — check .env.local"
+fi
+echo "Telegram webhook will use dev bot token (${TELEGRAM_BOT_TOKEN%%:*}:…)"
+
 notify_telegram() {
   local text="$1"
-  if [[ -z "${TELEGRAM_CHAT_ID:-}" ]]; then
-    return 0
+  if ! python3 "$BOT_DIR/scripts/notify_local_restart.py" --text "$text"; then
+    echo "WARN: Telegram notify failed (see stderr above)"
   fi
-  TELEGRAM_NOTIFY_TEXT="$text" python3 -c "
-import os, requests
-from dotenv import load_dotenv
-load_dotenv('$BOT_DIR/.env')
-token = os.getenv('TELEGRAM_BOT_TOKEN')
-chat = os.getenv('TELEGRAM_CHAT_ID')
-text = os.environ.get('TELEGRAM_NOTIFY_TEXT', '')
-if token and chat and text:
-    requests.post(
-        f'https://api.telegram.org/bot{token}/sendMessage',
-        json={'chat_id': int(chat), 'text': text, 'parse_mode': 'HTML'},
-        timeout=15,
-    )
-" 2>/dev/null || true
 }
 
 fail() {
   echo "FAIL: $1"
-  notify_telegram "❌ <b>Andro Neustart fehlgeschlagen</b>\n$1\n🕒 $(date '+%H:%M:%S')"
+  notify_telegram "❌ <b>Andro Neustart fehlgeschlagen</b>
+$1
+🕒 $(date '+%H:%M:%S')"
   exit 1
 }
 
@@ -64,9 +63,15 @@ for port in 5000 4040; do
   lsof -ti tcp:"$port" >/dev/null 2>&1 && fail "Port $port still in use"
 done
 
+bash "$BOT_DIR/scripts/ensure_redis.sh" || fail "Redis not running — price cache requires Redis"
+
 # shellcheck disable=SC1091
 source "$BOT_DIR/scripts/dev_local_mongo.sh"
-nohup env DEMO_MODE=1 python3 "$BOT_DIR/aria_bot.py" >>"$BOT_DIR/logs/bot_restart.log" 2>&1 &
+export DEMO_LEDGER_BACKEND=mongo
+bash "$BOT_DIR/scripts/sync_demo_ledger_from_railway.sh" || echo "WARN: demo ledger sync skipped"
+
+nohup env DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 "$BOT_DIR/aria_bot.py" --demo \
+  >>"$BOT_DIR/logs/bot_restart.log" 2>&1 &
 BOT_PID=$!
 echo "$BOT_PID" >"$BOT_DIR/run/aria_bot.pid"
 echo "Bot starting pid=$BOT_PID"
@@ -148,12 +153,16 @@ if err:
 [[ "$REGISTERED" == "$WEBHOOK_URL" ]] || fail "Webhook URL mismatch: $REGISTERED"
 
 python3 -c "
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv('$BOT_DIR/.env')
+root = Path('$BOT_DIR')
+load_dotenv(root / '.env')
+load_dotenv(root / '.env.local', override=True)
 from notifications.telegram_commands.command_menu import register_bot_commands
 register_bot_commands()
 " 2>/dev/null || echo "WARN: command menu registration skipped"
 
 echo "OK bot=$BOT_PID ngrok=$NGROK_PID webhook=$WEBHOOK_URL"
-notify_telegram "✅ <b>Andro Neustart OK</b>\nWebhook: ${PUBLIC_URL}\nModus: Demo · Mongo: xagent_test\n🕒 $(date '+%H:%M:%S')"
+PUBLIC_URL="$PUBLIC_URL" python3 "$BOT_DIR/scripts/notify_local_restart.py" "$PUBLIC_URL" \
+  || echo "WARN: startup Telegram notify failed"
 exit 0

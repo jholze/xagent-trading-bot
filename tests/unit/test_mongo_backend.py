@@ -23,11 +23,9 @@ FIXTURES = (
 
 @pytest.fixture
 def mongo_test_env(monkeypatch):
-    monkeypatch.setenv("MONGODB_DB", "xagent_test")
     drop_database(test=True)
     yield
     drop_database(test=True)
-    monkeypatch.delenv("MONGODB_DB", raising=False)
 
 
 def _mongo_config(base: dict) -> dict:
@@ -275,7 +273,7 @@ def test_buy_sell_cycle_equivalent_results(tmp_path, monkeypatch, mongo_test_env
         cfg = _local_config(base)
     else:
         cfg = _mongo_config(base)
-        monkeypatch.setenv("MONGODB_DB", "xagent_test")
+        monkeypatch.setenv("MONGODB_DB", "xagent_pytest")
 
     snapshot = _run_buy_sell_cycle(monkeypatch, cfg, paths)
 
@@ -345,7 +343,7 @@ def test_local_vs_mongo_buy_sell_snapshots_match(tmp_path, monkeypatch, mongo_te
     from data_manager import get_config
 
     base = get_config()
-    monkeypatch.setenv("MONGODB_DB", "xagent_test")
+    monkeypatch.setenv("MONGODB_DB", "xagent_pytest")
 
     local_paths = _isolated_ledger_paths(tmp_path / "local_cmp")
     mongo_paths = _isolated_ledger_paths(tmp_path / "mongo_cmp")

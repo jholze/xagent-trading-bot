@@ -1,6 +1,6 @@
 import os
 
-from core.build_info import format_build_line
+from core.runtime_identity import format_identity_section
 from data_manager import get_config, is_demo_mode, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
@@ -31,13 +31,14 @@ def _apply_mode_switch(updates: dict) -> tuple[bool, str]:
 
 
 def handle(text: str) -> bool:
-    if text in ["/mode", "/tradingmode"]:
+    if text in ["/mode", "/tradingmode", "/stand", "/version", "/build"]:
         service = TradingService()
         demo = " | Demo: ON" if is_demo_mode() else ""
         msg = f"""<b>Trading Mode</b>
 
 Current: <b>{service.mode_label()}</b>{demo}
-{format_build_line()}
+
+{format_identity_section()}
 
 <b>Commands:</b>
 /mode paper — Local paper trading (virtual ledger)

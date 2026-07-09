@@ -1,4 +1,4 @@
-"""Mongo connectivity smoke tests against xagent_test."""
+"""Mongo connectivity smoke tests against isolated xagent_pytest database."""
 
 import pytest
 

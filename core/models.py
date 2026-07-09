@@ -48,6 +48,7 @@ class SignalAnalysis:
     strategy_profile: str = ""
     shadow_action: str = ""
     dca_usdt: float = 0.0
+    sell_policy_audit: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -110,6 +111,7 @@ class TradeOrder:
     source: str = "auto"
     order_id: str = ""
     idempotency_key: str = ""
+    entry_15m_vol_ratio: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

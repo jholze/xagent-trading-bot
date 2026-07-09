@@ -1,5 +1,6 @@
 # Secrets and sensitive files
 .env
+.env.local
 *.log
 aria_bot.log
 logs/
@@ -44,6 +45,9 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Baked at deploy (scripts/write_build_meta.py) — not committed
+core/build_meta.json
 
 # Demo / test data files (created by --demo mode)
 *.demo.json

@@ -1,10 +1,48 @@
+import os
+
 from core.config import get_bot_config
+from data.cmc_capabilities import endpoint_available, probe_capabilities
 from data_manager import load_cmc_posts
 from notifications.user_explain import explain_cmc_signal
 from services.dry_run_watchlist import TrendingWatchlistSync
 from services.social_pipeline import SocialPipeline
 from telegram_notifier import send_telegram_message
 from x_analyzer import XAnalyzer
+
+
+def _cmc_unavailable_message(cfg) -> str:
+    cmc_cfg = cfg.cmc_config
+    if not cmc_cfg.get("enabled", True):
+        return "CMC ist deaktiviert — <code>cmc.enabled</code> in config.json auf true setzen."
+
+    if not os.getenv(str(cmc_cfg.get("api_key_env") or "CMC_API_KEY"), "").strip():
+        return (
+            "CMC API-Key fehlt — <code>CMC_API_KEY</code> in Railway/Env setzen "
+            "(Dashboard → Variables)."
+        )
+
+    caps = probe_capabilities()
+    has_community = endpoint_available("community/trending/token", caps) or endpoint_available(
+        "content/latest", caps
+    )
+    quotes_fallback = bool(cmc_cfg.get("quotes_fallback_as_signal", False))
+
+    if not has_community and not quotes_fallback:
+        return (
+            "<b>Keine CMC Community-Signale</b>\n\n"
+            "Dein CMC-Plan hat keine Community/Content-Endpoints "
+            "(nur <code>quotes/latest</code>-Fallback aktiv).\n"
+            "Für /cmc-Anzeige: <code>cmc.quotes_fallback_as_signal: true</code> "
+            "oder CMC-Plan mit Community upgraden.\n\n"
+            "<i>Trending-Watchlist + 15m-Entry laufen unabhängig davon — "
+            "siehe /trending.</i>"
+        )
+
+    return (
+        "Keine aktiven CMC-Signale im TTL-Fenster "
+        f"({cmc_cfg.get('signal_ttl_hours', 4)}h). "
+        "Nächster Bot-Cycle holt neue Daten."
+    )
 
 
 def handle(text: str) -> bool:
@@ -70,7 +108,7 @@ def handle(text: str) -> bool:
                 )
             send_telegram_message(msg)
             return True
-        send_telegram_message("No CMC community signals available. Enable cmc.enabled in config.")
+        send_telegram_message(_cmc_unavailable_message(get_bot_config()))
         return True
 
     msg = "<b>📊 CMC Signale</b> — Beobachtung\n\n"

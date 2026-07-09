@@ -15,19 +15,38 @@ from core.actions import (
     normalize,
     to_execution_action,
 )
+import time
+
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from data_manager import is_dry_run_enhanced, load_effective_watchlist
+from logger import log
 from services.market_service import MarketService
 from strategies.market_structure import (
     evaluate_market_structure_buy_boost,
     evaluate_market_structure_sells,
 )
 from strategies.dca import evaluate_dca_addon
+
+from strategies.sell_rotation_policy import (
+    apply_rotation_sell_filters,
+    audit_to_dict,
+    policy_shadow_active,
+)
 from strategies.trailing_stop import evaluate_trailing_stop
+from strategies.trailing_take_profit import evaluate_trailing_take_profit
 from strategies.time_profit_exit import evaluate_time_profit_exit
+from strategies.profit_max_lifetime import evaluate_profit_max_lifetime, sync_profit_armed_at
 from intelligence.volatility_classifier import volatility_tier
-from strategies.positions import count_open_positions, get_position, lock_strategy_tier, update_market_snapshot
+from strategies.positions import (
+    count_open_positions,
+    flush_positions,
+    get_position,
+    lock_strategy_tier,
+    mark_profit_max_lifetime_done,
+    mark_trailing_take_profit_step,
+    update_market_snapshot,
+)
 from strategies.registry import (
     get_strategy,
     resolve_coin_config,
@@ -40,6 +59,25 @@ from strategies.entry_sensor_15m import (
     evaluate_entry_sensor_15m,
 )
 from strategies import watch_15m_state
+from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
+from strategies.exit_sensor import evaluate_exit_sensor_sells
+
+_WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
+_WATCHLIST_TTL_SEC = 60.0
+
+
+def _active_watchlist_symbols() -> frozenset[str]:
+    global _WATCHLIST_CACHE
+    now = time.time()
+    if _WATCHLIST_CACHE and now - _WATCHLIST_CACHE[0] < _WATCHLIST_TTL_SEC:
+        return _WATCHLIST_CACHE[1]
+    symbols = frozenset(
+        c.get("symbol")
+        for c in load_effective_watchlist()
+        if c.get("active", True) and c.get("symbol")
+    )
+    _WATCHLIST_CACHE = (now, symbols)
+    return symbols
 
 
 class DecisionEngine:
@@ -60,6 +98,9 @@ class DecisionEngine:
 
     def _entry_sensor_cfg(self) -> dict:
         return self.config.entry_sensor_15m_config
+
+    def _exit_sensor_cfg(self) -> dict:
+        return self.config.exit_sensor_config
 
     def _in_setup_zone(self, market: MarketContext, strategy_params: dict) -> bool:
         modes = self._entry_sensor_cfg().get("setup_modes") or []
@@ -90,8 +131,7 @@ class DecisionEngine:
         if classify_coin(symbol, market.strategy_params) == "large_cap":
             watch_15m_state.clear_watch(symbol)
             return
-        sold = float(position.get("sold_percent", 0) or 0)
-        if market.has_position and sold >= 0.01:
+        if market.has_position:
             watch_15m_state.clear_watch(symbol)
             return
         if is_sell(normalized) or is_sell(technical.action):
@@ -103,10 +143,7 @@ class DecisionEngine:
         setup = self._in_setup_zone(market, market.strategy_params or {})
         modes = cfg.get("setup_modes") or []
         trending = "trending" in modes and "cmc_trending" in (technical.sources or [])
-        on_watchlist = "watchlist" in modes and any(
-            c.get("symbol") == symbol and c.get("active", True)
-            for c in load_effective_watchlist()
-        )
+        on_watchlist = "watchlist" in modes and symbol in _active_watchlist_symbols()
         should_watch = (
             (tech_buy and "buy_signal" in modes)
             or setup
@@ -117,6 +154,16 @@ class DecisionEngine:
         if not should_watch or market.has_position:
             return
         if watch_15m_state.max_watched_reached(int(cfg.get("max_watched_coins", 15))):
+            return
+        from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
+        from price_fetcher import passes_gate_filter
+
+        mcap = resolve_market_cap_usd(symbol, market.strategy_params or {})
+        mcap_ok, _ = passes_market_cap_filter(mcap, cfg)
+        if not mcap_ok:
+            return
+        gate_ok, _ = passes_gate_filter(symbol, cfg)
+        if not gate_ok:
             return
         reason = (
             "buy_signal"
@@ -158,6 +205,13 @@ class DecisionEngine:
         if metrics is None:
             metrics = self.market.fetch_15m_sensor_metrics(symbol, cfg)
         tech_norm = normalize(technical.action)
+        from data.cmc_market_cap import resolve_market_cap_usd
+        from price_fetcher import is_gate_tradeable
+
+        gate_tradeable = None
+        if cfg.get("gate_only", True):
+            gate_tradeable = is_gate_tradeable(symbol)
+
         sensor = evaluate_entry_sensor_15m(
             watched=True,
             metrics=metrics,
@@ -165,6 +219,8 @@ class DecisionEngine:
             rsi_4h=float(market.rsi),
             hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
             tech_already_buy=is_buy(tech_norm),
+            market_cap_usd=resolve_market_cap_usd(symbol, market.strategy_params or {}),
+            gate_tradeable=gate_tradeable,
         )
 
         if sensor is None or not sensor.triggered:
@@ -172,7 +228,7 @@ class DecisionEngine:
 
         out_sources = list(sources)
         out_sources.append(ENTRY_SENSOR_SOURCE)
-        new_conf = max(confidence, confidence + sensor.confidence_boost)
+        new_conf = confidence + sensor.confidence_boost
         rationale_extra = sensor.rationale
 
         if sensor.shadow_only:
@@ -479,9 +535,6 @@ class DecisionEngine:
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
             if tech_buy and social_count >= 1:
-                if social_count >= 2:
-                    sources.append("multi_source")
-                    return BUY_STRONG, sources, max(technical.confidence, blended)
                 return BUY, sources, max(technical.confidence, blended)
             if social_count >= 2:
                 sources.append("multi_source")
@@ -517,6 +570,7 @@ class DecisionEngine:
         candidates = []
         structure_rationales = []
         sell_source = ""
+        sell_policy_audit = {}
         consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
@@ -581,10 +635,61 @@ class DecisionEngine:
                     sources.append("lc")
 
         if market and position:
-            for cand in evaluate_market_structure_sells(market, strategy_params, position):
+            ta_bearish = is_sell(technical.action)
+            for cand in evaluate_market_structure_sells(
+                market, strategy_params, position, ta_bearish=ta_bearish,
+            ):
                 candidates.append((cand.action, cand.priority, cand.source))
                 sources.append(cand.source)
                 structure_rationales.append(cand.rationale)
+
+            escfg = self._exit_sensor_cfg()
+            if escfg.get("enabled", True):
+                try:
+                    metrics_15m = self.market.fetch_exit_metrics_15m(market.symbol, escfg)
+                    metrics_1h = self.market.fetch_exit_metrics_1h(market.symbol)
+                    bcfg = escfg.get("btc_rs") or {}
+                    btc_delta = None
+                    if bcfg.get("enabled", True):
+                        btc_delta = self.market.btc_relative_return_delta(
+                            market.symbol,
+                            timeframe=str(bcfg.get("timeframe", "4h")),
+                            periods=int(bcfg.get("periods", 1)),
+                        )
+                    for cand in evaluate_exit_sensor_sells(
+                        market,
+                        position,
+                        escfg,
+                        metrics_15m=metrics_15m,
+                        metrics_1h=metrics_1h,
+                        btc_rs_delta=btc_delta,
+                    ):
+                        candidates.append((cand.action, cand.priority, cand.source))
+                        sources.append(cand.source)
+                        structure_rationales.append(cand.rationale)
+                        if cand.shadow_only:
+                            sources.append("exit_sensor_shadow")
+                except Exception as exc:
+                    log(f"exit_sensor: metrics failed {market.symbol}: {exc}", "WARNING")
+
+            if sync_profit_armed_at(market, position, strategy_params):
+                flush_positions()
+
+            trail_tp = evaluate_trailing_take_profit(market, position, strategy_params)
+            if trail_tp:
+                candidates.append((trail_tp.action, trail_tp.priority, trail_tp.source))
+                sources.append(trail_tp.source)
+                structure_rationales.append(trail_tp.rationale)
+                if trail_tp.shadow_only:
+                    sources.append("trailing_take_profit_shadow")
+
+            life = evaluate_profit_max_lifetime(market, position, strategy_params)
+            if life:
+                candidates.append((life.action, life.priority, life.source))
+                sources.append(life.source)
+                structure_rationales.append(life.rationale)
+                if life.shadow_only:
+                    sources.append("profit_max_lifetime_shadow")
 
             trail = evaluate_trailing_stop(market, position, strategy_params)
             if trail:
@@ -602,8 +707,64 @@ class DecisionEngine:
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
 
+        if market and position and candidates:
+            candidates, policy_audit = apply_rotation_sell_filters(
+                candidates,
+                market,
+                position,
+                strategy_params,
+                self.config.raw,
+            )
+            sell_policy_audit = audit_to_dict(policy_audit)
+            if policy_audit.trail_exclusive_blocked:
+                structure_rationales.append(
+                    "Trail-exclusive blocked: " + ", ".join(policy_audit.trail_exclusive_blocked)
+                )
+
         if not candidates:
-            return HOLD, sources, technical.confidence, structure_rationales, sell_source
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
+
+        if market and position:
+            gain_pct = (
+                (market.current_price / market.average_entry - 1) * 100
+                if market.average_entry > 0 else 0.0
+            )
+            metrics_15m = None
+            if is_fresh_guarded_entry(position):
+                try:
+                    metrics_15m = self.market.fetch_15m_sensor_metrics(
+                        market.symbol, self._entry_sensor_cfg(),
+                    )
+                except Exception as exc:
+                    log(
+                        f"entry_guard: 15m metrics fetch failed {market.symbol}: {exc}",
+                        "WARNING",
+                    )
+                    metrics_15m = None
+                if not metrics_15m:
+                    stored_ratio = float(position.get("entry_15m_vol_ratio") or 0)
+                    if stored_ratio > 0:
+                        stored_momentum = position.get("entry_15m_momentum")
+                        metrics_15m = {
+                            "volume_spike_ratio": stored_ratio,
+                            "price_momentum": (
+                                bool(stored_momentum)
+                                if stored_momentum is not None
+                                else False
+                            ),
+                        }
+            candidates, blocked = filter_sell_candidates(
+                candidates,
+                position=position,
+                strategy_params=strategy_params,
+                gain_pct=gain_pct,
+                ta_bearish=is_sell(technical.action),
+                metrics_15m=metrics_15m,
+            )
+            structure_rationales.extend(blocked)
+
+        if not candidates:
+            return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
 
         best = max(candidates, key=lambda c: c[1])
         sell_source = best[2]
@@ -614,7 +775,7 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(cmc_signal, "effective_confidence", 0))
         if lc_signal:
             social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
-        return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source
+        return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source, sell_policy_audit
 
     def _apply_shadow_mode(
         self,
@@ -627,7 +788,16 @@ class DecisionEngine:
         if "trailing_shadow" in sources and is_sell(normalized):
             shadow = execution_action
             return HOLD, "HOLD", shadow
+        if "trailing_take_profit_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "profit_max_lifetime_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
         if "time_profit_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "exit_sensor_shadow" in sources and is_sell(normalized):
             shadow = execution_action
             return HOLD, "HOLD", shadow
 
@@ -692,20 +862,39 @@ class DecisionEngine:
 
         dca_usdt = 0.0
         sell_source = ""
+        sell_policy_audit: dict = {}
         sensor_shadow = ""
         if market.has_position:
-            normalized, sources, confidence, structure_rationales, sell_source = self._merge_sell(
+            normalized, sources, confidence, structure_rationales, sell_source, sell_policy_audit = self._merge_sell(
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
             if normalized == HOLD:
                 dca = evaluate_dca_addon(market, position, market.strategy_params)
                 if dca:
-                    normalized = BUY_DCA
-                    sources.append(dca.source)
-                    structure_rationales.append(dca.rationale)
-                    dca_usdt = dca.usdt_amount
-                    if dca.shadow_only:
-                        sources.append("dca_shadow")
+                    from strategies.dca_portfolio import should_defer_per_coin_dca
+
+                    defer = (
+                        not dca.shadow_only
+                        and should_defer_per_coin_dca(market.strategy_params, self.config.raw)
+                    )
+                    if defer:
+                        sources.append(dca.source)
+                        sources.append("dca_portfolio_deferred")
+                        structure_rationales.append(
+                            f"[portfolio] {dca.rationale} (${dca.usdt_amount:.0f})"
+                        )
+                    else:
+                        normalized = BUY_DCA
+                        sources.append(dca.source)
+                        structure_rationales.append(dca.rationale)
+                        dca_usdt = dca.usdt_amount
+                        if dca.shadow_only:
+                            shadow_tag = (
+                                "dca_recovery_shadow"
+                                if dca.source == "dca_recovery"
+                                else "dca_shadow"
+                            )
+                            sources.append(shadow_tag)
         else:
             normalized, sources, confidence = self._merge_buy(
                 technical, x_signal, cmc_signal, all_social, market, lc_signal
@@ -727,14 +916,10 @@ class DecisionEngine:
             )
             if sensor_rationale:
                 structure_rationales.append(sensor_rationale)
-            self._sync_watch_15m_state(
-                coin["symbol"], market, technical, normalized, position
-            )
 
-        if market.has_position:
-            self._sync_watch_15m_state(
-                coin["symbol"], market, technical, normalized, position
-            )
+        self._sync_watch_15m_state(
+            coin["symbol"], market, technical, normalized, position
+        )
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
@@ -743,14 +928,29 @@ class DecisionEngine:
         )
         if "entry_sensor_shadow" in sources and sensor_shadow and not shadow_action:
             shadow_action = sensor_shadow
-        if "dca_shadow" in sources and normalized == BUY_DCA:
+        if ("dca_shadow" in sources or "dca_recovery_shadow" in sources) and normalized == BUY_DCA:
             shadow_action = execution_action
+            normalized = HOLD
+            execution_action = "HOLD"
+        stop_sources = {"x_stop_loss", "stop_loss", "technical"}
+        is_stop_sell = (
+            "STOP" in (normalized or "").upper()
+            or bool(stop_sources.intersection(sources))
+        )
+        if policy_shadow_active(self.config.raw) and is_sell(normalized) and not is_stop_sell:
+            if not shadow_action:
+                shadow_action = execution_action
+            sources.append("sell_policy_shadow")
             normalized = HOLD
             execution_action = "HOLD"
         if sell_source == "time_profit_exit":
             from strategies.positions import mark_time_profit_exit_done
 
             mark_time_profit_exit_done(coin["symbol"], market.timeframe)
+        if sell_source == "trailing_take_profit":
+            mark_trailing_take_profit_step(coin["symbol"], market.timeframe, market.current_price)
+        if sell_source == "profit_max_lifetime":
+            mark_profit_max_lifetime_done(coin["symbol"], market.timeframe)
 
         rationale_parts = []
         if "technical" in sources:
@@ -778,6 +978,10 @@ class DecisionEngine:
             rationale_parts.append("strong consensus")
         if "trailing_stop" in sources:
             rationale_parts.append("Trail->ATR stop")
+        if "trailing_take_profit" in sources:
+            rationale_parts.append("Trail->take profit")
+        if "profit_max_lifetime" in sources:
+            rationale_parts.append("Life->max profit")
         if "time_profit_exit" in sources:
             rationale_parts.append("Time->profit exit")
         if "dca" in sources:
@@ -821,6 +1025,7 @@ class DecisionEngine:
             volatility_tier=tier,
             strategy_profile=profile,
             shadow_action=shadow_action,
+            sell_policy_audit=sell_policy_audit,
         )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt

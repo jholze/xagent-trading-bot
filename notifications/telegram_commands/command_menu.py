@@ -74,8 +74,12 @@ def all_bot_commands(lang: str = "de") -> list[dict[str, str]]:
     return commands
 
 
-def register_bot_commands(token: str | None = None) -> bool:
-    """Publish DE + EN commands; Telegram picks by user language_code."""
+def register_bot_commands(token: str | None = None, *, send_keyboard: bool = False) -> bool:
+    """Publish DE + EN commands; Telegram picks by user language_code.
+
+    send_keyboard: when True, push the section reply keyboard to TELEGRAM_CHAT_ID.
+    Startup/deploy should keep this False — users open the menu via /menu.
+    """
     token = token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         log("Telegram command menu: TELEGRAM_BOT_TOKEN not set", "WARNING")
@@ -146,7 +150,8 @@ def register_bot_commands(token: str | None = None) -> bool:
         from notifications.telegram_commands.menu_i18n import set_user_language
 
         set_user_language(default_lang)
-        send_main_section_keyboard(lang=default_lang)
+        if send_keyboard:
+            send_main_section_keyboard(lang=default_lang)
         return True
     except Exception as e:
         log(f"Telegram command menu registration error: {e}", "WARNING")

@@ -99,6 +99,15 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(updated["status"], "filled")
         self.assertEqual(updated["execution"]["usdt"], 100)
 
+    def test_link_execution_result_stores_zero_pnl(self):
+        svc = OrderService("paper")
+        order = TradeOrder("SELL", "COAI/USDT", 0.3036, 3040, signal="SELL_PARTIAL_30")
+        created = svc.create_from_request(order, status="executing", telegram_token="exec0")
+        result = TradeResult(True, "SELL", "COAI/USDT", amount=3040, price=0.3036, usdt_amount=923, pnl=0.0)
+        svc.link_execution_result(created["id"], result)
+        updated = svc.get_by_id("exec0")
+        self.assertEqual(updated["pnl"], 0.0)
+
     def test_expire_stale_pending(self):
         svc = OrderService("paper")
         order = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)

@@ -59,8 +59,10 @@ class BotConfig:
             "enabled": True,
             "live_enabled": True,
             "max_coins": 15,
-            "refresh_hours": 4,
+            "refresh_hours": 1,
             "gate_only": True,
+            "prune_non_gate": True,
+            "prune_base_watchlist": True,
             "max_open_from_trending": 8,
             "source_priority": [
                 "trending/latest",
@@ -205,6 +207,22 @@ class BotConfig:
         return bool(self.observability_config.get("notify_on_cycle", False))
 
     @property
+    def cycle_notifications_config(self) -> dict:
+        defaults = {
+            "mode": "delta",
+            "send_on_trade": True,
+            "send_on_blocked": True,
+            "send_on_nav_delta_pct": 0.5,
+            "send_on_new_decision": True,
+            "hold_explanation_max_per_cycle": 1,
+            "hold_explanation_cooldown_hours": 6,
+            "digest_merge": True,
+            "notify_hermes_rejected": False,
+        }
+        raw = self.observability_config.get("cycle_notifications", {})
+        return {**defaults, **raw}
+
+    @property
     def decisions_audit_enabled(self) -> bool:
         return bool(self.observability_config.get("decisions_audit", True))
 
@@ -277,6 +295,16 @@ class BotConfig:
             "heartbeat_ttl_sec": 120,
             "heartbeat_warn_enabled": True,
             "use_signal_snapshot": False,
+            "price_cache_enabled": True,
+            "price_cache_ttl_sec": 120,
+            "ohlcv_cache_enabled": True,
+            "ohlcv_cache_ttl_sec": {"15m": 60, "1h": 90, "4h": 120},
+            "funding_cache_ttl_sec": 300,
+            "coin_query_webhook_enabled": True,
+            "signal_webhook_enabled": True,
+            "signal_webhook_token": "",
+            "signal_event_ttl_sec": 3600,
+            "signal_webhook_rate_limit_per_min": 10,
             "background_social_enabled": True,
             "background_backtest_enabled": True,
             "background_social_interval_sec": 0,
@@ -288,6 +316,14 @@ class BotConfig:
             "ledger_lock_wait_sec": 15,
             "trade_intent_queue_enabled": False,
             "trade_intent_async_auto_only": True,
+            "eval_queue_enabled": False,
+            "eval_worker_poll_sec": 2.0,
+            "eval_batch_size": 3,
+            "eval_debounce_sec": 45,
+            "eval_position_heartbeat_sec": 300,
+            "eval_stale_sec": 7200,
+            "eval_meta_interval_sec": 300,
+            "eval_queue_max_len": 500,
             "ledger_backend": "local",
             "ledger_dual_write": False,
         }
@@ -333,8 +369,8 @@ class BotConfig:
             "mode": "shadow",
             "timeframe": "15m",
             "poll_interval_sec": 20,
+            "gate_only": True,
             "market_cap_min_usd": 5_000_000,
-            "market_cap_max_usd": 100_000_000,
             "watch_ttl_hours": 24,
             "setup_modes": ["buy_signal", "setup_zone", "trending", "watchlist"],
             "vol_spike_mult": 2.0,
@@ -357,6 +393,83 @@ class BotConfig:
     @property
     def entry_sensor_15m_mode(self) -> str:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
+
+    @property
+    def entry_guard_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "sources": ["entry_sensor_15m"],
+            "fresh_entry_window_minutes": 120,
+            "vol_spike_mult": 2.0,
+            "vol_exhaustion_15m_max": 0.85,
+            "exhaustion_min_gain_pct": 5.0,
+            "mega_pump_gain_pct": 12.0,
+            "block_loss_sells_minutes": 15,
+            "by_tier": {
+                "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
+                "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
+                "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
+                "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12},
+            },
+        }
+        raw = self._raw.get("entry_guard") or {}
+        merged = {**defaults, **raw}
+        if raw.get("by_tier"):
+            merged["by_tier"] = {**defaults["by_tier"], **raw["by_tier"]}
+        return merged
+
+    @property
+    def exit_sensor_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "mode": "live",
+            "min_gain_pct": 7,
+            "vol_avg_period": 20,
+            "weakness_15m": {
+                "enabled": True,
+                "ema_period": 20,
+                "min_gain_pct": 7,
+            },
+            "volume_climax": {
+                "enabled": True,
+                "vol_spike_min": 3.0,
+                "upper_wick_min_pct": 55,
+                "max_body_atr_ratio": 0.35,
+                "near_high_tolerance_pct": 2.0,
+                "min_gain_pct": 7,
+            },
+            "pullback": {
+                "enabled": True,
+                "min_drop_pct": 3.5,
+                "require_vol_above_avg": True,
+                "min_gain_pct": 6,
+            },
+            "btc_rs": {
+                "enabled": True,
+                "min_underperformance_pct": 2.0,
+                "min_gain_pct": 7,
+                "timeframe": "4h",
+                "periods": 1,
+            },
+            "rsi_rollover_1h": {
+                "enabled": True,
+                "peak_rsi_min": 70,
+                "current_rsi_max": 60,
+                "min_gain_pct": 7,
+            },
+        }
+        raw = self._raw.get("exit_sensor") or {}
+        merged = {**defaults, **raw}
+        for key in (
+            "weakness_15m",
+            "volume_climax",
+            "pullback",
+            "btc_rs",
+            "rsi_rollover_1h",
+        ):
+            if key in raw:
+                merged[key] = {**defaults[key], **raw[key]}
+        return merged
 
 
 def get_bot_config() -> BotConfig:
