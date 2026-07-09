@@ -687,9 +687,15 @@
     "trailing_take_profit": {
       "enabled": true,
       "mode": "live",
+      "dynamic_trail": true,
       "trail_pct": 6,
+      "trail_pct_min": 3,
+      "trail_pct_max": 12,
+      "trail_pct_scale_start_pct": 18,
+      "trail_pct_scale_peak_pct": 45,
       "arm_gain_pct": 12,
       "min_gain_pct": 10,
+      "min_gain_pct_floor": 8,
       "max_steps": 3,
       "cooldown_hours": 6
     },
