@@ -954,6 +954,43 @@
       "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12}
     }
   },
+  "exit_sensor": {
+    "enabled": true,
+    "mode": "shadow",
+    "min_gain_pct": 7,
+    "weakness_15m": {
+      "enabled": true,
+      "ema_period": 20,
+      "min_gain_pct": 7
+    },
+    "volume_climax": {
+      "enabled": true,
+      "vol_spike_min": 3.0,
+      "upper_wick_min_pct": 55,
+      "max_body_atr_ratio": 0.35,
+      "near_high_tolerance_pct": 2.0,
+      "min_gain_pct": 7
+    },
+    "pullback": {
+      "enabled": true,
+      "min_drop_pct": 3.5,
+      "require_vol_above_avg": true,
+      "min_gain_pct": 6
+    },
+    "btc_rs": {
+      "enabled": true,
+      "min_underperformance_pct": 2.0,
+      "min_gain_pct": 7,
+      "timeframe": "4h",
+      "periods": 1
+    },
+    "rsi_rollover_1h": {
+      "enabled": true,
+      "peak_rsi_min": 70,
+      "current_rsi_max": 60,
+      "min_gain_pct": 7
+    }
+  },
   "entry_sensor_15m": {
     "enabled": true,
     "mode": "active",

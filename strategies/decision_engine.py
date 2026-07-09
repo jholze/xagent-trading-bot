@@ -60,6 +60,7 @@ from strategies.entry_sensor_15m import (
 )
 from strategies import watch_15m_state
 from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
+from strategies.exit_sensor import evaluate_exit_sensor_sells
 
 _WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
 _WATCHLIST_TTL_SEC = 60.0
@@ -97,6 +98,9 @@ class DecisionEngine:
 
     def _entry_sensor_cfg(self) -> dict:
         return self.config.entry_sensor_15m_config
+
+    def _exit_sensor_cfg(self) -> dict:
+        return self.config.exit_sensor_config
 
     def _in_setup_zone(self, market: MarketContext, strategy_params: dict) -> bool:
         modes = self._entry_sensor_cfg().get("setup_modes") or []
@@ -639,6 +643,35 @@ class DecisionEngine:
                 sources.append(cand.source)
                 structure_rationales.append(cand.rationale)
 
+            escfg = self._exit_sensor_cfg()
+            if escfg.get("enabled", True):
+                try:
+                    metrics_15m = self.market.fetch_exit_metrics_15m(market.symbol, escfg)
+                    metrics_1h = self.market.fetch_exit_metrics_1h(market.symbol)
+                    bcfg = escfg.get("btc_rs") or {}
+                    btc_delta = None
+                    if bcfg.get("enabled", True):
+                        btc_delta = self.market.btc_relative_return_delta(
+                            market.symbol,
+                            timeframe=str(bcfg.get("timeframe", "4h")),
+                            periods=int(bcfg.get("periods", 1)),
+                        )
+                    for cand in evaluate_exit_sensor_sells(
+                        market,
+                        position,
+                        escfg,
+                        metrics_15m=metrics_15m,
+                        metrics_1h=metrics_1h,
+                        btc_rs_delta=btc_delta,
+                    ):
+                        candidates.append((cand.action, cand.priority, cand.source))
+                        sources.append(cand.source)
+                        structure_rationales.append(cand.rationale)
+                        if cand.shadow_only:
+                            sources.append("exit_sensor_shadow")
+                except Exception as exc:
+                    log(f"exit_sensor: metrics failed {market.symbol}: {exc}", "WARNING")
+
             if sync_profit_armed_at(market, position, strategy_params):
                 flush_positions()
 
@@ -762,6 +795,9 @@ class DecisionEngine:
             shadow = execution_action
             return HOLD, "HOLD", shadow
         if "time_profit_shadow" in sources and is_sell(normalized):
+            shadow = execution_action
+            return HOLD, "HOLD", shadow
+        if "exit_sensor_shadow" in sources and is_sell(normalized):
             shadow = execution_action
             return HOLD, "HOLD", shadow
 
