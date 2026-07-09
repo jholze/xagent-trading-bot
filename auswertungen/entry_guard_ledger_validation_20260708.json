@@ -1,0 +1,94 @@
+{
+  "ledger": "xagent_test",
+  "filled_orders": 396,
+  "entry_sensor_lots_90d": 48,
+  "quick_sells_60m": 11,
+  "quick_negative": 5,
+  "results": {
+    "baseline": {
+      "blocked": 2,
+      "total": 11,
+      "saved": 10.958398786483741
+    },
+    "entry_guard": {
+      "blocked": 2,
+      "total": 11,
+      "saved": 10.958398786483741,
+      "missed": 0.0
+    },
+    "arch_only": {
+      "blocked": 11,
+      "total": 11,
+      "saved": 22.279343147339837,
+      "missed": 129.16240111512099
+    }
+  },
+  "quick_sells": [
+    {
+      "symbol": "CAT/USDT",
+      "mins": 1.2960899666666668,
+      "pnl": -0.6773843930636346,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "DOGE/USDT",
+      "mins": 1.1772977833333333,
+      "pnl": 0.490452524195808,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "TYCOON/USDT",
+      "mins": 5.5258639,
+      "pnl": 105.75961566505939,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "HYPE/USDT",
+      "mins": 13.874603416666668,
+      "pnl": 0.9646939399838445,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "BNB/USDT",
+      "mins": 1.4837208166666669,
+      "pnl": -0.16318537859011542,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "CAT/USDT",
+      "mins": 0.6265651833333333,
+      "pnl": -10.281014393420106,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "MON/USDT",
+      "mins": 1.55233555,
+      "pnl": -0.8877840909090549,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "BNB/USDT",
+      "mins": 7.375932683333334,
+      "pnl": 0.793684388757196,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "LIT/USDT",
+      "mins": 41.55337263333333,
+      "pnl": 23.402785450061614,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "NEAR/USDT",
+      "mins": 10.6611288,
+      "pnl": -10.269974891356927,
+      "signal": "SELL_PARTIAL_30"
+    },
+    {
+      "symbol": "RIF/USDT",
+      "mins": 1.8267519,
+      "pnl": 0.0,
+      "signal": "SELL_PARTIAL_30"
+    }
+  ]
+}
