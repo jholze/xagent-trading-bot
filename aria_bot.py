@@ -531,6 +531,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 except Exception:
                     pass
 
+            try:
+                from services.position_tracking import maybe_snapshot_after_cycle
+
+                maybe_snapshot_after_cycle(price_map, config_raw=bot_config.raw)
+            except Exception as e:
+                log(f"Position snapshot failed: {e}", "WARNING")
+
             if use_dashboard:
                 render_cycle_dashboard(
                     cycle_signals=cycle_signal_lines,

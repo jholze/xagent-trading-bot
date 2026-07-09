@@ -58,7 +58,8 @@ def log_json(event: dict, level: str = "INFO"):
 
 def log_decision(entry: dict):
     """Append a decision audit record to logs/decisions.jsonl."""
-    record = {"timestamp": datetime.now().isoformat(), **entry}
+    record = dict(entry)
+    record.setdefault("timestamp", datetime.now().isoformat())
     try:
         with open(DECISIONS_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

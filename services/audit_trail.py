@@ -27,8 +27,13 @@ class AuditTrail:
         if not self.enabled or analysis is None:
             return
 
+        from services.observability_store import persist_decision, runtime_context
+        from services.position_metrics import position_metrics
+        from strategies.positions import get_position
+
         entry = {
             "timestamp": datetime.now().isoformat(),
+            **runtime_context(self.config.raw),
             "symbol": analysis.symbol,
             "timeframe": analysis.timeframe,
             "price": price,
@@ -52,6 +57,35 @@ class AuditTrail:
             ),
             "risk_message": risk_message or (trade_result.message if trade_result else ""),
         }
+        pos = get_position(analysis.symbol, analysis.timeframe)
+        has_position = float(pos.get("amount") or 0) > 0
+        entry["has_position"] = has_position
+        if has_position and price > 0:
+            from core.models import MarketContext
+
+            market = MarketContext(
+                symbol=analysis.symbol,
+                timeframe=analysis.timeframe,
+                current_price=price,
+                has_position=True,
+                average_entry=float(pos.get("average_entry") or 0),
+                atr_pct=getattr(analysis, "atr_pct", 0.0),
+                strategy_params={"strategy_profile": getattr(analysis, "strategy_profile", "")},
+            )
+            params = None
+            try:
+                from strategies.registry import resolve_strategy_params
+
+                params = resolve_strategy_params(
+                    {"symbol": analysis.symbol, "timeframe": analysis.timeframe},
+                    has_position=True,
+                    frozen_tier=pos.get("strategy_tier"),
+                )
+                market.strategy_params = params
+            except Exception:
+                params = {}
+            entry.update(position_metrics(market, pos, params))
+
         audit = getattr(analysis, "sell_policy_audit", None) or {}
         if audit:
             entry.update({
@@ -64,3 +98,4 @@ class AuditTrail:
                 "would_source": audit.get("would_source"),
             })
         log_decision(entry)
+        persist_decision(entry)
