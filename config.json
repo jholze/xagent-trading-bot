@@ -654,6 +654,8 @@
     "bb_sell_enabled": true,
     "bb_sell_upper_ratio": 0.99,
     "bb_sell_rsi_min": 58,
+    "bb_sell_min_gain_pct": 12,
+    "bb_sell_requires_ta": true,
     "vol_exhaustion_sell_enabled": true,
     "vol_exhaustion_max": 0.75,
     "vol_exhaustion_rsi_min": 58,

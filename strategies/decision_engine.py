@@ -632,7 +632,9 @@ class DecisionEngine:
 
         if market and position:
             ta_bearish = is_sell(technical.action)
-            for cand in evaluate_market_structure_sells(market, strategy_params, position):
+            for cand in evaluate_market_structure_sells(
+                market, strategy_params, position, ta_bearish=ta_bearish,
+            ):
                 candidates.append((cand.action, cand.priority, cand.source))
                 sources.append(cand.source)
                 structure_rationales.append(cand.rationale)

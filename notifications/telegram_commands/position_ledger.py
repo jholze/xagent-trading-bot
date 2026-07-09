@@ -227,16 +227,31 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             row["realized_usd"] = ev.realized_usd if ev.realized_usd is not None else 0.0
             if ev.cycle_closed:
                 row["cycle_closed"] = True
-        elif ev.lot and mark > 0 and ev.lot.remaining > 1e-12:
-            row["open_qty"] = ev.lot.remaining
-            row["open_pct"] = (mark / ev.lot.price - 1) * 100 if ev.lot.price > 0 else 0.0
-            row["open_usd"] = (mark - ev.lot.price) * ev.lot.remaining
+        elif ev.lot:
+            remaining = ev.lot.remaining
+            row["remaining_qty"] = remaining
+            row["original_qty"] = ev.lot.qty
+            if mark > 0 and remaining > 1e-12:
+                row["open_qty"] = remaining
+                row["open_pct"] = (mark / ev.lot.price - 1) * 100 if ev.lot.price > 0 else 0.0
+                row["open_usd"] = (mark - ev.lot.price) * remaining
+            elif remaining > 1e-12:
+                row["open_qty"] = remaining
+                row["open_pct"] = 0.0
+                row["open_usd"] = 0.0
+                row["mark_unavailable"] = True
+            else:
+                row["open_qty"] = 0.0
+                row["open_pct"] = 0.0
+                row["open_usd"] = 0.0
         else:
             row["open_qty"] = 0.0
             row["open_pct"] = 0.0
             row["open_usd"] = 0.0
-        if ev.kind == "buy" and row["open_qty"] <= 1e-12:
-            row["closed"] = True
+        if ev.kind == "buy":
+            remaining = float(row.get("remaining_qty", row.get("open_qty", 0)) or 0)
+            if remaining <= 1e-12:
+                row["closed"] = True
         out.append(row)
     return out
 
@@ -288,6 +303,14 @@ def format_event_line(ev: dict) -> str:
         return (
             f"{icon} {label} · <b>${usdt:,.0f}</b> @{price} · {ts} · {source} · "
             f"<i>geschlossen</i>"
+        )
+    if ev.get("mark_unavailable"):
+        remaining = float(ev.get("remaining_qty", ev.get("open_qty", 0)) or 0)
+        orig = float(ev.get("original_qty", 0) or 0)
+        pct_left = (remaining / orig * 100) if orig > 0 else 0.0
+        return (
+            f"{icon} {label} · <b>${usdt:,.0f}</b> @{price} · {ts} · {source} · "
+            f"offen <code>{pct_left:.0f}%</code> <i>(Mark n/a)</i>"
         )
     open_pct = float(ev.get("open_pct", 0) or 0)
     open_usd = float(ev.get("open_usd", 0) or 0)

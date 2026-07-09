@@ -148,8 +148,11 @@ def entry_sell_allowed(
 ) -> tuple[bool, str]:
     """Return (allowed, reason). Empty reason when allowed."""
     cfg = cfg or entry_guard_config()
-    if not cfg.get("enabled", True) or not is_fresh_guarded_entry(position, cfg, as_of=now):
+    if not cfg.get("enabled", True):
         return True, ""
+
+    guarded = is_guarded_entry(position, cfg)
+    fresh = is_fresh_guarded_entry(position, cfg, as_of=now)
 
     if _is_stop_loss_source(sell_source, action):
         return True, ""
@@ -170,8 +173,17 @@ def entry_sell_allowed(
     if elapsed_min is None:
         elapsed_min = 999.0
 
-    pump = classify_15m_pump_state(metrics_15m, gain_pct, cfg)
     src = (sell_source or "").lower()
+
+    if guarded and not fresh and src in STRUCTURE_SOURCES:
+        if gain_pct < min_gain and not ta_bearish:
+            return False, f"gain {gain_pct:.1f}% < {min_gain:.0f}% (guarded entry)"
+        return True, ""
+
+    if not fresh:
+        return True, ""
+
+    pump = classify_15m_pump_state(metrics_15m, gain_pct, cfg)
 
     if src in STRUCTURE_SOURCES:
         if pump == Pump15mState.CONTINUATION:

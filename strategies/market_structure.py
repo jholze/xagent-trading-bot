@@ -31,6 +31,8 @@ def evaluate_market_structure_sells(
     market: MarketContext,
     params: dict,
     position: dict,
+    *,
+    ta_bearish: bool = False,
 ) -> list[MarketStructureCandidate]:
     if not market.has_position or market.average_entry <= 0:
         return []
@@ -47,13 +49,23 @@ def evaluate_market_structure_sells(
         upper = getattr(market, "upper_bb", 0) or 0
         ratio = float(params.get("bb_sell_upper_ratio", 0.99))
         rsi_min = float(params.get("bb_sell_rsi_min", 62))
-        if upper > 0 and price >= upper * ratio and rsi >= rsi_min and not _tier_done(position, "30"):
+        bb_min_gain = float(params.get("bb_sell_min_gain_pct", 0))
+        bb_requires_ta = bool(params.get("bb_sell_requires_ta", False))
+        bb_ok = (
+            upper > 0
+            and price >= upper * ratio
+            and rsi >= rsi_min
+            and not _tier_done(position, "30")
+            and gain >= bb_min_gain
+            and (not bb_requires_ta or ta_bearish)
+        )
+        if bb_ok:
             candidates.append(
                 MarketStructureCandidate(
                     action=SELL_PARTIAL_30,
                     source="bb_upper",
                     priority=3,
-                    rationale=f"BB->upper extension (price>={upper * ratio:.4f}, RSI={rsi:.1f})",
+                    rationale=f"BB->upper extension (price>={upper * ratio:.4f}, RSI={rsi:.1f}, gain={gain:.1f}%)",
                 )
             )
 

@@ -158,6 +158,22 @@ class TestEntrySellAllowed:
         )
         assert allowed
 
+    def test_blocks_guarded_entry_structure_sell_after_fresh_window(self):
+        """COAI-style: 15m entry, 5h later bb_upper at breakeven."""
+        pos = _fresh_position(minutes_ago=330)
+        allowed, reason = entry_sell_allowed(
+            position=pos,
+            strategy_params={"volatility_tier": "volatile"},
+            sell_source="bb_upper",
+            action="SELL_PARTIAL_30",
+            gain_pct=0.0,
+            ta_bearish=False,
+            metrics_15m=None,
+            cfg=WINNER_CFG,
+        )
+        assert not allowed
+        assert "guarded entry" in reason
+
 
 class TestFilterSellCandidates:
     def test_filters_structure_candidate_keeps_stop(self):

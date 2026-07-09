@@ -386,7 +386,7 @@ class OrderService:
                     "exchange_order_id": getattr(result, "exchange_order_id", None),
                     "fee": float(getattr(result, "fee", 0) or 0) or None,
                 },
-                pnl=float(result.pnl) if result.pnl else None,
+                pnl=float(result.pnl) if result.pnl is not None else None,
             )
         else:
             self.update_status(order_id, "failed", error=result.message or "Execution failed")
