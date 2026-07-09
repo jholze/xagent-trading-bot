@@ -64,6 +64,7 @@
           "title": "🔍 <b>Transparenz</b> — Was der Bot warum tut",
           "keys": [
             "morning",
+            "stack",
             "decisions",
             "why",
             "ask",
@@ -198,6 +199,11 @@
         "description": "Morning Briefing (1× täglich)",
         "help_line": "<code>/morning</code> — Tagesstart: Portfolio, 24h-Aktivität, Highlights",
         "hint": "☀️ <b>/morning</b> — Morning Briefing\n\nEinmal pro Tag: Status, Portfolio, letzte 24h Trades/DCA, Highlights.\nErneuter Aufruf am selben Tag zeigt nur einen Hinweis."
+      },
+      "stack": {
+        "description": "Stack Compare — Staging vs Prod",
+        "help_line": "<code>/stack</code> — Observability-Vergleich (24h) | <code>/stack 48</code> — anderes Fenster",
+        "hint": "📊 <b>/stack</b> — Staging vs Production\n\n<code>/stack</code> — KPIs, Sell-Sources, Would-Sell-Divergenzen (24h)\n<code>/stack 48</code> — Lookback in Stunden (1–168)\n\nVoller Diff braucht Daten beider Stacks (Mongo-Sync oder pull_stack_observability.sh)."
       },
       "decisions": {
         "description": "Letzte Bot-Entscheidungen",
@@ -370,6 +376,7 @@
           "title": "🔍 <b>Transparency</b> — What the bot does and why",
           "keys": [
             "morning",
+            "stack",
             "decisions",
             "why",
             "ask",
@@ -504,6 +511,11 @@
         "description": "Morning briefing (once per day)",
         "help_line": "<code>/morning</code> — Day start: portfolio, 24h activity, highlights",
         "hint": "☀️ <b>/morning</b> — Morning briefing\n\nOnce per day: status, portfolio, last 24h trades/DCA, highlights.\nA second call the same day only shows a short notice."
+      },
+      "stack": {
+        "description": "Stack compare — staging vs prod",
+        "help_line": "<code>/stack</code> — Observability compare (24h) | <code>/stack 48</code> — custom window",
+        "hint": "📊 <b>/stack</b> — Staging vs production\n\n<code>/stack</code> — KPIs, sell sources, would-sell divergences (24h)\n<code>/stack 48</code> — lookback in hours (1–168)\n\nFull diff needs data from both stacks (Mongo sync or pull_stack_observability.sh)."
       },
       "decisions": {
         "description": "Recent bot decisions",

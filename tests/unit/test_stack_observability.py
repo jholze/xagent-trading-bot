@@ -13,7 +13,11 @@ from core.models import MarketContext
 from services.config_fingerprint import config_fingerprint, extract_rule_snapshot
 from services.observability_store import append_jsonl, load_decisions, load_snapshots
 from services.position_metrics import position_metrics
-from services.stack_compare import build_stack_compare_report, would_sell_divergences
+from services.stack_compare import (
+    build_stack_compare_report,
+    format_stack_compare_telegram,
+    would_sell_divergences,
+)
 
 
 class TestStackObservability(unittest.TestCase):
@@ -98,6 +102,63 @@ class TestStackObservability(unittest.TestCase):
         pr = {"MAGMA_USDT_4h": {"symbol": "MAGMA/USDT", "would_action": "HOLD", "would_source": ""}}
         divs = would_sell_divergences(st, pr)
         self.assertEqual(len(divs), 1)
+
+    def test_format_stack_compare_telegram(self):
+        report = {
+            "since": "2026-07-08T10:00:00",
+            "until": "2026-07-09T10:00:00",
+            "staging": {
+                "decisions": {
+                    "evals": 5,
+                    "with_position": 3,
+                    "sell_signals": 1,
+                    "executed_sells": 1,
+                    "trail_armed_evals": 2,
+                    "sources": __import__("collections").Counter({"trailing_take_profit": 1}),
+                    "would_sources": __import__("collections").Counter(),
+                    "trail_exclusive_blocked": __import__("collections").Counter(),
+                },
+                "open_positions_latest": 2,
+                "build_commits": ["abc123"],
+            },
+            "production": {
+                "decisions": {
+                    "evals": 4,
+                    "with_position": 2,
+                    "sell_signals": 0,
+                    "executed_sells": 0,
+                    "trail_armed_evals": 1,
+                    "sources": __import__("collections").Counter(),
+                    "would_sources": __import__("collections").Counter(),
+                    "trail_exclusive_blocked": __import__("collections").Counter(),
+                },
+                "open_positions_latest": 2,
+                "build_commits": ["def456"],
+            },
+            "divergences": [{
+                "symbol": "MAGMA/USDT",
+                "staging_would": "SELL_PARTIAL_30",
+                "prod_would": "HOLD",
+                "staging_source": "trail",
+                "prod_source": "",
+            }],
+        }
+        chunks = format_stack_compare_telegram(report, local_stack="staging")
+        text = "\n".join(chunks)
+        self.assertIn("Stack Compare", text)
+        self.assertIn("MAGMA/USDT", text)
+        self.assertIn("abc123", text)
+        self.assertIn("staging", text)
+
+    def test_stack_command_handler(self):
+        from notifications.telegram_commands.stack_commands import handle
+
+        with patch("notifications.telegram_commands.stack_commands.threading.Thread") as mock_thread:
+            self.assertTrue(handle("/stack"))
+            self.assertTrue(handle("/stack 48"))
+            self.assertFalse(handle("/stack foo"))
+            self.assertFalse(handle("/morning"))
+            self.assertEqual(mock_thread.call_count, 2)
 
     def test_audit_trail_includes_stack_context(self):
         from core.models import SignalAnalysis

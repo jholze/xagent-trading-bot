@@ -222,3 +222,101 @@ def format_stack_compare_markdown(report: dict[str, Any]) -> str:
             )
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_counter_lines(ctr: Counter, *, limit: int = 8) -> list[str]:
+    if not ctr:
+        return ["<i>keine</i>"]
+    lines: list[str] = []
+    for name, count in ctr.most_common(limit):
+        lines.append(f"• <code>{name}</code> — {count}")
+    return lines
+
+
+def format_stack_compare_telegram(
+    report: dict[str, Any],
+    *,
+    local_stack: str | None = None,
+    max_divergences: int = 12,
+) -> list[str]:
+    """Compact HTML report for Telegram (may return multiple chunks)."""
+    st = report["staging"]["decisions"]
+    pr = report["production"]["decisions"]
+    since = str(report.get("since") or "")[:16].replace("T", " ")
+    until = str(report.get("until") or "")[:16].replace("T", " ")
+
+    lines = [
+        "<b>📊 Stack Compare</b>",
+        f"<i>{since} → {until}</i>",
+    ]
+    if local_stack:
+        lines.append(f"Lokale Instanz: <code>{local_stack}</code>")
+    lines.extend([
+        "",
+        "<b>KPIs</b>",
+        f"Staging — Evals: {st['evals']} | Positionen: {st['with_position']} | "
+        f"Sells: {st['sell_signals']} ({st['executed_sells']} exec) | Trail: {st['trail_armed_evals']}",
+        f"Prod — Evals: {pr['evals']} | Positionen: {pr['with_position']} | "
+        f"Sells: {pr['sell_signals']} ({pr['executed_sells']} exec) | Trail: {pr['trail_armed_evals']}",
+        f"Open (Snapshot): Staging {report['staging']['open_positions_latest']} | "
+        f"Prod {report['production']['open_positions_latest']}",
+    ])
+
+    st_builds = report["staging"]["build_commits"]
+    pr_builds = report["production"]["build_commits"]
+    if st_builds or pr_builds:
+        lines.extend([
+            "",
+            "<b>Builds</b>",
+            f"Staging: <code>{', '.join(st_builds) or '—'}</code>",
+            f"Prod: <code>{', '.join(pr_builds) or '—'}</code>",
+        ])
+
+    lines.extend([
+        "",
+        "<b>Sell Sources (Staging)</b>",
+        *_format_counter_lines(st.get("sources") or Counter()),
+        "",
+        "<b>Would-Sell (Staging)</b>",
+        *_format_counter_lines(st.get("would_sources") or Counter()),
+    ])
+
+    trail_blocks = st.get("trail_exclusive_blocked") or Counter()
+    if trail_blocks:
+        lines.extend([
+            "",
+            "<b>Trail-Exclusive Blocks</b>",
+            *_format_counter_lines(trail_blocks),
+        ])
+
+    divs = report.get("divergences") or []
+    lines.extend(["", "<b>Divergenzen (Would-Sell)</b>"])
+    if not divs:
+        lines.append("<i>Keine in gemeinsamen Snapshot-Keys.</i>")
+    else:
+        for d in divs[:max_divergences]:
+            sym = str(d.get("symbol") or d.get("key") or "?")
+            lines.append(
+                f"• <b>{sym}</b> — Stg <code>{d.get('staging_would') or '—'}</code> "
+                f"({d.get('staging_source') or '—'}) vs Prod <code>{d.get('prod_would') or '—'}</code> "
+                f"({d.get('prod_source') or '—'})"
+            )
+        if len(divs) > max_divergences:
+            lines.append(f"<i>… +{len(divs) - max_divergences} weitere</i>")
+
+    if st["evals"] == 0 and pr["evals"] == 0:
+        lines.extend([
+            "",
+            "<i>Hinweis: Wenig lokale Daten — voller Vergleich braucht Mongo-Sync "
+            "oder <code>pull_stack_observability.sh</code>.</i>",
+        ])
+
+    text = "\n".join(lines)
+    limit = 3900
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    while text:
+        chunks.append(text[:limit])
+        text = text[limit:]
+    return chunks
