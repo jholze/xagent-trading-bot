@@ -459,6 +459,14 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             scan_coins = order_watchlist_positions_first(active_coins, open_positions)
             price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
+            try:
+                from data_manager import resolve_ledger_scope
+                from services.ledger_sync import reconcile_recent_highs
+
+                reconcile_recent_highs(resolve_ledger_scope(), price_map=price_map)
+            except Exception as e:
+                log(f"Peak reconcile failed: {e}", "WARNING")
+
             from bus.eval_queue import eval_queue_enabled
 
             use_eval_queue = eval_queue_enabled(bot_config.raw)

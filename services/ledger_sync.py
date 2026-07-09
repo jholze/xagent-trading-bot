@@ -246,6 +246,65 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
     )
 
 
+def reconcile_recent_highs(
+    scope: str,
+    price_map: dict | None = None,
+    *,
+    use_ohlcv: bool = False,
+) -> bool:
+    """Backfill recent_high from live marks (and optional OHLCV) for open lots."""
+    from strategies.positions import (
+        flush_positions,
+        get_position,
+        has_position_amount,
+        list_active_positions,
+        update_market_snapshot,
+    )
+
+    open_lots = list_active_positions()
+    if not open_lots:
+        return False
+
+    prices = dict(price_map or {})
+    missing = sorted(
+        {
+            p["symbol"]
+            for p in open_lots
+            if float(prices.get(p["symbol"], 0) or 0) <= 0
+        }
+    )
+    if missing:
+        from price_fetcher import get_prices_batch
+
+        prices.update(get_prices_batch(missing))
+
+    market_svc = None
+    if use_ohlcv:
+        from services.market_service import MarketService
+
+        market_svc = MarketService()
+
+    changed = False
+    for lot in open_lots:
+        sym = lot.get("symbol", "")
+        tf = lot.get("timeframe", "4h")
+        price = float(prices.get(sym, 0) or 0)
+        if price <= 0 or not has_position_amount(lot):
+            continue
+        peak_hint = None
+        if market_svc is not None:
+            pos = get_position(sym, tf)
+            since = pos.get("first_buy_at") or pos.get("entry_at")
+            peak_hint = market_svc.infer_ohlcv_peak_price(sym, tf, since)
+        if update_market_snapshot(sym, tf, price, peak_hint=peak_hint):
+            changed = True
+
+    if changed:
+        flush_positions(scope=scope, force=True)
+        log(f"Reconciled recent_high for scope={scope}", "INFO")
+    return changed
+
+
 def reconcile_peak_amounts(scope: str) -> bool:
     """Backfill peak_amount and sold_percent from filled orders for open lots."""
     from strategies.positions import _positions_lock, flush_positions, has_position_amount, positions
@@ -373,10 +432,14 @@ def _preserve_legacy_cache_lots(scope: str) -> None:
 
 
 def sync_positions_on_startup() -> None:
-    """Reconcile peak_amount cache after bootstrap (no wipe/rebuild)."""
+    """Reconcile peak_amount + recent_high cache after bootstrap (no wipe/rebuild)."""
     from data_manager import get_config, resolve_ledger_scope
 
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
     _preserve_legacy_cache_lots(scope)
     reconcile_peak_amounts(scope)
+    try:
+        reconcile_recent_highs(scope, use_ohlcv=True)
+    except Exception as exc:
+        log(f"recent_high reconcile skipped for scope={scope}: {exc}", "WARNING")

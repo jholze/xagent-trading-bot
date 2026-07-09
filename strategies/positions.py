@@ -322,12 +322,29 @@ def save_positions(scope: str = None):
     flush_positions(scope, force=True)
 
 
-def update_market_snapshot(symbol: str, timeframe: str, current_price: float, atr_pct: float = 0.0):
+def update_market_snapshot(
+    symbol: str,
+    timeframe: str,
+    current_price: float,
+    atr_pct: float = 0.0,
+    *,
+    peak_hint: float | None = None,
+) -> bool:
+    """Bump recent_high when price makes a new peak. Returns True if peak changed."""
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
+    changed = False
+    candidate = max(float(current_price), float(peak_hint or 0))
     with _positions_lock:
         pos = positions[key]
-        pos["recent_high"] = max(float(pos.get("recent_high") or 0), current_price)
+        old_high = float(pos.get("recent_high") or 0)
+        new_high = max(old_high, candidate)
+        if new_high > old_high:
+            pos["recent_high"] = new_high
+            changed = True
+    if changed:
+        flush_positions()
+    return changed
 
 
 def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:

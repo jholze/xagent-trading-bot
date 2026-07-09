@@ -14,13 +14,16 @@ from services.ledger_sync import (
     count_open_positions_from_orders,
     on_trading_mode_change,
     rebuild_positions_from_orders,
+    reconcile_recent_highs,
     sync_positions_on_startup,
 )
 from services.order_service import OrderService
 from strategies.positions import (
+    _positions_lock,
     bootstrap_positions,
     count_open_positions,
     get_active_scope,
+    get_key,
     get_position,
     positions,
 )
@@ -298,6 +301,23 @@ class TestLedgerSync(unittest.TestCase):
         self.assertEqual(added, 1)
         orders = load_orders("paper").get("orders", [])
         self.assertEqual(orders[-1]["id"], "legacy-cat-01")
+
+    def test_reconcile_recent_highs_updates_stale_peak(self):
+        self._filled_buy("paper", "MAGMA/USDT", 0.34, 1000.0)
+        rebuild_positions_from_orders("paper")
+        key = get_key("MAGMA/USDT", "4h")
+        with _positions_lock:
+            positions[key]["recent_high"] = 0.35
+
+        with patch("strategies.positions.save_positions_document", return_value=True) as mock_save:
+            changed = reconcile_recent_highs(
+                "paper",
+                price_map={"MAGMA/USDT": 0.39},
+            )
+
+        self.assertTrue(changed)
+        mock_save.assert_called()
+        self.assertEqual(float(get_position("MAGMA/USDT", "4h")["recent_high"]), 0.39)
 
 
 if __name__ == "__main__":

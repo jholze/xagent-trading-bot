@@ -228,6 +228,31 @@ class MarketService:
         """Public OHLCV fetch (same pipeline as fetch_indicators)."""
         return self._fetch_ohlcv(symbol, timeframe, limit)
 
+    def infer_ohlcv_peak_price(
+        self,
+        symbol: str,
+        timeframe: str,
+        since_iso: str | None = None,
+        *,
+        limit: int = 200,
+    ) -> float | None:
+        """Highest candle high since *since_iso* (or full window if unknown)."""
+        from datetime import datetime
+
+        df = self._fetch_ohlcv(symbol, timeframe, limit)
+        if df is None or df.empty:
+            return None
+        if since_iso:
+            try:
+                since_dt = datetime.fromisoformat(str(since_iso).replace("Z", ""))
+                since_ms = since_dt.timestamp() * 1000
+                df = df[df["ts"] >= since_ms]
+                if df.empty:
+                    return None
+            except Exception:
+                pass
+        return float(df["high"].max())
+
     @staticmethod
     def compute_15m_sensor_metrics(
         df: pd.DataFrame,
