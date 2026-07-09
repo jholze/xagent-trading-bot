@@ -22,6 +22,27 @@ class TestCMCChurn(unittest.TestCase):
         self.assertEqual(pid_b, f"cmc_quote_STG_bear_{date}")
         self.assertEqual(pid_c, f"cmc_quote_STG_bull_{date}")
 
+    def test_quote_fetch_skips_extreme_pump_pct(self):
+        provider = CMCProApiProvider(api_key="test")
+        fake_data = {
+            "BOBO": {
+                "quote": {"USDT": {"percent_change_24h": 199520.7, "price": 0.001, "volume_24h": 1}},
+            },
+            "STG": {
+                "quote": {"USDT": {"percent_change_24h": 8.0, "price": 0.2, "volume_24h": 100000}},
+            },
+        }
+        with patch.object(provider, "_quote_thresholds", return_value=(-8.0, 5.0)), \
+             patch("data_manager.get_config", return_value={"cmc": {"quotes_max_bullish_pct": 35}}), \
+             patch("data.cmc_community_provider.requests.get") as mock_get:
+            mock_resp = mock_get.return_value
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"data": fake_data}
+            posts = provider._fetch_quotes_sentiment(["BOBO", "STG"], limit=10)
+        coins = [p.coin for p in posts]
+        self.assertNotIn("BOBO", coins)
+        self.assertIn("STG", coins)
+
     def test_parser_bearish_threshold_tightened(self):
         parser = CMCCommunityParser()
         hold_post = RawCMCPost("p1", "STG", "neutral", votes_bullish=32, votes_bearish=68)

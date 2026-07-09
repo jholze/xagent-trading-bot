@@ -1,3 +1,6 @@
+import threading
+import time
+
 import ccxt
 import pandas as pd
 import talib
@@ -26,12 +29,74 @@ _24H_BARS = {
     "1d": 1,
 }
 
+_exchange_lock = threading.Lock()
+_exchanges: dict[str, object] = {}
+_funding_lock = threading.Lock()
+_funding_cache: dict[str, tuple[float, float]] = {}
+
+
+def _funding_ttl_sec(config_raw: dict | None = None) -> float:
+    arch = ((config_raw or {}).get("architecture") or {})
+    return float(arch.get("funding_cache_ttl_sec", 300))
+
 
 class MarketService:
     """Unified OHLCV and indicator access with multi-exchange fallback."""
 
     EXCHANGES = ["gate", "binance", "kucoin", "bybit"]
     FUNDING_EXCHANGES = ["gate", "binance", "bybit"]
+
+    def __init__(self, config_raw: dict | None = None):
+        self._config_raw = config_raw
+
+    def _arch(self) -> dict:
+        if self._config_raw is not None:
+            return (self._config_raw.get("architecture") or {})
+        try:
+            from core.config import get_bot_config
+
+            return get_bot_config().architecture_config
+        except Exception:
+            return {}
+
+    @classmethod
+    def _get_spot_exchange(cls, ex_name: str):
+        with _exchange_lock:
+            cached = _exchanges.get(f"spot:{ex_name}")
+            if cached is not None:
+                return cached
+            exchange = getattr(ccxt, ex_name)({"enableRateLimit": True, "timeout": 12000})
+            _exchanges[f"spot:{ex_name}"] = exchange
+            return exchange
+
+    @classmethod
+    def _get_swap_exchange(cls, ex_name: str):
+        with _exchange_lock:
+            cached = _exchanges.get(f"swap:{ex_name}")
+            if cached is not None:
+                return cached
+            exchange = getattr(ccxt, ex_name)(
+                {"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "swap"}}
+            )
+            _exchanges[f"swap:{ex_name}"] = exchange
+            return exchange
+
+    @staticmethod
+    def reset_exchange_cache_for_tests() -> None:
+        with _exchange_lock:
+            _exchanges.clear()
+        with _funding_lock:
+            _funding_cache.clear()
+
+    @staticmethod
+    def _bars_to_dataframe(bars: list) -> pd.DataFrame | None:
+        if not bars:
+            return None
+        df = pd.DataFrame(bars, columns=["ts", "open", "high", "low", "close", "volume"])
+        df["rsi"] = talib.RSI(df["close"], timeperiod=14)
+        df["upper"], df["middle"], df["lower"] = talib.BBANDS(df["close"], timeperiod=20)
+        df["vol_avg"] = df["volume"].rolling(window=20).mean()
+        return df
 
     def fetch_indicators(self, symbol: str, timeframe: str, current_price: float, limit: int = 100) -> dict:
         df = self._fetch_ohlcv(symbol, timeframe, limit)
@@ -90,20 +155,28 @@ class MarketService:
 
     def fetch_funding_rate(self, symbol: str) -> float | None:
         """Return perpetual funding rate in percent (e.g. -0.04 = -0.04%)."""
+        now = time.time()
+        ttl = _funding_ttl_sec(self._config_raw)
+        with _funding_lock:
+            cached = _funding_cache.get(symbol)
+            if cached and now - cached[1] <= ttl:
+                return cached[0]
+
         base = symbol.split("/")[0]
         swap_symbol = f"{base}/USDT:USDT"
         for ex_name in self.FUNDING_EXCHANGES:
             try:
-                exchange = getattr(ccxt, ex_name)(
-                    {"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "swap"}}
-                )
+                exchange = self._get_swap_exchange(ex_name)
                 if not exchange.has.get("fetchFundingRate"):
                     continue
                 data = exchange.fetch_funding_rate(swap_symbol)
                 rate = data.get("fundingRate")
                 if rate is None:
                     continue
-                return float(rate) * 100.0
+                value = float(rate) * 100.0
+                with _funding_lock:
+                    _funding_cache[symbol] = (value, now)
+                return value
             except Exception as e:
                 log(f"{ex_name.capitalize()} funding fetch failed for {symbol}: {e}", "WARNING")
         return None
@@ -210,15 +283,45 @@ class MarketService:
         )
 
     def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):
+        cache = None
+        try:
+            from bus.ohlcv_cache import ohlcv_cache_enabled, ohlcv_cache_from_config
+
+            if ohlcv_cache_enabled(self._config_raw):
+                cache = ohlcv_cache_from_config(self._config_raw)
+                cached = cache.get(symbol, timeframe, limit)
+                if cached and cached.bars:
+                    return self._bars_to_dataframe(cached.bars)
+        except Exception:
+            cache = None
+
         for ex_name in self.EXCHANGES:
             try:
-                exchange = getattr(ccxt, ex_name)({"enableRateLimit": True, "timeout": 12000})
+                exchange = self._get_spot_exchange(ex_name)
                 bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-                df = pd.DataFrame(bars, columns=["ts", "open", "high", "low", "close", "volume"])
-                df["rsi"] = talib.RSI(df["close"], timeperiod=14)
-                df["upper"], df["middle"], df["lower"] = talib.BBANDS(df["close"], timeperiod=20)
-                df["vol_avg"] = df["volume"].rolling(window=20).mean()
-                return df
+                if cache and bars:
+                    cache.set(symbol, timeframe, limit, bars, exchange=ex_name)
+                return self._bars_to_dataframe(bars)
             except Exception as e:
                 log(f"{ex_name.capitalize()} fetch failed for {symbol}: {e}", "WARNING")
         return None
+
+
+def ohlcv_cache_stats() -> dict:
+    try:
+        from bus.ohlcv_cache import ohlcv_cache_from_config, ohlcv_cache_enabled
+
+        if not ohlcv_cache_enabled():
+            return {}
+        return ohlcv_cache_from_config().stats()
+    except Exception:
+        return {}
+
+
+def reset_ohlcv_cache_cycle_stats() -> None:
+    try:
+        from bus.ohlcv_cache import ohlcv_cache_from_config
+
+        ohlcv_cache_from_config().reset_stats()
+    except Exception:
+        pass

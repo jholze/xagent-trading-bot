@@ -4,6 +4,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== X-Agent Railway start ==="
+python3 scripts/write_build_meta.py 2>/dev/null || true
+python3 - <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, ".")
+from core.build_info import get_build_info
+b = get_build_info()
+print(f"Build revision: {b['commit']} @ {b['branch']}" + (" (dirty)" if b['dirty'] else ""))
+PY
 
 # Demo mode (same as local scripts/start_demo_with_ngrok.sh)
 export DEMO_MODE=1
@@ -13,6 +21,8 @@ export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
 
 # Reduce CPU on small Railway plans (override in Railway vars if desired)
 export RAILWAY_DEPLOY=1
+export BOT_TIMEZONE="${BOT_TIMEZONE:-Europe/Berlin}"
+export TZ="${TZ:-$BOT_TIMEZONE}"
 
 if [[ ! -f watchlist.demo.json && -f watchlist.json ]]; then
   echo "Seeding watchlist.demo.json from watchlist.json"
@@ -43,11 +53,14 @@ import os, sys
 sys.path.insert(0, ".")
 os.environ.setdefault("DEMO_MODE", "1")
 os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
-from data_manager import reconcile_demo_trade_history_on_startup
-from services.ledger_sync import sync_positions_on_startup
+from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
+from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
+
+scope = resolve_ledger_scope()
+open_count = rebuild_positions_from_orders(scope)
 sync_positions_on_startup()
 reconcile_demo_trade_history_on_startup()
-print("Demo ledger reconcile OK")
+print(f"Demo ledger reconcile OK ({open_count} open positions)")
 PY
 
 # Register Telegram webhook (Railway public domain — replaces ngrok)
@@ -57,14 +70,6 @@ if [[ -n "${WEBHOOK_BASE_URL:-}" || -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]]; then
 else
   echo "WARN: No WEBHOOK_BASE_URL / RAILWAY_PUBLIC_DOMAIN — set in Railway service settings"
 fi
-
-echo "Registering Telegram command menu..."
-python3 - <<'PY' 2>/dev/null || echo "WARN: command menu registration skipped"
-import sys
-sys.path.insert(0, ".")
-from notifications.telegram_commands.command_menu import register_bot_commands
-register_bot_commands()
-PY
 
 PORT="${PORT:-5000}"
 echo "Starting aria_bot.py --demo on 0.0.0.0:${PORT}"

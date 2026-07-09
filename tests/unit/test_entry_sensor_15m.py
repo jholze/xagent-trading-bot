@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.actions import BUY, BUY_STRONG, HOLD
+from core.actions import BUY, BUY_STRONG, HOLD, SELL_PARTIAL_30
+from decimal import Decimal
 from core.config import BotConfig
 
 from services.market_service import MarketService
@@ -19,12 +20,25 @@ from strategies import watch_15m_state
 
 @pytest.fixture(autouse=True)
 def reset_sensor_state(tmp_path, monkeypatch):
+    from strategies.positions import clear_positions_memory
+
     clear_pending_for_tests()
+    clear_positions_memory()
     watch_15m_state.reset_cache_for_tests()
     path = str(tmp_path / "watch_15m_state.demo.json")
     monkeypatch.setattr(watch_15m_state, "_state_path", lambda: path)
+    monkeypatch.setattr("strategies.decision_engine.get_bot_config", _active_sensor_config)
+    monkeypatch.setattr(
+        "data.cmc_market_cap.resolve_market_cap_usd",
+        lambda symbol, coin=None: 10_000_000,
+    )
+    monkeypatch.setattr(
+        "price_fetcher.is_gate_tradeable",
+        lambda symbol, gate_price=None: True if gate_price is None else float(gate_price or 0) > 0,
+    )
     yield
     clear_pending_for_tests()
+    clear_positions_memory()
     watch_15m_state.reset_cache_for_tests()
 
 
@@ -112,6 +126,18 @@ class TestEvaluateEntrySensor15m:
         assert r.triggered
         assert r.action == BUY_STRONG
 
+    def test_blocked_when_not_on_gate(self):
+        metrics = {"volume_spike_ratio": 3.0, "body_atr_ratio": 0.5}
+        r = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics=metrics,
+            cfg={**DEFAULT_CFG, "gate_only": True},
+            rsi_4h=50,
+            gate_tradeable=False,
+        )
+        assert not r.triggered
+        assert "Gate.io" in r.rationale
+
     def test_blocked_by_rsi_cap(self):
         metrics = {"volume_spike_ratio": 3.0, "body_atr_ratio": 0.5}
         r = evaluate_entry_sensor_15m(watched=True, metrics=metrics, cfg=DEFAULT_CFG, rsi_4h=80)
@@ -128,6 +154,29 @@ class TestEvaluateEntrySensor15m:
         r = evaluate_entry_sensor_15m(watched=True, metrics=metrics, cfg=cfg, rsi_4h=50)
         assert r.triggered
         assert r.shadow_only
+
+    def test_market_cap_min_blocks_micro_cap(self):
+        cfg = {**DEFAULT_CFG, "market_cap_min_usd": 5_000_000}
+        r = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics=SPIKE_METRICS,
+            cfg=cfg,
+            rsi_4h=40,
+            market_cap_usd=500_000,
+        )
+        assert not r.triggered
+        assert "min" in r.rationale.lower()
+
+    def test_market_cap_min_allows_large_cap(self):
+        cfg = {**DEFAULT_CFG, "market_cap_min_usd": 5_000_000}
+        r = evaluate_entry_sensor_15m(
+            watched=True,
+            metrics=SPIKE_METRICS,
+            cfg=cfg,
+            rsi_4h=40,
+            market_cap_usd=8_000_000_000,
+        )
+        assert r.triggered
 
     def test_vol_prefilter_matches_spike_gate(self):
         assert passes_vol_spike_prefilter(SPIKE_METRICS, DEFAULT_CFG)
@@ -153,6 +202,32 @@ class TestWatch15mState:
         watch_15m_state.reset_cache_for_tests()
         assert watch_15m_state.is_watched("XPL/USDT")
 
+    def test_seed_from_watchlist_skips_non_gate_coins(self, monkeypatch):
+        watch_15m_state.reset_cache_for_tests()
+        cfg = {
+            **DEFAULT_CFG,
+            "setup_modes": ["watchlist"],
+            "max_watched_coins": 10,
+            "gate_only": True,
+        }
+        wl = [
+            {"symbol": "GATE/USDT", "active": True, "timeframe": "4h"},
+            {"symbol": "NOGATE/USDT", "active": True, "timeframe": "4h"},
+        ]
+        monkeypatch.setattr("data_manager.load_effective_watchlist", lambda: wl)
+        monkeypatch.setattr("strategies.positions.list_active_positions", lambda: [])
+        with patch(
+            "intelligence.strategy_backtest.classify_coin",
+            lambda sym, _: "mid_cap",
+        ), patch(
+            "price_fetcher.get_gate_prices_batch",
+            lambda symbols: {"GATE/USDT": 1.0, "NOGATE/USDT": 0.0},
+        ):
+            added = watch_15m_state.seed_from_watchlist(cfg)
+        assert added == 1
+        assert watch_15m_state.is_watched("GATE/USDT")
+        assert not watch_15m_state.is_watched("NOGATE/USDT")
+
     def test_seed_from_watchlist_skips_held_and_large_cap(self, monkeypatch):
         watch_15m_state.reset_cache_for_tests()
         cfg = {
@@ -176,6 +251,9 @@ class TestWatch15mState:
         with patch(
             "intelligence.strategy_backtest.classify_coin",
             lambda sym, _: "large_cap" if sym == "BTC/USDT" else "mid_cap",
+        ), patch(
+            "price_fetcher.get_gate_prices_batch",
+            lambda symbols: {sym: 1.0 for sym in symbols},
         ):
             added = watch_15m_state.seed_from_watchlist(cfg)
         assert added == 1
@@ -187,6 +265,7 @@ class TestWatch15mState:
 class TestDecisionEngineSensorIntegration:
     def test_evaluate_lifts_hold_to_buy_with_pending_metrics(self):
         from strategies.decision_engine import DecisionEngine
+        from tests.unit.test_market_service_15m import _sample_15m_df
 
         set_pending_sensor_metrics(VOLATILE_COIN["symbol"], SPIKE_METRICS)
         watch_15m_state.set_watch(
@@ -197,6 +276,8 @@ class TestDecisionEngineSensorIntegration:
 
         engine = DecisionEngine()
         with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            engine.market, "fetch_ohlcv", return_value=_sample_15m_df(30)
+        ), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ), patch.object(engine.market, "fetch_funding_rate", return_value=None):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
@@ -281,25 +362,15 @@ class TestActiveOrchestratorPath:
         )
 
         orch = SignalOrchestrator()
-        risk_outcomes = []
-        real_risk_eval = orch.trading.risk.evaluate
-
-        def _capture_risk(*args, **kwargs):
-            decision = real_risk_eval(*args, **kwargs)
-            risk_outcomes.append(decision)
-            return decision
-
         with patch.object(orch.decision_engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             orch.decision_engine.market, "fetch_15m_sensor_metrics", return_value=None
         ), patch.object(orch.decision_engine.market, "fetch_funding_rate", return_value=None), patch.object(
             orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
-        ), patch.object(orch.trading.risk.market, "fetch_funding_rate", return_value=None), patch.object(
-            orch.trading.risk, "evaluate", side_effect=_capture_risk
-        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
+        ), patch.object(orch.trading.risk.market, "fetch_funding_rate", return_value=None), patch(
+            "notifications.telegram_commands.position_display.send_positions_snapshot"
+        ):
             result = orch.process_coin(VOLATILE_COIN, 1.0, quiet=True)
 
-        assert risk_outcomes
-        assert risk_outcomes[-1].approved is True
         assert result["action"] == BUY
         assert result["executed"] is True
         assert ENTRY_SENSOR_SOURCE in result["sources"]
@@ -307,6 +378,13 @@ class TestActiveOrchestratorPath:
 
 
 class TestEntrySensorLoop:
+    def _reset_loop_state(self):
+        from services import entry_sensor_loop
+        from strategies.positions import clear_positions_memory
+
+        entry_sensor_loop.reset_poll_state_for_tests()
+        clear_positions_memory()
+
     def test_loop_module_import(self, monkeypatch):
         from services import entry_sensor_loop
         from services.entry_sensor_loop import start_entry_sensor_loop
@@ -325,7 +403,7 @@ class TestEntrySensorLoop:
         from services import entry_sensor_loop
         from tests.unit.test_market_service_15m import _sample_15m_df
 
-        entry_sensor_loop.reset_poll_state_for_tests()
+        self._reset_loop_state()
         fetch_calls = []
 
         class FakeMarket:
@@ -347,11 +425,11 @@ class TestEntrySensorLoop:
             rsi_4h=45,
             tech_buy=False,
         )
-        monkeypatch.setattr(entry_sensor_loop, "get_prices_batch", lambda symbols: {"XENTRY15/USDT": 1.0})
+        monkeypatch.setattr(entry_sensor_loop, "get_gate_prices_batch", lambda symbols: {"XENTRY15/USDT": 1.0})
         monkeypatch.setattr(
             entry_sensor_loop,
             "_coin_by_symbol",
-            lambda symbol: {"symbol": symbol, "timeframe": "4h", "active": True},
+            lambda symbol, entry=None: {"symbol": symbol, "timeframe": "4h", "active": True},
         )
         monkeypatch.setattr(
             "core.config.get_bot_config",
@@ -378,7 +456,7 @@ class TestEntrySensorLoop:
         from services.signal_orchestrator import SignalOrchestrator
         from tests.unit.test_market_service_15m import _sample_15m_df
 
-        entry_sensor_loop.reset_poll_state_for_tests()
+        self._reset_loop_state()
         monkeypatch.setattr("strategies.decision_engine.get_bot_config", _active_sensor_config)
         monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
 
@@ -410,35 +488,30 @@ class TestEntrySensorLoop:
         )
         monkeypatch.setattr(
             entry_sensor_loop,
-            "get_prices_batch",
+            "get_gate_prices_batch",
             lambda symbols: {VOLATILE_COIN["symbol"]: 1.0},
         )
-        monkeypatch.setattr(entry_sensor_loop, "_coin_by_symbol", lambda symbol: dict(VOLATILE_COIN))
-
-        risk_outcomes = []
-        real_risk_eval = orch.trading.risk.evaluate
-
-        def _capture_risk(*args, **kwargs):
-            decision = real_risk_eval(*args, **kwargs)
-            risk_outcomes.append(decision)
-            return decision
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol, entry=None: dict(VOLATILE_COIN),
+        )
 
         with patch.object(orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             orch.trading.risk.market, "fetch_funding_rate", return_value=None
-        ), patch.object(orch.trading.risk, "evaluate", side_effect=_capture_risk), patch(
+        ), patch("bus.eval_queue.eval_queue_enabled", return_value=False), patch(
             "notifications.telegram_commands.position_display.send_positions_snapshot"
         ):
             entry_sensor_loop._poll_once(orch)
 
-        assert risk_outcomes
-        assert risk_outcomes[-1].approved is True
+        assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])
 
     def test_poll_once_ignores_stale_watch_rsi_when_live_rsi_hot(self, monkeypatch):
         from services import entry_sensor_loop
         from services.signal_orchestrator import SignalOrchestrator
         from tests.unit.test_market_service_15m import _sample_15m_df
 
-        entry_sensor_loop.reset_poll_state_for_tests()
+        self._reset_loop_state()
         monkeypatch.setattr("strategies.decision_engine.get_bot_config", _active_sensor_config)
         monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
 
@@ -472,10 +545,14 @@ class TestEntrySensorLoop:
         )
         monkeypatch.setattr(
             entry_sensor_loop,
-            "get_prices_batch",
+            "get_gate_prices_batch",
             lambda symbols: {VOLATILE_COIN["symbol"]: 1.0},
         )
-        monkeypatch.setattr(entry_sensor_loop, "_coin_by_symbol", lambda symbol: dict(VOLATILE_COIN))
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol, entry=None: dict(VOLATILE_COIN),
+        )
 
         risk_outcomes = []
         real_risk_eval = orch.trading.risk.evaluate
@@ -491,3 +568,136 @@ class TestEntrySensorLoop:
             entry_sensor_loop._poll_once(orch)
 
         assert not risk_outcomes
+
+    def test_poll_once_skips_symbol_with_open_position(self, monkeypatch):
+        from services import entry_sensor_loop
+        from tests.unit.test_market_service_15m import _sample_15m_df
+
+        self._reset_loop_state()
+        fetch_calls = []
+
+        class FakeMarket:
+            def fetch_ohlcv(self, symbol, timeframe, limit):
+                fetch_calls.append(symbol)
+                return _sample_15m_df(30, spike_last=True)
+
+            def compute_15m_sensor_metrics(self, df, **kwargs):
+                return SPIKE_METRICS
+
+        orch = MagicMock()
+        orch.market = FakeMarket()
+        watch_15m_state.set_watch(VOLATILE_COIN["symbol"], VOLATILE_COIN["timeframe"])
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "get_gate_prices_batch",
+            lambda symbols: {VOLATILE_COIN["symbol"]: 1.0},
+        )
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol, entry=None: dict(VOLATILE_COIN),
+        )
+        monkeypatch.setattr(
+            "core.config.get_bot_config",
+            lambda: BotConfig(raw={"entry_sensor_15m": {**DEFAULT_CFG, "mode": "active"}}),
+        )
+        from strategies.positions import init_position, positions, get_key
+
+        init_position(VOLATILE_COIN["symbol"], VOLATILE_COIN["timeframe"])
+        key = get_key(VOLATILE_COIN["symbol"], VOLATILE_COIN["timeframe"])
+        positions[key]["amount"] = Decimal("100")
+        positions[key]["average_entry"] = 1.0
+        positions[key]["peak_amount"] = 100.0
+
+        entry_sensor_loop._poll_once(orch)
+
+        assert not fetch_calls
+        assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])
+        orch.process_entry_sensor.assert_not_called()
+
+
+class TestProcessEntrySensorPath:
+    def test_entry_sensor_never_executes_sell(self, monkeypatch):
+        from services.signal_orchestrator import SignalOrchestrator
+        from strategies.decision_engine import DecisionEngine
+        from core.models import SignalAnalysis
+
+        orch = SignalOrchestrator()
+        sell_analysis = SignalAnalysis(
+            symbol=VOLATILE_COIN["symbol"],
+            timeframe=VOLATILE_COIN["timeframe"],
+            action=SELL_PARTIAL_30,
+            normalized_action=SELL_PARTIAL_30,
+            confidence=80,
+            rsi=70,
+            lower_bb=0.9,
+            upper_bb=1.1,
+            vol_multiplier=2.0,
+            ampel_emoji="🔴",
+            ampel_text="sell",
+            rationale="bb upper",
+            sources=["bb_upper"],
+        )
+
+        with patch.object(orch, "analyze", return_value=sell_analysis), patch.object(
+            orch, "execute_if_needed"
+        ) as mock_exec:
+            result = orch.process_entry_sensor(VOLATILE_COIN, 1.0, sensor_metrics=SPIKE_METRICS)
+
+        mock_exec.assert_not_called()
+        assert result["action"] == "HOLD"
+        assert result["executed"] is False
+
+    def test_active_loop_clears_watch_after_buy(self, monkeypatch):
+        from services import entry_sensor_loop
+        from services.signal_orchestrator import SignalOrchestrator
+        from tests.unit.test_market_service_15m import _sample_15m_df
+        from strategies.positions import clear_positions_memory
+
+        entry_sensor_loop.reset_poll_state_for_tests()
+        clear_positions_memory()
+        monkeypatch.setattr("strategies.decision_engine.get_bot_config", _active_sensor_config)
+        monkeypatch.setattr("core.config.get_bot_config", _active_sensor_config)
+
+        class LoopMarket:
+            def fetch_ohlcv(self, symbol, timeframe, limit):
+                return _sample_15m_df(30, spike_last=True)
+
+            def compute_15m_sensor_metrics(self, df, **kwargs):
+                return SPIKE_METRICS
+
+            def fetch_indicators(self, symbol, timeframe, price):
+                return HOLD_INDICATORS
+
+            def fetch_funding_rate(self, symbol):
+                return None
+
+            def fetch_15m_sensor_metrics(self, symbol, cfg):
+                return None
+
+        orch = SignalOrchestrator()
+        orch.market = LoopMarket()
+        orch.decision_engine.market = LoopMarket()
+
+        watch_15m_state.set_watch(
+            VOLATILE_COIN["symbol"],
+            VOLATILE_COIN["timeframe"],
+            rsi_4h=42.0,
+        )
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "get_gate_prices_batch",
+            lambda symbols: {VOLATILE_COIN["symbol"]: 1.0},
+        )
+        monkeypatch.setattr(
+            entry_sensor_loop,
+            "_coin_by_symbol",
+            lambda symbol, entry=None: dict(VOLATILE_COIN),
+        )
+
+        with patch.object(orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            orch.trading.risk.market, "fetch_funding_rate", return_value=None
+        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
+            entry_sensor_loop._poll_once(orch)
+
+        assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])

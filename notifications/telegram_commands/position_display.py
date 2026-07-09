@@ -1,7 +1,7 @@
 import re
 
 from core.config import get_bot_config
-from core.portfolio_baseline import initial_capital
+from core.portfolio_baseline import initial_capital, split_nav_pnl_for_display
 from data_manager import (
     is_dry_run_enhanced,
     resolve_ledger_scope,
@@ -417,7 +417,6 @@ def format_portfolio_summary(
     include_position_header: bool = True,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
-    realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
     total_value = balance + float(positions_market_value or 0)
     cfg = get_bot_config()
     initial = initial_capital(
@@ -426,8 +425,11 @@ def format_portfolio_summary(
         history=history,
         trading_mode=cfg.trading_mode,
     )
-    total_pnl = realized + float(total_unreal or 0)
-    pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0.0
+    pnl = split_nav_pnl_for_display(total_value, initial, float(total_unreal or 0))
+    total_pnl = pnl["total_pnl"]
+    realized = pnl["realized"]
+    unrealized = pnl["unrealized"]
+    pnl_pct = pnl["pnl_pct"]
     pnl_icon = _pnl_emoji(total_pnl)
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
@@ -451,7 +453,7 @@ def format_portfolio_summary(
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"📈 Unrealisiert <b>${total_unreal:+.1f}</b> · "
+        f"📈 Unrealisiert <b>${unrealized:+.1f}</b> · "
         f"✅ Realisiert <b>${realized:+.1f}</b>\n"
         f"{daily_line}"
     )

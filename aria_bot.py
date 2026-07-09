@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask, jsonify, request
 
 import argparse
 import atexit
@@ -57,6 +57,7 @@ try:
         send_cmc_cycle_digest,
         send_cycle_summary,
         send_lc_cycle_digest,
+        send_merged_social_digest,
         send_signal_message,
         send_x_cycle_digest,
     )
@@ -105,11 +106,11 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
         pass
 
 try:
-    from data_manager import reconcile_demo_trade_history_on_startup
-    from services.ledger_sync import sync_positions_on_startup
-    from strategies.positions import bootstrap_positions
+    from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
+    from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
 
-    bootstrap_positions()
+    _ledger_scope = resolve_ledger_scope()
+    rebuild_positions_from_orders(_ledger_scope)
     sync_positions_on_startup()
     reconcile_demo_trade_history_on_startup()
 except Exception as e:
@@ -122,6 +123,140 @@ app = Flask(__name__)
 @app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
+
+
+@app.route("/health/detail", methods=["GET"])
+def health_detail():
+    from bus.price_cache import price_cache_from_config
+
+    cache = price_cache_from_config()
+    meta = cache.last_refresh() if cache.available() else None
+    try:
+        from services.market_service import ohlcv_cache_stats
+
+        ohlcv_stats = ohlcv_cache_stats()
+    except Exception:
+        ohlcv_stats = {}
+    try:
+        from webhooks.store import recent_events
+
+        signal_events = recent_events(10)
+    except Exception:
+        signal_events = []
+    try:
+        from core.runtime_identity import get_runtime_identity
+
+        identity = get_runtime_identity()
+    except Exception:
+        identity = {}
+    try:
+        from bus.eval_queue import eval_queue_enabled, peek_eval_queue, queue_depth
+        from services.eval_queue_runtime import worker_stats
+
+        eval_queue = {
+            "enabled": eval_queue_enabled(),
+            "depth": queue_depth(),
+            "worker": worker_stats(),
+            "peek": peek_eval_queue(5) if eval_queue_enabled() else [],
+        }
+    except Exception:
+        eval_queue = {}
+    return jsonify({
+        "status": "OK",
+        "redis": cache.available(),
+        "price_cache_last_refresh": meta,
+        "ohlcv_cache": ohlcv_stats,
+        "signal_webhook_recent": signal_events,
+        "eval_queue": eval_queue,
+        "build": {
+            "commit": identity.get("commit"),
+            "branch": identity.get("branch"),
+            "stack": identity.get("stack"),
+            "service": identity.get("service"),
+        },
+    }), 200
+
+
+@app.route("/api/signals/webhook", methods=["POST"])
+def signal_webhook():
+    from core.config import get_bot_config
+    from services.signal_webhook_service import process_signal_webhook, signal_webhook_enabled
+    from webhooks.auth import signal_webhook_token_ok
+
+    cfg = get_bot_config()
+    if not signal_webhook_enabled(cfg.raw):
+        return jsonify({"error": "signal webhook disabled"}), 404
+
+    token = request.headers.get("X-Signal-Token") or request.args.get("token")
+    if not signal_webhook_token_ok(token, cfg.raw):
+        return jsonify({"error": "unauthorized"}), 401
+
+    source = request.args.get("source") or request.headers.get("X-Signal-Source") or "generic"
+    body = request.get_json(silent=True)
+    if body is None and request.data:
+        try:
+            body = request.get_data(as_text=True)
+        except Exception:
+            body = None
+
+    result = process_signal_webhook(body, source=source, config_raw=cfg.raw)
+    status = 200 if result.ok else 400
+    if result.message == "rate_limit":
+        status = 429
+    payload = result.as_dict()
+    payload["redis_published"] = result.redis_published
+    return jsonify(payload), status
+
+
+@app.route("/api/coins/prices", methods=["GET", "POST"])
+def coin_prices_webhook():
+    from core.config import get_bot_config
+    from services.coin_query_service import (
+        normalize_symbols,
+        query_coin_prices,
+        response_to_dict,
+        webhook_token_ok,
+    )
+
+    cfg = get_bot_config()
+    arch = cfg.architecture_config
+    if not arch.get("coin_query_webhook_enabled", True):
+        return jsonify({"error": "coin query webhook disabled"}), 404
+
+    token = request.headers.get("X-Coin-Token") or request.args.get("token")
+    if not webhook_token_ok(token, cfg.raw):
+        return jsonify({"error": "unauthorized"}), 401
+
+    symbols: list[str] = []
+    fallbacks: dict[str, float] = {}
+    force_refresh = False
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        symbols = normalize_symbols(body.get("symbols") or body.get("symbol"))
+        raw_fb = body.get("fallbacks") or {}
+        if isinstance(raw_fb, dict):
+            for key, val in raw_fb.items():
+                normed = normalize_symbols(key)
+                if normed:
+                    fallbacks[normed[0]] = float(val)
+        force_refresh = bool(body.get("force_refresh"))
+    else:
+        symbols = normalize_symbols(request.args.get("symbols") or request.args.get("symbol"))
+        force_refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+
+    if not symbols:
+        return jsonify({"error": "symbols required (e.g. BTC,ETH or BTC/USDT)"}), 400
+
+    result = query_coin_prices(
+        symbols,
+        fallbacks=fallbacks or None,
+        config_raw=cfg.raw,
+        force_refresh=force_refresh,
+    )
+    payload = response_to_dict(result)
+    payload["ok"] = True
+    payload["count"] = len(result.prices)
+    return jsonify(payload), 200
 
 
 @app.route("/", methods=["GET"])
@@ -160,6 +295,15 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
     while True:
         try:
             cycle_started = time.time()
+            from services.cycle_notification_policy import cycle_notification_policy
+
+            cycle_notification_policy.reset_cycle()
+            try:
+                from services.market_service import reset_ohlcv_cache_cycle_stats
+
+                reset_ohlcv_cache_cycle_stats()
+            except Exception:
+                pass
             bot_config.refresh()
             try:
                 from services.architecture_runtime import ensure_started
@@ -181,7 +325,10 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 print("=" * 90)
 
             try:
+                from data_manager import prune_non_gate_watchlist_sources
                 from services.dry_run_watchlist import DryRunWatchlistSync
+
+                prune_non_gate_watchlist_sources(bot_config.raw)
                 DryRunWatchlistSync(bot_config).sync_if_needed()
             except Exception as e:
                 log(f"Dry-run watchlist sync failed: {e}", "WARNING")
@@ -312,31 +459,69 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             scan_coins = order_watchlist_positions_first(active_coins, open_positions)
             price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
-            for coin in scan_coins:
-                symbol = coin["symbol"]
-                if not use_dashboard:
-                    print(f"→ {symbol}")
+            from bus.eval_queue import eval_queue_enabled
 
-                price = float(price_map.get(symbol, 0) or 0)
-                if orchestrator:
-                    result = orchestrator.process_coin(
-                        coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
-                    )
-                    coin_results.append(result)
-                else:
-                    from strategies.core_strategy import check_signal
-                    check_signal(coin, price, x_signals, notify_callback=send_signal_message)
+            use_eval_queue = eval_queue_enabled(bot_config.raw)
+
+            if orchestrator:
+                try:
+                    orchestrator.run_portfolio_dca_pass(scan_coins, price_map, quiet=use_dashboard)
+                except Exception as e:
+                    log(f"Portfolio DCA pass failed: {e}", "WARNING")
+
+            if use_eval_queue and orchestrator:
+                from services.eval_queue_runtime import get_recent_coin_results, seed_meta_producers
+
+                seed_meta_producers(
+                    watchlist=active_coins,
+                    open_positions=open_positions,
+                    x_signals=x_signals,
+                    cmc_signals=cmc_signals,
+                    lc_signals=lc_signals,
+                    config_raw=bot_config.raw,
+                )
+                coin_results = get_recent_coin_results(cycle_started)
                 if not use_dashboard:
-                    print()
+                    print(f"Redis eval queue aktiv — {len(coin_results)} Ergebnisse im Zyklus")
+            else:
+                for coin in scan_coins:
+                    symbol = coin["symbol"]
+                    if not use_dashboard:
+                        print(f"→ {symbol}")
+
+                    price = float(price_map.get(symbol, 0) or 0)
+                    if orchestrator:
+                        result = orchestrator.process_coin(
+                            coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
+                        )
+                        coin_results.append(result)
+                    else:
+                        from strategies.core_strategy import check_signal
+                        check_signal(coin, price, x_signals, notify_callback=send_signal_message)
+                    if not use_dashboard:
+                        print()
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
             if cycle_elapsed > 30:
+                mode_label = "eval_queue" if use_eval_queue else f"{len(scan_coins)} coins"
                 log(
                     f"Cycle completed in {cycle_elapsed}s "
-                    f"({len(scan_coins)} coins, {len(open_positions)} positions first)",
+                    f"({mode_label}, {len(open_positions)} positions first)",
                     "INFO",
                 )
+                try:
+                    from services.market_service import ohlcv_cache_stats
+
+                    stats = ohlcv_cache_stats()
+                    if stats:
+                        log(
+                            "ohlcv_cache: hits={hits} misses={misses} "
+                            "hit_rate={hit_rate_pct}% ram={ram_entries}".format(**stats),
+                            "INFO",
+                        )
+                except Exception:
+                    pass
 
             if use_dashboard:
                 render_cycle_dashboard(
@@ -373,13 +558,31 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                     f"Galaxy {best_lc.galaxy_score:.0f}"
                 )
 
-            if social_pipeline:
-                if social_pipeline.should_send_cmc_digest(cmc_signals):
-                    send_cmc_cycle_digest(cmc_signals)
-                if social_pipeline.should_send_lc_digest(lc_signals):
-                    send_lc_cycle_digest(lc_signals)
-                send_x_cycle_digest(x_signals, skip_post_ids=social_pipeline.get_notified_post_ids())
+            cycle_notification_policy.flush_hold_explanations()
 
+            cycle_notif_cfg = bot_config.observability_config.get("cycle_notifications", {})
+            digest_merge = cycle_notif_cfg.get("digest_merge", True)
+            x_skip = social_pipeline.get_notified_post_ids() if social_pipeline else set()
+
+            if social_pipeline:
+                if digest_merge:
+                    if social_pipeline.should_send_merged_digest(
+                        cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
+                    ):
+                        send_merged_social_digest(
+                            cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
+                        )
+                else:
+                    if social_pipeline.should_send_cmc_digest(cmc_signals):
+                        send_cmc_cycle_digest(cmc_signals)
+                    if social_pipeline.should_send_lc_digest(lc_signals):
+                        send_lc_cycle_digest(lc_signals)
+                    if social_pipeline.should_send_x_digest(x_signals, skip_post_ids=x_skip):
+                        send_x_cycle_digest(x_signals, skip_post_ids=x_skip)
+
+            from notifications.terminal_dashboard import _portfolio_snapshot
+
+            portfolio_snap = _portfolio_snapshot(mode)
             summary = build_cycle_summary(
                 coin_results=coin_results,
                 trading_mode=mode,
@@ -390,7 +593,13 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 top_cmc=top_cmc,
                 top_lc=top_lc,
             )
-            send_cycle_summary(summary)
+            send_cycle_summary(
+                summary,
+                cycle_ctx={
+                    "coin_results": coin_results,
+                    "total_value": float(portfolio_snap.get("total_value", 0) or 0),
+                },
+            )
 
             if not bot_config.architecture_config.get("background_backtest_enabled", True):
                 try:
@@ -433,6 +642,12 @@ if __name__ == "__main__":
         log(f"Telegram command menu registration skipped: {e}", "WARNING")
 
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
+    try:
+        from services.architecture_runtime import register_eval_orchestrator
+
+        register_eval_orchestrator(orchestrator)
+    except Exception as e:
+        log(f"Eval queue worker register skipped: {e}", "WARNING")
     social_pipeline = SocialPipeline(analyzer, orchestrator=orchestrator)
     try:
         from services.background_runtime import register_pipeline
@@ -500,7 +715,37 @@ if __name__ == "__main__":
         threading.Thread(target=hermes_loop, daemon=True, name="hermes-agent").start()
         print(f"Hermes self-improvement loop started (interval={hermes_interval}s)")
 
+    try:
+        from bus.price_cache import price_cache_from_config
+
+        cache = price_cache_from_config(bot_config.raw)
+        if cache.available():
+            print(f"Redis price cache OK (ttl={int(cache.ttl_sec)}s)")
+        else:
+            log(
+                "Redis not reachable — price cache disabled; run: bash scripts/ensure_redis.sh",
+                "WARNING",
+            )
+    except Exception as e:
+        log(f"Redis price cache check failed: {e}", "WARNING")
+
     print(get_text("webhook_started"))
+    print("Coin price webhook: GET/POST /api/coins/prices?symbols=BTC,ETH")
+    print("Signal webhook: POST /api/signals/webhook?source=tradingview")
+
+    try:
+        from core.runtime_identity import format_startup_message, should_notify_startup
+        from telegram_notifier import send_telegram_message
+
+        if should_notify_startup():
+
+            def _startup_ping():
+                time.sleep(2)
+                send_telegram_message(format_startup_message())
+
+            threading.Thread(target=_startup_ping, daemon=True, name="startup-notify").start()
+    except Exception as e:
+        log(f"Startup Telegram notify skipped: {e}", "WARNING")
 
     port = int(os.environ.get("PORT", 5000))
     host = os.environ.get("HOST", "0.0.0.0")

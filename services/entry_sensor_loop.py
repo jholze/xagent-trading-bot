@@ -9,13 +9,14 @@ from core.actions import is_buy
 from core.config import get_bot_config
 from data_manager import load_effective_watchlist
 from logger import log
-from price_fetcher import get_prices_batch
+from price_fetcher import get_gate_prices_batch, get_prices_batch
 from strategies.entry_sensor_15m import (
     ENTRY_SENSOR_SOURCE,
     evaluate_entry_sensor_15m,
     passes_vol_spike_prefilter,
     set_pending_sensor_metrics,
 )
+from strategies.positions import get_position, is_open_position
 from strategies import watch_15m_state
 
 _loop_thread: threading.Thread | None = None
@@ -25,10 +26,16 @@ _last_watch_seed_at: float = 0.0
 _WATCH_SEED_INTERVAL_SEC = 600.0
 
 
-def _coin_by_symbol(symbol: str) -> dict | None:
+def _coin_by_symbol(symbol: str, entry: dict | None = None) -> dict | None:
     for coin in load_effective_watchlist():
         if coin.get("symbol") == symbol and coin.get("active", True):
             return coin
+    if entry and watch_15m_state.is_webhook_watch(entry):
+        return {
+            "symbol": symbol,
+            "timeframe": str(entry.get("timeframe") or "4h"),
+            "active": True,
+        }
     return None
 
 
@@ -38,12 +45,23 @@ def _min_poll_gap_sec(cfg: dict) -> float:
 
 def _should_poll_symbol(symbol: str, cfg: dict, now: float | None = None) -> bool:
     now = now if now is not None else time.monotonic()
+    if cfg.get("webhook_priority_poll", True) and watch_15m_state.consume_priority_poll(symbol):
+        _last_poll_at[symbol] = now
+        return True
     gap = _min_poll_gap_sec(cfg)
     last = _last_poll_at.get(symbol, 0.0)
     if now - last < gap:
         return False
     _last_poll_at[symbol] = now
     return True
+
+
+def _sort_watched_for_poll(watched: list[dict]) -> list[dict]:
+    def _key(entry: dict) -> tuple[int, str]:
+        webhook = 0 if watch_15m_state.is_webhook_watch(entry) else 1
+        return (webhook, str(entry.get("symbol") or ""))
+
+    return sorted(watched, key=_key)
 
 
 def reset_poll_state_for_tests() -> None:
@@ -86,11 +104,22 @@ def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict,
         log(f"15m sensor shadow skip {symbol}: {result.rationale}", "INFO")
 
 
+def _has_open_position(symbol: str, coin: dict) -> bool:
+    tf = str(coin.get("timeframe") or "4h")
+    return is_open_position(get_position(symbol, tf))
+
+
 def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
-    """Hand off fresh 15m metrics; DecisionEngine re-evaluates with live RSI + tech action."""
+    """Hand off fresh 15m metrics; entry-only path — never sell from this loop."""
+    if _has_open_position(symbol, coin):
+        watch_15m_state.clear_watch(symbol)
+        return
+
     set_pending_sensor_metrics(symbol, metrics)
     try:
-        outcome = orchestrator.process_coin(coin, price, quiet=True)
+        outcome = orchestrator.process_entry_sensor(
+            coin, price, sensor_metrics=metrics, quiet=True,
+        )
     except Exception as e:
         log(f"15m sensor execute failed for {symbol}: {e}", "ERROR")
         watch_15m_state.record_sensor_reject(symbol)
@@ -99,6 +128,7 @@ def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics
     sources = outcome.get("sources") or []
     executed = bool(outcome.get("executed"))
     if executed and ENTRY_SENSOR_SOURCE in sources and is_buy(outcome.get("action", "")):
+        watch_15m_state.clear_watch(symbol)
         log(
             f"15m sensor active buy executed for {symbol}: "
             f"action={outcome.get('action')} sources={sources}",
@@ -130,8 +160,10 @@ def _poll_once(orchestrator) -> None:
     if not watched:
         return
 
+    watched = _sort_watched_for_poll(watched)
     symbols = [w["symbol"] for w in watched]
-    prices = get_prices_batch(symbols)
+    gate_only = cfg.get("gate_only", True)
+    prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
     market_svc = orchestrator.market
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
     ema_period = int(cfg.get("ema_period", 9))
@@ -144,12 +176,18 @@ def _poll_once(orchestrator) -> None:
         if not _should_poll_symbol(symbol, cfg, poll_now):
             continue
 
-        coin = _coin_by_symbol(symbol)
+        coin = _coin_by_symbol(symbol, entry)
         if not coin:
+            continue
+
+        if _has_open_position(symbol, coin):
+            watch_15m_state.clear_watch(symbol)
             continue
 
         price = float(prices.get(symbol) or 0)
         if price <= 0:
+            if gate_only:
+                log(f"15m sensor skip {symbol}: not on Gate.io", "INFO")
             continue
 
         df = market_svc.fetch_ohlcv(symbol, "15m", ohlcv_limit)
@@ -161,12 +199,28 @@ def _poll_once(orchestrator) -> None:
         if not passes_vol_spike_prefilter(metrics, cfg):
             continue
 
+        from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
+
+        mcap = resolve_market_cap_usd(symbol, coin)
+        mcap_ok, mcap_reason = passes_market_cap_filter(mcap, cfg)
+        if not mcap_ok:
+            log(f"15m sensor skip {symbol}: {mcap_reason}", "INFO")
+            continue
+
         cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
         hours_since = watch_15m_state.hours_since_sensor_reject(symbol)
         if hours_since is not None and hours_since < cooldown_h:
             continue
 
         if mode == "active":
+            from bus.eval_queue import eval_queue_enabled
+            from services.eval_queue_runtime import enqueue_entry_15m_eval
+
+            tf = str(coin.get("timeframe") or "4h")
+            if eval_queue_enabled():
+                set_pending_sensor_metrics(symbol, metrics)
+                if enqueue_entry_15m_eval(symbol, tf):
+                    continue
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
             _shadow_log(symbol, coin, price, metrics, cfg, market_svc)

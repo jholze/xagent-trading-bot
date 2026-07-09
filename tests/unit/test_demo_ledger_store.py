@@ -1,4 +1,4 @@
-"""Demo scope ledger routing: JSON orders SOT + Mongo positions cache."""
+"""Demo scope ledger routing: Mongo-only at runtime."""
 
 import json
 import os
@@ -13,75 +13,28 @@ from data_manager import (
     compute_sim_cash_from_orders,
     load_live_trade_history,
     load_orders,
-    load_positions_document,
     load_trade_history,
     load_trade_history_document,
     reconcile_demo_trade_history_on_startup,
-    resolve_ledger_scope,
-    _load_orders_json,
+    resolve_ledger_backend,
 )
-from storage.ledger_router import DemoLedgerStore, resolve_ledger_backend, resolve_store
-from strategies.positions import bootstrap_positions, clear_positions_memory, count_open_positions
+from storage.ledger_router import MongoLedgerStoreAdapter, resolve_store
+from strategies.positions import clear_positions_memory
 
 
-class TestDemoLedgerStore(unittest.TestCase):
+class TestDemoMongoLedgerStore(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.orders_path = os.path.join(self.tmp.name, "orders.demo.json")
-        self.positions_path = os.path.join(self.tmp.name, "positions.demo.json")
-        self.orders_files = {
-            "demo": self.orders_path,
-            "paper": os.path.join(self.tmp.name, "orders.paper.json"),
-            "live": os.path.join(self.tmp.name, "orders.live.json"),
-        }
-        self.positions_files = {
-            "demo": self.positions_path,
-            "paper": os.path.join(self.tmp.name, "positions.paper.json"),
-            "live": os.path.join(self.tmp.name, "positions.live.json"),
-        }
-        with open(self.orders_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "ledger_scope": "demo",
-                    "orders": [
-                        {
-                            "id": "d1",
-                            "status": "filled",
-                            "side": "buy",
-                            "symbol": "ARIA/USDT",
-                            "timeframe": "4h",
-                            "execution": {"price": 0.05, "amount": 1000},
-                            "timestamps": {"filled": "2026-06-01T10:00:00"},
-                        }
-                    ],
-                    "migrated_from_trades": True,
-                },
-                f,
-            )
-        with open(self.positions_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "ledger_scope": "demo",
-                    "positions": {
-                        "ARIA_USDT_4h": {
-                            "amount": 1000.0,
-                            "peak_amount": 1000.0,
-                            "strategy_tier": "stable",
-                        }
-                    },
-                },
-                f,
-            )
         self.cfg = {
             "trading_mode": "paper",
+            "demo": {"backend": "mongo"},
             "architecture": {"ledger_backend": "mongo", "ledger_dual_write": False},
         }
+        os.environ["DEMO_MODE"] = "1"
+        os.environ["DEMO_LEDGER_BACKEND"] = "mongo"
         self.patches = [
-            patch("data_manager.ORDERS_SCOPE_FILES", self.orders_files),
-            patch("data_manager.POSITIONS_SCOPE_FILES", self.positions_files),
-            patch("storage.ledger_router.ORDERS_SCOPE_FILES", self.orders_files),
-            patch("storage.ledger_router.POSITIONS_SCOPE_FILES", self.positions_files),
             patch("data_manager.get_config", return_value=self.cfg),
             patch("data_manager.is_demo_mode", return_value=True),
             patch("data_manager.resolve_ledger_scope", return_value="demo"),
@@ -108,114 +61,107 @@ class TestDemoLedgerStore(unittest.TestCase):
     def test_resolve_ledger_backend_demo_defaults_mongo(self):
         self.assertEqual(resolve_ledger_backend("demo", self.cfg), "mongo")
 
-    def test_resolve_ledger_backend_demo_hybrid_env_override(self):
-        with patch.dict(os.environ, {"DEMO_LEDGER_BACKEND": "demo_hybrid"}):
-            from storage import ledger_router
-
-            ledger_router._store_cache.clear()
-            self.assertEqual(resolve_ledger_backend("demo", self.cfg), "demo_hybrid")
-
-    def _use_demo_hybrid(self):
-        os.environ["DEMO_LEDGER_BACKEND"] = "demo_hybrid"
-        from storage import ledger_router
-
-        ledger_router._store_cache.clear()
-
-    def test_demo_store_reads_orders_from_json_not_empty_mongo(self):
-        self._use_demo_hybrid()
+    def test_resolve_store_demo_uses_mongo_adapter(self):
         store = resolve_store("demo", self.cfg)
-        self.assertIsInstance(store, DemoLedgerStore)
+        self.assertIsInstance(store, MongoLedgerStoreAdapter)
 
-        class EmptyMongo:
+    def test_demo_cash_reconciled_from_mongo_orders_not_stale_history(self):
+        filled_order = {
+            "id": "d1",
+            "status": "filled",
+            "side": "buy",
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "execution": {"price": 0.05, "amount": 1000},
+            "timestamps": {"filled": "2026-06-01T10:00:00"},
+        }
+        stale_history = {
+            "virtual_balance": 4000.0,
+            "realized_pnl": 0.0,
+            "open_positions": 0,
+            "trades": [],
+        }
+
+        class FakeStore:
+            def __init__(self):
+                self.history = dict(stale_history)
+
             def load_orders(self, scope):
-                return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
+                return {
+                    "ledger_scope": scope,
+                    "orders": [filled_order],
+                    "migrated_from_trades": True,
+                }
+
+            def load_trade_history(self, scope):
+                return dict(self.history)
 
             def load_positions(self, scope):
                 return {"ledger_scope": scope, "positions": {}}
 
-        with patch.object(store, "_mongo") as mock_mongo:
-            mock_mongo.load_orders.side_effect = EmptyMongo().load_orders
-            mock_mongo.load_positions.side_effect = EmptyMongo().load_positions
-            orders = store.load_orders("demo")
-            self.assertEqual(len(orders["orders"]), 1)
-            self.assertEqual(orders["orders"][0]["symbol"], "ARIA/USDT")
+            def save_trade_history(self, data, scope):
+                self.history = dict(data)
+                return True
 
-    def test_bootstrap_positions_derives_from_demo_json_orders(self):
-        self._use_demo_hybrid()
-        bootstrap_positions(scope="demo")
-        self.assertGreater(count_open_positions(), 0)
-        self.assertEqual(load_orders("demo")["orders"][0]["status"], "filled")
-
-    def test_load_positions_document_prefers_mongo_cache_when_populated(self):
-        self._use_demo_hybrid()
-        store = resolve_store("demo", self.cfg)
-        mongo_cache = {
-            "ledger_scope": "demo",
-            "positions": {
-                "CACHE_USDT_4h": {"amount": 5.0, "peak_amount": 5.0, "strategy_tier": "volatile"},
-            },
-        }
-        with patch.object(store._mongo, "load_positions", return_value=mongo_cache):
-            doc = store.load_positions("demo")
-        self.assertIn("CACHE_USDT_4h", doc["positions"])
-
-    def test_save_positions_writes_json_only_not_mongo(self):
-        self._use_demo_hybrid()
-        store = resolve_store("demo", self.cfg)
-        payload = {"ledger_scope": "demo", "positions": {"X_USDT_4h": {"amount": 1.0}}}
-        with patch.object(store._mongo, "save_positions") as mock_mongo_save:
-            self.assertTrue(store.save_positions(payload, "demo"))
-            mock_mongo_save.assert_not_called()
-
-    def test_demo_cash_reconciled_from_json_orders_not_stale_mongo(self):
-        self._use_demo_hybrid()
-        history_path = os.path.join(self.tmp.name, "live_trade_history.demo.json")
-        with open(history_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {"virtual_balance": 4000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []},
-                f,
-            )
-        with patch("data_manager.LIVE_TRADE_HISTORY_FILE", "live_trade_history.demo.json"), \
-             patch("data_manager.get_data_file", side_effect=lambda name: history_path if "live_trade" in name else self.orders_path):
+        store = FakeStore()
+        with patch("data_manager._mongo_ledger_store", return_value=store):
             history = load_trade_history_document("demo", self.cfg)
+            reconciled = reconcile_demo_trade_history_on_startup(self.cfg)
+
         from core.portfolio_baseline import initial_capital
 
         buy_usdt = 1000 * 0.05
         expected_cash = initial_capital(scope="demo", config=self.cfg) - buy_usdt
         self.assertAlmostEqual(history["virtual_balance"], expected_cash, places=2)
         self.assertNotAlmostEqual(history["virtual_balance"], 4000.0, places=2)
-        self.assertEqual(reconcile_demo_trade_history_on_startup(self.cfg)["virtual_balance"], history["virtual_balance"])
+        self.assertAlmostEqual(reconciled["virtual_balance"], expected_cash, places=2)
 
     def test_load_live_trade_history_in_demo_matches_order_reconciled_cash(self):
-        """Regression: demo portfolio read live Mongo ledger and showed stale $100k cash."""
-        self._use_demo_hybrid()
-        history_path = os.path.join(self.tmp.name, "live_trade_history.demo.json")
-        with open(history_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {"virtual_balance": 100000.0, "realized_pnl": 0.0, "open_positions": 0, "trades": []},
-                f,
-            )
-        with patch.dict(os.environ, {"DEMO_MODE": "1"}), \
-             patch("data_manager.LIVE_TRADE_HISTORY_FILE", "live_trade_history.demo.json"), \
-             patch("data_manager.get_data_file", side_effect=lambda name: history_path if "live_trade" in name else self.orders_path), \
-             patch("data_manager._ledger_reads_mongo_trade_history", return_value=False), \
-             patch(
-                 "data_manager._mongo_ledger_store",
-             ) as mock_mongo:
-            mock_mongo.return_value.load_trade_history.return_value = {
-                "virtual_balance": 100000.0,
-                "realized_pnl": 0.0,
-                "trades": [],
-            }
+        filled_order = {
+            "id": "d1",
+            "status": "filled",
+            "side": "buy",
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "execution": {"price": 0.05, "amount": 1000},
+            "timestamps": {"filled": "2026-06-01T10:00:00"},
+        }
+
+        class FakeStore:
+            def __init__(self):
+                self.history = {
+                    "virtual_balance": 100000.0,
+                    "realized_pnl": 0.0,
+                    "trades": [],
+                }
+
+            def load_orders(self, scope):
+                return {
+                    "ledger_scope": scope,
+                    "orders": [filled_order],
+                    "migrated_from_trades": True,
+                }
+
+            def load_trade_history(self, scope):
+                return dict(self.history)
+
+            def load_positions(self, scope):
+                return {"ledger_scope": scope, "positions": {}}
+
+            def save_trade_history(self, data, scope):
+                self.history = dict(data)
+                return True
+
+        with patch("data_manager._mongo_ledger_store", return_value=FakeStore()):
             from core.portfolio_baseline import initial_capital
 
             initial = initial_capital(scope="demo", config=self.cfg)
-            filled = [
-                o for o in _load_orders_json("demo").get("orders", []) if o.get("status") == "filled"
-            ]
-            expected_cash = compute_sim_cash_from_orders(filled, initial)
+            expected_cash = compute_sim_cash_from_orders([filled_order], initial)
             live_hist = load_live_trade_history()
             scoped_hist = load_trade_history()
+            orders_doc = load_orders("demo")
+
+        self.assertEqual(len(orders_doc["orders"]), 1)
         self.assertAlmostEqual(live_hist["virtual_balance"], expected_cash, places=2)
         self.assertAlmostEqual(scoped_hist["virtual_balance"], expected_cash, places=2)
         self.assertNotAlmostEqual(live_hist["virtual_balance"], 100000.0, places=2)

@@ -21,7 +21,7 @@
     "trending_watchlist": {
       "enabled": true,
       "max_coins": 15,
-      "refresh_hours": 6,
+      "refresh_hours": 1,
       "gate_only": true,
       "strategy_profile": "dry_run_meme",
       "exclude_symbols": [
@@ -123,7 +123,16 @@
     "sell_min_confidence": 70,
     "sell_requires_ta": true,
     "signal_ttl_hours": 4,
-    "quotes_fallback_as_signal": true,
+    "quotes_fallback_as_signal": false,
+    "quotes_include_trending_movers": false,
+    "quotes_max_bullish_pct": 35,
+    "listings_include_losers": false,
+    "listings_fallback_mode": "mcap_band_momentum",
+    "listings_scan_limit": 500,
+    "listings_mcap_min_usd": 5000000,
+    "listings_min_pct_change_24h": 3,
+    "listings_max_pct_change_24h": 35,
+    "listings_min_volume_24h_usd": 500000,
     "quotes_bearish_pct": -8,
     "quotes_bullish_pct": 5,
     "quotes_fallback_sell_threshold_bonus": 10,
@@ -141,8 +150,10 @@
       "enabled": true,
       "live_enabled": true,
       "max_coins": 15,
-      "refresh_hours": 4,
-      "gate_only": false,
+      "refresh_hours": 1,
+      "gate_only": true,
+      "prune_non_gate": true,
+      "prune_base_watchlist": true,
       "max_open_from_trending": 8,
       "source_priority": [
         "trending/latest",
@@ -237,6 +248,20 @@
     "mode": "monolith",
     "redis_url": "redis://127.0.0.1:6379/0",
     "key_prefix": "aria:",
+    "price_cache_enabled": true,
+    "price_cache_ttl_sec": 120,
+    "ohlcv_cache_enabled": true,
+    "ohlcv_cache_ttl_sec": {
+      "15m": 60,
+      "1h": 90,
+      "4h": 120
+    },
+    "funding_cache_ttl_sec": 300,
+    "coin_query_webhook_enabled": true,
+    "signal_webhook_enabled": true,
+    "signal_webhook_token": "",
+    "signal_event_ttl_sec": 3600,
+    "signal_webhook_rate_limit_per_min": 10,
     "notification_mode": "async",
     "notification_rate_limit_sec": 1.0,
     "hermes_external": false,
@@ -257,6 +282,14 @@
     "ledger_lock_wait_sec": 15,
     "trade_intent_queue_enabled": false,
     "trade_intent_async_auto_only": true,
+    "eval_queue_enabled": true,
+    "eval_worker_poll_sec": 2.0,
+    "eval_batch_size": 3,
+    "eval_debounce_sec": 45,
+    "eval_position_heartbeat_sec": 300,
+    "eval_stale_sec": 7200,
+    "eval_meta_interval_sec": 300,
+    "eval_queue_max_len": 500,
     "ledger_backend": "mongo",
     "ledger_dual_write": false,
     "mongodb": {
@@ -278,15 +311,45 @@
     "min_sell_notional_usdt": 300,
     "min_position_usdt_for_partial_sell": 500,
     "block_partial_sell_if_sold_percent_above": 0.75,
-    "dust_sweep_max_position_usdt": 300,
-    "dust_sweep_sold_percent_min": 0.7,
-    "dust_sweep_min_remainder_usdt": 200
+    "dust_sweep_max_position_usdt": 500,
+    "dust_sweep_sold_percent_min": 0.5,
+    "dust_sweep_min_remainder_usdt": 100
+  },
+  "sell_policy": {
+    "mode": "active",
+    "shadow_log_decisions": true,
+    "rotation": {
+      "trail_exclusive": true,
+      "evict_min_gain_pct": 0,
+      "arm_gain_pct": 12,
+      "arm_gain_pct_stable": 15,
+      "pre_arm_ta_allowed": true,
+      "pre_arm_min_gain_pct": 10,
+      "pre_arm_max_gain_pct": 15,
+      "tail_idle_hours": 24,
+      "tail_exempt_sold_pct": 0.5,
+      "tail_exempt_notional_usdt": 800,
+      "trail_exit_full_close": true
+    }
   },
   "update_interval": 120,
   "observability": {
     "terminal_dashboard": true,
     "json_logs": false,
     "notify_on_cycle": true,
+    "cycle_notifications": {
+      "mode": "delta",
+      "send_on_trade": true,
+      "send_on_blocked": true,
+      "send_on_nav_delta_pct": 0.5,
+      "send_on_new_decision": true,
+      "hold_explanation_max_per_cycle": 1,
+      "hold_explanation_cooldown_hours": 6,
+      "digest_merge": true,
+      "notify_hermes_rejected": false
+    },
+    "display_timezone": "Europe/Berlin",
+    "telegram_startup_notify": true,
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
     "decisions_audit": true,
@@ -297,7 +360,7 @@
       "verbosity": "verbose",
       "language": "de",
       "show_technical_codes": true,
-      "notify_hermes_every_cycle": true,
+      "notify_hermes_every_cycle": false,
       "notify_cmc_digest": true,
       "notify_lc_digest": true,
       "notify_x_digest": true,
@@ -591,6 +654,8 @@
     "bb_sell_enabled": true,
     "bb_sell_upper_ratio": 0.99,
     "bb_sell_rsi_min": 58,
+    "bb_sell_min_gain_pct": 12,
+    "bb_sell_requires_ta": true,
     "vol_exhaustion_sell_enabled": true,
     "vol_exhaustion_max": 0.75,
     "vol_exhaustion_rsi_min": 58,
@@ -604,12 +669,12 @@
     "exit_ladder": {
       "enabled": true,
       "tiers": [
-        0.6,
-        0.3,
-        0.1
+        0.35,
+        0.35,
+        0.3
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 200
+      "min_remainder_usdt_floor": 100
     },
     "trailing_stop": {
       "enabled": true,
@@ -623,7 +688,7 @@
       "enabled": true,
       "mode": "live",
       "trail_pct": 6,
-      "arm_gain_pct": 15,
+      "arm_gain_pct": 12,
       "min_gain_pct": 10,
       "max_steps": 3,
       "cooldown_hours": 6
@@ -648,11 +713,36 @@
       "enabled": true,
       "mode": "live",
       "interval_hours": 12,
-      "fixed_usdt": 400,
-      "loss_pct_min": -20,
+      "fixed_usdt": 500,
+      "sizing": {
+        "enabled": true,
+        "base_mode": "max",
+        "notional_ratio": 0.30,
+        "min_multiplier": 0.55,
+        "max_multiplier": 1.0,
+        "loss_depth_boost": 0.15,
+        "round_decay": 0.12,
+        "min_usdt": 300,
+        "max_usdt": 1200
+      },
+      "portfolio": {
+        "enabled": true,
+        "mode": "live",
+        "max_buys_per_cycle": 1,
+        "max_funding_sells_per_cycle": 1,
+        "min_dca_score": 6,
+        "cash_buffer_usdt": 300,
+        "stale_winner_min_hours": 36,
+        "stale_winner_max_gain_pct": 8
+      },
+      "loss_pct_min": -25,
       "loss_pct_max": -3,
+      "max_sold_percent": 0.85,
+      "min_remainder_usdt": 150,
+      "cascade_min_drop_pct": 4.0,
+      "cascade_score_discount": 1,
       "sl_proximity_pct": 15,
-      "max_rounds": 3,
+      "max_rounds": 4,
       "grace_hours_after_dca": 12,
       "pause_partial_stop_during_dca": true,
       "stop_loss_widen_pct_per_round": 6,
@@ -684,6 +774,9 @@
           "bb_support_enabled": true,
           "bb_support_ratio": 1.02
         }
+      },
+      "recovery": {
+        "enabled": false
       }
     }
   },
@@ -711,11 +804,10 @@
       "tiers": [
         0.3,
         0.3,
-        0.2,
-        0.2
+        0.4
       ],
       "min_remainder_pct": 0.05,
-      "min_remainder_usdt_floor": 200
+      "min_remainder_usdt_floor": 150
     },
     "trailing_stop": {
       "enabled": true,
@@ -782,6 +874,21 @@
           "bb_support_enabled": true,
           "bb_support_ratio": 1.02
         }
+      },
+      "recovery": {
+        "enabled": true,
+        "mode": "live",
+        "interval_hours": 18,
+        "max_rounds": 1,
+        "loss_pct_min": -15,
+        "loss_pct_max": -2,
+        "max_sold_percent": 0.85,
+        "min_remainder_usdt": 150,
+        "remainder_size_ratio": 0.3,
+        "sl_proximity_pct": 10,
+        "cascade_min_drop_pct": 4.0,
+        "cascade_score_discount": 1,
+        "scoring_inherit": true
       }
     }
   },
@@ -831,13 +938,29 @@
       }
     }
   },
+  "entry_guard": {
+    "enabled": true,
+    "sources": ["entry_sensor_15m"],
+    "fresh_entry_window_minutes": 120,
+    "vol_spike_mult": 2.0,
+    "vol_exhaustion_15m_max": 0.85,
+    "exhaustion_min_gain_pct": 5,
+    "mega_pump_gain_pct": 12,
+    "block_loss_sells_minutes": 15,
+    "by_tier": {
+      "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
+      "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
+      "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
+      "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12}
+    }
+  },
   "entry_sensor_15m": {
     "enabled": true,
     "mode": "active",
     "timeframe": "15m",
     "poll_interval_sec": 20,
+    "gate_only": true,
     "market_cap_min_usd": 5000000,
-    "market_cap_max_usd": 100000000,
     "watch_ttl_hours": 24,
     "setup_modes": [
       "buy_signal",
@@ -853,6 +976,7 @@
     "fakeout_min_body_atr_ratio": 0.3,
     "cooldown_after_reject_hours": 2,
     "max_watched_coins": 40,
-    "min_poll_gap_sec_per_coin": 20
+    "min_poll_gap_sec_per_coin": 20,
+    "webhook_priority_poll": true
   }
 }

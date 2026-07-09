@@ -17,6 +17,16 @@ def redis_url_from_env() -> str:
     )
 
 
+def resolve_redis_url(config_url: str | None = None) -> str:
+    """Prefer Railway/cloud REDIS_URL over localhost defaults from config.json."""
+    env_url = (os.getenv("REDIS_URL") or os.getenv("ARCHITECTURE_REDIS_URL") or "").strip()
+    if env_url:
+        return env_url
+    if config_url:
+        return str(config_url)
+    return redis_url_from_env()
+
+
 def get_redis(url: str | None = None, key_prefix: str = "aria:"):
     """Lazy Redis connection; None if redis package missing or server down."""
     global _client, _available

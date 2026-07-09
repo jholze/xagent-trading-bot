@@ -31,6 +31,14 @@ class TestCMCTrendingLive(unittest.TestCase):
 
 
 class TestCMCVolatileAggregator(unittest.TestCase):
+    def test_skips_community_when_endpoint_unavailable(self):
+        agg = CMCVolatileSignalAggregator(api_key="test-key")
+        agg._caps = {"endpoints": {"community/trending/token": False}}
+        with patch("data.cmc_volatile_signals.requests.get") as mock_get:
+            posts = agg._fetch_community_trending(5)
+        mock_get.assert_not_called()
+        self.assertEqual(posts, [])
+
     def test_apply_tier_trust_scores(self):
         agg = CMCVolatileSignalAggregator(api_key="")
         parser = CMCCommunityParser()

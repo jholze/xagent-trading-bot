@@ -33,9 +33,12 @@ class SocialPipeline:
         self._cycle_cmc_signals = []
         self._cycle_lc_signals = []
         self._last_lc_fetch_at = 0.0
+        self._last_lc_metrics_count = 0
         self._last_lc_digest_sig = ""
         self._notified_post_ids = set()
         self._last_cmc_digest_sig = ""
+        self._last_x_digest_sig = ""
+        self._last_merged_digest_sig = ""
         self._perf = get_config().get("x_performance", {})
         self._strategy_async = self._perf.get("strategy_discovery_async", True)
         self._strategy_queue: Queue = Queue()
@@ -272,7 +275,7 @@ class SocialPipeline:
             return False
         return (time.time() - self._last_lc_fetch_at) < interval
 
-    def process_lc_signals(self, watchlist: list = None) -> list:
+    def process_lc_signals(self, watchlist: list = None, *, force: bool = False) -> list:
         from core.config import get_bot_config
 
         cfg = get_bot_config()
@@ -280,12 +283,13 @@ class SocialPipeline:
         if not lc_cfg.get("enabled", True):
             return []
 
-        if self._should_skip_lc_fetch(lc_cfg):
+        if not force and self._should_skip_lc_fetch(lc_cfg):
             return list(self._cycle_lc_signals)
 
         self._last_lc_fetch_at = time.time()
         watchlist = watchlist or load_effective_watchlist()
         raw_metrics = self.lc_provider.fetch_for_watchlist(watchlist)
+        self._last_lc_metrics_count = len(raw_metrics)
         self._cycle_lc_signals = []
         thresholds = dict(lc_cfg.get("thresholds", {}))
         thresholds["trust_score"] = float(lc_cfg.get("trust_score", 72))
@@ -379,16 +383,78 @@ class SocialPipeline:
     def get_notified_post_ids(self) -> set:
         return set(self._notified_post_ids)
 
-    def should_send_cmc_digest(self, signals: list) -> bool:
-        if not signals:
-            return False
-        sig = "|".join(
+    @staticmethod
+    def _signals_signature(signals: list, prefix: str = "") -> str:
+        body = "|".join(
             f"{getattr(s, 'coin', '')}:{getattr(s, 'action', '')}:{getattr(s, 'confidence', 0)}"
             for s in sorted(signals, key=lambda x: getattr(x, "coin", ""))
         )
+        return f"{prefix}:{body}" if prefix else body
+
+    def _filter_x_digest_signals(self, signals: list, skip_post_ids: set | None = None) -> list:
+        from notifications.user_explain import explanations_config
+
+        cfg = explanations_config()
+        min_eff = float(cfg.get("x_digest_min_effective_confidence", 70))
+        skip = skip_post_ids or set()
+        filtered = []
+        for s in signals or []:
+            eff = getattr(s, "effective_confidence", getattr(s, "confidence", 0))
+            pid = getattr(s, "post_id", None)
+            if eff >= min_eff and pid not in skip:
+                filtered.append(s)
+        return filtered
+
+    def should_send_cmc_digest(self, signals: list) -> bool:
+        if not signals:
+            return False
+        sig = self._signals_signature(signals)
         if sig == self._last_cmc_digest_sig:
             return False
         self._last_cmc_digest_sig = sig
+        return True
+
+    def should_send_x_digest(self, signals: list, skip_post_ids: set | None = None) -> bool:
+        filtered = self._filter_x_digest_signals(signals, skip_post_ids)
+        if not filtered:
+            return False
+        sig = self._signals_signature(filtered, "x")
+        if sig == self._last_x_digest_sig:
+            return False
+        self._last_x_digest_sig = sig
+        return True
+
+    def should_send_merged_digest(
+        self,
+        cmc_signals: list,
+        lc_signals: list,
+        x_signals: list,
+        skip_post_ids: set | None = None,
+    ) -> bool:
+        from notifications.user_explain import explanations_config
+
+        cfg = explanations_config()
+        parts = []
+        if cfg.get("notify_cmc_digest"):
+            min_conf = int(cfg.get("cmc_digest_min_confidence", 60))
+            cmc = [s for s in (cmc_signals or []) if getattr(s, "confidence", 0) >= min_conf]
+            if cmc:
+                parts.append(self._signals_signature(cmc, "cmc"))
+        if cfg.get("notify_lc_digest"):
+            min_conf = int(cfg.get("lc_digest_min_confidence", 55))
+            lc = [s for s in (lc_signals or []) if getattr(s, "confidence", 0) >= min_conf]
+            if lc:
+                parts.append(self._signals_signature(lc, "lc"))
+        if cfg.get("notify_x_digest"):
+            x = self._filter_x_digest_signals(x_signals, skip_post_ids)
+            if x:
+                parts.append(self._signals_signature(x, "x"))
+        if not parts:
+            return False
+        sig = "||".join(parts)
+        if sig == self._last_merged_digest_sig:
+            return False
+        self._last_merged_digest_sig = sig
         return True
 
     def update_accuracy_loop(self) -> dict:

@@ -233,8 +233,14 @@ class GateExecutionAdapter(ExecutionAdapter):
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
-                order.symbol, timeframe, order.price, order.usdt_amount,
-                source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
+                order.symbol,
+                timeframe,
+                order.price,
+                order.usdt_amount,
+                source=order.source,
+                order_id=oid,
+                sync_virtual_ledger=sync_virtual,
+                entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             )
         else:
             local = self.portfolio.execute_sell(

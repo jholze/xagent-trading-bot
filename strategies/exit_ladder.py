@@ -87,7 +87,7 @@ def resolve_sell_amount(
     terminal = is_terminal_signal(signal) or "trailing_stop" in (signal or "")
 
     if step >= len(tiers) and not terminal:
-        return 0.0
+        return amount
 
     if terminal or step >= len(tiers) - 1:
         return amount

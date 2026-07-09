@@ -55,7 +55,7 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Gesamtwert", msg)
         self.assertIn("$5,000", msg)
         self.assertIn("Gesamt-PnL", msg)
-        self.assertIn("$+37.5", msg)
+        self.assertIn("$+0.0", msg)
         self.assertIn("Positionen (2)", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):

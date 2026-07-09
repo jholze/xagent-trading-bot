@@ -21,13 +21,24 @@ class PortfolioService:
         source: str = "auto",
         order_id: str = None,
         sync_virtual_ledger: bool = True,
+        entry_source: str | None = None,
+        entry_15m_vol_ratio: float | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
-        signal = "BUY_DCA" if source == "dca" else "BUY"
-        update_position(symbol, timeframe, signal, price, amount)
+        signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
+        effective_entry_source = entry_source or (source if source == "entry_sensor_15m" else None)
+        update_position(
+            symbol,
+            timeframe,
+            signal,
+            price,
+            amount,
+            entry_source=effective_entry_source,
+            entry_15m_vol_ratio=entry_15m_vol_ratio,
+        )
         if sync_virtual_ledger:
             record_trade({
                 "type": "BUY",
@@ -90,7 +101,13 @@ class PortfolioService:
         oid = order.order_id or None
         if order.type == "BUY":
             return self.execute_buy(
-                order.symbol, timeframe, order.price, order.usdt_amount or None, source=source, order_id=oid,
+                order.symbol,
+                timeframe,
+                order.price,
+                order.usdt_amount or None,
+                source=source,
+                order_id=oid,
+                entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             )
         return self.execute_sell(
             order.symbol, timeframe, order.price, order.signal or "SELL", order.amount or None,

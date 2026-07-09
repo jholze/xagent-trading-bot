@@ -67,6 +67,30 @@ class TestCommandMenu(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertFalse(register_bot_commands(token=None))
 
+    def test_register_does_not_send_keyboard_by_default(self):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b'{"ok": true}'
+        mock_resp.json.return_value = {"ok": True}
+
+        with patch("notifications.telegram_commands.command_menu.requests.post", return_value=mock_resp), \
+             patch("notifications.telegram_commands.command_menu.menu_button_payload", return_value={"type": "commands", "text": "Menü"}), \
+             patch("notifications.telegram_commands.command_menu.send_main_section_keyboard", return_value=True) as mock_keyboard:
+            self.assertTrue(register_bot_commands(token="test-token"))
+        mock_keyboard.assert_not_called()
+
+    def test_register_can_send_keyboard_when_requested(self):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b'{"ok": true}'
+        mock_resp.json.return_value = {"ok": True}
+
+        with patch("notifications.telegram_commands.command_menu.requests.post", return_value=mock_resp), \
+             patch("notifications.telegram_commands.command_menu.menu_button_payload", return_value={"type": "commands", "text": "Menü"}), \
+             patch("notifications.telegram_commands.command_menu.send_main_section_keyboard", return_value=True) as mock_keyboard:
+            self.assertTrue(register_bot_commands(token="test-token", send_keyboard=True))
+        mock_keyboard.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

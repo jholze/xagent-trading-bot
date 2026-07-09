@@ -86,7 +86,7 @@ class CMCCommunityParser:
             confidence = 45
 
         rationale = post.text[:120] if post.text else f"Community sentiment for {post.coin}"
-        if total_votes > 0:
+        if total_votes > 0 and "(votes:" not in rationale:
             rationale += f" (votes: {post.votes_bullish}↑/{post.votes_bearish}↓)"
 
         signal = CMCCommunitySignal(
@@ -271,8 +271,13 @@ class CMCProApiProvider(CMCDataProvider):
                 vol = float(quote.get("volume_24h", 0) or 0)
                 price = float(quote.get("price", 0) or 0)
 
+                from data_manager import get_config
+
+                max_bull_pct = float(get_config().get("cmc", {}).get("quotes_max_bullish_pct", 35))
                 if pct >= bull_pct:
-                    bull, bear = min(95, 55 + int(pct)), max(5, 35 - int(pct / 2))
+                    if pct > max_bull_pct:
+                        continue
+                    bull, bear = min(95, 55 + int(min(pct, max_bull_pct))), max(5, 35 - int(min(pct, max_bull_pct) / 2))
                     text = f"{symbol} +{pct:.1f}% in 24h — bullish momentum (CMC market data)"
                 elif pct <= bear_pct:
                     bull, bear = max(5, 35 + int(pct / 2)), min(95, 55 + int(abs(pct)))

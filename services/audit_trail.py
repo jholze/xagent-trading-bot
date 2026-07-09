@@ -52,4 +52,15 @@ class AuditTrail:
             ),
             "risk_message": risk_message or (trade_result.message if trade_result else ""),
         }
+        audit = getattr(analysis, "sell_policy_audit", None) or {}
+        if audit:
+            entry.update({
+                "rotation_blocked": audit.get("rotation_blocked"),
+                "tail_exempt": audit.get("tail_exempt"),
+                "ladder_terminal_would_close": audit.get("ladder_terminal_would_close"),
+                "tail_idle_would_close": audit.get("tail_idle_would_close"),
+                "trail_exclusive_blocked": audit.get("trail_exclusive_blocked"),
+                "would_sell": audit.get("would_sell"),
+                "would_source": audit.get("would_source"),
+            })
         log_decision(entry)

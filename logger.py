@@ -2,6 +2,8 @@ import json
 import os
 from datetime import datetime
 
+from core.time_utils import format_display_time
+
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "aria_log.txt")
 JSON_LOG_FILE = os.path.join(LOG_DIR, "aria_log.jsonl")
@@ -20,7 +22,7 @@ def _json_logs_enabled() -> bool:
 
 def log(message, level="INFO"):
     """Write a message to the log file and terminal."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = format_display_time()
     log_entry = f"[{timestamp}] [{level}] {message}"
 
     try:

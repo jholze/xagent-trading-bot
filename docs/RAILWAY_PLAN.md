@@ -1,8 +1,22 @@
 # Railway Deployment Plan — X-Agent Trading Bot
 
-**Status:** Ready to deploy (Dockerfile + `railway.toml` on `main`)  
-**Last updated:** 2026-07-01
-**Branch baseline:** `main` after Mongo ledger + Telegram position tree merge
+**Status:** Staging deploy live on Railway (`xagent-test`, branch `staging`)  
+**Last updated:** 2026-07-09
+**Branch baseline:** `staging` → Railway test instance; `main` → production (later)
+
+---
+
+## Staging workflow (Git + Railway)
+
+| Git branch | Railway | `BOT_STACK` | Mongo DB |
+|------------|---------|-------------|----------|
+| `feature/*` | — | `local` | `xagent_test` (local) / `xagent_pytest` (pytest) |
+| **`staging`** | Service `xagent-test`, env `test` | `staging` | **`xagent_test`** (Ledger — never rename) |
+| `main` | Production (future) | `production` | `xagent` |
+
+Deploy staging: `bash scripts/deploy_staging.sh` (push branch `staging`).
+
+Flow: `feature/*` → PR → **`staging`** → Railway test → PR → **`main`**.
 
 ---
 

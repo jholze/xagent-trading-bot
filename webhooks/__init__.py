@@ -1,0 +1,1 @@
+"""External signal webhook ingress (TradingView, CMC, generic)."""

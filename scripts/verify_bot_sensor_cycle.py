@@ -133,7 +133,7 @@ def main() -> int:
 
     orch.process_coin = _capture_process
 
-    with patch.object(entry_sensor_loop, "get_prices_batch", lambda symbols: {COIN["symbol"]: 1.0}), patch.object(
+    with patch.object(entry_sensor_loop, "get_gate_prices_batch", lambda symbols: {COIN["symbol"]: 1.0}), patch.object(
         entry_sensor_loop, "_coin_by_symbol", lambda symbol: dict(COIN)
     ), patch.object(orch.trading.risk.market, "fetch_indicators", return_value=INDICATORS), patch(
         "notifications.telegram_commands.position_display.send_positions_snapshot"

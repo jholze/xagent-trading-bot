@@ -564,26 +564,24 @@ class TestVirtualTrading(unittest.TestCase):
         from unittest.mock import patch, MagicMock
         from telegram_notifier import send_telegram_message
 
-        with patch("telegram_notifier.is_demo_mode", return_value=True), \
+        with patch("telegram_notifier.message_prefix", return_value="🧪 [TEST] "), \
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
             send_telegram_message("Important trade signal")
 
-            # Check that the message sent to Telegram contained the demo prefix
             called_text = mock_post.call_args[1]["json"]["text"]
-            self.assertIn("🧪 [DEMO]", called_text)
+            self.assertIn("🧪 [TEST]", called_text)
             self.assertIn("Important trade signal", called_text)
 
-        # Also verify that without demo mode, no prefix is added
-        with patch("telegram_notifier.is_demo_mode", return_value=False), \
+        with patch("telegram_notifier.message_prefix", return_value=""), \
              patch("telegram_notifier.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
 
             send_telegram_message("Normal message")
 
             called_text = mock_post.call_args[1]["json"]["text"]
-            self.assertNotIn("🧪 [DEMO]", called_text)
+            self.assertNotIn("[TEST]", called_text)
             self.assertIn("Normal message", called_text)
 
     def test_demo_file_path_helper(self):

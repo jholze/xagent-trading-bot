@@ -105,7 +105,7 @@ class TestDryRunWatchlist(unittest.TestCase):
             with patch("data_manager.get_data_file", return_value=overlay_path), \
                  patch("data_manager.load_watchlist", return_value=[{"symbol": "BTC/USDT"}]), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
-                 patch("services.dry_run_watchlist.get_prices_batch", return_value={
+                 patch("services.dry_run_watchlist.get_gate_prices_batch", return_value={
                      "PEPE/USDT": 0.00001,
                      "FAKECOIN/USDT": 0,
                      "DOGE/USDT": 0.12,

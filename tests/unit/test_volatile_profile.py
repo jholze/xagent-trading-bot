@@ -58,7 +58,7 @@ class TestVolatileProfile(unittest.TestCase):
         self.assertEqual(params.get("rsi_sell_mode"), "level")
         self.assertEqual(params.get("stop_loss_pct"), 50.0)
         self.assertIsNone(params.get("take_profit_pct"))
-        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.6, 0.3, 0.1])
+        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.35, 0.35, 0.3])
 
     def test_hermes_memory_without_position(self):
         coin = {"symbol": "H/USDT", "timeframe": "4h"}
@@ -77,7 +77,7 @@ class TestVolatileProfile(unittest.TestCase):
             params = resolve_strategy_params(coin, has_position=True, atr_pct=1.5)
         self.assertEqual(params.get("volatility_tier"), "stable")
         self.assertEqual(params.get("strategy_profile"), "stable_altcoin")
-        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.3, 0.3, 0.2, 0.2])
+        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.3, 0.3, 0.4])
         self.assertEqual(params.get("take_profit_tiers"), [60, 100, 150])
 
     def test_stable_tier_buy_overlay_without_position(self):
@@ -111,7 +111,7 @@ class TestVolatileProfile(unittest.TestCase):
         with patch("strategies.registry._explicit_strategy_entry", return_value={"symbol": "ETH/USDT", "rsi_sell_30": 70}):
             params = resolve_strategy_params(coin, has_position=True, atr_pct=1.7, frozen_tier="volatile")
         self.assertEqual(params.get("rsi_sell_30"), 70)
-        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.6, 0.3, 0.1])
+        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.35, 0.35, 0.3])
         self.assertNotIn("take_profit_pct", params)
 
     def test_rsi_level_sell_with_min_gain(self):

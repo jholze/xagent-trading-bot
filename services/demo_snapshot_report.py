@@ -1,12 +1,11 @@
-"""Unified demo snapshot report — same resolve_store path as the running bot.
+"""Unified demo snapshot report — same Mongo path as the running bot.
 
 Demo invariants (verification gating; do not violate):
   - ~25 open positions derived from demo orders SOT (~$100k equity, daily NAV delta < $2k)
-  - Mongo positions/portfolio doc is read-only (DemoLedgerStore never writes positions to Mongo)
   - No manual test coins in demo orders (e.g. XRVM/USDT from unit/integration tests)
-  - Orders/trade_history SOT is demo JSON; migrate_scope runs idempotently before any Mongo sync
-  - --dry-run calls migrate_scope(dry_run=True) then reads only (no Mongo/JSON writes)
-  - write_json=False apply syncs Mongo orders/trades only (no JSON file mutations)
+  - Mongo is SOT when demo.backend=mongo (default); JSON export is opt-in via write_json=True
+  - --dry-run reads only (no Mongo/JSON writes)
+  - write_json=False skips all *.demo.json mutations (default)
 """
 
 from __future__ import annotations
@@ -29,6 +28,10 @@ from data_manager import (
     POSITIONS_SCOPE_FILES,
     atomic_write_json,
     get_config,
+    load_orders,
+    load_positions_document,
+    load_trade_history_document,
+    resolve_ledger_backend,
 )
 from services.ledger_sync import count_open_positions_from_orders
 from storage.ledger_router import resolve_store
@@ -236,6 +239,10 @@ def strip_demo_test_pollution(*, write: bool = True) -> int:
     return removed
 
 
+def _demo_uses_mongo_ledger() -> bool:
+    return resolve_ledger_backend(TARGET_SCOPE, get_config()) == "mongo"
+
+
 def _load_demo_payloads(*, from_live: bool) -> tuple[dict, dict, dict | None]:
     if from_live:
         orders = _load_json(SOURCE_FILES["orders"]) or {
@@ -248,6 +255,10 @@ def _load_demo_payloads(*, from_live: bool) -> tuple[dict, dict, dict | None]:
             "positions": {},
         }
         history = _load_json(SOURCE_FILES["trade_history"])
+    elif _demo_uses_mongo_ledger():
+        orders = load_orders(TARGET_SCOPE)
+        positions = load_positions_document(TARGET_SCOPE)
+        history = load_trade_history_document(TARGET_SCOPE)
     else:
         orders = _load_json(DEMO_JSON_FILES["orders"]) or {
             "ledger_scope": TARGET_SCOPE,
@@ -303,14 +314,14 @@ def build_demo_snapshot_report(
     *,
     dry_run: bool = False,
     test_db: bool = False,
-    write_json: bool = True,
+    write_json: bool = False,
     from_live: bool = False,
 ) -> dict[str, Any]:
     """I/O wrapper: load ledger docs, optionally write, delegate to pure builder."""
     if test_db:
         os.environ["MONGODB_DB"] = "xagent_test"
 
-    if not from_live and not dry_run and write_json:
+    if not from_live and not _demo_uses_mongo_ledger() and not dry_run and write_json:
         strip_demo_test_pollution(write=True)
 
     _clear_store_cache()
@@ -328,7 +339,7 @@ def build_demo_snapshot_report(
         store.load_trade_history(TARGET_SCOPE) if demo_history else None
     )
 
-    if not from_live and demo_history:
+    if not from_live and not _demo_uses_mongo_ledger() and demo_history:
         migrate_pending = _migrate_mod.preview_migrate_scope(
             TARGET_SCOPE, DEMO_JSON_FILES["trade_history"], "paper"
         )
@@ -423,7 +434,12 @@ def format_report_lines(report: dict[str, Any]) -> list[str]:
         )
 
     prefix = "[dry-run]" if report.get("dry_run") else "[applied]"
-    source = "live" if report.get("from_live") else "demo-json"
+    if report.get("from_live"):
+        source = "live"
+    elif _demo_uses_mongo_ledger():
+        source = "demo-mongo"
+    else:
+        source = "demo-json"
     lines.append(
         f"{prefix} snapshot {source} -> mongo:{report['target_scope']} "
         f"db={report['database']} orders={report['orders']} "
