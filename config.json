@@ -956,7 +956,7 @@
   },
   "exit_sensor": {
     "enabled": true,
-    "mode": "shadow",
+    "mode": "live",
     "min_gain_pct": 7,
     "weakness_15m": {
       "enabled": true,

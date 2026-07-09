@@ -116,6 +116,10 @@ class TestExitSensorSells(unittest.TestCase):
         sources = [c.source for c in cands]
         self.assertIn("exit_15m_weakness", sources)
 
+    def test_default_config_is_live_not_shadow(self):
+        cfg = exit_sensor_config()
+        self.assertEqual(cfg.get("mode"), "live")
+
     def test_weakness_blocked_below_min_gain(self):
         pos = {"recent_high": 1.05, "rsi_sell_tiers_done": {}}
         metrics_15m = {"lower_high": True, "close_below_ema": True}

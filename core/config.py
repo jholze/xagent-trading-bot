@@ -422,7 +422,7 @@ class BotConfig:
     def exit_sensor_config(self) -> dict:
         defaults = {
             "enabled": True,
-            "mode": "shadow",
+            "mode": "live",
             "min_gain_pct": 7,
             "vol_avg_period": 20,
             "weakness_15m": {
