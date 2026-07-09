@@ -12,13 +12,18 @@ os.environ.setdefault("DEMO_MODE", "1")
 os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
 os.environ.setdefault("MONGODB_DB", "xagent_test")
 
+from scripts.operator_mongo import prepare_operator_mongo
 from data_manager import load_orders, load_trade_history, resolve_ledger_scope
 from services.ledger_sync import count_open_positions_from_orders
-from storage.mongo_client import resolve_database_name, resolve_mongo_uri
 from strategies.positions import bootstrap_positions, count_open_positions, list_active_positions
 
 
 def main() -> int:
+    meta = prepare_operator_mongo()
+    if meta.get("pytest_isolated"):
+        print("ERROR: resolved pytest-isolated DB — set MONGO_URL + DEMO_ALLOW_REMOTE_MONGO for Railway")
+        return 1
+
     scope = resolve_ledger_scope()
     orders = load_orders(scope).get("orders", [])
     history = load_trade_history()
@@ -28,9 +33,7 @@ def main() -> int:
     active = list_active_positions()
     active_count = count_open_positions()
 
-    uri = resolve_mongo_uri()
-    host = uri.split("@")[-1] if "@" in uri else uri
-    print(f"db={resolve_database_name()} host={host}")
+    print(f"db={meta['db']} host={meta['host']}")
     print(
         f"orders={len(orders)} cash={cash:.2f} "
         f"active_positions={active_count} (from_orders={open_from_orders})"

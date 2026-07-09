@@ -37,11 +37,14 @@ if [[ -z "$MONGO_PUBLIC" ]]; then
 fi
 
 echo "Importing ${ORDER_COUNT} orders into Railway test Mongo..."
-env -u MONGODB_URI \
+env -u MONGODB_URI -u PYTEST_RUNNING -u PYTEST_CURRENT_TEST \
   MONGO_URL="$MONGO_PUBLIC" \
   MONGODB_DB="$MONGODB_DB" \
   DEMO_MODE=1 \
   DEMO_LEDGER_BACKEND=mongo \
+  DEMO_ALLOW_REMOTE_MONGO=1 \
+  FORCE_OPERATOR_MONGO=1 \
+  ALLOW_DEV_DB_MUTATION=1 \
   python3 scripts/demo_ledger_bundle.py import --file "$BUNDLE"
 
 echo "Done. Restart xagent-test to pick up in-memory positions:"

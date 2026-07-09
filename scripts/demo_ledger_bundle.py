@@ -21,8 +21,10 @@ def _ensure_demo_mongo() -> None:
 
 
 def _ledger_store():
+    from scripts.operator_mongo import prepare_operator_mongo
     from data_manager import get_config, _mongo_ledger_store
 
+    prepare_operator_mongo()
     return _mongo_ledger_store(get_config())
 
 

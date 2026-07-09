@@ -45,11 +45,13 @@ fi
 echo "Exporting live demo ledger from Railway → bundle..."
 # IMPORTANT: unset local MONGODB_URI so resolve_mongo_uri() uses MONGO_URL (public proxy).
 # railway run + dev_local_mongo would otherwise export localhost by mistake.
-if ! env -u MONGODB_URI \
+if ! env -u MONGODB_URI -u PYTEST_RUNNING -u PYTEST_CURRENT_TEST \
   MONGO_URL="$MONGO_PUBLIC" \
   MONGODB_DB="${MONGODB_DB:-xagent_test}" \
   DEMO_MODE=1 \
   DEMO_LEDGER_BACKEND=mongo \
+  DEMO_ALLOW_REMOTE_MONGO=1 \
+  FORCE_OPERATOR_MONGO=1 \
   python3 scripts/demo_ledger_bundle.py export >"$BUNDLE" 2>/dev/null; then
   echo "WARN: Railway export failed — local ledger unchanged"
   exit 0

@@ -983,10 +983,10 @@ def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
 
 
 def _mongo_ledger_store(config: dict = None):
-    from storage.mongo_client import is_pytest_running
+    from storage.mongo_client import use_isolated_pytest_database
     from storage.mongo_ledger import get_ledger_store
 
-    return get_ledger_store(test=is_pytest_running(), config=config)
+    return get_ledger_store(test=use_isolated_pytest_database(config), config=config)
 
 
 def resolve_orders_file(scope: str) -> str:

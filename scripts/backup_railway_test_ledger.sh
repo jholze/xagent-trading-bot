@@ -26,11 +26,14 @@ if [[ -z "$MONGO_PUBLIC" ]]; then
 fi
 
 echo "Exporting demo ledger to ${OUT}..."
-env -u MONGODB_URI \
+env -u MONGODB_URI -u PYTEST_RUNNING -u PYTEST_CURRENT_TEST \
   MONGO_URL="$MONGO_PUBLIC" \
   MONGODB_DB="${MONGODB_DB:-xagent_test}" \
   DEMO_MODE=1 \
   DEMO_LEDGER_BACKEND=mongo \
+  DEMO_ALLOW_REMOTE_MONGO=1 \
+  FORCE_OPERATOR_MONGO=1 \
+  ALLOW_DEV_DB_MUTATION=1 \
   python3 scripts/demo_ledger_bundle.py export >"$OUT"
 
 ORDER_COUNT="$(python3 -c "import json; print(len(json.load(open('$OUT'))['orders']['orders']))")"

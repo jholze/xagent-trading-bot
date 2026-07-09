@@ -28,8 +28,11 @@ def _load_seed(name: str) -> dict | None:
 
 
 def main() -> int:
+    from scripts.operator_mongo import prepare_operator_mongo
     from storage.mongo_client import ping_database, resolve_database_name
     from storage.mongo_ledger import MongoLedgerStore
+
+    prepare_operator_mongo()
 
     if not ping_database():
         print("[seed] Mongo ping failed — skipping")

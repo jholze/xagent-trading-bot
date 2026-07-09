@@ -67,9 +67,9 @@ def ledger_dual_write_enabled(config: dict) -> bool:
 
 
 def _mongo_test_mode(config: dict | None = None) -> bool:
-    from storage.mongo_client import is_pytest_running
+    from storage.mongo_client import use_isolated_pytest_database
 
-    return is_pytest_running()
+    return use_isolated_pytest_database(config)
 
 
 def _mongo_store(config: dict):

@@ -35,9 +35,12 @@ def fresh_bundle(balance_usdt: float) -> dict:
 
 def reset_demo_ledger(balance_usdt: float) -> dict:
     _ensure_demo_mongo()
+    from scripts.operator_mongo import prepare_operator_mongo
     from data_manager import get_config
-    from storage.mongo_client import assert_safe_demo_mongo_db
+    from storage.mongo_client import assert_safe_demo_mongo_db, operator_mongo_summary
     from storage.mongo_ledger import get_ledger_store
+
+    prepare_operator_mongo()
     from services.ledger_sync import sync_positions_on_startup
     from strategies.positions import bootstrap_positions, flush_positions
 
@@ -56,6 +59,7 @@ def reset_demo_ledger(balance_usdt: float) -> dict:
     reconcile_demo_trade_history_on_startup()
     return {
         "database": db,
+        "mongo_host": operator_mongo_summary().get("host"),
         "orders": 0,
         "positions": 0,
         "virtual_balance": float(balance_usdt),
@@ -94,7 +98,7 @@ def main() -> int:
 
     stats = reset_demo_ledger(args.balance)
     print(
-        f"[reset] db={stats.get('database')} "
+        f"[reset] db={stats.get('database')} host={stats.get('mongo_host')} "
         f"orders={stats['orders']} positions={stats['positions']} "
         f"cash={stats['virtual_balance']:,.2f}"
     )
