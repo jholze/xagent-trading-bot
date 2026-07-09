@@ -6,7 +6,7 @@ set -euo pipefail
 RAILWAY_TOKEN="${RAILWAY_TOKEN:?RAILWAY_TOKEN required}"
 
 COMMIT_SHA="${1:-${GITHUB_SHA:-}}"
-BRANCH="${2:-${GITHUB_REF_NAME:-feature/entry-guard-15m}}"
+BRANCH="${2:-${GITHUB_REF_NAME:-staging}}"
 
 if [[ -z "$COMMIT_SHA" ]]; then
   echo "ERROR: commit SHA required (arg1, GITHUB_SHA, or git HEAD)"
@@ -108,7 +108,7 @@ deploy_id = gql(
 for name, value in [
     ("GIT_COMMIT", short_sha),
     ("GIT_BRANCH", branch),
-    ("BOT_STACK", "test"),
+    ("BOT_STACK", "staging"),
 ]:
     gql(
         """
@@ -133,7 +133,7 @@ PY
 )" || {
   echo "ERROR: serviceInstanceDeployV2 failed (Not Authorized)."
   echo "  RAILWAY_TOKEN must be an Account Token from https://railway.com/account/tokens"
-  echo "  Fallback: env -u RAILWAY_TOKEN railway up -d -y  (from feature/entry-guard-15m)"
+  echo "  Fallback: env -u RAILWAY_TOKEN railway up -d -y  (from staging)"
   exit 1
 }
 

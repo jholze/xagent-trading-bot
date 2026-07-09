@@ -9,24 +9,24 @@ from core.build_info import get_build_info
 
 
 def resolve_bot_stack() -> str:
-    """Return production | test | local | unknown."""
+    """Return production | staging | local | unknown."""
     explicit = (os.getenv("BOT_STACK") or "").strip().lower()
     if explicit in {"production", "prod", "live"}:
         return "production"
-    if explicit in {"test", "staging", "dev"}:
-        return "test"
+    if explicit in {"staging", "test", "dev"}:
+        return "staging"
     if explicit in {"local", "mac"}:
         return "local"
 
     service = (os.getenv("RAILWAY_SERVICE_NAME") or "").strip().lower()
-    if "test" in service:
-        return "test"
+    if "staging" in service or "test" in service:
+        return "staging"
     if service in {"xagent-bot", "aria-bot", "trading-bot"}:
         return "production"
 
     env = (os.getenv("RAILWAY_ENVIRONMENT") or "").strip().lower()
-    if env == "test":
-        return "test"
+    if env in {"test", "staging"}:
+        return "staging"
     if env == "production" and os.getenv("RAILWAY_DEPLOY"):
         return "production"
 
@@ -41,7 +41,7 @@ def resolve_bot_stack() -> str:
 
 _STACK_LABELS = {
     "production": ("🟢", "Production"),
-    "test": ("🧪", "Test"),
+    "staging": ("🧪", "Staging"),
     "local": ("💻", "Local"),
     "unknown": ("❔", "Unbekannt"),
 }
@@ -49,6 +49,8 @@ _STACK_LABELS = {
 
 def stack_badge(stack: str | None = None) -> str:
     stack = stack or resolve_bot_stack()
+    if stack == "test":
+        stack = "staging"
     emoji, label = _STACK_LABELS.get(stack, _STACK_LABELS["unknown"])
     return f"{emoji} [{label.upper()}]"
 

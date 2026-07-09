@@ -1184,9 +1184,21 @@ Spam-Schutz: CMC-Digest nur bei **geänderten** Signalen; X-Digest überspringt 
 
 ---
 
-## 17. Feature-Branch: entwickeln, testen, mergen
+## 17. Branch-Workflow: feature → staging → main
 
 Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufzeit-JSONs des Bots.
+
+### Drei Git-Branches
+
+| Branch | Rolle | Railway |
+|--------|-------|---------|
+| `feature/*` | Entwicklung, lokale Tests | — |
+| **`staging`** | Integration, Railway-Demo-Bot | Service `xagent-test` (Env `test`) |
+| `main` | Stabil, produktionsreif | später Production |
+
+**Mongo auf Railway staging:** `xagent_test` (Ledger-Name bleibt — nicht umbenennen).
+
+**Deploy staging:** `bash scripts/deploy_staging.sh` (pusht Branch `staging` → Railway baut automatisch).
 
 ### Zwei Arten von JSON-Dateien
 
@@ -1195,42 +1207,42 @@ Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufze
 | **Laufzeit** (gitignored) | `positions.json`, `orders.live.json`, `live_trade_history.json`, `hermes/memory/*.json`, `data/cmc_slug_cache.json` | Bleiben auf der Festplatte — **gleiche Dateien** für alle Branches. Der Bot schreibt immer in dieselben Pfade. |
 | **Config** (in Git) | `config.json`, `watchlist.json`, `watchlist.dry_run_expansion.json`, `x_accounts.json` | `git checkout` / Merge lädt die Version aus dem jeweiligen Branch. |
 
-**Merksatz:** Feature-Branch = neuer Code. Bot-Laufzeitdaten = gemeinsamer Ordner, unabhängig vom Branch.
+### Checkliste (neues Feature)
 
-### Checkliste
-
-1. **Branch anlegen** (von sauberem `main`):
+1. **Branch anlegen** (von `main`):
    ```bash
    git checkout main && git pull
    git checkout -b feature/mein-feature
    ```
 2. **Nur Code + bewusste Config** committen — keine Laufzeit-JSONs (`git status` prüfen).
-3. **Bot zum Testen neu starten** (läuft mit Code des aktuellen Branches):
-   ```bash
-   bash scripts/stop_stack.sh
-   bash scripts/start_stack.sh
-   ```
-4. **Tests** vor dem Merge:
+3. **Lokal testen** (`pytest` nutzt `xagent_pytest`, nicht `xagent_test`):
    ```bash
    pytest tests/unit/ -q
+   bash scripts/stop_stack.sh && bash scripts/start_stack.sh
    ```
-5. **Merge nach `main`**, Feature-Branch löschen:
+4. **PR nach `staging`** (nicht direkt nach `main`):
    ```bash
-   git checkout main
-   git merge feature/mein-feature
-   git push origin main
-   git branch -d feature/mein-feature
+   gh pr create --base staging --head feature/mein-feature
    ```
-6. **Bot erneut neu starten** — dann läuft der gemergte Code auf `main`.
+5. **Nach Merge:** Railway deployt `staging` automatisch — prüfen via `/mode` und `/health/detail`.
+6. **Release nach `main`** (wenn Railway-Test OK):
+   ```bash
+   gh pr create --base main --head staging
+   ```
+7. **Nach `main`-Merge:** `staging` synchron halten:
+   ```bash
+   git checkout staging && git merge main && git push origin staging
+   ```
 
 ### Tipps
 
 | Situation | Empfehlung |
 |-----------|------------|
 | Feature testen ohne Prod-Daten zu vermischen | `--demo` oder separates Bot-Verzeichnis |
-| `config.json` im Feature geändert | Bewusst committen — nach Merge gilt sie auf `main` |
+| Railway-Ledger lesen | `inspect_ledger_summary.py` mit `MONGO_URL` — **kein** Reset/Wipe |
+| `config.json` im Feature geändert | Bewusst committen — nach Merge gilt sie auf `staging` / `main` |
 | Hermes-/Positions-Daten schützen | Vor riskanten Tests: `cp positions.json positions.json.bak` |
-| Sauberer `main` | `git status` muss clean sein; Laufzeit-JSONs nie committen |
+| Sauberer `main` | Feature-PRs nie direkt nach `main` — immer erst `staging` |
 
 ---
 

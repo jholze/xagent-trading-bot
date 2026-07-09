@@ -16,18 +16,18 @@ export DEMO_LEDGER_BACKEND=mongo
 BUNDLE="$(mktemp)"
 trap 'rm -f "$BUNDLE"' EXIT
 
-# BOT_STACK=test → test Mongo (MongoDB-AeF7); default production (MongoDB-mPbb)
+# BOT_STACK=staging|test → staging Mongo (MongoDB-AeF7); default production (MongoDB-mPbb)
 MONGO_SERVICE="${RAILWAY_MONGO_SERVICE:-}"
 if [[ -z "$MONGO_SERVICE" ]]; then
   case "${BOT_STACK:-production}" in
-    test) MONGO_SERVICE="MongoDB-AeF7" ;;
+    staging|test) MONGO_SERVICE="MongoDB-AeF7" ;;
     *) MONGO_SERVICE="MongoDB-mPbb" ;;
   esac
 fi
 RAILWAY_ENV="${RAILWAY_ENVIRONMENT:-}"
 if [[ -z "$RAILWAY_ENV" ]]; then
   case "${BOT_STACK:-production}" in
-    test) RAILWAY_ENV="test" ;;
+    staging|test) RAILWAY_ENV="test" ;;
     *) RAILWAY_ENV="production" ;;
   esac
 fi

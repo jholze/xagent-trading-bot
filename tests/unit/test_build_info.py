@@ -15,14 +15,14 @@ class TestBuildInfo(unittest.TestCase):
             os.environ,
             {
                 "GIT_COMMIT": "e44de14",
-                "GIT_BRANCH": "feature/entry-guard-15m",
+                "GIT_BRANCH": "staging",
                 "RAILWAY_DEPLOY": "1",
             },
             clear=False,
         ):
             info = get_build_info()
         self.assertEqual(info["commit"], "e44de14")
-        self.assertEqual(info["branch"], "feature/entry-guard-15m")
+        self.assertEqual(info["branch"], "staging")
         self.assertFalse(info["dirty"])
 
     def test_railway_git_overrides_stale_git_commit_env(self):
@@ -30,16 +30,16 @@ class TestBuildInfo(unittest.TestCase):
             os.environ,
             {
                 "GIT_COMMIT": "27ea307",
-                "GIT_BRANCH": "feature/entry-guard-15m",
+                "GIT_BRANCH": "staging",
                 "RAILWAY_GIT_COMMIT_SHA": "6021428abc123def456789012345678901234",
-                "RAILWAY_GIT_BRANCH": "feature/entry-guard-15m",
+                "RAILWAY_GIT_BRANCH": "staging",
                 "RAILWAY_DEPLOY": "1",
             },
             clear=False,
         ):
             info = get_build_info()
         self.assertEqual(info["commit"], "6021428")
-        self.assertEqual(info["branch"], "feature/entry-guard-15m")
+        self.assertEqual(info["branch"], "staging")
 
     def test_railway_git_sha_shortened(self):
         with patch.dict(

@@ -1184,9 +1184,21 @@ Spam protection: CMC digest only on **changed** signals; X digest skips posts al
 
 ---
 
-## 17. Feature branch: develop, test, merge
+## 17. Branch workflow: feature → staging → main
 
 Switching branches changes **code and tracked config** — not automatically the bot's runtime JSON files.
+
+### Three Git branches
+
+| Branch | Role | Railway |
+|--------|------|---------|
+| `feature/*` | Development, local tests | — |
+| **`staging`** | Integration, Railway demo bot | Service `xagent-test` (env `test`) |
+| `main` | Stable, production-ready | production (later) |
+
+**Mongo on Railway staging:** `xagent_test` (ledger name unchanged — do not rename).
+
+**Deploy staging:** `bash scripts/deploy_staging.sh` (pushes branch `staging` → Railway auto-build).
 
 ### Two kinds of JSON files
 
@@ -1195,43 +1207,42 @@ Switching branches changes **code and tracked config** — not automatically the
 | **Runtime** (gitignored) | `positions.json`, `orders.live.json`, `live_trade_history.json`, `hermes/memory/*.json`, `data/cmc_slug_cache.json` | Stay on disk — **same files** for all branches. Bot always writes to the same paths. |
 | **Config** (in Git) | `config.json`, `watchlist.json`, `watchlist.dry_run_expansion.json`, `x_accounts.json` | `git checkout` / merge loads version from respective branch. |
 
-**Rule of thumb:** Feature branch = new code. Bot runtime data = shared folder, independent of branch.
+### Checklist (new feature)
 
-### Checklist
-
-1. **Create branch** (from clean `main`):
+1. **Create branch** (from `main`):
    ```bash
    git checkout main && git pull
    git checkout -b feature/mein-feature
    ```
 2. **Commit only code + deliberate config** — no runtime JSONs (check `git status`).
-3. **Restart bot for testing** (runs with code of current branch):
-   ```bash
-   bash scripts/stop_bot.sh
-   bash scripts/stop_stack.sh
-   bash scripts/start_stack.sh
-   ```
-4. **Tests** before merge:
+3. **Test locally** (`pytest` uses `xagent_pytest`, not `xagent_test`):
    ```bash
    pytest tests/unit/ -q
+   bash scripts/stop_stack.sh && bash scripts/start_stack.sh
    ```
-5. **Merge to `main`**, delete feature branch:
+4. **PR to `staging`** (not directly to `main`):
    ```bash
-   git checkout main
-   git merge feature/mein-feature
-   git push origin main
-   git branch -d feature/mein-feature
+   gh pr create --base staging --head feature/mein-feature
    ```
-6. **Restart bot again** — then merged code runs on `main`.
+5. **After merge:** Railway deploys `staging` automatically — verify via `/mode` and `/health/detail`.
+6. **Release to `main`** (when Railway test OK):
+   ```bash
+   gh pr create --base main --head staging
+   ```
+7. **After `main` merge:** keep `staging` in sync:
+   ```bash
+   git checkout staging && git merge main && git push origin staging
+   ```
 
 ### Tips
 
 | Situation | Recommendation |
 |-----------|------------|
 | Test feature without mixing prod data | `--demo` or separate bot directory |
-| Changed `config.json` in feature | Commit deliberately — after merge it applies on `main` |
+| Read Railway ledger | `inspect_ledger_summary.py` with `MONGO_URL` — **no** reset/wipe |
+| Changed `config.json` in feature | Commit deliberately — applies on `staging` / `main` after merge |
 | Protect Hermes/position data | Before risky tests: `cp positions.json positions.json.bak` |
-| Clean `main` | `git status` must be clean; never commit runtime JSONs |
+| Clean `main` | Never PR features directly to `main` — always `staging` first |
 
 ---
 

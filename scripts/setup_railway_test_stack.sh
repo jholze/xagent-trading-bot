@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Provision an isolated Railway test stack entirely via CLI.
-# Usage: bash scripts/setup_railway_test_stack.sh
-# Optional: RAILWAY_TEST_ENV=test RAILWAY_TEST_SERVICE=xagent-test bash scripts/setup_railway_test_stack.sh
+# Provision Railway staging stack (service xagent-test, env test) via CLI.
+# Usage: bash scripts/setup_railway_staging_stack.sh
+# Optional: RAILWAY_STAGING_ENV=test RAILWAY_STAGING_SERVICE=xagent-test bash scripts/setup_railway_staging_stack.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ENV_NAME="${RAILWAY_TEST_ENV:-test}"
-SERVICE_NAME="${RAILWAY_TEST_SERVICE:-xagent-test}"
-REPO="${RAILWAY_TEST_REPO:-jholze/xagent-trading-bot}"
-BRANCH="${RAILWAY_TEST_BRANCH:-feature/entry-guard-15m}"
+ENV_NAME="${RAILWAY_STAGING_ENV:-${RAILWAY_TEST_ENV:-test}}"
+SERVICE_NAME="${RAILWAY_STAGING_SERVICE:-${RAILWAY_TEST_SERVICE:-xagent-test}}"
+REPO="${RAILWAY_STAGING_REPO:-${RAILWAY_TEST_REPO:-jholze/xagent-trading-bot}}"
+BRANCH="${RAILWAY_STAGING_BRANCH:-staging}"
 
 if ! command -v railway >/dev/null 2>&1; then
   echo "❌ railway CLI missing — install: brew install railway"
@@ -20,7 +20,7 @@ if ! railway whoami >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "=== Railway test stack setup ==="
+echo "=== Railway staging stack setup ==="
 echo "Project:  $(railway status 2>/dev/null | awk '/^Project:/{print $2}' || echo '?')"
 echo "Target env: ${ENV_NAME}"
 echo "Bot service: ${SERVICE_NAME}"
@@ -177,7 +177,7 @@ set_var MONGODB_DB=xagent_test
 set_var DEMO_MODE=1
 set_var DEMO_LEDGER_BACKEND=mongo
 set_var RAILWAY_DEPLOY=1
-set_var BOT_STACK=test
+set_var BOT_STACK=staging
 set_var "WEBHOOK_BASE_URL=${WEBHOOK_BASE}"
 
 # Railway service references (private networking)
@@ -203,11 +203,11 @@ if git status --porcelain | grep -q .; then
 else
   DEPLOY_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 fi
-echo "Deploy from git: bash scripts/deploy_test_branch.sh"
+echo "Deploy from git: bash scripts/deploy_staging.sh"
 echo "  (push → Railway GitHub webhook; no RAILWAY_TOKEN, no redeploy --from-source)"
 
 echo ""
-echo "=== Test stack ready ==="
+echo "=== Staging stack ready ==="
 echo "Environment:  ${ENV_NAME}"
 echo "Service:      ${SERVICE_NAME}"
 echo "Health:       ${WEBHOOK_BASE}/health"
