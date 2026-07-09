@@ -353,6 +353,12 @@
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
     "decisions_audit": true,
+    "decisions_mongo_sync": true,
+    "position_snapshots_enabled": true,
+    "position_snapshots_mongo_sync": true,
+    "position_snapshots_every_n_cycles": 1,
+    "position_snapshots_include_exit_sensor": false,
+    "stack_compare_enabled": true,
     "positions_show_trade_tree": true,
     "positions_max_events_per_coin": 6,
     "telegram_explanations": {
