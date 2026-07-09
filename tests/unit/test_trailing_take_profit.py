@@ -3,7 +3,10 @@ from datetime import datetime, timedelta
 
 from core.actions import SELL_FULL, SELL_PARTIAL_30
 from core.models import MarketContext
-from strategies.trailing_take_profit import evaluate_trailing_take_profit
+from strategies.trailing_take_profit import (
+    evaluate_trailing_take_profit,
+    resolve_trail_pct,
+)
 
 
 class TestTrailingTakeProfit(unittest.TestCase):
@@ -83,6 +86,66 @@ class TestTrailingTakeProfit(unittest.TestCase):
         cand = evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
         self.assertIsNotNone(cand)
         self.assertEqual(cand.action, SELL_FULL)
+
+    def test_resolve_trail_pct_scales_with_peak(self):
+        cfg = {
+            "dynamic_trail": True,
+            "trail_pct_min": 3.0,
+            "trail_pct_max": 12.0,
+            "trail_pct_scale_start_pct": 18.0,
+            "trail_pct_scale_peak_pct": 45.0,
+        }
+        self.assertEqual(resolve_trail_pct(13.0, cfg), 3.0)
+        self.assertEqual(resolve_trail_pct(45.0, cfg), 12.0)
+        self.assertGreater(resolve_trail_pct(30.0, cfg), 6.0)
+        self.assertLess(resolve_trail_pct(30.0, cfg), 12.0)
+
+    def test_dynamic_trail_triggers_on_modest_peak_pullback(self):
+        """Peak +13%, current +9.5%: tight trail should fire (closes exit_sensor gap)."""
+        pos = {"recent_high": 1.13, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}
+        params = self._params(
+            dynamic_trail=True,
+            trail_pct_min=3.0,
+            trail_pct_max=12.0,
+            trail_pct_scale_peak_pct=45.0,
+            arm_gain_pct=12.0,
+            min_gain_pct_floor=8.0,
+        )
+        cand = evaluate_trailing_take_profit(
+            self._market(current_price=1.095), pos, params,
+        )
+        self.assertIsNotNone(cand)
+        self.assertIn("trail 3.0%", cand.rationale)
+
+    def test_dynamic_trail_allows_runner_pullback(self):
+        """Peak +50%, -5% pullback: wide trail should hold."""
+        pos = {"recent_high": 1.50, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}
+        params = self._params(
+            dynamic_trail=True,
+            trail_pct_min=3.0,
+            trail_pct_max=12.0,
+            trail_pct_scale_peak_pct=45.0,
+            arm_gain_pct=12.0,
+            min_gain_pct_floor=8.0,
+        )
+        self.assertIsNone(
+            evaluate_trailing_take_profit(
+                self._market(current_price=1.425), pos, params,
+            )
+        )
+
+    def test_fixed_trail_when_dynamic_disabled(self):
+        pos = {"recent_high": 1.13, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}
+        params = self._params(
+            dynamic_trail=False,
+            trail_pct=6.0,
+            arm_gain_pct=12.0,
+        )
+        self.assertIsNone(
+            evaluate_trailing_take_profit(
+                self._market(current_price=1.095), pos, params,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -418,6 +418,59 @@ class BotConfig:
             merged["by_tier"] = {**defaults["by_tier"], **raw["by_tier"]}
         return merged
 
+    @property
+    def exit_sensor_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "mode": "live",
+            "min_gain_pct": 7,
+            "vol_avg_period": 20,
+            "weakness_15m": {
+                "enabled": True,
+                "ema_period": 20,
+                "min_gain_pct": 7,
+            },
+            "volume_climax": {
+                "enabled": True,
+                "vol_spike_min": 3.0,
+                "upper_wick_min_pct": 55,
+                "max_body_atr_ratio": 0.35,
+                "near_high_tolerance_pct": 2.0,
+                "min_gain_pct": 7,
+            },
+            "pullback": {
+                "enabled": True,
+                "min_drop_pct": 3.5,
+                "require_vol_above_avg": True,
+                "min_gain_pct": 6,
+            },
+            "btc_rs": {
+                "enabled": True,
+                "min_underperformance_pct": 2.0,
+                "min_gain_pct": 7,
+                "timeframe": "4h",
+                "periods": 1,
+            },
+            "rsi_rollover_1h": {
+                "enabled": True,
+                "peak_rsi_min": 70,
+                "current_rsi_max": 60,
+                "min_gain_pct": 7,
+            },
+        }
+        raw = self._raw.get("exit_sensor") or {}
+        merged = {**defaults, **raw}
+        for key in (
+            "weakness_15m",
+            "volume_climax",
+            "pullback",
+            "btc_rs",
+            "rsi_rollover_1h",
+        ):
+            if key in raw:
+                merged[key] = {**defaults[key], **raw[key]}
+        return merged
+
 
 def get_bot_config() -> BotConfig:
     return BotConfig()

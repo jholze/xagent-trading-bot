@@ -38,6 +38,27 @@ def _peak_gain_pct(market: MarketContext, position: dict) -> float:
     return (recent_high / entry - 1) * 100
 
 
+def resolve_trail_pct(peak_gain_pct: float, cfg: dict) -> float:
+    """Scale trail width with peak gain: tight after arm, wider on big runners."""
+    if not cfg.get("dynamic_trail", True):
+        return float(cfg.get("trail_pct", 6.0))
+
+    lo = float(cfg.get("trail_pct_min", 3.0))
+    hi = float(cfg.get("trail_pct_max", 12.0))
+    scale_start = float(cfg.get("trail_pct_scale_start_pct", 18.0))
+    scale_peak = float(cfg.get("trail_pct_scale_peak_pct", 45.0))
+
+    if peak_gain_pct <= scale_start:
+        return lo
+    if peak_gain_pct >= scale_peak:
+        return hi
+    if scale_peak <= scale_start:
+        return hi
+
+    t = (peak_gain_pct - scale_start) / (scale_peak - scale_start)
+    return lo + t * (hi - lo)
+
+
 def _hours_since(iso_ts: str | None, now: datetime) -> float | None:
     if not iso_ts:
         return None
@@ -88,12 +109,16 @@ def evaluate_trailing_take_profit(
     if not action:
         return None
 
+    peak_gain = _peak_gain_pct(market, position)
     arm_gain = float(cfg.get("arm_gain_pct", 15.0))
-    if _peak_gain_pct(market, position) < arm_gain:
+    if peak_gain < arm_gain:
         return None
 
-    min_gain = float(cfg.get("min_gain_pct", 10.0))
     gain = _gain_pct(market)
+    if cfg.get("dynamic_trail", True):
+        min_gain = float(cfg.get("min_gain_pct_floor", 8.0))
+    else:
+        min_gain = float(cfg.get("min_gain_pct", 10.0))
     if gain < min_gain:
         return None
 
@@ -101,7 +126,7 @@ def evaluate_trailing_take_profit(
     if recent_high <= 0:
         return None
     drop_pct = (1 - market.current_price / recent_high) * 100
-    trail_pct = float(cfg.get("trail_pct", 6.0))
+    trail_pct = resolve_trail_pct(peak_gain, cfg)
     if drop_pct < trail_pct:
         return None
 
@@ -117,7 +142,8 @@ def evaluate_trailing_take_profit(
         source="trailing_take_profit",
         priority=5,
         rationale=(
-            f"TrailTP->{action} (drop {drop_pct:.1f}% from high, gain={gain:.1f}%, exit_ladder)"
+            f"TrailTP->{action} (drop {drop_pct:.1f}% from high, "
+            f"trail {trail_pct:.1f}%, peak={peak_gain:.1f}%, gain={gain:.1f}%)"
         ),
         shadow_only=shadow,
     )

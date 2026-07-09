@@ -228,6 +228,31 @@ class MarketService:
         """Public OHLCV fetch (same pipeline as fetch_indicators)."""
         return self._fetch_ohlcv(symbol, timeframe, limit)
 
+    def infer_ohlcv_peak_price(
+        self,
+        symbol: str,
+        timeframe: str,
+        since_iso: str | None = None,
+        *,
+        limit: int = 200,
+    ) -> float | None:
+        """Highest candle high since *since_iso* (or full window if unknown)."""
+        from datetime import datetime
+
+        df = self._fetch_ohlcv(symbol, timeframe, limit)
+        if df is None or df.empty:
+            return None
+        if since_iso:
+            try:
+                since_dt = datetime.fromisoformat(str(since_iso).replace("Z", ""))
+                since_ms = since_dt.timestamp() * 1000
+                df = df[df["ts"] >= since_ms]
+                if df.empty:
+                    return None
+            except Exception:
+                pass
+        return float(df["high"].max())
+
     @staticmethod
     def compute_15m_sensor_metrics(
         df: pd.DataFrame,
@@ -281,6 +306,108 @@ class MarketService:
         return self.compute_15m_sensor_metrics(
             df, ema_period=ema_period, vol_avg_period=vol_avg_period
         )
+
+    @staticmethod
+    def compute_exit_metrics_15m(
+        df: pd.DataFrame,
+        *,
+        ema_period: int = 20,
+        vol_avg_period: int = 20,
+    ) -> dict | None:
+        """15m metrics for P1 exit sensor (weakness, climax, pullback)."""
+        base = MarketService.compute_15m_sensor_metrics(
+            df, ema_period=ema_period, vol_avg_period=vol_avg_period
+        )
+        if not base:
+            return None
+
+        ema = talib.EMA(df["close"], timeperiod=ema_period)
+        if pd.isna(ema.iloc[-1]):
+            return None
+
+        highs = df["high"]
+        lower_high = False
+        if len(highs) >= 4:
+            swing = float(highs.iloc[-3])
+            last_high = float(highs.iloc[-1])
+            prev_peak = float(highs.iloc[-4:-1].max())
+            lower_high = swing >= prev_peak * 0.995 and last_high < swing * 0.998
+
+        close_val = float(df["close"].iloc[-1])
+        ema_val = float(ema.iloc[-1])
+        open_val = float(df["open"].iloc[-1])
+        high_val = float(df["high"].iloc[-1])
+        low_val = float(df["low"].iloc[-1])
+        candle_range = high_val - low_val
+        upper_body = max(open_val, close_val)
+        upper_wick_pct = (
+            ((high_val - upper_body) / candle_range) * 100.0 if candle_range > 0 else 0.0
+        )
+
+        volume = float(df["volume"].iloc[-1])
+        vol_avg = float(df["volume"].rolling(window=vol_avg_period).mean().iloc[-1])
+        vol_above_avg = volume > vol_avg if vol_avg > 0 else False
+
+        base.update({
+            "ema": ema_val,
+            "close_below_ema": close_val < ema_val,
+            "lower_high": lower_high,
+            "upper_wick_pct": float(upper_wick_pct),
+            "vol_above_avg": bool(vol_above_avg),
+        })
+        return base
+
+    @staticmethod
+    def compute_exit_metrics_1h(df: pd.DataFrame) -> dict | None:
+        if df is None or df.empty or len(df) < 20:
+            return None
+        rsi = talib.RSI(df["close"], timeperiod=14)
+        if pd.isna(rsi.iloc[-1]):
+            return None
+        rsi_cur = float(rsi.iloc[-1])
+        rsi_peak_5 = float(rsi.tail(5).max())
+        peak_min = 70.0
+        current_max = 60.0
+        rsi_rollover = rsi_peak_5 >= peak_min and rsi_cur < current_max
+        return {
+            "rsi": rsi_cur,
+            "rsi_peak_5": rsi_peak_5,
+            "rsi_rollover": bool(rsi_rollover),
+        }
+
+    def fetch_exit_metrics_15m(self, symbol: str, cfg: dict | None = None) -> dict | None:
+        cfg = cfg or {}
+        vol_avg_period = int(cfg.get("vol_avg_period", 20))
+        ema_period = int((cfg.get("weakness_15m") or {}).get("ema_period", 20))
+        limit = max(vol_avg_period, ema_period) + 30
+        df = self._fetch_ohlcv(symbol, "15m", limit)
+        return self.compute_exit_metrics_15m(
+            df, ema_period=ema_period, vol_avg_period=vol_avg_period
+        )
+
+    def fetch_exit_metrics_1h(self, symbol: str, *, limit: int = 40) -> dict | None:
+        df = self._fetch_ohlcv(symbol, "1h", limit)
+        return self.compute_exit_metrics_1h(df)
+
+    def btc_relative_return_delta(
+        self,
+        symbol: str,
+        timeframe: str = "4h",
+        periods: int = 1,
+    ) -> float | None:
+        """Coin % change minus BTC % change over `periods` bars."""
+        if symbol.upper().startswith("BTC/"):
+            return None
+        limit = periods + 5
+        coin_df = self._fetch_ohlcv(symbol, timeframe, limit)
+        btc_df = self._fetch_ohlcv("BTC/USDT", timeframe, limit)
+        if coin_df is None or btc_df is None:
+            return None
+        coin_chg = self._pct_change(coin_df, periods)
+        btc_chg = self._pct_change(btc_df, periods)
+        if coin_chg is None or btc_chg is None:
+            return None
+        return coin_chg - btc_chg
 
     def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):
         cache = None

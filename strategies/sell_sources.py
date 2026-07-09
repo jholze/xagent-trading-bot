@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-STRUCTURE_SOURCES = frozenset({"bb_upper", "vol_exhaustion", "vol_dump"})
+STRUCTURE_SOURCES = frozenset({
+    "bb_upper",
+    "vol_exhaustion",
+    "vol_dump",
+    "exit_15m_weakness",
+    "exit_volume_climax",
+    "exit_pullback",
+    "exit_btc_rs",
+    "exit_1h_rsi_rollover",
+})
 
 TRAIL_ROTATION_SOURCES = frozenset({
     "trailing_take_profit",
