@@ -260,6 +260,9 @@ def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) ->
                 pos[field] = order_val
             elif cached_val is not None:
                 pos[field] = cached_val
+        from strategies.exit_ladder import reconcile_exit_ladder_step
+
+        reconcile_exit_ladder_step(pos)
         merged[key] = pos
 
     for key, cached in cache_positions.items():

@@ -177,10 +177,33 @@ def _build_positions_snapshot_from_orders(
             pos["last_action"] = "SELL"
             pos["last_trade_type"] = "SELL"
             pos["last_trade_at"] = trade_ts
+            signal = (order.get("signal") or "").upper()
+            if "PARTIAL" in signal or signal in ("SELL_30", "SELL_20", "SELL_10"):
+                pos["_partial_sell_count"] = int(pos.get("_partial_sell_count") or 0) + 1
             pnl = order.get("pnl")
             if pnl is not None:
                 pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + float(pnl)
+
+    _reconcile_ladder_steps_in_snapshot(snapshot)
     return snapshot
+
+
+def _is_partial_sell_signal(signal: str) -> bool:
+    sig = (signal or "").upper()
+    return "PARTIAL" in sig or sig in ("SELL_30", "SELL_20", "SELL_10")
+
+
+def _reconcile_ladder_steps_in_snapshot(snapshot: dict) -> None:
+    from strategies.exit_ladder import default_ladder_tiers, reconcile_exit_ladder_step
+
+    tiers = default_ladder_tiers()
+    for pos in snapshot.values():
+        partial_count = pos.pop("_partial_sell_count", None)
+        reconcile_exit_ladder_step(
+            pos,
+            tiers,
+            partial_sell_count=partial_count if partial_count else None,
+        )
 
 
 def count_open_positions_from_orders(

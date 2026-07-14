@@ -6,6 +6,7 @@ from strategies.exit_ladder import (
     advance_ladder_step,
     ladder_enabled,
     min_remainder_threshold,
+    reconcile_exit_ladder_step,
     resolve_sell_amount,
     resolve_sell_fraction,
 )
@@ -126,6 +127,24 @@ class TestExitLadder(unittest.TestCase):
         pos = {"exit_ladder_step": 2}
         advance_ladder_step(pos, "SELL_STOP_FULL", self.params, amount_sold=100, amount_before=100)
         self.assertEqual(pos["exit_ladder_step"], 4)
+
+    def test_reconcile_exit_ladder_step_from_sold_percent(self):
+        tiers = [0.35, 0.35, 0.3]
+        pos = {"sold_percent": 0.6, "exit_ladder_step": 0}
+        reconcile_exit_ladder_step(pos, tiers)
+        self.assertEqual(pos["exit_ladder_step"], 2)
+
+    def test_reconcile_never_decreases_step(self):
+        tiers = [0.35, 0.35, 0.3]
+        pos = {"sold_percent": 0.35, "exit_ladder_step": 2}
+        reconcile_exit_ladder_step(pos, tiers)
+        self.assertEqual(pos["exit_ladder_step"], 2)
+
+    def test_reconcile_partial_sell_count_floor(self):
+        tiers = [0.35, 0.35, 0.3]
+        pos = {"sold_percent": 0.1, "exit_ladder_step": 0}
+        reconcile_exit_ladder_step(pos, tiers, partial_sell_count=1)
+        self.assertEqual(pos["exit_ladder_step"], 1)
 
 
 if __name__ == "__main__":

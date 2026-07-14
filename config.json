@@ -331,7 +331,8 @@
       "tail_idle_hours": 24,
       "tail_exempt_sold_pct": 0.5,
       "tail_exempt_notional_usdt": 800,
-      "trail_exit_full_close": true
+      "trail_exit_full_close": true,
+      "profit_exit_full_close": true
     }
   },
   "update_interval": 120,
@@ -677,7 +678,7 @@
     "vol_buy_boost_enabled": false,
     "partial_stop_pct": 25,
     "exit_ladder": {
-      "enabled": true,
+      "enabled": false,
       "tiers": [
         0.35,
         0.35,
@@ -706,7 +707,7 @@
       "arm_gain_pct": 12,
       "min_gain_pct": 10,
       "min_gain_pct_floor": 8,
-      "max_steps": 3,
+      "max_steps": 1,
       "cooldown_hours": 6
     },
     "profit_max_lifetime": {
@@ -816,7 +817,7 @@
       150
     ],
     "exit_ladder": {
-      "enabled": true,
+      "enabled": false,
       "tiers": [
         0.3,
         0.3,
@@ -839,7 +840,7 @@
       "trail_pct": 6,
       "arm_gain_pct": 15,
       "min_gain_pct": 10,
-      "max_steps": 3,
+      "max_steps": 1,
       "cooldown_hours": 6
     },
     "profit_max_lifetime": {

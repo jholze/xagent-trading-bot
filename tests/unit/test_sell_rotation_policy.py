@@ -16,6 +16,7 @@ from strategies.sell_rotation_policy import (
     apply_rotation_sell_filters,
     can_rotation_evict,
     evaluate_ladder_terminal,
+    filter_profit_full_close,
     filter_trail_exclusive,
     is_tail_position,
 )
@@ -111,6 +112,22 @@ class TestSellRotationPolicy(unittest.TestCase):
         tail["sold_percent"] = 0.6
         tail["amount"] = Decimal("400")
         self.assertEqual(count_open_full_slots(self.raw), 1)
+
+    def test_profit_full_close_upgrades_partial_on_plus(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True}
+        market = self._market(1.0, 1.08)
+        pos = {}
+        cands = [(SELL_PARTIAL_30, 3, "technical")]
+        out = filter_profit_full_close(cands, market, pos, cfg)
+        self.assertEqual(out[0][0], SELL_FULL)
+
+    def test_profit_full_close_skips_losers(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True}
+        market = self._market(1.0, 0.92)
+        pos = {}
+        cands = [(SELL_PARTIAL_30, 3, "technical")]
+        out = filter_profit_full_close(cands, market, pos, cfg)
+        self.assertEqual(out[0][0], SELL_PARTIAL_30)
 
     def test_rotation_filter_blocks_loser_ladder_terminal(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)

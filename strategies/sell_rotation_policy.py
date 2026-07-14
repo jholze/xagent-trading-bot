@@ -5,7 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from core.actions import SELL_FULL, is_sell
+from core.actions import (
+    SELL_FULL,
+    SELL_PARTIAL_10,
+    SELL_PARTIAL_20,
+    SELL_PARTIAL_30,
+    is_sell,
+)
+
+PROFIT_PARTIAL_ACTIONS = frozenset({
+    SELL_PARTIAL_10,
+    SELL_PARTIAL_20,
+    SELL_PARTIAL_30,
+    "SELL_10",
+    "SELL_20",
+    "SELL_30",
+    "SELL_TP",
+})
 from core.models import MarketContext
 from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_enabled
 from strategies.positions import is_open_position, position_notional_usdt
@@ -31,6 +47,7 @@ POLICY_DEFAULTS = {
     "tail_exempt_sold_pct": 0.50,
     "tail_exempt_notional_usdt": 800.0,
     "trail_exit_full_close": True,
+    "profit_exit_full_close": False,
 }
 
 
@@ -266,6 +283,28 @@ def filter_trail_exclusive(
     return kept, blocked_labels
 
 
+def filter_profit_full_close(
+    candidates: list[tuple],
+    market: MarketContext,
+    position: dict,
+    cfg: dict,
+) -> list[tuple]:
+    """Staging/test mode: close entire position on profit partial signals (no ladder tails)."""
+    if not cfg.get("profit_exit_full_close"):
+        return candidates
+    if not can_rotation_evict(market, position, cfg):
+        return candidates
+
+    upgraded: list[tuple] = []
+    for action, priority, source in candidates:
+        src = (source or "").lower()
+        if "stop" in src or action not in PROFIT_PARTIAL_ACTIONS:
+            upgraded.append((action, priority, source))
+            continue
+        upgraded.append((SELL_FULL, max(priority, 5), source))
+    return upgraded
+
+
 def apply_rotation_sell_filters(
     candidates: list[tuple],
     market: MarketContext,
@@ -281,6 +320,7 @@ def apply_rotation_sell_filters(
         candidates, market, position, cfg, strategy_params=strategy_params,
     )
     audit.trail_exclusive_blocked = blocked
+    filtered = filter_profit_full_close(filtered, market, position, cfg)
 
     for extra in (
         evaluate_ladder_terminal(market, position, strategy_params, cfg),

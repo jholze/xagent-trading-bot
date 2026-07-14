@@ -47,6 +47,52 @@ def _infer_step_from_sold_percent(sold_pct: float, tiers: list[float]) -> int:
     return len(tiers)
 
 
+def default_ladder_tiers() -> list[float]:
+    """Volatile exit-ladder tiers from config (fallback for rebuild/repair)."""
+    try:
+        from core.config import get_bot_config
+
+        tiers = (
+            get_bot_config()
+            .volatile_altcoin_config.get("exit_ladder", {})
+            .get("tiers")
+        )
+        if tiers:
+            return [float(t) for t in tiers]
+    except Exception:
+        pass
+    return [0.35, 0.35, 0.3]
+
+
+def reconcile_exit_ladder_step(
+    position: dict,
+    tiers: list[float] | None = None,
+    *,
+    partial_sell_count: int | None = None,
+) -> int:
+    """Align exit_ladder_step with sold_percent / partial sell count (never decrease step)."""
+    tiers = [float(t) for t in (tiers or default_ladder_tiers())]
+    if not tiers:
+        return int(position.get("exit_ladder_step") or 0)
+
+    sold = float(position.get("sold_percent") or 0)
+    current = int(position.get("exit_ladder_step") or 0)
+    if sold <= 0 and not partial_sell_count:
+        return current
+
+    inferred = _infer_step_from_sold_percent(sold, tiers) if sold > 0 else 0
+    if partial_sell_count and partial_sell_count > 0:
+        inferred = max(inferred, min(int(partial_sell_count), len(tiers)))
+
+    if sold >= 0.999:
+        inferred = len(tiers)
+
+    new_step = max(current, inferred)
+    if new_step != current:
+        position["exit_ladder_step"] = new_step
+    return int(position.get("exit_ladder_step") or 0)
+
+
 def current_ladder_step(position: dict, tiers: list[float]) -> int:
     step = position.get("exit_ladder_step")
     if step is not None:

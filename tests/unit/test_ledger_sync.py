@@ -62,11 +62,13 @@ class TestLedgerSync(unittest.TestCase):
             "storage.ledger_router.resolve_store",
             side_effect=lambda scope, cfg=None: JsonLedgerStore(cfg),
         )
+        self.mt_patch = patch("core.tenant_context.multi_tenant_enabled", return_value=False)
         self.orders_patch.start()
         self.positions_patch.start()
         self.router_orders_patch.start()
         self.router_positions_patch.start()
         self.resolve_store_patch.start()
+        self.mt_patch.start()
         from storage import ledger_router
         from services import order_service
 
@@ -74,6 +76,7 @@ class TestLedgerSync(unittest.TestCase):
         order_service._ORDERS_READ_CACHE.clear()
 
     def tearDown(self):
+        self.mt_patch.stop()
         self.resolve_store_patch.stop()
         self.router_positions_patch.stop()
         self.router_orders_patch.stop()
@@ -185,6 +188,41 @@ class TestLedgerSync(unittest.TestCase):
         self.assertAlmostEqual(float(pos["amount"]), 70.0, places=2)
         self.assertAlmostEqual(float(pos["peak_amount"]), 100.0, places=2)
         self.assertAlmostEqual(pos["sold_percent"], 0.3, places=2)
+
+    def _filled_partial_sell(self, scope, symbol, price, amount, *, tag=""):
+        from core.models import TradeOrder
+
+        svc = OrderService(scope)
+        order = svc.create_from_request(
+            TradeOrder(
+                "SELL",
+                symbol,
+                price,
+                amount,
+                signal="SELL_PARTIAL_30",
+            ),
+            telegram_token=f"{scope}_partial_{symbol}_{amount}_{tag}",
+        )
+        svc.update_status(
+            order["id"],
+            "filled",
+            execution={"price": price, "amount": amount, "usdt": price * amount},
+            pnl=10.0,
+        )
+
+    def test_rebuild_infers_exit_ladder_step_after_partial_sells(self):
+        self._filled_buy("paper", "VELVET/USDT", 1.0, 1000.0)
+        self._filled_partial_sell("paper", "VELVET/USDT", 1.2, 350.0, tag="a")
+        self._filled_partial_sell("paper", "VELVET/USDT", 1.2, 350.0, tag="b")
+
+        snap = _build_positions_snapshot_from_orders("paper")
+        pos = snap["VELVET_USDT_4h"]
+        self.assertGreater(pos["exit_ladder_step"], 0)
+        self.assertAlmostEqual(pos["sold_percent"], 0.7, places=2)
+
+        rebuild_positions_from_orders("paper")
+        pos = get_position("VELVET/USDT", "4h")
+        self.assertGreater(int(pos["exit_ladder_step"]), 0)
 
     def test_rebuild_preserves_dca_rounds_from_orders(self):
         self._filled_buy("paper", "LAB/USDT", 12.0, 100.0)
