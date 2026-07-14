@@ -280,13 +280,28 @@ def _get_tenant_id_from_request() -> str:
     return tid or DEFAULT_TENANT
 
 
+def _message_text_from_update(update: dict | None) -> str:
+    if not update or "message" not in update:
+        return ""
+    return str(update["message"].get("text") or "")
+
+
 def _dispatch_telegram_webhook(explicit_tenant_id: str | None = None):
     """Route update to tenant by chat_id (shared bot) or explicit /webhook/<id>."""
     from core.tenant_routing import extract_chat_id_from_update, resolve_incoming_tenant
+    from notifications.telegram_commands.tenant_link_commands import try_link_tenant_from_start
     from telegram_notifier import _send_telegram_direct
 
     update = request.get_json(silent=True)
     chat_id = extract_chat_id_from_update(update)
+    text = _message_text_from_update(update)
+
+    if text.strip().lower().startswith("/start"):
+        handled, link_msg = try_link_tenant_from_start(text, chat_id)
+        if handled and link_msg:
+            _send_telegram_direct(link_msg, chat_id=chat_id, parse_mode="HTML")
+            return "OK", 200
+
     route = resolve_incoming_tenant(
         chat_id=chat_id,
         explicit_tenant_id=explicit_tenant_id or _get_tenant_id_from_request(),

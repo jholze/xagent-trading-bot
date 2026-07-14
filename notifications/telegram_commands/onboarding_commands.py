@@ -411,7 +411,7 @@ def _perform_onboard(
         gs = gs if _looks_like_credential(gs) else ""
         paper_only = True
 
-    owner = (owner_chat_id or "").strip() or str(current_chat_id())
+    owner = (owner_chat_id or "").strip()
     shared_bot = resolved_token == _shared_bot_token()
 
     try:
@@ -444,7 +444,8 @@ def _perform_onboard(
             f"Tenant: <code>{tid}</code>\n\n"
             f"<code>/help</code> · <code>/menu</code>"
         )
-        send_message_with_bot_token(resolved_token, owner, welcome)
+        if owner:
+            send_message_with_bot_token(resolved_token, owner, welcome)
 
         base = (os.getenv("WEBHOOK_BASE_URL") or "").rstrip("/")
         if shared_bot:
@@ -455,22 +456,24 @@ def _perform_onboard(
             webhook_url = f"{base}/webhook/{tid}" if base else "(WEBHOOK_BASE_URL nicht gesetzt)"
 
         gate_note = "nicht gesetzt (Paper)" if paper_only else "gespeichert"
-        owner_hint = ""
-        op_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
-        if op_chat and owner == op_chat and tid != "default":
-            owner_hint = (
-                "\n⚠️ Owner = deine Chat-ID. User soll <code>/myid</code> senden, "
-                f"dann <code>/onboard {tid} &lt;chat_id&gt;</code> erneut.\n"
-            )
+        from notifications.telegram_commands.tenant_link_commands import invite_message_for_operator
+
+        owner_line = (
+            f"• Owner chat: <code>{owner}</code>\n"
+            if owner
+            else "• Owner: <i>wartet auf Einladung</i>\n"
+        )
         msg = (
             f"✅ <b>Tenant <code>{tid}</code> onboarded</b> ({mode})\n\n"
             f"• Bot: {'gemeinsam' if shared_bot else 'eigener Token'}\n"
             f"• Gate: {gate_note}\n"
-            f"• Owner chat: <code>{owner}</code>\n"
+            f"{owner_line}"
             f"• Webhook: {webhook_note}\n"
-            f"• Watchlist: 4 Coins{owner_hint}\n\n"
+            f"• Watchlist: 4 Coins\n\n"
             f"<b>URL:</b> <code>{webhook_url}</code>"
         )
+        if not owner:
+            msg += "\n\n" + invite_message_for_operator(tid)
         send_telegram_message(msg)
 
         log(f"[ONBOARDING] Tenant {tid} erstellt mode={mode} shared_bot={shared_bot}", "INFO")

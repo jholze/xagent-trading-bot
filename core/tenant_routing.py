@@ -91,8 +91,9 @@ def resolve_incoming_tenant(
         owner_chat_id=cid,
         rejected=True,
         reject_message=(
-            "❌ Dieser Chat ist keinem Tenant zugeordnet.\n"
-            "Bitte den Operator kontaktieren (Onboarding mit deiner Chat-ID)."
+            "❌ Dieser Chat ist keinem Tenant zugeordnet.\n\n"
+            "Bitte den <b>Einladungs-Link</b> vom Operator öffnen "
+            "(z.B. <code>t.me/…?start=dein_name</code>)."
         ),
     )
 

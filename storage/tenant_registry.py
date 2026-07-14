@@ -153,6 +153,49 @@ def list_active_tenants(*, test: bool = False) -> list[dict]:
     return list(coll.find({"status": "active"}))
 
 
+def link_tenant_owner_chat(
+    tenant_id: str,
+    chat_id: str | int,
+    *,
+    test: bool = False,
+) -> tuple[bool, str]:
+    """Bind a Telegram chat to a tenant (invite /start flow). Returns (ok, message)."""
+    tid = (tenant_id or "").strip().lower()
+    cid = str(chat_id or "").strip()
+    if not tid or not cid:
+        return False, "tenant_id und chat_id erforderlich"
+
+    doc = get_tenant(tid, test=test)
+    if not doc:
+        return False, f"Tenant <code>{tid}</code> existiert nicht."
+
+    op_chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    current = str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
+    if current and current != cid and current != op_chat:
+        return False, "Dieser Tenant ist bereits mit einem anderen Chat verbunden."
+
+    try:
+        db = get_database(test=test)
+        coll = db[TENANTS_COLLECTION]
+        coll.update_one(
+            {"tenant_id": tid},
+            {
+                "$set": {
+                    "telegram.owner_chat_id": cid,
+                    "updated_at": _now_iso(),
+                }
+            },
+        )
+        log(f"[TENANT-LINK] {tid} → chat {cid}", "INFO")
+        return True, (
+            f"✅ Verbunden mit <code>{tid}</code> (Paper).\n\n"
+            f"<code>/menu</code> · <code>/help</code> · <code>/myid</code>"
+        )
+    except Exception as e:
+        log(f"tenant_registry: link_owner failed for {tid}: {e}", "WARNING")
+        return False, "Verknüpfung fehlgeschlagen."
+
+
 def find_tenant_by_owner_chat_id(chat_id: str | int, *, test: bool = False) -> dict | None:
     """Lookup active tenant by telegram.owner_chat_id (shared-bot routing)."""
     cid = str(chat_id or "").strip()

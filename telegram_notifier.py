@@ -6,8 +6,41 @@ from core.time_utils import format_display_hms
 from strategies.positions import get_position
 from logger import log
 
+_BOT_USERNAME_CACHE: str | None = None
+
+
 def _bot_token() -> str | None:
     return os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def get_bot_username() -> str:
+    """Cached @username from Telegram getMe (for invite deep links)."""
+    global _BOT_USERNAME_CACHE
+    if _BOT_USERNAME_CACHE:
+        return _BOT_USERNAME_CACHE
+    token = _bot_token()
+    if not token:
+        return ""
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            body = resp.json()
+            if body.get("ok"):
+                _BOT_USERNAME_CACHE = str((body.get("result") or {}).get("username") or "")
+    except Exception as e:
+        log(f"getMe failed: {e}", "WARNING")
+    return _BOT_USERNAME_CACHE or ""
+
+
+def build_tenant_invite_link(tenant_id: str) -> str:
+    uname = get_bot_username()
+    tid = (tenant_id or "").strip().lower()
+    if uname:
+        return f"https://t.me/{uname}?start={tid}"
+    return f"/start {tid}"
 
 
 def _env_chat_id() -> str | None:
