@@ -85,8 +85,14 @@ def tail_jsonl(path: str | os.PathLike, limit: int = 50, *, chunk_size: int = 26
                 if len(entries) >= limit:
                     break
 
+    if incomplete.strip() and len(entries) < limit:
+        try:
+            entries.append(json.loads(incomplete.strip()))
+        except json.JSONDecodeError:
+            pass
+
     entries.reverse()
-    return entries
+    return entries[-limit:]
 
 
 def persist_decision(record: dict) -> None:

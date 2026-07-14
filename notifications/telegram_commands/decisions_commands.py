@@ -14,19 +14,24 @@ def _load_decisions(limit: int = 200) -> list[dict]:
     return tail_jsonl(DECISIONS_LOG_FILE, limit)
 
 
-def _handle_why(symbol_filter: str) -> bool:
-    cfg = get_bot_config()
-    entries = _load_decisions(100)
-    sym = symbol_filter.upper()
+def _normalize_symbol(symbol_filter: str) -> str:
+    sym = (symbol_filter or "").upper().strip()
     if "/" not in sym:
         sym = f"{sym}/USDT"
+    return sym
 
-    match = None
+
+def _find_latest_decision(symbol: str, entries: list[dict]) -> dict | None:
+    target = _normalize_symbol(symbol)
     for entry in reversed(entries):
-        if (entry.get("symbol") or "").upper() == sym:
-            match = entry
-            break
+        if (entry.get("symbol") or "").upper() == target:
+            return entry
+    return None
 
+
+def _format_why_message(symbol_filter: str, entries: list[dict], cfg) -> str:
+    sym = _normalize_symbol(symbol_filter)
+    match = _find_latest_decision(sym, entries)
     coin_cfg = resolve_coin_config({"symbol": sym})
     sp = coin_cfg.get("strategy_params") or {}
 
@@ -55,7 +60,50 @@ def _handle_why(symbol_filter: str) -> bool:
         if sp.get("hermes_updated_at"):
             lines.append(f"Aktualisiert: {sp['hermes_updated_at']}")
 
-    send_telegram_message("\n".join(lines), chat_id=current_chat_id() or None)
+    return "\n".join(lines)
+
+
+def _build_why(
+    symbol_filter: str,
+    chat_id: str,
+    *,
+    tenant_id: str,
+    scope: str,
+    owner_chat_id: str,
+) -> None:
+    try:
+        with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
+            cfg = get_bot_config()
+            if not cfg.decisions_audit_enabled:
+                send_telegram_message(
+                    "Entscheidungs-Protokoll ist deaktiviert (observability.decisions_audit).",
+                    chat_id=chat_id or None,
+                )
+                return
+            message = _format_why_message(symbol_filter, _load_decisions(100), cfg)
+            send_telegram_message(message, chat_id=chat_id or None)
+    except Exception as e:
+        send_telegram_message(
+            f"❌ Warum-Antwort konnte nicht geladen werden: {e}",
+            chat_id=chat_id or None,
+        )
+
+
+def _dispatch_why_async(symbol_filter: str) -> bool:
+    chat_id = current_chat_id()
+    tenant_id, scope, owner_chat_id = tenant_snapshot()
+    send_telegram_message("⏳ <b>Warum</b> wird geladen…", chat_id=chat_id or None)
+    threading.Thread(
+        target=_build_why,
+        args=(symbol_filter, chat_id),
+        kwargs={
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "owner_chat_id": owner_chat_id,
+        },
+        daemon=True,
+        name="why-cmd",
+    ).start()
     return True
 
 
@@ -107,13 +155,13 @@ def handle(text: str) -> bool:
                 "<i>Nach <code>/why</code> reicht das Symbol allein.</i>"
             )
             return True
-        return _handle_why(parts[1])
+        return _dispatch_why_async(parts[1])
 
     if cmd not in ("/decisions", "/decision"):
         return False
 
     if len(parts) > 1 and parts[1].lower() not in ("help", "?"):
-        return _handle_why(parts[1])
+        return _dispatch_why_async(parts[1])
 
     chat_id = current_chat_id()
     tenant_id, scope, owner_chat_id = tenant_snapshot()

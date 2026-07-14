@@ -27,12 +27,15 @@ class AuditTrail:
         if not self.enabled or analysis is None:
             return
 
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
         from services.observability_store import persist_decision, runtime_context
         from services.position_metrics import position_metrics
         from strategies.positions import get_position
 
         entry = {
             "timestamp": datetime.now().isoformat(),
+            "tenant_id": resolve_tenant_id(),
+            "ledger_scope": resolve_tenant_scope(),
             **runtime_context(self.config.raw),
             "symbol": analysis.symbol,
             "timeframe": analysis.timeframe,

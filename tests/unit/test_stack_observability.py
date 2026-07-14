@@ -62,6 +62,14 @@ class TestStackObservability(unittest.TestCase):
             self.assertEqual(len(tail), 8)
             self.assertEqual([row["idx"] for row in tail], list(range(112, 120)))
 
+    def test_tail_jsonl_reads_single_line_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decisions.jsonl"
+            append_jsonl(str(path), {"symbol": "BTC/USDT", "action": "HOLD"})
+            tail = tail_jsonl(path, 5)
+            self.assertEqual(len(tail), 1)
+            self.assertEqual(tail[0]["symbol"], "BTC/USDT")
+
     def test_load_decisions_filters_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "decisions.jsonl"
