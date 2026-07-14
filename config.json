@@ -1031,7 +1031,7 @@
     "exchange_only": true
   },
   "regime_detector": {
-    "enabled": false,
+    "enabled": true,
     "tech_weight": 0.62,
     "sentiment_weight": 0.38,
     "cooldown_bars": 6,
@@ -1039,7 +1039,7 @@
     "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"]
   },
   "strategy_allocator": {
-    "enabled": false,
+    "enabled": true,
     "neutral_sentiment_threshold": 0.35,
     "confirm_sentiment_threshold": 0.45,
     "defensive_sentiment_threshold": -0.55,
@@ -1055,7 +1055,7 @@
     "use_limit_orders": true
   },
   "multi_tenant": {
-    "enabled": false,
+    "enabled": true,
     "default_tenant": "default",
     "onboarding_enabled": true,
     "require_webhook_secret": true
