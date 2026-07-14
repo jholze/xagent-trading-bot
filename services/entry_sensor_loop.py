@@ -162,7 +162,10 @@ def _poll_once(orchestrator) -> None:
 
     watched = _sort_watched_for_poll(watched)
     symbols = [w["symbol"] for w in watched]
-    gate_only = cfg.get("gate_only", True)
+    gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
+    ex = get_bot_config().exchange
+    # For now still use gate batch if gate_only (legacy), else general.
+    # TODO: make get_prices_batch(exchange=ex) when gate_only means exchange_only
     prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
     market_svc = orchestrator.market
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
@@ -187,7 +190,7 @@ def _poll_once(orchestrator) -> None:
         price = float(prices.get(symbol) or 0)
         if price <= 0:
             if gate_only:
-                log(f"15m sensor skip {symbol}: not on Gate.io", "INFO")
+                log(f"15m sensor skip {symbol}: not on {ex}", "INFO")
             continue
 
         df = market_svc.fetch_ohlcv(symbol, "15m", ohlcv_limit)

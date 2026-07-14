@@ -204,7 +204,7 @@ def seed_from_watchlist(cfg: dict) -> int:
 
     max_coins = int(cfg.get("max_watched_coins", 15))
     ttl_hours = float(cfg.get("watch_ttl_hours", 24))
-    gate_only = cfg.get("gate_only", True)
+    gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
     prune_ttl()
     held = {p["symbol"] for p in list_active_positions()}
     pending: list[dict] = []
@@ -227,7 +227,9 @@ def seed_from_watchlist(cfg: dict) -> int:
     gate_prices: dict[str, float] = {}
     if gate_only and pending:
         from price_fetcher import get_gate_prices_batch
+        from core.config import get_bot_config
 
+        # legacy gate batch for now; generalize later
         gate_prices = get_gate_prices_batch([c["symbol"] for c in pending])
 
     added = 0
@@ -236,9 +238,11 @@ def seed_from_watchlist(cfg: dict) -> int:
             break
         sym = coin["symbol"]
         if gate_only:
-            from price_fetcher import passes_gate_filter
+            from price_fetcher import passes_exchange_filter
+            from core.config import get_bot_config
 
-            gate_ok, _ = passes_gate_filter(sym, cfg, gate_price=gate_prices.get(sym, 0))
+            ex = get_bot_config().exchange
+            gate_ok, _ = passes_exchange_filter(sym, cfg, exchange=ex, price=gate_prices.get(sym, 0))
             if not gate_ok:
                 continue
         set_watch(

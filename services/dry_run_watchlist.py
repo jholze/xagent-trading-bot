@@ -83,9 +83,11 @@ class TrendingWatchlistSync:
                 continue
             candidates.append((f"{sym}/USDT", rank))
 
-        if tw_cfg.get("gate_only", True) and candidates:
+        if tw_cfg.get("gate_only", tw_cfg.get("exchange_only", True)) and candidates:
+            from core.config import get_bot_config
+            ex = get_bot_config().exchange
             syms = [sym for sym, _ in candidates]
-            prices = get_gate_prices_batch(syms)
+            prices = get_gate_prices_batch(syms)  # TODO: generalize to exchange
             candidates = [(sym, rank) for sym, rank in candidates if float(prices.get(sym, 0) or 0) > 0]
 
         volatile_tf = str(

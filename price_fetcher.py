@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from core.config import get_bot_config
+
 # In-memory price cache (TTL reduces API spam during Telegram commands)
 _price_cache = {}
 _last_good_cache = {}
@@ -339,17 +341,65 @@ def is_gate_tradeable(symbol: str, *, gate_price: float | None = None) -> bool:
     return float(get_gate_prices_batch([symbol]).get(symbol, 0) or 0) > 0
 
 
-def passes_gate_filter(
+def get_ticker_price(symbol: str, exchange: str | None = None) -> float:
+    """Fetch ticker price specifically for the given (or configured primary) exchange.
+
+    This is the source of truth for "is this coin listed and has price on our exchange?"
+    Falls back to general batch only if specific fetch fails.
+    """
+    from core.config import get_bot_config
+    ex = (exchange or get_bot_config().exchange or "gate").lower()
+
+    # Fast path for known exchanges with bulk support
+    if ex == "gate":
+        return float(get_gate_prices_batch([symbol]).get(symbol, 0) or 0)
+
+    # For other exchanges, try direct CCXT ticker on the specific exchange.
+    try:
+        from services.market_service import MarketService
+        ms = MarketService()
+        ex_obj = ms._get_spot_exchange(ex)
+        ticker = ex_obj.fetch_ticker(symbol)
+        last = ticker.get("last") or ticker.get("close") or 0
+        return float(last or 0)
+    except Exception:
+        # Last resort fallback
+        return float(get_prices_batch([symbol]).get(symbol, 0) or 0)
+
+
+def is_listed_on_exchange(symbol: str, exchange: str | None = None) -> bool:
+    """True if we can get a positive price from the configured (or given) exchange."""
+    return get_ticker_price(symbol, exchange) > 0
+
+
+def _exchange_label(exchange: str) -> str:
+    labels = {"gate": "Gate.io", "binance": "Binance"}
+    return labels.get((exchange or "").lower(), exchange or "exchange")
+
+
+def passes_exchange_filter(
     symbol: str,
     cfg: dict,
     *,
-    gate_price: float | None = None,
+    exchange: str | None = None,
+    price: float | None = None,
 ) -> tuple[bool, str]:
-    if not cfg.get("gate_only", True):
+    """Generic filter: only allow coins that are actually listed on our configured exchange."""
+    if not cfg.get("exchange_only", cfg.get("gate_only", True)):
         return True, ""
-    if is_gate_tradeable(symbol, gate_price=gate_price):
+    ex = exchange or get_bot_config().exchange
+    if price is not None:
+        listed = float(price or 0) > 0
+    else:
+        listed = is_listed_on_exchange(symbol, ex)
+    if listed:
         return True, ""
-    return False, "not listed on Gate.io"
+    return False, f"not listed on {_exchange_label(ex)}"
+
+
+# Legacy support
+def passes_gate_filter(symbol: str, cfg: dict, *, gate_price: float | None = None) -> tuple[bool, str]:
+    return passes_exchange_filter(symbol, cfg, exchange="gate", price=gate_price)
 
 
 def get_prices(symbol="ARIA/USDT"):
