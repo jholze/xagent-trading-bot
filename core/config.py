@@ -467,6 +467,16 @@ class BotConfig:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
 
     @property
+    def trading_profile(self) -> str | None:
+        raw = self._raw.get("trading_profile")
+        return str(raw).strip().lower() if raw else None
+
+    @property
+    def coin_filters_config(self) -> dict:
+        from core.trading_profiles import coin_filters_config
+        return coin_filters_config(self._raw)
+
+    @property
     def multi_tenant_config(self) -> dict:
         defaults = {
             "enabled": False,

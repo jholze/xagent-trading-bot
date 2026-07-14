@@ -1041,6 +1041,21 @@ class DecisionEngine:
             coin["symbol"], market, technical, normalized, position
         )
 
+        if not market.has_position and is_buy(normalized):
+            from core.coin_eligibility import passes_coin_filters
+
+            filter_ok, filter_reason = passes_coin_filters(
+                coin, market, self.config.raw, context="buy"
+            )
+            if not filter_ok:
+                log(
+                    f"[Filter] SKIP {coin['symbol']}: {filter_reason}",
+                    "INFO",
+                )
+                structure_rationales.append(f"[Filter] {filter_reason}")
+                normalized = HOLD
+                sources.append("coin_filter_blocked")
+
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
         normalized, execution_action, shadow_action = self._apply_shadow_mode(

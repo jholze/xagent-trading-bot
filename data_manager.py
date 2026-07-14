@@ -463,22 +463,29 @@ def prune_non_gate_watchlist_sources(config: dict = None) -> dict:
 
 def load_effective_watchlist(tenant_id: str | None = None):
     """Base watchlist + dry-run/demo expansion + optional CMC trending overlay. Supports tenant scoping."""
+    cfg = load_config(tenant_id=tenant_id)
     coins = list(load_watchlist(tenant_id=tenant_id))
-    if uses_watchlist_expansion():
+    if uses_watchlist_expansion(cfg):
         coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
-    if is_dry_run_enhanced():
+    if is_dry_run_enhanced(cfg):
         coins = _dedupe_watchlist_coins(coins + load_dry_run_overlay().get("coins", []))
-    if trending_watchlist_live_enabled():
-        coins = _dedupe_watchlist_coins(coins + load_cmc_trending_overlay().get("coins", []))
 
+    from core.coin_eligibility import filter_watchlist_coins, should_include_trending_overlay
     from core.config import get_bot_config
 
-    tw = get_bot_config().trending_watchlist_config
+    include_trending = (
+        trending_watchlist_live_enabled(cfg)
+        and should_include_trending_overlay(cfg)
+    )
+    if include_trending:
+        coins = _dedupe_watchlist_coins(coins + load_cmc_trending_overlay().get("coins", []))
+
+    tw = get_bot_config(tenant_id=tenant_id).trending_watchlist_config
     if tw.get("exchange_only", tw.get("gate_only", True)):
         kept, _ = prune_watchlist_coins_gate_only(coins)
         coins = kept
 
-    return coins
+    return filter_watchlist_coins(coins, cfg)
 
 
 def save_full_coin(coin_data):
@@ -519,6 +526,22 @@ def _load_default_config_from_disk():
         }
 
 
+def _apply_trading_profile_merge(default_cfg: dict, tenant_body: dict | None) -> dict:
+    from core.trading_profiles import apply_effective_config
+    return apply_effective_config(default_cfg, tenant_body)
+
+
+def _load_tenant_config_body(tid: str, default_cfg: dict) -> dict | None:
+    try:
+        from storage import tenant_meta_store as _tms
+        return _tms.load_tenant_config_body(
+            tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg)
+        )
+    except Exception as e:
+        log(f"Failed tenant_meta_store load_tenant_config_body for {tid}: {e}", "WARNING")
+        return None
+
+
 def load_config(tenant_id: str | None = None):
     """Thin dispatcher.
     - default path: use pure disk loader + cache
@@ -526,39 +549,21 @@ def load_config(tenant_id: str | None = None):
     Never calls get_config from inside tenant decision paths.
     """
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    default_cfg = _load_default_config_from_disk()
     tid = resolve_tenant_id(tenant_id)
     if tid != DEFAULT_TENANT:
-        default_cfg = _load_default_config_from_disk()
+        tenant_body = None
         try:
             use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
         except Exception:
             use_mongo = False
         if use_mongo:
-            try:
-                from storage import tenant_meta_store as _tms
-                return _tms.load_tenant_config(tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
-            except Exception as e:
-                log(f"Failed tenant_meta_store load_tenant_config for {tid}: {e}", "WARNING")
-        # fallback for tenant
-        return {
-            "virtual_trading": True,
-            "initial_capital_usdt": 5000,
-            "max_usdt_per_trade": 150,
-            "stop_loss_pct": 12.0,
-            "max_open_positions": 5,
-            "debug": False,
-            "x_accounts": [],
-            "min_x_confidence": 65,
-            "x_weight": 0.45,
-            "technical_weight": 0.35,
-            "onchain_weight": 0.2,
-            "max_daily_trades": 5,
-            "strategies": []
-        }
+            tenant_body = _load_tenant_config_body(tid, default_cfg)
+        return _apply_trading_profile_merge(default_cfg, tenant_body)
     # default
     global _config_cache
     if _config_cache is None:
-        _config_cache = _load_default_config_from_disk()
+        _config_cache = _apply_trading_profile_merge(default_cfg, None)
     return _config_cache
 
 
@@ -578,14 +583,14 @@ def get_config(tenant_id: str | None = None):
             return load_config(tenant_id=tenant_id)
         # explicit default
         if _config_cache is None:
-            _config_cache = _load_default_config_from_disk()
+            _config_cache = _apply_trading_profile_merge(_load_default_config_from_disk(), None)
         return _config_cache
     # no explicit arg: respect ctx via load_config (which will handle tenant or default)
     tid = resolve_tenant_id(None)
     if tid != DEFAULT_TENANT:
         return load_config(tenant_id=tid)
     if _config_cache is None:
-        _config_cache = _load_default_config_from_disk()
+        _config_cache = _apply_trading_profile_merge(_load_default_config_from_disk(), None)
     return _config_cache
 
 
@@ -597,7 +602,7 @@ def reload_config(tenant_id: str | None = None):
     if tid != DEFAULT_TENANT:
         return load_config(tenant_id=tid)
     _config_cache = None
-    return get_config()
+    return load_config()
 
 
 def save_config(config, tenant_id: str | None = None):
