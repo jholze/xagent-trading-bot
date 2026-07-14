@@ -16,7 +16,7 @@ from notifications.telegram_commands.menu_i18n import back_label, help_label, se
 class TestMenuCommands(unittest.TestCase):
     def test_all_commands_in_sections(self):
         keys = all_menu_command_keys()
-        self.assertEqual(len(keys), 42)
+        self.assertEqual(len(keys), 43)
         self.assertIn("stack", keys)
         self.assertIn("positions_full", keys)
         self.assertIn("lc", keys)

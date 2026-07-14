@@ -67,6 +67,7 @@
             "stack",
             "decisions",
             "why",
+            "grid",
             "ask",
             "hermes",
             "hermes_last",
@@ -219,6 +220,11 @@
       "why": {
         "description": "Warum? — Erklärung für einen Coin",
         "help_line": "<code>/why SYMBOL</code> — Letzte Entscheidung für einen Coin erklären"
+      },
+      "grid": {
+        "description": "Grid-Modus — welche Coins im Grid laufen",
+        "help_line": "<code>/grid</code> — Grid-Status aller aktiven Coins | <code>/grid BTC</code> — Detail",
+        "hint": "🔲 <b>/grid</b> — Grid-Strategie pro Coin\n\n<code>/grid</code> — Welche aktiven Coins GridStrategy / Tracking nutzen\n<code>/grid BTC</code> — Detail für einen Coin (Center, Levels, Regime)\n\nGrid aktiv bei RANGING + Allocator-Gewicht; aus bei STRONG_UPTREND."
       },
       "ask": {
         "description": "Frage an Cursor-Assistent",
@@ -390,6 +396,7 @@
             "stack",
             "decisions",
             "why",
+            "grid",
             "ask",
             "hermes",
             "hermes_last",
@@ -542,6 +549,11 @@
       "why": {
         "description": "Why? — explanation for a coin",
         "help_line": "<code>/why SYMBOL</code> — Explain last decision for a coin"
+      },
+      "grid": {
+        "description": "Grid mode — which coins use grid",
+        "help_line": "<code>/grid</code> — Grid status for active coins | <code>/grid BTC</code> — detail",
+        "hint": "🔲 <b>/grid</b> — Grid strategy per coin\n\n<code>/grid</code> — Which active coins use GridStrategy / tracking\n<code>/grid BTC</code> — Detail for one coin (center, levels, regime)\n\nGrid active in RANGING + allocator weight; off in STRONG_UPTREND."
       },
       "ask": {
         "description": "Question for Cursor assistant",

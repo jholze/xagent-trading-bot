@@ -100,6 +100,11 @@
             "example": "<code>/why NEAR</code>",
             "tips": "Zeigt TA vs. LC vs. CMC und ob Risk blockiert hat."
           },
+          "grid": {
+            "usage": "Welche aktiven Coins gerade GridStrategy nutzen (Allocator + grid_states).",
+            "example": "<code>/grid</code> oder <code>/grid BTC</code>",
+            "tips": "Aktiv bei RANGING; aus wenn Momentum dominiert (z. B. STRONG_UPTREND)."
+          },
           "ask": {
             "usage": "Frage an den Assistenten (Cursor, lokal). Danach nur die Frage als Text.",
             "example": "Warum wurde DOGE gekauft?",
@@ -288,6 +293,11 @@
           "why": {
             "usage": "Explain a coin. Then symbol only: <code>H</code>",
             "tips": "Shows TA vs LC vs CMC and risk blocks."
+          },
+          "grid": {
+            "usage": "Which active coins use GridStrategy (allocator + grid_states).",
+            "example": "<code>/grid</code> or <code>/grid BTC</code>",
+            "tips": "Active in RANGING; off when momentum dominates (e.g. STRONG_UPTREND)."
           },
           "ask": {
             "usage": "Question for assistant (Cursor, local). Then send question as plain text."
