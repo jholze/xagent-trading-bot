@@ -92,14 +92,17 @@ def _reset_position_cycle(pos: dict, *, amount: float, price: float, trade_ts: s
     pos["entry_at"] = None
 
 
-def _build_positions_snapshot_from_orders(scope: str) -> dict:
-    """Derive position state from filled orders for *scope*."""
+def _build_positions_snapshot_from_orders(
+    scope: str,
+    tenant_id: str | None = None,
+) -> dict:
+    """Derive position state from filled orders for *scope* (tenant-isolated)."""
     from data_manager import load_orders
     from strategies.positions import get_key
 
     orders = [
         o
-        for o in load_orders(scope).get("orders", [])
+        for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
         if o.get("status") == "filled"
     ]
     orders.sort(
@@ -180,14 +183,20 @@ def _build_positions_snapshot_from_orders(scope: str) -> dict:
     return snapshot
 
 
-def count_open_positions_from_orders(scope: str) -> int:
+def count_open_positions_from_orders(
+    scope: str,
+    tenant_id: str | None = None,
+) -> int:
     from strategies.positions import is_open_position
 
-    snapshot = _build_positions_snapshot_from_orders(scope)
+    snapshot = _build_positions_snapshot_from_orders(scope, tenant_id=tenant_id)
     return sum(1 for p in snapshot.values() if is_open_position(p))
 
 
-def rebuild_positions_from_orders(scope: str) -> int:
+def rebuild_positions_from_orders(
+    scope: str,
+    tenant_id: str | None = None,
+) -> int:
     """Rebuild in-memory positions for *scope* from orders + position cache merge."""
     from data_manager import load_orders, load_positions_document
     from strategies.positions import (
@@ -197,12 +206,16 @@ def rebuild_positions_from_orders(scope: str) -> int:
         is_open_position,
     )
 
-    order_snap = _build_positions_snapshot_from_orders(scope)
-    cache_doc = load_positions_document(scope)
+    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tenant_id)
+    cache_doc = load_positions_document(scope, tenant_id=tenant_id)
     snapshot = derive_positions_from_orders_and_cache(order_snap, cache_doc)
     from data_manager import load_orders
 
-    orders = [o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"]
+    orders = [
+        o
+        for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
+        if o.get("status") == "filled"
+    ]
 
     apply_positions_snapshot(snapshot, scope=scope)
     flush_positions(scope, force=True)
@@ -309,7 +322,10 @@ def reconcile_peak_amounts(scope: str) -> bool:
     """Backfill peak_amount and sold_percent from filled orders for open lots."""
     from strategies.positions import _positions_lock, flush_positions, has_position_amount, positions
 
-    order_snap = _build_positions_snapshot_from_orders(scope)
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id()
+    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
     changed = False
     with _positions_lock:
         for key, pos in positions.items():
@@ -419,8 +435,11 @@ def _preserve_legacy_cache_lots(scope: str) -> None:
         positions,
     )
 
-    cache_positions = load_positions_document(scope).get("positions", {}) or {}
-    order_snap = _build_positions_snapshot_from_orders(scope)
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id()
+    cache_positions = load_positions_document(scope, tenant_id=tid).get("positions", {}) or {}
+    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
     with _positions_lock:
         for key, cached in cache_positions.items():
             if key in order_snap or key in positions:

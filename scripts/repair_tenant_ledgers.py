@@ -34,6 +34,57 @@ def _entry_ids(doc: dict | None, payload_key: str) -> set[str]:
     return {str(x.get("id")) for x in (doc.get(payload_key) or []) if x.get("id")}
 
 
+def _payload_size(doc: dict | None, payload_key: str) -> int:
+    if not doc:
+        return 0
+    payload = doc.get(payload_key)
+    if payload_key == "positions":
+        return len(payload or {})
+    return len(payload or [])
+
+
+def migrate_operator_legacy_to_compound(
+    *,
+    scope: str = "paper",
+    dry_run: bool = True,
+    test: bool = False,
+) -> dict:
+    """Copy legacy scope docs into default:<scope> when compound is missing or thinner."""
+    store = MongoLedgerStore(test=test)
+    stats: dict = {"scope": scope, "dry_run": dry_run, "collections": {}}
+
+    for coll_name, payload_key in COLLECTIONS:
+        coll = store._collection(coll_name)
+        legacy = coll.find_one({"_id": scope})
+        if not legacy or not is_legacy_doc(legacy):
+            continue
+        compound_id = compound_ledger_id(DEFAULT_TENANT, scope)
+        compound = coll.find_one({"_id": compound_id}) or {}
+        legacy_n = _payload_size(legacy, payload_key)
+        compound_n = _payload_size(compound, payload_key)
+        if legacy_n <= compound_n:
+            stats["collections"][coll_name] = {
+                "skipped": True,
+                "legacy_entries": legacy_n,
+                "compound_entries": compound_n,
+            }
+            continue
+        stats["collections"][coll_name] = {
+            "legacy_entries": legacy_n,
+            "compound_entries_before": compound_n,
+            "compound_entries_after": legacy_n,
+        }
+        if dry_run:
+            continue
+        payload = copy.deepcopy(legacy)
+        payload["_id"] = compound_id
+        payload["tenant_id"] = DEFAULT_TENANT
+        payload["ledger_scope"] = scope
+        coll.replace_one({"_id": compound_id}, payload, upsert=True)
+
+    return stats
+
+
 def repair_tenant_ledgers(
     *,
     scope: str = "paper",
@@ -134,8 +185,6 @@ def repair_tenant_ledgers(
             restored["ledger_scope"] = scope
             restored["_id"] = compound_ledger_id(DEFAULT_TENANT, scope)
             coll.replace_one({"_id": restored["_id"]}, restored, upsert=True)
-            if legacy_ok:
-                coll.delete_one({"_id": scope})
 
         if moved or target_doc:
             target_out = copy.deepcopy(target_doc) if target_doc else {

@@ -60,13 +60,35 @@ class TestPortfolioTenantIsolation(unittest.TestCase):
         self.assertTrue(done.wait(timeout=3))
         self.assertEqual(seen, ["henry"])
 
+    @patch("strategies.positions.load_positions_document")
     @patch("services.ledger_sync._build_positions_snapshot_from_orders")
-    @patch("data_manager.load_positions_document")
+    def test_load_positions_falls_back_to_cache_when_orders_empty(self, mock_order_snap, mock_cache):
+        mock_order_snap.return_value = {}
+        mock_cache.return_value = {
+            "positions": {
+                "ETH_USDT_4h": {
+                    "amount": 2.0,
+                    "average_entry": 50.0,
+                    "peak_amount": 2.0,
+                    "sold_percent": 0.0,
+                }
+            }
+        }
+        with tenant_context(DEFAULT_TENANT, scope="paper"):
+            load_positions(scope="paper", tenant_id=DEFAULT_TENANT)
+            from strategies.positions import list_active_positions
+
+            active = list_active_positions()
+            self.assertEqual(len(active), 1)
+            self.assertEqual(active[0]["symbol"], "ETH/USDT")
+
+    @patch("services.ledger_sync._build_positions_snapshot_from_orders")
+    @patch("strategies.positions.load_positions_document")
     def test_load_positions_uses_tenant_orders(self, mock_cache, mock_order_snap):
         mock_cache.return_value = {"positions": {}}
 
-        def snap(scope):
-            if scope == "paper":
+        def snap(scope, tenant_id=None):
+            if scope == "paper" and tenant_id == "henry":
                 return {
                     "BTC_USDT_4h": {
                         "amount": 0.01,
@@ -91,7 +113,7 @@ class TestPortfolioTenantIsolation(unittest.TestCase):
                     self.assertEqual(active[0]["symbol"], "BTC/USDT")
 
                 with tenant_context(DEFAULT_TENANT, scope="paper"):
-                    mock_order_snap.side_effect = lambda scope: {}
+                    mock_order_snap.side_effect = lambda scope, tenant_id=None: {}
                     load_positions(scope="paper", tenant_id=DEFAULT_TENANT)
                     from strategies.positions import list_active_positions
 

@@ -26,16 +26,16 @@ class TestPositionsFastPath(unittest.TestCase):
         result = load_positions(scope="paper")
         self.assertIsInstance(result, dict)
 
-    def test_derive_positions_does_not_inject_orphan_lots(self):
+    def test_derive_positions_injects_material_cache_only_lots(self):
         order_snap = {"ARIA_USDT_4h": {"amount": 10.0, "peak_amount": 10.0}}
         cache_doc = {
             "positions": {
                 "ARIA_USDT_4h": {"recent_high": 1.5},
-                "X_USDT_4h": {"amount": 99.0, "peak_amount": 99.0},
+                "X_USDT_4h": {"amount": 99.0, "peak_amount": 99.0, "average_entry": 1.0},
             }
         }
         merged = derive_positions_from_orders_and_cache(order_snap, cache_doc)
-        self.assertEqual(set(merged.keys()), {"ARIA_USDT_4h"})
+        self.assertEqual(set(merged.keys()), {"ARIA_USDT_4h", "X_USDT_4h"})
         self.assertEqual(merged["ARIA_USDT_4h"]["recent_high"], 1.5)
 
     def test_update_market_snapshot_persists_new_peak(self):
