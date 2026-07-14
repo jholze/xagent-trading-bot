@@ -93,11 +93,15 @@ def evaluate_entry_sensor_15m(
             rationale=mcap_reason,
         )
 
-    if cfg.get("gate_only", True) and gate_tradeable is False:
+    gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
+    if gate_only and gate_tradeable is False:
+        from core.config import get_bot_config
+        from price_fetcher import _exchange_label
+        ex = get_bot_config().exchange
         return EntrySensor15mResult(
             triggered=False,
             shadow_only=shadow_only,
-            rationale="not listed on Gate.io",
+            rationale=f"not listed on {_exchange_label(ex)}",
         )
 
     cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))

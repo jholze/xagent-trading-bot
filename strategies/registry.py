@@ -1,4 +1,5 @@
 from core.config import get_bot_config
+from core.models import AllocationDecision, RegimeResult
 from data_manager import is_dry_run_enhanced
 from strategies.base import BaseStrategy
 
@@ -10,6 +11,11 @@ def _load_registry():
         return _STRATEGY_CLASSES
     from strategies.technical_rsi_bb import TechnicalRSIStrategy
     _STRATEGY_CLASSES["technical_rsi_bb"] = TechnicalRSIStrategy
+    try:
+        from strategies.grid import GridStrategy
+        _STRATEGY_CLASSES["grid"] = GridStrategy
+    except Exception:
+        pass
     return _STRATEGY_CLASSES
 
 
@@ -216,6 +222,8 @@ def resolve_strategy_params(
     frozen_tier: str | None = None,
     range_24h_pct: float | None = None,
     change_24h_pct: float | None = None,
+    regime_result: RegimeResult | None = None,
+    allocation: AllocationDecision | None = None,
 ) -> dict:
     """Pick strategy params: strategies[] > Hermes memory > volatile > altcoin_social > defaults."""
     cfg = get_bot_config()
@@ -228,6 +236,21 @@ def resolve_strategy_params(
         range_24h_pct=range_24h_pct, change_24h_pct=change_24h_pct,
     )
     stable_cfg = cfg.stable_altcoin_config
+
+    regime_profile = {}
+    if regime_result:
+        regime_profile["regime"] = regime_result.primary_regime
+        regime_profile["regime_confidence"] = regime_result.confidence
+        regime_profile["sentiment_score"] = regime_result.sentiment_score
+
+    if allocation:
+        regime_profile["allocation"] = {
+            "strategy_weights": getattr(allocation, "strategy_weights", {}),
+            "exposure_multiplier": getattr(allocation, "exposure_multiplier", 1.0),
+        }
+        regime_profile.update(getattr(allocation, "momentum_params_override", {}) or {})
+        if getattr(allocation, "grid_params", None):
+            regime_profile["grid"] = allocation.grid_params
 
     explicit = _explicit_strategy_entry(symbol, tf)
     if explicit:
@@ -245,6 +268,7 @@ def resolve_strategy_params(
             cfg=cfg,
         )
         result.update(preserved)
+        result.update(regime_profile)
         return result
 
     hermes_params = _hermes_memory_params(symbol, tf)
@@ -252,7 +276,7 @@ def resolve_strategy_params(
 
     if hermes_params:
         base = _buy_profile_overlay(hermes_params, coin, tier, cfg)
-        return apply_position_sell_overlay(
+        result = apply_position_sell_overlay(
             base,
             tier=tier,
             has_position=has_position,
@@ -262,12 +286,18 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
+        result.update(regime_profile)
+        return result
 
     if volatile_active:
-        return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
+        result = _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
+        result.update(regime_profile)
+        return result
 
     if coin.get("source") == "cmc_trending" and tier == "volatile":
-        return _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
+        result = _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
+        result.update(regime_profile)
+        return result
 
     if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
         profile = dict(cfg.altcoin_social_config)
@@ -275,7 +305,7 @@ def resolve_strategy_params(
             profile.update(cfg.dry_run_defaults)
         profile.update({"symbol": symbol, "timeframe": tf})
         profile = _buy_profile_overlay(profile, coin, tier, cfg)
-        return apply_position_sell_overlay(
+        result = apply_position_sell_overlay(
             profile,
             tier=tier,
             has_position=has_position,
@@ -285,11 +315,13 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
+        result.update(regime_profile)
+        return result
 
     params = cfg.strategy_params(symbol, tf)
     base = dict(params) if params else {}
     base = _buy_profile_overlay(base, coin, tier, cfg)
-    return apply_position_sell_overlay(
+    result = apply_position_sell_overlay(
         base,
         tier=tier,
         has_position=has_position,
@@ -299,6 +331,8 @@ def resolve_strategy_params(
         stable_cfg=stable_cfg,
         cfg=cfg,
     )
+    result.update(regime_profile)
+    return result
 
 def resolve_coin_config(coin: dict) -> dict:
     """Merge watchlist coin with matching config.strategies[] entry."""
@@ -327,16 +361,26 @@ def list_registered_strategies() -> list:
 
 
 def get_strategy(coin: dict) -> BaseStrategy:
-    preset_params = coin.get("strategy_params")
+    preset_params = coin.get("strategy_params") or {}
     coin = resolve_coin_config(coin)
-    if preset_params and preset_params.get("strategy_profile"):
+    if preset_params.get("strategy_profile"):
         coin["strategy_params"] = preset_params
     registry = _load_registry()
     strategy_class = coin.get("strategy_class", "technical_rsi_bb")
+
+    allocation = preset_params.get("allocation") or {}
+    weights = allocation.get("strategy_weights", {})
+    if weights.get("grid", 0) > weights.get("momentum", 0):
+        strategy_class = "grid"
+
     cls = registry.get(strategy_class)
     if cls is None:
-        from strategies.technical_rsi_bb import TechnicalRSIStrategy
-        cls = TechnicalRSIStrategy
+        if strategy_class == "grid":
+            from strategies.grid import GridStrategy
+            cls = GridStrategy
+        else:
+            from strategies.technical_rsi_bb import TechnicalRSIStrategy
+            cls = TechnicalRSIStrategy
     return cls()
 
 

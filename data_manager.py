@@ -295,20 +295,22 @@ def prune_watchlist_coins_gate_only(
     gate_prices: dict | None = None,
     gate_only: bool = True,
 ) -> tuple[list, list[str]]:
-    """Drop coins with no Gate.io USDT price. Returns (kept, removed_symbols)."""
+    """Drop coins not listed on the configured exchange (legacy name kept for compat)."""
     if not gate_only or not coins:
         return list(coins), []
-    from price_fetcher import get_gate_prices_batch, passes_gate_filter
+    from price_fetcher import get_gate_prices_batch, passes_exchange_filter
+    from core.config import get_bot_config
 
     symbols = [c.get("symbol") for c in coins if c.get("symbol")]
     prices = gate_prices if gate_prices is not None else get_gate_prices_batch(symbols)
-    cfg = {"gate_only": True}
+    ex = get_bot_config().exchange
+    cfg = {"gate_only": True, "exchange_only": True}
     kept, removed = [], []
     for coin in coins:
         sym = coin.get("symbol", "")
         if not sym:
             continue
-        ok, _ = passes_gate_filter(sym, cfg, gate_price=prices.get(sym, 0))
+        ok, _ = passes_exchange_filter(sym, cfg, exchange=ex, price=prices.get(sym, 0))
         if ok:
             kept.append(coin)
         else:
@@ -409,6 +411,14 @@ def load_effective_watchlist():
         coins = _dedupe_watchlist_coins(coins + load_dry_run_overlay().get("coins", []))
     if trending_watchlist_live_enabled():
         coins = _dedupe_watchlist_coins(coins + load_cmc_trending_overlay().get("coins", []))
+
+    from core.config import get_bot_config
+
+    tw = get_bot_config().trending_watchlist_config
+    if tw.get("exchange_only", tw.get("gate_only", True)):
+        kept, _ = prune_watchlist_coins_gate_only(coins)
+        coins = kept
+
     return coins
 
 

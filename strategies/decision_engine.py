@@ -17,6 +17,8 @@ from core.actions import (
 )
 import time
 
+import pandas as pd
+
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from data_manager import is_dry_run_enhanced, load_effective_watchlist
@@ -37,6 +39,8 @@ from strategies.trailing_stop import evaluate_trailing_stop
 from strategies.trailing_take_profit import evaluate_trailing_take_profit
 from strategies.time_profit_exit import evaluate_time_profit_exit
 from strategies.profit_max_lifetime import evaluate_profit_max_lifetime, sync_profit_armed_at
+from intelligence.regime_detector import RegimeDetector
+from intelligence.strategy_allocator import StrategyAllocator
 from intelligence.volatility_classifier import volatility_tier
 from strategies.positions import (
     count_open_positions,
@@ -156,14 +160,14 @@ class DecisionEngine:
         if watch_15m_state.max_watched_reached(int(cfg.get("max_watched_coins", 15))):
             return
         from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
-        from price_fetcher import passes_gate_filter
+        from price_fetcher import passes_exchange_filter
 
         mcap = resolve_market_cap_usd(symbol, market.strategy_params or {})
         mcap_ok, _ = passes_market_cap_filter(mcap, cfg)
         if not mcap_ok:
             return
-        gate_ok, _ = passes_gate_filter(symbol, cfg)
-        if not gate_ok:
+        ex_ok, _ = passes_exchange_filter(symbol, cfg)
+        if not ex_ok:
             return
         reason = (
             "buy_signal"
@@ -206,11 +210,16 @@ class DecisionEngine:
             metrics = self.market.fetch_15m_sensor_metrics(symbol, cfg)
         tech_norm = normalize(technical.action)
         from data.cmc_market_cap import resolve_market_cap_usd
-        from price_fetcher import is_gate_tradeable
+        from price_fetcher import is_gate_tradeable, is_listed_on_exchange
+        from core.config import get_bot_config
 
-        gate_tradeable = None
-        if cfg.get("gate_only", True):
-            gate_tradeable = is_gate_tradeable(symbol)
+        ex = get_bot_config().exchange
+        exchange_tradeable = None
+        if cfg.get("gate_only", cfg.get("exchange_only", True)):
+            if (ex or "gate").lower() == "gate":
+                exchange_tradeable = is_gate_tradeable(symbol)
+            else:
+                exchange_tradeable = is_listed_on_exchange(symbol, ex)
 
         sensor = evaluate_entry_sensor_15m(
             watched=True,
@@ -220,7 +229,7 @@ class DecisionEngine:
             hours_since_reject=watch_15m_state.hours_since_sensor_reject(symbol),
             tech_already_buy=is_buy(tech_norm),
             market_cap_usd=resolve_market_cap_usd(symbol, market.strategy_params or {}),
-            gate_tradeable=gate_tradeable,
+            gate_tradeable=exchange_tradeable,
         )
 
         if sensor is None or not sensor.triggered:
@@ -242,6 +251,18 @@ class DecisionEngine:
         if is_buy(normalized) and sensor.action == BUY_STRONG:
             return BUY_STRONG, out_sources, new_conf, rationale_extra, ""
         return normalized, out_sources, new_conf, rationale_extra, ""
+
+    def _build_social_context_for_regime(self, symbol: str, x_signals, cmc_signals, lc_signals) -> dict:
+        ctx = {}
+        for signals, key in [(x_signals, "x"), (cmc_signals, "cmc"), (lc_signals, "lc")]:
+            coin_signals = self._signals_for_coin(symbol, signals) if signals else []
+            if coin_signals:
+                s = coin_signals[0]
+                if hasattr(s, "sentiment"):
+                    ctx[f"{key}_sentiment"] = getattr(s, "sentiment", 50)
+                if hasattr(s, "confidence"):
+                    ctx[f"{key}_confidence"] = getattr(s, "confidence", 50)
+        return ctx
 
     def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
         symbol = coin.get("symbol", "")
@@ -478,6 +499,7 @@ class DecisionEngine:
         coin_signals: list,
         market: MarketContext,
         lc_signal=None,
+        coin: dict | None = None,
     ) -> tuple:
         sources = list(technical.sources)
         x_buy = False
@@ -528,6 +550,19 @@ class DecisionEngine:
             sources.append(boost.source)
 
         if not market.has_position and market.open_positions < self.config.max_open_positions:
+            coin_source = (coin or {}).get("source") or ""
+            if coin_source in ("cmc_trending", "dry_run_expansion"):
+                from price_fetcher import passes_exchange_filter
+                sensor_cfg = self._entry_sensor_cfg()
+                ex = get_bot_config().exchange
+                ex_ok, _ = passes_exchange_filter(
+                    (coin or {}).get("symbol", market.symbol),
+                    sensor_cfg,
+                    exchange=ex,
+                )
+                if not ex_ok:
+                    return HOLD, sources, technical.confidence
+
             if boost and (tech_buy or cmc_buy or lc_buy):
                 sources.append("multi_source")
                 return BUY_STRONG, sources, max(technical.confidence, blended)
@@ -543,6 +578,7 @@ class DecisionEngine:
                 return BUY, sources, technical.confidence
             if social_count >= 1:
                 return BUY, sources, blended
+
         return HOLD, sources, technical.confidence
 
     def _x_stop_loss_triggered(self, x_signal, current_price: float) -> bool:
@@ -847,8 +883,89 @@ class DecisionEngine:
                 atr_pct=market.atr_pct,
                 frozen_tier=get_position(coin["symbol"], market.timeframe).get("strategy_tier"),
             )
+
+        regime_result = None
+        allocation = None
+        try:
+            if (self.config.raw.get("regime_detector") or {}).get("enabled", False):
+                ohlcv_df = self.market.fetch_ohlcv(coin["symbol"], market.timeframe, limit=300)
+                if ohlcv_df is None:
+                    ohlcv_df = pd.DataFrame()
+                detector = RegimeDetector(self.config.regime_detector_config)
+                regime_result = detector.detect(
+                    coin=coin,
+                    ohlcv_df=ohlcv_df,
+                    current_price=market.current_price,
+                    atr_pct=market.atr_pct,
+                    social_context=self._build_social_context_for_regime(
+                        coin["symbol"], x_signals, cmc_signals, lc_signals
+                    ),
+                )
+                if (self.config.raw.get("strategy_allocator") or {}).get("enabled", False):
+                    allocator = StrategyAllocator()
+                    allocation = allocator.allocate(
+                        regime_result=regime_result,
+                        coin=coin,
+                        has_position=market.has_position,
+                    )
+        except Exception as e:
+            log(f"[Regime] Detector/Allocator failed for {coin.get('symbol')}: {e}", "WARNING")
+
+        if regime_result:
+            market.regime = regime_result
+        if allocation:
+            market.allocation = allocation
+
+        if regime_result:
+            log(
+                f"[Regime] {coin.get('symbol', '?')} regime={regime_result.primary_regime} "
+                f"conf={regime_result.confidence} sent={regime_result.sentiment_score:.2f} "
+                f"tier={regime_result.volatility_tier}",
+                "INFO",
+            )
+            if allocation:
+                log(
+                    f"[Regime] allocation weights={allocation.strategy_weights} "
+                    f"exposure_mult={allocation.exposure_multiplier} rationale={allocation.rationale}",
+                    "INFO",
+                )
+
+        if allocation:
+            market.strategy_params.setdefault("allocation", {
+                "strategy_weights": allocation.strategy_weights,
+                "exposure_multiplier": allocation.exposure_multiplier,
+            })
+            if allocation.defensive_mode:
+                market.strategy_params["regime_defensive"] = True
+                market.strategy_params["exposure_multiplier"] = allocation.exposure_multiplier
+
+        if regime_result or allocation:
+            market.strategy_params = resolve_strategy_params(
+                coin,
+                has_position=market.has_position,
+                atr_pct=market.atr_pct,
+                frozen_tier=get_position(coin["symbol"], market.timeframe).get("strategy_tier"),
+                regime_result=regime_result,
+                allocation=allocation,
+            ) or market.strategy_params
+
         strategy = get_strategy({**coin, "strategy_params": market.strategy_params})
         technical = strategy.analyze(coin, market, x_signals=None)
+
+        if regime_result:
+            technical.regime = regime_result.primary_regime
+            technical.regime_confidence = regime_result.confidence
+            technical.sentiment_score = regime_result.sentiment_score
+            if regime_result.primary_regime and not technical.rationale:
+                technical.rationale = f"regime={regime_result.primary_regime}"
+            elif regime_result.primary_regime:
+                technical.rationale = f"{technical.rationale} | regime={regime_result.primary_regime}"
+        if allocation:
+            technical.allocation = {
+                "strategy_weights": allocation.strategy_weights,
+                "exposure_multiplier": allocation.exposure_multiplier,
+                "defensive_mode": allocation.defensive_mode,
+            }
 
         coin_x = self._signals_for_coin(coin["symbol"], x_signals)
         coin_cmc = self._signals_for_coin(coin["symbol"], cmc_signals)
@@ -897,7 +1014,7 @@ class DecisionEngine:
                             sources.append(shadow_tag)
         else:
             normalized, sources, confidence = self._merge_buy(
-                technical, x_signal, cmc_signal, all_social, market, lc_signal
+                technical, x_signal, cmc_signal, all_social, market, lc_signal, coin=coin
             )
             if normalized == HOLD:
                 tech_norm = normalize(technical.action)
@@ -1029,6 +1146,14 @@ class DecisionEngine:
         )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt
+
+        if getattr(technical, "regime", None):
+            analysis.regime = technical.regime
+            analysis.regime_confidence = getattr(technical, "regime_confidence", 0.0)
+            analysis.sentiment_score = getattr(technical, "sentiment_score", 0.0)
+        if getattr(technical, "allocation", None):
+            analysis.allocation = technical.allocation
+
         return analysis
 
     def to_recommendation(self, x_signal, analysis: SignalAnalysis, account: str, tweet_text: str, price: float) -> dict:

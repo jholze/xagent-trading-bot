@@ -23,6 +23,7 @@
       "max_coins": 15,
       "refresh_hours": 1,
       "gate_only": true,
+      "exchange_only": true,
       "strategy_profile": "dry_run_meme",
       "exclude_symbols": [
         "USDT",
@@ -1026,6 +1027,30 @@
     "cooldown_after_reject_hours": 2,
     "max_watched_coins": 40,
     "min_poll_gap_sec_per_coin": 20,
-    "webhook_priority_poll": true
+    "webhook_priority_poll": true,
+    "exchange_only": true
+  },
+  "regime_detector": {
+    "enabled": true,
+    "tech_weight": 0.62,
+    "sentiment_weight": 0.38,
+    "cooldown_bars": 6,
+    "hysteresis": 0.15
+  },
+  "strategy_allocator": {
+    "enabled": true,
+    "neutral_sentiment_threshold": 0.35,
+    "confirm_sentiment_threshold": 0.45,
+    "defensive_sentiment_threshold": -0.55,
+    "default_grid_weight": 0.6,
+    "default_momentum_weight": 0.4
+  },
+  "grid": {
+    "enabled": true,
+    "default_spacing_atr_mult": 0.8,
+    "re_center_atr_mult": 2.5,
+    "fee_aware": true,
+    "max_levels": 12,
+    "use_limit_orders": true
   }
 }

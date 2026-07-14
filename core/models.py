@@ -21,6 +21,8 @@ class MarketContext:
     open_positions: int = 0
     strategy_params: dict = field(default_factory=dict)
     sim_state: dict | None = None  # isolated in-memory state for Hermes backtests
+    regime: Optional["RegimeResult"] = None
+    allocation: Optional["AllocationDecision"] = None
 
 
 @dataclass
@@ -49,6 +51,10 @@ class SignalAnalysis:
     shadow_action: str = ""
     dca_usdt: float = 0.0
     sell_policy_audit: dict = field(default_factory=dict)
+    regime: str = ""
+    regime_confidence: float = 0.0
+    sentiment_score: float = 0.0
+    allocation: Optional[dict] = None
 
 
 @dataclass
@@ -164,3 +170,26 @@ class SandboxMetrics:
     trade_quality: float = 0.0
     opportunity_score: float = 0.0
     buy_signals: int = 0
+
+
+@dataclass
+class RegimeResult:
+    """Result of the RegimeDetector (technical + sentiment fusion)."""
+    primary_regime: str
+    confidence: float
+    weighted_score: float
+    volatility_tier: str
+    sentiment_score: float
+    components: dict = field(default_factory=dict)
+    details: dict = field(default_factory=dict)
+
+
+@dataclass
+class AllocationDecision:
+    """StrategyAllocator output: weights, exposure, and parameter overrides."""
+    strategy_weights: dict = field(default_factory=dict)
+    exposure_multiplier: float = 1.0
+    grid_params: dict = field(default_factory=dict)
+    momentum_params_override: dict = field(default_factory=dict)
+    defensive_mode: bool = False
+    rationale: str = ""

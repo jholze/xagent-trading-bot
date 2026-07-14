@@ -42,6 +42,11 @@ class BotConfig:
         return self._raw.get("live", {})
 
     @property
+    def exchange(self) -> str:
+        """Primary exchange for live trading (e.g. 'gate', 'binance')."""
+        return self.live_config.get("exchange", "gate")
+
+    @property
     def dry_run_defaults(self) -> dict:
         return self._raw.get("dry_run_defaults", {})
 
@@ -60,7 +65,8 @@ class BotConfig:
             "live_enabled": True,
             "max_coins": 15,
             "refresh_hours": 1,
-            "gate_only": True,
+            "exchange_only": True,
+            "gate_only": True,  # legacy
             "prune_non_gate": True,
             "prune_base_watchlist": True,
             "max_open_from_trending": 8,
@@ -369,7 +375,8 @@ class BotConfig:
             "mode": "shadow",
             "timeframe": "15m",
             "poll_interval_sec": 20,
-            "gate_only": True,
+            "exchange_only": True,
+            "gate_only": True,  # legacy
             "market_cap_min_usd": 5_000_000,
             "watch_ttl_hours": 24,
             "setup_modes": ["buy_signal", "setup_zone", "trending", "watchlist"],
@@ -384,7 +391,10 @@ class BotConfig:
             "min_poll_gap_sec_per_coin": 20,
         }
         raw = self._raw.get("entry_sensor_15m", {})
-        return {**defaults, **raw}
+        merged = {**defaults, **raw}
+        if "exchange_only" not in raw and "gate_only" in raw:
+            merged["exchange_only"] = raw["gate_only"]
+        return merged
 
     @property
     def entry_sensor_15m_enabled(self) -> bool:
@@ -393,6 +403,45 @@ class BotConfig:
     @property
     def entry_sensor_15m_mode(self) -> str:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
+
+    @property
+    def regime_detector_config(self) -> dict:
+        defaults = {
+            "enabled": False,
+            "tech_weight": 0.62,
+            "sentiment_weight": 0.38,
+            "cooldown_bars": 6,
+            "hysteresis": 0.15,
+            "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"],
+        }
+        raw = self._raw.get("regime_detector", {})
+        return {**defaults, **raw}
+
+    @property
+    def strategy_allocator_config(self) -> dict:
+        defaults = {
+            "enabled": False,
+            "neutral_sentiment_threshold": 0.35,
+            "confirm_sentiment_threshold": 0.45,
+            "defensive_sentiment_threshold": -0.55,
+            "default_grid_weight": 0.6,
+            "default_momentum_weight": 0.4,
+        }
+        raw = self._raw.get("strategy_allocator", {})
+        return {**defaults, **raw}
+
+    @property
+    def grid_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "default_spacing_atr_mult": 0.8,
+            "re_center_atr_mult": 2.5,
+            "fee_aware": True,
+            "max_levels": 12,
+            "use_limit_orders": True,
+        }
+        raw = self._raw.get("grid", {})
+        return {**defaults, **raw}
 
     @property
     def entry_guard_config(self) -> dict:
