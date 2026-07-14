@@ -1,5 +1,7 @@
 import unittest
 
+from unittest.mock import patch
+
 from notifications.telegram_commands.menu_i18n import (
     back_label,
     build_help_message,
@@ -12,6 +14,7 @@ from notifications.telegram_commands.menu_i18n import (
     menu_button_label,
     prefixed_command_description,
     resolve_language,
+    resolve_ui_language,
     section_title,
     set_user_language,
     title_to_section_id,
@@ -68,6 +71,15 @@ class TestMenuI18n(unittest.TestCase):
     def test_menu_button_label(self):
         self.assertEqual(menu_button_label("de"), "Menü")
         self.assertEqual(menu_button_label("en"), "Menu")
+
+    @patch("storage.tenant_registry.get_tenant", return_value={"defaults": {"ui_language": "de"}})
+    def test_resolve_ui_language_prefers_tenant_default(self, _tenant):
+        upd = {"message": {"from": {"language_code": "en-US"}}}
+        self.assertEqual(resolve_ui_language(upd, "henry"), "de")
+
+    def test_resolve_ui_language_operator_follows_telegram(self):
+        upd = {"message": {"from": {"language_code": "en-US"}}}
+        self.assertEqual(resolve_ui_language(upd, "default"), "en")
 
     def test_section_help_message(self):
         de = build_section_help_message("transparenz", "de")

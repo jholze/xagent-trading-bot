@@ -566,15 +566,22 @@ def send_telegram_message(
     )
 
 
-def send_telegram_buttons(text, buttons):
+def send_telegram_buttons(text, buttons, *, chat_id: str | int | None = None):
     """buttons: list of rows, each row is list of {text, callback_data} dicts."""
     reply_markup = {"inline_keyboard": buttons}
-    return send_telegram_message(text, reply_markup=reply_markup)
+    return send_telegram_message(text, reply_markup=reply_markup, chat_id=chat_id)
 
 
-def send_reply_keyboard(text, rows: list[list[str]], *, one_time: bool = False) -> bool:
+def send_reply_keyboard(
+    text,
+    rows: list[list[str]],
+    *,
+    one_time: bool = False,
+    chat_id: str | int | None = None,
+) -> bool:
     """Persistent section keyboard below the input field (rows of button labels)."""
-    if not _bot_token() or not _chat_id():
+    target = resolve_notification_chat_id(chat_id)
+    if not _bot_token() or not target:
         print("⚠️ Telegram not configured")
         return False
 
@@ -585,7 +592,7 @@ def send_reply_keyboard(text, rows: list[list[str]], *, one_time: bool = False) 
         "is_persistent": True,
         "one_time_keyboard": one_time,
     }
-    return send_telegram_message(text, reply_markup=reply_markup)
+    return send_telegram_message(text, reply_markup=reply_markup, chat_id=target)
 
 
 def edit_telegram_message(text, chat_id, message_id, reply_markup=None):

@@ -355,8 +355,10 @@ def _process_telegram_update(update=None):
     if update is None:
         update = request.get_json(silent=True)
     if update:
-        from notifications.telegram_commands.menu_i18n import set_user_language_from_update
-        set_user_language_from_update(update)
+        from notifications.telegram_commands.menu_i18n import resolve_ui_language
+        from core.tenant_context import resolve_tenant_id
+
+        resolve_ui_language(update, resolve_tenant_id())
     if update and "callback_query" in update:
         log(f"[{tid}] Telegram callback", "DEBUG")
         handle_telegram_callback(update["callback_query"])

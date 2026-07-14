@@ -20,6 +20,7 @@ from notifications.telegram_commands.menu_i18n import (
 from notifications.telegram_commands.command_context import (
     clear_active_section,
     clear_context,
+    current_chat_id,
     set_active_section,
 )
 from telegram_notifier import send_telegram_message
@@ -100,23 +101,46 @@ def send_section_help(section_id: str, lang: str | None = None) -> bool:
     return send_telegram_message(build_section_help_message(section_id, lang))
 
 
-def send_main_section_keyboard(text: str | None = None, lang: str | None = None) -> bool:
+def _target_chat_id(chat_id: str | int | None = None) -> str | int | None:
+    if chat_id is not None:
+        return chat_id
+    cid = current_chat_id()
+    return cid or None
+
+
+def send_main_section_keyboard(
+    text: str | None = None,
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> bool:
     if not _reply_keyboard_enabled():
         return False
     lang = lang or current_language()
-    return send_reply_keyboard(text or home_intro(lang), _main_reply_rows(lang))
+    return send_reply_keyboard(
+        text or home_intro(lang),
+        _main_reply_rows(lang),
+        chat_id=_target_chat_id(chat_id),
+    )
 
 
 def send_section_keyboard(section_id: str, lang: str | None = None, chat_id=None) -> bool:
     if section_id not in _SECTION_KEYS:
         return False
     lang = lang or current_language()
-    if chat_id is not None:
-        set_active_section(chat_id, section_id)
+    target = _target_chat_id(chat_id)
+    if target is not None:
+        set_active_section(target, section_id)
     return send_reply_keyboard(
         f"<b>{section_title(section_id, lang)}</b>\n\n{section_pick(lang)}",
         _section_reply_rows(section_id, lang),
+        chat_id=target,
     )
+
+
+def open_menu_for_chat(chat_id: str | int, lang: str | None = None) -> bool:
+    """Push section reply keyboard + inline overview to a specific chat."""
+    return show_home(chat_id=int(chat_id), lang=lang)
 
 
 def _command_label(key: str, lang: str | None = None) -> str:
@@ -168,10 +192,11 @@ def _section_keyboard(section_id: str, lang: str | None = None) -> list[list[dic
 def show_home(*, chat_id: int | None = None, message_id: int | None = None, lang: str | None = None) -> bool:
     lang = lang or current_language()
     markup = _home_keyboard(lang)
+    target = _target_chat_id(chat_id)
     if chat_id is not None and message_id is not None:
         return edit_telegram_message(_home_text(lang), chat_id, message_id, reply_markup=markup)
-    send_main_section_keyboard(lang=lang)
-    return send_telegram_buttons(_home_text(lang), markup)
+    send_main_section_keyboard(lang=lang, chat_id=target)
+    return send_telegram_buttons(_home_text(lang), markup, chat_id=target)
 
 
 def show_section(section_id: str, chat_id: int, message_id: int, lang: str | None = None) -> bool:
@@ -194,7 +219,7 @@ def handle_text(text: str, chat_id=None) -> bool:
         if chat_id is not None:
             clear_context(chat_id)
             clear_active_section(chat_id)
-        send_main_section_keyboard()
+        send_main_section_keyboard(chat_id=_target_chat_id(chat_id))
         return True
     if is_help_label(stripped):
         section_id = None
@@ -221,7 +246,7 @@ def handle_text(text: str, chat_id=None) -> bool:
 def handle(text: str) -> bool:
     if text not in ("/menu", "/menü"):
         return False
-    show_home()
+    show_home(chat_id=int(current_chat_id()) if current_chat_id() else None)
     return True
 
 
@@ -241,7 +266,7 @@ def handle_callback(callback_query: dict) -> bool:
         if chat_id and message_id:
             show_home(chat_id=chat_id, message_id=message_id)
         else:
-            send_main_section_keyboard()
+            send_main_section_keyboard(chat_id=chat_id)
         return True
 
     if data.startswith("menu:sec:"):

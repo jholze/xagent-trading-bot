@@ -67,6 +67,37 @@ def set_user_language_from_update(update: dict | None) -> str:
     return lang
 
 
+def resolve_ui_language(update: dict | None, tenant_id: str | None = None) -> str:
+    """UI language for menus/keyboards.
+
+    Non-default tenants use tenant.defaults.ui_language or bot default_language
+    (staging DE) so onboarded users see German section buttons even when
+    Telegram app language is English. Native ☰ slash list still follows the
+    user's Telegram language_code.
+    """
+    from core.tenant_context import DEFAULT_TENANT
+
+    tid = (tenant_id or DEFAULT_TENANT).strip() or DEFAULT_TENANT
+    if tid != DEFAULT_TENANT:
+        try:
+            from storage.tenant_registry import get_tenant
+
+            doc = get_tenant(tid) or {}
+            pref = str((doc.get("defaults") or {}).get("ui_language") or "").strip().lower()
+            if pref in SUPPORTED_LANGS:
+                set_user_language(pref)
+                return pref
+            from core.config import get_bot_config
+
+            cfg_lang = get_bot_config().telegram_command_menu_config.get("default_language")
+            if cfg_lang in SUPPORTED_LANGS:
+                set_user_language(cfg_lang)
+                return cfg_lang
+        except Exception:
+            pass
+    return set_user_language_from_update(update)
+
+
 def _pack(lang: str) -> dict:
     data = _load_menu_data()
     return data.get(lang) or data["de"]

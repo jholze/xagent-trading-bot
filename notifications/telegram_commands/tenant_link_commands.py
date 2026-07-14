@@ -33,6 +33,17 @@ def try_link_tenant_from_start(text: str, chat_id: str | int) -> tuple[bool, str
     ok, msg = link_tenant_owner_chat(tid, chat_id)
     if ok:
         notify_tenant_linked(tid, chat_id)
+        try:
+            from core.config import get_bot_config
+            from notifications.telegram_commands.menu_commands import open_menu_for_chat
+            from notifications.telegram_commands.menu_i18n import resolve_language
+
+            lang = resolve_language(
+                get_bot_config().telegram_command_menu_config.get("default_language")
+            )
+            open_menu_for_chat(chat_id, lang=lang)
+        except Exception:
+            pass
     return True, msg
 
 

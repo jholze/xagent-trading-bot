@@ -446,6 +446,17 @@ def _perform_onboard(
         )
         if owner:
             send_message_with_bot_token(resolved_token, owner, welcome)
+            try:
+                from core.config import get_bot_config
+                from notifications.telegram_commands.menu_commands import open_menu_for_chat
+                from notifications.telegram_commands.menu_i18n import resolve_language
+
+                lang = resolve_language(
+                    get_bot_config().telegram_command_menu_config.get("default_language")
+                )
+                open_menu_for_chat(owner, lang=lang)
+            except Exception:
+                pass
 
         base = (os.getenv("WEBHOOK_BASE_URL") or "").rstrip("/")
         if shared_bot:

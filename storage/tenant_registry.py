@@ -68,7 +68,7 @@ def ensure_default_tenant(
             "owner_chat_id": owner_chat_id or os.environ.get("TELEGRAM_CHAT_ID", ""),
             "bot_token_ref": "env:TELEGRAM_BOT_TOKEN" if bot_token else "",
         },
-        "defaults": {"trading_mode": "paper", "ledger_scope": "paper"},
+        "defaults": {"trading_mode": "paper", "ledger_scope": "paper", "ui_language": "de"},
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -116,7 +116,7 @@ def create_tenant(
                 "testnet": False,
             }
         },
-        "defaults": {"trading_mode": "paper", "ledger_scope": "paper"},
+        "defaults": {"trading_mode": "paper", "ledger_scope": "paper", "ui_language": "de"},
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
