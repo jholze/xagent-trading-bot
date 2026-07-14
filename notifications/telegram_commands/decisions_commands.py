@@ -1,30 +1,17 @@
-import json
-import os
+import threading
 
 from core.config import get_bot_config
+from core.tenant_context import tenant_context, tenant_snapshot
 from logger import DECISIONS_LOG_FILE
-from notifications.telegram_commands.usage_hints import hint
+from notifications.telegram_commands.command_context import activate_command, current_chat_id
 from notifications.user_explain import explain_rationale, explanations_config, format_decision_entry
+from services.observability_store import tail_jsonl
 from strategies.registry import resolve_coin_config
-from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
 
 def _load_decisions(limit: int = 200) -> list[dict]:
-    path = DECISIONS_LOG_FILE
-    if not os.path.isfile(path):
-        return []
-    entries = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return entries[-limit:]
+    return tail_jsonl(DECISIONS_LOG_FILE, limit)
 
 
 def _handle_why(symbol_filter: str) -> bool:
@@ -68,8 +55,43 @@ def _handle_why(symbol_filter: str) -> bool:
         if sp.get("hermes_updated_at"):
             lines.append(f"Aktualisiert: {sp['hermes_updated_at']}")
 
-    send_telegram_message("\n".join(lines))
+    send_telegram_message("\n".join(lines), chat_id=current_chat_id() or None)
     return True
+
+
+def _build_decisions_list(chat_id: str, *, tenant_id: str, scope: str, owner_chat_id: str) -> None:
+    try:
+        with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
+            cfg = get_bot_config()
+            if not cfg.decisions_audit_enabled:
+                send_telegram_message(
+                    "Entscheidungs-Protokoll ist deaktiviert (observability.decisions_audit).",
+                    chat_id=chat_id or None,
+                )
+                return
+
+            entries = _load_decisions(50)
+            if not entries:
+                send_telegram_message(
+                    "Noch keine Entscheidungen protokolliert.\n"
+                    "<i>Der Bot schreibt ab jetzt nach <code>logs/decisions.jsonl</code>.</i>",
+                    chat_id=chat_id or None,
+                )
+                return
+
+            show_tech = explanations_config(cfg).get("show_technical_codes", True)
+            lines = ["<b>📜 Letzte Bot-Entscheidungen</b>", ""]
+            for entry in reversed(entries[-8:]):
+                lines.append(format_decision_entry(entry, show_technical=show_tech))
+                lines.append("")
+
+            lines.append("<i>Filter: <code>/why SYMBOL</code> · <code>/decisions SYMBOL</code></i>")
+            send_telegram_message("\n".join(lines).strip(), chat_id=chat_id or None)
+    except Exception as e:
+        send_telegram_message(
+            f"❌ Entscheidungen konnten nicht geladen werden: {e}",
+            chat_id=chat_id or None,
+        )
 
 
 def handle(text: str) -> bool:
@@ -93,25 +115,18 @@ def handle(text: str) -> bool:
     if len(parts) > 1 and parts[1].lower() not in ("help", "?"):
         return _handle_why(parts[1])
 
-    cfg = get_bot_config()
-    if not cfg.decisions_audit_enabled:
-        send_telegram_message("Entscheidungs-Protokoll ist deaktiviert (observability.decisions_audit).")
-        return True
-
-    entries = _load_decisions(50)
-    if not entries:
-        send_telegram_message(
-            "Noch keine Entscheidungen protokolliert.\n"
-            "<i>Der Bot schreibt ab jetzt nach <code>logs/decisions.jsonl</code>.</i>"
-        )
-        return True
-
-    show_tech = explanations_config(cfg).get("show_technical_codes", True)
-    lines = ["<b>📜 Letzte Bot-Entscheidungen</b>", ""]
-    for entry in reversed(entries[-8:]):
-        lines.append(format_decision_entry(entry, show_technical=show_tech))
-        lines.append("")
-
-    lines.append("<i>Filter: <code>/why SYMBOL</code> · <code>/decisions SYMBOL</code></i>")
-    send_telegram_message("\n".join(lines).strip())
+    chat_id = current_chat_id()
+    tenant_id, scope, owner_chat_id = tenant_snapshot()
+    send_telegram_message("⏳ <b>Entscheidungen</b> werden geladen…", chat_id=chat_id or None)
+    threading.Thread(
+        target=_build_decisions_list,
+        args=(chat_id,),
+        kwargs={
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "owner_chat_id": owner_chat_id,
+        },
+        daemon=True,
+        name="decisions-cmd",
+    ).start()
     return True

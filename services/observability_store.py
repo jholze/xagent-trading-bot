@@ -55,6 +55,40 @@ def append_jsonl(path: str, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def tail_jsonl(path: str | os.PathLike, limit: int = 50, *, chunk_size: int = 262_144) -> list[dict]:
+    """Read the last *limit* JSONL records without scanning the whole file."""
+    if limit <= 0:
+        return []
+    path = os.fspath(path)
+    if not os.path.isfile(path):
+        return []
+
+    entries: list[dict] = []
+    incomplete = b""
+    with open(path, "rb") as f:
+        pos = f.seek(0, os.SEEK_END)
+        while pos > 0 and len(entries) < limit:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size) + incomplete
+            lines = chunk.split(b"\n")
+            incomplete = lines[0]
+            for raw in reversed(lines[1:]):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entries.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    continue
+                if len(entries) >= limit:
+                    break
+
+    entries.reverse()
+    return entries
+
+
 def persist_decision(record: dict) -> None:
     """Mirror decision to Mongo when enabled (file write is via log_decision)."""
     if not mongo_sync_enabled():

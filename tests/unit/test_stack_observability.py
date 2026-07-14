@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from core.models import MarketContext
 from services.config_fingerprint import config_fingerprint, extract_rule_snapshot
-from services.observability_store import append_jsonl, load_decisions, load_snapshots
+from services.observability_store import append_jsonl, load_decisions, load_snapshots, tail_jsonl
 from services.position_metrics import position_metrics
 from services.stack_compare import (
     build_stack_compare_report,
@@ -52,6 +52,15 @@ class TestStackObservability(unittest.TestCase):
         self.assertGreater(m["peak_gain_pct"], 15)
         self.assertTrue(m["trail_armed"])
         self.assertIsNotNone(m["trail_pct_resolved"])
+
+    def test_tail_jsonl_reads_last_records_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decisions.jsonl"
+            for i in range(120):
+                append_jsonl(str(path), {"idx": i, "symbol": f"COIN{i}/USDT"})
+            tail = tail_jsonl(path, 8)
+            self.assertEqual(len(tail), 8)
+            self.assertEqual([row["idx"] for row in tail], list(range(112, 120)))
 
     def test_load_decisions_filters_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
