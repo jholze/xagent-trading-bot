@@ -80,8 +80,16 @@ class TestTenantIsolationMongo(unittest.TestCase):
             },
             upsert=True,
         )
-        loaded = self.store.load_orders("paper", tenant_id=DEFAULT_TENANT)
-        self.assertEqual(loaded["orders"][0]["symbol"], "LEGACY/USDT")
+        prev = os.environ.get("MULTI_TENANT_ENABLED")
+        os.environ["MULTI_TENANT_ENABLED"] = "0"
+        try:
+            loaded = self.store.load_orders("paper", tenant_id=DEFAULT_TENANT)
+            self.assertEqual(loaded["orders"][0]["symbol"], "LEGACY/USDT")
+        finally:
+            if prev is None:
+                os.environ.pop("MULTI_TENANT_ENABLED", None)
+            else:
+                os.environ["MULTI_TENANT_ENABLED"] = prev
 
     def test_save_writes_compound_id(self):
         self.store.save_orders(
