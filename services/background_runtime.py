@@ -136,7 +136,14 @@ def _loop():
                 or cfg.raw.get("update_interval", 240)
             )
             _ensure_trending_watchlist()
-            wl = load_effective_watchlist()
+            from core.tenant_context import multi_tenant_enabled
+
+            if multi_tenant_enabled():
+                from services.cycle_shared import union_tenant_watchlists
+
+                wl = union_tenant_watchlists()
+            else:
+                wl = load_effective_watchlist()
             if not _fetch_in_progress:
                 try:
                     from bus.heartbeats import heartbeat_registry

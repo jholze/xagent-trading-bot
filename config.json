@@ -87,7 +87,8 @@
     "x_search_cache_ttl_sec": 900,
     "parse_batch_size": 10,
     "strategy_discovery_async": true,
-    "parallel_account_fetch": 3
+    "parallel_account_fetch": 3,
+    "defer_ingest_eval": true
   },
   "x_weight": 0.4,
   "technical_weight": 0.27,

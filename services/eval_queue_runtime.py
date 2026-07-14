@@ -295,7 +295,9 @@ def seed_meta_producers(
         if not coin:
             continue
         sym = coin if "/" in str(coin) else f"{coin}/USDT"
-        tf = str(watch_by_symbol.get(sym, {}).get("timeframe") or "4h")
+        if sym not in watch_by_symbol:
+            continue
+        tf = str(watch_by_symbol[sym].get("timeframe") or "4h")
         if enqueue_eval(
             sym, tf,
             reason="social_x",
@@ -308,7 +310,9 @@ def seed_meta_producers(
         if signal.confidence < 60:
             continue
         sym = signal.coin if "/" in str(signal.coin) else f"{signal.coin}/USDT"
-        tf = str(watch_by_symbol.get(sym, {}).get("timeframe") or "4h")
+        if sym not in watch_by_symbol:
+            continue
+        tf = str(watch_by_symbol[sym].get("timeframe") or "4h")
         if enqueue_eval(
             sym, tf,
             reason="social_cmc",
@@ -321,7 +325,9 @@ def seed_meta_producers(
         if signal.confidence < 55:
             continue
         sym = signal.coin if "/" in str(signal.coin) else f"{signal.coin}/USDT"
-        tf = str(watch_by_symbol.get(sym, {}).get("timeframe") or "4h")
+        if sym not in watch_by_symbol:
+            continue
+        tf = str(watch_by_symbol[sym].get("timeframe") or "4h")
         if enqueue_eval(
             sym, tf,
             reason="social_lc",

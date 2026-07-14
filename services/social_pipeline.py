@@ -11,7 +11,7 @@ from data.cmc_community_provider import CMCCommunityParser, get_cmc_provider
 from intelligence.accuracy_tracker import AccuracyTracker
 from intelligence.strategy_discovery import StrategyDiscovery
 from logger import log
-from price_fetcher import get_prices
+from price_fetcher import get_prices_batch
 from telegram_notifier import send_x_recommendation_message
 from x_data_provider import RawPost, get_x_provider
 
@@ -136,7 +136,10 @@ class SocialPipeline:
 
         new_posts = [post for post in raw_posts if not self._already_logged(post.post_id)]
         parsed_by_id = self.analyzer.parse_tweets_batch(new_posts) if new_posts else {}
+        defer_eval = bool(self._perf.get("defer_ingest_eval", True))
 
+        staged: list[tuple] = []
+        price_symbols: list[str] = []
         for post in new_posts:
             signal = parsed_by_id.get(post.post_id)
             if not signal:
@@ -148,11 +151,13 @@ class SocialPipeline:
             self._cycle_signals.append(signal)
             if signal.coin and signal.coin != "UNKNOWN":
                 symbol = f"{signal.coin}/USDT"
+                price_symbols.append(symbol)
+            staged.append((post, signal, symbol))
 
-            price = 0.0
-            if symbol:
-                price, _, _ = get_prices(symbol)
-                price = price or 0.0
+        price_map = get_prices_batch(price_symbols) if price_symbols else {}
+
+        for post, signal, symbol in staged:
+            price = float(price_map.get(symbol, 0) or 0) if symbol else 0.0
 
             rec = self.analyzer.track_and_recommend(
                 post.text,
@@ -160,6 +165,7 @@ class SocialPipeline:
                 current_price=price,
                 orchestrator=self.orchestrator,
                 signal=signal,
+                defer_eval=defer_eval,
             )
             rec["post_id"] = post.post_id
             rec["raw_tweet"] = post.text[:200]

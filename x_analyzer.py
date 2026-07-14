@@ -366,6 +366,7 @@ JSON:"""
         current_price: float = 0.0,
         orchestrator=None,
         signal: XSignal = None,
+        defer_eval: bool = False,
     ) -> Dict:
         if signal is None:
             signal = self.parse_tweet(tweet_text, account)
@@ -400,7 +401,7 @@ JSON:"""
         if engine is None:
             engine = DecisionEngine()
 
-        if current_price:
+        if current_price and not defer_eval:
             analysis = engine.evaluate(coin_data, current_price, x_signals=[signal])
             if analysis:
                 return engine.to_recommendation(signal, analysis, account, tweet_text, current_price)

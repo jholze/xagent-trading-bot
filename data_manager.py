@@ -1480,13 +1480,22 @@ def log_cmc_post(signal, post_id: str = None):
     return data
 
 
+_lc_signals_cache: dict = {"mtime": 0.0, "data": {"signals": []}}
+
+
 def load_lc_signals():
     path = get_data_file(LC_SIGNALS_FILE)
     if not os.path.exists(path):
         return {"signals": []}
     try:
+        mtime = os.path.getmtime(path)
+        if _lc_signals_cache["mtime"] == mtime:
+            return _lc_signals_cache["data"]
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        _lc_signals_cache["mtime"] = mtime
+        _lc_signals_cache["data"] = data
+        return data
     except Exception as e:
         log(f"Failed to load {path}: {e}", "WARNING")
         return {"signals": []}
@@ -1496,6 +1505,9 @@ def save_lc_signals(data):
     path = get_data_file(LC_SIGNALS_FILE)
     try:
         atomic_write_json(path, data)
+        if os.path.exists(path):
+            _lc_signals_cache["mtime"] = os.path.getmtime(path)
+            _lc_signals_cache["data"] = data
         return True
     except Exception:
         return False
