@@ -48,6 +48,13 @@ railway service link "${SERVICE_NAME}" >/dev/null 2>&1 || railway service link "
 COMMIT="$(git rev-parse HEAD)"
 SHORT="$(git rev-parse --short HEAD)"
 
+if [[ "${SKIP_MT_SMOKE:-}" == "1" ]]; then
+  echo "WARN: SKIP_MT_SMOKE=1 — skipping pre-push multi-tenant smoke"
+else
+  echo "=== Pre-push: multi-tenant demo smoke ==="
+  bash scripts/smoke_mt_demo.sh
+fi
+
 echo ""
 echo "Pushing ${BRANCH} @ ${SHORT} to origin..."
 git push origin "${BRANCH}"
