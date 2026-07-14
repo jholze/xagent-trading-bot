@@ -651,6 +651,8 @@ def _run_tenant_price_cycle(
             f"Galaxy {best_lc.galaxy_score:.0f}"
         )
 
+    from services.cycle_notification_policy import cycle_notification_policy
+
     cycle_notification_policy.flush_hold_explanations()
 
     cycle_notif_cfg = bot_config.observability_config.get("cycle_notifications", {})
