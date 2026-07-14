@@ -48,6 +48,22 @@ class MarketService:
 
     def __init__(self, config_raw: dict | None = None):
         self._config_raw = config_raw
+        self._cycle_btc_cache: dict[tuple[str, int], pd.DataFrame | None] = {}
+
+    def begin_cycle(self) -> None:
+        """Reset per-tenant-cycle caches (BTC OHLCV reuse)."""
+        self._cycle_btc_cache = {}
+
+    def prefetch_btc_ohlcv(self, timeframe: str, limit: int) -> None:
+        key = (timeframe, int(limit))
+        if key not in self._cycle_btc_cache:
+            self._cycle_btc_cache[key] = self._fetch_ohlcv("BTC/USDT", timeframe, limit)
+
+    def _get_btc_ohlcv(self, timeframe: str, limit: int) -> pd.DataFrame | None:
+        key = (timeframe, int(limit))
+        if key in self._cycle_btc_cache:
+            return self._cycle_btc_cache[key]
+        return self._fetch_ohlcv("BTC/USDT", timeframe, limit)
 
     def _arch(self) -> dict:
         if self._config_raw is not None:
@@ -198,7 +214,7 @@ class MarketService:
         periods = max(2, int(lookback_hours / tf_hours))
         limit = periods + 5
         coin_df = self._fetch_ohlcv(symbol, timeframe, limit)
-        btc_df = self._fetch_ohlcv("BTC/USDT", timeframe, limit)
+        btc_df = self._get_btc_ohlcv(timeframe, limit)
         if coin_df is None or btc_df is None or len(coin_df) < periods + 1 or len(btc_df) < periods + 1:
             return None
 
@@ -400,7 +416,7 @@ class MarketService:
             return None
         limit = periods + 5
         coin_df = self._fetch_ohlcv(symbol, timeframe, limit)
-        btc_df = self._fetch_ohlcv("BTC/USDT", timeframe, limit)
+        btc_df = self._get_btc_ohlcv(timeframe, limit)
         if coin_df is None or btc_df is None:
             return None
         coin_chg = self._pct_change(coin_df, periods)

@@ -56,11 +56,51 @@ def log_json(event: dict, level: str = "INFO"):
         print(f"JSON log write failed: {e}")
 
 
+def _observability_cfg() -> dict:
+    try:
+        from data_manager import get_config
+
+        return get_config().get("observability") or {}
+    except Exception:
+        return {}
+
+
+def _maybe_rotate_decisions_log() -> None:
+    cfg = _observability_cfg()
+    max_bytes = int(cfg.get("decisions_log_max_bytes", 52_428_800) or 0)
+    keep = max(1, int(cfg.get("decisions_log_rotate_keep", 3) or 3))
+    if max_bytes <= 0 or not os.path.isfile(DECISIONS_LOG_FILE):
+        return
+    try:
+        if os.path.getsize(DECISIONS_LOG_FILE) <= max_bytes:
+            return
+    except OSError:
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive = os.path.join(LOG_DIR, f"decisions.{stamp}.jsonl")
+    try:
+        os.replace(DECISIONS_LOG_FILE, archive)
+    except OSError as e:
+        log(f"Decision log rotate failed: {e}", "WARNING")
+        return
+
+    archives = sorted(
+        f for f in os.listdir(LOG_DIR) if f.startswith("decisions.") and f.endswith(".jsonl") and f != "decisions.jsonl"
+    )
+    while len(archives) > keep:
+        try:
+            os.remove(os.path.join(LOG_DIR, archives.pop(0)))
+        except OSError:
+            break
+
+
 def log_decision(entry: dict):
     """Append a decision audit record to logs/decisions.jsonl."""
     record = dict(entry)
     record.setdefault("timestamp", datetime.now().isoformat())
     try:
+        _maybe_rotate_decisions_log()
         with open(DECISIONS_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:

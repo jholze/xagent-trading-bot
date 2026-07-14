@@ -102,6 +102,27 @@ class DecisionEngine:
     def __init__(self, market_service: MarketService = None):
         self.config = get_bot_config()
         self.market = market_service or MarketService()
+        self._tenant_regime_detector: RegimeDetector | None = None
+        self._tenant_strategy_allocator: StrategyAllocator | None = None
+
+    def begin_tenant_cycle(self) -> None:
+        """Prepare per-tenant cycle caches and reusable regime collaborators."""
+        self.config.refresh()
+        self.market.begin_cycle()
+        raw = self.config.raw
+        rd_cfg = raw.get("regime_detector") or {}
+        alloc_cfg = raw.get("strategy_allocator") or {}
+        self._tenant_regime_detector = (
+            RegimeDetector(self.config.regime_detector_config)
+            if rd_cfg.get("enabled", False)
+            else None
+        )
+        self._tenant_strategy_allocator = (
+            StrategyAllocator() if alloc_cfg.get("enabled", False) else None
+        )
+        if self._tenant_regime_detector is not None:
+            for timeframe, limit in (("4h", 300), ("1h", 300), ("15m", 50)):
+                self.market.prefetch_btc_ohlcv(timeframe, limit)
 
     def _entry_sensor_cfg(self) -> dict:
         return self.config.entry_sensor_15m_config
@@ -894,7 +915,10 @@ class DecisionEngine:
                 ohlcv_df = self.market.fetch_ohlcv(coin["symbol"], market.timeframe, limit=300)
                 if ohlcv_df is None:
                     ohlcv_df = pd.DataFrame()
-                detector = RegimeDetector(self.config.regime_detector_config)
+                detector = self._tenant_regime_detector
+                if detector is None:
+                    detector = RegimeDetector(self.config.regime_detector_config)
+                    self._tenant_regime_detector = detector
                 regime_result = detector.detect(
                     coin=coin,
                     ohlcv_df=ohlcv_df,
@@ -904,8 +928,11 @@ class DecisionEngine:
                         coin["symbol"], x_signals, cmc_signals, lc_signals
                     ),
                 )
-                if (self.config.raw.get("strategy_allocator") or {}).get("enabled", False):
+                allocator = self._tenant_strategy_allocator
+                if allocator is None and (self.config.raw.get("strategy_allocator") or {}).get("enabled", False):
                     allocator = StrategyAllocator()
+                    self._tenant_strategy_allocator = allocator
+                if allocator is not None:
                     allocation = allocator.allocate(
                         regime_result=regime_result,
                         coin=coin,

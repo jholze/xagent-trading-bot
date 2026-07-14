@@ -16,6 +16,18 @@ class AuditTrail:
     def enabled(self) -> bool:
         return bool(self.config.raw.get("observability", {}).get("decisions_audit", True))
 
+    @staticmethod
+    def _needs_position_metrics(analysis, trade_result) -> bool:
+        if trade_result and trade_result.executed:
+            return True
+        norm = str(getattr(analysis, "normalized_action", "") or "").upper()
+        if norm.startswith(("BUY", "SELL")) and norm != "HOLD":
+            return True
+        audit = getattr(analysis, "sell_policy_audit", None) or {}
+        if audit.get("would_sell"):
+            return True
+        return False
+
     def record(
         self,
         coin: dict,
@@ -63,7 +75,7 @@ class AuditTrail:
         pos = get_position(analysis.symbol, analysis.timeframe)
         has_position = float(pos.get("amount") or 0) > 0
         entry["has_position"] = has_position
-        if has_position and price > 0:
+        if has_position and price > 0 and self._needs_position_metrics(analysis, trade_result):
             from core.models import MarketContext
 
             market = MarketContext(

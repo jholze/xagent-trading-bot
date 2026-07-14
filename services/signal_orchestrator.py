@@ -37,6 +37,10 @@ class SignalOrchestrator:
         self.decision_engine = DecisionEngine(self.market)
         self.audit = AuditTrail(self.config)
 
+    def begin_tenant_cycle(self) -> None:
+        self.config.refresh()
+        self.decision_engine.begin_tenant_cycle()
+
     def analyze(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None):
         return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals, lc_signals)
 

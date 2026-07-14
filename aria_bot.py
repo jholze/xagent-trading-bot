@@ -381,6 +381,7 @@ def _run_tenant_price_cycle(
     social_pipeline,
     sandbox,
     trend_engine,
+    shared_signals=None,
 ):
     bot_config = get_bot_config()
     bot_config.refresh()
@@ -403,14 +404,11 @@ def _run_tenant_price_cycle(
         print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
         print("=" * 90)
 
-    try:
-        from data_manager import prune_non_gate_watchlist_sources
-        from services.dry_run_watchlist import DryRunWatchlistSync
-
-        prune_non_gate_watchlist_sources(bot_config.raw)
-        DryRunWatchlistSync(bot_config).sync_if_needed()
-    except Exception as e:
-        log(f"Dry-run watchlist sync failed: {e}", "WARNING")
+    if orchestrator:
+        try:
+            orchestrator.begin_tenant_cycle()
+        except Exception as e:
+            log(f"Tenant cycle init failed: {e}", "WARNING")
 
     watchlist = load_effective_watchlist()
     active_symbols = [
@@ -421,56 +419,21 @@ def _run_tenant_price_cycle(
         print("-" * 90)
         print("Prüfe Coins + X-Signale:\n")
 
-    if social_pipeline:
-        from services.background_runtime import (
-            get_last_accuracy,
-            register_pipeline,
-            request_social_fetch,
-            run_social_cycle_sync,
-            social_ever_fetched,
-            social_fetch_fresh,
-        )
-
-        register_pipeline(social_pipeline)
-        arch = bot_config.architecture_config
-        bg_social = arch.get("background_social_enabled", True)
-        max_age = float(arch.get("social_snapshot_max_age_sec", 300))
-        accuracy = {}
-
-        if bg_social:
-            if not social_ever_fetched():
-                accuracy = run_social_cycle_sync(watchlist)
-            elif social_fetch_fresh(max_age):
-                accuracy = get_last_accuracy()
-            else:
-                request_social_fetch(watchlist)
-                accuracy = get_last_accuracy()
-        else:
-            accuracy = social_pipeline.run_cycle_fetches(watchlist)
-
-        if not use_dashboard and (accuracy.get("outcomes_updated") or accuracy.get("trust_updates")):
-            print(
-                f"   Accuracy update: {accuracy.get('outcomes_updated', 0)} outcomes, "
-                f"{accuracy.get('trust_updates', 0)} trust scores"
-            )
-
-    use_snapshot = bot_config.architecture_config.get("use_signal_snapshot")
-    if social_pipeline and use_snapshot:
-        from bus.signals import signal_snapshot_store
-
-        cached = signal_snapshot_store.get_signals(
-            max_age_sec=float(bot_config.architecture_config.get("social_snapshot_max_age_sec", 300))
-        )
-        if cached:
-            x_signals, cmc_signals, lc_signals = cached
-        else:
-            x_signals = social_pipeline.refresh_signals()
-            cmc_signals = social_pipeline.refresh_cmc_signals()
-            lc_signals = social_pipeline.refresh_lc_signals()
+    if shared_signals is not None:
+        x_signals = list(shared_signals.x_signals or [])
+        cmc_signals = list(shared_signals.cmc_signals or [])
+        lc_signals = list(shared_signals.lc_signals or [])
     elif social_pipeline:
-        x_signals = social_pipeline.refresh_signals()
-        cmc_signals = social_pipeline.refresh_cmc_signals()
-        lc_signals = social_pipeline.refresh_lc_signals()
+        from services.cycle_shared import prepare_shared_cycle_signals
+
+        bundle = prepare_shared_cycle_signals(
+            bot_config=bot_config,
+            social_pipeline=social_pipeline,
+            analyzer=analyzer,
+        )
+        x_signals = bundle.x_signals
+        cmc_signals = bundle.cmc_signals
+        lc_signals = bundle.lc_signals
     else:
         x_signals = analyzer.get_top_signals() if analyzer else []
         cmc_signals = []
@@ -715,6 +678,14 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             except Exception:
                 pass
             from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
+            from services.cycle_shared import prepare_shared_cycle_signals, sync_global_watchlist_once
+
+            sync_global_watchlist_once(bot_config)
+            shared_signals = prepare_shared_cycle_signals(
+                bot_config=bot_config,
+                social_pipeline=social_pipeline,
+                analyzer=analyzer,
+            )
 
             for _cycle_tenant in iter_price_cycle_tenants():
                 with tenant_cycle_context(_cycle_tenant):
@@ -726,6 +697,7 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                         social_pipeline=social_pipeline,
                         sandbox=sandbox,
                         trend_engine=trend_engine,
+                        shared_signals=shared_signals,
                     )
 
             interval = get_config().get("update_interval", 600)

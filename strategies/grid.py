@@ -10,6 +10,7 @@ Unterstützt:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -36,6 +37,8 @@ class GridState:
 
 class GridStrategy(BaseStrategy):
     name = "grid"
+    _persist_debounce_sec = 30.0
+    _last_persist_at: Dict[str, float] = {}
 
     def __init__(self):
         self._states: Dict[str, GridState] = {}   # key = f"{symbol}_{tf}"
@@ -94,9 +97,16 @@ class GridStrategy(BaseStrategy):
         threshold = state.center_price * (atr_pct / 100.0) * re_center_mult
         return distance > threshold
 
-    def _persist_state(self, symbol: str, tf: str, state: GridState) -> None:
-        """Persist grid state in config.json (grid_states map) so it survives restarts."""
+    def _persist_state(self, symbol: str, tf: str, state: GridState, *, force: bool = False) -> None:
+        """Persist grid state in tenant-scoped config (grid_states map)."""
         key = self._get_key(symbol, tf)
+        now = time.time()
+        if not force:
+            last = self._last_persist_at.get(key, 0.0)
+            if now - last < self._persist_debounce_sec:
+                self._states[key] = state
+                return
+        self._last_persist_at[key] = now
         serial = {
             "center_price": float(state.center_price),
             "spacing": float(state.spacing),
@@ -133,7 +143,7 @@ class GridStrategy(BaseStrategy):
         state.levels = new_levels
         state.last_recenter_price = current_price
 
-        self._persist_state(symbol, tf, state)
+        self._persist_state(symbol, tf, state, force=True)
         log(f"[Grid] Re-centered grid for {symbol} @ {current_price:.2f}", "INFO")
 
     def analyze(

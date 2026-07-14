@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-_cycle_counter = 0
+_cycle_counters: dict[str, int] = {}
 
 from core.actions import is_sell, normalize
 from core.models import MarketContext
@@ -223,8 +223,10 @@ def maybe_snapshot_after_cycle(
     *,
     config_raw: dict | None = None,
 ) -> dict | None:
-    global _cycle_counter
-    _cycle_counter += 1
+    from core.tenant_context import resolve_tenant_id
+
+    tenant_id = resolve_tenant_id()
+    _cycle_counters[tenant_id] = _cycle_counters.get(tenant_id, 0) + 1
     try:
         from core.config import get_bot_config
 
@@ -232,7 +234,7 @@ def maybe_snapshot_after_cycle(
     except Exception:
         cfg = {}
     every = max(1, int(cfg.get("position_snapshots_every_n_cycles", 1)))
-    if _cycle_counter % every != 0:
+    if _cycle_counters[tenant_id] % every != 0:
         return None
     snap = snapshot_all_open_positions(price_map, config_raw=config_raw)
     if snap:
