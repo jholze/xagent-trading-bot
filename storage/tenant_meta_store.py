@@ -25,17 +25,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_tenant_config(tid: str, *, default_cfg: dict, test: bool = False) -> dict:
-    """Return tenant-specific config body if present in mongo, else default_cfg."""
+def load_tenant_config_body(tid: str, *, default_cfg: dict, test: bool = False) -> dict | None:
+    """Return tenant-specific config body from mongo, or None if not stored."""
     if not tid:
-        return dict(default_cfg)
+        return None
     try:
         db = get_database(test=test, config=default_cfg)
         doc = db[TENANT_CONFIGS_COLL].find_one({"tenant_id": tid})
         if doc and isinstance(doc.get("body"), dict):
             return dict(doc["body"])
     except Exception as e:
-        log(f"tenant_meta_store: failed load_tenant_config for {tid}: {e}", "WARNING")
+        log(f"tenant_meta_store: failed load_tenant_config_body for {tid}: {e}", "WARNING")
+    return None
+
+
+def load_tenant_config(tid: str, *, default_cfg: dict, test: bool = False) -> dict:
+    """Return tenant body if present, else default_cfg (legacy callers)."""
+    body = load_tenant_config_body(tid, default_cfg=default_cfg, test=test)
+    if body is not None:
+        return body
     return dict(default_cfg)
 
 

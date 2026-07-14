@@ -312,13 +312,10 @@ def _perform_onboard(tenant_id: str, bot_token: str, gate_key: str, gate_secret:
         from core.tenant_context import tenant_context
         from data_manager import save_config, save_watchlist
 
+        from core.trading_profiles import build_tenant_seed_config
+
         with tenant_context(tenant_id, scope="paper"):
-            save_config({
-                "trading_mode": "paper",
-                "virtual_trading": True,
-                "max_open_positions": 8,
-                "max_usdt_per_trade": 1500,
-            })
+            save_config(build_tenant_seed_config("balanced"))
             save_watchlist(DEFAULT_WATCHLIST)
 
         # Register webhook automatically
