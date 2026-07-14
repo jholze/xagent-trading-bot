@@ -271,9 +271,10 @@ def build_onboarding_help_message(lang: str | None = None) -> str:
         )
     return (
         "<b>🚀 Onboarding — Neue User (nur Operator)</b>\n\n"
-        "Per einfacher privater Nachricht onboarden.\n\n"
-        "Token + Key + Secret senden (Name optional, 3 Zeilen → auto ID).\n"
-        "Automatisch: Tenant, Watchlist-Seed (BTC/ETH/SOL/PEPE), Webhook, Welcome im User-Bot, Bestätigung mit URL.\n\n"
-        "Nur privat + du als Operator (TELEGRAM_CHAT_ID). Daten verschlüsselt.\n"
+        "<b>Paper (staging):</b> nur Tenant-ID — Gate-Keys optional.\n"
+        "<code>/onboard henry</code> oder <code>henry 123456789</code> (Chat-ID).\n"
+        "Gemeinsamer Bot via TELEGRAM_BOT_TOKEN — kein @BotFather nötig.\n\n"
+        "Live später: optional eigener Bot-Token + Gate Key + Secret.\n"
+        "Nur privat + Operator (TELEGRAM_CHAT_ID).\n"
         "Siehe auch: <code>/onboard</code>"
     )

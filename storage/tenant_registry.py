@@ -105,7 +105,8 @@ def create_tenant(
         "features": features or ["basic"],
         "telegram": {
             "owner_chat_id": owner_chat_id,
-            "bot_token_enc": _encrypt(bot_token, test=test),
+            "bot_token_enc": _encrypt(bot_token, test=test) if bot_token else "",
+            "bot_token_ref": "env:TELEGRAM_BOT_TOKEN" if not bot_token else "",
             "webhook_secret": secrets.token_urlsafe(32),
         },
         "exchange": {

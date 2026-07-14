@@ -197,7 +197,7 @@
     },
     "onboarding_help": {
       "title": "🚀 Onboarding — Neue User (nur Operator)",
-      "body": "Als Operator kannst du neue User mit <b>einer einzigen privaten Nachricht</b> onboarden.\n\n<b>1. Vorbereitung durch den User</b>\n• Eigenen Bot bei @BotFather erstellen\n• Bot-Token + Gate.io API Key + Secret weitergeben\n\n<b>2. Onboarden (du)</b>\nEinfach die Daten als normale private Nachricht an den Bot senden:\n\n<code>max\n123456:AAH...BOTTOKEN...\nGATEKEY123...\nGATESECRET456...</code>\n\nOder mit Labels (auch 3-Zeiler ohne Namen → auto-ID):\n<code>token: 123...\nkey: GATE...\nsecret: SEC...</code>\n\n<b>Automatisch passiert:</b>\n• Tenant anlegen (ID ggf. auto-generiert)\n• Watchlist mit BTC, ETH, SOL, PEPE vorgeladen\n• Webhook für den neuen Bot registriert\n• Willkommensnachricht direkt im Bot des neuen Users\n• Bestätigung mit exakter Webhook-URL an dich\n\n<b>Wichtig:</b> Funktioniert nur im privaten Chat mit dir (TELEGRAM_CHAT_ID). Alle sensiblen Daten werden verschlüsselt.\n\nAlternative: <code>/onboard</code> (interaktiv oder einzeilig)."
+      "body": "Als Operator onboardest du neue User — <b>Paper auf Staging ohne Gate-Keys</b>.\n\n<b>Schnell (Henry &amp; Co.):</b>\n<code>/onboard henry</code>\nOptional Henrys Chat-ID: <code>/onboard henry 123456789</code>\nOder als Nachricht: <code>henry</code>\n\n<b>Gemeinsamer Bot</b> (TELEGRAM_BOT_TOKEN) — kein @BotFather nötig.\nGate API Key/Secret: <b>optional</b> (erst für Live später).\n\n<b>Automatisch:</b> Tenant, balanced-Profil, Watchlist BTC/ETH/SOL/PEPE, Welcome-Nachricht.\n\n<b>Live später (optional):</b> eigener Bot-Token + Gate Keys — interaktiv via <code>/onboard</code> (skip = Paper).\n\nNur privat + Operator (TELEGRAM_CHAT_ID)."
     }
   },
   "en": {
