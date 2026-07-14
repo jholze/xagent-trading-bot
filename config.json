@@ -1031,14 +1031,15 @@
     "exchange_only": true
   },
   "regime_detector": {
-    "enabled": true,
+    "enabled": false,
     "tech_weight": 0.62,
     "sentiment_weight": 0.38,
     "cooldown_bars": 6,
-    "hysteresis": 0.15
+    "hysteresis": 0.15,
+    "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"]
   },
   "strategy_allocator": {
-    "enabled": true,
+    "enabled": false,
     "neutral_sentiment_threshold": 0.35,
     "confirm_sentiment_threshold": 0.45,
     "defensive_sentiment_threshold": -0.55,

@@ -11,13 +11,21 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.models import TradeOrder
-from core.tenant_context import DEFAULT_TENANT, tenant_context
+from core.tenant_context import DEFAULT_TENANT, tenant_context, resolve_tenant_id
 from data_manager import (
     load_orders,
     load_positions_document,
     save_orders,
     save_positions_document,
+    load_config,
+    save_config,
+    load_watchlist,
+    save_watchlist,
+    load_effective_watchlist,
+    get_config,
 )
+from storage.mongo_client import get_database as get_mongo_db
+from storage.tenant_registry import create_tenant, get_tenant, get_gate_credentials
 from services.order_service import OrderService
 from storage.mongo_client import TEST_DB_NAME, drop_database
 from storage.mongo_ledger import MongoLedgerStore
@@ -29,6 +37,7 @@ from strategies.positions import (
     load_positions,
     update_position,
 )
+import data_manager
 
 
 class TestTenantIsolationMongo(unittest.TestCase):
@@ -194,6 +203,37 @@ class TestTenantIsolationMongoContext(unittest.TestCase):
             with tenant_context("tenant_a", scope="paper"):
                 doc_a_reload = load_positions_document("paper")
                 self.assertIn("ISO_USDT_4h", doc_a_reload.get("positions", {}))
+
+    def test_tenant_config_watchlist_and_registry_real_paths(self):
+        """Honest test: registry + tenant config roundtrip under ctx with no get_config patch."""
+        # registry uses test=True directly (no need for get_config patch)
+        create_tenant(
+            "t_cfg_real",
+            plan="pro",
+            gate_api_key="REALKEY",
+            gate_api_secret="REALSEC",
+            test=True,
+        )
+        tdoc = get_tenant("t_cfg_real", test=True)
+        self.assertIsNotNone(tdoc)
+        creds = get_gate_credentials("t_cfg_real", test=True)
+        self.assertEqual(creds["api_key"], "REALKEY")
+        self.assertEqual(creds["api_secret"], "REALSEC")
+
+        # Honest: only _should patch to force mongo backend; no get_config patch at all.
+        # Fixture seeds cache only; real get_config under ctx drives dispatcher + meta.
+        with patch("data_manager._should_use_mongo_for_tenant_config", return_value=True):
+            with tenant_context("t_delegate", scope="paper"):
+                save_config({"delegated": 42, "virtual_trading": True})
+                c = get_config()
+                self.assertEqual(c.get("delegated"), 42)
+                c2 = load_config()
+                self.assertEqual(c2.get("delegated"), 42)
+
+                # watchlist roundtrip
+                save_watchlist([{"symbol": "HONEST/USDT", "active": True}])
+                w = load_watchlist()
+                self.assertTrue(any("HONEST" in str(x) for x in w or []))
 
 
 if __name__ == "__main__":

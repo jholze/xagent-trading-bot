@@ -1,19 +1,30 @@
 # Multi-Tenant Migration & Architekturplan
 
-Stand: Juli 2026 · Basis: `main` @ v1.8.0 (Monolith + Mongo-Ledger + Redis optional)
+**Stand:** Juli 2026 — Branch `feature/multi-tenant`  
+**Zielgruppe:** SaaS für Freunde / kleine geschlossene Community  
+**Fokus:** Hohe Performance (niedrige Latenz bei Trading-Entscheidungen) + hohe Flexibilität (einfaches Onboarding, unterschiedliche Pläne, einfache Erweiterbarkeit)
 
 ## Ziel
 
-Den Trading-Bot von einem **Single-User-Monolithen** zu einem **Multi-Tenant-System** umbauen, sodass mehrere Nutzer unabhängig voneinander ihren eigenen Bot mit eigenen Einstellungen, Watchlists, Strategien und Kapital betreiben können.
+Den Trading-Bot von einem **Single-User-Monolithen** zu einem **professionellen Multi-Tenant-SaaS-System** umbauen. Mehrere unabhängige Nutzer (Freunde) sollen ihren eigenen voll-isolierten Bot betreiben können — mit eigenen Einstellungen, Watchlists, Strategien, Kapital, Exchange-Keys und Telegram-Bot.
 
-**Getroffene Architektur-Entscheidungen:**
+**Kernanforderungen für SaaS-Verkauf:**
+- **Performance**: Schnelle Zyklen, effiziente Datenversorgung, faire Ressourcennutzung auch bei mehreren aktiven Tenants.
+- **Flexibilität**: Einfaches Onboarding neuer Nutzer, Plan-Tiers mit Limits, pro-Tenant Konfiguration, später einfache Erweiterung (neue Exchanges, neue Module).
+- **Isolation & Vertrauen**: Keine Datenlecks, eigene Keys, eigene Historie.
+- **Betriebssicherheit**: Gute Observability, Quotas, Audit.
 
-| Thema | Entscheidung |
-|-------|--------------|
-| Deployment | **Hybrid** (empfohlen): gemeinsame Worker-/Daten-Infrastruktur, strikte `tenant_id`-Isolation |
-| Telegram | **Bot pro Tenant**: eigenes Token + Webhook pro Nutzer |
-| Worker-Ziel | **RQ zuerst** (Redis), asyncio für I/O; Celery optional später |
-| Datenbank | **MongoDB** mit Compound-Keys `{tenant_id, ledger_scope}` |
+**Getroffene Architektur-Entscheidungen (SaaS-optimiert):**
+
+| Thema              | Empfehlung (für Performance + Flexibilität) |
+|--------------------|---------------------------------------------|
+| Deployment         | **Hybrid** (gemeinsame Worker + DB + Redis) mit strikter `tenant_id`-Isolation. Bester Kompromiss aus Kosten, Performance und Betriebsaufwand für 5–50 Tenants. |
+| Telegram           | **Bring-Your-Own-Bot (BYOB)**: Jeder Tenant stellt seinen eigenen Bot-Token bereit. Sehr flexibel, saubere Isolation, keine geteilten Rate-Limits. |
+| Worker / Scheduling| **RQ + Redis** als Einstieg. Pro-Tenant-Jobs + fairer Scheduler. Schwere Jobs (Backtests, Hermes) in dedizierten Queues. Später asyncio-lastige Worker. |
+| Datenbank          | **MongoDB** mit Compound-Keys `{tenant_id, ledger_scope}` + separater `tenants`-Collection. |
+| Kontext-Propagation| `TenantContext` (ContextVar) + frühe Setzung im Gateway. Alles tenant-aware. |
+| Konfiguration      | Pro Tenant in Mongo (`tenant_configs` + Versionierung). |
+| Markt-Daten        | Geteilter effizienter Price-Feed (über Redis), tenant-spezifische Signal-Berechnung. |
 
 ---
 
@@ -76,6 +87,27 @@ flowchart LR
 
 ---
 
+## Aktueller Stand auf `feature/multi-tenant` (Juli 2026)
+
+Phase 0 (Ledger-Foundation) ist größtenteils umgesetzt:
+
+- `core/tenant_context.py` mit `TenantContext`, `tenant_context()` Context Manager, `resolve_tenant_id()`, `resolve_tenant_scope()`, `multi_tenant_enabled()`.
+- `storage/tenant_keys.py` mit Compound-Keys (`{tenant}:{scope}`).
+- `storage/mongo_ledger.py` unterstützt `tenant_id` + Scope + kontrollierten Legacy-Fallback.
+- `storage/ledger_router.py` + `data_manager.py` leiten tenant-aware Load/Save weiter.
+- `strategies/positions.py` nutzt `_position_stores[(tenant_id, scope)]` (Hybrid mit globalem Fallback).
+- Migration-Skript, Verifizierungs-Skripte und Isolation-Tests vorhanden.
+
+**Noch nicht aktiviert (wichtig für SaaS):**
+- Der Context Manager wird nur in Tests gesetzt. Kein Routing `/webhook/<tenant_id>`, keine Middleware im Gateway.
+- Keine pro-Tenant Config/Watchlist in Mongo.
+- Kein vollständiges `TenantRegistry` / Onboarding.
+- Keine Quotas/Limits, keine Secrets-Verschlüsselung, kein Redis-Prefix überall.
+
+**Nächster Fokus für SaaS:** Context-Aktivierung + Tenant Onboarding + Config Isolation + Limits.
+
+---
+
 ## 2. Empfohlene Ziel-Architektur (Hybrid)
 
 ```mermaid
@@ -120,98 +152,143 @@ flowchart TB
     TW --> RLock
 ```
 
-**Hybrid bedeutet:**
+**Hybrid bedeutet (SaaS-optimiert):**
 
-- Ein **Gateway** + **Worker-Pool** (später separate Prozesse)
-- Eine **MongoDB** mit `tenant_id` auf allen Dokumenten
-- Pro Tenant: **eigenes Bot-Token**, **eigene Gate-Keys**, **eigene Watchlist/Config**
-- Trading-Cycles als **per-Tenant-Jobs** (nicht ein globaler `price_loop`)
+- Ein schlankes **Gateway**, das früh `TenantContext` setzt und Jobs in tenant-spezifische Queues schiebt.
+- Geteilte **Worker-Pools** (RQ), aber alle Jobs sind strikt tenant-scoped.
+- Eine **MongoDB** mit `tenant_id` als erstem Partitionsschlüssel.
+- Pro Tenant: eigene (verschlüsselte) Credentials, eigene Config, eigene Watchlist, eigene Limits.
+- Trading-Cycles + Sensoren als **geplante pro-Tenant-Jobs** (kein globaler Monolith-Loop mehr).
+- **Geteilte Markt-Daten** (Preise) für Performance + tenant-spezifische Verarbeitung.
 
-**Warum nicht „eine VM pro User“?** Schnell, aber N× Ops-Kosten, kein zentraler Fair-Scheduler.
+**Performance-Design-Prinzipien (wichtig für SaaS):**
+- Geteilter Price-Feed über Redis (vermeidet N-fache API-Calls).
+- Heiße Daten (Config, Watchlist, Preise) im Redis mit tenant-Prefix + kurzer TTL + Invalidation per Pub/Sub.
+- Schwere Arbeit (Backtests, Hermes, Social-Analyse) in dedizierte Queues mit niedriger Priorität.
+- Async I/O wo möglich (Sozialdaten, Preis-Fetching).
+- Faire Verteilung + pro-Tenant-Quotas, damit ein Tenant das System nicht ausbremst.
 
-**Warum nicht „ein Prozess, kein tenant_id“?** Heutiger Code bricht sofort (globale `positions`, eine Config).
+**Flexibilitäts-Design-Prinzipien:**
+- Bring-Your-Own-Bot + eigenes Gate-Konto pro Tenant.
+- Plan-Modell (`free` / `pro` / `vip`) mit dynamischen Limits im Tenant-Dokument.
+- Versionierte Config pro Tenant (Rollback möglich).
+- Einfaches Onboarding-Skript + später Admin-CLI.
+- Core-Trading-Logik bleibt weitgehend tenant-agnostisch (wird über Context injiziert).
+
+**Warum nicht „eine VM pro User“?** Für ein Freunde-SaaS zu teuer und betriebsaufwändig. Hybrid ist günstiger und performanter durch geteilte Caches.
+
+**Warum nicht reiner Monolith ohne tenant_id?** Führt sofort zu Datenvermischung und Sicherheitsproblemen — nicht verkaufbar.
 
 ---
 
-## 3. Datenmodell MongoDB
+## 3. Datenmodell MongoDB (SaaS-optimiert)
 
-### 3.1 Neue Collection: `tenants`
+### 3.1 `tenants` Collection (zentral für Flexibilität)
 
 ```python
-# storage/schemas/tenant.py (neu)
 {
-    "tenant_id": "usr_01JABC...",       # stabil, URL-safe, unique
-    "status": "active|suspended|trial",
-    "plan": "free|pro",
-    "telegram": {
-        "bot_token_enc": "...",         # AES/KMS — nie Plaintext
-        "bot_username": "MyTradingBot",
-        "owner_chat_id": "123456789",
-        "webhook_secret": "random",     # Telegram secret_token
+    "tenant_id": "t_01JABC123...",          # z.B. ULID oder "t_" + short-id
+    "status": "active | trial | suspended | deleted",
+    "plan": "free | pro | vip",
+    
+    "limits": {
+        "max_open_positions": 12,
+        "max_daily_trades": 30,
+        "max_daily_usdt": 5000,
+        "max_watchlist_size": 25,
+        "allow_live": false
     },
+    
+    "features": ["hermes", "entry_15m", "x_signals", "trail_tp"],
+
+    "telegram": {
+        "bot_token_enc": "...",             # Fernet / KMS verschlüsselt
+        "bot_username": "MyPersonalBot",
+        "owner_chat_id": "123456789",
+        "webhook_secret": "random-secret",
+        "last_webhook_set_at": ISODate
+    },
+    
     "exchange": {
         "gate": {
             "api_key_enc": "...",
             "api_secret_enc": "...",
+            "testnet": false
         }
     },
+    
     "defaults": {
         "trading_mode": "paper",
         "ledger_scope": "paper",
+        "timezone": "Europe/Berlin"
     },
+    
+    "metadata": {
+        "display_name": "Max' Meme Bot",
+        "notes": "Freund von Juli 2026"
+    },
+    
     "created_at": ISODate,
     "updated_at": ISODate,
+    "last_active_at": ISODate
 }
 ```
 
-**Indexes:**
-
+**Wichtige Indexes (Performance + Isolation):**
 ```javascript
 db.tenants.createIndex({ "tenant_id": 1 }, { unique: true })
-db.tenants.createIndex({ "telegram.bot_username": 1 })
+db.tenants.createIndex({ "status": 1, "plan": 1 })
 ```
 
-### 3.2 Ledger-Collections (Breaking Change)
+**Vorteile für SaaS:**
+- Limits und Features direkt im Tenant → einfache Enforcement.
+- Verschlüsselte Credentials → vertrauenswürdig beim Verkauf.
+- `features` Array → sehr flexibel (kannst neue Module pro Plan freischalten).
+- `last_active_at` → nützlich für Cleanup / Billing-ähnliche Logik.
 
-**Heute:** `_id: "paper"` (max. 3 Docs)
+### 3.2 `tenant_configs` (Versionierte Konfiguration)
+
+Statt einer `config.json`:
+- Ein Dokument pro Tenant.
+- Version + History (oder separate `config_revisions` Collection).
+- Ermöglicht Rollback und Audit.
+
+### 3.3 Ledger-Collections (Breaking Change)
+
+### 3.4 Ledger-Collections (Compound Key)
 
 **Ziel:** Compound Key `{tenant_id, ledger_scope}`
 
 ```python
-# storage/mongo_ledger.py — neues Schema
 {
-    "_id": "usr_01JABC:paper",          # oder ObjectId + compound unique index
-    "tenant_id": "usr_01JABC",
+    "_id": "t_01JABC:paper",
+    "tenant_id": "t_01JABC",
     "ledger_scope": "paper",
     "orders": [...],
-    "migrated_from_trades": false,
-    "updated_at": ISODate,
+    "updated_at": ISODate
 }
 ```
 
-**Indexes (orders, positions, trade_history):**
+**Wichtige Indexes (schnelle tenant-isolierte Queries):**
 
 ```javascript
 db.orders.createIndex({ "tenant_id": 1, "ledger_scope": 1 }, { unique: true })
-db.orders.createIndex({ "tenant_id": 1, "orders.display_seq": 1 })
 db.orders.createIndex({ "tenant_id": 1, "orders.symbol": 1, "orders.status": 1 })
-
 db.positions.createIndex({ "tenant_id": 1, "ledger_scope": 1 }, { unique: true })
 db.trade_history.createIndex({ "tenant_id": 1, "ledger_scope": 1 }, { unique: true })
 ```
 
-### 3.3 Weitere Collections
+### 3.5 Weitere Collections (für Flexibilität)
 
-| Collection | Key | Ersetzt |
-|------------|-----|---------|
-| `configs` | `{tenant_id}` | `config.json` |
-| `config_revisions` | `{tenant_id, version}` | — (Audit/Rollback) |
-| `watchlists` | `{tenant_id}` | `watchlist.json` |
-| `watchlist_overlays` | `{tenant_id, overlay_type}` | `watchlist.*.overlay.json` |
-| `hermes_profiles` | `{tenant_id, symbol, timeframe}` | `hermes/memory/*.json` |
-| `command_contexts` | `{tenant_id, chat_id}` | `data/telegram_command_context.json` |
-| `audit_events` | `{tenant_id, ts}` | `logs/decisions.jsonl` (optional TTL) |
-| `social_snapshots` | `{tenant_id, source, ts}` | `x_posts.json`, `cmc_posts.json` |
+| Collection              | Key                          | Zweck                              |
+|-------------------------|------------------------------|------------------------------------|
+| `tenants`               | `tenant_id`                  | Kern-Metadaten + Limits + Secrets  |
+| `tenant_configs`        | `tenant_id`                  | Versionierte Bot-Konfiguration     |
+| `watchlists`            | `tenant_id`                  | Persönliche Watchlist              |
+| `hermes_profiles`       | `tenant_id + symbol`         | Pro-Tenant Hermes Memory           |
+| `command_contexts`      | `tenant_id + chat_id`        | Conversation State                 |
+| `audit_events`          | `tenant_id + ts`             | Pro-Tenant Audit Trail             |
+| `social_snapshots`      | `tenant_id + source + ts`    | X/CMC/LC Snapshots (cached)        |
 
 ### 3.4 Normalisierte Orders (Phase 3+, optional)
 
@@ -219,196 +296,159 @@ Langfristig: ein Order = ein Mongo-Doc statt Array im Blob. Bessere Pagination, 
 
 ---
 
-## 4. User-Isolation (Datenbank + Code)
+## 4. User-Isolation & Context (Performance + Korrektheit)
 
-### 4.1 TenantContext (zentrales Pattern)
+### 4.1 TenantContext – das Herzstück (bereits teilweise implementiert)
 
-Neues Modul `core/tenant_context.py`:
+`core/tenant_context.py` (auf dem Branch bereits vorhanden und gut):
 
-```python
-from contextvars import ContextVar
-from dataclasses import dataclass
+- Verwendet `ContextVar` (thread-safe + async-kompatibel).
+- `resolve_tenant_id()` mit Fallback auf `DEFAULT_TENANT` ("default") für Übergangszeit.
+- `tenant_context(tenant_id, scope=...)` Context Manager zum Setzen.
+- `redis_prefix` wird automatisch auf `aria:{tenant_id}:` gesetzt.
 
-@dataclass(frozen=True)
-class TenantContext:
-    tenant_id: str
-    scope: str                    # demo|paper|live
-    config: dict
-    redis_prefix: str             # f"aria:{tenant_id}:"
-    owner_chat_id: str
-    bot_token: str                # decrypted, nur Request-Lifetime
-
-_ctx: ContextVar[TenantContext | None] = ContextVar("tenant_ctx", default=None)
-
-def require_tenant() -> TenantContext:
-    ctx = _ctx.get()
-    if not ctx:
-        raise RuntimeError("No tenant context — bug in call chain")
-    return ctx
-
-def tenant_scope() -> tuple[str, str]:
-    c = require_tenant()
-    return c.tenant_id, c.scope
-```
-
-**Regel:** Jeder DB-/Redis-Zugriff liest `tenant_id` aus `require_tenant()`. Kein impliziter Default-Tenant in Produktion.
-
-### 4.2 MongoLedgerStore
+**Best Practice für SaaS (empfohlen):**
 
 ```python
-# storage/mongo_ledger.py
-class MongoLedgerStore:
-    def load_orders(self, tenant_id: str, scope: str) -> dict:
-        doc = self._collection(ORDERS_COLLECTION).find_one({
-            "tenant_id": tenant_id,
-            "ledger_scope": scope,
-        })
-        if not doc:
-            return _empty_orders(scope)
-        ...
+# Frühe Aktivierung im Gateway (aria_bot.py oder FastAPI middleware)
+with tenant_context(tenant_id, scope=scope, bot_token=decrypted_token):
+    # Hier läuft der gesamte Request / Job
+    handle_telegram_update(...)
+    # Alle nachfolgenden Aufrufe (data_manager, positions, risk, order_service)
+    # bekommen automatisch den richtigen Tenant
 ```
 
-Alle Aufrufer (`OrderService`, `data_manager`, `positions.py`) bekommen `tenant_id` durchgereicht oder lesen aus Context.
+**Wichtige Regel für Performance & Korrektheit:**
+- So früh wie möglich im Request/Job `tenant_context(...)` setzen.
+- `require_tenant()` nur an kritischen Stellen (wo ein fehlender Tenant ein Bug wäre).
+- Die meisten Stellen nutzen `resolve_tenant_id()` (robust während Migration).
 
-### 4.3 Positions-In-Memory (kritisch)
+### 4.2 Aktueller Stand der Isolation (Branch `feature/multi-tenant`)
 
-`strategies/positions.py` — globales `positions = {}` ersetzen:
+- Ledger (Orders, Positions, TradeHistory) → vollständig tenant-aware via Mongo + Router.
+- Positions-In-Memory → `_position_stores[(tid, scope)]` + aktiver Key (guter Kompromiss).
+- data_manager → alle wichtigen Load/Save-Funktionen akzeptieren `tenant_id`.
+- `multi_tenant_enabled()` steuert den Legacy-Fallback (sehr nützlich während Migration).
 
-```python
-_position_stores: dict[tuple[str, str], dict] = {}
+### 4.3 Redis-Key-Schema (Performance-Critical)
 
-def _store() -> dict:
-    tid, scope = tenant_scope()
-    key = (tid, scope)
-    if key not in _position_stores:
-        _position_stores[key] = {}
-    return _position_stores[key]
-```
-
-**Worker-sichere Alternative:** Kein Shared Memory — Position aus Mongo, kurzer Redis-Cache (TTL 2s).
-
-### 4.4 Config-Isolation
-
-```python
-# core/config.py
-class BotConfig:
-    def __init__(self, raw: dict | None = None, *, tenant_id: str | None = None):
-        if raw is None:
-            raw = load_tenant_config(tenant_id or require_tenant().tenant_id)
-        self._tenant_id = tenant_id
-        self._raw = raw
-```
-
-### 4.5 Redis-Key-Schema
+Empfohlenes Prefix-Schema (bereits im `TenantContext` vorbereitet):
 
 ```
 aria:{tenant_id}:lock:ledger:{scope}
-aria:{tenant_id}:cache:config:{version}
+aria:{tenant_id}:cache:config
 aria:{tenant_id}:cache:watchlist
-aria:{tenant_id}:dedup:x:{post_id}
+aria:{tenant_id}:prices:{symbol}          # geteilt oder tenant-spezifisch
 aria:{tenant_id}:signals:snapshot
-aria:{tenant_id}:jobs:heavy
-aria:{tenant_id}:notifications
+aria:{tenant_id}:jobs:...
+aria:{tenant_id}:limits:...
 ```
 
-Anpassung in `bus/locks.py`, `bus/dedup.py`, `bus/publisher.py`:
+**Performance-Tipp:** 
+- Preise können **shared** gecached werden (nicht pro Tenant), um API-Calls zu sparen.
+- Alles andere strikt pro Tenant.
 
-```python
-def redis_prefix(tenant_id: str) -> str:
-    return f"aria:{tenant_id}:"
-```
+### 4.4 Config- & Watchlist-Isolation (nächster großer Schritt)
+
+- Configs in Mongo (`tenant_configs`).
+- Watchlists + Overlays pro Tenant.
+- `BotConfig` und `load_effective_watchlist()` müssen tenant-aware werden (ähnlich wie Ledger bereits).
+
+### 4.5 Positions-Handling (bereits gut auf dem Branch)
+
+Das aktuelle Design mit `_position_stores[(tid, scope)]` + `_active_key` ist ein guter, pragmatischer Mittelweg zwischen Performance (In-Memory) und Isolation. Es passt gut zu einem Trading-Bot.
 
 ---
 
-## 5. Telegram: Bot pro Tenant
+## 5. Telegram: BYOB-Modell (empfohlen für SaaS)
 
-### 5.1 Webhook-Routing
+**Bring-Your-Own-Bot** ist die beste Wahl für Performance, Flexibilität und Vertrauen:
 
-`aria_bot.py` erweitern:
+- Jeder Tenant bringt seinen eigenen Bot-Token mit.
+- Webhook-Route: `POST /webhook/<tenant_id>`
+- Validierung von `X-Telegram-Bot-Api-Secret-Token` + autorisiertem Chat.
+- Sofort `tenant_context(...)` setzen.
+- Outbound immer über den Context.
 
-```python
-@app.route("/webhook/<tenant_id>", methods=["POST"])
-def webhook_tenant(tenant_id: str):
-    tenant = tenant_registry.get_active(tenant_id)
-    if not tenant:
-        return "Not found", 404
+Dies vermeidet Rate-Limit-Probleme und gibt jedem Nutzer echtes Ownership.
 
-    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if secret != tenant.telegram.webhook_secret:
-        return "Forbidden", 403
-
-    update = request.get_json()
-    chat_id = _extract_chat_id(update)
-
-    if not tenant.is_authorized_chat(chat_id):
-        return "Forbidden", 403
-
-    with tenant_context(tenant, chat_id=chat_id):
-        return _dispatch_telegram_update(update)
-```
-
-Legacy-Route `POST /` bleibt für `tenant_id=default` während Migration.
-
-### 5.2 Webhook-Registrierung
-
-```python
-# scripts/register_tenant_webhook.py
-def register(tenant_id: str):
-    tenant = registry.load(tenant_id)
-    token = decrypt(tenant.telegram.bot_token_enc)
-    set_webhook(
-        token=token,
-        url=f"{BASE_URL}/webhook/{tenant_id}",
-        secret_token=tenant.telegram.webhook_secret,
-    )
-```
-
-### 5.3 Outbound-Nachrichten
-
-`telegram_notifier.py`:
-
-```python
-def _send_telegram_direct(text, chat_id=None, *, tenant: TenantContext | None = None):
-    ctx = tenant or require_tenant()
-    token = ctx.bot_token
-    chat_id = chat_id or ctx.owner_chat_id
-    # POST https://api.telegram.org/bot{token}/sendMessage
-```
-
-`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` nur noch als **Legacy-Fallback** für Single-Tenant.
-
-### 5.4 Conversation State
-
-`command_context.py` — Key `(tenant_id, chat_id)`:
-
-```python
-def _context_key(tenant_id: str, chat_id: str) -> str:
-    return f"{tenant_id}:{chat_id}"
-```
-
-Persistenz: Mongo `command_contexts` statt `data/telegram_command_context.json`.
-
-### 5.5 Heavy Jobs pro Tenant
-
-`bus/sessions.py`:
-
-```python
-class CommandSessionManager:
-    def is_busy(self, tenant_id: str) -> bool:
-        return self._active.get(tenant_id) is not None
-```
-
-Tenant A: `/backtest` läuft. Tenant B: Trading unbeeinträchtigt.
-
-### 5.6 Auth-Lücke schließen
-
-Heute: nur `telegram_ask_bridge._authorized_chat()` prüft `TELEGRAM_CHAT_ID`.
-
-**Ziel:** Jeder Webhook-Handler prüft `tenant.is_authorized_chat(chat_id)` bevor Commands ausgeführt werden.
+Legacy-Route `/` nur temporär für Migration.
 
 ---
 
-## 6. Worker-Struktur: Threading → RQ + Asyncio
+## 6. SaaS-spezifische Themen (Performance + Flexibilität)
+
+### 6.1 Tenant Onboarding (sehr wichtig für Verkauf an Freunde)
+
+Empfohlener Flow:
+
+1. Freund erstellt eigenen Telegram Bot → gibt Token + Chat-ID + Gate Keys.
+2. Du (oder ein kleines Script) rufst `onboard_tenant(...)` auf.
+3. System:
+   - Erzeugt `tenant_id`
+   - Verschlüsselt Secrets
+   - Seedet Default-Config + leere Ledger
+   - Registriert Webhook (`/webhook/{tenant_id}`)
+   - Startet erste Jobs (Trading-Cycle Scheduler)
+4. Freund bekommt eine kurze Bestätigung + seinen persönlichen Webhook-Pfad.
+
+Skript-Idee: `scripts/onboard_tenant.py --bot-token=... --gate-key=...`
+
+### 6.2 Quotas & Limits Enforcement (Vertrauen + Fairness)
+
+Limits aus dem `tenants.limits` Dokument müssen an mehreren Stellen durchgesetzt werden:
+
+- `risk/risk_manager.py`
+- `services/order_service.py` (vor jedem Buy)
+- Entry-Sensor / Daily Stats
+- Watchlist-Größe
+
+Beispiel: `enforce_tenant_limits(tenant_id, action="buy")`
+
+Das schützt das System davor, dass ein einzelner Tenant zu viele Ressourcen verbraucht.
+
+### 6.3 Performance-Optimierungen (Trading-spezifisch)
+
+**Hochpriorisiert für gutes SaaS-Erlebnis:**
+
+1. **Geteilter Price Feed** (empfohlen)
+   - Ein Prozess/Service holt Preise effizient (WebSocket wo möglich, sonst smart polling).
+   - Publiziert in Redis: `prices:BTC/USDT`, `prices:PEPE/USDT` (shared).
+   - Worker lesen daraus tenant-spezifisch für ihre Watchlist.
+
+2. **Config & Watchlist Caching**
+   - Redis mit kurzer TTL (30–120s) + Invalidation bei Änderung.
+
+3. **Async für I/O**
+   - Social Pipeline (X, CMC, LunarCrush) → asyncio.
+   - Preis-Fetching in Workern → async.
+
+4. **Faire Scheduling**
+   - RQ mit Priorität oder Round-Robin über aktive Tenants.
+   - Schwere Jobs (Hermes, große Backtests) in separate Queue mit niedriger Priorität.
+
+5. **In-Memory + Persistenz**
+   - Positions bleiben in-memory pro Tenant (schnell).
+   - Wichtige State-Änderungen sofort oder debounced nach Mongo.
+
+### 6.4 Security & Secrets (besonders wichtig beim Verkauf)
+
+- **Nie** Plaintext Secrets in DB oder Logs.
+- Verwende `cryptography.fernet` (oder Vault später).
+- Schlüssel aus Env-Variable (`TENANT_SECRET_KEY`).
+- Webhook Secret-Token von Telegram immer prüfen.
+- Rate Limiting pro `tenant_id` + `chat_id` (Redis).
+- `status != active` → sofort ablehnen (keine Jobs, keine Webhooks).
+
+### 6.5 Observability pro Tenant
+
+- Jeder Log-Eintrag sollte idealerweise `tenant_id` enthalten.
+- Metriken (Prometheus o.ä.) mit Label `tenant_id`.
+- Pro-Tenant tägliche/ wöchentliche Reports (bereits teilweise vorhanden).
+
+---
+
+## 7. Worker-Struktur: Threading → RQ + Asyncio (angepasst)
 
 ### 6.1 Ist-Zustand
 
@@ -480,214 +520,159 @@ async def fetch_all_sources(tenant_id: str) -> SignalSnapshot:
 
 ---
 
-## 7. Push-basierte Datenversorgung
+## 7. Performance & Caching (Zusammenfassung der besten Praktiken)
 
-| Daten | Heute (Pull) | Ziel |
-|-------|--------------|------|
-| Telegram Commands | Webhook (Push) | Unverändert |
-| Preise | REST Poll jeden Cycle | WebSocket → Redis `prices:{tenant}:{symbol}` |
-| 15m Sensor | 20s OHLCV Pull | Preis-Stream + Candle-Close Event |
-| Social X/CMC/LC | Cycle Pull | Webhooks wo möglich; sonst Pull + Dedup |
-| Config-Änderung | File reload | Redis Pub/Sub `config_invalidate:{tenant_id}` |
-| Notifications | Direct send | Stream `notifications:{tenant_id}` (bereits in `bus/publisher.py`) |
-
-**Pragmatischer Start:** Preis-Push als separater `price-feed` Service (Phase 3).
-
-```python
-# price_feed/subscriber.py
-async def on_price_update(tenant_id: str, symbol: str, price: float):
-    redis.hset(f"aria:{tenant_id}:prices", symbol, price)
-```
+- **Geteilte Preise** über Redis (nicht pro Tenant).
+- Redis Caching für Config, Watchlist, Signale mit Invalidation.
+- Async I/O in Social- und Preis-Pipelines.
+- Per-Tenant fair Scheduling + Quotas.
+- Diese Themen sind bereits in Abschnitt 6 detailliert beschrieben.
 
 ---
 
-## 8. Redis-Caching & Invalidierung
+## 8. Sicherheit & Skalierung (SaaS)
 
-### 8.1 Cache-Layer
+### Sicherheit (P0 für Verkauf)
 
-| Key | TTL | Inhalt |
-|-----|-----|--------|
-| `cache:config:{v}` | 5 min | Deserialisierte Config |
-| `cache:watchlist` | 2 min | Effective Watchlist |
-| `cache:tenant_meta` | 10 min | Plan, Status, Token-Refs |
-| `prices` | 30s | Letzter Preis pro Symbol |
-| `signals:snapshot` | 60s | Social-Snapshot |
+- Secrets immer verschlüsselt (Fernet).
+- Webhook Secret + Chat-Auth pro Tenant.
+- Rate Limits + Quotas pro Tenant.
+- `status != active` → harte Ablehnung.
 
-### 8.2 Version-basierte Invalidierung
+### Skalierung (für 5–50 Tenants)
 
-```python
-# Bei Config-Save:
-new_version = current_version + 1
-db.configs.update_one(
-    {"tenant_id": tid},
-    {"$set": {"body": cfg, "version": new_version}},
-)
-redis.publish(f"aria:{tid}:config_invalidate", str(new_version))
-```
-
-Worker subscribed:
-
-```python
-def on_config_invalidate(tenant_id: str, version: str):
-    _config_cache.pop(tenant_id, None)
-```
-
-Gleiches Muster für Watchlist bei `/watchlist add`.
+- Hybrid-Modell reicht zunächst aus.
+- Später mehrere Worker-Replicas.
+- `tenant_id` als Label in Logs und Metriken.
+- Mongo-Indexes auf `tenant_id` sind entscheidend.
 
 ---
 
-## 9. Sicherheit & Skalierung
+## 8. Migrations-Roadmap für SaaS (priorisiert & realistisch)
 
-### Sicherheit (P0)
+### Phase 0 — Ledger & Context Foundation (größtenteils erledigt auf diesem Branch)
 
-- **Secrets:** Bot-Token + Gate-Keys encrypted at rest (Fernet/KMS)
-- **Webhook:** `secret_token` pro Tenant (Telegram Header-Check)
-- **Chat-Auth:** Alle Commands, nicht nur `/ask`
-- **Tenant-Suspension:** `status != active` → 403 + Worker skip
-- **Mongo:** Jeder Query filtert `tenant_id` — Integrationstests mit 2 Tenants
-- **Rate Limits:** Pro `tenant_id` + `chat_id` (Redis sliding window)
-- **Live-Trading:** `live_confirmed` pro Tenant in Mongo
+| # | Task | Status | Dateien |
+|---|------|--------|---------|
+| 0.1 | TenantContext + resolve Helpers | ✅ | `core/tenant_context.py` |
+| 0.2 | Compound Keys + MongoLedger | ✅ | `storage/tenant_keys.py`, `mongo_ledger.py` |
+| 0.3 | Ledger Router + data_manager tenant-aware | ✅ | `ledger_router.py`, `data_manager.py` |
+| 0.4 | Positions scoped | ✅ (Hybrid) | `strategies/positions.py` |
+| 0.5 | Migration + Isolation Tests | ✅ | `migrate_single_to_tenant.py`, `test_tenant_isolation.py` |
+| 0.6 | Minimal TenantRegistry | 🟡 | `storage/tenant_registry.py` |
 
-### Skalierung
+### Phase 1 — Aktivierung & SaaS-Basics (nächster Fokus)
 
-- **Horizontal:** Mehrere `trading-worker` Replicas; Idempotenz via Redis `SET NX`
-- **Fair Scheduling:** Round-robin Tenant-Queue
-- **Mongo Sharding:** Später auf `tenant_id` (bei >1000 Tenants)
-- **Observability:** `tenant_id` in jedem Log + Metrics-Label
+| # | Task | Priorität | Wichtige Dateien |
+|---|------|-----------|------------------|
+| 1.1 | Webhook-Routing `/webhook/<tenant_id>` + Middleware | P0 | `aria_bot.py` |
+| 1.2 | Tenant Onboarding Script + Secrets Encryption | P0 | `scripts/onboard_tenant.py`, erweitere `tenant_registry` |
+| 1.3 | Config + Watchlist in Mongo pro Tenant | P0 | `data_manager.py`, `core/config.py` |
+| 1.4 | Telegram Notifier + Command Router tenant-aware | P0 | `telegram_notifier.py`, Router |
+| 1.5 | Limits / Quotas Enforcement | P0 | `risk/`, `services/order_service.py` |
+| 1.6 | Context in Trading Cycles & Sensor Loops | P1 | Services + Workers |
+| 1.7 | Redis Prefix überall + Caching Layer | P1 | `bus/`, neue Cache-Helpers |
 
----
+**Ziel nach Phase 1:** Du kannst mehreren Freunden einen eigenen Bot geben.
 
-## 10. Migrations-Roadmap (priorisiert)
+### Phase 2 — Performance & Entkopplung
 
-### Phase 0 — Foundation (Woche 1–2) — P0
+| # | Task | Nutzen |
+|---|------|--------|
+| 2.1 | Trading-Cycle als RQ Job pro Tenant | Skalierbar, keine globalen Loops |
+| 2.2 | Geteilter Price-Feed + Redis Pub/Sub | Deutlich weniger API-Calls |
+| 2.3 | Schwere Jobs (Hermes, Backtest) in eigene Queue | Ein Tenant blockiert niemanden |
+| 2.4 | Async Social Pipeline | Schnellere Signale |
+| 2.5 | Per-Tenant Scheduling + Fairness | Gutes Multi-User-Erlebnis |
 
-| # | Task | Dateien |
-|---|------|---------|
-| 0.1 | `tenants` Collection + `TenantRegistry` | `storage/tenant_registry.py` (neu) |
-| 0.2 | `TenantContext` + Webhook-Middleware | `core/tenant_context.py` (neu) |
-| 0.3 | MongoLedgerStore `{tenant_id, scope}` | `storage/mongo_ledger.py` |
-| 0.4 | Migration Single-User → `tenant_id=default` | `scripts/migrate_single_to_tenant.py` |
-| 0.5 | Cross-Tenant-Leak-Tests | `tests/unit/test_tenant_isolation.py` |
+### Phase 3 — Flexibilität & Produktionsreife
 
-**Risiko:** Breaking Mongo `_id`. **Mitigation:** Dual-Read (alt+neu) 2 Wochen.
-
-### Phase 1 — Isolation (Woche 3–5) — P0/P1
-
-| # | Task | Dateien |
-|---|------|---------|
-| 1.1 | Positions tenant-scoped | `strategies/positions.py` |
-| 1.2 | Config + Watchlist → Mongo | `data_manager.py`, `core/config.py` |
-| 1.3 | Command context → Mongo | `command_context.py` |
-| 1.4 | `/webhook/<tenant_id>` + Bot-Registrierung | `aria_bot.py`, `scripts/register_tenant_webhook.py` |
-| 1.5 | `telegram_notifier` tenant-aware | `telegram_notifier.py` |
-| 1.6 | Auth auf allen Commands | `aria_bot.py`, Router |
-
-**Feature-Flag:** `MULTI_TENANT_ENABLED=true`
-
-### Phase 2 — Worker-Entkopplung (Woche 6–8) — P1
-
-| # | Task |
-|---|------|
-| 2.1 | RQ Setup + `trading_cycle` Job |
-| 2.2 | `price_loop` → RQ Scheduler |
-| 2.3 | Heavy Jobs tenant-scoped in RQ |
-| 2.4 | Redis-Prefix überall |
-| 2.5 | Gateway bleibt dünn (Webhook + enqueue) |
-
-**Risiko:** Job-Duplikate. **Mitigation:** Redis Job-Dedup-Key.
-
-### Phase 3 — Optimierung (Woche 9+) — P2
-
-| # | Task |
-|---|------|
-| 3.1 | Async Social Pipeline |
-| 3.2 | Price WebSocket Feed |
-| 3.3 | Normalisierte Order-Docs |
-| 3.4 | Admin-API / CLI für Tenant-Onboarding |
+| # | Task | Nutzen für SaaS |
+|---|------|-----------------|
+| 3.1 | Versionierte Configs + Rollback | Vertrauen |
+| 3.2 | Admin CLI / kleines Dashboard für Tenants | Einfache Verwaltung |
+| 3.3 | Pro-Tenant Observability + Reports | Du siehst, wer aktiv ist |
+| 3.4 | Price WebSocket Feed (wo möglich) | Noch performanter |
+| 3.5 | Erweiterte Plan-Tiers + Feature-Flags | Monetarisierung / unterschiedliche Angebote |
 
 ---
 
-## 11. Migrations-Skripte
+## 9. Migrations- & Onboarding-Skripte (SaaS)
 
-### 11.1 Single-User → Default Tenant
+### 9.1 Legacy → Default Tenant (bereits vorhanden)
 
-```python
-# scripts/migrate_single_to_tenant.py
-DEFAULT_TENANT = "default"
+`scripts/migrate_single_to_tenant.py` — migriert alte Scope-Docs zu `tenant_id=default`.
 
-def migrate():
-    registry.create_tenant(
-        tenant_id=DEFAULT_TENANT,
-        telegram_token=os.environ["TELEGRAM_BOT_TOKEN"],
-        owner_chat_id=os.environ["TELEGRAM_CHAT_ID"],
-    )
-    for scope in ("demo", "paper", "live"):
-        old = mongo.orders.find_one({"_id": scope})
-        if old:
-            payload = {k: v for k, v in old.items() if k != "_id"}
-            payload["tenant_id"] = DEFAULT_TENANT
-            payload["ledger_scope"] = scope
-            mongo.orders.replace_one(
-                {"tenant_id": DEFAULT_TENANT, "ledger_scope": scope},
-                payload,
-                upsert=True,
-            )
-    # config.json → configs Collection
-    # watchlist.json → watchlists Collection
-```
+### 9.2 Neues Tenant Onboarding (SaaS-kritisch)
 
-### 11.2 Neuer Tenant Onboarding
+Erstelle / erweitere `scripts/onboard_tenant.py`:
 
 ```python
-# services/tenant_onboarding.py
-def onboard_tenant(bot_token: str, owner_chat_id: str, gate_keys: dict | None = None):
+# Beispiel
+def onboard_tenant(
+    owner_chat_id: str,
+    bot_token: str,
+    gate_api_key: str,
+    gate_secret: str,
+    plan: str = "pro"
+) -> str:
     tenant_id = generate_tenant_id()
-    encrypt_and_store_secrets(tenant_id, bot_token, gate_keys)
-    seed_default_config(tenant_id)
+    encrypt_and_save_secrets(tenant_id, bot_token, gate_api_key, gate_secret)
+    create_tenant_document(tenant_id, plan=plan, owner_chat_id=owner_chat_id)
+    seed_default_config_and_watchlist(tenant_id)
     seed_empty_ledgers(tenant_id)
-    register_webhook(tenant_id)
-    enqueue_trading_cycle(tenant_id)
+    register_telegram_webhook(tenant_id)   # /webhook/{tenant_id}
+    schedule_trading_jobs(tenant_id)
     return tenant_id
 ```
 
----
-
-## 12. Test-Strategie
-
-- **Contract Tests:** Store-Adapter mit 2 `tenant_id`s — kein Cross-Read
-- **Integration:** Zwei Bots, zwei Webhooks, parallele `/buy` — getrennte Ledgers
-- **Migration:** Snapshot vor/nach `migrate_single_to_tenant.py`
-- Erweitern: `tests/unit/test_mongo_backend.py`, `tests/unit/test_order_isolation.py`
+Das ist der wichtigste Einstiegspunkt, wenn du das Projekt an Freunde verkaufst.
 
 ---
 
-## 13. Bewusst NICHT in Phase 1
+## 10. Test-Strategie (SaaS)
 
-- Vollständiger Celery-Beat-Cluster
-- Order-Normalisierung (zu großer Big-Bang)
-- Self-Service-UI/Portal
-- Multi-Exchange pro Tenant
+- Isolation-Tests mit mehreren Tenants (bereits `test_tenant_isolation.py`).
+- Quota-Tests (Limits werden eingehalten).
+- Onboarding + Migration Tests.
+- End-to-End: Zwei Tenants gleichzeitig aktiv mit unterschiedlichen Strategien.
+- Performance-Tests: Wie verhält sich der Bot bei 10+ aktiven Tenants?
+
+## 11. Zusammenfassung – Beste Lösung für SaaS an Freunde
+
+**Empfohlene Architektur:**
+- **Hybrid-Modell** (shared Infrastructure) mit starker tenant_id Isolation.
+- **Bring-Your-Own-Bot** für Telegram (flexibel + vertrauenswürdig).
+- **TenantContext** früh setzen + durchgängig nutzen.
+- **MongoDB** als Source of Truth mit Compound Keys.
+- **Redis** für Caching, Queues, Locks und geteilte Preise.
+- **RQ** für entkoppelte, tenant-spezifische Jobs.
+- Reiche `tenants` Dokumente mit `plan`, `limits`, `features`, verschlüsselten Credentials.
+
+**Warum diese Lösung performant & flexibel ist:**
+- Geteilte Markt-Daten + Caches → niedrige Latenz und geringe API-Kosten auch bei mehreren Nutzern.
+- Per-Tenant Jobs + Quotas → fair und stabil.
+- BYOB + pro-Tenant Config → sehr einfach neue Freunde hinzuzufügen und individuelle Wünsche zu erfüllen.
+- Aufbauend auf dem bereits implementierten Phase-0-Fundament auf diesem Branch.
+
+**Nächste konkrete Schritte (empfohlen für SaaS-Readiness):**
+1. Webhook-Routing `/webhook/<tenant_id>` + frühe `tenant_context` Aktivierung.
+2. `scripts/onboard_tenant.py` mit Encryption + Defaults.
+3. Config + Watchlist Isolation in Mongo.
+4. Limits/Quotas Enforcement in Risk + OrderService.
+5. Erste echte Tests mit 2–3 Freunden (BYOB).
+
+Der bestehende Monolith wird schrittweise zum schlanken, tenant-aware Gateway + Job-Koordinator. Kein Big-Bang nötig — wir bauen auf dem guten Phase-0-Fundament auf dem Branch auf.
 
 ---
 
-## 14. Zusammenfassung
+## Referenzen & Wichtige Dateien (aktuell)
 
-| Entscheidung | Wahl |
-|--------------|------|
-| Deployment | Hybrid — shared Workers + Mongo, `tenant_id` überall |
-| Telegram | Bot pro Tenant — `/webhook/{tenant_id}` |
-| Worker | RQ zuerst, asyncio für I/O |
-| Mongo | Compound `{tenant_id, ledger_scope}` + `tenants` Collection |
-| Erster Schritt | `TenantContext` + Mongo-Ledger-Migration |
-
-Der Monolith in `aria_bot.py` bleibt als **Gateway + Legacy-Fallback** bis Phase 2 — kein Big-Bang-Rewrite.
-
----
-
-## Referenzen im Repo
-
-- `ARCHITECTURE_PLAN.md` — Redis-Prozess-Architektur (Vorarbeit)
-- `docs/RAILWAY_PLAN.md` — Deployment, Mongo-Guard
-- `storage/mongo_ledger.py` — aktuelles Ledger-Schema
-- `storage/ledger_router.py` — Backend-Routing (JSON/Mongo/Dual-Write)
-- `bus/` — Redis Streams, Locks, Jobs
+- `core/tenant_context.py`
+- `storage/{mongo_ledger.py, ledger_router.py, tenant_keys.py, tenant_registry.py}`
+- `data_manager.py` (tenant-aware Teile)
+- `strategies/positions.py`
+- `scripts/migrate_single_to_tenant.py` + `verify_tenant_phase0.py`
+- `tests/unit/test_tenant_isolation.py`
+- `plans/multi-tenant-migration.md` (dieses Dokument)
+- `ARCHITECTURE_PLAN.md` (Redis / Bus Architektur)

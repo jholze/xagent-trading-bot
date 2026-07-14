@@ -5,6 +5,7 @@ import shutil
 from datetime import datetime
 
 from logger import log
+from storage.mongo_client import get_database
 
 def is_demo_mode() -> bool:
     """Returns True if the bot is running in demo mode (--demo flag or pytest)."""
@@ -33,6 +34,29 @@ def get_data_file(base_name: str) -> str:
             log(f"Could not copy {base_name} to {demo_path}: {e}", "WARNING")
 
     return demo_path
+
+
+def _mongo_test_mode(config: dict | None = None) -> bool:
+    from storage.mongo_client import use_isolated_pytest_database
+    return use_isolated_pytest_database(config)
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _should_use_mongo_for_tenant_config(config: dict = None) -> bool:
+    """Mirror ledger logic: use mongo for tenant meta when backend is mongo."""
+    try:
+        from storage.ledger_router import resolve_ledger_backend, ledger_dual_write_enabled
+        cfg = config or {}
+        if ledger_dual_write_enabled(cfg):
+            return True
+        be = resolve_ledger_backend("paper", cfg)
+        return be == "mongo"
+    except Exception:
+        return False  # safe fallback
 
 
 def atomic_write_json(path: str, data: dict):
@@ -102,7 +126,25 @@ def simulated_balance_usdt(config: dict = None) -> float:
     return float(cfg.get("live", {}).get("simulated_balance_usdt", 5000))
 
 
-def load_watchlist():
+def load_watchlist(tenant_id: str | None = None):
+    """Thin dispatcher for watchlist. Uses pure default + tenant_meta_store for tenants."""
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    tid = resolve_tenant_id(tenant_id)
+    if tid != DEFAULT_TENANT:
+        default_cfg = _load_default_config_from_disk()
+        try:
+            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+        except Exception:
+            use_mongo = False
+        if use_mongo:
+            try:
+                from storage import tenant_meta_store as _tms
+                coins = _tms.load_tenant_watchlist(tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
+                if coins:
+                    return coins
+            except Exception as e:
+                log(f"Failed tenant_meta_store load_tenant_watchlist for {tid}: {e}", "WARNING")
+    # default or fallback
     path = get_data_file(WATCHLIST_FILE)
     if not os.path.exists(path):
         return []
@@ -123,8 +165,25 @@ def load_watchlist():
         return []
 
 
-def save_watchlist(coins):
-    """Speichert die Watchlist in die JSON-Datei"""
+def save_watchlist(coins, tenant_id: str | None = None):
+    """Thin dispatcher. Delegates tenant watchlist to meta_store when mongo backend."""
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    tid = resolve_tenant_id(tenant_id)
+    if tid != DEFAULT_TENANT:
+        default_cfg = _load_default_config_from_disk()
+        try:
+            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+        except Exception:
+            use_mongo = False
+        if not use_mongo:
+            return True
+        try:
+            from storage import tenant_meta_store as _tms
+            return _tms.save_tenant_watchlist(tid, coins, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
+        except Exception as e:
+            log(f"Failed tenant_meta_store save_tenant_watchlist for {tid}: {e}", "WARNING")
+            return False
+    # default
     path = get_data_file(WATCHLIST_FILE)
     try:
         atomic_write_json(path, {"coins": coins})
@@ -402,9 +461,9 @@ def prune_non_gate_watchlist_sources(config: dict = None) -> dict:
     return {"removed": removed_all, "by_source": by_source}
 
 
-def load_effective_watchlist():
-    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay."""
-    coins = list(load_watchlist())
+def load_effective_watchlist(tenant_id: str | None = None):
+    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay. Supports tenant scoping."""
+    coins = list(load_watchlist(tenant_id=tenant_id))
     if uses_watchlist_expansion():
         coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
     if is_dry_run_enhanced():
@@ -433,13 +492,16 @@ def save_full_coin(coin_data):
     )
 
 
-def load_config():
-    """Loads config from disk (always fresh read). Prefer get_config() for cached access."""
+def _load_default_config_from_disk():
+    """Recursion-free loader for the base/default config only.
+    Must NEVER call get_config, load_config, resolve_*, or anything that can re-enter tenant paths.
+    Used for default cache and for feeding tenant_meta decisions.
+    """
     try:
         with open("config.json", "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        log(f"Failed to load config.json, using defaults: {e}", "WARNING")
+        log(f"Failed to load config.json for default, using hardcoded defaults: {e}", "WARNING")
         return {
             "virtual_trading": True,
             "initial_capital_usdt": 5000,
@@ -457,31 +519,113 @@ def load_config():
         }
 
 
+def load_config(tenant_id: str | None = None):
+    """Thin dispatcher.
+    - default path: use pure disk loader + cache
+    - tenant: resolve tid, get default_cfg via pure loader, delegate to tenant_meta_store if mongo backend
+    Never calls get_config from inside tenant decision paths.
+    """
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    tid = resolve_tenant_id(tenant_id)
+    if tid != DEFAULT_TENANT:
+        default_cfg = _load_default_config_from_disk()
+        try:
+            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+        except Exception:
+            use_mongo = False
+        if use_mongo:
+            try:
+                from storage import tenant_meta_store as _tms
+                return _tms.load_tenant_config(tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
+            except Exception as e:
+                log(f"Failed tenant_meta_store load_tenant_config for {tid}: {e}", "WARNING")
+        # fallback for tenant
+        return {
+            "virtual_trading": True,
+            "initial_capital_usdt": 5000,
+            "max_usdt_per_trade": 150,
+            "stop_loss_pct": 12.0,
+            "max_open_positions": 5,
+            "debug": False,
+            "x_accounts": [],
+            "min_x_confidence": 65,
+            "x_weight": 0.45,
+            "technical_weight": 0.35,
+            "onchain_weight": 0.2,
+            "max_daily_trades": 5,
+            "strategies": []
+        }
+    # default
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = _load_default_config_from_disk()
+    return _config_cache
+
+
 # Simple module-level cache to avoid repeated disk reads
 _config_cache = None
 
 
-def get_config():
-    """Returns cached config. Use this in most places instead of load_config()."""
+def get_config(tenant_id: str | None = None):
+    """Thin dispatcher.
+    - explicit or ctx non-default: delegate to load_config (which uses pure default + meta store)
+    - default: use cached pure disk loader
+    """
     global _config_cache
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    if tenant_id is not None:
+        if tenant_id != DEFAULT_TENANT:
+            return load_config(tenant_id=tenant_id)
+        # explicit default
+        if _config_cache is None:
+            _config_cache = _load_default_config_from_disk()
+        return _config_cache
+    # no explicit arg: respect ctx via load_config (which will handle tenant or default)
+    tid = resolve_tenant_id(None)
+    if tid != DEFAULT_TENANT:
+        return load_config(tenant_id=tid)
     if _config_cache is None:
-        _config_cache = load_config()
+        _config_cache = _load_default_config_from_disk()
     return _config_cache
 
 
-def reload_config():
-    """Forces reload from disk (useful after manual config changes)."""
+def reload_config(tenant_id: str | None = None):
+    """Forces reload. For tenant: always fresh load."""
     global _config_cache
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    tid = resolve_tenant_id(tenant_id)
+    if tid != DEFAULT_TENANT:
+        return load_config(tenant_id=tid)
     _config_cache = None
     return get_config()
 
 
-def save_config(config):
+def save_config(config, tenant_id: str | None = None):
+    global _config_cache
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    tid = resolve_tenant_id(tenant_id)
+    if tid != DEFAULT_TENANT:
+        default_cfg = _load_default_config_from_disk()
+        try:
+            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+        except Exception:
+            use_mongo = False
+        if not use_mongo:
+            return True
+        try:
+            from storage import tenant_meta_store as _tms
+            ok = _tms.save_tenant_config(tid, config, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
+            if ok:
+                # do not touch the default cache
+                return True
+            return False
+        except Exception as e:
+            log(f"Failed tenant_meta_store save_tenant_config for {tid}: {e}", "WARNING")
+            return False
+    # default
     path = "config.json"
     try:
         atomic_write_json(path, config)
-        # Invalidate cache so subsequent get_config() calls see the change
-        global _config_cache
         _config_cache = None
         return True
     except Exception:

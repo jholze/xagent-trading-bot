@@ -36,7 +36,8 @@ class TestPriceFetcher(unittest.TestCase):
     def test_get_prices_batch_uses_entry_fallback_when_live_missing(self):
         with patch("price_fetcher._fetch_gate_bulk", return_value={}), \
              patch("price_fetcher._fetch_coingecko_bulk", return_value={}), \
-             patch("price_fetcher._fetch_single_symbol", return_value=("CAT/USDT", 0.0)):
+             patch("price_fetcher._fetch_single_symbol", return_value=("CAT/USDT", 0.0)), \
+             patch("bus.price_cache.price_cache_enabled", return_value=False):
             prices, sources = get_prices_batch(
                 ["CAT/USDT"],
                 fallbacks={"CAT/USDT": 1.514e-06},
@@ -49,7 +50,8 @@ class TestPriceFetcher(unittest.TestCase):
         _last_good_cache["CAT/USDT"] = 1.6e-06
         with patch("price_fetcher._fetch_gate_bulk", return_value={}), \
              patch("price_fetcher._fetch_coingecko_bulk", return_value={}), \
-             patch("price_fetcher._fetch_single_symbol", return_value=("CAT/USDT", 0.0)):
+             patch("price_fetcher._fetch_single_symbol", return_value=("CAT/USDT", 0.0)), \
+             patch("bus.price_cache.price_cache_enabled", return_value=False):
             prices, sources = get_prices_batch(
                 ["CAT/USDT"],
                 fallbacks={"CAT/USDT": 1.514e-06},
@@ -59,7 +61,8 @@ class TestPriceFetcher(unittest.TestCase):
         self.assertEqual(sources["CAT/USDT"], "stale")
 
     def test_get_prices_batch_fetches_cat_from_gate(self):
-        with patch("price_fetcher._fetch_gate_bulk", return_value={"CAT/USDT": 1.514e-06}):
+        with patch("price_fetcher._fetch_gate_bulk", return_value={"CAT/USDT": 1.514e-06}), \
+             patch("bus.price_cache.price_cache_enabled", return_value=False):
             prices, sources = get_prices_batch(["CAT/USDT"], return_sources=True)
         self.assertAlmostEqual(prices["CAT/USDT"], 1.514e-06)
         self.assertEqual(sources["CAT/USDT"], "live")

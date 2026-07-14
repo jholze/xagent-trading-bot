@@ -199,3 +199,8 @@ python3 scripts/reconcile_gate_positions.py   # Live mode
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
 Last updated: 23 June 2026
+
+## Adaptive Regime-Switching (Spot)
+
+Opt-in feature: RegimeDetector (TA + sentiment fusion), StrategyAllocator (grid priority in ranging, momentum in trends, defensive on extreme fear), dynamic GridStrategy with ATR spacing + recentering + tenant persistence.
+See code under intelligence/, strategies/grid.py and backtest/rust skeleton. Backward compatible when disabled (default).

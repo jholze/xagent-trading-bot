@@ -87,10 +87,12 @@ class TestBackgroundRuntime(unittest.TestCase):
 class TestDedup(unittest.TestCase):
     def test_try_claim_id_memory_fallback(self):
         from bus.dedup import clear_memory, try_claim_id
+        from unittest.mock import patch
 
         clear_memory()
-        self.assertTrue(try_claim_id("test", "post1", ttl_sec=60))
-        self.assertFalse(try_claim_id("test", "post1", ttl_sec=60))
+        with patch("bus.dedup.get_redis", return_value=None):  # force memory fallback, avoid any redis side effects in batch
+            self.assertTrue(try_claim_id("test", "post1", ttl_sec=60))
+            self.assertFalse(try_claim_id("test", "post1", ttl_sec=60))
 
 
 if __name__ == "__main__":

@@ -194,6 +194,10 @@
           }
         }
       }
+    },
+    "onboarding_help": {
+      "title": "🚀 Onboarding — Neue User (nur Operator)",
+      "body": "Als Operator kannst du neue User mit <b>einer einzigen privaten Nachricht</b> onboarden.\n\n<b>1. Vorbereitung durch den User</b>\n• Eigenen Bot bei @BotFather erstellen\n• Bot-Token + Gate.io API Key + Secret weitergeben\n\n<b>2. Onboarden (du)</b>\nEinfach die Daten als normale private Nachricht an den Bot senden:\n\n<code>max\n123456:AAH...BOTTOKEN...\nGATEKEY123...\nGATESECRET456...</code>\n\nOder mit Labels (auch 3-Zeiler ohne Namen → auto-ID):\n<code>token: 123...\nkey: GATE...\nsecret: SEC...</code>\n\n<b>Automatisch passiert:</b>\n• Tenant anlegen (ID ggf. auto-generiert)\n• Watchlist mit BTC, ETH, SOL, PEPE vorgeladen\n• Webhook für den neuen Bot registriert\n• Willkommensnachricht direkt im Bot des neuen Users\n• Bestätigung mit exakter Webhook-URL an dich\n\n<b>Wichtig:</b> Funktioniert nur im privaten Chat mit dir (TELEGRAM_CHAT_ID). Alle sensiblen Daten werden verschlüsselt.\n\nAlternative: <code>/onboard</code> (interaktiv oder einzeilig)."
     }
   },
   "en": {
@@ -373,6 +377,10 @@
           }
         }
       }
+    },
+    "onboarding_help": {
+      "title": "🚀 Onboarding — New users (operator only)",
+      "body": "As operator you can onboard new users with <b>a single private message</b>.\n\n<b>1. User preparation</b>\n• Create their own bot via @BotFather\n• Provide Bot-Token + Gate.io API Key + Secret\n\n<b>2. Onboard (you)</b>\nJust send the data as a normal private message:\n\n<code>max\n123456:AAH...BOTTOKEN...\nGATEKEY123...\nGATESECRET456...</code>\n\nOr with labels (also 3 lines without name → auto ID):\n<code>token: 123...\nkey: GATE...\nsecret: SEC...</code>\n\n<b>Automatically happens:</b>\n• Tenant created (ID auto-generated if omitted)\n• Watchlist pre-seeded with BTC, ETH, SOL, PEPE\n• Webhook registered for the new bot\n• Welcome message sent directly into the user's own bot\n• Confirmation to you with the exact webhook URL\n\n<b>Important:</b> Only works in private chat with you (TELEGRAM_CHAT_ID). All sensitive data is encrypted.\n\nAlternative: <code>/onboard</code> (interactive or one-shot)."
     }
   }
 }

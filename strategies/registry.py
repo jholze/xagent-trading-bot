@@ -56,6 +56,7 @@ _EXPLICIT_PRESERVE_KEYS = (
 
 
 from strategies.sell_profile import apply_position_sell_overlay
+from core.models import RegimeResult, AllocationDecision
 
 
 def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
@@ -225,7 +226,11 @@ def resolve_strategy_params(
     regime_result: RegimeResult | None = None,
     allocation: AllocationDecision | None = None,
 ) -> dict:
-    """Pick strategy params: strategies[] > Hermes memory > volatile > altcoin_social > defaults."""
+    """
+    Pick strategy params.
+    Erweitert um regime_result + allocation (von RegimeDetector + StrategyAllocator).
+    Bestehende volatility_tier Logik wird erweitert, nicht ersetzt.
+    """
     cfg = get_bot_config()
     symbol = coin.get("symbol", "")
     tf = coin.get("timeframe", "4h")
@@ -365,6 +370,7 @@ def get_strategy(coin: dict) -> BaseStrategy:
     coin = resolve_coin_config(coin)
     if preset_params.get("strategy_profile"):
         coin["strategy_params"] = preset_params
+
     registry = _load_registry()
     strategy_class = coin.get("strategy_class", "technical_rsi_bb")
 

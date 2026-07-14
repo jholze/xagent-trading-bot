@@ -86,17 +86,17 @@ class TestDemoMongoLedgerStore(unittest.TestCase):
             def __init__(self):
                 self.history = dict(stale_history)
 
-            def load_orders(self, scope):
+            def load_orders(self, scope, tenant_id=None):
                 return {
                     "ledger_scope": scope,
                     "orders": [filled_order],
                     "migrated_from_trades": True,
                 }
 
-            def load_trade_history(self, scope):
+            def load_trade_history(self, scope, tenant_id=None):
                 return dict(self.history)
 
-            def load_positions(self, scope):
+            def load_positions(self, scope, tenant_id=None):
                 return {"ledger_scope": scope, "positions": {}}
 
             def save_trade_history(self, data, scope):
@@ -135,17 +135,17 @@ class TestDemoMongoLedgerStore(unittest.TestCase):
                     "trades": [],
                 }
 
-            def load_orders(self, scope):
+            def load_orders(self, scope, tenant_id=None):
                 return {
                     "ledger_scope": scope,
                     "orders": [filled_order],
                     "migrated_from_trades": True,
                 }
 
-            def load_trade_history(self, scope):
+            def load_trade_history(self, scope, tenant_id=None):
                 return dict(self.history)
 
-            def load_positions(self, scope):
+            def load_positions(self, scope, tenant_id=None):
                 return {"ledger_scope": scope, "positions": {}}
 
             def save_trade_history(self, data, scope):

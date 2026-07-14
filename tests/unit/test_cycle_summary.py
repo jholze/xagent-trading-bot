@@ -141,7 +141,15 @@ class TestCycleSummary(unittest.TestCase):
         mock_cfg.trading_mode = "live"
         mock_cfg.simulated_balance_usdt = 5000
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
-             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("notifications.terminal_dashboard._portfolio_snapshot", return_value={
+                 "history": live_hist,
+                 "balance": 3952.19,
+                 "balance_label": "Dry Run USDT",
+                 "realized": -111.82,
+                 "unrealized": 0.0,
+                 "total_value": 3952.19,
+                 "ledger_scope": "demo",
+             }), \
              patch("data_manager.is_dry_run_enhanced", return_value=False), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")

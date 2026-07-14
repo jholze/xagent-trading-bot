@@ -368,7 +368,7 @@ class TestActiveOrchestratorPath:
             orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
         ), patch.object(orch.trading.risk.market, "fetch_funding_rate", return_value=None), patch(
             "notifications.telegram_commands.position_display.send_positions_snapshot"
-        ):
+        ), patch("risk.risk_manager.is_demo_mode", return_value=False):
             result = orch.process_coin(VOLATILE_COIN, 1.0, quiet=True)
 
         assert result["action"] == BUY
@@ -501,7 +501,7 @@ class TestEntrySensorLoop:
             orch.trading.risk.market, "fetch_funding_rate", return_value=None
         ), patch("bus.eval_queue.eval_queue_enabled", return_value=False), patch(
             "notifications.telegram_commands.position_display.send_positions_snapshot"
-        ):
+        ), patch("risk.risk_manager.is_demo_mode", return_value=False):
             entry_sensor_loop._poll_once(orch)
 
         assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])
@@ -697,7 +697,8 @@ class TestProcessEntrySensorPath:
 
         with patch.object(orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             orch.trading.risk.market, "fetch_funding_rate", return_value=None
-        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"):
+        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"), \
+             patch("risk.risk_manager.is_demo_mode", return_value=False):
             entry_sensor_loop._poll_once(orch)
 
         assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])

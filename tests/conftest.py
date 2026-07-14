@@ -183,42 +183,37 @@ def normalize_unit_test_config(monkeypatch):
         "watch_ttl_hours": 24,
     }
     data_manager._config_cache = cfg
-    orig_get_config = data_manager.get_config
+    orig_save_config = data_manager.save_config
     orig_reload_config = data_manager.reload_config
 
-    def _get_config():
-        return cfg
+    # Per strategy: seed cache only for default-tenant; do not replace get_config/reload globally.
+    # Default-tenant calls will hit real get_config() which returns from _config_cache.
+    # For reload on default: just reset cache.
 
-    def _reload_config():
-        return cfg
+    def _reload_config(tenant_id=None, **kwargs):
+        if (tenant_id is None or tenant_id == "default"):
+            data_manager._config_cache = None
+        # for non-default, real reload will handle via load_config
+        return data_manager.reload_config(tenant_id=tenant_id, **kwargs) if hasattr(data_manager, 'reload_config') else cfg
 
-    monkeypatch.setattr(data_manager, "get_config", _get_config)
-    monkeypatch.setattr(data_manager, "_config_cache", cfg)
-    monkeypatch.setattr(data_manager, "reload_config", _reload_config)
+    # Note: we keep orig_reload but do not setattr reload globally; only guard default writes via save.
 
-    def _save_config(updated):
-        nonlocal cfg
-        cfg = copy.deepcopy(updated)
-        data_manager._config_cache = cfg
-        return True
+    def _save_config(updated, tenant_id=None, **kwargs):
+        if (tenant_id is None or tenant_id == "default"):
+            # guard only default-tenant: update in-memory cache only, no json write
+            nonlocal cfg
+            cfg = copy.deepcopy(updated)
+            data_manager._config_cache = cfg
+            return True
+        # for non-default tenant: call real (will use tenant_meta_store)
+        return orig_save_config(updated, tenant_id=tenant_id, **kwargs)
 
     monkeypatch.setattr(data_manager, "save_config", _save_config)
-
-    project_root = str(Path(__file__).resolve().parent.parent)
-    for mod in list(sys.modules.values()):
-        if mod is None:
-            continue
-        mod_file = getattr(mod, "__file__", "") or ""
-        if project_root not in mod_file:
-            continue
-        if mod.__dict__.get("get_config") is orig_get_config:
-            monkeypatch.setattr(mod, "get_config", _get_config)
-        if mod.__dict__.get("reload_config") is orig_reload_config:
-            monkeypatch.setattr(mod, "reload_config", _reload_config)
+    # Do not setattr get_config or reload globally; only cache for default.
+    # Remove cross-module propagation for get/reload.
 
     def _bot_config():
         from core.config import BotConfig
-
         return BotConfig(raw=copy.deepcopy(cfg))
 
     monkeypatch.setattr("core.config.get_bot_config", _bot_config)

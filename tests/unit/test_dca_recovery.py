@@ -192,11 +192,17 @@ class TestDCARecoveryDecisionEngine(unittest.TestCase):
             },
         )
         engine = DecisionEngine()
-        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "", {})):
+        # Ensure regime code is disabled for this test (backward compat)
+        engine.config.raw.setdefault("regime_detector", {})["enabled"] = False
+        engine.config.raw.setdefault("strategy_allocator", {})["enabled"] = False
+        with patch.object(engine, "_merge_sell", return_value=("HOLD", ["technical"], 50.0, [], "", {})), \
+             patch("strategies.dca_portfolio.should_defer_per_coin_dca", return_value=False):
             analysis = engine.evaluate_with_market(
                 {"symbol": self.symbol, "timeframe": self.tf},
                 market,
             )
+        print("DEBUG dca test analysis.action =", analysis.action if analysis else None)
+        print("DEBUG dca test sources =", analysis.sources if analysis else None)
         self.assertEqual(analysis.action, "BUY_DCA")
         self.assertIn("dca", analysis.sources)
 

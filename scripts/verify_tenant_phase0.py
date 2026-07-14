@@ -18,7 +18,7 @@ from scripts.migrate_single_to_tenant import migrate
 
 
 def _isolation_exercise() -> None:
-    os.environ["MONGODB_DB"] = "xagent_test"
+    os.environ["MONGODB_DB"] = "xagent_pytest"
     drop_database(test=True)
     cfg = {"trading_mode": "paper", "architecture": {"ledger_backend": "mongo"}}
     store = MongoLedgerStore(test=True)
@@ -60,7 +60,7 @@ def _isolation_exercise() -> None:
 
 
 def _migrate_apply_verify() -> None:
-    os.environ["MONGODB_DB"] = "xagent_test"
+    os.environ["MONGODB_DB"] = "xagent_pytest"
     drop_database(test=True)
     db = get_database(test=True)
     coll = db["orders"]

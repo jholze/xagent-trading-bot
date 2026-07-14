@@ -206,3 +206,24 @@ python3 scripts/reconcile_gate_positions.py   # Live-Modus
 **GitHub:** https://github.com/jholze/xagent-trading-bot
 
 Letzte Aktualisierung: 23. Juni 2026
+
+---
+
+## Adaptive Regime-Switching (Spot)
+
+Opt-in über `config.json`:
+
+```json
+"regime_detector": { "enabled": true, "tech_weight": 0.62, "sentiment_weight": 0.38 },
+"strategy_allocator": { "enabled": true },
+"grid": { "enabled": true }
+```
+
+- RegimeDetector fusioniert Technik (ADX/DI, EMA200, BB, ATR, Volatility-Tier) + Sentiment (LunarCrush, X, Fear&Greed).
+- StrategyAllocator wählt dynamisch Grid (ranging+neutral) vs Momentum (trend+confirm) + Defensive bei stark negativem Sentiment.
+- GridStrategy: ATR-basiertes dynamisches Grid + Auto-Re-Center + Persistenz (tenant_meta_store).
+- Erweitert bestehende volatility / buy_regime Logik, backward-kompatibel.
+- Logs: `[Regime] ...`, Regime-Info an SignalAnalysis angehängt (sichtbar in Notifier/Logs).
+- Rust-Skeleton für schnelle Backtests: `backtest/rust/`
+
+Siehe `intelligence/regime_detector.py`, `strategy_allocator.py`, `strategies/grid.py`, `core/config.py`, `tests/unit/test_regime_and_allocator.py`.

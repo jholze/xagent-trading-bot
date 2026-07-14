@@ -87,6 +87,12 @@
           ]
         },
         {
+          "title": "🚀 <b>Onboarding</b> — Neue User hinzufügen",
+          "keys": [
+            "onboard"
+          ]
+        },
+        {
           "title": "❓ <b>Hilfe</b>",
           "keys": [
             "menu",
@@ -308,6 +314,11 @@
       "help": {
         "description": "Alle Befehle mit Beispielen",
         "help_line": "<code>/help</code> — Diese Befehlsliste"
+      },
+      "onboard": {
+        "description": "Neuen User onboarden (Operator)",
+        "help_line": "<code>/onboard</code> — Neuen Tenant per privater Nachricht onboarden (nur Operator)",
+        "hint": "🚀 <b>/onboard</b> — Onboarding für neuen User\n\nEinfach Daten als private Nachricht senden oder interaktiv:\n<code>/onboard</code> starten.\nOder direkt: <code>/help onboarding</code> für die komplette Anleitung."
       }
     }
   },
@@ -396,6 +407,12 @@
             "backtest",
             "backtest_lock",
             "backtest_results"
+          ]
+        },
+        {
+          "title": "🚀 <b>Onboarding</b> — Add new users",
+          "keys": [
+            "onboard"
           ]
         },
         {
@@ -620,6 +637,11 @@
       "help": {
         "description": "Full command list with examples",
         "help_line": "<code>/help</code> — This command list"
+      },
+      "onboard": {
+        "description": "Onboard a new user (Operator)",
+        "help_line": "<code>/onboard</code> — Onboard new tenant via private message (operator only)",
+        "hint": "🚀 <b>/onboard</b> — Onboard a new user\n\nSend data as a private message or start interactive with <code>/onboard</code>.\nFor full instructions: <code>/help onboarding</code>."
       }
     }
   }

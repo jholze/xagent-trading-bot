@@ -1,18 +1,52 @@
-"""Minimal tenant registry for Phase 0 migration and onboarding."""
+"""Tenant registry for multi-tenant SaaS: supports creation, retrieval and per-tenant encrypted Gate credentials."""
 
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timezone
+
+from cryptography.fernet import Fernet, InvalidToken
 
 from core.tenant_context import DEFAULT_TENANT
 from storage.mongo_client import get_database
 
 TENANTS_COLLECTION = "tenants"
 
+# Stable test key for unit tests (32 bytes url-safe base64). Never use in prod.
+_TEST_FERNET_KEY = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_fernet(test: bool = False) -> Fernet:
+    key = os.getenv("TENANT_SECRET_KEY")
+    if not key and test:
+        key = _TEST_FERNET_KEY
+    if not key:
+        raise RuntimeError("TENANT_SECRET_KEY env var is required for tenant secret operations")
+    if isinstance(key, str):
+        key = key.encode()
+    return Fernet(key)
+
+
+def _encrypt(value: str | None, test: bool = False) -> str:
+    if not value:
+        return ""
+    f = _get_fernet(test=test)
+    return f.encrypt(value.encode()).decode()
+
+
+def _decrypt(enc_value: str | None, test: bool = False) -> str:
+    if not enc_value:
+        return ""
+    f = _get_fernet(test=test)
+    try:
+        return f.decrypt(enc_value.encode()).decode()
+    except (InvalidToken, Exception):
+        return ""
 
 
 def ensure_default_tenant(
@@ -40,3 +74,79 @@ def ensure_default_tenant(
     }
     coll.replace_one({"tenant_id": DEFAULT_TENANT}, doc, upsert=True)
     return doc
+
+
+def create_tenant(
+    tenant_id: str,
+    *,
+    plan: str = "free",
+    status: str = "active",
+    owner_chat_id: str = "",
+    bot_token: str = "",
+    gate_api_key: str = "",
+    gate_api_secret: str = "",
+    limits: dict | None = None,
+    features: list[str] | None = None,
+    test: bool = False,
+) -> dict:
+    """Create or upsert a full tenant record with encrypted Gate credentials."""
+    db = get_database(test=test)
+    coll = db[TENANTS_COLLECTION]
+    doc = {
+        "tenant_id": tenant_id,
+        "status": status,
+        "plan": plan,
+        "limits": limits or {
+            "max_open_positions": 10,
+            "max_daily_trades": 20,
+            "max_daily_usdt": 3000,
+            "allow_live": False,
+        },
+        "features": features or ["basic"],
+        "telegram": {
+            "owner_chat_id": owner_chat_id,
+            "bot_token_enc": _encrypt(bot_token, test=test),
+            "webhook_secret": secrets.token_urlsafe(32),
+        },
+        "exchange": {
+            "gate": {
+                "api_key_enc": _encrypt(gate_api_key, test=test),
+                "api_secret_enc": _encrypt(gate_api_secret, test=test),
+                "testnet": False,
+            }
+        },
+        "defaults": {"trading_mode": "paper", "ledger_scope": "paper"},
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+    }
+    coll.replace_one({"tenant_id": tenant_id}, doc, upsert=True)
+    return doc
+
+
+def get_tenant(tenant_id: str, *, test: bool = False) -> dict | None:
+    """Retrieve tenant doc by id."""
+    db = get_database(test=test)
+    coll = db[TENANTS_COLLECTION]
+    return coll.find_one({"tenant_id": tenant_id})
+
+
+def get_gate_credentials(tenant_id: str, *, test: bool = False) -> dict[str, str]:
+    """Return decrypted Gate API credentials for the tenant (empty strings if missing)."""
+    tenant = get_tenant(tenant_id, test=test) or {}
+    gate = (tenant.get("exchange") or {}).get("gate") or {}
+    return {
+        "api_key": _decrypt(gate.get("api_key_enc"), test=test),
+        "api_secret": _decrypt(gate.get("api_secret_enc"), test=test),
+    }
+
+
+def get_webhook_secret(tenant_id: str, *, test: bool = False) -> str:
+    """Return the webhook secret for secret_token validation (empty if not set)."""
+    tenant = get_tenant(tenant_id, test=test) or {}
+    return (tenant.get("telegram") or {}).get("webhook_secret", "")
+
+
+def list_active_tenants(*, test: bool = False) -> list[dict]:
+    db = get_database(test=test)
+    coll = db[TENANTS_COLLECTION]
+    return list(coll.find({"status": "active"}))

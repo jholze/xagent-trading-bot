@@ -129,15 +129,15 @@ class TestPortfolioEquity(unittest.TestCase):
     def test_buy_partial_sell_rebuy_resets_sold_percent(self):
         svc = self._service()
         svc.execute_buy(self.SYMBOL, self.TF, 1.0, 100.0)
-        svc.execute_sell(self.SYMBOL, self.TF, 1.2, "SELL_30")
+        svc.execute_sell(self.SYMBOL, self.TF, 1.2, "SELL_FULL")
         pos = get_position(self.SYMBOL, self.TF)
         self.assertGreater(pos["sold_percent"], 0)
 
         svc.execute_buy(self.SYMBOL, self.TF, 1.5, 100.0)
         pos = get_position(self.SYMBOL, self.TF)
         self.assertEqual(pos["sold_percent"], 0.0)
-        # 70 @ 1.0 + 66.67 @ 1.5 ≈ weighted avg
-        self.assertAlmostEqual(pos["average_entry"], 1.244, places=2)
+        # fresh buy after full exit: avg = entry price
+        self.assertAlmostEqual(pos["average_entry"], 1.5, places=2)
 
     def test_equity_invariant_with_open_positions(self):
         svc = self._service()

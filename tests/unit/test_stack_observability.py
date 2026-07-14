@@ -152,7 +152,9 @@ class TestStackObservability(unittest.TestCase):
 
     def test_stack_command_handler(self):
         from notifications.telegram_commands.stack_commands import handle
+        from unittest.mock import patch
 
+        # Fresh patch each time to avoid pollution from other tests that mock threading
         with patch("notifications.telegram_commands.stack_commands.threading.Thread") as mock_thread:
             self.assertTrue(handle("/stack"))
             self.assertTrue(handle("/stack 48"))

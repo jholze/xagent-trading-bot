@@ -591,11 +591,22 @@ def handle_telegram_command(text, chat_id=None):
 
 
 def handle_telegram_text(text, chat_id=None):
-    """Non-slash messages (e.g. section buttons on reply keyboard)."""
+    """Non-slash messages (e.g. section buttons on reply keyboard).
+
+    Also supports the super-simple onboarding flow: operator can paste
+    onboarding data (token+key+secret) as a plain private message.
+    """
     from notifications.telegram_commands.command_context import try_resolve
 
     if chat_id is not None and try_resolve(chat_id, text):
         return True
+
+    # Try onboarding handler for plain-text pastes (operator-only, returns False quickly otherwise).
+    # This enables the "just send the data as a normal private message" UX.
+    from notifications.telegram_commands import onboarding_commands
+    if onboarding_commands.handle(text):
+        return True
+
     from notifications.telegram_commands.menu_commands import handle_text
 
     return handle_text(text, chat_id=chat_id)
@@ -604,3 +615,65 @@ def handle_telegram_text(text, chat_id=None):
 def handle_telegram_callback(callback_query):
     from notifications.telegram_commands.router import dispatch_callback
     return dispatch_callback(callback_query)
+
+
+def set_webhook_for_bot(token: str, tenant_id: str) -> bool:
+    """Set Telegram webhook for a user's own bot token (BYOB onboarding)."""
+    import json
+    import requests
+
+    base = (os.getenv("WEBHOOK_BASE_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().rstrip("/")
+    if not base:
+        log("No WEBHOOK_BASE_URL set — cannot register user webhook", "WARNING")
+        return False
+    if not base.startswith("http"):
+        base = f"https://{base}"
+
+    url = f"{base}/webhook/{tenant_id}"
+
+    # fetch secret if present
+    from storage.tenant_registry import get_webhook_secret
+    secret = get_webhook_secret(tenant_id, test=False)
+
+    api = f"https://api.telegram.org/bot{token}/setWebhook"
+    payload = {
+        "url": url,
+        "drop_pending_updates": "true",
+        "allowed_updates": json.dumps(["message", "callback_query"]),
+    }
+    if secret:
+        payload["secret_token"] = secret
+
+    try:
+        resp = requests.post(api, data=payload, timeout=15)
+        data = resp.json() if resp.status_code == 200 else {}
+        if data.get("ok"):
+            log(f"User webhook registered for tenant {tenant_id}: {url}", "INFO")
+            return True
+        else:
+            log(f"setWebhook failed for {tenant_id}: {resp.text[:200]}", "WARNING")
+            return False
+    except Exception as e:
+        log(f"setWebhook exception for {tenant_id}: {e}", "ERROR")
+        return False
+
+
+def send_message_with_bot_token(token: str, chat_id: str | int, text: str) -> bool:
+    """Send a message using a foreign bot token (used during onboarding)."""
+    import requests
+    api = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        resp = requests.post(
+            api,
+            data={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        return resp.status_code == 200 and resp.json().get("ok", False)
+    except Exception as e:
+        log(f"send_message_with_bot_token failed: {e}", "WARNING")
+        return False

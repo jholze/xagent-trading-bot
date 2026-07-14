@@ -54,16 +54,26 @@ class TestMarketServiceOhlcvCache(unittest.TestCase):
         cfg = {"architecture": {"ohlcv_cache_enabled": True}}
         ms = MarketService(config_raw=cfg)
         bars = _bars(40)
+        sym = "TESTOHLCV/USDT"  # unique symbol to avoid cross-test cache pollution
 
         class FakeExchange:
+            def __init__(self):
+                self.calls = 0
             def fetch_ohlcv(self, symbol, timeframe=None, limit=None):
-                self.calls = getattr(self, "calls", 0) + 1
+                self.calls += 1
                 return bars
 
         fake = FakeExchange()
-        with patch.object(MarketService, "_get_spot_exchange", return_value=fake):
-            df1 = ms._fetch_ohlcv("SOL/USDT", "4h", 100)
-            df2 = ms._fetch_ohlcv("SOL/USDT", "4h", 100)
+
+        # Control the cache hit/miss explicitly via a mock returned by from_config
+        mock_cache = MagicMock()
+        mock_cache.get.side_effect = [None, MagicMock(bars=bars)]
+
+        with patch.object(MarketService, "_get_spot_exchange", return_value=fake), \
+             patch("bus.ohlcv_cache.ohlcv_cache_enabled", return_value=True), \
+             patch("bus.ohlcv_cache.ohlcv_cache_from_config", return_value=mock_cache):
+            df1 = ms._fetch_ohlcv(sym, "4h", 100)
+            df2 = ms._fetch_ohlcv(sym, "4h", 100)
 
         self.assertIsNotNone(df1)
         self.assertIsNotNone(df2)

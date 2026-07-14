@@ -17,7 +17,7 @@ def test_load_orders_refuses_json_fallback_on_mongo_error(demo_mongo_env, monkey
     from data_manager import load_orders
 
     class BrokenStore:
-        def load_orders(self, scope):
+        def load_orders(self, scope, tenant_id=None):
             raise ConnectionError("mongo down")
 
     monkeypatch.setattr("data_manager._mongo_ledger_store", lambda *a, **k: BrokenStore())
@@ -35,7 +35,7 @@ def test_load_orders_uses_json_fallback_when_opt_in(demo_mongo_env, monkeypatch,
     )
 
     class BrokenStore:
-        def load_orders(self, scope):
+        def load_orders(self, scope, tenant_id=None):
             raise ConnectionError("mongo down")
 
     monkeypatch.setenv("DEMO_LEDGER_JSON_FALLBACK", "1")

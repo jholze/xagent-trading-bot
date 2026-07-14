@@ -246,3 +246,34 @@ def build_section_help_message(section_id: str, lang: str | None = None) -> str:
     if footer:
         lines.append(footer)
     return "\n".join(lines).rstrip()
+
+
+def build_onboarding_help_message(lang: str | None = None) -> str:
+    """Concise onboarding documentation for quick recall via /help onboarding."""
+    lang = lang or current_language()
+    pack = _pack(lang)
+    oh = pack.get("onboarding_help", {})
+    if isinstance(oh, str):
+        return oh
+    title = oh.get("title", "🚀 Onboarding")
+    body = oh.get("body", "")
+    if body:
+        return f"{title}\n\n{body}"
+    # Fallback concise text if no locale data
+    if lang == "en":
+        return (
+            "<b>🚀 Onboarding — New users (operator only)</b>\n\n"
+            "Onboard via a single private message.\n\n"
+            "Send token + key + secret (name optional, 3 lines → auto ID).\n"
+            "Auto: tenant, default watchlist (BTC/ETH/SOL/PEPE), webhook, welcome in user bot, confirmation with URL.\n\n"
+            "Only private + TELEGRAM_CHAT_ID operator. Data encrypted.\n"
+            "See also: <code>/onboard</code>"
+        )
+    return (
+        "<b>🚀 Onboarding — Neue User (nur Operator)</b>\n\n"
+        "Per einfacher privater Nachricht onboarden.\n\n"
+        "Token + Key + Secret senden (Name optional, 3 Zeilen → auto ID).\n"
+        "Automatisch: Tenant, Watchlist-Seed (BTC/ETH/SOL/PEPE), Webhook, Welcome im User-Bot, Bestätigung mit URL.\n\n"
+        "Nur privat + du als Operator (TELEGRAM_CHAT_ID). Daten verschlüsselt.\n"
+        "Siehe auch: <code>/onboard</code>"
+    )

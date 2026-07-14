@@ -41,7 +41,7 @@ MENU_SECTIONS: list[tuple[str, list[str]]] = [
     ("transparenz", ["morning", "stack", "decisions", "why", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
-    ("hilfe", ["menu", "help"]),
+    ("hilfe", ["menu", "help", "onboard"]),
 ]
 
 _SECTION_KEYS = {sid: keys for sid, keys in MENU_SECTIONS}

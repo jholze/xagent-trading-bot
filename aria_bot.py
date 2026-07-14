@@ -37,6 +37,7 @@ print(get_text("bot_started") + "\n")
 
 try:
     from core.config import get_bot_config
+    from core.tenant_context import DEFAULT_TENANT, tenant_context, resolve_tenant_id
     from data_manager import (
         get_config,
         get_text,
@@ -266,27 +267,69 @@ def webhook_get():
     return "OK", 200
 
 
+def _get_tenant_id_from_request() -> str:
+    # Support future per-tenant routing + header for tests/compat
+    # 1. Path param if using /webhook/<tid> (added below)
+    # 2. Header X-Tenant-Id
+    # 3. Query ?tenant= or ?tenant_id=
+    tid = request.view_args.get("tenant_id") if request.view_args else None
+    if not tid:
+        tid = request.headers.get("X-Tenant-Id") or request.headers.get("X-Tenant-ID")
+    if not tid:
+        tid = request.args.get("tenant") or request.args.get("tenant_id")
+    return tid or DEFAULT_TENANT
+
+
+@app.route("/webhook/<tenant_id>", methods=["POST"])
+def webhook_with_tenant(tenant_id: str):
+    """Per-tenant webhook route for SaaS / BYOB."""
+    from storage.tenant_registry import get_webhook_secret
+
+    # Optional but recommended: validate Telegram secret_token
+    expected_secret = get_webhook_secret(tenant_id)
+    if expected_secret:
+        received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if received != expected_secret:
+            log(f"Webhook secret mismatch for {tenant_id}", "WARNING")
+            return "Forbidden", 403
+
+    with tenant_context(tenant_id):
+        return _process_telegram_update()
+
+
 @app.route("/", methods=["POST"])
 def webhook():
     try:
-        update = request.get_json()
-        if update:
-            from notifications.telegram_commands.menu_i18n import set_user_language_from_update
-
-            set_user_language_from_update(update)
-        if update and "callback_query" in update:
-            log("Received Telegram callback query", "DEBUG")
-            handle_telegram_callback(update["callback_query"])
-        elif update and "message" in update:
-            text = update["message"].get("text", "")
-            chat_id = update["message"].get("chat", {}).get("id")
-            log(f"Received Telegram message: {text[:100]}", "DEBUG")
-            if text.startswith("/"):
-                handle_telegram_command(text, chat_id=chat_id)
-            elif text.strip():
-                handle_telegram_text(text, chat_id=chat_id)
+        tid = _get_tenant_id_from_request()
+        with tenant_context(tid):
+            return _process_telegram_update()
     except Exception as e:
         log(f"Webhook error: {e}", "ERROR")
+    return "OK", 200
+
+
+def _process_telegram_update():
+    """Inner dispatch. Assumes tenant_context is active so resolve_tenant_id() works."""
+    # exercise tenant registry in real shipped path (get_tenant is safe, returns None if absent)
+    tid = resolve_tenant_id()
+    from storage.tenant_registry import get_tenant
+    _ = get_tenant(tid)  # drives registry lookup under ctx in webhook path
+
+    update = request.get_json(silent=True)
+    if update:
+        from notifications.telegram_commands.menu_i18n import set_user_language_from_update
+        set_user_language_from_update(update)
+    if update and "callback_query" in update:
+        log("Received Telegram callback query", "DEBUG")
+        handle_telegram_callback(update["callback_query"])
+    elif update and "message" in update:
+        text = update["message"].get("text", "")
+        chat_id = update["message"].get("chat", {}).get("id")
+        log(f"Received Telegram message: {text[:100]}", "DEBUG")
+        if text.startswith("/"):
+            handle_telegram_command(text, chat_id=chat_id)
+        elif text.strip():
+            handle_telegram_text(text, chat_id=chat_id)
     return "OK", 200
 
 

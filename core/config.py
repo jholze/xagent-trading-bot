@@ -3,13 +3,20 @@ from logger import log
 
 
 class BotConfig:
-    """Typed accessors over config.json."""
+    """Typed accessors over config (supports per-tenant via tenant_id)."""
 
-    def __init__(self, raw: dict | None = None):
-        self._raw = raw if raw is not None else get_config()
+    def __init__(self, raw: dict | None = None, *, tenant_id: str | None = None):
+        if raw is not None:
+            self._raw = raw
+        else:
+            if tenant_id:
+                self._raw = get_config(tenant_id=tenant_id)
+            else:
+                self._raw = get_config()
+        self._tenant_id = tenant_id
 
     def refresh(self):
-        self._raw = reload_config()
+        self._raw = reload_config(tenant_id=getattr(self, "_tenant_id", None))
         return self
 
     @property
@@ -400,6 +407,61 @@ class BotConfig:
     def entry_sensor_15m_enabled(self) -> bool:
         return bool(self.entry_sensor_15m_config.get("enabled", False))
 
+    # ============================================================
+    # NEW: Regime-aware adaptive system configuration (opt-in)
+    # ============================================================
+    # To enable: set "regime_detector": {"enabled": true, ...} and "strategy_allocator": {"enabled": true}
+    # in config.json (or per-tenant). Extends (does not replace) volatility_tier / buy_regime.
+    # See intelligence/regime_detector.py, strategy_allocator.py, strategies/grid.py
+    # Logs: [Regime] ... will appear; regime info attached to SignalAnalysis for notifiers.
+    # Backward compatible: defaults keep legacy behavior.
+
+    @property
+    def regime_detector_config(self) -> dict:
+        defaults = {
+            "enabled": False,  # opt-in (set true to activate adaptive regime switching)
+            "tech_weight": 0.62,
+            "sentiment_weight": 0.38,
+            "cooldown_bars": 6,
+            "hysteresis": 0.15,
+            "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"],
+            "regimes": {
+                "RANGING": {"tech_score_range": [-0.4, 0.4]},
+                "STRONG_UPTREND": {"tech_score_min": 0.55},
+                "STRONG_DOWNTREND": {"tech_score_max": -0.55},
+                "CHOPPY_HIGH_VOL": {"volatility_min": 0.7},
+                "TRANSITION": {}
+            }
+        }
+        raw = self._raw.get("regime_detector", {})
+        return {**defaults, **raw}
+
+    @property
+    def strategy_allocator_config(self) -> dict:
+        defaults = {
+            "enabled": False,  # tied to regime_detector
+            "neutral_sentiment_threshold": 0.35,
+            "confirm_sentiment_threshold": 0.45,
+            "defensive_sentiment_threshold": -0.55,
+            "default_grid_weight": 0.6,
+            "default_momentum_weight": 0.4
+        }
+        raw = self._raw.get("strategy_allocator", {})
+        return {**defaults, **raw}
+
+    @property
+    def grid_config(self) -> dict:
+        defaults = {
+            "enabled": True,
+            "default_spacing_atr_mult": 0.8,
+            "re_center_atr_mult": 2.5,
+            "fee_aware": True,
+            "max_levels": 12,
+            "use_limit_orders": True
+        }
+        raw = self._raw.get("grid", {})
+        return {**defaults, **raw}
+
     @property
     def entry_sensor_15m_mode(self) -> str:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
@@ -521,5 +583,5 @@ class BotConfig:
         return merged
 
 
-def get_bot_config() -> BotConfig:
-    return BotConfig()
+def get_bot_config(tenant_id: str | None = None) -> BotConfig:
+    return BotConfig(tenant_id=tenant_id)
