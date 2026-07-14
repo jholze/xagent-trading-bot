@@ -36,17 +36,30 @@ class TestResolveIncomingTenant(unittest.TestCase):
         os.environ.pop("TELEGRAM_CHAT_ID", None)
         os.environ.pop("MULTI_TENANT_ENABLED", None)
 
+    @patch("data_manager.is_demo_mode", return_value=False)
     @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
     @patch("storage.tenant_registry.find_tenant_by_owner_chat_id")
-    def test_operator_always_default(self, mock_find, _mt):
+    def test_operator_always_default(self, mock_find, _mt, _demo):
         mock_find.return_value = {"tenant_id": "henry", "defaults": {"ledger_scope": "paper"}}
         route = resolve_incoming_tenant(chat_id="111")
         self.assertEqual(route.tenant_id, DEFAULT_TENANT)
+        self.assertEqual(route.scope, "paper")
         mock_find.assert_not_called()
 
+    @patch("data_manager.is_demo_mode", return_value=True)
+    @patch("data_manager.resolve_ledger_scope", return_value="demo")
     @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
     @patch("storage.tenant_registry.find_tenant_by_owner_chat_id")
-    def test_henry_chat_routes_to_henry(self, mock_find, _mt):
+    def test_operator_uses_demo_scope_in_demo_mode(self, mock_find, _mt, _scope, _demo):
+        mock_find.return_value = {"tenant_id": "henry", "defaults": {"ledger_scope": "paper"}}
+        route = resolve_incoming_tenant(chat_id="111")
+        self.assertEqual(route.tenant_id, DEFAULT_TENANT)
+        self.assertEqual(route.scope, "demo")
+
+    @patch("data_manager.is_demo_mode", return_value=False)
+    @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
+    @patch("storage.tenant_registry.find_tenant_by_owner_chat_id")
+    def test_henry_chat_routes_to_henry(self, mock_find, _mt, _demo):
         mock_find.return_value = {
             "tenant_id": "henry",
             "defaults": {"ledger_scope": "paper"},
@@ -55,6 +68,21 @@ class TestResolveIncomingTenant(unittest.TestCase):
         route = resolve_incoming_tenant(chat_id="222")
         self.assertEqual(route.tenant_id, "henry")
         self.assertEqual(route.owner_chat_id, "222")
+        self.assertEqual(route.scope, "paper")
+
+    @patch("data_manager.is_demo_mode", return_value=True)
+    @patch("data_manager.resolve_ledger_scope", return_value="demo")
+    @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
+    @patch("storage.tenant_registry.find_tenant_by_owner_chat_id")
+    def test_henry_uses_demo_scope_in_demo_mode(self, mock_find, _mt, _scope, _demo):
+        mock_find.return_value = {
+            "tenant_id": "henry",
+            "defaults": {"ledger_scope": "paper"},
+            "telegram": {"owner_chat_id": "222"},
+        }
+        route = resolve_incoming_tenant(chat_id="222")
+        self.assertEqual(route.tenant_id, "henry")
+        self.assertEqual(route.scope, "demo")
 
     @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
     @patch("storage.tenant_registry.find_tenant_by_owner_chat_id", return_value=None)

@@ -32,9 +32,24 @@ def extract_chat_id_from_update(update: dict | None) -> str:
     return ""
 
 
+def _runtime_ledger_scope() -> str:
+    from data_manager import resolve_ledger_scope
+
+    return resolve_ledger_scope()
+
+
 def _scope_from_tenant_doc(doc: dict | None) -> str:
     defaults = (doc or {}).get("defaults") or {}
-    return str(defaults.get("ledger_scope") or "paper")
+    return str(defaults.get("ledger_scope") or _runtime_ledger_scope())
+
+
+def _effective_ledger_scope(doc: dict | None) -> str:
+    """Resolve ledger scope for a tenant route (demo mode overrides tenant doc)."""
+    from data_manager import is_demo_mode
+
+    if is_demo_mode():
+        return _runtime_ledger_scope()
+    return _scope_from_tenant_doc(doc)
 
 
 def _operator_chat_id() -> str:
@@ -60,21 +75,21 @@ def resolve_incoming_tenant(
         return IncomingTenantRoute(
             tenant_id=explicit_tenant_id,
             owner_chat_id=owner,
-            scope=_scope_from_tenant_doc(doc),
+            scope=_effective_ledger_scope(doc),
         )
 
     if not multi_tenant_enabled():
         return IncomingTenantRoute(
             tenant_id=DEFAULT_TENANT,
             owner_chat_id=op_chat or cid,
-            scope="paper",
+            scope=_runtime_ledger_scope(),
         )
 
     if cid and op_chat and cid == op_chat:
         return IncomingTenantRoute(
             tenant_id=DEFAULT_TENANT,
             owner_chat_id=op_chat,
-            scope="paper",
+            scope=_effective_ledger_scope(None),
         )
 
     if cid:
@@ -85,7 +100,7 @@ def resolve_incoming_tenant(
                 return IncomingTenantRoute(
                     tenant_id=tid,
                     owner_chat_id=cid,
-                    scope=_scope_from_tenant_doc(doc),
+                    scope=_effective_ledger_scope(doc),
                 )
 
     return IncomingTenantRoute(
@@ -129,6 +144,6 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
     doc = get_tenant(tenant_id, test=test) or {}
     tg = doc.get("telegram") or {}
     owner = str(tg.get("owner_chat_id") or _operator_chat_id() or "")
-    scope = _scope_from_tenant_doc(doc)
+    scope = _effective_ledger_scope(doc if tenant_id != DEFAULT_TENANT else None)
     with tenant_context(tenant_id, scope=scope, owner_chat_id=owner):
         yield
