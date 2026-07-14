@@ -467,42 +467,14 @@ class BotConfig:
         return str(self.entry_sensor_15m_config.get("mode", "shadow")).strip().lower()
 
     @property
-    def regime_detector_config(self) -> dict:
+    def multi_tenant_config(self) -> dict:
         defaults = {
             "enabled": False,
-            "tech_weight": 0.62,
-            "sentiment_weight": 0.38,
-            "cooldown_bars": 6,
-            "hysteresis": 0.15,
-            "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"],
+            "default_tenant": "default",
+            "onboarding_enabled": True,
+            "require_webhook_secret": True,
         }
-        raw = self._raw.get("regime_detector", {})
-        return {**defaults, **raw}
-
-    @property
-    def strategy_allocator_config(self) -> dict:
-        defaults = {
-            "enabled": False,
-            "neutral_sentiment_threshold": 0.35,
-            "confirm_sentiment_threshold": 0.45,
-            "defensive_sentiment_threshold": -0.55,
-            "default_grid_weight": 0.6,
-            "default_momentum_weight": 0.4,
-        }
-        raw = self._raw.get("strategy_allocator", {})
-        return {**defaults, **raw}
-
-    @property
-    def grid_config(self) -> dict:
-        defaults = {
-            "enabled": True,
-            "default_spacing_atr_mult": 0.8,
-            "re_center_atr_mult": 2.5,
-            "fee_aware": True,
-            "max_levels": 12,
-            "use_limit_orders": True,
-        }
-        raw = self._raw.get("grid", {})
+        raw = self._raw.get("multi_tenant", {})
         return {**defaults, **raw}
 
     @property

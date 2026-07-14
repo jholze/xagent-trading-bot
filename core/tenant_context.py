@@ -95,8 +95,14 @@ def tenant_context(
 
 
 def multi_tenant_enabled() -> bool:
-    return os.environ.get("MULTI_TENANT_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    env = os.environ.get("MULTI_TENANT_ENABLED", "").strip().lower()
+    if env in {"1", "true", "yes"}:
+        return True
+    if env in {"0", "false", "no"}:
+        return False
+    try:
+        from core.config import get_bot_config
+
+        return bool(get_bot_config().multi_tenant_config.get("enabled", False))
+    except Exception:
+        return False

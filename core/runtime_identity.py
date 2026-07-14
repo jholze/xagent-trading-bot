@@ -94,12 +94,23 @@ def _feature_flags(config_raw: dict | None = None) -> dict[str, bool]:
         redis = get_redis(resolve_redis_url(arch.get("redis_url"))) is not None
     except Exception:
         redis = False
+    try:
+        from core.tenant_context import multi_tenant_enabled
+
+        mt = multi_tenant_enabled()
+    except Exception:
+        mt = False
+    regime_on = bool((config_raw or {}).get("regime_detector", {}).get("enabled", False))
+    allocator_on = bool((config_raw or {}).get("strategy_allocator", {}).get("enabled", False))
     return {
         "redis": redis,
         "price_cache": bool(arch.get("price_cache_enabled", True)),
         "ohlcv_cache": bool(arch.get("ohlcv_cache_enabled", True)),
         "signal_webhook": bool(arch.get("signal_webhook_enabled", True)),
         "coin_webhook": bool(arch.get("coin_query_webhook_enabled", True)),
+        "multi_tenant": mt,
+        "regime": regime_on,
+        "strategy_allocator": allocator_on,
     }
 
 
@@ -145,6 +156,9 @@ def format_identity_section(*, html: bool = True) -> str:
         f"Price-Cache: {'✅' if features['price_cache'] else '❌'}",
         f"OHLCV-Cache: {'✅' if features['ohlcv_cache'] else '❌'}",
         f"Signal-Webhook: {'✅' if features['signal_webhook'] else '❌'}",
+        f"Multi-Tenant: {'✅' if features.get('multi_tenant') else '❌'}",
+        f"Regime: {'✅' if features.get('regime') else '❌'}",
+        f"Allocator: {'✅' if features.get('strategy_allocator') else '❌'}",
     ]
 
     if html:

@@ -1053,5 +1053,11 @@
     "fee_aware": true,
     "max_levels": 12,
     "use_limit_orders": true
+  },
+  "multi_tenant": {
+    "enabled": false,
+    "default_tenant": "default",
+    "onboarding_enabled": true,
+    "require_webhook_secret": true
   }
 }

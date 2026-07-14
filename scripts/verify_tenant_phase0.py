@@ -18,6 +18,7 @@ from scripts.migrate_single_to_tenant import migrate
 
 
 def _isolation_exercise() -> None:
+    os.environ.pop("MULTI_TENANT_ENABLED", None)
     os.environ["MONGODB_DB"] = "xagent_pytest"
     drop_database(test=True)
     cfg = {"trading_mode": "paper", "architecture": {"ledger_backend": "mongo"}}
@@ -60,6 +61,7 @@ def _isolation_exercise() -> None:
 
 
 def _migrate_apply_verify() -> None:
+    os.environ.pop("MULTI_TENANT_ENABLED", None)
     os.environ["MONGODB_DB"] = "xagent_pytest"
     drop_database(test=True)
     db = get_database(test=True)
