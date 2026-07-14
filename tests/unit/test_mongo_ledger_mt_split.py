@@ -51,10 +51,25 @@ class TestMongoLedgerMultiTenantSplit(unittest.TestCase):
         symbols = [o["symbol"] for o in loaded["orders"]]
         self.assertEqual(symbols, ["OP/USDT"])
 
-    def test_henry_reads_own_plus_leaked_default_orders(self):
+    def test_henry_reads_only_own_compound_doc(self):
+        coll = self.store._collection("orders")
+        coll.replace_one(
+            {"_id": compound_ledger_id("henry", "paper")},
+            {
+                "_id": compound_ledger_id("henry", "paper"),
+                "tenant_id": "henry",
+                "ledger_scope": "paper",
+                "orders": [{"id": "h1", "symbol": "HENRY/USDT"}],
+            },
+            upsert=True,
+        )
         loaded = self.store.load_orders("paper", tenant_id="henry")
-        symbols = {o["symbol"] for o in loaded["orders"]}
-        self.assertEqual(symbols, {"HENRY/USDT"})
+        symbols = [o["symbol"] for o in loaded["orders"]]
+        self.assertEqual(symbols, ["HENRY/USDT"])
+
+    def test_henry_never_reads_operator_legacy_or_default(self):
+        loaded = self.store.load_orders("paper", tenant_id="henry")
+        self.assertEqual(loaded["orders"], [])
 
 
 if __name__ == "__main__":

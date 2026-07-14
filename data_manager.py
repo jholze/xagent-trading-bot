@@ -1142,6 +1142,10 @@ def _ledger_reads_mongo_trade_history(scope: str, config: dict = None) -> bool:
 
 
 def _ledger_writes_json(scope: str, config: dict = None) -> bool:
+    from core.tenant_context import multi_tenant_enabled
+
+    if multi_tenant_enabled():
+        return False
     if scope == "demo":
         return not _demo_ledger_backend_is_mongo(config)
     backend = resolve_ledger_backend(scope, config)
@@ -1221,7 +1225,7 @@ def _save_orders_json(data: dict, scope: str) -> bool:
 
 
 def load_orders(scope: str, tenant_id: str | None = None):
-    from core.tenant_context import resolve_tenant_id
+    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
 
     cfg = get_config()
     tid = resolve_tenant_id(tenant_id)
@@ -1229,13 +1233,20 @@ def load_orders(scope: str, tenant_id: str | None = None):
         try:
             return _mongo_ledger_store(cfg).load_orders(scope, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(scope, cfg):
+            if _should_refuse_demo_json_fallback(scope, cfg) or multi_tenant_enabled():
                 log(
-                    f"Demo Mongo orders load failed, refusing JSON fallback: {e}",
+                    f"Mongo orders load failed ({scope}, tenant={tid}), refusing JSON fallback: {e}",
                     "ERROR",
                 )
                 raise
             log(f"Mongo orders load failed ({scope}), falling back to JSON: {e}", "WARNING")
+    if multi_tenant_enabled():
+        return {
+            "tenant_id": tid,
+            "ledger_scope": scope,
+            "orders": [],
+            "migrated_from_trades": False,
+        }
     return _load_orders_json(scope)
 
 

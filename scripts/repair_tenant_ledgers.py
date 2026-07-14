@@ -85,17 +85,32 @@ def repair_tenant_ledgers(
 
         target_existing = copy.deepcopy(target_doc.get(payload_key) or ([] if payload_key != "positions" else {}))
         if payload_key == "positions":
+            for key in list(target_existing.keys()):
+                if key in legacy_ids or key in operator_ids:
+                    target_existing.pop(key, None)
             moved = len(to_target)
             target_existing.update(to_target)
             operator_count = len(operator_payload)
             target_count = len(target_existing)
         else:
+            cleaned_target = []
+            for entry in target_existing if isinstance(target_existing, list) else []:
+                entry_id = str(entry.get("id") or "")
+                tagged = str(entry.get("tenant_id") or "").strip()
+                if tagged and tagged != target_tenant:
+                    continue
+                if entry_id and entry_id in legacy_ids:
+                    continue
+                cleaned_target.append(entry)
+            target_existing = cleaned_target
             existing_target_ids = _entry_ids({payload_key: target_existing}, payload_key)
             moved = 0
             for entry in to_target:
                 entry_id = str(entry.get("id") or "")
                 if entry_id and entry_id in existing_target_ids:
                     continue
+                entry = copy.deepcopy(entry)
+                entry["tenant_id"] = target_tenant
                 target_existing.append(entry)
                 existing_target_ids.add(entry_id)
                 moved += 1

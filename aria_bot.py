@@ -77,6 +77,9 @@ try:
 
     assert_safe_demo_mongo_db()
     log_ledger_startup()
+    from core.ledger_repair import maybe_repair_tenant_ledgers_once
+
+    maybe_repair_tenant_ledgers_once()
 except SystemExit:
     raise
 except Exception as e:

@@ -80,11 +80,13 @@ def resolve_incoming_tenant(
     if cid:
         doc = find_tenant_by_owner_chat_id(cid, test=test)
         if doc and doc.get("tenant_id"):
-            return IncomingTenantRoute(
-                tenant_id=str(doc["tenant_id"]),
-                owner_chat_id=cid,
-                scope=_scope_from_tenant_doc(doc),
-            )
+            tid = str(doc["tenant_id"]).strip()
+            if tid and tid != DEFAULT_TENANT:
+                return IncomingTenantRoute(
+                    tenant_id=tid,
+                    owner_chat_id=cid,
+                    scope=_scope_from_tenant_doc(doc),
+                )
 
     return IncomingTenantRoute(
         tenant_id=DEFAULT_TENANT,

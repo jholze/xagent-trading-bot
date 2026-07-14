@@ -165,6 +165,8 @@ class OrderService:
     ) -> dict:
         data = self._load()
         cfg = get_bot_config()
+        from core.tenant_context import resolve_tenant_id
+
         idem = idempotency_key or getattr(order, "idempotency_key", "") or ""
         record = {
             "id": telegram_token or uuid.uuid4().hex[:12],
@@ -177,6 +179,7 @@ class OrderService:
             "source": order.source or "auto",
             "signal": order.signal or "",
             "idempotency_key": idem or None,
+            "tenant_id": resolve_tenant_id(),
             "trading_mode": cfg.trading_mode,
             "ledger_scope": self.scope,
             "request": {
@@ -204,6 +207,8 @@ class OrderService:
         request_extra: dict = None,
     ) -> dict:
         data = self._load()
+        from core.tenant_context import resolve_tenant_id
+
         record = {
             "id": uuid.uuid4().hex[:12],
             "display_seq": self._next_seq(data),
@@ -212,6 +217,7 @@ class OrderService:
             "symbol": order.symbol,
             "timeframe": timeframe,
             "order_type": "market",
+            "tenant_id": resolve_tenant_id(),
             "source": order.source or "auto",
             "signal": order.signal or "",
             "trading_mode": get_bot_config().trading_mode,
