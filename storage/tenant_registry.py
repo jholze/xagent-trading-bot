@@ -151,3 +151,20 @@ def list_active_tenants(*, test: bool = False) -> list[dict]:
     db = get_database(test=test)
     coll = db[TENANTS_COLLECTION]
     return list(coll.find({"status": "active"}))
+
+
+def find_tenant_by_owner_chat_id(chat_id: str | int, *, test: bool = False) -> dict | None:
+    """Lookup active tenant by telegram.owner_chat_id (shared-bot routing)."""
+    cid = str(chat_id or "").strip()
+    if not cid:
+        return None
+    try:
+        db = get_database(test=test)
+        coll = db[TENANTS_COLLECTION]
+        return coll.find_one(
+            {"status": "active", "telegram.owner_chat_id": cid},
+            sort=[("updated_at", -1)],
+        )
+    except Exception as e:
+        log(f"tenant_registry: find by chat_id failed: {e}", "WARNING")
+        return None

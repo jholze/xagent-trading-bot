@@ -10,8 +10,21 @@ def _bot_token() -> str | None:
     return os.getenv("TELEGRAM_BOT_TOKEN")
 
 
-def _chat_id() -> str | None:
+def _env_chat_id() -> str | None:
     return os.getenv("TELEGRAM_CHAT_ID")
+
+
+def _chat_id() -> str | None:
+    """Notification target: tenant owner chat when in tenant context, else operator env."""
+    try:
+        from core.tenant_context import current_tenant_context
+
+        ctx = current_tenant_context()
+        if ctx and ctx.owner_chat_id:
+            return str(ctx.owner_chat_id)
+    except Exception:
+        pass
+    return _env_chat_id()
 
 search_results = {}
 
@@ -441,10 +454,16 @@ def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> boo
         return False
 
 
+def resolve_notification_chat_id(chat_id: str | int | None = None) -> str:
+    if chat_id is not None and str(chat_id).strip():
+        return str(chat_id).strip()
+    return str(_chat_id() or "").strip()
+
+
 def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
     """Synchronous Telegram HTTP send (used by notification worker)."""
     bot_token = _bot_token()
-    target_chat = str(chat_id or _chat_id() or "").strip()
+    target_chat = resolve_notification_chat_id(chat_id)
     if not bot_token or not target_chat:
         print("⚠️ Telegram not configured")
         return False
@@ -500,7 +519,7 @@ def send_telegram_message(
                 notification_publisher.enqueue(
                     text,
                     priority=prio,
-                    chat_id=chat_id,
+                    chat_id=chat_id if chat_id is not None else resolve_notification_chat_id(),
                     reply_markup=reply_markup,
                     parse_mode=parse_mode,
                     kind="cycle" if prio >= PRIORITY_CYCLE else "message",

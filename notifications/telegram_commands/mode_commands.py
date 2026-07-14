@@ -31,6 +31,19 @@ def _apply_mode_switch(updates: dict) -> tuple[bool, str]:
 
 
 def handle(text: str) -> bool:
+    if text.strip().lower() == "/myid":
+        from core.tenant_context import resolve_tenant_id
+        from notifications.telegram_commands.command_context import current_chat_id
+
+        cid = current_chat_id() or "?"
+        tid = resolve_tenant_id()
+        send_telegram_message(
+            f"🆔 Chat-ID: <code>{cid}</code>\n"
+            f"Tenant: <code>{tid}</code>\n\n"
+            f"(Operator braucht die Chat-ID fürs Onboarding.)"
+        )
+        return True
+
     if text in ["/mode", "/tradingmode", "/stand", "/version", "/build"]:
         service = TradingService()
         demo = " | Demo: ON" if is_demo_mode() else ""

@@ -280,12 +280,31 @@ def _get_tenant_id_from_request() -> str:
     return tid or DEFAULT_TENANT
 
 
+def _dispatch_telegram_webhook(explicit_tenant_id: str | None = None):
+    """Route update to tenant by chat_id (shared bot) or explicit /webhook/<id>."""
+    from core.tenant_routing import extract_chat_id_from_update, resolve_incoming_tenant
+    from telegram_notifier import _send_telegram_direct
+
+    update = request.get_json(silent=True)
+    chat_id = extract_chat_id_from_update(update)
+    route = resolve_incoming_tenant(
+        chat_id=chat_id,
+        explicit_tenant_id=explicit_tenant_id or _get_tenant_id_from_request(),
+    )
+    if route.rejected:
+        if route.reject_message and chat_id:
+            _send_telegram_direct(route.reject_message, chat_id=chat_id, parse_mode="HTML")
+        return "OK", 200
+
+    with tenant_context(route.tenant_id, scope=route.scope, owner_chat_id=route.owner_chat_id):
+        return _process_telegram_update(update)
+
+
 @app.route("/webhook/<tenant_id>", methods=["POST"])
 def webhook_with_tenant(tenant_id: str):
     """Per-tenant webhook route for SaaS / BYOB."""
     from storage.tenant_registry import get_webhook_secret
 
-    # Optional but recommended: validate Telegram secret_token
     expected_secret = get_webhook_secret(tenant_id)
     if expected_secret:
         received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
@@ -293,44 +312,369 @@ def webhook_with_tenant(tenant_id: str):
             log(f"Webhook secret mismatch for {tenant_id}", "WARNING")
             return "Forbidden", 403
 
-    with tenant_context(tenant_id):
-        return _process_telegram_update()
+    try:
+        return _dispatch_telegram_webhook(tenant_id)
+    except Exception as e:
+        log(f"Webhook error ({tenant_id}): {e}", "ERROR")
+    return "OK", 200
 
 
 @app.route("/", methods=["POST"])
 def webhook():
     try:
-        tid = _get_tenant_id_from_request()
-        with tenant_context(tid):
-            return _process_telegram_update()
+        return _dispatch_telegram_webhook(None)
     except Exception as e:
         log(f"Webhook error: {e}", "ERROR")
     return "OK", 200
 
 
-def _process_telegram_update():
-    """Inner dispatch. Assumes tenant_context is active so resolve_tenant_id() works."""
-    # exercise tenant registry in real shipped path (get_tenant is safe, returns None if absent)
+def _process_telegram_update(update=None):
+    """Inner dispatch. Assumes tenant_context is active."""
     tid = resolve_tenant_id()
     from storage.tenant_registry import get_tenant
-    _ = get_tenant(tid)  # drives registry lookup under ctx in webhook path
+    _ = get_tenant(tid)
 
-    update = request.get_json(silent=True)
+    if update is None:
+        update = request.get_json(silent=True)
     if update:
         from notifications.telegram_commands.menu_i18n import set_user_language_from_update
         set_user_language_from_update(update)
     if update and "callback_query" in update:
-        log("Received Telegram callback query", "DEBUG")
+        log(f"[{tid}] Telegram callback", "DEBUG")
         handle_telegram_callback(update["callback_query"])
     elif update and "message" in update:
         text = update["message"].get("text", "")
         chat_id = update["message"].get("chat", {}).get("id")
-        log(f"Received Telegram message: {text[:100]}", "DEBUG")
+        log(f"[{tid}] Telegram message: {text[:100]}", "DEBUG")
         if text.startswith("/"):
             handle_telegram_command(text, chat_id=chat_id)
         elif text.strip():
             handle_telegram_text(text, chat_id=chat_id)
     return "OK", 200
+
+
+def _run_tenant_price_cycle(
+    cycle_started: float,
+    use_dashboard: bool,
+    *,
+    analyzer,
+    orchestrator,
+    social_pipeline,
+    sandbox,
+    trend_engine,
+):
+    bot_config = get_bot_config()
+    bot_config.refresh()
+    try:
+        from services.architecture_runtime import ensure_started
+        ensure_started()
+    except Exception as e:
+        log(f"Architecture runtime tick failed: {e}", "WARNING")
+    use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
+
+    if not use_dashboard and os.isatty(1):
+        os.system("clear" if os.name == "posix" else "cls")
+
+    now = datetime.now()
+    mode = get_config().get("trading_mode", "paper")
+    cycle_signal_lines = []
+    coin_results = []
+
+    if not use_dashboard:
+        print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
+        print("=" * 90)
+
+    try:
+        from data_manager import prune_non_gate_watchlist_sources
+        from services.dry_run_watchlist import DryRunWatchlistSync
+
+        prune_non_gate_watchlist_sources(bot_config.raw)
+        DryRunWatchlistSync(bot_config).sync_if_needed()
+    except Exception as e:
+        log(f"Dry-run watchlist sync failed: {e}", "WARNING")
+
+    watchlist = load_effective_watchlist()
+    active_symbols = [
+        coin["symbol"] for coin in watchlist if coin.get("active", True)
+    ]
+    if not use_dashboard:
+        print(f"Aktive Coins ({len(active_symbols)}): " + " • ".join(active_symbols))
+        print("-" * 90)
+        print("Prüfe Coins + X-Signale:\n")
+
+    if social_pipeline:
+        from services.background_runtime import (
+            get_last_accuracy,
+            register_pipeline,
+            request_social_fetch,
+            run_social_cycle_sync,
+            social_ever_fetched,
+            social_fetch_fresh,
+        )
+
+        register_pipeline(social_pipeline)
+        arch = bot_config.architecture_config
+        bg_social = arch.get("background_social_enabled", True)
+        max_age = float(arch.get("social_snapshot_max_age_sec", 300))
+        accuracy = {}
+
+        if bg_social:
+            if not social_ever_fetched():
+                accuracy = run_social_cycle_sync(watchlist)
+            elif social_fetch_fresh(max_age):
+                accuracy = get_last_accuracy()
+            else:
+                request_social_fetch(watchlist)
+                accuracy = get_last_accuracy()
+        else:
+            accuracy = social_pipeline.run_cycle_fetches(watchlist)
+
+        if not use_dashboard and (accuracy.get("outcomes_updated") or accuracy.get("trust_updates")):
+            print(
+                f"   Accuracy update: {accuracy.get('outcomes_updated', 0)} outcomes, "
+                f"{accuracy.get('trust_updates', 0)} trust scores"
+            )
+
+    use_snapshot = bot_config.architecture_config.get("use_signal_snapshot")
+    if social_pipeline and use_snapshot:
+        from bus.signals import signal_snapshot_store
+
+        cached = signal_snapshot_store.get_signals(
+            max_age_sec=float(bot_config.architecture_config.get("social_snapshot_max_age_sec", 300))
+        )
+        if cached:
+            x_signals, cmc_signals, lc_signals = cached
+        else:
+            x_signals = social_pipeline.refresh_signals()
+            cmc_signals = social_pipeline.refresh_cmc_signals()
+            lc_signals = social_pipeline.refresh_lc_signals()
+    elif social_pipeline:
+        x_signals = social_pipeline.refresh_signals()
+        cmc_signals = social_pipeline.refresh_cmc_signals()
+        lc_signals = social_pipeline.refresh_lc_signals()
+    else:
+        x_signals = analyzer.get_top_signals() if analyzer else []
+        cmc_signals = []
+        lc_signals = []
+
+    if trend_engine and x_signals:
+        candidates = trend_engine.cross_validate(x_signals, run_scan=False)
+        for c in candidates[:3]:
+            line = f"→ Trend+X: {c['symbol']} ({c['regime']}) 5m:{c['change_5m']:+.1f}%"
+            cycle_signal_lines.append(line)
+            if not use_dashboard:
+                print(f"   {line}")
+
+    if sandbox and get_config().get("sandbox", {}).get("enabled", True):
+        sandbox_results = sandbox.run_cycle(watchlist, get_prices)
+        for sr in sandbox_results[:3]:
+            m = sr["metrics"]
+            line = f"→ Sandbox {sr['hypothesis_id']}: {sr['action']} {sr['symbol']} | WR={m.win_rate}%"
+            cycle_signal_lines.append(line)
+            if not use_dashboard:
+                print(f"   {line}")
+
+    for signal in x_signals:
+        eff = getattr(signal, "effective_confidence", signal.confidence)
+        if eff >= 70:
+            line = (
+                f"🟢 @{signal.account} {signal.action} {signal.coin} | "
+                f"Conf: {signal.confidence}% | Eff: {eff:.0f}%"
+            )
+            cycle_signal_lines.append(line)
+            if not use_dashboard:
+                print(f"   → X-Signal @{signal.account}: {signal.action} {signal.coin} | "
+                      f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | "
+                      f"Trust: {getattr(signal, 'trust_score', '?')}")
+
+    for signal in cmc_signals:
+        if signal.confidence >= 60:
+            line = f"📊 CMC {signal.action} {signal.coin} | {signal.confidence}%"
+            cycle_signal_lines.append(line)
+            if not use_dashboard:
+                print(
+                    f"   → CMC Community: {signal.action} {signal.coin} | "
+                    f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
+                )
+
+    for signal in lc_signals:
+        if signal.confidence >= 55:
+            line = (
+                f"🌙 LC {signal.action} {signal.coin} | {signal.confidence}% | "
+                f"Galaxy {signal.galaxy_score:.0f}"
+            )
+            cycle_signal_lines.append(line)
+            if not use_dashboard:
+                print(
+                    f"   → LunarCrush: {signal.action} {signal.coin} | "
+                    f"Conf: {signal.confidence}% | Galaxy: {signal.galaxy_score:.0f} | "
+                    f"AltRank: {signal.alt_rank} | Sentiment: {signal.sentiment:.0f}%"
+                )
+
+    active_coins = [coin for coin in watchlist if coin.get("active", True)]
+    from core.cycle_order import order_watchlist_positions_first
+    from strategies.positions import list_active_positions
+
+    open_positions = list_active_positions()
+    scan_coins = order_watchlist_positions_first(active_coins, open_positions)
+    price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
+
+    try:
+        from data_manager import resolve_ledger_scope
+        from services.ledger_sync import reconcile_recent_highs
+
+        reconcile_recent_highs(resolve_ledger_scope(), price_map=price_map)
+    except Exception as e:
+        log(f"Peak reconcile failed: {e}", "WARNING")
+
+    from bus.eval_queue import eval_queue_enabled
+
+    use_eval_queue = eval_queue_enabled(bot_config.raw)
+
+    if orchestrator:
+        try:
+            orchestrator.run_portfolio_dca_pass(scan_coins, price_map, quiet=use_dashboard)
+        except Exception as e:
+            log(f"Portfolio DCA pass failed: {e}", "WARNING")
+
+    if use_eval_queue and orchestrator:
+        from services.eval_queue_runtime import get_recent_coin_results, seed_meta_producers
+
+        seed_meta_producers(
+            watchlist=active_coins,
+            open_positions=open_positions,
+            x_signals=x_signals,
+            cmc_signals=cmc_signals,
+            lc_signals=lc_signals,
+            config_raw=bot_config.raw,
+        )
+        coin_results = get_recent_coin_results(cycle_started)
+        if not use_dashboard:
+            print(f"Redis eval queue aktiv — {len(coin_results)} Ergebnisse im Zyklus")
+    else:
+        for coin in scan_coins:
+            symbol = coin["symbol"]
+            if not use_dashboard:
+                print(f"→ {symbol}")
+
+            price = float(price_map.get(symbol, 0) or 0)
+            if orchestrator:
+                result = orchestrator.process_coin(
+                    coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
+                )
+                coin_results.append(result)
+            else:
+                from strategies.core_strategy import check_signal
+                check_signal(coin, price, x_signals, notify_callback=send_signal_message)
+            if not use_dashboard:
+                print()
+
+    interval = get_config().get("update_interval", 600)
+    cycle_elapsed = int(time.time() - cycle_started)
+    if cycle_elapsed > 30:
+        mode_label = "eval_queue" if use_eval_queue else f"{len(scan_coins)} coins"
+        log(
+            f"Cycle completed in {cycle_elapsed}s "
+            f"({mode_label}, {len(open_positions)} positions first)",
+            "INFO",
+        )
+        try:
+            from services.market_service import ohlcv_cache_stats
+
+            stats = ohlcv_cache_stats()
+            if stats:
+                log(
+                    "ohlcv_cache: hits={hits} misses={misses} "
+                    "hit_rate={hit_rate_pct}% ram={ram_entries}".format(**stats),
+                    "INFO",
+                )
+        except Exception:
+            pass
+
+    try:
+        from services.position_tracking import maybe_snapshot_after_cycle
+
+        maybe_snapshot_after_cycle(price_map, config_raw=bot_config.raw)
+    except Exception as e:
+        log(f"Position snapshot failed: {e}", "WARNING")
+
+    if use_dashboard:
+        render_cycle_dashboard(
+            cycle_signals=cycle_signal_lines,
+            coin_results=coin_results,
+            trading_mode=mode,
+            next_update=interval,
+        )
+    else:
+        print("-" * 90)
+        print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
+
+    top_x = ""
+    top_cmc = ""
+    top_lc = ""
+    if x_signals:
+        best_x = max(
+            x_signals,
+            key=lambda s: getattr(s, "effective_confidence", getattr(s, "confidence", 0)),
+        )
+        eff = getattr(best_x, "effective_confidence", best_x.confidence)
+        top_x = f"@{best_x.account} {best_x.action} {best_x.coin} ({eff:.0f}%)"
+    if cmc_signals:
+        best_cmc = max(cmc_signals, key=lambda s: s.confidence)
+        top_cmc = (
+            f"{best_cmc.coin} {best_cmc.action} ({best_cmc.confidence}%) "
+            f"Votes {best_cmc.votes_bullish}↑/{best_cmc.votes_bearish}↓"
+        )
+
+    if lc_signals:
+        best_lc = max(lc_signals, key=lambda s: s.confidence)
+        top_lc = (
+            f"{best_lc.coin} {best_lc.action} ({best_lc.confidence}%) "
+            f"Galaxy {best_lc.galaxy_score:.0f}"
+        )
+
+    cycle_notification_policy.flush_hold_explanations()
+
+    cycle_notif_cfg = bot_config.observability_config.get("cycle_notifications", {})
+    digest_merge = cycle_notif_cfg.get("digest_merge", True)
+    x_skip = social_pipeline.get_notified_post_ids() if social_pipeline else set()
+
+    if social_pipeline:
+        if digest_merge:
+            if social_pipeline.should_send_merged_digest(
+                cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
+            ):
+                send_merged_social_digest(
+                    cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
+                )
+        else:
+            if social_pipeline.should_send_cmc_digest(cmc_signals):
+                send_cmc_cycle_digest(cmc_signals)
+            if social_pipeline.should_send_lc_digest(lc_signals):
+                send_lc_cycle_digest(lc_signals)
+            if social_pipeline.should_send_x_digest(x_signals, skip_post_ids=x_skip):
+                send_x_cycle_digest(x_signals, skip_post_ids=x_skip)
+
+    from notifications.terminal_dashboard import _portfolio_snapshot
+
+    portfolio_snap = _portfolio_snapshot(mode)
+    summary = build_cycle_summary(
+        coin_results=coin_results,
+        trading_mode=mode,
+        x_signal_count=len(x_signals),
+        cmc_signal_count=len(cmc_signals),
+        lc_signal_count=len(lc_signals),
+        top_x=top_x,
+        top_cmc=top_cmc,
+        top_lc=top_lc,
+    )
+    send_cycle_summary(
+        summary,
+        cycle_ctx={
+            "coin_results": coin_results,
+            "total_value": float(portfolio_snap.get("total_value", 0) or 0),
+        },
+    )
 
 
 def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None):
@@ -349,317 +693,22 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                 reset_ohlcv_cache_cycle_stats()
             except Exception:
                 pass
-            bot_config.refresh()
-            try:
-                from services.architecture_runtime import ensure_started
-                ensure_started()
-            except Exception as e:
-                log(f"Architecture runtime tick failed: {e}", "WARNING")
-            use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
+            from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
 
-            if not use_dashboard and os.isatty(1):
-                os.system("clear" if os.name == "posix" else "cls")
-
-            now = datetime.now()
-            mode = get_config().get("trading_mode", "paper")
-            cycle_signal_lines = []
-            coin_results = []
-
-            if not use_dashboard:
-                print(f"🕒 {now.strftime('%H:%M:%S')}                  X-Agent Trading Bot                  Mode: {mode.upper()}")
-                print("=" * 90)
-
-            try:
-                from data_manager import prune_non_gate_watchlist_sources
-                from services.dry_run_watchlist import DryRunWatchlistSync
-
-                prune_non_gate_watchlist_sources(bot_config.raw)
-                DryRunWatchlistSync(bot_config).sync_if_needed()
-            except Exception as e:
-                log(f"Dry-run watchlist sync failed: {e}", "WARNING")
-
-            watchlist = load_effective_watchlist()
-            active_symbols = [
-                coin["symbol"] for coin in watchlist if coin.get("active", True)
-            ]
-            if not use_dashboard:
-                print(f"Aktive Coins ({len(active_symbols)}): " + " • ".join(active_symbols))
-                print("-" * 90)
-                print("Prüfe Coins + X-Signale:\n")
-
-            if social_pipeline:
-                from services.background_runtime import (
-                    get_last_accuracy,
-                    register_pipeline,
-                    request_social_fetch,
-                    run_social_cycle_sync,
-                    social_ever_fetched,
-                    social_fetch_fresh,
-                )
-
-                register_pipeline(social_pipeline)
-                arch = bot_config.architecture_config
-                bg_social = arch.get("background_social_enabled", True)
-                max_age = float(arch.get("social_snapshot_max_age_sec", 300))
-                accuracy = {}
-
-                if bg_social:
-                    if not social_ever_fetched():
-                        accuracy = run_social_cycle_sync(watchlist)
-                    elif social_fetch_fresh(max_age):
-                        accuracy = get_last_accuracy()
-                    else:
-                        request_social_fetch(watchlist)
-                        accuracy = get_last_accuracy()
-                else:
-                    accuracy = social_pipeline.run_cycle_fetches(watchlist)
-
-                if not use_dashboard and (accuracy.get("outcomes_updated") or accuracy.get("trust_updates")):
-                    print(
-                        f"   Accuracy update: {accuracy.get('outcomes_updated', 0)} outcomes, "
-                        f"{accuracy.get('trust_updates', 0)} trust scores"
+            for _cycle_tenant in iter_price_cycle_tenants():
+                with tenant_cycle_context(_cycle_tenant):
+                    _run_tenant_price_cycle(
+                        cycle_started,
+                        use_dashboard,
+                        analyzer=analyzer,
+                        orchestrator=orchestrator,
+                        social_pipeline=social_pipeline,
+                        sandbox=sandbox,
+                        trend_engine=trend_engine,
                     )
-
-            use_snapshot = bot_config.architecture_config.get("use_signal_snapshot")
-            if social_pipeline and use_snapshot:
-                from bus.signals import signal_snapshot_store
-
-                cached = signal_snapshot_store.get_signals(
-                    max_age_sec=float(bot_config.architecture_config.get("social_snapshot_max_age_sec", 300))
-                )
-                if cached:
-                    x_signals, cmc_signals, lc_signals = cached
-                else:
-                    x_signals = social_pipeline.refresh_signals()
-                    cmc_signals = social_pipeline.refresh_cmc_signals()
-                    lc_signals = social_pipeline.refresh_lc_signals()
-            elif social_pipeline:
-                x_signals = social_pipeline.refresh_signals()
-                cmc_signals = social_pipeline.refresh_cmc_signals()
-                lc_signals = social_pipeline.refresh_lc_signals()
-            else:
-                x_signals = analyzer.get_top_signals() if analyzer else []
-                cmc_signals = []
-                lc_signals = []
-
-            if trend_engine and x_signals:
-                candidates = trend_engine.cross_validate(x_signals, run_scan=False)
-                for c in candidates[:3]:
-                    line = f"→ Trend+X: {c['symbol']} ({c['regime']}) 5m:{c['change_5m']:+.1f}%"
-                    cycle_signal_lines.append(line)
-                    if not use_dashboard:
-                        print(f"   {line}")
-
-            if sandbox and get_config().get("sandbox", {}).get("enabled", True):
-                sandbox_results = sandbox.run_cycle(watchlist, get_prices)
-                for sr in sandbox_results[:3]:
-                    m = sr["metrics"]
-                    line = f"→ Sandbox {sr['hypothesis_id']}: {sr['action']} {sr['symbol']} | WR={m.win_rate}%"
-                    cycle_signal_lines.append(line)
-                    if not use_dashboard:
-                        print(f"   {line}")
-
-            for signal in x_signals:
-                eff = getattr(signal, "effective_confidence", signal.confidence)
-                if eff >= 70:
-                    line = (
-                        f"🟢 @{signal.account} {signal.action} {signal.coin} | "
-                        f"Conf: {signal.confidence}% | Eff: {eff:.0f}%"
-                    )
-                    cycle_signal_lines.append(line)
-                    if not use_dashboard:
-                        print(f"   → X-Signal @{signal.account}: {signal.action} {signal.coin} | "
-                              f"Conf: {signal.confidence}% | Effective: {eff:.0f}% | "
-                              f"Trust: {getattr(signal, 'trust_score', '?')}")
-
-            for signal in cmc_signals:
-                if signal.confidence >= 60:
-                    line = f"📊 CMC {signal.action} {signal.coin} | {signal.confidence}%"
-                    cycle_signal_lines.append(line)
-                    if not use_dashboard:
-                        print(
-                            f"   → CMC Community: {signal.action} {signal.coin} | "
-                            f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
-                        )
-
-            for signal in lc_signals:
-                if signal.confidence >= 55:
-                    line = (
-                        f"🌙 LC {signal.action} {signal.coin} | {signal.confidence}% | "
-                        f"Galaxy {signal.galaxy_score:.0f}"
-                    )
-                    cycle_signal_lines.append(line)
-                    if not use_dashboard:
-                        print(
-                            f"   → LunarCrush: {signal.action} {signal.coin} | "
-                            f"Conf: {signal.confidence}% | Galaxy: {signal.galaxy_score:.0f} | "
-                            f"AltRank: {signal.alt_rank} | Sentiment: {signal.sentiment:.0f}%"
-                        )
-
-            active_coins = [coin for coin in watchlist if coin.get("active", True)]
-            from core.cycle_order import order_watchlist_positions_first
-            from strategies.positions import list_active_positions
-
-            open_positions = list_active_positions()
-            scan_coins = order_watchlist_positions_first(active_coins, open_positions)
-            price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
-
-            try:
-                from data_manager import resolve_ledger_scope
-                from services.ledger_sync import reconcile_recent_highs
-
-                reconcile_recent_highs(resolve_ledger_scope(), price_map=price_map)
-            except Exception as e:
-                log(f"Peak reconcile failed: {e}", "WARNING")
-
-            from bus.eval_queue import eval_queue_enabled
-
-            use_eval_queue = eval_queue_enabled(bot_config.raw)
-
-            if orchestrator:
-                try:
-                    orchestrator.run_portfolio_dca_pass(scan_coins, price_map, quiet=use_dashboard)
-                except Exception as e:
-                    log(f"Portfolio DCA pass failed: {e}", "WARNING")
-
-            if use_eval_queue and orchestrator:
-                from services.eval_queue_runtime import get_recent_coin_results, seed_meta_producers
-
-                seed_meta_producers(
-                    watchlist=active_coins,
-                    open_positions=open_positions,
-                    x_signals=x_signals,
-                    cmc_signals=cmc_signals,
-                    lc_signals=lc_signals,
-                    config_raw=bot_config.raw,
-                )
-                coin_results = get_recent_coin_results(cycle_started)
-                if not use_dashboard:
-                    print(f"Redis eval queue aktiv — {len(coin_results)} Ergebnisse im Zyklus")
-            else:
-                for coin in scan_coins:
-                    symbol = coin["symbol"]
-                    if not use_dashboard:
-                        print(f"→ {symbol}")
-
-                    price = float(price_map.get(symbol, 0) or 0)
-                    if orchestrator:
-                        result = orchestrator.process_coin(
-                            coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
-                        )
-                        coin_results.append(result)
-                    else:
-                        from strategies.core_strategy import check_signal
-                        check_signal(coin, price, x_signals, notify_callback=send_signal_message)
-                    if not use_dashboard:
-                        print()
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
-            if cycle_elapsed > 30:
-                mode_label = "eval_queue" if use_eval_queue else f"{len(scan_coins)} coins"
-                log(
-                    f"Cycle completed in {cycle_elapsed}s "
-                    f"({mode_label}, {len(open_positions)} positions first)",
-                    "INFO",
-                )
-                try:
-                    from services.market_service import ohlcv_cache_stats
-
-                    stats = ohlcv_cache_stats()
-                    if stats:
-                        log(
-                            "ohlcv_cache: hits={hits} misses={misses} "
-                            "hit_rate={hit_rate_pct}% ram={ram_entries}".format(**stats),
-                            "INFO",
-                        )
-                except Exception:
-                    pass
-
-            try:
-                from services.position_tracking import maybe_snapshot_after_cycle
-
-                maybe_snapshot_after_cycle(price_map, config_raw=bot_config.raw)
-            except Exception as e:
-                log(f"Position snapshot failed: {e}", "WARNING")
-
-            if use_dashboard:
-                render_cycle_dashboard(
-                    cycle_signals=cycle_signal_lines,
-                    coin_results=coin_results,
-                    trading_mode=mode,
-                    next_update=interval,
-                )
-            else:
-                print("-" * 90)
-                print(f"Update abgeschlossen um {now.strftime('%H:%M:%S')}")
-
-            top_x = ""
-            top_cmc = ""
-            top_lc = ""
-            if x_signals:
-                best_x = max(
-                    x_signals,
-                    key=lambda s: getattr(s, "effective_confidence", getattr(s, "confidence", 0)),
-                )
-                eff = getattr(best_x, "effective_confidence", best_x.confidence)
-                top_x = f"@{best_x.account} {best_x.action} {best_x.coin} ({eff:.0f}%)"
-            if cmc_signals:
-                best_cmc = max(cmc_signals, key=lambda s: s.confidence)
-                top_cmc = (
-                    f"{best_cmc.coin} {best_cmc.action} ({best_cmc.confidence}%) "
-                    f"Votes {best_cmc.votes_bullish}↑/{best_cmc.votes_bearish}↓"
-                )
-
-            if lc_signals:
-                best_lc = max(lc_signals, key=lambda s: s.confidence)
-                top_lc = (
-                    f"{best_lc.coin} {best_lc.action} ({best_lc.confidence}%) "
-                    f"Galaxy {best_lc.galaxy_score:.0f}"
-                )
-
-            cycle_notification_policy.flush_hold_explanations()
-
-            cycle_notif_cfg = bot_config.observability_config.get("cycle_notifications", {})
-            digest_merge = cycle_notif_cfg.get("digest_merge", True)
-            x_skip = social_pipeline.get_notified_post_ids() if social_pipeline else set()
-
-            if social_pipeline:
-                if digest_merge:
-                    if social_pipeline.should_send_merged_digest(
-                        cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
-                    ):
-                        send_merged_social_digest(
-                            cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip
-                        )
-                else:
-                    if social_pipeline.should_send_cmc_digest(cmc_signals):
-                        send_cmc_cycle_digest(cmc_signals)
-                    if social_pipeline.should_send_lc_digest(lc_signals):
-                        send_lc_cycle_digest(lc_signals)
-                    if social_pipeline.should_send_x_digest(x_signals, skip_post_ids=x_skip):
-                        send_x_cycle_digest(x_signals, skip_post_ids=x_skip)
-
-            from notifications.terminal_dashboard import _portfolio_snapshot
-
-            portfolio_snap = _portfolio_snapshot(mode)
-            summary = build_cycle_summary(
-                coin_results=coin_results,
-                trading_mode=mode,
-                x_signal_count=len(x_signals),
-                cmc_signal_count=len(cmc_signals),
-                lc_signal_count=len(lc_signals),
-                top_x=top_x,
-                top_cmc=top_cmc,
-                top_lc=top_lc,
-            )
-            send_cycle_summary(
-                summary,
-                cycle_ctx={
-                    "coin_results": coin_results,
-                    "total_value": float(portfolio_snap.get("total_value", 0) or 0),
-                },
-            )
 
             if not bot_config.architecture_config.get("background_backtest_enabled", True):
                 try:
