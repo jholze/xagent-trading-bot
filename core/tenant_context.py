@@ -94,6 +94,16 @@ def tenant_context(
         _ctx.reset(token)
 
 
+def tenant_snapshot() -> tuple[str, str, str]:
+    """Capture (tenant_id, scope, owner_chat_id) from active context or defaults."""
+    ctx = _ctx.get()
+    if ctx is not None:
+        return ctx.tenant_id, ctx.scope, ctx.owner_chat_id
+    from data_manager import resolve_ledger_scope
+
+    return DEFAULT_TENANT, resolve_ledger_scope(), ""
+
+
 def multi_tenant_enabled() -> bool:
     env = os.environ.get("MULTI_TENANT_ENABLED", "").strip().lower()
     if env in {"1", "true", "yes"}:

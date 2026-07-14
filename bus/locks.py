@@ -17,19 +17,23 @@ class LedgerLock:
         self,
         scope: str,
         *,
+        tenant_id: str | None = None,
         ttl_sec: int = 30,
         key_prefix: str = "aria:",
         redis_url: str | None = None,
         wait_sec: float = 15.0,
         enabled: bool = True,
     ):
+        from core.tenant_context import resolve_tenant_id
+
         self.scope = scope or "paper"
+        self.tenant_id = resolve_tenant_id(tenant_id)
         self.ttl_sec = max(5, int(ttl_sec))
         self.key_prefix = key_prefix
         self.redis_url = redis_url
         self.wait_sec = max(0.0, float(wait_sec))
         self.enabled = enabled
-        self._redis_key = f"{key_prefix}lock:ledger:{self.scope}"
+        self._redis_key = f"{key_prefix}lock:ledger:{self.tenant_id}:{self.scope}"
         self._token = uuid.uuid4().hex
         self._redis = None
         self._held_redis = False
@@ -66,7 +70,7 @@ class LedgerLock:
         return False
 
 
-def ledger_lock(scope: str | None = None, *, cfg=None):
+def ledger_lock(scope: str | None = None, *, cfg=None, tenant_id: str | None = None):
     from core.config import get_bot_config
     from data_manager import resolve_ledger_scope
 
@@ -75,6 +79,7 @@ def ledger_lock(scope: str | None = None, *, cfg=None):
     scope = scope or resolve_ledger_scope(cfg.trading_mode)
     return LedgerLock(
         scope,
+        tenant_id=tenant_id,
         ttl_sec=int(arch.get("ledger_lock_ttl_sec", 30)),
         key_prefix=arch.get("key_prefix", "aria:"),
         redis_url=arch.get("redis_url"),

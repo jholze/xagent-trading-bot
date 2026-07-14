@@ -68,6 +68,8 @@ def publish_trade_intent(intent, *, key_prefix: str = "aria:", redis_url: str | 
         "intent_id": intent.intent_id,
         "idempotency_key": intent.idempotency_key,
         "scope": intent.scope,
+        "tenant_id": getattr(intent, "tenant_id", "default"),
+        "owner_chat_id": getattr(intent, "owner_chat_id", ""),
         "source": intent.source,
         "timeframe": intent.timeframe,
         "order": json.dumps(

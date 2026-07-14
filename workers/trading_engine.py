@@ -64,17 +64,25 @@ def _consume_redis_once():
                     order=order,
                     timeframe=fields.get("timeframe", "4h"),
                     source=fields.get("source", "auto"),
+                    tenant_id=fields.get("tenant_id", "default"),
+                    owner_chat_id=fields.get("owner_chat_id", ""),
                 )
                 from bus.locks import ledger_lock
+                from core.tenant_context import tenant_context
 
-                with ledger_lock(intent.scope):
-                    result = svc._execute_order_locked(
-                        intent.order,
-                        intent.timeframe,
-                        source=intent.source,
-                        idempotency_key=intent.idempotency_key,
-                        _lock_held=True,
-                    )
+                with tenant_context(
+                    intent.tenant_id,
+                    scope=intent.scope,
+                    owner_chat_id=intent.owner_chat_id,
+                ):
+                    with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
+                        result = svc._execute_order_locked(
+                            intent.order,
+                            intent.timeframe,
+                            source=intent.source,
+                            idempotency_key=intent.idempotency_key,
+                            _lock_held=True,
+                        )
                 log(f"External engine filled {result.order_type} {result.symbol}: {result.executed}", "INFO")
                 client.xack(stream, group, msg_id)
             except Exception as e:

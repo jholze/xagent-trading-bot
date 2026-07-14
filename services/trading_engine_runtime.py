@@ -34,19 +34,26 @@ def ensure_started():
     svc = TradingService()
 
     def _execute_intent(intent: TradeIntent) -> TradeResult:
-        with ledger_lock(intent.scope):
-            return svc._execute_order_locked(
-                intent.order,
-                intent.timeframe,
-                source=intent.source,
-                trust_score=intent.trust_score,
-                confidence=intent.confidence,
-                indicators=intent.indicators,
-                order_id=intent.order_id,
-                request_extra=intent.request_extra,
-                idempotency_key=intent.idempotency_key,
-                _lock_held=True,
-            )
+        from core.tenant_context import tenant_context
+
+        with tenant_context(
+            intent.tenant_id,
+            scope=intent.scope,
+            owner_chat_id=intent.owner_chat_id,
+        ):
+            with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
+                return svc._execute_order_locked(
+                    intent.order,
+                    intent.timeframe,
+                    source=intent.source,
+                    trust_score=intent.trust_score,
+                    confidence=intent.confidence,
+                    indicators=intent.indicators,
+                    order_id=intent.order_id,
+                    request_extra=intent.request_extra,
+                    idempotency_key=intent.idempotency_key,
+                    _lock_held=True,
+                )
 
     trade_intent_queue.start(_execute_intent)
     _started = True
@@ -68,13 +75,15 @@ def submit_trade_intent(
     wait_timeout: float = 120.0,
 ) -> TradeResult:
     from core.config import get_bot_config
+    from core.tenant_context import tenant_snapshot
     from data_manager import resolve_ledger_scope
 
     ensure_started()
     cfg = get_bot_config()
-    scope = scope or resolve_ledger_scope(cfg.trading_mode)
+    tenant_id, ctx_scope, owner_chat_id = tenant_snapshot()
+    scope = scope or ctx_scope or resolve_ledger_scope(cfg.trading_mode)
     key = idempotency_key or getattr(order, "idempotency_key", "") or make_idempotency_key(
-        order.symbol, timeframe, order.signal or order.type, source, scope
+        order.symbol, timeframe, order.signal or order.type, source, scope, tenant_id=tenant_id
     )
     intent = TradeIntent(
         intent_id=uuid.uuid4().hex[:12],
@@ -83,6 +92,8 @@ def submit_trade_intent(
         order=order,
         timeframe=timeframe,
         source=source,
+        tenant_id=tenant_id,
+        owner_chat_id=owner_chat_id,
         trust_score=trust_score,
         confidence=confidence,
         indicators=indicators,

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from core.models import TradeOrder, TradeResult
+from core.tenant_context import DEFAULT_TENANT
 from logger import log
 
 
@@ -20,6 +21,8 @@ class TradeIntent:
     order: TradeOrder
     timeframe: str
     source: str
+    tenant_id: str = DEFAULT_TENANT
+    owner_chat_id: str = ""
     trust_score: float | None = None
     confidence: float | None = None
     indicators: dict | None = None
@@ -126,9 +129,15 @@ def make_idempotency_key(
     scope: str,
     *,
     bucket: str | None = None,
+    tenant_id: str | None = None,
 ) -> str:
     from datetime import datetime
 
+    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
+
     hour = bucket or datetime.now().strftime("%Y%m%d%H")
     sig = (signal or "MARKET").upper()
+    if multi_tenant_enabled():
+        tid = resolve_tenant_id(tenant_id)
+        return f"{tid}:{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
     return f"{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
