@@ -787,18 +787,29 @@ def load_trade_history_document(
 
     cfg = config or get_config()
     tid = resolve_tenant_id(tenant_id)
+    from core.tenant_context import multi_tenant_enabled
+
     if _ledger_reads_mongo_trade_history(scope, cfg):
         try:
             history = _mongo_ledger_store(cfg).load_trade_history(scope, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(scope, cfg):
+            if _should_refuse_demo_json_fallback(scope, cfg) or multi_tenant_enabled():
                 log(
-                    f"Demo Mongo trade_history load failed, refusing JSON fallback: {e}",
+                    f"Mongo trade_history load failed ({scope}, tenant={tid}), refusing JSON fallback: {e}",
                     "ERROR",
                 )
                 raise
             log(f"Mongo trade_history load failed ({scope}), falling back to JSON: {e}", "WARNING")
             history = _load_trade_history_json(scope, cfg)
+    elif multi_tenant_enabled():
+        history = {
+            "tenant_id": tid,
+            "ledger_scope": scope,
+            "trades": [],
+            "virtual_balance": 5000.0,
+            "realized_pnl": 0.0,
+            "open_positions": 0,
+        }
     else:
         history = _load_trade_history_json(scope, cfg)
     history, changed = _reconcile_scoped_trade_history(history, scope, cfg)
@@ -1326,17 +1337,21 @@ def load_positions_document(
     target = scope or resolve_ledger_scope()
     cfg = config or get_config()
     tid = resolve_tenant_id(tenant_id)
+    from core.tenant_context import multi_tenant_enabled
+
     if _ledger_reads_mongo(target, cfg):
         try:
             return _mongo_ledger_store(cfg).load_positions(target, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(target, cfg):
+            if _should_refuse_demo_json_fallback(target, cfg) or multi_tenant_enabled():
                 log(
-                    f"Demo Mongo positions load failed, refusing JSON fallback: {e}",
+                    f"Mongo positions load failed ({target}, tenant={tid}), refusing JSON fallback: {e}",
                     "ERROR",
                 )
                 raise
             log(f"Mongo positions load failed ({target}), falling back to JSON: {e}", "WARNING")
+    if multi_tenant_enabled():
+        return {"tenant_id": tid, "ledger_scope": target, "positions": {}}
     return _load_positions_json(target)
 
 

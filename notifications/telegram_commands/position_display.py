@@ -621,12 +621,10 @@ def load_trade_history_safe() -> dict:
 
 def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
     """Reload positions from order ledger before /portfolio (orders are source of truth)."""
-    from strategies.positions import bootstrap_positions, count_open_positions, load_positions
+    from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+    from strategies.positions import load_positions
 
-    if fast:
-        load_positions()
-    elif count_open_positions() == 0:
-        bootstrap_positions()
+    load_positions(scope=resolve_tenant_scope(), tenant_id=resolve_tenant_id())
 
 
 def resolve_portfolio_context(*, fast: bool = False) -> dict:
@@ -698,20 +696,14 @@ def send_positions_snapshot(
     detail_level: str | None = None,
 ) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
-    from concurrent.futures import ThreadPoolExecutor
-
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
     from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
     _refresh_positions_for_snapshot(fast=fast)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_active = pool.submit(list_active_positions)
-        f_ctx = pool.submit(resolve_portfolio_context, fast=fast)
-        active = f_active.result()
-        ctx = f_ctx.result()
+    active = list_active_positions()
+    ctx = resolve_portfolio_context(fast=fast)
 
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):

@@ -1,5 +1,6 @@
 import threading
 
+from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id
 from notifications.telegram_commands.position_display import send_positions_snapshot
 from telegram_notifier import send_telegram_message
@@ -14,13 +15,21 @@ _FULL_COMMANDS = {
 }
 
 
-def _build_positions(chat_id: str, *, detail_level: str):
+def _build_positions(
+    chat_id: str,
+    *,
+    detail_level: str,
+    tenant_id: str,
+    scope: str,
+    owner_chat_id: str,
+):
     try:
-        send_positions_snapshot(
-            fast=True,
-            chat_id=chat_id or None,
-            detail_level=detail_level,
-        )
+        with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
+            send_positions_snapshot(
+                fast=True,
+                chat_id=chat_id or None,
+                detail_level=detail_level,
+            )
     except Exception as e:
         send_telegram_message(
             f"❌ Positionen konnten nicht geladen werden: {e}",
@@ -39,11 +48,17 @@ def handle(text: str) -> bool:
         return False
 
     chat_id = current_chat_id()
+    tenant_id, scope, owner_chat_id = tenant_snapshot()
     send_telegram_message(loading, chat_id=chat_id or None)
     threading.Thread(
         target=_build_positions,
         args=(chat_id,),
-        kwargs={"detail_level": detail_level},
+        kwargs={
+            "detail_level": detail_level,
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "owner_chat_id": owner_chat_id,
+        },
         daemon=True,
         name="positions-cmd",
     ).start()
