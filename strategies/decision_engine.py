@@ -774,6 +774,8 @@ class DecisionEngine:
                 position,
                 strategy_params,
                 self.config.raw,
+                strategy_profile=getattr(technical, "strategy_profile", None),
+                sell_sources=sources,
             )
             sell_policy_audit = audit_to_dict(policy_audit)
             if policy_audit.trail_exclusive_blocked:

@@ -18,6 +18,7 @@ from strategies.sell_rotation_policy import (
     evaluate_ladder_terminal,
     filter_profit_full_close,
     filter_trail_exclusive,
+    is_grid_profit_sell_context,
     is_tail_position,
 )
 
@@ -128,6 +129,30 @@ class TestSellRotationPolicy(unittest.TestCase):
         cands = [(SELL_PARTIAL_30, 3, "technical")]
         out = filter_profit_full_close(cands, market, pos, cfg)
         self.assertEqual(out[0][0], SELL_PARTIAL_30)
+
+    def test_profit_full_close_skips_grid_profile(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True}
+        market = self._market(1.0, 1.08)
+        pos = {}
+        cands = [(SELL_PARTIAL_30, 3, "technical")]
+        out = filter_profit_full_close(
+            cands, market, pos, cfg, strategy_profile="grid",
+        )
+        self.assertEqual(out[0][0], SELL_PARTIAL_30)
+
+    def test_profit_full_close_skips_grid_source(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True}
+        market = self._market(1.0, 1.08)
+        cands = [(SELL_PARTIAL_30, 3, "technical")]
+        out = filter_profit_full_close(
+            cands, market, {}, cfg, sell_sources=["grid", "technical"],
+        )
+        self.assertEqual(out[0][0], SELL_PARTIAL_30)
+
+    def test_is_grid_profit_sell_context(self):
+        self.assertTrue(is_grid_profit_sell_context("grid"))
+        self.assertTrue(is_grid_profit_sell_context(None, ["grid"]))
+        self.assertFalse(is_grid_profit_sell_context("hermes_baseline+volatile", ["technical"]))
 
     def test_rotation_filter_blocks_loser_ladder_terminal(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 1000)

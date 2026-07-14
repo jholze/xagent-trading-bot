@@ -283,14 +283,29 @@ def filter_trail_exclusive(
     return kept, blocked_labels
 
 
+def is_grid_profit_sell_context(
+    strategy_profile: str | None = None,
+    sell_sources: list[str] | None = None,
+) -> bool:
+    """Grid uses incremental level sells — must not be upgraded to SELL_FULL."""
+    if str(strategy_profile or "").strip().lower() == "grid":
+        return True
+    return "grid" in [str(s).lower() for s in (sell_sources or [])]
+
+
 def filter_profit_full_close(
     candidates: list[tuple],
     market: MarketContext,
     position: dict,
     cfg: dict,
+    *,
+    strategy_profile: str | None = None,
+    sell_sources: list[str] | None = None,
 ) -> list[tuple]:
     """Staging/test mode: close entire position on profit partial signals (no ladder tails)."""
     if not cfg.get("profit_exit_full_close"):
+        return candidates
+    if is_grid_profit_sell_context(strategy_profile, sell_sources):
         return candidates
     if not can_rotation_evict(market, position, cfg):
         return candidates
@@ -311,6 +326,9 @@ def apply_rotation_sell_filters(
     position: dict,
     strategy_params: dict | None,
     config_raw: dict | None,
+    *,
+    strategy_profile: str | None = None,
+    sell_sources: list[str] | None = None,
 ) -> tuple[list[tuple], SellPolicyAudit]:
     cfg = rotation_config(config_raw, strategy_params)
     audit = SellPolicyAudit()
@@ -320,7 +338,14 @@ def apply_rotation_sell_filters(
         candidates, market, position, cfg, strategy_params=strategy_params,
     )
     audit.trail_exclusive_blocked = blocked
-    filtered = filter_profit_full_close(filtered, market, position, cfg)
+    filtered = filter_profit_full_close(
+        filtered,
+        market,
+        position,
+        cfg,
+        strategy_profile=strategy_profile,
+        sell_sources=sell_sources,
+    )
 
     for extra in (
         evaluate_ladder_terminal(market, position, strategy_params, cfg),
