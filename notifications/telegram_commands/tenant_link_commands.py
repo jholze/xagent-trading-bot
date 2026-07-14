@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import re
 
-from logger import log
+from core.operator_notify import notify_tenant_linked
 from notifications.telegram_commands.onboarding_commands import _is_valid_tenant_id, _normalize_tenant_id
 from storage.tenant_registry import link_tenant_owner_chat
 from telegram_notifier import build_tenant_invite_link, send_telegram_message
@@ -33,15 +32,7 @@ def try_link_tenant_from_start(text: str, chat_id: str | int) -> tuple[bool, str
         return True, "❌ Ungültiger Einladungs-Code."
     ok, msg = link_tenant_owner_chat(tid, chat_id)
     if ok:
-        op_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
-        if op_chat and str(chat_id) != op_chat:
-            try:
-                send_telegram_message(
-                    f"🔗 <b>{tid}</b> verbunden mit Chat <code>{chat_id}</code>",
-                    chat_id=op_chat,
-                )
-            except Exception as e:
-                log(f"Operator notify after tenant link failed: {e}", "WARNING")
+        notify_tenant_linked(tid, chat_id)
     return True, msg
 
 
