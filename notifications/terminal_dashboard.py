@@ -26,15 +26,15 @@ def _win_rate(history: dict) -> str:
 def _portfolio_snapshot(trading_mode: str = None) -> dict:
     """Cash, PnL, and position values for dashboard and cycle summary."""
     from data_manager import (
+        is_demo_mode,
         is_dry_run_enhanced,
-        load_live_trade_history,
-        load_trade_history,
         uses_exchange_ledger,
         uses_simulated_live_portfolio,
     )
     from notifications.telegram_commands.position_display import (
         _position_metrics,
         build_price_fallbacks,
+        load_trade_history_safe,
         position_symbol,
     )
     from price_fetcher import get_prices_batch
@@ -43,26 +43,24 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     mode = trading_mode or cfg.trading_mode
     scope = resolve_ledger_scope(mode)
 
-    if uses_exchange_ledger(mode):
-        history = load_live_trade_history()
-        if uses_simulated_live_portfolio(cfg.raw):
-            balance = float(history.get("virtual_balance", cfg.simulated_balance_usdt))
-            balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Dry Run USDT"
-        else:
-            balance = history.get("virtual_balance")
-            if balance is None:
-                try:
-                    from services.gate_balance import fetch_usdt_balance
-                    balance = fetch_usdt_balance(cfg)
-                except Exception:
-                    balance = 0.0
-            balance = float(balance or 0)
-            balance_label = "USDT (Gate)"
-        realized = float(history.get("total_pnl", history.get("realized_pnl", 0)))
+    history = load_trade_history_safe()
+    balance = float(history.get("virtual_balance", 0) or 0)
+    realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+
+    if is_demo_mode():
+        balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Demo USDT"
+    elif uses_exchange_ledger(mode) and uses_simulated_live_portfolio(cfg.raw):
+        balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Dry Run USDT"
+    elif uses_exchange_ledger(mode):
+        if balance <= 0:
+            try:
+                from services.gate_balance import fetch_usdt_balance
+
+                balance = float(fetch_usdt_balance(cfg) or 0)
+            except Exception:
+                balance = 0.0
+        balance_label = "USDT (Gate)"
     else:
-        history = load_trade_history()
-        balance = float(history.get("virtual_balance", 0))
-        realized = float(history.get("realized_pnl", history.get("total_pnl", 0)))
         balance_label = "Balance"
 
     active = list_active_positions()

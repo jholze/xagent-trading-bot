@@ -28,7 +28,7 @@ class TestCycleSummary(unittest.TestCase):
             "live": os.path.join(self.tmp.name, "orders.live.json"),
         })
         self.scope_patch.start()
-        self.scope = patch("services.order_service.resolve_ledger_scope", return_value="paper")
+        self.scope = patch("services.order_service.resolve_tenant_scope", return_value="paper")
         self.scope.start()
 
     def tearDown(self):
@@ -123,13 +123,32 @@ class TestCycleSummary(unittest.TestCase):
         mock_cfg.trading_mode = "live"
         mock_cfg.simulated_balance_usdt = 5000
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
-             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=live_hist), \
+             patch("data_manager.is_demo_mode", return_value=False), \
              patch("data_manager.is_dry_run_enhanced", return_value=True), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Sim USDT", summary)
         self.assertIn("4,750", summary)
         self.assertIn("Gesamtwert", summary)
+
+    def test_build_cycle_summary_demo_uses_demo_cash_not_live(self):
+        demo_hist = {"virtual_balance": 10512.0, "realized_pnl": 250.0, "trades": []}
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.raw = {
+            "trading_mode": "live",
+            "live": {"dry_run": True, "dry_run_enhanced": True},
+        }
+        mock_cfg.trading_mode = "live"
+        with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=demo_hist), \
+             patch("data_manager.is_demo_mode", return_value=True), \
+             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg), \
+             patch("notifications.daily_portfolio.today_activity_stats", return_value=(0, 0, 0.0, False)):
+            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+        self.assertIn("Sim USDT: $10,512", summary)
+        self.assertNotIn("88,406", summary)
 
     def test_build_cycle_summary_live_dry_run_without_enhanced(self):
         live_hist = {"virtual_balance": 3952.19, "realized_pnl": -111.82, "trades": []}
@@ -174,7 +193,8 @@ class TestCycleSummary(unittest.TestCase):
         }]
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=positions), \
              patch("price_fetcher.get_prices_batch", return_value={"ARIA/USDT": 2.0}), \
-             patch("data_manager.load_live_trade_history", return_value=live_hist), \
+             patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=live_hist), \
+             patch("data_manager.is_demo_mode", return_value=False), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Gesamtwert: $1,200", summary)

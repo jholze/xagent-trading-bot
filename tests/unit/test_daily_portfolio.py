@@ -138,14 +138,9 @@ class TestDailyPortfolio(unittest.TestCase):
         self.assertAlmostEqual(nav, 46700.0)
 
     def test_format_daily_nav_line_with_trades(self):
-        today = date.today().isoformat()
-        trades = [
-            {"timestamp": f"{today}T08:00:00", "type": "SELL", "pnl": -100.0},
-            {"timestamp": f"{today}T09:00:00", "type": "BUY"},
-        ]
-        with patch(
-            "notifications.daily_portfolio._history_and_trades",
-            return_value=({"trades": trades}, trades),
+        with patch("data_manager.is_demo_mode", return_value=False), patch(
+            "notifications.daily_portfolio.today_activity_stats",
+            return_value=(1, 1, -100.0, True),
         ), patch(
             "notifications.daily_portfolio.estimate_nav_at_day_start",
             return_value=5300.0,

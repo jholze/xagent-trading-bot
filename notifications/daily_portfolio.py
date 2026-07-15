@@ -11,11 +11,9 @@ from data_manager import (
     compute_sim_cash_from_orders,
     compute_sim_cash_from_trades,
     compute_sim_realized_pnl,
-    load_live_trade_history,
+    is_demo_mode,
     load_orders,
-    load_trade_history,
     resolve_ledger_scope,
-    uses_exchange_ledger,
 )
 from notifications.telegram_commands.position_display import (
     _position_metrics,
@@ -27,12 +25,9 @@ from strategies.positions import get_key, list_active_positions
 
 
 def _history_and_trades(trading_mode: str = None):
-    cfg = get_bot_config()
-    mode = trading_mode or cfg.trading_mode
-    if uses_exchange_ledger(mode):
-        history = load_live_trade_history()
-    else:
-        history = load_trade_history()
+    from notifications.telegram_commands.position_display import load_trade_history_safe
+
+    history = load_trade_history_safe()
     return history, history.get("trades", [])
 
 
@@ -120,6 +115,41 @@ def trades_today(trades: list = None) -> list:
     return [t for t in trades if str(t.get("timestamp", "")).startswith(today)]
 
 
+def filled_orders_today(scope: str | None = None) -> list:
+    """Filled demo/paper orders today (source of truth when trade_history.trades is empty)."""
+    target = scope or resolve_ledger_scope()
+    today = date.today().isoformat()
+    return [
+        o
+        for o in load_orders(target).get("orders", [])
+        if o.get("status") == "filled"
+        and ((o.get("timestamps") or {}).get("filled") or "").startswith(today)
+    ]
+
+
+def today_activity_stats(trading_mode: str = None) -> tuple[int, int, float, bool]:
+    """Return (buys, sells, realized_pnl, has_activity) for the current day."""
+    mode = trading_mode or get_bot_config().trading_mode
+    if is_demo_mode():
+        orders = filled_orders_today(resolve_ledger_scope(mode))
+        if not orders:
+            return 0, 0, 0.0, False
+        buys = sum(1 for o in orders if (o.get("side") or "").lower() == "buy")
+        sells = sum(1 for o in orders if (o.get("side") or "").lower() == "sell")
+        realized = sum(
+            float(o.get("pnl") or 0)
+            for o in orders
+            if (o.get("side") or "").lower() == "sell"
+        )
+        return buys, sells, realized, True
+    today = trades_today()
+    if not today:
+        return 0, 0, 0.0, False
+    buys = sum(1 for t in today if t.get("type") == "BUY")
+    sells = sum(1 for t in today if t.get("type") == "SELL")
+    return buys, sells, realized_pnl_for(today), True
+
+
 def realized_pnl_for(trade_list: list) -> float:
     return round(
         sum(float(t.get("pnl") or 0) for t in trade_list if t.get("type") == "SELL"),
@@ -147,11 +177,21 @@ def estimate_nav_at_day_start(
     if cached and now - cached[0] < max(5.0, float(cache_ttl_sec)):
         return cached[1]
 
-    today_trades = trades_today()
-    if today_trades:
-        cutoff = min(t.get("timestamp", "") for t in today_trades)
+    if is_demo_mode():
+        today_orders = filled_orders_today(scope)
+        if today_orders:
+            cutoff = min(
+                (o.get("timestamps") or {}).get("filled") or ""
+                for o in today_orders
+            )
+        else:
+            cutoff = f"{date.today().isoformat()}T23:59:59"
     else:
-        cutoff = f"{date.today().isoformat()}T23:59:59"
+        today_trades = trades_today()
+        if today_trades:
+            cutoff = min(t.get("timestamp", "") for t in today_trades)
+        else:
+            cutoff = f"{date.today().isoformat()}T23:59:59"
     history, all_trades = _history_and_trades(mode)
     initial = initial_capital(
         scope=scope,
@@ -186,14 +226,9 @@ def format_daily_nav_line(
 ) -> str:
     """One-line daily stats for cycle summary."""
     mode = trading_mode or get_bot_config().trading_mode
-    history, trades = _history_and_trades(mode)
-    today = trades_today(trades)
-    if not today:
+    buys, sells, realized_today, has_activity = today_activity_stats(mode)
+    if not has_activity:
         return ""
-
-    realized_today = realized_pnl_for(today)
-    buys = sum(1 for t in today for _ in [0] if t.get("type") == "BUY")
-    sells = sum(1 for t in today for _ in [0] if t.get("type") == "SELL")
     nav_start = estimate_nav_at_day_start(mode, prices=prices, cache_ttl_sec=cache_ttl_sec)
     if total_value is None:
         from notifications.terminal_dashboard import _portfolio_snapshot
