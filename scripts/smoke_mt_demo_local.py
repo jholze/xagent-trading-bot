@@ -29,6 +29,12 @@ def _run_pytest() -> int:
         "tests/unit/test_tenant_demo_scope.py",
         "tests/unit/test_mongo_ledger_mt_split.py",
         "tests/unit/test_portfolio_tenant_isolation.py",
+        "tests/unit/test_trending_watchlist_sync.py",
+        "tests/unit/test_background_runtime.py",
+        "tests/unit/test_cycle_summary.py",
+        "tests/unit/test_trade_history_mt_read.py",
+        "tests/unit/test_henry_tenant_orders.py",
+        "tests/unit/test_repair_tenant_ledgers.py",
         "-q",
         "--tb=line",
     ]

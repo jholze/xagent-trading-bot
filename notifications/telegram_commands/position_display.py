@@ -636,15 +636,21 @@ def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
 
 
 def resolve_portfolio_context(*, fast: bool = False) -> dict:
+    from data_manager import is_demo_mode, resolve_sim_cash_balance
+
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
         cash_label = "Cash (Sim)" if is_dry_run_enhanced(cfg.raw) else "Cash (Dry Run)"
+        if is_demo_mode():
+            cash = resolve_sim_cash_balance(config=cfg.raw, history=history)
+        else:
+            cash = float(
+                history.get("virtual_balance", getattr(cfg, "simulated_balance_usdt", 5000))
+            )
         return {
             "history": history,
-            "cash_balance": float(
-                history.get("virtual_balance", getattr(cfg, "simulated_balance_usdt", 5000))
-            ),
+            "cash_balance": cash,
             "cash_label": cash_label,
             "gate_holdings": None,
         }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timedelta
 
 from core.config import BotConfig, get_bot_config
@@ -19,6 +20,14 @@ from data_manager import (
 )
 from logger import log
 from price_fetcher import get_gate_prices_batch
+
+_sync_lock = threading.Lock()
+
+
+def sync_trending_watchlist_once(bot_config: BotConfig = None, *, force: bool = False) -> dict:
+    """Single entry point for CMC trending overlay sync (thread-safe)."""
+    with _sync_lock:
+        return TrendingWatchlistSync(bot_config).sync_if_needed(force=force)
 
 
 class TrendingWatchlistSync:
@@ -124,7 +133,14 @@ class TrendingWatchlistSync:
             f"(source: {source or 'unknown'}, +{len(added)} -{len(removed)})",
             "INFO",
         )
-        self._notify_added(added, source)
+        if not old_syms:
+            log(
+                f"CMC trending bootstrap: {len(coins)} coins seeded "
+                f"(source: {source or 'unknown'}, no Telegram on cold start)",
+                "INFO",
+            )
+        else:
+            self._notify_added(added, source)
         return overlay
 
     def _notify_added(self, added: list, source: str) -> None:

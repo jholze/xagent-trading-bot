@@ -875,6 +875,33 @@ def load_trade_history():
 def save_trade_history(data):
     return save_trade_history_document(data, resolve_ledger_scope())
 
+
+def resolve_sim_cash_balance(
+    scope: str = None,
+    config: dict = None,
+    tenant_id: str | None = None,
+    *,
+    history: dict | None = None,
+) -> float:
+    """Orders-replayed USDT cash for demo ledger (display source of truth)."""
+    from core.portfolio_baseline import initial_capital
+    from core.tenant_context import resolve_tenant_id
+
+    cfg = config or get_config()
+    resolved_scope = scope or resolve_ledger_scope()
+    tid = resolve_tenant_id(tenant_id)
+    if resolved_scope != "demo":
+        hist = history or load_trade_history_document(resolved_scope, cfg, tenant_id=tid)
+        return float(hist.get("virtual_balance", 0) or 0)
+
+    filled = [
+        o
+        for o in load_orders(resolved_scope, tenant_id=tid).get("orders", [])
+        if o.get("status") == "filled"
+    ]
+    initial = initial_capital(scope=resolved_scope, config=cfg, history=history)
+    return float(compute_sim_cash_from_orders(filled, initial))
+
 def _filled_order_usdt(order: dict) -> float:
     execution = order.get("execution") or {}
     request = order.get("request") or {}

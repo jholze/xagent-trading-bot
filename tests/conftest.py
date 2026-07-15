@@ -212,7 +212,7 @@ def normalize_unit_test_config(monkeypatch):
     # Do not setattr get_config or reload globally; only cache for default.
     # Remove cross-module propagation for get/reload.
 
-    def _bot_config():
+    def _bot_config(tenant_id=None, **_kwargs):
         from core.config import BotConfig
         return BotConfig(raw=copy.deepcopy(cfg))
 

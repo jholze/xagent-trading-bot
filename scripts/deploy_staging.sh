@@ -51,8 +51,8 @@ SHORT="$(git rev-parse --short HEAD)"
 if [[ "${SKIP_MT_SMOKE:-}" == "1" ]]; then
   echo "WARN: SKIP_MT_SMOKE=1 — skipping pre-push multi-tenant smoke"
 else
-  echo "=== Pre-push: multi-tenant demo smoke ==="
-  bash scripts/smoke_mt_demo.sh
+  echo "=== Pre-push: local verification (MT + trending sync + ledger guards) ==="
+  bash scripts/verify_pre_staging.sh
 fi
 
 echo ""

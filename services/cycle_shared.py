@@ -36,11 +36,11 @@ def sync_global_watchlist_once(bot_config) -> None:
     from core.tenant_context import DEFAULT_TENANT
     from core.tenant_routing import tenant_cycle_context
     from data_manager import prune_non_gate_watchlist_sources
-    from services.dry_run_watchlist import DryRunWatchlistSync
+    from services.dry_run_watchlist import sync_trending_watchlist_once
 
     with tenant_cycle_context(DEFAULT_TENANT):
         prune_non_gate_watchlist_sources(bot_config.raw)
-        DryRunWatchlistSync(bot_config).sync_if_needed()
+        sync_trending_watchlist_once(bot_config)
 
 
 def prepare_shared_cycle_signals(

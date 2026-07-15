@@ -44,7 +44,15 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     scope = resolve_ledger_scope(mode)
 
     history = load_trade_history_safe()
-    balance = float(history.get("virtual_balance", 0) or 0)
+    from data_manager import resolve_sim_cash_balance
+
+    if is_demo_mode():
+        from notifications.telegram_commands.position_display import _refresh_positions_for_snapshot
+
+        _refresh_positions_for_snapshot(fast=True)
+        balance = resolve_sim_cash_balance(scope=scope, config=cfg.raw, history=history)
+    else:
+        balance = float(history.get("virtual_balance", 0) or 0)
     realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
 
     if is_demo_mode():
