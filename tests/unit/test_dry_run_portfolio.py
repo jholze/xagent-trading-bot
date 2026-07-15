@@ -82,6 +82,7 @@ class DryRunPortfolioHarness:
             patch("data_manager._ledger_reads_mongo_orders", return_value=False),
             patch("data_manager._ledger_reads_mongo_trade_history", return_value=False),
             patch("data_manager._ledger_writes_mongo", return_value=False),
+            patch("core.tenant_context.multi_tenant_enabled", return_value=False),
             patch("data_manager.resolve_ledger_scope", return_value="live"),
             patch("data_manager.POSITIONS_SCOPE_FILES", {
                 "demo": os.path.join(self.tmp.name, "positions.demo.json"),

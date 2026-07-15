@@ -113,8 +113,10 @@ class MongoLedgerStore:
                 return compound
             return legacy
 
-        # Shared-bot MT: operator history often remains in legacy scope docs while
-        # misrouted tenant trades were written to default:<scope>.
+        # Multi-tenant: compound default:<scope> is canonical (read == write).
+        # Legacy scope docs are merged on startup via merge_operator_ledger_scope().
+        if compound and _legacy_has_payload(compound, collection):
+            return compound
         if legacy and _legacy_has_payload(legacy, collection):
             return legacy
         return compound

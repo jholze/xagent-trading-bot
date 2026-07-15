@@ -610,8 +610,15 @@ def format_sell_list_message(active: list, prices: dict) -> str:
 
 
 def load_trade_history_safe() -> dict:
-    from data_manager import is_demo_mode, load_live_trade_history, load_trade_history
+    from data_manager import (
+        is_demo_mode,
+        load_live_trade_history,
+        load_trade_history,
+        uses_simulated_live_portfolio,
+    )
 
+    if is_demo_mode() and uses_simulated_live_portfolio(get_bot_config().raw):
+        return load_live_trade_history()
     if is_demo_mode():
         return load_trade_history()
     if uses_exchange_ledger(get_bot_config().trading_mode):

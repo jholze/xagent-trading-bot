@@ -7,40 +7,36 @@ from logger import log
 
 
 def maybe_repair_tenant_ledgers_once() -> None:
-    """Split operator vs tenant ledgers in Mongo once per deployment generation."""
+    """Split tenant leakage, then merge legacy operator docs into compound ledgers."""
     if not multi_tenant_enabled():
         return
     try:
         from storage.mongo_client import get_database
         from storage.tenant_registry import list_active_tenants
-        from scripts.repair_tenant_ledgers import (
-            migrate_operator_legacy_to_compound,
-            repair_tenant_ledgers,
-        )
+        from scripts.repair_tenant_ledgers import repair_tenant_ledgers
+        from storage.ledger_merge import merge_operator_ledger_scope
     except Exception as e:
         log(f"Ledger repair skipped (import): {e}", "WARNING")
         return
 
-    marker_id = "ledger_repair_v3"
+    marker_id = "ledger_repair_v4"
     try:
         db = get_database()
         meta = db["meta"]
         if meta.find_one({"_id": marker_id}, {"done": 1}):
             return
 
-        scopes = ("paper",)
-        for scope in scopes:
-            op_stats = migrate_operator_legacy_to_compound(scope=scope, dry_run=False, test=False)
-            log(f"Operator legacy migrate {scope}: {op_stats.get('collections', {})}", "INFO")
+        scopes = ("paper", "demo")
+        tenants = [
+            str(doc.get("tenant_id") or "").strip()
+            for doc in list_active_tenants()
+            if str(doc.get("tenant_id") or "").strip()
+            and str(doc.get("tenant_id") or "").strip() != DEFAULT_TENANT
+            and str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
+        ]
 
-        for doc in list_active_tenants():
-            tid = str(doc.get("tenant_id") or "").strip()
-            if not tid or tid == DEFAULT_TENANT:
-                continue
-            owner = str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
-            if not owner:
-                continue
-            for scope in scopes:
+        for scope in scopes:
+            for tid in tenants:
                 stats = repair_tenant_ledgers(
                     scope=scope,
                     target_tenant=tid,
@@ -49,9 +45,20 @@ def maybe_repair_tenant_ledgers_once() -> None:
                 )
                 log(f"Ledger repair {tid}/{scope}: {stats.get('collections', {})}", "INFO")
 
+            merge_stats = merge_operator_ledger_scope(
+                scope=scope,
+                dry_run=False,
+                test=False,
+                delete_legacy=True,
+            )
+            log(
+                f"Operator ledger merge {scope}: {merge_stats.get('collections', {})}",
+                "INFO",
+            )
+
         meta.replace_one(
             {"_id": marker_id},
-            {"_id": marker_id, "done": True, "version": 3},
+            {"_id": marker_id, "done": True, "version": 4},
             upsert=True,
         )
     except Exception as e:

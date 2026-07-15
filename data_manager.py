@@ -1022,6 +1022,9 @@ def _load_live_trade_history_json() -> dict:
 
 
 def load_live_trade_history():
+    cfg = get_config()
+    if is_demo_mode() and is_live_dry_run(cfg):
+        return load_trade_history_document("live")
     if is_demo_mode():
         return load_trade_history_document("demo")
     cfg = get_config()

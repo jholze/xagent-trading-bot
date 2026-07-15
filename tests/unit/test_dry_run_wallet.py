@@ -53,6 +53,10 @@ class TestDryRunWallet(unittest.TestCase):
                  patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=True), \
+                 patch("data_manager._ledger_reads_mongo", return_value=False), \
+                 patch("data_manager._ledger_reads_mongo_trade_history", return_value=False), \
+                 patch("data_manager._ledger_writes_mongo", return_value=False), \
+                 patch("core.tenant_context.multi_tenant_enabled", return_value=False), \
                  patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
                 record_live_trade({"type": "BUY", "symbol": "PEPE/USDT", "usdt_amount": 100})
                 history = load_live_trade_history()
@@ -76,6 +80,10 @@ class TestDryRunWallet(unittest.TestCase):
                  patch("data_manager.is_demo_mode", return_value=False), \
                  patch("data_manager.is_live_dry_run", return_value=True), \
                  patch("data_manager.is_dry_run_enhanced", return_value=False), \
+                 patch("data_manager._ledger_reads_mongo", return_value=False), \
+                 patch("data_manager._ledger_reads_mongo_trade_history", return_value=False), \
+                 patch("data_manager._ledger_writes_mongo", return_value=False), \
+                 patch("core.tenant_context.multi_tenant_enabled", return_value=False), \
                  patch("data_manager._reconcile_live_trade_sources", side_effect=lambda h: (h, False)):
                 record_live_trade({"type": "BUY", "symbol": "SIREN/USDT", "usdt_amount": 250})
                 history = load_live_trade_history()

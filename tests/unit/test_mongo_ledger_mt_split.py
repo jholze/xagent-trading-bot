@@ -9,6 +9,8 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.tenant_context import DEFAULT_TENANT
+from scripts.repair_tenant_ledgers import repair_tenant_ledgers
+from storage.ledger_merge import merge_operator_ledger_scope
 from storage.mongo_client import TEST_DB_NAME, drop_database
 from storage.mongo_ledger import MongoLedgerStore
 from storage.tenant_keys import compound_ledger_id
@@ -46,7 +48,9 @@ class TestMongoLedgerMultiTenantSplit(unittest.TestCase):
         drop_database(test=True)
         os.environ.pop("MULTI_TENANT_ENABLED", None)
 
-    def test_default_reads_operator_legacy_not_leaked_compound(self):
+    def test_default_reads_compound_after_repair_and_merge(self):
+        repair_tenant_ledgers(scope="paper", target_tenant="henry", dry_run=False, test=True)
+        merge_operator_ledger_scope(scope="paper", dry_run=False, test=True, delete_legacy=True)
         loaded = self.store.load_orders("paper", tenant_id=DEFAULT_TENANT)
         symbols = [o["symbol"] for o in loaded["orders"]]
         self.assertEqual(symbols, ["OP/USDT"])
