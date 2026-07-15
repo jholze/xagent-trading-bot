@@ -9,10 +9,10 @@ from typing import Optional
 
 from core.config import get_bot_config
 from core.models import RiskDecision, TradeOrder, TradeResult
+from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
 from data_manager import (
     get_config,
     load_orders,
-    resolve_ledger_scope,
     resolve_orders_file,
     save_orders,
 )
@@ -61,9 +61,23 @@ def infer_manual_source(order: dict) -> Optional[str]:
 
 
 def ledger_label(scope: str = None) -> str:
-    scope = scope or resolve_ledger_scope()
+    scope = scope or resolve_tenant_scope()
     labels = {"demo": "DEMO", "paper": "PAPER", "live": "GATE/LIVE"}
     return labels.get(scope, scope.upper())
+
+
+def _orders_header_label(scope: str | None = None) -> str:
+    """Ledger label including tenant id for multi-tenant Telegram views."""
+    from core.tenant_context import multi_tenant_enabled
+
+    scope = scope or resolve_tenant_scope()
+    base = ledger_label(scope)
+    if not multi_tenant_enabled():
+        return base
+    tid = resolve_tenant_id()
+    if tid == "default":
+        return base
+    return f"{tid.upper()} · {base}"
 
 
 def _now() -> str:
@@ -101,7 +115,7 @@ def _order_trade_ts(order: dict) -> str:
 
 class OrderService:
     def __init__(self, scope: str = None):
-        self.scope = scope or resolve_ledger_scope()
+        self.scope = scope or resolve_tenant_scope()
         self._path = resolve_orders_file(self.scope)  # noqa: F841 — reserved for diagnostics
 
     def _cache_key(self) -> str:
@@ -302,6 +316,25 @@ class OrderService:
         if changed:
             self._save(data)
         return changed
+
+    def list_recent_rejected(self, *, hours: float = 24, limit: int = 5) -> list:
+        """Recent blocked orders for /orders (not in trade book by default)."""
+        self.expire_stale_pending()
+        data = self._load()
+        cutoff = datetime.now() - timedelta(hours=hours)
+        rejected = []
+        for order in reversed(data.get("orders", [])):
+            if order.get("ledger_scope") != self.scope:
+                continue
+            if order.get("status") != "rejected":
+                continue
+            ts = _parse_ts((order.get("timestamps") or {}).get("created"))
+            if not ts or ts < cutoff:
+                continue
+            rejected.append(order)
+            if len(rejected) >= limit:
+                break
+        return rejected
 
     def list_orders(
         self,

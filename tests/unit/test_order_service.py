@@ -31,7 +31,7 @@ class TestOrderService(unittest.TestCase):
             "live": os.path.join(self.tmp.name, "orders.live.json"),
         })
         self.scope_patch.start()
-        self.scope = patch("services.order_service.resolve_ledger_scope", return_value="paper")
+        self.scope = patch("services.order_service.resolve_tenant_scope", return_value="paper")
         self.scope.start()
 
     def tearDown(self):

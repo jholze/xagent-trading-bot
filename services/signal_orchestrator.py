@@ -176,9 +176,9 @@ class SignalOrchestrator:
             )
 
         from bus.trade_intents import make_idempotency_key
-        from data_manager import resolve_ledger_scope
+        from core.tenant_context import resolve_tenant_scope
 
-        scope = resolve_ledger_scope(self.config.trading_mode)
+        scope = resolve_tenant_scope()
         idem = make_idempotency_key(
             symbol, tf, order.signal or analysis.normalized_action, source, scope
         )

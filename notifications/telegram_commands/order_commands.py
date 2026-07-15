@@ -5,6 +5,7 @@ from __future__ import annotations
 from services.order_service import (
     ORDERS_PER_PAGE,
     OrderService,
+    _orders_header_label,
     format_order_line,
     ledger_label,
 )
@@ -28,7 +29,7 @@ def _stats_header(ledger: OrderService) -> str:
         + attempts["executing"]
     )
     lines = [
-        f"<b>📒 Orderbuch — {ledger_label(scope)}</b>",
+        f"<b>📒 Orderbuch — {_orders_header_label(scope)}</b>",
         (
             f"24h ausgeführt: 🟢 {executed['buys']} Käufe · "
             f"🔴 {executed['sells']} Verkäufe"
@@ -90,6 +91,13 @@ def send_orders_page(page: int = 1) -> None:
         lines.append("")
         for order in orders:
             lines.append(format_order_line(order))
+    if page == 1:
+        blocked = ledger.list_recent_rejected(hours=24, limit=5)
+        if blocked:
+            lines.append("")
+            lines.append("<b>Blockiert (24h, Auszug)</b>")
+            for order in blocked:
+                lines.append(format_order_line(order))
     msg = "\n".join(lines)
 
     buttons: list[list[dict]] = []

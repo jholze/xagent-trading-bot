@@ -110,12 +110,20 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
         pass
 
 try:
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+    from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
     from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
     from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
     from strategies.positions import flush_positions
 
     _ledger_scope = resolve_ledger_scope()
-    rebuild_positions_from_orders(_ledger_scope)
+    rebuild_positions_from_orders(_ledger_scope, tenant_id=DEFAULT_TENANT)
+    if multi_tenant_enabled():
+        for _startup_tenant in iter_price_cycle_tenants():
+            if _startup_tenant == DEFAULT_TENANT:
+                continue
+            with tenant_cycle_context(_startup_tenant):
+                rebuild_positions_from_orders(_ledger_scope)
     sync_positions_on_startup()
     reconcile_demo_trade_history_on_startup()
     flush_positions(scope=resolve_ledger_scope(), force=True)

@@ -812,9 +812,9 @@ def load_trade_history_document(
         }
     else:
         history = _load_trade_history_json(scope, cfg)
-    history, changed = _reconcile_scoped_trade_history(history, scope, cfg)
+    history, changed = _reconcile_scoped_trade_history(history, scope, cfg, tenant_id=tid)
     if changed:
-        save_trade_history_document(history, scope, cfg)
+        save_trade_history_document(history, scope, cfg, tenant_id=tid)
     return history
 
 
@@ -822,8 +822,31 @@ def reconcile_demo_trade_history_on_startup(config: dict = None) -> dict:
     """Refresh demo virtual_balance from ledger orders before the first trading cycle."""
     if not is_demo_mode():
         return {}
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled, tenant_context
+
     cfg = config or get_config()
-    return load_trade_history_document("demo", cfg)
+    results: dict[str, dict] = {}
+    results[DEFAULT_TENANT] = load_trade_history_document(
+        "demo", cfg, tenant_id=DEFAULT_TENANT
+    )
+    if multi_tenant_enabled():
+        try:
+            from storage.tenant_registry import list_active_tenants
+
+            for doc in list_active_tenants():
+                tid = str(doc.get("tenant_id") or "").strip()
+                if not tid or tid == DEFAULT_TENANT:
+                    continue
+                if doc.get("status", "active") != "active":
+                    continue
+                owner = str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
+                if not owner:
+                    continue
+                with tenant_context(tid, scope="demo", owner_chat_id=owner):
+                    results[tid] = load_trade_history_document("demo", cfg, tenant_id=tid)
+        except Exception as e:
+            log(f"Multi-tenant demo trade_history reconcile skipped: {e}", "WARNING")
+    return results
 
 
 def save_trade_history_document(
@@ -905,16 +928,25 @@ def compute_realized_pnl_from_orders(orders: list) -> float:
     )
 
 
-def _reconcile_scoped_trade_history(history: dict, scope: str, config: dict = None) -> tuple:
+def _reconcile_scoped_trade_history(
+    history: dict,
+    scope: str,
+    config: dict = None,
+    tenant_id: str | None = None,
+) -> tuple:
     if scope != "demo":
         return history, False
     cfg = config or get_config()
     from core.portfolio_baseline import initial_capital
+    from core.tenant_context import resolve_tenant_id
     from services.ledger_sync import count_open_positions_from_orders
 
+    tid = resolve_tenant_id(tenant_id)
     initial = initial_capital(scope=scope, config=cfg)
     filled = [
-        o for o in load_orders(scope).get("orders", []) if o.get("status") == "filled"
+        o
+        for o in load_orders(scope, tenant_id=tid).get("orders", [])
+        if o.get("status") == "filled"
     ]
     computed_cash = compute_sim_cash_from_orders(filled, initial)
     computed_pnl = compute_realized_pnl_from_orders(filled)
@@ -927,7 +959,7 @@ def _reconcile_scoped_trade_history(history: dict, scope: str, config: dict = No
     if stored_pnl is None or abs(float(stored_pnl or 0) - computed_pnl) > 0.01:
         history["realized_pnl"] = computed_pnl
         changed = True
-    open_pos = count_open_positions_from_orders(scope)
+    open_pos = count_open_positions_from_orders(scope, tenant_id=tid)
     if history.get("open_positions") != open_pos:
         history["open_positions"] = open_pos
         changed = True

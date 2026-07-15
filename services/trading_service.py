@@ -103,10 +103,10 @@ class TradingService:
         idempotency_key: str = None,
     ) -> TradeResult:
         from bus.trade_intents import make_idempotency_key
-        from data_manager import resolve_ledger_scope
+        from core.tenant_context import resolve_tenant_scope
         from services.trading_engine_runtime import should_queue_intent, submit_trade_intent
 
-        scope = resolve_ledger_scope(self.config.trading_mode)
+        scope = resolve_tenant_scope()
         idem = idempotency_key or order.idempotency_key or ""
         if not idem and source != "manual":
             idem = make_idempotency_key(

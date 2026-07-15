@@ -229,19 +229,25 @@ def rebuild_positions_from_orders(
         is_open_position,
     )
 
-    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tenant_id)
-    cache_doc = load_positions_document(scope, tenant_id=tenant_id)
-    snapshot = derive_positions_from_orders_and_cache(order_snap, cache_doc)
+    from core.tenant_context import resolve_tenant_id, tenant_context
+
+    tid = resolve_tenant_id(tenant_id)
+    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
+    cache_doc = load_positions_document(scope, tenant_id=tid)
+    snapshot = derive_positions_from_orders_and_cache(
+        order_snap, cache_doc, tenant_id=tid
+    )
     from data_manager import load_orders
 
     orders = [
         o
-        for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
+        for o in load_orders(scope, tenant_id=tid).get("orders", [])
         if o.get("status") == "filled"
     ]
 
-    apply_positions_snapshot(snapshot, scope=scope)
-    flush_positions(scope, force=True)
+    with tenant_context(tid, scope=scope):
+        apply_positions_snapshot(snapshot, scope=scope)
+        flush_positions(scope, force=True)
     open_count = sum(1 for p in snapshot.values() if is_open_position(p))
     log(
         f"Rebuilt positions for scope={scope} from {len(orders)} filled order(s), "

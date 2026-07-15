@@ -237,8 +237,16 @@ _DCA_ORDER_PRIORITY_FIELDS = (
 )
 
 
-def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) -> dict:
+def derive_positions_from_orders_and_cache(
+    order_snap: dict,
+    cache_doc: dict,
+    *,
+    tenant_id: str | None = None,
+) -> dict:
     """Derive amounts from orders; merge cache fields; keep material cache-only lots."""
+    from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
     merged = {}
     cache_positions = cache_doc.get("positions", {}) or {}
     for key, snap in order_snap.items():
@@ -265,13 +273,14 @@ def derive_positions_from_orders_and_cache(order_snap: dict, cache_doc: dict) ->
         reconcile_exit_ladder_step(pos)
         merged[key] = pos
 
-    for key, cached in cache_positions.items():
-        if key in merged:
-            continue
-        raw = dict(cached)
-        if not is_open_position(raw):
-            continue
-        merged[key] = raw
+    if tid == DEFAULT_TENANT:
+        for key, cached in cache_positions.items():
+            if key in merged:
+                continue
+            raw = dict(cached)
+            if not is_open_position(raw):
+                continue
+            merged[key] = raw
     return merged
 
 
@@ -303,7 +312,9 @@ def load_positions(scope: str = None, tenant_id: str | None = None):
         try:
             order_snap = _build_positions_snapshot_from_orders(target, tenant_id=key[0])
             cache_doc = load_positions_document(target, tenant_id=key[0])
-            merged = derive_positions_from_orders_and_cache(order_snap, cache_doc)
+            merged = derive_positions_from_orders_and_cache(
+                order_snap, cache_doc, tenant_id=key[0]
+            )
             for pos_key, raw in merged.items():
                 store[pos_key] = _deserialize_position(raw)
             _recompute_open_count()

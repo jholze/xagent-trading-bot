@@ -19,7 +19,7 @@ def maybe_repair_tenant_ledgers_once() -> None:
         log(f"Ledger repair skipped (import): {e}", "WARNING")
         return
 
-    marker_id = "ledger_repair_v4"
+    marker_id = "ledger_repair_v5"
     try:
         db = get_database()
         meta = db["meta"]
@@ -56,9 +56,16 @@ def maybe_repair_tenant_ledgers_once() -> None:
                 "INFO",
             )
 
+        from data_manager import reconcile_demo_trade_history_on_startup
+        from services.ledger_sync import rebuild_positions_from_orders
+
+        for tid in tenants:
+            rebuild_positions_from_orders("demo", tenant_id=tid)
+        reconcile_demo_trade_history_on_startup()
+
         meta.replace_one(
             {"_id": marker_id},
-            {"_id": marker_id, "done": True, "version": 4},
+            {"_id": marker_id, "done": True, "version": 5},
             upsert=True,
         )
     except Exception as e:
