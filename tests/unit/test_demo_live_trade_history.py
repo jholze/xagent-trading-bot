@@ -63,13 +63,12 @@ class TestDemoLiveTradeHistory(unittest.TestCase):
         self.assertEqual(len(live_doc["trades"]), 1)
 
     @patch("data_manager.is_demo_mode", return_value=True)
-    @patch("data_manager.uses_simulated_live_portfolio", return_value=True)
-    @patch("data_manager.load_live_trade_history")
-    def test_portfolio_snapshot_uses_live_history(self, mock_live, _sim, _demo):
-        mock_live.return_value = {"virtual_balance": 95_000.0, "trades": []}
+    @patch("data_manager.load_trade_history")
+    def test_portfolio_snapshot_uses_demo_history_in_demo_mode(self, mock_demo, _demo):
+        mock_demo.return_value = {"virtual_balance": 10_512.0, "trades": []}
         history = load_trade_history_safe()
-        self.assertEqual(history["virtual_balance"], 95_000.0)
-        mock_live.assert_called_once()
+        self.assertEqual(history["virtual_balance"], 10_512.0)
+        mock_demo.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -617,10 +617,11 @@ def load_trade_history_safe() -> dict:
         uses_simulated_live_portfolio,
     )
 
-    if is_demo_mode() and uses_simulated_live_portfolio(get_bot_config().raw):
-        return load_live_trade_history()
     if is_demo_mode():
+        # Demo stack: cash must match demo order ledger (not live sim trades).
         return load_trade_history()
+    if uses_simulated_live_portfolio(get_bot_config().raw):
+        return load_live_trade_history()
     if uses_exchange_ledger(get_bot_config().trading_mode):
         return load_live_trade_history()
     return load_trade_history()

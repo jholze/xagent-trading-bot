@@ -102,6 +102,12 @@ def repair_tenant_ledgers(
         target_doc = coll.find_one({"_id": compound_ledger_id(target_tenant, scope)}) or {}
 
         legacy_ok = legacy and is_legacy_doc(legacy)
+        if not legacy_ok and coll_name == ORDERS_COLLECTION:
+            stats["collections"][coll_name] = {
+                "skipped": True,
+                "reason": "no_legacy_scope_doc",
+            }
+            continue
         legacy_ids = _entry_ids(legacy if legacy_ok else None, payload_key)
 
         to_target: list | dict = [] if payload_key != "positions" else {}

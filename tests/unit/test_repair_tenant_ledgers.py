@@ -54,6 +54,25 @@ class TestRepairTenantLedgers(unittest.TestCase):
         self.assertEqual([o["symbol"] for o in henry["orders"]], ["HENRY/USDT"])
         self.assertIsNone(self.store._collection("orders").find_one({"_id": "paper"}))
 
+    def test_repair_skips_demo_without_legacy_scope_doc(self):
+        coll = self.store._collection("orders")
+        coll.replace_one(
+            {"_id": compound_ledger_id(DEFAULT_TENANT, "demo")},
+            {
+                "_id": compound_ledger_id(DEFAULT_TENANT, "demo"),
+                "tenant_id": DEFAULT_TENANT,
+                "ledger_scope": "demo",
+                "orders": [{"id": "d1", "symbol": "BTC/USDT", "tenant_id": "default"}],
+            },
+            upsert=True,
+        )
+        stats = repair_tenant_ledgers(scope="demo", target_tenant="henry", dry_run=False, test=True)
+        self.assertTrue(stats["collections"]["orders"].get("skipped"))
+        default = self.store.load_orders("demo", tenant_id=DEFAULT_TENANT)
+        self.assertEqual(len(default["orders"]), 1)
+        henry = self.store.load_orders("demo", tenant_id="henry")
+        self.assertEqual(henry["orders"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
