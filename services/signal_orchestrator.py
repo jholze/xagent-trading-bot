@@ -122,6 +122,8 @@ class SignalOrchestrator:
             source = "dca"
         elif "entry_sensor_15m" in (analysis.sources or []):
             source = "entry_sensor_15m"
+        elif "grid" in (analysis.sources or []) or getattr(analysis, "strategy_profile", "") == "grid":
+            source = "grid"
         else:
             source = "auto"
         trust_score = analysis.x_confidence if source == "x" else None

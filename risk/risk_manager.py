@@ -435,7 +435,10 @@ class RiskManager:
         reserve_pct = float(self.config.risk_config.get("dca_reserve_pct", 0) or 0)
         if reserve_pct <= 0:
             return balance
-        reserve_floor = equity * (reserve_pct / 100.0)
+        # Reserve a slice of cash for DCA — not equity. When most capital is in
+        # open positions, equity-based reserve can exceed cash and block all
+        # auto/grid/entry_sensor buys with size $0.
+        reserve_floor = balance * (reserve_pct / 100.0)
         return max(0.0, balance - reserve_floor)
 
     def _dry_run_reference_prices(self, reference_price: float = 0, symbol: str = None) -> dict:
