@@ -10,6 +10,7 @@ from bus.eval_queue import (
     PRIORITY_POSITION_HEARTBEAT,
     PRIORITY_WEBHOOK,
     enqueue_eval,
+    eval_member_key,
     eval_queue_enabled,
     peek_eval_queue,
     pop_eval_batch,
@@ -149,8 +150,21 @@ class TestEvalQueue(unittest.TestCase):
     def test_webhook_enqueue_helper(self):
         client, _, _ = _mock_redis_client()
         with patch("bus.eval_queue._client", return_value=client):
-            self.assertTrue(enqueue_webhook_eval("RAVE/USDT", "4h", config_raw=CFG))
+            self.assertGreater(enqueue_webhook_eval("RAVE/USDT", "4h", config_raw=CFG), 0)
             self.assertEqual(queue_depth(CFG), 1)
+
+    @patch("core.tenant_context.multi_tenant_enabled", return_value=True)
+    def test_enqueue_includes_tenant_in_member(self, _mt):
+        client, zset, _ = _mock_redis_client()
+        with patch("bus.eval_queue._client", return_value=client):
+            enqueue_eval(
+                "SUI/USDT", "4h", reason="test", priority=40,
+                config_raw=CFG, tenant_id="henry",
+            )
+            self.assertIn(eval_member_key("henry", "SUI/USDT", "4h"), zset)
+            jobs = pop_eval_batch(1, config_raw=CFG)
+        self.assertEqual(jobs[0].tenant_id, "henry")
+        self.assertEqual(jobs[0].symbol, "SUI/USDT")
 
 
 class TestEvalMetaProducers(unittest.TestCase):

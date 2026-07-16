@@ -30,10 +30,11 @@ class EvalJob:
     priority: int
     enqueued_at: float
     score: float = 0.0
+    tenant_id: str = ""
 
     @property
     def member(self) -> str:
-        return f"{self.symbol}|{self.timeframe}"
+        return eval_member_key(self.tenant_id, self.symbol, self.timeframe)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +44,7 @@ class EvalJob:
             "priority": self.priority,
             "enqueued_at": self.enqueued_at,
             "score": self.score,
+            "tenant_id": self.tenant_id,
         }
 
 
@@ -97,11 +99,34 @@ def _score(priority: int, *, now: float | None = None) -> float:
     return float(priority * _SCORE_SLOT + ts)
 
 
-def _parse_member(member: str) -> tuple[str, str]:
-    if "|" in member:
-        sym, tf = member.split("|", 1)
-        return sym.strip(), (tf.strip() or "4h")
-    return member.strip(), "4h"
+def _resolve_enqueue_tenant(tenant_id: str | None) -> str:
+    from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+
+    return resolve_tenant_id(tenant_id) or DEFAULT_TENANT
+
+
+def eval_member_key(tenant_id: str, symbol: str, timeframe: str) -> str:
+    """Redis ZSET member — tenant prefix when multi-tenant is on."""
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+
+    sym = (symbol or "").strip()
+    tf = (timeframe or "4h").strip() or "4h"
+    tid = (tenant_id or DEFAULT_TENANT).strip() or DEFAULT_TENANT
+    if multi_tenant_enabled() and tid:
+        return f"{tid}|{sym}|{tf}"
+    return f"{sym}|{tf}"
+
+
+def _parse_member(member: str) -> tuple[str, str, str]:
+    """Return (tenant_id, symbol, timeframe). Legacy members map to default."""
+    from core.tenant_context import DEFAULT_TENANT
+
+    parts = [p.strip() for p in str(member).split("|") if p.strip()]
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2] or "4h"
+    if len(parts) == 2:
+        return DEFAULT_TENANT, parts[0], parts[1] or "4h"
+    return DEFAULT_TENANT, parts[0] if parts else "", "4h"
 
 
 def enqueue_eval(
@@ -112,6 +137,7 @@ def enqueue_eval(
     priority: int,
     config_raw: dict | None = None,
     force: bool = False,
+    tenant_id: str | None = None,
 ) -> bool:
     """Enqueue a coin for evaluation. Returns True if accepted."""
     cfg = eval_queue_config(config_raw)
@@ -126,7 +152,8 @@ def enqueue_eval(
     arch = _arch(config_raw)
     prefix = str(arch.get("key_prefix", "aria:"))
     queue_key, meta_key, processed_key = _keys(prefix)
-    member = f"{symbol}|{timeframe}"
+    tid = _resolve_enqueue_tenant(tenant_id)
+    member = eval_member_key(tid, symbol, timeframe)
     now = time.time()
     debounce = float(cfg.get("eval_debounce_sec", 45))
 
@@ -156,7 +183,12 @@ def enqueue_eval(
             meta_key,
             member,
             json.dumps(
-                {"reason": reason, "priority": priority, "enqueued_at": now},
+                {
+                    "reason": reason,
+                    "priority": priority,
+                    "enqueued_at": now,
+                    "tenant_id": tid,
+                },
                 default=str,
             ),
         )
@@ -189,7 +221,7 @@ def pop_eval_batch(
     jobs: list[EvalJob] = []
     now = time.time()
     for member, score in items or []:
-        symbol, timeframe = _parse_member(str(member))
+        tenant_id, symbol, timeframe = _parse_member(str(member))
         reason = "unknown"
         priority = int(float(score) // _SCORE_SLOT)
         enqueued_at = now
@@ -200,6 +232,7 @@ def pop_eval_batch(
                 reason = str(meta.get("reason") or reason)
                 priority = int(meta.get("priority", priority))
                 enqueued_at = float(meta.get("enqueued_at", enqueued_at))
+                tenant_id = str(meta.get("tenant_id") or tenant_id)
         except Exception:
             pass
         try:
@@ -214,6 +247,7 @@ def pop_eval_batch(
                 priority=priority,
                 enqueued_at=enqueued_at,
                 score=float(score),
+                tenant_id=tenant_id,
             )
         )
     return jobs
@@ -243,16 +277,19 @@ def peek_eval_queue(limit: int = 10, config_raw: dict | None = None) -> list[dic
         return []
     out = []
     for member, score in items or []:
-        symbol, timeframe = _parse_member(str(member))
+        tenant_id, symbol, timeframe = _parse_member(str(member))
         reason = ""
         try:
             raw = client.hget(meta_key, member)
             if raw:
-                reason = json.loads(raw).get("reason", "")
+                meta = json.loads(raw)
+                reason = meta.get("reason", "")
+                tenant_id = str(meta.get("tenant_id") or tenant_id)
         except Exception:
             pass
         out.append(
             {
+                "tenant_id": tenant_id,
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "reason": reason,
@@ -263,13 +300,19 @@ def peek_eval_queue(limit: int = 10, config_raw: dict | None = None) -> list[dic
     return out
 
 
-def last_processed_at(symbol: str, timeframe: str, config_raw: dict | None = None) -> float | None:
+def last_processed_at(
+    symbol: str,
+    timeframe: str,
+    config_raw: dict | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> float | None:
     client = _client(config_raw)
     if not client:
         return None
     arch = _arch(config_raw)
     _, _, processed_key = _keys(str(arch.get("key_prefix", "aria:")))
-    member = f"{symbol}|{timeframe}"
+    member = eval_member_key(_resolve_enqueue_tenant(tenant_id), symbol, timeframe)
     try:
         raw = client.hget(processed_key, member)
         return float(raw) if raw else None

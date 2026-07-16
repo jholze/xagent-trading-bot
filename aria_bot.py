@@ -538,7 +538,11 @@ def _run_tenant_price_cycle(
             lc_signals=lc_signals,
             config_raw=bot_config.raw,
         )
-        coin_results = get_recent_coin_results(cycle_started)
+        from core.tenant_context import resolve_tenant_id
+
+        coin_results = get_recent_coin_results(
+            cycle_started, tenant_id=resolve_tenant_id(),
+        )
         if not use_dashboard:
             print(f"Redis eval queue aktiv — {len(coin_results)} Ergebnisse im Zyklus")
     else:

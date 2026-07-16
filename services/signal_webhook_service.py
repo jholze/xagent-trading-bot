@@ -118,7 +118,7 @@ def process_signal_webhook(
         webhook_event_type=signal.event_type,
     )
 
-    eval_enqueued = False
+    eval_enqueued = 0
     try:
         from bus.eval_queue import eval_queue_enabled
         from services.eval_queue_runtime import enqueue_webhook_eval

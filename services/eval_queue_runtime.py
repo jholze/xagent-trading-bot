@@ -79,6 +79,7 @@ def _record_result(result: dict | None, job: EvalJob) -> None:
         return
     payload = {
         **result,
+        "tenant_id": job.tenant_id,
         "eval_reason": job.reason,
         "eval_priority": job.priority,
         "processed_at": time.time(),
@@ -151,23 +152,26 @@ def _has_open_position(symbol: str, coin: dict) -> bool:
 
 def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
     """Run one queued evaluation (serial — called only from worker thread)."""
-    coin = _coin_for_symbol(job.symbol, job.timeframe)
-    price = float(get_prices_batch([job.symbol]).get(job.symbol, 0) or 0)
-    if price <= 0:
-        return None
+    from core.tenant_routing import tenant_cycle_context
 
-    reason = job.reason or ""
-    if reason.startswith("entry_15m") or reason == "15m_watch":
-        return _process_entry_15m_job(orchestrator, job, price, coin)
+    with tenant_cycle_context(job.tenant_id):
+        coin = _coin_for_symbol(job.symbol, job.timeframe)
+        price = float(get_prices_batch([job.symbol]).get(job.symbol, 0) or 0)
+        if price <= 0:
+            return None
 
-    return orchestrator.process_coin(
-        coin,
-        price,
-        _latest_signals.get("x") or [],
-        _latest_signals.get("cmc") or [],
-        _latest_signals.get("lc") or [],
-        quiet=True,
-    )
+        reason = job.reason or ""
+        if reason.startswith("entry_15m") or reason == "15m_watch":
+            return _process_entry_15m_job(orchestrator, job, price, coin)
+
+        return orchestrator.process_coin(
+            coin,
+            price,
+            _latest_signals.get("x") or [],
+            _latest_signals.get("cmc") or [],
+            _latest_signals.get("lc") or [],
+            quiet=True,
+        )
 
 
 def _worker_loop(orchestrator) -> None:
@@ -228,6 +232,9 @@ def seed_meta_producers(
     """Enqueue heartbeat/stale/social/15m-watch jobs from the meta cycle."""
     global _last_meta_seed_at
 
+    from core.tenant_context import resolve_tenant_id
+
+    tenant_id = resolve_tenant_id()
     cfg_raw = config_raw or get_bot_config().raw
     if not eval_queue_enabled(cfg_raw):
         return {}
@@ -249,7 +256,7 @@ def seed_meta_producers(
         tf = str(pos.get("timeframe") or "4h")
         if not symbol:
             continue
-        last = last_processed_at(symbol, tf, config_raw=cfg_raw)
+        last = last_processed_at(symbol, tf, config_raw=cfg_raw, tenant_id=tenant_id)
         if last and (now - last) < heartbeat_sec:
             continue
         if enqueue_eval(
@@ -257,13 +264,14 @@ def seed_meta_producers(
             reason="position_heartbeat",
             priority=PRIORITY_POSITION_HEARTBEAT,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["positions"] += 1
 
     watch_by_symbol = {c.get("symbol"): c for c in watchlist if c.get("active", True)}
     for symbol, coin in watch_by_symbol.items():
         tf = str(coin.get("timeframe") or "4h")
-        last = last_processed_at(symbol, tf, config_raw=cfg_raw)
+        last = last_processed_at(symbol, tf, config_raw=cfg_raw, tenant_id=tenant_id)
         if last and (now - last) < stale_sec:
             continue
         if enqueue_eval(
@@ -271,6 +279,7 @@ def seed_meta_producers(
             reason="stale_watchlist",
             priority=PRIORITY_STALE,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["stale"] += 1
 
@@ -284,6 +293,7 @@ def seed_meta_producers(
             reason="15m_watch",
             priority=PRIORITY_ENTRY_15M,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["watches"] += 1
 
@@ -303,6 +313,7 @@ def seed_meta_producers(
             reason="social_x",
             priority=PRIORITY_SOCIAL,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["social"] += 1
 
@@ -318,6 +329,7 @@ def seed_meta_producers(
             reason="social_cmc",
             priority=PRIORITY_SOCIAL,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["social"] += 1
 
@@ -333,20 +345,58 @@ def seed_meta_producers(
             reason="social_lc",
             priority=PRIORITY_SOCIAL,
             config_raw=cfg_raw,
+            tenant_id=tenant_id,
         ):
             counts["social"] += 1
 
     if any(counts.values()):
         log(
-            f"eval_meta seeded: pos={counts['positions']} stale={counts['stale']} "
+            f"eval_meta seeded tenant={tenant_id}: pos={counts['positions']} stale={counts['stale']} "
             f"watches={counts['watches']} social={counts['social']}",
             "INFO",
         )
     return counts
 
 
-def enqueue_webhook_eval(symbol: str, timeframe: str, *, config_raw: dict | None = None) -> bool:
-    return enqueue_eval(
+def enqueue_eval_for_watchers(
+    symbol: str,
+    timeframe: str,
+    *,
+    reason: str,
+    priority: int,
+    config_raw: dict | None = None,
+    force: bool = False,
+) -> int:
+    """Enqueue for each active tenant that lists *symbol* on its watchlist."""
+    from core.tenant_context import multi_tenant_enabled
+    from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
+
+    if not multi_tenant_enabled():
+        return 1 if enqueue_eval(
+            symbol, timeframe, reason=reason, priority=priority,
+            config_raw=config_raw, force=force,
+        ) else 0
+
+    accepted = 0
+    for tid in iter_price_cycle_tenants():
+        with tenant_cycle_context(tid):
+            active = {
+                c.get("symbol")
+                for c in load_effective_watchlist()
+                if c.get("active", True) and c.get("symbol")
+            }
+            if symbol not in active:
+                continue
+            if enqueue_eval(
+                symbol, timeframe, reason=reason, priority=priority,
+                config_raw=config_raw, force=force, tenant_id=tid,
+            ):
+                accepted += 1
+    return accepted
+
+
+def enqueue_webhook_eval(symbol: str, timeframe: str, *, config_raw: dict | None = None) -> int:
+    return enqueue_eval_for_watchers(
         symbol,
         timeframe,
         reason="webhook",
@@ -356,8 +406,8 @@ def enqueue_webhook_eval(symbol: str, timeframe: str, *, config_raw: dict | None
     )
 
 
-def enqueue_entry_15m_eval(symbol: str, timeframe: str, *, config_raw: dict | None = None) -> bool:
-    return enqueue_eval(
+def enqueue_entry_15m_eval(symbol: str, timeframe: str, *, config_raw: dict | None = None) -> int:
+    return enqueue_eval_for_watchers(
         symbol,
         timeframe,
         reason="entry_15m_vol_spike",
@@ -366,10 +416,20 @@ def enqueue_entry_15m_eval(symbol: str, timeframe: str, *, config_raw: dict | No
     )
 
 
-def get_recent_coin_results(since: float | None = None) -> list[dict]:
+def get_recent_coin_results(
+    since: float | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> list[dict]:
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
+    rows = list(_recent_results)
+    if tid:
+        rows = [r for r in rows if str(r.get("tenant_id") or "default") == tid]
     if since is None:
-        return list(_recent_results)
-    return [r for r in _recent_results if float(r.get("processed_at", 0)) >= since]
+        return rows
+    return [r for r in rows if float(r.get("processed_at", 0)) >= since]
 
 
 def worker_stats() -> dict[str, Any]:
