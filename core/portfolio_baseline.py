@@ -45,19 +45,33 @@ def nav_total_pnl(total_value: float, initial_capital: float) -> float:
     return float(total_value) - float(initial_capital)
 
 
-def split_nav_pnl_for_display(
+def portfolio_pnl_for_display(
     total_value: float,
     initial_capital: float,
     unrealized: float,
+    trade_realized: float,
 ) -> dict[str, float]:
-    """Split NAV PnL for UI; realized is residual so components sum to total_pnl."""
+    """Headline PnL from NAV; trade_realized from closed orders (not a residual)."""
     unreal = float(unrealized or 0)
     total_pnl = nav_total_pnl(total_value, initial_capital)
-    realized = total_pnl - unreal
     pct = (total_pnl / float(initial_capital) * 100.0) if initial_capital > 0 else 0.0
     return {
         "total_pnl": total_pnl,
         "unrealized": unreal,
-        "realized": realized,
+        "trade_realized": float(trade_realized or 0),
         "pnl_pct": pct,
+    }
+
+
+def split_nav_pnl_for_display(
+    total_value: float,
+    initial_capital: float,
+    unrealized: float,
+    trade_realized: float = 0.0,
+) -> dict[str, float]:
+    """Backward-compatible alias — pass trade_realized from ledger order replay."""
+    pnl = portfolio_pnl_for_display(total_value, initial_capital, unrealized, trade_realized)
+    return {
+        **pnl,
+        "realized": pnl["trade_realized"],
     }

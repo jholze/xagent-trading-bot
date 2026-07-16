@@ -1,7 +1,7 @@
 import re
 
 from core.config import get_bot_config
-from core.portfolio_baseline import initial_capital, split_nav_pnl_for_display
+from core.portfolio_baseline import initial_capital, portfolio_pnl_for_display
 from data_manager import (
     is_dry_run_enhanced,
     resolve_ledger_scope,
@@ -415,6 +415,7 @@ def format_portfolio_summary(
     prices: dict = None,
     fast_daily_nav: bool = False,
     include_position_header: bool = True,
+    trade_realized: float = None,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     total_value = balance + float(positions_market_value or 0)
@@ -425,9 +426,10 @@ def format_portfolio_summary(
         history=history,
         trading_mode=cfg.trading_mode,
     )
-    pnl = split_nav_pnl_for_display(total_value, initial, float(total_unreal or 0))
+    if trade_realized is None:
+        trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+    pnl = portfolio_pnl_for_display(total_value, initial, float(total_unreal or 0), trade_realized)
     total_pnl = pnl["total_pnl"]
-    realized = pnl["realized"]
     unrealized = pnl["unrealized"]
     pnl_pct = pnl["pnl_pct"]
     pnl_icon = _pnl_emoji(total_pnl)
@@ -454,7 +456,7 @@ def format_portfolio_summary(
         f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
         f"📈 Unrealisiert <b>${unrealized:+.1f}</b> · "
-        f"✅ Realisiert <b>${realized:+.1f}</b>\n"
+        f"✅ Trade-Gewinn <b>${trade_realized:+.1f}</b>\n"
         f"{daily_line}"
     )
     if include_position_header:
@@ -473,6 +475,7 @@ def format_positions_message(
     *,
     cash_balance: float = None,
     cash_label: str = "Cash",
+    trade_realized: float = None,
     gate_holdings: list = None,
     price_sources: dict = None,
     fast_daily_nav: bool = False,
@@ -493,6 +496,7 @@ def format_positions_message(
                 prices=prices,
                 fast_daily_nav=fast_daily_nav,
                 include_position_header=False,
+                trade_realized=trade_realized,
             )
         cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
         empty = (
@@ -537,6 +541,7 @@ def format_positions_message(
             prices=prices,
             fast_daily_nav=fast_daily_nav,
             include_position_header=level != "summary",
+            trade_realized=trade_realized,
         ) + "\n"
 
     if gate_holdings:
@@ -635,8 +640,8 @@ def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
 
 
 def resolve_portfolio_context(*, fast: bool = False) -> dict:
-    from core.simulated_trading import is_simulated_trading, simulated_ledger_scope
-    from data_manager import resolve_sim_cash_balance
+    from core.simulated_trading import is_simulated_trading, simulated_ledger_scope, uses_order_ledger_cash
+    from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
 
     cfg = get_bot_config()
     history = load_trade_history_safe()
@@ -653,10 +658,16 @@ def resolve_portfolio_context(*, fast: bool = False) -> dict:
             config=cfg.raw,
             history=history,
         )
+        trade_realized = (
+            resolve_sim_realized_pnl(scope=scope, config=cfg.raw)
+            if uses_order_ledger_cash(cfg.raw)
+            else float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        )
         return {
             "history": history,
             "cash_balance": cash,
             "cash_label": cash_label,
+            "trade_realized": trade_realized,
             "gate_holdings": None,
         }
     if uses_exchange_ledger(cfg.trading_mode):
@@ -667,12 +678,14 @@ def resolve_portfolio_context(*, fast: bool = False) -> dict:
             "history": history,
             "cash_balance": float(bundle.get("usdt", 0)),
             "cash_label": "Gate USDT",
+            "trade_realized": float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0),
             "gate_holdings": bundle.get("holdings") or [],
         }
     return {
         "history": history,
         "cash_balance": float(history.get("virtual_balance", 0)),
         "cash_label": "Cash",
+        "trade_realized": float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0),
         "gate_holdings": None,
     }
 
@@ -745,6 +758,7 @@ def send_positions_snapshot(
         include_trades=(level == "full"),
         cash_balance=ctx["cash_balance"],
         cash_label=ctx["cash_label"],
+        trade_realized=ctx.get("trade_realized"),
         gate_holdings=ctx.get("gate_holdings"),
         price_sources=price_sources,
         fast_daily_nav=fast,

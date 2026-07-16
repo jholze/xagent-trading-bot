@@ -10,12 +10,18 @@ from notifications.terminal_dashboard import _portfolio_snapshot
 
 class TestTerminalDashboardBaseline(unittest.TestCase):
     def test_portfolio_snapshot_uses_baseline_and_scope(self):
+        history = {
+            "virtual_balance": 40000.0,
+            "realized_pnl": 100.0,
+            "trades": [],
+        }
         with patch("notifications.terminal_dashboard.get_bot_config") as mock_cfg, \
-             patch("data_manager.load_trade_history", return_value={
-                 "virtual_balance": 40000.0,
-                 "realized_pnl": 100.0,
-                 "trades": [],
-             }), \
+             patch(
+                 "notifications.telegram_commands.position_display.load_trade_history_safe",
+                 return_value=history,
+             ), \
+             patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=False), \
              patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
              patch("notifications.terminal_dashboard.initial_capital", return_value=50000.0) as mock_baseline, \
              patch("notifications.terminal_dashboard.resolve_ledger_scope", return_value="demo") as mock_scope:
@@ -29,7 +35,8 @@ class TestTerminalDashboardBaseline(unittest.TestCase):
         self.assertEqual(snap["initial_capital"], 50000.0)
         self.assertAlmostEqual(snap["total_pnl"], -10000.0, places=2)
         self.assertAlmostEqual(snap["pnl_pct"], -20.0, places=2)
-        self.assertAlmostEqual(snap["realized"], -10000.0, places=2)
+        self.assertAlmostEqual(snap["trade_realized"], 100.0, places=2)
+        self.assertAlmostEqual(snap["realized"], 100.0, places=2)
 
 
 if __name__ == "__main__":

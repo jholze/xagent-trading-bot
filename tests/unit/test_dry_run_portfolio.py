@@ -131,7 +131,7 @@ class DryRunPortfolioHarness:
         return load_live_trade_history()
 
     def assert_portfolio_invariant(self, prices: dict, tol: float = 0.05) -> None:
-        from core.portfolio_baseline import split_nav_pnl_for_display
+        from core.portfolio_baseline import portfolio_pnl_for_display
 
         history = self.history()
         cash = float(history["virtual_balance"])
@@ -139,14 +139,15 @@ class DryRunPortfolioHarness:
         market_value = _position_market_value(active, prices)
         unreal = _unrealized_pnl(active, prices)
         total = cash + market_value
-        pnl = split_nav_pnl_for_display(total, self.initial, unreal)
+        trade_realized = float(history.get("realized_pnl", 0) or 0)
+        pnl = portfolio_pnl_for_display(total, self.initial, unreal, trade_realized)
 
         self._assert_close(total, self.initial + pnl["total_pnl"], tol, "nav identity")
         self._assert_close(
-            pnl["realized"] + pnl["unrealized"],
-            pnl["total_pnl"],
-            tol,
-            "pnl split",
+            compute_sim_realized_pnl(history.get("trades", [])),
+            trade_realized,
+            0.5,
+            "trade realized replay",
         )
         self._assert_close(
             compute_sim_cash_from_trades(history.get("trades", []), self.initial),

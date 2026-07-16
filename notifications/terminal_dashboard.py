@@ -93,15 +93,16 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         trading_mode=mode,
     )
     total_value = balance + positions_market_value
-    from core.portfolio_baseline import split_nav_pnl_for_display
+    from core.portfolio_baseline import portfolio_pnl_for_display
 
-    pnl = split_nav_pnl_for_display(total_value, baseline, unrealized)
+    pnl = portfolio_pnl_for_display(total_value, baseline, unrealized, realized)
 
     return {
         "history": history,
         "balance": balance,
         "balance_label": balance_label,
-        "realized": pnl["realized"],
+        "realized": pnl["trade_realized"],
+        "trade_realized": pnl["trade_realized"],
         "realized_ledger": realized,
         "unrealized": pnl["unrealized"],
         "positions_market_value": positions_market_value,
@@ -270,7 +271,7 @@ def build_cycle_summary(
         f"Modus: <b>{trading_mode.upper()}</b> · Ledger: <b>{scope.upper()}</b>",
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | "
-        f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, real. ${float(realized or 0):,.1f})",
+        f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, Trades ${float(realized or 0):,.1f})",
         f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC | {lc_signal_count} LC",
     ]
     try:

@@ -80,11 +80,15 @@ class TestPositionDisplay(unittest.TestCase):
                  "virtual_balance": 3952.19, "realized_pnl": -111.82, "trades": [],
              }), \
              patch("notifications.telegram_commands.position_display.is_dry_run_enhanced", return_value=False), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
+             patch("data_manager.resolve_sim_cash_balance", return_value=3952.19), \
+             patch("data_manager.resolve_sim_realized_pnl", return_value=-111.82), \
              patch("notifications.telegram_commands.position_display.fetch_usdt_balance") as mock_gate:
             ctx = resolve_portfolio_context()
             mock_gate.assert_not_called()
-        self.assertEqual(ctx["cash_label"], "Cash (Dry Run)")
+        self.assertEqual(ctx["cash_label"], "Sim USDT")
         self.assertAlmostEqual(ctx["cash_balance"], 3952.19)
+        self.assertAlmostEqual(ctx["trade_realized"], -111.82)
         self.assertIsNone(ctx["gate_holdings"])
 
     def test_empty_positions_message(self):
@@ -168,15 +172,21 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertNotIn("0.0000", line)
 
     def test_resolve_portfolio_context_dry_run_uses_sim_cash(self):
-        cfg = type("Cfg", (), {"raw": {"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}})()
+        cfg = type("Cfg", (), {
+            "raw": {"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}},
+            "trading_mode": "live",
+        })()
         with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
              patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value={
-                 "virtual_balance": 3904.25, "total_pnl": -10, "trades": [],
+                 "virtual_balance": 3904.25, "realized_pnl": 12.5, "trades": [],
              }), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=False), \
+             patch("data_manager.resolve_sim_cash_balance", return_value=3904.25), \
              patch("notifications.telegram_commands.position_display.is_dry_run_enhanced", return_value=True):
             ctx = resolve_portfolio_context()
-        self.assertEqual(ctx["cash_label"], "Cash (Sim)")
+        self.assertEqual(ctx["cash_label"], "Sim USDT")
         self.assertAlmostEqual(ctx["cash_balance"], 3904.25)
+        self.assertAlmostEqual(ctx["trade_realized"], 12.5)
         self.assertIsNone(ctx["gate_holdings"])
 
     def test_format_position_card_shows_micro_cap_price(self):
@@ -239,15 +249,17 @@ class TestPositionDisplay(unittest.TestCase):
 
     def test_refresh_positions_for_snapshot_fast_calls_load(self):
         with patch("strategies.positions.load_positions") as mock_load, \
-             patch("strategies.positions.bootstrap_positions") as mock_boot:
+             patch("strategies.positions.bootstrap_positions") as mock_boot, \
+             patch("core.tenant_context.resolve_tenant_scope", return_value="demo"), \
+             patch("core.tenant_context.resolve_tenant_id", return_value="default"):
             _refresh_positions_for_snapshot(fast=True)
-            mock_load.assert_called_once_with()
+            mock_load.assert_called_once_with(scope="demo", tenant_id="default")
             mock_boot.assert_not_called()
 
     def test_send_positions_snapshot_fast_refreshes_before_listing(self):
         call_order = []
 
-        def _load():
+        def _load(*_args, **_kwargs):
             call_order.append("load")
 
         def _list():
