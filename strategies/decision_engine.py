@@ -972,6 +972,18 @@ class DecisionEngine:
             if allocation.defensive_mode:
                 market.strategy_params["regime_defensive"] = True
                 market.strategy_params["exposure_multiplier"] = allocation.exposure_multiplier
+            try:
+                from strategies.trading_modes import resolve_trading_mode
+
+                force_g = (
+                    market.strategy_params.get("strategy_class") == "grid"
+                    or coin.get("strategy_class") == "grid"
+                )
+                market.strategy_params["trading_mode"] = resolve_trading_mode(
+                    allocation, force_grid=force_g,
+                )
+            except Exception:
+                pass
 
         if regime_result or allocation:
             market.strategy_params = resolve_strategy_params(

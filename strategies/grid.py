@@ -1,29 +1,44 @@
 """
-GridStrategy – dynamische Grid-Strategie für Spot-Trading.
+GridStrategy – slice-based grid for spot (Phase A).
 
-Wird über den StrategyAllocator aktiviert und parametrisiert.
-Unterstützt:
-- ATR- oder prozentbasiertes Spacing
-- Automatisches Re-Centering
-- Fee-bewusste Gewinnkalkulation (vereinfacht)
+Activated via StrategyAllocator / force strategy_class=grid.
+Uses pure GridPlan for levels + partial buy/sell sizes.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from core.models import MarketContext, SignalAnalysis
-from strategies.base import BaseStrategy
+from core.actions import HOLD
 from core.config import get_bot_config
+from core.models import MarketContext, SignalAnalysis
 from logger import log
+from strategies.base import BaseStrategy
+from strategies.grid_plan import (
+    GridPlan,
+    build_grid_plan,
+    evaluate_plan_at_price,
+    plan_from_legacy_state,
+    recenter_plan,
+    should_recenter,
+)
+from strategies.trading_modes import (
+    MODE_DEFENSIVE,
+    MODE_GRID,
+    MODE_HYBRID,
+    mode_allows_grid_sells,
+    mode_allows_new_grid_buys,
+    resolve_trading_mode,
+)
 
 
+# Backward-compatible names (tests / older imports)
 @dataclass
 class GridLevel:
     price: float
-    side: str          # "buy" or "sell"
+    side: str
     filled: bool = False
 
 
@@ -41,17 +56,21 @@ class GridStrategy(BaseStrategy):
     _last_persist_at: Dict[str, float] = {}
 
     def __init__(self):
-        self._states: Dict[str, GridState] = {}   # key = f"{symbol}_{tf}"
+        self._plans: Dict[str, GridPlan] = {}
+        self._states: Dict[str, GridState] = {}
 
     def _get_key(self, symbol: str, tf: str) -> str:
         return f"{symbol}_{tf}"
 
-    def _load_or_init_state(
+    def _grid_cfg(self) -> dict:
+        return get_bot_config().grid_config
+
+    def _load_or_init_plan(
         self, symbol: str, tf: str, current_price: float, params: dict
-    ) -> GridState:
+    ) -> GridPlan:
         key = self._get_key(symbol, tf)
-        if key in self._states:
-            return self._states[key]
+        if key in self._plans:
+            return self._plans[key]
 
         try:
             from data_manager import get_config
@@ -60,59 +79,47 @@ class GridStrategy(BaseStrategy):
             grid_states = (cfg or {}).get("grid_states", {}) or {}
             stored = grid_states.get(key) or grid_states.get(f"{symbol}_{tf}")
             if stored and isinstance(stored, dict):
-                state = GridState(
-                    center_price=float(stored.get("center_price", current_price)),
-                    spacing=float(stored.get("spacing", 0.01)),
-                    levels=[GridLevel(**l) for l in stored.get("levels", []) if isinstance(l, dict)],
-                    last_recenter_price=float(stored.get("last_recenter_price", stored.get("center_price", current_price))),
-                )
-                self._states[key] = state
-                return state
+                if stored.get("levels") and "center" in stored:
+                    plan = GridPlan.from_dict({**stored, "symbol": symbol, "timeframe": tf})
+                else:
+                    plan = plan_from_legacy_state(symbol, tf, stored)
+                if plan.center > 0 and plan.levels:
+                    self._plans[key] = plan
+                    return plan
         except Exception:
             pass
 
-        # Fallback: frisches Grid
-        grid_cfg = get_bot_config().grid_config
-        spacing_mult = float(params.get("grid_spacing_atr_mult", grid_cfg.get("default_spacing_atr_mult", 0.8)))
+        gcfg = self._grid_cfg()
+        spacing_mult = float(
+            params.get("grid_spacing_atr_mult", gcfg.get("default_spacing_atr_mult", 0.8))
+        )
         atr_pct = float(params.get("atr_pct", 3.0))
+        n_levels = int(gcfg.get("max_levels", 12) or 12)
+        n_side = max(1, n_levels // 2)
+        plan = build_grid_plan(
+            symbol,
+            tf,
+            current_price,
+            atr_pct=atr_pct,
+            spacing_atr_mult=spacing_mult,
+            n_buy_levels=n_side,
+            n_sell_levels=n_side,
+        )
+        self._plans[key] = plan
+        return plan
 
-        spacing = current_price * (atr_pct / 100.0) * spacing_mult
-        center = current_price
-
-        levels = []
-        for i in range(1, 7):
-            levels.append(GridLevel(price=center - i * spacing, side="buy"))
-            levels.append(GridLevel(price=center + i * spacing, side="sell"))
-
-        state = GridState(center_price=center, spacing=spacing, levels=levels, last_recenter_price=center)
-        self._states[key] = state
-        return state
-
-    def _should_recenter(self, state: GridState, current_price: float, params: dict) -> bool:
-        grid_cfg = get_bot_config().grid_config
-        re_center_mult = float(params.get("re_center_atr_mult", grid_cfg.get("re_center_atr_mult", 2.5)))
-        atr_pct = float(params.get("atr_pct", 3.0))
-
-        distance = abs(current_price - state.center_price)
-        threshold = state.center_price * (atr_pct / 100.0) * re_center_mult
-        return distance > threshold
-
-    def _persist_state(self, symbol: str, tf: str, state: GridState, *, force: bool = False) -> None:
-        """Persist grid state in tenant-scoped config (grid_states map)."""
-        key = self._get_key(symbol, tf)
+    def _persist_plan(self, plan: GridPlan, *, force: bool = False) -> None:
+        key = self._get_key(plan.symbol, plan.timeframe)
         now = time.time()
         if not force:
             last = self._last_persist_at.get(key, 0.0)
             if now - last < self._persist_debounce_sec:
-                self._states[key] = state
+                self._plans[key] = plan
                 return
         self._last_persist_at[key] = now
-        serial = {
-            "center_price": float(state.center_price),
-            "spacing": float(state.spacing),
-            "levels": [{"price": float(l.price), "side": str(l.side), "filled": bool(l.filled)} for l in state.levels],
-            "last_recenter_price": float(state.last_recenter_price),
-        }
+        serial = plan.to_dict()
+        # Keep legacy field names for /grid status readers
+        serial["center_price"] = plan.center
         try:
             from data_manager import get_config, save_config
 
@@ -120,31 +127,10 @@ class GridStrategy(BaseStrategy):
             gs = cfg.setdefault("grid_states", {})
             gs[key] = serial
             save_config(cfg)
-            self._states[key] = state
+            self._plans[key] = plan
         except Exception as e:
             log(f"[Grid] persist skipped for {key}: {e}", "DEBUG")
-            self._states[key] = state
-
-    def _recenter_grid(self, state: GridState, current_price: float, params: dict, symbol: str, tf: str):
-        """Erzeugt ein neues Grid um den aktuellen Preis."""
-        grid_cfg = get_bot_config().grid_config
-        spacing_mult = float(params.get("grid_spacing_atr_mult", grid_cfg.get("default_spacing_atr_mult", 0.8)))
-        atr_pct = float(params.get("atr_pct", 3.0))
-
-        new_spacing = current_price * (atr_pct / 100.0) * spacing_mult
-        new_levels = []
-
-        for i in range(1, 7):
-            new_levels.append(GridLevel(price=current_price - i * new_spacing, side="buy"))
-            new_levels.append(GridLevel(price=current_price + i * new_spacing, side="sell"))
-
-        state.center_price = current_price
-        state.spacing = new_spacing
-        state.levels = new_levels
-        state.last_recenter_price = current_price
-
-        self._persist_state(symbol, tf, state, force=True)
-        log(f"[Grid] Re-centered grid for {symbol} @ {current_price:.2f}", "INFO")
+            self._plans[key] = plan
 
     def analyze(
         self,
@@ -152,25 +138,35 @@ class GridStrategy(BaseStrategy):
         market: MarketContext,
         x_signals=None,
     ) -> SignalAnalysis:
-        symbol = coin.get("symbol")
+        symbol = coin.get("symbol") or market.symbol
         tf = market.timeframe
-        price = market.current_price
+        price = float(market.current_price or 0)
         params = dict(market.strategy_params or {})
-
-        # Support explicit grid (strategy_class) or allocator weight
-        allocation = getattr(market, "allocation", None) or params.get("allocation", {})
-        grid_weight = 0.0
-        if isinstance(allocation, dict):
-            grid_weight = allocation.get("strategy_weights", {}).get("grid", 0.0) or 0.0
-        else:
-            # AllocationDecision object
-            sw = getattr(allocation, "strategy_weights", {}) or {}
-            grid_weight = sw.get("grid", 0.0) if isinstance(sw, dict) else 0.0
+        allocation = getattr(market, "allocation", None) or params.get("allocation")
 
         force_grid = (params.get("strategy_class") == "grid") or (coin.get("strategy_class") == "grid")
-        if grid_weight <= 0.05 and not force_grid:
+        mode = resolve_trading_mode(allocation, force_grid=force_grid)
+
+        if mode == MODE_DEFENSIVE and not market.has_position:
             return SignalAnalysis(
-                action="HOLD",
+                action=HOLD,
+                symbol=symbol,
+                timeframe=tf,
+                rsi=market.rsi,
+                lower_bb=market.lower_bb,
+                vol_multiplier=market.vol_multiplier,
+                ampel_emoji="🟠",
+                ampel_text="Defensive — no new grid buys",
+                sources=["grid", "mode_defensive"],
+                normalized_action=HOLD,
+                strategy_profile="grid",
+                rationale=f"mode={MODE_DEFENSIVE}",
+                confidence=0.5,
+            )
+
+        if mode not in (MODE_GRID, MODE_HYBRID) and not force_grid:
+            return SignalAnalysis(
+                action=HOLD,
                 symbol=symbol,
                 timeframe=tf,
                 rsi=market.rsi,
@@ -179,50 +175,118 @@ class GridStrategy(BaseStrategy):
                 ampel_emoji="🟡",
                 ampel_text="Grid deaktiviert durch Allocator",
                 sources=["grid"],
-                normalized_action="HOLD",
+                normalized_action=HOLD,
                 strategy_profile="grid",
+                rationale=f"mode={mode}",
+                confidence=0.4,
             )
 
-        state = self._load_or_init_state(symbol, tf, price, params)
+        gcfg = self._grid_cfg()
+        atr_pct = float(params.get("atr_pct", market.atr_pct or 3.0))
+        spacing_mult = float(
+            params.get("grid_spacing_atr_mult", gcfg.get("default_spacing_atr_mult", 0.8))
+        )
+        re_center_mult = float(
+            params.get("re_center_atr_mult", gcfg.get("re_center_atr_mult", 2.5))
+        )
 
-        # Re-Centering prüfen
-        if self._should_recenter(state, price, params):
-            self._recenter_grid(state, price, params, symbol, tf)
+        # Prefer pre-seeded legacy _states (unit tests)
+        key = self._get_key(symbol, tf)
+        if key in self._states and key not in self._plans:
+            st = self._states[key]
+            plan = plan_from_legacy_state(
+                symbol,
+                tf,
+                {
+                    "center_price": st.center_price,
+                    "spacing": st.spacing,
+                    "levels": [
+                        {"price": lv.price, "side": lv.side, "filled": lv.filled}
+                        for lv in st.levels
+                    ],
+                    "last_recenter_price": st.last_recenter_price,
+                },
+            )
+            self._plans[key] = plan
+        else:
+            plan = self._load_or_init_plan(symbol, tf, price, {**params, "atr_pct": atr_pct})
 
-        # Prüfe, ob Preis ein Level getroffen hat
-        action = "HOLD"
-        sources = ["grid"]
-        rationale = ""
+        if should_recenter(
+            plan, price, atr_pct=atr_pct, re_center_atr_mult=re_center_mult,
+        ):
+            plan = recenter_plan(
+                plan, price, atr_pct=atr_pct, spacing_atr_mult=spacing_mult,
+            )
+            self._persist_plan(plan, force=True)
+            log(f"[Grid] Re-centered plan for {symbol} @ {price:.6g}", "INFO")
 
-        for level in state.levels:
-            if level.filled:
-                continue
+        act = evaluate_plan_at_price(
+            plan,
+            price,
+            has_position=bool(market.has_position),
+            allow_buys=mode_allows_new_grid_buys(mode),
+            allow_sells=mode_allows_grid_sells(mode),
+        )
+        if act.action != HOLD:
+            self._persist_plan(plan, force=True)
+        else:
+            self._persist_plan(plan, force=False)
 
-            # Sehr einfache Level-Erkennung (in Realität würde man Order-Fills tracken)
-            if level.side == "buy" and price <= level.price * 1.001:
-                action = "BUY"
-                rationale = f"Grid buy level @ {level.price:.2f}"
-                level.filled = True
-                break
+        # HYBRID: only take grid sells / mild buys (smaller slice)
+        buy_frac = act.buy_usdt_frac
+        if mode == MODE_HYBRID and act.action == "BUY":
+            buy_frac = max(0.05, buy_frac * 0.6)
 
-            if level.side == "sell" and price >= level.price * 0.999:
-                action = "SELL"
-                rationale = f"Grid sell level @ {level.price:.2f}"
-                level.filled = True
-                break
+        dca_usdt = 0.0
+        if act.action == "BUY" and buy_frac > 0:
+            base = float(get_bot_config().max_usdt_per_trade or 500)
+            dca_usdt = round(base * buy_frac, 2)
 
         return SignalAnalysis(
-            action=action,
+            action=act.action,
             symbol=symbol,
             timeframe=tf,
             rsi=market.rsi,
             lower_bb=market.lower_bb,
             vol_multiplier=market.vol_multiplier,
-            ampel_emoji="🔵" if action != "HOLD" else "🟡",
-            ampel_text=rationale or "Grid monitoring",
-            sources=sources,
-            normalized_action=action,
-            rationale=rationale,
+            ampel_emoji="🔵" if act.action != HOLD else "🟡",
+            ampel_text=act.rationale or "Grid monitoring",
+            sources=["grid", f"mode_{mode.lower()}"],
+            normalized_action=act.action,
+            rationale=f"{act.rationale} | mode={mode}",
             strategy_profile="grid",
-            confidence=0.7,
+            confidence=0.72 if act.action != HOLD else 0.55,
+            dca_usdt=dca_usdt,
+            atr_pct=atr_pct,
         )
+
+    # --- backward-compatible helpers used by tests ---
+    def _persist_state(self, symbol: str, tf: str, state, *, force: bool = False) -> None:
+        """Legacy test helper: accept GridState-like or GridPlan."""
+        if isinstance(state, GridPlan):
+            self._persist_plan(state, force=force)
+            return
+        # GridState dataclass from older tests
+        levels = []
+        for lv in getattr(state, "levels", []) or []:
+            levels.append(
+                {
+                    "price": float(getattr(lv, "price", 0)),
+                    "side": str(getattr(lv, "side", "buy")),
+                    "filled": bool(getattr(lv, "filled", False)),
+                }
+            )
+        plan = plan_from_legacy_state(
+            symbol,
+            tf,
+            {
+                "center_price": float(getattr(state, "center_price", 0)),
+                "spacing": float(getattr(state, "spacing", 0)),
+                "levels": levels,
+                "last_recenter_price": float(getattr(state, "last_recenter_price", 0)),
+            },
+        )
+        self._persist_plan(plan, force=force)
+        # Keep attribute name used in old tests
+        self._states = getattr(self, "_states", {})
+        self._states[self._get_key(symbol, tf)] = state
