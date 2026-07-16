@@ -53,6 +53,8 @@ def _should_use_mongo_for_tenant_config(config: dict = None) -> bool:
         cfg = config or {}
         if ledger_dual_write_enabled(cfg):
             return True
+        if is_demo_mode():
+            return resolve_ledger_backend("demo", cfg) == "mongo"
         be = resolve_ledger_backend("paper", cfg)
         return be == "mongo"
     except Exception:

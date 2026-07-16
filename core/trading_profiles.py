@@ -126,6 +126,33 @@ def apply_effective_config(base_cfg: dict, tenant_overrides: dict | None = None)
     return merged
 
 
+def build_operator_like_tenant_config(base_cfg: dict | None = None) -> dict:
+    """Simulated-live demo settings aligned with the operator config.json baseline."""
+    cfg = copy.deepcopy(base_cfg or {})
+    live = dict(cfg.get("live") or {})
+    live.setdefault("dry_run", True)
+    live.setdefault("dry_run_enhanced", True)
+    live.setdefault("simulated_balance_usdt", cfg.get("initial_capital_usdt", 100_000))
+    body: dict[str, Any] = {
+        "trading_mode": "live",
+        "virtual_trading": False,
+        "live_confirmed": True,
+        "live": live,
+        "initial_capital_usdt": cfg.get("initial_capital_usdt", 100_000),
+        "max_open_positions": cfg.get("max_open_positions", 40),
+        "max_usdt_per_trade": cfg.get("max_usdt_per_trade", 2500),
+        "max_position_percent": cfg.get("max_position_percent", 30),
+        "stop_loss_pct": cfg.get("stop_loss_pct", 50.0),
+        "trade_cooldown_hours": cfg.get("trade_cooldown_hours", 1.0),
+        "slippage_percent": cfg.get("slippage_percent", 1.5),
+        "trading_profile": cfg.get("trading_profile") or DEFAULT_PROFILE,
+    }
+    for key in ("dry_run_defaults", "coin_filters", "paper", "demo"):
+        if key in cfg:
+            body[key] = copy.deepcopy(cfg[key])
+    return body
+
+
 def build_tenant_seed_config(
     profile: str = DEFAULT_PROFILE,
     *,

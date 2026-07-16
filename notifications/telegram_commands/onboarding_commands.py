@@ -425,13 +425,14 @@ def _perform_onboard(
             test=False,
         )
 
-        from core.tenant_context import tenant_context
-        from core.trading_profiles import build_tenant_seed_config
-        from data_manager import save_config, save_watchlist
+        from core.tenant_context import DEFAULT_TENANT, tenant_context
+        from core.trading_profiles import build_operator_like_tenant_config
+        from data_manager import _load_default_config_from_disk, load_effective_watchlist, save_config, save_watchlist
 
+        default_cfg = _load_default_config_from_disk()
         with tenant_context(tid, scope="paper"):
-            save_config(build_tenant_seed_config("balanced"))
-            save_watchlist(DEFAULT_WATCHLIST)
+            save_config(build_operator_like_tenant_config(default_cfg))
+            save_watchlist(list(load_effective_watchlist(tenant_id=DEFAULT_TENANT)) or DEFAULT_WATCHLIST)
 
         webhook_ok = True
         if not shared_bot:
