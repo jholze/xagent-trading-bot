@@ -951,8 +951,15 @@ def _filled_order_usdt(order: dict) -> float:
     return 0.0
 
 
+_SIM_CASH_EPS = 0.01
+
+
 def compute_sim_cash_from_orders(orders: list, initial: float = 5000.0) -> float:
-    """Replay filled orders from starting capital to derive demo/paper USDT cash."""
+    """Replay filled orders from starting capital to derive simulated-live USDT cash.
+
+    Buys that exceed available cash are skipped — matching live Gate rejection, not
+    clamping balance to zero (which hid phantom fills on overdrawn ledgers).
+    """
     balance = float(initial)
     sorted_orders = sorted(
         orders or [],
@@ -968,10 +975,12 @@ def compute_sim_cash_from_orders(orders: list, initial: float = 5000.0) -> float
         side = (order.get("side") or "").lower()
         usdt = _filled_order_usdt(order)
         if side == "buy":
-            balance = max(0.0, balance - usdt)
+            if usdt > balance + _SIM_CASH_EPS:
+                continue
+            balance -= usdt
         elif side == "sell":
             balance += usdt
-    return round(balance, 8)
+    return round(max(0.0, balance), 8)
 
 
 def compute_realized_pnl_from_orders(orders: list) -> float:
@@ -1038,10 +1047,13 @@ def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float
     balance = float(initial)
     for trade in trades or []:
         if trade.get("type") == "BUY":
-            balance = max(0.0, balance - float(trade.get("usdt_amount") or 0))
+            usdt = float(trade.get("usdt_amount") or 0)
+            if usdt > balance + _SIM_CASH_EPS:
+                continue
+            balance -= usdt
         elif trade.get("type") == "SELL":
             balance += float(trade.get("usdt_received") or 0)
-    return round(balance, 8)
+    return round(max(0.0, balance), 8)
 
 
 def compute_sim_realized_pnl(trades: list) -> float:

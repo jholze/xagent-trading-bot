@@ -10,9 +10,11 @@ from data_manager import (
     is_live_dry_run,
     load_live_trade_history,
     load_trade_history,
+    resolve_sim_cash_balance,
     simulated_balance_usdt,
     uses_exchange_ledger,
 )
+from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
 from logger import log
 from price_fetcher import get_prices_batch
 
@@ -35,6 +37,13 @@ def _balance_cache_key(cfg: BotConfig) -> str:
 def fetch_balance_bundle(config: BotConfig = None, *, min_amount: float = 0.0, max_age_sec: float = None) -> dict:
     """Single Gate fetch_balance for USDT + spot holdings (cached briefly)."""
     cfg = config or get_bot_config()
+    if is_simulated_trading(cfg.raw):
+        if uses_order_ledger_cash(cfg.raw):
+            cash = resolve_sim_cash_balance(config=cfg.raw)
+        else:
+            history = load_live_trade_history()
+            cash = float(history.get("virtual_balance", cfg.simulated_balance_usdt))
+        return {"usdt": cash, "holdings": [], "from_cache": False}
     if is_live_dry_run(cfg.raw):
         history = load_live_trade_history()
         cash = float(history.get("virtual_balance", cfg.simulated_balance_usdt))

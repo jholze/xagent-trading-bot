@@ -421,6 +421,14 @@ class RiskManager:
         return load_trade_history()
 
     def _available_usdt(self, fallback: float = 0) -> float:
+        from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
+        from data_manager import resolve_sim_cash_balance
+
+        if is_simulated_trading(self.config.raw):
+            if uses_order_ledger_cash(self.config.raw):
+                return resolve_sim_cash_balance(config=self.config.raw)
+            history = load_live_trade_history()
+            return float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))
         if is_live_dry_run(self.config.raw):
             history = load_live_trade_history()
             return float(history.get("virtual_balance", simulated_balance_usdt(self.config.raw)))

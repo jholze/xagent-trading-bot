@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from data_manager import get_config, is_demo_mode, is_live_dry_run, resolve_ledger_scope
+from data_manager import get_config, is_demo_mode, is_dry_run_enhanced, is_live_dry_run, resolve_ledger_scope
 
 
 def is_simulated_trading(config: dict | None = None) -> bool:
@@ -24,8 +24,13 @@ def simulated_ledger_scope(trading_mode: str | None = None, config: dict | None 
 
 
 def uses_order_ledger_cash(config: dict | None = None) -> bool:
-    """Cash for portfolio/NAV must be replayed from filled orders, not stale trade_history."""
-    return is_simulated_trading(config)
+    """Cash replayed from filled orders (staging/demo). Trade-history dry-run uses live trades."""
+    cfg = config or get_config()
+    if is_demo_mode():
+        return True
+    if is_dry_run_enhanced(cfg):
+        return False
+    return is_simulated_trading(cfg)
 
 
 def uses_simulated_portfolio(config: dict | None = None) -> bool:
