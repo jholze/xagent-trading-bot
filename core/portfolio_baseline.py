@@ -76,6 +76,51 @@ def open_positions_cost_basis(
     return float(positions_market_value) - float(open_lots_mtm or 0)
 
 
+def reconcile_display_nav(
+    cash_balance: float,
+    initial_capital: float,
+    positions_market_value: float,
+    trade_realized: float,
+    open_lots_mtm: float,
+    *,
+    positions_cost_basis: float | None = None,
+    tolerance: float = 0.5,
+) -> dict[str, float]:
+    """Fix display when cash still shows start capital but coins are held.
+
+    Only applies the stale-cash pattern (cash ≈ initial, Einstand > 0). When
+    order-replayed cash already reflects buys, leave cash + marktwert unchanged.
+    """
+    cash = float(cash_balance or 0)
+    pos_mv = float(positions_market_value or 0)
+    trade = float(trade_realized or 0)
+    mtm = float(open_lots_mtm or 0)
+    initial = float(initial_capital or 0)
+    cost = float(
+        positions_cost_basis if positions_cost_basis is not None else (pos_mv - mtm)
+    )
+    nav_from_lots = initial + trade + mtm
+    nav_from_cash = cash + pos_mv
+    stale_cash = (
+        pos_mv > tolerance
+        and cost > tolerance
+        and abs(cash - initial) <= tolerance
+    )
+    if stale_cash:
+        cash = nav_from_lots - pos_mv
+        nav = nav_from_lots
+        reconciled = True
+    else:
+        nav = nav_from_cash
+        reconciled = False
+    return {
+        "cash_balance": cash,
+        "total_value": nav,
+        "nav_from_lots": nav_from_lots,
+        "reconciled": reconciled,
+    }
+
+
 def portfolio_pnl_for_display(
     total_value: float,
     initial_capital: float,

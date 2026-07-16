@@ -9,6 +9,7 @@ from core.portfolio_baseline import (
     nav_total_pnl,
     portfolio_nav_breakdown,
     portfolio_pnl_for_display,
+    reconcile_display_nav,
 )
 from notifications.telegram_commands.position_display import format_portfolio_summary
 
@@ -16,6 +17,31 @@ from notifications.telegram_commands.position_display import format_portfolio_su
 class TestPortfolioNav(unittest.TestCase):
     def test_nav_total_pnl_from_value_minus_initial(self):
         self.assertAlmostEqual(nav_total_pnl(98_516.0, 100_000.0), -1_484.0, places=0)
+
+    def test_reconcile_display_nav_when_stale_cash_with_open_coins(self):
+        """Stale virtual_balance $100k + $4.3k coins must not show +$4.3k Wertzuwachs."""
+        fix = reconcile_display_nav(
+            100_000.0, 100_000.0, 4_326.0, 0.0, -26.0,
+        )
+        self.assertTrue(fix["reconciled"])
+        self.assertAlmostEqual(fix["total_value"], 99_974.0, places=0)
+        self.assertAlmostEqual(fix["cash_balance"], 95_648.0, places=0)
+
+    def test_format_portfolio_summary_stale_cash_matches_lots_pnl(self):
+        with patch("notifications.telegram_commands.position_display.initial_capital", return_value=100_000.0):
+            msg = format_portfolio_summary(
+                {"virtual_balance": 100_000.0, "realized_pnl": 0.0},
+                total_unreal=-26.0,
+                position_count=2,
+                cash_balance=100_000.0,
+                positions_market_value=4_326.0,
+                positions_cost_basis=4_352.0,
+            )
+        self.assertIn("$95,648", msg)
+        self.assertIn("$99,974", msg)
+        self.assertIn("$-26", msg)
+        self.assertNotIn("$104,326", msg)
+        self.assertNotIn("$+4326", msg)
 
     def test_wertzuwachs_equals_cash_delta_plus_coins(self):
         """Operator ledger: NAV PnL decomposes as cash change + coins MV, not Verk+Llots."""

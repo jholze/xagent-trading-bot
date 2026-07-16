@@ -1,7 +1,11 @@
 import re
 
 from core.config import get_bot_config
-from core.portfolio_baseline import initial_capital, portfolio_pnl_for_display
+from core.portfolio_baseline import (
+    initial_capital,
+    portfolio_pnl_for_display,
+    reconcile_display_nav,
+)
 from data_manager import (
     is_dry_run_enhanced,
     resolve_ledger_scope,
@@ -457,7 +461,6 @@ def format_portfolio_summary(
     positions_cost_basis: float = None,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
-    total_value = balance + float(positions_market_value or 0)
     cfg = get_bot_config()
     initial = initial_capital(
         scope=resolve_ledger_scope(cfg.trading_mode),
@@ -469,15 +472,25 @@ def format_portfolio_summary(
         trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
     open_mtm = float(total_unreal or 0)
     pos_mv = float(positions_market_value or 0)
+    cost_basis = (
+        float(positions_cost_basis)
+        if positions_cost_basis is not None
+        else pos_mv - open_mtm
+    )
+    nav_fix = reconcile_display_nav(
+        balance,
+        initial,
+        pos_mv,
+        trade_realized,
+        open_mtm,
+        positions_cost_basis=cost_basis,
+    )
+    balance = nav_fix["cash_balance"]
+    total_value = nav_fix["total_value"]
     pnl = portfolio_pnl_for_display(total_value, initial, trade_realized, open_mtm)
     total_pnl = pnl["total_pnl"]
     open_lots_mtm = pnl["open_lots_mtm"]
     pnl_pct = pnl["pnl_pct"]
-    cost_basis = (
-        float(positions_cost_basis)
-        if positions_cost_basis is not None
-        else pos_mv - open_lots_mtm
-    )
     wert_icon = _pnl_emoji(total_pnl)
     trade_icon = _pnl_emoji(trade_realized)
     lots_icon = _pnl_emoji(open_lots_mtm)
@@ -732,13 +745,18 @@ def resolve_portfolio_context(*, fast: bool = False) -> dict:
             cash_label = "Sim USDT"
         else:
             cash_label = "Cash (Dry Run)"
+        from core.tenant_context import resolve_tenant_id
+
         cash = resolve_sim_cash_balance(
             scope=scope,
             config=cfg.raw,
             history=history,
+            tenant_id=resolve_tenant_id(),
         )
         trade_realized = (
-            resolve_sim_realized_pnl(scope=scope, config=cfg.raw)
+            resolve_sim_realized_pnl(
+                scope=scope, config=cfg.raw, tenant_id=resolve_tenant_id(),
+            )
             if uses_order_ledger_cash(cfg.raw)
             else float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
         )
