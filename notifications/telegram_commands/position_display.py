@@ -610,20 +610,19 @@ def format_sell_list_message(active: list, prices: dict) -> str:
 
 
 def load_trade_history_safe() -> dict:
-    from data_manager import (
-        is_demo_mode,
-        load_live_trade_history,
-        load_trade_history,
-        uses_simulated_live_portfolio,
-    )
+    from core.simulated_trading import is_simulated_trading, simulated_ledger_scope
+    from data_manager import load_trade_history_document
 
-    if is_demo_mode():
-        # Demo stack: cash must match demo order ledger (not live sim trades).
-        return load_trade_history()
-    if uses_simulated_live_portfolio(get_bot_config().raw):
-        return load_live_trade_history()
+    cfg = get_bot_config().raw
+    scope = simulated_ledger_scope(get_bot_config().trading_mode, cfg)
+    if is_simulated_trading(cfg):
+        return load_trade_history_document(scope, cfg)
     if uses_exchange_ledger(get_bot_config().trading_mode):
+        from data_manager import load_live_trade_history
+
         return load_live_trade_history()
+    from data_manager import load_trade_history
+
     return load_trade_history()
 
 
@@ -636,18 +635,24 @@ def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
 
 
 def resolve_portfolio_context(*, fast: bool = False) -> dict:
-    from data_manager import is_demo_mode, resolve_sim_cash_balance
+    from core.simulated_trading import is_simulated_trading, simulated_ledger_scope
+    from data_manager import resolve_sim_cash_balance
 
     cfg = get_bot_config()
     history = load_trade_history_safe()
     if uses_simulated_live_portfolio(cfg.raw):
-        cash_label = "Cash (Sim)" if is_dry_run_enhanced(cfg.raw) else "Cash (Dry Run)"
-        if is_demo_mode():
-            cash = resolve_sim_cash_balance(config=cfg.raw, history=history)
+        scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
+        if is_dry_run_enhanced(cfg.raw):
+            cash_label = "Sim USDT"
+        elif is_simulated_trading(cfg.raw):
+            cash_label = "Sim USDT"
         else:
-            cash = float(
-                history.get("virtual_balance", getattr(cfg, "simulated_balance_usdt", 5000))
-            )
+            cash_label = "Cash (Dry Run)"
+        cash = resolve_sim_cash_balance(
+            scope=scope,
+            config=cfg.raw,
+            history=history,
+        )
         return {
             "history": history,
             "cash_balance": cash,

@@ -1,7 +1,8 @@
 import os
 
 from core.runtime_identity import format_identity_section
-from data_manager import get_config, is_demo_mode, reload_config, save_config
+from core.simulated_trading import is_simulated_trading
+from data_manager import get_config, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from services.ledger_sync import on_trading_mode_change
@@ -46,16 +47,15 @@ def handle(text: str) -> bool:
 
     if text in ["/mode", "/tradingmode", "/stand", "/version", "/build"]:
         service = TradingService()
-        demo = " | Demo: ON" if is_demo_mode() else ""
+        sim = " | <b>Simulated Live</b>" if is_simulated_trading() else ""
         msg = f"""<b>Trading Mode</b>
 
-Current: <b>{service.mode_label()}</b>{demo}
+Current: <b>{service.mode_label()}</b>{sim}
 
 {format_identity_section()}
 
 <b>Commands:</b>
-/mode paper — Local paper trading (virtual ledger)
-/mode live — Live Gate.io mainnet (requires /live_confirm)
+/mode live — Simulated live (dry-run ledger, no real orders)
 /mode off — Analysis only, no execution
 /live_confirm — Confirm live trading
 /live_cancel — Revoke live confirmation
@@ -97,14 +97,15 @@ Current: <b>{service.mode_label()}</b>{demo}
 
     if text == "/mode paper":
         ok, ledger_msg = _apply_mode_switch({
-            "trading_mode": "paper",
-            "virtual_trading": True,
+            "trading_mode": "live",
+            "virtual_trading": False,
             "live_confirmed": False,
+            "live": {**get_config().get("live", {}), "dry_run": True},
         })
         if ok:
             msg = (
-                "✅ Switched to <b>paper</b> mode (local ledger).\n"
-                "Trades in trade_history.json — not on Gate.io."
+                "✅ <b>Paper</b> ist veraltet — umgestellt auf <b>Simulated Live</b> "
+                "(dry-run, Order-Ledger, keine echten Gate-Orders)."
             )
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
@@ -122,23 +123,24 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/mode live":
-        if is_demo_mode():
-            send_telegram_message(
-                "❌ Live-Modus im <b>Demo-Modus</b> nicht verfügbar.\n"
-                "Bot ohne <code>--demo</code> starten."
-            )
-            return True
         cfg = get_config()
         dry = cfg.get("live", {}).get("dry_run", True)
+        if os.environ.get("DEMO_MODE") == "1":
+            send_telegram_message(
+                "✅ <b>Simulated Live</b> aktiv (Staging-Ledger, dry-run).\n"
+                "Keine echten Gate-Orders — Portfolio aus Order-Ledger."
+            )
+            return True
         ok, ledger_msg = _apply_mode_switch({
             "trading_mode": "live",
             "virtual_trading": False,
+            "live": {**cfg.get("live", {}), "dry_run": True},
         })
         if ok:
             msg = (
-                "⚠️ Switched to <b>live</b> mode (mainnet).\n"
-                "Send <code>/live_confirm</code> to enable real orders.\n"
-                f"Dry run: <b>{'ON' if dry else 'OFF'}</b> (set live.dry_run in config.json)"
+                "✅ <b>Simulated Live</b> (dry-run Ledger).\n"
+                "Send <code>/live_confirm</code> nur für echtes Mainnet-Trading.\n"
+                f"Dry run: <b>{'ON' if dry else 'OFF'}</b>"
             )
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
@@ -148,10 +150,10 @@ Current: <b>{service.mode_label()}</b>{demo}
         return True
 
     if text == "/live_confirm":
-        if is_demo_mode():
+        if os.environ.get("DEMO_MODE") == "1":
             send_telegram_message(
-                "❌ Live-Trading im <b>Demo-Modus</b> nicht möglich.\n"
-                "Bot ohne <code>--demo</code> starten."
+                "❌ Echtes Mainnet-Trading auf <b>Staging</b> deaktiviert.\n"
+                "Simulated Live nutzt nur das Order-Ledger."
             )
             return True
 

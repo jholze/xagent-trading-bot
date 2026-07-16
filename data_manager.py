@@ -110,8 +110,10 @@ def is_dry_run_enhanced(config: dict = None) -> bool:
 
 
 def uses_simulated_live_portfolio(config: dict = None) -> bool:
-    """Portfolio cash/positions come from the local live ledger, not Gate balances."""
-    return is_live_dry_run(config)
+    """Portfolio cash/positions come from the local ledger, not Gate balances."""
+    from core.simulated_trading import uses_simulated_portfolio
+
+    return uses_simulated_portfolio(config)
 
 
 def uses_watchlist_expansion(config: dict = None) -> bool:
@@ -883,14 +885,15 @@ def resolve_sim_cash_balance(
     *,
     history: dict | None = None,
 ) -> float:
-    """Orders-replayed USDT cash for demo ledger (display source of truth)."""
+    """Orders-replayed USDT cash for simulated trading (display source of truth)."""
     from core.portfolio_baseline import initial_capital
+    from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
     from core.tenant_context import resolve_tenant_id
 
     cfg = config or get_config()
     resolved_scope = scope or resolve_ledger_scope()
     tid = resolve_tenant_id(tenant_id)
-    if resolved_scope != "demo":
+    if not uses_order_ledger_cash(cfg):
         hist = history or load_trade_history_document(resolved_scope, cfg, tenant_id=tid)
         return float(hist.get("virtual_balance", 0) or 0)
 
@@ -899,8 +902,35 @@ def resolve_sim_cash_balance(
         for o in load_orders(resolved_scope, tenant_id=tid).get("orders", [])
         if o.get("status") == "filled"
     ]
-    initial = initial_capital(scope=resolved_scope, config=cfg, history=history)
+    initial = initial_capital(
+        scope=resolved_scope,
+        config=cfg,
+        history=history,
+        trading_mode=cfg.get("trading_mode"),
+    )
     return float(compute_sim_cash_from_orders(filled, initial))
+
+
+def resolve_sim_realized_pnl(
+    scope: str = None,
+    config: dict = None,
+    tenant_id: str | None = None,
+) -> float:
+    """Realized PnL from filled sell orders (simulated trading)."""
+    from core.simulated_trading import uses_order_ledger_cash
+    from core.tenant_context import resolve_tenant_id
+
+    cfg = config or get_config()
+    resolved_scope = scope or resolve_ledger_scope()
+    if not uses_order_ledger_cash(cfg):
+        hist = load_trade_history_document(resolved_scope, cfg, tenant_id=resolve_tenant_id(tenant_id))
+        return float(hist.get("realized_pnl", hist.get("total_pnl", 0)) or 0)
+    filled = [
+        o
+        for o in load_orders(resolved_scope, tenant_id=resolve_tenant_id(tenant_id)).get("orders", [])
+        if o.get("status") == "filled"
+    ]
+    return float(compute_realized_pnl_from_orders(filled))
 
 def _filled_order_usdt(order: dict) -> float:
     execution = order.get("execution") or {}
@@ -961,9 +991,13 @@ def _reconcile_scoped_trade_history(
     config: dict = None,
     tenant_id: str | None = None,
 ) -> tuple:
-    if scope != "demo":
-        return history, False
+    from core.simulated_trading import is_simulated_trading
+
     cfg = config or get_config()
+    if not is_simulated_trading(cfg):
+        return history, False
+    if scope not in ("demo", "live", "paper"):
+        return history, False
     from core.portfolio_baseline import initial_capital
     from core.tenant_context import resolve_tenant_id
     from services.ledger_sync import count_open_positions_from_orders

@@ -7,11 +7,11 @@ from datetime import date, datetime
 
 from core.config import get_bot_config
 from core.portfolio_baseline import initial_capital
+from core.simulated_trading import is_simulated_trading
 from data_manager import (
     compute_sim_cash_from_orders,
     compute_sim_cash_from_trades,
     compute_sim_realized_pnl,
-    is_demo_mode,
     load_orders,
     resolve_ledger_scope,
 )
@@ -130,7 +130,7 @@ def filled_orders_today(scope: str | None = None) -> list:
 def today_activity_stats(trading_mode: str = None) -> tuple[int, int, float, bool]:
     """Return (buys, sells, realized_pnl, has_activity) for the current day."""
     mode = trading_mode or get_bot_config().trading_mode
-    if is_demo_mode():
+    if is_simulated_trading(get_bot_config().raw):
         orders = filled_orders_today(resolve_ledger_scope(mode))
         if not orders:
             return 0, 0, 0.0, False
@@ -177,7 +177,7 @@ def estimate_nav_at_day_start(
     if cached and now - cached[0] < max(5.0, float(cache_ttl_sec)):
         return cached[1]
 
-    if is_demo_mode():
+    if is_simulated_trading(cfg.raw):
         today_orders = filled_orders_today(scope)
         if today_orders:
             cutoff = min(

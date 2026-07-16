@@ -124,8 +124,10 @@ class TestCycleSummary(unittest.TestCase):
         mock_cfg.simulated_balance_usdt = 5000
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
              patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=live_hist), \
-             patch("data_manager.is_demo_mode", return_value=False), \
-             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
+             patch("data_manager.resolve_sim_cash_balance", return_value=4750.0), \
+             patch("data_manager.resolve_sim_realized_pnl", return_value=12.5), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Sim USDT", summary)
@@ -143,9 +145,10 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
              patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=demo_hist), \
              patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
-             patch("data_manager.is_demo_mode", return_value=True), \
-             patch("data_manager.is_dry_run_enhanced", return_value=True), \
+             patch("core.simulated_trading.is_simulated_trading", return_value=True), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
              patch("data_manager.resolve_sim_cash_balance", return_value=10_512.0), \
+             patch("data_manager.resolve_sim_realized_pnl", return_value=250.0), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg), \
              patch("notifications.daily_portfolio.today_activity_stats", return_value=(0, 0, 0.0, False)):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
@@ -166,7 +169,7 @@ class TestCycleSummary(unittest.TestCase):
              patch("notifications.terminal_dashboard._portfolio_snapshot", return_value={
                  "history": live_hist,
                  "balance": 3952.19,
-                 "balance_label": "Dry Run USDT",
+                 "balance_label": "Sim USDT",
                  "realized": -111.82,
                  "unrealized": 0.0,
                  "total_value": 3952.19,
@@ -175,10 +178,9 @@ class TestCycleSummary(unittest.TestCase):
              patch("data_manager.is_dry_run_enhanced", return_value=False), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
-        self.assertIn("Dry Run USDT", summary)
+        self.assertIn("Sim USDT", summary)
         self.assertIn("3,952", summary)
         self.assertIn("-111.8", summary)
-        self.assertNotIn("Sim USDT", summary)
 
     def test_build_cycle_summary_total_value_includes_positions(self):
         live_hist = {"virtual_balance": 1000.0, "realized_pnl": 5.0, "trades": []}
@@ -197,7 +199,10 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=positions), \
              patch("price_fetcher.get_prices_batch", return_value={"ARIA/USDT": 2.0}), \
              patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=live_hist), \
-             patch("data_manager.is_demo_mode", return_value=False), \
+             patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
+             patch("data_manager.resolve_sim_cash_balance", return_value=1000.0), \
+             patch("data_manager.resolve_sim_realized_pnl", return_value=5.0), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
             summary = build_cycle_summary(coin_results=[], trading_mode="live")
         self.assertIn("Gesamtwert: $1,200", summary)

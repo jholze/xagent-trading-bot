@@ -26,8 +26,6 @@ def _win_rate(history: dict) -> str:
 def _portfolio_snapshot(trading_mode: str = None) -> dict:
     """Cash, PnL, and position values for dashboard and cycle summary."""
     from data_manager import (
-        is_demo_mode,
-        is_dry_run_enhanced,
         uses_exchange_ledger,
         uses_simulated_live_portfolio,
     )
@@ -44,21 +42,21 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     scope = resolve_ledger_scope(mode)
 
     history = load_trade_history_safe()
-    from data_manager import resolve_sim_cash_balance
+    from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
+    from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
 
-    if is_demo_mode():
+    if uses_order_ledger_cash(cfg.raw):
         from notifications.telegram_commands.position_display import _refresh_positions_for_snapshot
 
         _refresh_positions_for_snapshot(fast=True)
         balance = resolve_sim_cash_balance(scope=scope, config=cfg.raw, history=history)
+        realized = resolve_sim_realized_pnl(scope=scope, config=cfg.raw)
     else:
         balance = float(history.get("virtual_balance", 0) or 0)
-    realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
 
-    if is_demo_mode():
-        balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Demo USDT"
-    elif uses_exchange_ledger(mode) and uses_simulated_live_portfolio(cfg.raw):
-        balance_label = "Sim USDT" if is_dry_run_enhanced(cfg.raw) else "Dry Run USDT"
+    if is_simulated_trading(cfg.raw):
+        balance_label = "Sim USDT"
     elif uses_exchange_ledger(mode):
         if balance <= 0:
             try:

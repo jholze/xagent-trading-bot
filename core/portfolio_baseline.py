@@ -24,6 +24,10 @@ def initial_capital(
     hist = history or {}
     if uses_exchange_ledger(mode) or uses_simulated_live_portfolio(cfg):
         return live_sim_initial_capital(cfg)
+    from core.simulated_trading import is_simulated_trading
+
+    if is_simulated_trading(cfg):
+        return live_sim_initial_capital(cfg)
     trades = hist.get("trades") or []
     if any(t.get("mode") == "live" for t in trades):
         return live_sim_initial_capital(cfg)
