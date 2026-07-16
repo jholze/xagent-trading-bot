@@ -146,4 +146,7 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
     owner = str(tg.get("owner_chat_id") or _operator_chat_id() or "")
     scope = _effective_ledger_scope(doc if tenant_id != DEFAULT_TENANT else None)
     with tenant_context(tenant_id, scope=scope, owner_chat_id=owner):
+        from strategies.positions import activate_tenant_positions
+
+        activate_tenant_positions(scope=scope, tenant_id=tenant_id)
         yield

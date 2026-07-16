@@ -176,10 +176,23 @@ def _deserialize_position(raw: dict) -> dict:
     }
 
 
+def _position_persistable(p: dict) -> bool:
+    """Skip empty init_position shells; keep lots with size or trade history."""
+    if has_position_amount(p):
+        return True
+    if p.get("first_buy_at") or p.get("last_action"):
+        return True
+    if float(p.get("realized_pnl", 0) or 0) != 0:
+        return True
+    return False
+
+
 def _serialize_positions() -> dict:
     store = _active_store()
     data = {"positions": {}, "ledger_scope": _active_key[1]}
     for tf, p in store.items():
+        if not _position_persistable(p):
+            continue
         data["positions"][tf] = {
             "amount": float(p["amount"]),
             "peak_amount": float(p.get("peak_amount", 0) or 0),
@@ -324,9 +337,21 @@ def load_positions(scope: str = None, tenant_id: str | None = None):
     return snapshot
 
 
-def bootstrap_positions(scope: str = None) -> None:
+def bootstrap_positions(scope: str = None, tenant_id: str | None = None) -> None:
     """Explicit startup load (not at import time)."""
-    load_positions(scope=scope)
+    load_positions(scope=scope, tenant_id=tenant_id)
+
+
+def activate_tenant_positions(
+    *,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+) -> None:
+    """Switch in-memory store to the active tenant before cycle / command reads."""
+    key = _resolve_store_key(scope, tenant_id)
+    _activate(key)
+    if key[0] != DEFAULT_TENANT and not _position_stores.get(key):
+        bootstrap_positions(scope=key[1], tenant_id=key[0])
 
 
 def clear_positions_memory(tenant_id: str | None = None, scope: str | None = None) -> None:
@@ -347,29 +372,38 @@ def _cancel_flush_timer() -> None:
             _flush_timer = None
 
 
-def _do_save_positions(scope: str) -> None:
+def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
+    from core.tenant_context import resolve_tenant_id
+
     target = scope or _active_key[1]
+    tid = resolve_tenant_id(tenant_id)
+    store_key = (tid, target)
     with _positions_lock:
-        payload = _serialize_positions()
-        payload["ledger_scope"] = target
+        prev_key = _active_key
+        _activate(store_key)
         try:
-            if not save_positions_document(payload, target, tenant_id=_active_key[0]):
+            payload = _serialize_positions()
+            payload["ledger_scope"] = target
+            if not save_positions_document(payload, target, tenant_id=tid):
                 log(f"Failed to save positions ({target})", "ERROR")
         except Exception as e:
             log(f"Failed to save positions ({target}): {e}", "ERROR")
+        finally:
+            _activate(prev_key)
 
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
     """Persist positions; debounced unless force=True (trade/shutdown)."""
     global _flush_timer
     target = scope or _active_key[1]
+    pinned_tenant = _active_key[0]
     if force:
         _cancel_flush_timer()
-        _do_save_positions(target)
+        _do_save_positions(target, tenant_id=pinned_tenant)
         return
 
     def _delayed():
-        _do_save_positions(target)
+        _do_save_positions(target, tenant_id=pinned_tenant)
 
     with _flush_timer_lock:
         _cancel_flush_timer()
@@ -416,10 +450,13 @@ def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
     init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     store = _active_store()
+    changed = False
     with _positions_lock:
         if not store[key].get("strategy_tier"):
             store[key]["strategy_tier"] = tier
-    flush_positions()
+            changed = True
+    if changed and _position_persistable(store[key]):
+        flush_positions()
 
 
 def get_key(symbol, timeframe):
