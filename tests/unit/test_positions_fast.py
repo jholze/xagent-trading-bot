@@ -26,7 +26,7 @@ class TestPositionsFastPath(unittest.TestCase):
         result = load_positions(scope="paper")
         self.assertIsInstance(result, dict)
 
-    def test_derive_positions_injects_material_cache_only_lots(self):
+    def test_derive_positions_injects_material_cache_only_lots_legacy(self):
         order_snap = {"ARIA_USDT_4h": {"amount": 10.0, "peak_amount": 10.0}}
         cache_doc = {
             "positions": {
@@ -34,7 +34,10 @@ class TestPositionsFastPath(unittest.TestCase):
                 "X_USDT_4h": {"amount": 99.0, "peak_amount": 99.0, "average_entry": 1.0},
             }
         }
-        merged = derive_positions_from_orders_and_cache(order_snap, cache_doc)
+        with patch("core.simulated_trading.uses_order_ledger_cash", return_value=False), patch(
+            "data_manager.get_config", return_value={}
+        ):
+            merged = derive_positions_from_orders_and_cache(order_snap, cache_doc)
         self.assertEqual(set(merged.keys()), {"ARIA_USDT_4h", "X_USDT_4h"})
         self.assertEqual(merged["ARIA_USDT_4h"]["recent_high"], 1.5)
 

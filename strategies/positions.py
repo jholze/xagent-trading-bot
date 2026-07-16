@@ -292,7 +292,11 @@ def derive_positions_from_orders_and_cache(
         reconcile_exit_ladder_step(pos)
         merged[key] = pos
 
-    if tid == DEFAULT_TENANT:
+    from data_manager import get_config
+    from core.simulated_trading import uses_order_ledger_cash
+
+    # Demo/mongo: orders replay cash — cache-only lots inflate NAV without reducing cash.
+    if tid == DEFAULT_TENANT and not uses_order_ledger_cash(get_config()):
         for key, cached in cache_positions.items():
             if key in merged:
                 continue
