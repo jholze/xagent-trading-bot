@@ -29,6 +29,8 @@ def _build_positions(
                 fast=True,
                 chat_id=chat_id or None,
                 detail_level=detail_level,
+                tenant_id=tenant_id,
+                scope=scope,
             )
     except Exception as e:
         send_telegram_message(

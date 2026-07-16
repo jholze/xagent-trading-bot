@@ -706,14 +706,18 @@ def format_sell_list_message(active: list, prices: dict) -> str:
     return msg + "\n\n" + context_footer("sell", current_language(), example="RAVE 30")
 
 
-def load_trade_history_safe() -> dict:
+def load_trade_history_safe(
+    *,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> dict:
     from core.simulated_trading import is_simulated_trading, simulated_ledger_scope
     from data_manager import load_trade_history_document
 
     cfg = get_bot_config().raw
-    scope = simulated_ledger_scope(get_bot_config().trading_mode, cfg)
+    scope = scope or simulated_ledger_scope(get_bot_config().trading_mode, cfg)
     if is_simulated_trading(cfg):
-        return load_trade_history_document(scope, cfg)
+        return load_trade_history_document(scope, cfg, tenant_id=tenant_id)
     if uses_exchange_ledger(get_bot_config().trading_mode):
         from data_manager import load_live_trade_history
 
@@ -723,39 +727,59 @@ def load_trade_history_safe() -> dict:
     return load_trade_history()
 
 
-def _refresh_positions_for_snapshot(*, fast: bool = False) -> None:
-    """Reload positions from order ledger before /portfolio (orders are source of truth)."""
+def _portfolio_tenant_ids(
+    *,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> tuple[str, str]:
     from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
-    from strategies.positions import load_positions
 
-    load_positions(scope=resolve_tenant_scope(), tenant_id=resolve_tenant_id())
+    return resolve_tenant_id(tenant_id), resolve_tenant_scope(scope)
 
 
-def resolve_portfolio_context(*, fast: bool = False) -> dict:
+def _refresh_positions_for_snapshot(
+    *,
+    fast: bool = False,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> list[dict]:
+    """Load open lots from the tenant ledger (orders are source of truth)."""
+    from strategies.positions import list_active_positions_from_ledger
+
+    tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
+    return list_active_positions_from_ledger(scope=sc, tenant_id=tid)
+
+
+def resolve_portfolio_context(
+    *,
+    fast: bool = False,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> dict:
     from core.simulated_trading import is_simulated_trading, simulated_ledger_scope, uses_order_ledger_cash
     from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
 
     cfg = get_bot_config()
-    history = load_trade_history_safe()
+    tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
+    history = load_trade_history_safe(tenant_id=tid, scope=sc)
     if uses_simulated_live_portfolio(cfg.raw):
-        scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
+        ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
         if is_dry_run_enhanced(cfg.raw):
             cash_label = "Sim USDT"
         elif is_simulated_trading(cfg.raw):
             cash_label = "Sim USDT"
         else:
             cash_label = "Cash (Dry Run)"
-        from core.tenant_context import resolve_tenant_id
 
         cash = resolve_sim_cash_balance(
-            scope=scope,
+            scope=ledger_scope,
             config=cfg.raw,
             history=history,
-            tenant_id=resolve_tenant_id(),
+            tenant_id=tid,
         )
         trade_realized = (
             resolve_sim_realized_pnl(
-                scope=scope, config=cfg.raw, tenant_id=resolve_tenant_id(),
+                scope=ledger_scope, config=cfg.raw, tenant_id=tid,
             )
             if uses_order_ledger_cash(cfg.raw)
             else float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
@@ -816,6 +840,15 @@ def _resolve_snapshot_detail_level(trade_result, detail_level: str | None) -> st
     return "compact"
 
 
+def _portfolio_tenant_header(tenant_id: str) -> str:
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+
+    tid = (tenant_id or "").strip()
+    if multi_tenant_enabled() and tid and tid != DEFAULT_TENANT:
+        return f"<i>Tenant: {tid}</i>\n"
+    return ""
+
+
 def send_positions_snapshot(
     trade_result=None,
     mode_label: str = None,
@@ -823,16 +856,17 @@ def send_positions_snapshot(
     fast: bool = True,
     chat_id: str | int | None = None,
     detail_level: str | None = None,
+    tenant_id: str | None = None,
+    scope: str | None = None,
 ) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
-    from strategies.positions import list_active_positions
     from telegram_notifier import send_telegram_message
 
-    _refresh_positions_for_snapshot(fast=fast)
-    active = list_active_positions()
-    ctx = resolve_portfolio_context(fast=fast)
+    tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
+    active = _refresh_positions_for_snapshot(fast=fast, tenant_id=tid, scope=sc)
+    ctx = resolve_portfolio_context(fast=fast, tenant_id=tid, scope=sc)
 
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):
@@ -865,6 +899,10 @@ def send_positions_snapshot(
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"
         if trade_result.order_type == "SELL":
             msg = f"{msg}\n\n{format_sell_trade_detail(trade_result)}"
+
+    header = _portfolio_tenant_header(tid)
+    if header:
+        msg = f"{header}{msg}"
 
     chunks = chunk_positions_message(msg, annotate_pages=(level == "full"))
     ok = True

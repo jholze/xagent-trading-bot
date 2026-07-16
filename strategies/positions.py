@@ -52,6 +52,12 @@ def _active_store() -> dict:
     return _ensure_store(_active_key)
 
 
+def _store_for_key(key: tuple[str, str]) -> dict:
+    if key[0] == DEFAULT_TENANT:
+        return positions
+    return _ensure_store(key)
+
+
 def _activate(key: tuple[str, str]) -> None:
     global _active_key, _open_positions_count
     _active_key = key
@@ -842,27 +848,68 @@ def get_total_aria():
         return total
 
 
-def list_active_positions():
-    store = _active_store()
+def _active_lot_from_store_key(key: str, p: dict) -> dict:
+    base, _, tf = key.rpartition("_")
+    symbol = base.replace("_", "/") if "/" not in base else base
+    highlight = "🔥 " if p.get("last_action") == "BUY" else ""
+    amount = p.get("amount", 0)
+    if hasattr(amount, "__float__"):
+        amount = float(amount)
+    return {
+        "symbol": symbol,
+        "timeframe": tf,
+        "amount": float(amount or 0),
+        "average_entry": p.get("average_entry", 0),
+        "entry_price": p.get("average_entry", 0),
+        "last_buy_price": p.get("last_buy_price", 0),
+        "realized_pnl": p.get("realized_pnl", 0),
+        "peak_amount": float(p.get("peak_amount", 0) or 0),
+        "sold_percent": float(p.get("sold_percent", 0)),
+        "last_action": p.get("last_action"),
+        "highlight": highlight,
+    }
+
+
+def list_active_positions_from_ledger(
+    scope: str | None = None,
+    tenant_id: str | None = None,
+) -> list[dict]:
+    """Open lots from orders+cache for *tenant* (safe for async portfolio reads)."""
+    from services.ledger_sync import _build_positions_snapshot_from_orders
+
+    key = _resolve_store_key(scope, tenant_id)
+    target = key[1]
+    tid = key[0]
+    order_snap = _build_positions_snapshot_from_orders(target, tenant_id=tid)
+    cache_doc = load_positions_document(target, tenant_id=tid)
+    merged = derive_positions_from_orders_and_cache(
+        order_snap, cache_doc, tenant_id=tid
+    )
+    active: list[dict] = []
+    for pos_key, raw in merged.items():
+        if not is_open_position(raw):
+            continue
+        base, _, _tf = pos_key.rpartition("_")
+        symbol = base.replace("_", "/") if "/" not in base else base
+        if symbol.upper().startswith("TEST"):
+            continue
+        active.append(_active_lot_from_store_key(pos_key, raw))
+    return active
+
+
+def list_active_positions(
+    tenant_id: str | None = None,
+    scope: str | None = None,
+):
+    key = _resolve_store_key(scope, tenant_id)
+    store = _store_for_key(key)
     with _positions_lock:
         active = []
-        for key, p in store.items():
-            if is_open_position(p):
-                base, _, tf = key.rpartition("_")
-                symbol = base.replace("_", "/") if "/" not in base else base
-                if not symbol.upper().startswith("TEST"):
-                    highlight = "🔥 " if p.get("last_action") == "BUY" else ""
-                    active.append({
-                        "symbol": symbol,
-                        "timeframe": tf,
-                        "amount": float(p["amount"]),
-                        "average_entry": p.get("average_entry", 0),
-                        "entry_price": p.get("average_entry", 0),
-                        "last_buy_price": p.get("last_buy_price", 0),
-                        "realized_pnl": p.get("realized_pnl", 0),
-                        "peak_amount": float(p.get("peak_amount", 0) or 0),
-                        "sold_percent": float(p.get("sold_percent", 0)),
-                        "last_action": p.get("last_action"),
-                        "highlight": highlight,
-                    })
+        for pos_key, p in store.items():
+            if not is_open_position(p):
+                continue
+            lot = _active_lot_from_store_key(pos_key, p)
+            if lot["symbol"].upper().startswith("TEST"):
+                continue
+            active.append(lot)
         return active

@@ -250,29 +250,25 @@ class TestPositionDisplay(unittest.TestCase):
             self.assertLessEqual(len(chunk), 800)
             self.assertTrue(chunk.startswith("<b>") or chunk.startswith("<i>"))
 
-    def test_refresh_positions_for_snapshot_fast_calls_load(self):
-        with patch("strategies.positions.load_positions") as mock_load, \
-             patch("strategies.positions.bootstrap_positions") as mock_boot, \
-             patch("core.tenant_context.resolve_tenant_scope", return_value="demo"), \
-             patch("core.tenant_context.resolve_tenant_id", return_value="default"):
-            _refresh_positions_for_snapshot(fast=True)
-            mock_load.assert_called_once_with(scope="demo", tenant_id="default")
-            mock_boot.assert_not_called()
+    def test_refresh_positions_for_snapshot_reads_tenant_ledger(self):
+        with patch(
+            "strategies.positions.list_active_positions_from_ledger", return_value=[]
+        ) as mock_ledger, patch(
+            "core.tenant_context.resolve_tenant_scope", return_value="demo"
+        ), patch(
+            "core.tenant_context.resolve_tenant_id", return_value="default"
+        ):
+            out = _refresh_positions_for_snapshot(fast=True)
+            mock_ledger.assert_called_once_with(scope="demo", tenant_id="default")
+            self.assertEqual(out, [])
 
-    def test_send_positions_snapshot_fast_refreshes_before_listing(self):
-        call_order = []
-
-        def _load(*_args, **_kwargs):
-            call_order.append("load")
-
-        def _list():
-            call_order.append("list")
-            return []
-
+    def test_send_positions_snapshot_reads_ledger_for_tenant(self):
         with patch("telegram_notifier.send_telegram_message"), \
              patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
-             patch("strategies.positions.load_positions", side_effect=_load), \
-             patch("strategies.positions.list_active_positions", side_effect=_list), \
+             patch(
+                 "notifications.telegram_commands.position_display._refresh_positions_for_snapshot",
+                 return_value=[],
+             ) as mock_refresh, \
              patch("notifications.telegram_commands.position_display.resolve_portfolio_context", return_value={
                  "history": {"virtual_balance": 5000, "trades": []},
                  "cash_balance": 5000.0,
@@ -280,8 +276,12 @@ class TestPositionDisplay(unittest.TestCase):
                  "gate_holdings": None,
              }), patch("services.trading_service.TradingService") as mock_svc:
             mock_svc.return_value.mode_label.return_value = "demo"
-            send_positions_snapshot(fast=True, detail_level="compact")
-        self.assertEqual(call_order, ["load", "list"])
+            send_positions_snapshot(
+                fast=True, detail_level="compact", tenant_id="henry", scope="demo"
+            )
+            mock_refresh.assert_called_once_with(
+                fast=True, tenant_id="henry", scope="demo"
+            )
 
     def test_format_position_card_trade_tree_mode(self):
         p = {
