@@ -134,6 +134,15 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
     if mode != "active":
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 
+    # Shared 15m watch is global — operator buy/clear must not block satellites.
+    if not watch_15m_state.is_watched(job.symbol):
+        watch_15m_state.set_watch(
+            job.symbol,
+            job.timeframe or str(coin.get("timeframe") or "4h"),
+            reason=f"entry_job:{job.tenant_id or 'default'}",
+            ttl_hours=float(cfg.get("watch_ttl_hours", 24)),
+        )
+
     set_pending_sensor_metrics(job.symbol, metrics, tenant_id=job.tenant_id)
     outcome = orchestrator.process_entry_sensor(
         coin, price, sensor_metrics=metrics, quiet=True,
@@ -141,10 +150,12 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
     executed = bool(outcome.get("executed"))
     sources = outcome.get("sources") or []
     if executed and ENTRY_SENSOR_SOURCE in sources and is_buy(outcome.get("action", "")):
-        # Do not clear shared watch on satellite success — operator may still trade.
-        from core.tenant_context import DEFAULT_TENANT
+        from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
 
-        if not job.tenant_id or job.tenant_id == DEFAULT_TENANT:
+        # Multi-tenant: keep shared watch so other tenants still get the spike.
+        if not multi_tenant_enabled() and (
+            not job.tenant_id or job.tenant_id == DEFAULT_TENANT
+        ):
             watch_15m_state.clear_watch(job.symbol)
     elif ENTRY_SENSOR_SOURCE in sources and not executed:
         watch_15m_state.record_sensor_reject(job.symbol, tenant_id=job.tenant_id)
@@ -218,8 +229,10 @@ def _worker_loop(orchestrator) -> None:
                     _record_result(result, job)
                     _bump_stats(symbol=job.symbol, reason=job.reason)
                     log(
-                        f"eval_worker {job.symbol} ({job.reason} p={job.priority}) "
-                        f"→ {result.get('action') if result else 'skip'}",
+                        f"eval_worker tenant={job.tenant_id or 'default'} "
+                        f"{job.symbol} ({job.reason} p={job.priority}) "
+                        f"→ {result.get('action') if result else 'skip'}"
+                        f"{' exec' if result and result.get('executed') else ''}",
                         "DEBUG",
                     )
                 except Exception as e:
