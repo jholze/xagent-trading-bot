@@ -19,6 +19,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
 from strategies.grid_plan import simulate_plan_path  # noqa: E402
+from strategies.grid_limits import simulate_limit_grid_path  # noqa: E402
 
 
 def _series_ranging(n: int = 200, mid: float = 100.0, amp: float = 8.0) -> list[float]:
@@ -80,6 +81,11 @@ def main() -> int:
     p.add_argument("--spacing-mult", type=float, default=0.8)
     p.add_argument("--cash", type=float, default=10_000.0)
     p.add_argument("--base-buy", type=float, default=500.0)
+    p.add_argument(
+        "--limits",
+        action="store_true",
+        help="Phase C: shadow limit-order book instead of market-touch slices",
+    )
     args = p.parse_args()
 
     common = dict(
@@ -88,6 +94,7 @@ def main() -> int:
         initial_cash=args.cash,
         base_buy_usdt=args.base_buy,
     )
+    sim_fn = simulate_limit_grid_path if args.limits else simulate_plan_path
 
     scenarios: list[tuple[str, list[float]]] = []
     if args.ohlcv:
@@ -109,12 +116,13 @@ def main() -> int:
             ("crash", _series_crash()),
         ]
 
-    print("Grid plan backtest (Phase A/B) — local only")
+    mode_label = "limit_shadow (Phase C)" if args.limits else "market slices (Phase A/B)"
+    print(f"Grid plan backtest — {mode_label} — local only")
     print("(spacing: stable=0.55 · volatile=1.15 · meme=1.25 via same series)\n")
     for name, prices in scenarios:
-        res = simulate_plan_path(prices, **common)
+        res = sim_fn(prices, **common)
         _print_result(name, res)
-        if name == "ranging":
+        if name == "ranging" and not args.limits:
             from strategies.grid_plan import spacing_atr_mult_for_coin
 
             for tier, mult in (

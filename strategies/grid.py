@@ -74,14 +74,17 @@ class GridStrategy(BaseStrategy):
             return self._plans[key]
 
         try:
-            from data_manager import get_config
+            from storage.grid_plan_store import load_grid_plan
 
-            cfg = get_config()
-            grid_states = (cfg or {}).get("grid_states", {}) or {}
-            stored = grid_states.get(key) or grid_states.get(f"{symbol}_{tf}")
+            stored = load_grid_plan(symbol, tf)
             if stored and isinstance(stored, dict):
-                if stored.get("levels") and "center" in stored:
-                    plan = GridPlan.from_dict({**stored, "symbol": symbol, "timeframe": tf})
+                if stored.get("levels") and (
+                    "center" in stored or "center_price" in stored
+                ):
+                    raw = dict(stored)
+                    if "center" not in raw and "center_price" in raw:
+                        raw["center"] = raw["center_price"]
+                    plan = GridPlan.from_dict({**raw, "symbol": symbol, "timeframe": tf})
                 else:
                     plan = plan_from_legacy_state(symbol, tf, stored)
                 if plan.center > 0 and plan.levels:
@@ -106,6 +109,14 @@ class GridStrategy(BaseStrategy):
             n_buy_levels=n_side,
             n_sell_levels=n_side,
         )
+        if gcfg.get("fee_aware", True):
+            try:
+                from strategies.grid_limits import enforce_fee_spacing
+
+                fee = float(gcfg.get("assumed_fee_pct", 0.1))
+                plan = enforce_fee_spacing(plan, fee_pct=fee)
+            except Exception:
+                pass
         self._plans[key] = plan
         return plan
 
@@ -122,12 +133,9 @@ class GridStrategy(BaseStrategy):
         # Keep legacy field names for /grid status readers
         serial["center_price"] = plan.center
         try:
-            from data_manager import get_config, save_config
+            from storage.grid_plan_store import save_grid_plan
 
-            cfg = dict(get_config() or {})
-            gs = cfg.setdefault("grid_states", {})
-            gs[key] = serial
-            save_config(cfg)
+            save_grid_plan(plan.symbol, plan.timeframe, serial)
             self._plans[key] = plan
         except Exception as e:
             log(f"[Grid] persist skipped for {key}: {e}", "DEBUG")

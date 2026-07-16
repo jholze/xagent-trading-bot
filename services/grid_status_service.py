@@ -96,6 +96,16 @@ def build_grid_status_report(
     """Summarize grid mode per active watchlist coin."""
     cfg = get_config() or {}
     grid_states = dict(cfg.get("grid_states") or {})
+    # Phase B rest: merge tenant Mongo plans (source of truth when present)
+    try:
+        from storage.grid_plan_store import load_grid_plans_document
+
+        mongo_plans = (load_grid_plans_document().get("plans") or {})
+        for k, v in mongo_plans.items():
+            if isinstance(v, dict):
+                grid_states[k] = {**grid_states.get(k, {}), **v}
+    except Exception:
+        pass
     grid_cfg = (cfg.get("grid") or {})
     allocator_cfg = (cfg.get("strategy_allocator") or {})
     regime_cfg = (cfg.get("regime_detector") or {})

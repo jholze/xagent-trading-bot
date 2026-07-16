@@ -23,13 +23,16 @@ Phase B **reuses that** instead of inventing a second taxonomy.
    stable + grid-dominant → pure GRID.
 3. **Regime flip** — DEFENSIVE + open position → `SELL_PARTIAL_50` (reduce inventory).
 4. **Entry-sensor in GRID** — buy becomes a *slice* (`dca_usdt`), not full size / BUY_STRONG.
-5. Persist plan per tenant in Mongo — still using `grid_states` config map (full Mongo collection later).
+5. **Persist plan per tenant in Mongo** — collection `grid_plans` via
+   `storage/grid_plan_store.py` (legacy `config.grid_states` still mirrored for `/grid`).
 
-## Phase C — Exchange limits (optional)
+## Phase C — Exchange limits (optional / local first)
 
-1. Optional limit orders per level when live + `use_limit_orders`.
-2. Fill tracking / cancel-replace on re-center.
-3. Fee-aware min distance between levels.
+1. **Fee-aware min spacing** — `enforce_fee_spacing` / `fee_aware_min_spacing`.
+2. **Limit specs from plan** — `plan_to_limit_specs` (no Gate yet).
+3. **Shadow book** — `GridLimitShadowBook` + `simulate_limit_grid_path` for local backtests
+   (`scripts/backtest_grid_plan.py --limits`).
+4. Live multi-limit Gate executor — **not wired**; remains Protocol only until rollout.
 
 ## Success metrics (local backtest)
 
