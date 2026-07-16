@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from core.actions import HOLD
+from core.actions import HOLD, SELL_PARTIAL_50
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from logger import log
@@ -23,6 +23,7 @@ from strategies.grid_plan import (
     plan_from_legacy_state,
     recenter_plan,
     should_recenter,
+    spacing_atr_mult_for_coin,
 )
 from strategies.trading_modes import (
     MODE_DEFENSIVE,
@@ -145,7 +146,24 @@ class GridStrategy(BaseStrategy):
         allocation = getattr(market, "allocation", None) or params.get("allocation")
 
         force_grid = (params.get("strategy_class") == "grid") or (coin.get("strategy_class") == "grid")
-        mode = resolve_trading_mode(allocation, force_grid=force_grid)
+        vol_tier = str(
+            params.get("volatility_tier")
+            or getattr(market, "volatility_tier", "")
+            or ""
+        )
+        try:
+            from intelligence.strategy_backtest import classify_coin
+
+            coin_class = classify_coin(symbol, params)
+        except Exception:
+            coin_class = ""
+
+        mode = resolve_trading_mode(
+            allocation,
+            force_grid=force_grid,
+            volatility_tier=vol_tier,
+            coin_class=coin_class,
+        )
 
         if mode == MODE_DEFENSIVE and not market.has_position:
             return SignalAnalysis(
@@ -160,8 +178,28 @@ class GridStrategy(BaseStrategy):
                 sources=["grid", "mode_defensive"],
                 normalized_action=HOLD,
                 strategy_profile="grid",
-                rationale=f"mode={MODE_DEFENSIVE}",
+                rationale=f"mode={MODE_DEFENSIVE} tier={vol_tier or '?'}",
                 confidence=0.5,
+                volatility_tier=vol_tier,
+            )
+
+        # Regime flip while in position: rotate out a slice (Phase B)
+        if mode == MODE_DEFENSIVE and market.has_position:
+            return SignalAnalysis(
+                action=SELL_PARTIAL_50,
+                symbol=symbol,
+                timeframe=tf,
+                rsi=market.rsi,
+                lower_bb=market.lower_bb,
+                vol_multiplier=market.vol_multiplier,
+                ampel_emoji="🟠",
+                ampel_text="Defensive — reduce grid inventory",
+                sources=["grid", "mode_defensive", "regime_flip"],
+                normalized_action=SELL_PARTIAL_50,
+                strategy_profile="grid",
+                rationale=f"mode={MODE_DEFENSIVE} reduce | tier={vol_tier or '?'}",
+                confidence=0.65,
+                volatility_tier=vol_tier,
             )
 
         if mode not in (MODE_GRID, MODE_HYBRID) and not force_grid:
@@ -183,12 +221,23 @@ class GridStrategy(BaseStrategy):
 
         gcfg = self._grid_cfg()
         atr_pct = float(params.get("atr_pct", market.atr_pct or 3.0))
-        spacing_mult = float(
+        base_spacing = float(
             params.get("grid_spacing_atr_mult", gcfg.get("default_spacing_atr_mult", 0.8))
+        )
+        spacing_mult = spacing_atr_mult_for_coin(
+            volatility_tier=vol_tier,
+            coin_class=coin_class,
+            base=base_spacing,
+            volatile_mult=float(gcfg.get("volatile_spacing_atr_mult", 1.15)),
+            stable_mult=float(gcfg.get("stable_spacing_atr_mult", 0.55)),
+            meme_mult=float(gcfg.get("meme_spacing_atr_mult", 1.25)),
         )
         re_center_mult = float(
             params.get("re_center_atr_mult", gcfg.get("re_center_atr_mult", 2.5))
         )
+        # Volatile: re-center less aggressively (avoid thrash)
+        if vol_tier == "volatile" or coin_class == "meme":
+            re_center_mult = max(re_center_mult, float(gcfg.get("volatile_re_center_atr_mult", 3.2)))
 
         # Prefer pre-seeded legacy _states (unit tests)
         key = self._get_key(symbol, tf)
@@ -253,11 +302,15 @@ class GridStrategy(BaseStrategy):
             ampel_text=act.rationale or "Grid monitoring",
             sources=["grid", f"mode_{mode.lower()}"],
             normalized_action=act.action,
-            rationale=f"{act.rationale} | mode={mode}",
+            rationale=(
+                f"{act.rationale} | mode={mode} | tier={vol_tier or coin_class or '?'} "
+                f"| spacing×{spacing_mult:.2f}"
+            ),
             strategy_profile="grid",
             confidence=0.72 if act.action != HOLD else 0.55,
             dca_usdt=dca_usdt,
             atr_pct=atr_pct,
+            volatility_tier=vol_tier,
         )
 
     # --- backward-compatible helpers used by tests ---

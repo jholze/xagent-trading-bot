@@ -458,9 +458,14 @@ class BotConfig:
             "enabled": True,
             "default_spacing_atr_mult": 0.8,
             "re_center_atr_mult": 2.5,
+            # Phase B: respect volatile_altcoin stable/volatile split
+            "volatile_spacing_atr_mult": 1.15,
+            "stable_spacing_atr_mult": 0.55,
+            "meme_spacing_atr_mult": 1.25,
+            "volatile_re_center_atr_mult": 3.2,
             "fee_aware": True,
             "max_levels": 12,
-            "use_limit_orders": True
+            "use_limit_orders": True,
         }
         raw = self._raw.get("grid", {})
         return {**defaults, **raw}

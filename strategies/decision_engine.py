@@ -272,6 +272,29 @@ class DecisionEngine:
                 return HOLD, out_sources, new_conf, rationale_extra, sensor.action
             return normalized, out_sources, new_conf, rationale_extra, sensor.action
 
+        # Phase B: in GRID mode entry sensor is a *slice*, not full momentum size
+        trading_mode = str((market.strategy_params or {}).get("trading_mode") or "")
+        vol_tier = str(
+            (market.strategy_params or {}).get("volatility_tier")
+            or getattr(technical, "volatility_tier", "")
+            or ""
+        )
+        if trading_mode == "GRID":
+            from strategies.trading_modes import entry_sensor_buy_usdt_frac
+
+            frac = entry_sensor_buy_usdt_frac(trading_mode, volatility_tier=vol_tier)
+            out_sources.append("grid_slice")
+            rationale_extra = f"{rationale_extra} | grid_slice={frac:.0%}".strip(" |")
+            # Stash for evaluate path (dca_usdt); use BUY not BUY_STRONG
+            try:
+                base = float(get_bot_config().max_usdt_per_trade or 500)
+                technical.dca_usdt = round(base * frac, 2)
+            except Exception:
+                pass
+            if normalized == HOLD or is_buy(normalized):
+                return BUY, out_sources, new_conf, rationale_extra, ""
+            return normalized, out_sources, new_conf, rationale_extra, ""
+
         if normalized == HOLD:
             return sensor.action, out_sources, new_conf, rationale_extra, ""
         if is_buy(normalized) and sensor.action == BUY_STRONG:
@@ -973,15 +996,26 @@ class DecisionEngine:
                 market.strategy_params["regime_defensive"] = True
                 market.strategy_params["exposure_multiplier"] = allocation.exposure_multiplier
             try:
+                from intelligence.strategy_backtest import classify_coin
                 from strategies.trading_modes import resolve_trading_mode
 
                 force_g = (
                     market.strategy_params.get("strategy_class") == "grid"
                     or coin.get("strategy_class") == "grid"
                 )
-                market.strategy_params["trading_mode"] = resolve_trading_mode(
-                    allocation, force_grid=force_g,
+                vol_tier = str(
+                    market.strategy_params.get("volatility_tier")
+                    or getattr(market, "volatility_tier", "")
+                    or ""
                 )
+                cclass = classify_coin(coin.get("symbol", ""), market.strategy_params)
+                market.strategy_params["trading_mode"] = resolve_trading_mode(
+                    allocation,
+                    force_grid=force_g,
+                    volatility_tier=vol_tier,
+                    coin_class=cclass,
+                )
+                market.strategy_params["coin_class"] = cclass
             except Exception:
                 pass
 
@@ -1207,6 +1241,8 @@ class DecisionEngine:
         )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt
+        elif float(getattr(technical, "dca_usdt", 0) or 0) > 0:
+            analysis.dca_usdt = float(technical.dca_usdt)
 
         if getattr(technical, "regime", None):
             analysis.regime = technical.regime

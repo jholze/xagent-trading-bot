@@ -15,12 +15,14 @@ from strategies.grid_plan import (
     recenter_plan,
     should_recenter,
     simulate_plan_path,
+    spacing_atr_mult_for_coin,
 )
 from strategies.trading_modes import (
     MODE_DEFENSIVE,
     MODE_GRID,
     MODE_HYBRID,
     MODE_MOMENTUM,
+    entry_sensor_buy_usdt_frac,
     resolve_trading_mode,
 )
 
@@ -57,6 +59,28 @@ class TestTradingModes(unittest.TestCase):
 
     def test_force_grid(self):
         self.assertEqual(resolve_trading_mode(None, force_grid=True), MODE_GRID)
+
+    def test_volatile_mixed_weights_prefer_hybrid(self):
+        """Volatile coins keep momentum path open (entry spikes) → HYBRID."""
+        alloc = AllocationDecision(
+            strategy_weights={"grid": 0.6, "momentum": 0.4},
+            exposure_multiplier=1.0,
+        )
+        self.assertEqual(
+            resolve_trading_mode(alloc, volatility_tier="volatile"),
+            MODE_HYBRID,
+        )
+        self.assertEqual(
+            resolve_trading_mode(alloc, volatility_tier="stable"),
+            MODE_GRID,
+        )
+
+    def test_entry_sensor_slice_by_mode_and_tier(self):
+        self.assertLess(
+            entry_sensor_buy_usdt_frac(MODE_GRID, volatility_tier="stable"),
+            entry_sensor_buy_usdt_frac(MODE_GRID, volatility_tier="volatile"),
+        )
+        self.assertEqual(entry_sensor_buy_usdt_frac(MODE_MOMENTUM), 1.0)
 
 
 class TestGridPlan(unittest.TestCase):
@@ -100,6 +124,29 @@ class TestGridPlan(unittest.TestCase):
         self.assertGreaterEqual(res["trades"], 2)
         self.assertIn("final_equity", res)
         self.assertGreater(res["final_equity"], 0)
+
+    def test_spacing_respects_volatile_stable_split(self):
+        base = 0.8
+        vol = spacing_atr_mult_for_coin(volatility_tier="volatile", base=base)
+        st = spacing_atr_mult_for_coin(volatility_tier="stable", base=base)
+        meme = spacing_atr_mult_for_coin(coin_class="meme", base=base)
+        large = spacing_atr_mult_for_coin(coin_class="large_cap", base=base)
+        self.assertGreater(vol, st)
+        self.assertGreaterEqual(meme, vol)
+        self.assertLessEqual(large, st)
+
+    def test_volatile_grid_wider_than_stable_on_same_prices(self):
+        """Same range series: wider volatile spacing → fewer level fills."""
+        import math
+
+        prices = [100 + 5 * math.sin(i / 5.0) for i in range(120)]
+        tight = simulate_plan_path(
+            prices, spacing_atr_mult=0.55, atr_pct=3.0, base_buy_usdt=400,
+        )
+        wide = simulate_plan_path(
+            prices, spacing_atr_mult=1.25, atr_pct=3.0, base_buy_usdt=400,
+        )
+        self.assertGreaterEqual(tight["trades"], wide["trades"])
 
 
 if __name__ == "__main__":

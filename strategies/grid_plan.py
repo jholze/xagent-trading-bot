@@ -238,16 +238,25 @@ def spacing_atr_mult_for_coin(
     volatility_tier: str = "",
     coin_class: str = "",
     base: float = 0.8,
+    volatile_mult: float = 1.15,
+    stable_mult: float = 0.55,
+    meme_mult: float = 1.25,
 ) -> float:
-    """Phase B: wider grid for volatile/meme, tighter for stable."""
-    tier = (volatility_tier or "").lower()
-    cls = (coin_class or "").lower()
-    mult = float(base)
-    if tier == "volatile" or cls in ("meme", "micro"):
-        mult = max(mult, 1.1)
-    elif tier == "stable" or cls in ("large", "bluechip"):
-        mult = min(mult, 0.55)
-    return mult
+    """Phase B: use existing volatile/stable (+ meme/large_cap) split for spacing.
+
+    - volatile / meme → wider levels (fewer false fills, less churn)
+    - stable / large_cap → tighter levels (more rotation in range)
+    """
+    tier = (volatility_tier or "").strip().lower()
+    cls = (coin_class or "").strip().lower()
+    base_m = float(base) if base > 0 else 0.8
+    if cls in ("meme",) or tier == "volatile":
+        if cls == "meme":
+            return max(base_m, float(meme_mult))
+        return max(base_m, float(volatile_mult))
+    if cls in ("large_cap", "large", "bluechip") or tier == "stable":
+        return min(base_m, float(stable_mult))
+    return base_m
 
 
 def plan_from_legacy_state(

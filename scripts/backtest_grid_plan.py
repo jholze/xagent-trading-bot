@@ -109,10 +109,27 @@ def main() -> int:
             ("crash", _series_crash()),
         ]
 
-    print("Grid plan backtest (Phase A) — local only")
+    print("Grid plan backtest (Phase A/B) — local only")
+    print("(spacing: stable=0.55 · volatile=1.15 · meme=1.25 via same series)\n")
     for name, prices in scenarios:
         res = simulate_plan_path(prices, **common)
         _print_result(name, res)
+        if name == "ranging":
+            from strategies.grid_plan import spacing_atr_mult_for_coin
+
+            for tier, mult in (
+                ("stable", spacing_atr_mult_for_coin(volatility_tier="stable")),
+                ("volatile", spacing_atr_mult_for_coin(volatility_tier="volatile")),
+                ("meme", spacing_atr_mult_for_coin(coin_class="meme")),
+            ):
+                r2 = simulate_plan_path(
+                    prices,
+                    atr_pct=args.atr_pct,
+                    spacing_atr_mult=mult,
+                    initial_cash=args.cash,
+                    base_buy_usdt=args.base_buy,
+                )
+                _print_result(f"ranging/{tier} spacing×{mult:.2f}", r2)
 
     print("\nDone. No deploy — review results before rollout.")
     return 0
