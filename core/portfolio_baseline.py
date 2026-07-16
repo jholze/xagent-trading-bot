@@ -45,6 +45,37 @@ def nav_total_pnl(total_value: float, initial_capital: float) -> float:
     return float(total_value) - float(initial_capital)
 
 
+def portfolio_nav_breakdown(
+    cash_balance: float,
+    initial_capital: float,
+    positions_market_value: float,
+    *,
+    initial_positions_market_value: float = 0.0,
+) -> dict[str, float]:
+    """Decompose NAV PnL: cash change plus coins market value (start → now).
+
+    Avoids summing signed trade components (Verk. + Lots) which do not equal
+    Wertzuwachs when sell proceeds are reinvested.
+    """
+    cash_delta = float(cash_balance) - float(initial_capital)
+    coins_contribution = float(positions_market_value) - float(
+        initial_positions_market_value or 0
+    )
+    return {
+        "cash_delta": cash_delta,
+        "coins_contribution": coins_contribution,
+        "total_pnl": cash_delta + coins_contribution,
+    }
+
+
+def open_positions_cost_basis(
+    positions_market_value: float,
+    open_lots_mtm: float,
+) -> float:
+    """USDT paid for open lots at entry (Marktwert minus unrealized vs entry)."""
+    return float(positions_market_value) - float(open_lots_mtm or 0)
+
+
 def portfolio_pnl_for_display(
     total_value: float,
     initial_capital: float,

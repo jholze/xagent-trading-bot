@@ -120,6 +120,38 @@ def _effective_sold_fraction(p: dict) -> float:
     return min(float(p.get("sold_percent", 0) or 0), 1.0)
 
 
+def _position_cost_basis(p: dict) -> float:
+    """USDT invested in this open lot at entry (entry × amount)."""
+    entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
+    amount = float(p.get("amount", 0) or 0)
+    if entry <= 0 or amount <= 0:
+        return 0.0
+    return entry * amount
+
+
+def aggregate_open_coins_totals(active: list, prices: dict) -> dict:
+    """Sum marktwert, einstand, and unrealized PnL across open positions."""
+    marktwert = 0.0
+    cost_basis = 0.0
+    unreal = 0.0
+    missing_prices = 0
+    for p in active:
+        sym = position_symbol(p)
+        price = float(prices.get(sym, 0) or 0)
+        m = _position_metrics(p, price)
+        marktwert += m["value_usdt"]
+        unreal += m["unreal"]
+        cost_basis += _position_cost_basis(p)
+        if price <= 0:
+            missing_prices += 1
+    return {
+        "marktwert": marktwert,
+        "cost_basis": cost_basis,
+        "unreal": unreal,
+        "missing_prices": missing_prices,
+    }
+
+
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
@@ -246,7 +278,13 @@ def format_position_card(
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
 
-    header = f"{prefix}<b>{ticker_html}</b> {pnl_icon} <code>{_fmt_pct(m['unreal_pct'])}</code>"
+    value_part = ""
+    if m["value_usdt"] > 0:
+        value_part = f" · Wert <b>${m['value_usdt']:,.0f}</b>"
+    header = (
+        f"{prefix}<b>{ticker_html}</b> {pnl_icon} "
+        f"<code>{_fmt_pct(m['unreal_pct'])}</code>{value_part}"
+    )
 
     if show_trade_tree:
         from notifications.telegram_commands.position_ledger import build_position_trade_tree
@@ -416,6 +454,7 @@ def format_portfolio_summary(
     fast_daily_nav: bool = False,
     include_position_header: bool = True,
     trade_realized: float = None,
+    positions_cost_basis: float = None,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     total_value = balance + float(positions_market_value or 0)
@@ -429,14 +468,35 @@ def format_portfolio_summary(
     if trade_realized is None:
         trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
     open_mtm = float(total_unreal or 0)
+    pos_mv = float(positions_market_value or 0)
     pnl = portfolio_pnl_for_display(total_value, initial, trade_realized, open_mtm)
     total_pnl = pnl["total_pnl"]
     open_lots_mtm = pnl["open_lots_mtm"]
-    handel_sum = pnl["handel_sum"]
     pnl_pct = pnl["pnl_pct"]
+    cost_basis = (
+        float(positions_cost_basis)
+        if positions_cost_basis is not None
+        else pos_mv - open_lots_mtm
+    )
     wert_icon = _pnl_emoji(total_pnl)
-    handel_icon = _pnl_emoji(handel_sum)
-    pos_mv = float(positions_market_value or 0)
+    trade_icon = _pnl_emoji(trade_realized)
+    lots_icon = _pnl_emoji(open_lots_mtm)
+    pos_label = "Position" if position_count == 1 else "Positionen"
+    coins_line = ""
+    if position_count > 0:
+        if pos_mv > 0:
+            coins_line = (
+                f"📦 Coins <i>({position_count} {pos_label})</i>\n"
+                f"   Einstand <b>${cost_basis:,.0f}</b> · "
+                f"Marktwert <b>${pos_mv:,.0f}</b>\n"
+                f"   Δ vs Entry {lots_icon} <b>${open_lots_mtm:+.0f}</b>\n"
+            )
+        else:
+            coins_line = (
+                f"📦 Coins <i>({position_count} {pos_label})</i>\n"
+                f"   Einstand <b>${cost_basis:,.0f}</b> · "
+                f"<i>Marktwert n/a (kein Live-Kurs)</i>\n"
+            )
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
     daily_line = ""
@@ -453,19 +513,34 @@ def format_portfolio_summary(
     except Exception:
         pass
 
+    wert_detail = (
+        f"   └ Gesamtwert <b>${total_value:,.0f}</b> − Start <b>${initial:,.0f}</b>\n"
+    )
+    trade_detail = ""
+    if trade_realized or position_count > 0:
+        trade_detail = f"{trade_icon} Verkäufe (realisiert) <b>${trade_realized:+.0f}</b>\n"
+
     body = (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
         f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
-        f"💰 Gesamtwert <b>${total_value:,.0f}</b> "
-        f"<i>(Cash + Coins ${pos_mv:,.0f})</i>\n"
+        f"{coins_line}"
+        f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{wert_icon} Wertzuwachs <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"{handel_icon} Handel <b>${handel_sum:+.1f}</b> "
-        f"<i>(Verk. ${trade_realized:+.0f} · Lots ${open_lots_mtm:+.0f})</i>\n"
+        f"{wert_detail}"
+        f"{trade_detail}"
         f"{daily_line}"
     )
-    if include_position_header:
-        body += f"<b>Positionen ({position_count})</b>"
+    if include_position_header and position_count > 0:
+        if pos_mv > 0:
+            body += (
+                f"📋 <b>Positionen ({position_count})</b> · "
+                f"Marktwert <b>${pos_mv:,.0f}</b>"
+            )
+        else:
+            body += f"📋 <b>Positionen ({position_count})</b> · <i>Marktwert n/a</i>"
+    elif include_position_header:
+        body += "<b>Positionen (0)</b>"
     return body.rstrip() + ("\n" if body else "")
 
 
@@ -524,17 +599,15 @@ def format_positions_message(
                     empty += _trade_line(t)
         return empty
 
-    total_unreal = 0.0
-    positions_market_value = 0.0
+    coin_totals = aggregate_open_coins_totals(active, prices)
+    total_unreal = coin_totals["unreal"]
+    positions_market_value = coin_totals["marktwert"]
+    positions_cost_basis = coin_totals["cost_basis"]
     sorted_active = sort_positions_by_value(active, prices)
-    rows = []
-    for p in sorted_active:
-        sym = position_symbol(p)
-        price = float(prices.get(sym, 0) or 0)
-        m = _position_metrics(p, price)
-        total_unreal += m["unreal"]
-        positions_market_value += m["value_usdt"]
-        rows.append((p, price))
+    rows = [
+        (p, float(prices.get(position_symbol(p), 0) or 0))
+        for p in sorted_active
+    ]
 
     if title:
         msg = f"<b>{title}</b>\n\n"
@@ -543,6 +616,7 @@ def format_positions_message(
             history, total_unreal, len(active), mode_label,
             cash_balance=cash_balance, cash_label=cash_label,
             positions_market_value=positions_market_value,
+            positions_cost_basis=positions_cost_basis,
             prices=prices,
             fast_daily_nav=fast_daily_nav,
             include_position_header=level != "summary",

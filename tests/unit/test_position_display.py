@@ -54,9 +54,12 @@ class TestPositionDisplay(unittest.TestCase):
             )
         self.assertIn("Gesamtwert", msg)
         self.assertIn("$5,000", msg)
+        self.assertIn("Einstand", msg)
+        self.assertIn("Marktwert", msg)
         self.assertIn("Wertzuwachs", msg)
         self.assertIn("$+0.0", msg)
         self.assertIn("Positionen (2)", msg)
+        self.assertIn("Marktwert", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
         msg = format_portfolio_summary(
@@ -333,9 +336,11 @@ class TestPositionDisplay(unittest.TestCase):
             active, prices, {"virtual_balance": 1000, "trades": []}, detail_level="compact",
         )
         self.assertIn("Positionen (2)", msg)
+        self.assertIn("Marktwert", msg)
+        self.assertIn("$95,005", msg)
         self.assertIn("BTC", msg)
         self.assertIn("ARIA", msg)
-        self.assertNotIn("Entry", msg)
+        self.assertNotIn("└ <code>", msg)
 
     def test_summary_positions_message_omits_position_cards(self):
         active = [{"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0}]
@@ -343,8 +348,9 @@ class TestPositionDisplay(unittest.TestCase):
             active, {"ARIA/USDT": 0.05}, {"virtual_balance": 1000, "trades": []}, detail_level="summary",
         )
         self.assertIn("Gesamtwert", msg)
+        self.assertIn("Coins", msg)
         self.assertNotIn("Positionen (1)", msg)
-        self.assertNotIn("Entry", msg)
+        self.assertNotIn("📋", msg)
 
     def test_format_sell_trade_detail_shows_remaining_position(self):
         result = TradeResult(

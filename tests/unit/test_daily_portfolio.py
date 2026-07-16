@@ -45,8 +45,10 @@ class TestDailyPortfolio(unittest.TestCase):
                 cash_balance=3952.19,
                 positions_market_value=868.0,
             )
-        self.assertIn("Gesamt-PnL", msg)
+        self.assertIn("Wertzuwachs", msg)
         self.assertIn("$-179.8", msg)
+        self.assertIn("Einstand", msg)
+        self.assertIn("Marktwert", msg)
 
     def test_realized_pnl_for_sells_only(self):
         trades = [
