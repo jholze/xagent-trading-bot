@@ -243,6 +243,6 @@ def format_daily_nav_line(
 
     return (
         f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
-        f"Real. <b>{_signed_usd(realized_today)}</b> · "
+        f"Heute Verk. <b>{_signed_usd(realized_today)}</b> · "
         f"NAV <b>${total_value:,.0f}</b> ({_signed_usd(nav_delta)} vs. Tagesstart ${nav_start:,.0f})"
     )

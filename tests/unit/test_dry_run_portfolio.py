@@ -139,14 +139,15 @@ class DryRunPortfolioHarness:
         market_value = _position_market_value(active, prices)
         total = cash + market_value
         trade_realized = float(history.get("realized_pnl", 0) or 0)
-        pnl = portfolio_pnl_for_display(total, self.initial, trade_realized)
+        unreal = _unrealized_pnl(active, prices)
+        pnl = portfolio_pnl_for_display(total, self.initial, trade_realized, unreal)
 
         self._assert_close(total, self.initial + pnl["total_pnl"], tol, "nav identity")
         self._assert_close(
-            pnl["trade_realized"] + pnl["unrealized"],
+            pnl["trade_realized"] + pnl["open_lots_mtm"] + pnl["nav_residual"],
             pnl["total_pnl"],
             0.01,
-            "trade + unrealized = total pnl",
+            "trade + mtm + residual = total pnl",
         )
         self._assert_close(
             compute_sim_realized_pnl(history.get("trades", [])),

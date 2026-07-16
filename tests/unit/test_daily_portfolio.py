@@ -148,6 +148,7 @@ class TestDailyPortfolio(unittest.TestCase):
             line = format_daily_nav_line(total_value=4820.0)
         self.assertIn("Heute:", line)
         self.assertIn("1 Käufe / 1 Verkäufe", line)
+        self.assertIn("Heute Verk.", line)
         self.assertIn("-$480", line)
         self.assertIn("vs. Tagesstart $5,300", line)
 

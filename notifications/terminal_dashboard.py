@@ -95,7 +95,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     total_value = balance + positions_market_value
     from core.portfolio_baseline import portfolio_pnl_for_display
 
-    pnl = portfolio_pnl_for_display(total_value, baseline, realized)
+    pnl = portfolio_pnl_for_display(total_value, baseline, realized, open_lots_mtm)
 
     return {
         "history": history,

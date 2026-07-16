@@ -428,9 +428,11 @@ def format_portfolio_summary(
     )
     if trade_realized is None:
         trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
-    pnl = portfolio_pnl_for_display(total_value, initial, trade_realized)
+    open_mtm = float(total_unreal or 0)
+    pnl = portfolio_pnl_for_display(total_value, initial, trade_realized, open_mtm)
     total_pnl = pnl["total_pnl"]
-    unrealized = pnl["unrealized"]
+    open_lots_mtm = pnl["open_lots_mtm"]
+    nav_residual = pnl["nav_residual"]
     pnl_pct = pnl["pnl_pct"]
     pnl_icon = _pnl_emoji(total_pnl)
 
@@ -455,9 +457,14 @@ def format_portfolio_summary(
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"📈 Unrealisiert <b>${unrealized:+.1f}</b> · "
-        f"✅ Trade-Gewinn <b>${trade_realized:+.1f}</b>\n"
-        f"{daily_line}"
+        f"✅ Trade-Gewinn <b>${trade_realized:+.1f}</b> · "
+        f"📉 Offene Lots <b>${open_lots_mtm:+.1f}</b>\n"
+        + (
+            f"↔️ Portfolio-Rest <b>${nav_residual:+.1f}</b>\n"
+            if abs(nav_residual) >= 1.0
+            else ""
+        )
+        + f"{daily_line}"
     )
     if include_position_header:
         body += f"<b>Positionen ({position_count})</b>"
