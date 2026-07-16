@@ -925,12 +925,20 @@ def resolve_sim_realized_pnl(
     if not uses_order_ledger_cash(cfg):
         hist = load_trade_history_document(resolved_scope, cfg, tenant_id=resolve_tenant_id(tenant_id))
         return float(hist.get("realized_pnl", hist.get("total_pnl", 0)) or 0)
+    from core.portfolio_baseline import initial_capital
+
+    tid = resolve_tenant_id(tenant_id)
     filled = [
         o
-        for o in load_orders(resolved_scope, tenant_id=resolve_tenant_id(tenant_id)).get("orders", [])
+        for o in load_orders(resolved_scope, tenant_id=tid).get("orders", [])
         if o.get("status") == "filled"
     ]
-    return float(compute_realized_pnl_from_orders(filled))
+    initial = initial_capital(
+        scope=resolved_scope,
+        config=cfg,
+        trading_mode=cfg.get("trading_mode"),
+    )
+    return float(compute_realized_pnl_from_orders(filled, initial))
 
 def _filled_order_usdt(order: dict) -> float:
     execution = order.get("execution") or {}
@@ -951,47 +959,18 @@ def _filled_order_usdt(order: dict) -> float:
     return 0.0
 
 
-_SIM_CASH_EPS = 0.01
-
-
 def compute_sim_cash_from_orders(orders: list, initial: float = 5000.0) -> float:
-    """Replay filled orders from starting capital to derive simulated-live USDT cash.
+    """Replay filled orders — cash leg of unified simulated-ledger replay."""
+    from core.sim_ledger_replay import replay_simulated_ledger
 
-    Buys that exceed available cash are skipped — matching live Gate rejection, not
-    clamping balance to zero (which hid phantom fills on overdrawn ledgers).
-    """
-    balance = float(initial)
-    sorted_orders = sorted(
-        orders or [],
-        key=lambda o: (
-            (o.get("timestamps") or {}).get("filled")
-            or (o.get("timestamps") or {}).get("created")
-            or ""
-        ),
-    )
-    for order in sorted_orders:
-        if order.get("status") != "filled":
-            continue
-        side = (order.get("side") or "").lower()
-        usdt = _filled_order_usdt(order)
-        if side == "buy":
-            if usdt > balance + _SIM_CASH_EPS:
-                continue
-            balance -= usdt
-        elif side == "sell":
-            balance += usdt
-    return round(max(0.0, balance), 8)
+    return float(replay_simulated_ledger(orders, initial)["cash"])
 
 
-def compute_realized_pnl_from_orders(orders: list) -> float:
-    return round(
-        sum(
-            float(o.get("pnl") or 0)
-            for o in (orders or [])
-            if (o.get("side") or "").lower() == "sell" and o.get("status") == "filled"
-        ),
-        8,
-    )
+def compute_realized_pnl_from_orders(orders: list, initial: float = 5000.0) -> float:
+    """Realized PnL from acknowledged sells only (matches position replay)."""
+    from core.sim_ledger_replay import replay_simulated_ledger
+
+    return float(replay_simulated_ledger(orders, initial)["realized_pnl"])
 
 
 def _reconcile_scoped_trade_history(
@@ -1019,7 +998,7 @@ def _reconcile_scoped_trade_history(
         if o.get("status") == "filled"
     ]
     computed_cash = compute_sim_cash_from_orders(filled, initial)
-    computed_pnl = compute_realized_pnl_from_orders(filled)
+    computed_pnl = compute_realized_pnl_from_orders(filled, initial)
     changed = False
     stored_cash = history.get("virtual_balance")
     if stored_cash is None or abs(float(stored_cash) - computed_cash) > 0.01:
@@ -1040,6 +1019,9 @@ def _reconcile_scoped_trade_history(
             "INFO",
         )
     return history, changed
+
+
+_SIM_CASH_EPS = 0.01
 
 
 def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:

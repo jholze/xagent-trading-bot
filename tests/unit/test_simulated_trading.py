@@ -15,12 +15,14 @@ from core.simulated_trading import (
     uses_simulated_portfolio,
 )
 from data_manager import is_dry_run_enhanced
+from core.sim_ledger_replay import replay_simulated_ledger
 from data_manager import (
     compute_sim_cash_from_orders,
     resolve_ledger_scope,
     resolve_sim_cash_balance,
     uses_simulated_live_portfolio,
 )
+from services.ledger_sync import _build_positions_snapshot_from_orders
 
 
 class TestSimulatedTrading(unittest.TestCase):
@@ -81,6 +83,8 @@ class TestSimulatedTrading(unittest.TestCase):
                 "id": "buy-ok",
                 "status": "filled",
                 "side": "buy",
+                "symbol": "AAA/USDT",
+                "timeframe": "4h",
                 "execution": {"price": 1.0, "amount": 100.0},
                 "timestamps": {"filled": "2026-07-15T10:00:00"},
             },
@@ -88,6 +92,8 @@ class TestSimulatedTrading(unittest.TestCase):
                 "id": "buy-phantom",
                 "status": "filled",
                 "side": "buy",
+                "symbol": "BBB/USDT",
+                "timeframe": "4h",
                 "execution": {"price": 1.0, "amount": 500.0},
                 "timestamps": {"filled": "2026-07-15T10:01:00"},
             },
@@ -95,6 +101,8 @@ class TestSimulatedTrading(unittest.TestCase):
                 "id": "sell-1",
                 "status": "filled",
                 "side": "sell",
+                "symbol": "AAA/USDT",
+                "timeframe": "4h",
                 "execution": {"price": 2.0, "amount": 50.0},
                 "timestamps": {"filled": "2026-07-15T10:02:00"},
             },
@@ -102,6 +110,61 @@ class TestSimulatedTrading(unittest.TestCase):
         cash = compute_sim_cash_from_orders(orders, initial=200.0)
         # 200 - 100 = 100; phantom 500 buy skipped; sell +100 → 200
         self.assertAlmostEqual(cash, 200.0, places=2)
+
+    def test_overdraw_conserves_cash_positions_and_nav(self):
+        """Phantom fills must not open lots or mint cash on orphan sells."""
+        orders = [
+            {
+                "id": "buy-ok",
+                "status": "filled",
+                "side": "buy",
+                "symbol": "AAA/USDT",
+                "timeframe": "4h",
+                "execution": {"price": 1.0, "amount": 100.0},
+                "timestamps": {"filled": "2026-07-15T10:00:00"},
+            },
+            {
+                "id": "buy-phantom",
+                "status": "filled",
+                "side": "buy",
+                "symbol": "BBB/USDT",
+                "timeframe": "4h",
+                "execution": {"price": 1.0, "amount": 500.0},
+                "timestamps": {"filled": "2026-07-15T10:01:00"},
+            },
+            {
+                "id": "sell-phantom",
+                "status": "filled",
+                "side": "sell",
+                "symbol": "BBB/USDT",
+                "timeframe": "4h",
+                "execution": {"price": 2.0, "amount": 500.0},
+                "timestamps": {"filled": "2026-07-15T10:02:00"},
+            },
+        ]
+        initial = 200.0
+        replay = replay_simulated_ledger(orders, initial)
+        self.assertAlmostEqual(replay["cash"], 100.0, places=2)
+        self.assertAlmostEqual(replay["positions"]["AAA_USDT_4h"]["amount"], 100.0, places=4)
+        bbb = replay["positions"].get("BBB_USDT_4h", {}).get("amount", 0)
+        self.assertAlmostEqual(bbb, 0.0, places=4)
+
+        cost_basis = sum(
+            float(p.get("amount") or 0) * float(p.get("average_entry") or 0)
+            for p in replay["positions"].values()
+            if float(p.get("amount") or 0) > 0
+        )
+        self.assertAlmostEqual(replay["cash"] + cost_basis, initial, places=2)
+
+        with patch("data_manager.load_orders", return_value={"orders": orders}), \
+             patch("data_manager.get_config", return_value={
+                 "trading_mode": "live",
+                 "live": {"dry_run": True, "simulated_balance_usdt": initial},
+             }), \
+             patch("core.portfolio_baseline.initial_capital", return_value=initial):
+            snap = _build_positions_snapshot_from_orders("demo")
+        self.assertAlmostEqual(snap["AAA_USDT_4h"]["amount"], 100.0, places=4)
+        self.assertNotIn("BBB_USDT_4h", snap)
 
 
 if __name__ == "__main__":

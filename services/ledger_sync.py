@@ -96,94 +96,19 @@ def _build_positions_snapshot_from_orders(
     scope: str,
     tenant_id: str | None = None,
 ) -> dict:
-    """Derive position state from filled orders for *scope* (tenant-isolated)."""
-    from data_manager import load_orders
-    from strategies.positions import get_key
+    """Derive position state from cash-aware replay (same filter as Sim USDT)."""
+    from core.portfolio_baseline import initial_capital
+    from core.sim_ledger_replay import replay_simulated_ledger
+    from data_manager import get_config, load_orders
 
+    cfg = get_config()
     orders = [
         o
         for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
         if o.get("status") == "filled"
     ]
-    orders.sort(
-        key=lambda o: (
-            o.get("timestamps", {}).get("filled")
-            or o.get("timestamps", {}).get("created")
-            or ""
-        )
-    )
-
-    snapshot: dict = {}
-    for order in orders:
-        symbol = order.get("symbol", "")
-        timeframe = order.get("timeframe", "4h")
-        if not symbol:
-            continue
-        key = get_key(symbol, timeframe)
-        pos = snapshot.setdefault(key, _empty_order_position())
-
-        side = (order.get("side") or "").lower()
-        execution = order.get("execution") or {}
-        request = order.get("request") or {}
-        price = float(execution.get("price") or request.get("price") or 0)
-        amount = float(execution.get("amount") or request.get("amount") or 0)
-        trade_ts = (
-            order.get("timestamps", {}).get("filled")
-            or order.get("timestamps", {}).get("created")
-        )
-        source = (order.get("source") or "").lower()
-
-        if side == "buy" and amount > 0 and price > 0:
-            old_amount = pos["amount"]
-            new_amount = old_amount + amount
-            if old_amount <= 0:
-                _reset_position_cycle(pos, amount=new_amount, price=price, trade_ts=trade_ts)
-                if source == "entry_sensor_15m":
-                    pos["entry_source"] = "entry_sensor_15m"
-                    pos["entry_at"] = trade_ts
-            elif _is_dca_order(order):
-                pos["average_entry"] = (
-                    pos["average_entry"] * old_amount + price * amount
-                ) / new_amount
-                pos["amount"] = new_amount
-                pos["last_buy_price"] = price
-                pos["last_action"] = "BUY_DCA"
-                pos["last_trade_type"] = "BUY_DCA"
-                pos["last_trade_at"] = trade_ts
-                pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
-                pos["last_dca_at"] = trade_ts
-                pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + price * amount
-            else:
-                pos["average_entry"] = (
-                    pos["average_entry"] * old_amount + price * amount
-                ) / new_amount
-                pos["amount"] = new_amount
-                pos["last_buy_price"] = price
-                pos["last_action"] = "BUY"
-                pos["last_trade_type"] = "BUY"
-                pos["last_trade_at"] = trade_ts
-                if source == "entry_sensor_15m":
-                    pos["entry_source"] = "entry_sensor_15m"
-                    pos["entry_at"] = trade_ts
-        elif side == "sell" and amount > 0:
-            original = pos["amount"]
-            sell_amount = min(amount, original) if original > 0 else amount
-            pos["amount"] = max(0.0, original - sell_amount)
-            peak = float(pos.get("peak_amount") or original or 0)
-            if peak > 0:
-                pos["sold_percent"] = min(
-                    1.0, max(0.0, 1.0 - pos["amount"] / peak)
-                )
-            pos["last_action"] = "SELL"
-            pos["last_trade_type"] = "SELL"
-            pos["last_trade_at"] = trade_ts
-            signal = (order.get("signal") or "").upper()
-            if "PARTIAL" in signal or signal in ("SELL_30", "SELL_20", "SELL_10"):
-                pos["_partial_sell_count"] = int(pos.get("_partial_sell_count") or 0) + 1
-            pnl = order.get("pnl")
-            if pnl is not None:
-                pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + float(pnl)
-
+    initial = initial_capital(scope=scope, config=cfg)
+    snapshot = dict(replay_simulated_ledger(orders, initial)["positions"])
     _reconcile_ladder_steps_in_snapshot(snapshot)
     return snapshot
 
