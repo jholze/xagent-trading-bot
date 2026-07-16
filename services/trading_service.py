@@ -25,6 +25,8 @@ class TradingService:
 
     def refresh(self):
         self.config.refresh()
+        self.risk.config = self.config
+        self.portfolio.config = self.config
         return self
 
     @property

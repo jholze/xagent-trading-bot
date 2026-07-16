@@ -171,6 +171,36 @@ class TestEvalMetaProducers(unittest.TestCase):
     def setUp(self):
         reset_eval_runtime_for_tests()
 
+    def test_meta_seed_not_skipped_for_second_tenant(self):
+        import os
+        from core.tenant_context import tenant_context
+
+        os.environ["MULTI_TENANT_ENABLED"] = "1"
+        client, zset, _ = _mock_redis_client()
+        watchlist = [{"symbol": "BTC/USDT", "timeframe": "4h", "active": True}]
+        try:
+            with patch("bus.eval_queue._client", return_value=client), \
+                 patch("bus.eval_queue.last_processed_at", return_value=None), \
+                 patch("strategies.watch_15m_state.list_watched", return_value=[]):
+                with tenant_context("default", scope="demo"):
+                    first = seed_meta_producers(
+                        watchlist=watchlist,
+                        open_positions=[],
+                        config_raw=CFG,
+                    )
+                with tenant_context("henry", scope="demo", owner_chat_id="6512212782"):
+                    second = seed_meta_producers(
+                        watchlist=watchlist,
+                        open_positions=[],
+                        config_raw=CFG,
+                    )
+            self.assertNotIn("skipped", first)
+            self.assertNotIn("skipped", second)
+            self.assertGreaterEqual(first.get("stale", 0), 1)
+            self.assertGreaterEqual(second.get("stale", 0), 1)
+        finally:
+            os.environ.pop("MULTI_TENANT_ENABLED", None)
+
     def test_seed_enqueues_positions_and_stale(self):
         client, zset, _ = _mock_redis_client()
         watchlist = [

@@ -107,6 +107,8 @@ class DecisionEngine:
 
     def begin_tenant_cycle(self) -> None:
         """Prepare per-tenant cycle caches and reusable regime collaborators."""
+        global _WATCHLIST_CACHE
+        _WATCHLIST_CACHE = None
         self.config.refresh()
         self.market.begin_cycle()
         raw = self.config.raw

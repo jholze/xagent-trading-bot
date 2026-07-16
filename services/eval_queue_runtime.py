@@ -51,7 +51,7 @@ _latest_signals: dict[str, list] = {
     "cmc": [],
     "lc": [],
 }
-_last_meta_seed_at = 0.0
+_last_meta_seed_at: dict[str, float] = {}
 
 
 def _coin_for_symbol(symbol: str, timeframe: str) -> dict:
@@ -155,6 +155,10 @@ def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
     from core.tenant_routing import tenant_cycle_context
 
     with tenant_cycle_context(job.tenant_id):
+        try:
+            orchestrator.begin_tenant_cycle()
+        except Exception as exc:
+            log(f"eval_worker tenant init failed ({job.tenant_id}): {exc}", "WARNING")
         coin = _coin_for_symbol(job.symbol, job.timeframe)
         price = float(get_prices_batch([job.symbol]).get(job.symbol, 0) or 0)
         if price <= 0:
@@ -243,9 +247,10 @@ def seed_meta_producers(
     eq_cfg = eval_queue_config(cfg_raw)
     now = time.time()
     meta_interval = float(eq_cfg.get("eval_meta_interval_sec", 300))
-    if now - _last_meta_seed_at < meta_interval:
-        return {"skipped": 1}
-    _last_meta_seed_at = now
+    last_seed = _last_meta_seed_at.get(tenant_id, 0.0)
+    if now - last_seed < meta_interval:
+        return {"skipped": 1, "tenant_id": tenant_id}
+    _last_meta_seed_at[tenant_id] = now
 
     heartbeat_sec = float(eq_cfg.get("eval_position_heartbeat_sec", 300))
     stale_sec = float(eq_cfg.get("eval_stale_sec", 7200))
@@ -477,7 +482,7 @@ def reset_eval_runtime_for_tests() -> None:
     _worker_thread = None
     _orchestrator = None
     _recent_results.clear()
-    _last_meta_seed_at = 0.0
+    _last_meta_seed_at = {}
     _latest_signals.update({"x": [], "cmc": [], "lc": []})
     with _stats_lock:
         _stats.update({

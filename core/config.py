@@ -16,7 +16,10 @@ class BotConfig:
         self._tenant_id = tenant_id
 
     def refresh(self):
-        self._raw = reload_config(tenant_id=getattr(self, "_tenant_id", None))
+        from core.tenant_context import resolve_tenant_id
+
+        tid = getattr(self, "_tenant_id", None) or resolve_tenant_id()
+        self._raw = reload_config(tenant_id=tid)
         return self
 
     @property
