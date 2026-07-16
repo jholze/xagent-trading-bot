@@ -428,7 +428,7 @@ def format_portfolio_summary(
     )
     if trade_realized is None:
         trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
-    pnl = portfolio_pnl_for_display(total_value, initial, float(total_unreal or 0), trade_realized)
+    pnl = portfolio_pnl_for_display(total_value, initial, trade_realized)
     total_pnl = pnl["total_pnl"]
     unrealized = pnl["unrealized"]
     pnl_pct = pnl["pnl_pct"]

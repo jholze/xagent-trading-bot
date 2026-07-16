@@ -78,12 +78,12 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     symbols = [position_symbol(p) for p in active]
     prices = get_prices_batch(symbols, fallbacks=build_price_fallbacks(active)) if symbols else {}
 
-    unrealized = 0.0
+    open_lots_mtm = 0.0
     positions_market_value = 0.0
     for pos in active:
         sym = position_symbol(pos)
         metrics = _position_metrics(pos, float(prices.get(sym, 0) or 0))
-        unrealized += metrics["unreal"]
+        open_lots_mtm += metrics["unreal"]
         positions_market_value += metrics["value_usdt"]
 
     baseline = initial_capital(
@@ -95,7 +95,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     total_value = balance + positions_market_value
     from core.portfolio_baseline import portfolio_pnl_for_display
 
-    pnl = portfolio_pnl_for_display(total_value, baseline, unrealized, realized)
+    pnl = portfolio_pnl_for_display(total_value, baseline, realized)
 
     return {
         "history": history,
@@ -105,6 +105,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         "trade_realized": pnl["trade_realized"],
         "realized_ledger": realized,
         "unrealized": pnl["unrealized"],
+        "open_lots_mtm": open_lots_mtm,
         "positions_market_value": positions_market_value,
         "total_value": total_value,
         "initial_capital": baseline,

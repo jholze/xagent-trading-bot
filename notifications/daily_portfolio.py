@@ -235,10 +235,14 @@ def format_daily_nav_line(
 
         total_value = float(_portfolio_snapshot(mode).get("total_value", 0) or 0)
     nav_delta = total_value - nav_start
-    sign = "+" if nav_delta >= 0 else ""
-    pnl_sign = "+" if realized_today >= 0 else ""
+
+    def _signed_usd(value: float) -> str:
+        if value >= 0:
+            return f"+${value:,.0f}"
+        return f"-${abs(value):,.0f}"
+
     return (
         f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
-        f"Real. <b>{pnl_sign}${realized_today:,.0f}</b> · "
-        f"NAV <b>${total_value:,.0f}</b> ({sign}${nav_delta:,.0f} vs. Tagesstart ${nav_start:,.0f})"
+        f"Real. <b>{_signed_usd(realized_today)}</b> · "
+        f"NAV <b>${total_value:,.0f}</b> ({_signed_usd(nav_delta)} vs. Tagesstart ${nav_start:,.0f})"
     )

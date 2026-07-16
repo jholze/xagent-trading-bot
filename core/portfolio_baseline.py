@@ -48,17 +48,22 @@ def nav_total_pnl(total_value: float, initial_capital: float) -> float:
 def portfolio_pnl_for_display(
     total_value: float,
     initial_capital: float,
-    unrealized: float,
     trade_realized: float,
 ) -> dict[str, float]:
-    """Headline PnL from NAV; trade_realized from closed orders (not a residual)."""
-    unreal = float(unrealized or 0)
+    """Headline PnL from NAV; trade_realized from closed orders.
+
+    Unrealized is the balance-sheet residual (total_pnl - trade_realized) so
+    Gesamt-PnL = Trade-Gewinn + Unrealisiert always reconciles, including
+    when unrealized is negative.
+    """
     total_pnl = nav_total_pnl(total_value, initial_capital)
+    trade = float(trade_realized or 0)
+    unreal = total_pnl - trade
     pct = (total_pnl / float(initial_capital) * 100.0) if initial_capital > 0 else 0.0
     return {
         "total_pnl": total_pnl,
         "unrealized": unreal,
-        "trade_realized": float(trade_realized or 0),
+        "trade_realized": trade,
         "pnl_pct": pct,
     }
 
@@ -66,11 +71,12 @@ def portfolio_pnl_for_display(
 def split_nav_pnl_for_display(
     total_value: float,
     initial_capital: float,
-    unrealized: float,
     trade_realized: float = 0.0,
+    *,
+    unrealized: float | None = None,
 ) -> dict[str, float]:
     """Backward-compatible alias — pass trade_realized from ledger order replay."""
-    pnl = portfolio_pnl_for_display(total_value, initial_capital, unrealized, trade_realized)
+    pnl = portfolio_pnl_for_display(total_value, initial_capital, trade_realized)
     return {
         **pnl,
         "realized": pnl["trade_realized"],
