@@ -31,3 +31,27 @@ def uses_order_ledger_cash(config: dict | None = None) -> bool:
 def uses_simulated_portfolio(config: dict | None = None) -> bool:
     """Portfolio uses local ledger balances, not Gate spot wallet."""
     return is_simulated_trading(config)
+
+
+def is_real_live_trading(config: dict | None = None) -> bool:
+    """True only when dry_run is off and live is confirmed — real Gate orders."""
+    cfg = config or get_config()
+    if cfg.get("trading_mode") != "live":
+        return False
+    live = cfg.get("live", {})
+    if live.get("dry_run", True):
+        return False
+    return bool(cfg.get("live_confirmed"))
+
+
+def simulated_live_config_updates(config: dict | None = None) -> dict:
+    """Config patch: executable simulated live (dry-run ledger, no Mainnet)."""
+    cfg = dict(config or get_config())
+    live = dict(cfg.get("live", {}))
+    live["dry_run"] = True
+    return {
+        "trading_mode": "live",
+        "virtual_trading": False,
+        "live_confirmed": True,
+        "live": live,
+    }

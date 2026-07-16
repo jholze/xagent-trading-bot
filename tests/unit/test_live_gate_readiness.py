@@ -69,15 +69,17 @@ class TestLiveGateReadiness(unittest.TestCase):
         mock_buy.assert_called_once()
         self.assertFalse(mock_buy.call_args.kwargs.get("sync_virtual_ledger", True))
 
-    def test_live_confirm_blocked_in_demo(self):
-        with patch("notifications.telegram_commands.mode_commands.is_demo_mode", return_value=True), \
+    def test_live_confirm_on_staging_enables_simulated_live(self):
+        with patch.dict(os.environ, {"DEMO_MODE": "1"}, clear=False), \
+             patch("notifications.telegram_commands.mode_commands._save_mode_updates", return_value=True), \
+             patch("notifications.telegram_commands.mode_commands.reload_config"), \
+             patch("notifications.telegram_commands.mode_commands.on_trading_mode_change", return_value=""), \
              patch("notifications.telegram_commands.mode_commands.send_telegram_message") as mock_send:
             self.assertTrue(mode_commands.handle("/live_confirm"))
-            self.assertIn("Demo", mock_send.call_args[0][0])
+            self.assertIn("Simulated Live", mock_send.call_args[0][0])
 
     def test_live_confirm_blocked_without_keys(self):
-        with patch("notifications.telegram_commands.mode_commands.is_demo_mode", return_value=False), \
-             patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"DEMO_MODE": "0", "GATE_API_KEY": "", "GATE_API_SECRET": ""}, clear=False), \
              patch("notifications.telegram_commands.mode_commands.send_telegram_message") as mock_send:
             self.assertTrue(mode_commands.handle("/live_confirm"))
             self.assertIn("Keys fehlen", mock_send.call_args[0][0])
@@ -85,11 +87,11 @@ class TestLiveGateReadiness(unittest.TestCase):
     def test_live_confirm_warns_on_dry_run(self):
         cfg = dict(get_config())
         cfg.setdefault("live", {})["dry_run"] = True
-        with patch("notifications.telegram_commands.mode_commands.is_demo_mode", return_value=False), \
+        with patch.dict(os.environ, {"DEMO_MODE": "0", "GATE_API_KEY": "k", "GATE_API_SECRET": "s"}, clear=False), \
              patch("notifications.telegram_commands.mode_commands.get_config", return_value=cfg), \
-             patch.dict(os.environ, {"GATE_API_KEY": "k", "GATE_API_SECRET": "s"}), \
              patch("notifications.telegram_commands.mode_commands._save_mode_updates", return_value=True), \
              patch("notifications.telegram_commands.mode_commands.reload_config"), \
+             patch("notifications.telegram_commands.mode_commands.on_trading_mode_change", return_value=""), \
              patch("notifications.telegram_commands.mode_commands.send_telegram_message") as mock_send:
             self.assertTrue(mode_commands.handle("/live_confirm"))
             self.assertIn("dry_run", mock_send.call_args[0][0])

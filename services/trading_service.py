@@ -32,35 +32,46 @@ class TradingService:
         return get_execution_adapter(self.config, self.portfolio)
 
     def mode_label(self) -> str:
-        from data_manager import is_demo_mode, resolve_ledger_backend
+        import os
 
-        if is_demo_mode():
-            backend = resolve_ledger_backend("demo", self.config.raw)
-            return f"demo ({backend} ledger)"
+        from core.simulated_trading import (
+            is_real_live_trading,
+            is_simulated_trading,
+            simulated_ledger_scope,
+        )
+        from data_manager import resolve_ledger_backend
+
+        if is_simulated_trading(self.config.raw):
+            scope = simulated_ledger_scope(self.config.trading_mode, self.config.raw)
+            backend = resolve_ledger_backend(scope, self.config.raw)
+            tag = " staging" if os.environ.get("DEMO_MODE") == "1" else ""
+            return f"Simulated Live ({scope}/{backend}{tag})"
         mode = self.config.trading_mode
         if mode == "live":
+            if is_real_live_trading(self.config.raw):
+                return "live (MAINNET CONFIRMED)"
             confirmed = "CONFIRMED" if self.config.live_confirmed else "needs /live_confirm"
             dry = " [DRY RUN]" if self.config.live_config.get("dry_run", True) else ""
             return f"live ({confirmed}){dry}"
         if mode == "off":
             return "off (analysis only)"
-        backend = self.config.paper_config.get("backend", "local")
-        if backend == "mongo":
-            dual = " + JSON dual-write" if self.config.ledger_dual_write else ""
-            return f"paper (mongo ledger{dual})"
-        if backend != "local":
-            return f"paper ({backend})"
-        return "paper (local ledger)"
+        return "paper (deprecated — use /mode live)"
 
     def can_execute(self, source: str = "auto", trust_score: float = None) -> tuple:
+        from core.simulated_trading import is_real_live_trading, is_simulated_trading
+
         mode = self.config.trading_mode
         if mode == "off":
-            return False, "Trading disabled (mode=off). Use /mode paper to enable."
+            return False, "Trading disabled (mode=off). Use /mode live to enable."
+        if is_simulated_trading(self.config.raw):
+            return True, ""
         if mode == "paper":
             return True, ""
         if mode == "live":
             if not self.config.live_confirmed:
                 return False, "Live trading requires /live_confirm first."
+            if not is_real_live_trading(self.config.raw):
+                return True, ""
             min_trust = self.config.live_config.get("require_min_trust_score", 70)
             if source == "x" and trust_score is not None and trust_score < min_trust:
                 return False, f"Trust score {trust_score:.0f} below live minimum ({min_trust})."

@@ -1,7 +1,7 @@
 import os
 
 from core.runtime_identity import format_identity_section
-from core.simulated_trading import is_simulated_trading
+from core.simulated_trading import is_simulated_trading, simulated_live_config_updates
 from data_manager import get_config, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
@@ -96,12 +96,7 @@ Current: <b>{service.mode_label()}</b>{sim}
         return True
 
     if text == "/mode paper":
-        ok, ledger_msg = _apply_mode_switch({
-            "trading_mode": "live",
-            "virtual_trading": False,
-            "live_confirmed": False,
-            "live": {**get_config().get("live", {}), "dry_run": True},
-        })
+        ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
         if ok:
             msg = (
                 "✅ <b>Paper</b> ist veraltet — umgestellt auf <b>Simulated Live</b> "
@@ -124,23 +119,14 @@ Current: <b>{service.mode_label()}</b>{sim}
 
     if text == "/mode live":
         cfg = get_config()
-        dry = cfg.get("live", {}).get("dry_run", True)
-        if os.environ.get("DEMO_MODE") == "1":
-            send_telegram_message(
-                "✅ <b>Simulated Live</b> aktiv (Staging-Ledger, dry-run).\n"
-                "Keine echten Gate-Orders — Portfolio aus Order-Ledger."
-            )
-            return True
-        ok, ledger_msg = _apply_mode_switch({
-            "trading_mode": "live",
-            "virtual_trading": False,
-            "live": {**cfg.get("live", {}), "dry_run": True},
-        })
+        ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates(cfg))
         if ok:
+            staging = os.environ.get("DEMO_MODE") == "1"
             msg = (
-                "✅ <b>Simulated Live</b> (dry-run Ledger).\n"
-                "Send <code>/live_confirm</code> nur für echtes Mainnet-Trading.\n"
-                f"Dry run: <b>{'ON' if dry else 'OFF'}</b>"
+                "✅ <b>Simulated Live</b> aktiv"
+                + (" (Staging-Ledger)" if staging else " (dry-run Ledger)")
+                + ".\nOrders über Order-Ledger — keine echten Gate-Orders.\n"
+                "Für Mainnet: <code>/live_confirm</code> (nur außerhalb Staging)."
             )
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
@@ -151,10 +137,14 @@ Current: <b>{service.mode_label()}</b>{sim}
 
     if text == "/live_confirm":
         if os.environ.get("DEMO_MODE") == "1":
-            send_telegram_message(
-                "❌ Echtes Mainnet-Trading auf <b>Staging</b> deaktiviert.\n"
-                "Simulated Live nutzt nur das Order-Ledger."
+            ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
+            msg = (
+                "✅ <b>Simulated Live</b> auf Staging — Order-Ausführung aktiv.\n"
+                "Echtes Mainnet ist hier deaktiviert."
             )
+            if ledger_msg:
+                msg += f"\n\n{ledger_msg}"
+            send_telegram_message(msg if ok else "❌ Failed to save config.")
             return True
 
         cfg = get_config()
@@ -191,13 +181,9 @@ Current: <b>{service.mode_label()}</b>{sim}
         return True
 
     if text == "/live_cancel":
-        ok, ledger_msg = _apply_mode_switch({
-            "live_confirmed": False,
-            "trading_mode": "paper",
-            "virtual_trading": True,
-        })
+        ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
         if ok:
-            msg = "✅ Live trading cancelled. Back to <b>paper</b> mode."
+            msg = "✅ Mainnet widerrufen. Zurück zu <b>Simulated Live</b> (dry-run)."
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)

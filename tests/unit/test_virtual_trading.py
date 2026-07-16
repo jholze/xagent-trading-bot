@@ -262,7 +262,7 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("disabled", reason.lower())
 
-    def test_trading_service_live_requires_confirm(self):
+    def test_trading_service_mainnet_requires_confirm(self):
         from core.config import BotConfig
         from data_manager import get_config
         from services.trading_service import TradingService
@@ -270,10 +270,12 @@ class TestVirtualTrading(unittest.TestCase):
         raw = dict(get_config())
         raw["trading_mode"] = "live"
         raw["live_confirmed"] = False
+        raw.setdefault("live", {})["dry_run"] = False
         cfg = BotConfig()
         cfg._raw = raw
-        svc = TradingService(cfg)
-        ok, reason = svc.can_execute()
+        with patch.dict(os.environ, {"DEMO_MODE": "0"}, clear=False):
+            svc = TradingService(cfg)
+            ok, reason = svc.can_execute()
         self.assertFalse(ok)
         self.assertIn("live_confirm", reason)
 

@@ -35,6 +35,7 @@ def _run_pytest() -> int:
         "tests/unit/test_trade_history_mt_read.py",
         "tests/unit/test_simulated_trading.py",
         "tests/unit/test_portfolio_cycle_cash_parity.py",
+        "tests/unit/test_trading_service_simulated.py",
         "tests/unit/test_henry_tenant_orders.py",
         "tests/unit/test_repair_tenant_ledgers.py",
         "-q",

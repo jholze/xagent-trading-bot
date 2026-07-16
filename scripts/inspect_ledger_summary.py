@@ -13,7 +13,12 @@ os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
 os.environ.setdefault("MONGODB_DB", "xagent_test")
 
 from scripts.operator_mongo import prepare_operator_mongo
-from data_manager import load_orders, load_trade_history, resolve_ledger_scope
+from data_manager import (
+    load_orders,
+    load_trade_history,
+    resolve_ledger_scope,
+    resolve_sim_cash_balance,
+)
 from services.ledger_sync import count_open_positions_from_orders
 from strategies.positions import bootstrap_positions, count_open_positions, list_active_positions
 
@@ -27,7 +32,8 @@ def main() -> int:
     scope = resolve_ledger_scope()
     orders = load_orders(scope).get("orders", [])
     history = load_trade_history()
-    cash = float(history.get("virtual_balance", 0) or 0)
+    cash = resolve_sim_cash_balance(scope=scope)
+    hist_cash = float(history.get("virtual_balance", 0) or 0)
     open_from_orders = count_open_positions_from_orders(scope)
     bootstrap_positions(scope=scope)
     active = list_active_positions()
@@ -36,6 +42,7 @@ def main() -> int:
     print(f"db={meta['db']} host={meta['host']}")
     print(
         f"orders={len(orders)} cash={cash:.2f} "
+        f"(history={hist_cash:.2f}) "
         f"active_positions={active_count} (from_orders={open_from_orders})"
     )
     if orders:
