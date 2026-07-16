@@ -221,9 +221,9 @@ def _poll_once(orchestrator) -> None:
 
             tf = str(coin.get("timeframe") or "4h")
             if eval_queue_enabled():
-                set_pending_sensor_metrics(symbol, metrics)
-                if enqueue_entry_15m_eval(symbol, tf):
+                if enqueue_entry_15m_eval(symbol, tf, metrics=metrics):
                     continue
+                set_pending_sensor_metrics(symbol, metrics)
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
             _shadow_log(symbol, coin, price, metrics, cfg, market_svc)

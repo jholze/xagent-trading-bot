@@ -23,12 +23,34 @@ class EntrySensor15mResult:
     volume_spike_ratio: float = 0.0
 
 
-def set_pending_sensor_metrics(symbol: str, metrics: dict) -> None:
+def _metrics_key(symbol: str, tenant_id: str | None = None) -> str:
+    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
+    if multi_tenant_enabled() and tid:
+        return f"{tid}|{symbol}"
+    return symbol
+
+
+def set_pending_sensor_metrics(
+    symbol: str,
+    metrics: dict,
+    *,
+    tenant_id: str | None = None,
+) -> None:
     """Loop hands off fresh 15m metrics; DecisionEngine re-evaluates with live 4h RSI."""
-    _pending_metrics[symbol] = dict(metrics)
+    _pending_metrics[_metrics_key(symbol, tenant_id)] = dict(metrics)
 
 
-def consume_pending_sensor_metrics(symbol: str) -> dict | None:
+def consume_pending_sensor_metrics(
+    symbol: str,
+    *,
+    tenant_id: str | None = None,
+) -> dict | None:
+    key = _metrics_key(symbol, tenant_id)
+    if key in _pending_metrics:
+        return _pending_metrics.pop(key)
+    # Fallback: pre-multi-tenant callers still stash under bare symbol.
     return _pending_metrics.pop(symbol, None)
 
 

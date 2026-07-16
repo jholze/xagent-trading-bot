@@ -112,7 +112,7 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
     ema_period = int(cfg.get("ema_period", 9))
     ohlcv_limit = vol_avg_period + 30
-    metrics = consume_pending_sensor_metrics(job.symbol)
+    metrics = consume_pending_sensor_metrics(job.symbol, tenant_id=job.tenant_id)
     if not metrics:
         df = market_svc.fetch_ohlcv(job.symbol, "15m", ohlcv_limit)
         metrics = market_svc.compute_15m_sensor_metrics(
@@ -124,7 +124,9 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 
     cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
-    hours_since = watch_15m_state.hours_since_sensor_reject(job.symbol)
+    hours_since = watch_15m_state.hours_since_sensor_reject(
+        job.symbol, tenant_id=job.tenant_id,
+    )
     if hours_since is not None and hours_since < cooldown_h:
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 
@@ -132,16 +134,20 @@ def _process_entry_15m_job(orchestrator, job: EvalJob, price: float, coin: dict)
     if mode != "active":
         return {"action": "HOLD", "symbol": job.symbol, "normalized_action": "HOLD"}
 
-    set_pending_sensor_metrics(job.symbol, metrics)
+    set_pending_sensor_metrics(job.symbol, metrics, tenant_id=job.tenant_id)
     outcome = orchestrator.process_entry_sensor(
         coin, price, sensor_metrics=metrics, quiet=True,
     )
     executed = bool(outcome.get("executed"))
     sources = outcome.get("sources") or []
     if executed and ENTRY_SENSOR_SOURCE in sources and is_buy(outcome.get("action", "")):
-        watch_15m_state.clear_watch(job.symbol)
+        # Do not clear shared watch on satellite success — operator may still trade.
+        from core.tenant_context import DEFAULT_TENANT
+
+        if not job.tenant_id or job.tenant_id == DEFAULT_TENANT:
+            watch_15m_state.clear_watch(job.symbol)
     elif ENTRY_SENSOR_SOURCE in sources and not executed:
-        watch_15m_state.record_sensor_reject(job.symbol)
+        watch_15m_state.record_sensor_reject(job.symbol, tenant_id=job.tenant_id)
     return outcome
 
 
@@ -371,27 +377,23 @@ def enqueue_eval_for_watchers(
     priority: int,
     config_raw: dict | None = None,
     force: bool = False,
+    metrics: dict | None = None,
 ) -> int:
-    """Enqueue for each active tenant that lists *symbol* on its watchlist."""
-    from core.tenant_context import multi_tenant_enabled
+    """Enqueue for every active cycle tenant (same entry/webhook opportunity)."""
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
     from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
+    from strategies.entry_sensor_15m import set_pending_sensor_metrics
 
-    if not multi_tenant_enabled():
-        return 1 if enqueue_eval(
-            symbol, timeframe, reason=reason, priority=priority,
-            config_raw=config_raw, force=force,
-        ) else 0
-
+    tenants = (
+        list(iter_price_cycle_tenants())
+        if multi_tenant_enabled()
+        else [DEFAULT_TENANT]
+    )
     accepted = 0
-    for tid in iter_price_cycle_tenants():
+    for tid in tenants:
         with tenant_cycle_context(tid):
-            active = {
-                c.get("symbol")
-                for c in load_effective_watchlist()
-                if c.get("active", True) and c.get("symbol")
-            }
-            if symbol not in active:
-                continue
+            if metrics is not None:
+                set_pending_sensor_metrics(symbol, metrics, tenant_id=tid)
             if enqueue_eval(
                 symbol, timeframe, reason=reason, priority=priority,
                 config_raw=config_raw, force=force, tenant_id=tid,
@@ -411,13 +413,20 @@ def enqueue_webhook_eval(symbol: str, timeframe: str, *, config_raw: dict | None
     )
 
 
-def enqueue_entry_15m_eval(symbol: str, timeframe: str, *, config_raw: dict | None = None) -> int:
+def enqueue_entry_15m_eval(
+    symbol: str,
+    timeframe: str,
+    *,
+    config_raw: dict | None = None,
+    metrics: dict | None = None,
+) -> int:
     return enqueue_eval_for_watchers(
         symbol,
         timeframe,
         reason="entry_15m_vol_spike",
         priority=PRIORITY_ENTRY_15M,
         config_raw=config_raw,
+        metrics=metrics,
     )
 
 

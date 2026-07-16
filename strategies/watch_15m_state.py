@@ -167,14 +167,35 @@ def prune_ttl(now: datetime | None = None) -> int:
     return removed
 
 
-def record_sensor_reject(symbol: str, when: datetime | None = None) -> None:
+def _reject_key(symbol: str, tenant_id: str | None = None) -> str:
+    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
+    if multi_tenant_enabled() and tid:
+        return f"{tid}|{symbol}"
+    return symbol
+
+
+def record_sensor_reject(
+    symbol: str,
+    when: datetime | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> None:
     data = _load()
-    data.setdefault("last_reject_at", {})[symbol] = (when or datetime.now()).isoformat()
+    key = _reject_key(symbol, tenant_id)
+    data.setdefault("last_reject_at", {})[key] = (when or datetime.now()).isoformat()
     _save(data)
 
 
-def hours_since_sensor_reject(symbol: str, now: datetime | None = None) -> float | None:
-    raw = _load().get("last_reject_at", {}).get(symbol)
+def hours_since_sensor_reject(
+    symbol: str,
+    now: datetime | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> float | None:
+    key = _reject_key(symbol, tenant_id)
+    raw = _load().get("last_reject_at", {}).get(key)
     if not raw:
         return None
     now = now or datetime.now()
