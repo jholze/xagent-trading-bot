@@ -82,8 +82,46 @@ class TestTenantPositionIsolation(unittest.TestCase):
         self.assertEqual(len(list_active_positions()), 1)
 
         with tenant_context("henry", scope="demo"):
-            activate_tenant_positions(scope="demo")
+            with patch(
+                "services.ledger_sync._build_positions_snapshot_from_orders",
+                return_value={},
+            ), patch(
+                "strategies.positions.load_positions_document",
+                return_value={"positions": {}},
+            ):
+                activate_tenant_positions(scope="demo")
             self.assertEqual(list_active_positions(), [])
+
+    def test_activate_satellite_reloads_open_lots_from_ledger(self):
+        """Stale empty RAM must not report pos=0 when orders have an open lot."""
+        lot = {
+            "amount": 100.0,
+            "peak_amount": 100.0,
+            "sold_percent": 0.0,
+            "average_entry": 2.5,
+        }
+        with tenant_context("henry", scope="demo"):
+            with patch(
+                "services.ledger_sync._build_positions_snapshot_from_orders",
+                return_value={},
+            ), patch(
+                "strategies.positions.load_positions_document",
+                return_value={"positions": {}},
+            ):
+                activate_tenant_positions(scope="demo", tenant_id="henry")
+            self.assertEqual(list_active_positions(tenant_id="henry", scope="demo"), [])
+
+            with patch(
+                "services.ledger_sync._build_positions_snapshot_from_orders",
+                return_value={"BEAT_USDT_4h": lot},
+            ), patch(
+                "strategies.positions.load_positions_document",
+                return_value={"positions": {}},
+            ):
+                activate_tenant_positions(scope="demo", tenant_id="henry")
+            active = list_active_positions(tenant_id="henry", scope="demo")
+            self.assertEqual(len(active), 1)
+            self.assertEqual(active[0]["symbol"], "BEAT/USDT")
 
     def test_lock_strategy_tier_does_not_persist_empty_shell(self):
         with tenant_context("henry", scope="demo"):

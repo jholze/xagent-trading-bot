@@ -378,11 +378,16 @@ def activate_tenant_positions(
     scope: str | None = None,
     tenant_id: str | None = None,
 ) -> None:
-    """Switch in-memory store to the active tenant before cycle / command reads."""
+    """Switch in-memory store to the active tenant before cycle / command reads.
+
+    Satellite tenants always reload from the order ledger so RAM cannot drift from
+    Mongo (out-of-process fills, missed first bootstrap, empty shell store).
+    """
     key = _resolve_store_key(scope, tenant_id)
     _activate(key)
-    if key[0] != DEFAULT_TENANT and not _position_stores.get(key):
-        bootstrap_positions(scope=key[1], tenant_id=key[0])
+    if key[0] == DEFAULT_TENANT:
+        return
+    bootstrap_positions(scope=key[1], tenant_id=key[0])
 
 
 def clear_positions_memory(tenant_id: str | None = None, scope: str | None = None) -> None:

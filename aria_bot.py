@@ -503,9 +503,14 @@ def _run_tenant_price_cycle(
 
     active_coins = [coin for coin in watchlist if coin.get("active", True)]
     from core.cycle_order import order_watchlist_positions_first
-    from strategies.positions import list_active_positions
+    from core.tenant_context import multi_tenant_enabled
+    from strategies.positions import list_active_positions, list_active_positions_from_ledger
 
-    open_positions = list_active_positions()
+    # Multi-tenant: orders ledger is SOT (RAM can lag after external fills).
+    if multi_tenant_enabled():
+        open_positions = list_active_positions_from_ledger()
+    else:
+        open_positions = list_active_positions()
     scan_coins = order_watchlist_positions_first(active_coins, open_positions)
     price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
