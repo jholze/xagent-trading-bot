@@ -66,6 +66,7 @@ def portfolio_pnl_for_display(
         "unrealized": mtm,
         "open_lots_mtm": mtm,
         "trade_realized": trade,
+        "handel_sum": trade + mtm,
         "nav_residual": nav_residual,
         "pnl_pct": pct,
     }

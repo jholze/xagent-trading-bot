@@ -432,9 +432,11 @@ def format_portfolio_summary(
     pnl = portfolio_pnl_for_display(total_value, initial, trade_realized, open_mtm)
     total_pnl = pnl["total_pnl"]
     open_lots_mtm = pnl["open_lots_mtm"]
-    nav_residual = pnl["nav_residual"]
+    handel_sum = pnl["handel_sum"]
     pnl_pct = pnl["pnl_pct"]
-    pnl_icon = _pnl_emoji(total_pnl)
+    wert_icon = _pnl_emoji(total_pnl)
+    handel_icon = _pnl_emoji(handel_sum)
+    pos_mv = float(positions_market_value or 0)
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
     daily_line = ""
@@ -454,17 +456,13 @@ def format_portfolio_summary(
     body = (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
         f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
-        f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
-        f"{pnl_icon} Gesamt-PnL <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
+        f"💰 Gesamtwert <b>${total_value:,.0f}</b> "
+        f"<i>(Cash + Coins ${pos_mv:,.0f})</i>\n"
+        f"{wert_icon} Wertzuwachs <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
         f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"✅ Trade-Gewinn <b>${trade_realized:+.1f}</b> · "
-        f"📉 Offene Lots <b>${open_lots_mtm:+.1f}</b>\n"
-        + (
-            f"↔️ Portfolio-Rest <b>${nav_residual:+.1f}</b>\n"
-            if abs(nav_residual) >= 1.0
-            else ""
-        )
-        + f"{daily_line}"
+        f"{handel_icon} Handel <b>${handel_sum:+.1f}</b> "
+        f"<i>(Verk. ${trade_realized:+.0f} · Lots ${open_lots_mtm:+.0f})</i>\n"
+        f"{daily_line}"
     )
     if include_position_header:
         body += f"<b>Positionen ({position_count})</b>"
