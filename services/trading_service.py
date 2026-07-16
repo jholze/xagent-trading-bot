@@ -253,8 +253,16 @@ class TradingService:
             )
             if approved_order.type in ("BUY", "SELL"):
                 try:
+                    from core.tenant_context import tenant_snapshot
                     from notifications.telegram_commands.position_display import send_positions_snapshot
-                    send_positions_snapshot(trade_result=result, mode_label=self.mode_label())
+
+                    tid, sc, _ = tenant_snapshot()
+                    send_positions_snapshot(
+                        trade_result=result,
+                        mode_label=self.mode_label(),
+                        tenant_id=tid,
+                        scope=sc,
+                    )
                 except Exception as e:
                     log(f"Positions snapshot failed: {e}", "WARNING")
         elif decision.size_multiplier != 1.0 and not result.message:

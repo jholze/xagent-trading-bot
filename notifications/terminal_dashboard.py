@@ -40,20 +40,27 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     cfg = get_bot_config()
     mode = trading_mode or cfg.trading_mode
     scope = resolve_ledger_scope(mode)
+    from core.tenant_context import tenant_snapshot
 
-    history = load_trade_history_safe()
+    tid, tenant_scope, _owner = tenant_snapshot()
+    scope = tenant_scope or scope
+
+    history = load_trade_history_safe(tenant_id=tid, scope=scope)
     from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
     from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
 
     if uses_order_ledger_cash(cfg.raw):
         from notifications.telegram_commands.position_display import _refresh_positions_for_snapshot
 
-        _refresh_positions_for_snapshot(fast=True)
-        balance = resolve_sim_cash_balance(scope=scope, config=cfg.raw, history=history)
-        realized = resolve_sim_realized_pnl(scope=scope, config=cfg.raw)
+        active = _refresh_positions_for_snapshot(fast=True, tenant_id=tid, scope=scope)
+        balance = resolve_sim_cash_balance(
+            scope=scope, config=cfg.raw, history=history, tenant_id=tid,
+        )
+        realized = resolve_sim_realized_pnl(scope=scope, config=cfg.raw, tenant_id=tid)
     else:
         balance = float(history.get("virtual_balance", 0) or 0)
         realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        active = None
 
     if is_simulated_trading(cfg.raw):
         balance_label = "Sim USDT"
@@ -69,12 +76,13 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     else:
         balance_label = "Balance"
 
-    active = list_active_positions()
-    if not active and int(history.get("open_positions", 0) or 0) > 0:
-        from strategies.positions import bootstrap_positions
+    if active is None:
+        active = list_active_positions(tenant_id=tid, scope=scope)
+        if not active and int(history.get("open_positions", 0) or 0) > 0:
+            from strategies.positions import bootstrap_positions
 
-        bootstrap_positions(scope)
-        active = list_active_positions()
+            bootstrap_positions(scope, tenant_id=tid)
+            active = list_active_positions(tenant_id=tid, scope=scope)
     symbols = [position_symbol(p) for p in active]
     prices = get_prices_batch(symbols, fallbacks=build_price_fallbacks(active)) if symbols else {}
 

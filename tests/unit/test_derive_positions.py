@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from strategies.positions import derive_positions_from_orders_and_cache, is_open_position
+from strategies.positions import (
+    derive_positions_from_orders_and_cache,
+    is_open_position,
+    prune_orphan_position_cache,
+)
 
 
 def _open_keys(snapshot: dict) -> set[str]:
@@ -64,6 +68,22 @@ class TestDerivePositions(unittest.TestCase):
             {"positions": {"BTC_USDT_4h": {"amount": 1e-15, "average_entry": 100.0}}},
         )
         self.assertEqual(derived, {})
+
+    def test_prune_orphan_position_cache_order_ledger(self):
+        order_snap = {"ADA_USDT_1h": {"amount": 10.0, "peak_amount": 10.0}}
+        cache_doc = {
+            "positions": {
+                "ADA_USDT_1h": {"recent_high": 1.1},
+                "SPCX_USDT_1h": {"amount": 26.0, "peak_amount": 26.0},
+            }
+        }
+        with patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), patch(
+            "data_manager.get_config", return_value={"live": {"dry_run": True}}
+        ):
+            pruned, orphans = prune_orphan_position_cache(order_snap, cache_doc)
+        self.assertEqual(orphans, ["SPCX_USDT_1h"])
+        self.assertNotIn("SPCX_USDT_1h", pruned["positions"])
+        self.assertIn("ADA_USDT_1h", pruned["positions"])
 
 
 if __name__ == "__main__":

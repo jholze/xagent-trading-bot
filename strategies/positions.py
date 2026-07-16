@@ -296,7 +296,7 @@ def derive_positions_from_orders_and_cache(
     from core.simulated_trading import uses_order_ledger_cash
 
     # Demo/mongo: orders replay cash — cache-only lots inflate NAV without reducing cash.
-    if tid == DEFAULT_TENANT and not uses_order_ledger_cash(get_config()):
+    if not uses_order_ledger_cash(get_config()):
         for key, cached in cache_positions.items():
             if key in merged:
                 continue
@@ -305,6 +305,27 @@ def derive_positions_from_orders_and_cache(
                 continue
             merged[key] = raw
     return merged
+
+
+def prune_orphan_position_cache(
+    order_snap: dict,
+    cache_doc: dict,
+) -> tuple[dict, list[str]]:
+    """Remove position-cache keys with no matching order lot (order-ledger cash mode)."""
+    from data_manager import get_config
+    from core.simulated_trading import uses_order_ledger_cash
+
+    if not uses_order_ledger_cash(get_config()):
+        return cache_doc, []
+    positions = dict(cache_doc.get("positions") or {})
+    orphans = sorted(k for k in positions if k not in order_snap)
+    if not orphans:
+        return cache_doc, []
+    for key in orphans:
+        positions.pop(key, None)
+    pruned = dict(cache_doc)
+    pruned["positions"] = positions
+    return pruned, orphans
 
 
 def _merge_cache_fields(order_snap: dict, cache_doc: dict) -> dict:

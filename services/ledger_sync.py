@@ -159,6 +159,17 @@ def rebuild_positions_from_orders(
     tid = resolve_tenant_id(tenant_id)
     order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
     cache_doc = load_positions_document(scope, tenant_id=tid)
+    from strategies.positions import prune_orphan_position_cache
+
+    cache_doc, orphans = prune_orphan_position_cache(order_snap, cache_doc)
+    if orphans:
+        from data_manager import save_positions_document
+
+        save_positions_document(cache_doc, scope, tenant_id=tid)
+        log(
+            f"Pruned {len(orphans)} orphan position cache key(s) for tenant={tid} scope={scope}",
+            "INFO",
+        )
     snapshot = derive_positions_from_orders_and_cache(
         order_snap, cache_doc, tenant_id=tid
     )
