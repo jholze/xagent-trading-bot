@@ -90,7 +90,12 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
         regime = _worse_regime(regime, pol.get("regime") or pol.get("state"))
         if pol.get("apply_size_mult"):
             apply_size = True
-            size = min(size, float(pol.get("size_mult") or 1.0))
+            try:
+                sm = pol.get("size_mult")
+                sm_f = 1.0 if sm is None else float(sm)
+            except Exception:
+                sm_f = 1.0
+            size = min(size, sm_f)
         if pol.get("apply_sensor_policy"):
             apply_sensor = True
             sensor = _worse_sensor(sensor, str(pol.get("sensor_policy") or "active"))
