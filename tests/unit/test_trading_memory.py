@@ -165,6 +165,52 @@ class TestEventIngest(unittest.TestCase):
         self.assertTrue(self.store.get_event(ev.event_id))
         self.assertIn("ETH", " ".join(ev.symbols))
 
+    def test_process_signal_webhook_news_alert_to_memory(self):
+        """Production path: process_signal_webhook → ingest_webhook_signal → MarketEvent."""
+        from services.signal_webhook_service import process_signal_webhook
+
+        store = InMemoryMemoryStore()
+        cfg = {
+            "architecture": {
+                "signal_webhook_enabled": True,
+                "signal_webhook_rate_limit_per_min": 100,
+            },
+            "entry_sensor_15m": {"enabled": False},
+            "memory": {"enabled": True},
+        }
+
+        def _ingest(sig):
+            return ingest_webhook_signal(sig, store=store)
+
+        with patch("webhooks.store.publish_redis", return_value=False), patch(
+            "intelligence.memory.store.memory_enabled", return_value=True
+        ), patch(
+            "intelligence.memory.event_ingest.ingest_webhook_signal",
+            side_effect=_ingest,
+        ):
+            result = process_signal_webhook(
+                {
+                    "symbol": "BTC/USDT",
+                    "event_type": "news_alert",
+                    "strength": 0.9,
+                    "title": "SEC charges exchange for fraud",
+                    "url": "https://example.com/sec-charges-prod",
+                    "body": "fraud investigation",
+                },
+                source="generic",
+                config_raw=cfg,
+            )
+        self.assertTrue(result.ok)
+        events = store.list_events(event_type="news") + store.list_events(
+            event_type="webhook_news_alert"
+        )
+        # event_type may be "news" after map
+        all_ev = store.list_events(limit=20)
+        self.assertTrue(all_ev, "webhook should create at least one MarketEvent")
+        self.assertTrue(
+            any("SEC" in (e.description or "") or "fraud" in (e.description or "").lower() for e in all_ev)
+        )
+
     def test_x_bridge_feature_flagged_off(self):
         ev = ingest_x_post(
             text="BTC looking strong after ETF flows",
@@ -496,6 +542,35 @@ class TestRiskManagerMemory(unittest.TestCase):
         ):
             sized_full, _ = risk._dynamic_size(**common)
         self.assertLess(sized, sized_full)
+
+    def test_evaluate_sell_never_uses_soft_block_code(self):
+        """Sells go through evaluate(); soft_block must never be the rejection code."""
+        from core.models import TradeOrder
+        from risk.risk_manager import RiskManager
+
+        cfg = self._cfg()
+        risk = RiskManager(cfg)
+        with patch(
+            "risk.risk_manager.get_position",
+            return_value={"amount": 10, "entry_price": 1.0, "average_entry": 1.0},
+        ), patch(
+            "intelligence.memory.cache.get_entry_bias", return_value="soft_block"
+        ), patch.object(risk, "_daily_sells_count", return_value=0), patch.object(
+            risk, "_effective_max_daily_sells", return_value=0
+        ), patch.object(
+            risk, "_partial_sell_blocked", return_value=(False, "")
+        ), patch.object(
+            risk, "_trade_cooldown_blocked", return_value=(False, "")
+        ), patch.object(
+            risk, "_resolve_sell_order", side_effect=lambda o, *a, **k: o
+        ):
+            decision = risk.evaluate(
+                TradeOrder("SELL", "ANY/USDT", 1.0, 3, signal="SELL_FULL"),
+                "4h",
+                source="auto",
+            )
+        self.assertTrue(decision.approved)
+        self.assertNotEqual(getattr(decision, "code", None), "coin_memory_soft_block")
 
 
 class TestServiceLiveEvidence(unittest.TestCase):
