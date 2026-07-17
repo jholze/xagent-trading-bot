@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from intelligence.memory.embeddings import embed_text
 from intelligence.memory.models import Lesson, utc_now_iso
-from intelligence.memory.store import MemoryStore
+from intelligence.memory.store import MemoryStore, resolve_memory_scope
 from logger import log
 
 
@@ -15,6 +15,7 @@ def reflect(
     store: MemoryStore | None = None,
     *,
     tenant_id: str = "default",
+    ledger_scope: str | None = None,
     min_samples: int = 3,
 ) -> dict[str, int]:
     store = store or MemoryStore()
@@ -22,6 +23,7 @@ def reflect(
     events = store.list_events(limit=100)
     lessons = 0
     profile_updates = 0
+    default_scope = resolve_memory_scope(ledger_scope)
 
     # Aggregate by symbol
     by_sym: dict[str, list] = defaultdict(list)
@@ -32,11 +34,18 @@ def reflect(
         sells = [t for t in tlist if t.direction == "sell" and t.pnl_usdt is not None]
         if len(sells) < min_samples:
             continue
+        # Prefer scope from TradeMemory (rebuild stamps demo|live on staging)
+        trade_scope = next(
+            (t.ledger_scope for t in tlist if getattr(t, "ledger_scope", None)),
+            None,
+        )
+        scope_candidates: list[str] = []
+        for sc in (trade_scope, default_scope, "demo", "live", "paper"):
+            if sc and sc not in scope_candidates:
+                scope_candidates.append(sc)
         pnls = [float(t.pnl_usdt) for t in sells]
         wr = sum(1 for p in pnls if p > 0) / len(pnls)
         total = sum(pnls)
-        # negative events near losses
-        loss_trades = [t for t in sells if float(t.pnl_usdt or 0) < 0]
         neg_events = [e for e in events if e.impact_score < -0.3]
         text = ""
         conf = 0.45
@@ -74,12 +83,17 @@ def reflect(
         if store.upsert_lesson(lesson):
             lessons += 1
 
-        # reinforce profile rationale if exists
-        prof = store.get_profile(symbol, tenant_id=tenant_id)
+        # reinforce profile: try trade scope first, then active env, then common scopes
+        prof = None
+        for sc in scope_candidates:
+            prof = store.get_profile(symbol, ledger_scope=sc, tenant_id=tenant_id)
+            if prof:
+                break
         if prof and "weak_history" in tags:
             prof.rationale = text[:200]
             if prof.size_bias > 0.7:
                 prof.size_bias = 0.7
+            # keep profile.ledger_scope so _id stays tenant|scope|symbol
             if store.upsert_profile(prof):
                 profile_updates += 1
 

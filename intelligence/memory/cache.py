@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from intelligence.memory.models import CoinProfile
-from intelligence.memory.store import MemoryStore, memory_enabled
+from intelligence.memory.store import MemoryStore, memory_enabled, resolve_memory_scope
 
 _LOCK = threading.Lock()
 _CACHE: dict[str, tuple[float, CoinProfile | None]] = {}
@@ -34,13 +34,7 @@ def get_coin_profile(
 ) -> CoinProfile | None:
     if not memory_enabled(config):
         return None
-    try:
-        if ledger_scope is None:
-            from data_manager import resolve_ledger_scope
-
-            ledger_scope = resolve_ledger_scope()
-    except Exception:
-        ledger_scope = ledger_scope or "live"
+    ledger_scope = resolve_memory_scope(ledger_scope)
 
     key = f"{tenant_id}|{ledger_scope}|{symbol}"
     now = time.time()

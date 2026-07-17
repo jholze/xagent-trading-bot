@@ -46,6 +46,22 @@ def memory_enabled(config: dict | None = None) -> bool:
     return True
 
 
+def resolve_memory_scope(explicit: str | None = None) -> str:
+    """Match CoinProfile keys to the active ledger (demo on Railway staging, live otherwise).
+
+    Rebuild writes profiles as `{tenant}|{resolve_ledger_scope()}|{symbol}`. Callers that
+    hardcode `live` miss demo profiles and skip size_bias updates.
+    """
+    if explicit:
+        return str(explicit)
+    try:
+        from data_manager import resolve_ledger_scope
+
+        return resolve_ledger_scope() or "live"
+    except Exception:
+        return "live"
+
+
 def _db():
     from storage.mongo_client import get_database
 
@@ -87,11 +103,12 @@ class MemoryStore:
         self,
         symbol: str,
         *,
-        ledger_scope: str = "live",
+        ledger_scope: str | None = None,
         tenant_id: str = "default",
     ) -> CoinProfile | None:
+        scope = resolve_memory_scope(ledger_scope)
         try:
-            _id = f"{tenant_id}|{ledger_scope}|{symbol}"
+            _id = f"{tenant_id}|{scope}|{symbol}"
             return CoinProfile.from_doc(self._col(COL_PROFILES).find_one({"_id": _id}))
         except Exception as e:
             log(f"memory get_profile failed: {e}", "DEBUG")
@@ -259,9 +276,10 @@ class InMemoryMemoryStore(MemoryStore):
     def upsert_profile(self, profile: CoinProfile) -> bool:
         return self._put(COL_PROFILES, profile.to_doc())
 
-    def get_profile(self, symbol, *, ledger_scope="live", tenant_id="default"):
+    def get_profile(self, symbol, *, ledger_scope=None, tenant_id="default"):
+        scope = resolve_memory_scope(ledger_scope)
         return CoinProfile.from_doc(
-            self._docs[COL_PROFILES].get(f"{tenant_id}|{ledger_scope}|{symbol}")
+            self._docs[COL_PROFILES].get(f"{tenant_id}|{scope}|{symbol}")
         )
 
     def list_profiles(self, *, tenant_id="default", limit=200):

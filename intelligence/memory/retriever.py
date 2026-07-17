@@ -6,7 +6,7 @@ from typing import Any
 
 from intelligence.memory.embeddings import cosine, embed_text
 from intelligence.memory.models import CoinProfile, Lesson, MarketEvent
-from intelligence.memory.store import MemoryStore
+from intelligence.memory.store import MemoryStore, resolve_memory_scope
 from intelligence.memory.vector_weaviate import WeaviateIndex, weaviate_enabled
 
 
@@ -58,14 +58,17 @@ def similar_coin_situations(
     *,
     k: int = 8,
     store: MemoryStore | None = None,
+    ledger_scope: str | None = None,
 ) -> list[CoinProfile]:
     """Find coins with similar risk/history situation (vector over profile summary)."""
     store = store or MemoryStore()
+    scope = resolve_memory_scope(ledger_scope)
     if isinstance(profile, str):
-        prof = store.get_profile(profile)
+        prof = store.get_profile(profile, ledger_scope=scope)
         if not prof:
             return []
         profile = prof
+    scope = resolve_memory_scope(profile.ledger_scope or scope)
     query = (
         f"{profile.symbol} size_bias={profile.size_bias} entry={profile.entry_bias} "
         f"win={profile.win_rate} pnl={profile.total_pnl_usdt} {profile.rationale}"
@@ -73,15 +76,13 @@ def similar_coin_situations(
     if weaviate_enabled():
         try:
             idx = WeaviateIndex()
-            rows = idx.search_similar_profiles(
-                query, k=k + 2, ledger_scope=profile.ledger_scope
-            )
+            rows = idx.search_similar_profiles(query, k=k + 2, ledger_scope=scope)
             out = []
             for row in rows:
                 sym = row.get("symbol")
                 if not sym or sym == profile.symbol:
                     continue
-                p = store.get_profile(sym, ledger_scope=profile.ledger_scope)
+                p = store.get_profile(sym, ledger_scope=scope)
                 if p:
                     out.append(p)
             if out:
@@ -93,6 +94,8 @@ def similar_coin_situations(
     scored = []
     for p in store.list_profiles(tenant_id=profile.tenant_id, limit=100):
         if p.symbol == profile.symbol:
+            continue
+        if p.ledger_scope and p.ledger_scope != scope:
             continue
         text = f"{p.symbol} size_bias={p.size_bias} entry={p.entry_bias} {p.rationale}"
         vec = p.embedding or embed_text(text)
@@ -123,11 +126,17 @@ def lessons_for(symbol: str, *, k: int = 5, store: MemoryStore | None = None) ->
     return store.list_lessons(symbol=symbol, limit=k)
 
 
-def compact_context(symbol: str, store: MemoryStore | None = None) -> str:
+def compact_context(
+    symbol: str,
+    store: MemoryStore | None = None,
+    *,
+    ledger_scope: str | None = None,
+) -> str:
     """One-line context for decision rationale."""
     store = store or MemoryStore()
+    scope = resolve_memory_scope(ledger_scope)
     parts = []
-    prof = store.get_profile(symbol)
+    prof = store.get_profile(symbol, ledger_scope=scope)
     if prof and prof.rationale:
         parts.append(f"mem:{prof.rationale[:80]}")
     les = lessons_for(symbol, k=1, store=store)

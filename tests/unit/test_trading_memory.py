@@ -23,7 +23,7 @@ from intelligence.memory.models import CoinProfile, MarketEvent, TradeMemory
 from intelligence.memory.rebuild import compute_profile_from_trades, orders_to_trade_memories
 from intelligence.memory.reflector import reflect
 from intelligence.memory.retriever import compact_context, similar_coin_situations, similar_events
-from intelligence.memory.store import InMemoryMemoryStore
+from intelligence.memory.store import InMemoryMemoryStore, resolve_memory_scope
 from intelligence.memory.vector_weaviate import WeaviateIndex, _uuid_from_str
 from webhooks.schemas import ExternalSignal
 
@@ -34,12 +34,20 @@ class TestMemoryModelsStore(unittest.TestCase):
         invalidate_cache()
 
     def test_profile_roundtrip(self):
-        p = CoinProfile(symbol="SOL/USDT", size_bias=0.7, rationale="test", sells_30d=5)
+        scope = resolve_memory_scope()
+        p = CoinProfile(
+            symbol="SOL/USDT",
+            size_bias=0.7,
+            rationale="test",
+            sells_30d=5,
+            ledger_scope=scope,
+        )
         self.assertTrue(self.store.upsert_profile(p))
         got = self.store.get_profile("SOL/USDT")
         self.assertIsNotNone(got)
         self.assertEqual(got.symbol, "SOL/USDT")
         self.assertAlmostEqual(got.size_bias, 0.7)
+        self.assertEqual(got.ledger_scope, scope)
 
     def test_event_dedupe_id(self):
         e = MarketEvent(
@@ -236,6 +244,7 @@ class TestEventIngest(unittest.TestCase):
 class TestReflectRetrieve(unittest.TestCase):
     def setUp(self):
         self.store = InMemoryMemoryStore()
+        self.scope = resolve_memory_scope()
         ts = "2026-07-10T12:00:00Z"
         for i, pnl in enumerate([-10, -8, -12, 2]):
             self.store.upsert_trade(
@@ -247,10 +256,16 @@ class TestReflectRetrieve(unittest.TestCase):
                     pnl_usdt=pnl,
                     outcome="loss" if pnl < 0 else "win",
                     tenant_id="default",
+                    ledger_scope=self.scope,
                 )
             )
         self.store.upsert_profile(
-            CoinProfile(symbol="PEPE/USDT", size_bias=1.0, rationale="init")
+            CoinProfile(
+                symbol="PEPE/USDT",
+                size_bias=1.0,
+                rationale="init",
+                ledger_scope=self.scope,
+            )
         )
 
     def test_reflect_creates_lesson(self):
@@ -258,8 +273,99 @@ class TestReflectRetrieve(unittest.TestCase):
         self.assertGreaterEqual(out["lessons"], 1)
         les = self.store.list_lessons(symbol="PEPE/USDT")
         self.assertTrue(les)
-        prof = self.store.get_profile("PEPE/USDT")
+        prof = self.store.get_profile("PEPE/USDT", ledger_scope=self.scope)
+        self.assertIsNotNone(prof)
         self.assertLessEqual(prof.size_bias, 0.7)
+        self.assertGreaterEqual(out["profile_updates"], 1)
+
+    def test_reflect_updates_demo_scope_profiles(self):
+        """Skeptic repro: rebuild stamps demo profiles; reflect must not default to live-only."""
+        store = InMemoryMemoryStore()
+        ts = "2026-07-10T12:00:00Z"
+        for i, pnl in enumerate([-10.0, -8.0, -12.0]):
+            store.upsert_trade(
+                TradeMemory(
+                    trade_id=f"demo_t{i}",
+                    symbol="WEAK/USDT",
+                    entry_time=ts,
+                    direction="sell",
+                    pnl_usdt=pnl,
+                    outcome="loss",
+                    tenant_id="default",
+                    ledger_scope="demo",
+                )
+            )
+        store.upsert_profile(
+            CoinProfile(
+                symbol="WEAK/USDT",
+                size_bias=1.0,
+                rationale="init",
+                ledger_scope="demo",
+                tenant_id="default",
+            )
+        )
+        # Ensure live key is empty (the bug path looked only here)
+        self.assertIsNone(store.get_profile("WEAK/USDT", ledger_scope="live"))
+        with patch(
+            "intelligence.memory.store.resolve_memory_scope",
+            side_effect=lambda explicit=None: explicit or "demo",
+        ):
+            out = reflect(store, min_samples=3, ledger_scope="demo")
+        self.assertGreaterEqual(out["lessons"], 1)
+        self.assertGreaterEqual(
+            out["profile_updates"],
+            1,
+            "reflect must update demo profiles (not miss them via live default)",
+        )
+        prof = store.get_profile("WEAK/USDT", ledger_scope="demo")
+        self.assertIsNotNone(prof)
+        self.assertLessEqual(prof.size_bias, 0.7)
+        self.assertIn("weak", (prof.rationale or "").lower())
+
+    def test_compact_context_uses_active_scope(self):
+        store = InMemoryMemoryStore()
+        store.upsert_profile(
+            CoinProfile(
+                symbol="CTX/USDT",
+                rationale="demo memory rationale for CTX",
+                ledger_scope="demo",
+            )
+        )
+        with patch(
+            "intelligence.memory.store.resolve_memory_scope",
+            side_effect=lambda explicit=None: explicit or "demo",
+        ):
+            ctx = compact_context("CTX/USDT", store=store, ledger_scope="demo")
+        self.assertIn("mem:", ctx)
+        self.assertIn("demo memory", ctx)
+
+    def test_similar_coin_situations_str_uses_scope(self):
+        store = InMemoryMemoryStore()
+        a = CoinProfile(
+            symbol="A/USDT",
+            size_bias=0.6,
+            entry_bias="soft_block",
+            rationale="weak history losses",
+            ledger_scope="demo",
+            embedding=embed_text("A soft_block weak history losses"),
+        )
+        b = CoinProfile(
+            symbol="B/USDT",
+            size_bias=0.55,
+            entry_bias="soft_block",
+            rationale="weak history losses churn",
+            ledger_scope="demo",
+            embedding=embed_text("B soft_block weak history losses churn"),
+        )
+        store.upsert_profile(a)
+        store.upsert_profile(b)
+        with patch(
+            "intelligence.memory.store.resolve_memory_scope",
+            side_effect=lambda explicit=None: explicit or "demo",
+        ):
+            sims = similar_coin_situations("A/USDT", store=store, ledger_scope="demo", k=3)
+        self.assertTrue(sims)
+        self.assertEqual(sims[0].symbol, "B/USDT")
 
     def test_similar_events_local(self):
         self.store.upsert_event(
@@ -278,18 +384,21 @@ class TestReflectRetrieve(unittest.TestCase):
         self.assertEqual(hits[0].event_id, "e1")
 
     def test_similar_coin_situations_local(self):
+        scope = self.scope
         weak = CoinProfile(
-            symbol="WEAK/USDT",
+            symbol="WEAK2/USDT",
             size_bias=0.6,
             entry_bias="soft_block",
             rationale="weak history losses",
-            embedding=embed_text("WEAK soft_block weak history losses"),
+            ledger_scope=scope,
+            embedding=embed_text("WEAK2 soft_block weak history losses"),
         )
         peer = CoinProfile(
             symbol="PEER/USDT",
             size_bias=0.55,
             entry_bias="soft_block",
             rationale="weak history losses churn",
+            ledger_scope=scope,
             embedding=embed_text("PEER soft_block weak history losses churn"),
         )
         strong = CoinProfile(
@@ -297,11 +406,12 @@ class TestReflectRetrieve(unittest.TestCase):
             size_bias=1.1,
             entry_bias="prefer",
             rationale="strong win rate momentum",
+            ledger_scope=scope,
             embedding=embed_text("STRONG prefer strong win rate momentum"),
         )
         for p in (weak, peer, strong):
             self.store.upsert_profile(p)
-        sims = similar_coin_situations(weak, store=self.store, k=3)
+        sims = similar_coin_situations(weak, store=self.store, k=3, ledger_scope=scope)
         self.assertTrue(sims)
         self.assertEqual(sims[0].symbol, "PEER/USDT")
 
