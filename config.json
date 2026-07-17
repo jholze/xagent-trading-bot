@@ -57,7 +57,7 @@
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
-  "max_open_positions": 40,
+  "max_open_positions": 24,
   "trade_cooldown_hours": 1.0,
   "debug": false,
   "use_mock_x_data": false,
@@ -300,7 +300,9 @@
     }
   },
   "risk": {
-    "dca_reserve_pct": 18,
+    "cash_floor_pct": 18,
+    "cash_floor_basis": "initial",
+    "dca_reserve_pct": 0,
     "max_daily_buys": 50,
     "max_daily_dca_buys": 100,
     "max_daily_dca_usdt": 20000,

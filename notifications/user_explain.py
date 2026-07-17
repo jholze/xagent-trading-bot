@@ -37,6 +37,8 @@ _RISK_MESSAGES = {
     "trust score": "X-Account-Vertrauenswert zu niedrig für Live-Handel.",
     "invalid price": "Kein gültiger Preis — Trade abgebrochen.",
     "min trade": "Betrag unter dem Mindest-Trade — zu klein für die Börse.",
+    "cash floor": "Cash-Floor erreicht — Mindest-Bargeld bleibt frei (keine Auto-Käufe).",
+    "size_too_small": "Betrag nach Limits unter dem Mindest-Trade.",
 }
 
 _PARAM_LABELS = {
@@ -140,6 +142,10 @@ def explain_risk(message: str, code: str = "") -> str:
         return _RISK_MESSAGES["trade cooldown"]
     if code == "max_open_positions":
         return _RISK_MESSAGES["max open positions"]
+    if code == "cash_floor":
+        return _RISK_MESSAGES["cash floor"]
+    if code == "size_too_small":
+        return _RISK_MESSAGES.get("size_too_small") or _RISK_MESSAGES["min trade"]
     if code == "mode_blocked":
         if "off" in lower:
             return _RISK_MESSAGES["trading disabled"]

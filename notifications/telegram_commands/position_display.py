@@ -533,9 +533,28 @@ def format_portfolio_summary(
     if trade_realized or position_count > 0:
         trade_detail = f"{trade_icon} Verkäufe (realisiert) <b>${trade_realized:+.0f}</b>\n"
 
+    floor_line = ""
+    try:
+        from risk.risk_manager import RiskManager
+
+        st = RiskManager().status_summary()
+        floor_abs = float(st.get("cash_floor_abs") or 0)
+        spendable = float(st.get("spendable_usdt") or 0)
+        max_open = int(st.get("max_open_positions") or 0)
+        open_n = int(st.get("open_positions") or position_count or 0)
+        if floor_abs > 0:
+            floor_line = (
+                f"🧱 Cash-Floor <b>${floor_abs:,.0f}</b> · "
+                f"frei für Käufe <b>${spendable:,.0f}</b>\n"
+                f"📦 Slots <b>{open_n}/{max_open}</b>\n"
+            )
+    except Exception:
+        pass
+
     body = (
         f"<b>📊 Portfolio</b>{mode_line}\n\n"
         f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
+        f"{floor_line}"
         f"{coins_line}"
         f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
         f"{wert_icon} Wertzuwachs <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "

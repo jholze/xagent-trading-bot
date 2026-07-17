@@ -112,6 +112,10 @@ class RiskManager:
             )
 
         is_dca = self._is_dca_buy(source, order)
+        floor_block = self._cash_floor_blocked(is_dca=is_dca)
+        if floor_block:
+            return floor_block
+
         buy_limit = self._daily_buy_limit_blocked(is_dca)
         if buy_limit:
             return buy_limit
@@ -207,9 +211,26 @@ class RiskManager:
         if sized > balance:
             sized = balance
             factors["balance_capped"] = True
+            factors["spendable_usdt"] = round(balance, 2)
 
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
         if sized < min_trade:
+            floor_abs = self._cash_floor_abs()
+            cash = self._available_usdt(equity)
+            # Prefer clear cash_floor messaging when reserve/floor is the constraint
+            if floor_abs > 0 and cash - floor_abs < min_trade:
+                return RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Cash floor: free ${max(0.0, cash - floor_abs):.2f} "
+                        f"(floor ${floor_abs:.0f}, cash ${cash:.2f})"
+                    ),
+                    code="cash_floor",
+                    size_multiplier=factors.get("total_multiplier", 1.0),
+                    drawdown_pct=factors.get("drawdown_pct", 0.0),
+                    atr_factor=factors.get("atr_factor", 1.0),
+                    trust_factor=factors.get("trust_factor", 1.0),
+                )
             return RiskDecision(
                 approved=False,
                 message=f"Adjusted size ${sized:.2f} below minimum (${min_trade:.0f})",
@@ -254,6 +275,8 @@ class RiskManager:
         drawdown_pct = self._equity_drawdown_pct()
         throttle_at = float(self.config.risk_config.get("drawdown_throttle_pct", 10.0))
         cash = self._available_usdt()
+        floor_abs = self._cash_floor_abs()
+        spendable = self._spendable_usdt(equity, is_dca=False)
         return {
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
@@ -274,6 +297,9 @@ class RiskManager:
             "drawdown_pct": round(drawdown_pct, 2),
             "drawdown_throttle_active": drawdown_pct >= throttle_at,
             "virtual_balance": cash,
+            "cash_floor_abs": round(floor_abs, 2),
+            "cash_floor_pct": float(self.config.risk_config.get("cash_floor_pct", 0) or 0),
+            "spendable_usdt": round(spendable, 2),
             "ledger_source": self._ledger_source_label(),
         }
 
@@ -436,18 +462,51 @@ class RiskManager:
             return fetch_usdt_balance(self.config)
         return float(load_trade_history().get("virtual_balance", fallback))
 
+    def _cash_floor_abs(self) -> float:
+        """Absolute min free cash (staging P1). Basis: initial capital by default."""
+        risk = self.config.risk_config
+        pct = float(risk.get("cash_floor_pct", 0) or 0)
+        if pct <= 0:
+            return 0.0
+        basis = str(risk.get("cash_floor_basis", "initial") or "initial").lower()
+        if basis == "nav":
+            ref = self._portfolio_equity()
+        else:
+            ref = self._initial_capital()
+        return max(0.0, float(ref) * (pct / 100.0))
+
+    def _cash_floor_blocked(self, *, is_dca: bool = False) -> "RiskDecision | None":
+        """Block buys when cash cannot cover floor + min trade."""
+        floor_abs = self._cash_floor_abs()
+        if floor_abs <= 0:
+            return None
+        # DCA also respects floor (plan: cash is production capital)
+        cash = self._available_usdt()
+        min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+        free = cash - floor_abs
+        if free >= min_trade:
+            return None
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"Cash floor: free ${max(0.0, free):.2f} "
+                f"(floor ${floor_abs:.0f}, cash ${cash:.2f})"
+            ),
+            code="cash_floor",
+        )
+
     def _spendable_usdt(self, equity: float, *, is_dca: bool) -> float:
         balance = self._available_usdt(equity)
-        if is_dca:
-            return balance
-        reserve_pct = float(self.config.risk_config.get("dca_reserve_pct", 0) or 0)
-        if reserve_pct <= 0:
-            return balance
-        # Reserve a slice of cash for DCA — not equity. When most capital is in
-        # open positions, equity-based reserve can exceed cash and block all
-        # auto/grid/entry_sensor buys with size $0.
-        reserve_floor = balance * (reserve_pct / 100.0)
-        return max(0.0, balance - reserve_floor)
+        floor_abs = self._cash_floor_abs()
+        # Absolute floor first (initial capital %)
+        if floor_abs > 0:
+            balance = max(0.0, balance - floor_abs)
+        # Optional extra % reserve of *remaining* cash (legacy dca_reserve_pct)
+        if not is_dca:
+            reserve_pct = float(self.config.risk_config.get("dca_reserve_pct", 0) or 0)
+            if reserve_pct > 0:
+                balance = max(0.0, balance * (1.0 - reserve_pct / 100.0))
+        return balance
 
     def _dry_run_reference_prices(self, reference_price: float = 0, symbol: str = None) -> dict:
         ref_prices = {}

@@ -20,6 +20,7 @@ def _railway_like_config() -> BotConfig:
     raw["max_open_positions"] = 40
     risk = raw.setdefault("risk", {})
     risk["dca_reserve_pct"] = 18
+    risk["cash_floor_pct"] = 0  # isolate legacy reserve tests
     risk["min_trade_usdt"] = 100.0
     return BotConfig(raw)
 
@@ -52,15 +53,25 @@ class TestDcaReserveSpendable:
         assert spendable == pytest.approx(expected, rel=1e-4)
         assert spendable > 15_000
 
-    def test_dca_bypasses_reserve(self):
+    def test_dca_bypasses_percent_reserve_not_cash_floor(self):
+        """DCA ignores dca_reserve_pct but still respects absolute cash_floor."""
         cfg = _railway_like_config()
+        cfg.raw["risk"]["cash_floor_pct"] = 18
+        cfg.raw["initial_capital_usdt"] = 100_000
         rm = RiskManager(cfg)
-        cash = 18_419.30
+        cash = 20_000.0
 
-        with patch.object(rm, "_available_usdt", return_value=cash):
+        with patch.object(rm, "_available_usdt", return_value=cash), patch.object(
+            rm, "_initial_capital", return_value=100_000.0
+        ):
+            # floor $18k → free $2k; DCA does not apply extra 18% on remaining
             spendable = rm._spendable_usdt(100_000.0, is_dca=True)
+            non_dca = rm._spendable_usdt(100_000.0, is_dca=False)
 
-        assert spendable == pytest.approx(cash)
+        assert spendable == pytest.approx(2_000.0)
+        # non-DCA also only floor when dca_reserve is 18% of remaining after floor
+        # free after floor 2000, then *0.82 if reserve on remaining
+        assert non_dca == pytest.approx(2_000.0 * 0.82)
 
     def test_auto_buy_approved_with_deployed_portfolio(self):
         """Reproduces Railway test: high equity, moderate cash, many positions."""
