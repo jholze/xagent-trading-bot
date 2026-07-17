@@ -119,25 +119,48 @@ def reflect(
         ):
             lessons += 1
 
-    # Pass 2: rebuild already stamps soft_block/size_bias on the active scope (demo on
-    # staging). Reinforce those profiles even when the sell-count loop above missed them
-    # (e.g. sparse TradeMemory rows) — always use profile.ledger_scope, never live-only.
-    for prof in store.list_profiles(tenant_id=tenant_id, limit=200):
-        if prof.entry_bias != "soft_block" and "weak" not in (prof.rationale or "").lower():
+    # Pass 2: rebuild stamps soft_block/size_bias on the active scope (demo on staging).
+    # Always use each profile's own ledger_scope (never hardcode live).
+    profiles = store.list_profiles(tenant_id=tenant_id, limit=200)
+    if not profiles:
+        # tenant filter miss (legacy docs): try unscoped listing via known trade symbols
+        for sym in list(by_sym.keys())[:50]:
+            for sc in (default_scope, "demo", "live", "paper"):
+                p = store.get_profile(sym, ledger_scope=sc, tenant_id=tenant_id)
+                if p:
+                    profiles.append(p)
+                    break
+    for prof in profiles:
+        weak = (
+            prof.entry_bias == "soft_block"
+            or "weak" in (prof.rationale or "").lower()
+            or float(prof.size_bias or 1.0) < 0.95
+        )
+        if not weak:
             continue
-        if (prof.sells_30d or 0) < min_samples and len(by_sym.get(prof.symbol, [])) < min_samples:
+        enough = (prof.sells_30d or 0) >= 1 or len(by_sym.get(prof.symbol, [])) >= 1
+        if not enough:
             continue
         changed = False
         if prof.size_bias > 0.7:
             prof.size_bias = 0.7
             changed = True
-        stamp = f"reflect soft_block n={prof.sells_30d or 0}"
+        stamp = f"reflect scope={prof.ledger_scope} n={prof.sells_30d or 0}"
         if stamp not in (prof.rationale or ""):
-            base = (prof.rationale or "weak history").strip()
+            base = (prof.rationale or "history").strip()
             prof.rationale = f"{base} | {stamp}"[:200]
             changed = True
         if changed and store.upsert_profile(prof):
             profile_updates += 1
 
-    log(f"memory reflect: lessons={lessons} profile_updates={profile_updates}", "INFO")
-    return {"lessons": lessons, "profile_updates": profile_updates}
+    log(
+        f"memory reflect: lessons={lessons} profile_updates={profile_updates} "
+        f"profiles_seen={len(profiles)} scope={default_scope}",
+        "INFO",
+    )
+    return {
+        "lessons": lessons,
+        "profile_updates": profile_updates,
+        "profiles_seen": len(profiles),
+        "scope": default_scope,
+    }
