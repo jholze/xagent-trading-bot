@@ -1,4 +1,7 @@
-"""Pure market-state machine from BTC/ETH features + hysteresis."""
+"""Pure market-state machine from BTC/ETH features + hysteresis.
+
+A1: multi-TF returns, EMA structure, 1h cascade → CRASH (same hysteresis as other states).
+"""
 
 from __future__ import annotations
 
@@ -24,24 +27,58 @@ def raw_state_from_features(
     risk_off_24h: float = -3.0,
     crash_24h: float = -6.0,
     risk_on_24h: float = 1.0,
+    cascade_1h: float = -2.5,
+    risk_on_1h_floor: float = -1.0,
 ) -> tuple[str, float, str]:
     """Map features → provisional state (no hysteresis)."""
     btc = float(features.get("btc_ret_24h_pct") or 0.0)
     eth = float(features.get("eth_ret_24h_pct") or 0.0)
     blend = 0.7 * btc + 0.3 * eth
     trend = float(features.get("btc_trend_4h") or 0.0)
+    btc_1h = features.get("btc_ret_1h_pct")
+    has_1h = btc_1h is not None
+    btc_1h_f = float(btc_1h) if has_1h else 0.0
+    btc_4h = features.get("btc_ret_4h_pct")
+    btc_7d = features.get("btc_ret_7d_pct")
+
+    parts = [f"btc_24h={btc:+.2f}%", f"eth_24h={eth:+.2f}%"]
+    if has_1h:
+        parts.append(f"btc_1h={btc_1h_f:+.2f}%")
+    if btc_4h is not None:
+        parts.append(f"btc_4h={float(btc_4h):+.2f}%")
+    if btc_7d is not None:
+        parts.append(f"btc_7d={float(btc_7d):+.2f}%")
+    parts.append(f"trend_4h={trend:+.0f}")
+    base = " ".join(parts)
+
+    # A1 cascade: sharp 1h dump → CRASH without waiting for −6% 24h
+    if has_1h and btc_1h_f <= cascade_1h:
+        conf = min(0.95, 0.65 + abs(btc_1h_f) / 15.0)
+        return "CRASH", conf, f"{base} cascade_1h"
 
     if blend <= crash_24h or btc <= crash_24h:
         conf = min(0.95, 0.6 + abs(blend) / 20.0)
-        return "CRASH", conf, f"btc_24h={btc:+.2f}% eth_24h={eth:+.2f}% crash"
+        return "CRASH", conf, f"{base} crash_24h"
+
     if blend <= risk_off_24h or btc <= risk_off_24h:
         conf = min(0.9, 0.55 + abs(blend) / 15.0)
-        return "RISK_OFF", conf, f"btc_24h={btc:+.2f}% eth_24h={eth:+.2f}% risk_off"
-    if blend >= risk_on_24h and trend >= 0:
+        return "RISK_OFF", conf, f"{base} risk_off"
+
+    # Soft: 4h dump + weak trend → RISK_OFF even if 24h mild
+    if btc_4h is not None and float(btc_4h) <= -2.0 and trend < 0:
+        conf = 0.62
+        return "RISK_OFF", conf, f"{base} structure_4h_down"
+
+    # RISK_ON: 24h green + trend up + 1h not strongly negative
+    if blend >= risk_on_24h and trend > 0:
+        if has_1h and btc_1h_f <= risk_on_1h_floor:
+            conf = 0.55
+            return "NEUTRAL", conf, f"{base} risk_on_blocked_1h"
         conf = min(0.88, 0.5 + blend / 15.0)
-        return "RISK_ON", conf, f"btc_24h={btc:+.2f}% trend_up risk_on"
+        return "RISK_ON", conf, f"{base} risk_on"
+
     conf = 0.55
-    return "NEUTRAL", conf, f"btc_24h={btc:+.2f}% eth_24h={eth:+.2f}% neutral"
+    return "NEUTRAL", conf, f"{base} neutral"
 
 
 def policy_for_state(state: str, *, risk_off_size: float = 0.35, neutral_size: float = 0.85) -> dict:
@@ -118,6 +155,8 @@ def decide(
     risk_off_24h: float = -3.0,
     crash_24h: float = -6.0,
     risk_on_24h: float = 1.0,
+    cascade_1h: float = -2.5,
+    risk_on_1h_floor: float = -1.0,
     risk_off_size: float = 0.35,
     neutral_size: float = 0.85,
 ) -> OracleDecision:
@@ -126,6 +165,8 @@ def decide(
         risk_off_24h=risk_off_24h,
         crash_24h=crash_24h,
         risk_on_24h=risk_on_24h,
+        cascade_1h=cascade_1h,
+        risk_on_1h_floor=risk_on_1h_floor,
     )
     state, bars = hyst.update(raw)
     pol = policy_for_state(state, risk_off_size=risk_off_size, neutral_size=neutral_size)
@@ -153,9 +194,6 @@ def should_push(
 ) -> bool:
     if heartbeat_due or not prev:
         return True
-    if prev.get("state") != new.get("state") and prev.get("regime") != new.get("regime"):
-        # support both keys
-        pass
     prev_state = prev.get("state") or prev.get("regime")
     new_state = new.get("state") or new.get("regime")
     if prev_state != new_state:

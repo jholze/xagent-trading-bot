@@ -28,6 +28,53 @@ class TestOracleRegime(unittest.TestCase):
         st, _, _ = raw_state_from_features({"btc_ret_24h_pct": -7.0, "eth_ret_24h_pct": -5.0})
         self.assertEqual(st, "CRASH")
 
+    def test_cascade_1h_crash_even_if_24h_mild(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": -2.0,
+                "eth_ret_24h_pct": -1.0,
+                "btc_ret_1h_pct": -3.0,
+                "btc_trend_4h": -1.0,
+            }
+        )
+        self.assertEqual(st, "CRASH")
+        self.assertIn("cascade_1h", why)
+
+    def test_risk_on_blocked_when_1h_weak(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 2.0,
+                "eth_ret_24h_pct": 1.5,
+                "btc_ret_1h_pct": -1.5,
+                "btc_trend_4h": 1.0,
+            }
+        )
+        self.assertEqual(st, "NEUTRAL")
+        self.assertIn("risk_on_blocked_1h", why)
+
+    def test_risk_on_requires_trend_up(self):
+        st, _, _ = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 2.0,
+                "eth_ret_24h_pct": 1.5,
+                "btc_ret_1h_pct": 0.2,
+                "btc_trend_4h": 1.0,
+            }
+        )
+        self.assertEqual(st, "RISK_ON")
+
+    def test_structure_4h_risk_off(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": -1.0,
+                "eth_ret_24h_pct": -0.5,
+                "btc_ret_4h_pct": -2.5,
+                "btc_trend_4h": -1.0,
+            }
+        )
+        self.assertEqual(st, "RISK_OFF")
+        self.assertIn("structure_4h", why)
+
     def test_hysteresis_holds_until_min_bars(self):
         h = StateHysteresis(min_bars_to_flip=2)
         d1 = decide({"btc_ret_24h_pct": -4.0, "eth_ret_24h_pct": -3.0}, h)
@@ -36,6 +83,20 @@ class TestOracleRegime(unittest.TestCase):
         self.assertEqual(d2.state, "RISK_OFF")
         self.assertEqual(d2.sensor_policy, "shadow")
         self.assertAlmostEqual(d2.size_mult, 0.35)
+
+    def test_cascade_hysteresis_two_bars(self):
+        h = StateHysteresis(min_bars_to_flip=2)
+        feat = {
+            "btc_ret_24h_pct": -1.0,
+            "eth_ret_24h_pct": -0.5,
+            "btc_ret_1h_pct": -3.0,
+            "btc_trend_4h": -1.0,
+        }
+        d1 = decide(feat, h)
+        self.assertNotEqual(d1.state, "CRASH")  # still flipping
+        d2 = decide(feat, h)
+        self.assertEqual(d2.state, "CRASH")
+        self.assertEqual(d2.size_mult, 0.0)
 
 
 class TestOraclePolicy(unittest.TestCase):

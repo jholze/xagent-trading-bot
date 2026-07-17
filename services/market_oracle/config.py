@@ -44,6 +44,9 @@ def load_config() -> dict:
         "btc_risk_off_24h_pct": _float("BTC_RISK_OFF_24H_PCT", -3.0),
         "btc_crash_24h_pct": _float("BTC_CRASH_24H_PCT", -6.0),
         "btc_risk_on_24h_pct": _float("BTC_RISK_ON_24H_PCT", 1.0),
+        # A1: 1h cascade CRASH threshold; RISK_ON blocked if 1h at/below floor
+        "btc_cascade_1h_pct": _float("BTC_CASCADE_1H_PCT", -2.5),
+        "btc_risk_on_1h_floor_pct": _float("BTC_RISK_ON_1H_FLOOR_PCT", -1.0),
         "risk_off_size_mult": _float("RISK_OFF_SIZE_MULT", 0.35),
         "neutral_size_mult": _float("NEUTRAL_SIZE_MULT", 0.85),
         "min_bars_to_flip": max(1, _int("MIN_BARS_TO_FLIP", 2)),

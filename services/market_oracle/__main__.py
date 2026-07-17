@@ -78,6 +78,8 @@ def run_once(cfg: dict, client: MarketDataClient, hyst: StateHysteresis) -> dict
         risk_off_24h=cfg["btc_risk_off_24h_pct"],
         crash_24h=cfg["btc_crash_24h_pct"],
         risk_on_24h=cfg["btc_risk_on_24h_pct"],
+        cascade_1h=cfg["btc_cascade_1h_pct"],
+        risk_on_1h_floor=cfg["btc_risk_on_1h_floor_pct"],
         risk_off_size=cfg["risk_off_size_mult"],
         neutral_size=cfg["neutral_size_mult"],
     )
