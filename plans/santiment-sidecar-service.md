@@ -5,6 +5,8 @@
 > **Bot:** `xagent-test` (unverändert im Hot-Path; liest nur Snapshots/Events)  
 > **Related:** [`arena-market-oracle-service.md`](arena-market-oracle-service.md) · **Epic [#13](https://github.com/jholze/xagent-trading-bot/issues/13)** (expansion) · Epic [#6](https://github.com/jholze/xagent-trading-bot/issues/6) (signals CMC/LC) · LC bleibt Social-Bein im Bot  
 > **Erstellt:** 2026-07-17  
+> **API access (2026-07-17):** Sanbase **PRO** — realtime: DAA, `price_volatility_1d`, `dev_activity`. Restricted (~30d lag): social, funding, OI, exchange flows. Sidecar uses lag only as `research_*` / not for policy. Upgrade SanAPI realtime tier for live social/funding/OI/flows (P4/P5).  
+
 
 ---
 
