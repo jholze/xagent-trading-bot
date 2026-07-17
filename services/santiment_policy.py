@@ -1,4 +1,7 @@
-"""Read Santiment sidecar snapshot and expose bot risk/sensor policy."""
+"""Read Santiment sidecar snapshot and expose bot risk/sensor policy.
+
+Mode/grid fusion lives in ``market_policy_fusion`` (avoids DEFENSIVE churn).
+"""
 
 from __future__ import annotations
 
@@ -26,6 +29,9 @@ def santiment_risk_config(config_raw: dict | None = None) -> dict:
         "apply_size_mult": bool(arch.get("santiment_apply_size_mult", True)),
         "apply_sensor_policy": bool(arch.get("santiment_apply_sensor_policy", True)),
         "block_buys_on_crash": bool(arch.get("santiment_block_buys_on_crash", True)),
+        "apply_mode_bias": bool(arch.get("santiment_apply_mode_bias", True)),
+        "apply_grid_spacing": bool(arch.get("santiment_apply_grid_spacing", True)),
+        "inject_regime_sentiment": bool(arch.get("santiment_inject_regime_sentiment", True)),
     }
 
 
@@ -95,5 +101,8 @@ def get_santiment_policy(config_raw: dict | None = None) -> dict[str, Any]:
         "as_of": snap.get("as_of"),
         "apply_size_mult": cfg["apply_size_mult"],
         "apply_sensor_policy": cfg["apply_sensor_policy"],
+        "apply_mode_bias": cfg["apply_mode_bias"],
+        "apply_grid_spacing": cfg["apply_grid_spacing"],
+        "inject_regime_sentiment": cfg["inject_regime_sentiment"],
         "block_buys": block_buys,
     }

@@ -309,8 +309,26 @@ class DecisionEngine:
                 s = coin_signals[0]
                 if hasattr(s, "sentiment"):
                     ctx[f"{key}_sentiment"] = getattr(s, "sentiment", 50)
+                    # RegimeDetector expects lunarcrush_sentiment key
+                    if key == "lc":
+                        ctx["lunarcrush_sentiment"] = getattr(s, "sentiment", 50)
                 if hasattr(s, "confidence"):
                     ctx[f"{key}_confidence"] = getattr(s, "confidence", 50)
+                    if key == "x":
+                        ctx["x_confidence"] = getattr(s, "confidence", 50)
+                        # map conf to soft x_sentiment when no explicit field
+                        if "x_sentiment" not in ctx:
+                            ctx["x_sentiment"] = (float(getattr(s, "confidence", 50)) - 50) / 50.0
+        # P1/P3: global Santiment sidecar → soft sentiment for RegimeDetector
+        try:
+            from services.market_policy_fusion import get_global_market_bias, inject_global_sentiment
+            from services.santiment_policy import santiment_risk_config
+
+            if santiment_risk_config(self.config.raw).get("inject_regime_sentiment", True):
+                bias = get_global_market_bias(self.config.raw)
+                ctx = inject_global_sentiment(ctx, bias)
+        except Exception:
+            pass
         return ctx
 
     def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
@@ -1009,12 +1027,33 @@ class DecisionEngine:
                     or ""
                 )
                 cclass = classify_coin(coin.get("symbol", ""), market.strategy_params)
-                market.strategy_params["trading_mode"] = resolve_trading_mode(
+                mode = resolve_trading_mode(
                     allocation,
                     force_grid=force_g,
                     volatility_tier=vol_tier,
                     coin_class=cclass,
                 )
+                # P1: global Santiment mode bias (never forces DEFENSIVE inventory dump)
+                try:
+                    from services.market_policy_fusion import (
+                        apply_global_mode_bias,
+                        get_global_market_bias,
+                    )
+                    from services.santiment_policy import santiment_risk_config
+
+                    if santiment_risk_config(self.config.raw).get("apply_mode_bias", True):
+                        bias = get_global_market_bias(self.config.raw)
+                        mode = apply_global_mode_bias(mode, bias, force_grid=force_g)
+                        if bias.get("active"):
+                            market.strategy_params["santiment_regime"] = bias.get("regime")
+                            market.strategy_params["global_market_bias"] = {
+                                "regime": bias.get("regime"),
+                                "sentiment": bias.get("sentiment"),
+                                "grid_spacing_mult": bias.get("grid_spacing_mult"),
+                            }
+                except Exception:
+                    pass
+                market.strategy_params["trading_mode"] = mode
                 market.strategy_params["coin_class"] = cclass
             except Exception:
                 pass

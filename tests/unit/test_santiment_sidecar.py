@@ -10,10 +10,16 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from services.santiment_ingest import process_santiment_ingest, santiment_token_ok
+from services.market_policy_fusion import (
+    apply_global_mode_bias,
+    get_global_market_bias,
+    inject_global_sentiment,
+)
 from services.santiment_policy import get_santiment_policy
 from services.santiment_sidecar.regime import decide_regime, should_push
 from services.santiment_sidecar.snapshot import build_snapshot
 from services.santiment_store import get_latest_snapshot, reset_for_tests, snapshot_is_fresh, store_snapshot
+from strategies.trading_modes import MODE_DEFENSIVE, MODE_GRID, MODE_HYBRID, MODE_MOMENTUM
 
 
 class TestSantimentRegime(unittest.TestCase):
@@ -133,6 +139,60 @@ class TestSantimentPolicy(unittest.TestCase):
         )
         pol = get_santiment_policy({"architecture": {"santiment_risk_enabled": True}})
         self.assertTrue(pol["block_buys"])
+
+
+class TestMarketPolicyFusion(unittest.TestCase):
+    def setUp(self):
+        reset_for_tests()
+
+    def tearDown(self):
+        reset_for_tests()
+
+    def test_risk_off_soft_sentiment_not_defensive_threshold(self):
+        """RISK_OFF sentiment must stay > -0.55 to avoid allocator DEFENSIVE dump."""
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "RISK_OFF",
+                "size_mult": 0.35,
+                "sensor_policy": "shadow",
+                "ttl_sec": 1800,
+            }
+        )
+        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        self.assertTrue(bias["active"])
+        self.assertGreater(bias["sentiment"], -0.55)
+        self.assertEqual(bias["grid_spacing_mult"], 1.25)
+
+    def test_mode_bias_momentum_to_hybrid_not_defensive(self):
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "RISK_OFF",
+                "size_mult": 0.35,
+                "sensor_policy": "shadow",
+                "ttl_sec": 1800,
+            }
+        )
+        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        self.assertEqual(apply_global_mode_bias(MODE_MOMENTUM, bias), MODE_HYBRID)
+        self.assertEqual(apply_global_mode_bias(MODE_GRID, bias), MODE_GRID)
+        self.assertNotEqual(apply_global_mode_bias(MODE_MOMENTUM, bias), MODE_DEFENSIVE)
+
+    def test_inject_sentiment(self):
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "RISK_ON",
+                "size_mult": 1.0,
+                "sensor_policy": "active",
+                "ttl_sec": 1800,
+            }
+        )
+        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        ctx = inject_global_sentiment({}, bias)
+        self.assertIn("santiment_sentiment", ctx)
+        self.assertGreater(ctx["santiment_sentiment"], 0)
 
 
 class TestSantimentRoute(unittest.TestCase):

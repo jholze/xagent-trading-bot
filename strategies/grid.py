@@ -242,6 +242,27 @@ class GridStrategy(BaseStrategy):
             stable_mult=float(gcfg.get("stable_spacing_atr_mult", 0.55)),
             meme_mult=float(gcfg.get("meme_spacing_atr_mult", 1.25)),
         )
+        # Allocator spacing_mode (wide/aggressive) + Santiment global spacing (P2)
+        grid_extra = params.get("grid") if isinstance(params.get("grid"), dict) else {}
+        spacing_mode = str(
+            params.get("spacing_mode")
+            or grid_extra.get("spacing_mode")
+            or ""
+        ).lower()
+        if spacing_mode == "wide":
+            spacing_mult *= 1.25
+        elif spacing_mode == "aggressive":
+            spacing_mult *= 0.9
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+            from services.santiment_policy import santiment_risk_config
+
+            if santiment_risk_config().get("apply_grid_spacing", True):
+                bias = get_global_market_bias()
+                if bias.get("apply_grid_spacing") and bias.get("active"):
+                    spacing_mult *= float(bias.get("grid_spacing_mult") or 1.0)
+        except Exception:
+            pass
         re_center_mult = float(
             params.get("re_center_atr_mult", gcfg.get("re_center_atr_mult", 2.5))
         )
