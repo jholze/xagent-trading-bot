@@ -22,6 +22,7 @@ from intelligence.memory.export import export_jsonl
 from intelligence.memory.news_providers import poll_and_ingest_news
 from intelligence.memory.rebuild import rebuild_from_orders
 from intelligence.memory.reflector import reflect
+from intelligence.memory.social_ingest import reflect_social, sync_social_memory
 from intelligence.memory.store import MemoryStore, memory_enabled
 from intelligence.memory.vector_weaviate import WeaviateIndex, weaviate_enabled
 from logger import log
@@ -33,6 +34,7 @@ _STATE: dict = {
     "last_rebuild": {},
     "last_news": {},
     "last_reflect": {},
+    "last_social": {},
     "last_hermes": {},
     "live_evidence": {
         "mode": "dual",
@@ -110,6 +112,7 @@ class _Health(BaseHTTPRequestHandler):
             "last_rebuild": _STATE["last_rebuild"],
             "last_news": _STATE["last_news"],
             "last_reflect": _STATE["last_reflect"],
+            "last_social": _STATE.get("last_social") or {},
             "last_hermes": _STATE.get("last_hermes") or {},
             "live_evidence": le,
             "promotion_rate": le.get("promotion_rate", 0.0),
@@ -130,11 +133,17 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     out = {
         "rebuild": rebuild_from_orders(store),
         "events": sync_fusion_events(store),
+        "social": {},
         "news": {},
         "reflect": {},
         "weaviate_ready": False,
         "hermes": {},
     }
+    try:
+        out["social"] = sync_social_memory(store)
+    except Exception as e:
+        log(f"memory social cycle: {e}", "WARNING")
+        out["social"] = {"error": str(e)[:200]}
     try:
         out["news"] = poll_and_ingest_news(store)
     except Exception as e:
@@ -143,6 +152,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         out["reflect"] = reflect(store)
     except Exception as e:
         log(f"memory reflect cycle: {e}", "WARNING")
+    try:
+        social_ref = reflect_social(store)
+        if isinstance(out.get("reflect"), dict):
+            out["reflect"] = {**out["reflect"], **social_ref}
+        else:
+            out["reflect"] = social_ref
+    except Exception as e:
+        log(f"memory social reflect: {e}", "WARNING")
     if weaviate_enabled():
         try:
             idx = WeaviateIndex()
@@ -250,6 +267,7 @@ def main() -> None:
             _STATE["last_rebuild"] = result.get("rebuild") or {}
             _STATE["last_news"] = result.get("news") or {}
             _STATE["last_reflect"] = result.get("reflect") or {}
+            _STATE["last_social"] = result.get("social") or {}
             _STATE["last_hermes"] = result.get("hermes") or {}
             _STATE["weaviate_ready"] = bool(result.get("weaviate_ready"))
             _STATE["last_error"] = ""

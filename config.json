@@ -468,6 +468,30 @@
     },
     "x_bridge": {
       "enabled": false
+    },
+    "social": {
+      "cmc": {
+        "enabled": true,
+        "include_quotes_fallback": false,
+        "min_confidence": 60,
+        "trending": true,
+        "quote_extreme": false,
+        "quote_chg_pct_min": 12,
+        "max_events_per_cycle": 40,
+        "lookback_hours": 168
+      },
+      "lunarcrush": {
+        "enabled": true,
+        "min_galaxy_delta": 8,
+        "sentiment_extreme_low": 35,
+        "sentiment_extreme_high": 75,
+        "min_confidence": 55,
+        "max_events_per_cycle": 40,
+        "lookback_hours": 168
+      },
+      "feature_refresh": true,
+      "join_window_hours": 12,
+      "reflect_social": true
     }
   },
   "hermes": {

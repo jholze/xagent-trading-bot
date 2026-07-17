@@ -1563,12 +1563,20 @@ def log_cmc_post(signal, post_id: str = None):
         "votes_bullish": getattr(signal, "votes_bullish", 0),
         "votes_bearish": getattr(signal, "votes_bearish", 0),
         "source": "cmc",
+        "quotes_fallback": bool(getattr(signal, "quotes_fallback", False)),
     }
     pid = entry.get("post_id")
     if pid and any(p.get("post_id") == pid for p in data.get("posts", [])):
         return data
     data.setdefault("posts", []).append(entry)
     save_cmc_posts(data)
+    # Dual-write for Hermes social memory (memory_* only, fail-open)
+    try:
+        from intelligence.memory.social_ingest import append_social_feed
+
+        append_social_feed(entry)
+    except Exception:
+        pass
     return data
 
 
@@ -1624,6 +1632,12 @@ def log_lc_signal(signal, signal_id: str = None):
         return data
     data.setdefault("signals", []).append(entry)
     save_lc_signals(data)
+    try:
+        from intelligence.memory.social_ingest import append_social_feed
+
+        append_social_feed(entry)
+    except Exception:
+        pass
     return data
 
 

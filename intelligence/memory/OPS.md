@@ -34,10 +34,27 @@ python -c "from intelligence.memory.export import export_jsonl; print(export_jso
 
 Restore: re-insert JSONL lines into the matching `_collection` field. Profiles are recomputed by rebuild from filled orders (read-only).
 
+## CMC + LunarCrush social memory (Epic #42)
+
+| Source | How Hermes gets it |
+|--------|--------------------|
+| CMC | `load_cmc_posts()` + `memory_social_feed` dual-write from bot `log_cmc_post` |
+| LC | `load_lc_signals()` + `memory_social_feed` dual-write from bot `log_lc_signal` |
+| Trending | `load_cmc_trending_overlay()` (optional) |
+
+Config: `memory.social` in `config.json`. Kill-switches: `MEMORY_SOCIAL=0`, `MEMORY_SOCIAL_CMC=0`, `MEMORY_SOCIAL_LC=0`.
+
+Health: `last_social` → `cmc_events`, `lc_events`, `cmc_features`, `lc_features`, `joined_trades`.
+
+Quotes-fallback CMC noise is **excluded by default** (`include_quotes_fallback: false`).
+
+Social never sole BUY; never blocks sells; soft_block only from trade history.
+
 ## Fail-open
 
 - Weaviate down → Hermes still writes Mongo; bot uses profiles only.
 - Memory Mongo fail → size_bias defaults to 1.0; soft_block skipped.
+- CMC/LC empty on Hermes → last_social zeros, cycle continues.
 - News providers fail → cycle continues; counters show zeros.
 
 ## Health

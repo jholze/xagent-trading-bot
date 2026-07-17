@@ -104,6 +104,47 @@ def similar_coin_situations(
     return [p for _, p in scored[:k]]
 
 
+def social_events_for(
+    symbol: str,
+    *,
+    k: int = 8,
+    store: MemoryStore | None = None,
+) -> list[MarketEvent]:
+    """Recent CMC/LC social events for a symbol (local list + optional vector)."""
+    from intelligence.memory.social_ingest import (
+        EVT_CMC_QUOTE_EXTREME,
+        EVT_CMC_SOCIAL,
+        EVT_CMC_TRENDING,
+        EVT_LC_FADE,
+        EVT_LC_SENTIMENT,
+        EVT_LC_SPIKE,
+    )
+
+    types = {
+        EVT_CMC_SOCIAL,
+        EVT_CMC_TRENDING,
+        EVT_CMC_QUOTE_EXTREME,
+        EVT_LC_SPIKE,
+        EVT_LC_FADE,
+        EVT_LC_SENTIMENT,
+    }
+    hits = similar_events(
+        f"social {symbol}",
+        symbol=symbol,
+        k=max(k * 2, 16),
+        store=store,
+    )
+    out = [e for e in hits if e.event_type in types]
+    if out:
+        return out[:k]
+    store = store or MemoryStore()
+    return [
+        e
+        for e in store.list_events(symbol=symbol, limit=40)
+        if e.event_type in types
+    ][:k]
+
+
 def lessons_for(symbol: str, *, k: int = 5, store: MemoryStore | None = None) -> list[Lesson]:
     store = store or MemoryStore()
     if weaviate_enabled():

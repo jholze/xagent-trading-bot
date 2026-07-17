@@ -662,8 +662,13 @@ class RiskManager:
             if prof:
                 coin_entry = prof.entry_bias or "neutral"
                 coin_rationale = (prof.rationale or "")[:120]
+                feats = prof.features or {}
+                social_summary = str((feats.get("social_summary") or ""))[:80]
+            else:
+                social_summary = ""
         except Exception:
             coin_bias = 1.0
+            social_summary = ""
 
         total = trust_factor * conf_factor * atr_factor * dd_mult * global_mult * coin_bias
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
@@ -686,6 +691,7 @@ class RiskManager:
             "coin_size_bias": round(coin_bias, 3),
             "coin_entry_bias": coin_entry,
             "coin_memory": coin_rationale,
+            "coin_social": social_summary,
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors
