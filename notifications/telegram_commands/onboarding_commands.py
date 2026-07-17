@@ -27,6 +27,7 @@ from notifications.telegram_commands.command_context import (
     set_context,
 )
 from storage.tenant_registry import create_tenant
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message, set_webhook_for_bot, send_message_with_bot_token
 
 
@@ -258,7 +259,7 @@ def handle(text: str) -> bool:
         return False
 
     if not _is_operator():
-        send_telegram_message("❌ Nur der Operator kann neue User onboarden.")
+        send_telegram_message(t("onboard_operator_only"))
         return True
 
     parts = text.split()
@@ -319,7 +320,7 @@ def _continue_onboarding(text: str) -> bool:
         if tid.lower() == "auto":
             tid = _generate_tenant_id()
         if not _is_valid_tenant_id(tid):
-            send_telegram_message("❌ Ungültige tenant_id (a-z, 0-9, _, 2–31 Zeichen).")
+            send_telegram_message(t("tenant_invalid"))
             return True
         data["tenant_id"] = _normalize_tenant_id(tid)
         set_context(current_chat_id(), "onboarding", step="owner_chat_id", data=data)
@@ -493,5 +494,5 @@ def _perform_onboard(
 
     except Exception as e:
         log(f"[ONBOARDING] Fehler beim Onboarden von {tid}: {e}", "ERROR")
-        send_telegram_message(f"❌ Onboarding fehlgeschlagen:\n<code>{e}</code>")
+        send_telegram_message(t("onboard_failed", error=e))
         return True

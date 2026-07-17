@@ -13,6 +13,7 @@ from notifications.telegram_commands.order_detail_view import format_order_detai
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_i18n import t
 from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 
@@ -116,7 +117,7 @@ def send_order_detail(display_seq: int, *, list_page: int = 1) -> None:
     ledger = OrderService()
     order = ledger.get_by_display_seq(display_seq)
     if not order:
-        send_telegram_message(f"❌ Order <b>#{display_seq}</b> nicht gefunden im {ledger_label()} Ledger.")
+        send_telegram_message(t("order_not_found", seq=display_seq, ledger=ledger_label()))
         return
     msg = format_order_detail_rich(order, scope=ledger.scope)
     send_telegram_buttons(msg, _detail_back_buttons(ledger.scope, list_page))
@@ -166,10 +167,7 @@ def handle_callback(callback_query: dict) -> bool:
 
         ledger = OrderService()
         if parts[1] != ledger.scope:
-            send_telegram_message(
-                f"⚠️ Ledger-Scope hat sich geändert ({ledger_label(parts[1])} → {ledger_label()}). "
-                "Sende <code>/orders</code> erneut."
-            )
+            send_telegram_message(t("order_page_oob"))
             return True
 
         send_orders_page(page)
@@ -188,10 +186,7 @@ def handle_callback(callback_query: dict) -> bool:
 
         ledger = OrderService()
         if scope != ledger.scope:
-            send_telegram_message(
-                f"⚠️ Ledger-Scope hat sich geändert ({ledger_label(scope)} → {ledger_label()}). "
-                "Sende <code>/orders</code> erneut."
-            )
+            send_telegram_message(t("order_page_oob"))
             return True
 
         send_order_detail(seq, list_page=list_page or 1)

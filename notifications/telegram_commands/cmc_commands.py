@@ -6,6 +6,7 @@ from data_manager import load_cmc_posts
 from notifications.user_explain import explain_cmc_signal
 from services.dry_run_watchlist import TrendingWatchlistSync
 from services.social_pipeline import SocialPipeline
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 from x_analyzer import XAnalyzer
 
@@ -75,13 +76,13 @@ def handle(text: str) -> bool:
     if text == "/dexsignals":
         cfg = get_bot_config().cmc_config.get("dexscan_alerts", {})
         if not cfg.get("enabled", True):
-            send_telegram_message("DexScan-Alerts sind deaktiviert (cmc.dexscan_alerts.enabled).")
+            send_telegram_message(t("cmc_dex_disabled"))
             return True
         from data.cmc_dex_signals_provider import get_dexscan_provider
 
         alerts = get_dexscan_provider().fetch_alerts(limit=int(cfg.get("max_alerts", 10)))
         if not alerts:
-            send_telegram_message("Keine DexScan-Alerts verfügbar (API oder Plan).")
+            send_telegram_message(t("cmc_dex_none"))
             return True
         lines = ["<b>🔔 DexScan Alerts</b> — nur Info, kein Auto-Trade", ""]
         for a in alerts[:10]:

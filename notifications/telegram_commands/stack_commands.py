@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from core.runtime_identity import resolve_bot_stack
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
 
@@ -58,7 +59,7 @@ def _run_stack_report(hours: float) -> None:
                 plain = html.unescape(prefix + chunk)
                 send_telegram_message(plain, parse_mode=None)
     except Exception as e:
-        send_telegram_message(f"❌ Stack Compare fehlgeschlagen: {html.escape(str(e))}")
+        send_telegram_message(t("stack_failed", error=html.escape(str(e))))
 
 
 def handle(text: str) -> bool:

@@ -43,8 +43,10 @@ def format_watchlist_message(coins: list = None) -> str:
 def format_buy_list_message(coins: list, prices: dict) -> str:
     from price_fetcher import format_usdt_price
 
+    from notifications.telegram_i18n import t
+
     if not coins:
-        return "❌ Watchlist ist leer. Zuerst <code>/add SYMBOL</code> nutzen."
+        return t("watchlist_empty_add")
     default_usdt = get_bot_config().max_usdt_per_trade
     msg = "<b>🛒 Coins kaufen</b>\n\n"
     for i, coin in enumerate(coins, 1):
@@ -113,7 +115,9 @@ def handle(text: str) -> bool:
             return True
         coins = list_coins()
         if index < 1 or index > len(coins):
-            send_telegram_message("❌ Ungültige Nummer.")
+            from notifications.telegram_i18n import t
+
+            send_telegram_message(t("invalid_number"))
             return True
         symbol = coins[index - 1]["symbol"]
         success, msg = remove_coin(symbol)

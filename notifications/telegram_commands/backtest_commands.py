@@ -6,6 +6,7 @@ from data_manager import get_strategy_backtest_entry, list_strategy_targets, sav
 from intelligence.strategy_backtest import StrategyBacktester, coin_key
 from notifications.telegram_commands.command_context import activate_command, current_chat_id
 from services.strategy_backtest_worker import StrategyBacktestWorker
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
 _FORCE_COOLDOWN: dict[str, datetime] = {}
@@ -31,7 +32,7 @@ def handle(text: str) -> bool:
     if text == "/backtest":
         lines = StrategyBacktestWorker.get().status_lines()
         if not lines:
-            send_telegram_message("📊 <b>Strategy Backtest</b>\n\nKeine Strategie-Coins in config.strategies.")
+            send_telegram_message(t("backtest_no_strategies"))
             return True
         msg = "📊 <b>Strategy Backtest</b> (adaptives Scheduling)\n\n" + "\n".join(lines)
         send_telegram_message(msg)
@@ -82,7 +83,7 @@ def handle(text: str) -> bool:
                 key = coin_key(sym, entry.get("timeframe", "4h"))
                 matches.append(get_strategy_backtest_entry(key))
         if not matches:
-            send_telegram_message(f"❌ Kein Backtest-Eintrag für {sym}")
+            send_telegram_message(t("backtest_no_entry", sym=sym))
             return True
         parts = [f"📊 <b>Backtest {sym}</b>"]
         for data in matches:
@@ -101,12 +102,12 @@ def handle(text: str) -> bool:
     if text.startswith("/backtest "):
         symbol, days = _parse_symbol(text[10:])
         if not symbol:
-            send_telegram_message("❌ Nutzung: <code>/backtest SYMBOL [TAGE]</code>")
+            send_telegram_message(t("backtest_usage"))
             return True
         cooldown_key = symbol
         last = _FORCE_COOLDOWN.get(cooldown_key)
         if last and datetime.now() - last < timedelta(hours=6):
-            send_telegram_message("⏳ Force-Backtest Cooldown aktiv (6h).")
+            send_telegram_message(t("backtest_cooldown"))
             return True
         entry = None
         for e in list_strategy_targets():
@@ -114,7 +115,7 @@ def handle(text: str) -> bool:
                 entry = e
                 break
         if not entry:
-            send_telegram_message(f"❌ {symbol} nicht in config.strategies")
+            send_telegram_message(t("backtest_not_in", symbol=symbol))
             return True
         tf = entry.get("timeframe", "4h")
         chat_id = current_chat_id() or os.getenv("TELEGRAM_CHAT_ID", "")
@@ -136,7 +137,7 @@ def handle(text: str) -> bool:
                 StrategyBacktestWorker.get().tick()
                 _FORCE_COOLDOWN[cooldown_key] = datetime.now()
             except Exception as e:
-                send_telegram_message(f"❌ Backtest fehlgeschlagen: {e}")
+                send_telegram_message(t("backtest_failed", error=e))
 
         job_id, err = heavy_job_queue.enqueue(
             "backtest",
@@ -147,7 +148,7 @@ def handle(text: str) -> bool:
         if err:
             send_telegram_message(err)
             return True
-        send_telegram_message(f"⏳ Backtest <b>{symbol}</b> {tf} gestartet (Job {job_id})…")
+        send_telegram_message(t("backtest_started", symbol=symbol, tf=tf, job_id=job_id))
         return True
 
     return False

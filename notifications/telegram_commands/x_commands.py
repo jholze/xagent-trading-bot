@@ -11,6 +11,7 @@ from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from intelligence.accuracy_tracker import AccuracyTracker
 from services.signal_orchestrator import SignalOrchestrator
+from notifications.telegram_i18n import t
 from telegram_notifier import (
     answer_callback_query,
     send_telegram_buttons,
@@ -35,8 +36,8 @@ def add_x_account(handle_name: str) -> tuple[bool, str]:
         "notes": "Added via Telegram",
     })
     if save_x_accounts(accounts):
-        return True, f"✅ Added @{handle_name} to monitored X accounts."
-    return False, "❌ Failed to save x_accounts.json."
+        return True, t("x_added", handle=handle_name)
+    return False, t("x_save_failed")
 
 
 def _parse_testaccount_args(text: str) -> tuple[str | None, int | None]:
@@ -75,11 +76,11 @@ def _run_backtest(handle: str, days: int):
             f"<b>@{handle} zur Monitoring-Liste hinzufügen?</b>"
         )
         send_telegram_buttons(prompt, [[
-            {"text": "✅ Ja, übernehmen", "callback_data": f"testaccount_add:{handle}"},
-            {"text": "❌ Nein", "callback_data": f"testaccount_skip:{handle}"},
+            {"text": t("x_yes_add"), "callback_data": f"testaccount_add:{handle}"},
+            {"text": t("x_no_add"), "callback_data": f"testaccount_skip:{handle}"},
         ]])
     except Exception as e:
-        send_telegram_message(f"❌ Backtest für @{handle} fehlgeschlagen: {e}")
+        send_telegram_message(t("x_backtest_failed", handle=handle, error=e))
 
 
 def handle_callback(callback_query: dict) -> bool:
@@ -98,7 +99,7 @@ def handle_callback(callback_query: dict) -> bool:
 
     if data.startswith("testaccount_skip:"):
         handle = data.split(":", 1)[1]
-        send_telegram_message(f"👍 @{handle} wurde nicht zur Liste hinzugefügt.")
+        send_telegram_message(t("x_skipped_add", handle=handle))
         return True
 
     return False
@@ -133,17 +134,17 @@ def handle(text: str) -> bool:
         new_accounts = [a for a in accounts if a.get("handle", a) != handle_name]
         if len(new_accounts) != len(accounts):
             if save_x_accounts(new_accounts):
-                send_telegram_message(f"✅ Removed @{handle_name} from X accounts.")
+                send_telegram_message(t("x_removed", handle=handle_name))
             else:
-                send_telegram_message("❌ Failed to save x_accounts.json.")
+                send_telegram_message(t("x_save_failed"))
         else:
-            send_telegram_message(f"@{handle_name} not found.")
+            send_telegram_message(t("x_not_found", handle=handle_name))
         return True
 
     if text in ["/listx", "/xaccounts", "/xlist"]:
         accounts = load_x_accounts()
         if not accounts:
-            send_telegram_message("No X accounts configured.")
+            send_telegram_message(t("x_none"))
         else:
             msg = "<b>📋 Monitored X Accounts:</b>\n\n"
             for a in accounts:
@@ -157,7 +158,7 @@ def handle(text: str) -> bool:
     if text in ["/xposts", "/xhistory", "/xlog"]:
         posts = load_x_posts().get("posts", [])[-10:]
         if not posts:
-            send_telegram_message("No tracked X posts yet.")
+            send_telegram_message(t("x_no_posts"))
         else:
             msg = "<b>📜 Last 10 Tracked X Posts:</b>\n\n"
             for p in reversed(posts):
@@ -173,7 +174,7 @@ def handle(text: str) -> bool:
         analyzer = XAnalyzer()
         signals = analyzer.get_top_signals()
         if not signals:
-            send_telegram_message("No strong X signals right now.")
+            send_telegram_message(t("x_no_signals"))
         else:
             msg = "<b>📡 Latest X Signals:</b>\n\n"
             for s in signals[:8]:
@@ -185,7 +186,7 @@ def handle(text: str) -> bool:
         tracker = AccuracyTracker()
         board = tracker.get_leaderboard()
         if not board:
-            send_telegram_message("No X account accuracy data yet.")
+            send_telegram_message(t("x_no_accuracy"))
         else:
             msg = "<b>📊 X Account Accuracy Leaderboard:</b>\n\n"
             for i, row in enumerate(board, 1):
@@ -229,7 +230,9 @@ def handle(text: str) -> bool:
         if err:
             send_telegram_message(err)
             return True
-        send_telegram_message(f"⏳ Backtest für @{handle} ({days} Tage) gestartet (Job {job_id})…")
+        send_telegram_message(
+            t("x_backtest_started", handle=handle, days=days, job_id=job_id)
+        )
         return True
 
     return False

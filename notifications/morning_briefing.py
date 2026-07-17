@@ -195,12 +195,13 @@ def _send_chunk(chat_id: str | None, chunk: str) -> bool:
 def send_morning_briefing(chat_id: str | None = None) -> bool:
     from telegram_notifier import send_telegram_message
 
+    from notifications.telegram_i18n import t
+
     cid = chat_id or _current_chat_id()
     allowed, sent_time = can_send_morning(cid)
     if not allowed:
         send_telegram_message(
-            f"☀️ <b>Morning Briefing</b> für heute bereits gesendet "
-            f"(um {sent_time} Uhr).\nNächstes Briefing: morgen mit <code>/morning</code>."
+            t("morning_already_sent", time=sent_time)
         )
         return True
 
@@ -212,8 +213,5 @@ def send_morning_briefing(chat_id: str | None = None) -> bool:
     if ok:
         mark_morning_sent(cid)
     else:
-        send_telegram_message(
-            "❌ Morning Briefing konnte nicht vollständig gesendet werden. "
-            "Bitte <code>/morning</code> erneut versuchen."
-        )
+        send_telegram_message(t("morning_send_failed"))
     return ok

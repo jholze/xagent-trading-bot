@@ -8,6 +8,7 @@ from core.models import TradeOrder
 from services.order_service import OrderService
 from services.trading_service import TradingService
 from strategies.positions import get_position
+from notifications.telegram_i18n import t
 from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 
@@ -214,8 +215,8 @@ def request_buy_confirmation(
     from notifications.coin_links import inline_link_buttons
 
     keyboard = [[
-        {"text": "✅ Bestätigen", "callback_data": f"manual_ok:{order_id}"},
-        {"text": "❌ Abbrechen", "callback_data": f"manual_no:{order_id}"},
+        {"text": t("manual_confirm"), "callback_data": f"manual_ok:{order_id}"},
+        {"text": t("manual_abort"), "callback_data": f"manual_no:{order_id}"},
     ]]
     link_row = (inline_link_buttons(symbol) or [None])[0]
     if link_row:
@@ -259,8 +260,8 @@ def request_sell_confirmation(
     from notifications.coin_links import inline_link_buttons
 
     keyboard = [[
-        {"text": "✅ Bestätigen", "callback_data": f"manual_ok:{order_id}"},
-        {"text": "❌ Abbrechen", "callback_data": f"manual_no:{order_id}"},
+        {"text": t("manual_confirm"), "callback_data": f"manual_ok:{order_id}"},
+        {"text": t("manual_abort"), "callback_data": f"manual_no:{order_id}"},
     ]]
     link_row = (inline_link_buttons(symbol) or [None])[0]
     if link_row:
@@ -297,12 +298,12 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
     ledger = OrderService()
     record = ledger.get_by_id(order_id)
     if not record or record.get("status") != "pending_confirmation":
-        send_telegram_message("⏱️ Diese Order ist abgelaufen. Bitte <code>/buy</code> oder <code>/sell</code> erneut senden.")
+        send_telegram_message(t("manual_expired"))
         return
 
     pending = _pending_from_record(record)
     if not pending:
-        send_telegram_message("❌ Ungültige Order-Daten.")
+        send_telegram_message(t("manual_invalid"))
         return
 
     trading.refresh()
@@ -313,7 +314,7 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
     price = get_prices(symbol)[0]
     if not price or price <= 0:
         ledger.update_status(order_id, "failed", error="Price unavailable")
-        send_telegram_message(f"❌ Kurs für {_ticker(symbol)} nicht verfügbar. Order abgebrochen.")
+        send_telegram_message(t("manual_price_gone", sym=_ticker(symbol)))
         return
 
     if pending["kind"] == "buy":
@@ -323,12 +324,12 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
         amount = float(pos.get("amount", 0)) * float(pending["pct"])
         if amount <= 0:
             ledger.update_status(order_id, "failed", error="No sellable amount")
-            send_telegram_message(f"❌ Keine verkaufbare Menge für {_ticker(symbol)}.")
+            send_telegram_message(t("manual_no_qty", sym=_ticker(symbol)))
             return
         result = trading.execute_sell(symbol, timeframe, price, pending["signal"], amount, order_id=order_id)
 
     if not result.executed:
-        send_telegram_message(f"❌ Order fehlgeschlagen: {result.message}")
+        send_telegram_message(t("manual_failed", msg=result.message))
 
 
 def handle_callback(callback_query: dict) -> bool:
@@ -349,9 +350,9 @@ def handle_callback(callback_query: dict) -> bool:
         record = ledger.get_by_id(order_id)
         if record and record.get("status") == "pending_confirmation":
             ledger.update_status(order_id, "cancelled")
-            send_telegram_message("🚫 Manuelle Order abgebrochen.")
+            send_telegram_message(t("manual_cancelled"))
         else:
-            send_telegram_message("⏱️ Order bereits abgelaufen oder unbekannt.")
+            send_telegram_message(t("manual_unknown"))
         return True
 
     if action == "manual_ok":

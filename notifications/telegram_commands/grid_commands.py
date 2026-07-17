@@ -6,7 +6,8 @@ import threading
 
 from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id
-from notifications.telegram_commands.menu_i18n import current_language
+from notifications.telegram_commands.menu_i18n import current_language, set_user_language
+from notifications.telegram_i18n import t
 from services.grid_status_service import build_grid_status_report, format_grid_status_telegram
 from telegram_notifier import send_telegram_message
 
@@ -22,6 +23,7 @@ def _normalize_symbol_arg(arg: str) -> str | None:
 
 def _build_and_send(*, symbol_filter: str | None, chat_id, tenant_id: str, scope: str, owner_chat_id: str, lang: str) -> None:
     try:
+        set_user_language(lang)
         with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
             report = build_grid_status_report(symbol_filter=symbol_filter)
             msg = format_grid_status_telegram(report, lang=lang)
@@ -29,8 +31,9 @@ def _build_and_send(*, symbol_filter: str | None, chat_id, tenant_id: str, scope
                 msg = msg[:3900] + "\n… <i>(gekürzt)</i>"
             send_telegram_message(msg, chat_id=chat_id or None)
     except Exception as e:
+        set_user_language(lang)
         send_telegram_message(
-            f"❌ Grid-Status konnte nicht geladen werden: {e}",
+            t("grid_load_failed", error=e),
             chat_id=chat_id or None,
         )
 
@@ -47,11 +50,11 @@ def handle(text: str) -> bool:
 
     if symbol_filter:
         send_telegram_message(
-            f"⏳ <b>Grid</b> — <code>{symbol_filter}</code> wird geladen…",
+            t("grid_loading_sym", sym=symbol_filter),
             chat_id=chat_id or None,
         )
     else:
-        send_telegram_message("⏳ <b>Grid-Modus</b> wird geladen…", chat_id=chat_id or None)
+        send_telegram_message(t("grid_loading"), chat_id=chat_id or None)
 
     threading.Thread(
         target=_build_and_send,

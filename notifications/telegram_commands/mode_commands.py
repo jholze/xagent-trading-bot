@@ -5,6 +5,7 @@ from core.simulated_trading import is_simulated_trading, simulated_live_config_u
 from data_manager import get_config, reload_config, save_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
+from notifications.telegram_i18n import t
 from services.ledger_sync import on_trading_mode_change
 from services.trading_service import TradingService
 from strategies.positions import count_open_positions
@@ -38,30 +39,18 @@ def handle(text: str) -> bool:
 
         cid = current_chat_id() or "?"
         tid = resolve_tenant_id()
-        send_telegram_message(
-            f"🆔 Chat-ID: <code>{cid}</code>\n"
-            f"Tenant: <code>{tid}</code>\n\n"
-            f"(Operator braucht die Chat-ID fürs Onboarding.)"
-        )
+        send_telegram_message(t("myid", chat_id=cid, tenant_id=tid))
         return True
 
     if text in ["/mode", "/tradingmode", "/stand", "/version", "/build"]:
         service = TradingService()
-        sim = " | <b>Simulated Live</b>" if is_simulated_trading() else ""
-        msg = f"""<b>Trading Mode</b>
-
-Current: <b>{service.mode_label()}</b>{sim}
-
-{format_identity_section()}
-
-<b>Commands:</b>
-/mode live — Simulated live (dry-run ledger, no real orders)
-/mode off — Analysis only, no execution
-/live_confirm — Confirm live trading
-/live_cancel — Revoke live confirmation
-/gate — Gate.io API status + Balance
-/maxpositions — Max. offene Positionen anzeigen/setzen
-"""
+        sim = t("mode_sim_tag") if is_simulated_trading() else ""
+        msg = (
+            f"{t('mode_title')}\n\n"
+            f"{t('mode_current', label=service.mode_label(), sim=sim)}\n\n"
+            f"{format_identity_section()}\n\n"
+            f"{t('mode_commands')}"
+        )
         send_telegram_message(msg)
         return True
 
@@ -71,10 +60,13 @@ Current: <b>{service.mode_label()}</b>{sim}
         open_count = count_open_positions()
         activate_command("maxpositions")
         send_telegram_message(
-            f"<b>Max. offene Positionen</b>\n\n"
-            f"Aktuell: <b>{current}</b>  ·  Offen: <b>{open_count}</b>\n\n"
-            f"Ändern: nur Zahl senden, z.B. <code>10</code>\n"
-            f"(Bereich {MAX_POSITIONS_MIN}–{MAX_POSITIONS_MAX})"
+            t(
+                "maxpos_show",
+                current=current,
+                open=open_count,
+                min=MAX_POSITIONS_MIN,
+                max=MAX_POSITIONS_MAX,
+            )
         )
         return True
 
@@ -88,33 +80,29 @@ Current: <b>{service.mode_label()}</b>{sim}
             reload_config()
             open_count = count_open_positions()
             send_telegram_message(
-                f"✅ Max. offene Positionen auf <b>{value}</b> gesetzt.\n"
-                f"Aktuell offen: <b>{open_count}</b>/{value}"
+                t("maxpos_set", value=value, open=open_count)
             )
         else:
-            send_telegram_message("❌ Konfiguration konnte nicht gespeichert werden.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text == "/mode paper":
         ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
         if ok:
-            msg = (
-                "✅ <b>Paper</b> ist veraltet — umgestellt auf <b>Simulated Live</b> "
-                "(dry-run, Order-Ledger, keine echten Gate-Orders)."
-            )
+            msg = t("mode_paper_migrated")
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)
         else:
-            send_telegram_message("❌ Failed to save config.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text == "/mode off":
         if _save_mode_updates({"trading_mode": "off", "virtual_trading": False}):
             reload_config()
-            send_telegram_message("✅ Trading set to <b>off</b> — analysis only.")
+            send_telegram_message(t("mode_off"))
         else:
-            send_telegram_message("❌ Failed to save config.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text == "/mode live":
@@ -122,29 +110,22 @@ Current: <b>{service.mode_label()}</b>{sim}
         ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates(cfg))
         if ok:
             staging = os.environ.get("DEMO_MODE") == "1"
-            msg = (
-                "✅ <b>Simulated Live</b> aktiv"
-                + (" (Staging-Ledger)" if staging else " (dry-run Ledger)")
-                + ".\nOrders über Order-Ledger — keine echten Gate-Orders.\n"
-                "Für Mainnet: <code>/live_confirm</code> (nur außerhalb Staging)."
-            )
+            tag = t("mode_staging_tag") if staging else t("mode_dryrun_tag")
+            msg = t("mode_live_sim", staging=tag)
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)
         else:
-            send_telegram_message("❌ Failed to save config.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text == "/live_confirm":
         if os.environ.get("DEMO_MODE") == "1":
             ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
-            msg = (
-                "✅ <b>Simulated Live</b> auf Staging — Order-Ausführung aktiv.\n"
-                "Echtes Mainnet ist hier deaktiviert."
-            )
+            msg = t("live_confirm_staging")
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
-            send_telegram_message(msg if ok else "❌ Failed to save config.")
+            send_telegram_message(msg if ok else t("config_save_failed"))
             return True
 
         cfg = get_config()
@@ -153,8 +134,7 @@ Current: <b>{service.mode_label()}</b>{sim}
         secret_env = live_cfg.get("api_secret_env", "GATE_API_SECRET")
         if not os.getenv(key_env) or not os.getenv(secret_env):
             send_telegram_message(
-                f"❌ Gate Mainnet-Keys fehlen.\n"
-                f"Setze <code>{key_env}</code> und <code>{secret_env}</code> in .env, dann <code>/gate</code>."
+                t("live_keys_missing", key_env=key_env, secret_env=secret_env)
             )
             return True
 
@@ -165,30 +145,24 @@ Current: <b>{service.mode_label()}</b>{sim}
             "virtual_trading": False,
         })
         if ok:
-            msg = "🔴 <b>Live trading CONFIRMED.</b>"
-            if dry:
-                msg += (
-                    "\n\n⚠️ <b>dry_run ist noch ON</b> — Orders werden nur lokal geloggt.\n"
-                    "Für echte Orders: <code>live.dry_run: false</code> in config.json, Bot neu starten."
-                )
-            else:
-                msg += "\n\nEchte Gate.io Mainnet-Orders sind aktiv."
+            msg = t("live_confirmed")
+            msg += t("live_dry_still_on") if dry else t("live_real_on")
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)
         else:
-            send_telegram_message("❌ Failed to save config.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text == "/live_cancel":
         ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
         if ok:
-            msg = "✅ Mainnet widerrufen. Zurück zu <b>Simulated Live</b> (dry-run)."
+            msg = t("live_cancelled")
             if ledger_msg:
                 msg += f"\n\n{ledger_msg}"
             send_telegram_message(msg)
         else:
-            send_telegram_message("❌ Failed to save config.")
+            send_telegram_message(t("config_save_failed"))
         return True
 
     if text.startswith("/mode "):

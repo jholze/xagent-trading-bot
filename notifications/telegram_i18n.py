@@ -9,11 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from notifications.telegram_commands.menu_i18n import (
-    SUPPORTED_LANGS,
-    current_language,
-)
-
+_SUPPORTED = ("de", "en")
 _MESSAGES: dict | None = None
 _PATH = Path(__file__).resolve().parents[1] / "locales" / "telegram_messages.json"
 
@@ -33,11 +29,24 @@ def reload_messages() -> None:
     _load()
 
 
+def _active_lang(lang: str | None) -> str:
+    if lang in _SUPPORTED:
+        return lang
+    # Lazy import avoids circular import via telegram_commands package __init__.
+    try:
+        from notifications.telegram_commands.menu_i18n import current_language
+
+        ui = current_language()
+        if ui in _SUPPORTED:
+            return ui
+    except Exception:
+        pass
+    return "de"
+
+
 def t(key: str, lang: str | None = None, **kwargs) -> str:
     """Translate *key* for the active UI language; optional format kwargs."""
-    pack_lang = lang or current_language()
-    if pack_lang not in SUPPORTED_LANGS:
-        pack_lang = "de"
+    pack_lang = _active_lang(lang)
     data = _load()
     pack = data.get(pack_lang) or data.get("de") or {}
     fallback = (data.get("de") or {}).get(key) or key

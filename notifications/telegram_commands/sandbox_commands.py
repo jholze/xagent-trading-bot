@@ -1,6 +1,7 @@
 from notifications.telegram_commands.command_context import activate_command
 from notifications.telegram_commands.usage_hints import hint
 from strategies.paper_sandbox import PaperSandbox
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
 
@@ -12,7 +13,7 @@ def handle(text: str) -> bool:
         _sandbox.config.refresh()
         testing = _sandbox.list_testing()
         if not testing:
-            send_telegram_message("📦 <b>Paper Sandbox</b>\n\nNo hypotheses in testing. Strategy concepts are auto-discovered from X posts with RSI/volume/breakout keywords.")
+            send_telegram_message(t("sandbox_empty"))
             return True
 
         msg = "<b>📦 Paper Sandbox — Testing</b>\n\n"
@@ -48,7 +49,7 @@ def handle(text: str) -> bool:
         discovery = StrategyDiscovery()
         hyp = discovery.get_hypothesis(hyp_id)
         if not hyp:
-            send_telegram_message(f"❌ Hypothesis {hyp_id} not found.")
+            send_telegram_message(t("sandbox_hyp_not_found", id=hyp_id))
             return True
 
         metrics = _sandbox.compute_metrics(hyp_id)

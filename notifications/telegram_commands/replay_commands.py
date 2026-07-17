@@ -10,6 +10,7 @@ from bus.sessions import session_manager
 from hermes.churn_replay import analyze_churn, format_telegram_summary
 from hermes.counterfactual import replay_window
 from notifications.telegram_commands.command_context import current_chat_id
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
 
@@ -35,7 +36,7 @@ def _run_churn_replay(symbol: str, since: datetime | None):
         result = analyze_churn(symbol, since=since)
         send_telegram_message(format_telegram_summary(result))
     except Exception as e:
-        send_telegram_message(f"❌ Churn replay fehlgeschlagen: {e}")
+        send_telegram_message(t("churn_failed", error=e))
 
 
 def _run_counterfactual(symbol: str, days: int):
@@ -52,7 +53,7 @@ def _run_counterfactual(symbol: str, days: int):
                 break
         summary = replay_window(symbol, tf, start, end)
         if summary.get("error"):
-            send_telegram_message(f"❌ Counterfactual: {summary['error']}")
+            send_telegram_message(t("cf_error", error=summary["error"]))
             return
         lines = [f"📊 <b>Counterfactual {symbol}</b> ({days}d)"]
         for name, row in (summary.get("variants") or {}).items():
@@ -62,7 +63,7 @@ def _run_counterfactual(symbol: str, days: int):
             )
         send_telegram_message("\n".join(lines))
     except Exception as e:
-        send_telegram_message(f"❌ Counterfactual fehlgeschlagen: {e}")
+        send_telegram_message(t("cf_failed", error=e))
 
 
 def handle(text: str) -> bool:
@@ -74,15 +75,15 @@ def handle(text: str) -> bool:
                 notification_publisher.flush_deferred()
             except Exception:
                 pass
-            send_telegram_message("✅ Aktive Session beendet. Gepufferte Nachrichten werden nachgereicht.")
+            send_telegram_message(t("session_ended"))
         else:
-            send_telegram_message("ℹ️ Keine aktive HEAVY-Session.")
+            send_telegram_message(t("session_none"))
         return True
 
     if text.startswith("/churn_replay"):
         parts = text.split()
         if len(parts) < 2:
-            send_telegram_message("❌ Nutzung: <code>/churn_replay SYMBOL [--since ISO-DATUM]</code>")
+            send_telegram_message(t("churn_usage"))
             return True
         symbol = _normalize_symbol(parts[1])
         since = _parse_since(parts)
@@ -96,13 +97,13 @@ def handle(text: str) -> bool:
         if err:
             send_telegram_message(err)
             return True
-        send_telegram_message(f"⏳ Churn replay <b>{symbol}</b> gestartet (Job {job_id})…")
+        send_telegram_message(t("churn_started", symbol=symbol, job_id=job_id))
         return True
 
     if text.startswith("/counterfactual"):
         parts = text.split()
         if len(parts) < 2:
-            send_telegram_message("❌ Nutzung: <code>/counterfactual SYMBOL [TAGE]</code>")
+            send_telegram_message(t("cf_usage"))
             return True
         symbol = _normalize_symbol(parts[1])
         days = 7
@@ -121,7 +122,7 @@ def handle(text: str) -> bool:
         if err:
             send_telegram_message(err)
             return True
-        send_telegram_message(f"⏳ Counterfactual <b>{symbol}</b> ({days}d) gestartet (Job {job_id})…")
+        send_telegram_message(t("cf_started", symbol=symbol, days=days, job_id=job_id))
         return True
 
     return False
