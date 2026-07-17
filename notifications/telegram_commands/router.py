@@ -47,7 +47,9 @@ def dispatch_command(text: str) -> bool:
     except Exception as e:
         log(f"Error in dispatch_command for '{text}': {e}", "ERROR")
         try:
-            send_telegram_message("❌ Interner Fehler beim Verarbeiten des Befehls.")
+            from notifications.telegram_i18n import t
+
+            send_telegram_message(t("error_command"))
         except Exception:
             pass
         return True

@@ -358,6 +358,8 @@ def build_cycle_summary(
     except Exception:
         max_open = 0
 
+    from notifications.telegram_i18n import money, signed_money, t
+
     if style_s == "compact":
         reason = ""
         try:
@@ -366,54 +368,84 @@ def build_cycle_summary(
             reason = cycle_notification_policy.last_summary_reason or ""
         except Exception:
             pass
-        title = "Zyklus"
         if reason == "heartbeat":
-            title = "Heartbeat"
+            title = t("cycle_heartbeat")
         elif reason and "trade" in reason:
-            title = "Zyklus · Trade"
+            title = t("cycle_trade")
+        else:
+            title = t("cycle_title")
 
         lines = [
-            f"<b>📋 {title}</b> — {datetime.now().strftime('%H:%M')} · "
+            f"<b>{title}</b> — {datetime.now().strftime('%H:%M')} · "
             f"<b>{scope.upper()}</b>",
-            f"{balance_label} <b>${float(balance or 0):,.0f}</b> · "
-            f"NAV <b>${float(total_value or 0):,.0f}</b> · "
-            f"PnL <b>${nav_pnl:+,.0f}</b> (<code>{pnl_pct:+.1f}%</code>)",
+            t(
+                "cycle_nav_line",
+                cash_label=balance_label,
+                cash=money(float(balance or 0)),
+                nav=money(float(total_value or 0)),
+                pnl=signed_money(nav_pnl),
+                pct=f"{pnl_pct:+.1f}%",
+            ),
         ]
         if max_open > 0:
-            lines.append(f"Slots <b>{open_n}/{max_open}</b> · Realisiert <b>${float(realized or 0):+,.0f}</b>")
-        else:
-            lines.append(f"Realisiert <b>${float(realized or 0):+,.0f}</b>")
-
-        lines.append(
-            f"24h Orders: 🟢{day_stats['buys']} · 🔴{day_stats['sells']}"
-            + (
-                f" · ❌{attempts['rejected']} blocked"
-                if attempts.get("rejected")
-                else ""
+            lines.append(
+                t(
+                    "cycle_slots_realized",
+                    open=open_n,
+                    max=max_open,
+                    realized=signed_money(float(realized or 0)),
+                )
             )
-        )
+        else:
+            lines.append(
+                t("cycle_realized_only", realized=signed_money(float(realized or 0)))
+            )
+
+        if attempts.get("rejected"):
+            lines.append(
+                t(
+                    "cycle_orders_24h_blocked",
+                    buys=day_stats["buys"],
+                    sells=day_stats["sells"],
+                    rejected=attempts["rejected"],
+                )
+            )
+        else:
+            lines.append(
+                t(
+                    "cycle_orders_24h",
+                    buys=day_stats["buys"],
+                    sells=day_stats["sells"],
+                )
+            )
 
         if executed_trades:
-            lines.append(f"<b>Ausgeführt</b> ({len(executed_trades)}):")
+            lines.append(t("cycle_executed", count=len(executed_trades)))
             for r in executed_trades[:4]:
                 lines.append(format_executed_cycle_line(r))
         else:
             tally = _blocked_reject_tally(coin_results)
             if tally:
                 parts = [f"{k}×{n}" for k, n in sorted(tally.items(), key=lambda x: -x[1])]
-                lines.append(f"<i>Blocked (Zyklus):</i> {', '.join(parts)}")
+                lines.append(t("cycle_blocked", tally=", ".join(parts)))
 
-        lines.append("<i>/positions · /orders · /decisions</i>")
+        lines.append(t("cycle_footer_compact"))
         return "\n".join(lines)
 
     # --- full (legacy / debug) ---
     lines = [
-        f"<b>📋 Zyklus-Zusammenfassung</b> — {datetime.now().strftime('%H:%M:%S')}",
-        f"Modus: <b>{trading_mode.upper()}</b> · Ledger: <b>{scope.upper()}</b>",
+        f"<b>{t('cycle_title_full')}</b> — {datetime.now().strftime('%H:%M:%S')}",
+        t("cycle_mode_ledger", mode=trading_mode.upper(), scope=scope.upper()),
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | "
         f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, Trades ${float(realized or 0):,.1f})",
-        f"Signale: {len(actions)} handelbar | {x_signal_count} X | {cmc_signal_count} CMC | {lc_signal_count} LC",
+        t(
+            "cycle_signals",
+            actions=len(actions),
+            x=x_signal_count,
+            cmc=cmc_signal_count,
+            lc=lc_signal_count,
+        ),
     ]
     try:
         from notifications.daily_portfolio import format_daily_nav_line
@@ -424,7 +456,7 @@ def build_cycle_summary(
     except Exception:
         pass
     if top_x or top_cmc or top_lc:
-        lines.append("<b>Social:</b>")
+        lines.append(t("cycle_social"))
         if top_x:
             lines.append(f"  🐦 {top_x}")
         if top_cmc:
@@ -432,7 +464,7 @@ def build_cycle_summary(
         if top_lc:
             lines.append(f"  🌙 {top_lc}")
     if actions:
-        lines.append("<b>Entscheidungen:</b>")
+        lines.append(t("cycle_decisions"))
         from notifications.coin_links import format_ticker_html
 
         for r in actions[:6]:
@@ -443,23 +475,31 @@ def build_cycle_summary(
             status = "✅" if r.get("executed") else "🚫" if r.get("trade_message") else "👀"
             lines.append(f"  {status} {sym_html} {act}: {why}")
     if executed_trades:
-        lines.append(f"<b>Ausgeführt:</b> {len(executed_trades)} Trade(s)")
+        lines.append(t("cycle_executed_full", count=len(executed_trades)))
         for r in executed_trades[:5]:
             lines.append(format_executed_cycle_line(r))
     else:
-        lines.append("Keine Auto-Trades in diesem Zyklus.")
+        lines.append(t("cycle_no_auto_trades"))
 
     lines.append("")
     lines.append(
-        f"<b>Orders (24h, {ledger_label()}):</b> "
-        f"🟢{day_stats['buys']} Käufe · 🔴{day_stats['sells']} Verkäufe"
+        t(
+            "cycle_orders_24h_full",
+            ledger=ledger_label(),
+            buys=day_stats["buys"],
+            sells=day_stats["sells"],
+        )
     )
     blocked = attempts["rejected"] + attempts["cancelled"] + attempts["pending_confirmation"]
     if blocked:
         lines.append(
-            f"<i>Nicht ausgeführt:</i> ❌{attempts['rejected']} "
-            f"⏳{attempts['pending_confirmation']} 🚫{attempts['cancelled']}"
+            t(
+                "cycle_not_executed",
+                rejected=attempts["rejected"],
+                pending=attempts["pending_confirmation"],
+                cancelled=attempts["cancelled"],
+            )
         )
     lines.extend(recent_orders_lines())
-    lines.append("<i>Details: <code>/decisions</code> · <code>/orders</code> · /buy · /sell</i>")
+    lines.append(t("cycle_footer_full"))
     return "\n".join(lines)

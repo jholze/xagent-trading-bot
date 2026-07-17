@@ -408,7 +408,8 @@
     "telegram_command_menu": {
       "enabled": true,
       "reply_keyboard": true,
-      "default_language": "de"
+      "default_language": "de",
+      "force_language": "de"
     },
     "coin_links": {
       "enabled": true,

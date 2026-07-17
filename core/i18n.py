@@ -35,7 +35,16 @@ def get_system_lang() -> str:
 
 
 def get_text(key: str, default: str = "") -> str:
+    # Prefer Telegram UI language when a user request is in flight.
     lang = get_system_lang()
+    try:
+        from notifications.telegram_commands.menu_i18n import current_language
+
+        ui = current_language()
+        if ui in ("de", "en"):
+            lang = ui
+    except Exception:
+        pass
     trans = TRANSLATIONS.get(lang, TRANSLATIONS.get("en", {}))
     return trans.get(key, default or key)
 

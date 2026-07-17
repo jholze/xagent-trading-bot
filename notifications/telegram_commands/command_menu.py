@@ -75,7 +75,11 @@ def all_bot_commands(lang: str = "de") -> list[dict[str, str]]:
 
 
 def register_bot_commands(token: str | None = None, *, send_keyboard: bool = False) -> bool:
-    """Publish DE + EN commands; Telegram picks by user language_code.
+    """Publish bot commands and menu button.
+
+    When ``force_language`` is set (or multi-tenant with default_language),
+    only that language is registered as the default slash list so English
+    Telegram clients still see German commands on a DE staging bot.
 
     send_keyboard: when True, push the section reply keyboard to TELEGRAM_CHAT_ID.
     Startup/deploy should keep this False — users open the menu via /menu.
@@ -85,14 +89,22 @@ def register_bot_commands(token: str | None = None, *, send_keyboard: bool = Fal
         log("Telegram command menu: TELEGRAM_BOT_TOKEN not set", "WARNING")
         return False
 
+    force_lang = None
     try:
         from core.config import get_bot_config
+        from core.tenant_context import multi_tenant_enabled
 
         cfg = get_bot_config().telegram_command_menu_config
         if not cfg.get("enabled", True):
             log("Telegram command menu disabled in config", "INFO")
             return False
         default_lang = resolve_language(cfg.get("default_language"))
+        force_lang = cfg.get("force_language")
+        if force_lang:
+            force_lang = resolve_language(force_lang)
+        elif multi_tenant_enabled() and default_lang:
+            # Shared bot: keep slash menu in bot default language for all tenants.
+            force_lang = default_lang
     except Exception:
         default_lang = "de"
 
@@ -100,11 +112,16 @@ def register_bot_commands(token: str | None = None, *, send_keyboard: bool = Fal
     base = f"https://api.telegram.org/bot{token}"
 
     try:
-        for lang in SUPPORTED_LANGS:
+        langs_to_register = (force_lang,) if force_lang else SUPPORTED_LANGS
+        for lang in langs_to_register:
             commands = all_bot_commands(lang)
+            payload = {"commands": commands}
+            # Only attach language_code when publishing bilingual packs.
+            if not force_lang:
+                payload["language_code"] = lang
             resp = requests.post(
                 f"{base}/setMyCommands",
-                json={"commands": commands, "language_code": lang},
+                json=payload,
                 timeout=10,
             )
             data = resp.json() if resp.content else {}
@@ -115,19 +132,31 @@ def register_bot_commands(token: str | None = None, *, send_keyboard: bool = Fal
                 )
                 return False
 
-        fallback = all_bot_commands(default_lang)
-        resp = requests.post(
-            f"{base}/setMyCommands",
-            json={"commands": fallback},
-            timeout=10,
-        )
-        data = resp.json() if resp.content else {}
-        if not resp.ok or not data.get("ok"):
-            log(
-                f"Telegram setMyCommands(default) failed: {data.get('description', resp.text)}",
-                "WARNING",
+        if not force_lang:
+            fallback = all_bot_commands(default_lang)
+            resp = requests.post(
+                f"{base}/setMyCommands",
+                json={"commands": fallback},
+                timeout=10,
             )
-            return False
+            data = resp.json() if resp.content else {}
+            if not resp.ok or not data.get("ok"):
+                log(
+                    f"Telegram setMyCommands(default) failed: {data.get('description', resp.text)}",
+                    "WARNING",
+                )
+                return False
+        else:
+            # Clear language-specific packs so EN clients don't keep stale English.
+            for lang in SUPPORTED_LANGS:
+                if lang == force_lang:
+                    continue
+                requests.post(
+                    f"{base}/setMyCommands",
+                    json={"commands": [], "language_code": lang},
+                    timeout=10,
+                )
+            fallback = all_bot_commands(force_lang)
 
         menu_resp = requests.post(
             f"{base}/setChatMenuButton",
@@ -144,7 +173,7 @@ def register_bot_commands(token: str | None = None, *, send_keyboard: bool = Fal
 
         log(
             f"Telegram command menu registered ({len(fallback)} commands, "
-            f"langs de+en, button: {button['text']!r})",
+            f"langs={langs_to_register}, force={force_lang!r}, button: {button['text']!r})",
             "INFO",
         )
         from notifications.telegram_commands.menu_i18n import set_user_language

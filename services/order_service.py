@@ -471,11 +471,25 @@ def _order_pnl_part(order: dict) -> str:
 
 def format_order_line(order: dict) -> str:
     from notifications.coin_links import format_ticker_html
+    from notifications.telegram_i18n import t
 
     icon = STATUS_ICONS.get(order.get("status", ""), "·")
     sym = (order.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
-    side = (order.get("side") or "?").upper()
+    status_raw = (order.get("status") or "").lower()
+    status_key = f"order_status_{status_raw}"
+    status_label = t(status_key) if status_raw in (
+        "filled", "rejected", "pending", "cancelled", "pending_confirmation",
+    ) else (order.get("status") or "").upper()
+    if status_raw == "pending_confirmation":
+        status_label = t("order_status_pending")
+    side_raw = (order.get("side") or "").lower()
+    if side_raw == "buy":
+        side = t("order_side_buy")
+    elif side_raw == "sell":
+        side = t("order_side_sell")
+    else:
+        side = (order.get("side") or "?").upper()
     seq = order.get("display_seq", "?")
     src = source_label(order.get("source", "auto"))
     usdt = _order_usdt_display(order)
@@ -483,7 +497,7 @@ def format_order_line(order: dict) -> str:
     trade_ts = _order_trade_ts(order)
     date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
     return (
-        f"{icon} <b>#{seq}</b> {order.get('status', '').upper()}  {side}  "
+        f"{icon} <b>#{seq}</b> {status_label}  {side}  "
         f"<b>{sym_html}</b>  {usdt}{pnl_part}  <i>{src}</i>{date_part}"
     )
 

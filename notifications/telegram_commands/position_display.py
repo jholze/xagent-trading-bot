@@ -432,7 +432,9 @@ def _trade_line(t: dict) -> str:
     from notifications.coin_links import format_ticker_html
 
     ts = t.get("timestamp", "")[:16].replace("T", " ")
-    typ = "🟢 Kauf" if t.get("type") == "BUY" else "🔴 Verkauf"
+    from notifications.telegram_i18n import t as _t
+
+    typ = _t("trade_buy") if t.get("type") == "BUY" else _t("trade_sell")
     sym = (t.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
     pnl = t.get("pnl")
@@ -491,24 +493,35 @@ def format_portfolio_summary(
     total_pnl = pnl["total_pnl"]
     open_lots_mtm = pnl["open_lots_mtm"]
     pnl_pct = pnl["pnl_pct"]
+    from notifications.telegram_i18n import money, signed_money, t
+
     wert_icon = _pnl_emoji(total_pnl)
     trade_icon = _pnl_emoji(trade_realized)
     lots_icon = _pnl_emoji(open_lots_mtm)
-    pos_label = "Position" if position_count == 1 else "Positionen"
+    pos_label = t("pos_label_one") if position_count == 1 else t("pos_label_many")
     coins_line = ""
     if position_count > 0:
         if pos_mv > 0:
             coins_line = (
-                f"📦 Coins <i>({position_count} {pos_label})</i>\n"
-                f"   Einstand <b>${cost_basis:,.0f}</b> · "
-                f"Marktwert <b>${pos_mv:,.0f}</b>\n"
-                f"   Δ vs Entry {lots_icon} <b>${open_lots_mtm:+.0f}</b>\n"
+                t("portfolio_coins", count=position_count, pos_label=pos_label) + "\n"
+                + t(
+                    "portfolio_cost_mark",
+                    cost=money(cost_basis),
+                    mark=money(pos_mv),
+                )
+                + "\n"
+                + t(
+                    "portfolio_delta_entry",
+                    icon=lots_icon,
+                    delta=signed_money(open_lots_mtm),
+                )
+                + "\n"
             )
         else:
             coins_line = (
-                f"📦 Coins <i>({position_count} {pos_label})</i>\n"
-                f"   Einstand <b>${cost_basis:,.0f}</b> · "
-                f"<i>Marktwert n/a (kein Live-Kurs)</i>\n"
+                t("portfolio_coins", count=position_count, pos_label=pos_label) + "\n"
+                + t("portfolio_cost_mark_na", cost=money(cost_basis))
+                + "\n"
             )
 
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
@@ -520,7 +533,6 @@ def format_portfolio_summary(
             total_value=total_value,
             prices=prices,
             cache_ttl_sec=180.0 if fast_daily_nav else 120.0,
-            # Fast /positions: skip full day-start ledger replay (only trade counts).
             lightweight=bool(fast_daily_nav),
         )
         if daily_line:
@@ -528,15 +540,19 @@ def format_portfolio_summary(
     except Exception:
         pass
 
-    wert_detail = (
-        f"   └ Gesamtwert <b>${total_value:,.0f}</b> − Start <b>${initial:,.0f}</b>\n"
-    )
+    wert_detail = t(
+        "portfolio_growth_detail",
+        total=money(total_value),
+        initial=money(initial),
+    ) + "\n"
     trade_detail = ""
     if trade_realized or position_count > 0:
-        trade_detail = f"{trade_icon} Verkäufe (realisiert) <b>${trade_realized:+.0f}</b>\n"
+        trade_detail = t(
+            "portfolio_realized",
+            icon=trade_icon,
+            realized=signed_money(trade_realized),
+        ) + "\n"
 
-    # Lightweight floor/slots — never call RiskManager.status_summary() here
-    # (that reloads the full order book multiple times and made /positions crawl).
     floor_line = ""
     try:
         risk_cfg = cfg.risk_config if hasattr(cfg, "risk_config") else {}
@@ -547,35 +563,49 @@ def format_portfolio_summary(
             max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
             open_n = int(position_count or 0)
             floor_line = (
-                f"🧱 Cash-Floor <b>${floor_abs:,.0f}</b> · "
-                f"frei für Käufe <b>${spendable:,.0f}</b>\n"
-                f"📦 Slots <b>{open_n}/{max_open}</b>\n"
+                t(
+                    "portfolio_cash_floor",
+                    floor=money(floor_abs),
+                    spendable=money(spendable),
+                )
+                + "\n"
+                + t("portfolio_slots", open=open_n, max=max_open)
+                + "\n"
             )
     except Exception:
         pass
 
     body = (
-        f"<b>📊 Portfolio</b>{mode_line}\n\n"
-        f"💵 {cash_label} <b>${balance:,.2f}</b>\n"
-        f"{floor_line}"
-        f"{coins_line}"
-        f"💰 Gesamtwert <b>${total_value:,.0f}</b>\n"
-        f"{wert_icon} Wertzuwachs <b>${total_pnl:+.1f}</b> (<code>{pnl_pct:+.1f}%</code>) "
-        f"<i>vs. Start ${initial:,.0f}</i>\n"
-        f"{wert_detail}"
-        f"{trade_detail}"
-        f"{daily_line}"
+        f"<b>{t('portfolio_title')}</b>{mode_line}\n\n"
+        + t("portfolio_cash", label=cash_label, balance=f"{balance:,.2f}")
+        + "\n"
+        + floor_line
+        + coins_line
+        + t("portfolio_nav", total=money(total_value))
+        + "\n"
+        + t(
+            "portfolio_growth",
+            icon=wert_icon,
+            pnl=signed_money(total_pnl, decimals=1),
+            pct=f"{pnl_pct:+.1f}%",
+            initial=money(initial),
+        )
+        + "\n"
+        + wert_detail
+        + trade_detail
+        + daily_line
     )
     if include_position_header and position_count > 0:
         if pos_mv > 0:
-            body += (
-                f"📋 <b>Positionen ({position_count})</b> · "
-                f"Marktwert <b>${pos_mv:,.0f}</b>"
+            body += t(
+                "portfolio_positions_header",
+                count=position_count,
+                mark=money(pos_mv),
             )
         else:
-            body += f"📋 <b>Positionen ({position_count})</b> · <i>Marktwert n/a</i>"
+            body += t("portfolio_positions_header_na", count=position_count)
     elif include_position_header:
-        body += "<b>Positionen (0)</b>"
+        body += t("portfolio_positions_empty_header")
     return body.rstrip() + ("\n" if body else "")
 
 
@@ -613,11 +643,13 @@ def format_positions_message(
                 include_position_header=False,
                 trade_realized=trade_realized,
             )
+        from notifications.telegram_i18n import t
+
         cash = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
         empty = (
-            "<b>📊 Portfolio</b>\n\n"
-            "Keine offenen Positionen.\n"
-            f"💵 {cash_label} <b>${cash:,.2f}</b>"
+            f"<b>{t('portfolio_title')}</b>\n\n"
+            f"{t('portfolio_no_positions')}\n"
+            + t("portfolio_cash", label=cash_label, balance=f"{cash:,.2f}")
         )
         if mode_label:
             empty += f"\n<i>{mode_label}</i>"
@@ -625,10 +657,10 @@ def format_positions_message(
             empty += "\n\n<b>Gate Spot-Bestände</b>\n"
             empty += "\n".join(format_holdings_lines(gate_holdings, {}))
         if include_trades:
-            empty += "\n\n<b>Letzte Trades</b>\n"
+            empty += f"\n\n{t('portfolio_last_trades')}\n"
             trades = history.get("trades", [])[-5:]
             if not trades:
-                empty += "<i>Keine Trades im Ledger.</i>"
+                empty += t("portfolio_no_trades")
             else:
                 for t in reversed(trades):
                     empty += _trade_line(t)
@@ -936,14 +968,20 @@ def format_trade_banner(result) -> str:
     usdt = float(result.usdt_amount or 0)
     price_str = format_usdt_price(price)
     amount_str = format_token_amount(amount)
+    from notifications.telegram_i18n import t
+
     if result.order_type == "BUY":
         return (
-            f"✅ <b>Kauf ausgeführt</b> — <b>{sym}</b>\n"
+            f"{t('buy_done', sym=sym)}\n"
             f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
         )
-    pnl_part = f" · PnL <b>${result.pnl:+.1f}</b>" if result.pnl is not None else ""
+    pnl_part = (
+        t("sell_done_pnl", pnl=f"{float(result.pnl):+.1f}")
+        if result.pnl is not None
+        else ""
+    )
     return (
-        f"✅ <b>Verkauf ausgeführt</b> — <b>{sym}</b>\n"
+        f"{t('sell_done', sym=sym)}\n"
         f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
     )
 

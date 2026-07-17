@@ -1693,9 +1693,9 @@ def get_system_lang():
         return "en"
 
 def get_text(key, default=""):
-    lang = get_system_lang()
-    trans = TRANSLATIONS.get(lang, TRANSLATIONS.get("en", {}))
-    return trans.get(key, default or key)
+    from core.i18n import get_text as _get_text
+
+    return _get_text(key, default)
 
 load_translations()
 

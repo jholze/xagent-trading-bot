@@ -2,7 +2,9 @@ import threading
 
 from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id
+from notifications.telegram_commands.menu_i18n import current_language, set_user_language
 from notifications.telegram_commands.position_display import send_positions_snapshot
+from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
 _COMPACT_COMMANDS = {"/positions", "/portfolio", "/status", "/balance"}
@@ -22,8 +24,10 @@ def _build_positions(
     tenant_id: str,
     scope: str,
     owner_chat_id: str,
+    lang: str,
 ):
     try:
+        set_user_language(lang)
         with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
             send_positions_snapshot(
                 fast=True,
@@ -33,8 +37,9 @@ def _build_positions(
                 scope=scope,
             )
     except Exception as e:
+        set_user_language(lang)
         send_telegram_message(
-            f"❌ Positionen konnten nicht geladen werden: {e}",
+            t("portfolio_load_failed", error=e),
             chat_id=chat_id or None,
         )
 
@@ -42,15 +47,16 @@ def _build_positions(
 def handle(text: str) -> bool:
     if text in _COMPACT_COMMANDS:
         detail_level = "compact"
-        loading = "⏳ <b>Portfolio</b> (Kurzliste) wird geladen…"
+        loading = t("portfolio_loading_compact")
     elif text in _FULL_COMMANDS:
         detail_level = "full"
-        loading = "⏳ <b>Portfolio</b> (Details) wird geladen…"
+        loading = t("portfolio_loading_full")
     else:
         return False
 
     chat_id = current_chat_id()
     tenant_id, scope, owner_chat_id = tenant_snapshot()
+    lang = current_language()
     send_telegram_message(loading, chat_id=chat_id or None)
     threading.Thread(
         target=_build_positions,
@@ -60,6 +66,7 @@ def handle(text: str) -> bool:
             "tenant_id": tenant_id,
             "scope": scope,
             "owner_chat_id": owner_chat_id,
+            "lang": lang,
         },
         daemon=True,
         name="positions-cmd",
