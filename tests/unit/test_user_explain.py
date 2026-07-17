@@ -46,6 +46,27 @@ class TestUserExplain(unittest.TestCase):
     def test_explain_sell_tier_stop(self):
         self.assertIn("Verlustgrenze", explain_sell_tier("SELL_STOP_FULL"))
 
+    def test_explain_grid_sell_not_rsi_overbought(self):
+        text = explain_sell_tier(
+            "SELL_PARTIAL_20",
+            sources=["grid", "mode_hybrid"],
+            ampel_text="Grid sell L1 @ 59.80 (slice 22%)",
+        )
+        self.assertIn("Grid", text)
+        self.assertNotIn("überkauft", text.lower())
+        analysis = DummyAnalysis(
+            action="SELL_PARTIAL_20",
+            normalized_action="SELL_PARTIAL_20",
+            sources=["grid", "mode_hybrid"],
+            ampel_text="Grid sell L1 @ 59.80 (slice 22%, range 58.9-60.2)",
+            rsi=19.1,
+            rationale="Grid sell L1 | mode=HYBRID",
+        )
+        result = explain_trade(analysis)
+        self.assertIn("Grid", result["why_de"])
+        self.assertNotIn("überkauft", result["why_de"].lower())
+        self.assertIn("Grid", result["source_de"])
+
     def test_explain_trade_buy(self):
         analysis = DummyAnalysis(
             action="BUY",

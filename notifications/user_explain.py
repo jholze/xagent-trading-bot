@@ -148,14 +148,36 @@ def explain_risk(message: str, code: str = "") -> str:
     return message
 
 
-def explain_sell_tier(signal: str) -> str:
+def explain_sell_tier(signal: str, sources: list | None = None, ampel_text: str = "") -> str:
     sig = (signal or "").upper()
+    src = [str(s).lower() for s in (sources or [])]
+    ampel = (ampel_text or "").lower()
+    is_grid = "grid" in src or "grid" in ampel or "grid sell" in ampel or "grid buy" in ampel
+
     if "STOP_FULL" in sig or sig.endswith("_FULL"):
         return "Not-Verkauf: Verlustgrenze — gesamte Position wird geschlossen."
     if "STOP_PARTIAL" in sig or "PARTIAL_50" in sig:
+        if is_grid and "regime" in " ".join(src):
+            return "Defensiv/Grid: 50 % der Position werden abgebaut (Regime-Flip)."
         return "Verlustgrenze — 50 % werden verkauft, Rest bleibt unter Beobachtung."
     if "TP" in sig or "TAKE_PROFIT" in sig:
         return "Gewinnziel erreicht — Teil der Position wird mit Gewinn verkauft."
+
+    if is_grid:
+        # Prefer concrete ampel (e.g. "Grid sell L1 @ …") over RSI templates
+        if ampel_text and "grid" in ampel:
+            return (
+                f"Grid-Level getroffen — Teilverkauf am Grid ({ampel_text}). "
+                "Bezogen auf Grid-Center/Levels, nicht zwingend auf Einstand."
+            )
+        if "30" in sig:
+            return "Grid-Level: ca. 30 % der Position werden am Sell-Level verkauft."
+        if "20" in sig:
+            return "Grid-Level: ca. 20 % der Position werden am Sell-Level verkauft."
+        if "10" in sig:
+            return "Grid-Level: ca. 10 % der Position werden am Sell-Level verkauft."
+        return "Grid-Verkauf — Position wird am Sell-Level (teilweise) reduziert."
+
     if "30" in sig:
         return "RSI überkauft (Stufe 2) — 30 % der Position werden verkauft."
     if "20" in sig:
@@ -216,6 +238,7 @@ def explain_trade(
     normalized = getattr(analysis, "normalized_action", action)
     sources = list(getattr(analysis, "sources", None) or [])
 
+    ampel = getattr(analysis, "ampel_text", "") or ""
     why_parts = []
     if "BUY_DCA" in str(action) or "BUY_DCA" in str(normalized):
         why_parts.append(
@@ -225,14 +248,16 @@ def explain_trade(
     elif "BUY" in str(action):
         why_parts.append(explain_rationale(rationale))
     elif "SELL" in str(action):
-        tier = explain_sell_tier(action)
+        tier = explain_sell_tier(action, sources=sources, ampel_text=ampel)
         if tier:
             why_parts.append(tier)
-        why_parts.append(explain_rationale(rationale))
+        # Skip generic TA rationales that contradict grid (e.g. RSI templates)
+        is_grid = "grid" in [s.lower() for s in sources] or "grid" in ampel.lower()
+        if not is_grid:
+            why_parts.append(explain_rationale(rationale))
     else:
         why_parts.append(explain_rationale(rationale))
 
-    ampel = getattr(analysis, "ampel_text", "")
     ampel_gloss = explain_ampel(ampel)
     if ampel_gloss and "HOLD" in str(normalized):
         why_parts.append(ampel_gloss)
@@ -250,6 +275,14 @@ def explain_trade(
         blocks["risk_de"] = explain_risk(trade_result.message)
 
     source_de = []
+    if any(str(s).lower().startswith("grid") or str(s).lower() == "grid" for s in sources) or (
+        "grid" in (ampel or "").lower()
+    ):
+        source_de.append("Grid")
+    if any("mode_hybrid" in str(s).lower() for s in sources):
+        source_de.append("Hybrid-Mode")
+    if any("mode_grid" in str(s).lower() for s in sources):
+        source_de.append("Grid-Mode")
     if "technical" in sources:
         source_de.append("Technische Analyse")
     if "x" in sources:
@@ -262,6 +295,8 @@ def explain_trade(
         source_de.append("Gewinnziel")
     if "stop_loss" in sources:
         source_de.append("Stop-Loss")
+    if "entry_sensor_15m" in sources:
+        source_de.append("15m Entry-Sensor")
     if "hermes" in sources or (social_ctx and social_ctx.get("hermes")):
         source_de.append("Hermes-Strategie")
 
