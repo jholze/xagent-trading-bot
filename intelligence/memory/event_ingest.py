@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
-from datetime import datetime, timezone
 from typing import Any
 
 from intelligence.memory.embeddings import embed_event
@@ -91,6 +91,7 @@ def ingest_news_item(
     published_at: str | None = None,
     body: str = "",
     symbols: list[str] | None = None,
+    event_type: str = "news",
     store: MemoryStore | None = None,
 ) -> MarketEvent | None:
     store = store or MemoryStore()
@@ -104,20 +105,109 @@ def ingest_news_item(
         return store.get_event(eid)
     syms = symbols or extract_symbols(text, default=["BTC/USDT"])
     impact = impact_from_text(text)
+    et = (event_type or "news").strip() or "news"
     ev = MarketEvent(
         event_id=eid,
         timestamp=published_at or utc_now_iso(),
-        event_type="news",
+        event_type=et,
         symbols=syms,
         impact_score=impact,
         description=(title or "")[:400],
         source=source,
         url=url or "",
         metadata={"body_excerpt": (body or "")[:300]},
-        embedding=embed_event(title, body, "news"),
+        embedding=embed_event(title, body, et),
     )
     store.upsert_event(ev)
     return ev
+
+
+def ingest_webhook_signal(
+    signal: Any,
+    *,
+    store: MemoryStore | None = None,
+) -> MarketEvent | None:
+    """Map ExternalSignal (news_alert / volume etc.) → MarketEvent. Never sole BUY."""
+    store = store or MemoryStore()
+    if signal is None:
+        return None
+    # duck-type ExternalSignal
+    source = getattr(signal, "source", None) or (signal.get("source") if isinstance(signal, dict) else "webhook")
+    symbol = getattr(signal, "symbol", None) or (signal.get("symbol") if isinstance(signal, dict) else "")
+    event_type = getattr(signal, "event_type", None) or (
+        signal.get("event_type") if isinstance(signal, dict) else "generic"
+    )
+    strength = float(
+        getattr(signal, "strength", None)
+        if not isinstance(signal, dict)
+        else signal.get("strength", 0.5)
+        or 0.5
+    )
+    raw = getattr(signal, "raw", None) or (signal.get("raw") if isinstance(signal, dict) else {}) or {}
+    ts = getattr(signal, "timestamp", None) or (
+        signal.get("timestamp") if isinstance(signal, dict) else None
+    )
+
+    title = (
+        str(raw.get("title") or raw.get("headline") or raw.get("message") or raw.get("text") or "")
+        .strip()
+    )
+    if not title:
+        title = f"{event_type} {symbol}".strip()
+    url = str(raw.get("url") or raw.get("link") or "").strip()
+    body = str(raw.get("body") or raw.get("description") or "").strip()
+    mem_type = "news" if event_type in ("news_alert", "news") else f"webhook_{event_type}"
+    # Map strength → impact: high strength news can be ± depending on keywords
+    base_impact = impact_from_text(f"{title} {body}")
+    if base_impact == 0.0 and event_type == "news_alert":
+        base_impact = max(-0.4, min(0.4, (strength - 0.5) * 0.8))
+    syms = [symbol] if symbol else extract_symbols(f"{title} {body}", default=["BTC/USDT"])
+    return ingest_news_item(
+        title=title,
+        url=url,
+        source=f"webhook:{source}",
+        published_at=ts,
+        body=body,
+        symbols=syms,
+        event_type=mem_type,
+        store=store,
+    )
+
+
+def ingest_x_post(
+    *,
+    text: str,
+    author: str = "",
+    url: str = "",
+    symbols: list[str] | None = None,
+    store: MemoryStore | None = None,
+    enabled: bool | None = None,
+) -> MarketEvent | None:
+    """Feature-flagged X/Twitter bridge → social_headline MarketEvent."""
+    if enabled is None:
+        try:
+            from core.config import get_bot_config
+
+            mem = (get_bot_config().raw.get("memory") or {}).get("x_bridge") or {}
+            enabled = bool(mem.get("enabled", False))
+        except Exception:
+            enabled = os.environ.get("MEMORY_X_BRIDGE", "").strip() in ("1", "true", "yes")
+    if not enabled:
+        return None
+    text = (text or "").strip()
+    if not text:
+        return None
+    store = store or MemoryStore()
+    title = text[:200]
+    return ingest_news_item(
+        title=title,
+        url=url,
+        source=f"x:{author or 'unknown'}",
+        body=text[:400],
+        symbols=symbols,
+        event_type="social_headline",
+        store=store,
+    )
 
 
 def sync_fusion_events(store: MemoryStore | None = None) -> int:

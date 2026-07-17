@@ -452,11 +452,12 @@
     "enabled": true,
     "news": {
       "coingecko_news": true,
-      "free_crypto_news": false,
+      "free_crypto_news": true,
       "cryptopanic_free": false,
       "rss_feeds": [
         "https://cointelegraph.com/rss",
-        "https://decrypt.co/feed"
+        "https://decrypt.co/feed",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/"
       ],
       "scrape_sources": [],
       "poll_sec": 600
@@ -464,6 +465,9 @@
     "onchain": {
       "defillama": true,
       "poll_sec": 3600
+    },
+    "x_bridge": {
+      "enabled": false
     }
   },
   "hermes": {

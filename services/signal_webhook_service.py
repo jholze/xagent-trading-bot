@@ -88,6 +88,16 @@ def process_signal_webhook(
 
     redis_ok = publish_redis(signal, config_raw=config_raw)
 
+    # Trading Memory: news_alert (and other) → MarketEvent (fail-open, never sole BUY)
+    try:
+        from intelligence.memory.event_ingest import ingest_webhook_signal
+        from intelligence.memory.store import memory_enabled
+
+        if memory_enabled(config_raw):
+            ingest_webhook_signal(signal)
+    except Exception as e:
+        log(f"signal_webhook memory ingest skipped: {e}", "DEBUG")
+
     cfg = (config_raw or {}).get("entry_sensor_15m") or {}
     if config_raw is None:
         from core.config import get_bot_config
