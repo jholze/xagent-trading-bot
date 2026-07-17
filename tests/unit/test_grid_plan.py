@@ -10,9 +10,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from core.models import AllocationDecision
 from strategies.grid_plan import (
+    apply_grid_sell_guards,
     build_grid_plan,
     evaluate_plan_at_price,
     recenter_plan,
+    should_block_recenter_below_entry,
     should_recenter,
     simulate_plan_path,
     spacing_atr_mult_for_coin,
@@ -181,6 +183,63 @@ class TestGridPlan(unittest.TestCase):
             prices, spacing_atr_mult=1.25, atr_pct=3.0, base_buy_usdt=400,
         )
         self.assertGreaterEqual(tight["trades"], wide["trades"])
+
+    def test_sell_guard_green_only_blocks_underwater(self):
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
+        raw = evaluate_plan_at_price(
+            plan, sell_lv.price * 1.001, has_position=True,
+        )
+        self.assertIn("SELL", raw.action)
+        blocked = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=sell_lv.price,
+            average_entry=120.0,  # underwater vs entry
+            mode="GRID",
+            policy={"enabled": True, "green_only_modes": ["GRID"], "green_buffer_pct": 0.15},
+        )
+        self.assertEqual(blocked.action, "HOLD")
+        self.assertIn("blocked", blocked.rationale.lower())
+
+    def test_sell_guard_hybrid_soft_slice(self):
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
+        raw = evaluate_plan_at_price(
+            plan, sell_lv.price * 1.001, has_position=True,
+        )
+        soft = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=sell_lv.price,
+            average_entry=120.0,
+            mode="HYBRID",
+            policy={
+                "enabled": True,
+                "green_only_modes": ["GRID"],
+                "soft_underwater_modes": ["HYBRID"],
+                "underwater_max_slice": 0.12,
+            },
+        )
+        self.assertIn("SELL", soft.action)
+        self.assertLessEqual(soft.sell_pos_frac, 0.12)
+        self.assertIn("underwater", soft.rationale.lower())
+
+    def test_block_recenter_below_entry(self):
+        self.assertTrue(
+            should_block_recenter_below_entry(
+                90.0, 100.0,
+                policy={"enabled": True, "block_recenter_below_entry": True,
+                        "re_center_max_drawdown_pct": 3.0},
+            )
+        )
+        self.assertFalse(
+            should_block_recenter_below_entry(
+                99.0, 100.0,
+                policy={"enabled": True, "block_recenter_below_entry": True,
+                        "re_center_max_drawdown_pct": 3.0},
+            )
+        )
 
 
 if __name__ == "__main__":

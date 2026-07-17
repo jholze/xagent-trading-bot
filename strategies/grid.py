@@ -18,10 +18,12 @@ from logger import log
 from strategies.base import BaseStrategy
 from strategies.grid_plan import (
     GridPlan,
+    apply_grid_sell_guards,
     build_grid_plan,
     evaluate_plan_at_price,
     plan_from_legacy_state,
     recenter_plan,
+    should_block_recenter_below_entry,
     should_recenter,
     spacing_atr_mult_for_coin,
 )
@@ -279,14 +281,29 @@ class GridStrategy(BaseStrategy):
                 symbol, plan_tf, price, {**params, "atr_pct": atr_pct},
             )
 
+        sell_policy = dict(gcfg.get("sell_policy") or {})
+        avg_entry = float(getattr(market, "average_entry", 0) or 0)
+
         if should_recenter(
             plan, price, atr_pct=atr_pct, re_center_atr_mult=re_center_mult,
         ):
-            plan = recenter_plan(
-                plan, price, atr_pct=atr_pct, spacing_atr_mult=spacing_mult,
-            )
-            self._persist_plan(plan, force=True)
-            log(f"[Grid] Re-centered plan for {symbol} @ {price:.6g} ({plan_tf})", "INFO")
+            if should_block_recenter_below_entry(
+                price, avg_entry, policy=sell_policy,
+            ):
+                log(
+                    f"[Grid] Re-center skipped {symbol}: price {price:.6g} "
+                    f"below entry {avg_entry:.6g} (sell_policy)",
+                    "INFO",
+                )
+            else:
+                plan = recenter_plan(
+                    plan, price, atr_pct=atr_pct, spacing_atr_mult=spacing_mult,
+                )
+                self._persist_plan(plan, force=True)
+                log(
+                    f"[Grid] Re-centered plan for {symbol} @ {price:.6g} ({plan_tf})",
+                    "INFO",
+                )
 
         bar_low, bar_high = self._level_bar_range(
             symbol, plan_tf, price, gcfg,
@@ -300,12 +317,22 @@ class GridStrategy(BaseStrategy):
             bar_low=bar_low,
             bar_high=bar_high,
         )
+        # Soft-guard: center + entry (staging live-feel)
+        if "SELL" in str(act.action or "").upper():
+            act = apply_grid_sell_guards(
+                act,
+                plan=plan,
+                sell_price=price,
+                average_entry=avg_entry,
+                mode=mode,
+                policy=sell_policy,
+            )
         if act.action != HOLD:
             self._persist_plan(plan, force=True)
         else:
             self._persist_plan(plan, force=False)
 
-        # HYBRID: only take grid sells / mild buys (smaller slice)
+        # HYBRID: mild buys (smaller slice)
         buy_frac = act.buy_usdt_frac
         if mode == MODE_HYBRID and act.action == "BUY":
             buy_frac = max(0.05, buy_frac * 0.6)

@@ -476,9 +476,26 @@ class BotConfig:
             "pure_grid_classes": ["large_cap"],
             "hybrid_tiers": ["volatile"],
             "no_pure_grid_classes": ["meme"],
+            # Sell soft-guard (staging)
+            "sell_policy": {
+                "enabled": True,
+                "require_sell_above_center": True,
+                "green_only_modes": ["GRID"],
+                "soft_underwater_modes": ["HYBRID"],
+                "underwater_max_slice": 0.12,
+                "green_buffer_pct": 0.15,
+                "block_recenter_below_entry": True,
+                "re_center_max_drawdown_pct": 3.0,
+                "allow_defensive_underwater": True,
+            },
         }
         raw = self._raw.get("grid", {})
-        return {**defaults, **raw}
+        merged = {**defaults, **raw}
+        # deep-merge sell_policy
+        sp = dict(defaults.get("sell_policy") or {})
+        sp.update(dict((raw or {}).get("sell_policy") or {}))
+        merged["sell_policy"] = sp
+        return merged
 
     @property
     def entry_sensor_15m_mode(self) -> str:

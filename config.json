@@ -1068,7 +1068,18 @@
     "pure_grid_tiers": ["stable"],
     "pure_grid_classes": ["large_cap"],
     "hybrid_tiers": ["volatile"],
-    "no_pure_grid_classes": ["meme"]
+    "no_pure_grid_classes": ["meme"],
+    "sell_policy": {
+      "enabled": true,
+      "require_sell_above_center": true,
+      "green_only_modes": ["GRID"],
+      "soft_underwater_modes": ["HYBRID"],
+      "underwater_max_slice": 0.12,
+      "green_buffer_pct": 0.15,
+      "block_recenter_below_entry": true,
+      "re_center_max_drawdown_pct": 3.0,
+      "allow_defensive_underwater": true
+    }
   },
   "multi_tenant": {
     "enabled": true,

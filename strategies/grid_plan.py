@@ -253,6 +253,119 @@ def evaluate_plan_at_price(
     return GridAction(action=HOLD, rationale="Grid monitoring")
 
 
+def apply_grid_sell_guards(
+    act: GridAction,
+    *,
+    plan: GridPlan,
+    sell_price: float,
+    average_entry: float = 0.0,
+    mode: str = "",
+    policy: dict | None = None,
+) -> GridAction:
+    """Staging soft-guard: classic grid + entry protection.
+
+    - Sells must be at/above grid center (upper half of grid).
+    - vs average entry:
+      - GRID (stable): green-only (price >= entry × buffer) → else HOLD
+      - HYBRID: allow underwater but cap slice (soft rotate)
+      - DEFENSIVE: no green guard (risk reduction allowed)
+    """
+    if not act or "SELL" not in str(act.action or "").upper():
+        return act
+    pol = dict(policy or {})
+    if not pol.get("enabled", True):
+        return act
+
+    mode_u = (mode or "").upper()
+    px = float(sell_price or act.level_price or 0)
+    lvl = float(act.level_price or px)
+    center = float(plan.center or 0)
+    eps = max(float(plan.touch_eps), 1e-6)
+
+    # 1) Classic grid: only sell levels at/above center
+    if pol.get("require_sell_above_center", True) and center > 0:
+        if lvl < center * (1.0 - eps):
+            return GridAction(
+                action=HOLD,
+                rationale=(
+                    f"Grid sell blocked: level {lvl:.6g} below center {center:.6g}"
+                ),
+            )
+
+    entry = float(average_entry or 0)
+    if entry <= 0 or px <= 0:
+        return act
+
+    buffer_pct = float(pol.get("green_buffer_pct", 0.15))
+    green_floor = entry * (1.0 + buffer_pct / 100.0)
+    underwater = px < green_floor
+
+    if not underwater:
+        return act
+
+    # DEFENSIVE: allow full intended sell for risk-off
+    if mode_u == "DEFENSIVE" or pol.get("allow_defensive_underwater", True) and mode_u == "DEFENSIVE":
+        return act
+
+    green_only_modes = {
+        str(m).upper() for m in (pol.get("green_only_modes") or ["GRID"])
+    }
+    soft_modes = {
+        str(m).upper() for m in (pol.get("soft_underwater_modes") or ["HYBRID"])
+    }
+
+    if mode_u in green_only_modes or pol.get("green_only", False):
+        return GridAction(
+            action=HOLD,
+            rationale=(
+                f"Grid sell blocked: price {px:.6g} < entry×buffer {green_floor:.6g} "
+                f"(green-only / {mode_u or 'GRID'})"
+            ),
+        )
+
+    if mode_u in soft_modes or not green_only_modes:
+        max_slice = float(pol.get("underwater_max_slice", 0.12))
+        new_frac = min(float(act.sell_pos_frac or 0), max_slice)
+        if new_frac < 0.05:
+            return GridAction(
+                action=HOLD,
+                rationale=(
+                    f"Grid sell blocked underwater: slice cap {max_slice:.0%} too small"
+                ),
+            )
+        return GridAction(
+            action=_sell_action_for_frac(new_frac),
+            level_index=act.level_index,
+            level_price=act.level_price,
+            sell_pos_frac=new_frac,
+            rationale=(
+                f"{act.rationale} | underwater soft slice {new_frac:.0%} "
+                f"(entry {entry:.6g}, px {px:.6g})"
+            ),
+        )
+
+    return act
+
+
+def should_block_recenter_below_entry(
+    price: float,
+    average_entry: float,
+    *,
+    policy: dict | None = None,
+) -> bool:
+    """Optional: avoid re-centering deep underwater (keeps sell ladder above entry)."""
+    pol = dict(policy or {})
+    if not pol.get("enabled", True) or not pol.get("block_recenter_below_entry", True):
+        return False
+    entry = float(average_entry or 0)
+    px = float(price or 0)
+    if entry <= 0 or px <= 0:
+        return False
+    # Block re-center if more than X% below entry (default 3%)
+    max_dd = float(pol.get("re_center_max_drawdown_pct", 3.0))
+    return px < entry * (1.0 - max_dd / 100.0)
+
+
 def spacing_atr_mult_for_coin(
     *,
     volatility_tier: str = "",
