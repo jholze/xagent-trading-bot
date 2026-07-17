@@ -223,23 +223,35 @@ def format_daily_nav_line(
     *,
     prices: dict | None = None,
     cache_ttl_sec: float = _NAV_CACHE_TTL,
+    lightweight: bool = False,
 ) -> str:
-    """One-line daily stats for cycle summary."""
+    """One-line daily stats for cycle summary / portfolio.
+
+    lightweight=True (fast /positions): buy/sell counts only — skips day-start
+    ledger replay which re-loads the full order book.
+    """
     mode = trading_mode or get_bot_config().trading_mode
     buys, sells, realized_today, has_activity = today_activity_stats(mode)
     if not has_activity:
         return ""
+
+    def _signed_usd(value: float) -> str:
+        if value >= 0:
+            return f"+${value:,.0f}"
+        return f"-${abs(value):,.0f}"
+
+    if lightweight:
+        return (
+            f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
+            f"Heute Verk. <b>{_signed_usd(realized_today)}</b>"
+        )
+
     nav_start = estimate_nav_at_day_start(mode, prices=prices, cache_ttl_sec=cache_ttl_sec)
     if total_value is None:
         from notifications.terminal_dashboard import _portfolio_snapshot
 
         total_value = float(_portfolio_snapshot(mode).get("total_value", 0) or 0)
     nav_delta = total_value - nav_start
-
-    def _signed_usd(value: float) -> str:
-        if value >= 0:
-            return f"+${value:,.0f}"
-        return f"-${abs(value):,.0f}"
 
     return (
         f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "

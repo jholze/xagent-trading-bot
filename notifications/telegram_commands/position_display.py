@@ -520,6 +520,8 @@ def format_portfolio_summary(
             total_value=total_value,
             prices=prices,
             cache_ttl_sec=180.0 if fast_daily_nav else 120.0,
+            # Fast /positions: skip full day-start ledger replay (only trade counts).
+            lightweight=bool(fast_daily_nav),
         )
         if daily_line:
             daily_line = f"{daily_line}\n"
@@ -533,16 +535,17 @@ def format_portfolio_summary(
     if trade_realized or position_count > 0:
         trade_detail = f"{trade_icon} Verkäufe (realisiert) <b>${trade_realized:+.0f}</b>\n"
 
+    # Lightweight floor/slots — never call RiskManager.status_summary() here
+    # (that reloads the full order book multiple times and made /positions crawl).
     floor_line = ""
     try:
-        from risk.risk_manager import RiskManager
-
-        st = RiskManager().status_summary()
-        floor_abs = float(st.get("cash_floor_abs") or 0)
-        spendable = float(st.get("spendable_usdt") or 0)
-        max_open = int(st.get("max_open_positions") or 0)
-        open_n = int(st.get("open_positions") or position_count or 0)
-        if floor_abs > 0:
+        risk_cfg = cfg.risk_config if hasattr(cfg, "risk_config") else {}
+        floor_pct = float((risk_cfg or {}).get("cash_floor_pct", 0) or 0)
+        if floor_pct > 0:
+            floor_abs = max(0.0, float(initial) * (floor_pct / 100.0))
+            spendable = max(0.0, float(balance) - floor_abs)
+            max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
+            open_n = int(position_count or 0)
             floor_line = (
                 f"🧱 Cash-Floor <b>${floor_abs:,.0f}</b> · "
                 f"frei für Käufe <b>${spendable:,.0f}</b>\n"
@@ -756,16 +759,97 @@ def _portfolio_tenant_ids(
     return resolve_tenant_id(tenant_id), resolve_tenant_scope(scope)
 
 
+def _active_lots_from_merged(merged: dict) -> list[dict]:
+    from strategies.positions import _active_lot_from_store_key, is_open_position
+
+    active: list[dict] = []
+    for pos_key, raw in merged.items():
+        if not is_open_position(raw):
+            continue
+        lot = _active_lot_from_store_key(pos_key, raw)
+        if lot["symbol"].upper().startswith("TEST"):
+            continue
+        active.append(lot)
+    return active
+
+
+def _sim_order_ledger_bundle(
+    *,
+    tenant_id: str,
+    scope: str,
+    history: dict,
+    cfg,
+    prefer_memory: bool = True,
+) -> dict:
+    """One Mongo orders load + one replay → cash, realized, open lots."""
+    from core.sim_ledger_replay import replay_simulated_ledger
+    from core.simulated_trading import simulated_ledger_scope
+    from data_manager import load_orders, load_positions_document
+    from services.ledger_sync import _reconcile_ladder_steps_in_snapshot
+    from strategies.positions import (
+        derive_positions_from_orders_and_cache,
+        list_active_positions,
+    )
+
+    ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
+    filled = [
+        o
+        for o in load_orders(ledger_scope, tenant_id=tenant_id).get("orders", [])
+        if o.get("status") == "filled"
+    ]
+    initial = initial_capital(
+        scope=ledger_scope,
+        config=cfg.raw,
+        history=history,
+        trading_mode=cfg.trading_mode,
+    )
+    replayed = replay_simulated_ledger(filled, initial)
+    cash = float(replayed["cash"])
+    trade_realized = float(replayed["realized_pnl"])
+
+    active: list[dict] = []
+    if prefer_memory:
+        active = list_active_positions(tenant_id=tenant_id, scope=scope)
+    if not active:
+        order_snap = dict(replayed["positions"])
+        _reconcile_ladder_steps_in_snapshot(order_snap)
+        cache_doc = load_positions_document(ledger_scope, tenant_id=tenant_id)
+        merged = derive_positions_from_orders_and_cache(
+            order_snap, cache_doc, tenant_id=tenant_id
+        )
+        active = _active_lots_from_merged(merged)
+
+    return {
+        "history": history,
+        "cash_balance": cash,
+        "trade_realized": trade_realized,
+        "active": active,
+        "gate_holdings": None,
+        "filled_orders": filled,
+    }
+
+
 def _refresh_positions_for_snapshot(
     *,
     fast: bool = False,
     tenant_id: str | None = None,
     scope: str | None = None,
 ) -> list[dict]:
-    """Load open lots from the tenant ledger (orders are source of truth)."""
-    from strategies.positions import list_active_positions_from_ledger
+    """Open lots for portfolio display.
+
+    fast=True: prefer warm in-memory tenant store (no full order replay).
+    Falls back to ledger rebuild when memory is empty or fast=False.
+    """
+    from strategies.positions import (
+        list_active_positions,
+        list_active_positions_from_ledger,
+    )
 
     tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
+    if fast:
+        active = list_active_positions(tenant_id=tid, scope=sc)
+        if active:
+            return active
     return list_active_positions_from_ledger(scope=sc, tenant_id=tid)
 
 
@@ -776,13 +860,12 @@ def resolve_portfolio_context(
     scope: str | None = None,
 ) -> dict:
     from core.simulated_trading import is_simulated_trading, simulated_ledger_scope, uses_order_ledger_cash
-    from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
+    from data_manager import resolve_sim_cash_balance
 
     cfg = get_bot_config()
     tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
     history = load_trade_history_safe(tenant_id=tid, scope=sc)
     if uses_simulated_live_portfolio(cfg.raw):
-        ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
         if is_dry_run_enhanced(cfg.raw):
             cash_label = "Sim USDT"
         elif is_simulated_trading(cfg.raw):
@@ -790,18 +873,32 @@ def resolve_portfolio_context(
         else:
             cash_label = "Cash (Dry Run)"
 
+        if uses_order_ledger_cash(cfg.raw):
+            bundle = _sim_order_ledger_bundle(
+                tenant_id=tid,
+                scope=sc,
+                history=history,
+                cfg=cfg,
+                prefer_memory=bool(fast),
+            )
+            return {
+                "history": history,
+                "cash_balance": bundle["cash_balance"],
+                "cash_label": cash_label,
+                "trade_realized": bundle["trade_realized"],
+                "gate_holdings": None,
+                "active": bundle["active"],
+            }
+
+        ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
         cash = resolve_sim_cash_balance(
             scope=ledger_scope,
             config=cfg.raw,
             history=history,
             tenant_id=tid,
         )
-        trade_realized = (
-            resolve_sim_realized_pnl(
-                scope=ledger_scope, config=cfg.raw, tenant_id=tid,
-            )
-            if uses_order_ledger_cash(cfg.raw)
-            else float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        trade_realized = float(
+            history.get("realized_pnl", history.get("total_pnl", 0)) or 0
         )
         return {
             "history": history,
@@ -884,8 +981,11 @@ def send_positions_snapshot(
     from telegram_notifier import send_telegram_message
 
     tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
-    active = _refresh_positions_for_snapshot(fast=fast, tenant_id=tid, scope=sc)
     ctx = resolve_portfolio_context(fast=fast, tenant_id=tid, scope=sc)
+    # Prefer lots already derived in the single order-ledger pass (no 2nd Mongo load).
+    active = ctx.get("active")
+    if active is None:
+        active = _refresh_positions_for_snapshot(fast=fast, tenant_id=tid, scope=sc)
 
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):

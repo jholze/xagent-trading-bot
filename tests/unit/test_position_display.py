@@ -61,6 +61,28 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Positionen (2)", msg)
         self.assertIn("Marktwert", msg)
 
+    def test_portfolio_summary_floor_line_without_risk_manager(self):
+        cfg = type("Cfg", (), {
+            "raw": {"risk": {"cash_floor_pct": 18}, "max_open_positions": 24},
+            "trading_mode": "live",
+            "risk_config": {"cash_floor_pct": 18},
+            "max_open_positions": 24,
+        })()
+        with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
+             patch("notifications.telegram_commands.position_display.initial_capital", return_value=100_000.0), \
+             patch("risk.risk_manager.RiskManager") as mock_rm:
+            msg = format_portfolio_summary(
+                {"virtual_balance": 50.0, "realized_pnl": 0},
+                total_unreal=0.0,
+                position_count=12,
+                cash_balance=50.0,
+                positions_market_value=99_000.0,
+            )
+        mock_rm.assert_not_called()
+        self.assertIn("Cash-Floor", msg)
+        self.assertIn("$18,000", msg)
+        self.assertIn("Slots <b>12/24</b>", msg)
+
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
         msg = format_portfolio_summary(
             {"virtual_balance": 3952.19, "realized_pnl": -111.82},
@@ -84,8 +106,17 @@ class TestPositionDisplay(unittest.TestCase):
              }), \
              patch("notifications.telegram_commands.position_display.is_dry_run_enhanced", return_value=False), \
              patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
-             patch("data_manager.resolve_sim_cash_balance", return_value=3952.19), \
-             patch("data_manager.resolve_sim_realized_pnl", return_value=-111.82), \
+             patch(
+                 "notifications.telegram_commands.position_display._sim_order_ledger_bundle",
+                 return_value={
+                     "history": {},
+                     "cash_balance": 3952.19,
+                     "trade_realized": -111.82,
+                     "active": [],
+                     "gate_holdings": None,
+                     "filled_orders": [],
+                 },
+             ), \
              patch("notifications.telegram_commands.position_display.fetch_usdt_balance") as mock_gate:
             ctx = resolve_portfolio_context()
             mock_gate.assert_not_called()
@@ -93,6 +124,7 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertAlmostEqual(ctx["cash_balance"], 3952.19)
         self.assertAlmostEqual(ctx["trade_realized"], -111.82)
         self.assertIsNone(ctx["gate_holdings"])
+        self.assertEqual(ctx["active"], [])
 
     def test_empty_positions_message(self):
         msg = format_positions_message([], {}, {"virtual_balance": 5000})
@@ -252,6 +284,8 @@ class TestPositionDisplay(unittest.TestCase):
 
     def test_refresh_positions_for_snapshot_reads_tenant_ledger(self):
         with patch(
+            "strategies.positions.list_active_positions", return_value=[]
+        ), patch(
             "strategies.positions.list_active_positions_from_ledger", return_value=[]
         ) as mock_ledger, patch(
             "core.tenant_context.resolve_tenant_scope", return_value="demo"
@@ -261,6 +295,22 @@ class TestPositionDisplay(unittest.TestCase):
             out = _refresh_positions_for_snapshot(fast=True)
             mock_ledger.assert_called_once_with(scope="demo", tenant_id="default")
             self.assertEqual(out, [])
+
+    def test_refresh_positions_for_snapshot_fast_uses_memory_when_warm(self):
+        warm = [{"symbol": "BTC/USDT", "amount": 1.0, "average_entry": 100.0}]
+        with patch(
+            "strategies.positions.list_active_positions", return_value=warm
+        ) as mock_mem, patch(
+            "strategies.positions.list_active_positions_from_ledger"
+        ) as mock_ledger, patch(
+            "core.tenant_context.resolve_tenant_scope", return_value="demo"
+        ), patch(
+            "core.tenant_context.resolve_tenant_id", return_value="default"
+        ):
+            out = _refresh_positions_for_snapshot(fast=True)
+            mock_mem.assert_called_once()
+            mock_ledger.assert_not_called()
+            self.assertEqual(out, warm)
 
     def test_send_positions_snapshot_reads_ledger_for_tenant(self):
         with patch("telegram_notifier.send_telegram_message"), \
@@ -274,6 +324,7 @@ class TestPositionDisplay(unittest.TestCase):
                  "cash_balance": 5000.0,
                  "cash_label": "Cash",
                  "gate_holdings": None,
+                 # No "active" key → falls back to refresh path
              }), patch("services.trading_service.TradingService") as mock_svc:
             mock_svc.return_value.mode_label.return_value = "demo"
             send_positions_snapshot(
@@ -282,6 +333,25 @@ class TestPositionDisplay(unittest.TestCase):
             mock_refresh.assert_called_once_with(
                 fast=True, tenant_id="henry", scope="demo"
             )
+
+    def test_send_positions_snapshot_reuses_active_from_context(self):
+        with patch("telegram_notifier.send_telegram_message"), \
+             patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
+             patch(
+                 "notifications.telegram_commands.position_display._refresh_positions_for_snapshot",
+             ) as mock_refresh, \
+             patch("notifications.telegram_commands.position_display.resolve_portfolio_context", return_value={
+                 "history": {"virtual_balance": 5000, "trades": []},
+                 "cash_balance": 5000.0,
+                 "cash_label": "Sim USDT",
+                 "gate_holdings": None,
+                 "active": [],
+             }), patch("services.trading_service.TradingService") as mock_svc:
+            mock_svc.return_value.mode_label.return_value = "demo"
+            send_positions_snapshot(
+                fast=True, detail_level="compact", tenant_id="default", scope="demo"
+            )
+            mock_refresh.assert_not_called()
 
     def test_format_position_card_trade_tree_mode(self):
         p = {

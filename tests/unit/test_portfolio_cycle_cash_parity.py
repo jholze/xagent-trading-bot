@@ -35,6 +35,17 @@ class TestPortfolioCycleCashParity(unittest.TestCase):
             patch("core.simulated_trading.simulated_ledger_scope", return_value="demo"),
             patch("data_manager.resolve_sim_cash_balance", return_value=order_cash),
             patch("data_manager.resolve_sim_realized_pnl", return_value=250.0),
+            patch(
+                "notifications.telegram_commands.position_display._sim_order_ledger_bundle",
+                return_value={
+                    "history": hist,
+                    "cash_balance": order_cash,
+                    "trade_realized": 250.0,
+                    "active": [],
+                    "gate_holdings": None,
+                    "filled_orders": [],
+                },
+            ),
             patch("data_manager.resolve_ledger_scope", return_value="demo"),
         ]
         for p in patches:
