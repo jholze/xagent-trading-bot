@@ -103,21 +103,24 @@ class RiskManager:
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
 
-        # Santiment sidecar: block new buys on CRASH / size_mult 0 / sensor block.
+        # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
             try:
-                from services.santiment_policy import get_santiment_policy
+                from services.market_policy_fusion import get_global_market_bias
 
-                san = get_santiment_policy(self.config.raw if hasattr(self.config, "raw") else None)
-                if san.get("block_buys"):
+                bias = get_global_market_bias(
+                    self.config.raw if hasattr(self.config, "raw") else None
+                )
+                if bias.get("block_buys"):
                     return RiskDecision(
                         approved=False,
                         message=(
-                            f"Santiment {san.get('regime') or 'block'}: "
-                            f"no new entries ({san.get('rationale') or 'policy'})"
+                            f"Market {bias.get('regime') or 'block'} "
+                            f"[{bias.get('source') or 'global'}]: "
+                            f"no new entries ({bias.get('rationale') or 'policy'})"
                         ),
-                        code="santiment_block",
-                        size_multiplier=float(san.get("size_mult") or 0.0),
+                        code="market_block",
+                        size_multiplier=float(bias.get("size_mult") or 0.0),
                     )
             except Exception:
                 pass
@@ -588,23 +591,27 @@ class RiskManager:
         throttle_at = float(risk.get("drawdown_throttle_pct", 10.0))
         dd_mult = float(risk.get("drawdown_size_multiplier", 0.5)) if drawdown_pct >= throttle_at else 1.0
 
-        san_mult = 1.0
-        san_regime = None
+        global_mult = 1.0
+        global_regime = None
+        global_source = None
         try:
-            from services.santiment_policy import get_santiment_policy
+            from services.market_policy_fusion import get_global_market_bias
 
-            san = get_santiment_policy(self.config.raw if hasattr(self.config, "raw") else None)
-            if san.get("apply_size_mult") and san.get("active"):
-                san_mult = max(0.0, min(1.5, float(san.get("size_mult") or 1.0)))
-                san_regime = san.get("regime")
+            bias = get_global_market_bias(
+                self.config.raw if hasattr(self.config, "raw") else None
+            )
+            if bias.get("apply_size_mult") and bias.get("active"):
+                global_mult = max(0.0, min(1.5, float(bias.get("size_mult") or 1.0)))
+                global_regime = bias.get("regime")
+                global_source = bias.get("source")
         except Exception:
             pass
 
-        total = trust_factor * conf_factor * atr_factor * dd_mult * san_mult
+        total = trust_factor * conf_factor * atr_factor * dd_mult * global_mult
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
-        # Allow Santiment CRASH (0) to zero out size; otherwise keep floor.
-        if san_mult <= 0:
+        # Allow CRASH/warmup (0) to zero out size; otherwise keep floor.
+        if global_mult <= 0:
             total = 0.0
         else:
             total = max(min_mult, min(max_mult, total))
@@ -615,8 +622,9 @@ class RiskManager:
             "atr_factor": round(atr_factor, 3),
             "drawdown_pct": round(drawdown_pct, 2),
             "drawdown_multiplier": dd_mult,
-            "santiment_size_mult": round(san_mult, 3),
-            "santiment_regime": san_regime,
+            "global_size_mult": round(global_mult, 3),
+            "global_regime": global_regime,
+            "global_bias_source": global_source,
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors

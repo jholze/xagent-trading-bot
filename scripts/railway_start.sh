@@ -3,11 +3,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Same monorepo image can run the Santiment sidecar when this service is selected.
+# Same monorepo image can run auxiliary services when selected by Railway service name.
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-santiment" || "${RUN_SANTIMENT_SIDECAR:-}" == "1" ]]; then
   echo "=== Santiment sidecar start ==="
   export PYTHONUNBUFFERED=1
   exec python3 -m services.santiment_sidecar
+fi
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-market-oracle" || "${RUN_MARKET_ORACLE:-}" == "1" ]]; then
+  echo "=== Market oracle start ==="
+  export PYTHONUNBUFFERED=1
+  exec python3 -m services.market_oracle
 fi
 
 echo "=== X-Agent Railway start ==="

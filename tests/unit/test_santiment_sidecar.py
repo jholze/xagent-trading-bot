@@ -159,7 +159,11 @@ class TestMarketPolicyFusion(unittest.TestCase):
                 "ttl_sec": 1800,
             }
         )
-        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        arch = {
+            "santiment_risk_enabled": True,
+            "market_oracle_risk_enabled": False,
+        }
+        bias = get_global_market_bias({"architecture": arch})
         self.assertTrue(bias["active"])
         self.assertGreater(bias["sentiment"], -0.55)
         self.assertEqual(bias["grid_spacing_mult"], 1.25)
@@ -174,7 +178,11 @@ class TestMarketPolicyFusion(unittest.TestCase):
                 "ttl_sec": 1800,
             }
         )
-        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        arch = {
+            "santiment_risk_enabled": True,
+            "market_oracle_risk_enabled": False,
+        }
+        bias = get_global_market_bias({"architecture": arch})
         self.assertEqual(apply_global_mode_bias(MODE_MOMENTUM, bias), MODE_HYBRID)
         self.assertEqual(apply_global_mode_bias(MODE_GRID, bias), MODE_GRID)
         self.assertNotEqual(apply_global_mode_bias(MODE_MOMENTUM, bias), MODE_DEFENSIVE)
@@ -189,7 +197,14 @@ class TestMarketPolicyFusion(unittest.TestCase):
                 "ttl_sec": 1800,
             }
         )
-        bias = get_global_market_bias({"architecture": {"santiment_risk_enabled": True}})
+        bias = get_global_market_bias(
+            {
+                "architecture": {
+                    "santiment_risk_enabled": True,
+                    "market_oracle_risk_enabled": False,
+                }
+            }
+        )
         ctx = inject_global_sentiment({}, bias)
         self.assertIn("santiment_sentiment", ctx)
         self.assertGreater(ctx["santiment_sentiment"], 0)

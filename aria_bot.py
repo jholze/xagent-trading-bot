@@ -195,6 +195,35 @@ def health_detail():
         }
     except Exception:
         santiment = {}
+    try:
+        from services.market_oracle_store import (
+            get_latest_snapshot as get_oracle_snap,
+            snapshot_is_fresh as oracle_fresh,
+            status_line as oracle_line,
+        )
+        from services.market_policy_fusion import get_global_market_bias
+
+        ora = get_oracle_snap()
+        market_oracle = {
+            "line": oracle_line(),
+            "fresh": oracle_fresh(ora),
+            "state": (ora or {}).get("state") or (ora or {}).get("regime"),
+            "size_mult": (ora or {}).get("size_mult"),
+            "as_of": (ora or {}).get("as_of"),
+        }
+        fusion = get_global_market_bias()
+        market_fusion = {
+            "active": fusion.get("active"),
+            "source": fusion.get("source"),
+            "regime": fusion.get("regime"),
+            "size_mult": fusion.get("size_mult"),
+            "sensor_policy": fusion.get("sensor_policy"),
+            "block_buys": fusion.get("block_buys"),
+            "warmup_active": fusion.get("warmup_active"),
+        }
+    except Exception:
+        market_oracle = {}
+        market_fusion = {}
     return jsonify({
         "status": "OK",
         "redis": cache.available(),
@@ -203,6 +232,8 @@ def health_detail():
         "signal_webhook_recent": signal_events,
         "eval_queue": eval_queue,
         "santiment": santiment,
+        "market_oracle": market_oracle,
+        "market_fusion": market_fusion,
         "build": {
             "commit": identity.get("commit"),
             "branch": identity.get("branch"),
@@ -232,6 +263,34 @@ def santiment_ingest():
 
     body = request.get_json(silent=True)
     result = process_santiment_ingest(body, config_raw=cfg.raw)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/market-oracle/ingest", methods=["POST"])
+def market_oracle_ingest():
+    """Receive MarketSnapshot from the market-oracle service."""
+    from core.config import get_bot_config
+    from services.market_oracle_ingest import (
+        market_oracle_ingest_enabled,
+        market_oracle_token_ok,
+        process_market_oracle_ingest,
+    )
+
+    cfg = get_bot_config()
+    if not market_oracle_ingest_enabled(cfg.raw):
+        return jsonify({"error": "market oracle ingest disabled"}), 404
+
+    token = (
+        request.headers.get("X-Market-Oracle-Token")
+        or request.headers.get("X-Oracle-Token")
+        or request.args.get("token")
+    )
+    if not market_oracle_token_ok(token, cfg.raw):
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True)
+    result = process_market_oracle_ingest(body, config_raw=cfg.raw)
     status = 200 if result.get("ok") else 400
     return jsonify(result), status
 

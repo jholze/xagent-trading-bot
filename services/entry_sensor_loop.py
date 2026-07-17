@@ -215,18 +215,18 @@ def _poll_once(orchestrator) -> None:
         if hours_since is not None and hours_since < cooldown_h:
             continue
 
-        # Santiment sidecar sensor_policy: block / shadow override config mode.
+        # Global bias (oracle + santiment) sensor_policy: block / shadow.
         effective_mode = mode
         try:
-            from services.santiment_policy import get_santiment_policy
+            from services.market_policy_fusion import get_global_market_bias
 
-            san = get_santiment_policy()
-            if san.get("apply_sensor_policy") and san.get("active"):
-                pol = str(san.get("sensor_policy") or "active").lower()
+            bias = get_global_market_bias()
+            if bias.get("apply_sensor_policy") and bias.get("active"):
+                pol = str(bias.get("sensor_policy") or "active").lower()
                 if pol == "block":
                     log(
-                        f"15m sensor skip {symbol}: Santiment {san.get('regime')} "
-                        f"sensor_policy=block",
+                        f"15m sensor skip {symbol}: market {bias.get('regime')} "
+                        f"[{bias.get('source')}] sensor_policy=block",
                         "INFO",
                     )
                     continue
