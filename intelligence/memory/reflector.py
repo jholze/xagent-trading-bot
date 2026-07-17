@@ -119,5 +119,25 @@ def reflect(
         ):
             lessons += 1
 
+    # Pass 2: rebuild already stamps soft_block/size_bias on the active scope (demo on
+    # staging). Reinforce those profiles even when the sell-count loop above missed them
+    # (e.g. sparse TradeMemory rows) — always use profile.ledger_scope, never live-only.
+    for prof in store.list_profiles(tenant_id=tenant_id, limit=200):
+        if prof.entry_bias != "soft_block" and "weak" not in (prof.rationale or "").lower():
+            continue
+        if (prof.sells_30d or 0) < min_samples and len(by_sym.get(prof.symbol, [])) < min_samples:
+            continue
+        changed = False
+        if prof.size_bias > 0.7:
+            prof.size_bias = 0.7
+            changed = True
+        stamp = f"reflect soft_block n={prof.sells_30d or 0}"
+        if stamp not in (prof.rationale or ""):
+            base = (prof.rationale or "weak history").strip()
+            prof.rationale = f"{base} | {stamp}"[:200]
+            changed = True
+        if changed and store.upsert_profile(prof):
+            profile_updates += 1
+
     log(f"memory reflect: lessons={lessons} profile_updates={profile_updates}", "INFO")
     return {"lessons": lessons, "profile_updates": profile_updates}
