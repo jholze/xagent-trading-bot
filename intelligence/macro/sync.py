@@ -101,7 +101,9 @@ def _load_btc_bars_optional() -> list[dict]:
         from pathlib import Path
         import json
 
-        p = Path("tests/fixtures/macro/btc_bars.json")
+        p = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "macro" / "btc_bars.json"
+        if not p.is_file():
+            p = Path("tests/fixtures/macro/btc_bars.json")
         if p.is_file():
             return list(json.loads(p.read_text()).get("bars") or [])
     except Exception:
