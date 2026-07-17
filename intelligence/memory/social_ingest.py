@@ -46,6 +46,19 @@ def clamp_impact(v: float) -> float:
     return max(-1.0, min(1.0, float(v)))
 
 
+def float_or(value: Any, default: float) -> float:
+    """Parse float; only fall back to default when value is None/missing/invalid.
+
+    Important: 0 and 0.0 are valid (e.g. LC sentiment=0) — never use `x or default`.
+    """
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def impact_from_action(action: str, confidence: float) -> float:
     """Map BUY/SELL/HOLD + conf% → impact in [-1, 1]."""
     a = (action or "HOLD").upper()
@@ -528,11 +541,14 @@ def sync_lc_memory(
             skipped += 1
             continue
         by_coin[sym].append(sig)
-        conf = float(sig.get("confidence") or 0)
+        conf = float_or(sig.get("confidence"), 0.0)
         action = str(sig.get("action") or "HOLD").upper()
-        galaxy = float(sig.get("galaxy_score") or 0)
-        sentiment = float(sig.get("sentiment") or 50)
-        alt_rank = int(sig.get("alt_rank") or 0)
+        galaxy = float_or(sig.get("galaxy_score"), 0.0)
+        sentiment = float_or(sig.get("sentiment"), 50.0)
+        try:
+            alt_rank = int(sig["alt_rank"]) if sig.get("alt_rank") is not None else 0
+        except (TypeError, ValueError):
+            alt_rank = 0
         sid = str(sig.get("signal_id") or "")
         rationale = str(sig.get("rationale") or "")
 
@@ -546,8 +562,8 @@ def sync_lc_memory(
                 g_delta = float(m.group(1))
             except ValueError:
                 g_delta = 0.0
-        if not g_delta and "galaxy_delta" in sig:
-            g_delta = float(sig.get("galaxy_delta") or 0)
+        if g_delta == 0.0 and sig.get("galaxy_delta") is not None:
+            g_delta = float_or(sig.get("galaxy_delta"), 0.0)
 
         if events_n >= max_ev:
             continue
@@ -658,13 +674,17 @@ def sync_lc_memory(
                 g_delta = float(m.group(1))
             except ValueError:
                 pass
+        try:
+            last_alt = int(last["alt_rank"]) if last.get("alt_rank") is not None else 0
+        except (TypeError, ValueError):
+            last_alt = 0
         feat = {
-            "galaxy_score": float(last.get("galaxy_score") or 0),
+            "galaxy_score": float_or(last.get("galaxy_score"), 0.0),
             "galaxy_delta": g_delta,
-            "alt_rank": int(last.get("alt_rank") or 0),
-            "sentiment": float(last.get("sentiment") or 50),
+            "alt_rank": last_alt,
+            "sentiment": float_or(last.get("sentiment"), 50.0),
             "last_action": str(last.get("action") or "HOLD").upper(),
-            "last_conf": float(last.get("confidence") or 0),
+            "last_conf": float_or(last.get("confidence"), 0.0),
             "as_of": utc_now_iso(),
         }
         if _merge_profile_features(store, sym, lc=feat):

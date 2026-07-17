@@ -1566,11 +1566,11 @@ def log_cmc_post(signal, post_id: str = None):
         "quotes_fallback": bool(getattr(signal, "quotes_fallback", False)),
     }
     pid = entry.get("post_id")
-    if pid and any(p.get("post_id") == pid for p in data.get("posts", [])):
-        return data
-    data.setdefault("posts", []).append(entry)
-    save_cmc_posts(data)
-    # Dual-write for Hermes social memory (memory_* only, fail-open)
+    already = bool(pid and any(p.get("post_id") == pid for p in data.get("posts", [])))
+    if not already:
+        data.setdefault("posts", []).append(entry)
+        save_cmc_posts(data)
+    # Dual-write always (even if JSON already had id) so failed first feed write can recover
     try:
         from intelligence.memory.social_ingest import append_social_feed
 
@@ -1628,10 +1628,11 @@ def log_lc_signal(signal, signal_id: str = None):
         "source": "lc",
     }
     sid = entry.get("signal_id")
-    if sid and any(s.get("signal_id") == sid for s in data.get("signals", [])):
-        return data
-    data.setdefault("signals", []).append(entry)
-    save_lc_signals(data)
+    already = bool(sid and any(s.get("signal_id") == sid for s in data.get("signals", [])))
+    if not already:
+        data.setdefault("signals", []).append(entry)
+        save_lc_signals(data)
+    # Dual-write always so memory_social_feed recovers after a failed first write
     try:
         from intelligence.memory.social_ingest import append_social_feed
 

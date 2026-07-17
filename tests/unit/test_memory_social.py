@@ -16,7 +16,9 @@ from intelligence.memory.social_ingest import (
     EVT_CMC_SOCIAL,
     EVT_CMC_TRENDING,
     EVT_LC_FADE,
+    EVT_LC_SENTIMENT,
     EVT_LC_SPIKE,
+    float_or,
     impact_from_action,
     ingest_social_signal,
     is_quotes_fallback,
@@ -152,6 +154,101 @@ class TestCmcLcSync(unittest.TestCase):
         out = sync_lc_memory(self.store, config=self.cfg, signals=[])
         self.assertEqual(out["lc_events"], 0)
         self.assertEqual(out["lc_features"], 0)
+
+    def test_lc_sentiment_zero_is_extreme_not_default_50(self):
+        """sentiment=0 must not become 50 via `x or 50` — emit extreme event + feature 0."""
+        self.assertEqual(float_or(0, 50.0), 0.0)
+        self.assertEqual(float_or(None, 50.0), 50.0)
+        signals = [
+            {
+                "timestamp": "2026-07-15T15:00:00",
+                "signal_id": "lc_DEAD_sent0",
+                "coin": "DEAD",
+                "action": "HOLD",
+                "confidence": 40,
+                "rationale": "Galaxy 40 (0), Sentiment 0%",
+                "galaxy_score": 40.0,
+                "galaxy_delta": 0.0,
+                "alt_rank": 500,
+                "sentiment": 0,  # legitimate zero
+                "source": "lc",
+            }
+        ]
+        out = sync_lc_memory(self.store, config=self.cfg, signals=signals)
+        self.assertGreaterEqual(out["lc_events"], 1)
+        events = self.store.list_events(limit=20)
+        sent_ev = [
+            e
+            for e in events
+            if e.event_type == EVT_LC_SENTIMENT and any("DEAD" in s for s in e.symbols)
+        ]
+        self.assertTrue(sent_ev, "sentiment=0 must trigger lc_sentiment_extreme")
+        self.assertLess(sent_ev[0].impact_score, 0)
+        prof = self.store.get_profile("DEAD/USDT")
+        self.assertIsNotNone(prof)
+        self.assertEqual(float((prof.features or {}).get("lc", {}).get("sentiment")), 0.0)
+
+
+class TestDualWriteOnDuplicate(unittest.TestCase):
+    def test_log_cmc_post_dual_writes_even_when_json_has_id(self):
+        """If JSON already has post_id, still call append_social_feed (retry path)."""
+        from data_manager import log_cmc_post
+
+        class Sig:
+            post_id = "cmc_dup_1"
+            coin = "ARIA"
+            action = "BUY"
+            confidence = 70
+            rationale = "dup test"
+            votes_bullish = 10
+            votes_bearish = 1
+            quotes_fallback = False
+
+        calls = []
+
+        def capture(entry):
+            calls.append(dict(entry))
+            return True
+
+        with patch("data_manager.load_cmc_posts", return_value={
+            "posts": [{"post_id": "cmc_dup_1", "coin": "ARIA"}]
+        }), patch("data_manager.save_cmc_posts", return_value=True), patch(
+            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
+        ):
+            log_cmc_post(Sig())
+            # second call: already in JSON — must still dual-write
+            log_cmc_post(Sig())
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[-1].get("post_id"), "cmc_dup_1")
+
+    def test_log_lc_signal_dual_writes_even_when_json_has_id(self):
+        from data_manager import log_lc_signal
+
+        class Sig:
+            post_id = "lc_dup_1"
+            coin = "SOL"
+            action = "BUY"
+            confidence = 65
+            rationale = "Galaxy 70 (+10)"
+            galaxy_score = 70
+            alt_rank = 20
+            sentiment = 0
+
+        calls = []
+
+        def capture(entry):
+            calls.append(dict(entry))
+            return True
+
+        with patch("data_manager.load_lc_signals", return_value={
+            "signals": [{"signal_id": "lc_dup_1", "coin": "SOL"}]
+        }), patch("data_manager.save_lc_signals", return_value=True), patch(
+            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
+        ):
+            log_lc_signal(Sig(), signal_id="lc_dup_1")
+            log_lc_signal(Sig(), signal_id="lc_dup_1")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(float(calls[-1].get("sentiment")), 0.0)
 
     def test_sync_social_memory_entry_point(self):
         with patch(
