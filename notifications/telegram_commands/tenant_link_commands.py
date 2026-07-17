@@ -39,8 +39,13 @@ def try_link_tenant_from_start(text: str, chat_id: str | int) -> tuple[bool, str
 
             lang = resolve_ui_language(None, tid)
             open_menu_for_chat(chat_id, lang=lang)
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                from logger import log
+
+                log(f"open_menu_for_chat after link failed (tenant={tid}): {e}", "WARNING")
+            except Exception:
+                pass
     return True, msg
 
 
@@ -68,8 +73,13 @@ def handle(text: str) -> bool:
             lang = resolve_ui_language(None, route.tenant_id)
             open_menu_for_chat(chat_id, lang=lang)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            from logger import log
+
+            log(f"/start open menu failed (chat={chat_id}): {e}", "WARNING")
+        except Exception:
+            pass
 
     send_telegram_message(
         "👋 Willkommen beim xAgent Trading Bot.\n\n"

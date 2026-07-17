@@ -62,19 +62,32 @@ MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
 MENU_SECTIONS: list[tuple[str, list[str]]] = MENU_SECTIONS_OPERATOR
 
 _ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS_OPERATOR for k in keys]
+_SATELLITE_COMMAND_KEYS = frozenset(k for _, keys in MENU_SECTIONS_SATELLITE for k in keys)
+
+
+def _operator_chat_id() -> str:
+    return (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+
+def _is_operator_chat(cid: str) -> bool:
+    op = _operator_chat_id()
+    return bool(cid and op and cid == op)
 
 
 def menu_role_for(*, chat_id: str | int | None = None, tenant_id: str | None = None) -> str:
-    """``operator`` = full menu; ``satellite`` = co-tester (e.g. Henry)."""
+    """``operator`` = full menu; ``satellite`` = co-tester (e.g. Henry).
+
+    Multi-tenant: non-operator chats fail closed to ``satellite`` (safer UI than
+    briefly showing onboard/sandbox if registry lookup fails).
+    """
+    cid = str(chat_id if chat_id is not None else (current_chat_id() or "")).strip()
     try:
         from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
 
         if not multi_tenant_enabled():
             return "operator"
 
-        cid = str(chat_id if chat_id is not None else (current_chat_id() or "")).strip()
-        op = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
-        if cid and op and cid == op:
+        if _is_operator_chat(cid):
             return "operator"
 
         tid = (tenant_id or "").strip()
@@ -85,9 +98,29 @@ def menu_role_for(*, chat_id: str | int | None = None, tenant_id: str | None = N
             tid = str(doc.get("tenant_id") or "").strip()
         if tid and tid != DEFAULT_TENANT:
             return "satellite"
+        # Unknown or default-linked non-operator chat: slim menu (fail closed).
+        if cid and not _is_operator_chat(cid):
+            return "satellite"
     except Exception:
-        pass
+        if cid and not _is_operator_chat(cid):
+            return "satellite"
     return "operator"
+
+
+def _register_chat_commands_safe(chat_id: str | int | None, lang: str | None = None) -> None:
+    if chat_id is None:
+        return
+    try:
+        from notifications.telegram_commands.command_menu import register_commands_for_chat
+
+        register_commands_for_chat(chat_id, lang=lang)
+    except Exception as e:
+        try:
+            from logger import log
+
+            log(f"register_commands_for_chat failed (chat={chat_id}): {e}", "WARNING")
+        except Exception:
+            pass
 
 
 def menu_sections_for(
@@ -220,12 +253,6 @@ def send_section_keyboard(section_id: str, lang: str | None = None, chat_id=None
 
 def open_menu_for_chat(chat_id: str | int, lang: str | None = None) -> bool:
     """Push section reply keyboard + inline overview to a specific chat."""
-    try:
-        from notifications.telegram_commands.command_menu import register_commands_for_chat
-
-        register_commands_for_chat(chat_id, lang=lang)
-    except Exception:
-        pass
     return show_home(chat_id=int(chat_id), lang=lang)
 
 
@@ -292,6 +319,8 @@ def _section_keyboard(
 def show_home(*, chat_id: int | None = None, message_id: int | None = None, lang: str | None = None) -> bool:
     lang = lang or current_language()
     target = _target_chat_id(chat_id)
+    # Keep chat-scoped ☰ list in sync for /menu, /start, and inline home.
+    _register_chat_commands_safe(target, lang=lang)
     markup = _home_keyboard(lang, chat_id=target)
     if chat_id is not None and message_id is not None:
         return edit_telegram_message(_home_text(lang), chat_id, message_id, reply_markup=markup)
@@ -391,8 +420,7 @@ def handle_callback(callback_query: dict) -> bool:
             return True
         # Satellites: ignore operator-only menu runs (stale inline buttons).
         if chat_id is not None and menu_role_for(chat_id=chat_id) == "satellite":
-            allowed = {k for _, keys in MENU_SECTIONS_SATELLITE for k in keys}
-            if cmd_key not in allowed:
+            if cmd_key not in _SATELLITE_COMMAND_KEYS:
                 if callback_id:
                     answer_callback_query(callback_id, callback_unknown_command())
                 return True
