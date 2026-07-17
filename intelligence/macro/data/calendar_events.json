@@ -1,0 +1,83 @@
+{
+  "events": [
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2026-07-18T12:45:00Z",
+      "title": "CPI YoY",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "NFP",
+      "scheduled_at": "2026-07-18T11:57:00Z",
+      "title": "Nonfarm Payrolls",
+      "importance": "high",
+      "actual": 180,
+      "consensus": 160,
+      "source": "fixture"
+    },
+    {
+      "event_code": "FOMC",
+      "scheduled_at": "2026-07-23T12:00:00Z",
+      "title": "FOMC Rate",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-01-15T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-02-12T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-03-12T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-04-10T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-05-13T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-06-11T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-07-11T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    },
+    {
+      "event_code": "CPI",
+      "scheduled_at": "2025-08-13T13:30:00Z",
+      "title": "CPI hist",
+      "importance": "high",
+      "source": "fixture"
+    }
+  ]
+}

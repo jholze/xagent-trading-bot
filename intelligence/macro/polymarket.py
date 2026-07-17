@@ -78,9 +78,9 @@ def load_fixture_markets(path: str | None = None) -> list[PmMarket]:
     if path:
         p = Path(path)
     else:
-        p = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "macro" / "polymarket_markets.json"
+        p = Path(__file__).resolve().parent / "data" / "polymarket_markets.json"
         if not p.is_file():
-            p = Path("tests/fixtures/macro/polymarket_markets.json")
+            p = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "macro" / "polymarket_markets.json"
     if not p.is_file():
         return []
     data = json.loads(p.read_text(encoding="utf-8"))

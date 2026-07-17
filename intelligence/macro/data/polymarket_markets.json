@@ -1,0 +1,16 @@
+{
+  "markets": [
+    {
+      "market_id": "fed-cut-sep",
+      "title": "Fed cuts rates in Sep",
+      "prob": 0.72,
+      "prev_prob": 0.55
+    },
+    {
+      "market_id": "btc-100k",
+      "title": "BTC above 100k",
+      "prob": 0.4,
+      "prev_prob": 0.42
+    }
+  ]
+}

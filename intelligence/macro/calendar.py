@@ -149,10 +149,10 @@ def load_fixture_events(path: str | None = None) -> list[MacroEvent]:
     if path:
         p = Path(path)
     else:
-        # repo-root relative to this package (works on Railway /app)
-        p = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "macro" / "calendar_events.json"
+        # packaged data (not under tests/ — Docker includes this)
+        p = Path(__file__).resolve().parent / "data" / "calendar_events.json"
         if not p.is_file():
-            p = Path("tests/fixtures/macro/calendar_events.json")
+            p = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "macro" / "calendar_events.json"
     if not p.is_file():
         return []
     data = json.loads(p.read_text(encoding="utf-8"))
