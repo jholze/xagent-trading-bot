@@ -127,23 +127,31 @@ def handle(text: str) -> bool:
     if not signals:
         posts = load_cmc_posts().get("posts", [])
         if posts:
+            from notifications.user_explain import cmc_score_line_de, cmc_signal_kind, cmc_source_label_de
+
             msg = f"<b>📊 CMC Signale (logged)</b>\n{header}\n\n"
             for p in posts[-8:]:
-                tier = "quote" if str(p.get("post_id", "")).startswith("cmc_quote_") else "log"
+                kind = cmc_signal_kind(p)
+                src = cmc_source_label_de(kind)
+                bull = p.get("votes_bullish", 0)
+                bear = p.get("votes_bearish", 0)
                 msg += (
-                    f"{p.get('coin')} {p.get('action')} ({p.get('confidence', 0)}%) "
-                    f"[{tier}] — {p.get('rationale', '')[:60]}\n"
+                    f"<b>[{src}]</b> {p.get('coin')} {p.get('action')} "
+                    f"({p.get('confidence', 0)}%) — "
+                    f"{cmc_score_line_de(kind, bull, bear)}\n"
+                    f"  {str(p.get('rationale', ''))[:70]}\n"
                 )
             send_telegram_message(msg)
             return True
         send_telegram_message(_cmc_unavailable_message(cfg))
         return True
 
-    msg = f"<b>📊 CMC Signale</b> — Beobachtung\n{header}\n\n"
+    msg = (
+        f"<b>📊 CMC Signale</b> — Beobachtung\n{header}\n"
+        f"<i>„Community-Votes“ nur bei echter Community-API; "
+        f"sonst Trend-/Kurs-Score.</i>\n\n"
+    )
     for s in signals[:10]:
-        tier = getattr(s, "signal_tier", "") or ""
-        qf = " · fallback" if getattr(s, "quotes_fallback", False) else ""
-        label = f" [{tier}{qf}]" if tier or qf else ""
-        msg += explain_cmc_signal(s) + label + "\n\n"
+        msg += explain_cmc_signal(s) + "\n\n"
     send_telegram_message(msg)
     return True

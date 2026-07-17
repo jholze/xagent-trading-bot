@@ -1,6 +1,12 @@
 import unittest
 
+from types import SimpleNamespace
+
 from notifications.user_explain import (
+    cmc_score_line_de,
+    cmc_signal_kind,
+    cmc_source_label_de,
+    explain_cmc_signal,
     explain_hermes_cycle,
     explain_hold_with_social,
     explain_rationale,
@@ -38,6 +44,59 @@ class TestUserExplain(unittest.TestCase):
         text = explain_rationale("CMC→BUY(82%)")
         self.assertIn("CMC", text)
         self.assertIn("82", text)
+        self.assertNotIn("Community", text)
+
+    def test_cmc_kind_labels_honest(self):
+        quote = SimpleNamespace(
+            quotes_fallback=True,
+            signal_tier="quote",
+            account="CMC Market",
+            rationale="H +5% in 24h",
+            post_id="cmc_quote_H_bull_2026-07-17",
+            action="BUY",
+            coin="H",
+            confidence=70,
+            votes_bullish=70,
+            votes_bearish=30,
+        )
+        self.assertEqual(cmc_signal_kind(quote), "quotes_synthetic")
+        self.assertIn("kein Community-Vote", cmc_score_line_de("quotes_synthetic", 70, 30))
+        self.assertNotIn("Community-Votes", explain_cmc_signal(quote))
+
+        trend = SimpleNamespace(
+            quotes_fallback=False,
+            signal_tier="trending",
+            account="CMC Market Trending",
+            rationale="CMC market trending #1 (trending/latest)",
+            post_id="cmc_mkt_trend_H_2026-07-17",
+            action="BUY",
+            coin="H",
+            confidence=62,
+            votes_bullish=62,
+            votes_bearish=38,
+            trending_rank=1,
+        )
+        self.assertEqual(cmc_signal_kind(trend), "market_trending")
+        self.assertEqual(cmc_source_label_de("market_trending"), "Markt-Trending")
+        text = explain_cmc_signal(trend)
+        self.assertIn("Markt-Trending", text)
+        self.assertIn("kein Community-Vote", text)
+
+        community = SimpleNamespace(
+            quotes_fallback=False,
+            signal_tier="community",
+            account="CMC Community",
+            rationale="SOL community bullish",
+            post_id="cmc_trend_SOL_1",
+            action="BUY",
+            coin="SOL",
+            confidence=80,
+            votes_bullish=85,
+            votes_bearish=15,
+            trending_rank=0,
+        )
+        self.assertEqual(cmc_signal_kind(community), "community")
+        self.assertIn("Community-Votes", cmc_score_line_de("community", 85, 15))
 
     def test_explain_risk_max_positions(self):
         de = explain_risk("Max open positions reached (5)")

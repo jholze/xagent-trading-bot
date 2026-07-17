@@ -233,9 +233,17 @@ class SocialPipeline:
             if post.post_id not in logged_ids and self._claim_post("cmc_post", post.post_id):
                 log_cmc_post(signal, post.post_id)
                 logged_ids.add(post.post_id)
+                from notifications.user_explain import (
+                    cmc_score_line_de,
+                    cmc_signal_kind,
+                    cmc_source_label_de,
+                )
+
+                kind = cmc_signal_kind(signal)
                 log(
-                    f"CMC signal: {signal.coin} {signal.action} ({signal.confidence}%) "
-                    f"votes {signal.votes_bullish}↑/{signal.votes_bearish}↓",
+                    f"CMC [{cmc_source_label_de(kind)}] {signal.coin} {signal.action} "
+                    f"({signal.confidence}%) "
+                    f"{cmc_score_line_de(kind, signal.votes_bullish, signal.votes_bearish)}",
                     "INFO",
                 )
         return self._cycle_cmc_signals

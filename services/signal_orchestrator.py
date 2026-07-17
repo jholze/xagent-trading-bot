@@ -67,6 +67,10 @@ class SignalOrchestrator:
                 "votes_bullish": getattr(s, "votes_bullish", 0),
                 "votes_bearish": getattr(s, "votes_bearish", 0),
                 "rationale": getattr(s, "rationale", ""),
+                "quotes_fallback": bool(getattr(s, "quotes_fallback", False)),
+                "signal_tier": getattr(s, "signal_tier", "") or "",
+                "account": getattr(s, "account", "") or "",
+                "post_id": getattr(s, "post_id", "") or "",
             }
         if coin_lc:
             s = coin_lc[0]

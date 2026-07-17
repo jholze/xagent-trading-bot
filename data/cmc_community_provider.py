@@ -85,9 +85,27 @@ class CMCCommunityParser:
             action = "HOLD"
             confidence = 45
 
-        rationale = post.text[:120] if post.text else f"Community sentiment for {post.coin}"
-        if total_votes > 0 and "(votes:" not in rationale:
-            rationale += f" (votes: {post.votes_bullish}↑/{post.votes_bearish}↓)"
+        rationale = post.text[:120] if post.text else f"CMC signal for {post.coin}"
+        if total_votes > 0 and "↑/" not in rationale:
+            author = (post.author or "").strip()
+            qf = bool(getattr(post, "quotes_fallback", False))
+            text_l = (post.text or "").lower()
+            if author == "CMC Market" or (qf and author != "CMC Market Trending"):
+                tag = "Kurs-Score"
+            elif author == "CMC Market Trending" and (
+                qf or "listings" in text_l or "mcap-band" in text_l
+            ):
+                tag = "Listings-Score"
+            elif author == "CMC Market Trending":
+                tag = "Trend-Score"
+            elif author in ("CMC Community", "CMC Trending"):
+                tag = "Community-Votes"
+            elif author == "CMC Content":
+                tag = "Content-Score"
+            else:
+                # Mock / unknown: do not claim community votes.
+                tag = "CMC-Score"
+            rationale += f" ({tag}: {post.votes_bullish}↑/{post.votes_bearish}↓)"
 
         signal = CMCCommunitySignal(
             coin=post.coin,

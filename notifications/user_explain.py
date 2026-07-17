@@ -16,7 +16,7 @@ _RATIONALE_PARTS = {
     "TA→take_profit": "Festes Gewinnziel erreicht — Teilgewinn wird mitgenommen.",
     "X→price_target hit": "Der empfohlene Kursziel-Preis vom X-Signal wurde erreicht — Verkauf.",
     "X→stop_loss hit": "Die empfohlene Stop-Loss-Marke vom X-Signal wurde unterschritten — Verkauf.",
-    "X+CMC consensus": "X (Twitter) und CMC-Community stimmen in die gleiche Richtung.",
+    "X+CMC consensus": "X (Twitter) und CMC-Signal (Markt/Community) zeigen in die gleiche Richtung.",
     "strong consensus": "Mehrere Quellen (Technik + Social) stimmen überein — stärkeres Signal.",
     "multi_source": "Mehrere Signalquellen liefern dasselbe Bild.",
     "DCA->accumulation": "Nachkauf (DCA) in der Akkumulationsphase — Position wird bei Dip vergrößert, Exit-Leiter bleibt unverändert.",
@@ -111,7 +111,7 @@ def _match_rationale_part(part: str) -> str:
         if m:
             action, conf = m.groups()
             act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else action
-            return f"CMC-Community tendiert zu {act_de} (Stimmung {conf}%)."
+            return f"CMC-Signal tendiert zu {act_de} (Score {conf}%)."
     if part.startswith("TA→"):
         return _RATIONALE_PARTS.get(part, f"Technische Analyse: {part[3:]}")
     return part
@@ -214,9 +214,12 @@ def _social_detail_lines(social_ctx: dict | None) -> list[str]:
         )
     cmc = social_ctx.get("cmc")
     if cmc:
+        kind = cmc_signal_kind(cmc)
+        bull = cmc.get("votes_bullish", 0)
+        bear = cmc.get("votes_bearish", 0)
         lines.append(
-            f"CMC: {cmc.get('action', '?')} ({cmc.get('confidence', 0)}%) — "
-            f"Votes {cmc.get('votes_bullish', 0)}↑/{cmc.get('votes_bearish', 0)}↓"
+            f"CMC [{cmc_source_label_de(kind)}]: {cmc.get('action', '?')} "
+            f"({cmc.get('confidence', 0)}%) — {cmc_score_line_de(kind, bull, bear)}"
         )
         if cmc.get("rationale"):
             lines.append(f"  \"{cmc['rationale'][:100]}\"")
@@ -294,7 +297,11 @@ def explain_trade(
     if "x" in sources:
         source_de.append("X/Twitter")
     if "cmc" in sources:
-        source_de.append("CMC Community")
+        cmc_meta = (social_ctx or {}).get("cmc") or {}
+        if cmc_meta:
+            source_de.append(f"CMC {cmc_source_label_de(cmc_signal_kind(cmc_meta))}")
+        else:
+            source_de.append("CMC")
     if "lc" in sources:
         source_de.append("LunarCrush")
     if "take_profit" in sources:
@@ -477,14 +484,74 @@ def explain_lc_signal(signal) -> str:
     return line
 
 
-def _cmc_tier_label(signal) -> str:
-    tier = getattr(signal, "signal_tier", "community") or "community"
-    labels = {
-        "trending": "Trending",
+def _cmc_attr(obj, key: str, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def cmc_signal_kind(signal) -> str:
+    """Classify CMC signal origin for honest operator labels.
+
+    - community: real CMC community endpoint votes
+    - market_trending: Startup/Builder trending/latest (not community chat)
+    - listings_synthetic: listings mcap-band momentum with synthetic scores
+    - quotes_synthetic: quotes/latest 24h% mapped to fake vote ratios
+    """
+    qf = bool(_cmc_attr(signal, "quotes_fallback", False))
+    tier = str(_cmc_attr(signal, "signal_tier", "") or "").lower()
+    author = str(
+        _cmc_attr(signal, "account", None)
+        or _cmc_attr(signal, "author", None)
+        or ""
+    )
+    rat = str(_cmc_attr(signal, "rationale", "") or "")
+    pid = str(_cmc_attr(signal, "post_id", "") or "")
+    rat_l = rat.lower()
+
+    if tier == "quote" or author == "CMC Market" or pid.startswith("cmc_quote_"):
+        return "quotes_synthetic"
+    if qf or pid.startswith("cmc_mkt_listings_") or "mcap-band" in rat_l or (
+        "listings" in rat_l and "market trending" in rat_l
+    ):
+        return "listings_synthetic"
+    if tier == "trending" or author == "CMC Market Trending" or "market trending" in rat_l:
+        return "market_trending"
+    if tier == "community" or author in ("CMC Community", "CMC Trending", "CMC Content"):
+        return "community"
+    if qf:
+        return "quotes_synthetic"
+    return "market_trending" if tier else "quotes_synthetic"
+
+
+def cmc_source_label_de(kind: str) -> str:
+    return {
         "community": "Community",
-        "quote": "Kursdaten",
-    }
-    return labels.get(tier, "Community")
+        "market_trending": "Markt-Trending",
+        "listings_synthetic": "Listings (abgeleitet)",
+        "quotes_synthetic": "Kursdaten (abgeleitet)",
+    }.get(kind, "CMC")
+
+
+def cmc_score_line_de(kind: str, bull: int | float, bear: int | float) -> str:
+    """Never call synthetic scores 'Community-Votes'."""
+    b, e = int(bull or 0), int(bear or 0)
+    if kind == "community":
+        return f"Community-Votes {b}↑/{e}↓"
+    if kind == "market_trending":
+        return f"Trend-Score {b}↑/{e}↓ (kein Community-Vote)"
+    if kind == "listings_synthetic":
+        return f"Listings-Score {b}↑/{e}↓ (aus Momentum, kein Community-Vote)"
+    if kind == "quotes_synthetic":
+        return f"Kurs-Score {b}↑/{e}↓ (aus 24h-%, kein Community-Vote)"
+    return f"Score {b}↑/{e}↓ (kein Community-Vote)"
+
+
+def _cmc_tier_label(signal) -> str:
+    """Short bracket label for /cmc lists."""
+    return cmc_source_label_de(cmc_signal_kind(signal))
 
 
 def explain_cmc_signal(signal) -> str:
@@ -496,13 +563,14 @@ def explain_cmc_signal(signal) -> str:
     bull = getattr(signal, "votes_bullish", 0)
     bear = getattr(signal, "votes_bearish", 0)
     rat = getattr(signal, "rationale", "") or ""
-    tier = _cmc_tier_label(signal)
+    kind = cmc_signal_kind(signal)
+    tier = cmc_source_label_de(kind)
     rank = int(getattr(signal, "trending_rank", 0) or 0)
-    rank_part = f" #{rank}" if rank > 0 and tier == "Trending" else ""
+    rank_part = f" #{rank}" if rank > 0 and kind == "market_trending" else ""
     if action == "BUY":
-        act_de = "bullish" if tier == "Kursdaten" else "Kauf-Stimmung"
+        act_de = "bullish" if kind in ("quotes_synthetic", "listings_synthetic") else "Kauf-Signal"
     elif action == "SELL":
-        act_de = "bearish" if tier == "Kursdaten" else "Verkauf-Stimmung"
+        act_de = "bearish" if kind in ("quotes_synthetic", "listings_synthetic") else "Verkauf-Signal"
     else:
         act_de = "neutral"
     coin_html = format_ticker_html(coin, symbol_suffix="")
@@ -510,7 +578,7 @@ def explain_cmc_signal(signal) -> str:
     links_part = f"\n{links}" if links else ""
     line = (
         f"<b>[{tier}{rank_part}]</b> {coin_html} — <b>{act_de}</b> ({conf}%). "
-        f"Stimmen: {bull}↑/{bear}↓.{links_part}"
+        f"{cmc_score_line_de(kind, bull, bear)}.{links_part}"
     )
     if rat:
         line += f"\n  {rat[:120]}"

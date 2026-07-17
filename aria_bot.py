@@ -486,12 +486,17 @@ def _run_tenant_price_cycle(
 
     for signal in cmc_signals:
         if signal.confidence >= 60:
-            line = f"📊 CMC {signal.action} {signal.coin} | {signal.confidence}%"
+            from notifications.user_explain import cmc_score_line_de, cmc_signal_kind, cmc_source_label_de
+
+            kind = cmc_signal_kind(signal)
+            src = cmc_source_label_de(kind)
+            line = f"📊 CMC [{src}] {signal.action} {signal.coin} | {signal.confidence}%"
             cycle_signal_lines.append(line)
             if not use_dashboard:
                 print(
-                    f"   → CMC Community: {signal.action} {signal.coin} | "
-                    f"Conf: {signal.confidence}% | Votes: {signal.votes_bullish}↑/{signal.votes_bearish}↓"
+                    f"   → CMC [{src}]: {signal.action} {signal.coin} | "
+                    f"Conf: {signal.confidence}% | "
+                    f"{cmc_score_line_de(kind, signal.votes_bullish, signal.votes_bearish)}"
                 )
 
     for signal in lc_signals:
@@ -626,10 +631,14 @@ def _run_tenant_price_cycle(
         eff = getattr(best_x, "effective_confidence", best_x.confidence)
         top_x = f"@{best_x.account} {best_x.action} {best_x.coin} ({eff:.0f}%)"
     if cmc_signals:
+        from notifications.user_explain import cmc_score_line_de, cmc_signal_kind, cmc_source_label_de
+
         best_cmc = max(cmc_signals, key=lambda s: s.confidence)
+        kind = cmc_signal_kind(best_cmc)
         top_cmc = (
-            f"{best_cmc.coin} {best_cmc.action} ({best_cmc.confidence}%) "
-            f"Votes {best_cmc.votes_bullish}↑/{best_cmc.votes_bearish}↓"
+            f"[{cmc_source_label_de(kind)}] {best_cmc.coin} {best_cmc.action} "
+            f"({best_cmc.confidence}%) "
+            f"{cmc_score_line_de(kind, best_cmc.votes_bullish, best_cmc.votes_bearish)}"
         )
 
     if lc_signals:
