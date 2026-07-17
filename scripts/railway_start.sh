@@ -14,6 +14,14 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-market-oracle" || "${RUN_MARKET_ORA
   export PYTHONUNBUFFERED=1
   exec python3 -m services.market_oracle
 fi
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-hermes" || "${RUN_HERMES:-}" == "1" ]]; then
+  echo "=== Hermes + Trading Memory service start ==="
+  export PYTHONUNBUFFERED=1
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  # Hermes is read-only on ledger; never run ledger repair/seed
+  exec python3 -m intelligence.memory.service
+fi
 
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true

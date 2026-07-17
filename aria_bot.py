@@ -230,6 +230,8 @@ def health_detail():
             "line": None,
             "cycle_blocks": None,
             "cycle_cuts": None,
+            "memory_enabled": None,
+            "hermes_external": None,
         }
         try:
             from services.market_context_observability import (
@@ -241,6 +243,14 @@ def health_detail():
             ctr = cycle_counters()
             market_fusion["cycle_blocks"] = ctr.get("buy_blocks")
             market_fusion["cycle_cuts"] = ctr.get("size_cuts")
+        except Exception:
+            pass
+        try:
+            from intelligence.memory.store import memory_enabled
+            from services.architecture_runtime import hermes_runs_in_process
+
+            market_fusion["memory_enabled"] = memory_enabled()
+            market_fusion["hermes_external"] = not hermes_runs_in_process()
         except Exception:
             pass
     except Exception:

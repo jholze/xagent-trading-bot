@@ -15,37 +15,16 @@ from logger import log
 
 
 def main():
+    """Delegate to intelligence.memory.service (memory + optional Hermes learning)."""
     cfg = get_bot_config()
     arch = cfg.architecture_config
-    if not arch.get("hermes_external"):
+    # Allow RUN_HERMES=1 even if hermes_external not yet flipped in config
+    if not arch.get("hermes_external") and os.environ.get("RUN_HERMES") != "1":
         print("hermes_external=false — Hermes läuft im Monolithen. Abbruch.")
         sys.exit(1)
-    if not cfg.hermes_enabled:
-        print("hermes.enabled=false — nichts zu tun.")
-        sys.exit(0)
+    from intelligence.memory.service import main as memory_main
 
-    interval = int(cfg.hermes_config.get("cycle_interval_sec", 3600))
-    agent = HermesAgent(cfg)
-    log(f"Hermes external worker started (interval={interval}s)", "INFO")
-
-    while True:
-        try:
-            cfg.refresh()
-            result = agent.run_cycle()
-            log(result.summary, "INFO")
-            try:
-                from bus.heartbeats import heartbeat_registry
-
-                heartbeat_registry.beat(
-                    "hermes",
-                    ttl_sec=int(arch.get("heartbeat_ttl_sec", 120)),
-                    key_prefix=arch.get("key_prefix", "aria:"),
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            log(f"Hermes worker error: {e}", "ERROR")
-        time.sleep(interval)
+    memory_main()
 
 
 if __name__ == "__main__":

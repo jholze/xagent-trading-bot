@@ -135,6 +135,25 @@ class RiskManager:
             except Exception:
                 pass
 
+            # Coin memory soft_block: skip *new* entries only (DCA / existing pos allowed)
+            if not has_position and not self._is_dca_buy(source, order):
+                try:
+                    from intelligence.memory.cache import get_entry_bias, get_coin_profile
+
+                    if get_entry_bias(order.symbol) == "soft_block":
+                        prof = get_coin_profile(order.symbol)
+                        return RiskDecision(
+                            approved=False,
+                            message=(
+                                f"Coin memory soft_block {order.symbol}: "
+                                f"{(prof.rationale if prof else 'weak history')}"
+                            ),
+                            code="coin_memory_soft_block",
+                            size_multiplier=0.0,
+                        )
+                except Exception:
+                    pass
+
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position and open_slots >= self.config.max_open_positions:
             return RiskDecision(
@@ -624,7 +643,29 @@ class RiskManager:
         except Exception:
             pass
 
-        total = trust_factor * conf_factor * atr_factor * dd_mult * global_mult
+        coin_bias = 1.0
+        coin_entry = "neutral"
+        coin_rationale = ""
+        try:
+            from intelligence.memory.cache import get_coin_profile, get_size_bias
+
+            coin_bias = float(
+                get_size_bias(
+                    order.symbol,
+                    config=self.config.raw if hasattr(self.config, "raw") else None,
+                )
+            )
+            prof = get_coin_profile(
+                order.symbol,
+                config=self.config.raw if hasattr(self.config, "raw") else None,
+            )
+            if prof:
+                coin_entry = prof.entry_bias or "neutral"
+                coin_rationale = (prof.rationale or "")[:120]
+        except Exception:
+            coin_bias = 1.0
+
+        total = trust_factor * conf_factor * atr_factor * dd_mult * global_mult * coin_bias
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
         # Allow CRASH/warmup (0) to zero out size; otherwise keep floor.
@@ -642,6 +683,9 @@ class RiskManager:
             "global_size_mult": round(global_mult, 3),
             "global_regime": global_regime,
             "global_bias_source": global_source,
+            "coin_size_bias": round(coin_bias, 3),
+            "coin_entry_bias": coin_entry,
+            "coin_memory": coin_rationale,
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors
