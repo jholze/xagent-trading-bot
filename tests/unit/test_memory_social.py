@@ -188,68 +188,6 @@ class TestCmcLcSync(unittest.TestCase):
         self.assertIsNotNone(prof)
         self.assertEqual(float((prof.features or {}).get("lc", {}).get("sentiment")), 0.0)
 
-
-class TestDualWriteOnDuplicate(unittest.TestCase):
-    def test_log_cmc_post_dual_writes_even_when_json_has_id(self):
-        """If JSON already has post_id, still call append_social_feed (retry path)."""
-        from data_manager import log_cmc_post
-
-        class Sig:
-            post_id = "cmc_dup_1"
-            coin = "ARIA"
-            action = "BUY"
-            confidence = 70
-            rationale = "dup test"
-            votes_bullish = 10
-            votes_bearish = 1
-            quotes_fallback = False
-
-        calls = []
-
-        def capture(entry):
-            calls.append(dict(entry))
-            return True
-
-        with patch("data_manager.load_cmc_posts", return_value={
-            "posts": [{"post_id": "cmc_dup_1", "coin": "ARIA"}]
-        }), patch("data_manager.save_cmc_posts", return_value=True), patch(
-            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
-        ):
-            log_cmc_post(Sig())
-            # second call: already in JSON — must still dual-write
-            log_cmc_post(Sig())
-        self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(calls[-1].get("post_id"), "cmc_dup_1")
-
-    def test_log_lc_signal_dual_writes_even_when_json_has_id(self):
-        from data_manager import log_lc_signal
-
-        class Sig:
-            post_id = "lc_dup_1"
-            coin = "SOL"
-            action = "BUY"
-            confidence = 65
-            rationale = "Galaxy 70 (+10)"
-            galaxy_score = 70
-            alt_rank = 20
-            sentiment = 0
-
-        calls = []
-
-        def capture(entry):
-            calls.append(dict(entry))
-            return True
-
-        with patch("data_manager.load_lc_signals", return_value={
-            "signals": [{"signal_id": "lc_dup_1", "coin": "SOL"}]
-        }), patch("data_manager.save_lc_signals", return_value=True), patch(
-            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
-        ):
-            log_lc_signal(Sig(), signal_id="lc_dup_1")
-            log_lc_signal(Sig(), signal_id="lc_dup_1")
-        self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(float(calls[-1].get("sentiment")), 0.0)
-
     def test_sync_social_memory_entry_point(self):
         with patch(
             "intelligence.memory.social_ingest._load_cmc_posts_combined",
@@ -312,6 +250,68 @@ class TestDualWriteOnDuplicate(unittest.TestCase):
         self.assertGreaterEqual(out["social_lessons"], 1)
         les = self.store.list_lessons(symbol="ARIA/USDT")
         self.assertTrue(any("hype" in (L.text or "").lower() or "hype_fade" in L.tags for L in les))
+
+
+class TestDualWriteOnDuplicate(unittest.TestCase):
+    def test_log_cmc_post_dual_writes_even_when_json_has_id(self):
+        """If JSON already has post_id, still call append_social_feed (retry path)."""
+        from data_manager import log_cmc_post
+
+        class Sig:
+            post_id = "cmc_dup_1"
+            coin = "ARIA"
+            action = "BUY"
+            confidence = 70
+            rationale = "dup test"
+            votes_bullish = 10
+            votes_bearish = 1
+            quotes_fallback = False
+
+        calls = []
+
+        def capture(entry):
+            calls.append(dict(entry))
+            return True
+
+        with patch("data_manager.load_cmc_posts", return_value={
+            "posts": [{"post_id": "cmc_dup_1", "coin": "ARIA"}]
+        }), patch("data_manager.save_cmc_posts", return_value=True), patch(
+            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
+        ):
+            log_cmc_post(Sig())
+            # second call: already in JSON — must still dual-write
+            log_cmc_post(Sig())
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[-1].get("post_id"), "cmc_dup_1")
+
+    def test_log_lc_signal_dual_writes_even_when_json_has_id(self):
+        from data_manager import log_lc_signal
+
+        class Sig:
+            post_id = "lc_dup_1"
+            coin = "SOL"
+            action = "BUY"
+            confidence = 65
+            rationale = "Galaxy 70 (+10)"
+            galaxy_score = 70
+            alt_rank = 20
+            sentiment = 0
+
+        calls = []
+
+        def capture(entry):
+            calls.append(dict(entry))
+            return True
+
+        with patch("data_manager.load_lc_signals", return_value={
+            "signals": [{"signal_id": "lc_dup_1", "coin": "SOL"}]
+        }), patch("data_manager.save_lc_signals", return_value=True), patch(
+            "intelligence.memory.social_ingest.append_social_feed", side_effect=capture
+        ):
+            log_lc_signal(Sig(), signal_id="lc_dup_1")
+            log_lc_signal(Sig(), signal_id="lc_dup_1")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(float(calls[-1].get("sentiment")), 0.0)
 
 
 class TestServiceWiresSocial(unittest.TestCase):
