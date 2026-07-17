@@ -215,7 +215,27 @@ def _poll_once(orchestrator) -> None:
         if hours_since is not None and hours_since < cooldown_h:
             continue
 
-        if mode == "active":
+        # Santiment sidecar sensor_policy: block / shadow override config mode.
+        effective_mode = mode
+        try:
+            from services.santiment_policy import get_santiment_policy
+
+            san = get_santiment_policy()
+            if san.get("apply_sensor_policy") and san.get("active"):
+                pol = str(san.get("sensor_policy") or "active").lower()
+                if pol == "block":
+                    log(
+                        f"15m sensor skip {symbol}: Santiment {san.get('regime')} "
+                        f"sensor_policy=block",
+                        "INFO",
+                    )
+                    continue
+                if pol == "shadow":
+                    effective_mode = "shadow"
+        except Exception:
+            pass
+
+        if effective_mode == "active":
             from bus.eval_queue import eval_queue_enabled
             from services.eval_queue_runtime import enqueue_entry_15m_eval
 

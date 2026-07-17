@@ -103,6 +103,25 @@ class RiskManager:
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
 
+        # Santiment sidecar: block new buys on CRASH / size_mult 0 / sensor block.
+        if not has_position:
+            try:
+                from services.santiment_policy import get_santiment_policy
+
+                san = get_santiment_policy(self.config.raw if hasattr(self.config, "raw") else None)
+                if san.get("block_buys"):
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Santiment {san.get('regime') or 'block'}: "
+                            f"no new entries ({san.get('rationale') or 'policy'})"
+                        ),
+                        code="santiment_block",
+                        size_multiplier=float(san.get("size_mult") or 0.0),
+                    )
+            except Exception:
+                pass
+
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position and open_slots >= self.config.max_open_positions:
             return RiskDecision(
@@ -569,19 +588,38 @@ class RiskManager:
         throttle_at = float(risk.get("drawdown_throttle_pct", 10.0))
         dd_mult = float(risk.get("drawdown_size_multiplier", 0.5)) if drawdown_pct >= throttle_at else 1.0
 
-        total = trust_factor * conf_factor * atr_factor * dd_mult
+        san_mult = 1.0
+        san_regime = None
+        try:
+            from services.santiment_policy import get_santiment_policy
+
+            san = get_santiment_policy(self.config.raw if hasattr(self.config, "raw") else None)
+            if san.get("apply_size_mult") and san.get("active"):
+                san_mult = max(0.0, min(1.5, float(san.get("size_mult") or 1.0)))
+                san_regime = san.get("regime")
+        except Exception:
+            pass
+
+        total = trust_factor * conf_factor * atr_factor * dd_mult * san_mult
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
-        total = max(min_mult, min(max_mult, total))
+        # Allow Santiment CRASH (0) to zero out size; otherwise keep floor.
+        if san_mult <= 0:
+            total = 0.0
+        else:
+            total = max(min_mult, min(max_mult, total))
 
-        return base_usdt * total, {
+        factors = {
             "trust_factor": round(trust_factor, 3),
             "conf_factor": round(conf_factor, 3),
             "atr_factor": round(atr_factor, 3),
             "drawdown_pct": round(drawdown_pct, 2),
             "drawdown_multiplier": dd_mult,
+            "santiment_size_mult": round(san_mult, 3),
+            "santiment_regime": san_regime,
             "total_multiplier": round(total, 3),
         }
+        return base_usdt * total, factors
 
     def _partial_sell_limits(self, symbol: str, timeframe: str) -> dict:
         params = self.config.strategy_params(symbol, timeframe)

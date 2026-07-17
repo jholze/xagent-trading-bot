@@ -10,9 +10,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from services.santiment_ingest import process_santiment_ingest, santiment_token_ok
+from services.santiment_policy import get_santiment_policy
 from services.santiment_sidecar.regime import decide_regime, should_push
 from services.santiment_sidecar.snapshot import build_snapshot
-from services.santiment_store import get_latest_snapshot, reset_for_tests, snapshot_is_fresh
+from services.santiment_store import get_latest_snapshot, reset_for_tests, snapshot_is_fresh, store_snapshot
 
 
 class TestSantimentRegime(unittest.TestCase):
@@ -78,6 +79,60 @@ class TestSantimentIngest(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["regime"], "RISK_OFF")
         self.assertTrue(snapshot_is_fresh(stored))
+
+
+class TestSantimentPolicy(unittest.TestCase):
+    def setUp(self):
+        reset_for_tests()
+
+    def tearDown(self):
+        reset_for_tests()
+
+    def test_fail_open_without_snapshot(self):
+        with patch("services.santiment_policy.get_latest_snapshot", return_value=None):
+            pol = get_santiment_policy({"architecture": {"santiment_risk_enabled": True}})
+        self.assertFalse(pol["active"])
+        self.assertEqual(pol["size_mult"], 1.0)
+        self.assertFalse(pol["block_buys"])
+
+    def test_risk_off_policy_from_snapshot(self):
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "RISK_OFF",
+                "size_mult": 0.35,
+                "sensor_policy": "shadow",
+                "ttl_sec": 1800,
+                "rationale": "test",
+            }
+        )
+        pol = get_santiment_policy(
+            {
+                "architecture": {
+                    "santiment_risk_enabled": True,
+                    "santiment_apply_size_mult": True,
+                    "santiment_apply_sensor_policy": True,
+                }
+            }
+        )
+        self.assertTrue(pol["active"])
+        self.assertEqual(pol["regime"], "RISK_OFF")
+        self.assertEqual(pol["size_mult"], 0.35)
+        self.assertEqual(pol["sensor_policy"], "shadow")
+        self.assertFalse(pol["block_buys"])
+
+    def test_crash_blocks_buys(self):
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "CRASH",
+                "size_mult": 0.0,
+                "sensor_policy": "block",
+                "ttl_sec": 1800,
+            }
+        )
+        pol = get_santiment_policy({"architecture": {"santiment_risk_enabled": True}})
+        self.assertTrue(pol["block_buys"])
 
 
 class TestSantimentRoute(unittest.TestCase):
