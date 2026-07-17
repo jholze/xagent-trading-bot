@@ -1,6 +1,6 @@
 # Santiment Sidecar Service — Plan (Railway Test)
 
-> **Status:** Phase 0–2 in progress (sidecar + bot ingest on staging)  
+> **Status:** Phase 0–3 live on staging (sidecar + ingest + risk/sensor wire-up)  
 > **Environment:** Railway project `trading-bot` · Environment **`test`**  
 > **Bot:** `xagent-test` (unverändert im Hot-Path; liest nur Snapshots/Events)  
 > **Related:** [`arena-market-oracle-service.md`](arena-market-oracle-service.md) · Epic #6 · LC bleibt Social-Bein im Bot  
