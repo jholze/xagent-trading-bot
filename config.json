@@ -383,6 +383,8 @@
     },
     "display_timezone": "Europe/Berlin",
     "telegram_startup_notify": true,
+    "market_context_state_notify": true,
+    "market_context_notify_min_sec": 120,
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
     "decisions_audit": true,

@@ -401,6 +401,13 @@ def build_cycle_summary(
                 t("cycle_realized_only", realized=signed_money(float(realized or 0)))
             )
 
+        try:
+            from services.market_context_observability import format_fusion_line
+
+            lines.append(format_fusion_line())
+        except Exception:
+            pass
+
         if attempts.get("rejected"):
             lines.append(
                 t(

@@ -112,6 +112,16 @@ class RiskManager:
                     self.config.raw if hasattr(self.config, "raw") else None
                 )
                 if bias.get("block_buys"):
+                    try:
+                        from services.market_context_observability import note_buy_blocked
+
+                        note_buy_blocked(
+                            regime=bias.get("regime"),
+                            source=bias.get("source"),
+                            rationale=str(bias.get("rationale") or ""),
+                        )
+                    except Exception:
+                        pass
                     return RiskDecision(
                         approved=False,
                         message=(
@@ -604,6 +614,13 @@ class RiskManager:
                 global_mult = max(0.0, min(1.5, float(bias.get("size_mult") or 1.0)))
                 global_regime = bias.get("regime")
                 global_source = bias.get("source")
+                if global_mult < 0.999:
+                    try:
+                        from services.market_context_observability import note_size_cut
+
+                        note_size_cut(mult=global_mult, regime=global_regime)
+                    except Exception:
+                        pass
         except Exception:
             pass
 

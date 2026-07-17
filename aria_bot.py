@@ -227,7 +227,22 @@ def health_detail():
             "sensor_policy": fusion.get("sensor_policy"),
             "block_buys": fusion.get("block_buys"),
             "warmup_active": fusion.get("warmup_active"),
+            "line": None,
+            "cycle_blocks": None,
+            "cycle_cuts": None,
         }
+        try:
+            from services.market_context_observability import (
+                cycle_counters,
+                format_fusion_line,
+            )
+
+            market_fusion["line"] = format_fusion_line(fusion)
+            ctr = cycle_counters()
+            market_fusion["cycle_blocks"] = ctr.get("buy_blocks")
+            market_fusion["cycle_cuts"] = ctr.get("size_cuts")
+        except Exception:
+            pass
     except Exception:
         market_oracle = {}
         market_fusion = {}
@@ -808,6 +823,12 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             from services.cycle_notification_policy import cycle_notification_policy
 
             cycle_notification_policy.reset_cycle()
+            try:
+                from services.market_context_observability import observe_cycle_start
+
+                observe_cycle_start(bot_config.raw)
+            except Exception:
+                pass
             try:
                 from services.market_service import reset_ohlcv_cache_cycle_stats
 
