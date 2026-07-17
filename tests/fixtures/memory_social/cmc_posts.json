@@ -1,0 +1,46 @@
+{
+  "posts": [
+    {
+      "timestamp": "2026-07-15T10:00:00",
+      "post_id": "cmc_community_ARIA_bull_1",
+      "coin": "ARIA",
+      "action": "BUY",
+      "confidence": 78,
+      "rationale": "Strong community bullish votes on ARIA breakout",
+      "votes_bullish": 120,
+      "votes_bearish": 30,
+      "source": "cmc"
+    },
+    {
+      "timestamp": "2026-07-15T11:00:00",
+      "post_id": "cmc_community_ARIA_bull_2",
+      "coin": "ARIA",
+      "action": "BUY",
+      "confidence": 72,
+      "rationale": "ARIA accumulate chatter",
+      "votes_bullish": 90,
+      "votes_bearish": 20,
+      "source": "cmc"
+    },
+    {
+      "timestamp": "2026-07-15T12:00:00",
+      "post_id": "cmc_quote_TRX_neutral_2026-07-15",
+      "coin": "TRX",
+      "action": "HOLD",
+      "confidence": 50,
+      "rationale": "TRX -0.4% in 24h \u2014 neutral (CMC market data)",
+      "votes_bullish": 50,
+      "votes_bearish": 50,
+      "source": "cmc"
+    },
+    {
+      "timestamp": "2026-07-15T13:00:00",
+      "post_id": "cmc_mkt_trend_SOL_1",
+      "coin": "SOL",
+      "action": "BUY",
+      "confidence": 70,
+      "rationale": "SOL entered CMC trending",
+      "source": "cmc"
+    }
+  ]
+}

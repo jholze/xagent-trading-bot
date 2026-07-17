@@ -1,0 +1,40 @@
+{
+  "signals": [
+    {
+      "timestamp": "2026-07-15T10:30:00",
+      "signal_id": "lc_SOL_2026071510",
+      "coin": "SOL",
+      "action": "BUY",
+      "confidence": 68,
+      "rationale": "Galaxy 72 (+15), AltRank 40 (20%\u2191), Sentiment 78%",
+      "galaxy_score": 72.0,
+      "alt_rank": 40,
+      "sentiment": 78.0,
+      "source": "lc"
+    },
+    {
+      "timestamp": "2026-07-15T14:00:00",
+      "signal_id": "lc_ARIA_fade_2026071514",
+      "coin": "ARIA",
+      "action": "SELL",
+      "confidence": 60,
+      "rationale": "Galaxy 48 (-12), AltRank 200, Sentiment 32%",
+      "galaxy_score": 48.0,
+      "alt_rank": 200,
+      "sentiment": 32.0,
+      "source": "lc"
+    },
+    {
+      "timestamp": "2026-07-10T10:00:00",
+      "signal_id": "lc_old_skip",
+      "coin": "ETH",
+      "action": "BUY",
+      "confidence": 80,
+      "rationale": "Galaxy 80 (+20), Sentiment 80%",
+      "galaxy_score": 80,
+      "alt_rank": 10,
+      "sentiment": 80,
+      "source": "lc"
+    }
+  ]
+}
