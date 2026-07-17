@@ -83,6 +83,10 @@ def run_once(cfg: dict, client: MarketDataClient, hyst: StateHysteresis) -> dict
         breadth_risk_on_min_green=cfg["breadth_risk_on_min_green"],
         breadth_risk_off_max_green=cfg["breadth_risk_off_max_green"],
         breadth_rotten_max_green=cfg["breadth_rotten_max_green"],
+        funding_extreme_pos=cfg["funding_extreme_pos"],
+        funding_extreme_neg=cfg["funding_extreme_neg"],
+        funding_crash_1h=cfg["funding_crash_1h"],
+        funding_crash_24h_blend=cfg["funding_crash_24h_blend"],
         risk_off_size=cfg["risk_off_size_mult"],
         neutral_size=cfg["neutral_size_mult"],
     )

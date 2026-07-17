@@ -10,6 +10,7 @@ import requests
 log = logging.getLogger("market_oracle.client")
 
 GATE_BASE = "https://api.gateio.ws/api/v4"
+BINANCE_FAPI = "https://fapi.binance.com"
 
 
 def _ema(closes: list[float], period: int) -> float | None:
@@ -216,8 +217,44 @@ class MarketDataClient:
             "breadth_mean_24h_pct": float(sum(rets) / n),
         }
 
+    def fetch_btc_funding_rate_pct(self) -> tuple[float | None, str]:
+        """BTC perpetual funding in percent (e.g. 0.01 = 0.01% per interval).
+
+        Gate first, Binance fallback. Fail-open: (None, \"\").
+        """
+        # Gate USDT-M futures contract
+        try:
+            resp = self._session.get(
+                f"{GATE_BASE}/futures/usdt/contracts/BTC_USDT",
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            row = resp.json() or {}
+            # funding_rate is decimal string e.g. "0.0001"
+            raw = row.get("funding_rate")
+            if raw is not None and str(raw) != "":
+                return float(raw) * 100.0, "gate"
+        except Exception as e:
+            log.warning("gate funding failed: %s", e)
+
+        try:
+            resp = self._session.get(
+                f"{BINANCE_FAPI}/fapi/v1/premiumIndex",
+                params={"symbol": "BTCUSDT"},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            row = resp.json() or {}
+            raw = row.get("lastFundingRate")
+            if raw is not None and str(raw) != "":
+                return float(raw) * 100.0, "binance"
+        except Exception as e:
+            log.warning("binance funding failed: %s", e)
+
+        return None, ""
+
     def fetch_features(self, *, breadth_top_n: int = 40) -> dict[str, float]:
-        """BTC/ETH multi-TF + structure + optional market breadth."""
+        """BTC/ETH multi-TF + structure + breadth + optional funding."""
         features: dict[str, float] = {}
         for label, pair in (("btc", "BTC_USDT"), ("eth", "ETH_USDT")):
             try:
@@ -231,4 +268,12 @@ class MarketDataClient:
             features.update(self.fetch_breadth(top_n=breadth_top_n))
         except Exception as e:
             log.warning("breadth failed: %s", e)
+        try:
+            fr, src = self.fetch_btc_funding_rate_pct()
+            if fr is not None:
+                features["btc_funding_rate_pct"] = float(fr)
+                # encode source as 1=gate 2=binance for snapshot features (numeric only)
+                features["btc_funding_source"] = 1.0 if src == "gate" else 2.0
+        except Exception as e:
+            log.warning("funding failed: %s", e)
         return features

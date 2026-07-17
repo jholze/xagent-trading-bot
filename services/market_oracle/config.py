@@ -51,6 +51,11 @@ def load_config() -> dict:
         "breadth_risk_on_min_green": _float("BREADTH_RISK_ON_MIN_GREEN", 0.45),
         "breadth_risk_off_max_green": _float("BREADTH_RISK_OFF_MAX_GREEN", 0.35),
         "breadth_rotten_max_green": _float("BREADTH_ROTTEN_MAX_GREEN", 0.25),
+        # A3 funding (percent per interval, e.g. 0.05 = 0.05%)
+        "funding_extreme_pos": _float("BTC_FUNDING_EXTREME_POS", 0.05),
+        "funding_extreme_neg": _float("BTC_FUNDING_EXTREME_NEG", -0.03),
+        "funding_crash_1h": _float("BTC_FUNDING_CRASH_1H_PCT", -1.5),
+        "funding_crash_24h_blend": _float("BTC_FUNDING_CRASH_24H_BLEND", -2.0),
         "risk_off_size_mult": _float("RISK_OFF_SIZE_MULT", 0.35),
         "neutral_size_mult": _float("NEUTRAL_SIZE_MULT", 0.85),
         "min_bars_to_flip": max(1, _int("MIN_BARS_TO_FLIP", 2)),

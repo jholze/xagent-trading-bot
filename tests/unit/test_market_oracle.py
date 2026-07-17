@@ -137,6 +137,53 @@ class TestOracleRegime(unittest.TestCase):
         )
         self.assertEqual(st, "RISK_ON")
 
+    def test_funding_crowded_long_risk_off(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 0.2,
+                "eth_ret_24h_pct": 0.1,
+                "btc_trend_4h": 0.0,
+                "btc_funding_rate_pct": 0.08,
+            }
+        )
+        self.assertEqual(st, "RISK_OFF")
+        self.assertIn("funding_crowded", why)
+
+    def test_funding_crash_with_dump(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": -2.5,
+                "eth_ret_24h_pct": -2.0,
+                "btc_ret_1h_pct": -0.5,
+                "btc_trend_4h": -1.0,
+                "btc_funding_rate_pct": 0.06,
+            }
+        )
+        self.assertEqual(st, "CRASH")
+        self.assertIn("funding_crash", why)
+
+    def test_funding_negative_soft_risk_on(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 0.3,
+                "eth_ret_24h_pct": 0.2,
+                "btc_ret_1h_pct": 0.1,
+                "btc_trend_4h": 1.0,
+                "btc_funding_rate_pct": -0.05,
+            }
+        )
+        self.assertEqual(st, "RISK_ON")
+        self.assertIn("funding_short_crowded", why)
+
+    def test_funding_missing_fail_open(self):
+        st, _, _ = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": -4.0,
+                "eth_ret_24h_pct": -3.0,
+            }
+        )
+        self.assertEqual(st, "RISK_OFF")
+
 
 class TestOraclePolicy(unittest.TestCase):
     def setUp(self):

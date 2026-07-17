@@ -32,10 +32,15 @@ def raw_state_from_features(
     breadth_risk_on_min_green: float = 0.45,
     breadth_risk_off_max_green: float = 0.35,
     breadth_rotten_max_green: float = 0.25,
+    funding_extreme_pos: float = 0.05,
+    funding_extreme_neg: float = -0.03,
+    funding_crash_1h: float = -1.5,
+    funding_crash_24h_blend: float = -2.0,
 ) -> tuple[str, float, str]:
     """Map features → provisional state (no hysteresis).
 
-    Breadth (optional): if missing, fail-open (price rules only).
+    Breadth/funding optional: if missing, fail-open (price rules only).
+    Funding unit: percent per interval (0.01 = 0.01%).
     """
     btc = float(features.get("btc_ret_24h_pct") or 0.0)
     eth = float(features.get("eth_ret_24h_pct") or 0.0)
@@ -49,6 +54,8 @@ def raw_state_from_features(
     has_breadth = features.get("breadth_pct_green") is not None
     pct_green = float(features["breadth_pct_green"]) if has_breadth else None
     med_br = features.get("breadth_median_24h_pct")
+    has_funding = features.get("btc_funding_rate_pct") is not None
+    funding = float(features["btc_funding_rate_pct"]) if has_funding else None
 
     parts = [f"btc_24h={btc:+.2f}%", f"eth_24h={eth:+.2f}%"]
     if has_1h:
@@ -62,6 +69,8 @@ def raw_state_from_features(
         parts.append(f"breadth_green={pct_green:.0%}")
         if med_br is not None:
             parts.append(f"breadth_med={float(med_br):+.2f}%")
+    if has_funding and funding is not None:
+        parts.append(f"fund={funding:+.4f}%")
     base = " ".join(parts)
 
     # A1 cascade: sharp 1h dump → CRASH without waiting for −6% 24h
@@ -73,9 +82,27 @@ def raw_state_from_features(
         conf = min(0.95, 0.6 + abs(blend) / 20.0)
         return "CRASH", conf, f"{base} crash_24h"
 
+    # A3: crowded long funding + price already dumping → CRASH
+    if (
+        has_funding
+        and funding is not None
+        and funding >= funding_extreme_pos
+        and (
+            blend <= funding_crash_24h_blend
+            or (has_1h and btc_1h_f <= funding_crash_1h)
+        )
+    ):
+        conf = min(0.92, 0.6 + abs(funding) * 2.0)
+        return "CRASH", conf, f"{base} funding_crash"
+
     if blend <= risk_off_24h or btc <= risk_off_24h:
         conf = min(0.9, 0.55 + abs(blend) / 15.0)
         return "RISK_OFF", conf, f"{base} risk_off"
+
+    # A3: extreme positive funding + soft red/flat → RISK_OFF
+    if has_funding and funding is not None and funding >= funding_extreme_pos and blend < 0.5:
+        conf = 0.68
+        return "RISK_OFF", conf, f"{base} funding_crowded_long"
 
     # Soft: 4h dump + weak trend → RISK_OFF even if 24h mild
     if btc_4h is not None and float(btc_4h) <= -2.0 and trend < 0:
@@ -92,15 +119,35 @@ def raw_state_from_features(
             return "RISK_OFF", conf, f"{base} breadth_weak"
 
     # RISK_ON: 24h green + trend up + 1h not strongly negative + breadth ok
-    if blend >= risk_on_24h and trend > 0:
+    def _risk_on_ok() -> tuple[bool, str]:
         if has_1h and btc_1h_f <= risk_on_1h_floor:
-            conf = 0.55
-            return "NEUTRAL", conf, f"{base} risk_on_blocked_1h"
+            return False, "risk_on_blocked_1h"
         if has_breadth and pct_green is not None and pct_green < breadth_risk_on_min_green:
+            return False, "risk_on_blocked_breadth"
+        return True, ""
+
+    if blend >= risk_on_24h and trend > 0:
+        ok, block = _risk_on_ok()
+        if not ok:
             conf = 0.55
-            return "NEUTRAL", conf, f"{base} risk_on_blocked_breadth"
+            return "NEUTRAL", conf, f"{base} {block}"
         conf = min(0.88, 0.5 + blend / 15.0)
         return "RISK_ON", conf, f"{base} risk_on"
+
+    # A3 bullish soft: extreme negative funding (shorts crowded) + mild green/flat + trend
+    if (
+        has_funding
+        and funding is not None
+        and funding <= funding_extreme_neg
+        and blend >= 0.0
+        and trend > 0
+    ):
+        ok, block = _risk_on_ok()
+        if ok:
+            conf = 0.62
+            return "RISK_ON", conf, f"{base} funding_short_crowded_risk_on"
+        conf = 0.55
+        return "NEUTRAL", conf, f"{base} funding_short_crowded_{block or 'blocked'}"
 
     conf = 0.55
     return "NEUTRAL", conf, f"{base} neutral"
@@ -185,6 +232,10 @@ def decide(
     breadth_risk_on_min_green: float = 0.45,
     breadth_risk_off_max_green: float = 0.35,
     breadth_rotten_max_green: float = 0.25,
+    funding_extreme_pos: float = 0.05,
+    funding_extreme_neg: float = -0.03,
+    funding_crash_1h: float = -1.5,
+    funding_crash_24h_blend: float = -2.0,
     risk_off_size: float = 0.35,
     neutral_size: float = 0.85,
 ) -> OracleDecision:
@@ -198,6 +249,10 @@ def decide(
         breadth_risk_on_min_green=breadth_risk_on_min_green,
         breadth_risk_off_max_green=breadth_risk_off_max_green,
         breadth_rotten_max_green=breadth_rotten_max_green,
+        funding_extreme_pos=funding_extreme_pos,
+        funding_extreme_neg=funding_extreme_neg,
+        funding_crash_1h=funding_crash_1h,
+        funding_crash_24h_blend=funding_crash_24h_blend,
     )
     state, bars = hyst.update(raw)
     pol = policy_for_state(state, risk_off_size=risk_off_size, neutral_size=neutral_size)
