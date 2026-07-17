@@ -244,6 +244,16 @@ class SignalOrchestrator:
             "order_type": trade_result.order_type if trade_result else None,
             "trade_message": trade_result.message if trade_result else "",
             "has_position": has_position,
+            "pnl": (
+                float(trade_result.pnl)
+                if trade_result and trade_result.pnl is not None
+                else None
+            ),
+            "usdt_amount": (
+                float(trade_result.usdt_amount)
+                if trade_result and trade_result.usdt_amount is not None
+                else None
+            ),
         }
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:
@@ -376,6 +386,16 @@ class SignalOrchestrator:
             "trade_message": trade_result.message if trade_result else "",
             "unrealized": unrealized,
             "why_de": explained.get("why_de", ""),
+            "pnl": (
+                float(trade_result.pnl)
+                if trade_result and trade_result.pnl is not None
+                else None
+            ),
+            "usdt_amount": (
+                float(trade_result.usdt_amount)
+                if trade_result and trade_result.usdt_amount is not None
+                else None
+            ),
         }
 
     def run_portfolio_dca_pass(

@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from core.models import TradeOrder
 from notifications.terminal_dashboard import (
     build_cycle_summary,
+    format_executed_cycle_line,
     format_recent_trade_line,
     recent_orders_lines,
     recent_trades_lines,
@@ -64,6 +65,7 @@ class TestCycleSummary(unittest.TestCase):
                 "executed": True,
                 "order_type": "BUY",
                 "normalized_action": "BUY",
+                "usdt_amount": 250,
             }],
             trading_mode="paper",
             x_signal_count=2,
@@ -72,7 +74,28 @@ class TestCycleSummary(unittest.TestCase):
         self.assertIn("Zyklus-Zusammenfassung", summary)
         self.assertIn("Ausgeführt", summary)
         self.assertIn("ARIA", summary)
+        self.assertIn("$250", summary)
         self.assertIn("Orders (24h", summary)
+
+    def test_format_executed_cycle_line_includes_pnl(self):
+        line = format_executed_cycle_line({
+            "symbol": "SOL/USDT",
+            "order_type": "SELL",
+            "usdt_amount": 140,
+            "pnl": 3.5,
+        })
+        self.assertIn("SOL", line)
+        self.assertIn("SELL", line)
+        self.assertIn("$140", line)
+        self.assertIn("PnL", line)
+        self.assertIn("+3.5", line)
+
+    def test_build_cycle_summary_ledger_sell_shows_pnl(self):
+        self._seed_orders()
+        with patch("notifications.terminal_dashboard.load_trade_history", return_value=self._history([])):
+            summary = build_cycle_summary(coin_results=[], trading_mode="paper")
+        self.assertIn("PnL", summary)
+        self.assertIn("SOL", summary)
 
     def test_recent_orders_from_ledger(self):
         self._seed_orders()
@@ -97,10 +120,15 @@ class TestCycleSummary(unittest.TestCase):
         sell = format_recent_trade_line({
             "type": "SELL", "symbol": "SOL/USDT", "usdt_received": 120, "pnl": 3.5, "source": "auto",
         })
+        buy_with_pnl = format_recent_trade_line({
+            "type": "BUY", "symbol": "ETH/USDT", "usdt_amount": 100, "pnl": 0.0, "source": "auto",
+        })
         self.assertIn("manuell", buy)
         self.assertIn("200", buy)
         self.assertIn("Auto", sell)
         self.assertIn("PnL", sell)
+        self.assertIn("+3.5", sell)
+        self.assertIn("PnL", buy_with_pnl)
 
     def test_recent_trades_empty_message(self):
         lines = recent_trades_lines({"trades": []})

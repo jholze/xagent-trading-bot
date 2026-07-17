@@ -123,17 +123,12 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
         usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
         src = trade.get("source", "?")
-        if trade["type"] == "SELL":
-            pnl = trade.get("pnl") or 0
-            trade_lines.append(
-                f"• {ts} {_esc(trade['type'])} {_esc(trade['symbol'])} "
-                f"${usdt:,.0f} ({_esc(src)}) PnL {pnl:+.1f}"
-            )
-        else:
-            trade_lines.append(
-                f"• {ts} {_esc(trade['type'])} {_esc(trade['symbol'])} "
-                f"${usdt:,.0f} ({_esc(src)})"
-            )
+        pnl = trade.get("pnl")
+        pnl_part = f" PnL {float(pnl):+.1f}" if pnl is not None else ""
+        trade_lines.append(
+            f"• {ts} {_esc(trade['type'])} {_esc(trade['symbol'])} "
+            f"${usdt:,.0f} ({_esc(src)}){pnl_part}"
+        )
     if not trade_lines:
         trade_lines.append("• — keine Trades in 24h —")
 

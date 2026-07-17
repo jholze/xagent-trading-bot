@@ -459,6 +459,16 @@ def _fmt_price(price) -> str:
     return format_usdt_price(float(price or 0))
 
 
+def _order_pnl_part(order: dict) -> str:
+    """Realized trade PnL for list lines (sells; rarely set on buys)."""
+    if order.get("pnl") is None:
+        return ""
+    try:
+        return f"  PnL <b>${float(order['pnl']):+.1f}</b>"
+    except (TypeError, ValueError):
+        return ""
+
+
 def format_order_line(order: dict) -> str:
     from notifications.coin_links import format_ticker_html
 
@@ -469,11 +479,12 @@ def format_order_line(order: dict) -> str:
     seq = order.get("display_seq", "?")
     src = source_label(order.get("source", "auto"))
     usdt = _order_usdt_display(order)
+    pnl_part = _order_pnl_part(order)
     trade_ts = _order_trade_ts(order)
     date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
     return (
         f"{icon} <b>#{seq}</b> {order.get('status', '').upper()}  {side}  "
-        f"<b>{sym_html}</b>  {usdt}  <i>{src}</i>{date_part}"
+        f"<b>{sym_html}</b>  {usdt}{pnl_part}  <i>{src}</i>{date_part}"
     )
 
 
@@ -532,12 +543,16 @@ def format_order_detail(order: dict) -> str:
 
 
 def _order_usdt_display(order: dict) -> str:
+    """Notional USDT only — PnL is appended separately via _order_pnl_part."""
     exe = order.get("execution", {})
     req = order.get("request", {})
     if exe.get("usdt"):
         return f"${float(exe['usdt']):.0f}"
     if req.get("usdt"):
         return f"${float(req['usdt']):.0f}"
-    if order.get("side") == "sell" and order.get("pnl") is not None:
-        return f"PnL ${float(order['pnl']):+.1f}"
+    # Fallback: price × amount when execution notional missing
+    price = float(exe.get("price") or req.get("price") or 0)
+    amount = float(exe.get("amount") or req.get("amount") or 0)
+    if price > 0 and amount > 0:
+        return f"${price * amount:.0f}"
     return "—"

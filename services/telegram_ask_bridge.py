@@ -401,14 +401,20 @@ def build_context_snapshot(question: str) -> dict:
         for order in reversed(load_orders(scope).get("orders", [])):
             if order.get("status") != "filled":
                 continue
-            recent.append({
+            row = {
                 "side": order.get("side"),
                 "symbol": order.get("symbol"),
                 "source": order.get("source"),
                 "signal": order.get("signal"),
                 "usdt": round(float((order.get("execution") or {}).get("usdt", 0) or 0), 2),
                 "at": (order.get("timestamps") or {}).get("filled", "")[:16],
-            })
+            }
+            if order.get("pnl") is not None:
+                try:
+                    row["pnl"] = round(float(order["pnl"]), 2)
+                except (TypeError, ValueError):
+                    pass
+            recent.append(row)
             if len(recent) >= 6:
                 break
         snapshot["recent_trades"] = recent

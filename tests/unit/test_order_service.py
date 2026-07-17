@@ -142,6 +142,30 @@ class TestOrderService(unittest.TestCase):
         self.assertIn("ARIA", line)
         self.assertIn("07.06.2026 19:16", line)
 
+    def test_format_order_line_includes_pnl_for_sells(self):
+        line = format_order_line({
+            "status": "filled", "display_seq": 9, "side": "sell",
+            "symbol": "HYPE/USDT", "source": "auto",
+            "request": {"usdt": 500}, "execution": {"usdt": 500},
+            "pnl": -12.5,
+            "timestamps": {"filled": "2026-07-17T10:00:00"},
+        })
+        self.assertIn("HYPE", line)
+        self.assertIn("$500", line)
+        self.assertIn("PnL", line)
+        self.assertIn("-12.5", line)
+
+    def test_format_order_line_includes_zero_pnl(self):
+        line = format_order_line({
+            "status": "filled", "display_seq": 2, "side": "sell",
+            "symbol": "SOL/USDT", "source": "manual",
+            "execution": {"usdt": 140},
+            "pnl": 0.0,
+            "timestamps": {"filled": "2026-07-17T11:00:00"},
+        })
+        self.assertIn("PnL", line)
+        self.assertIn("$+0.0", line)
+
     def test_format_order_detail_shows_buy_date_label(self):
         detail = format_order_detail({
             "display_seq": 1, "status": "filled", "side": "buy",

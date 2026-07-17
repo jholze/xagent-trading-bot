@@ -164,13 +164,15 @@ def send_signal_message(
         pos = get_position(symbol, tf)
         entry = float(pos.get("average_entry", 0))
         sold_amount = float(trade_result.amount) if trade_result and trade_result.executed else 0.0
-        pnl = float(trade_result.pnl) if trade_result and trade_result.executed else 0.0
+        pnl = None
+        if trade_result and trade_result.executed and trade_result.pnl is not None:
+            pnl = float(trade_result.pnl)
         extra = ""
         if entry > 0:
             extra += f"\n<b>Entry:</b> ${entry:.4f}"
         if sold_amount > 0:
             extra += f"\n<b>Sold:</b> {sold_amount:.4f}"
-        if pnl != 0:
+        if pnl is not None:
             extra += f"\n<b>PnL:</b> ${pnl:+.2f}"
     else:
         emoji = "📡"

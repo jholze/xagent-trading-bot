@@ -222,11 +222,35 @@ def format_recent_trade_line(trade: dict) -> str:
     src = _trade_source_label(trade.get("source", "auto"))
     if typ == "BUY":
         usdt = float(trade.get("usdt_amount", 0) or 0)
-        return f"  · {typ} <b>{sym_html}</b> · ${usdt:.0f} · <i>{src}</i>"
-    usdt = float(trade.get("usdt_received", 0) or 0)
+    else:
+        usdt = float(trade.get("usdt_received", 0) or trade.get("usdt_amount", 0) or 0)
     pnl = trade.get("pnl")
     pnl_part = f" · PnL <b>${float(pnl):+.1f}</b>" if pnl is not None else ""
     return f"  · {typ} <b>{sym_html}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
+
+
+def format_executed_cycle_line(result: dict) -> str:
+    """One line for a cycle-executed trade (BUY/SELL) including notional + PnL."""
+    from notifications.coin_links import format_ticker_html
+
+    sym = (result.get("symbol") or "").replace("/USDT", "")
+    sym_html = format_ticker_html(sym, symbol_suffix="")
+    order_type = result.get("order_type") or result.get("normalized_action") or "?"
+    usdt = result.get("usdt_amount")
+    if usdt is None:
+        usdt = result.get("usdt")
+    parts = [f"• {sym_html} {order_type}"]
+    try:
+        if usdt is not None and float(usdt) > 0:
+            parts.append(f"${float(usdt):.0f}")
+    except (TypeError, ValueError):
+        pass
+    if result.get("pnl") is not None:
+        try:
+            parts.append(f"PnL <b>${float(result['pnl']):+.1f}</b>")
+        except (TypeError, ValueError):
+            pass
+    return "  " + " · ".join(parts)
 
 
 def recent_trades_lines(history: dict, hours: float = 24, limit: int = 5) -> list[str]:
@@ -313,7 +337,7 @@ def build_cycle_summary(
     if executed:
         lines.append(f"<b>Ausgeführt:</b> {len(executed)} Trade(s)")
         for r in executed[:5]:
-            lines.append(f"  • {r.get('symbol')} {r.get('order_type')}")
+            lines.append(format_executed_cycle_line(r))
     else:
         lines.append("Keine Auto-Trades in diesem Zyklus.")
 
