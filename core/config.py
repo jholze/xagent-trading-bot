@@ -456,6 +456,10 @@ class BotConfig:
     def grid_config(self) -> dict:
         defaults = {
             "enabled": True,
+            # Plans / level hits on 1h; regime can stay on coin TF (often 4h)
+            "level_timeframe": "1h",
+            "use_bar_range_hits": True,
+            "bar_lookback": 2,
             "default_spacing_atr_mult": 0.8,
             "re_center_atr_mult": 2.5,
             # Phase B: respect volatile_altcoin stable/volatile split
@@ -464,8 +468,14 @@ class BotConfig:
             "meme_spacing_atr_mult": 1.25,
             "volatile_re_center_atr_mult": 3.2,
             "fee_aware": True,
+            "assumed_fee_pct": 0.1,
             "max_levels": 12,
-            "use_limit_orders": True,
+            # Staging: market slices feel live; real multi-limits later
+            "use_limit_orders": False,
+            "pure_grid_tiers": ["stable"],
+            "pure_grid_classes": ["large_cap"],
+            "hybrid_tiers": ["volatile"],
+            "no_pure_grid_classes": ["meme"],
         }
         raw = self._raw.get("grid", {})
         return {**defaults, **raw}

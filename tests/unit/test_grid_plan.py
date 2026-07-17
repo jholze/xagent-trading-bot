@@ -33,7 +33,13 @@ class TestTradingModes(unittest.TestCase):
             strategy_weights={"grid": 0.6, "momentum": 0.4},
             exposure_multiplier=1.0,
         )
-        self.assertEqual(resolve_trading_mode(alloc), MODE_GRID)
+        # pure GRID only when stable/large_cap is known
+        self.assertEqual(
+            resolve_trading_mode(alloc, volatility_tier="stable"),
+            MODE_GRID,
+        )
+        # unknown tier → HYBRID (safer default)
+        self.assertEqual(resolve_trading_mode(alloc), MODE_HYBRID)
 
     def test_defensive(self):
         alloc = AllocationDecision(
@@ -74,6 +80,34 @@ class TestTradingModes(unittest.TestCase):
             resolve_trading_mode(alloc, volatility_tier="stable"),
             MODE_GRID,
         )
+
+    def test_meme_never_pure_grid(self):
+        alloc = AllocationDecision(
+            strategy_weights={"grid": 0.7, "momentum": 0.3},
+            exposure_multiplier=1.0,
+        )
+        self.assertEqual(
+            resolve_trading_mode(alloc, coin_class="meme", volatility_tier="volatile"),
+            MODE_HYBRID,
+        )
+        self.assertNotEqual(
+            resolve_trading_mode(alloc, coin_class="meme"),
+            MODE_GRID,
+        )
+
+    def test_bar_range_hits_buy_level(self):
+        """1h bar wick can hit buy level even if close is above."""
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        buy_lv = min((lv for lv in plan.levels if lv.side == "buy"), key=lambda x: -x.price)
+        # close above level, but bar low pierced it
+        act = evaluate_plan_at_price(
+            plan,
+            price=buy_lv.price * 1.01,
+            has_position=False,
+            bar_low=buy_lv.price * 0.995,
+            bar_high=buy_lv.price * 1.02,
+        )
+        self.assertEqual(act.action, "BUY")
 
     def test_entry_sensor_slice_by_mode_and_tier(self):
         self.assertLess(

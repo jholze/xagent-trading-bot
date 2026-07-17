@@ -197,13 +197,23 @@ def evaluate_plan_at_price(
     has_position: bool = False,
     allow_buys: bool = True,
     allow_sells: bool = True,
+    bar_low: float | None = None,
+    bar_high: float | None = None,
 ) -> GridAction:
-    """First unfilled level touched by *price* wins (buys preferred if both — rare)."""
+    """First unfilled level touched wins (buys preferred).
+
+    If *bar_low*/*bar_high* are set (e.g. last 1h candle), a level counts as hit
+    when the bar range crossed it — not only when *price* equals the last close.
+    """
     if price <= 0 or plan.spacing <= 0:
         return GridAction(action=HOLD, rationale="invalid price/plan")
 
+    lo = float(bar_low) if bar_low is not None and bar_low > 0 else float(price)
+    hi = float(bar_high) if bar_high is not None and bar_high > 0 else float(price)
+    if lo > hi:
+        lo, hi = hi, lo
+
     eps = max(float(plan.touch_eps), 1e-6)
-    # Prefer buys when price is low (more rotation into inventory first)
     ordered = sorted(
         plan.levels,
         key=lambda lv: (0 if lv.side == "buy" else 1, abs(lv.price - price)),
@@ -211,16 +221,23 @@ def evaluate_plan_at_price(
     for lv in ordered:
         if lv.filled:
             continue
-        if lv.side == "buy" and allow_buys and price <= lv.price * (1.0 + eps):
+        # Buy level hit if bar traded down to/through it
+        buy_hit = lo <= lv.price * (1.0 + eps)
+        # Sell level hit if bar traded up to/through it
+        sell_hit = hi >= lv.price * (1.0 - eps)
+        if lv.side == "buy" and allow_buys and buy_hit:
             lv.filled = True
             return GridAction(
                 action=BUY,
                 level_index=lv.index,
                 level_price=lv.price,
                 buy_usdt_frac=max(0.05, min(0.5, float(lv.slice_pct))),
-                rationale=f"Grid buy L{lv.index} @ {lv.price:.6g} (slice {lv.slice_pct:.0%})",
+                rationale=(
+                    f"Grid buy L{lv.index} @ {lv.price:.6g} "
+                    f"(slice {lv.slice_pct:.0%}, range {lo:.6g}-{hi:.6g})"
+                ),
             )
-        if lv.side == "sell" and allow_sells and has_position and price >= lv.price * (1.0 - eps):
+        if lv.side == "sell" and allow_sells and has_position and sell_hit:
             lv.filled = True
             frac = max(0.1, min(1.0, float(lv.slice_pct)))
             return GridAction(
@@ -228,7 +245,10 @@ def evaluate_plan_at_price(
                 level_index=lv.index,
                 level_price=lv.price,
                 sell_pos_frac=frac,
-                rationale=f"Grid sell L{lv.index} @ {lv.price:.6g} (slice {frac:.0%})",
+                rationale=(
+                    f"Grid sell L{lv.index} @ {lv.price:.6g} "
+                    f"(slice {frac:.0%}, range {lo:.6g}-{hi:.6g})"
+                ),
             )
     return GridAction(action=HOLD, rationale="Grid monitoring")
 

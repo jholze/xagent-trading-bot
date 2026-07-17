@@ -247,13 +247,22 @@ class GridStrategy(BaseStrategy):
         if vol_tier == "volatile" or coin_class == "meme":
             re_center_mult = max(re_center_mult, float(gcfg.get("volatile_re_center_atr_mult", 3.2)))
 
-        # Prefer pre-seeded legacy _states (unit tests)
-        key = self._get_key(symbol, tf)
-        if key in self._states and key not in self._plans:
-            st = self._states[key]
+        # Level TF (default 1h): plan key independent of watchlist 4h coin TF
+        level_tf = str(
+            params.get("grid_level_timeframe")
+            or gcfg.get("level_timeframe")
+            or "1h"
+        ).strip() or "1h"
+        plan_tf = level_tf
+
+        # Prefer pre-seeded legacy _states (unit tests) — key by coin TF for tests
+        legacy_key = self._get_key(symbol, tf)
+        key = self._get_key(symbol, plan_tf)
+        if legacy_key in self._states and key not in self._plans:
+            st = self._states[legacy_key]
             plan = plan_from_legacy_state(
                 symbol,
-                tf,
+                plan_tf,
                 {
                     "center_price": st.center_price,
                     "spacing": st.spacing,
@@ -266,7 +275,9 @@ class GridStrategy(BaseStrategy):
             )
             self._plans[key] = plan
         else:
-            plan = self._load_or_init_plan(symbol, tf, price, {**params, "atr_pct": atr_pct})
+            plan = self._load_or_init_plan(
+                symbol, plan_tf, price, {**params, "atr_pct": atr_pct},
+            )
 
         if should_recenter(
             plan, price, atr_pct=atr_pct, re_center_atr_mult=re_center_mult,
@@ -275,14 +286,19 @@ class GridStrategy(BaseStrategy):
                 plan, price, atr_pct=atr_pct, spacing_atr_mult=spacing_mult,
             )
             self._persist_plan(plan, force=True)
-            log(f"[Grid] Re-centered plan for {symbol} @ {price:.6g}", "INFO")
+            log(f"[Grid] Re-centered plan for {symbol} @ {price:.6g} ({plan_tf})", "INFO")
 
+        bar_low, bar_high = self._level_bar_range(
+            symbol, plan_tf, price, gcfg,
+        )
         act = evaluate_plan_at_price(
             plan,
             price,
             has_position=bool(market.has_position),
             allow_buys=mode_allows_new_grid_buys(mode),
             allow_sells=mode_allows_grid_sells(mode),
+            bar_low=bar_low,
+            bar_high=bar_high,
         )
         if act.action != HOLD:
             self._persist_plan(plan, force=True)
@@ -312,7 +328,7 @@ class GridStrategy(BaseStrategy):
             normalized_action=act.action,
             rationale=(
                 f"{act.rationale} | mode={mode} | tier={vol_tier or coin_class or '?'} "
-                f"| spacing×{spacing_mult:.2f}"
+                f"| spacing×{spacing_mult:.2f} | levels={plan_tf}"
             ),
             strategy_profile="grid",
             confidence=0.72 if act.action != HOLD else 0.55,
@@ -320,6 +336,34 @@ class GridStrategy(BaseStrategy):
             atr_pct=atr_pct,
             volatility_tier=vol_tier,
         )
+
+    def _level_bar_range(
+        self,
+        symbol: str,
+        level_tf: str,
+        live_price: float,
+        gcfg: dict,
+    ) -> tuple[float, float]:
+        """High/low over recent level-TF bars so hits are not only last close."""
+        px = float(live_price or 0)
+        if not gcfg.get("use_bar_range_hits", True) or px <= 0:
+            return px, px
+        lookback = max(1, int(gcfg.get("bar_lookback", 2) or 2))
+        try:
+            from services.market_service import MarketService
+
+            df = MarketService().fetch_ohlcv(symbol, level_tf, limit=lookback + 2)
+            if df is None or df.empty:
+                return px, px
+            tail = df.tail(lookback)
+            if "low" in tail.columns and "high" in tail.columns:
+                lo = float(tail["low"].min())
+                hi = float(tail["high"].max())
+                if lo > 0 and hi > 0:
+                    return min(lo, px), max(hi, px)
+        except Exception as e:
+            log(f"[Grid] 1h range fetch skip {symbol}: {e}", "DEBUG")
+        return px, px
 
     # --- backward-compatible helpers used by tests ---
     def _persist_state(self, symbol: str, tf: str, state, *, force: bool = False) -> None:

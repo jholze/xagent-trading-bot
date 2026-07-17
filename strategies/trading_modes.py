@@ -51,9 +51,10 @@ def resolve_trading_mode(
 ) -> str:
     """Map allocator weights + coin tier → a single trading mode.
 
-    Uses existing volatile/stable split:
-    - *volatile* / meme: prefer HYBRID when weights are mixed (grid + momentum both useful)
-    - *stable* / large_cap: pure GRID when ranging (tighter, cleaner rotation)
+    Product rules (staging live-feel):
+    - **stable / large_cap**: pure GRID when allocator prefers grid (tight rotation)
+    - **volatile**: HYBRID when grid is competitive (grid slices + entry sensor)
+    - **meme**: never pure GRID — HYBRID if grid useful, else MOMENTUM
     """
     if force_grid:
         return MODE_GRID
@@ -65,22 +66,39 @@ def resolve_trading_mode(
     m = w.get("momentum", 0.0)
     tier = (volatility_tier or "").strip().lower()
     cls = (coin_class or "").strip().lower()
-    is_volatile = tier == "volatile" or cls in ("meme", "micro")
-    is_stable = tier == "stable" or cls in ("large_cap", "large", "bluechip")
+    is_meme = cls in ("meme",)
+    is_volatile = tier == "volatile" or is_meme or cls in ("micro",)
+    is_stable = (tier == "stable" or cls in ("large_cap", "large", "bluechip")) and not is_meme
 
-    # Volatile: need higher grid dominance for pure GRID (spikes matter → HYBRID)
-    g_min = 0.55 if is_volatile else grid_min
-    h_min = 0.28 if is_volatile else hybrid_min
-
-    if g >= g_min and g > m:
-        # Stable coins in clear grid regime → GRID; volatile still often HYBRID
-        if is_volatile and m >= 0.25:
+    # --- Meme: no pure GRID default (trending memes need momentum/spikes) ---
+    if is_meme:
+        if g >= hybrid_min and g >= 0.30:
             return MODE_HYBRID
-        return MODE_GRID
-    if g >= h_min and m >= h_min:
+        return MODE_MOMENTUM
+
+    # --- Volatile (non-meme): HYBRID when grid is in play, never pure GRID ---
+    if is_volatile:
+        if g >= hybrid_min and g >= m * 0.85:
+            return MODE_HYBRID
+        if g > m and g >= 0.50:
+            return MODE_HYBRID
+        return MODE_MOMENTUM
+
+    # --- Stable / large_cap: pure GRID when ranging-style weights ---
+    if is_stable:
+        if g >= grid_min and g > m:
+            return MODE_GRID
+        if g >= 0.40 and g >= m:
+            return MODE_GRID
+        if g >= hybrid_min and m >= hybrid_min:
+            return MODE_HYBRID
+        return MODE_MOMENTUM
+
+    # Mid-cap / unknown: balanced
+    if g >= grid_min and g > m:
+        return MODE_HYBRID  # safer than pure GRID without clear tier
+    if g >= hybrid_min and m >= hybrid_min:
         return MODE_HYBRID
-    if is_stable and g >= 0.40 and g >= m:
-        return MODE_GRID
     return MODE_MOMENTUM
 
 
