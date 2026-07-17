@@ -640,7 +640,7 @@ def _run_tenant_price_cycle(
     digest_merge = cycle_notif_cfg.get("digest_merge", True)
     x_skip = social_pipeline.get_notified_post_ids() if social_pipeline else set()
 
-    if social_pipeline:
+    if social_pipeline and cycle_notification_policy.should_send_social_digest():
         if digest_merge:
             if social_pipeline.should_send_merged_digest(
                 cmc_signals, lc_signals, x_signals, skip_post_ids=x_skip

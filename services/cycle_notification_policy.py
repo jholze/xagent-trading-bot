@@ -8,23 +8,30 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Balanced quiet defaults (staging): fewer Telegram pings, trades always surface.
+_DEFAULTS = {
+    "mode": "delta",
+    "send_on_trade": True,
+    "send_on_blocked": False,
+    "send_on_nav_delta_pct": 2.0,
+    "send_on_new_decision": False,
+    "min_interval_sec": 900,
+    "heartbeat_sec": 3600,
+    "hold_explanation_max_per_cycle": 0,
+    "hold_explanation_cooldown_hours": 6,
+    "digest_merge": True,
+    "notify_hermes_rejected": False,
+    "summary_style": "compact",
+    "social_digest_min_interval_sec": 1800,
+}
+
+
 def _cycle_notifications_config(config=None) -> dict:
     from core.config import get_bot_config
 
     cfg = config or get_bot_config()
-    defaults = {
-        "mode": "delta",
-        "send_on_trade": True,
-        "send_on_blocked": True,
-        "send_on_nav_delta_pct": 0.5,
-        "send_on_new_decision": True,
-        "hold_explanation_max_per_cycle": 1,
-        "hold_explanation_cooldown_hours": 6,
-        "digest_merge": True,
-        "notify_hermes_rejected": False,
-    }
     raw = cfg.observability_config.get("cycle_notifications", {})
-    return {**defaults, **raw}
+    return {**_DEFAULTS, **raw}
 
 
 def decision_fingerprint(coin_results: list | None) -> str:
@@ -43,6 +50,10 @@ def _reason_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:12]
 
 
+def _has_executed_trade(coin_results: list | None) -> bool:
+    return any(r.get("executed") for r in (coin_results or []))
+
+
 @dataclass
 class _HoldCandidate:
     symbol: str
@@ -55,6 +66,10 @@ class _HoldCandidate:
 class CycleNotificationPolicy:
     last_nav: float | None = None
     last_decision_fingerprint: str = ""
+    last_summary_at: float = 0.0
+    last_digest_at: float = 0.0
+    last_summary_reason: str = ""
+    process_started_at: float = field(default_factory=time.time)
     hold_cooldown: dict[str, float] = field(default_factory=dict)
     _hold_candidates: list[_HoldCandidate] = field(default_factory=list)
 
@@ -71,38 +86,75 @@ class CycleNotificationPolicy:
         cnf = _cycle_notifications_config(config)
         mode = (cnf.get("mode") or "delta").lower()
         if mode == "off":
+            self.last_summary_reason = "off"
             return False
         if mode == "always":
-            self._record_summary_state(coin_results, total_value)
+            self._record_summary_state(coin_results, total_value, reason="always")
             return True
 
         triggers: list[str] = []
+        force = False
 
-        if cnf.get("send_on_trade", True):
-            if any(r.get("executed") for r in (coin_results or [])):
-                triggers.append("trade")
+        if cnf.get("send_on_trade", True) and _has_executed_trade(coin_results):
+            triggers.append("trade")
+            force = True
 
-        if cnf.get("send_on_blocked", True):
+        if cnf.get("send_on_blocked", False):
             for r in coin_results or []:
                 if r.get("trade_message") and not r.get("executed"):
                     triggers.append("blocked")
                     break
 
-        nav_delta_pct = float(cnf.get("send_on_nav_delta_pct", 0.5) or 0)
+        nav_delta_pct = float(cnf.get("send_on_nav_delta_pct", 2.0) or 0)
         if nav_delta_pct > 0 and self.last_nav is not None and self.last_nav > 0:
             delta_pct = abs(float(total_value) - self.last_nav) / self.last_nav * 100.0
             if delta_pct >= nav_delta_pct:
                 triggers.append("nav")
 
-        if cnf.get("send_on_new_decision", True):
+        if cnf.get("send_on_new_decision", False):
             fp = decision_fingerprint(coin_results)
             if fp and fp != self.last_decision_fingerprint:
                 triggers.append("decision")
 
-        if triggers:
-            self._record_summary_state(coin_results, total_value)
+        now = time.time()
+        min_interval = float(cnf.get("min_interval_sec", 900) or 0)
+        heartbeat = float(cnf.get("heartbeat_sec", 3600) or 0)
+
+        # Heartbeat: at most once per heartbeat_sec of quiet time (from last
+        # summary or process start). Does not fire on the very first quiet cycle.
+        if not triggers and heartbeat > 0:
+            anchor = self.last_summary_at or self.process_started_at
+            if self.last_summary_at > 0 and (now - anchor) >= heartbeat:
+                triggers.append("heartbeat")
+            elif self.last_summary_at <= 0 and (now - self.process_started_at) >= heartbeat:
+                triggers.append("heartbeat")
+
+        if not triggers:
+            self.last_summary_reason = "quiet"
+            return False
+
+        if not force and min_interval > 0 and self.last_summary_at > 0:
+            if (now - self.last_summary_at) < min_interval:
+                self.last_summary_reason = (
+                    f"min_interval triggers={'+'.join(triggers)}"
+                )
+                return False
+
+        reason = "+".join(triggers)
+        self._record_summary_state(coin_results, total_value, reason=reason)
+        return True
+
+    def should_send_social_digest(self, config=None) -> bool:
+        """Rate-limit merged/separate social digests."""
+        cnf = _cycle_notifications_config(config)
+        interval = float(cnf.get("social_digest_min_interval_sec", 1800) or 0)
+        if interval <= 0:
             return True
-        return False
+        now = time.time()
+        if self.last_digest_at > 0 and (now - self.last_digest_at) < interval:
+            return False
+        self.last_digest_at = now
+        return True
 
     def skip_reason(
         self,
@@ -117,14 +169,26 @@ class CycleNotificationPolicy:
         if self.last_nav is not None and self.last_nav > 0:
             delta_pct = abs(float(total_value) - self.last_nav) / self.last_nav * 100.0
             nav_part = f" nav_delta={delta_pct:.2f}%"
+        age = ""
+        if self.last_summary_at > 0:
+            age = f" since_summary={time.time() - self.last_summary_at:.0f}s"
         return (
             f"delta_skip mode={cnf.get('mode', 'delta')}"
-            f"{nav_part} decisions={fp or 'none'}"
+            f"{nav_part} decisions={fp or 'none'}{age}"
+            f" reason={self.last_summary_reason or 'n/a'}"
         )
 
-    def _record_summary_state(self, coin_results: list | None, total_value: float) -> None:
+    def _record_summary_state(
+        self,
+        coin_results: list | None,
+        total_value: float,
+        *,
+        reason: str = "",
+    ) -> None:
         self.last_nav = float(total_value)
         self.last_decision_fingerprint = decision_fingerprint(coin_results)
+        self.last_summary_at = time.time()
+        self.last_summary_reason = reason or "sent"
 
     def offer_hold_explanation(
         self,
@@ -136,7 +200,7 @@ class CycleNotificationPolicy:
         config=None,
     ) -> None:
         cnf = _cycle_notifications_config(config)
-        max_per_cycle = int(cnf.get("hold_explanation_max_per_cycle", 1) or 0)
+        max_per_cycle = int(cnf.get("hold_explanation_max_per_cycle", 0) or 0)
         if max_per_cycle <= 0:
             return
         cooldown_h = float(cnf.get("hold_explanation_cooldown_hours", 6) or 0)
@@ -156,7 +220,7 @@ class CycleNotificationPolicy:
 
     def flush_hold_explanations(self, config=None) -> int:
         cnf = _cycle_notifications_config(config)
-        max_per_cycle = int(cnf.get("hold_explanation_max_per_cycle", 1) or 0)
+        max_per_cycle = int(cnf.get("hold_explanation_max_per_cycle", 0) or 0)
         if max_per_cycle <= 0 or not self._hold_candidates:
             self._hold_candidates.clear()
             return 0

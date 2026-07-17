@@ -224,16 +224,21 @@ class BotConfig:
 
     @property
     def cycle_notifications_config(self) -> dict:
+        # Balanced quiet: fewer Telegram pings; fills always surface.
         defaults = {
             "mode": "delta",
             "send_on_trade": True,
-            "send_on_blocked": True,
-            "send_on_nav_delta_pct": 0.5,
-            "send_on_new_decision": True,
-            "hold_explanation_max_per_cycle": 1,
+            "send_on_blocked": False,
+            "send_on_nav_delta_pct": 2.0,
+            "send_on_new_decision": False,
+            "min_interval_sec": 900,
+            "heartbeat_sec": 3600,
+            "hold_explanation_max_per_cycle": 0,
             "hold_explanation_cooldown_hours": 6,
             "digest_merge": True,
             "notify_hermes_rejected": False,
+            "summary_style": "compact",
+            "social_digest_min_interval_sec": 1800,
         }
         raw = self.observability_config.get("cycle_notifications", {})
         return {**defaults, **raw}

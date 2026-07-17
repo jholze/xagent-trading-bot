@@ -276,6 +276,42 @@ def recent_orders_lines(hours: float = 24, limit: int = 5) -> list[str]:
     return [f"  {format_order_line(o)}" for o in orders]
 
 
+def _cycle_summary_style() -> str:
+    try:
+        from core.config import get_bot_config
+
+        style = (
+            get_bot_config()
+            .observability_config.get("cycle_notifications", {})
+            .get("summary_style", "compact")
+        )
+        return str(style or "compact").strip().lower()
+    except Exception:
+        return "compact"
+
+
+def _blocked_reject_tally(coin_results: list | None) -> dict[str, int]:
+    """Count non-executed cycle rejects by short reason prefix."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for r in coin_results or []:
+        if r.get("executed") or not r.get("trade_message"):
+            continue
+        msg = str(r.get("trade_message") or "")
+        low = msg.lower()
+        if "cash floor" in low or "cash_floor" in low:
+            key = "cash_floor"
+        elif "max open" in low:
+            key = "max_open"
+        elif "below minimum" in low or "size" in low:
+            key = "size"
+        else:
+            key = "other"
+        counts[key] += 1
+    return dict(counts)
+
+
 def build_cycle_summary(
     coin_results: list = None,
     trading_mode: str = "paper",
@@ -285,20 +321,92 @@ def build_cycle_summary(
     top_x: str = "",
     top_cmc: str = "",
     top_lc: str = "",
+    *,
+    style: str | None = None,
 ) -> str:
     snap = _portfolio_snapshot(trading_mode)
     balance = snap["balance"]
     balance_label = snap["balance_label"]
     realized = snap["realized"]
-    unrealized = snap["unrealized"]
     total_value = snap["total_value"]
-    nav_pnl = float(snap.get("total_pnl", float(realized or 0) + float(unrealized or 0)))
+    nav_pnl = float(snap.get("total_pnl", float(realized or 0) + float(snap.get("unrealized", 0) or 0)))
     pnl_pct = float(snap.get("pnl_pct", 0.0))
     scope = snap.get("ledger_scope", resolve_ledger_scope(trading_mode))
 
-    executed = [r for r in (coin_results or []) if r.get("executed")]
+    executed_trades = [r for r in (coin_results or []) if r.get("executed")]
     actions = [r for r in (coin_results or []) if r.get("normalized_action") != "HOLD"]
+    style_s = (style or _cycle_summary_style()).strip().lower()
+    if style_s not in ("compact", "full"):
+        style_s = "compact"
 
+    ledger = OrderService()
+    day_stats = ledger.stats_executed_24h()
+    attempts = ledger.stats_24h()
+
+    open_n = int(snap.get("open_positions") or snap.get("position_count") or 0)
+    if not open_n:
+        try:
+            from strategies.positions import count_open_positions
+
+            open_n = int(count_open_positions() or 0)
+        except Exception:
+            open_n = 0
+    try:
+        from core.config import get_bot_config
+
+        max_open = int(get_bot_config().max_open_positions or 0)
+    except Exception:
+        max_open = 0
+
+    if style_s == "compact":
+        reason = ""
+        try:
+            from services.cycle_notification_policy import cycle_notification_policy
+
+            reason = cycle_notification_policy.last_summary_reason or ""
+        except Exception:
+            pass
+        title = "Zyklus"
+        if reason == "heartbeat":
+            title = "Heartbeat"
+        elif reason and "trade" in reason:
+            title = "Zyklus · Trade"
+
+        lines = [
+            f"<b>📋 {title}</b> — {datetime.now().strftime('%H:%M')} · "
+            f"<b>{scope.upper()}</b>",
+            f"{balance_label} <b>${float(balance or 0):,.0f}</b> · "
+            f"NAV <b>${float(total_value or 0):,.0f}</b> · "
+            f"PnL <b>${nav_pnl:+,.0f}</b> (<code>{pnl_pct:+.1f}%</code>)",
+        ]
+        if max_open > 0:
+            lines.append(f"Slots <b>{open_n}/{max_open}</b> · Realisiert <b>${float(realized or 0):+,.0f}</b>")
+        else:
+            lines.append(f"Realisiert <b>${float(realized or 0):+,.0f}</b>")
+
+        lines.append(
+            f"24h Orders: 🟢{day_stats['buys']} · 🔴{day_stats['sells']}"
+            + (
+                f" · ❌{attempts['rejected']} blocked"
+                if attempts.get("rejected")
+                else ""
+            )
+        )
+
+        if executed_trades:
+            lines.append(f"<b>Ausgeführt</b> ({len(executed_trades)}):")
+            for r in executed_trades[:4]:
+                lines.append(format_executed_cycle_line(r))
+        else:
+            tally = _blocked_reject_tally(coin_results)
+            if tally:
+                parts = [f"{k}×{n}" for k, n in sorted(tally.items(), key=lambda x: -x[1])]
+                lines.append(f"<i>Blocked (Zyklus):</i> {', '.join(parts)}")
+
+        lines.append("<i>/positions · /orders · /decisions</i>")
+        return "\n".join(lines)
+
+    # --- full (legacy / debug) ---
     lines = [
         f"<b>📋 Zyklus-Zusammenfassung</b> — {datetime.now().strftime('%H:%M:%S')}",
         f"Modus: <b>{trading_mode.upper()}</b> · Ledger: <b>{scope.upper()}</b>",
@@ -334,20 +442,17 @@ def build_cycle_summary(
             why = (r.get("why_de") or r.get("rationale") or "")[:80]
             status = "✅" if r.get("executed") else "🚫" if r.get("trade_message") else "👀"
             lines.append(f"  {status} {sym_html} {act}: {why}")
-    if executed:
-        lines.append(f"<b>Ausgeführt:</b> {len(executed)} Trade(s)")
-        for r in executed[:5]:
+    if executed_trades:
+        lines.append(f"<b>Ausgeführt:</b> {len(executed_trades)} Trade(s)")
+        for r in executed_trades[:5]:
             lines.append(format_executed_cycle_line(r))
     else:
         lines.append("Keine Auto-Trades in diesem Zyklus.")
 
-    ledger = OrderService()
-    executed = ledger.stats_executed_24h()
-    attempts = ledger.stats_24h()
     lines.append("")
     lines.append(
         f"<b>Orders (24h, {ledger_label()}):</b> "
-        f"🟢{executed['buys']} Käufe · 🔴{executed['sells']} Verkäufe"
+        f"🟢{day_stats['buys']} Käufe · 🔴{day_stats['sells']} Verkäufe"
     )
     blocked = attempts["rejected"] + attempts["cancelled"] + attempts["pending_confirmation"]
     if blocked:

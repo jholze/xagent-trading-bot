@@ -345,13 +345,17 @@
     "cycle_notifications": {
       "mode": "delta",
       "send_on_trade": true,
-      "send_on_blocked": true,
-      "send_on_nav_delta_pct": 0.5,
-      "send_on_new_decision": true,
-      "hold_explanation_max_per_cycle": 1,
+      "send_on_blocked": false,
+      "send_on_nav_delta_pct": 2.0,
+      "send_on_new_decision": false,
+      "min_interval_sec": 900,
+      "heartbeat_sec": 3600,
+      "hold_explanation_max_per_cycle": 0,
       "hold_explanation_cooldown_hours": 6,
       "digest_merge": true,
-      "notify_hermes_rejected": false
+      "notify_hermes_rejected": false,
+      "summary_style": "compact",
+      "social_digest_min_interval_sec": 1800
     },
     "display_timezone": "Europe/Berlin",
     "telegram_startup_notify": true,
@@ -377,8 +381,8 @@
       "notify_cmc_digest": true,
       "notify_lc_digest": true,
       "notify_x_digest": true,
-      "notify_social_hold_explanations": true,
-      "notify_blocked_trades": true,
+      "notify_social_hold_explanations": false,
+      "notify_blocked_trades": false,
       "cmc_digest_min_confidence": 60,
       "lc_digest_min_confidence": 55,
       "x_digest_min_effective_confidence": 70

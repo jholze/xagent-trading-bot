@@ -70,12 +70,32 @@ class TestCycleSummary(unittest.TestCase):
             trading_mode="paper",
             x_signal_count=2,
             cmc_signal_count=1,
+            style="full",
         )
         self.assertIn("Zyklus-Zusammenfassung", summary)
         self.assertIn("Ausgeführt", summary)
         self.assertIn("ARIA", summary)
         self.assertIn("$250", summary)
         self.assertIn("Orders (24h", summary)
+
+    def test_build_cycle_summary_compact_is_short(self):
+        summary = build_cycle_summary(
+            coin_results=[{
+                "symbol": "ARIA/USDT",
+                "executed": True,
+                "order_type": "BUY",
+                "usdt_amount": 250,
+            }],
+            trading_mode="paper",
+            style="compact",
+        )
+        self.assertIn("Zyklus", summary)
+        self.assertIn("NAV", summary)
+        self.assertIn("ARIA", summary)
+        self.assertIn("$250", summary)
+        self.assertNotIn("Zyklus-Zusammenfassung", summary)
+        self.assertNotIn("Entscheidungen:", summary)
+        self.assertLess(len(summary), 900)
 
     def test_format_executed_cycle_line_includes_pnl(self):
         line = format_executed_cycle_line({
@@ -93,7 +113,7 @@ class TestCycleSummary(unittest.TestCase):
     def test_build_cycle_summary_ledger_sell_shows_pnl(self):
         self._seed_orders()
         with patch("notifications.terminal_dashboard.load_trade_history", return_value=self._history([])):
-            summary = build_cycle_summary(coin_results=[], trading_mode="paper")
+            summary = build_cycle_summary(coin_results=[], trading_mode="paper", style="full")
         self.assertIn("PnL", summary)
         self.assertIn("SOL", summary)
 
@@ -108,7 +128,7 @@ class TestCycleSummary(unittest.TestCase):
     def test_build_cycle_summary_includes_ledger_orders(self):
         self._seed_orders()
         with patch("notifications.terminal_dashboard.load_trade_history", return_value=self._history([])):
-            summary = build_cycle_summary(coin_results=[], trading_mode="paper")
+            summary = build_cycle_summary(coin_results=[], trading_mode="paper", style="full")
         self.assertIn("ARIA", summary)
         self.assertIn("SOL", summary)
         self.assertIn("/orders", summary)
@@ -137,7 +157,7 @@ class TestCycleSummary(unittest.TestCase):
 
     def test_no_auto_executed_still_shows_ledger_hint(self):
         with patch("notifications.terminal_dashboard.load_trade_history", return_value=self._history([])):
-            summary = build_cycle_summary(coin_results=[], trading_mode="paper")
+            summary = build_cycle_summary(coin_results=[], trading_mode="paper", style="full")
         self.assertIn("Keine Auto-Trades in diesem Zyklus", summary)
         self.assertIn("/orders", summary)
 
@@ -157,7 +177,7 @@ class TestCycleSummary(unittest.TestCase):
              patch("data_manager.resolve_sim_cash_balance", return_value=4750.0), \
              patch("data_manager.resolve_sim_realized_pnl", return_value=12.5), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
-            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+            summary = build_cycle_summary(coin_results=[], trading_mode="live", style="full")
         self.assertIn("Sim USDT", summary)
         self.assertIn("4,750", summary)
         self.assertIn("Gesamtwert", summary)
@@ -179,7 +199,7 @@ class TestCycleSummary(unittest.TestCase):
              patch("data_manager.resolve_sim_realized_pnl", return_value=250.0), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg), \
              patch("notifications.daily_portfolio.today_activity_stats", return_value=(0, 0, 0.0, False)):
-            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+            summary = build_cycle_summary(coin_results=[], trading_mode="live", style="full")
         self.assertIn("Sim USDT: $10,512", summary)
         self.assertNotIn("3,648", summary)
         self.assertNotIn("88,406", summary)
@@ -205,7 +225,7 @@ class TestCycleSummary(unittest.TestCase):
              }), \
              patch("data_manager.is_dry_run_enhanced", return_value=False), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
-            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+            summary = build_cycle_summary(coin_results=[], trading_mode="live", style="full")
         self.assertIn("Sim USDT", summary)
         self.assertIn("3,952", summary)
         self.assertIn("-111.8", summary)
@@ -232,7 +252,7 @@ class TestCycleSummary(unittest.TestCase):
              patch("data_manager.resolve_sim_cash_balance", return_value=1000.0), \
              patch("data_manager.resolve_sim_realized_pnl", return_value=5.0), \
              patch("notifications.terminal_dashboard.get_bot_config", return_value=mock_cfg):
-            summary = build_cycle_summary(coin_results=[], trading_mode="live")
+            summary = build_cycle_summary(coin_results=[], trading_mode="live", style="full")
         self.assertIn("Gesamtwert: $1,200", summary)
 
 
