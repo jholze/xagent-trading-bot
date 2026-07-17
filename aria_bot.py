@@ -182,6 +182,19 @@ def health_detail():
         }
     except Exception:
         eval_queue = {}
+    try:
+        from services.santiment_store import get_latest_snapshot, snapshot_is_fresh, status_line
+
+        san = get_latest_snapshot()
+        santiment = {
+            "line": status_line(),
+            "fresh": snapshot_is_fresh(san),
+            "regime": (san or {}).get("regime"),
+            "size_mult": (san or {}).get("size_mult"),
+            "as_of": (san or {}).get("as_of"),
+        }
+    except Exception:
+        santiment = {}
     return jsonify({
         "status": "OK",
         "redis": cache.available(),
@@ -189,6 +202,7 @@ def health_detail():
         "ohlcv_cache": ohlcv_stats,
         "signal_webhook_recent": signal_events,
         "eval_queue": eval_queue,
+        "santiment": santiment,
         "build": {
             "commit": identity.get("commit"),
             "branch": identity.get("branch"),
@@ -196,6 +210,30 @@ def health_detail():
             "service": identity.get("service"),
         },
     }), 200
+
+
+@app.route("/api/santiment/ingest", methods=["POST"])
+def santiment_ingest():
+    """Receive market-context snapshots from the Santiment sidecar service."""
+    from core.config import get_bot_config
+    from services.santiment_ingest import (
+        process_santiment_ingest,
+        santiment_ingest_enabled,
+        santiment_token_ok,
+    )
+
+    cfg = get_bot_config()
+    if not santiment_ingest_enabled(cfg.raw):
+        return jsonify({"error": "santiment ingest disabled"}), 404
+
+    token = request.headers.get("X-Santiment-Token") or request.args.get("token")
+    if not santiment_token_ok(token, cfg.raw):
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True)
+    result = process_santiment_ingest(body, config_raw=cfg.raw)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 @app.route("/api/signals/webhook", methods=["POST"])
