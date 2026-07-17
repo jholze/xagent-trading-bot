@@ -107,16 +107,24 @@ class TestSantimentRegime(unittest.TestCase):
         self.assertGreaterEqual(without.size_mult, with_social.size_mult)
 
     def test_dev_soft_bias(self):
-        base = {
+        mild = {
             "btc_daa_delta_1d": -0.15,
             "eth_daa_delta_1d": -0.12,
             "btc_vol_1d": 0.03,
+        }
+        with_dev = {
+            **mild,
             "btc_dev_activity_delta_1d": -0.4,
             "eth_dev_activity_delta_1d": -0.35,
         }
-        d = decide_regime(base)
-        self.assertIn(d.regime, ("NEUTRAL", "RISK_OFF"))
-        self.assertIn("dev", d.rationale)
+        d0 = decide_regime(mild)
+        d1 = decide_regime(with_dev)
+        self.assertIn(d1.regime, ("NEUTRAL", "RISK_OFF"))
+        # Dev drag should not improve composite/size vs DAA-only
+        self.assertGreaterEqual(
+            (d0.scores.get("onchain") or 0),
+            (d1.scores.get("onchain") or 0),
+        )
 
     def test_should_push_on_regime_change(self):
         a = {"regime": "NEUTRAL", "size_mult": 1.0, "sensor_policy": "active"}
@@ -157,6 +165,23 @@ class TestSantimentSnapshot(unittest.TestCase):
         self.assertEqual(snap["meta"]["data_lag_days_max"], 0.2)
         self.assertFalse(snap["meta"]["social_fresh"])
         self.assertEqual(snap["regime"], "NEUTRAL")
+        self.assertIn("scores", snap)
+        self.assertIn("onchain", snap["scores"])
+        self.assertIn("composite", snap["scores"])
+
+    def test_multi_score_pillars(self):
+        d = decide_regime(
+            {
+                "btc_daa_delta_1d": -0.2,
+                "eth_daa_delta_1d": -0.15,
+                "btc_vol_1d": 0.03,
+            }
+        )
+        self.assertIsNotNone(d.scores.get("onchain"))
+        self.assertIsNone(d.scores.get("leverage"))
+        self.assertIsNone(d.scores.get("social"))
+        self.assertIn("onchain", d.scores.get("pillars") or [])
+        self.assertGreater(d.confidence, 0.35)
 
 
 class TestSantimentIngest(unittest.TestCase):

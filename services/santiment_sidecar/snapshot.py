@@ -39,6 +39,7 @@ def build_snapshot(
             "lagged_excluded_from_policy": True,
         }
 
+    scores = dict(dec.scores or {})
     return {
         "schema_version": schema_version,
         "source": "santiment",
@@ -51,7 +52,8 @@ def build_snapshot(
         "max_new_entries_per_hour": int(dec.max_new_entries_per_hour),
         "features": {k: round(float(v), 6) for k, v in sorted(numeric.items())},
         "meta": meta_out,
+        "scores": scores,
         "symbols": {},
         "rationale": dec.rationale,
-        "sidecar_build": build or "santiment-sidecar-0.2",
+        "sidecar_build": build or "santiment-sidecar-0.3",
     }

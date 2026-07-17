@@ -60,6 +60,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
             "metrics_failed": meta.get("metrics_failed") or [],
             "policy_inputs": meta.get("policy_inputs") or [],
             "social_fresh": meta.get("social_fresh"),
+            "scores": snap.get("scores") or {},
             "rationale": snap.get("rationale"),
         }
         raw = json.dumps(body).encode("utf-8")

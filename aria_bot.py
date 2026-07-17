@@ -198,6 +198,7 @@ def health_detail():
             "metrics_failed": san_meta.get("metrics_failed") or [],
             "policy_inputs": san_meta.get("policy_inputs") or [],
             "social_fresh": san_meta.get("social_fresh"),
+            "scores": (san or {}).get("scores") or {},
         }
     except Exception:
         santiment = {}
