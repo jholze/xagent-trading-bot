@@ -264,7 +264,12 @@ class CMCProApiProvider(CMCDataProvider):
         return f"cmc_quote_{symbol}_{bucket}_{date}"
 
     def _fetch_quotes_sentiment(self, symbols: list, limit: int) -> List[RawCMCPost]:
-        """Fallback for plans without community/content endpoints — uses market quotes."""
+        """Build light momentum posts from quotes/latest (price %, not social).
+
+        Used when community/content endpoints are off-plan (typical on Startup)
+        or as enrichment. Primary trade path on Startup remains market trending
+        (see cmc_capabilities.trade_path_mode / CMCTrendingProvider).
+        """
         if not self.api_key or not symbols:
             return []
         bear_pct, bull_pct = self._quote_thresholds()
@@ -316,7 +321,12 @@ class CMCProApiProvider(CMCDataProvider):
                 if len(posts) >= limit:
                     break
             if posts:
-                log(f"CMC using quotes/latest fallback for {len(posts)} symbols (community plan not available)", "INFO")
+                # Not "Basic only" — Startup often has trending but not community.
+                log(
+                    f"CMC quotes enrichment: {len(posts)} symbols "
+                    f"(24h price momentum; community/content endpoints not on plan)",
+                    "INFO",
+                )
             return posts
         except Exception as e:
             log(f"CMC quotes sentiment fetch error: {e}", "WARNING")

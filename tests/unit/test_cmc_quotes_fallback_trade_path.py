@@ -46,7 +46,8 @@ class TestTradePathMode(unittest.TestCase):
         mode = trade_path_mode({"enabled": True, "quotes_fallback_as_signal": True}, caps)
         self.assertEqual(mode, "quotes_fallback")
         line = format_cmc_status_line({"enabled": True, "quotes_fallback_as_signal": True}, caps)
-        self.assertIn("fallback", line.lower())
+        self.assertIn("quotes/listings", line.lower())
+        self.assertIn("trade-enabled", line.lower())
 
     def test_market_trending_startup_mode(self):
         caps = {

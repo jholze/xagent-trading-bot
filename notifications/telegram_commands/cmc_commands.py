@@ -39,22 +39,38 @@ def _cmc_unavailable_message(cfg) -> str:
     mode = trade_path_mode(cmc_cfg, caps)
     quotes_fallback = bool(cmc_cfg.get("quotes_fallback_as_signal", False))
 
-    if mode == "quotes_blocked" or (not has_community_endpoints(caps) and not quotes_fallback):
+    # Only claim "trade path off" when we truly cannot trade CMC signals.
+    if mode == "quotes_blocked":
         return (
             f"{header}\n\n"
             "<b>Keine CMC Trade-Signale</b>\n\n"
-            "Plan ohne Community/Content — nur Listings/Quotes.\n"
-            "Trade-Pfad ist aus: setze <code>cmc.quotes_fallback_as_signal: true</code> "
-            "(niedrigeres Trust, <code>sell_requires_ta</code> + Churn-Guards bleiben) "
-            "oder CMC-Plan mit Community upgraden.\n\n"
-            "<i>Trending-Watchlist + 15m-Entry laufen unabhängig — siehe /trending.</i>"
+            "Key hat nur Quotes/Listings; Trade-Pfad aus.\n"
+            "Option: <code>cmc.quotes_fallback_as_signal: true</code> "
+            "(niedrigeres Trust, <code>sell_requires_ta</code> + Churn-Guards) "
+            "oder Plan mit <code>trending/latest</code> / Community freischalten.\n\n"
+            "<i>Trending-Watchlist + 15m-Entry können trotzdem laufen — siehe /trending.</i>"
+        )
+    if mode == "empty" or mode == "no_key" or mode == "disabled":
+        return (
+            f"{header}\n\n"
+            "<b>Keine CMC Trade-Signale</b>\n\n"
+            f"Pfad: <code>{mode}</code> — Key/Config/Endpoints prüfen."
         )
 
+    # market_trending / community / quotes_fallback — empty TTL is normal
+    path_hint = {
+        "market_trending": "Startup: primary path is <code>trending/latest</code> "
+        "(quotes may enrich; community/DEX often off-plan).",
+        "community": "Community + market path.",
+        "quotes_fallback": "Quotes/listings as signals (no trending endpoints).",
+    }.get(mode, mode)
     return (
         f"{header}\n\n"
         "Keine aktiven CMC-Signale im TTL-Fenster "
-        f"({cmc_cfg.get('signal_ttl_hours', 4)}h). "
-        "Nächster Bot-Cycle holt neue Daten."
+        f"({cmc_cfg.get('signal_ttl_hours', 4)}h).\n"
+        f"{path_hint}\n"
+        "Nächster Bot-Cycle holt neue Daten.\n\n"
+        "<i>Siehe auch /trending für Watchlist-Sync.</i>"
     )
 
 

@@ -242,9 +242,9 @@ def format_cmc_status_line(cmc_config: dict | None = None, caps: dict | None = N
     plan = data.get("plan_label") or "unknown"
     mode = trade_path_mode(cfg, data)
     mode_label = {
-        "community": "community + market",
-        "market_trending": "trending/latest (Startup)",
-        "quotes_fallback": "quotes/listings fallback (trade-enabled)",
+        "community": "community + market (full social)",
+        "market_trending": "trending/latest (Startup market path)",
+        "quotes_fallback": "quotes/listings only (trade-enabled)",
         "quotes_blocked": "quotes/listings only — trade filter OFF",
         "disabled": "disabled in config",
         "no_key": "no API key",
@@ -270,21 +270,22 @@ def log_cmc_boot_status(cmc_config: dict | None = None) -> dict:
     log(line, "INFO")
     if mode == "quotes_blocked":
         log(
-            "CMC: Basic/listings plan — set cmc.quotes_fallback_as_signal=true "
-            "to use quote/listing signals (with sell_requires_ta + churn guards), "
-            "or upgrade CMC for trending/community",
+            "CMC: only quotes/listings on this key — trade path off. "
+            "Set cmc.quotes_fallback_as_signal=true to allow quote signals "
+            "(with sell_requires_ta + churn guards), or unlock trending/community on the plan",
             "WARNING",
         )
     elif mode == "quotes_fallback":
         log(
-            "CMC: using Basic-tier quotes/listings path "
-            "(lower trust, sell_requires_ta + post_id churn guards apply)",
+            "CMC: trade path via quotes/listings only "
+            "(no trending endpoints; lower trust, sell_requires_ta + churn guards apply)",
             "INFO",
         )
     elif mode == "market_trending":
         log(
             "CMC: Startup market-trending path active "
-            "(trending/latest preferred; community/DEX still optional if unlocked)",
+            "(trending/latest primary; quotes may enrich watchlist; "
+            "community/DEX off-plan unless unlocked)",
             "INFO",
         )
     elif mode == "community":
