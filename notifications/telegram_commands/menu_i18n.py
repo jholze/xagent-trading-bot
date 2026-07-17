@@ -248,13 +248,18 @@ def context_footer(key: str, lang: str | None = None, **kwargs) -> str:
     return footer
 
 
-def build_section_help_message(section_id: str, lang: str | None = None) -> str:
+def build_section_help_message(
+    section_id: str,
+    lang: str | None = None,
+    *,
+    command_keys: list[str] | None = None,
+) -> str:
     from notifications.telegram_commands.menu_commands import MENU_SECTIONS
 
     lang = lang or current_language()
     pack = _pack(lang)
     help_cfg = pack.get("section_help", {}).get(section_id, {})
-    keys = dict(MENU_SECTIONS).get(section_id, [])
+    keys = list(command_keys) if command_keys is not None else dict(MENU_SECTIONS).get(section_id, [])
     lines = [help_cfg.get("title", section_title(section_id, lang)), ""]
     if help_cfg.get("intro"):
         lines.append(help_cfg["intro"])

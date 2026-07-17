@@ -8,8 +8,12 @@ import re
 import requests
 
 from logger import log
-from notifications.telegram_commands.menu_commands import MENU_SECTIONS, all_menu_command_keys
-from notifications.telegram_commands.menu_commands import send_main_section_keyboard
+from notifications.telegram_commands.menu_commands import (
+    MENU_SECTIONS,
+    all_menu_command_keys,
+    menu_sections_for,
+    send_main_section_keyboard,
+)
 from notifications.telegram_commands.menu_i18n import (
     SUPPORTED_LANGS,
     menu_button_label,
@@ -53,10 +57,13 @@ def menu_button_payload(lang: str | None = None) -> dict:
     }
 
 
-def all_bot_commands(lang: str = "de") -> list[dict[str, str]]:
+def all_bot_commands(
+    lang: str = "de",
+    sections: list[tuple[str, list[str]]] | None = None,
+) -> list[dict[str, str]]:
     commands = []
     seen: set[str] = set()
-    for section_id, keys in MENU_SECTIONS:
+    for section_id, keys in (sections if sections is not None else MENU_SECTIONS):
         for key in keys:
             if key in seen:
                 raise ValueError(f"Duplicate menu command key: {key}")
@@ -72,6 +79,56 @@ def all_bot_commands(lang: str = "de") -> list[dict[str, str]]:
                 )
             commands.append({"command": key, "description": description})
     return commands
+
+
+def register_commands_for_chat(
+    chat_id: str | int,
+    lang: str | None = None,
+    token: str | None = None,
+) -> bool:
+    """Publish a chat-scoped slash menu (satellite gets a slim command list)."""
+    token = token or os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return False
+    try:
+        from core.config import get_bot_config
+
+        cfg = get_bot_config().telegram_command_menu_config
+        if not cfg.get("enabled", True):
+            return False
+        use_lang = resolve_language(lang or cfg.get("default_language") or "de")
+    except Exception:
+        use_lang = resolve_language(lang or "de")
+
+    sections = menu_sections_for(chat_id=chat_id)
+    commands = all_bot_commands(use_lang, sections=sections)
+    base = f"https://api.telegram.org/bot{token}"
+    try:
+        resp = requests.post(
+            f"{base}/setMyCommands",
+            json={
+                "commands": commands,
+                "scope": {"type": "chat", "chat_id": int(chat_id)},
+            },
+            timeout=10,
+        )
+        data = resp.json() if resp.content else {}
+        if not resp.ok or not data.get("ok"):
+            log(
+                f"Telegram setMyCommands(chat={chat_id}) failed: "
+                f"{data.get('description', resp.text)}",
+                "WARNING",
+            )
+            return False
+        log(
+            f"Telegram chat command menu registered (chat={chat_id}, "
+            f"{len(commands)} commands, lang={use_lang})",
+            "INFO",
+        )
+        return True
+    except Exception as e:
+        log(f"Telegram chat command menu error (chat={chat_id}): {e}", "WARNING")
+        return False
 
 
 def register_bot_commands(token: str | None = None, *, send_keyboard: bool = False) -> bool:

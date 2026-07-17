@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from notifications.telegram_commands.menu_i18n import (
     back_label,
     build_section_help_message,
@@ -35,7 +37,8 @@ _COMMAND_DISPATCH: dict[str, str] = {
     "positions_full": "/positions full",
 }
 
-MENU_SECTIONS: list[tuple[str, list[str]]] = [
+# Full operator navigation (onboard, live, sandbox/backtest, …).
+MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", ["positions", "positions_full", "buy", "sell", "orders", "risk"]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
@@ -45,8 +48,70 @@ MENU_SECTIONS: list[tuple[str, list[str]]] = [
     ("hilfe", ["menu", "help", "onboard"]),
 ]
 
-_SECTION_KEYS = {sid: keys for sid, keys in MENU_SECTIONS}
-_ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS for k in keys]
+# Co-tester / satellite tenants (e.g. Henry): no ops, onboard, or live-confirm.
+MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
+    ("watchlist", ["list", "add", "remove"]),
+    ("handel", ["positions", "positions_full", "buy", "sell", "orders", "risk"]),
+    ("modus", ["mode", "gate", "dryrun", "maxpositions"]),
+    ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy"]),
+    ("hilfe", ["menu", "help"]),
+]
+
+# Backward-compatible alias = operator menu (global slash list + tests).
+MENU_SECTIONS: list[tuple[str, list[str]]] = MENU_SECTIONS_OPERATOR
+
+_ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS_OPERATOR for k in keys]
+
+
+def menu_role_for(*, chat_id: str | int | None = None, tenant_id: str | None = None) -> str:
+    """``operator`` = full menu; ``satellite`` = co-tester (e.g. Henry)."""
+    try:
+        from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+
+        if not multi_tenant_enabled():
+            return "operator"
+
+        cid = str(chat_id if chat_id is not None else (current_chat_id() or "")).strip()
+        op = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+        if cid and op and cid == op:
+            return "operator"
+
+        tid = (tenant_id or "").strip()
+        if not tid and cid:
+            from storage.tenant_registry import find_tenant_by_owner_chat_id
+
+            doc = find_tenant_by_owner_chat_id(cid) or {}
+            tid = str(doc.get("tenant_id") or "").strip()
+        if tid and tid != DEFAULT_TENANT:
+            return "satellite"
+    except Exception:
+        pass
+    return "operator"
+
+
+def menu_sections_for(
+    *,
+    chat_id: str | int | None = None,
+    tenant_id: str | None = None,
+    role: str | None = None,
+) -> list[tuple[str, list[str]]]:
+    r = role or menu_role_for(chat_id=chat_id, tenant_id=tenant_id)
+    if r == "satellite":
+        return MENU_SECTIONS_SATELLITE
+    return MENU_SECTIONS_OPERATOR
+
+
+def section_keys_for(
+    section_id: str,
+    *,
+    chat_id: str | int | None = None,
+    tenant_id: str | None = None,
+) -> list[str]:
+    for sid, keys in menu_sections_for(chat_id=chat_id, tenant_id=tenant_id):
+        if sid == section_id:
+            return list(keys)
+    return []
 
 
 def all_menu_command_keys() -> list[str]:
@@ -67,10 +132,14 @@ def _reply_keyboard_enabled() -> bool:
         return True
 
 
-def _main_reply_rows(lang: str | None = None) -> list[list[str]]:
+def _main_reply_rows(
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> list[list[str]]:
     rows: list[list[str]] = []
     row: list[str] = []
-    for section_id, _ in MENU_SECTIONS:
+    for section_id, _ in menu_sections_for(chat_id=chat_id):
         row.append(section_title(section_id, lang))
         if len(row) == 2:
             rows.append(row)
@@ -80,10 +149,16 @@ def _main_reply_rows(lang: str | None = None) -> list[list[str]]:
     return rows
 
 
-def _section_reply_rows(section_id: str, lang: str | None = None) -> list[list[str]]:
+def _section_reply_rows(
+    section_id: str,
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> list[list[str]]:
+    keys = section_keys_for(section_id, chat_id=chat_id)
     rows: list[list[str]] = []
     row: list[str] = []
-    for key in _SECTION_KEYS[section_id]:
+    for key in keys:
         row.append(command_dispatch_text(key))
         if len(row) == 3:
             rows.append(row)
@@ -94,11 +169,14 @@ def _section_reply_rows(section_id: str, lang: str | None = None) -> list[list[s
     return rows
 
 
-def send_section_help(section_id: str, lang: str | None = None) -> bool:
-    if section_id not in _SECTION_KEYS:
+def send_section_help(section_id: str, lang: str | None = None, chat_id=None) -> bool:
+    keys = section_keys_for(section_id, chat_id=chat_id)
+    if not keys:
         return False
     lang = lang or current_language()
-    return send_telegram_message(build_section_help_message(section_id, lang))
+    return send_telegram_message(
+        build_section_help_message(section_id, lang, command_keys=keys)
+    )
 
 
 def _target_chat_id(chat_id: str | int | None = None) -> str | int | None:
@@ -117,29 +195,37 @@ def send_main_section_keyboard(
     if not _reply_keyboard_enabled():
         return False
     lang = lang or current_language()
+    target = _target_chat_id(chat_id)
     return send_reply_keyboard(
         text or home_intro(lang),
-        _main_reply_rows(lang),
-        chat_id=_target_chat_id(chat_id),
+        _main_reply_rows(lang, chat_id=target),
+        chat_id=target,
     )
 
 
 def send_section_keyboard(section_id: str, lang: str | None = None, chat_id=None) -> bool:
-    if section_id not in _SECTION_KEYS:
+    target = _target_chat_id(chat_id)
+    keys = section_keys_for(section_id, chat_id=target)
+    if not keys:
         return False
     lang = lang or current_language()
-    target = _target_chat_id(chat_id)
     if target is not None:
         set_active_section(target, section_id)
     return send_reply_keyboard(
         f"<b>{section_title(section_id, lang)}</b>\n\n{section_pick(lang)}",
-        _section_reply_rows(section_id, lang),
+        _section_reply_rows(section_id, lang, chat_id=target),
         chat_id=target,
     )
 
 
 def open_menu_for_chat(chat_id: str | int, lang: str | None = None) -> bool:
     """Push section reply keyboard + inline overview to a specific chat."""
+    try:
+        from notifications.telegram_commands.command_menu import register_commands_for_chat
+
+        register_commands_for_chat(chat_id, lang=lang)
+    except Exception:
+        pass
     return show_home(chat_id=int(chat_id), lang=lang)
 
 
@@ -154,18 +240,27 @@ def _home_text(lang: str | None = None) -> str:
     return home_inline(lang)
 
 
-def _section_text(section_id: str, lang: str | None = None) -> str:
+def _section_text(
+    section_id: str,
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> str:
     lang = lang or current_language()
     lines = [f"<b>{section_title(section_id, lang)}</b>", "", section_pick(lang)]
-    for key in _SECTION_KEYS[section_id]:
+    for key in section_keys_for(section_id, chat_id=chat_id):
         lines.append(f"• <code>{command_dispatch_text(key)}</code> — {_command_label(key, lang)}")
     return "\n".join(lines)
 
 
-def _home_keyboard(lang: str | None = None) -> list[list[dict]]:
+def _home_keyboard(
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
-    for section_id, _ in MENU_SECTIONS:
+    for section_id, _ in menu_sections_for(chat_id=chat_id):
         row.append({"text": section_title(section_id, lang), "callback_data": f"menu:sec:{section_id}"})
         if len(row) == 2:
             rows.append(row)
@@ -175,10 +270,15 @@ def _home_keyboard(lang: str | None = None) -> list[list[dict]]:
     return rows
 
 
-def _section_keyboard(section_id: str, lang: str | None = None) -> list[list[dict]]:
+def _section_keyboard(
+    section_id: str,
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
-    for key in _SECTION_KEYS[section_id]:
+    for key in section_keys_for(section_id, chat_id=chat_id):
         row.append({"text": _command_label(key, lang), "callback_data": f"menu:run:{key}"})
         if len(row) == 2:
             rows.append(row)
@@ -191,8 +291,8 @@ def _section_keyboard(section_id: str, lang: str | None = None) -> list[list[dic
 
 def show_home(*, chat_id: int | None = None, message_id: int | None = None, lang: str | None = None) -> bool:
     lang = lang or current_language()
-    markup = _home_keyboard(lang)
     target = _target_chat_id(chat_id)
+    markup = _home_keyboard(lang, chat_id=target)
     if chat_id is not None and message_id is not None:
         return edit_telegram_message(_home_text(lang), chat_id, message_id, reply_markup=markup)
     send_main_section_keyboard(lang=lang, chat_id=target)
@@ -200,14 +300,14 @@ def show_home(*, chat_id: int | None = None, message_id: int | None = None, lang
 
 
 def show_section(section_id: str, chat_id: int, message_id: int, lang: str | None = None) -> bool:
-    if section_id not in _SECTION_KEYS:
-        return False
+    if not section_keys_for(section_id, chat_id=chat_id):
+        return show_home(chat_id=chat_id, message_id=message_id, lang=lang)
     lang = lang or current_language()
     return edit_telegram_message(
-        _section_text(section_id, lang),
+        _section_text(section_id, lang, chat_id=chat_id),
         chat_id,
         message_id,
-        reply_markup=_section_keyboard(section_id, lang),
+        reply_markup=_section_keyboard(section_id, lang, chat_id=chat_id),
     )
 
 
@@ -228,7 +328,7 @@ def handle_text(text: str, chat_id=None) -> bool:
 
             section_id = get_active_section(chat_id)
         if section_id:
-            send_section_help(section_id)
+            send_section_help(section_id, chat_id=chat_id)
             return True
         send_telegram_message(
             "<b>❓ Hilfe</b>\n\nWähle zuerst einen Bereich — dann <i>❓ Hilfe</i> für Details zu allen Befehlen dort."
@@ -238,6 +338,9 @@ def handle_text(text: str, chat_id=None) -> bool:
         return True
     section_id = title_to_section_id(stripped)
     if section_id:
+        allowed = {sid for sid, _ in menu_sections_for(chat_id=chat_id)}
+        if section_id not in allowed:
+            return False
         send_section_keyboard(section_id, chat_id=chat_id)
         return True
     return False
@@ -246,7 +349,8 @@ def handle_text(text: str, chat_id=None) -> bool:
 def handle(text: str) -> bool:
     if text not in ("/menu", "/menü"):
         return False
-    show_home(chat_id=int(current_chat_id()) if current_chat_id() else None)
+    cid = current_chat_id()
+    show_home(chat_id=int(cid) if cid else None)
     return True
 
 
@@ -275,8 +379,8 @@ def handle_callback(callback_query: dict) -> bool:
             answer_callback_query(callback_id)
         if chat_id and message_id:
             show_section(section_id, chat_id, message_id)
-        elif section_id in _SECTION_KEYS:
-            send_section_keyboard(section_id)
+        elif section_keys_for(section_id, chat_id=chat_id):
+            send_section_keyboard(section_id, chat_id=chat_id)
         return True
 
     if data.startswith("menu:run:"):
@@ -285,6 +389,13 @@ def handle_callback(callback_query: dict) -> bool:
             if callback_id:
                 answer_callback_query(callback_id, callback_unknown_command())
             return True
+        # Satellites: ignore operator-only menu runs (stale inline buttons).
+        if chat_id is not None and menu_role_for(chat_id=chat_id) == "satellite":
+            allowed = {k for _, keys in MENU_SECTIONS_SATELLITE for k in keys}
+            if cmd_key not in allowed:
+                if callback_id:
+                    answer_callback_query(callback_id, callback_unknown_command())
+                return True
         cmd_text = command_dispatch_text(cmd_key)
         if callback_id:
             answer_callback_query(callback_id, cmd_text)

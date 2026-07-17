@@ -34,13 +34,10 @@ def try_link_tenant_from_start(text: str, chat_id: str | int) -> tuple[bool, str
     if ok:
         notify_tenant_linked(tid, chat_id)
         try:
-            from core.config import get_bot_config
             from notifications.telegram_commands.menu_commands import open_menu_for_chat
-            from notifications.telegram_commands.menu_i18n import resolve_language
+            from notifications.telegram_commands.menu_i18n import resolve_ui_language
 
-            lang = resolve_language(
-                get_bot_config().telegram_command_menu_config.get("default_language")
-            )
+            lang = resolve_ui_language(None, tid)
             open_menu_for_chat(chat_id, lang=lang)
         except Exception:
             pass
@@ -58,6 +55,22 @@ def handle(text: str) -> bool:
         if msg:
             send_telegram_message(msg)
         return handled
+
+    # Already linked (operator or satellite): open role-appropriate navigation.
+    chat_id = current_chat_id()
+    try:
+        from core.tenant_routing import resolve_incoming_tenant
+        from notifications.telegram_commands.menu_commands import open_menu_for_chat
+        from notifications.telegram_commands.menu_i18n import resolve_ui_language
+
+        route = resolve_incoming_tenant(chat_id=chat_id)
+        if chat_id and not route.rejected:
+            lang = resolve_ui_language(None, route.tenant_id)
+            open_menu_for_chat(chat_id, lang=lang)
+            return True
+    except Exception:
+        pass
+
     send_telegram_message(
         "👋 Willkommen beim xAgent Trading Bot.\n\n"
         "Hast du einen Einladungs-Link vom Operator? Einfach antippen.\n"

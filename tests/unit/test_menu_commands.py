@@ -3,12 +3,15 @@ from unittest.mock import patch
 
 from notifications.telegram_commands.menu_commands import (
     MENU_SECTIONS,
+    MENU_SECTIONS_SATELLITE,
     _home_keyboard,
     _section_reply_rows,
     all_menu_command_keys,
     handle,
     handle_callback,
     handle_text,
+    menu_role_for,
+    menu_sections_for,
 )
 from notifications.telegram_commands.menu_i18n import back_label, help_label, set_user_language
 
@@ -27,9 +30,47 @@ class TestMenuCommands(unittest.TestCase):
     def test_seven_sections(self):
         self.assertEqual(len(MENU_SECTIONS), 7)
 
+    def test_satellite_menu_hides_ops(self):
+        sat_keys = [k for _, keys in MENU_SECTIONS_SATELLITE for k in keys]
+        self.assertNotIn("onboard", sat_keys)
+        self.assertNotIn("live_confirm", sat_keys)
+        self.assertNotIn("sandbox", sat_keys)
+        self.assertNotIn("hermes_run", sat_keys)
+        self.assertIn("positions", sat_keys)
+        self.assertEqual(len(MENU_SECTIONS_SATELLITE), 6)
+        self.assertFalse(any(sid == "tests" for sid, _ in MENU_SECTIONS_SATELLITE))
+
+    def test_menu_role_satellite_by_tenant(self):
+        with patch(
+            "notifications.telegram_commands.menu_commands.menu_role_for",
+            wraps=menu_role_for,
+        ):
+            with patch("core.tenant_context.multi_tenant_enabled", return_value=True), \
+                 patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "111"}, clear=False), \
+                 patch(
+                     "storage.tenant_registry.find_tenant_by_owner_chat_id",
+                     return_value={"tenant_id": "henry"},
+                 ):
+                self.assertEqual(menu_role_for(chat_id="6512212782"), "satellite")
+                secs = menu_sections_for(chat_id="6512212782")
+                self.assertEqual(secs, MENU_SECTIONS_SATELLITE)
+
+    def test_menu_role_operator_chat(self):
+        with patch("core.tenant_context.multi_tenant_enabled", return_value=True), \
+             patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "111"}, clear=False):
+            self.assertEqual(menu_role_for(chat_id="111"), "operator")
+
     def test_home_keyboard_has_sections(self):
         buttons = [b for row in _home_keyboard() for b in row]
         self.assertEqual(len(buttons), 7)
+
+    def test_home_keyboard_satellite_has_six_sections(self):
+        with patch(
+            "notifications.telegram_commands.menu_commands.menu_role_for",
+            return_value="satellite",
+        ):
+            buttons = [b for row in _home_keyboard(chat_id=999) for b in row]
+            self.assertEqual(len(buttons), 6)
 
     def test_section_reply_rows_include_commands_and_back(self):
         rows = _section_reply_rows("handel")
