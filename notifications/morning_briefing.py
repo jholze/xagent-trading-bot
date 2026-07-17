@@ -91,7 +91,9 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
     if not cfg.observability_config.get("morning_briefing_enabled", True):
         return ["<b>☀️ Morning Briefing</b>\n\nDeaktiviert in config (<code>morning_briefing_enabled</code>)."]
 
-    now = datetime.now()
+    from notifications.daily_stats import utc_now_naive
+
+    now = utc_now_naive()
     since = now - timedelta(hours=24)
     stats = window_stats(BOT_ROOT, since, until=now)
     dec = stats["decisions"]

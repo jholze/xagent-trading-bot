@@ -4,14 +4,28 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BOT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse_ts(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "")[:26])
+    """Parse ISO timestamp to naive UTC (comparable across sources)."""
+    raw = str(value).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        dt = datetime.fromisoformat(raw.replace("Z", "")[:26])
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def load_json(path: Path) -> dict | list:
@@ -20,27 +34,25 @@ def load_json(path: Path) -> dict | list:
 
 
 def _stats_ledger_scope() -> str:
-    from data_manager import get_config, is_demo_mode, resolve_ledger_scope
+    """Same scope the bot uses for orders/positions (not hardcoded demo)."""
+    from data_manager import resolve_ledger_scope
 
-    if is_demo_mode():
-        return "demo"
-    return resolve_ledger_scope(get_config().get("trading_mode", "live"))
+    return resolve_ledger_scope()
 
 
 def load_trade_history_doc() -> dict:
-    """Trade history from active ledger (Mongo or JSON), with legacy file fallback."""
+    """Trade history from active ledger scope (Mongo or JSON)."""
     try:
-        from data_manager import is_demo_mode, load_live_trade_history, load_trade_history
+        from data_manager import load_trade_history_document
 
-        if is_demo_mode():
-            return load_trade_history() or {}
-        return load_live_trade_history() or {}
+        return load_trade_history_document(_stats_ledger_scope()) or {}
     except Exception:
         pass
     for name in (
         "live_trade_history.json",
         "live_trade_history.demo.json",
         "trade_history.json",
+        "trade_history.demo.json",
     ):
         path = BOT_ROOT / name
         if not path.exists():
@@ -65,7 +77,7 @@ def load_orders_doc() -> dict:
         "demo": ("orders.demo.json",),
         "paper": ("orders.paper.json",),
         "live": ("orders.live.json",),
-    }.get(scope, ("orders.live.json", "orders.paper.json"))
+    }.get(scope, ("orders.live.json", "orders.paper.json", "orders.demo.json"))
     for name in candidates:
         path = BOT_ROOT / name
         if not path.exists():
@@ -79,13 +91,50 @@ def load_orders_doc() -> dict:
 
 def _order_window_ts(order: dict) -> datetime | None:
     ts = order.get("timestamps") or {}
-    raw = ts.get("created") or ts.get("filled") or ts.get("updated")
+    # Prefer fill time for activity windows
+    raw = ts.get("filled") or ts.get("created") or ts.get("updated")
     if not raw:
         return None
     try:
         return parse_ts(str(raw))
     except Exception:
         return None
+
+
+def filled_order_to_trade(order: dict) -> dict | None:
+    """Map a filled order record to the trade-history shape used by briefings."""
+    if str(order.get("status") or "").lower() != "filled":
+        return None
+    side = str(order.get("side") or "").upper()
+    if side not in ("BUY", "SELL"):
+        return None
+    ts = _order_window_ts(order)
+    if ts is None:
+        return None
+    req = order.get("request") or {}
+    ex = order.get("execution") or {}
+    usdt = ex.get("usdt") or ex.get("usdt_amount") or req.get("usdt") or req.get("usdt_amount") or 0
+    try:
+        usdt_f = float(usdt or 0)
+    except Exception:
+        usdt_f = 0.0
+    pnl = order.get("pnl")
+    if isinstance(pnl, dict):
+        pnl = pnl.get("usdt") or pnl.get("realized") or pnl.get("pnl")
+    ts_raw = (order.get("timestamps") or {}).get("filled") or (
+        order.get("timestamps") or {}
+    ).get("created")
+    return {
+        "type": side,
+        "symbol": order.get("symbol") or "?",
+        "timestamp": ts_raw or ts.isoformat(),
+        "usdt_amount": usdt_f,
+        "usdt_received": usdt_f if side == "SELL" else None,
+        "source": order.get("source") or "order",
+        "pnl": pnl,
+        "_from_order": True,
+        "_order_id": order.get("id") or order.get("display_seq"),
+    }
 
 
 def cmc_posts(raw) -> list:
@@ -152,9 +201,13 @@ def trades_in_window(
     since: datetime,
     until: datetime,
 ) -> list[dict]:
+    """Trades in [since, until). Prefer trade_history; fall back to filled orders.
+
+    Railway / Mongo often has fills only in the order ledger.
+    """
     th = load_trade_history_doc()
-    trades = th.get("trades", [])
-    out = []
+    trades = th.get("trades", []) or []
+    out: list[dict] = []
     for trade in trades:
         ts_raw = trade.get("timestamp")
         if not ts_raw:
@@ -165,6 +218,41 @@ def trades_in_window(
             continue
         if since <= ts < until:
             out.append(trade)
+
+    # Always merge filled orders so morning briefing works when history is empty
+    # or only partially synced.
+    seen = set()
+    for t in out:
+        key = (
+            str(t.get("type") or "").upper(),
+            str(t.get("symbol") or ""),
+            str(t.get("timestamp") or "")[:19],
+            round(float(t.get("usdt_amount") or t.get("usdt_received") or 0), 2),
+        )
+        seen.add(key)
+
+    for order in orders_in_window(bot_dir, since, until):
+        row = filled_order_to_trade(order)
+        if not row:
+            continue
+        try:
+            ts = parse_ts(str(row["timestamp"]))
+        except Exception:
+            continue
+        if not (since <= ts < until):
+            continue
+        key = (
+            row["type"],
+            str(row.get("symbol") or ""),
+            str(row.get("timestamp") or "")[:19],
+            round(float(row.get("usdt_amount") or 0), 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+
+    out.sort(key=lambda t: str(t.get("timestamp") or ""))
     return out
 
 

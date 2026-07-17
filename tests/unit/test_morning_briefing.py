@@ -166,6 +166,84 @@ class TestDailyStatsWindow(unittest.TestCase):
         self.assertEqual(stats["open_count"], 0)
         self.assertEqual(stats["trades"], [])
 
+    def test_trades_from_filled_orders_when_history_empty(self):
+        """#27: Mongo order ledger is SOT — morning must show fills without trade_history."""
+        from notifications.daily_stats import trades_in_window, utc_now_naive
+
+        now = utc_now_naive()
+        since = now - timedelta(hours=24)
+        filled_ts = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        orders = {
+            "orders": [
+                {
+                    "id": "abc",
+                    "status": "filled",
+                    "side": "buy",
+                    "symbol": "SOL/USDT",
+                    "source": "dca",
+                    "request": {"usdt": 150.0},
+                    "execution": {"usdt": 150.0},
+                    "timestamps": {"created": filled_ts, "filled": filled_ts},
+                },
+                {
+                    "id": "def",
+                    "status": "rejected",
+                    "side": "buy",
+                    "symbol": "XRP/USDT",
+                    "request": {"usdt": 50.0},
+                    "timestamps": {"created": filled_ts},
+                },
+            ]
+        }
+        with patch(
+            "notifications.daily_stats.load_trade_history_doc",
+            return_value={"trades": [], "virtual_balance": 0, "realized_pnl": 0},
+        ), patch(
+            "notifications.daily_stats.load_orders_doc",
+            return_value=orders,
+        ):
+            trades = trades_in_window(Path("."), since, now)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["type"], "BUY")
+        self.assertEqual(trades[0]["symbol"], "SOL/USDT")
+        self.assertEqual(trades[0]["usdt_amount"], 150.0)
+
+        with patch("notifications.morning_briefing.window_stats") as mock_stats:
+            mock_stats.return_value = {
+                "trades": trades,
+                "orders": orders["orders"],
+                "buys": 1,
+                "sells": 0,
+                "dca_buys": 1,
+                "sell_pnl": 0.0,
+                "filled_orders": 1,
+                "rejected_orders": 1,
+                "cash": 1000.0,
+                "realized_total": 0.0,
+                "open_count": 1,
+                "pos_value": 150.0,
+                "decisions": {"total": 0, "buy_dca": 0, "buy_dca_executed": 0, "buy_dca_shadow": 0},
+                "highlights": [],
+                "social": [],
+                "hermes": "Hermes: —",
+            }
+            with patch(
+                "notifications.terminal_dashboard._portfolio_snapshot",
+                return_value={"total_value": 1150.0, "balance": 1000.0, "open_positions": 1},
+            ), patch("services.trading_service.TradingService") as mock_trading:
+                mock_trading.return_value.risk.status_summary.return_value = {
+                    "portfolio_equity": 1150.0,
+                    "drawdown_pct": 0.0,
+                    "daily_buys": 1,
+                    "max_daily_buys": 15,
+                    "daily_sells": 0,
+                    "max_daily_sells": 0,
+                }
+                text = "\n".join(build_morning_briefing("chat-1"))
+        self.assertIn("SOL/USDT", text)
+        self.assertIn("BUY", text)
+        self.assertNotIn("keine Trades in 24h", text)
+
     def test_decision_stats_counts_dca(self, bot_dir=None):
         bot_dir = Path(__file__).resolve().parents[2]
         decisions = bot_dir / "logs" / "decisions.jsonl"
