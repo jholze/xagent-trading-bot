@@ -4,6 +4,7 @@ from core.config import get_bot_config
 from data.cmc_capabilities import (
     format_cmc_status_line,
     has_community_endpoints,
+    has_dexscan_endpoint,
     probe_capabilities,
     trade_path_mode,
 )
@@ -85,9 +86,21 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/dexsignals":
-        cfg = get_bot_config().cmc_config.get("dexscan_alerts", {})
+        bot_cfg = get_bot_config()
+        cfg = bot_cfg.cmc_config.get("dexscan_alerts", {})
         if not cfg.get("enabled", True):
             send_telegram_message(t("cmc_dex_disabled"))
+            return True
+        caps = probe_capabilities()
+        if cfg.get("require_endpoint", True) and not has_dexscan_endpoint(caps):
+            send_telegram_message(
+                f"{_cmc_status_header(bot_cfg)}\n\n"
+                "<b>DexScan nicht freigeschaltet</b>\n"
+                "Endpoint <code>dex/tokens/trending/list</code> liefert 403 auf diesem Plan.\n"
+                "Startup freischaltet oft nur <b>market trending</b> — DexScan braucht "
+                "ggf. höheres Add-on / Enterprise. Market-Signale: <code>/cmc</code> · "
+                "<code>/trending</code>."
+            )
             return True
         from data.cmc_dex_signals_provider import get_dexscan_provider
 

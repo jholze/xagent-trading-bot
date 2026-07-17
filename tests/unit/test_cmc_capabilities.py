@@ -51,7 +51,8 @@ class TestCMCCapabilities(unittest.TestCase):
         mock_probe.side_effect = lambda _key, eid: eid == "listings/latest"
 
         caps = probe_capabilities("test-key", force=True)
-        self.assertEqual(caps["plan_label"], "Builder")
+        self.assertTrue(caps["plan_label"].startswith("Builder"))
+        self.assertIn("150,000", caps["plan_label"])
         self.assertTrue(caps["endpoints"]["listings/latest"])
         self.assertFalse(caps["endpoints"]["trending/latest"])
 

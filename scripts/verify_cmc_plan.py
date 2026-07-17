@@ -146,23 +146,29 @@ def _fetch_key_info(key: str) -> dict:
 
 def _infer_plan(results: list[tuple[dict, dict]], key_info: dict) -> str:
     name = (key_info.get("plan_name") or "").strip()
-    if name:
-        credits = key_info.get("credits_monthly") or 0
-        rate = key_info.get("rate_limit_per_min") or 0
-        extra = ""
-        if credits:
-            extra = f" — {credits:,} credits/mo"
-        if rate:
-            extra += f", {rate}/min"
-        return f"{name}{extra}"
+    credits = key_info.get("credits_monthly") or 0
+    rate = key_info.get("rate_limit_per_min") or 0
+    extra = ""
+    if credits:
+        extra = f" — {credits:,} credits/mo"
+    if rate:
+        extra += f", {rate}/min"
 
     ok_ids = {spec["id"] for spec, res in results if res["ok"]}
+    if name:
+        return f"{name}{extra}"
+
     if "dex/tokens/trending/list" in ok_ids:
-        return "Startup oder höher (DexScan + vermutlich WebSocket-fähig)"
+        return f"Startup+ (DexScan){extra}"
     if "trending/latest" in ok_ids and "community/trending/token" in ok_ids:
-        return "Builder (oder höher) — Trending + Community OK"
+        return f"Builder+ (Trending + Community){extra}"
+    if "trending/latest" in ok_ids or "trending/gainers-losers" in ok_ids:
+        # Current CMC Startup often unlocks market trending, not community/DEX.
+        if credits >= 300_000 or rate >= 500:
+            return f"Startup (market trending){extra}"
+        return f"Builder/Startup (market trending){extra}"
     if "listings/latest" in ok_ids:
-        return "Basic/Builder — listings/quotes OK, Trending/Community evtl. 403"
+        return f"Basic — listings/quotes only{extra}"
     return "Unbekannt — Key ungültig oder Plan nicht erkannt"
 
 
@@ -253,13 +259,21 @@ def main() -> int:
     listings_ok = any(res["ok"] for spec, res in results if spec["id"] == "listings/latest")
     quotes_ok = any(res["ok"] for spec, res in results if spec["id"] == "quotes/latest")
     trending_ok = any(res["ok"] for spec, res in results if spec["id"] == "trending/latest")
-    if listings_ok and quotes_ok and not trending_ok:
-        print("\n✓ Builder-typisch: listings + quotes nutzbar, Trending/Community/DexScan 403.")
-        print("  Bot-Config: source_priority=[listings/latest], dexscan disabled.")
+    community_ok = any(res["ok"] for spec, res in results if spec["id"] == "community/trending/token")
+    dex_ok = any(res["ok"] for spec, res in results if spec["id"] == "dex/tokens/trending/list")
+    if trending_ok and not community_ok:
+        print("\n✓ Startup-typisch: market trending OK, Community/DexScan oft noch 403.")
+        print("  Bot-Config: source_priority=[trending/latest, gainers-losers, listings],")
+        print("  plan_profile=startup, quotes_include_trending_movers=true.")
+        if not dex_ok:
+            print("  DexScan: nicht freigeschaltet — /dexsignals bleibt leer (OK).")
+    elif listings_ok and quotes_ok and not trending_ok:
+        print("\n✓ Basic-typisch: listings + quotes nutzbar, Trending/Community/DexScan 403.")
+        print("  Bot-Config: quotes_fallback_as_signal=true.")
     elif not listings_ok:
         print("\n⚠️  listings/latest fehlgeschlagen — Key ungültig oder Plan gesperrt.")
     elif not trending_ok:
-        print("\n⚠️  trending/latest 403 — für Builder normal; Bot nutzt listings/quotes.")
+        print("\n⚠️  trending/latest 403 — Bot nutzt listings/quotes-Fallback.")
 
     if args.health_url:
         try:

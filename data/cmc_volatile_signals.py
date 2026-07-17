@@ -7,6 +7,8 @@ from typing import List
 
 import requests
 
+from datetime import datetime, timezone
+
 from data.cmc_capabilities import endpoint_available, filter_source_priority, probe_capabilities, quotes_batch_size
 from data.cmc_community_provider import CMCCommunityParser, CMCCommunitySignal, RawCMCPost
 from data.cmc_trending_provider import CMCTrendingProvider
@@ -118,10 +120,15 @@ class CMCVolatileSignalAggregator:
         filtered = filter_source_priority(priority, caps, api_key=self.api_key)
         posts = []
 
-        if filtered == ["listings/latest"] or (
-            filtered and filtered[0] == "listings/latest"
-            and not any(endpoint_available(e, caps) for e in ("trending/latest", "trending/gainers-losers"))
-        ):
+        use_listings_only = filtered == ["listings/latest"] or (
+            filtered
+            and filtered[0] == "listings/latest"
+            and not any(
+                endpoint_available(e, caps)
+                for e in ("trending/latest", "trending/gainers-losers")
+            )
+        )
+        if use_listings_only:
             details = self.trending_provider.fetch_listings_momentum_details(limit)
             for rank, row in enumerate(details, start=1):
                 sym = row["symbol"]
@@ -130,7 +137,7 @@ class CMCVolatileSignalAggregator:
                 bull = min(95, 55 + int(pct))
                 bear = max(5, 100 - bull)
                 posts.append(RawCMCPost(
-                    post_id=f"cmc_mkt_trend_{sym}_{rank}",
+                    post_id=f"cmc_mkt_listings_{sym}_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
                     coin=sym,
                     text=(
                         f"{sym} +{pct:.1f}% in 24h, mcap ${mcap_m:.1f}M "
@@ -141,6 +148,8 @@ class CMCVolatileSignalAggregator:
                     votes_bearish=bear,
                 ))
                 posts[-1].trending_rank = rank  # type: ignore[attr-defined]
+                posts[-1].quotes_fallback = True  # type: ignore[attr-defined]
+                posts[-1].signal_source = "listings/latest"  # type: ignore[attr-defined]
             return posts
 
         symbols, source = self.trending_provider.fetch_trending_symbols(
@@ -149,9 +158,12 @@ class CMCVolatileSignalAggregator:
             include_losers=include_losers,
             capabilities=caps,
         )
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Real market trending (Startup+) is NOT a quotes fallback — full trending trust.
+        is_fallback = source in ("", "listings/latest")
         for rank, sym in enumerate(symbols, start=1):
             posts.append(RawCMCPost(
-                post_id=f"cmc_mkt_trend_{sym}_{rank}",
+                post_id=f"cmc_mkt_trend_{sym}_{day}",
                 coin=sym,
                 text=f"CMC market trending #{rank} ({source})",
                 author="CMC Market Trending",
@@ -159,6 +171,8 @@ class CMCVolatileSignalAggregator:
                 votes_bearish=38,
             ))
             posts[-1].trending_rank = rank  # type: ignore[attr-defined]
+            posts[-1].quotes_fallback = is_fallback  # type: ignore[attr-defined]
+            posts[-1].signal_source = source or "unknown"  # type: ignore[attr-defined]
         return posts
 
     def _fetch_content(self, symbols: list, limit: int) -> List[RawCMCPost]:
@@ -232,7 +246,11 @@ class CMCVolatileSignalAggregator:
             if post.post_id in seen or post.post_id in result_ids:
                 return
             signal = self.parser.parse(post)
-            signal.quotes_fallback = post.author in ("CMC Market", "CMC Market Trending")
+            if getattr(post, "quotes_fallback", None) is not None:
+                signal.quotes_fallback = bool(post.quotes_fallback)
+            else:
+                # Pure quotes/latest posts; market trending sets the flag explicitly.
+                signal.quotes_fallback = post.author == "CMC Market"
             rank = int(getattr(post, "trending_rank", 0) or 0)
             _apply_tier(signal, tier, trending_rank=rank)
             results.append(signal)

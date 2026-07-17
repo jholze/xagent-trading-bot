@@ -107,16 +107,38 @@ def _fetch_key_info(api_key: str) -> dict:
 
 
 def _infer_plan_label(endpoints: dict[str, bool], key_info: dict) -> str:
+    """Label plan from key/info name or endpoint/credit fingerprints."""
     name = (key_info.get("plan_name") or "").strip()
-    if name:
-        return name
-    if endpoints.get("dex/tokens/trending/list"):
-        return "Startup+"
-    if endpoints.get("trending/latest") and endpoints.get("community/trending/token"):
-        return "Builder+"
-    if endpoints.get("listings/latest"):
-        return "Basic/Builder (listings only)"
-    return "unknown"
+    credits = int(key_info.get("credits_monthly") or 0)
+    rate = int(key_info.get("rate_limit_per_min") or 0)
+
+    # API key/info often omits plan_name; use credits/rate + endpoints.
+    if not name:
+        if endpoints.get("dex/tokens/trending/list"):
+            name = "Startup+ (Dex)"
+        elif endpoints.get("trending/latest") and endpoints.get("community/trending/token"):
+            name = "Builder+ (Community)"
+        elif endpoints.get("trending/latest") or endpoints.get("trending/gainers-losers"):
+            # Startup typically unlocks market trending; community/DEX may stay locked.
+            if credits >= 300_000 or rate >= 500:
+                name = "Startup"
+            else:
+                name = "Builder (trending)"
+        elif endpoints.get("listings/latest"):
+            name = "Basic (listings only)"
+        else:
+            name = "unknown"
+    elif "startup" in name.lower() and not endpoints.get("trending/latest"):
+        name = f"{name} (key may need re-issue for trending)"
+
+    extras = []
+    if credits:
+        extras.append(f"{credits:,} cr/mo")
+    if rate:
+        extras.append(f"{rate}/min")
+    if extras:
+        return f"{name} · {' · '.join(extras)}"
+    return name
 
 
 def probe_capabilities(api_key: str | None = None, *, force: bool = False) -> dict:
@@ -172,8 +194,25 @@ def has_community_endpoints(caps: dict | None = None) -> bool:
     )
 
 
+def has_market_trending_endpoints(caps: dict | None = None) -> bool:
+    """True when Startup/Builder market-trending APIs work (not listings-only)."""
+    data = caps or probe_capabilities()
+    return endpoint_available("trending/latest", data) or endpoint_available(
+        "trending/gainers-losers", data
+    )
+
+
+def has_dexscan_endpoint(caps: dict | None = None) -> bool:
+    data = caps or probe_capabilities()
+    return endpoint_available("dex/tokens/trending/list", data)
+
+
 def trade_path_mode(cmc_config: dict | None = None, caps: dict | None = None) -> str:
-    """How CMC feeds the trade path: community | quotes_fallback | disabled | empty."""
+    """How CMC feeds the trade path.
+
+    Modes: community | market_trending | quotes_fallback | quotes_blocked |
+    disabled | no_key | empty
+    """
     cfg = cmc_config or {}
     if not cfg.get("enabled", True):
         return "disabled"
@@ -182,14 +221,17 @@ def trade_path_mode(cmc_config: dict | None = None, caps: dict | None = None) ->
         return "no_key"
     quotes_ok = bool(cfg.get("quotes_fallback_as_signal", False))
     community = has_community_endpoints(data)
+    market = has_market_trending_endpoints(data)
     listings = endpoint_available("listings/latest", data)
     quotes = endpoint_available("quotes/latest", data)
     if community:
         return "community"
+    if market:
+        return "market_trending"
     if quotes_ok and (listings or quotes):
         return "quotes_fallback"
     if listings or quotes:
-        return "quotes_blocked"  # data available but trade filter off
+        return "quotes_blocked"
     return "empty"
 
 
@@ -200,14 +242,16 @@ def format_cmc_status_line(cmc_config: dict | None = None, caps: dict | None = N
     plan = data.get("plan_label") or "unknown"
     mode = trade_path_mode(cfg, data)
     mode_label = {
-        "community": "community endpoints",
+        "community": "community + market",
+        "market_trending": "trending/latest (Startup)",
         "quotes_fallback": "quotes/listings fallback (trade-enabled)",
         "quotes_blocked": "quotes/listings only — trade filter OFF",
         "disabled": "disabled in config",
         "no_key": "no API key",
         "empty": "no usable endpoints",
     }.get(mode, mode)
-    return f"CMC plan={plan} · trade={mode_label}"
+    dex = "dex=on" if has_dexscan_endpoint(data) else "dex=off"
+    return f"CMC plan={plan} · trade={mode_label} · {dex}"
 
 
 def log_cmc_boot_status(cmc_config: dict | None = None) -> dict:
@@ -228,13 +272,26 @@ def log_cmc_boot_status(cmc_config: dict | None = None) -> dict:
         log(
             "CMC: Basic/listings plan — set cmc.quotes_fallback_as_signal=true "
             "to use quote/listing signals (with sell_requires_ta + churn guards), "
-            "or upgrade CMC for community endpoints",
+            "or upgrade CMC for trending/community",
             "WARNING",
         )
     elif mode == "quotes_fallback":
         log(
             "CMC: using Basic-tier quotes/listings path "
             "(lower trust, sell_requires_ta + post_id churn guards apply)",
+            "INFO",
+        )
+    elif mode == "market_trending":
+        log(
+            "CMC: Startup market-trending path active "
+            "(trending/latest preferred; community/DEX still optional if unlocked)",
+            "INFO",
+        )
+    elif mode == "community":
+        log("CMC: community + market endpoints active", "INFO")
+    if not has_dexscan_endpoint(caps) and (cfg.get("dexscan_alerts") or {}).get("enabled", True):
+        log(
+            "CMC DexScan endpoint not on this plan — /dexsignals will stay empty until unlocked",
             "INFO",
         )
     return caps

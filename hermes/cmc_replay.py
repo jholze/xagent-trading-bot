@@ -52,7 +52,9 @@ def make_cmc_signal(post: dict, trust_score: float = 65.0) -> CMCCommunitySignal
     )
     signal.trust_score = float(trust_score)
     signal.effective_confidence = confidence * (trust_score / 100.0)
-    signal.quotes_fallback = str(post.get("post_id", "")).startswith("cmc_quote_")
+    pid = str(post.get("post_id", ""))
+    # Pure quotes + listings-mcap fallbacks; real trending/latest uses cmc_mkt_trend_* day ids.
+    signal.quotes_fallback = pid.startswith("cmc_quote_") or pid.startswith("cmc_mkt_listings_")
     return signal
 
 

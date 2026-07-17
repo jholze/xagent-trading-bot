@@ -24,6 +24,8 @@ class TestTradePathMode(unittest.TestCase):
                 "quotes/latest": True,
                 "community/trending/token": False,
                 "content/latest": False,
+                "trending/latest": False,
+                "trending/gainers-losers": False,
             },
         }
         mode = trade_path_mode({"enabled": True, "quotes_fallback_as_signal": False}, caps)
@@ -38,12 +40,32 @@ class TestTradePathMode(unittest.TestCase):
                 "quotes/latest": True,
                 "community/trending/token": False,
                 "content/latest": False,
+                "trending/latest": False,
             },
         }
         mode = trade_path_mode({"enabled": True, "quotes_fallback_as_signal": True}, caps)
         self.assertEqual(mode, "quotes_fallback")
         line = format_cmc_status_line({"enabled": True, "quotes_fallback_as_signal": True}, caps)
         self.assertIn("fallback", line.lower())
+
+    def test_market_trending_startup_mode(self):
+        caps = {
+            "api_key_set": True,
+            "plan_label": "Startup",
+            "endpoints": {
+                "trending/latest": True,
+                "trending/gainers-losers": True,
+                "listings/latest": True,
+                "quotes/latest": True,
+                "community/trending/token": False,
+                "dex/tokens/trending/list": False,
+            },
+        }
+        mode = trade_path_mode({"enabled": True, "quotes_fallback_as_signal": True}, caps)
+        self.assertEqual(mode, "market_trending")
+        line = format_cmc_status_line({"enabled": True}, caps)
+        self.assertIn("trending", line.lower())
+        self.assertIn("dex=off", line)
 
     def test_community_preferred(self):
         caps = {
@@ -52,6 +74,7 @@ class TestTradePathMode(unittest.TestCase):
             "endpoints": {
                 "community/trending/token": True,
                 "quotes/latest": True,
+                "trending/latest": True,
             },
         }
         self.assertEqual(
