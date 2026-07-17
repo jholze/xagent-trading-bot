@@ -129,7 +129,11 @@ def status_line() -> str:
     lag_s = f"lag={lag}d" if lag is not None else "lag=?"
     n_ok = len(meta.get("metrics_ok") or [])
     n_fail = len(meta.get("metrics_failed") or [])
+    lev = "lev" if meta.get("leverage_fresh") else (
+        "lev_research" if meta.get("research_only") else "lev—"
+    )
     return (
         f"Santiment: {snap.get('regime')} size={snap.get('size_mult')} "
-        f"{lag_s} ok={n_ok} fail={n_fail} ({age_note}, {snap.get('as_of', '?')})"
+        f"{lag_s} ok={n_ok} fail={n_fail} {lev} "
+        f"({age_note}, {snap.get('as_of', '?')})"
     )

@@ -183,6 +183,19 @@ class TestSantimentSnapshot(unittest.TestCase):
         self.assertIn("onchain", d.scores.get("pillars") or [])
         self.assertGreater(d.confidence, 0.35)
 
+    def test_leverage_only_when_fresh(self):
+        feat = {
+            "btc_daa_delta_1d": 0.05,
+            "eth_daa_delta_1d": 0.02,
+            "btc_vol_1d": 0.02,
+            "btc_funding_rate": 0.001,
+        }
+        cold = decide_regime(feat, meta={"leverage_fresh": False})
+        hot = decide_regime(feat, meta={"leverage_fresh": True})
+        self.assertIsNone(cold.scores.get("leverage"))
+        self.assertIsNotNone(hot.scores.get("leverage"))
+        self.assertLess(hot.scores["leverage"], 0)  # positive funding → crowded
+
 
 class TestSantimentIngest(unittest.TestCase):
     def setUp(self):

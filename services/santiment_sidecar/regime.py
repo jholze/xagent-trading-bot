@@ -85,10 +85,9 @@ def score_social(social_d: float | None) -> float | None:
 
 
 def score_leverage(features: dict[str, float], meta: dict[str, Any]) -> float | None:
-    """Placeholder for P3: funding / OI when present and policy-fresh."""
+    """Funding (+ optional OI Δ) only when meta.leverage_fresh (live SanAPI)."""
     if not meta.get("leverage_fresh"):
-        # Allow explicit feature without flag only if funding keys exist and not lagged.
-        pass
+        return None
     fr = _f(features, "btc_funding_rate")
     if fr is None:
         fr = _f(features, "btc_funding")
@@ -96,7 +95,15 @@ def score_leverage(features: dict[str, float], meta: dict[str, Any]) -> float | 
         return None
     # Typical funding ~1e-4 to 1e-3; extreme positive → crowded long → negative score.
     # Map: 0 → 0, +0.001 → -0.5, -0.001 → +0.5
-    return round(_clamp(-float(fr) * 500.0), 4)
+    score = _clamp(-float(fr) * 500.0)
+    oi_d = _f(features, "btc_open_interest_delta_1d")
+    if oi_d is not None and oi_d <= -0.08:
+        # OI dumping → deleveraging stress (slightly more risk-off for new longs)
+        score = _clamp(score - 0.15)
+    elif oi_d is not None and oi_d >= 0.1 and fr is not None and fr > 0:
+        # Rising OI + positive funding → crowded long
+        score = _clamp(score - 0.1)
+    return round(score, 4)
 
 
 def vol_penalty(vol: float | None) -> float:

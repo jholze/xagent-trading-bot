@@ -32,6 +32,13 @@ SOCIAL_QUERIES: list[tuple[str, str, str]] = [
     ("eth_social_volume", "ethereum", "social_volume_total"),
 ]
 
+# Leverage (restricted on many plans): funding + OI. Live → policy; lag → research_only.
+LEVERAGE_QUERIES: list[tuple[str, str, str, str]] = [
+    # key, slug, metric, interval
+    ("btc_funding_rate", "bitcoin", "total_funding_rates_aggregated_per_asset", "1h"),
+    ("btc_open_interest", "bitcoin", "total_open_interest", "1h"),
+]
+
 
 @dataclass
 class FeatureFetchResult:
@@ -178,6 +185,8 @@ class SantimentClient:
         metric: str,
         from_iso: str,
         to_iso: str,
+        *,
+        interval: str = "1d",
     ) -> tuple[list[dict], Exception | None]:
         try:
             series = self.get_metric_timeseries(
@@ -185,11 +194,21 @@ class SantimentClient:
                 slug=slug,
                 from_iso=from_iso,
                 to_iso=to_iso,
-                interval="1d",
+                interval=interval,
             )
             return series, None
         except Exception as e:
             return [], e
+
+    def _lagged_research_window(self) -> tuple[str, str]:
+        """~30d lag window for restricted SanAPI tiers (research_only)."""
+        now = datetime.now(timezone.utc)
+        a = now - timedelta(days=34)
+        b = now - timedelta(days=31)
+        return (
+            a.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            b.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
 
     def fetch_features(self) -> FeatureFetchResult:
         """Fetch realtime-first features + meta for health/policy."""
@@ -258,13 +277,60 @@ class SantimentClient:
             social_fresh = True
             policy_inputs.append("social")
 
+        leverage_fresh = False
+        research_only: list[str] = []
+        for key, slug, metric, interval in LEVERAGE_QUERIES:
+            series, err = self._fetch_one(
+                key, slug, metric, from_iso, to_iso, interval=interval
+            )
+            if series and is_series_fresh(series):
+                lag = self._apply_series(features, key, series)
+                metrics_ok.append(key)
+                if lag is not None:
+                    lags.append(lag)
+                leverage_fresh = True
+                continue
+            # Restricted plans: optional lagged snapshot for research, not policy.
+            lag_from, lag_to = self._lagged_research_window()
+            series_lag, err_lag = self._fetch_one(
+                key, slug, metric, lag_from, lag_to, interval=interval
+            )
+            if series_lag:
+                # Store under research_ prefix so regime never picks them as live.
+                rkey = f"research_{key}"
+                self._apply_series(features, rkey, series_lag)
+                metrics_ok.append(rkey)
+                research_only.append(key)
+                log.info(
+                    "leverage %s/%s research_only (lagged, not policy)",
+                    slug,
+                    metric,
+                )
+            else:
+                metrics_failed.append(key)
+                if err or err_lag:
+                    log.warning(
+                        "metric %s/%s failed: %s",
+                        slug,
+                        metric,
+                        err or err_lag,
+                    )
+
+        if leverage_fresh:
+            policy_inputs.append("leverage")
+            # Prefer live funding key name expected by score_leverage
+            if "btc_funding_rate" in features:
+                pass
+
         meta: dict[str, Any] = {
             "data_lag_days_max": round(max(lags), 3) if lags else None,
             "metrics_ok": metrics_ok,
             "metrics_failed": metrics_failed,
             "policy_inputs": policy_inputs,
             "social_fresh": social_fresh,
-            "lagged_excluded_from_policy": not social_fresh,
+            "leverage_fresh": leverage_fresh,
+            "research_only": research_only,
+            "lagged_excluded_from_policy": (not social_fresh) or (not leverage_fresh and bool(research_only)),
             "fresh_max_age_days": FRESH_MAX_AGE_DAYS,
         }
         return FeatureFetchResult(features=features, meta=meta)
