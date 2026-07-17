@@ -18,14 +18,26 @@ from logger import log
 _TIER_TRUST = {
     "trending": 72.0,
     "community": 68.0,
-    "quote": 60.0,
+    "quote": 55.0,
 }
+
+
+def _tier_trust(signal: CMCCommunitySignal, tier: str) -> float:
+    try:
+        cfg = get_bot_config().cmc_config
+        if getattr(signal, "quotes_fallback", False) and cfg.get("quotes_fallback_trust_score") is not None:
+            return float(cfg["quotes_fallback_trust_score"])
+        if tier == "quote" and cfg.get("quotes_fallback_trust_score") is not None:
+            return float(cfg["quotes_fallback_trust_score"])
+    except Exception:
+        pass
+    return float(_TIER_TRUST.get(tier, 65.0))
 
 
 def _apply_tier(signal: CMCCommunitySignal, tier: str, trending_rank: int = 0) -> CMCCommunitySignal:
     signal.signal_tier = tier
     signal.trending_rank = trending_rank
-    signal.trust_score = _TIER_TRUST.get(tier, 65.0)
+    signal.trust_score = _tier_trust(signal, tier)
     signal.effective_confidence = float(signal.confidence) * (signal.trust_score / 100.0)
     return signal
 

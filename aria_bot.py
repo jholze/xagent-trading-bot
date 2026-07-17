@@ -85,6 +85,13 @@ except SystemExit:
 except Exception as e:
     log(f"Ledger startup guard failed: {e}", "WARNING")
 
+try:
+    from data.cmc_capabilities import log_cmc_boot_status
+
+    log_cmc_boot_status()
+except Exception as e:
+    log(f"CMC capability probe on startup failed: {e}", "WARNING")
+
 
 def _flush_positions_on_exit(*_args) -> None:
     try:

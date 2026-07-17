@@ -55,6 +55,17 @@ class TestCMCCapabilities(unittest.TestCase):
         self.assertTrue(caps["endpoints"]["listings/latest"])
         self.assertFalse(caps["endpoints"]["trending/latest"])
 
+    @patch("data.cmc_capabilities._fetch_key_info")
+    @patch("data.cmc_capabilities._probe_endpoint")
+    def test_probe_logs_ok_and_blocked(self, mock_probe, mock_key_info):
+        mock_key_info.return_value = {"plan_name": "Basic"}
+        mock_probe.side_effect = lambda _key, eid: eid in ("listings/latest", "quotes/latest")
+        with patch("data.cmc_capabilities.log") as mock_log:
+            probe_capabilities("test-key", force=True)
+        joined = " ".join(str(c.args[0]) for c in mock_log.call_args_list)
+        self.assertIn("listings/latest", joined)
+        self.assertIn("blocked=", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

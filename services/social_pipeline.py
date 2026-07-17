@@ -214,8 +214,15 @@ class SocialPipeline:
             signal.quotes_fallback = post.author in ("CMC Market", "CMC Market Trending")
             signal.signal_tier = getattr(post, "signal_tier", "community")
             signal.trending_rank = int(getattr(post, "trending_rank", 0) or 0)
-            tier_trust = {"trending": 72.0, "community": 68.0, "quote": 60.0}
-            signal.trust_score = tier_trust.get(signal.signal_tier, float(cmc_cfg.get("trust_score", 65)))
+            quote_trust = float(cmc_cfg.get("quotes_fallback_trust_score", 55))
+            tier_trust = {
+                "trending": 72.0 if not signal.quotes_fallback else quote_trust,
+                "community": 68.0,
+                "quote": quote_trust,
+            }
+            signal.trust_score = tier_trust.get(
+                signal.signal_tier, float(cmc_cfg.get("trust_score", 65))
+            )
             if signal.quotes_fallback and not quotes_as_signal:
                 continue
             signal.effective_confidence = signal.confidence * (signal.trust_score / 100)

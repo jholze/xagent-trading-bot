@@ -144,8 +144,11 @@ def probe_capabilities(api_key: str | None = None, *, force: bool = False) -> di
     _CACHE_AT = now
 
     ok = [e for e, v in endpoints.items() if v]
+    fail = [e for e, v in endpoints.items() if not v]
     log(
-        f"CMC capabilities: plan={plan_label}, endpoints_ok={len(ok)}/{len(endpoints)}",
+        f"CMC capabilities: plan={plan_label}, "
+        f"ok=[{', '.join(ok) or 'none'}], "
+        f"blocked=[{', '.join(fail) or 'none'}]",
         "INFO",
     )
     return _CACHE
@@ -160,6 +163,81 @@ def reset_capabilities_cache() -> None:
 def endpoint_available(endpoint_id: str, caps: dict | None = None) -> bool:
     data = caps or probe_capabilities()
     return bool((data.get("endpoints") or {}).get(endpoint_id))
+
+
+def has_community_endpoints(caps: dict | None = None) -> bool:
+    data = caps or probe_capabilities()
+    return endpoint_available("community/trending/token", data) or endpoint_available(
+        "content/latest", data
+    )
+
+
+def trade_path_mode(cmc_config: dict | None = None, caps: dict | None = None) -> str:
+    """How CMC feeds the trade path: community | quotes_fallback | disabled | empty."""
+    cfg = cmc_config or {}
+    if not cfg.get("enabled", True):
+        return "disabled"
+    data = caps or probe_capabilities()
+    if not data.get("api_key_set"):
+        return "no_key"
+    quotes_ok = bool(cfg.get("quotes_fallback_as_signal", False))
+    community = has_community_endpoints(data)
+    listings = endpoint_available("listings/latest", data)
+    quotes = endpoint_available("quotes/latest", data)
+    if community:
+        return "community"
+    if quotes_ok and (listings or quotes):
+        return "quotes_fallback"
+    if listings or quotes:
+        return "quotes_blocked"  # data available but trade filter off
+    return "empty"
+
+
+def format_cmc_status_line(cmc_config: dict | None = None, caps: dict | None = None) -> str:
+    """One-line operator status for /cmc, digests, startup."""
+    cfg = cmc_config or {}
+    data = caps or probe_capabilities()
+    plan = data.get("plan_label") or "unknown"
+    mode = trade_path_mode(cfg, data)
+    mode_label = {
+        "community": "community endpoints",
+        "quotes_fallback": "quotes/listings fallback (trade-enabled)",
+        "quotes_blocked": "quotes/listings only — trade filter OFF",
+        "disabled": "disabled in config",
+        "no_key": "no API key",
+        "empty": "no usable endpoints",
+    }.get(mode, mode)
+    return f"CMC plan={plan} · trade={mode_label}"
+
+
+def log_cmc_boot_status(cmc_config: dict | None = None) -> dict:
+    """Probe once at process start and log plan + trade-path decision."""
+    cfg = cmc_config or {}
+    try:
+        from core.config import get_bot_config
+
+        if not cfg:
+            cfg = get_bot_config().cmc_config
+    except Exception:
+        pass
+    caps = probe_capabilities(force=False)
+    line = format_cmc_status_line(cfg, caps)
+    mode = trade_path_mode(cfg, caps)
+    log(line, "INFO")
+    if mode == "quotes_blocked":
+        log(
+            "CMC: Basic/listings plan — set cmc.quotes_fallback_as_signal=true "
+            "to use quote/listing signals (with sell_requires_ta + churn guards), "
+            "or upgrade CMC for community endpoints",
+            "WARNING",
+        )
+    elif mode == "quotes_fallback":
+        log(
+            "CMC: using Basic-tier quotes/listings path "
+            "(lower trust, sell_requires_ta + post_id churn guards apply)",
+            "INFO",
+        )
+    return caps
 
 
 def filter_source_priority(
