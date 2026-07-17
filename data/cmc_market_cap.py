@@ -11,8 +11,12 @@ import requests
 from logger import log
 
 _BASE_URL = "https://pro-api.coinmarketcap.com/v1"
+# value: market cap USD (0.0 = known missing / zero); expires monotonic
 _CACHE: dict[str, tuple[float, float]] = {}
 _CACHE_TTL_SEC = 3600.0
+# Negative cache for HTTP/network failures (avoid 1Hz retry storms)
+_FAIL_CACHE: dict[str, float] = {}
+_FAIL_TTL_SEC = 900.0
 
 
 def _base_symbol(symbol: str) -> str:
@@ -31,6 +35,24 @@ def market_cap_from_coin(coin: dict | None) -> float | None:
     return None
 
 
+def _pick_quote_item(data: dict, base: str) -> dict:
+    """CMC may return a dict or list for multi-match symbols (e.g. XAUT)."""
+    raw = (data or {}).get(base)
+    if isinstance(raw, list):
+        return raw[0] if raw else {}
+    if isinstance(raw, dict):
+        return raw
+    # Sometimes keys are cmc ids; scan for matching symbol
+    for entry in (data or {}).values():
+        if isinstance(entry, list):
+            for item in entry:
+                if str(item.get("symbol") or "").upper() == base:
+                    return item
+        elif isinstance(entry, dict) and str(entry.get("symbol") or "").upper() == base:
+            return entry
+    return {}
+
+
 def fetch_market_cap_usd(symbol: str, *, api_key: str | None = None) -> float | None:
     base = _base_symbol(symbol)
     if not base:
@@ -38,7 +60,12 @@ def fetch_market_cap_usd(symbol: str, *, api_key: str | None = None) -> float | 
     now = time.monotonic()
     cached = _CACHE.get(base)
     if cached and (now - cached[1]) < _CACHE_TTL_SEC:
-        return cached[0]
+        mcap = cached[0]
+        return mcap if mcap > 0 else None
+
+    fail_at = _FAIL_CACHE.get(base)
+    if fail_at is not None and (now - fail_at) < _FAIL_TTL_SEC:
+        return None
 
     key = (api_key or os.getenv("CMC_API_KEY") or "").strip()
     if not key:
@@ -51,15 +78,19 @@ def fetch_market_cap_usd(symbol: str, *, api_key: str | None = None) -> float | 
             timeout=12,
         )
         if resp.status_code != 200:
+            _FAIL_CACHE[base] = now
             return None
-        item = (resp.json().get("data") or {}).get(base) or {}
+        item = _pick_quote_item(resp.json().get("data") or {}, base)
         quote = (item.get("quote") or {}).get("USD") or {}
         mcap = float(quote.get("market_cap") or 0)
-        if mcap > 0:
-            _CACHE[base] = (mcap, now)
-            return mcap
+        # Always cache successful HTTP — including mcap=0 — so we never 1Hz-retry
+        # symbols like XAUT that return price without usable market_cap.
+        _CACHE[base] = (mcap, now)
+        _FAIL_CACHE.pop(base, None)
+        return mcap if mcap > 0 else None
     except Exception as exc:
         log(f"CMC market cap fetch failed for {base}: {exc}", "WARNING")
+        _FAIL_CACHE[base] = now
     return None
 
 
@@ -72,6 +103,7 @@ def resolve_market_cap_usd(symbol: str, coin: dict | None = None) -> float | Non
 
 def reset_market_cap_cache_for_tests() -> None:
     _CACHE.clear()
+    _FAIL_CACHE.clear()
 
 
 def entry_sensor_mcap_bounds(cfg: dict) -> tuple[float, float | None]:
