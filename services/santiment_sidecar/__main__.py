@@ -44,14 +44,23 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        snap = _STATE["last_snapshot"] or {}
+        meta = snap.get("meta") if isinstance(snap.get("meta"), dict) else {}
         body = {
             "status": "OK",
             "service": "xagent-santiment",
             "polls": _STATE["polls"],
             "pushes": _STATE["pushes"],
             "last_error": _STATE["last_error"],
-            "last_regime": (_STATE["last_snapshot"] or {}).get("regime"),
-            "last_as_of": (_STATE["last_snapshot"] or {}).get("as_of"),
+            "last_regime": snap.get("regime"),
+            "last_as_of": snap.get("as_of"),
+            "size_mult": snap.get("size_mult"),
+            "data_lag_days_max": meta.get("data_lag_days_max"),
+            "metrics_ok": meta.get("metrics_ok") or [],
+            "metrics_failed": meta.get("metrics_failed") or [],
+            "policy_inputs": meta.get("policy_inputs") or [],
+            "social_fresh": meta.get("social_fresh"),
+            "rationale": snap.get("rationale"),
         }
         raw = json.dumps(body).encode("utf-8")
         self.send_response(200)
@@ -70,12 +79,23 @@ def _start_health_server(port: int) -> None:
 
 def run_once(cfg: dict, client: SantimentClient) -> dict:
     if client.available():
-        features = client.fetch_mvp_features()
+        fetched = client.fetch_features()
+        features = fetched.features
+        meta = fetched.meta
     else:
         log.warning("no SANTIMENT_API_KEY — neutral snapshot")
         features = {}
+        meta = {
+            "data_lag_days_max": None,
+            "metrics_ok": [],
+            "metrics_failed": ["no_api_key"],
+            "policy_inputs": [],
+            "social_fresh": False,
+            "lagged_excluded_from_policy": True,
+        }
     snap = build_snapshot(
         features,
+        meta=meta,
         schema_version=cfg["schema_version"],
         ttl_sec=cfg["ttl_sec"],
     )
@@ -101,10 +121,12 @@ def run_once(cfg: dict, client: SantimentClient) -> dict:
             _STATE["_prev_pushed"] = snap
             _STATE["last_error"] = ""
             log.info(
-                "pushed regime=%s size_mult=%s conf=%.2f (%s)",
+                "pushed regime=%s size_mult=%s conf=%.2f lag=%s ok=%s (%s)",
                 snap["regime"],
                 snap["size_mult"],
                 snap["confidence"],
+                (snap.get("meta") or {}).get("data_lag_days_max"),
+                len((snap.get("meta") or {}).get("metrics_ok") or []),
                 msg,
             )
         else:

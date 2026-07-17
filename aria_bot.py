@@ -186,12 +186,18 @@ def health_detail():
         from services.santiment_store import get_latest_snapshot, snapshot_is_fresh, status_line
 
         san = get_latest_snapshot()
+        san_meta = (san or {}).get("meta") if isinstance((san or {}).get("meta"), dict) else {}
         santiment = {
             "line": status_line(),
             "fresh": snapshot_is_fresh(san),
             "regime": (san or {}).get("regime"),
             "size_mult": (san or {}).get("size_mult"),
             "as_of": (san or {}).get("as_of"),
+            "data_lag_days_max": san_meta.get("data_lag_days_max"),
+            "metrics_ok": san_meta.get("metrics_ok") or [],
+            "metrics_failed": san_meta.get("metrics_failed") or [],
+            "policy_inputs": san_meta.get("policy_inputs") or [],
+            "social_fresh": san_meta.get("social_fresh"),
         }
     except Exception:
         santiment = {}

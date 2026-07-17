@@ -3,7 +3,7 @@
 > **Status:** Phase 0–3 live on staging (sidecar + ingest + risk/sensor wire-up)  
 > **Environment:** Railway project `trading-bot` · Environment **`test`**  
 > **Bot:** `xagent-test` (unverändert im Hot-Path; liest nur Snapshots/Events)  
-> **Related:** [`arena-market-oracle-service.md`](arena-market-oracle-service.md) · Epic #6 · LC bleibt Social-Bein im Bot  
+> **Related:** [`arena-market-oracle-service.md`](arena-market-oracle-service.md) · **Epic [#13](https://github.com/jholze/xagent-trading-bot/issues/13)** (expansion) · Epic [#6](https://github.com/jholze/xagent-trading-bot/issues/6) (signals CMC/LC) · LC bleibt Social-Bein im Bot  
 > **Erstellt:** 2026-07-17  
 
 ---

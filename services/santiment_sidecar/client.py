@@ -1,8 +1,9 @@
-"""Minimal Santiment GraphQL client (getMetric)."""
+"""Santiment GraphQL client — realtime-first metrics + lag-aware meta."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,14 +13,64 @@ log = logging.getLogger("santiment_sidecar.client")
 
 GRAPHQL_URL = "https://api.santiment.net/graphql"
 
-# MVP metrics — global / BTC-ETH focused (low cost).
-DEFAULT_QUERIES: list[tuple[str, str, str]] = [
-    # (feature_key, slug, metric)
-    ("btc_social_volume", "bitcoin", "social_volume_total"),
-    ("eth_social_volume", "ethereum", "social_volume_total"),
+# Last point must be within this many days of "now" to count as policy-fresh.
+FRESH_MAX_AGE_DAYS = 2.5
+
+# Realtime path (unrestricted / live on current plan).
+REALTIME_QUERIES: list[tuple[str, str, str]] = [
+    ("btc_daa", "bitcoin", "daily_active_addresses"),
+    ("eth_daa", "ethereum", "daily_active_addresses"),
+    ("btc_vol_1d", "bitcoin", "price_volatility_1d"),
+    ("eth_vol_1d", "ethereum", "price_volatility_1d"),
     ("btc_dev_activity", "bitcoin", "dev_activity"),
     ("eth_dev_activity", "ethereum", "dev_activity"),
 ]
+
+# Social: try recent window only; only policy-fresh if last point is fresh.
+SOCIAL_QUERIES: list[tuple[str, str, str]] = [
+    ("btc_social_volume", "bitcoin", "social_volume_total"),
+    ("eth_social_volume", "ethereum", "social_volume_total"),
+]
+
+
+@dataclass
+class FeatureFetchResult:
+    features: dict[str, float] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def _parse_dt(raw: Any) -> datetime | None:
+    if raw is None:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts
+    except Exception:
+        return None
+
+
+def series_lag_days(series: list[dict], *, now: datetime | None = None) -> float | None:
+    """Days between now and last timeseries point."""
+    if not series:
+        return None
+    now = now or datetime.now(timezone.utc)
+    last = series[-1]
+    ts = _parse_dt(last.get("datetime"))
+    if ts is None:
+        return None
+    return max(0.0, (now - ts).total_seconds() / 86400.0)
+
+
+def is_series_fresh(
+    series: list[dict],
+    *,
+    now: datetime | None = None,
+    max_age_days: float = FRESH_MAX_AGE_DAYS,
+) -> bool:
+    lag = series_lag_days(series, now=now)
+    return lag is not None and lag <= max_age_days
 
 
 class SantimentClient:
@@ -93,56 +144,131 @@ class SantimentClient:
         series = ((data.get("getMetric") or {}).get("timeseriesData")) or []
         return list(series)
 
-    def _window_pairs(self) -> list[tuple[str, str]]:
-        """Santiment plans often lag social metrics (~30d); try recent then lagged."""
+    def _recent_window(self) -> tuple[str, str]:
         now = datetime.now(timezone.utc)
-        windows: list[tuple[datetime, datetime]] = [
-            (now - timedelta(days=14), now - timedelta(hours=1)),
-            (now - timedelta(days=45), now - timedelta(days=31)),
-            (now - timedelta(days=90), now - timedelta(days=60)),
-        ]
-        out = []
-        for a, b in windows:
-            out.append(
-                (
-                    a.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    b.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                )
+        a = now - timedelta(days=14)
+        b = now - timedelta(hours=1)
+        return (
+            a.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            b.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+
+    def _apply_series(
+        self,
+        features: dict[str, float],
+        key: str,
+        series: list[dict],
+    ) -> float | None:
+        """Write last value + delta; return lag_days of last point."""
+        last = series[-1]
+        val = last.get("value")
+        if val is None:
+            return None
+        features[key] = float(val)
+        if len(series) >= 2 and series[-2].get("value") is not None:
+            prev = float(series[-2]["value"])
+            if prev != 0:
+                features[f"{key}_delta_1d"] = (float(val) - prev) / abs(prev)
+        return series_lag_days(series)
+
+    def _fetch_one(
+        self,
+        key: str,
+        slug: str,
+        metric: str,
+        from_iso: str,
+        to_iso: str,
+    ) -> tuple[list[dict], Exception | None]:
+        try:
+            series = self.get_metric_timeseries(
+                metric=metric,
+                slug=slug,
+                from_iso=from_iso,
+                to_iso=to_iso,
+                interval="1d",
             )
-        return out
+            return series, None
+        except Exception as e:
+            return [], e
+
+    def fetch_features(self) -> FeatureFetchResult:
+        """Fetch realtime-first features + meta for health/policy."""
+        features: dict[str, float] = {}
+        metrics_ok: list[str] = []
+        metrics_failed: list[str] = []
+        lags: list[float] = []
+        policy_inputs: list[str] = []
+        social_fresh = False
+
+        from_iso, to_iso = self._recent_window()
+
+        for key, slug, metric in REALTIME_QUERIES:
+            series, err = self._fetch_one(key, slug, metric, from_iso, to_iso)
+            if not series or not is_series_fresh(series):
+                metrics_failed.append(key)
+                if err:
+                    log.warning("metric %s/%s failed: %s", slug, metric, err)
+                elif series:
+                    log.warning(
+                        "metric %s/%s stale lag=%.1fd",
+                        slug,
+                        metric,
+                        series_lag_days(series) or -1,
+                    )
+                continue
+            lag = self._apply_series(features, key, series)
+            metrics_ok.append(key)
+            if lag is not None:
+                lags.append(lag)
+
+        if any(k.endswith("_daa_delta_1d") or k.endswith("_daa") for k in features):
+            if "btc_daa_delta_1d" in features or "eth_daa_delta_1d" in features:
+                policy_inputs.append("daa")
+        if "btc_vol_1d" in features or "eth_vol_1d" in features:
+            policy_inputs.append("vol")
+        if any(k.startswith("btc_dev") or k.startswith("eth_dev") for k in features):
+            policy_inputs.append("dev")
+
+        social_ok_keys: list[str] = []
+        for key, slug, metric in SOCIAL_QUERIES:
+            series, err = self._fetch_one(key, slug, metric, from_iso, to_iso)
+            if not series:
+                metrics_failed.append(key)
+                if err:
+                    log.warning("metric %s/%s failed: %s", slug, metric, err)
+                continue
+            if not is_series_fresh(series):
+                metrics_failed.append(key)
+                log.info(
+                    "social %s/%s not policy-fresh lag=%.1fd — excluded from policy",
+                    slug,
+                    metric,
+                    series_lag_days(series) or -1,
+                )
+                continue
+            lag = self._apply_series(features, key, series)
+            metrics_ok.append(key)
+            social_ok_keys.append(key)
+            if lag is not None:
+                lags.append(lag)
+
+        if social_ok_keys and (
+            "btc_social_volume_delta_1d" in features or "eth_social_volume_delta_1d" in features
+        ):
+            social_fresh = True
+            policy_inputs.append("social")
+
+        meta: dict[str, Any] = {
+            "data_lag_days_max": round(max(lags), 3) if lags else None,
+            "metrics_ok": metrics_ok,
+            "metrics_failed": metrics_failed,
+            "policy_inputs": policy_inputs,
+            "social_fresh": social_fresh,
+            "lagged_excluded_from_policy": not social_fresh,
+            "fresh_max_age_days": FRESH_MAX_AGE_DAYS,
+        }
+        return FeatureFetchResult(features=features, meta=meta)
 
     def fetch_mvp_features(self) -> dict[str, float]:
-        """Fetch last values for MVP metrics; missing metrics skipped with log."""
-        features: dict[str, float] = {}
-        windows = self._window_pairs()
-        for key, slug, metric in DEFAULT_QUERIES:
-            series: list = []
-            last_err: Exception | None = None
-            for from_iso, to_iso in windows:
-                try:
-                    series = self.get_metric_timeseries(
-                        metric=metric,
-                        slug=slug,
-                        from_iso=from_iso,
-                        to_iso=to_iso,
-                        interval="1d",
-                    )
-                    if series:
-                        break
-                except Exception as e:
-                    last_err = e
-                    series = []
-            if not series:
-                if last_err:
-                    log.warning("metric %s/%s failed: %s", slug, metric, last_err)
-                continue
-            last = series[-1]
-            val = last.get("value")
-            if val is None:
-                continue
-            features[key] = float(val)
-            if len(series) >= 2 and series[-2].get("value") is not None:
-                prev = float(series[-2]["value"])
-                if prev != 0:
-                    features[f"{key}_delta_1d"] = (float(val) - prev) / abs(prev)
-        return features
+        """Back-compat: features dict only."""
+        return self.fetch_features().features

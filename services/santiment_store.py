@@ -124,7 +124,12 @@ def status_line() -> str:
         return "Santiment: —"
     fresh = snapshot_is_fresh(snap)
     age_note = "ok" if fresh else "stale"
+    meta = snap.get("meta") if isinstance(snap.get("meta"), dict) else {}
+    lag = meta.get("data_lag_days_max")
+    lag_s = f"lag={lag}d" if lag is not None else "lag=?"
+    n_ok = len(meta.get("metrics_ok") or [])
+    n_fail = len(meta.get("metrics_failed") or [])
     return (
         f"Santiment: {snap.get('regime')} size={snap.get('size_mult')} "
-        f"({age_note}, {snap.get('as_of', '?')})"
+        f"{lag_s} ok={n_ok} fail={n_fail} ({age_note}, {snap.get('as_of', '?')})"
     )

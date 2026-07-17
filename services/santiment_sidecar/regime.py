@@ -1,8 +1,16 @@
-"""Pure regime mapping from Santiment-style features (no I/O)."""
+"""Pure regime mapping from Santiment features + meta (no I/O).
+
+P0: primary = DAA + volatility; social only if meta.social_fresh;
+dev soft bias; CRASH allowed on extreme live stress; RISK_ON size ≤ 0.9.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+
+RISK_ON_SIZE_CAP = 0.9
 
 
 @dataclass(frozen=True)
@@ -15,17 +23,52 @@ class RegimeDecision:
     rationale: str
 
 
-def _zish_delta(features: dict, key: str) -> float:
-    return float(features.get(f"{key}_delta_1d") or 0.0)
+def _f(features: dict, key: str, default: float | None = None) -> float | None:
+    if key not in features or features.get(key) is None:
+        return default
+    try:
+        return float(features[key])
+    except Exception:
+        return default
 
 
-def decide_regime(features: dict[str, float] | None) -> RegimeDecision:
-    """Map sparse features → coarse market policy for the trading bot.
+def _blend_delta(features: dict, btc_key: str, eth_key: str) -> float | None:
+    b = _f(features, btc_key)
+    e = _f(features, eth_key)
+    if b is None and e is None:
+        return None
+    if b is None:
+        return e
+    if e is None:
+        return b
+    return 0.6 * b + 0.4 * e
 
-    Calibrate on paper; defaults are intentionally conservative when social
-    volume is falling hard and softer when rising.
+
+def _blend_level(features: dict, btc_key: str, eth_key: str) -> float | None:
+    """Prefer max of available levels (stress uses worst vol)."""
+    b = _f(features, btc_key)
+    e = _f(features, eth_key)
+    if b is None and e is None:
+        return None
+    if b is None:
+        return e
+    if e is None:
+        return b
+    return max(b, e)
+
+
+def decide_regime(
+    features: dict[str, float] | None,
+    meta: dict[str, Any] | None = None,
+) -> RegimeDecision:
+    """Map features → coarse market policy for the trading bot.
+
+    Social volume only influences policy when meta.social_fresh is True
+    (realtime-successful fetch). Lagged social alone must not drive CRASH/RISK_OFF.
     """
     feat = dict(features or {})
+    meta = dict(meta or {})
+
     if not feat:
         return RegimeDecision(
             regime="NEUTRAL",
@@ -36,56 +79,139 @@ def decide_regime(features: dict[str, float] | None) -> RegimeDecision:
             rationale="no Santiment features — neutral fail-open",
         )
 
-    btc_sv_d = _zish_delta(feat, "btc_social_volume")
-    eth_sv_d = _zish_delta(feat, "eth_social_volume")
-    btc_dev_d = _zish_delta(feat, "btc_dev_activity")
-    eth_dev_d = _zish_delta(feat, "eth_dev_activity")
-    # Prefer social volume; fall back to dev activity when social is plan-lagged.
-    if any(k.endswith("_social_volume_delta_1d") for k in feat):
-        social_d = 0.6 * btc_sv_d + 0.4 * eth_sv_d
-    else:
-        social_d = 0.5 * btc_dev_d + 0.5 * eth_dev_d
+    social_fresh = bool(meta.get("social_fresh"))
+    policy_inputs = list(meta.get("policy_inputs") or [])
 
-    # Strong social collapse → risk-off/crash; expansion → risk-on soft.
-    if social_d <= -0.55:
+    daa_d = _blend_delta(feat, "btc_daa_delta_1d", "eth_daa_delta_1d")
+    vol = _blend_level(feat, "btc_vol_1d", "eth_vol_1d")
+    dev_d = _blend_delta(feat, "btc_dev_activity_delta_1d", "eth_dev_activity_delta_1d")
+    social_d = None
+    if social_fresh:
+        social_d = _blend_delta(
+            feat, "btc_social_volume_delta_1d", "eth_social_volume_delta_1d"
+        )
+        if social_d is not None and "social" not in policy_inputs:
+            policy_inputs.append("social")
+
+    # No live policy anchors → fail-open (ignore orphan social-only lag keys).
+    has_daa = daa_d is not None
+    has_vol = vol is not None
+    if not has_daa and not has_vol and not (social_fresh and social_d is not None):
+        return RegimeDecision(
+            regime="NEUTRAL",
+            confidence=0.35,
+            size_mult=1.0,
+            sensor_policy="active",
+            max_new_entries_per_hour=20,
+            rationale=(
+                "no policy-fresh DAA/vol/social — neutral fail-open "
+                f"(keys={len(feat)})"
+            ),
+        )
+
+    stress = 0.0
+    parts: list[str] = []
+
+    if has_daa:
+        # daa falling → stress
+        if daa_d <= -0.25:
+            stress += min(0.55, 0.25 + abs(daa_d) * 0.5)
+        elif daa_d <= -0.12:
+            stress += 0.2
+        elif daa_d >= 0.15:
+            stress -= 0.15
+        parts.append(f"daa_d={daa_d:+.2f}")
+
+    if has_vol:
+        if vol >= 0.08:
+            stress += 0.4
+            parts.append(f"vol={vol:.3f} extreme")
+        elif vol >= 0.04:
+            stress += 0.22
+            parts.append(f"vol={vol:.3f} high")
+        elif vol >= 0.025:
+            stress += 0.08
+            parts.append(f"vol={vol:.3f}")
+        else:
+            parts.append(f"vol={vol:.3f}")
+
+    # Soft social (only when fresh)
+    if social_d is not None:
+        if social_d <= -0.35:
+            stress += 0.18
+        elif social_d <= -0.2:
+            stress += 0.1
+        elif social_d >= 0.35:
+            stress -= 0.08
+        parts.append(f"social_d={social_d:+.2f}")
+
+    # Soft dev bias
+    if dev_d is not None:
+        if dev_d <= -0.3 and (daa_d is not None and daa_d < 0):
+            stress += 0.1
+            parts.append(f"dev_d={dev_d:+.2f} soft")
+        elif dev_d is not None:
+            parts.append(f"dev_d={dev_d:+.2f}")
+
+    stress = max(-0.3, min(1.2, stress))
+    why = ", ".join(parts) if parts else "mixed"
+
+    # CRASH: extreme live stress (DAA dump + high vol), optional social/dev soft
+    if (
+        has_daa
+        and has_vol
+        and daa_d is not None
+        and vol is not None
+        and daa_d <= -0.25
+        and vol >= 0.05
+        and stress >= 0.75
+    ):
         return RegimeDecision(
             regime="CRASH",
-            confidence=0.75,
+            confidence=min(0.9, 0.55 + stress * 0.3),
             size_mult=0.0,
             sensor_policy="block",
             max_new_entries_per_hour=0,
-            rationale=f"severe social collapse social_d={social_d:+.2f}",
-        )
-    if social_d <= -0.35:
-        return RegimeDecision(
-            regime="RISK_OFF",
-            confidence=min(0.9, 0.5 + abs(social_d)),
-            size_mult=0.35,
-            sensor_policy="shadow",
-            max_new_entries_per_hour=2,
-            rationale=(
-                f"social volume down (btc_d={btc_sv_d:+.2f}, eth_d={eth_sv_d:+.2f})"
-            ),
-        )
-    if social_d >= 0.4 and btc_dev_d >= -0.2:
-        return RegimeDecision(
-            regime="RISK_ON",
-            confidence=min(0.85, 0.45 + social_d * 0.5),
-            size_mult=1.0,
-            sensor_policy="active",
-            max_new_entries_per_hour=30,
-            rationale=(
-                f"social volume expanding (btc_d={btc_sv_d:+.2f}, eth_d={eth_sv_d:+.2f})"
-            ),
+            rationale=f"extreme live stress ({why})",
         )
 
+    if stress >= 0.45 or (has_daa and daa_d is not None and daa_d <= -0.3):
+        return RegimeDecision(
+            regime="RISK_OFF",
+            confidence=min(0.9, 0.5 + abs(stress) * 0.35),
+            size_mult=0.35 if stress >= 0.6 else 0.5,
+            sensor_policy="shadow",
+            max_new_entries_per_hour=2,
+            rationale=f"risk-off stress={stress:.2f} ({why})",
+        )
+
+    # Soft RISK_ON: DAA expanding, vol not high, stress low
+    if (
+        has_daa
+        and daa_d is not None
+        and daa_d >= 0.12
+        and (vol is None or vol < 0.04)
+        and stress <= 0.15
+    ):
+        return RegimeDecision(
+            regime="RISK_ON",
+            confidence=min(0.85, 0.5 + daa_d * 0.4),
+            size_mult=RISK_ON_SIZE_CAP,
+            sensor_policy="active",
+            max_new_entries_per_hour=25,
+            rationale=f"soft risk-on size_cap={RISK_ON_SIZE_CAP} ({why})",
+        )
+
+    size = 0.85
+    if has_vol and vol is not None and vol >= 0.035:
+        size = 0.75
     return RegimeDecision(
         regime="NEUTRAL",
         confidence=0.55,
-        size_mult=0.85,
+        size_mult=size,
         sensor_policy="active",
         max_new_entries_per_hour=15,
-        rationale=f"mixed social (social_d={social_d:+.2f})",
+        rationale=f"neutral stress={stress:.2f} ({why})",
     )
 
 

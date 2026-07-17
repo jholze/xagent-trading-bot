@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -16,9 +17,16 @@ from services.market_policy_fusion import (
     inject_global_sentiment,
 )
 from services.santiment_policy import get_santiment_policy
-from services.santiment_sidecar.regime import decide_regime, should_push
+from services.santiment_sidecar.client import is_series_fresh, series_lag_days
+from services.santiment_sidecar.regime import RISK_ON_SIZE_CAP, decide_regime, should_push
 from services.santiment_sidecar.snapshot import build_snapshot
-from services.santiment_store import get_latest_snapshot, reset_for_tests, snapshot_is_fresh, store_snapshot
+from services.santiment_store import (
+    get_latest_snapshot,
+    reset_for_tests,
+    snapshot_is_fresh,
+    status_line,
+    store_snapshot,
+)
 from strategies.trading_modes import MODE_DEFENSIVE, MODE_GRID, MODE_HYBRID, MODE_MOMENTUM
 
 
@@ -28,32 +36,127 @@ class TestSantimentRegime(unittest.TestCase):
         self.assertEqual(d.regime, "NEUTRAL")
         self.assertEqual(d.size_mult, 1.0)
 
-    def test_social_collapse_risk_off(self):
-        d = decide_regime(
-            {
-                "btc_social_volume_delta_1d": -0.4,
-                "eth_social_volume_delta_1d": -0.4,
-            }
-        )
-        self.assertEqual(d.regime, "RISK_OFF")
-        self.assertLess(d.size_mult, 0.5)
-        self.assertEqual(d.sensor_policy, "shadow")
-
-    def test_severe_collapse_crash(self):
+    def test_social_only_without_fresh_flag_fail_open(self):
+        """Lagged social must not drive RISK_OFF/CRASH."""
         d = decide_regime(
             {
                 "btc_social_volume_delta_1d": -0.7,
                 "eth_social_volume_delta_1d": -0.6,
+            },
+            meta={"social_fresh": False},
+        )
+        self.assertEqual(d.regime, "NEUTRAL")
+        self.assertEqual(d.size_mult, 1.0)
+
+    def test_daa_vol_crash(self):
+        d = decide_regime(
+            {
+                "btc_daa_delta_1d": -0.4,
+                "eth_daa_delta_1d": -0.35,
+                "btc_vol_1d": 0.09,
+                "eth_vol_1d": 0.07,
             }
         )
         self.assertEqual(d.regime, "CRASH")
         self.assertEqual(d.sensor_policy, "block")
+        self.assertEqual(d.size_mult, 0.0)
+
+    def test_daa_collapse_risk_off(self):
+        d = decide_regime(
+            {
+                "btc_daa_delta_1d": -0.35,
+                "eth_daa_delta_1d": -0.3,
+                "btc_vol_1d": 0.03,
+                "eth_vol_1d": 0.03,
+            }
+        )
+        self.assertEqual(d.regime, "RISK_OFF")
+        self.assertLessEqual(d.size_mult, 0.5)
+        self.assertEqual(d.sensor_policy, "shadow")
+
+    def test_soft_risk_on_size_capped(self):
+        d = decide_regime(
+            {
+                "btc_daa_delta_1d": 0.2,
+                "eth_daa_delta_1d": 0.15,
+                "btc_vol_1d": 0.01,
+                "eth_vol_1d": 0.012,
+            }
+        )
+        self.assertEqual(d.regime, "RISK_ON")
+        self.assertLessEqual(d.size_mult, RISK_ON_SIZE_CAP)
+        self.assertEqual(d.size_mult, RISK_ON_SIZE_CAP)
+
+    def test_fresh_social_soft_bias_into_risk_off(self):
+        base = {
+            "btc_daa_delta_1d": -0.2,
+            "eth_daa_delta_1d": -0.18,
+            "btc_vol_1d": 0.042,
+            "eth_vol_1d": 0.04,
+        }
+        without = decide_regime(base, meta={"social_fresh": False})
+        with_social = decide_regime(
+            {
+                **base,
+                "btc_social_volume_delta_1d": -0.4,
+                "eth_social_volume_delta_1d": -0.4,
+            },
+            meta={"social_fresh": True, "policy_inputs": ["daa", "vol", "social"]},
+        )
+        self.assertEqual(with_social.regime, "RISK_OFF")
+        self.assertGreaterEqual(without.size_mult, with_social.size_mult)
+
+    def test_dev_soft_bias(self):
+        base = {
+            "btc_daa_delta_1d": -0.15,
+            "eth_daa_delta_1d": -0.12,
+            "btc_vol_1d": 0.03,
+            "btc_dev_activity_delta_1d": -0.4,
+            "eth_dev_activity_delta_1d": -0.35,
+        }
+        d = decide_regime(base)
+        self.assertIn(d.regime, ("NEUTRAL", "RISK_OFF"))
+        self.assertIn("dev", d.rationale)
 
     def test_should_push_on_regime_change(self):
         a = {"regime": "NEUTRAL", "size_mult": 1.0, "sensor_policy": "active"}
         b = {"regime": "RISK_OFF", "size_mult": 0.35, "sensor_policy": "shadow"}
         self.assertTrue(should_push(a, b))
         self.assertFalse(should_push(b, dict(b)))
+
+
+class TestSantimentClientHelpers(unittest.TestCase):
+    def test_series_freshness(self):
+        now = datetime.now(timezone.utc)
+        fresh = [{"datetime": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"), "value": 1}]
+        stale = [{"datetime": (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"), "value": 1}]
+        self.assertTrue(is_series_fresh(fresh, now=now))
+        self.assertFalse(is_series_fresh(stale, now=now))
+        self.assertLess(series_lag_days(fresh, now=now), 1.0)
+        self.assertGreater(series_lag_days(stale, now=now), 20.0)
+
+
+class TestSantimentSnapshot(unittest.TestCase):
+    def test_meta_on_snapshot(self):
+        snap = build_snapshot(
+            {
+                "btc_daa_delta_1d": 0.05,
+                "eth_daa_delta_1d": 0.02,
+                "btc_vol_1d": 0.02,
+            },
+            meta={
+                "data_lag_days_max": 0.2,
+                "metrics_ok": ["btc_daa", "eth_daa", "btc_vol_1d"],
+                "metrics_failed": ["btc_social_volume"],
+                "policy_inputs": ["daa", "vol"],
+                "social_fresh": False,
+                "lagged_excluded_from_policy": True,
+            },
+        )
+        self.assertIn("meta", snap)
+        self.assertEqual(snap["meta"]["data_lag_days_max"], 0.2)
+        self.assertFalse(snap["meta"]["social_fresh"])
+        self.assertEqual(snap["regime"], "NEUTRAL")
 
 
 class TestSantimentIngest(unittest.TestCase):
@@ -76,7 +179,12 @@ class TestSantimentIngest(unittest.TestCase):
             }
         }
         snap = build_snapshot(
-            {"btc_social_volume_delta_1d": -0.4, "eth_social_volume_delta_1d": -0.4}
+            {
+                "btc_daa_delta_1d": -0.35,
+                "eth_daa_delta_1d": -0.3,
+                "btc_vol_1d": 0.03,
+            },
+            meta={"social_fresh": False, "policy_inputs": ["daa", "vol"], "metrics_ok": ["btc_daa"]},
         )
         with patch.dict(os.environ, {}, clear=False):
             result = process_santiment_ingest(snap, config_raw=cfg)
@@ -85,6 +193,27 @@ class TestSantimentIngest(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["regime"], "RISK_OFF")
         self.assertTrue(snapshot_is_fresh(stored))
+        self.assertIn("meta", stored)
+
+    def test_status_line_includes_lag(self):
+        store_snapshot(
+            {
+                "source": "santiment",
+                "regime": "NEUTRAL",
+                "size_mult": 0.85,
+                "ttl_sec": 1800,
+                "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "meta": {
+                    "data_lag_days_max": 0.1,
+                    "metrics_ok": ["btc_daa", "btc_vol_1d"],
+                    "metrics_failed": ["btc_social_volume"],
+                },
+            }
+        )
+        line = status_line()
+        self.assertIn("lag=", line)
+        self.assertIn("ok=2", line)
+        self.assertIn("fail=1", line)
 
 
 class TestSantimentPolicy(unittest.TestCase):
@@ -192,7 +321,7 @@ class TestMarketPolicyFusion(unittest.TestCase):
             {
                 "source": "santiment",
                 "regime": "RISK_ON",
-                "size_mult": 1.0,
+                "size_mult": 0.9,
                 "sensor_policy": "active",
                 "ttl_sec": 1800,
             }
@@ -221,7 +350,14 @@ class TestSantimentRoute(unittest.TestCase):
         reset_for_tests()
 
     def test_ingest_route(self):
-        snap = build_snapshot({"btc_social_volume_delta_1d": 0.1, "eth_social_volume_delta_1d": 0.0})
+        snap = build_snapshot(
+            {
+                "btc_daa_delta_1d": 0.05,
+                "eth_daa_delta_1d": 0.02,
+                "btc_vol_1d": 0.02,
+            },
+            meta={"social_fresh": False, "metrics_ok": ["btc_daa"]},
+        )
         with patch.dict(os.environ, {"SANTIMENT_INGEST_TOKEN": "t1"}, clear=False), \
              patch("services.santiment_ingest.santiment_ingest_enabled", return_value=True):
             resp = self.client.post(

@@ -11,12 +11,34 @@ from services.santiment_sidecar.regime import RegimeDecision, decide_regime
 def build_snapshot(
     features: dict[str, float],
     *,
+    meta: dict[str, Any] | None = None,
     schema_version: int = 1,
     ttl_sec: int = 1800,
     build: str = "",
     decision: RegimeDecision | None = None,
 ) -> dict[str, Any]:
-    dec = decision or decide_regime(features)
+    meta_out = dict(meta or {})
+    # Numeric features only in features map (floats); meta separate.
+    numeric: dict[str, float] = {}
+    for k, v in (features or {}).items():
+        if k == "meta":
+            continue
+        try:
+            numeric[k] = float(v)
+        except Exception:
+            continue
+
+    dec = decision or decide_regime(numeric, meta_out)
+    if not meta_out:
+        meta_out = {
+            "data_lag_days_max": None,
+            "metrics_ok": sorted(numeric.keys()),
+            "metrics_failed": [],
+            "policy_inputs": [],
+            "social_fresh": False,
+            "lagged_excluded_from_policy": True,
+        }
+
     return {
         "schema_version": schema_version,
         "source": "santiment",
@@ -27,8 +49,9 @@ def build_snapshot(
         "size_mult": round(float(dec.size_mult), 4),
         "sensor_policy": dec.sensor_policy,
         "max_new_entries_per_hour": int(dec.max_new_entries_per_hour),
-        "features": {k: round(float(v), 6) for k, v in sorted(features.items())},
+        "features": {k: round(float(v), 6) for k, v in sorted(numeric.items())},
+        "meta": meta_out,
         "symbols": {},
         "rationale": dec.rationale,
-        "sidecar_build": build or "santiment-sidecar-0.1",
+        "sidecar_build": build or "santiment-sidecar-0.2",
     }
