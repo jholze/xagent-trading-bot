@@ -98,6 +98,45 @@ class TestOracleRegime(unittest.TestCase):
         self.assertEqual(d2.state, "CRASH")
         self.assertEqual(d2.size_mult, 0.0)
 
+    def test_breadth_blocks_risk_on(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 2.0,
+                "eth_ret_24h_pct": 1.5,
+                "btc_ret_1h_pct": 0.2,
+                "btc_trend_4h": 1.0,
+                "breadth_pct_green": 0.30,
+                "breadth_median_24h_pct": -1.5,
+            }
+        )
+        self.assertEqual(st, "NEUTRAL")
+        self.assertIn("risk_on_blocked_breadth", why)
+
+    def test_breadth_rotten_risk_off(self):
+        st, _, why = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 0.5,
+                "eth_ret_24h_pct": 0.2,
+                "btc_trend_4h": 0.0,
+                "breadth_pct_green": 0.20,
+                "breadth_median_24h_pct": -3.0,
+            }
+        )
+        self.assertEqual(st, "RISK_OFF")
+        self.assertIn("breadth_rotten", why)
+
+    def test_breadth_missing_fail_open_risk_on(self):
+        """No breadth keys → price-only path still allows RISK_ON."""
+        st, _, _ = raw_state_from_features(
+            {
+                "btc_ret_24h_pct": 2.0,
+                "eth_ret_24h_pct": 1.5,
+                "btc_ret_1h_pct": 0.2,
+                "btc_trend_4h": 1.0,
+            }
+        )
+        self.assertEqual(st, "RISK_ON")
+
 
 class TestOraclePolicy(unittest.TestCase):
     def setUp(self):

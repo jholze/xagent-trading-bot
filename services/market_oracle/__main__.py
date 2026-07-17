@@ -70,7 +70,7 @@ def _start_health(port: int) -> None:
 
 
 def run_once(cfg: dict, client: MarketDataClient, hyst: StateHysteresis) -> dict:
-    features = client.fetch_features()
+    features = client.fetch_features(breadth_top_n=cfg["breadth_top_n"])
     prev_state = (_STATE.get("prev_pushed") or {}).get("state")
     decision = decide(
         features,
@@ -80,6 +80,9 @@ def run_once(cfg: dict, client: MarketDataClient, hyst: StateHysteresis) -> dict
         risk_on_24h=cfg["btc_risk_on_24h_pct"],
         cascade_1h=cfg["btc_cascade_1h_pct"],
         risk_on_1h_floor=cfg["btc_risk_on_1h_floor_pct"],
+        breadth_risk_on_min_green=cfg["breadth_risk_on_min_green"],
+        breadth_risk_off_max_green=cfg["breadth_risk_off_max_green"],
+        breadth_rotten_max_green=cfg["breadth_rotten_max_green"],
         risk_off_size=cfg["risk_off_size_mult"],
         neutral_size=cfg["neutral_size_mult"],
     )

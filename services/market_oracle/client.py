@@ -149,8 +149,75 @@ class MarketDataClient:
         except Exception as e:
             log.warning("1d candles %s failed: %s", pair, e)
 
-    def fetch_features(self) -> dict[str, float]:
-        """BTC/ETH multi-TF returns + 4h EMA structure + 1h cascade inputs."""
+    def fetch_all_tickers(self) -> list[dict[str, Any]]:
+        """All Gate spot tickers (public)."""
+        resp = self._session.get(f"{GATE_BASE}/spot/tickers", timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json() or []
+        return data if isinstance(data, list) else []
+
+    def fetch_breadth(
+        self,
+        *,
+        top_n: int = 40,
+        exclude_pairs: frozenset[str] | None = None,
+    ) -> dict[str, float]:
+        """Universe = top N USDT pairs by quote volume (ex BTC/ETH by default).
+
+        Fail-open: empty dict if API fails or too few samples.
+        """
+        exclude = exclude_pairs or frozenset({"BTC_USDT", "ETH_USDT"})
+        try:
+            rows = self.fetch_all_tickers()
+        except Exception as e:
+            log.warning("breadth tickers failed: %s", e)
+            return {}
+
+        candidates: list[tuple[float, float]] = []  # (quote_vol, ret_24h)
+        for row in rows:
+            pair = str(row.get("currency_pair") or "")
+            if not pair.endswith("_USDT"):
+                continue
+            if pair in exclude:
+                continue
+            # skip leveraged tokens noise
+            base = pair.split("_")[0]
+            if any(x in base for x in ("3L", "3S", "5L", "5S", "BULL", "BEAR")):
+                continue
+            try:
+                qv = float(row.get("quote_volume") or row.get("base_volume") or 0)
+                ret = float(row.get("change_percentage") or 0)
+            except Exception:
+                continue
+            if qv <= 0:
+                continue
+            candidates.append((qv, ret))
+
+        if len(candidates) < 8:
+            log.warning("breadth: only %s liquid USDT pairs", len(candidates))
+            return {}
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        sample = candidates[: max(8, int(top_n))]
+        rets = [r for _, r in sample]
+        n = len(rets)
+        green = sum(1 for r in rets if r > 0)
+        rets_sorted = sorted(rets)
+        mid = n // 2
+        if n % 2:
+            median = rets_sorted[mid]
+        else:
+            median = 0.5 * (rets_sorted[mid - 1] + rets_sorted[mid])
+
+        return {
+            "breadth_n": float(n),
+            "breadth_pct_green": float(green) / float(n),
+            "breadth_median_24h_pct": float(median),
+            "breadth_mean_24h_pct": float(sum(rets) / n),
+        }
+
+    def fetch_features(self, *, breadth_top_n: int = 40) -> dict[str, float]:
+        """BTC/ETH multi-TF + structure + optional market breadth."""
         features: dict[str, float] = {}
         for label, pair in (("btc", "BTC_USDT"), ("eth", "ETH_USDT")):
             try:
@@ -160,4 +227,8 @@ class MarketDataClient:
             except Exception as e:
                 log.warning("ticker %s failed: %s", pair, e)
             self._enrich_from_candles(features, label, pair)
+        try:
+            features.update(self.fetch_breadth(top_n=breadth_top_n))
+        except Exception as e:
+            log.warning("breadth failed: %s", e)
         return features

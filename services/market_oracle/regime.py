@@ -29,8 +29,14 @@ def raw_state_from_features(
     risk_on_24h: float = 1.0,
     cascade_1h: float = -2.5,
     risk_on_1h_floor: float = -1.0,
+    breadth_risk_on_min_green: float = 0.45,
+    breadth_risk_off_max_green: float = 0.35,
+    breadth_rotten_max_green: float = 0.25,
 ) -> tuple[str, float, str]:
-    """Map features → provisional state (no hysteresis)."""
+    """Map features → provisional state (no hysteresis).
+
+    Breadth (optional): if missing, fail-open (price rules only).
+    """
     btc = float(features.get("btc_ret_24h_pct") or 0.0)
     eth = float(features.get("eth_ret_24h_pct") or 0.0)
     blend = 0.7 * btc + 0.3 * eth
@@ -40,6 +46,9 @@ def raw_state_from_features(
     btc_1h_f = float(btc_1h) if has_1h else 0.0
     btc_4h = features.get("btc_ret_4h_pct")
     btc_7d = features.get("btc_ret_7d_pct")
+    has_breadth = features.get("breadth_pct_green") is not None
+    pct_green = float(features["breadth_pct_green"]) if has_breadth else None
+    med_br = features.get("breadth_median_24h_pct")
 
     parts = [f"btc_24h={btc:+.2f}%", f"eth_24h={eth:+.2f}%"]
     if has_1h:
@@ -49,6 +58,10 @@ def raw_state_from_features(
     if btc_7d is not None:
         parts.append(f"btc_7d={float(btc_7d):+.2f}%")
     parts.append(f"trend_4h={trend:+.0f}")
+    if has_breadth and pct_green is not None:
+        parts.append(f"breadth_green={pct_green:.0%}")
+        if med_br is not None:
+            parts.append(f"breadth_med={float(med_br):+.2f}%")
     base = " ".join(parts)
 
     # A1 cascade: sharp 1h dump → CRASH without waiting for −6% 24h
@@ -69,11 +82,23 @@ def raw_state_from_features(
         conf = 0.62
         return "RISK_OFF", conf, f"{base} structure_4h_down"
 
-    # RISK_ON: 24h green + trend up + 1h not strongly negative
+    # A2 breadth: rotten book → RISK_OFF (even if BTC only mildly red/flat)
+    if has_breadth and pct_green is not None:
+        if pct_green <= breadth_rotten_max_green:
+            conf = 0.7
+            return "RISK_OFF", conf, f"{base} breadth_rotten"
+        if pct_green <= breadth_risk_off_max_green and blend < 0.5:
+            conf = 0.65
+            return "RISK_OFF", conf, f"{base} breadth_weak"
+
+    # RISK_ON: 24h green + trend up + 1h not strongly negative + breadth ok
     if blend >= risk_on_24h and trend > 0:
         if has_1h and btc_1h_f <= risk_on_1h_floor:
             conf = 0.55
             return "NEUTRAL", conf, f"{base} risk_on_blocked_1h"
+        if has_breadth and pct_green is not None and pct_green < breadth_risk_on_min_green:
+            conf = 0.55
+            return "NEUTRAL", conf, f"{base} risk_on_blocked_breadth"
         conf = min(0.88, 0.5 + blend / 15.0)
         return "RISK_ON", conf, f"{base} risk_on"
 
@@ -157,6 +182,9 @@ def decide(
     risk_on_24h: float = 1.0,
     cascade_1h: float = -2.5,
     risk_on_1h_floor: float = -1.0,
+    breadth_risk_on_min_green: float = 0.45,
+    breadth_risk_off_max_green: float = 0.35,
+    breadth_rotten_max_green: float = 0.25,
     risk_off_size: float = 0.35,
     neutral_size: float = 0.85,
 ) -> OracleDecision:
@@ -167,6 +195,9 @@ def decide(
         risk_on_24h=risk_on_24h,
         cascade_1h=cascade_1h,
         risk_on_1h_floor=risk_on_1h_floor,
+        breadth_risk_on_min_green=breadth_risk_on_min_green,
+        breadth_risk_off_max_green=breadth_risk_off_max_green,
+        breadth_rotten_max_green=breadth_rotten_max_green,
     )
     state, bars = hyst.update(raw)
     pol = policy_for_state(state, risk_off_size=risk_off_size, neutral_size=neutral_size)
