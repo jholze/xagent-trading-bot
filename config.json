@@ -492,6 +492,66 @@
       "feature_refresh": true,
       "join_window_hours": 12,
       "reflect_social": true
+    },
+    "macro": {
+      "enabled": true,
+      "fred": {
+        "enabled": true,
+        "api_key_env": "FRED_API_KEY"
+      },
+      "alpha_vantage": {
+        "enabled": true,
+        "api_key_env": "ALPHA_VANTAGE_API_KEY",
+        "poll_sec": 3600
+      },
+      "trading_economics": {
+        "enabled": false
+      },
+      "events_allowlist": [
+        "FOMC",
+        "NFP",
+        "CPI"
+      ],
+      "pre_windows_min": [
+        1440,
+        240,
+        60,
+        15
+      ],
+      "post_windows_min": [
+        5,
+        60
+      ]
+    },
+    "sessions": {
+      "enabled": true,
+      "timezone_policy": "utc_windows",
+      "asia": [
+        "00:00",
+        "08:00"
+      ],
+      "london": [
+        "07:00",
+        "16:00"
+      ],
+      "ny": [
+        "13:30",
+        "20:00"
+      ],
+      "low_volume_pctile": 30,
+      "fakeout_size_mult": 0.5
+    },
+    "polymarket": {
+      "enabled": true,
+      "poll_sec": 900,
+      "market_ids": [],
+      "dune_enabled": false,
+      "mispricing_delta_pp": 10
+    },
+    "calendar_risk": {
+      "size_mult_pre_high_impact": 0.5,
+      "block_new_entries": false,
+      "min_hist_samples": 8
     }
   },
   "hermes": {

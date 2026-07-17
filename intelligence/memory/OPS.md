@@ -34,6 +34,21 @@ python -c "from intelligence.memory.export import export_jsonl; print(export_jso
 
 Restore: re-insert JSONL lines into the matching `_collection` field. Profiles are recomputed by rebuild from filled orders (read-only).
 
+## Macro calendar + sessions + Polymarket (Epic #53)
+
+| Piece | Module | Hermes | Bot |
+|-------|--------|--------|-----|
+| Session clock | `intelligence/macro/session_clock.py` | sync | `get_risk_multipliers()` |
+| Calendar windows | `intelligence/macro/calendar.py` | fixtures + optional FRED/AV | cache only |
+| BTC corr / impact | `intelligence/macro/btc_correlation.py` | offline stats | impact on events |
+| Polymarket | `intelligence/macro/polymarket.py` | fixtures or gamma API | cache |
+| Snapshot | `memory_macro_snapshot` | publish | read TTL |
+
+Config: `memory.macro`, `memory.sessions`, `memory.polymarket`, `memory.calendar_risk`.  
+Kill-switch: `MEMORY_MACRO=0`.  
+Risk factors: `calendar_mult`, `session_mult`, `pm_mult` (fail-open 1.0). Sells never blocked.  
+Health: `last_macro` on Hermes `/health`.
+
 ## CMC + LunarCrush social memory (Epic #42)
 
 | Source | How Hermes gets it |

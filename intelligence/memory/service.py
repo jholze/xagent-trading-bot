@@ -35,6 +35,7 @@ _STATE: dict = {
     "last_news": {},
     "last_reflect": {},
     "last_social": {},
+    "last_macro": {},
     "last_hermes": {},
     "live_evidence": {
         "mode": "dual",
@@ -113,6 +114,7 @@ class _Health(BaseHTTPRequestHandler):
             "last_news": _STATE["last_news"],
             "last_reflect": _STATE["last_reflect"],
             "last_social": _STATE.get("last_social") or {},
+            "last_macro": _STATE.get("last_macro") or {},
             "last_hermes": _STATE.get("last_hermes") or {},
             "live_evidence": le,
             "promotion_rate": le.get("promotion_rate", 0.0),
@@ -134,6 +136,7 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         "rebuild": rebuild_from_orders(store),
         "events": sync_fusion_events(store),
         "social": {},
+        "macro": {},
         "news": {},
         "reflect": {},
         "weaviate_ready": False,
@@ -144,6 +147,20 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     except Exception as e:
         log(f"memory social cycle: {e}", "WARNING")
         out["social"] = {"error": str(e)[:200]}
+    try:
+        from intelligence.macro.sync import sync_macro_context
+
+        fusion_regime = None
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+
+            fusion_regime = (get_global_market_bias() or {}).get("regime")
+        except Exception:
+            pass
+        out["macro"] = sync_macro_context(store, fusion_regime=fusion_regime)
+    except Exception as e:
+        log(f"memory macro cycle: {e}", "WARNING")
+        out["macro"] = {"error": str(e)[:200]}
     try:
         out["news"] = poll_and_ingest_news(store)
     except Exception as e:
@@ -268,6 +285,7 @@ def main() -> None:
             _STATE["last_news"] = result.get("news") or {}
             _STATE["last_reflect"] = result.get("reflect") or {}
             _STATE["last_social"] = result.get("social") or {}
+            _STATE["last_macro"] = result.get("macro") or {}
             _STATE["last_hermes"] = result.get("hermes") or {}
             _STATE["weaviate_ready"] = bool(result.get("weaviate_ready"))
             _STATE["last_error"] = ""

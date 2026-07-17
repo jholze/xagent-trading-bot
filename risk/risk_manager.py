@@ -153,6 +153,25 @@ class RiskManager:
                         )
                 except Exception:
                     pass
+                # Optional macro calendar hard block (default off — prefer size mult)
+                try:
+                    from intelligence.macro.snapshot import get_risk_multipliers
+
+                    mm = get_risk_multipliers(
+                        self.config.raw if hasattr(self.config, "raw") else None
+                    )
+                    if mm.get("block_new_entries"):
+                        return RiskDecision(
+                            approved=False,
+                            message=(
+                                f"Macro calendar pre-window block: "
+                                f"{mm.get('calendar_risk') or mm.get('next_event') or 'high impact'}"
+                            ),
+                            code="macro_calendar_block",
+                            size_multiplier=0.0,
+                        )
+                except Exception:
+                    pass
 
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position and open_slots >= self.config.max_open_positions:
@@ -669,7 +688,38 @@ class RiskManager:
             coin_bias = 1.0
             social_summary = ""
 
-        total = trust_factor * conf_factor * atr_factor * dd_mult * global_mult * coin_bias
+        calendar_mult = 1.0
+        session_mult = 1.0
+        pm_mult = 1.0
+        calendar_risk = ""
+        session_risk = ""
+        pm_risk = ""
+        try:
+            from intelligence.macro.snapshot import get_risk_multipliers
+
+            mm = get_risk_multipliers(
+                self.config.raw if hasattr(self.config, "raw") else None
+            )
+            calendar_mult = float(mm.get("calendar_mult") or 1.0)
+            session_mult = float(mm.get("session_mult") or 1.0)
+            pm_mult = float(mm.get("pm_mult") or 1.0)
+            calendar_risk = str(mm.get("calendar_risk") or "")[:100]
+            session_risk = str(mm.get("session_risk") or "")[:80]
+            pm_risk = str(mm.get("pm_risk") or "")[:80]
+        except Exception:
+            pass
+
+        total = (
+            trust_factor
+            * conf_factor
+            * atr_factor
+            * dd_mult
+            * global_mult
+            * coin_bias
+            * calendar_mult
+            * session_mult
+            * pm_mult
+        )
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
         # Allow CRASH/warmup (0) to zero out size; otherwise keep floor.
@@ -691,6 +741,12 @@ class RiskManager:
             "coin_entry_bias": coin_entry,
             "coin_memory": coin_rationale,
             "coin_social": social_summary,
+            "calendar_mult": round(calendar_mult, 3),
+            "session_mult": round(session_mult, 3),
+            "pm_mult": round(pm_mult, 3),
+            "calendar_risk": calendar_risk,
+            "session_risk": session_risk,
+            "pm_risk": pm_risk,
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors
