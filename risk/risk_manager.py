@@ -646,6 +646,7 @@ class RiskManager:
         coin_bias = 1.0
         coin_entry = "neutral"
         coin_rationale = ""
+        social_summary = ""
         try:
             from intelligence.memory.cache import get_coin_profile, get_size_bias
 
@@ -664,8 +665,6 @@ class RiskManager:
                 coin_rationale = (prof.rationale or "")[:120]
                 feats = prof.features or {}
                 social_summary = str((feats.get("social_summary") or ""))[:80]
-            else:
-                social_summary = ""
         except Exception:
             coin_bias = 1.0
             social_summary = ""
