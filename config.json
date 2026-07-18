@@ -430,7 +430,7 @@
     },
     "ask_bridge": {
       "enabled": true,
-      "response_mode": "cursor_only",
+      "response_mode": "grok_fallback",
       "queue_path": "data/telegram_ask_queue.json",
       "pending_notify_path": "data/telegram_ask_pending.json",
       "notify_log_path": "data/telegram_ask_notify.jsonl",
@@ -438,11 +438,11 @@
       "poll_interval_sec": 3,
       "cursor_renotify_sec": 30,
       "cursor_priority_sec": 8,
-      "cursor_timeout_sec": 600,
-      "headless_dispatch_enabled": true,
+      "cursor_timeout_sec": 30,
+      "headless_dispatch_enabled": false,
       "headless_dispatch_delay_sec": 5,
       "auto_respond_enabled": false,
-      "grok_fallback_enabled": false,
+      "grok_fallback_enabled": true,
       "max_question_length": 500,
       "rate_limit_per_hour": 20
     },
