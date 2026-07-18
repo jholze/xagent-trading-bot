@@ -442,17 +442,26 @@ class TestWeaviateClient(unittest.TestCase):
             self.assertEqual(idx.search_events("q"), [])
 
     def test_mock_insert_and_query(self):
-        """BYO vector insert + graphql search path (mock HTTP)."""
+        """BYO vector insert uses POST (create) / PATCH (update), not broken PUT."""
         calls = []
+        existing = set()
 
-        def fake_req(method, path, body=None):
-            calls.append((method, path, body))
+        def fake_req(method, path, body=None, **kwargs):
+            calls.append((method, path))
             if path.endswith("/ready"):
                 return {}
-            if path == "/v1/schema":
+            if method == "GET" and path == "/v1/schema":
+                return {"classes": []}  # force create all
+            if method == "POST" and path == "/v1/schema":
                 return {}
-            if path == "/v1/objects" or path.startswith("/v1/objects/"):
-                return {"id": "x"}
+            if method == "GET" and path.startswith("/v1/objects/"):
+                # not found → create path
+                return None
+            if method == "POST" and path == "/v1/objects":
+                existing.add((body or {}).get("id"))
+                return {"id": (body or {}).get("id")}
+            if method == "PATCH" and path.startswith("/v1/objects/"):
+                return {}
             if path == "/v1/graphql":
                 return {
                     "data": {
@@ -477,11 +486,21 @@ class TestWeaviateClient(unittest.TestCase):
                 vector=embed_text("news exchange hack"),
             )
             self.assertTrue(ok)
+            methods = [m for m, _ in calls]
+            self.assertIn("POST", methods)
+            self.assertNotIn("PUT", methods)  # PUT caused HTTP 500 on cluster
             ids = idx.search_events("hack", symbol="BTC/USDT", k=3)
             self.assertEqual(ids, ["news:1"])
             profiles = idx.search_similar_profiles("weak soft_block", k=2)
-            # empty when graphql not matching profile class in this fake
             self.assertIsInstance(profiles, list)
+
+    def test_normalize_vector_dim(self):
+        from intelligence.memory.vector_weaviate import VECTOR_DIM, _normalize_vector
+
+        v = _normalize_vector([1.0, 2.0], "x")
+        self.assertEqual(len(v), VECTOR_DIM)
+        v2 = _normalize_vector(list(range(100)), "x")
+        self.assertEqual(len(v2), VECTOR_DIM)
 
 
 class TestNewsProviders(unittest.TestCase):

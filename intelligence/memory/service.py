@@ -184,8 +184,10 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
             _STATE["weaviate_ready"] = out["weaviate_ready"]
             if out["weaviate_ready"]:
                 idx.ensure_schema()
+                wv_ok = 0
+                wv_fail = 0
                 for ev in store.list_events(limit=40):
-                    idx.upsert_event(
+                    if idx.upsert_event(
                         ev.event_id,
                         ev.description,
                         event_type=ev.event_type,
@@ -194,9 +196,12 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                         symbols=ev.symbols,
                         timestamp=ev.timestamp,
                         vector=ev.embedding or None,
-                    )
+                    ):
+                        wv_ok += 1
+                    else:
+                        wv_fail += 1
                 for prof in store.list_profiles(limit=40):
-                    idx.upsert_profile(
+                    if idx.upsert_profile(
                         prof.symbol,
                         rationale=prof.rationale,
                         size_bias=prof.size_bias,
@@ -205,9 +210,12 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                         ledger_scope=prof.ledger_scope,
                         as_of=prof.as_of,
                         vector=prof.embedding or None,
-                    )
+                    ):
+                        wv_ok += 1
+                    else:
+                        wv_fail += 1
                 for tr in store.list_trades(limit=30):
-                    idx.upsert_trade(
+                    if idx.upsert_trade(
                         tr.trade_id,
                         tr.symbol,
                         outcome=tr.outcome,
@@ -215,9 +223,12 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                         pnl_usdt=float(tr.pnl_usdt or 0),
                         reason=tr.reason,
                         vector=tr.embedding or None,
-                    )
+                    ):
+                        wv_ok += 1
+                    else:
+                        wv_fail += 1
                 for les in store.list_lessons(limit=30):
-                    idx.upsert_lesson(
+                    if idx.upsert_lesson(
                         les.lesson_id,
                         les.text,
                         confidence=les.confidence,
@@ -225,7 +236,16 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                         symbols=les.symbols,
                         validated=les.validated,
                         vector=les.embedding or None,
-                    )
+                    ):
+                        wv_ok += 1
+                    else:
+                        wv_fail += 1
+                out["weaviate_upsert_ok"] = wv_ok
+                out["weaviate_upsert_fail"] = wv_fail
+                if wv_fail and not wv_ok:
+                    log(f"weaviate upsert all failed ok=0 fail={wv_fail}", "WARNING")
+                elif wv_fail:
+                    log(f"weaviate upsert ok={wv_ok} fail={wv_fail}", "DEBUG")
         except Exception as e:
             log(f"weaviate cycle: {e}", "DEBUG")
             out["weaviate_ready"] = False
