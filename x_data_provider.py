@@ -311,6 +311,11 @@ class XApiV2Provider(XDataProvider):
             return None
 
     def fetch_new_posts(self, accounts: list, limit_per_account: int = 5) -> List[RawPost]:
+        from data_manager import get_config
+
+        # Epic #6 / #10: live X parked — no API calls until re-enabled
+        if float(get_config().get("x_weight", 0) or 0) <= 0:
+            return []
         if not self.bearer_token:
             log("Skipping live X fetch — no bearer token configured", "WARNING")
             return []

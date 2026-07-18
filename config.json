@@ -90,12 +90,12 @@
     "parallel_account_fetch": 3,
     "defer_ingest_eval": true
   },
-  "x_weight": 0.4,
-  "technical_weight": 0.27,
-  "onchain_weight": 0.15,
-  "lc_weight": 0.18,
+  "x_weight": 0.0,
+  "technical_weight": 0.45,
+  "onchain_weight": 0.25,
+  "lc_weight": 0.0,
   "lunarcrush": {
-    "enabled": true,
+    "enabled": false,
     "use_mock": false,
     "use_list_endpoint": false,
     "api_key_env": "LUNARCRUSH_API_KEY",
