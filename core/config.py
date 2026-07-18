@@ -396,15 +396,23 @@ class BotConfig:
             "market_cap_min_usd": 5_000_000,
             "watch_ttl_hours": 24,
             "setup_modes": ["buy_signal", "setup_zone", "trending", "watchlist"],
-            "vol_spike_mult": 2.0,
+            "vol_spike_mult": 3.0,
             "vol_avg_period": 20,
             "ema_period": 9,
             "require_ema_breakout": False,
-            "block_buy_if_rsi_4h_above": 75,
+            "block_buy_if_rsi_4h_above": 65,
             "fakeout_min_body_atr_ratio": 0.3,
             "cooldown_after_reject_hours": 2,
             "max_watched_coins": 40,
             "min_poll_gap_sec_per_coin": 20,
+            "ignore_aggression_boost": True,
+            "max_usdt_absolute": 1000,
+            "hold_override_by_mode": {
+                "GRID": "slice_only",
+                "HYBRID": "allow_with_conditions",
+                "MOMENTUM": "block",
+                "DEFENSIVE": "off",
+            },
         }
         raw = self._raw.get("entry_sensor_15m", {})
         merged = {**defaults, **raw}

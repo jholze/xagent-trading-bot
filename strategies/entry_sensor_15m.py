@@ -93,6 +93,8 @@ def evaluate_entry_sensor_15m(
     tech_already_buy: bool = False,
     market_cap_usd: float | None = None,
     gate_tradeable: bool | None = None,
+    venue_ok: bool | None = None,
+    venue_reason: str | None = None,
     now: datetime | None = None,
 ) -> EntrySensor15mResult:
     """Evaluate 15m sensor; pure function — no I/O or position side effects."""
@@ -113,6 +115,13 @@ def evaluate_entry_sensor_15m(
             triggered=False,
             shadow_only=shadow_only,
             rationale=mcap_reason,
+        )
+
+    if venue_ok is False:
+        return EntrySensor15mResult(
+            triggered=False,
+            shadow_only=shadow_only,
+            rationale=venue_reason or "venue_quality_block",
         )
 
     gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))

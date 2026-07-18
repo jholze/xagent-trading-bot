@@ -139,18 +139,78 @@ class RiskManager:
             if not has_position and not self._is_dca_buy(source, order):
                 try:
                     from intelligence.memory.cache import get_entry_bias, get_coin_profile
+                    from strategies.sensor_entry_policy import is_sensor_source
 
                     if get_entry_bias(order.symbol) == "soft_block":
                         prof = get_coin_profile(order.symbol)
-                        return RiskDecision(
-                            approved=False,
-                            message=(
-                                f"Coin memory soft_block {order.symbol}: "
-                                f"{(prof.rationale if prof else 'weak history')}"
-                            ),
-                            code="coin_memory_soft_block",
-                            size_multiplier=0.0,
+                        feats = (prof.features if prof else None) or {}
+                        # Legacy soft_block (no scope in features) blocks all new entries.
+                        # Gross-loss sensor_only: only block sensor-family sources.
+                        scope = str(feats.get("soft_block_scope") or "").lower()
+                        block_this = True
+                        if scope == "sensor_only" and not is_sensor_source(source):
+                            block_this = False
+                        # TTL soft_block_until in features
+                        if block_this and isinstance(feats, dict):
+                            until = feats.get("soft_block_until")
+                            if until:
+                                try:
+                                    from datetime import datetime, timezone
+
+                                    u = str(until).replace("Z", "+00:00")
+                                    until_dt = datetime.fromisoformat(u)
+                                    if until_dt.tzinfo is None:
+                                        until_dt = until_dt.replace(tzinfo=timezone.utc)
+                                    if datetime.now(timezone.utc) > until_dt:
+                                        block_this = False
+                                except Exception:
+                                    pass
+                        if block_this:
+                            return RiskDecision(
+                                approved=False,
+                                message=(
+                                    f"Coin memory soft_block {order.symbol}: "
+                                    f"{(prof.rationale if prof else 'weak history')}"
+                                ),
+                                code="coin_memory_soft_block",
+                                size_multiplier=0.0,
+                            )
+                except Exception:
+                    pass
+                # Re-entry cooloff after gross loss (sensor-entry-guard)
+                try:
+                    cool = self._sensor_reentry_cooloff_blocked(order, source)
+                    if cool:
+                        return cool
+                except Exception:
+                    pass
+                # Venue quality hard gate (buys only; sells never use this)
+                try:
+                    from services.venue_quality import check_venue_for_buy, source_applies_venue, venue_quality_config
+
+                    vcfg = venue_quality_config(
+                        self.config.raw if hasattr(self.config, "raw") else None
+                    )
+                    if vcfg.get("enabled", True) and source_applies_venue(source, vcfg):
+                        planned = float(order.usdt_amount or 0) or float(
+                            self.config.max_usdt_per_trade or 0
                         )
+                        vres = check_venue_for_buy(
+                            order.symbol,
+                            source=source,
+                            planned_usdt=planned,
+                            config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                        )
+                        if not vres.ok:
+                            return RiskDecision(
+                                approved=False,
+                                message=(
+                                    f"Venue quality block {order.symbol}: "
+                                    + ("; ".join(vres.reasons) or "thin market")
+                                ),
+                                code="venue_liquidity_block",
+                                size_multiplier=0.0,
+                            )
                 except Exception:
                     pass
                 # Optional macro calendar hard block (default off — prefer size mult)
@@ -251,15 +311,44 @@ class RiskManager:
         else:
             if indicators is None:
                 indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
-            sized, factors = self._dynamic_size(
-                base_usdt,
-                order,
-                timeframe,
-                source,
-                trust_score,
-                confidence,
-                indicators,
+            # Sensor-entry-guard: no aggression inflation on pure sensor size
+            from strategies.sensor_entry_policy import is_sensor_source
+
+            sensor_cfg = {}
+            try:
+                sensor_cfg = self.config.entry_sensor_15m_config
+            except Exception:
+                sensor_cfg = {}
+            skip_dyn = is_sensor_source(source) and bool(
+                sensor_cfg.get("ignore_aggression_boost", True)
             )
+            if skip_dyn:
+                sized = float(base_usdt)
+                factors = {
+                    "trust_factor": 1.0,
+                    "conf_factor": 1.0,
+                    "atr_factor": 1.0,
+                    "drawdown_pct": round(self._equity_drawdown_pct(), 2),
+                    "drawdown_multiplier": 1.0,
+                    "total_multiplier": 1.0,
+                    "sensor_size_locked": True,
+                }
+            else:
+                sized, factors = self._dynamic_size(
+                    base_usdt,
+                    order,
+                    timeframe,
+                    source,
+                    trust_score,
+                    confidence,
+                    indicators,
+                )
+            # Absolute sensor cap (defense-in-depth)
+            if is_sensor_source(source):
+                abs_cap = sensor_cfg.get("max_usdt_absolute")
+                if abs_cap is not None and float(abs_cap) > 0:
+                    sized = min(float(sized), float(abs_cap))
+                    factors["sensor_max_usdt_absolute"] = float(abs_cap)
 
         equity = self._portfolio_equity(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
@@ -372,6 +461,72 @@ class RiskManager:
             "spendable_usdt": round(spendable, 2),
             "ledger_source": self._ledger_source_label(),
         }
+
+    def _sensor_reentry_cooloff_blocked(self, order: TradeOrder, source: str):
+        """Block sensor-family re-entry after a recent gross loss on the symbol."""
+        from strategies.sensor_entry_policy import is_sensor_source
+
+        if not is_sensor_source(source):
+            return None
+        risk = self.config.risk_config or {}
+        se = risk.get("sensor_entry") or {}
+        hours = float(se.get("reentry_cooloff_hours_after_gross_loss") or 0)
+        if hours <= 0:
+            return None
+        try:
+            from intelligence.memory.cache import get_coin_profile
+
+            prof = get_coin_profile(order.symbol)
+            if not prof or not isinstance(prof.features, dict):
+                return None
+            last_loss = prof.features.get("last_loss_at") or prof.features.get("soft_block_until")
+            if not last_loss:
+                return None
+            # only if last loss was large
+            worst = float(prof.features.get("worst_loss_usdt") or 0)
+            worst_pct = float(prof.features.get("worst_loss_pct") or 0)
+            min_usdt = float(
+                ((self.config.raw.get("memory") or {}).get("gross_loss") or {}).get(
+                    "min_loss_usdt", 500
+                )
+            )
+            min_pct = float(
+                ((self.config.raw.get("memory") or {}).get("gross_loss") or {}).get(
+                    "min_loss_pct", 25
+                )
+            )
+            if abs(worst) < min_usdt and abs(worst_pct) < min_pct:
+                return None
+            from datetime import datetime, timezone, timedelta
+
+            u = str(last_loss).replace("Z", "+00:00")
+            loss_dt = datetime.fromisoformat(u)
+            if loss_dt.tzinfo is None:
+                loss_dt = loss_dt.replace(tzinfo=timezone.utc)
+            # if soft_block_until is in future, use last_loss_at for cooloff start
+            start = loss_dt
+            if "last_loss_at" in prof.features:
+                try:
+                    s2 = str(prof.features["last_loss_at"]).replace("Z", "+00:00")
+                    start = datetime.fromisoformat(s2)
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=timezone.utc)
+                except Exception:
+                    pass
+            elapsed_h = (datetime.now(timezone.utc) - start).total_seconds() / 3600.0
+            if elapsed_h < hours:
+                return RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Sensor re-entry cooloff {order.symbol}: "
+                        f"{elapsed_h:.1f}h < {hours:.0f}h after gross loss"
+                    ),
+                    code="sensor_reentry_cooloff",
+                    size_multiplier=0.0,
+                )
+        except Exception:
+            return None
+        return None
 
     def _ledger_source_label(self) -> str:
         if is_live_dry_run(self.config.raw):

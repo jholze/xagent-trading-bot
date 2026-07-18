@@ -118,12 +118,16 @@ def mode_allows_grid_sells(mode: str) -> bool:
 def entry_sensor_buy_usdt_frac(mode: str, *, volatility_tier: str = "") -> float:
     """Fraction of max_usdt_per_trade when entry sensor lifts a buy.
 
-    GRID: small slice (rotation-friendly). HYBRID: medium. MOMENTUM: full (1.0).
-    Volatile GRID slices a bit larger than stable GRID.
+    GRID: small slice (rotation-friendly). HYBRID: medium. MOMENTUM: capped (not full).
+    Volatile GRID/HYBRID slices a bit larger than stable.
     """
     tier = (volatility_tier or "").lower()
-    if mode == MODE_GRID:
+    mode_u = (mode or "").upper()
+    if mode_u == MODE_GRID:
         return 0.35 if tier == "volatile" else 0.22
-    if mode == MODE_HYBRID:
+    if mode_u == MODE_HYBRID:
         return 0.55 if tier == "volatile" else 0.40
-    return 1.0
+    if mode_u == MODE_DEFENSIVE:
+        return 0.0
+    # MOMENTUM / unknown: never full-size (sensor-entry-guard)
+    return 0.30

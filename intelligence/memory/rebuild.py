@@ -10,6 +10,10 @@ from intelligence.memory.models import CoinProfile, TradeMemory, utc_now_iso
 from intelligence.memory.store import MemoryStore
 from logger import log
 
+SENSOR_SOURCES = frozenset(
+    {"entry_sensor_15m", "vol_spike_15m", "entry_sensor", "15m_sensor"}
+)
+
 
 def _parse_ts(raw: Any) -> datetime | None:
     if not raw:
@@ -22,6 +26,26 @@ def _parse_ts(raw: Any) -> datetime | None:
         return dt
     except Exception:
         return None
+
+
+def _gross_loss_cfg(config_raw: dict | None = None) -> dict[str, Any]:
+    if config_raw is None:
+        try:
+            from core.config import get_bot_config
+
+            config_raw = get_bot_config().raw
+        except Exception:
+            config_raw = {}
+    mem = (config_raw or {}).get("memory") or {}
+    gl = mem.get("gross_loss") or {}
+    return {
+        "enabled": bool(gl.get("enabled", True)),
+        "min_loss_pct": float(gl.get("min_loss_pct", 25)),
+        "min_loss_usdt": float(gl.get("min_loss_usdt", 500)),
+        "soft_block_ttl_hours": float(gl.get("soft_block_ttl_hours", 336)),
+        "size_bias_cap": float(gl.get("size_bias_cap", 0.5)),
+        "soft_block_scope": str(gl.get("soft_block_scope") or "sensor_only"),
+    }
 
 
 def orders_to_trade_memories(
@@ -45,10 +69,8 @@ def orders_to_trade_memories(
         filled = _parse_ts(ts.get("filled") or ts.get("created"))
         if filled is None or filled < since:
             continue
-        # tenant filter if present on order
         ot = str(o.get("tenant_id") or tenant_id or "default")
         if tenant_id and ot != tenant_id and ot != "default":
-            # allow default-scoped rebuild of default tenant
             if tenant_id != "default":
                 continue
         req = o.get("request") or {}
@@ -71,6 +93,10 @@ def orders_to_trade_memories(
             else:
                 outcome = "breakeven"
         tid = str(o.get("id") or o.get("display_seq") or f"{o.get('symbol')}_{filled.isoformat()}")
+        meta: dict[str, Any] = {"usdt": usdt, "status": "filled"}
+        venue = ex.get("venue")
+        if isinstance(venue, dict):
+            meta["venue"] = venue
         out.append(
             TradeMemory(
                 trade_id=f"{ledger_scope}:{tid}",
@@ -86,8 +112,76 @@ def orders_to_trade_memories(
                 reason=str(o.get("signal") or o.get("source") or ""),
                 ledger_scope=ledger_scope,
                 tenant_id=tenant_id,
-                metadata={"usdt": usdt, "status": "filled"},
+                metadata=meta,
             )
+        )
+    return out
+
+
+def _by_source_stats(trades: list[TradeMemory]) -> dict[str, Any]:
+    by: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"buys": 0, "sells": 0, "pnl_usdt": 0.0}
+    )
+    for t in trades:
+        src = (t.source or "unknown").lower()
+        if t.direction == "buy":
+            by[src]["buys"] += 1
+        elif t.direction == "sell":
+            by[src]["sells"] += 1
+            if t.pnl_usdt is not None:
+                by[src]["pnl_usdt"] = float(by[src]["pnl_usdt"]) + float(t.pnl_usdt)
+    return {k: dict(v) for k, v in by.items()}
+
+
+def _venue_features(trades: list[TradeMemory], config_raw: dict | None = None) -> dict[str, Any]:
+    from services.venue_quality import is_thin_venue_stamp, venue_quality_config
+
+    vcfg = venue_quality_config(config_raw)
+    thin_n = 0
+    thick_n = 0
+    pnl_thin = 0.0
+    pnl_thick = 0.0
+    last_qv = None
+    last_spread = None
+    last_stamp = None
+    for t in trades:
+        if t.direction != "buy":
+            continue
+        stamp = (t.metadata or {}).get("venue")
+        if not isinstance(stamp, dict):
+            continue
+        last_stamp = stamp
+        last_qv = stamp.get("quote_volume_24h_usdt")
+        last_spread = stamp.get("spread_pct")
+        thin = is_thin_venue_stamp(stamp, vcfg)
+        # attach pnl from later sells loosely: use sell on same symbol after this buy
+        sell_pnl = 0.0
+        for s in trades:
+            if s.direction != "sell" or s.pnl_usdt is None:
+                continue
+            if s.entry_time and t.entry_time and s.entry_time >= t.entry_time:
+                sell_pnl += float(s.pnl_usdt)
+        if thin:
+            thin_n += 1
+            pnl_thin += sell_pnl
+        else:
+            thick_n += 1
+            pnl_thick += sell_pnl
+    if last_stamp is None and thin_n == 0 and thick_n == 0:
+        return {}
+    out: dict[str, Any] = {
+        "entries_thin_30d": thin_n,
+        "entries_thick_30d": thick_n,
+        "pnl_when_thin_usdt": round(pnl_thin, 2),
+        "pnl_when_thick_usdt": round(pnl_thick, 2),
+    }
+    if last_qv is not None:
+        out["last_entry_quote_vol_24h"] = float(last_qv)
+    if last_spread is not None:
+        out["last_entry_spread_pct"] = float(last_spread)
+    if thin_n + thick_n > 0:
+        out["thin_loss_rate"] = round(
+            (1.0 if pnl_thin < -0.5 else 0.0) if thin_n else 0.0, 3
         )
     return out
 
@@ -99,6 +193,7 @@ def compute_profile_from_trades(
     ledger_scope: str,
     tenant_id: str,
     min_samples: int = 3,
+    config_raw: dict | None = None,
 ) -> CoinProfile:
     sells = [t for t in trades if t.direction == "sell"]
     buys = [t for t in trades if t.direction == "buy"]
@@ -109,12 +204,68 @@ def compute_profile_from_trades(
     avg_pnl = (total_pnl / len(pnls)) if pnls else 0.0
     dca = sum(1 for t in buys if "dca" in (t.source or "").lower())
 
-    # size_bias: shrink after poor sell history; expand slightly after good
     size_bias = 1.0
     entry_bias = "neutral"
     rationale = "insufficient samples"
     n = len(pnls)
-    if n >= min_samples:
+    gl = _gross_loss_cfg(config_raw)
+    features: dict[str, Any] = {
+        "min_samples": min_samples,
+        "sample_n": n,
+        "by_source": _by_source_stats(trades),
+    }
+    venue_f = _venue_features(trades, config_raw)
+    if venue_f:
+        features["venue"] = venue_f
+
+    worst_usdt = min(pnls) if pnls else 0.0
+    worst_pct = 0.0
+    last_loss_at = None
+    last_loss_source = None
+    for t in sells:
+        if t.pnl_usdt is None or float(t.pnl_usdt) >= 0:
+            continue
+        # approximate pct from entry/exit if present
+        pct = 0.0
+        if t.entry_price and t.exit_price and t.entry_price > 0:
+            pct = (float(t.exit_price) / float(t.entry_price) - 1.0) * 100.0
+        if float(t.pnl_usdt) <= worst_usdt:
+            worst_usdt = float(t.pnl_usdt)
+            worst_pct = pct
+            last_loss_at = t.exit_time or t.entry_time
+            last_loss_source = t.source
+    if pnls:
+        features["worst_loss_usdt"] = round(worst_usdt, 2)
+        features["worst_loss_pct"] = round(worst_pct, 2)
+        if last_loss_at:
+            features["last_loss_at"] = last_loss_at
+        if last_loss_source:
+            features["last_loss_source"] = last_loss_source
+
+    # Gross-loss soft_block even when n < min_samples (BDX-class)
+    gross = False
+    if gl.get("enabled", True) and pnls:
+        if worst_usdt <= -abs(gl["min_loss_usdt"]) or worst_pct <= -abs(gl["min_loss_pct"]):
+            gross = True
+
+    if gross:
+        size_bias = min(float(gl["size_bias_cap"]), 0.5)
+        entry_bias = "soft_block"
+        rationale = (
+            f"gross_loss n={n} worst_usdt={worst_usdt:.1f} worst_pct={worst_pct:.1f} "
+            f"scope={gl.get('soft_block_scope')}"
+        )
+        ttl_h = float(gl.get("soft_block_ttl_hours") or 336)
+        if last_loss_at:
+            try:
+                start = _parse_ts(last_loss_at) or datetime.now(timezone.utc)
+                until = start + timedelta(hours=ttl_h)
+                features["soft_block_until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                pass
+        features["soft_block_scope"] = gl.get("soft_block_scope") or "sensor_only"
+        # thin venue boost TTL already encoded if needed by reflector later
+    elif n >= min_samples:
         if win_rate < 0.35 or total_pnl < -50:
             size_bias = 0.65
             entry_bias = "soft_block"
@@ -132,7 +283,7 @@ def compute_profile_from_trades(
         rationale = f"few samples n={n} (fail-open bias=1.0)"
 
     risk = 0.5
-    if n >= min_samples:
+    if n >= min_samples or gross:
         risk = max(0.1, min(0.9, 1.0 - win_rate + (0.2 if total_pnl < 0 else 0)))
 
     return CoinProfile(
@@ -151,7 +302,7 @@ def compute_profile_from_trades(
         entry_bias=entry_bias,
         risk_score=round(risk, 3),
         rationale=rationale,
-        features={"min_samples": min_samples, "sample_n": n},
+        features=features,
     )
 
 
@@ -179,6 +330,7 @@ def rebuild_from_orders(
     tenant_id: str = "default",
     lookback_days: int = 90,
     min_samples: int = 3,
+    config_raw: dict | None = None,
 ) -> dict[str, int]:
     """Full rebuild of trade memories + profiles. Ledger read-only."""
     store = store or MemoryStore()
@@ -196,7 +348,12 @@ def rebuild_from_orders(
     n_prof = 0
     for sym, tlist in by_sym.items():
         prof = compute_profile_from_trades(
-            sym, tlist, ledger_scope=scope, tenant_id=tenant_id, min_samples=min_samples
+            sym,
+            tlist,
+            ledger_scope=scope,
+            tenant_id=tenant_id,
+            min_samples=min_samples,
+            config_raw=config_raw,
         )
         if store.upsert_profile(prof):
             n_prof += 1

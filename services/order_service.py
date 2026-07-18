@@ -421,16 +421,34 @@ class OrderService:
                 record["source"] = approved_order.source
                 self._save(data)
         if result.executed:
+            execution = {
+                "price": float(result.price or 0),
+                "amount": float(result.amount or 0),
+                "usdt": float(result.usdt_amount or 0),
+                "exchange_order_id": getattr(result, "exchange_order_id", None),
+                "fee": float(getattr(result, "fee", 0) or 0) or None,
+            }
+            # Sensor-entry-guard: stamp Gate venue metrics at fill for memory learning
+            try:
+                side = (approved_order.type if approved_order else "") or ""
+                if str(side).upper() == "BUY" and approved_order:
+                    from services.venue_quality import stamp_venue_for_fill
+
+                    planned = float(
+                        result.usdt_amount
+                        or getattr(approved_order, "usdt_amount", 0)
+                        or 0
+                    )
+                    execution["venue"] = stamp_venue_for_fill(
+                        approved_order.symbol,
+                        planned_usdt=planned,
+                    )
+            except Exception:
+                execution["venue"] = {"capture": "missing"}
             self.update_status(
                 order_id,
                 "filled",
-                execution={
-                    "price": float(result.price or 0),
-                    "amount": float(result.amount or 0),
-                    "usdt": float(result.usdt_amount or 0),
-                    "exchange_order_id": getattr(result, "exchange_order_id", None),
-                    "fee": float(getattr(result, "fee", 0) or 0) or None,
-                },
+                execution=execution,
                 pnl=float(result.pnl) if result.pnl is not None else None,
             )
         else:

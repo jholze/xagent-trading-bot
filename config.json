@@ -342,7 +342,21 @@
     "block_partial_sell_if_sold_percent_above": 0.75,
     "dust_sweep_max_position_usdt": 500,
     "dust_sweep_sold_percent_min": 0.5,
-    "dust_sweep_min_remainder_usdt": 100
+    "dust_sweep_min_remainder_usdt": 100,
+    "venue_quality": {
+      "enabled": true,
+      "exchange": "gate",
+      "min_quote_volume_24h_usdt": 50000,
+      "max_spread_pct": 1.5,
+      "min_top_book_usdt_per_side": 200,
+      "min_volume_to_order_multiple": 20,
+      "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
+      "cache_ttl_sec": 90,
+      "on_fetch_error": "block_sensor"
+    },
+    "sensor_entry": {
+      "reentry_cooloff_hours_after_gross_loss": 168
+    }
   },
   "sell_policy": {
     "mode": "active",
@@ -451,6 +465,24 @@
   },
   "memory": {
     "enabled": true,
+    "profile_by_source": true,
+    "gross_loss": {
+      "enabled": true,
+      "min_loss_pct": 25,
+      "min_loss_usdt": 500,
+      "soft_block_ttl_hours": 336,
+      "size_bias_cap": 0.5,
+      "soft_block_scope": "sensor_only",
+      "apply_to_sources": ["entry_sensor_15m", "vol_spike_15m"]
+    },
+    "venue_learning": {
+      "enabled": true,
+      "stamp_on_fill": true,
+      "thin_uses_risk_venue_thresholds": true,
+      "lesson_on_thin_loss": true,
+      "soft_block_ttl_boost_hours_if_thin": 168,
+      "aggregate_window_days": 30
+    },
     "news": {
       "coingecko_news": true,
       "free_crypto_news": true,
@@ -1162,17 +1194,30 @@
       "trending",
       "watchlist"
     ],
-    "vol_spike_mult": 2.0,
+    "vol_spike_mult": 3.0,
     "vol_avg_period": 20,
     "ema_period": 9,
     "require_ema_breakout": false,
-    "block_buy_if_rsi_4h_above": 75,
+    "block_buy_if_rsi_4h_above": 65,
     "fakeout_min_body_atr_ratio": 0.3,
     "cooldown_after_reject_hours": 2,
     "max_watched_coins": 40,
     "min_poll_gap_sec_per_coin": 20,
     "webhook_priority_poll": true,
-    "exchange_only": true
+    "exchange_only": true,
+    "ignore_aggression_boost": true,
+    "max_usdt_absolute": 1000,
+    "hold_override_by_mode": {
+      "GRID": "slice_only",
+      "HYBRID": "allow_with_conditions",
+      "MOMENTUM": "block",
+      "DEFENSIVE": "off"
+    },
+    "size_hint_by_mode": {
+      "GRID": { "stable": 0.22, "volatile": 0.35 },
+      "HYBRID": { "stable": 0.40, "volatile": 0.55 },
+      "MOMENTUM": { "default": 0.30, "max": 0.35 }
+    }
   },
   "regime_detector": {
     "enabled": true,

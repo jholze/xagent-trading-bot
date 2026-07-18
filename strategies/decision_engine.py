@@ -247,6 +247,26 @@ class DecisionEngine:
             else:
                 exchange_tradeable = is_listed_on_exchange(symbol, ex)
 
+        venue_ok = None
+        venue_reason = None
+        try:
+            from services.venue_quality import check_venue_for_buy, venue_quality_config
+
+            vcfg = venue_quality_config(self.config.raw)
+            if vcfg.get("enabled", True):
+                planned = float(get_bot_config().max_usdt_per_trade or 500) * 0.35
+                vres = check_venue_for_buy(
+                    symbol,
+                    source=ENTRY_SENSOR_SOURCE,
+                    planned_usdt=planned,
+                    config_raw=self.config.raw,
+                )
+                venue_ok = bool(vres.ok)
+                if not vres.ok:
+                    venue_reason = "; ".join(vres.reasons) or "venue_quality_block"
+        except Exception:
+            venue_ok = None
+
         sensor = evaluate_entry_sensor_15m(
             watched=True,
             metrics=metrics,
@@ -256,6 +276,8 @@ class DecisionEngine:
             tech_already_buy=is_buy(tech_norm),
             market_cap_usd=resolve_market_cap_usd(symbol, market.strategy_params or {}),
             gate_tradeable=exchange_tradeable,
+            venue_ok=venue_ok,
+            venue_reason=venue_reason,
         )
 
         if sensor is None or not sensor.triggered:
@@ -272,33 +294,60 @@ class DecisionEngine:
                 return HOLD, out_sources, new_conf, rationale_extra, sensor.action
             return normalized, out_sources, new_conf, rationale_extra, sensor.action
 
-        # Phase B: in GRID mode entry sensor is a *slice*, not full momentum size
+        # Mode-aware size + hold_override (sensor-entry-guard M1)
         trading_mode = str((market.strategy_params or {}).get("trading_mode") or "")
         vol_tier = str(
             (market.strategy_params or {}).get("volatility_tier")
             or getattr(technical, "volatility_tier", "")
             or ""
         )
-        if trading_mode == "GRID":
-            from strategies.trading_modes import entry_sensor_buy_usdt_frac
+        from strategies.sensor_entry_policy import (
+            apply_sensor_hold_policy,
+            resolve_sensor_usdt,
+        )
+        from strategies.trading_modes import MODE_DEFENSIVE, MODE_GRID, MODE_HYBRID, MODE_MOMENTUM
 
-            frac = entry_sensor_buy_usdt_frac(trading_mode, volatility_tier=vol_tier)
+        if trading_mode == MODE_DEFENSIVE:
+            return normalized, sources, confidence, "sensor off in DEFENSIVE", ""
+
+        action, block_reason = apply_sensor_hold_policy(
+            tech_normalized=normalized,
+            trading_mode=trading_mode,
+            cfg=cfg,
+            sensor_action=sensor.action,
+            tech_already_buy=is_buy(tech_norm),
+        )
+        if action is None:
+            return normalized, sources, confidence, block_reason, ""
+
+        try:
+            base = float(get_bot_config().max_usdt_per_trade or 500)
+            usdt = resolve_sensor_usdt(
+                trading_mode,
+                volatility_tier=vol_tier,
+                max_usdt_per_trade=base,
+                cfg=cfg,
+            )
+            if usdt > 0:
+                technical.dca_usdt = usdt
+        except Exception:
+            pass
+
+        if trading_mode == MODE_GRID:
             out_sources.append("grid_slice")
-            rationale_extra = f"{rationale_extra} | grid_slice={frac:.0%}".strip(" |")
-            # Stash for evaluate path (dca_usdt); use BUY not BUY_STRONG
-            try:
-                base = float(get_bot_config().max_usdt_per_trade or 500)
-                technical.dca_usdt = round(base * frac, 2)
-            except Exception:
-                pass
-            if normalized == HOLD or is_buy(normalized):
-                return BUY, out_sources, new_conf, rationale_extra, ""
-            return normalized, out_sources, new_conf, rationale_extra, ""
+        elif trading_mode == MODE_HYBRID:
+            out_sources.append("hybrid_slice")
+        elif trading_mode == MODE_MOMENTUM or not trading_mode:
+            out_sources.append("sensor_size_cap")
+        if getattr(technical, "dca_usdt", 0):
+            rationale_extra = (
+                f"{rationale_extra} | sensor_usdt={getattr(technical, 'dca_usdt', 0)}"
+            ).strip(" |")
 
-        if normalized == HOLD:
-            return sensor.action, out_sources, new_conf, rationale_extra, ""
+        if normalized == HOLD or is_buy(normalized):
+            return BUY, out_sources, new_conf, rationale_extra, ""
         if is_buy(normalized) and sensor.action == BUY_STRONG:
-            return BUY_STRONG, out_sources, new_conf, rationale_extra, ""
+            return BUY, out_sources, new_conf, rationale_extra, ""
         return normalized, out_sources, new_conf, rationale_extra, ""
 
     def _build_social_context_for_regime(self, symbol: str, x_signals, cmc_signals, lc_signals) -> dict:
