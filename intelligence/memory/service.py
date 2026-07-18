@@ -108,6 +108,7 @@ class _Health(BaseHTTPRequestHandler):
             "memory_enabled": memory_enabled(),
             "weaviate": weaviate_enabled(),
             "weaviate_ready": bool(_STATE.get("weaviate_ready")),
+            "weaviate_upsert": _STATE.get("weaviate_upsert") or {},
             "cycles": _STATE["cycles"],
             "last_error": _STATE["last_error"],
             "last_rebuild": _STATE["last_rebuild"],
@@ -242,10 +243,11 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                         wv_fail += 1
                 out["weaviate_upsert_ok"] = wv_ok
                 out["weaviate_upsert_fail"] = wv_fail
+                _STATE["weaviate_upsert"] = {"ok": wv_ok, "fail": wv_fail}
                 if wv_fail and not wv_ok:
                     log(f"weaviate upsert all failed ok=0 fail={wv_fail}", "WARNING")
-                elif wv_fail:
-                    log(f"weaviate upsert ok={wv_ok} fail={wv_fail}", "DEBUG")
+                else:
+                    log(f"weaviate upsert ok={wv_ok} fail={wv_fail}", "INFO")
         except Exception as e:
             log(f"weaviate cycle: {e}", "DEBUG")
             out["weaviate_ready"] = False
