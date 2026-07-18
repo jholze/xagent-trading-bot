@@ -714,21 +714,33 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
         mem_hits = _memory_store_hits(symbol)
         seeded = merge_hits(seeded, mem_hits, top_k=8, prefer_symbol=symbol)
 
-        # 2) Vector/store retrieve (symbol filter when known)
+        # 2) Vector/store retrieve — symbol-scoped first; unfiltered only as weak fill
         filters = {"symbol": symbol} if symbol else None
-        store_hits = retriever.retrieve(question, top_k=5, filters=filters)
-        if symbol and len(store_hits) < 3:
-            more = retriever.retrieve(question, top_k=5, filters=None)
-            store_hits = merge_hits(store_hits, more, top_k=5, prefer_symbol=symbol)
+        scoped = retriever.retrieve(question, top_k=5, filters=filters) if filters else []
+        unscoped: list = []
+        if not filters:
+            scoped = retriever.retrieve(question, top_k=5, filters=None)
+        elif len(scoped) < 3:
+            # Other symbols are NOT evidence for this pair — keep separate / low weight
+            unscoped = retriever.retrieve(question, top_k=3, filters=None)
+            unscoped = [
+                h
+                for h in unscoped
+                if not symbol
+                or (h.metadata or {}).get("symbol") == symbol
+                or symbol.split("/")[0].upper()
+                in ((h.text or "") + " " + str((h.metadata or {}).get("symbol") or "")).upper()
+            ]
 
+        store_hits = merge_hits(scoped, unscoped, top_k=5, prefer_symbol=symbol)
         hits = merge_hits(seeded, store_hits, top_k=5, prefer_symbol=symbol)
         log(
             f"Ask RAG hits total={len(hits)} mem={len(mem_hits)} "
-            f"store={len(store_hits)} symbol={symbol or '-'}",
+            f"scoped={len(scoped)} unscoped_kept={len(unscoped)} symbol={symbol or '-'}",
             "INFO",
         )
 
-        return retriever.build_rag_prompt(
+        prompt = retriever.build_rag_prompt(
             {
                 "symbol": symbol,
                 "context": ctx,
@@ -737,6 +749,24 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
             template="dca_advice_rag",
             hits=hits,
         )
+        # Be explicit when the asked pair has zero memory evidence
+        if symbol and not hits:
+            prompt += (
+                f"\n\nHINWEIS: Für {symbol} liegen aktuell keine Trades, Lessons "
+                "oder RAG-Chunks vor. Sage das klar; erfinde keine Verluste und "
+                "empfehle kein DCA aus allgemeinen Markt-Chunks anderer Coins.\n"
+            )
+        elif symbol and not any(
+            (h.metadata or {}).get("symbol") == symbol
+            or symbol.split("/")[0].upper() in (h.text or "").upper()
+            for h in hits
+        ):
+            prompt += (
+                f"\n\nHINWEIS: RETRIEVED_MEMORY enthält keine {symbol}-spezifischen "
+                "Einträge. Antworte entsprechend ehrlich.\n"
+            )
+        return prompt
+
     except Exception:
         return (
             "Du bist der Trading-Bot-Assistent. Antworte kurz auf Deutsch "
