@@ -96,7 +96,8 @@ VOLATILE_COIN = {
 }
 
 
-def _active_sensor_config():
+def _active_sensor_config(*_args, **_kwargs):
+    """Match get_bot_config(tenant_id=...) signature used by execute/risk paths."""
     import data_manager
 
     raw = copy.deepcopy(data_manager.get_config())
@@ -112,7 +113,7 @@ def _active_sensor_config():
     return BotConfig(raw=raw)
 
 
-def _shadow_sensor_config():
+def _shadow_sensor_config(*_args, **_kwargs):
     import data_manager
 
     raw = copy.deepcopy(data_manager.get_config())
@@ -539,6 +540,9 @@ class TestEntrySensorLoop:
             def fetch_indicators(self, symbol, timeframe, price):
                 return HOLD_INDICATORS
 
+            def fetch_ohlcv_and_indicators(self, symbol, timeframe, price, limit=100):
+                return None, HOLD_INDICATORS
+
             def fetch_funding_rate(self, symbol):
                 return None
 
@@ -566,11 +570,40 @@ class TestEntrySensorLoop:
             lambda symbol, entry=None: dict(VOLATILE_COIN),
         )
 
-        with patch.object(orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+        cfg = _active_sensor_config()
+        cfg.raw.setdefault("risk", {})["min_trade_usdt"] = 1
+        cfg.raw["max_usdt_per_trade"] = 2500
+        orch.trading.config = cfg
+        orch.trading.risk.config = cfg
+        orch.decision_engine.config = cfg
+
+        with patch.object(orch.trading, "refresh", return_value=orch.trading), patch.object(
+            orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
+        ), patch.object(
             orch.trading.risk.market, "fetch_funding_rate", return_value=None
         ), patch("bus.eval_queue.eval_queue_enabled", return_value=False), patch(
             "notifications.telegram_commands.position_display.send_positions_snapshot"
-        ), patch("risk.risk_manager.is_demo_mode", return_value=False):
+        ), patch("risk.risk_manager.is_demo_mode", return_value=False), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={
+                "active": False,
+                "block_buys": False,
+                "apply_size_mult": False,
+                "apply_sensor_policy": False,
+                "sensor_policy": "active",
+            },
+        ), patch(
+            "services.venue_quality.check_venue_for_buy",
+            return_value=__import__(
+                "services.venue_quality", fromlist=["VenueQualityResult"]
+            ).VenueQualityResult(ok=True, reasons=[]),
+        ), patch.object(
+            orch.trading.risk, "_spendable_usdt", return_value=50_000.0
+        ), patch.object(
+            orch.trading.risk, "_portfolio_equity", return_value=100_000.0
+        ), patch.object(
+            orch.trading.risk, "_available_usdt", return_value=50_000.0
+        ):
             entry_sensor_loop._poll_once(orch)
 
         assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])
@@ -738,6 +771,9 @@ class TestProcessEntrySensorPath:
             def fetch_indicators(self, symbol, timeframe, price):
                 return HOLD_INDICATORS
 
+            def fetch_ohlcv_and_indicators(self, symbol, timeframe, price, limit=100):
+                return None, HOLD_INDICATORS
+
             def fetch_funding_rate(self, symbol):
                 return None
 
@@ -752,6 +788,7 @@ class TestProcessEntrySensorPath:
             VOLATILE_COIN["symbol"],
             VOLATILE_COIN["timeframe"],
             rsi_4h=42.0,
+            tech_buy=False,
         )
         monkeypatch.setattr(
             entry_sensor_loop,
@@ -764,10 +801,40 @@ class TestProcessEntrySensorPath:
             lambda symbol, entry=None: dict(VOLATILE_COIN),
         )
 
-        with patch.object(orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+        cfg = _active_sensor_config()
+        cfg.raw.setdefault("risk", {})["min_trade_usdt"] = 1
+        cfg.raw["max_usdt_per_trade"] = 2500
+        orch.trading.config = cfg
+        orch.trading.risk.config = cfg
+        orch.decision_engine.config = cfg
+
+        with patch.object(orch.trading, "refresh", return_value=orch.trading), patch.object(
+            orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
+        ), patch.object(
             orch.trading.risk.market, "fetch_funding_rate", return_value=None
-        ), patch("notifications.telegram_commands.position_display.send_positions_snapshot"), \
-             patch("risk.risk_manager.is_demo_mode", return_value=False):
+        ), patch("bus.eval_queue.eval_queue_enabled", return_value=False), patch(
+            "notifications.telegram_commands.position_display.send_positions_snapshot"
+        ), patch("risk.risk_manager.is_demo_mode", return_value=False), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={
+                "active": False,
+                "block_buys": False,
+                "apply_size_mult": False,
+                "apply_sensor_policy": False,
+                "sensor_policy": "active",
+            },
+        ), patch(
+            "services.venue_quality.check_venue_for_buy",
+            return_value=__import__(
+                "services.venue_quality", fromlist=["VenueQualityResult"]
+            ).VenueQualityResult(ok=True, reasons=[]),
+        ), patch.object(
+            orch.trading.risk, "_spendable_usdt", return_value=50_000.0
+        ), patch.object(
+            orch.trading.risk, "_portfolio_equity", return_value=100_000.0
+        ), patch.object(
+            orch.trading.risk, "_available_usdt", return_value=50_000.0
+        ):
             entry_sensor_loop._poll_once(orch)
 
         assert not watch_15m_state.is_watched(VOLATILE_COIN["symbol"])
