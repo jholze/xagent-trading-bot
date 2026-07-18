@@ -320,6 +320,7 @@ class BotConfig:
             "price_cache_ttl_sec": 120,
             "ohlcv_cache_enabled": True,
             "ohlcv_cache_ttl_sec": {"15m": 60, "1h": 90, "4h": 120},
+            "ohlcv_serve_from_larger": True,
             "funding_cache_ttl_sec": 300,
             "coin_query_webhook_enabled": True,
             "signal_webhook_enabled": True,

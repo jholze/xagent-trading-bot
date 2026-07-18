@@ -114,10 +114,18 @@ class MarketService:
         df["vol_avg"] = df["volume"].rolling(window=20).mean()
         return df
 
-    def fetch_indicators(self, symbol: str, timeframe: str, current_price: float, limit: int = 100) -> dict:
-        df = self._fetch_ohlcv(symbol, timeframe, limit)
+    def indicators_from_df(
+        self,
+        df: pd.DataFrame | None,
+        timeframe: str,
+        current_price: float,
+        *,
+        symbol: str = "",
+    ) -> dict:
+        """Compute TA indicators from an existing OHLCV frame (no network)."""
         if df is None or df.empty:
-            log(f"All exchanges failed for {symbol}. Using fallback data.", "ERROR")
+            if symbol:
+                log(f"All exchanges failed for {symbol}. Using fallback data.", "ERROR")
             return {
                 "rsi": 45.0,
                 "lower_bb": current_price * 0.97,
@@ -127,6 +135,12 @@ class MarketService:
                 "atr": current_price * 0.03,
                 "atr_pct": 3.0,
             }
+
+        if "rsi" not in df.columns:
+            df = df.copy()
+            df["rsi"] = talib.RSI(df["close"], timeperiod=14)
+            df["upper"], df["middle"], df["lower"] = talib.BBANDS(df["close"], timeperiod=20)
+            df["vol_avg"] = df["volume"].rolling(window=20).mean()
 
         recent_vol_avg = df["volume"].tail(4).mean()
         long_vol_avg = df["vol_avg"].iloc[-1]
@@ -152,6 +166,21 @@ class MarketService:
             "range_24h_pct": range_24h_pct,
             "change_24h_pct": change_24h_pct,
         }
+
+    def fetch_indicators(self, symbol: str, timeframe: str, current_price: float, limit: int = 100) -> dict:
+        df = self._fetch_ohlcv(symbol, timeframe, limit)
+        return self.indicators_from_df(df, timeframe, current_price, symbol=symbol)
+
+    def fetch_ohlcv_and_indicators(
+        self,
+        symbol: str,
+        timeframe: str,
+        current_price: float,
+        limit: int = 100,
+    ) -> tuple[pd.DataFrame | None, dict]:
+        """One network fetch: return (df, indicators) for reuse (PR-P2c / regime)."""
+        df = self._fetch_ohlcv(symbol, timeframe, limit)
+        return df, self.indicators_from_df(df, timeframe, current_price, symbol=symbol)
 
     @staticmethod
     def _compute_24h_metrics(df: pd.DataFrame, timeframe: str) -> tuple[float | None, float | None]:

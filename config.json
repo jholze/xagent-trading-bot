@@ -261,6 +261,7 @@
       "1h": 90,
       "4h": 120
     },
+    "ohlcv_serve_from_larger": true,
     "funding_cache_ttl_sec": 300,
     "coin_query_webhook_enabled": true,
     "signal_webhook_enabled": true,

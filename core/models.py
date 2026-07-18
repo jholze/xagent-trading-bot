@@ -23,6 +23,8 @@ class MarketContext:
     sim_state: dict | None = None  # isolated in-memory state for Hermes backtests
     regime: Optional["RegimeResult"] = None
     allocation: Optional["AllocationDecision"] = None
+    # PR-P2c: OHLCV frame reused by regime (avoid second fetch with different limit)
+    ohlcv_df: Any = None
 
 
 @dataclass

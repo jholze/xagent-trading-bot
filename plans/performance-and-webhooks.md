@@ -1,10 +1,11 @@
 # Plan: Performance, Caching & Webhook-Architektur
 
-> **Status:** Entwurf — Teile implementiert (PR-P1), Rest geplant  
+> **Status:** PR-P1 + PR-P2 + PR-P4 done · **nächster Hebel: PR-P2c** (Audit 2026-07-18)  
 > **Kontext:** Bot fühlt sich langsam an; Preis-/OHLCV-Fetches dominieren; externe Alerts fehlen  
-> **Branch:** `feature/entry-guard-15m` (P1 live) → `feature/perf-webhooks` (P2–P5)  
-> **Erstellt:** 2026-07-08  
-> **Verwandt:** [`plans/entry-queue-fsm.md`](entry-queue-fsm.md) · [`ARCHITECTURE_PLAN.md`](../ARCHITECTURE_PLAN.md) § Monolith-Härtung
+> **Branch:** `staging` (live) · Historie: `feature/entry-guard-15m` / perf-webhooks  
+> **Erstellt:** 2026-07-08 · **Audit-Update:** 2026-07-18  
+> **Verwandt:** [`plans/entry-queue-fsm.md`](entry-queue-fsm.md) · [`ARCHITECTURE_PLAN.md`](../ARCHITECTURE_PLAN.md) § Monolith-Härtung  
+> **Nicht in diesem Plan:** Epic #65 Decision Agents · Social P1 (#7/#8)
 
 ---
 
@@ -317,6 +318,165 @@ Parallel erlaubt nur für **read-only I/O**:
 
 ---
 
+## 5.5 Audit 2026-07-18: Stack-Impacts & PR-P2c (nächster einzelner Hebel)
+
+### 5.5.1 Was die „Gate × 48 sequential“-These falsch annimmt
+
+| Annahme | Realität im Repo (staging) |
+|---------|----------------------------|
+| 48× Gate-Ticker serial | ❌ `get_prices_batch` → `_fetch_gate_bulk` (1 HTTP) + 30s RAM + optional Redis |
+| Heartbeat alle 30s | ❌ `eval_position_heartbeat_sec: **300**`, `eval_meta_interval_sec: **300**` |
+| eval_worker blockiert POST | ❌ eigener Daemon-Thread; HTTP-Webhook ≠ Coin-Eval |
+| Kein OHLCV-Cache | ❌ **PR-P2 done**: `bus/ohlcv_cache.py`, `ohlcv_cache_enabled: true`, TTL 15m/1h/4h |
+| Regime uncached teuer | ⚠️ Detector selbst ist CPU-leicht; **teuer ist der 2. OHLCV-Fetch** |
+
+Gate-Parallelisierung als „die eine Sache“ liefert **kaum** Gewinn.  
+**Die eine Sache** = OHLCV-Limit-Split + Doppel-Fetch im Decision-Path beheben (**PR-P2c**).
+
+### 5.5.2 Root cause (nach PR-P2)
+
+Cache-Key ist `(symbol, timeframe, **limit**)`:
+
+| Aufrufer | limit | Cache-Key |
+|----------|-------|-----------|
+| `fetch_indicators` (TA / RSI / BB) | **100** (default) | `…:4h:100` |
+| `RegimeDetector` via `evaluate` | **300** | `…:4h:300` |
+| Entry/Exit 15m Sensor | ~50 | `…:15m:50` |
+| `btc_underperformance` / funding paths | periods+5 | eigene Keys |
+
+→ Selbst bei warmem Cache: **2 Netzwerk-Hits pro Coin+TF** (100er + 300er), plus ggf. 4h-Peek vor TF-Refinement.
+
+```text
+evaluate(coin)
+  └─ build_market_context
+       ├─ fetch_indicators(4h, limit=100)     # Miss → Gate OHLCV
+       └─ fetch_indicators(tf, limit=100)     # ggf. 2. Miss
+  └─ if regime_detector.enabled:
+       └─ fetch_ohlcv(tf, limit=300)          # IMMER anderer Key → 3. Miss
+```
+
+`RegimeDetector.detect` braucht nur **≥30 Bars** für Tech-Score; 300 ist „nice to have“, kein harter API-Vertrag.
+
+### 5.5.3 Stack-Landkarte: wer OHLCV/Regime berührt
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ xagent-test (Railway, Flask + Threads)                          │
+│                                                                 │
+│  Meta-Cycle (aria_bot)                                          │
+│    get_prices_batch ──► price_cache (OK)                        │
+│    seed_meta_producers ──► Redis eval_queue                     │
+│    portfolio DCA ──► fetch_indicators (limit 100)               │
+│                                                                 │
+│  eval_worker (serial jobs)                                      │
+│    process_eval_job ──► process_coin / entry_15m                │
+│         │                                                       │
+│         ▼                                                       │
+│  DecisionEngine.evaluate                                        │
+│    MarketService._fetch_ohlcv ◄── bus.ohlcv_cache (RAM+Redis)   │
+│    RegimeDetector (enabled=true) + StrategyAllocator            │
+│    RiskManager (execute) ──► frischer Order-Preis, nicht OHLCV  │
+│                                                                 │
+│  entry_sensor_loop (15m) ──► fetch_ohlcv 15m                    │
+│  risk_manager sizing ──► fetch_indicators (ATR)                 │
+│  grid / structure / exit sensors ──► diverse limits             │
+└─────────────────────────────────────────────────────────────────┘
+         │ snapshots (read-only)
+         ▼
+┌──────────────┐  ┌─────────────┐  ┌────────────┐  ┌──────────┐
+│ Market Oracle│  │ Santiment   │  │ Hermes     │  │ Weaviate │
+│ (kein Coin-  │  │ (kein Bot-  │  │ eigenes    │  │ Memory   │
+│  OHLCV-Path) │  │  OHLCV)     │  │ backtester │  │ (kein    │
+└──────────────┘  └─────────────┘  │ OHLCV)     │  │ OHLCV)   │
+                                   └────────────┘  └──────────┘
+```
+
+| Komponente | Impact von PR-P2c | Risiko |
+|------------|-------------------|--------|
+| **DecisionEngine / process_coin** | Primär: 1 OHLCV statt 2–3 | Niedrig wenn limit-unified / slice-from-larger |
+| **eval_worker** | Schnellere Jobs, weniger Queue-Stau | Niedrig |
+| **Meta-Cycle** | Kürzer wenn Queue off oder DCA/indicators | Niedrig |
+| **entry_sensor 15m** | Profitiert nur wenn 15m-Keys collapsen; **nicht** primäres Ziel | Mid: webhook-priority soll frisch bleiben → TTL 15m ≤ 60s belassen |
+| **RiskManager / Orders** | Nutzt Indicators nur für ATR-Sizing; Order-Preis = live | **Keine** Stale-Preise auf Fills |
+| **Grid / market structure** | Selber MarketService-Cache | Regime-Hysterese bleibt pro Symbol in Detector-State |
+| **Multi-Tenant (default/henry)** | OHLCV ist **marktdaten-global** (kein Tenant-Key) — korrekt shared | Kein Isolation-Leak; Regime-Hysterese in `RegimeDetector` ist pro Orchestrator-Instanz (ein Bot-Prozess = OK) |
+| **Mongo ledger** | Unberührt | — |
+| **Memory / Weaviate / Hermes** | Unberührt (eigene Fetch-Pfade) | Nicht anfassen |
+| **Oracle / Santiment / Macro** | Global bias snapshots, kein Coin-OHLCV | Unberührt |
+| **price_fetcher / Gate bulk** | Out of scope für P2c | Optional später Timeout 2s |
+| **Telegram POST /** | Nur indirekt (weniger Worker-CPU) | 500–797ms eher Webhook-Handler, nicht 48 Coins |
+
+### 5.5.4 Sekundäre Latenzfallen (nicht „die eine Sache“, aber im Stack sichtbar)
+
+1. **Exchange-Fallback-Cascade** (`MarketService.EXCHANGES = gate, binance, kucoin, bybit`):  
+   Railway oft geo-blocked für Binance/Bybit → Timeout-Kette **nach** Gate-Fail.  
+   → Optional **PR-P2d**: primary exchange only (`config.exchange` / Gate first, short timeout, no cascade on Railway).
+
+2. **`process_eval_job`**: `get_prices_batch([single])` → bei Miss Full-Ticker-Bulk (großes JSON).  
+   → Optional: single-pair Gate endpoint wenn batch size 1.
+
+3. **`process_coin`**: `load_trade_history` pro Coin für Logzeile → Mongo N-Reads.  
+   → Optional: einmal pro Tenant-Cycle cachen (nur Display).
+
+4. **Doppel-Import / Doppel-RegimeDetector-Konstruktor** in `decision_engine` (Code-Hygiene, kein Perf-Hebel).
+
+### 5.5.5 PR-P2c — Design (eine Sache, präzise)
+
+**Ziel:** Pro `(symbol, timeframe)` höchstens **ein** Network-OHLCV pro TTL-Fenster für Decision+Regime.
+
+**Bevorzugte Implementierung (minimal, logic-preserving):**
+
+1. **Limit-Unification im Hot Path**  
+   - `build_market_context` / `fetch_indicators` für Decision: `limit=max(100, regime_limit)` wenn Regime an, sonst 100.  
+   - Regime: **kein** zweiter `fetch_ohlcv` — DataFrame aus Context wiederverwenden (in `MarketContext` oder Thread-local cycle bag).
+
+2. **Cache-Serve-from-larger (optional hardening in `OhlcvCache.get`)**  
+   - Request `limit=L`: wenn RAM/Redis Entry mit gleichem `(symbol, tf)` und `stored_limit >= L` und fresh → `bars[-L:]` return.  
+   - Verhindert Misses durch unterschiedliche Limits (15m sensor 50 vs 100, funding ratios, …).
+
+3. **TTL:** bestehende Map behalten (`15m:60`, `1h:90`, `4h:120`). **Nicht** global auf 30s senken (mehr Misses). **Nicht** Regime-Ergebnis separat 60s cachen (Hysterese + Allocator hängen an frischem Social-Context pro Eval — OHLCV cachen reicht).
+
+4. **Kill-switch:** `architecture.ohlcv_cache_enabled` bleibt Master; optional `architecture.ohlcv_serve_from_larger: true`.
+
+**Explizit out of scope P2c:**
+- Trading-Algorithmus / Thresholds / Allocator-Gewichte  
+- Parallel `process_coin`  
+- Ledger / Multi-Tenant-Schreiben  
+- Hermes Backtest OHLCV  
+- Gate-Preis-Rewrite  
+- Prefetch batch (bleibt PR-P3)
+
+### 5.5.6 Erwarteter Effekt PR-P2c
+
+| Situation | Vorher (typisch) | Nachher (Schätzung) |
+|-----------|------------------|---------------------|
+| 1× `evaluate` cold, Regime on | 2–3 OHLCV HTTP | **1** OHLCV HTTP |
+| 2. Job gleicher Coin+TF innerhalb TTL | 1–2 Miss (limit-split) | **0** (serve-from-larger oder unified key) |
+| Warm Hit-Rate Log | oft &lt;60% trotz Cache | **>70%** erreichbar |
+| Memory | ~2 Keys × bars | 1 Key mit 300 Bars (~klein) |
+
+### 5.5.7 Test- & Verify-Plan P2c
+
+- Unit: `OhlcvCache` serve-from-larger (get 100 hits after set 300).  
+- Unit: `DecisionEngine.evaluate` mit mock MarketService → **ein** `_fetch_ohlcv` Call wenn Regime on.  
+- Unit: Multi-limit consumers (entry 15m limit≠100) regress-safe.  
+- Staging: `ohlcv_cache: hits/misses` in Cycle-Log / `/health/detail`; Gate G-Perf-2 erneut messen.  
+- Regression: bestehende `test_ohlcv_cache`, `test_market_service_*`, Decision/Risk unit suite.
+
+### 5.5.8 Reihenfolge nach P2c (nur wenn nötig)
+
+```text
+PR-P2c  limit-unify + reuse DF (+ serve-from-larger)
+   │
+   ├─► messen Hit-Rate + Cycle/eval_worker latency
+   │
+   ├─► PR-P2d  exchange cascade short-circuit (Railway)
+   ├─► PR-P2e  single-symbol price path (eval job)
+   └─► PR-P3   prefetch batch (nur wenn Hit-Rate ok, Zyklus noch > Ziel)
+```
+
+---
+
 ## 6. Performance: Zyklus-Prefetch (PR-P3, optional)
 
 Am Zyklusstart **einmal** für alle Watchlist-Symbole:
@@ -460,6 +620,9 @@ flowchart TD
 | **PR-P1** | `bus/price_cache.py`, `/api/coins/prices`, `ensure_redis.sh`, `price_fetcher` Redis layer | ✅ done | `test_price_cache_redis`, `test_coin_prices_webhook` |
 | **PR-P2** | `bus/ohlcv_cache.py`, `MarketService` singleton exchange + cache, BTC-once-per-cycle, funding cache | ✅ done | `test_ohlcv_cache`, `test_market_service_*` |
 | **PR-P2b** | `price_fetcher` illiquid timeout → entry fallback | 📋 | `test_price_fetcher` |
+| **PR-P2c** | **Limit-unify Decision+Regime; reuse OHLCV DF; optional serve-from-larger** (§5.5) | 📋 **next** | `test_ohlcv_serve_larger`, DecisionEngine single-fetch |
+| **PR-P2d** | Exchange-Fallback short-circuit (Gate-only / fail-fast on Railway) | 📋 after measure | market_service timeout tests |
+| **PR-P2e** | Single-symbol price path (kein Full-Ticker-Bulk im eval_job) | 📋 optional | price_fetcher unit |
 | **PR-P3** | `prefetch_ohlcv_batch` am Zyklusstart | 📋 optional | integration timing |
 | **PR-P4** | `webhooks/` module, `/api/signals/webhook`, adapter generic+tradingview, `signal_webhooks.jsonl` | ✅ done | `test_signal_webhook` |
 | **PR-P5** | Docs + `health/detail` OHLCV stats + Grafana-style log grep helper | 📋 | — |
@@ -475,11 +638,12 @@ flowchart TD
 - [x] `/api/coins/prices` 2. Aufruf < 500 ms
 - [x] `sell_policy_shadow` = 0 in active mode
 
-### Gate G-Perf-2 (nach PR-P2)
+### Gate G-Perf-2 (nach PR-P2 / **P2c**)
 
-- [ ] Zyklus 66 Coins **< 15 min** (3 aufeinanderfolgende Logs)
-- [ ] OHLCV cache hit rate > 60% im Log-Sample
-- [ ] Keine Regression: 698+ Unit-Tests grün
+- [ ] Zyklus 66 Coins **< 15 min** (3 aufeinanderfolgende Logs) — oder mit Eval-Queue: meta-cycle + queue depth stabil
+- [ ] OHLCV cache hit rate **> 70%** im Log-Sample (nach P2c; vorher oft limit-split)
+- [ ] Pro `evaluate` mit Regime: **≤1** Network-OHLCV pro Symbol+TF innerhalb TTL (Unit-Beweis)
+- [ ] Keine Regression: relevante Unit-Tests grün (`ohlcv`, `market_service`, decision/risk)
 
 ### Gate G-Perf-3 (nach PR-P4)
 

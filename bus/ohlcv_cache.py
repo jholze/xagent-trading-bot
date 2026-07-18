@@ -71,35 +71,101 @@ class OhlcvCache:
     def _is_fresh(self, entry: CachedOhlcvBars, timeframe: str) -> bool:
         return entry.age_sec <= ttl_for_timeframe(timeframe, self.config_raw)
 
+    def _serve_from_larger_enabled(self) -> bool:
+        arch = (self.config_raw or {}).get("architecture") or {}
+        return bool(arch.get("ohlcv_serve_from_larger", True))
+
+    @staticmethod
+    def _slice_entry(entry: CachedOhlcvBars, limit: int) -> CachedOhlcvBars:
+        """Return a view with at most `limit` trailing bars (same series, smaller request)."""
+        limit = int(limit)
+        bars = entry.bars or []
+        if len(bars) > limit:
+            bars = bars[-limit:]
+        return CachedOhlcvBars(
+            symbol=entry.symbol,
+            timeframe=entry.timeframe,
+            limit=limit,
+            bars=bars,
+            exchange=entry.exchange,
+            updated_at=entry.updated_at,
+        )
+
+    def _load_redis_entry(
+        self, symbol: str, timeframe: str, limit: int
+    ) -> CachedOhlcvBars | None:
+        client = self._client()
+        if not client:
+            return None
+        try:
+            raw = client.get(_ohlcv_key(self.key_prefix, symbol, timeframe, limit))
+            if not raw:
+                return None
+            data = json.loads(raw)
+            entry = CachedOhlcvBars(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=int(data.get("limit") or limit),
+                bars=data.get("bars") or [],
+                exchange=str(data.get("exchange") or "redis"),
+                updated_at=float(data.get("updated_at") or 0),
+            )
+            if entry.bars and self._is_fresh(entry, timeframe):
+                return entry
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return None
+
     def get(self, symbol: str, timeframe: str, limit: int) -> CachedOhlcvBars | None:
+        limit = int(limit)
         key = self._cache_key(symbol, timeframe, limit)
+
         with self._lock:
             entry = self._ram.get(key)
             if entry and self._is_fresh(entry, timeframe):
                 self._hits += 1
                 return entry
 
-        client = self._client()
-        if client:
-            try:
-                raw = client.get(_ohlcv_key(self.key_prefix, symbol, timeframe, limit))
-                if raw:
-                    data = json.loads(raw)
-                    entry = CachedOhlcvBars(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        limit=limit,
-                        bars=data.get("bars") or [],
-                        exchange=str(data.get("exchange") or "redis"),
-                        updated_at=float(data.get("updated_at") or 0),
-                    )
-                    if entry.bars and self._is_fresh(entry, timeframe):
-                        with self._lock:
-                            self._ram[key] = entry
-                            self._hits += 1
-                        return entry
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
+        redis_exact = self._load_redis_entry(symbol, timeframe, limit)
+        if redis_exact is not None:
+            with self._lock:
+                self._ram[key] = redis_exact
+                self._hits += 1
+            return redis_exact
+
+        if self._serve_from_larger_enabled():
+            # RAM: any fresh entry for same symbol+tf with enough bars
+            with self._lock:
+                candidates = [
+                    e
+                    for (s, tf, _L), e in self._ram.items()
+                    if s == symbol
+                    and tf == timeframe
+                    and e
+                    and int(e.limit) >= limit
+                    and len(e.bars or []) >= limit
+                    and self._is_fresh(e, timeframe)
+                ]
+                if candidates:
+                    # Prefer smallest sufficient store (less over-fetch noise)
+                    best = min(candidates, key=lambda e: int(e.limit))
+                    sliced = self._slice_entry(best, limit)
+                    self._ram[key] = sliced
+                    self._hits += 1
+                    return sliced
+
+            # Redis: try common larger limits used by the bot (regime=300, indicators=100, …)
+            for larger in (300, 250, 200, 150, 120, 100, 80, 60, 50):
+                if larger < limit:
+                    continue
+                found = self._load_redis_entry(symbol, timeframe, larger)
+                if found is None or len(found.bars or []) < limit:
+                    continue
+                sliced = self._slice_entry(found, limit)
+                with self._lock:
+                    self._ram[key] = sliced
+                    self._hits += 1
+                return sliced
 
         with self._lock:
             self._misses += 1

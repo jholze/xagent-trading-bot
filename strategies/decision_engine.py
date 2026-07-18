@@ -331,14 +331,25 @@ class DecisionEngine:
             pass
         return ctx
 
+    def _ohlcv_limit_for_decision(self) -> int:
+        """PR-P2c: when regime is on, fetch enough bars once for indicators + detector."""
+        if (self.config.raw.get("regime_detector") or {}).get("enabled", False):
+            return 300
+        return 100
+
     def build_market_context(self, coin: dict, current_price: float) -> MarketContext:
         symbol = coin.get("symbol", "")
         watchlist_tf = coin.get("timeframe", "4h")
         tf = resolve_effective_timeframe(coin)
         from intelligence.strategy_backtest import classify_coin
 
+        ohlcv_limit = self._ohlcv_limit_for_decision()
+        ohlcv_df = None
+
         if tf == watchlist_tf and classify_coin(symbol, coin.get("strategy_params")) != "large_cap":
-            peek = self.market.fetch_indicators(symbol, "4h", current_price)
+            peek_df, peek = self.market.fetch_ohlcv_and_indicators(
+                symbol, "4h", current_price, limit=ohlcv_limit,
+            )
             atr_peek = float(peek.get("atr_pct", 3.0))
             tf_refined = resolve_effective_timeframe(
                 coin,
@@ -348,13 +359,18 @@ class DecisionEngine:
             )
             if tf_refined != tf:
                 tf = tf_refined
-                indicators = self.market.fetch_indicators(symbol, tf, current_price)
+                ohlcv_df, indicators = self.market.fetch_ohlcv_and_indicators(
+                    symbol, tf, current_price, limit=ohlcv_limit,
+                )
                 atr_pct = float(indicators.get("atr_pct", 3.0))
             else:
                 indicators = peek
                 atr_pct = atr_peek
+                ohlcv_df = peek_df
         else:
-            indicators = self.market.fetch_indicators(symbol, tf, current_price)
+            ohlcv_df, indicators = self.market.fetch_ohlcv_and_indicators(
+                symbol, tf, current_price, limit=ohlcv_limit,
+            )
             atr_pct = float(indicators.get("atr_pct", 3.0))
 
         range_24h_pct = indicators.get("range_24h_pct")
@@ -412,6 +428,7 @@ class DecisionEngine:
             average_entry=pos.get("average_entry", 0),
             open_positions=count_open_positions(),
             strategy_params=params,
+            ohlcv_df=ohlcv_df,
         )
 
     def _signals_for_coin(self, symbol: str, signals: list) -> list:
@@ -957,7 +974,12 @@ class DecisionEngine:
         allocation = None
         try:
             if (self.config.raw.get("regime_detector") or {}).get("enabled", False):
-                ohlcv_df = self.market.fetch_ohlcv(coin["symbol"], market.timeframe, limit=300)
+                # PR-P2c: reuse frame from build_market_context (same limit=300 when regime on)
+                ohlcv_df = getattr(market, "ohlcv_df", None)
+                if ohlcv_df is None or (hasattr(ohlcv_df, "empty") and ohlcv_df.empty):
+                    ohlcv_df = self.market.fetch_ohlcv(
+                        coin["symbol"], market.timeframe, limit=300,
+                    )
                 if ohlcv_df is None:
                     ohlcv_df = pd.DataFrame()
                 detector = self._tenant_regime_detector

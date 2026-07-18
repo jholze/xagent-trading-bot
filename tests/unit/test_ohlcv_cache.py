@@ -39,10 +39,28 @@ class TestOhlcvCache(unittest.TestCase):
         self.assertEqual(stats["hits"], 2)
         self.assertEqual(stats["misses"], 0)
 
-    def test_cache_miss_different_limit(self):
-        cache = OhlcvCache(config_raw={"architecture": {}})
-        cache.set("ETH/USDT", "1h", 50, _bars(), exchange="gate")
+    def test_cache_miss_when_stored_limit_too_small(self):
+        cache = OhlcvCache(config_raw={"architecture": {"ohlcv_serve_from_larger": True}})
+        cache.set("ETH/USDT", "1h", 50, _bars(50), exchange="gate")
         self.assertIsNone(cache.get("ETH/USDT", "1h", 100))
+
+    def test_serve_from_larger_hits_smaller_request(self):
+        cache = OhlcvCache(config_raw={"architecture": {"ohlcv_serve_from_larger": True}})
+        bars = _bars(120)
+        cache.set("ETH/USDT", "4h", 300, bars, exchange="gate")
+        hit = cache.get("ETH/USDT", "4h", 100)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.limit, 100)
+        self.assertEqual(len(hit.bars), 100)
+        self.assertEqual(hit.bars[-1][4], bars[-1][4])  # same last close
+        self.assertEqual(cache.stats()["hits"], 1)
+        self.assertEqual(cache.stats()["misses"], 0)
+
+    def test_serve_from_larger_disabled(self):
+        cache = OhlcvCache(config_raw={"architecture": {"ohlcv_serve_from_larger": False}})
+        cache.set("SOL/USDT", "4h", 300, _bars(120), exchange="gate")
+        self.assertIsNone(cache.get("SOL/USDT", "4h", 100))
+
 
 
 class TestMarketServiceOhlcvCache(unittest.TestCase):
