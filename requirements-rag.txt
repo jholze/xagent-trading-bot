@@ -1,0 +1,3 @@
+# Optional heavy deps for xagent-hermes only (epic #72).
+# Bot image should stay lean — hash embeddings work without this file.
+sentence-transformers>=3.0.0

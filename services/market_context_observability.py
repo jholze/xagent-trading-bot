@@ -180,6 +180,14 @@ def maybe_notify_state_change(bias: dict[str, Any] | None = None) -> bool:
 
     _append_event({"event": "fusion_state_change", **snap, "rationale": (bias.get("rationale") or "")[:200]})
 
+    # Epic #72 C8: optional RAG index of fusion snapshots (default off)
+    try:
+        from intelligence.memory.rag_index import index_fusion_snapshot
+
+        index_fusion_snapshot(bias)
+    except Exception:
+        pass
+
     prev_s = "—"
     if prev:
         prev_s = (

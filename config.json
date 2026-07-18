@@ -466,6 +466,18 @@
   "memory": {
     "enabled": true,
     "profile_by_source": true,
+    "rag": {
+      "enabled": true,
+      "embedding_backend": "hash",
+      "top_k": 5,
+      "mongo_scan_limit": 500,
+      "index_on_cycle": true,
+      "use_bus": false,
+      "use_weaviate_rag": true,
+      "index_market_context": false,
+      "enrich_decision_audit": false,
+      "max_prompt_chars": 6000
+    },
     "gross_loss": {
       "enabled": true,
       "min_loss_pct": 25,

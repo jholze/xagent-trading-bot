@@ -18,9 +18,9 @@ def agent_with_mocks(monkeypatch, hermes_memory_tmp, sample_live_trade_history):
     raw["hermes"]["symbols_mode"] = "static"
     raw["hermes"]["symbols"] = ["ARIA/USDT"]
     cfg = BotConfig(raw)
-    monkeypatch.setattr("core.config.get_bot_config", lambda: cfg)
-    monkeypatch.setattr("data_manager.get_config", lambda: raw)
-    monkeypatch.setattr("data_manager.reload_config", lambda: raw)
+    monkeypatch.setattr("core.config.get_bot_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *a, **k: raw)
+    monkeypatch.setattr("data_manager.reload_config", lambda *a, **k: raw)
 
     store.init_baseline_from_config(cfg, "ARIA/USDT", "4h")
 

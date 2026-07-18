@@ -25,9 +25,12 @@ CLASS_EVENT = "MemoryEvent"
 CLASS_PROFILE = "MemoryCoinProfile"
 CLASS_TRADE = "MemoryTrade"
 CLASS_LESSON = "MemoryLesson"
+# Epic #72 C5: RAG chunks use MiniLM/hash-384 BYO vectors (parallel to 64d legacy)
+CLASS_RAG = "MemoryRagChunk"
 
-# Must match embeddings._DIM — fixed BYO vector size
+# Must match embeddings._DIM — fixed BYO vector size for legacy classes
 VECTOR_DIM = 64
+VECTOR_DIM_RAG = 384
 
 
 def weaviate_url() -> str:
@@ -46,13 +49,26 @@ def _uuid_from_str(s: str) -> str:
     return str(uuid.UUID(h))
 
 
-def _normalize_vector(vector: list[float] | None, text_fallback: str = "") -> list[float]:
-    vec = list(vector) if vector else embed_text(text_fallback)
+def _normalize_vector(
+    vector: list[float] | None,
+    text_fallback: str = "",
+    *,
+    dim: int = VECTOR_DIM,
+) -> list[float]:
+    if vector:
+        vec = list(vector)
+    else:
+        if dim == VECTOR_DIM_RAG:
+            from intelligence.memory.embeddings import embed_for_rag
+
+            vec = list(embed_for_rag(text_fallback))
+        else:
+            vec = list(embed_text(text_fallback))
     # pad/truncate to fixed dim so HNSW never sees mixed dimensions
-    if len(vec) < VECTOR_DIM:
-        vec = vec + [0.0] * (VECTOR_DIM - len(vec))
-    elif len(vec) > VECTOR_DIM:
-        vec = vec[:VECTOR_DIM]
+    if len(vec) < dim:
+        vec = vec + [0.0] * (dim - len(vec))
+    elif len(vec) > dim:
+        vec = vec[:dim]
     # Weaviate rejects non-finite floats
     out = []
     for v in vec:
@@ -182,6 +198,20 @@ class WeaviateIndex:
                     {"name": "validated", "dataType": ["boolean"]},
                 ],
             },
+            {
+                "class": CLASS_RAG,
+                "vectorizer": "none",
+                "vectorIndexConfig": {"distance": "cosine"},
+                "properties": [
+                    {"name": "chunk_id", "dataType": ["text"]},
+                    {"name": "text", "dataType": ["text"]},
+                    {"name": "chunk_type", "dataType": ["text"]},
+                    {"name": "symbol", "dataType": ["text"]},
+                    {"name": "source", "dataType": ["text"]},
+                    {"name": "ledger_scope", "dataType": ["text"]},
+                    {"name": "created_at", "dataType": ["text"]},
+                ],
+            },
         ]
         for body in schemas:
             name = body["class"]
@@ -204,11 +234,14 @@ class WeaviateIndex:
         object_id: str,
         properties: dict[str, Any],
         vector: list[float],
+        *,
+        vector_dim: int = VECTOR_DIM,
+        text_fallback: str = "",
     ) -> bool:
         if not self.base:
             return False
         uid = _uuid_from_str(object_id)
-        vec = _normalize_vector(vector)
+        vec = _normalize_vector(vector, text_fallback, dim=vector_dim)
         # Prefer create-or-update without PUT (PUT returned HTTP 500 on our cluster)
         if self.object_exists(class_name, object_id):
             r = self._req(
@@ -439,3 +472,92 @@ class WeaviateIndex:
             fields=["lesson_id", "text", "confidence", "symbols"],
             k=k,
         )
+
+    def upsert_rag_chunk(
+        self,
+        chunk_id: str,
+        text: str,
+        *,
+        chunk_type: str = "",
+        symbol: str = "",
+        source: str = "",
+        ledger_scope: str = "",
+        created_at: str = "",
+        vector: list[float] | None = None,
+    ) -> bool:
+        """C5: dual-write RAG chunk at dim 384 (does not touch legacy 64d classes)."""
+        self.ensure_schema()
+        body = (text or "")[:2000]
+        vec = _normalize_vector(vector, body, dim=VECTOR_DIM_RAG)
+        return self._upsert(
+            CLASS_RAG,
+            chunk_id,
+            {
+                "chunk_id": chunk_id,
+                "text": body,
+                "chunk_type": chunk_type or "",
+                "symbol": symbol or "",
+                "source": source or "",
+                "ledger_scope": ledger_scope or "",
+                "created_at": created_at or "",
+            },
+            vec,
+            vector_dim=VECTOR_DIM_RAG,
+            text_fallback=body,
+        )
+
+    def search_rag_chunks(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        symbol: str | None = None,
+        chunk_type: str | None = None,
+        vector: list[float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """nearVector search over MemoryRagChunk (dim 384)."""
+        if not self.base:
+            return []
+        self.ensure_schema()
+        vec = _normalize_vector(vector, query or "", dim=VECTOR_DIM_RAG)
+        operands = []
+        if symbol:
+            operands.append(
+                '{path: ["symbol"], operator: Equal, valueText: "%s"}' % symbol
+            )
+        if chunk_type:
+            operands.append(
+                '{path: ["chunk_type"], operator: Equal, valueText: "%s"}' % chunk_type
+            )
+        where = ""
+        if len(operands) == 1:
+            where = f", where: {operands[0]}"
+        elif len(operands) > 1:
+            where = (
+                ", where: {operator: And, operands: [%s]}" % ", ".join(operands)
+            )
+        gql = {
+            "query": """
+            {
+              Get {
+                %s(nearVector: {vector: %s}, limit: %d%s) {
+                  chunk_id
+                  text
+                  chunk_type
+                  symbol
+                  source
+                  _additional { distance }
+                }
+              }
+            }
+            """
+            % (CLASS_RAG, json.dumps(vec), int(k), where)
+        }
+        r = self._req("POST", "/v1/graphql", gql)
+        if not isinstance(r, dict):
+            return []
+        try:
+            rows = r.get("data", {}).get("Get", {}).get(CLASS_RAG) or []
+            return [row for row in rows if isinstance(row, dict)]
+        except Exception:
+            return []

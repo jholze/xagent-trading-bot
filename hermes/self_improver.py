@@ -17,6 +17,42 @@ def _load_prompt(name: str) -> str:
     return ""
 
 
+def _rag_section_for_proposal(baseline: dict, symbol: str, timeframe: str) -> str:
+    """Retrieve memory hits for Hermes proposal; empty string if disabled/fail."""
+    try:
+        from hermes.memory.rag_retriever import RagRetriever
+        from intelligence.memory.rag_config import rag_enabled
+
+        try:
+            cfg_raw = get_bot_config().raw
+        except Exception:
+            cfg_raw = None
+        if not rag_enabled(cfg_raw):
+            return ""
+
+        retriever = RagRetriever(config=cfg_raw)
+        query = (
+            f"{symbol} {timeframe} strategy experiment params "
+            f"{json.dumps(baseline.get('params') or {}, default=str)[:400]}"
+        )
+        hits = retriever.retrieve(
+            query,
+            top_k=5,
+            filters={"symbol": symbol} if symbol else None,
+        )
+        if not hits and symbol:
+            hits = retriever.retrieve(query, top_k=5, filters=None)
+        if not hits:
+            return ""
+        lines = ["RETRIEVED_MEMORY:"]
+        for h in hits:
+            lines.append(f"- ({h.score:.3f}) {(h.text or '')[:300]}")
+        return "\n".join(lines)
+    except Exception as e:
+        log(f"Hermes RAG retrieve skipped: {e}", "DEBUG")
+        return ""
+
+
 class SelfImprover:
     """Analyze cycle results and propose next experiments via Grok or heuristics."""
 
@@ -31,8 +67,21 @@ class SelfImprover:
         recent = store.recent_experiments(5)
         skills = store.relevant_skills(symbol, timeframe, limit=8)
         prompt_template = _load_prompt("propose_experiment.txt")
+        rag_tpl = _load_prompt("propose_experiment_rag.txt")
 
-        if prompt_template:
+        rag_block = _rag_section_for_proposal(baseline, symbol, timeframe)
+
+        if rag_tpl and rag_block:
+            prompt = rag_tpl.format(
+                baseline_params=json.dumps(params, indent=2),
+                recent_experiments=json.dumps(recent, indent=2),
+                recent_skills=json.dumps(skills, indent=2),
+                tunable_params=json.dumps(self.runner.tunable_params),
+                symbol=symbol,
+                timeframe=timeframe,
+                retrieved_memory=rag_block,
+            )
+        elif prompt_template:
             prompt = prompt_template.format(
                 baseline_params=json.dumps(params, indent=2),
                 recent_experiments=json.dumps(recent, indent=2),
@@ -41,12 +90,20 @@ class SelfImprover:
                 symbol=symbol,
                 timeframe=timeframe,
             )
+            if rag_block:
+                prompt = prompt + "\n\n" + rag_block
+        else:
+            prompt = ""
+
+        if prompt:
             try:
                 data = ask_grok_json(
                     prompt,
                     required_keys=["variable", "new_value"],
                 )
                 data["source"] = "grok"
+                if rag_block:
+                    data["rag"] = True
                 return data
             except GrokError as e:
                 log(f"Grok experiment proposal unavailable, using heuristic: {e}", "WARNING")

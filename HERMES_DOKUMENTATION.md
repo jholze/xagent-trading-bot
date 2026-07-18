@@ -497,6 +497,32 @@ In beiden Fällen läuft der **gleiche strenge Backtest** — Grok beeinflusst n
 
 ---
 
+### Beispiel E — Memory RAG (Epic #72)
+
+Hermes und Telegram `/ask` können **Trading Memory** (Lessons, Trades, Events) per Retrieval in den Prompt holen:
+
+| Baustein | Pfad |
+|----------|------|
+| Retriever | `hermes/memory/rag_retriever.py` |
+| Chunks | Mongo `memory_rag_chunks` (nur `memory_*`, nie Ledger) |
+| Embeddings | Default **hash** (kein torch); optional MiniLM (`requirements-rag.txt` / `MEMORY_EMBEDDING_BACKEND=minilm`); RAG-Vektoren **384d** via `embed_for_rag` |
+| Weaviate RAG (C5) | Klasse `MemoryRagChunk` (dim 384), dual-write; Retrieve nearVector wenn `WEAVIATE_URL` + `memory.rag.use_weaviate_rag` — Fail-open auf Mongo |
+| LLM (C7) | `intelligence/llm_client.py`: `LLM_BACKEND=xai` (default) oder `openai_compat` + `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` |
+| Indexing | `xagent-hermes` Cycle nach Reflect (`memory.rag.index_on_cycle`) |
+| Kill-Switch | `memory.rag.enabled` oder `HERMES_RAG=0` |
+
+**North-star-Frage (nur Beratung, keine Order):**  
+*„DCA: letzte Trades für Coin X — nachkaufen, und wie viel?“*
+
+Auch **Strategy Discovery** (Grok aus Tweets) hängt optional `RETRIEVED_MEMORY` an (`build_discovery_prompt`).
+
+**Fusion-Snapshots (C8):** bei Fusion-State-Change optional indexieren —  
+`memory.rag.index_market_context` default **false** (nur wenn explizit an).
+
+Orchestrierung = **eigener Bus/Packet** (kein LangChain als Spine). Bus-Flag `memory.rag.use_bus` default **false**.
+
+---
+
 ## 11. Was Hermes **nicht** tut
 
 - **Kein eigenes Trading:** Hermes platziert keine Orders direkt; er optimiert nur Strategie-Parameter.

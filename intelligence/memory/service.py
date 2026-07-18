@@ -178,6 +178,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
             out["reflect"] = social_ref
     except Exception as e:
         log(f"memory social reflect: {e}", "WARNING")
+    # Epic #72: index memory entities into RAG chunks (idempotent, kill-switch)
+    try:
+        from intelligence.memory.rag_index import index_store_into_rag
+
+        out["rag_index"] = index_store_into_rag(store)
+    except Exception as e:
+        log(f"memory rag index cycle: {e}", "WARNING")
+        out["rag_index"] = {"error": str(e)[:200]}
     if weaviate_enabled():
         try:
             idx = WeaviateIndex()

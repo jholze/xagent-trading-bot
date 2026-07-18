@@ -1,0 +1,25 @@
+Analyze this crypto tweet for a reusable TRADING STRATEGY (rules/conditions), not just a single coin tip.
+If no clear strategy concept exists, return {"skip": true}.
+
+Return ONLY valid JSON:
+{
+  "name": "short strategy name",
+  "timeframe": "1h|4h|1d",
+  "symbol": "COIN or COIN/USDT or empty",
+  "conditions": "brief description",
+  "rationale": "why this could work",
+  "params": {
+    "rsi_buy_low": number,
+    "rsi_buy_high": number,
+    "volume_multiplier": number,
+    "rsi_sell_30": number,
+    "rsi_sell_20": number,
+    "stop_loss_pct": number
+  }
+}
+
+Tweet by @{account}: "{tweet_text}"
+
+{retrieved_memory}
+Use RETRIEVED_MEMORY only as soft evidence; do not invent trades.
+JSON:

@@ -101,3 +101,81 @@ def publish_signal_snapshot(snapshot: dict, *, key_prefix: str = "aria:", redis_
         client.xadd(stream, flat, maxlen=200, approximate=True)
     except Exception:
         pass
+
+
+def publish_rag_request(
+    query,
+    *,
+    key_prefix: str = "aria:",
+    redis_url: str | None = None,
+    force: bool = False,
+) -> bool:
+    """Publish RagQuery to Redis when memory.rag.use_bus is true (or force). Default off."""
+    if not force:
+        try:
+            from intelligence.memory.rag_config import rag_config
+
+            if not rag_config().get("use_bus"):
+                return False
+        except Exception:
+            return False
+    client = get_redis(redis_url, key_prefix=key_prefix)
+    if not client:
+        return False
+    from bus.schemas import RagQuery
+
+    if isinstance(query, RagQuery):
+        payload = query.to_dict()
+    elif isinstance(query, dict):
+        payload = dict(query)
+    else:
+        return False
+    stream = f"{key_prefix}rag.requests"
+    flat = {
+        k: json.dumps(v, default=str)[:8000] if not isinstance(v, (str, int, float)) else str(v)[:8000]
+        for k, v in payload.items()
+    }
+    try:
+        client.xadd(stream, flat, maxlen=500, approximate=True)
+        return True
+    except Exception:
+        return False
+
+
+def publish_rag_result(
+    result,
+    *,
+    key_prefix: str = "aria:",
+    redis_url: str | None = None,
+    force: bool = False,
+) -> bool:
+    """Publish RagResult when use_bus is true (or force). Default off."""
+    if not force:
+        try:
+            from intelligence.memory.rag_config import rag_config
+
+            if not rag_config().get("use_bus"):
+                return False
+        except Exception:
+            return False
+    client = get_redis(redis_url, key_prefix=key_prefix)
+    if not client:
+        return False
+    from bus.schemas import RagResult
+
+    if isinstance(result, RagResult):
+        payload = result.to_dict()
+    elif isinstance(result, dict):
+        payload = dict(result)
+    else:
+        return False
+    stream = f"{key_prefix}rag.results"
+    flat = {
+        k: json.dumps(v, default=str)[:8000] if not isinstance(v, (str, int, float)) else str(v)[:8000]
+        for k, v in payload.items()
+    }
+    try:
+        client.xadd(stream, flat, maxlen=500, approximate=True)
+        return True
+    except Exception:
+        return False

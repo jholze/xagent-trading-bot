@@ -100,14 +100,35 @@ class StrategyDiscovery:
             source_post_id=post_id or "",
         )
 
-    def discover_from_tweet(self, tweet_text: str, account: str, post_id: str = None) -> StrategyHypothesis | None:
-        if not self._is_strategy_tweet(tweet_text):
-            return None
+    def _guess_symbol_from_tweet(self, tweet_text: str) -> str:
+        coin_match = re.search(r"\b([A-Z]{2,10})/USDT\b", tweet_text or "")
+        if coin_match:
+            return coin_match.group(0)
+        for token in re.findall(r"\b[A-Z]{2,6}\b", tweet_text or ""):
+            if token not in ("RSI", "MACD", "EMA", "USDT", "BUY", "SELL", "JSON"):
+                return f"{token}/USDT"
+        return ""
 
-        if self.config.raw.get("use_mock_x_data", True):
-            return self._heuristic_extract(tweet_text, account, post_id)
+    def build_discovery_prompt(
+        self,
+        tweet_text: str,
+        account: str,
+        *,
+        retriever=None,
+        retrieved_section: str | None = None,
+    ) -> str:
+        """Build Grok prompt with optional RETRIEVED_MEMORY (epic #72 C4).
 
-        prompt = f"""Analyze this crypto tweet for a reusable TRADING STRATEGY (rules/conditions), not just a single coin tip.
+        Pure enough for unit tests: inject `retrieved_section` or a RagRetriever.
+        Fail-open: retrieval errors omit the memory block.
+        """
+        memory_block = (retrieved_section or "").strip()
+        if not memory_block:
+            memory_block = self._retrieve_memory_for_tweet(
+                tweet_text, account, retriever=retriever
+            )
+
+        base = f"""Analyze this crypto tweet for a reusable TRADING STRATEGY (rules/conditions), not just a single coin tip.
 If no clear strategy concept exists, return {{"skip": true}}.
 
 Return ONLY valid JSON:
@@ -128,8 +149,51 @@ Return ONLY valid JSON:
 }}
 
 Tweet by @{account}: "{tweet_text}"
-JSON:"""
+"""
+        if memory_block:
+            base += f"\n{memory_block}\nUse RETRIEVED_MEMORY only as soft evidence; do not invent trades.\n"
+        base += "JSON:"
+        return base
 
+    def _retrieve_memory_for_tweet(
+        self, tweet_text: str, account: str, *, retriever=None
+    ) -> str:
+        try:
+            from intelligence.memory.rag_config import rag_enabled
+
+            cfg_raw = getattr(self.config, "raw", None) or {}
+            if not rag_enabled(cfg_raw):
+                return ""
+            from hermes.memory.rag_retriever import RagRetriever
+
+            rag = retriever or RagRetriever(config=cfg_raw)
+            symbol = self._guess_symbol_from_tweet(tweet_text)
+            query = f"trading strategy {account} {tweet_text[:200]}"
+            hits = rag.retrieve(
+                query,
+                top_k=5,
+                filters={"symbol": symbol} if symbol else None,
+            )
+            if not hits and symbol:
+                hits = rag.retrieve(query, top_k=5, filters=None)
+            if not hits:
+                return ""
+            lines = ["RETRIEVED_MEMORY:"]
+            for h in hits:
+                lines.append(f"- ({h.score:.3f}) {(h.text or '')[:280]}")
+            return "\n".join(lines)
+        except Exception as e:
+            log(f"strategy_discovery RAG retrieve skipped: {e}", "DEBUG")
+            return ""
+
+    def discover_from_tweet(self, tweet_text: str, account: str, post_id: str = None) -> StrategyHypothesis | None:
+        if not self._is_strategy_tweet(tweet_text):
+            return None
+
+        if self.config.raw.get("use_mock_x_data", True):
+            return self._heuristic_extract(tweet_text, account, post_id)
+
+        prompt = self.build_discovery_prompt(tweet_text, account)
         response = ask_grok(prompt)
         try:
             cleaned = response.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

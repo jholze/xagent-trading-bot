@@ -571,15 +571,110 @@ def submit_answer(question_id: str, answer: str, answered_by: str = "cursor") ->
     return True, ""
 
 
+def _ephemeral_context_hits(ctx: dict, symbol: str | None) -> list:
+    """Build request-scoped RagHits from context trades — never persist to index."""
+    from hermes.memory.rag_retriever import RagHit
+
+    seeded: list = []
+    for i, tr in enumerate(list(ctx.get("recent_trades") or ctx.get("trades") or [])[:5]):
+        if not isinstance(tr, dict):
+            continue
+        sym = str(tr.get("symbol") or symbol or "")
+        text = (
+            f"Trade {sym} {tr.get('side') or tr.get('direction')} "
+            f"pnl={tr.get('pnl_usdt', tr.get('pnl'))} {tr.get('reason', '')}"
+        ).strip()
+        if not text:
+            continue
+        seeded.append(
+            RagHit(
+                text=text,
+                score=1.0,
+                metadata={"type": "trade", "symbol": sym, "source": "ask_context"},
+                chunk_id=f"ephemeral:{sym}:{i}",
+            )
+        )
+    return seeded
+
+
+def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
+    """Evidence-grounded prompt for /ask (epic #72). Fail-open to plain context.
+
+    Context trades are ephemeral hits only (no index pollution). One scoped
+    retrieve + optional unfiltered fill; merge prefers symbol evidence.
+    """
+    ctx = context if isinstance(context, dict) else {}
+    try:
+        from hermes.memory.rag_retriever import RagRetriever, merge_hits
+        from intelligence.memory.rag_config import rag_enabled
+
+        if not rag_enabled():
+            raise RuntimeError("rag disabled")
+        symbol = (
+            ctx.get("symbol")
+            or ctx.get("pair")
+            or _extract_symbol_from_question(question)
+        )
+        if retriever is None:
+            retriever = RagRetriever()
+
+        # 1) Ephemeral context evidence (not written to Mongo/Weaviate)
+        seeded = _ephemeral_context_hits(ctx, symbol)
+
+        # 2) Single store retrieve (symbol filter when known)
+        filters = {"symbol": symbol} if symbol else None
+        store_hits = retriever.retrieve(question, top_k=5, filters=filters)
+        if symbol and len(store_hits) < 3:
+            more = retriever.retrieve(question, top_k=5, filters=None)
+            store_hits = merge_hits(store_hits, more, top_k=5, prefer_symbol=symbol)
+
+        hits = merge_hits(seeded, store_hits, top_k=5, prefer_symbol=symbol)
+
+        return retriever.build_rag_prompt(
+            {
+                "symbol": symbol,
+                "context": ctx,
+            },
+            question,
+            template="dca_advice_rag",
+            hits=hits,
+        )
+    except Exception:
+        return (
+            "Du bist der Trading-Bot-Assistent. Antworte kurz auf Deutsch "
+            "(max 8 Sätze, Telegram-HTML erlaubt: <b>, <i>, <code>).\n"
+            "Keine Order-Ausführung.\n\n"
+            f"Frage: {question}\n\n"
+            f"Kontext (JSON):\n{json.dumps(ctx, ensure_ascii=False, indent=2, default=str)[:3000]}"
+        )
+
+
+def _extract_symbol_from_question(question: str) -> str | None:
+    import re
+
+    q = question or ""
+    m = re.search(r"\b([A-Z]{2,12})/USDT\b", q, re.I)
+    if m:
+        return m.group(0).upper().replace("usdt", "USDT")
+    m = re.search(r"\b([A-Z]{2,12})\b", q)
+    if m and m.group(1).upper() not in ("DCA", "USDT", "USD", "BTC", "ETH", "WIE", "WAS", "SOLL"):
+        # Prefer base/USDT form when bare ticker
+        base = m.group(1).upper()
+        if base in ("BTC", "ETH", "SOL", "ARIA", "H", "WLD", "PEPE", "DOGE"):
+            return f"{base}/USDT"
+    # DCA questions often include BTC/ETH as words
+    for base in ("BTC", "ETH", "SOL", "ARIA"):
+        if re.search(rf"\b{base}\b", q, re.I):
+            return f"{base}/USDT"
+    return None
+
+
 def _grok_fallback_answer(question: str, context: dict) -> str:
+    """Advisory answer only — never executes trades or writes ledger."""
     try:
         from grok_agent import ask_grok
 
-        prompt = (
-            "Du bist der Trading-Bot-Assistent. Antworte kurz auf Deutsch (max 8 Sätze, Telegram-HTML erlaubt: <b>, <i>, <code>).\n\n"
-            f"Frage: {question}\n\n"
-            f"Kontext (JSON):\n{json.dumps(context, ensure_ascii=False, indent=2)}"
-        )
+        prompt = _build_ask_rag_prompt(question, context or {})
         reply = ask_grok(prompt, temperature=0.3)
         if reply and not reply.startswith("API-Fehler"):
             return reply.strip()
