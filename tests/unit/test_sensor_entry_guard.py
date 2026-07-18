@@ -390,6 +390,161 @@ class TestRiskVenueAndSoftBlockScope(unittest.TestCase):
         self.assertNotEqual(dec.code, "coin_memory_soft_block")
 
 
+class TestDecisionEngineTradingModeLifecycle(unittest.TestCase):
+    """trading_mode must drive sensor policy after resolve_strategy_params lifecycle."""
+
+    def setUp(self):
+        from strategies.positions import clear_positions_memory
+        from strategies import watch_15m_state
+        from strategies.entry_sensor_15m import clear_pending_for_tests, set_pending_sensor_metrics
+
+        clear_positions_memory()
+        clear_pending_for_tests()
+        watch_15m_state.reset_cache_for_tests()
+        set_pending_sensor_metrics(
+            "XENTRY15/USDT",
+            {
+                "volume_spike_ratio": 3.0,
+                "body_atr_ratio": 0.6,
+                "price_momentum": True,
+            },
+        )
+        watch_15m_state.set_watch("XENTRY15/USDT", "4h", rsi_4h=42.0)
+
+    def test_apply_sensor_buy_grid_slice_uses_trading_mode(self):
+        """Production path: strategy_params.trading_mode=GRID → HOLD lifts to BUY with size."""
+        from core.models import MarketContext, SignalAnalysis
+        from strategies.decision_engine import DecisionEngine
+        from services.venue_quality import VenueQualityResult
+        from core.actions import HOLD, BUY
+
+        engine = DecisionEngine()
+        cfg = {
+            "enabled": True,
+            "mode": "active",
+            "vol_spike_mult": 2.0,
+            "block_buy_if_rsi_4h_above": 75,
+            "fakeout_min_body_atr_ratio": 0.3,
+            "hold_override_by_mode": {
+                "GRID": "slice_only",
+                "MOMENTUM": "block",
+            },
+            "max_usdt_absolute": 1000,
+            "size_hint_by_mode": {"GRID": {"stable": 0.22}},
+        }
+        mock_cfg = MagicMock()
+        mock_cfg.raw = {"entry_sensor_15m": cfg, "max_usdt_per_trade": 2500, "risk": {}}
+        mock_cfg.entry_sensor_15m_config = cfg
+        mock_cfg.max_usdt_per_trade = 2500
+        engine.config = mock_cfg
+
+        market = MarketContext(
+            symbol="XENTRY15/USDT",
+            timeframe="4h",
+            current_price=1.0,
+            rsi=42.0,
+            lower_bb=0.95,
+            has_position=False,
+            strategy_params={"trading_mode": MODE_GRID, "volatility_tier": "stable"},
+        )
+        technical = SignalAnalysis(
+            action=HOLD,
+            symbol="XENTRY15/USDT",
+            timeframe="4h",
+            rsi=42.0,
+            lower_bb=0.95,
+            vol_multiplier=1.0,
+            ampel_emoji="🟡",
+            ampel_text="hold",
+            normalized_action=HOLD,
+        )
+        with patch(
+            "services.venue_quality.check_venue_for_buy",
+            return_value=VenueQualityResult(ok=True, reasons=[]),
+        ), patch("strategies.decision_engine.get_bot_config", return_value=mock_cfg), patch(
+            "data.cmc_market_cap.resolve_market_cap_usd", return_value=10_000_000
+        ), patch(
+            "price_fetcher.is_gate_tradeable", return_value=True
+        ):
+            norm, sources, conf, rationale, shadow = engine._apply_entry_sensor_buy(
+                HOLD, [], 50.0, "XENTRY15/USDT", market, technical
+            )
+        self.assertEqual(norm, BUY)
+        self.assertIn("entry_sensor_15m", sources)
+        self.assertGreater(float(getattr(technical, "dca_usdt", 0) or 0), 0)
+        self.assertLessEqual(float(technical.dca_usdt), 1000)
+
+    def test_apply_sensor_buy_momentum_blocks_hold_lift(self):
+        from core.models import MarketContext, SignalAnalysis
+        from strategies.decision_engine import DecisionEngine
+        from services.venue_quality import VenueQualityResult
+        from core.actions import HOLD
+
+        engine = DecisionEngine()
+        cfg = {
+            "enabled": True,
+            "mode": "active",
+            "vol_spike_mult": 2.0,
+            "block_buy_if_rsi_4h_above": 75,
+            "fakeout_min_body_atr_ratio": 0.3,
+            "hold_override_by_mode": {"MOMENTUM": "block"},
+            "max_usdt_absolute": 1000,
+        }
+        mock_cfg = MagicMock()
+        mock_cfg.raw = {"entry_sensor_15m": cfg, "risk": {}}
+        mock_cfg.entry_sensor_15m_config = cfg
+        mock_cfg.max_usdt_per_trade = 2500
+        engine.config = mock_cfg
+        market = MarketContext(
+            symbol="XENTRY15/USDT",
+            timeframe="4h",
+            current_price=1.0,
+            rsi=42.0,
+            lower_bb=0.95,
+            has_position=False,
+            strategy_params={"trading_mode": MODE_MOMENTUM, "volatility_tier": "stable"},
+        )
+        technical = SignalAnalysis(
+            action=HOLD,
+            symbol="XENTRY15/USDT",
+            timeframe="4h",
+            rsi=42.0,
+            lower_bb=0.95,
+            vol_multiplier=1.0,
+            ampel_emoji="🟡",
+            ampel_text="hold",
+            normalized_action=HOLD,
+        )
+        with patch(
+            "services.venue_quality.check_venue_for_buy",
+            return_value=VenueQualityResult(ok=True, reasons=[]),
+        ), patch("strategies.decision_engine.get_bot_config", return_value=mock_cfg), patch(
+            "data.cmc_market_cap.resolve_market_cap_usd", return_value=10_000_000
+        ), patch(
+            "price_fetcher.is_gate_tradeable", return_value=True
+        ):
+            norm, sources, conf, rationale, shadow = engine._apply_entry_sensor_buy(
+                HOLD, [], 50.0, "XENTRY15/USDT", market, technical
+            )
+        self.assertEqual(norm, HOLD)
+        self.assertNotIn("entry_sensor_15m", sources)
+        self.assertIn("hold_override", (rationale or "").lower())
+
+    def test_trading_mode_survives_resolve_strategy_params_wipe(self):
+        """Same preserve pattern as DecisionEngine._evaluate_internal after resolve."""
+        params = {"trading_mode": MODE_GRID, "coin_class": "large_cap", "rsi_buy_low": 25}
+        preserved = {
+            k: params.get(k)
+            for k in ("trading_mode", "coin_class")
+            if params.get(k) is not None
+        }
+        # simulate resolve_strategy_params returning a fresh dict without mode
+        params = {"rsi_buy_low": 25, "rsi_buy_high": 55}
+        for k, v in preserved.items():
+            params[k] = v
+        self.assertEqual(params["trading_mode"], MODE_GRID)
+
+
 class TestBdxCounterfactualEndToEnd(unittest.TestCase):
     """Single narrative: BDX entry would be stopped by shipped gates."""
 

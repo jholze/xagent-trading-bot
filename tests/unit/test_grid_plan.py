@@ -116,7 +116,8 @@ class TestTradingModes(unittest.TestCase):
             entry_sensor_buy_usdt_frac(MODE_GRID, volatility_tier="stable"),
             entry_sensor_buy_usdt_frac(MODE_GRID, volatility_tier="volatile"),
         )
-        self.assertEqual(entry_sensor_buy_usdt_frac(MODE_MOMENTUM), 1.0)
+        # sensor-entry-guard: MOMENTUM is capped (not full-size)
+        self.assertEqual(entry_sensor_buy_usdt_frac(MODE_MOMENTUM), 0.30)
 
 
 class TestGridPlan(unittest.TestCase):

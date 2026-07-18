@@ -38,11 +38,20 @@ def is_sensor_source(source: str | None) -> bool:
 
 def hold_override_mode(trading_mode: str, cfg: dict | None = None) -> str:
     cfg = cfg or {}
+    mode_u = (trading_mode or "").strip().upper()
+    # No resolved trading_mode (regime off / not yet set): keep pre-guard behavior
+    # so HOLD→sensor BUY still works until allocator sets GRID|HYBRID|MOMENTUM.
+    if not mode_u:
+        ho0 = cfg.get("hold_override")
+        if isinstance(ho0, dict) and ho0.get("mode"):
+            return str(ho0["mode"]).lower()
+        if isinstance(ho0, str) and ho0:
+            return ho0.lower()
+        return "legacy"
     by_mode = cfg.get("hold_override_by_mode")
     if isinstance(by_mode, dict) and by_mode:
-        key = (trading_mode or "").upper() or ""
-        if key in by_mode:
-            return str(by_mode[key]).lower()
+        if mode_u in by_mode:
+            return str(by_mode[mode_u]).lower()
         if trading_mode in by_mode:
             return str(by_mode[trading_mode]).lower()
     # legacy single mode
@@ -51,9 +60,7 @@ def hold_override_mode(trading_mode: str, cfg: dict | None = None) -> str:
         return str(ho["mode"]).lower()
     if isinstance(ho, str):
         return ho.lower()
-    return _DEFAULT_HOLD_OVERRIDE_BY_MODE.get(
-        (trading_mode or "").upper(), "block"
-    )
+    return _DEFAULT_HOLD_OVERRIDE_BY_MODE.get(mode_u, "block")
 
 
 def resolve_sensor_size_hint(

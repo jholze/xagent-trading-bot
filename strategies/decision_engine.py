@@ -1129,6 +1129,23 @@ class DecisionEngine:
             except Exception:
                 pass
 
+        # resolve_strategy_params returns a fresh dict — preserve cycle mode keys
+        # so sensor hold_override / size_hint see GRID|HYBRID|MOMENTUM (sensor-entry-guard).
+        _cycle_keys = (
+            "trading_mode",
+            "coin_class",
+            "santiment_regime",
+            "global_market_bias",
+            "regime_defensive",
+            "exposure_multiplier",
+            "allocation",
+        )
+        _preserved_cycle = {
+            k: market.strategy_params.get(k)
+            for k in _cycle_keys
+            if market.strategy_params.get(k) is not None
+        }
+
         if regime_result or allocation:
             market.strategy_params = resolve_strategy_params(
                 coin,
@@ -1138,6 +1155,9 @@ class DecisionEngine:
                 regime_result=regime_result,
                 allocation=allocation,
             ) or market.strategy_params
+
+        for _k, _v in _preserved_cycle.items():
+            market.strategy_params[_k] = _v
 
         strategy = get_strategy({**coin, "strategy_params": market.strategy_params})
         technical = strategy.analyze(coin, market, x_signals=None)

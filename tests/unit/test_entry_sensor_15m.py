@@ -21,6 +21,7 @@ from strategies import watch_15m_state
 @pytest.fixture(autouse=True)
 def reset_sensor_state(tmp_path, monkeypatch):
     from strategies.positions import clear_positions_memory
+    from services.venue_quality import VenueQualityResult
 
     clear_pending_for_tests()
     clear_positions_memory()
@@ -36,6 +37,11 @@ def reset_sensor_state(tmp_path, monkeypatch):
         "price_fetcher.is_gate_tradeable",
         lambda symbol, gate_price=None: True if gate_price is None else float(gate_price or 0) > 0,
     )
+    # Synthetic symbols are not on Gate — venue must not kill classic sensor unit tests
+    monkeypatch.setattr(
+        "services.venue_quality.check_venue_for_buy",
+        lambda *a, **k: VenueQualityResult(ok=True, reasons=["test_fixture"]),
+    )
     yield
     clear_pending_for_tests()
     clear_positions_memory()
@@ -50,6 +56,15 @@ DEFAULT_CFG = {
     "fakeout_min_body_atr_ratio": 0.3,
     "cooldown_after_reject_hours": 2,
     "require_ema_breakout": False,
+    # Classic lift tests: no MOMENTUM block unless product config is under test
+    "hold_override_by_mode": {
+        "GRID": "slice_only",
+        "HYBRID": "allow_with_conditions",
+        "MOMENTUM": "legacy",
+        "DEFENSIVE": "off",
+    },
+    "ignore_aggression_boost": True,
+    "max_usdt_absolute": 1000,
 }
 
 HOLD_INDICATORS = {
@@ -86,6 +101,14 @@ def _active_sensor_config():
 
     raw = copy.deepcopy(data_manager.get_config())
     raw["entry_sensor_15m"] = {**DEFAULT_CFG, "mode": "active"}
+    # Classic sensor lift tests: no regime mode forcing MOMENTUM hold_override=block
+    raw["regime_detector"] = {**(raw.get("regime_detector") or {}), "enabled": False}
+    raw["strategy_allocator"] = {**(raw.get("strategy_allocator") or {}), "enabled": False}
+    raw["max_usdt_per_trade"] = 2500
+    risk = dict(raw.get("risk") or {})
+    risk["min_trade_usdt"] = 50
+    risk["venue_quality"] = {**(risk.get("venue_quality") or {}), "enabled": False}
+    raw["risk"] = risk
     return BotConfig(raw=raw)
 
 
@@ -94,6 +117,8 @@ def _shadow_sensor_config():
 
     raw = copy.deepcopy(data_manager.get_config())
     raw["entry_sensor_15m"] = {**DEFAULT_CFG, "mode": "shadow"}
+    raw["regime_detector"] = {**(raw.get("regime_detector") or {}), "enabled": False}
+    raw["strategy_allocator"] = {**(raw.get("strategy_allocator") or {}), "enabled": False}
     return BotConfig(raw=raw)
 
 
@@ -278,6 +303,10 @@ class TestDecisionEngineSensorIntegration:
         with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
             engine.market, "fetch_ohlcv", return_value=_sample_15m_df(30)
         ), patch.object(
+            engine.market,
+            "fetch_ohlcv_and_indicators",
+            return_value=(_sample_15m_df(30), HOLD_INDICATORS),
+        ), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ), patch.object(engine.market, "fetch_funding_rate", return_value=None):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
@@ -300,6 +329,10 @@ class TestDecisionEngineSensorIntegration:
         engine = DecisionEngine()
         hot_rsi = {**HOLD_INDICATORS, "rsi": 80.0}
         with patch.object(engine.market, "fetch_indicators", return_value=hot_rsi), patch.object(
+            engine.market,
+            "fetch_ohlcv_and_indicators",
+            return_value=(None, hot_rsi),
+        ), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
@@ -323,6 +356,10 @@ class TestDecisionEngineSensorIntegration:
         monkeypatch.setattr("strategies.decision_engine.get_bot_config", _shadow_sensor_config)
         engine = DecisionEngine()
         with patch.object(engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+            engine.market,
+            "fetch_ohlcv_and_indicators",
+            return_value=(None, HOLD_INDICATORS),
+        ), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ), patch.object(engine.market, "fetch_funding_rate", return_value=None):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
@@ -342,6 +379,10 @@ class TestDecisionEngineSensorIntegration:
         monkeypatch.setattr("strategies.decision_engine.get_bot_config", _shadow_sensor_config)
         engine = DecisionEngine()
         with patch.object(engine.market, "fetch_indicators", return_value=indicators), patch.object(
+            engine.market,
+            "fetch_ohlcv_and_indicators",
+            return_value=(None, indicators),
+        ), patch.object(
             engine.market, "fetch_15m_sensor_metrics", return_value=None
         ):
             analysis = engine.evaluate(VOLATILE_COIN, 1.0)
@@ -362,13 +403,41 @@ class TestActiveOrchestratorPath:
         )
 
         orch = SignalOrchestrator()
-        with patch.object(orch.decision_engine.market, "fetch_indicators", return_value=HOLD_INDICATORS), patch.object(
+        # Align risk sizing with sensor-entry-guard caps (demo cash can shrink size)
+        cfg = _active_sensor_config()
+        cfg.raw.setdefault("risk", {})["min_trade_usdt"] = 1
+        cfg.raw["max_usdt_per_trade"] = 2500
+        orch.trading.config = cfg
+        orch.trading.risk.config = cfg
+        orch.decision_engine.config = cfg
+        # execute_order calls refresh() which reloads disk config — freeze test cfg
+        with patch.object(orch.trading, "refresh", return_value=orch.trading), patch.object(
+            orch.decision_engine.market, "fetch_indicators", return_value=HOLD_INDICATORS
+        ), patch.object(
+            orch.decision_engine.market,
+            "fetch_ohlcv_and_indicators",
+            return_value=(None, HOLD_INDICATORS),
+        ), patch.object(
             orch.decision_engine.market, "fetch_15m_sensor_metrics", return_value=None
         ), patch.object(orch.decision_engine.market, "fetch_funding_rate", return_value=None), patch.object(
             orch.trading.risk.market, "fetch_indicators", return_value=HOLD_INDICATORS
         ), patch.object(orch.trading.risk.market, "fetch_funding_rate", return_value=None), patch(
             "notifications.telegram_commands.position_display.send_positions_snapshot"
-        ), patch("risk.risk_manager.is_demo_mode", return_value=False):
+        ), patch("risk.risk_manager.is_demo_mode", return_value=False), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"active": False, "block_buys": False, "apply_size_mult": False},
+        ), patch(
+            "services.venue_quality.check_venue_for_buy",
+            return_value=__import__(
+                "services.venue_quality", fromlist=["VenueQualityResult"]
+            ).VenueQualityResult(ok=True, reasons=[]),
+        ), patch.object(
+            orch.trading.risk, "_spendable_usdt", return_value=50_000.0
+        ), patch.object(
+            orch.trading.risk, "_portfolio_equity", return_value=100_000.0
+        ), patch.object(
+            orch.trading.risk, "_available_usdt", return_value=50_000.0
+        ):
             result = orch.process_coin(VOLATILE_COIN, 1.0, quiet=True)
 
         assert result["action"] == BUY
