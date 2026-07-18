@@ -462,13 +462,12 @@ def update_market_snapshot(
 ) -> bool:
     """Bump recent_high when price makes a new peak. Returns True if peak changed."""
     _activate(_resolve_store_key())
-    init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     store = _active_store()
     changed = False
     candidate = max(float(current_price), float(peak_hint or 0))
     with _positions_lock:
-        pos = store[key]
+        pos = _ensure_key(store, key)
         old_high = float(pos.get("recent_high") or 0)
         new_high = max(old_high, candidate)
         if new_high > old_high:
@@ -483,16 +482,66 @@ def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
     if tier not in ("stable", "volatile"):
         return
     _activate(_resolve_store_key())
-    init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     store = _active_store()
     changed = False
     with _positions_lock:
-        if not store[key].get("strategy_tier"):
-            store[key]["strategy_tier"] = tier
+        pos = _ensure_key(store, key)
+        if not pos.get("strategy_tier"):
+            pos["strategy_tier"] = tier
             changed = True
     if changed and _position_persistable(store[key]):
         flush_positions()
+
+
+
+def _empty_position() -> dict:
+    """Default empty lot — never raise on missing store keys."""
+    return {
+        "amount": Decimal("0"),
+        "peak_amount": 0.0,
+        "sold_percent": 0.0,
+        "average_entry": 0.0,
+        "realized_pnl": 0.0,
+        "last_buy_price": 0.0,
+        "last_ampel": "🟡",
+        "last_rsi": 45.0,
+        "last_action": None,
+        "last_trade_at": None,
+        "last_trade_type": None,
+        "rsi_sell_tiers_done": {},
+        "last_cmc_sell_at": None,
+        "recent_high": 0.0,
+        "strategy_tier": None,
+        "exit_ladder_step": 0,
+        "dca_rounds": 0,
+        "dca_max_rounds": 0,
+        "last_dca_at": None,
+        "dca_total_usdt": 0.0,
+        "dca_recovery_rounds": 0,
+        "dca_recovery_max_rounds": 0,
+        "last_dca_recovery_at": None,
+        "last_recovery_ref_price": 0.0,
+        "last_sell_signal": None,
+        "first_buy_at": None,
+        "entry_source": None,
+        "entry_at": None,
+        "entry_15m_vol_ratio": None,
+        "time_profit_exit_done": False,
+        "profit_armed_at": None,
+        "trail_tp_steps": 0,
+        "last_trail_tp_at": None,
+        "profit_max_lifetime_done": False,
+    }
+
+
+def _ensure_key(store: dict, key: str) -> dict:
+    """Return position dict for key; create empty if missing. Caller holds lock."""
+    pos = store.get(key)
+    if pos is None:
+        pos = _empty_position()
+        store[key] = pos
+    return pos
 
 
 def get_key(symbol, timeframe):
@@ -500,63 +549,27 @@ def get_key(symbol, timeframe):
 
 
 def init_position(symbol, timeframe):
+    """Ensure position key exists on the active tenant store (never KeyError)."""
     _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
-    store = _active_store()
     with _positions_lock:
-        if key not in store:
-            store[key] = {
-                "amount": Decimal("0"),
-                "peak_amount": 0.0,
-                "sold_percent": 0.0,
-                "average_entry": 0.0,
-                "realized_pnl": 0.0,
-                "last_buy_price": 0.0,
-                "last_ampel": "🟡",
-                "last_rsi": 45.0,
-                "last_action": None,
-                "last_trade_at": None,
-                "last_trade_type": None,
-                "rsi_sell_tiers_done": {},
-                "last_cmc_sell_at": None,
-                "recent_high": 0.0,
-                "strategy_tier": None,
-                "exit_ladder_step": 0,
-                "dca_rounds": 0,
-                "dca_max_rounds": 0,
-                "last_dca_at": None,
-                "dca_total_usdt": 0.0,
-                "dca_recovery_rounds": 0,
-                "dca_recovery_max_rounds": 0,
-                "last_dca_recovery_at": None,
-                "last_recovery_ref_price": 0.0,
-                "last_sell_signal": None,
-                "first_buy_at": None,
-                "entry_source": None,
-                "entry_at": None,
-                "entry_15m_vol_ratio": None,
-                "time_profit_exit_done": False,
-                "profit_armed_at": None,
-                "trail_tp_steps": 0,
-                "last_trail_tp_at": None,
-                "profit_max_lifetime_done": False,
-            }
+        _ensure_key(_active_store(), key)
 
 
 def get_position(symbol, timeframe):
-    init_position(symbol, timeframe)
-    store = _active_store()
+    """Return position dict. Always ensures key exists (never KeyError)."""
+    _activate(_resolve_store_key())
+    key = get_key(symbol, timeframe)
     with _positions_lock:
-        return store[get_key(symbol, timeframe)]
+        return _ensure_key(_active_store(), key)
 
 
 def set_position_field(symbol: str, timeframe: str, field: str, value) -> None:
     """Update one position field under the positions lock."""
-    init_position(symbol, timeframe)
+    _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
-    store = _active_store()
     with _positions_lock:
-        store[key][field] = value
+        _ensure_key(_active_store(), key)[field] = value
 
 
 def reset_rsi_sell_tiers_if_cooled(
@@ -573,7 +586,7 @@ def reset_rsi_sell_tiers_if_cooled(
     store = _active_store()
     changed = False
     with _positions_lock:
-        pos = store[key]
+        pos = _ensure_key(store, key)
         tiers = dict(pos.get("rsi_sell_tiers_done") or {})
         if tiers.get("30") and current_rsi < rsi_sell_30 - buffer:
             tiers["30"] = False
@@ -600,7 +613,7 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
     key = get_key(symbol, timeframe)
     store = _active_store()
     with _positions_lock:
-        pos = store[key]
+        pos = _ensure_key(store, key)
         if pos.get("time_profit_exit_done"):
             return
         pos["time_profit_exit_done"] = True
@@ -609,20 +622,21 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
 
 def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: float) -> None:
     """Cooldown + reset recent_high after trail TP; sizing stays on exit ladder."""
-    init_position(symbol, timeframe)
+    _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
     with _positions_lock:
-        pos = positions[key]
+        pos = _ensure_key(_active_store(), key)
         pos["last_trail_tp_at"] = datetime.now().isoformat()
         pos["recent_high"] = float(current_price)
     flush_positions()
 
 
 def mark_profit_max_lifetime_done(symbol: str, timeframe: str) -> None:
-    init_position(symbol, timeframe)
+    _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
+    store = _active_store()
     with _positions_lock:
-        pos = positions[key]
+        pos = _ensure_key(store, key)
         if pos.get("profit_max_lifetime_done"):
             return
         pos["profit_max_lifetime_done"] = True
@@ -684,12 +698,11 @@ def update_position(
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
-    init_position(symbol, timeframe)
     key = get_key(symbol, timeframe)
     store = _active_store()
     was_open = False
     with _positions_lock:
-        pos = store[key]
+        pos = _ensure_key(store, key)
         was_open = is_open_position(pos)
         if signal in ("BUY", "BUY_DCA") and amount_traded > 0:
             old_amount = pos["amount"]

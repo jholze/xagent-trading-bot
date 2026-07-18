@@ -141,54 +141,63 @@ def collect_dca_targets(
     targets: list[DCATarget] = []
 
     for coin in coins:
-        symbol = coin.get("symbol", "")
-        price = float(price_map.get(symbol, 0) or 0)
-        if not symbol or price <= 0:
-            continue
-        coin_cfg = resolve_coin_config(coin)
-        tf = coin_cfg.get("timeframe", "4h")
-        pos = get_position(symbol, tf)
-        if float(pos.get("amount", 0) or 0) <= 0:
-            continue
-
-        strategy_params = coin_cfg.get("strategy_params") or {}
-        cfg_root = config_raw if config_raw is not None else get_bot_config().raw
         try:
-            strategy_params = resolve_strategy_params(
-                coin_cfg,
-                has_position=True,
-                frozen_tier=pos.get("strategy_tier"),
-            )
-        except Exception:
-            pass
+            symbol = coin.get("symbol", "")
+            price = float(price_map.get(symbol, 0) or 0)
+            if not symbol or price <= 0:
+                continue
+            coin_cfg = resolve_coin_config(coin)
+            tf = coin_cfg.get("timeframe", "4h")
+            pos = get_position(symbol, tf)
+            if float(pos.get("amount", 0) or 0) <= 0:
+                continue
 
-        dca_cfg = dict(strategy_params.get("dca") or {})
-        port_cfg = portfolio_config(dca_cfg, config_raw=cfg_root)
-        if not port_cfg.get("enabled"):
-            continue
-        market = _build_market(symbol, tf, price, pos, strategy_params)
+            strategy_params = coin_cfg.get("strategy_params") or {}
+            cfg_root = config_raw if config_raw is not None else get_bot_config().raw
+            try:
+                strategy_params = resolve_strategy_params(
+                    coin_cfg,
+                    has_position=True,
+                    frozen_tier=pos.get("strategy_tier"),
+                )
+            except Exception:
+                pass
 
-        cand = evaluate_dca_addon(market, pos, strategy_params)
-        if not cand:
-            continue
-        loss_pct = (price / float(pos.get("average_entry", price) or price) - 1.0) * 100.0
-        if (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
-            continue
-        priority = _target_priority(cand, loss_pct)
-        if priority < float(port_cfg.get("min_priority_score", 0)):
-            continue
-        targets.append(
-            DCATarget(
-                symbol=symbol,
-                timeframe=tf,
-                source="dca",
-                candidate=cand,
-                priority=priority,
-                usdt_needed=float(cand.usdt_amount or 0),
-                loss_pct=loss_pct,
-                score=int(cand.score or 0),
+            dca_cfg = dict(strategy_params.get("dca") or {})
+            port_cfg = portfolio_config(dca_cfg, config_raw=cfg_root)
+            if not port_cfg.get("enabled"):
+                continue
+            market = _build_market(symbol, tf, price, pos, strategy_params)
+
+            cand = evaluate_dca_addon(market, pos, strategy_params)
+            if not cand:
+                continue
+            loss_pct = (price / float(pos.get("average_entry", price) or price) - 1.0) * 100.0
+            if (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
+                continue
+            priority = _target_priority(cand, loss_pct)
+            if priority < float(port_cfg.get("min_priority_score", 0)):
+                continue
+            targets.append(
+                DCATarget(
+                    symbol=symbol,
+                    timeframe=tf,
+                    source="dca",
+                    candidate=cand,
+                    priority=priority,
+                    usdt_needed=float(cand.usdt_amount or 0),
+                    loss_pct=loss_pct,
+                    score=int(cand.score or 0),
+                )
             )
-        )
+        except Exception as e:
+            from logger import log
+
+            log(
+                f"Portfolio DCA target skip {coin.get('symbol', '?')}: {e}",
+                "WARNING",
+            )
+            continue
 
     targets.sort(key=lambda t: t.priority, reverse=True)
     return targets

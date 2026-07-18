@@ -106,7 +106,12 @@ def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict,
 
 def _has_open_position(symbol: str, coin: dict) -> bool:
     tf = str(coin.get("timeframe") or "4h")
-    return is_open_position(get_position(symbol, tf))
+    try:
+        return is_open_position(get_position(symbol, tf))
+    except Exception as e:
+        # Never crash the 15m loop on a bad/missing position key
+        log(f"15m sensor position check skip {symbol} {tf}: {e}", "WARNING")
+        return False
 
 
 def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
@@ -254,6 +259,9 @@ def _loop_main(orchestrator) -> None:
         try:
             get_bot_config().refresh()
             _poll_once(orchestrator)
+        except KeyError as e:
+            # Position-key KeyErrors must not spam ERROR after get_position harden
+            log(f"Entry sensor loop key skip: {e}", "WARNING")
         except Exception as e:
             log(f"Entry sensor loop error: {e}", "ERROR")
         interval = float(get_bot_config().entry_sensor_15m_config.get("poll_interval_sec", 20))
