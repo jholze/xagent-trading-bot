@@ -24,17 +24,48 @@ CURSOR_ACTION_MARKER = "@@CURSOR_ASK_ACTION@@"
 
 
 def _cfg() -> dict:
+    """Ask-bridge config with optional staging env overrides (no ledger impact).
+
+    Env (all optional):
+      ASK_BRIDGE_RESPONSE_MODE=cursor_only|grok_fallback
+      ASK_BRIDGE_GROK_FALLBACK=1|0
+      ASK_BRIDGE_CURSOR_TIMEOUT_SEC=30
+      ASK_BRIDGE_HEADLESS=0  (disable headless on Railway; no local grok CLI)
+    """
     try:
         from core.config import get_bot_config
 
         obs = get_bot_config().raw.get("observability", {})
         bridge_cfg = obs.get("ask_bridge")
-        if bridge_cfg:
-            return bridge_cfg
-        # legacy: ask_bridge was nested under telegram_explanations
-        return obs.get("telegram_explanations", {}).get("ask_bridge", {})
+        if not bridge_cfg:
+            # legacy: ask_bridge was nested under telegram_explanations
+            bridge_cfg = obs.get("telegram_explanations", {}).get("ask_bridge", {})
+        cfg = dict(bridge_cfg or {})
     except Exception:
-        return {}
+        cfg = {}
+
+    env_mode = os.environ.get("ASK_BRIDGE_RESPONSE_MODE", "").strip().lower()
+    if env_mode in ("cursor_only", "grok_fallback"):
+        cfg["response_mode"] = env_mode
+        if env_mode == "grok_fallback":
+            cfg["grok_fallback_enabled"] = True
+    env_gf = os.environ.get("ASK_BRIDGE_GROK_FALLBACK", "").strip().lower()
+    if env_gf in ("1", "true", "yes", "on"):
+        cfg["grok_fallback_enabled"] = True
+        # Prefer explicit RESPONSE_MODE=cursor_only if both set
+        if env_mode != "cursor_only":
+            cfg["response_mode"] = "grok_fallback"
+    elif env_gf in ("0", "false", "no", "off"):
+        cfg["grok_fallback_enabled"] = False
+    env_to = os.environ.get("ASK_BRIDGE_CURSOR_TIMEOUT_SEC", "").strip()
+    if env_to.isdigit():
+        cfg["cursor_timeout_sec"] = int(env_to)
+    env_hl = os.environ.get("ASK_BRIDGE_HEADLESS", "").strip().lower()
+    if env_hl in ("0", "false", "no", "off"):
+        cfg["headless_dispatch_enabled"] = False
+    elif env_hl in ("1", "true", "yes", "on"):
+        cfg["headless_dispatch_enabled"] = True
+    return cfg
 
 
 def _response_mode() -> str:
@@ -597,11 +628,70 @@ def _ephemeral_context_hits(ctx: dict, symbol: str | None) -> list:
     return seeded
 
 
+def _memory_store_hits(symbol: str | None, *, trade_limit: int = 8, lesson_limit: int = 5) -> list:
+    """Request-scoped hits from Hermes MemoryStore (Mongo memory_* only, never ledger writes).
+
+    Bridges the gap when RAG vector index has no symbol-scoped chunks yet, but
+    memory_trades / memory_lessons already have history for the pair.
+    """
+    if not symbol:
+        return []
+    from hermes.memory.rag_retriever import RagHit
+
+    out: list = []
+    try:
+        from intelligence.memory.store import MemoryStore
+
+        store = MemoryStore()
+        for i, tr in enumerate(store.list_trades(symbol=symbol, limit=trade_limit)):
+            pnl = getattr(tr, "pnl_usdt", None)
+            text = (
+                f"Trade {getattr(tr, 'symbol', symbol)} "
+                f"{getattr(tr, 'direction', '')} outcome={getattr(tr, 'outcome', '')} "
+                f"pnl_usdt={pnl} reason={(getattr(tr, 'reason', None) or '')[:200]}"
+            ).strip()
+            if not text:
+                continue
+            out.append(
+                RagHit(
+                    text=text,
+                    score=0.95,
+                    metadata={
+                        "type": "trade",
+                        "symbol": str(getattr(tr, "symbol", symbol) or symbol),
+                        "source": "memory_store",
+                    },
+                    chunk_id=f"mem:trade:{getattr(tr, 'trade_id', i)}",
+                )
+            )
+        for j, les in enumerate(store.list_lessons(symbol=symbol, limit=lesson_limit)):
+            body = (getattr(les, "text", None) or "").strip()
+            if not body:
+                continue
+            out.append(
+                RagHit(
+                    text=body[:800],
+                    score=0.9,
+                    metadata={
+                        "type": "lesson",
+                        "symbol": symbol,
+                        "source": "memory_store",
+                    },
+                    chunk_id=f"mem:lesson:{getattr(les, 'lesson_id', j)}",
+                )
+            )
+    except Exception as e:
+        log(f"Ask bridge memory_store hits skipped: {e}", "DEBUG")
+    return out
+
+
 def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
     """Evidence-grounded prompt for /ask (epic #72). Fail-open to plain context.
 
-    Context trades are ephemeral hits only (no index pollution). One scoped
-    retrieve + optional unfiltered fill; merge prefers symbol evidence.
+    Evidence sources (all request-scoped / read-only):
+      1) ephemeral context trades
+      2) MemoryStore trades/lessons for symbol (Mongo memory_*)
+      3) RAG retrieve (Mongo memory_rag_chunks + optional Weaviate)
     """
     ctx = context if isinstance(context, dict) else {}
     try:
@@ -620,8 +710,11 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
 
         # 1) Ephemeral context evidence (not written to Mongo/Weaviate)
         seeded = _ephemeral_context_hits(ctx, symbol)
+        # 1b) Symbol-scoped memory trades/lessons (same DB Hermes indexes from)
+        mem_hits = _memory_store_hits(symbol)
+        seeded = merge_hits(seeded, mem_hits, top_k=8, prefer_symbol=symbol)
 
-        # 2) Single store retrieve (symbol filter when known)
+        # 2) Vector/store retrieve (symbol filter when known)
         filters = {"symbol": symbol} if symbol else None
         store_hits = retriever.retrieve(question, top_k=5, filters=filters)
         if symbol and len(store_hits) < 3:
@@ -629,6 +722,11 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
             store_hits = merge_hits(store_hits, more, top_k=5, prefer_symbol=symbol)
 
         hits = merge_hits(seeded, store_hits, top_k=5, prefer_symbol=symbol)
+        log(
+            f"Ask RAG hits total={len(hits)} mem={len(mem_hits)} "
+            f"store={len(store_hits)} symbol={symbol or '-'}",
+            "INFO",
+        )
 
         return retriever.build_rag_prompt(
             {
