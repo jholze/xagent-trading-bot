@@ -579,13 +579,14 @@
     "rag": {
       "enabled": true,
       "embedding_backend": "hash",
+      "prefer_minilm": true,
       "top_k": 5,
       "mongo_scan_limit": 500,
       "index_on_cycle": true,
       "use_bus": false,
       "use_weaviate_rag": true,
       "index_market_context": false,
-      "enrich_decision_audit": false,
+      "enrich_decision_audit": true,
       "max_prompt_chars": 6000,
       "event_index_limit": 200,
       "trade_index_limit": 80,
@@ -687,6 +688,7 @@
       },
       "feature_refresh": true,
       "join_window_hours": 12,
+      "join_window_hours_delayed": 48,
       "reflect_social": true
     },
     "macro": {

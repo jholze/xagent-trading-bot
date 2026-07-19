@@ -40,6 +40,9 @@ class DcaContext:
     fact_event_count: int = 0
     fact_min_impact: float = 0.0
     fact_summary: str = ""
+    # P6: DCA lesson memory (advisory observability)
+    dca_lesson_count: int = 0
+    dca_lesson_summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -113,13 +116,22 @@ def format_dca_policy_audit(
     sm = float(ctx.fusion_size_mult) if ctx else 1.0
     spd = ctx.spendable_dca if ctx and ctx.spendable_dca is not None else None
     spd_s = f"{spd:.0f}" if spd is not None else "n/a"
+    size_bias = float(ctx.size_bias) if ctx else 1.0
+    entry_bias = (ctx.entry_bias if ctx else "") or "neutral"
+    dca_n = int(ctx.dca_lesson_count) if ctx else 0
+    dca_sum = (ctx.dca_lesson_summary if ctx else "") or ""
+    dca_part = f" dca_lessons={dca_n}"
+    if dca_sum:
+        dca_part += f"({dca_sum[:48]})"
     return (
         f"DCA policy {symbol or '?'}: {applied} "
         f"mode={mode} fusion_sm={sm:.2f} "
+        f"size_bias={size_bias:.2f} entry_bias={entry_bias} "
         f"mult={result.size_mult} skip={result.skip} "
         f"{'shadow ' if shadow else ''}"
         f"reasons=[{codes}] "
-        f"usdt={base_usdt:.0f}->{final_usdt:.0f} spendable_dca={spd_s} "
+        f"usdt={base_usdt:.0f}->{final_usdt:.0f} spendable_dca={spd_s}"
+        f"{dca_part} "
         f"v{result.policy_version}"
     )
 

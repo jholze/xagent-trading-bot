@@ -731,17 +731,38 @@ def sync_social_memory(
     return out
 
 
+def _symbol_bases(symbols: list[str] | None) -> set[str]:
+    out: set[str] = set()
+    for s in symbols or []:
+        n = normalize_symbol(s)
+        if not n:
+            continue
+        out.add(n)
+        out.add(n.split("/")[0])
+    return out
+
+
 def join_social_events_to_trades(
     store: MemoryStore | None = None,
     *,
     config: dict | None = None,
     tenant_id: str = "default",
 ) -> int:
-    """Attach related_event_ids for social events within join_window_hours."""
+    """Attach related_event_ids for social events within join window.
+
+    P4: delayed join — default window 48h (config join_window_hours /
+    join_window_hours_delayed). Matches on normalized base symbols; uses
+    entry_time or exit_time. Also stamps event.metadata.joined_trade_ids
+    for reverse lookup (fail-open).
+    """
     store = store or MemoryStore()
     soc = social_config(config)
-    window_h = float(soc.get("join_window_hours", 12))
-    window = timedelta(hours=window_h)
+    window_h = float(
+        soc.get("join_window_hours_delayed")
+        or soc.get("join_window_hours")
+        or 48
+    )
+    window = timedelta(hours=max(1.0, window_h))
     social_types = {
         EVT_CMC_SOCIAL,
         EVT_CMC_TRENDING,
@@ -752,36 +773,67 @@ def join_social_events_to_trades(
     }
     events = [
         e
-        for e in store.list_events(limit=200)
+        for e in store.list_events(limit=400)
         if e.event_type in social_types
     ]
     if not events:
         return 0
+
+    # Index events by base symbol for O(trades * events_for_sym)
+    by_base: dict[str, list] = defaultdict(list)
+    for ev in events:
+        bases = _symbol_bases(ev.symbols)
+        if not bases:
+            by_base["*"].append(ev)
+            continue
+        for b in bases:
+            by_base[b].append(ev)
+
     n = 0
-    for trade in store.list_trades(tenant_id=tenant_id, limit=300):
+    for trade in store.list_trades(tenant_id=tenant_id, limit=500):
         t_ts = _parse_ts(trade.entry_time or trade.exit_time)
         if t_ts is None:
             continue
+        trade_sym = normalize_symbol(trade.symbol)
+        base = trade_sym.split("/")[0] if trade_sym else ""
+        candidates = list(by_base.get(trade_sym, [])) + list(by_base.get(base, []))
+        # de-dupe candidates by event_id
+        seen_e: set[str] = set()
+        uniq = []
+        for ev in candidates:
+            if ev.event_id in seen_e:
+                continue
+            seen_e.add(ev.event_id)
+            uniq.append(ev)
+
         related = list(trade.related_event_ids or [])
         before = len(related)
-        for ev in events:
-            if trade.symbol not in (ev.symbols or []) and not any(
-                trade.symbol.split("/")[0] in s for s in (ev.symbols or [])
-            ):
-                # also match base
-                base = trade.symbol.split("/")[0]
-                if not any(base in s for s in (ev.symbols or [])):
-                    continue
+        newly: list = []
+        for ev in uniq:
             e_ts = _parse_ts(ev.timestamp)
             if e_ts is None:
                 continue
             if abs((e_ts - t_ts).total_seconds()) <= window.total_seconds():
                 if ev.event_id not in related:
                     related.append(ev.event_id)
+                    newly.append(ev)
         if len(related) > before:
-            trade.related_event_ids = related[:20]
+            trade.related_event_ids = related[:30]
             if store.upsert_trade(trade):
                 n += 1
+                # reverse stamp on events (best-effort)
+                for ev in newly:
+                    try:
+                        meta = dict(ev.metadata or {})
+                        joined = list(meta.get("joined_trade_ids") or [])
+                        if trade.trade_id not in joined:
+                            joined.append(trade.trade_id)
+                        meta["joined_trade_ids"] = joined[:30]
+                        meta["last_joined_at"] = utc_now_iso()
+                        ev.metadata = meta
+                        store.upsert_event(ev)
+                    except Exception:
+                        pass
     return n
 
 

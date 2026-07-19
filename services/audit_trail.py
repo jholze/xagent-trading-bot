@@ -112,5 +112,80 @@ class AuditTrail:
                 "would_sell": audit.get("would_sell"),
                 "would_source": audit.get("would_source"),
             })
+        # P5: shadow memory hits on decision audit (never changes action)
+        try:
+            self._attach_memory_shadow(entry, analysis)
+        except Exception:
+            pass
         log_decision(entry)
         persist_decision(entry)
+
+    def _attach_memory_shadow(self, entry: dict, analysis) -> None:
+        """Top-k RAG snippets for observability. Fail-open; shadow only."""
+        try:
+            from intelligence.memory.rag_config import rag_config, rag_enabled
+
+            cfg = rag_config(self.config.raw if hasattr(self.config, "raw") else None)
+            if not rag_enabled(self.config.raw if hasattr(self.config, "raw") else None):
+                return
+            if not cfg.get("enrich_decision_audit", True):
+                return
+        except Exception:
+            return
+
+        symbol = str(getattr(analysis, "symbol", "") or entry.get("symbol") or "")
+        action = str(getattr(analysis, "normalized_action", "") or entry.get("action") or "")
+        query = (
+            f"{symbol} {action} "
+            f"{getattr(analysis, 'rationale', '') or ''} "
+            f"trade memory lesson risk"
+        ).strip()
+        top_k = min(5, int(cfg.get("top_k") or 5))
+        try:
+            from hermes.memory.rag_retriever import RagRetriever
+
+            hits = RagRetriever(
+                config=self.config.raw if hasattr(self.config, "raw") else None
+            ).retrieve(
+                query,
+                top_k=top_k,
+                filters={"symbol": symbol} if symbol else None,
+            )
+            if not hits and symbol:
+                hits = RagRetriever(
+                    config=self.config.raw if hasattr(self.config, "raw") else None
+                ).retrieve(query, top_k=top_k, filters=None)
+        except Exception:
+            hits = []
+
+        shadow = []
+        for h in hits or []:
+            md = h.metadata if isinstance(getattr(h, "metadata", None), dict) else {}
+            shadow.append(
+                {
+                    "score": round(float(getattr(h, "score", 0) or 0), 4),
+                    "type": md.get("type") or "",
+                    "symbol": md.get("symbol") or "",
+                    "text": str(getattr(h, "text", "") or "")[:180],
+                    "chunk_id": str(getattr(h, "chunk_id", "") or "")[:40],
+                }
+            )
+        entry["memory_shadow"] = {
+            "enabled": True,
+            "query": query[:200],
+            "hit_count": len(shadow),
+            "hits": shadow,
+        }
+        # Profile snapshot (soft_block / size_bias) — no action change
+        try:
+            from intelligence.memory.cache import get_coin_profile
+
+            prof = get_coin_profile(symbol) if symbol else None
+            if prof:
+                entry["memory_shadow"]["profile"] = {
+                    "entry_bias": prof.entry_bias,
+                    "size_bias": float(prof.size_bias or 1.0),
+                    "risk_score": float(getattr(prof, "risk_score", 0.5) or 0.5),
+                }
+        except Exception:
+            pass

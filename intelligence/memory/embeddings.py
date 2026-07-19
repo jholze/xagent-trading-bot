@@ -69,21 +69,57 @@ def embed_text(text: str, dim: int = _DIM) -> list[float]:
     return embed_text_hash(text, dim=dim)
 
 
+def rag_prefer_minilm() -> bool:
+    """RAG path defaults to MiniLM when available (hash only as fallback).
+
+    Override:
+      MEMORY_RAG_EMBED=hash|minilm
+      memory.rag.prefer_minilm false → force hash-384 for RAG
+    """
+    env = (os.environ.get("MEMORY_RAG_EMBED") or "").strip().lower()
+    if env == "hash":
+        return False
+    if env == "minilm":
+        return True
+    if embedding_backend() == "minilm":
+        return True
+    if embedding_backend() == "hash":
+        # Still try MiniLM for RAG quality unless explicitly disabled
+        pass
+    try:
+        from intelligence.memory.rag_config import rag_config
+
+        if rag_config().get("prefer_minilm") is False:
+            return False
+    except Exception:
+        pass
+    return True  # prefer MiniLM for RAG by default
+
+
 def embed_for_rag(text: str) -> list[float]:
     """Fixed 384-d vector for MemoryRagChunk (Weaviate C5) + Mongo dual-write.
 
     Prefer MiniLM when available; otherwise hash at dim=384 (stable, no torch).
+    Legacy profile/event 64-d path stays on embed_text() / hash unless MEMORY_EMBEDDING_BACKEND=minilm.
     """
-    if embedding_backend() == "minilm":
+    if rag_prefer_minilm():
         m = _embed_minilm(text)
         if m is not None:
             if len(m) == _MINILM_DIM:
                 return m
-            # pad/truncate unexpected sizes
             if len(m) < _MINILM_DIM:
                 return m + [0.0] * (_MINILM_DIM - len(m))
             return m[:_MINILM_DIM]
     return embed_text_hash(text, dim=_MINILM_DIM)
+
+
+def rag_embed_backend_used() -> str:
+    """Observability: which backend embed_for_rag would use right now."""
+    if rag_prefer_minilm():
+        m = _embed_minilm("probe")
+        if m is not None:
+            return "minilm"
+    return "hash"
 
 
 def rag_embedding_dim() -> int:

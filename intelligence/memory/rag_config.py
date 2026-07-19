@@ -44,7 +44,9 @@ def rag_config(config: dict | None = None) -> dict[str, Any]:
         "use_bus": bool(rag.get("use_bus", False)),
         "use_weaviate_rag": bool(use_wv),
         "index_market_context": bool(rag.get("index_market_context", False)),
-        "enrich_decision_audit": bool(rag.get("enrich_decision_audit", False)),
+        # Shadow: attach top-k RAG hits to decision audit only (never changes actions)
+        "enrich_decision_audit": bool(rag.get("enrich_decision_audit", True)),
+        "prefer_minilm": bool(rag.get("prefer_minilm", True)),
         "max_prompt_chars": int(rag.get("max_prompt_chars", 6000) or 6000),
         # Index breadth — keep coin-facts/portfolio visible next to RSS flood
         "event_index_limit": int(rag.get("event_index_limit", 200) or 200),

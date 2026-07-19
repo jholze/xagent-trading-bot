@@ -358,6 +358,70 @@ def sync_macro_context(
         pm_payload["summary"] = pm_summary
         pm_payload["as_of"] = utc_now_iso()
 
+    cal_mult_f = float(regime.get("calendar_mult", calendar_mult) or 1.0)
+    sess_mult_f = float(regime.get("session_mult", 1.0) or 1.0)
+    pm_mult_f = float(pm_mult or 1.0)
+
+    # P3: when size mults deviate from 1.0, always write a fresh *pressure* event
+    # (hour-bucketed) so retrieval/RAG see active risk even if scheduled cards
+    # were already upserted earlier with the same stable key.
+    hour_bucket = utc_now_iso()[:13]
+    if abs(cal_mult_f - 1.0) > 0.02:
+        if _ingest_event(
+            store,
+            source="macro",
+            event_type="macro_pressure",
+            description=(
+                f"macro_pressure calendar_mult={cal_mult_f:.2f} "
+                f"next={next_event} hours={round(next_hours, 2) if next_hours is not None else 'n/a'} "
+                f"{cal_summary or ''}"
+            ).strip(),
+            impact=max(-1.0, min(1.0, (1.0 - cal_mult_f))),
+            metadata={
+                "calendar_mult": cal_mult_f,
+                "next_event": next_event,
+                "hours_to_event": next_hours,
+                "high_impact": high_impact,
+                "in_pre_window": in_pre,
+            },
+            stable_key=f"pressure|cal|{hour_bucket}|{next_event or 'none'}",
+        ):
+            counts["macro_events"] += 1
+            counts["pressure_events"] = int(counts.get("pressure_events") or 0) + 1
+    if abs(sess_mult_f - 1.0) > 0.02:
+        if _ingest_event(
+            store,
+            source="session",
+            event_type="session_pressure",
+            description=(
+                f"session_pressure session_mult={sess_mult_f:.2f} "
+                f"regime={regime.get('regime')} tags={regime.get('tags')}"
+            ),
+            impact=max(-1.0, min(1.0, (1.0 - sess_mult_f))),
+            metadata={
+                "session_mult": sess_mult_f,
+                "regime": regime,
+                "session": sess.as_dict(),
+            },
+            stable_key=f"pressure|sess|{hour_bucket}|{regime.get('regime')}",
+        ):
+            counts["session_events"] += 1
+            counts["pressure_events"] = int(counts.get("pressure_events") or 0) + 1
+    if abs(pm_mult_f - 1.0) > 0.02:
+        if _ingest_event(
+            store,
+            source="polymarket",
+            event_type="pm_pressure",
+            description=(
+                f"pm_pressure pm_mult={pm_mult_f:.2f} {pm_summary or ''}"
+            ).strip(),
+            impact=max(-1.0, min(1.0, (1.0 - pm_mult_f))),
+            metadata={"pm_mult": pm_mult_f, "pm": pm_payload},
+            stable_key=f"pressure|pm|{hour_bucket}",
+        ):
+            counts["pm_events"] += 1
+            counts["pressure_events"] = int(counts.get("pressure_events") or 0) + 1
+
     snap = {
         "session": sess.as_dict(),
         "calendar": {
@@ -370,21 +434,25 @@ def sync_macro_context(
         },
         "regime": regime,
         "pm": pm_payload,
-        "calendar_mult": regime.get("calendar_mult", calendar_mult),
-        "session_mult": regime.get("session_mult", 1.0),
-        "pm_mult": pm_mult,
+        "calendar_mult": cal_mult_f,
+        "session_mult": sess_mult_f,
+        "pm_mult": pm_mult_f,
         "fakeout_risk": regime.get("fakeout_risk", sess.fakeout_risk),
         "counts": counts,
         "as_of": utc_now_iso(),
     }
     publish_macro_snapshot(snap)
-    log(f"memory macro sync: {counts} cal_mult={snap['calendar_mult']} sess_mult={snap['session_mult']}", "INFO")
+    log(
+        f"memory macro sync: {counts} cal_mult={snap['calendar_mult']} "
+        f"sess_mult={snap['session_mult']} pm_mult={snap['pm_mult']}",
+        "INFO",
+    )
     return {
         "enabled": True,
         **counts,
         "calendar_mult": snap["calendar_mult"],
         "session_mult": snap["session_mult"],
-        "pm_mult": pm_mult,
+        "pm_mult": pm_mult_f,
         "next_event": next_event,
         "hours_to_event": snap["calendar"].get("hours_to_event"),
         "fakeout_risk": snap["fakeout_risk"],

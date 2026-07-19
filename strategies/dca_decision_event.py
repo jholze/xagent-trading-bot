@@ -33,9 +33,13 @@ def build_dca_decision_text(
     sm = float(ctx.fusion_size_mult) if ctx else 1.0
     action = "skip" if result.skip else "buy_dca"
     shadow_s = "shadow" if shadow else "live"
+    size_bias = float(ctx.size_bias) if ctx else 1.0
+    entry_bias = (ctx.entry_bias if ctx else "") or "neutral"
+    dca_n = int(ctx.dca_lesson_count) if ctx else 0
     return (
         f"DCA decision {symbol}: action={action} applied={applied} {shadow_s} "
-        f"cash_mode={mode} fusion_sm={sm:.2f} mult={result.size_mult} "
+        f"cash_mode={mode} fusion_sm={sm:.2f} size_bias={size_bias:.2f} "
+        f"entry_bias={entry_bias} dca_lessons={dca_n} mult={result.size_mult} "
         f"reasons=[{codes}] usdt={base_usdt:.0f}->{final_usdt:.0f} "
         f"policy_v{result.policy_version}"
     )
@@ -90,6 +94,11 @@ def persist_dca_decision_event(
         "final_usdt": float(final_usdt),
         "cash_mode": (ctx.cash_mode if ctx else "") or "",
         "fusion_size_mult": float(ctx.fusion_size_mult) if ctx else 1.0,
+        # P6 observability
+        "size_bias": float(ctx.size_bias) if ctx else 1.0,
+        "entry_bias": (ctx.entry_bias if ctx else "") or "neutral",
+        "dca_lesson_count": int(ctx.dca_lesson_count) if ctx else 0,
+        "dca_lesson_summary": (ctx.dca_lesson_summary if ctx else "") or "",
     }
 
     try:

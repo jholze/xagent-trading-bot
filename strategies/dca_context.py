@@ -140,6 +140,42 @@ def build_dca_context(
         except Exception:
             ctx.rag_hit_count = 0
 
+    # P6: pull recent DCA lessons for audit (never decides alone)
+    try:
+        from intelligence.memory.store import MemoryStore, memory_enabled
+
+        if memory_enabled(raw if isinstance(raw, dict) else None):
+            ms = MemoryStore()
+            dca_lessons: list = []
+            for les in ms.list_lessons(limit=50) or []:
+                tags = [str(t).lower() for t in (getattr(les, "tags", None) or [])]
+                text = str(getattr(les, "text", "") or "").lower()
+                syms = getattr(les, "symbols", None) or []
+                if "dca" in tags or "dca" in text:
+                    if not sym or not syms or any(sym in s or s in sym for s in syms):
+                        dca_lessons.append(les)
+            if not dca_lessons:
+                for ev in ms.list_events(limit=80) or []:
+                    et = str(getattr(ev, "event_type", "") or "").lower()
+                    desc = str(getattr(ev, "description", "") or "").lower()
+                    if "dca" not in et and "dca" not in desc:
+                        continue
+                    if sym and sym not in (getattr(ev, "symbols", None) or []):
+                        base = sym.split("/")[0]
+                        if not any(base in s for s in (getattr(ev, "symbols", None) or [])):
+                            continue
+                    dca_lessons.append(ev)
+            ctx.dca_lesson_count = len(dca_lessons)
+            if dca_lessons:
+                first = dca_lessons[0]
+                ctx.dca_lesson_summary = str(
+                    getattr(first, "text", None)
+                    or getattr(first, "description", None)
+                    or ""
+                )[:80]
+    except Exception:
+        pass
+
     # #103 coin facts from memory_market_events (fail-open; no ledger)
     try:
         from intelligence.memory.coin_facts import apply_facts_to_context, coin_facts_enabled

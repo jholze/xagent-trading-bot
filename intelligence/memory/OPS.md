@@ -72,6 +72,40 @@ Social never sole BUY; never blocks sells; soft_block only from trade history.
 - CMC/LC empty on Hermes → last_social zeros, cycle continues.
 - News providers fail → cycle continues; counters show zeros.
 
+## Quality eval (P1)
+
+```bash
+# Offline fixture hit-rate (no Mongo required)
+python3 scripts/eval_memory_retrieval.py
+# Live against configured Mongo/Weaviate
+python3 scripts/eval_memory_retrieval.py --live --json
+```
+
+## RAG embeddings (P2)
+
+- Hot-path `embed_text` defaults to **hash-64** unless `MEMORY_EMBEDDING_BACKEND=minilm`.
+- RAG `embed_for_rag` **prefers MiniLM-384** when installed; falls back to hash-384.
+- Overrides: `MEMORY_RAG_EMBED=hash|minilm`, `memory.rag.prefer_minilm`.
+
+## Macro pressure events (P3)
+
+When `calendar_mult` / `session_mult` / `pm_mult` ≠ 1.0, Hermes writes hour-bucketed
+`macro_pressure` / `session_pressure` / `pm_pressure` events (in addition to scheduled cards).
+
+## Social→trade join (P4)
+
+`join_social_events_to_trades` uses `join_window_hours_delayed` (default **48h**),
+normalized base symbols, and stamps `event.metadata.joined_trade_ids`.
+
+## Decision audit shadow (P5)
+
+`memory.rag.enrich_decision_audit` (default true): attaches `memory_shadow.hits` to
+decision audit only — never changes trade actions.
+
+## DCA audit (P6)
+
+DCA policy log lines include `size_bias`, `entry_bias`, `dca_lessons=N` (+ optional summary).
+
 ## Health
 
 - Hermes: `GET /health` → `weaviate`, `weaviate_ready`, `live_evidence`, `promotion_rate`, `veto_rate`, `last_news`, `last_rebuild`
