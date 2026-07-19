@@ -72,6 +72,17 @@ Social never sole BUY; never blocks sells; soft_block only from trade history.
 - CMC/LC empty on Hermes → last_social zeros, cycle continues.
 - News providers fail → cycle continues; counters show zeros.
 
+## Large moves → trigger attribution
+
+When a coin in **open positions ∪ watchlist** moves hard (default |Δ24h| ≥ 12% or vs BTC ≥ 8pp), Hermes:
+
+1. Detects move (CMC Pro quotes, fail-open)
+2. Scores nearby memory events (unlocks, social, news, macro/session/PM pressure, coin facts)
+3. Writes `price_move_attribution` MarketEvent + optional RAG chunk with `metadata.triggers[]`
+
+Config: `memory.move_attribution.*` · Kill: `MEMORY_MOVE_ATTRIBUTION=0`  
+Cycle field: Hermes `last_cycle` / health detail via `move_attribution` in cycle output.
+
 ## Backward enrich: open book + watchlist
 
 Universe = **open full positions first**, then **active watchlist** (capped).

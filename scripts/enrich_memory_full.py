@@ -300,12 +300,26 @@ def main() -> int:
         summary["coin_facts_error"] = str(e)[:200]
         print("8 coin_facts_error:", e)
 
-    # 9) RAG index
+    # 9) large moves → trigger attribution (uses CMC quotes when networked)
+    if use_net:
+        try:
+            from intelligence.memory.move_attribution import sync_move_attribution
+
+            summary["move_attribution"] = sync_move_attribution(
+                store, symbols=syms[:40]
+            )
+            print("9 move_attribution:", summary["move_attribution"])
+        except Exception as e:
+            print("9 move_attribution_error:", e)
+    else:
+        print("9 move_attribution skipped (--no-network)")
+
+    # 10) RAG index
     try:
         summary["rag"] = run_rag_index(store)
-        print("9 rag:", json.dumps(summary["rag"], default=str)[:300])
+        print("10 rag:", json.dumps(summary["rag"], default=str)[:300])
     except Exception as e:
-        print("9 rag_error:", e)
+        print("10 rag_error:", e)
 
     db = get_database()
     summary["mongo"] = {

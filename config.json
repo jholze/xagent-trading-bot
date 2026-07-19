@@ -602,6 +602,17 @@
       "reflect_grok": false,
       "index_rag": true
     },
+    "move_attribution": {
+      "enabled": true,
+      "abs_chg_24h_pct": 12,
+      "rel_btc_pct": 8,
+      "lookback_hours": 72,
+      "max_symbols_per_cycle": 30,
+      "max_triggers": 5,
+      "min_trigger_score": 0.12,
+      "prefer_idiosyncratic": true,
+      "index_rag": true
+    },
     "gross_loss": {
       "enabled": true,
       "min_loss_pct": 25,

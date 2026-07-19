@@ -174,6 +174,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     except Exception as e:
         log(f"memory coin_facts cycle: {e}", "WARNING")
         out["coin_facts"] = {"error": str(e)[:200]}
+    # Large moves → link candidate triggers (news/social/unlock/macro)
+    try:
+        from intelligence.memory.move_attribution import sync_move_attribution
+
+        out["move_attribution"] = sync_move_attribution(store)
+    except Exception as e:
+        log(f"memory move_attribution cycle: {e}", "WARNING")
+        out["move_attribution"] = {"error": str(e)[:200]}
     try:
         out["reflect"] = reflect(store)
     except Exception as e:
