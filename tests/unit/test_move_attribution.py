@@ -14,6 +14,7 @@ from intelligence.memory.move_attribution import (
     apply_15m_drill,
     build_attribution_event,
     drill_15m,
+    find_triggers,
     is_large_move,
     pct_change_from_closes,
     score_trigger_for_move,
@@ -95,6 +96,44 @@ class TestTriggerScore(unittest.TestCase):
         )
         sc = score_trigger_for_move(move=move, event=unlock, now=now)
         self.assertGreater(sc, 0.4)
+
+    def test_prefers_news_before_move_over_after(self):
+        """Catalyst *before* the move must rank higher than reactive headline after."""
+        now = datetime.now(timezone.utc)
+        move = MoveSnap(
+            "SOL/USDT",
+            chg_1h=8.0,
+            chg_24h=8.0,
+            screen_tf="1h",
+            chg_1h_bars=1,
+            move_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        before = MarketEvent(
+            event_id="before",
+            timestamp=(now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            event_type="listing",
+            symbols=["SOL/USDT"],
+            impact_score=0.3,
+            description="SOL listing announcement major exchange",
+            source="news",
+        )
+        after = MarketEvent(
+            event_id="after",
+            timestamp=(now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            event_type="news",
+            symbols=["SOL/USDT"],
+            impact_score=0.2,
+            description="SOL pumps 8% as traders pile in",
+            source="news",
+        )
+        sc_b = score_trigger_for_move(
+            move=move, event=before, now=now, prefer_pre_move=True
+        )
+        sc_a = score_trigger_for_move(
+            move=move, event=after, now=now, prefer_pre_move=True
+        )
+        self.assertGreater(sc_b, sc_a)
+        self.assertGreater(sc_b, 0.3)
 
 
 class Test15mDrill(unittest.TestCase):
@@ -184,7 +223,34 @@ class TestBuildEvent(unittest.TestCase):
         ev = build_attribution_event(
             MoveSnap("X/USDT", chg_1h=-5.0, chg_24h=-5.0, screen_tf="1h"), []
         )
-        self.assertIn("no strong trigger", ev.description.lower())
+        self.assertIn("preceding", ev.description.lower())
+
+    def test_find_triggers_marks_before(self):
+        store = FakeStore()
+        now = datetime.now(timezone.utc)
+        store.upsert_event(
+            MarketEvent(
+                event_id="pre1",
+                timestamp=(now - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                event_type="token_unlock",
+                symbols=["WIF/USDT"],
+                description="WIF unlock",
+                source="news",
+                impact_score=-0.2,
+            )
+        )
+        move = MoveSnap(
+            "WIF/USDT",
+            chg_1h=-5.0,
+            chg_24h=-5.0,
+            screen_tf="1h",
+            move_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        hits = find_triggers(store, move, now=now, prefer_pre_move=True)
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].relation, "before")
+        self.assertIsNotNone(hits[0].hours_delta)
+        self.assertLessEqual(hits[0].hours_delta, 0)
 
 
 if __name__ == "__main__":

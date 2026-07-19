@@ -70,6 +70,8 @@ class MoveSnap:
     fine_impulse_vol_x: float | None = None
     fine_bars_scanned: int = 0
     fine_window_minutes: int = 0
+    # When the move is considered to have started (UTC). Used to prefer *preceding* news.
+    move_at: str = ""  # ISO; empty → "now" at scoring time
 
     @property
     def chg_pct(self) -> float:
@@ -86,7 +88,8 @@ class TriggerHit:
     score: float
     description: str
     source: str = ""
-    hours_delta: float | None = None
+    hours_delta: float | None = None  # signed: negative = before move, positive = after
+    relation: str = ""  # before | after | unknown
 
 
 @dataclass
@@ -144,6 +147,12 @@ def move_attribution_config(config: dict | None = None) -> dict[str, Any]:
         "index_rag": bool(raw.get("index_rag", True)),
         "min_trigger_score": float(raw.get("min_trigger_score", 0.12)),
         "prefer_idiosyncratic": bool(raw.get("prefer_idiosyncratic", True)),
+        # Prefer news/events that precede the move (leading catalysts)
+        "prefer_pre_move": bool(raw.get("prefer_pre_move", True)),
+        "pre_window_hours": float(raw.get("pre_window_hours", 48.0)),
+        "pre_move_boost": float(raw.get("pre_move_boost", 0.45)),
+        "post_move_penalty": float(raw.get("post_move_penalty", 0.55)),
+        "max_post_hours": float(raw.get("max_post_hours", 6.0)),  # ignore late after-noise
     }
 
 
@@ -262,21 +271,58 @@ def strongest_bar_impulse(
     return best_pct, vol_x
 
 
+def _move_anchor_time(move: MoveSnap, now: datetime | None = None) -> datetime:
+    """When the move is considered to start (for before/after scoring)."""
+    now = now or datetime.now(timezone.utc)
+    if move.move_at:
+        t = _parse_ts(move.move_at)
+        if t is not None:
+            return t
+    # 1h bar: treat move as ending "now"; start ~1 bar earlier
+    bars = max(1, int(move.chg_1h_bars or 1))
+    if move.screen_tf == "1h":
+        return now - timedelta(hours=bars)
+    if move.screen_tf == "15m":
+        return now - timedelta(minutes=15 * bars)
+    return now - timedelta(hours=1)
+
+
 def score_trigger_for_move(
     *,
     move: MoveSnap,
     event: MarketEvent,
     now: datetime | None = None,
     lookback_hours: float = 72.0,
+    prefer_pre_move: bool = True,
+    pre_window_hours: float = 48.0,
+    pre_move_boost: float = 0.45,
+    post_move_penalty: float = 0.55,
+    max_post_hours: float = 6.0,
 ) -> float:
-    """Heuristic relevance of a memory event to a price move (0..1+)."""
+    """Heuristic relevance — **strongly prefer news/events before the move**.
+
+    Leading catalysts (unlock announced → then dump) score higher than
+    after-the-fact headlines that only react to the price move.
+    """
     now = now or datetime.now(timezone.utc)
     e_ts = _parse_ts(event.timestamp)
     if e_ts is None:
         return 0.0
-    hours = abs((now - e_ts).total_seconds()) / 3600.0
-    if hours > lookback_hours:
-        return 0.0
+
+    anchor = _move_anchor_time(move, now)
+    # signed hours: negative = event before move, positive = after move
+    hours_signed = (e_ts - anchor).total_seconds() / 3600.0
+    hours_abs = abs(hours_signed)
+
+    # Window: look further back before the move; only a short window after
+    if hours_signed < 0:
+        if hours_abs > max(lookback_hours, pre_window_hours):
+            return 0.0
+    else:
+        if prefer_pre_move and hours_signed > max_post_hours:
+            return 0.0  # ignore lagging commentary far after the move
+        if hours_abs > lookback_hours:
+            return 0.0
 
     mag = float(move.chg_pct or 0)
     score = 0.0
@@ -298,39 +344,73 @@ def score_trigger_for_move(
         else:
             return 0.0
 
+    # Event types that often *lead* moves get extra weight when pre-move
+    leading_types = {
+        "token_unlock",
+        "unlock",
+        "listing",
+        "structure_risk",
+        "macro_scheduled",
+        "macro_window",
+        "macro_news",
+        "macro_pressure",
+        "pm_mispricing",
+        "cmc_trending",
+        "lc_social_spike",
+    }
     if et in _TRIGGER_TYPES:
         score += 0.2
-    if et in ("token_unlock", "unlock", "structure_risk"):
-        score += 0.15
+    if et in ("token_unlock", "unlock", "structure_risk", "listing"):
+        score += 0.2
     if et.startswith("lc_") or et.startswith("cmc_"):
-        score += 0.1
-    if et in ("macro_pressure", "macro_window", "pm_pressure"):
-        score += 0.05 if abs(mag) > 8 else 0.12
+        score += 0.12
+    if et in ("macro_pressure", "macro_window", "macro_scheduled", "macro_news", "pm_pressure"):
+        score += 0.15 if hours_signed < 0 else 0.05
 
-    # Tighter recency if we have 15m impulse (event nearer to impulse window)
     impact = float(event.impact_score or 0)
     if mag <= -abs_threshold_soft() and impact < -0.15:
         score += 0.12
     if mag >= abs_threshold_soft() and impact > 0.15:
         score += 0.12
 
-    recency = max(0.0, 1.0 - hours / max(lookback_hours, 1.0))
-    if move.fine_impulse_pct is not None and hours <= 3:
-        score += 0.08  # boost events near the impulse window
-    score *= 0.55 + 0.45 * recency
+    # --- Before vs after the move (core preference) ---
+    if prefer_pre_move:
+        if hours_signed <= 0:
+            # Before move: boost; closer to anchor is better (not 3 months early)
+            pre_h = min(pre_window_hours, max(lookback_hours, 1.0))
+            # sweet spot: 0–24h before move
+            if hours_abs <= 24:
+                score += pre_move_boost
+            elif hours_abs <= pre_h:
+                score += pre_move_boost * (1.0 - (hours_abs - 24) / max(pre_h - 24, 1.0)) * 0.7
+            else:
+                score += pre_move_boost * 0.25
+            if et in leading_types:
+                score += 0.12
+        else:
+            # After move: heavy penalty (reactive noise)
+            score *= max(0.05, 1.0 - post_move_penalty)
+            score -= 0.15
+
+    # Recency toward move anchor (not wall-clock only)
+    recency = max(0.0, 1.0 - hours_abs / max(lookback_hours, 1.0))
+    score *= 0.5 + 0.5 * recency
+
+    if move.fine_impulse_pct is not None and hours_signed <= 0 and hours_abs <= 6:
+        score += 0.1  # news shortly before 15m impulse
 
     try:
-        q = f"{move.symbol} {mag:+.1f}% move trigger {et}"
+        q = f"{move.symbol} {mag:+.1f}% move preceding trigger {et}"
         from intelligence.memory.embeddings import cosine
 
-        score += 0.15 * max(
+        score += 0.12 * max(
             0.0,
             cosine(embed_text(q), event.embedding or embed_event(desc, event_type=et)),
         )
     except Exception:
         pass
 
-    return float(score)
+    return float(max(0.0, score))
 
 
 def abs_threshold_soft() -> float:
@@ -345,27 +425,40 @@ def find_triggers(
     max_triggers: int = 5,
     min_score: float = 0.12,
     now: datetime | None = None,
+    prefer_pre_move: bool = True,
+    pre_window_hours: float = 48.0,
+    pre_move_boost: float = 0.45,
+    post_move_penalty: float = 0.55,
+    max_post_hours: float = 6.0,
 ) -> list[TriggerHit]:
+    """Rank catalysts. Prefer news/events that occurred *before* the move."""
     now = now or datetime.now(timezone.utc)
-    # Tighten lookback when we only have a 1h impulse
+    anchor = _move_anchor_time(move, now)
     lb = float(lookback_hours)
+    pre_w = float(pre_window_hours)
+    search_back = max(lb, pre_w)
     if move.screen_tf == "1h" and abs(move.chg_pct) < 15:
-        lb = min(lb, 36.0)
-    since = (now - timedelta(hours=lb)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        search_back = min(search_back, 48.0)
+    since = (anchor - timedelta(hours=search_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     candidates: list[MarketEvent] = []
 
     try:
         candidates.extend(
-            store.list_events(symbol=move.symbol, since_iso=since, limit=80) or []
+            store.list_events(symbol=move.symbol, since_iso=since, limit=100) or []
         )
     except Exception:
         pass
     try:
-        for e in store.list_events(since_iso=since, limit=120) or []:
+        for e in store.list_events(since_iso=since, limit=150) or []:
             if e.event_id in {c.event_id for c in candidates}:
                 continue
             et = str(e.event_type or "")
-            if et in _TRIGGER_TYPES or et.startswith("macro") or et.startswith("pm_"):
+            if (
+                et in _TRIGGER_TYPES
+                or et.startswith("macro")
+                or et.startswith("pm_")
+                or et in ("news", "listing", "macro_news", "token_unlock")
+            ):
                 candidates.append(e)
     except Exception:
         pass
@@ -378,10 +471,10 @@ def find_triggers(
         if move.fine_impulse_pct is not None:
             fine = f" 15m_impulse={move.fine_impulse_pct:+.1f}%"
         q = (
-            f"{move.symbol} {direction} {move.chg_pct:+.1f}% {move.screen_tf}{fine} "
-            f"unlock news social funding macro"
+            f"{move.symbol} {direction} before move {move.chg_pct:+.1f}% "
+            f"{move.screen_tf}{fine} unlock listing news social macro catalyst"
         )
-        for e in similar_events(q, symbol=move.symbol, k=8, store=store) or []:
+        for e in similar_events(q, symbol=move.symbol, k=10, store=store) or []:
             if e.event_id not in {c.event_id for c in candidates}:
                 candidates.append(e)
     except Exception:
@@ -392,14 +485,24 @@ def find_triggers(
         if str(e.event_type or "") in (EVT_PRICE_MOVE, EVT_MOVE_LINK):
             continue
         sc = score_trigger_for_move(
-            move=move, event=e, now=now, lookback_hours=lb
+            move=move,
+            event=e,
+            now=now,
+            lookback_hours=search_back,
+            prefer_pre_move=prefer_pre_move,
+            pre_window_hours=pre_w,
+            pre_move_boost=pre_move_boost,
+            post_move_penalty=post_move_penalty,
+            max_post_hours=max_post_hours,
         )
         if sc < min_score:
             continue
         e_ts = _parse_ts(e.timestamp)
-        hours = None
+        hours_signed = None
+        relation = "unknown"
         if e_ts:
-            hours = abs((now - e_ts).total_seconds()) / 3600.0
+            hours_signed = (e_ts - anchor).total_seconds() / 3600.0
+            relation = "before" if hours_signed <= 0 else "after"
         scored.append(
             TriggerHit(
                 event_id=e.event_id,
@@ -407,10 +510,11 @@ def find_triggers(
                 score=round(sc, 4),
                 description=str(e.description or "")[:200],
                 source=str(e.source or ""),
-                hours_delta=round(hours, 2) if hours is not None else None,
+                hours_delta=round(hours_signed, 2) if hours_signed is not None else None,
+                relation=relation,
             )
         )
-    scored.sort(key=lambda t: t.score, reverse=True)
+    scored.sort(key=lambda t: (t.score, 1 if t.relation == "before" else 0), reverse=True)
     return scored[: max(1, int(max_triggers))]
 
 
@@ -425,12 +529,14 @@ def build_attribution_event(
     direction = "pump" if mag >= 0 else "dump"
     top = triggers[0] if triggers else None
     if top:
+        rel = top.relation or "?"
+        h = f"{top.hours_delta:+.1f}h" if top.hours_delta is not None else ""
         link_txt = (
-            f"top_trigger={top.event_type} score={top.score:.2f} "
-            f"({top.description[:80]})"
+            f"top_trigger={top.event_type} [{rel}{h}] score={top.score:.2f} "
+            f"({top.description[:70]})"
         )
     else:
-        link_txt = "no strong trigger found in lookback window"
+        link_txt = "no strong *preceding* trigger found in lookback window"
     vs = ""
     if move.vs_btc is not None:
         vs = f" vsBTC={move.vs_btc:+.1f}pp"
@@ -471,11 +577,16 @@ def build_attribution_event(
                 "score": t.score,
                 "source": t.source,
                 "hours_delta": t.hours_delta,
+                "relation": t.relation,
                 "description": t.description[:120],
             }
             for t in triggers
         ],
+        "preceding_triggers": [
+            t.event_id for t in triggers if t.relation == "before"
+        ],
         "related_event_ids": [t.event_id for t in triggers],
+        "prefer_pre_move": True,
     }
     hour = as_of[:13]
     eid = make_event_id(
@@ -763,6 +874,11 @@ def sync_move_attribution(
                 lookback_hours=float(cfg["lookback_hours"]),
                 max_triggers=int(cfg["max_triggers"]),
                 min_score=float(cfg["min_trigger_score"]),
+                prefer_pre_move=bool(cfg.get("prefer_pre_move", True)),
+                pre_window_hours=float(cfg.get("pre_window_hours", 48)),
+                pre_move_boost=float(cfg.get("pre_move_boost", 0.45)),
+                post_move_penalty=float(cfg.get("post_move_penalty", 0.55)),
+                max_post_hours=float(cfg.get("max_post_hours", 6)),
             )
             result.links_found += len(triggers)
             ev = build_attribution_event(snap, triggers)

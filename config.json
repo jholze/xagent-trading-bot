@@ -624,6 +624,11 @@
       "max_triggers": 5,
       "min_trigger_score": 0.12,
       "prefer_idiosyncratic": true,
+      "prefer_pre_move": true,
+      "pre_window_hours": 48,
+      "pre_move_boost": 0.45,
+      "post_move_penalty": 0.55,
+      "max_post_hours": 6,
       "index_rag": true
     },
     "gross_loss": {
