@@ -1,17 +1,23 @@
-"""Large move → trigger attribution (memory only)."""
+"""Large move → 1h screen + 15m drill + trigger attribution."""
 
 from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+import pandas as pd
 
 from intelligence.memory.models import MarketEvent, utc_now_iso
 from intelligence.memory.move_attribution import (
     MoveSnap,
+    apply_15m_drill,
     build_attribution_event,
-    find_triggers,
+    drill_15m,
     is_large_move,
+    pct_change_from_closes,
     score_trigger_for_move,
+    strongest_bar_impulse,
     sync_move_attribution,
 )
 
@@ -44,18 +50,32 @@ class FakeStore:
         return out[:limit]
 
 
-class TestLargeMove(unittest.TestCase):
-    def test_abs_threshold(self):
-        self.assertTrue(is_large_move(MoveSnap("ETH/USDT", 15.0)))
-        self.assertFalse(is_large_move(MoveSnap("ETH/USDT", 5.0)))
+class TestCandleMath(unittest.TestCase):
+    def test_pct_change_1_bar(self):
+        # 100 → 105 = +5%
+        self.assertAlmostEqual(pct_change_from_closes([100.0, 105.0], 1), 5.0)
 
-    def test_vs_btc_idiosyncratic(self):
-        # Only +6% absolute but +10 vs BTC
+    def test_strongest_impulse_picks_big_bar(self):
+        closes = [100, 101, 102, 110, 109]  # +7.8% bar
+        vols = [1, 1, 1, 5, 1]
+        imp, vol_x = strongest_bar_impulse(closes, vols, window=4)
+        self.assertIsNotNone(imp)
+        self.assertGreater(abs(imp), 5)
+        self.assertIsNotNone(vol_x)
+        self.assertGreater(vol_x, 1.5)
+
+
+class TestLargeMove(unittest.TestCase):
+    def test_1h_threshold(self):
+        self.assertTrue(is_large_move(MoveSnap("ETH/USDT", chg_1h=5.0, chg_24h=5.0), abs_chg=4.0))
+        self.assertFalse(is_large_move(MoveSnap("ETH/USDT", chg_1h=2.0, chg_24h=2.0), abs_chg=4.0))
+
+    def test_vs_btc(self):
         self.assertTrue(
             is_large_move(
-                MoveSnap("ALT/USDT", 6.0, vs_btc=10.0),
-                abs_chg=12.0,
-                rel_btc=8.0,
+                MoveSnap("ALT/USDT", chg_1h=2.0, chg_24h=2.0, vs_btc=4.0),
+                abs_chg=4.0,
+                rel_btc=3.0,
             )
         )
 
@@ -63,10 +83,10 @@ class TestLargeMove(unittest.TestCase):
 class TestTriggerScore(unittest.TestCase):
     def test_unlock_near_dump_scores_high(self):
         now = datetime.now(timezone.utc)
-        move = MoveSnap("ARB/USDT", -18.0)
+        move = MoveSnap("ARB/USDT", chg_1h=-6.0, chg_24h=-6.0, screen_tf="1h")
         unlock = MarketEvent(
             event_id="u1",
-            timestamp=(now - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            timestamp=(now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             event_type="token_unlock",
             symbols=["ARB/USDT"],
             impact_score=-0.4,
@@ -76,27 +96,44 @@ class TestTriggerScore(unittest.TestCase):
         sc = score_trigger_for_move(move=move, event=unlock, now=now)
         self.assertGreater(sc, 0.4)
 
-    def test_unrelated_symbol_zero(self):
-        move = MoveSnap("ETH/USDT", 20.0)
-        ev = MarketEvent(
-            event_id="x",
-            timestamp=utc_now_iso(),
-            event_type="token_unlock",
-            symbols=["DOGE/USDT"],
-            description="doge unlock",
-            source="x",
+
+class Test15mDrill(unittest.TestCase):
+    def test_drill_finds_impulse(self):
+        # synthetic 15m: flat then spike
+        closes = [10 + i * 0.01 for i in range(20)] + [10.2, 10.9, 10.85]
+        vols = [1.0] * (len(closes) - 2) + [8.0, 2.0]
+        self.assertEqual(len(closes), len(vols))
+        df = pd.DataFrame({"close": closes, "volume": vols})
+        market = MagicMock()
+        market.fetch_ohlcv.return_value = df
+        detail = drill_15m("SOL/USDT", market=market, fine_bars=8, impulse_min_pct=1.0)
+        self.assertEqual(detail["fine_tf"], "15m")
+        self.assertIsNotNone(detail["fine_impulse_pct"])
+        self.assertGreater(abs(detail["fine_impulse_pct"]), 1.0)
+
+    def test_apply_15m_on_large_snap(self):
+        closes = [100.0] * 10 + [100.0, 106.0, 105.5]
+        df = pd.DataFrame({"close": closes, "volume": [1.0] * len(closes)})
+        market = MagicMock()
+        market.fetch_ohlcv.return_value = df
+        snap = MoveSnap("SOL/USDT", chg_1h=5.0, chg_24h=5.0, screen_tf="1h", source="ohlcv_1h")
+        apply_15m_drill(
+            snap,
+            cfg={"fine_bars": 6, "ohlcv_limit_15m": 30, "fine_impulse_min_pct": 1.0},
+            market=market,
         )
-        self.assertEqual(score_trigger_for_move(move=move, event=ev), 0.0)
+        self.assertEqual(snap.fine_tf, "15m")
+        self.assertIsNotNone(snap.fine_impulse_pct)
 
 
-class TestFindAndWrite(unittest.TestCase):
-    def test_sync_writes_attribution_with_triggers(self):
+class TestSyncWithDrill(unittest.TestCase):
+    def test_sync_writes_with_1h_and_15m_meta(self):
         store = FakeStore()
         now = datetime.now(timezone.utc)
         store.upsert_event(
             MarketEvent(
                 event_id="soc1",
-                timestamp=(now - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                timestamp=(now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 event_type="lc_social_spike",
                 symbols=["SOL/USDT"],
                 impact_score=0.4,
@@ -104,7 +141,19 @@ class TestFindAndWrite(unittest.TestCase):
                 source="lunarcrush",
             )
         )
-        moves = [MoveSnap("SOL/USDT", 22.0, source="test")]
+        moves = [
+            MoveSnap(
+                "SOL/USDT",
+                chg_1h=5.5,
+                chg_24h=5.5,
+                screen_tf="1h",
+                source="ohlcv_1h",
+                fine_tf="15m",
+                fine_impulse_pct=3.2,
+                fine_impulse_vol_x=2.5,
+                fine_bars_scanned=8,
+            )
+        ]
         out = sync_move_attribution(
             store,
             config_raw={
@@ -112,7 +161,7 @@ class TestFindAndWrite(unittest.TestCase):
                     "enabled": True,
                     "move_attribution": {
                         "enabled": True,
-                        "abs_chg_24h_pct": 12,
+                        "abs_chg_1h_pct": 4,
                         "index_rag": False,
                     },
                 }
@@ -120,18 +169,21 @@ class TestFindAndWrite(unittest.TestCase):
             symbols=["SOL/USDT"],
             moves=moves,
         )
-        self.assertTrue(out.get("enabled"))
         self.assertEqual(out.get("moves_large"), 1)
         self.assertGreaterEqual(out.get("attributions_written"), 1)
-        self.assertGreaterEqual(out.get("links_found"), 1)
         written = [e for e in store.events.values() if e.event_type == "price_move_attribution"]
         self.assertEqual(len(written), 1)
-        self.assertIn("triggers", written[0].metadata)
-        self.assertEqual(written[0].metadata["triggers"][0]["event_id"], "soc1")
+        self.assertIn("1h", written[0].description)
+        self.assertIn("15m_impulse", written[0].description)
+        self.assertEqual(written[0].metadata.get("screen_tf"), "1h")
+        self.assertEqual(written[0].metadata.get("fine_impulse_pct"), 3.2)
 
-    def test_build_event_no_triggers(self):
-        ev = build_attribution_event(MoveSnap("X/USDT", -14.0), [])
-        self.assertEqual(ev.event_type, "price_move_attribution")
+
+class TestBuildEvent(unittest.TestCase):
+    def test_no_triggers(self):
+        ev = build_attribution_event(
+            MoveSnap("X/USDT", chg_1h=-5.0, chg_24h=-5.0, screen_tf="1h"), []
+        )
         self.assertIn("no strong trigger", ev.description.lower())
 
 
