@@ -27,6 +27,8 @@ FREE_CRYPTO_NEWS_FEEDS = [
 
 
 def _http_get(url: str, timeout: float = 15.0) -> bytes:
+    import ssl
+
     req = Request(
         url,
         headers={
@@ -34,7 +36,17 @@ def _http_get(url: str, timeout: float = 15.0) -> bytes:
             "Accept": "application/json, application/rss+xml, text/xml, */*",
         },
     )
-    with urlopen(req, timeout=timeout) as resp:
+    ctx = None
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            ctx = ssl.create_default_context()
+        except Exception:
+            ctx = None
+    with urlopen(req, timeout=timeout, context=ctx) as resp:
         return resp.read()
 
 

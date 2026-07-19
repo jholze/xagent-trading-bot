@@ -537,9 +537,9 @@
       "poll_sec": 600
     },
     "coin_facts": {
-      "enabled": false,
+      "enabled": true,
       "policy_apply": true,
-      "lookback_hours": 72,
+      "lookback_hours": 336,
       "max_events_per_symbol": 40,
       "sources": {
         "cmc_ai": {

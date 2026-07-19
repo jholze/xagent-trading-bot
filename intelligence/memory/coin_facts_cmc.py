@@ -67,6 +67,8 @@ def build_cmc_ai_urls(slug: str) -> dict[str, str]:
 
 
 def default_fetch(url: str, timeout: float = 20.0) -> str:
+    import ssl
+
     req = Request(
         url,
         headers={
@@ -74,7 +76,17 @@ def default_fetch(url: str, timeout: float = 20.0) -> str:
             "Accept": "text/html,application/xhtml+xml,*/*",
         },
     )
-    with urlopen(req, timeout=timeout) as resp:
+    ctx = None
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            ctx = ssl.create_default_context()
+        except Exception:
+            ctx = None
+    with urlopen(req, timeout=timeout, context=ctx) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
