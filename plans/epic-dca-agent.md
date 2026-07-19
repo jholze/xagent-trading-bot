@@ -17,7 +17,7 @@
 | D4b | [#99](https://github.com/jholze/xagent-trading-bot/issues/99) | /ask policy snapshot |
 | D5 | [#100](https://github.com/jholze/xagent-trading-bot/issues/100) | Reflection |
 | D6 | [#101](https://github.com/jholze/xagent-trading-bot/issues/101) | Observability |
-| D7 | [#102](https://github.com/jholze/xagent-trading-bot/issues/102) | Scheduled DCA (optional, parked) |
+| D7 | [#102](https://github.com/jholze/xagent-trading-bot/issues/102) | Scheduled DCA (implemented, **default off**) |
 | D8 | [#103](https://github.com/jholze/xagent-trading-bot/issues/103) | **Coin Fact Layer** — news/facts → memory → DCA + watchlist |
 
 ---

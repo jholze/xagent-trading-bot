@@ -132,6 +132,30 @@ def _build_market(symbol: str, tf: str, price: float, position: dict, strategy_p
     )
 
 
+
+def _portfolio_last_scheduled_run(coins: list[dict]) -> str | None:
+    """Earliest last_scheduled_dca_at across open positions (ISO), or None."""
+    stamps: list[str] = []
+    for coin in coins or []:
+        try:
+            symbol = coin.get("symbol", "")
+            if not symbol:
+                continue
+            coin_cfg = resolve_coin_config(coin)
+            tf = coin_cfg.get("timeframe", "4h")
+            pos = get_position(symbol, tf)
+            if float(pos.get("amount", 0) or 0) <= 0:
+                continue
+            ts = pos.get("last_scheduled_dca_at")
+            if ts:
+                stamps.append(str(ts))
+        except Exception:
+            continue
+    if not stamps:
+        return None
+    return min(stamps)
+
+
 def collect_dca_targets(
     coins: list[dict],
     price_map: dict[str, float],
@@ -139,6 +163,9 @@ def collect_dca_targets(
     config_raw: dict | None = None,
 ) -> list[DCATarget]:
     targets: list[DCATarget] = []
+    # per-call cache for scheduled plan
+    if hasattr(collect_dca_targets, "_sched_plan"):
+        delattr(collect_dca_targets, "_sched_plan")
 
     for coin in coins:
         try:
@@ -170,19 +197,59 @@ def collect_dca_targets(
             market = _build_market(symbol, tf, price, pos, strategy_params)
 
             cand = evaluate_dca_addon(market, pos, strategy_params)
+            is_scheduled = False
+            # #102: scheduled calendar split when dip path did not produce a candidate
+            if cand is None:
+                try:
+                    from strategies.dca_scheduled import (
+                        collect_open_position_symbols,
+                        evaluate_scheduled_dca_addon,
+                        plan_scheduled_allocations,
+                        scheduled_config,
+                        scheduled_enabled,
+                    )
+
+                    if scheduled_enabled(strategy_params, config_raw=cfg_root):
+                        scfg = scheduled_config(dca_cfg, config_raw=cfg_root)
+                        if not hasattr(collect_dca_targets, "_sched_plan"):
+                            open_syms = collect_open_position_symbols(coins)
+                            collect_dca_targets._sched_plan = plan_scheduled_allocations(  # type: ignore[attr-defined]
+                                open_syms,
+                                config=scfg,
+                                last_run=_portfolio_last_scheduled_run(coins),
+                            )
+                        plan = collect_dca_targets._sched_plan  # type: ignore[attr-defined]
+                        if plan.due and symbol in (plan.allocations or {}):
+                            sched_cand = evaluate_scheduled_dca_addon(
+                                market,
+                                pos,
+                                strategy_params,
+                                allocated_usdt=float(plan.allocations.get(symbol) or 0),
+                                config_raw=cfg_root,
+                            )
+                            if sched_cand:
+                                cand = sched_cand
+                                is_scheduled = True
+                except Exception:
+                    pass
+
             if not cand:
                 continue
             loss_pct = (price / float(pos.get("average_entry", price) or price) - 1.0) * 100.0
-            if (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
+            # Scheduled candidates may have score 0 — skip min_dca_score gate
+            if not is_scheduled and (cand.score or 0) < int(port_cfg.get("min_dca_score", 6)):
                 continue
             priority = _target_priority(cand, loss_pct)
+            if is_scheduled:
+                # Below typical dip priorities so dip wins when both present
+                priority = max(0.1, priority * 0.25) + 0.01
             if priority < float(port_cfg.get("min_priority_score", 0)):
                 continue
             targets.append(
                 DCATarget(
                     symbol=symbol,
                     timeframe=tf,
-                    source="dca",
+                    source=str(cand.source or "dca"),
                     candidate=cand,
                     priority=priority,
                     usdt_needed=float(cand.usdt_amount or 0),

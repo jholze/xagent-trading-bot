@@ -975,6 +975,20 @@
           "index_rag": true
         }
       },
+      "scheduled": {
+        "enabled": false,
+        "mode": "shadow",
+        "interval_days": 7,
+        "weekday": null,
+        "total_usdt": 500,
+        "min_usdt_per_symbol": 50,
+        "max_symbols": 10,
+        "require_open_position": true,
+        "apply_policy": true,
+        "respect_spendable_dca": true,
+        "only_when_dip_ineligible": true,
+        "source_tag": "dca_scheduled"
+      },
       "sizing": {
         "enabled": true,
         "base_mode": "max",

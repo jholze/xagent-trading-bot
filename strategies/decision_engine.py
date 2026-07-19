@@ -1197,12 +1197,57 @@ class DecisionEngine:
             )
             if normalized == HOLD:
                 dca = evaluate_dca_addon(market, position, market.strategy_params)
+                # #102: optional scheduled calendar DCA when dip path yields nothing
+                if dca is None:
+                    try:
+                        from strategies.dca_scheduled import (
+                            evaluate_scheduled_dca_addon,
+                            plan_scheduled_allocations,
+                            scheduled_config,
+                            scheduled_enabled,
+                        )
+
+                        if scheduled_enabled(market.strategy_params, config_raw=self.config.raw):
+                            scfg = scheduled_config(
+                                dict((market.strategy_params or {}).get("dca") or {}),
+                                config_raw=self.config.raw,
+                            )
+                            # Single-symbol allocation estimate (equal share of total)
+                            # Full multi-symbol split is used in portfolio collect path.
+                            max_n = max(1, int(scfg.get("max_symbols") or 10))
+                            alloc = float(scfg.get("total_usdt") or 0) / max_n
+                            last_run = position.get("last_scheduled_dca_at")
+                            plan = plan_scheduled_allocations(
+                                [coin.get("symbol") or market.symbol],
+                                config=scfg,
+                                last_run=last_run,
+                            )
+                            if plan.due:
+                                # Prefer plan allocation for this symbol if present
+                                if plan.allocations:
+                                    alloc = float(
+                                        plan.allocations.get(
+                                            coin.get("symbol") or market.symbol,
+                                            alloc,
+                                        )
+                                        or alloc
+                                    )
+                                dca = evaluate_scheduled_dca_addon(
+                                    market,
+                                    position,
+                                    market.strategy_params,
+                                    allocated_usdt=alloc,
+                                    config_raw=self.config.raw,
+                                )
+                    except Exception:
+                        pass
                 if dca:
                     from strategies.dca_portfolio import should_defer_per_coin_dca
 
                     defer = (
                         not dca.shadow_only
                         and should_defer_per_coin_dca(market.strategy_params, self.config.raw)
+                        and str(dca.source or "") != "dca_scheduled"
                     )
                     if defer:
                         sources.append(dca.source)
@@ -1217,9 +1262,13 @@ class DecisionEngine:
                         dca_usdt = dca.usdt_amount
                         if dca.shadow_only:
                             shadow_tag = (
-                                "dca_recovery_shadow"
-                                if dca.source == "dca_recovery"
-                                else "dca_shadow"
+                                "dca_scheduled_shadow"
+                                if str(dca.source or "") == "dca_scheduled"
+                                else (
+                                    "dca_recovery_shadow"
+                                    if dca.source == "dca_recovery"
+                                    else "dca_shadow"
+                                )
                             )
                             sources.append(shadow_tag)
         else:
