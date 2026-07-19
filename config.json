@@ -497,6 +497,16 @@
       "enrich_decision_audit": false,
       "max_prompt_chars": 6000
     },
+    "dca_reflect": {
+      "enabled": true,
+      "min_events": 5,
+      "event_limit": 300,
+      "outcome_window_hours": 72,
+      "loss_usdt_threshold": 50,
+      "win_usdt_threshold": 20,
+      "reflect_grok": false,
+      "index_rag": true
+    },
     "gross_loss": {
       "enabled": true,
       "min_loss_pct": 25,
@@ -953,7 +963,17 @@
         "telegram_on_skip_only": true,
         "persist_events": true,
         "index_rag": true,
-        "ask_snapshot": true
+        "ask_snapshot": true,
+        "reflect_grok": false,
+        "reflect": {
+          "enabled": true,
+          "min_events": 5,
+          "event_limit": 300,
+          "outcome_window_hours": 72,
+          "loss_usdt_threshold": 50,
+          "win_usdt_threshold": 20,
+          "index_rag": true
+        }
       },
       "sizing": {
         "enabled": true,

@@ -178,6 +178,18 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
             out["reflect"] = social_ref
     except Exception as e:
         log(f"memory social reflect: {e}", "WARNING")
+    # #100 D5: DCA policy reflection (rules first; optional Grok offline)
+    try:
+        from intelligence.memory.dca_reflector import reflect_dca_policy
+
+        dca_ref = reflect_dca_policy(store)
+        out["dca_reflect"] = dca_ref
+        if isinstance(out.get("reflect"), dict) and isinstance(dca_ref, dict):
+            out["reflect"]["dca_lessons"] = dca_ref.get("lessons", 0)
+            out["reflect"]["dca_events"] = dca_ref.get("events_read", 0)
+    except Exception as e:
+        log(f"memory dca reflect cycle: {e}", "WARNING")
+        out["dca_reflect"] = {"error": str(e)[:200]}
     # Epic #72: index memory entities into RAG chunks (idempotent, kill-switch)
     try:
         from intelligence.memory.rag_index import index_store_into_rag

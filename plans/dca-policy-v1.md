@@ -138,6 +138,7 @@ rationale += policy reasons
 | D6 #101 | Observability — done |
 | D4b #99 | LIVE_DCA_POLICY in /ask — done |
 | D4 #98 | `persist_dca_decision_event` → `memory_market_events` + optional RAG — done |
+| D5 #100 | `reflect_dca_policy` rules+outcomes → lessons (+ optional Grok) — done |
 
 ### D4 persist
 
