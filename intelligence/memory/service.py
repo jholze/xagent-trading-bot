@@ -215,7 +215,13 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                 idx.ensure_schema()
                 wv_ok = 0
                 wv_fail = 0
-                for ev in store.list_events(limit=40):
+                try:
+                    from intelligence.memory.rag_config import rag_config as _rag_cfg
+
+                    _wv_lim = int((_rag_cfg().get("event_index_limit") or 200) or 200)
+                except Exception:
+                    _wv_lim = 200
+                for ev in store.list_events(limit=max(40, _wv_lim)):
                     if idx.upsert_event(
                         ev.event_id,
                         ev.description,

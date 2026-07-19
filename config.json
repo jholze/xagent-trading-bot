@@ -495,7 +495,10 @@
       "use_weaviate_rag": true,
       "index_market_context": false,
       "enrich_decision_audit": false,
-      "max_prompt_chars": 6000
+      "max_prompt_chars": 6000,
+      "event_index_limit": 200,
+      "trade_index_limit": 80,
+      "lesson_index_limit": 40
     },
     "dca_reflect": {
       "enabled": true,

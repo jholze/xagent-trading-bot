@@ -58,11 +58,15 @@ def index_store_into_rag(
     retriever: RagRetriever | None = None,
     *,
     config: dict | None = None,
-    lesson_limit: int = 40,
-    trade_limit: int = 40,
-    event_limit: int = 40,
+    lesson_limit: int | None = None,
+    trade_limit: int | None = None,
+    event_limit: int | None = None,
 ) -> dict[str, int]:
-    """Upsert lessons/trades/events as RAG chunks. Fail-open."""
+    """Upsert lessons/trades/events as RAG chunks. Fail-open.
+
+    Defaults (overridable via memory.rag.*_index_limit) are high enough that
+    coin-fact / portfolio events are not starved by a flood of RSS items.
+    """
     out = {"lessons": 0, "trades": 0, "events": 0, "skipped": 0, "errors": 0}
     if not rag_enabled(config):
         out["skipped"] = 1
@@ -71,6 +75,18 @@ def index_store_into_rag(
     if not cfg.get("index_on_cycle", True):
         out["skipped"] = 1
         return out
+
+    def _lim(key: str, explicit: int | None, default: int) -> int:
+        if explicit is not None:
+            return max(1, int(explicit))
+        try:
+            return max(1, int(cfg.get(key, default) or default))
+        except (TypeError, ValueError):
+            return default
+
+    lesson_limit = _lim("lesson_index_limit", lesson_limit, 40)
+    trade_limit = _lim("trade_index_limit", trade_limit, 80)
+    event_limit = _lim("event_index_limit", event_limit, 200)
 
     store = memory_store or MemoryStore()
     rag = retriever or RagRetriever(config=config)
