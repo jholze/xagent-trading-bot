@@ -25,6 +25,7 @@ export class Hud {
    *  onZoomIn?: () => void,
    *  onZoomOut?: () => void,
    *  onZoomSlider?: (value: number) => void,
+   *  onModeChange?: (mode: string) => void,
    * }} hooks
    */
   constructor(hooks) {
@@ -33,6 +34,7 @@ export class Hud {
     this.symbolState = {};
     this._nodeByIndex = [];
     this.compact = true;
+    this.vizMode = "cortex";
 
     this.$panel = document.getElementById("hud-top");
     this.$status = document.getElementById("status-line");
@@ -56,6 +58,9 @@ export class Hud {
     this.$zoomIn = document.getElementById("zoom-in");
     this.$zoomOut = document.getElementById("zoom-out");
     this.$zoomSlider = document.getElementById("zoom-slider");
+    this.$graphStats = document.getElementById("graph-stats");
+    this.$modeCortex = document.getElementById("mode-cortex");
+    this.$modeGraph = document.getElementById("mode-graph");
     this._copyId = "";
 
     // default compact
@@ -69,6 +74,22 @@ export class Hud {
     this.$expand.addEventListener("click", () => {
       this.setCompact(!this.compact);
     });
+
+    const MODE_KEY = "memory_viz_mode";
+    try {
+      const sm = localStorage.getItem(MODE_KEY);
+      if (sm === "graph" || sm === "cortex") this.vizMode = sm;
+    } catch (_) {}
+    if (this.$modeCortex) {
+      this.$modeCortex.addEventListener("click", () => {
+        if (this.hooks.onModeChange) this.hooks.onModeChange("cortex");
+      });
+    }
+    if (this.$modeGraph) {
+      this.$modeGraph.addEventListener("click", () => {
+        if (this.hooks.onModeChange) this.hooks.onModeChange("graph");
+      });
+    }
 
     const run = () => this._runQuery();
     this.$btn.addEventListener("click", run);
@@ -153,6 +174,29 @@ export class Hud {
 
   setZoomSlider(value) {
     if (this.$zoomSlider) this.$zoomSlider.value = String(Math.round(value));
+  }
+
+  setModeUI(mode) {
+    this.vizMode = mode === "graph" ? "graph" : "cortex";
+    if (this.$modeCortex) this.$modeCortex.classList.toggle("on", this.vizMode === "cortex");
+    if (this.$modeGraph) this.$modeGraph.classList.toggle("on", this.vizMode === "graph");
+    try {
+      localStorage.setItem("memory_viz_mode", this.vizMode);
+    } catch (_) {}
+  }
+
+  setGraphStats(stats) {
+    if (!this.$graphStats) return;
+    if (!stats) {
+      this.$graphStats.hidden = true;
+      return;
+    }
+    const kinds = stats.kinds || {};
+    const kindBits = Object.entries(kinds)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(" · ");
+    this.$graphStats.hidden = false;
+    this.$graphStats.textContent = `${stats.link_count || 0} synapses · knn ${stats.knn || "?"} · ${kindBits || "—"}`;
   }
 
   setStatus(text) {

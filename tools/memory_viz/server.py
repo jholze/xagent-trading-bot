@@ -74,7 +74,11 @@ def ensure_store_loaded() -> None:
         _BOOTED = True
 
 
-def _broadcast_nodes_added(nodes: list[dict[str, Any]]) -> None:
+def _broadcast_nodes_added(
+    nodes: list[dict[str, Any]],
+    *,
+    links: list[dict[str, Any]] | None = None,
+) -> None:
     if not nodes:
         return
     store = get_store()
@@ -82,6 +86,7 @@ def _broadcast_nodes_added(nodes: list[dict[str, Any]]) -> None:
         {
             "type": "nodes_added",
             "nodes": nodes,
+            "links": links or [],
             "node_count": store.node_count,
             "revision": store.revision,
         }
@@ -144,13 +149,20 @@ class CortexHandler(BaseHTTPRequestHandler):
             return self._static("index.html")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :])
-        if path in ("/css/cortex.css", "/js/main.js", "/js/scene.js", "/js/hud.js"):
+        if path in (
+            "/css/cortex.css",
+            "/js/main.js",
+            "/js/scene.js",
+            "/js/scene_graph.js",
+            "/js/hud.js",
+        ):
             return self._static(path.lstrip("/"))
 
         if path == "/api/health":
             h = get_store().health()
             h["ledger_collections_blocked"] = sorted(LEDGER_COLLECTIONS)
             h["mongo_configured"] = mongo_configured()
+            h["modes"] = ["cortex", "graph"]
             w = get_watcher()
             h["watcher"] = bool(w)
             h["ws_clients"] = get_hub().client_count()
@@ -160,6 +172,25 @@ class CortexHandler(BaseHTTPRequestHandler):
             return self._json(200, h)
         if path == "/api/cortex":
             return self._json(200, get_store().public_cortex())
+        if path == "/api/graph":
+            # optional query knn / min_sim
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(parsed.query or "")
+            try:
+                knn = int((qs.get("knn") or ["5"])[0])
+            except (TypeError, ValueError):
+                knn = 5
+            try:
+                min_sim = float((qs.get("min_sim") or ["0.12"])[0])
+            except (TypeError, ValueError):
+                min_sim = 0.12
+            knn = max(2, min(knn, 16))
+            min_sim = max(0.0, min(min_sim, 0.9))
+            return self._json(
+                200,
+                get_store().public_graph(knn=knn, min_sim=min_sim),
+            )
         m = re.fullmatch(r"/api/node/([^/]+)", path)
         if m:
             node = get_store().get_node(m.group(1))
@@ -215,8 +246,17 @@ class CortexHandler(BaseHTTPRequestHandler):
                 "created_at": node.get("created_at"),
                 "nbs": node.get("nbs") or [],
             }
-            _broadcast_nodes_added([pub])
-            return self._json(200, {"ok": True, "node": pub, "node_count": store.node_count})
+            links = store.graph_links_for_id(str(pub["id"]))
+            _broadcast_nodes_added([pub], links=links)
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "node": pub,
+                    "links": links,
+                    "node_count": store.node_count,
+                },
+            )
 
         return self._json(404, {"error": "not_found"})
 

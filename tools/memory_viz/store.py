@@ -296,6 +296,47 @@ class CortexStore:
             "hits": hits,
         }
 
+    def public_graph(
+        self,
+        *,
+        knn: int = 5,
+        min_sim: float = 0.12,
+        max_nodes: int = 800,
+    ) -> dict[str, Any]:
+        """Knowledge graph snapshot for Graph mode (Mode 2)."""
+        from tools.memory_viz.graph_build import build_memory_graph
+
+        with self._lock:
+            nodes = list(self._cortex.get("nodes") or [])
+            vectors = list(self._vectors)
+            rev = self._revision
+            demo = bool(self._cortex.get("demo"))
+            source = self._source
+        g = build_memory_graph(
+            nodes,
+            vectors,
+            knn=knn,
+            min_sim=min_sim,
+            max_nodes=max_nodes,
+        )
+        g["revision"] = rev
+        g["demo"] = demo
+        g["source"] = source
+        g["mode"] = "graph"
+        g["lobes"] = lobe_legend()
+        return g
+
+    def graph_links_for_id(self, node_id: str, *, knn: int = 5) -> list[dict[str, Any]]:
+        from tools.memory_viz.graph_build import links_for_new_node
+
+        with self._lock:
+            i = self._by_id.get(str(node_id))
+            if i is None:
+                return []
+            nodes = list(self._cortex.get("nodes") or [])
+            vectors = list(self._vectors)
+        return links_for_new_node(i, nodes, vectors, knn=knn)
+
 
 _STORE: CortexStore | None = None
 

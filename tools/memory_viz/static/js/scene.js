@@ -80,6 +80,10 @@ export class CortexScene {
     this._onPick = fn;
   }
 
+  setVisible(on) {
+    this.renderer.domElement.style.display = on ? "block" : "none";
+  }
+
   onZoomChange(fn) {
     this._onZoomChange = fn;
   }

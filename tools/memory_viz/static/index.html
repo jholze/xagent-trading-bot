@@ -17,17 +17,23 @@
 <body class="hud-compact">
   <div id="boot-bg"></div>
   <canvas id="cortex-canvas" aria-label="3D memory cortex"></canvas>
+  <canvas id="graph-canvas" aria-label="3D knowledge graph" style="display:none"></canvas>
+  <div id="hover-tip" class="hover-tip" hidden></div>
 
   <header id="hud-top" class="glass compact" data-mode="compact">
     <div class="brand-row">
       <div class="brand">
         <span class="brand-mark">◈</span>
         <div class="brand-text">
-          <h1>Cortex <span id="ws-dot" class="ws-dot" title="WebSocket"></span></h1>
+          <h1>Memory <span id="ws-dot" class="ws-dot" title="WebSocket"></span></h1>
           <p id="status-line" class="muted">booting…</p>
         </div>
       </div>
       <div class="brand-actions">
+        <div id="mode-toggle" class="mode-toggle" role="group" aria-label="Visualization mode">
+          <button type="button" id="mode-cortex" class="mode-btn on" data-mode="cortex" title="Cortex — embedding space">Cortex</button>
+          <button type="button" id="mode-graph" class="mode-btn" data-mode="graph" title="Graph — synapses &amp; relations">Graph</button>
+        </div>
         <button id="hud-expand" type="button" class="ghost icon-btn" title="Expand settings" aria-expanded="false">☰</button>
       </div>
     </div>
@@ -48,6 +54,7 @@
         <button id="zoom-in" type="button" class="zoom-btn" title="Zoom in">+</button>
       </div>
     </div>
+    <p id="graph-stats" class="graph-stats muted" hidden></p>
 
     <div id="hud-expanded" class="hud-expanded" hidden>
       <div id="query-row">

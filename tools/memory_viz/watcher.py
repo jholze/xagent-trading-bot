@@ -119,10 +119,14 @@ class MemoryWatcher:
                 self.added_total += 1
 
         if new_public:
+            all_links: list[dict] = []
+            for p in new_public:
+                all_links.extend(self.store.graph_links_for_id(str(p.get("id") or "")))
             self._broadcast(
                 {
                     "type": "nodes_added",
                     "nodes": new_public,
+                    "links": all_links,
                     "node_count": self.store.node_count,
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }

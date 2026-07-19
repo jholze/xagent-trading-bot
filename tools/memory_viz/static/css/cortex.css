@@ -33,7 +33,8 @@ html, body {
     var(--bg);
 }
 
-#cortex-canvas {
+#cortex-canvas,
+#graph-canvas {
   position: fixed;
   inset: 0;
   z-index: 1;
@@ -42,6 +43,74 @@ html, body {
   height: 100%;
   outline: none;
 }
+
+.mode-toggle {
+  display: flex;
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mode-btn {
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mode-btn.on {
+  background: rgba(34, 211, 238, 0.2);
+  color: var(--cyan);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+}
+.mode-btn:hover:not(.on) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+body[data-viz-mode="graph"] .mode-btn[data-mode="graph"].on {
+  background: rgba(244, 114, 182, 0.22);
+  color: var(--pink);
+  text-shadow: 0 0 8px rgba(244, 114, 182, 0.45);
+}
+body[data-viz-mode="graph"] .mode-toggle {
+  border-color: rgba(244, 114, 182, 0.35);
+}
+
+.graph-stats {
+  margin: 6px 0 0;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body[data-viz-mode="cortex"] #graph-stats {
+  display: none !important;
+}
+
+.hover-tip {
+  position: fixed;
+  z-index: 15;
+  left: 50%;
+  top: 72px;
+  transform: translateX(-50%);
+  max-width: min(480px, 90vw);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #e2e8f0;
+  background: rgba(8, 12, 20, 0.85);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hover-tip[hidden] { display: none !important; }
 
 .glass {
   background: var(--glass);
@@ -67,9 +136,15 @@ html, body {
 }
 
 #hud-top.compact {
-  width: min(340px, calc(100vw - 28px));
-  max-width: 340px;
+  width: min(400px, calc(100vw - 28px));
+  max-width: 400px;
   padding: 8px 10px;
+}
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 #hud-top.expanded {

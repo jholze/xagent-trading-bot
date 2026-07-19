@@ -84,6 +84,9 @@ class TestMemoryVizServer(unittest.TestCase):
         self.assertIn("query-input-compact", html)
         self.assertIn("hud-compact", html)
         self.assertIn("zoom-controls", html)
+        self.assertIn("mode-toggle", html)
+        self.assertIn("mode-graph", html)
+        self.assertIn("graph-canvas", html)
         self.assertIn("hit-strip", html)
         self.assertIn("detail-drawer", html)
         self.assertIn("lobe-toggles", html)
@@ -95,6 +98,18 @@ class TestMemoryVizServer(unittest.TestCase):
         self.assertIn("from \"three\"", text)
         self.assertNotIn("module.exports", text)
         self.assertNotIn("require(", text)
+
+        code, gjs = self._req("GET", "/js/scene_graph.js")
+        self.assertEqual(code, 200)
+        self.assertIn("GraphScene", gjs.decode("utf-8"))
+        self.assertIn("from \"three\"", gjs.decode("utf-8"))
+
+        code, data = self._req("GET", "/api/graph")
+        self.assertEqual(code, 200)
+        g = json.loads(data)
+        self.assertEqual(g.get("mode"), "graph")
+        self.assertGreater(len(g.get("nodes") or []), 0)
+        self.assertGreater(len(g.get("links") or []), 0)
 
 
 if __name__ == "__main__":
