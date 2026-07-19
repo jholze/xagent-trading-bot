@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Full memory enrichment from portfolio + trades + news/social/macro + coin facts.
+"""Full memory enrichment from portfolio + watchlist + trades + news/social/macro + coin facts.
 
 LEDGER SAFETY: read-only on orders/positions; writes only memory_*.
 
+Pipeline (backward fill for books + watchlist):
+  1) rebuild TradeMemory + CoinProfile from filled orders (Mongo)
+  2) open positions → synthetic open trades + gap profiles
+  3) optional historical coin-fact seeds
+  4) portfolio snapshot events + significant fill events
+  5–7) news / social / macro (optional --no-network)
+  8) coin facts for positions ∪ active watchlist (CMC)
+  9) RAG index (Mongo chunks ± Weaviate)
+
   python3 scripts/enrich_memory_full.py
   python3 scripts/enrich_memory_full.py --top 40 --no-network
+  # Staging (Hermes network): railway ssh -s xagent-hermes -- python3 scripts/enrich_memory_full.py --top 40
 """
 
 from __future__ import annotations
@@ -265,10 +275,24 @@ def main() -> int:
     else:
         print("5-7 skipped (--no-network)")
 
-    # 8) coin facts for open universe (network CMC if allowed)
+    # 8) coin facts for open positions ∪ watchlist (network CMC if allowed)
     syms = [p["symbol"] for p in positions[: args.top]]
-    if "ALLO/USDT" not in syms:
-        syms = ["ALLO/USDT"] + syms
+    try:
+        from data_manager import load_effective_watchlist
+
+        for coin in load_effective_watchlist() or []:
+            if not (coin or {}).get("active", True):
+                continue
+            s = str((coin or {}).get("symbol") or "").strip().upper()
+            if s and "/" not in s:
+                s = f"{s}/USDT"
+            if s and s not in syms and not s.startswith("TEST"):
+                syms.append(s)
+    except Exception as e:
+        print("8 watchlist_merge_skip:", e)
+    # Cap for API budget (positions already first)
+    syms = syms[: max(args.top, 40)]
+    print(f"8 universe n={len(syms)} (positions+watchlist, cap={max(args.top, 40)})")
     try:
         summary["coin_facts"] = run_coin_facts(syms, use_network=use_net)
         print("8 coin_facts:", summary["coin_facts"])

@@ -72,6 +72,32 @@ Social never sole BUY; never blocks sells; soft_block only from trade history.
 - CMC/LC empty on Hermes → last_social zeros, cycle continues.
 - News providers fail → cycle continues; counters show zeros.
 
+## Backward enrich: open book + watchlist
+
+Universe = **open full positions first**, then **active watchlist** (capped).
+
+| Layer | What gets written | How |
+|-------|-------------------|-----|
+| Ledger rebuild | `memory_trades`, `memory_coin_profiles` (bias/soft_block) | Hermes cycle / `rebuild_from_orders` |
+| Open lots without closed sells | synthetic open trades + seed profiles | `scripts/enrich_memory_full.py` |
+| Coin narrative (unlocks, CMC) | `memory_market_events` (coin_fact) | `sync_coin_facts` / seed scripts |
+| Social | CMC/LC events + join to trades | Hermes social sync |
+| Macro pressure | calendar/session/PM events | Hermes macro sync |
+| RAG | `memory_rag_chunks` (+ Weaviate) | `index_store_into_rag` |
+
+One-shot full backfill (safe for memory_* only):
+
+```bash
+# Local with Mongo env
+python3 scripts/enrich_memory_full.py --top 40
+# Offline (no CMC/RSS)
+python3 scripts/enrich_memory_full.py --top 40 --no-network
+# Or thinner ledger seed
+python3 scripts/seed_memory_from_ledger.py --top 25
+```
+
+Hermes continuous path already uses the same universe for coin facts (`coin_fact_universe`).
+
 ## Quality eval (P1)
 
 ```bash
