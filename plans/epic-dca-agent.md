@@ -1,10 +1,23 @@
 # Epic: DCA Agent (policy-first) + intelligent sizing
 
 > **GitHub:** [#79](https://github.com/jholze/xagent-trading-bot/issues/79)  
-> **Status:** Open · ready (after #72 closed)  
-> **Updated:** 2026-07-18  
-> **Related:** #72 (infra done) · #67 · #71 · #65 · Cash plan  
+> **Status:** Open · ready (after #72 closed · cash #90 shipped)  
+> **Updated:** 2026-07-19  
+> **Related:** #72 (infra done) · #89/#90 Cash · #67/#91 · #71 · #65  
 > **Coordination:** [`next-wave-dca-decision-cash.md`](next-wave-dca-decision-cash.md)
+
+### Ticket map (children of #79)
+
+| ID | Issue | Title |
+|----|-------|--------|
+| D1 | [#95](https://github.com/jholze/xagent-trading-bot/issues/95) | Spec DcaContext + factors |
+| D2 | [#96](https://github.com/jholze/xagent-trading-bot/issues/96) | ContextBuilder |
+| D3 | [#97](https://github.com/jholze/xagent-trading-bot/issues/97) | Wire policy mult/skip |
+| D4 | [#98](https://github.com/jholze/xagent-trading-bot/issues/98) | DecisionEvent → memory/RAG |
+| D4b | [#99](https://github.com/jholze/xagent-trading-bot/issues/99) | /ask policy snapshot |
+| D5 | [#100](https://github.com/jholze/xagent-trading-bot/issues/100) | Reflection |
+| D6 | [#101](https://github.com/jholze/xagent-trading-bot/issues/101) | Observability |
+| D7 | [#102](https://github.com/jholze/xagent-trading-bot/issues/102) | Scheduled DCA (optional) |
 
 ---
 
@@ -139,16 +152,16 @@ flowchart TB
 
 ## Child issues
 
-| ID | Title | Depends |
-|----|--------|---------|
-| **D1** | Spec: `DcaContext` + factor table + reason_codes + cash_mode mapping | — |
-| **D2** | `DcaContextBuilder` (fusion live, cash, calendar, profile; RAG optional fail-open) | D1, #72 C1 |
-| **D3** | Wire policy mult/skip into evaluate path + unit tests + shadow flag | D2, Cash P0/P1 empfohlen |
-| **D4** | `DcaDecisionEvent` persist + index memory/RAG | D3 |
-| **D4b** | `/ask` optional Live-Policy-Snapshot (Alignment) | D3, #72 C4 |
-| **D5** | Reflection pass (rules first; Grok via Hermes optional) | D4 |
-| **D6** | Observability: logs/Telegram reason_codes + mult | D3 |
-| **D7** | *(optional)* Mode `scheduled` weekly DCA | D3 stable |
+| ID | GitHub | Title | Depends |
+|----|--------|--------|---------|
+| **D1** | #95 | Spec: `DcaContext` + factor table + reason_codes + cash_mode mapping | — |
+| **D2** | #96 | `DcaContextBuilder` (fusion live, cash, calendar, profile; RAG optional fail-open) | D1, #72 C1 |
+| **D3** | #97 | Wire policy mult/skip into evaluate path + unit tests + shadow flag | D2, #90 |
+| **D4** | #98 | `DcaDecisionEvent` persist + index memory/RAG | D3 |
+| **D4b** | #99 | `/ask` optional Live-Policy-Snapshot (Alignment) | D3, #72 C4 |
+| **D5** | #100 | Reflection pass (rules first; Grok via Hermes optional) | D4 |
+| **D6** | #101 | Observability: logs/Telegram reason_codes + mult | D3 |
+| **D7** | #102 | *(optional)* Mode `scheduled` weekly DCA | D3 stable |
 
 ---
 

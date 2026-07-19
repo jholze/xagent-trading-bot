@@ -1,9 +1,18 @@
 # Next wave: Adaptive Cash + Intelligent DCA + DecisionPacket
 
-> **Status:** Plan (updated 2026-07-18)  
+> **Status:** Plan (updated 2026-07-19) — **ticket-aligned**  
 > **Nach:** Epic [#72](https://github.com/jholze/xagent-trading-bot/issues/72) RAG/Bus **CLOSED**  
 > **Vor:** Gate-News (#86/#87), Memory-UI (#88)  
 > **Related docs:** [`epic-dca-agent.md`](epic-dca-agent.md) · [`adaptive-cash-rotation-master.md`](adaptive-cash-rotation-master.md) · [`epic-agent-bus-rag.md`](epic-agent-bus-rag.md)
+
+### Work from tickets (source of truth)
+
+| Track | Epic | Next open tickets | Done |
+|-------|------|-------------------|------|
+| Adaptive Cash | [#89](https://github.com/jholze/xagent-trading-bot/issues/89) | [#91](https://github.com/jholze/xagent-trading-bot/issues/91) soak → [#92](https://github.com/jholze/xagent-trading-bot/issues/92)–[#94](https://github.com/jholze/xagent-trading-bot/issues/94) | [#90](https://github.com/jholze/xagent-trading-bot/issues/90) P0–P1 |
+| DCA Agent | [#79](https://github.com/jholze/xagent-trading-bot/issues/79) | [#95](https://github.com/jholze/xagent-trading-bot/issues/95) D1 → [#96](https://github.com/jholze/xagent-trading-bot/issues/96)–[#97](https://github.com/jholze/xagent-trading-bot/issues/97) | — |
+| Decision Agents | [#65](https://github.com/jholze/xagent-trading-bot/issues/65) | [#82](https://github.com/jholze/xagent-trading-bot/issues/82) A0 (parallel, thin) | — |
+| Ops floor $0 | [#67](https://github.com/jholze/xagent-trading-bot/issues/67) | close via [#91](https://github.com/jholze/xagent-trading-bot/issues/91) | code path #90 |
 
 ---
 

@@ -1,12 +1,25 @@
 # Master-Plan: Adaptive Cash + Extreme Position Rotation
 
-> **Status:** Phase 0–1 **implemented** (2026-07-18) · Phases 2–4 open · **koordiniert** mit Next Wave  
+> **Status:** Phase 0–1 **implemented** (2026-07-19) · Phases 2–4 open · **koordiniert** mit Next Wave  
+> **GitHub epic:** [#89](https://github.com/jholze/xagent-trading-bot/issues/89) Adaptive Cash + Extreme Position Rotation  
 > **Anlass:** User-Ziel — starker Markt Cash **freigeben**, schwacher Markt **auffüllen**; viele kleine Gewinne, schnelle Rotation, immer DCA-fähig; starrer Floor (#67) blockiert Test  
 > **Supersedes / merged with:** Teile von `dca-recovery-rotation.md` (Rotation-Cash-Seite), ergänzt #67  
 > **Koordination:** [`next-wave-dca-decision-cash.md`](next-wave-dca-decision-cash.md) · DCA Policy [`epic-dca-agent.md`](epic-dca-agent.md) (#79)  
 > **#72:** Fusion live lesen; RAG optional Evidence — Cash Policy ist **nicht** #72-Scope  
 > **Nicht ersetzen:** Venue/Sensor-Guard, Exit-Ladder-Details — die bleiben; hier steuern wir **Cash + Tempo**  
 > **Branch-Vorschlag:** `feature/adaptive-cash-rotation` von `staging`
+
+### Ticket map
+
+| Phase | Issue | Status |
+|-------|-------|--------|
+| P0–P1 Cash controller | [#90](https://github.com/jholze/xagent-trading-bot/issues/90) | **closed** shipped |
+| Staging soak + close #67 | [#91](https://github.com/jholze/xagent-trading-bot/issues/91) | open |
+| P2 Rotation tempo | [#92](https://github.com/jholze/xagent-trading-bot/issues/92) | open |
+| P3 Funding portfolio | [#93](https://github.com/jholze/xagent-trading-bot/issues/93) | open |
+| P4 Urgency + HARVEST | [#94](https://github.com/jholze/xagent-trading-bot/issues/94) | open |
+| Ops floor free $0 | [#67](https://github.com/jholze/xagent-trading-bot/issues/67) | open → close via #91 |
+| Memory urgency docs | [#71](https://github.com/jholze/xagent-trading-bot/issues/71) | open (feeds #94) |
 
 ---
 
