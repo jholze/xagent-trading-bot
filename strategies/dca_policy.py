@@ -62,9 +62,82 @@ def dca_policy_config(dca_cfg: dict | None) -> dict[str, Any]:
         "soft_block_mult": 0.6,
         "size_mult_harvest": 0.7,
         "size_mult_deploy": 1.0,
+        # D6 observability (#101)
+        "log_audit": True,
+        "telegram_audit": False,
+        "telegram_on_skip_only": True,
     }
     raw = dict((dca_cfg or {}).get("policy") or {})
     return {**defaults, **raw}
+
+
+def format_dca_policy_audit(
+    *,
+    symbol: str,
+    result: DcaPolicyResult,
+    ctx: DcaContext | None = None,
+    shadow: bool = False,
+    base_usdt: float = 0.0,
+    final_usdt: float = 0.0,
+    applied: str = "apply",
+) -> str:
+    """Single-line operator audit (logs / Telegram)."""
+    codes = ",".join(result.reason_codes) if result.reason_codes else "-"
+    mode = (ctx.cash_mode if ctx else "") or "-"
+    sm = float(ctx.fusion_size_mult) if ctx else 1.0
+    spd = ctx.spendable_dca if ctx and ctx.spendable_dca is not None else None
+    spd_s = f"{spd:.0f}" if spd is not None else "n/a"
+    return (
+        f"DCA policy {symbol or '?'}: {applied} "
+        f"mode={mode} fusion_sm={sm:.2f} "
+        f"mult={result.size_mult} skip={result.skip} "
+        f"{'shadow ' if shadow else ''}"
+        f"reasons=[{codes}] "
+        f"usdt={base_usdt:.0f}->{final_usdt:.0f} spendable_dca={spd_s} "
+        f"v{result.policy_version}"
+    )
+
+
+def emit_dca_policy_audit(
+    *,
+    symbol: str,
+    result: DcaPolicyResult,
+    ctx: DcaContext | None = None,
+    shadow: bool = False,
+    base_usdt: float = 0.0,
+    final_usdt: float = 0.0,
+    applied: str = "apply",
+    policy_cfg: dict | None = None,
+) -> str:
+    """Log policy audit; optional Telegram. Returns the audit line."""
+    cfg = policy_cfg or {}
+    line = format_dca_policy_audit(
+        symbol=symbol,
+        result=result,
+        ctx=ctx,
+        shadow=shadow,
+        base_usdt=base_usdt,
+        final_usdt=final_usdt,
+        applied=applied,
+    )
+    if cfg.get("log_audit", True):
+        try:
+            from logger import log
+
+            log(line, "INFO")
+        except Exception:
+            pass
+    want_tg = bool(cfg.get("telegram_audit"))
+    if want_tg and cfg.get("telegram_on_skip_only", True) and not result.skip:
+        want_tg = False
+    if want_tg:
+        try:
+            from telegram_notifier import send_telegram_message
+
+            send_telegram_message(f"📊 <code>{line}</code>")
+        except Exception:
+            pass
+    return line
 
 
 def _f(cfg: dict, key: str, default: float) -> float:

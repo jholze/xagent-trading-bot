@@ -517,13 +517,38 @@ def evaluate_dca_addon(
             )
             breakdown["policy_mult"] = result.size_mult
             breakdown["policy_skip"] = 1 if result.skip else 0
+            base_before = usdt_amount
             if result.skip and not shadow:
+                from strategies.dca_policy import emit_dca_policy_audit
+
+                emit_dca_policy_audit(
+                    symbol=sym,
+                    result=result,
+                    ctx=ctx,
+                    shadow=shadow,
+                    base_usdt=base_before,
+                    final_usdt=0.0,
+                    applied="live_skip",
+                    policy_cfg=pcfg,
+                )
                 return None
             usdt_amount = apply_policy_to_usdt(
                 usdt_amount,
                 result,
                 spendable_dca=ctx.spendable_dca,
                 shadow=shadow,
+            )
+            from strategies.dca_policy import emit_dca_policy_audit
+
+            emit_dca_policy_audit(
+                symbol=sym,
+                result=result,
+                ctx=ctx,
+                shadow=shadow,
+                base_usdt=base_before,
+                final_usdt=usdt_amount,
+                applied="shadow" if shadow else "live",
+                policy_cfg=pcfg,
             )
     except Exception:
         pass

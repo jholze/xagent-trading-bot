@@ -64,6 +64,56 @@ class TestDcaPolicyPure(unittest.TestCase):
         self.assertLessEqual(usdt, 120.0)
 
 
+class TestDcaPolicyAudit(unittest.TestCase):
+    def test_format_audit_contains_mult_and_reasons(self):
+        from strategies.dca_policy import (
+            DcaContext,
+            DcaPolicyResult,
+            format_dca_policy_audit,
+        )
+
+        line = format_dca_policy_audit(
+            symbol="ZBT/USDT",
+            result=DcaPolicyResult(
+                size_mult=1.35,
+                skip=False,
+                reason_codes=("deploy_boost", "steady"),
+            ),
+            ctx=DcaContext(cash_mode="DEPLOY", fusion_size_mult=1.2, spendable_dca=800),
+            shadow=True,
+            base_usdt=500,
+            final_usdt=500,
+            applied="shadow",
+        )
+        self.assertIn("ZBT/USDT", line)
+        self.assertIn("mult=1.35", line)
+        self.assertIn("deploy_boost", line)
+        self.assertIn("spendable_dca=800", line)
+        self.assertIn("shadow", line)
+
+    def test_emit_logs_when_enabled(self):
+        from strategies.dca_policy import (
+            DcaContext,
+            DcaPolicyResult,
+            emit_dca_policy_audit,
+        )
+
+        with patch("logger.log") as log_mock:
+            line = emit_dca_policy_audit(
+                symbol="ADA/USDT",
+                result=DcaPolicyResult(size_mult=0.4, skip=True, reason_codes=("harvest_skip",)),
+                ctx=DcaContext(cash_mode="HARVEST", fusion_size_mult=0.5),
+                shadow=True,
+                base_usdt=200,
+                final_usdt=200,
+                applied="shadow",
+                policy_cfg={"log_audit": True, "telegram_audit": False},
+            )
+        self.assertIn("harvest_skip", line)
+        log_mock.assert_called()
+        self.assertEqual(log_mock.call_args[0][1], "INFO")
+
+
 class TestDcaPolicyWire(unittest.TestCase):
     def test_evaluate_addon_shadow_keeps_candidate_on_harvest(self):
         from core.models import MarketContext

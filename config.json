@@ -947,7 +947,10 @@
         "drawdown_mult": 0.5,
         "score_boost_mult": 1.25,
         "score_boost_ratio": 0.8,
-        "soft_block_mult": 0.6
+        "soft_block_mult": 0.6,
+        "log_audit": true,
+        "telegram_audit": false,
+        "telegram_on_skip_only": true
       },
       "sizing": {
         "enabled": true,

@@ -133,5 +133,20 @@ rationale += policy reasons
 
 ## 7. Implementation tickets
 
-| D2 #96 | `build_dca_context` |
-| D3 #97 | wire + pure `evaluate_dca_policy` + tests |
+| D2 #96 | `build_dca_context` — done |
+| D3 #97 | wire + pure `evaluate_dca_policy` + tests — done |
+| D6 #101 | Observability: `format_dca_policy_audit` / `emit_dca_policy_audit` INFO log; optional Telegram |
+
+### D6 config
+
+```json
+"log_audit": true,
+"telegram_audit": false,
+"telegram_on_skip_only": true
+```
+
+Log line example:
+
+```text
+DCA policy ZBT/USDT: shadow mode=HARVEST fusion_sm=0.50 mult=1.0 skip=True reasons=[harvest_skip] usdt=500->500 spendable_dca=800 v1
+```
