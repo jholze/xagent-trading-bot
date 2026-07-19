@@ -18,18 +18,20 @@ def _cfg(**risk_over) -> BotConfig:
     raw["initial_capital_usdt"] = 100_000
     raw["max_open_positions"] = 24
     raw["max_usdt_per_trade"] = 2500
-    risk = raw.setdefault("risk", {})
+    # Deep-copy risk so we never mutate the shared get_config() cache
+    base_risk = raw.get("risk") if isinstance(raw.get("risk"), dict) else {}
+    risk = dict(base_risk)
     risk["cash_floor_pct"] = 18
     risk["cash_floor_basis"] = "initial"
     risk["dca_reserve_pct"] = 0
     risk["min_trade_usdt"] = 100.0
     risk["venue_quality"] = {"enabled": False}
-    # Isolate static floor tests from adaptive capacity expansion
-    risk.setdefault(
-        "position_capacity",
-        {"enabled": False},
-    )
+    # Force static floor path — config.json may enable adaptive policy/capacity
+    risk["position_capacity"] = {"enabled": False}
+    risk["cash_policy"] = {"enabled": False}
+    risk["slot_eviction"] = {"enabled": False}
     risk.update(risk_over)
+    raw["risk"] = risk
     return BotConfig(raw)
 
 
