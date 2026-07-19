@@ -52,6 +52,17 @@ def min_notify_interval_sec() -> float:
         return 120.0
 
 
+def notify_on_boot() -> bool:
+    """If False (default), first process sample only baselines — no Telegram spam on restart.
+
+    Does not call CMC/Oracle APIs; only gates Telegram for the already-loaded fusion bias.
+    """
+    cfg = _obs_cfg()
+    if "market_context_notify_on_boot" in cfg:
+        return bool(cfg.get("market_context_notify_on_boot"))
+    return False
+
+
 def reset_cycle_counters() -> None:
     with _LOCK:
         _cycle["buy_blocks"] = 0
@@ -176,13 +187,38 @@ def maybe_notify_state_change(bias: dict[str, Any] | None = None) -> bool:
             and prev.get("active") == snap["active"]
         ):
             return False
-        now = time.time()
-        if prev is not None and (now - _last_notify_ts) < min_notify_interval_sec():
-            # still update memory so we don't spam after interval with stale flip
+
+        # Cold start: remember baseline, no Telegram (avoids deploy spam).
+        # Not a CMC call — fusion bias is already in-process from oracle/santiment stores.
+        if prev is None and not notify_on_boot():
             _last_notified = snap
-            return False
-        _last_notified = snap
-        _last_notify_ts = now
+            _last_notify_ts = time.time()
+            cold_start = True
+        else:
+            cold_start = False
+            now = time.time()
+            if prev is not None and (now - _last_notify_ts) < min_notify_interval_sec():
+                # still update memory so we don't spam after interval with stale flip
+                _last_notified = snap
+                return False
+            _last_notified = snap
+            _last_notify_ts = now
+
+    if cold_start:
+        _append_event(
+            {
+                "event": "fusion_state_baseline",
+                **snap,
+                "rationale": (bias.get("rationale") or "")[:200],
+                "note": "boot_suppress_telegram",
+            }
+        )
+        log(
+            f"market context baseline (no TG): "
+            f"{snap.get('regime') or 'off'} ×{snap.get('size_mult', 1):.2f}",
+            "INFO",
+        )
+        return False
 
     _append_event({"event": "fusion_state_change", **snap, "rationale": (bias.get("rationale") or "")[:200]})
 

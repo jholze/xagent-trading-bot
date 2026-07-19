@@ -49,7 +49,8 @@ class TestMarketContextObs(unittest.TestCase):
         self.assertIn("RISK_OFF", line)
         self.assertIn("0.35", line)
 
-    def test_state_change_notify_once(self):
+    def test_boot_suppresses_telegram_then_notifies_on_real_change(self):
+        """Cold start baselines without TG; real regime flip still notifies."""
         bias = {
             "active": True,
             "regime": "NEUTRAL",
@@ -61,6 +62,36 @@ class TestMarketContextObs(unittest.TestCase):
         }
         with patch(
             "services.market_context_observability.state_change_notify_enabled",
+            return_value=True,
+        ), patch(
+            "services.market_context_observability.notify_on_boot",
+            return_value=False,
+        ), patch(
+            "services.market_context_observability.min_notify_interval_sec",
+            return_value=0,
+        ), patch("telegram_notifier.send_telegram_message", return_value=True) as send:
+            self.assertFalse(maybe_notify_state_change(bias))  # boot baseline
+            self.assertEqual(send.call_count, 0)
+            self.assertFalse(maybe_notify_state_change(bias))  # same
+            bias2 = dict(bias, regime="RISK_OFF", size_mult=0.35)
+            self.assertTrue(maybe_notify_state_change(bias2))
+            self.assertEqual(send.call_count, 1)
+
+    def test_state_change_notify_once_when_boot_allowed(self):
+        bias = {
+            "active": True,
+            "regime": "NEUTRAL",
+            "size_mult": 0.85,
+            "sensor_policy": "active",
+            "source": "oracle",
+            "block_buys": False,
+            "rationale": "test",
+        }
+        with patch(
+            "services.market_context_observability.state_change_notify_enabled",
+            return_value=True,
+        ), patch(
+            "services.market_context_observability.notify_on_boot",
             return_value=True,
         ), patch(
             "services.market_context_observability.min_notify_interval_sec",
