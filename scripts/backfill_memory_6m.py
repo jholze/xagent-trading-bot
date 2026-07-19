@@ -402,14 +402,25 @@ def main() -> int:
         summary["macro_error"] = str(e)[:200]
         print("   error:", e)
 
-    # 6) news
+    # 6) news + events (priority for backfill — tag universe coins)
     if not args.no_network:
-        print("6) news ...")
+        print("6) news + events (boosted, universe-tagged) ...")
         try:
             from core.config import get_bot_config
-            from intelligence.memory.news_providers import poll_and_ingest_news
+            from intelligence.memory.news_providers import poll_news_for_backfill
+            from intelligence.macro.sync import sync_macro_context as _macro_again
 
-            summary["news"] = poll_and_ingest_news(store, config=get_bot_config().raw)
+            summary["news"] = poll_news_for_backfill(
+                store,
+                universe=universe,
+                config=get_bot_config().raw,
+                rounds=2,
+            )
+            # second macro pass after news so pressure events sit next to headlines
+            try:
+                summary["macro_after_news"] = _macro_again(store) or {}
+            except Exception:
+                pass
             print(f"   news={summary['news']}")
         except Exception as e:
             summary["news_error"] = str(e)[:200]

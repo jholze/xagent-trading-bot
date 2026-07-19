@@ -647,10 +647,16 @@
       "coingecko_news": true,
       "free_crypto_news": true,
       "cryptopanic_free": false,
+      "cryptocompare_extra": true,
+      "tag_universe": true,
+      "max_per_source": 20,
+      "backfill_max_per_source": 40,
       "rss_feeds": [
         "https://cointelegraph.com/rss",
         "https://decrypt.co/feed",
-        "https://www.coindesk.com/arc/outboundfeeds/rss/"
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://www.theblock.co/rss.xml",
+        "https://bitcoinmagazine.com/.rss/full/"
       ],
       "scrape_sources": [],
       "poll_sec": 600

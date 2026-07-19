@@ -252,7 +252,14 @@ def poll_and_ingest_news(
     scrape_sources: list[dict[str, Any]] | None = None,
     max_per_source: int = 15,
     config: dict | None = None,
+    universe: list[str] | None = None,
+    boost: bool = False,
 ) -> dict[str, int]:
+    """Ingest news/events into memory_market_events.
+
+    universe: open book + watchlist symbols — prefer tagging those coins.
+    boost: higher per-source limits (for 6m backfill).
+    """
     store = store or MemoryStore()
     mem = {}
     if config is None:
@@ -278,6 +285,20 @@ def poll_and_ingest_news(
     if use_defillama is True:
         use_defillama = bool(onchain_cfg.get("defillama", True))
 
+    # Prefer book/watchlist universe when caller did not pass one
+    if universe is None and news_cfg.get("tag_universe", True):
+        try:
+            from intelligence.memory.coin_facts_ingest import coin_fact_universe
+
+            universe = coin_fact_universe(config if isinstance(config, dict) else None)
+        except Exception:
+            universe = None
+
+    if boost:
+        max_per_source = max(max_per_source, int(news_cfg.get("backfill_max_per_source") or 40))
+    else:
+        max_per_source = int(news_cfg.get("max_per_source") or max_per_source)
+
     counts = {
         "rss": 0,
         "coingecko": 0,
@@ -285,43 +306,75 @@ def poll_and_ingest_news(
         "scrape": 0,
         "defillama": 0,
         "cryptocompare": 0,
+        "universe_tagged": 0,
+        "max_per_source": max_per_source,
     }
+
+    def _ingest(title: str, url: str, source: str, body: str = "", published: str | None = None) -> bool:
+        ev = ingest_news_item(
+            title=title,
+            url=url or "",
+            source=source,
+            body=body or "",
+            published_at=published,
+            store=store,
+            universe=universe,
+        )
+        if not ev:
+            return False
+        meta = ev.metadata or {}
+        if meta.get("book_symbols"):
+            counts["universe_tagged"] += 1
+        return True
 
     for feed in rss_feeds:
         host = feed.split("/")[2] if "//" in feed else "rss"
         for item in fetch_rss_items(feed, limit=max_per_source):
-            if ingest_news_item(
-                title=item["title"],
-                url=item.get("url") or "",
-                source=f"rss:{host}",
-                body=item.get("body") or "",
-                published_at=None,
-                store=store,
+            if _ingest(
+                item["title"],
+                item.get("url") or "",
+                f"rss:{host}",
+                item.get("body") or "",
+                item.get("published") or None,
             ):
                 counts["rss"] += 1
 
     if use_coingecko:
         for item in fetch_coingecko_news(limit=max_per_source):
             src = "coingecko" if "coingecko" in (item.get("url") or "") else "cryptocompare"
-            if ingest_news_item(
-                title=item["title"],
-                url=item.get("url") or "",
-                source=src,
-                body=item.get("body") or "",
-                store=store,
+            if _ingest(
+                item["title"],
+                item.get("url") or "",
+                src,
+                item.get("body") or "",
+                item.get("published") or None,
             ):
                 counts["coingecko"] += 1
                 if src == "cryptocompare":
                     counts["cryptocompare"] += 1
 
+    # Explicit CryptoCompare pull (always when boost or config flag)
+    if boost or bool(news_cfg.get("cryptocompare_extra", True)):
+        try:
+            for item in fetch_cryptocompare_news(limit=max_per_source):
+                if _ingest(
+                    item["title"],
+                    item.get("url") or "",
+                    "cryptocompare",
+                    item.get("body") or "",
+                    item.get("published") or None,
+                ):
+                    counts["cryptocompare"] += 1
+        except Exception as e:
+            log(f"cryptocompare extra: {e}", "DEBUG")
+
     if use_free_crypto_news:
         for item in fetch_free_crypto_news(limit=max_per_source):
-            if ingest_news_item(
-                title=item["title"],
-                url=item.get("url") or "",
-                source="free_crypto_news",
-                body=item.get("body") or "",
-                store=store,
+            if _ingest(
+                item["title"],
+                item.get("url") or "",
+                "free_crypto_news",
+                item.get("body") or "",
             ):
                 counts["free_crypto_news"] += 1
 
@@ -332,14 +385,13 @@ def poll_and_ingest_news(
         for item in scrape_list_page(
             str(src["list_url"]),
             title_pattern=str(src.get("title_pattern") or default_title_pat),
-            limit=int(src.get("limit") or 8),
+            limit=int(src.get("limit") or max_per_source),
         ):
-            if ingest_news_item(
-                title=item["title"],
-                url=item.get("url") or "",
-                source=f"scrape:{src.get('name') or 'page'}",
-                body=item.get("body") or "",
-                store=store,
+            if _ingest(
+                item["title"],
+                item.get("url") or "",
+                f"scrape:{src.get('name') or 'page'}",
+                item.get("body") or "",
             ):
                 counts["scrape"] += 1
 
@@ -351,3 +403,28 @@ def poll_and_ingest_news(
 
     log(f"memory news poll: {counts}", "INFO")
     return counts
+
+
+def poll_news_for_backfill(
+    store: MemoryStore | None = None,
+    *,
+    universe: list[str] | None = None,
+    config: dict | None = None,
+    rounds: int = 2,
+) -> dict[str, int]:
+    """Heavier news/event ingest for 6m backfill (multiple rounds + boost)."""
+    store = store or MemoryStore()
+    totals: dict[str, int] = {}
+    for i in range(max(1, int(rounds))):
+        c = poll_and_ingest_news(
+            store,
+            config=config,
+            universe=universe,
+            boost=True,
+            max_per_source=40,
+        )
+        for k, v in (c or {}).items():
+            if isinstance(v, int):
+                totals[k] = int(totals.get(k) or 0) + int(v)
+        totals["rounds"] = i + 1
+    return totals

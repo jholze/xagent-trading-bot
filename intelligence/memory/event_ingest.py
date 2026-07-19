@@ -31,16 +31,69 @@ def impact_from_text(text: str) -> float:
     return max(-1.0, min(1.0, score))
 
 
+_STOP_TICKERS = frozenset(
+    {
+        "USD", "USDT", "THE", "AND", "FOR", "API", "CEO", "ETF", "SEC", "USD",
+        "NEW", "ALL", "NOW", "OUT", "TOP", "BIG", "HOT", "WHY", "HOW", "WHO",
+        "NOT", "BUT", "ANY", "MAY", "CAN", "HAS", "HAD", "WAS", "ARE", "YOU",
+    }
+)
+
+
 def extract_symbols(text: str, default: list[str] | None = None) -> list[str]:
     found = set()
     for m in _TICKER.findall(text or ""):
-        if m in ("USD", "USDT", "THE", "AND", "FOR", "API", "CEO", "ETF", "SEC"):
+        if m in _STOP_TICKERS:
             continue
         if len(m) <= 5:
             found.add(f"{m}/USDT")
     if not found and default:
         return list(default)
     return sorted(found)[:12]
+
+
+def match_universe_symbols(
+    text: str,
+    universe: list[str] | None,
+    *,
+    max_symbols: int = 8,
+) -> list[str]:
+    """Prefer coins from our book/watchlist when their base ticker appears in text.
+
+    Example: universe has LAB/USDT → headline "LAB surges 40%" tags LAB/USDT
+    instead of only generic BTC.
+    """
+    if not universe:
+        return extract_symbols(text)
+    blob = f" {text or ''} ".upper()
+    # Normalize blob: word boundaries via non-alnum
+    blob_pad = re.sub(r"[^A-Z0-9/]+", " ", blob)
+    hits: list[str] = []
+    seen: set[str] = set()
+    for sym in universe:
+        s = str(sym or "").upper().replace("-", "/")
+        if not s:
+            continue
+        if "/" not in s:
+            s = f"{s}/USDT"
+        base = s.split("/")[0]
+        if not base or base in _STOP_TICKERS or len(base) < 2:
+            continue
+        # whole-word base match (avoid matching "AI" inside "MAIN")
+        if re.search(rf"(?<![A-Z0-9]){re.escape(base)}(?![A-Z0-9])", blob_pad):
+            if s not in seen:
+                seen.add(s)
+                hits.append(s)
+        if len(hits) >= max_symbols:
+            break
+    # Also add generic extract, but universe hits first
+    for s in extract_symbols(text):
+        if s not in seen:
+            seen.add(s)
+            hits.append(s)
+        if len(hits) >= max_symbols:
+            break
+    return hits[:max_symbols]
 
 
 def make_event_id(source: str, key: str) -> str:
@@ -93,6 +146,8 @@ def ingest_news_item(
     symbols: list[str] | None = None,
     event_type: str = "news",
     store: MemoryStore | None = None,
+    universe: list[str] | None = None,
+    force_event_type_on_impact: bool = True,
 ) -> MarketEvent | None:
     store = store or MemoryStore()
     text = f"{title} {body}".strip()
@@ -100,12 +155,53 @@ def ingest_news_item(
         return None
     key = url or title
     eid = make_event_id(source, key)
-    # dedupe
-    if store.get_event(eid):
-        return store.get_event(eid)
-    syms = symbols or extract_symbols(text, default=["BTC/USDT"])
+    # dedupe — but merge symbols if we learn better tags for same article
+    existing = store.get_event(eid)
+    if existing and not universe:
+        return existing
+    if symbols is not None:
+        syms = list(symbols)
+    elif universe:
+        syms = match_universe_symbols(text, universe)
+    else:
+        syms = extract_symbols(text, default=["BTC/USDT"])
+    if not syms:
+        syms = ["BTC/USDT"]
+    if existing:
+        # merge symbol tags for better book coverage
+        merged = list(dict.fromkeys(list(existing.symbols or []) + syms))[:12]
+        if merged != list(existing.symbols or []):
+            existing.symbols = merged
+            meta = dict(existing.metadata or {})
+            meta["symbols_merged"] = True
+            existing.metadata = meta
+            store.upsert_event(existing)
+        return existing
     impact = impact_from_text(text)
     et = (event_type or "news").strip() or "news"
+    if force_event_type_on_impact and et == "news":
+        # Classify high-signal headlines as structured event types
+        low = text.lower()
+        if re.search(r"\b(unlock|vesting|cliff)\b", low):
+            et = "token_unlock"
+        elif re.search(r"\b(hack|exploit|breach|rug)\b", low):
+            et = "structure_risk"
+        elif re.search(r"\b(listing|listed on|binance|gate\.io|bybit)\b", low):
+            et = "listing"
+        elif re.search(r"\b(sec|lawsuit|charge|ban|delist)\b", low):
+            et = "structure_risk"
+        elif re.search(r"\b(etf|fed|fomc|cpi|rate cut|rate hike)\b", low):
+            et = "macro_news"
+    meta = {
+        "body_excerpt": (body or "")[:300],
+        "universe_tagged": bool(universe),
+    }
+    # Mark if any of our book/watchlist coins are in symbols
+    if universe:
+        ub = {str(u).upper().replace("-", "/") for u in universe}
+        hit = [s for s in syms if s in ub or s.split("/")[0] in {x.split("/")[0] for x in ub}]
+        if hit:
+            meta["book_symbols"] = hit[:8]
     ev = MarketEvent(
         event_id=eid,
         timestamp=published_at or utc_now_iso(),
@@ -115,7 +211,7 @@ def ingest_news_item(
         description=(title or "")[:400],
         source=source,
         url=url or "",
-        metadata={"body_excerpt": (body or "")[:300]},
+        metadata=meta,
         embedding=embed_event(title, body, et),
     )
     store.upsert_event(ev)

@@ -106,7 +106,9 @@ python3 scripts/backfill_memory_6m.py --days 180 --no-network
 railway ssh -s xagent-hermes -- python3 scripts/backfill_memory_6m.py --days 180
 ```
 
-Steps: rebuild (180d) → universe → order events → social+join → macro → news → coin facts (batched) → reflect → RAG.
+Steps: rebuild (180d) → universe → order events → social+join → macro → **news/events (boosted, universe-tagged)** → coin facts → reflect → RAG.
+
+**News is first-class:** RSS + CryptoCompare + free feeds; headlines matched to book/watchlist tickers (`match_universe_symbols`); unlock/hack/listing/macro keywords → structured `event_type`. Backfill uses `poll_news_for_backfill` (2 rounds, max 40/source).
 
 Config: `memory.rebuild.lookback_days` (default 180). Lighter tools: `enrich_memory_full.py`, `seed_memory_from_ledger.py`.
 
