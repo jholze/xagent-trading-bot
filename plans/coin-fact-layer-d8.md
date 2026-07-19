@@ -21,8 +21,7 @@ Goal: a **shared coin-fact layer for all coins in scope** (open portfolio + watc
 Coin universe = open positions ∪ active watchlist (all symbols, not one-off ALLO)
         |
         v
-Primary: CMC AI latest-updates per slug
-  URL: https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/
+Primary: CMC AI suite per slug (latest-updates + price-analysis)
   (+ later: CMC Pro, LC, unlocks, Gate listings → same event schema)
         |
         v
@@ -142,7 +141,7 @@ Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `descripti
 ### In
 
 - Spec + schema (MarketEvent / CoinFactEvent taxonomy)
-- **CMC AI latest-updates ingest for all scoped coins** (primary source)
+- **CMC AI latest-updates + price-analysis ingest for all scoped coins** (primary source)
 - Persist memory_market_events (+ optional RAG)
 - Wire `build_dca_context` / `evaluate_dca_policy` with `fact_*` reason_codes
 - Watchlist consumption (phase C if large)
@@ -197,7 +196,7 @@ Skip beats size (same as cash/harvest).
 ## Acceptance
 
 - [ ] Spec linked from #79 / #103
-- [ ] CMC AI path: for coins in portfolio∪watchlist (capped), fetch+parse latest-updates → symbol-scoped events
+- [ ] CMC AI path: for coins in portfolio∪watchlist (capped), fetch+parse latest-updates **and** price-analysis → symbol-scoped events
 - [ ] Works for **arbitrary** in-scope tickers (not hard-coded ALLO)
 - [ ] `build_dca_context` exposes fact flags; policy emits `fact_*` reason_codes
 - [ ] Unit tests: negative fact → skip; no facts → unchanged; noise ignored; multi-symbol universe
@@ -247,7 +246,7 @@ Skip beats size (same as cash/harvest).
 
 ## References
 
-- ALLO CMC AI page: https://coinmarketcap.com/cmc-ai/allora/latest-updates/
+- ALLO CMC AI: https://coinmarketcap.com/cmc-ai/allora/latest-updates/ · https://coinmarketcap.com/cmc-ai/allora/price-analysis/
 - ALLO research (2026-07-19): AI rotation → 15.07 −10% narrative → 18.07 exit; memory 0 coin events
 - plans/epic-dca-agent.md · plans/dca-policy-v1.md
 - Existing CMC Pro usage: data/cmc_*.py, CMC_API_KEY
