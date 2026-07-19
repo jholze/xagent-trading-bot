@@ -1427,6 +1427,7 @@ class DecisionEngine:
             strategy_profile=profile,
             shadow_action=shadow_action,
             sell_policy_audit=sell_policy_audit,
+            sell_source=str(sell_source or ""),
         )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt

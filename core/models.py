@@ -53,6 +53,8 @@ class SignalAnalysis:
     shadow_action: str = ""
     dca_usdt: float = 0.0
     sell_policy_audit: dict = field(default_factory=dict)
+    # Strategy/module that won the sell merge (trailing_stop, grid, stop_loss, …)
+    sell_source: str = ""
     regime: str = ""
     regime_confidence: float = 0.0
     sentiment_score: float = 0.0
@@ -117,6 +119,9 @@ class TradeOrder:
     usdt_amount: float = 0.0
     signal: str = ""
     source: str = "auto"
+    # Why we sold (strategy/module). Distinct from channel `source` (auto/grid/dca/manual).
+    exit_source: str = ""
+    exit_rationale: str = ""
     order_id: str = ""
     idempotency_key: str = ""
     entry_15m_vol_ratio: float | None = None

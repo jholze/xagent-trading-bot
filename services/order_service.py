@@ -192,6 +192,8 @@ class OrderService:
             "order_type": "market",
             "source": order.source or "auto",
             "signal": order.signal or "",
+            "exit_source": (getattr(order, "exit_source", None) or "") or None,
+            "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
             "idempotency_key": idem or None,
             "tenant_id": resolve_tenant_id(),
             "trading_mode": cfg.trading_mode,
@@ -234,6 +236,8 @@ class OrderService:
             "tenant_id": resolve_tenant_id(),
             "source": order.source or "auto",
             "signal": order.signal or "",
+            "exit_source": (getattr(order, "exit_source", None) or "") or None,
+            "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
             "trading_mode": get_bot_config().trading_mode,
             "ledger_scope": self.scope,
             "request": {
@@ -414,11 +418,21 @@ class OrderService:
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:
         if not order_id:
             return
-        if result.executed and approved_order and approved_order.source:
+        if result.executed and approved_order:
             data = self._load()
             record = self._find(data, order_id=order_id)
-            if record and record.get("source") != approved_order.source:
+            dirty = False
+            if record and approved_order.source and record.get("source") != approved_order.source:
                 record["source"] = approved_order.source
+                dirty = True
+            if record and getattr(approved_order, "exit_source", None):
+                if record.get("exit_source") != approved_order.exit_source:
+                    record["exit_source"] = approved_order.exit_source
+                    dirty = True
+                if approved_order.exit_rationale and record.get("exit_rationale") != approved_order.exit_rationale:
+                    record["exit_rationale"] = approved_order.exit_rationale
+                    dirty = True
+            if dirty:
                 self._save(data)
         if result.executed:
             execution = {
@@ -534,6 +548,11 @@ def format_order_detail(order: dict) -> str:
         f"<b>Order #{order.get('display_seq')} — {order.get('status', '').upper()}</b>",
         f"{order.get('side', '').upper()} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
     ]
+    if order.get("exit_source"):
+        lines.append(f"<b>Exit</b>  <code>{order.get('exit_source')}</code>")
+        if order.get("exit_rationale"):
+            rat = str(order.get("exit_rationale") or "")[:180]
+            lines.append(f"   <i>{rat}</i>")
     if links:
         lines.append(links)
     lines.extend([

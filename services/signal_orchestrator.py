@@ -172,6 +172,13 @@ class SignalOrchestrator:
             )
             amount_sold = float(pos["amount"]) * fraction
             sell_signal = analysis.normalized_action or analysis.action
+            from strategies.exit_attribution import resolve_exit_source, truncate_rationale
+
+            exit_src = resolve_exit_source(
+                sell_source=getattr(analysis, "sell_source", "") or "",
+                sources=list(analysis.sources or []),
+                action=sell_signal,
+            )
             order = TradeOrder(
                 type="SELL",
                 symbol=symbol,
@@ -179,6 +186,8 @@ class SignalOrchestrator:
                 amount=amount_sold,
                 signal=sell_signal,
                 source=source,
+                exit_source=exit_src,
+                exit_rationale=truncate_rationale(getattr(analysis, "rationale", "") or ""),
             )
 
         from bus.trade_intents import make_idempotency_key
