@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xagent Memory Cortex</title>
+  <link rel="stylesheet" href="/css/cortex.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="boot-bg"></div>
+  <canvas id="cortex-canvas" aria-label="3D memory cortex"></canvas>
+
+  <header id="hud-top" class="glass">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <div>
+        <h1>Xagent Memory Cortex</h1>
+        <p id="status-line" class="muted">booting…</p>
+      </div>
+    </div>
+    <div id="query-row">
+      <input
+        id="query-input"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Query the memory… e.g. ARIA volume"
+        aria-label="Query input"
+      />
+      <button id="query-btn" type="button" title="Run query">⌕</button>
+      <select id="top-k" aria-label="Top K">
+        <option value="20">top 20</option>
+        <option value="40" selected>top 40</option>
+        <option value="60">top 60</option>
+      </select>
+      <button id="reset-view" type="button" class="ghost" title="Reset camera">reset</button>
+      <button id="clear-hits" type="button" class="ghost" title="Clear hits">clear</button>
+    </div>
+    <div id="symbol-chips" class="chips" aria-label="Symbol filters"></div>
+    <div id="lobe-toggles" class="chips lobes" aria-label="Lobe toggles"></div>
+  </header>
+
+  <aside id="detail-drawer" class="glass drawer" hidden aria-live="polite">
+    <div class="drawer-head">
+      <h2>Node detail</h2>
+      <button id="drawer-close" type="button" class="ghost" aria-label="Close drawer">✕</button>
+    </div>
+    <div id="drawer-meta" class="meta-grid"></div>
+    <p id="drawer-title" class="drawer-title"></p>
+    <pre id="drawer-body" class="drawer-body"></pre>
+    <button id="copy-id" type="button" class="ghost">copy id</button>
+  </aside>
+
+  <footer id="hit-strip" class="glass" aria-label="Query hit strip">
+    <span class="hit-label">HITS</span>
+    <div id="hit-list" class="hit-list"><span class="muted">No query yet — try ARIA volume</span></div>
+  </footer>
+
+  <div id="legend" class="glass" aria-label="Lobe legend"></div>
+
+  <div id="toast" hidden></div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
