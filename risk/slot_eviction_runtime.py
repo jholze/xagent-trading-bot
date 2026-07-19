@@ -421,6 +421,38 @@ def execute_eviction_sell(
         return {"ok": False, "message": str(e)}
 
 
+def resolve_spendable_ok_for_entry(
+    *,
+    order,
+    risk_manager=None,
+    risk_config: dict | None = None,
+    spendable_override: bool | None = None,
+) -> bool:
+    """Must-gate: entry must be fundable after eviction (P4)."""
+    if spendable_override is not None:
+        return bool(spendable_override)
+    cfg = slot_eviction_section(risk_config)
+    if not cfg.get("require_spendable_for_entry", True):
+        return True
+    min_trade = float((risk_config or {}).get("min_trade_usdt", 100) or 100)
+    try:
+        planned = float(getattr(order, "usdt_amount", 0) or 0)
+    except (TypeError, ValueError):
+        planned = 0.0
+    need = max(min_trade, planned) if planned > 0 else min_trade
+    if risk_manager is not None:
+        try:
+            price = float(getattr(order, "price", 0) or 0)
+            sym = getattr(order, "symbol", None)
+            eq = float(risk_manager._portfolio_equity(price, sym))
+            sp = float(risk_manager._spendable_usdt(eq, is_dca=False))
+            return sp >= need
+        except Exception:
+            # Cannot verify spendable → do not free a slot for an unfundable entry
+            return False
+    return False
+
+
 def try_slot_eviction_on_max_open(
     *,
     order,
@@ -430,6 +462,8 @@ def try_slot_eviction_on_max_open(
     risk_config: dict | None,
     config_raw: dict | None = None,
     spike_multiple: float = 0.0,
+    risk_manager=None,
+    spendable_ok: bool | None = None,
 ) -> tuple[EvictionPlan | None, str]:
     """Full path for RiskManager. Returns (plan, message_suffix)."""
     mode = eviction_mode(risk_config)
@@ -440,7 +474,7 @@ def try_slot_eviction_on_max_open(
     if raw is None and config is not None and hasattr(config, "raw"):
         raw = config.raw
 
-    # Fusion / soft_block / spendable — fail-open neutral
+    # Fusion / soft_block / spendable
     block_buys = False
     regime = "NEUTRAL"
     try:
@@ -468,14 +502,12 @@ def try_slot_eviction_on_max_open(
     except Exception:
         pass
 
-    spendable_ok = True
-    try:
-        # If risk manager already passed cash later, we only check roughly here
-        min_trade = float((risk_config or {}).get("min_trade_usdt", 100) or 100)
-        # leave True — cash_floor runs after max_open today; demand may still plan
-        _ = min_trade
-    except Exception:
-        pass
+    spendable_ok = resolve_spendable_ok_for_entry(
+        order=order,
+        risk_manager=risk_manager,
+        risk_config=risk_config,
+        spendable_override=spendable_ok,
+    )
 
     warmup = False
     try:

@@ -254,6 +254,7 @@ class RiskManager:
                         spike_multiple=float(
                             getattr(order, "entry_15m_vol_ratio", None) or 0
                         ),
+                        risk_manager=self,
                     )
                     if suffix:
                         msg = f"{msg}{suffix}"

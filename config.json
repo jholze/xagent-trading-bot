@@ -361,6 +361,8 @@
       "pending_entry_ttl_min": 30,
       "same_cycle_if_filled": false,
       "prefer_reduce_to_tail": true,
+      "tail_target_sold_pct": 0.55,
+      "tail_target_max_notional_usdt": 800,
       "allow_loss_full_evict": false,
       "require_sensor_source": true,
       "require_spendable_for_entry": true,

@@ -13,12 +13,20 @@ from risk.slot_eviction import (
     evidence_delta_from_hits,
     eviction_mode,
     format_eviction_reject_suffix,
+    fraction_to_free_full_slot,
     memory_keep_score,
     plan_slot_eviction,
     score_entry_demand,
+    would_be_tail_after_sell,
 )
 from risk.slot_eviction_rag import enrich_keeps_with_rag
+from risk.slot_eviction_runtime import (
+    execute_eviction_sell,
+    resolve_spendable_ok_for_entry,
+    try_slot_eviction_on_max_open,
+)
 from strategies.exit_attribution import resolve_exit_source
+from strategies.sell_rotation_policy import is_tail_position
 
 
 def _cfg(**over) -> dict:
@@ -350,8 +358,147 @@ class TestExitAttribution(unittest.TestCase):
         )
 
 
+class TestFractionFreesFullSlot(unittest.TestCase):
+    def test_mid_notional_partial_reaches_tail_sold(self):
+        # $2000 bag, 0% sold → need sold>=0.55 → frac >= 0.55
+        frac, action, already = fraction_to_free_full_slot(
+            sold_percent=0.0,
+            notional_usdt=2000.0,
+            tail_sold_pct=0.55,
+            tail_notional_usdt=800.0,
+        )
+        self.assertFalse(already)
+        self.assertGreaterEqual(frac, 0.55)
+        self.assertTrue(
+            would_be_tail_after_sell(
+                sold_percent=0.0,
+                notional_usdt=2000.0,
+                sell_fraction=frac,
+                tail_sold_pct=0.55,
+                tail_notional_usdt=800.0,
+            )
+        )
+        # Align with production is_tail_position rules
+        new_sold = 0.0 + (1.0 - 0.0) * frac
+        new_notional = 2000.0 * (1.0 - frac)
+        pos = {
+            "amount": max(1e-9, 1.0 * (1.0 - frac)),
+            "average_entry": new_notional / max(1e-9, 1.0 * (1.0 - frac)) if frac < 1 else 1.0,
+            "sold_percent": new_sold,
+        }
+        # if full close, not open
+        if frac >= 0.99:
+            self.assertTrue(True)
+        else:
+            self.assertTrue(
+                is_tail_position(
+                    pos,
+                    {
+                        "tail_exempt_sold_pct": 0.55,
+                        "tail_exempt_notional_usdt": 800.0,
+                    },
+                )
+            )
+
+    def test_large_bag_plan_sell_fraction_frees_slot(self):
+        """plan_slot_eviction sizes action so mid/large bag becomes tail."""
+        demand = score_entry_demand(
+            symbol="BANK/USDT",
+            source="entry_sensor_15m",
+            free_full_slots=0,
+            spike_multiple=5.0,
+            risk_config=_cfg(
+                tail_target_sold_pct=0.55,
+                tail_target_max_notional_usdt=800,
+            ),
+        )
+        cands = [
+            _cand(
+                "BBB/USDT",
+                keep_profile=0.3,
+                keep_rag=0.3,
+                gain=2.0,
+                notional=2500.0,
+                sold=0.0,
+            ),
+            VictimCandidate(
+                **{
+                    **_cand("BANK/USDT", keep_profile=0.7, keep_rag=0.7).to_dict(),
+                    "veto": "entry_self",
+                }
+            ),
+        ]
+        plan = plan_slot_eviction(
+            demand=demand,
+            candidates=cands,
+            risk_config=_cfg(
+                tail_target_sold_pct=0.55,
+                tail_target_max_notional_usdt=800,
+            ),
+        )
+        self.assertTrue(plan.ok, plan.veto_reason)
+        self.assertEqual(plan.victim_symbol, "BBB/USDT")
+        self.assertGreaterEqual(plan.sell_fraction, 0.55)
+        self.assertTrue(
+            would_be_tail_after_sell(
+                sold_percent=0.0,
+                notional_usdt=2500.0,
+                sell_fraction=plan.sell_fraction,
+                tail_sold_pct=0.55,
+                tail_notional_usdt=800.0,
+            )
+        )
+        # fixed 0.40 would leave $1500 full-slot — prove we beat that
+        self.assertFalse(
+            would_be_tail_after_sell(
+                sold_percent=0.0,
+                notional_usdt=2500.0,
+                sell_fraction=0.40,
+                tail_sold_pct=0.55,
+                tail_notional_usdt=800.0,
+            )
+        )
+
+
+class TestSpendableGate(unittest.TestCase):
+    def test_spendable_override_false_blocks_demand(self):
+        d = score_entry_demand(
+            symbol="BANK/USDT",
+            source="entry_sensor_15m",
+            free_full_slots=0,
+            spike_multiple=5.0,
+            spendable_ok=False,
+            risk_config=_cfg(),
+        )
+        self.assertFalse(d.passed)
+        self.assertIn("spendable", d.must_fail_reasons)
+
+    def test_resolve_spendable_uses_risk_manager(self):
+        from core.models import TradeOrder
+
+        order = TradeOrder(
+            type="BUY", symbol="BANK/USDT", price=1.0, amount=0, usdt_amount=500, signal="BUY"
+        )
+        rm = MagicMock()
+        rm._portfolio_equity.return_value = 100_000.0
+        rm._spendable_usdt.return_value = 50.0  # below min_trade 100
+        ok = resolve_spendable_ok_for_entry(
+            order=order,
+            risk_manager=rm,
+            risk_config={"min_trade_usdt": 100, "slot_eviction": {"require_spendable_for_entry": True}},
+        )
+        self.assertFalse(ok)
+        rm._spendable_usdt.return_value = 2000.0
+        ok2 = resolve_spendable_ok_for_entry(
+            order=order,
+            risk_manager=rm,
+            risk_config={"min_trade_usdt": 100, "slot_eviction": {"require_spendable_for_entry": True}},
+        )
+        self.assertTrue(ok2)
+
+
 class TestRiskMaxOpenIntegration(unittest.TestCase):
-    def test_max_open_invokes_eviction_hook(self):
+    def test_max_open_invokes_eviction_hook_with_risk_manager(self):
         from core.config import BotConfig
         from core.models import TradeOrder
         from data_manager import get_config
@@ -370,6 +517,7 @@ class TestRiskMaxOpenIntegration(unittest.TestCase):
             "sources": ["entry_sensor_15m"],
             "rag": {"mode": "off", "apply_to_plan": False},
             "memory": {"min_entry_keep_edge": 0.12, "prefer_is_hard_keep": True},
+            "require_spendable_for_entry": True,
         }
         risk["venue_quality"] = {"enabled": False}
         rm = RiskManager(BotConfig(raw))
@@ -398,6 +546,78 @@ class TestRiskMaxOpenIntegration(unittest.TestCase):
         self.assertEqual(decision.code, "max_open_positions")
         self.assertIn("eviction", decision.message.lower())
         hook.assert_called_once()
+        # risk_manager=self must be passed for spendable gate
+        kwargs = hook.call_args.kwargs
+        self.assertIs(kwargs.get("risk_manager"), rm)
+
+    def test_mode_off_no_sell_path(self):
+        from core.models import TradeOrder
+
+        order = TradeOrder(
+            type="BUY",
+            symbol="BANK/USDT",
+            price=1.0,
+            amount=0,
+            usdt_amount=500,
+            signal="BUY",
+            entry_15m_vol_ratio=5.5,
+        )
+        plan, suffix = try_slot_eviction_on_max_open(
+            order=order,
+            source="entry_sensor_15m",
+            free_full_slots=0,
+            config=None,
+            risk_config=_cfg(mode="off"),
+            spendable_ok=True,
+        )
+        self.assertIsNone(plan)
+        self.assertEqual(suffix, "")
+
+    def test_live_execute_uses_real_plan_fraction(self):
+        """execute_eviction_sell consumes real EvictionPlan (not a mocked plan builder)."""
+        from core.models import TradeOrder, TradeResult
+
+        demand = score_entry_demand(
+            symbol="BANK/USDT",
+            source="entry_sensor_15m",
+            free_full_slots=0,
+            spike_multiple=5.0,
+            risk_config=_cfg(mode="live"),
+        )
+        cands = [
+            _cand("BBB/USDT", keep_profile=0.3, notional=2000.0, sold=0.0, gain=2.0),
+            VictimCandidate(
+                **{**_cand("BANK/USDT", keep_profile=0.7).to_dict(), "veto": "entry_self"}
+            ),
+        ]
+        plan = plan_slot_eviction(
+            demand=demand, candidates=cands, risk_config=_cfg(mode="live")
+        )
+        self.assertTrue(plan.ok)
+        self.assertGreaterEqual(plan.sell_fraction, 0.55)
+
+        mock_svc = MagicMock()
+        mock_svc.execute_order.return_value = TradeResult(
+            executed=True, order_type="SELL", symbol="BBB/USDT", message="ok"
+        )
+        mock_svc.market = None
+        with patch(
+            "strategies.positions.get_position",
+            return_value={"amount": 100.0, "average_entry": 20.0, "mark_price": 20.0},
+        ), patch(
+            "risk.slot_eviction_runtime.note_eviction_executed"
+        ), patch(
+            "risk.slot_eviction_runtime.set_pending_entry"
+        ):
+            res = execute_eviction_sell(plan, trading=mock_svc)
+        self.assertTrue(res.get("ok"), res)
+        call_order = mock_svc.execute_order.call_args[0][0]
+        self.assertEqual(call_order.type, "SELL")
+        self.assertEqual(call_order.exit_source, EXIT_SOURCE_SLOT_EVICT)
+        # amount = 100 * sell_fraction from real plan
+        self.assertAlmostEqual(
+            float(call_order.amount), 100.0 * float(plan.sell_fraction), places=4
+        )
 
 
 class TestEvidenceDelta(unittest.TestCase):

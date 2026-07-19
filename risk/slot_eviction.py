@@ -13,10 +13,77 @@ from strategies.sensor_entry_policy import is_sensor_source
 
 EXIT_SOURCE_SLOT_EVICT = "slot_evict_for_entry"
 
-ACTION_PARTIAL_40 = "SELL_PARTIAL_40"
-ACTION_PARTIAL_50 = "SELL_PARTIAL_50"
+ACTION_PARTIAL = "SELL_PARTIAL"
+ACTION_PARTIAL_40 = "SELL_PARTIAL_40"  # legacy alias in logs
 ACTION_FULL = "SELL_FULL"
 ACTION_REDUCE_TAIL = "SELL_REDUCE_TO_TAIL"
+
+
+def fraction_to_free_full_slot(
+    *,
+    sold_percent: float,
+    notional_usdt: float,
+    tail_sold_pct: float = 0.55,
+    tail_notional_usdt: float = 800.0,
+) -> tuple[float, str, bool]:
+    """Compute sell fraction so remaining bag is a *tail* (frees a full slot).
+
+    Matches ``is_tail_position`` rules: sold >= tail_sold_pct OR remaining notional < cap.
+
+    Returns (fraction, action_label, already_tail).
+    """
+    sold = max(0.0, min(1.0, float(sold_percent or 0.0)))
+    notional = max(0.0, float(notional_usdt or 0.0))
+    target_sold = max(0.0, min(1.0, float(tail_sold_pct or 0.55)))
+    tail_cap = max(0.0, float(tail_notional_usdt or 800.0))
+
+    if sold >= target_sold or (0 < notional < tail_cap):
+        return 0.0, ACTION_PARTIAL, True
+
+    frac_sold = 0.0
+    if sold < target_sold and sold < 1.0:
+        # new_sold = sold + (1-sold)*f >= target_sold
+        frac_sold = (target_sold - sold) / max(1e-9, 1.0 - sold)
+
+    frac_notional = 0.0
+    if notional > 0 and tail_cap > 0 and notional >= tail_cap:
+        # remaining = notional*(1-f) < tail_cap  → f > 1 - tail_cap/notional
+        frac_notional = 1.0 - (tail_cap / notional) + 1e-6
+
+    frac = max(frac_sold, frac_notional)
+    frac = max(0.0, min(1.0, frac))
+    # Small bags: full close cleaner than dust partial
+    if notional > 0 and notional * (1.0 - frac) < max(50.0, tail_cap * 0.15):
+        frac = 1.0
+    if frac >= 0.99:
+        return 1.0, ACTION_FULL, False
+    if frac <= 0:
+        return 0.0, ACTION_PARTIAL, True
+    label = ACTION_REDUCE_TAIL if sold < 0.05 else ACTION_PARTIAL
+    return frac, label, False
+
+
+def would_be_tail_after_sell(
+    *,
+    sold_percent: float,
+    notional_usdt: float,
+    sell_fraction: float,
+    tail_sold_pct: float = 0.55,
+    tail_notional_usdt: float = 800.0,
+) -> bool:
+    """True if after selling ``sell_fraction`` of current amount the bag is tail-class."""
+    f = max(0.0, min(1.0, float(sell_fraction or 0.0)))
+    sold = max(0.0, min(1.0, float(sold_percent or 0.0)))
+    notional = max(0.0, float(notional_usdt or 0.0))
+    new_sold = sold + (1.0 - sold) * f
+    new_notional = notional * (1.0 - f)
+    if new_notional <= 0 or f >= 0.99:
+        return True  # fully closed → free slot
+    if new_sold >= float(tail_sold_pct):
+        return True
+    if 0 < new_notional < float(tail_notional_usdt):
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -600,21 +667,60 @@ def plan_slot_eviction(
             ab=ab,
         )
 
-    # Action selection
+    # Action: always size so remaining is tail (frees full slot) — not a fixed 40%.
+    tail_sold = _f(cfg, "tail_target_sold_pct", 0.55)
+    tail_notional = _f(cfg, "tail_target_max_notional_usdt", 800.0)
+    # Align with sell_policy.rotation defaults when present on parent risk
+    if isinstance(risk_config, dict):
+        sp = risk_config.get("sell_policy") if isinstance(risk_config.get("sell_policy"), dict) else {}
+        rot = sp.get("rotation") if isinstance(sp.get("rotation"), dict) else {}
+        if rot.get("tail_exempt_sold_pct") is not None:
+            try:
+                tail_sold = max(tail_sold, float(rot["tail_exempt_sold_pct"]))
+            except (TypeError, ValueError):
+                pass
+        if rot.get("tail_exempt_notional_usdt") is not None:
+            try:
+                tail_notional = min(tail_notional, float(rot["tail_exempt_notional_usdt"]))
+            except (TypeError, ValueError):
+                pass
+
+    frac, action, already_tail = fraction_to_free_full_slot(
+        sold_percent=applied.sold_percent,
+        notional_usdt=applied.notional_usdt,
+        tail_sold_pct=tail_sold,
+        tail_notional_usdt=tail_notional,
+    )
+    if already_tail:
+        # Should not be a full-slot candidate; fail closed
+        return EvictionPlan(
+            ok=False,
+            mode=mode,
+            entry_symbol=demand.symbol,
+            demand_score=demand.score,
+            apply_to_plan=apply_to_plan,
+            rag_mode=rag_mode,
+            veto_reason="victim_already_tail",
+            reason_codes=("victim_already_tail",),
+            candidates=cand_dicts,
+            ab=ab,
+        )
     if applied.gain_pct < 0 and cfg.get("prefer_reduce_to_tail", True):
         action = ACTION_REDUCE_TAIL
-        frac = 0.45
-    elif applied.notional_usdt < 400 or applied.sold_percent >= 0.4:
-        action = ACTION_FULL
-        frac = 1.0
-    else:
-        action = ACTION_PARTIAL_40
-        frac = 0.40
+    if not would_be_tail_after_sell(
+        sold_percent=applied.sold_percent,
+        notional_usdt=applied.notional_usdt,
+        sell_fraction=frac,
+        tail_sold_pct=tail_sold,
+        tail_notional_usdt=tail_notional,
+    ):
+        # Safety: force full if math edge-case left a full bag
+        frac, action = 1.0, ACTION_FULL
 
     rationale = (
         f"for={demand.symbol} demand={demand.score:.0f} "
         f"keep_v={victim_keep:.2f} keep_e={entry_keep:.2f} edge={edge:.2f} "
-        f"rag={rag_mode} action={action}"
+        f"rag={rag_mode} action={action} frac={frac:.2f}"
     )
 
     return EvictionPlan(
