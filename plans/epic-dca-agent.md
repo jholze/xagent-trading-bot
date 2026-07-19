@@ -2,7 +2,7 @@
 
 > **GitHub:** [#79](https://github.com/jholze/xagent-trading-bot/issues/79)  
 > **Status:** Open · ready (after #72 closed · cash #90 shipped)  
-> **Updated:** 2026-07-19  
+> **Updated:** 2026-07-19 · **D1–D3 shipped** (shadow mode)  
 > **Related:** #72 (infra done) · #89/#90 Cash · #67/#91 · #71 · #65  
 > **Coordination:** [`next-wave-dca-decision-cash.md`](next-wave-dca-decision-cash.md)
 
@@ -10,7 +10,7 @@
 
 | ID | Issue | Title |
 |----|-------|--------|
-| D1 | [#95](https://github.com/jholze/xagent-trading-bot/issues/95) | Spec DcaContext + factors |
+| D1 | [#95] done(https://github.com/jholze/xagent-trading-bot/issues/95) | Spec DcaContext + factors |
 | D2 | [#96](https://github.com/jholze/xagent-trading-bot/issues/96) | ContextBuilder |
 | D3 | [#97](https://github.com/jholze/xagent-trading-bot/issues/97) | Wire policy mult/skip |
 | D4 | [#98](https://github.com/jholze/xagent-trading-bot/issues/98) | DecisionEvent → memory/RAG |
@@ -154,7 +154,7 @@ flowchart TB
 
 | ID | GitHub | Title | Depends |
 |----|--------|--------|---------|
-| **D1** | #95 | Spec: `DcaContext` + factor table + reason_codes + cash_mode mapping | — |
+| **D1** | #95 | Spec **done**: `DcaContext` + factor table + reason_codes + cash_mode mapping | — |
 | **D2** | #96 | `DcaContextBuilder` (fusion live, cash, calendar, profile; RAG optional fail-open) | D1, #72 C1 |
 | **D3** | #97 | Wire policy mult/skip into evaluate path + unit tests + shadow flag | D2, #90 |
 | **D4** | #98 | `DcaDecisionEvent` persist + index memory/RAG | D3 |

@@ -454,7 +454,10 @@ def evaluate_dca_addon(
     position: dict,
     strategy_params: dict | None,
 ) -> DCACandidate | None:
-    """Return a BUY_DCA candidate when unified loss-band and scoring rules pass."""
+    """Return a BUY_DCA candidate when unified loss-band and scoring rules pass.
+
+    Optional policy layer (plans/dca-policy-v1.md / #79 D2–D3).
+    """
     decision = should_dca(market, position, strategy_params)
     if not decision.should_dca:
         return None
@@ -476,12 +479,62 @@ def evaluate_dca_addon(
     else:
         rationale = f"DCA dip {loss_pct:.1f}%{sold_tag} (round {rounds + 1}/{max_rounds})"
 
+    usdt_amount = float(decision.usdt_amount or 0)
+    breakdown = dict(decision.breakdown)
+
+    # Policy layer — fail-open to base candidate
+    try:
+        from strategies.dca_context import build_dca_context
+        from strategies.dca_policy import (
+            apply_policy_to_usdt,
+            dca_policy_config,
+            evaluate_dca_policy,
+        )
+
+        pcfg = dca_policy_config(cfg)
+        if pcfg.get("enabled"):
+            sym = str(
+                (position or {}).get("symbol")
+                or getattr(market, "symbol", "")
+                or ""
+            )
+            ctx = build_dca_context(
+                symbol=sym,
+                position=position,
+                market=market,
+                strategy_params=strategy_params,
+                score=int(decision.score or 0),
+                max_score=int(decision.max_score or 10),
+                loss_pct=loss_pct,
+            )
+            result = evaluate_dca_policy(ctx, pcfg)
+            shadow = bool(pcfg.get("shadow", True))
+            codes = ",".join(result.reason_codes) if result.reason_codes else "-"
+            rationale = (
+                f"{rationale} policy[v{result.policy_version} "
+                f"{'shadow ' if shadow else ''}"
+                f"mult={result.size_mult} skip={result.skip} {codes}]"
+            )
+            breakdown["policy_mult"] = result.size_mult
+            breakdown["policy_skip"] = 1 if result.skip else 0
+            if result.skip and not shadow:
+                return None
+            usdt_amount = apply_policy_to_usdt(
+                usdt_amount,
+                result,
+                spendable_dca=ctx.spendable_dca,
+                shadow=shadow,
+            )
+    except Exception:
+        pass
+
     return DCACandidate(
         action=BUY_DCA,
         source="dca",
         rationale=rationale,
-        usdt_amount=decision.usdt_amount,
+        usdt_amount=usdt_amount,
         shadow_only=decision.shadow_only,
         score=decision.score,
-        breakdown=dict(decision.breakdown),
+        breakdown=breakdown,
     )
+
