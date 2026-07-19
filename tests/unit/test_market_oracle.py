@@ -184,6 +184,90 @@ class TestOracleRegime(unittest.TestCase):
         )
         self.assertEqual(st, "RISK_OFF")
 
+    def test_crash_blocks_entries_not_sells_policy(self):
+        """CRASH: block new entries / sensors; size 0 — sells are Risk path, not policy."""
+        from services.market_oracle.regime import policy_for_state
+
+        pol = policy_for_state("CRASH")
+        self.assertTrue(pol["block_new_entries"])
+        self.assertTrue(pol["block_sensor_entries"])
+        self.assertEqual(pol["size_mult"], 0.0)
+        # RISK_OFF still allows new entries (only sensor shadow)
+        soft = policy_for_state("RISK_OFF")
+        self.assertFalse(soft["block_new_entries"])
+        self.assertTrue(soft["block_sensor_entries"])
+
+
+class TestOracleClientBreadthFunding(unittest.TestCase):
+    def test_breadth_empty_universe_fail_open(self):
+        from services.market_oracle.client import MarketDataClient
+
+        client = MarketDataClient()
+        with patch.object(client, "fetch_all_tickers", return_value=[]):
+            out = client.fetch_breadth(top_n=40)
+        self.assertEqual(out, {})
+
+    def test_breadth_too_few_liquid_pairs(self):
+        from services.market_oracle.client import MarketDataClient
+
+        client = MarketDataClient()
+        thin = [
+            {
+                "currency_pair": f"X{i}_USDT",
+                "quote_volume": "100",
+                "change_percentage": "1.0",
+            }
+            for i in range(5)
+        ]
+        with patch.object(client, "fetch_all_tickers", return_value=thin):
+            out = client.fetch_breadth(top_n=40)
+        self.assertEqual(out, {})
+
+    def test_funding_gate_success(self):
+        from services.market_oracle.client import MarketDataClient
+
+        client = MarketDataClient()
+
+        class _Resp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"funding_rate": "0.0001"}
+
+        with patch.object(client._session, "get", return_value=_Resp()):
+            rate, src = client.fetch_btc_funding_rate_pct()
+        self.assertEqual(src, "gate")
+        self.assertAlmostEqual(rate, 0.01, places=6)
+
+    def test_funding_binance_fallback(self):
+        from services.market_oracle.client import MarketDataClient
+
+        client = MarketDataClient()
+        calls = {"n": 0}
+
+        class _Fail:
+            def raise_for_status(self):
+                raise RuntimeError("gate down")
+
+        class _Ok:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"lastFundingRate": "0.0002"}
+
+        def _get(url, *a, **k):
+            calls["n"] += 1
+            if "gateio" in url or "gate" in url:
+                return _Fail()
+            return _Ok()
+
+        with patch.object(client._session, "get", side_effect=_get):
+            rate, src = client.fetch_btc_funding_rate_pct()
+        self.assertEqual(src, "binance")
+        self.assertAlmostEqual(rate, 0.02, places=6)
+
 
 class TestOraclePolicy(unittest.TestCase):
     def setUp(self):

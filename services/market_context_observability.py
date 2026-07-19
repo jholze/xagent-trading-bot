@@ -126,13 +126,19 @@ def format_fusion_line(bias: dict[str, Any] | None = None) -> str:
 
 def _append_event(record: dict[str, Any]) -> None:
     try:
-        from services.observability_store import append_jsonl
+        from services.observability_store import append_jsonl, maybe_rotate_jsonl
 
         rec = {
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **record,
         }
         append_jsonl(EVENTS_LOG, rec)
+        # Bound growth (default 5MB → keep last ~2k lines as .1 backup)
+        try:
+            max_b = int(_obs_cfg().get("market_policy_events_max_bytes", 5_000_000) or 5_000_000)
+        except Exception:
+            max_b = 5_000_000
+        maybe_rotate_jsonl(EVENTS_LOG, max_bytes=max_b, keep_lines=2_000)
     except Exception as e:
         log(f"market_policy event log failed: {e}", "DEBUG")
 

@@ -55,6 +55,47 @@ def append_jsonl(path: str, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def maybe_rotate_jsonl(
+    path: str,
+    *,
+    max_bytes: int = 5_000_000,
+    keep_lines: int = 2_000,
+) -> bool:
+    """If *path* exceeds *max_bytes*, keep the last *keep_lines* and rename old to .1.
+
+    Fail-open: returns False on any error. Used for market_policy_events.jsonl etc.
+    """
+    try:
+        if max_bytes <= 0 or not os.path.isfile(path):
+            return False
+        if os.path.getsize(path) < int(max_bytes):
+            return False
+        keep = max(1, int(keep_lines))
+        # Read last lines without loading huge file fully into Python list of dicts
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            chunk = min(size, 2_000_000)
+            f.seek(-chunk, os.SEEK_END)
+            data = f.read().decode("utf-8", errors="replace")
+        lines = [ln for ln in data.splitlines() if ln.strip()]
+        tail = lines[-keep:] if len(lines) > keep else lines
+        bak = f"{path}.1"
+        try:
+            if os.path.isfile(bak):
+                os.remove(bak)
+            os.replace(path, bak)
+        except Exception:
+            # if rename fails, truncate in place
+            pass
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(tail) + ("\n" if tail else ""))
+        return True
+    except Exception as e:
+        log(f"jsonl rotate failed {path}: {e}", "DEBUG")
+        return False
+
+
 def tail_jsonl(path: str | os.PathLike, limit: int = 50, *, chunk_size: int = 262_144) -> list[dict]:
     """Read the last *limit* JSONL records without scanning the whole file."""
     if limit <= 0:

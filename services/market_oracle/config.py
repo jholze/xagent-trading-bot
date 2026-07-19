@@ -1,4 +1,22 @@
-"""Env config for market oracle (no bot imports)."""
+"""Env config for market oracle (no bot imports).
+
+Public knobs (Railway / .env) — all optional, defaults match plan:
+
+| Env | Role | Default |
+|-----|------|---------|
+| `POLL_INTERVAL_SEC` | Feature poll | 300 |
+| `HEARTBEAT_SEC` | Force push | 1800 |
+| `BTC_CASCADE_1H_PCT` | A1 1h crash | -2.5 |
+| `BTC_RISK_ON_1H_FLOOR_PCT` | Block RISK_ON | -1.0 |
+| `BREADTH_TOP_N` | A2 universe size | 40 |
+| `BREADTH_RISK_ON_MIN_GREEN` | A2 RISK_ON gate | 0.45 |
+| `BTC_FUNDING_EXTREME_POS` | A3 crowded long | 0.05 (%) |
+| `MIN_BARS_TO_FLIP` | Hysteresis | 2 |
+| `BOT_INGEST_URL` / `BOT_INGEST_TOKEN` | Push to bot | — |
+| `DRY_RUN` | No HTTP push | false |
+
+Sidecar: health only on PORT — **no Telegram** from this process.
+"""
 
 from __future__ import annotations
 

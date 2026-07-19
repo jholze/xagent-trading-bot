@@ -72,6 +72,25 @@ class TestMarketContextObs(unittest.TestCase):
             self.assertTrue(maybe_notify_state_change(bias2))
             self.assertGreaterEqual(send.call_count, 2)
 
+    def test_jsonl_rotate_when_over_max(self):
+        import tempfile
+        from pathlib import Path
+
+        from services.observability_store import append_jsonl, maybe_rotate_jsonl
+
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "events.jsonl")
+            for i in range(50):
+                append_jsonl(path, {"i": i, "pad": "x" * 200})
+            self.assertTrue(os.path.isfile(path))
+            # force rotate with tiny budget
+            ok = maybe_rotate_jsonl(path, max_bytes=500, keep_lines=10)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.isfile(path))
+            lines = Path(path).read_text(encoding="utf-8").strip().splitlines()
+            self.assertLessEqual(len(lines), 10)
+            self.assertTrue(os.path.isfile(path + ".1") or len(lines) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
