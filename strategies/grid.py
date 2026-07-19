@@ -21,12 +21,14 @@ from strategies.grid_plan import (
     apply_grid_sell_guards,
     build_grid_plan,
     evaluate_plan_at_price,
+    grid_gain_pct,
     plan_from_legacy_state,
     recenter_plan,
     should_block_recenter_below_entry,
     should_recenter,
     spacing_atr_mult_for_coin,
 )
+from strategies.grid_memory_policy import apply_grid_memory_sell_policy
 from strategies.trading_modes import (
     MODE_DEFENSIVE,
     MODE_GRID,
@@ -338,7 +340,8 @@ class GridStrategy(BaseStrategy):
             bar_low=bar_low,
             bar_high=bar_high,
         )
-        # Soft-guard: center + entry (staging live-feel)
+        # Guards: center + min-gain (no harvest under entry) + memory facts
+        mem_bits: list[str] = []
         if "SELL" in str(act.action or "").upper():
             act = apply_grid_sell_guards(
                 act,
@@ -348,6 +351,26 @@ class GridStrategy(BaseStrategy):
                 mode=mode,
                 policy=sell_policy,
             )
+            gain = grid_gain_pct(price, avg_entry)
+            try:
+                from intelligence.memory.coin_facts import summarize_facts_for_symbol
+
+                flags = summarize_facts_for_symbol(symbol)
+                before = act.action
+                act = apply_grid_memory_sell_policy(
+                    act,
+                    gain_pct=gain,
+                    flags=flags,
+                    policy=sell_policy,
+                )
+                if before != act.action or "memory:" in (act.rationale or ""):
+                    mem_bits.append("memory_checked")
+                    if flags.event_count:
+                        mem_bits.append(f"facts={flags.event_count}")
+                    if flags.summary:
+                        mem_bits.append(flags.summary[:60])
+            except Exception as e:
+                log(f"[Grid] memory sell check fail-open {symbol}: {e}", "DEBUG")
         if act.action != HOLD:
             self._persist_plan(plan, force=True)
         else:
@@ -363,6 +386,20 @@ class GridStrategy(BaseStrategy):
             base = float(get_bot_config().max_usdt_per_trade or 500)
             dca_usdt = round(base * buy_frac, 2)
 
+        is_sell = "SELL" in str(act.action or "").upper()
+        sources = ["grid", f"mode_{mode.lower()}"]
+        if is_sell:
+            sources.append("grid_sell")
+        if mem_bits:
+            sources.append("grid_memory")
+
+        rat = (
+            f"{act.rationale} | mode={mode} | tier={vol_tier or coin_class or '?'} "
+            f"| spacing×{spacing_mult:.2f} | levels={plan_tf}"
+        )
+        if mem_bits:
+            rat = f"{rat} | {' · '.join(mem_bits)}"
+
         return SignalAnalysis(
             action=act.action,
             symbol=symbol,
@@ -372,17 +409,15 @@ class GridStrategy(BaseStrategy):
             vol_multiplier=market.vol_multiplier,
             ampel_emoji="🔵" if act.action != HOLD else "🟡",
             ampel_text=act.rationale or "Grid monitoring",
-            sources=["grid", f"mode_{mode.lower()}"],
+            sources=sources,
             normalized_action=act.action,
-            rationale=(
-                f"{act.rationale} | mode={mode} | tier={vol_tier or coin_class or '?'} "
-                f"| spacing×{spacing_mult:.2f} | levels={plan_tf}"
-            ),
+            rationale=rat,
             strategy_profile="grid",
             confidence=0.72 if act.action != HOLD else 0.55,
             dca_usdt=dca_usdt,
             atr_pct=atr_pct,
             volatility_tier=vol_tier,
+            sell_source="grid" if is_sell else "",
         )
 
     def _level_bar_range(

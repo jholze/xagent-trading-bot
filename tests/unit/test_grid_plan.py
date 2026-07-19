@@ -203,7 +203,30 @@ class TestGridPlan(unittest.TestCase):
         self.assertEqual(blocked.action, "HOLD")
         self.assertIn("blocked", blocked.rationale.lower())
 
-    def test_sell_guard_hybrid_soft_slice(self):
+    def test_sell_guard_hybrid_blocked_underwater_by_default(self):
+        """A: HYBRID no longer harvests under entry (soft underwater opt-in only)."""
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
+        raw = evaluate_plan_at_price(
+            plan, sell_lv.price * 1.001, has_position=True,
+        )
+        blocked = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=sell_lv.price,
+            average_entry=120.0,
+            mode="HYBRID",
+            policy={
+                "enabled": True,
+                "min_sell_gain_pct": 0.0,
+                "green_only_modes": ["GRID", "HYBRID"],
+                "soft_underwater_modes": [],
+            },
+        )
+        self.assertEqual(blocked.action, "HOLD")
+        self.assertIn("min", blocked.rationale.lower())
+
+    def test_sell_guard_hybrid_soft_slice_opt_in(self):
         plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
         sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
         raw = evaluate_plan_at_price(
@@ -225,6 +248,22 @@ class TestGridPlan(unittest.TestCase):
         self.assertIn("SELL", soft.action)
         self.assertLessEqual(soft.sell_pos_frac, 0.12)
         self.assertIn("underwater", soft.rationale.lower())
+
+    def test_sell_guard_allows_green_profit(self):
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
+        raw = evaluate_plan_at_price(
+            plan, sell_lv.price * 1.001, has_position=True,
+        )
+        ok = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=max(sell_lv.price, 105.0),
+            average_entry=100.0,
+            mode="HYBRID",
+            policy={"enabled": True, "min_sell_gain_pct": 0.0, "green_only_modes": ["GRID", "HYBRID"]},
+        )
+        self.assertIn("SELL", ok.action)
 
     def test_block_recenter_below_entry(self):
         self.assertTrue(

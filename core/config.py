@@ -494,13 +494,21 @@ class BotConfig:
             "sell_policy": {
                 "enabled": True,
                 "require_sell_above_center": True,
-                "green_only_modes": ["GRID"],
-                "soft_underwater_modes": ["HYBRID"],
+                # Harvest only in profit (GRID+HYBRID). Soft underwater is opt-in.
+                "min_sell_gain_pct": 0.0,
+                "green_only_modes": ["GRID", "HYBRID"],
+                "soft_underwater_modes": [],
                 "underwater_max_slice": 0.12,
                 "green_buffer_pct": 0.15,
                 "block_recenter_below_entry": True,
                 "re_center_max_drawdown_pct": 3.0,
                 "allow_defensive_underwater": True,
+                # Memory coin-facts (fail-open if memory down)
+                "memory_enabled": True,
+                "memory_hard_neg_min_gain_pct": 5.0,
+                "memory_structure_min_gain_pct": 2.0,
+                "memory_runner_hold_below_gain_pct": 8.0,
+                "memory_flow_only_min_gain_pct": 0.0,
             },
         }
         raw = self._raw.get("grid", {})

@@ -253,6 +253,15 @@ def evaluate_plan_at_price(
     return GridAction(action=HOLD, rationale="Grid monitoring")
 
 
+def grid_gain_pct(sell_price: float, average_entry: float) -> float | None:
+    """Position gain % at sell price vs average entry. None if unknown."""
+    entry = float(average_entry or 0)
+    px = float(sell_price or 0)
+    if entry <= 0 or px <= 0:
+        return None
+    return (px / entry - 1.0) * 100.0
+
+
 def apply_grid_sell_guards(
     act: GridAction,
     *,
@@ -262,13 +271,12 @@ def apply_grid_sell_guards(
     mode: str = "",
     policy: dict | None = None,
 ) -> GridAction:
-    """Staging soft-guard: classic grid + entry protection.
+    """Grid sell guards: center half + min gain (default) + optional soft underwater.
 
     - Sells must be at/above grid center (upper half of grid).
-    - vs average entry:
-      - GRID (stable): green-only (price >= entry × buffer) → else HOLD
-      - HYBRID: allow underwater but cap slice (soft rotate)
-      - DEFENSIVE: no green guard (risk reduction allowed)
+    - min_sell_gain_pct (default 0): block GRID/HYBRID harvests below entry (+ buffer).
+    - DEFENSIVE: underwater risk reduction still allowed unless disabled.
+    - soft_underwater_modes (default empty): opt-in small underwater slices only.
     """
     if not act or "SELL" not in str(act.action or "").upper():
         return act
@@ -296,34 +304,34 @@ def apply_grid_sell_guards(
     if entry <= 0 or px <= 0:
         return act
 
+    try:
+        min_gain = float(pol.get("min_sell_gain_pct", 0.0))
+    except (TypeError, ValueError):
+        min_gain = 0.0
     buffer_pct = float(pol.get("green_buffer_pct", 0.15))
-    green_floor = entry * (1.0 + buffer_pct / 100.0)
+    # floor = entry × (1 + min_gain/100) × (1 + buffer/100) ≈ entry + min gain + tiny buffer
+    green_floor = entry * (1.0 + min_gain / 100.0) * (1.0 + buffer_pct / 100.0)
+    gain = grid_gain_pct(px, entry)
     underwater = px < green_floor
 
     if not underwater:
         return act
 
     # DEFENSIVE: allow full intended sell for risk-off
-    if mode_u == "DEFENSIVE" or pol.get("allow_defensive_underwater", True) and mode_u == "DEFENSIVE":
+    if mode_u == "DEFENSIVE" and pol.get("allow_defensive_underwater", True):
         return act
 
+    # Default: hard block harvests under min gain (GRID + HYBRID)
     green_only_modes = {
-        str(m).upper() for m in (pol.get("green_only_modes") or ["GRID"])
+        str(m).upper()
+        for m in (pol.get("green_only_modes") or ["GRID", "HYBRID"])
     }
+    # Soft underwater is opt-in only (empty default — no HYPE-style grid loss sells)
     soft_modes = {
-        str(m).upper() for m in (pol.get("soft_underwater_modes") or ["HYBRID"])
+        str(m).upper() for m in (pol.get("soft_underwater_modes") or [])
     }
 
-    if mode_u in green_only_modes or pol.get("green_only", False):
-        return GridAction(
-            action=HOLD,
-            rationale=(
-                f"Grid sell blocked: price {px:.6g} < entry×buffer {green_floor:.6g} "
-                f"(green-only / {mode_u or 'GRID'})"
-            ),
-        )
-
-    if mode_u in soft_modes or not green_only_modes:
+    if mode_u in soft_modes:
         max_slice = float(pol.get("underwater_max_slice", 0.12))
         new_frac = min(float(act.sell_pos_frac or 0), max_slice)
         if new_frac < 0.05:
@@ -340,7 +348,17 @@ def apply_grid_sell_guards(
             sell_pos_frac=new_frac,
             rationale=(
                 f"{act.rationale} | underwater soft slice {new_frac:.0%} "
-                f"(entry {entry:.6g}, px {px:.6g})"
+                f"(entry {entry:.6g}, px {px:.6g}, gain={gain if gain is not None else 0:.1f}%)"
+            ),
+        )
+
+    if mode_u in green_only_modes or pol.get("green_only", False) or not soft_modes:
+        gtxt = f"{gain:.1f}%" if gain is not None else "?"
+        return GridAction(
+            action=HOLD,
+            rationale=(
+                f"Grid sell blocked: gain {gtxt} < min {min_gain:.2f}% "
+                f"(px {px:.6g} < floor {green_floor:.6g}, {mode_u or 'GRID'})"
             ),
         )
 

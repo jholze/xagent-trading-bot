@@ -1375,13 +1375,19 @@
     "sell_policy": {
       "enabled": true,
       "require_sell_above_center": true,
-      "green_only_modes": ["GRID"],
-      "soft_underwater_modes": ["HYBRID"],
+      "min_sell_gain_pct": 0.0,
+      "green_only_modes": ["GRID", "HYBRID"],
+      "soft_underwater_modes": [],
       "underwater_max_slice": 0.12,
       "green_buffer_pct": 0.15,
       "block_recenter_below_entry": true,
       "re_center_max_drawdown_pct": 3.0,
-      "allow_defensive_underwater": true
+      "allow_defensive_underwater": true,
+      "memory_enabled": true,
+      "memory_hard_neg_min_gain_pct": 5.0,
+      "memory_structure_min_gain_pct": 2.0,
+      "memory_runner_hold_below_gain_pct": 8.0,
+      "memory_flow_only_min_gain_pct": 0.0
     }
   },
   "multi_tenant": {
