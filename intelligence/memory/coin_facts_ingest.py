@@ -23,6 +23,29 @@ from logger import log
 FetchFn = Callable[[str], str]
 
 
+def _source_cap(cfg: dict) -> int:
+    """Max symbols per cycle from cmc_pro / cmc_ai config (larger wins)."""
+    sources = cfg.get("sources") or {}
+    caps: list[int] = []
+    for key, field in (
+        ("cmc_pro", "max_symbols_per_cycle"),
+        ("cmc_ai", "max_coins_per_cycle"),
+    ):
+        try:
+            caps.append(int((sources.get(key) or {}).get(field) or 40))
+        except (TypeError, ValueError):
+            caps.append(40)
+    return max(1, max(caps) if caps else 40)
+
+
+def _append_symbol(out: list[str], seen: set[str], raw: str) -> None:
+    sym = normalize_symbol(raw)
+    if not sym or sym in seen or sym.upper().startswith("TEST"):
+        return
+    seen.add(sym)
+    out.append(sym)
+
+
 def coin_fact_universe(
     config_raw: dict | None = None,
     *,
@@ -31,11 +54,7 @@ def coin_fact_universe(
 ) -> list[str]:
     """Open positions ∪ active watchlist, positions first, capped."""
     cfg = coin_facts_config(config_raw)
-    cmc = (cfg.get("sources") or {}).get("cmc_ai") or {}
-    try:
-        cap = max(1, int(cmc.get("max_coins_per_cycle") or 40))
-    except (TypeError, ValueError):
-        cap = 40
+    cap = _source_cap(cfg)
     want = list(cfg.get("universe") or ["open_positions", "watchlist"])
     out: list[str] = []
     seen: set[str] = set()
@@ -47,13 +66,7 @@ def coin_fact_universe(
 
                 list_positions_fn = list_active_positions
             for lot in list_positions_fn() or []:
-                sym = normalize_symbol(str((lot or {}).get("symbol") or ""))
-                if not sym or sym in seen:
-                    continue
-                if sym.upper().startswith("TEST"):
-                    continue
-                seen.add(sym)
-                out.append(sym)
+                _append_symbol(out, seen, str((lot or {}).get("symbol") or ""))
         except Exception as e:
             log(f"coin_facts universe positions: {e}", "DEBUG")
 
@@ -66,13 +79,7 @@ def coin_fact_universe(
             for coin in load_watchlist_fn() or []:
                 if not (coin or {}).get("active", True):
                     continue
-                sym = normalize_symbol(str((coin or {}).get("symbol") or ""))
-                if not sym or sym in seen:
-                    continue
-                if sym.upper().startswith("TEST"):
-                    continue
-                seen.add(sym)
-                out.append(sym)
+                _append_symbol(out, seen, str((coin or {}).get("symbol") or ""))
         except Exception as e:
             log(f"coin_facts universe watchlist: {e}", "DEBUG")
 
@@ -195,60 +202,54 @@ def sync_coin_facts(
     seen_ids: set[str] = set()
     pro_written = 0
 
+    def _accept(sym: str, draft: CoinFactDraft, *, url: str = "", count_pro: bool = False) -> None:
+        nonlocal written, pro_written
+        if draft.event_type == "ignore_target":
+            return
+        slug = resolve_cmc_slug(sym) or normalize_symbol(sym).split("/")[0].lower()
+        eid = persist_coin_fact(
+            draft, symbol=sym, slug=slug, url=url, store=store, embed=False
+        )
+        if not eid or eid in seen_ids:
+            return
+        seen_ids.add(eid)
+        written += 1
+        per_coin[sym] = int(per_coin.get(sym) or 0) + 1
+        if count_pro:
+            pro_written += 1
+
     # --- D8b: CMC Pro (structured JSON) first ---
     if pro_on:
         try:
             from intelligence.memory.coin_facts_cmc_pro import collect_cmc_pro_drafts
 
             for sym, d in collect_cmc_pro_drafts(universe, config_raw=raw):
-                if d.event_type == "ignore_target":
-                    continue
-                slug = resolve_cmc_slug(sym) or normalize_symbol(sym).split("/")[0].lower()
-                eid = persist_coin_fact(
-                    d, symbol=sym, slug=slug, url="", store=store, embed=False
-                )
-                if eid and eid not in seen_ids:
-                    seen_ids.add(eid)
-                    written += 1
-                    pro_written += 1
-                    per_coin[sym] = int(per_coin.get(sym) or 0) + 1
+                _accept(sym, d, count_pro=True)
         except Exception as e:
             errors.append(f"cmc_pro:{str(e)[:100]}")
             log(f"coin_facts cmc_pro failed: {e}", "WARNING")
 
-    # --- D8: CMC AI HTML (optional fallback / parallel) ---
+    # --- D8: CMC AI HTML (optional) ---
     if ai_on:
+        from intelligence.memory.coin_facts_cmc import build_cmc_ai_urls
+
         for sym in universe:
             try:
                 slug = resolve_cmc_slug(sym)
                 if not slug:
                     continue
                 drafts = fetch_and_parse_coin(sym, fetch_fn=fetch_fn, slug=slug)
-                n = 0
-                for d in drafts:
-                    if n >= max_ev:
+                urls = build_cmc_ai_urls(slug)
+                ep_to_url = {
+                    "latest_updates": urls.get("latest_updates", ""),
+                    "price_analysis": urls.get("price_analysis", ""),
+                    "price_prediction": urls.get("price_prediction", ""),
+                }
+                for i, d in enumerate(drafts):
+                    if i >= max_ev:
                         break
-                    if d.event_type == "ignore_target":
-                        continue
-                    from intelligence.memory.coin_facts_cmc import build_cmc_ai_urls
-
-                    urls = build_cmc_ai_urls(slug)
-                    url = ""
-                    ep = (d.metadata or {}).get("endpoint") or ""
-                    if ep == "latest_updates":
-                        url = urls.get("latest_updates", "")
-                    elif ep == "price_analysis":
-                        url = urls.get("price_analysis", "")
-                    elif ep == "price_prediction":
-                        url = urls.get("price_prediction", "")
-                    eid = persist_coin_fact(
-                        d, symbol=sym, slug=slug, url=url, store=store, embed=False
-                    )
-                    if eid and eid not in seen_ids:
-                        seen_ids.add(eid)
-                        written += 1
-                        n += 1
-                        per_coin[sym] = int(per_coin.get(sym) or 0) + 1
+                    ep = str((d.metadata or {}).get("endpoint") or "")
+                    _accept(sym, d, url=ep_to_url.get(ep, ""))
             except Exception as e:
                 errors.append(f"{sym}:{str(e)[:80]}")
 

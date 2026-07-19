@@ -52,7 +52,10 @@ class TestIngest(unittest.TestCase):
                 "coin_facts": {
                     "enabled": True,
                     "universe": ["open_positions", "watchlist"],
-                    "sources": {"cmc_ai": {"max_coins_per_cycle": 3}},
+                    "sources": {
+                        "cmc_ai": {"max_coins_per_cycle": 3},
+                        "cmc_pro": {"max_symbols_per_cycle": 3},
+                    },
                 }
             }
         }

@@ -85,22 +85,16 @@ def quote_row_to_drafts(
     else:
         usd = q if isinstance(q, dict) else {}
 
-    try:
-        chg = float(usd.get("percent_change_24h") or 0)
-    except (TypeError, ValueError):
-        chg = 0.0
-    try:
-        vol = float(usd.get("volume_24h") or 0)
-    except (TypeError, ValueError):
-        vol = 0.0
-    try:
-        vol_chg = float(usd.get("volume_change_24h") or 0)
-    except (TypeError, ValueError):
-        vol_chg = 0.0
-    try:
-        price = float(usd.get("price") or 0)
-    except (TypeError, ValueError):
-        price = 0.0
+    def _num(key: str) -> float:
+        try:
+            return float(usd.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    chg = _num("percent_change_24h")
+    vol = _num("volume_24h")
+    vol_chg = _num("volume_change_24h")
+    price = _num("price")
 
     drafts: list[CoinFactDraft] = []
     meta_base = {
