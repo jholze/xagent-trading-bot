@@ -186,28 +186,14 @@ Beides ist „intelligent“; Eviction ist produktnäher an eurem North Star (Ro
 
 - [ ] Staging soak: Reject-Rate, Free-Slots-Histogramm, keine Ledger-Korruption  
 
-### Phase 2 — Intelligent Slot Freeing (der Lorenzo-Hebel) (2–4 Tage)
+### Phase 2 — Intelligent Slot Freeing (der Lorenzo-Hebel)
 
-Wenn `free_slots == 0` **und** High-Conviction Entry wartet:
+**Ausgelagert in eigenes Ticket + Plan:**
 
-| Kriterium High-Conviction (Beispiel) | Score |
-|--------------------------------------|-------|
-| Sensor spike ≥ 5× | +2 |
-| LC/CMC bullish confluence | +1 |
-| Venue ok | must |
-| Not soft_block / not structure_risk | must |
-| Fusion not block_buys | must |
+- Issue: [#111 Slot eviction for high-conviction entry](https://github.com/jholze/xagent-trading-bot/issues/111)  
+- Plan: [`slot-eviction-for-entry.md`](slot-eviction-for-entry.md)
 
-Dann **optional** (Config `evict_for_entry.enabled`):
-
-1. Wähle **Eviction-Kandidat:** schwächster Full-Slot  
-   - flach/neg. PnL, lange idle, partial already, Memory weak, kein trail armed  
-2. `SELL_PARTIAL` oder Full (policy) mit `exit_source=slot_evict_for_entry`  
-3. Danach Entry freigeben  
-
-**Shadow first:** log „would_evict SYMBOL for BANK“.  
-
-Aligniert mit #89 Phase 2 Rotation — **nicht** parallel zwei Eviction-Engines bauen; Capacity-Controller **ruft** Rotation/Urgency.
+Capacity (#110) steuert **wie viele** Slots; #111 steuert **wen freimachen**, wenn trotzdem full + High-Conviction Entry wartet.
 
 ### Phase 3 — Priority Queue (optional)
 

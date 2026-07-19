@@ -15,6 +15,7 @@ from strategies.sell_sources import (
 
 # Prefer more specific exit modules over generic channel tags
 _EXIT_PRIORITY: tuple[str, ...] = (
+    "slot_evict_for_entry",
     "ladder_terminal",
     "tail_idle",
     "trailing_stop",

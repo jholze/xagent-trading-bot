@@ -234,12 +234,36 @@ class RiskManager:
                     pass
 
         open_slots = count_open_full_slots(self.config.raw)
-        if not has_position and open_slots >= self.config.max_open_positions:
-            return RiskDecision(
-                approved=False,
-                message=f"Max open positions reached ({self.config.max_open_positions})",
-                code="max_open_positions",
-            )
+        if not has_position:
+            cap = self._resolve_position_capacity(full_slots=open_slots)
+            if open_slots >= cap.max_open_eff:
+                from risk.position_capacity import format_capacity_reject_message
+
+                msg = format_capacity_reject_message(cap, open_slots)
+                free = max(0, int(cap.max_open_eff) - int(open_slots))
+                try:
+                    from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
+
+                    _plan, suffix = try_slot_eviction_on_max_open(
+                        order=order,
+                        source=source,
+                        free_full_slots=free,
+                        config=self.config,
+                        risk_config=self.config.risk_config,
+                        config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                        spike_multiple=float(
+                            getattr(order, "entry_15m_vol_ratio", None) or 0
+                        ),
+                    )
+                    if suffix:
+                        msg = f"{msg}{suffix}"
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message=msg,
+                    code="max_open_positions",
+                )
 
         is_dca = self._is_dca_buy(source, order)
         floor_block = self._cash_floor_blocked(is_dca=is_dca)
@@ -436,8 +460,10 @@ class RiskManager:
         cash = self._available_usdt()
         floor_abs = self._cash_floor_abs()
         spendable = self._spendable_usdt(equity, is_dca=False)
+        full_slots = count_open_full_slots(self.config.raw)
         out = {
             "open_positions": count_open_positions(),
+            "open_full_slots": full_slots,
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
             "daily_buys": self._daily_buys_count(dca_only=False if self._dca_limits_enabled() else None),
@@ -472,6 +498,20 @@ class RiskManager:
             out["cash_policy_size_mult"] = round(pol.size_mult, 4)
         else:
             out["cash_policy_enabled"] = False
+        try:
+            cap = self._resolve_position_capacity(full_slots=full_slots, equity=equity)
+            out["max_open_eff"] = cap.max_open_eff
+            out["position_capacity_enabled"] = cap.enabled
+            out["position_capacity_rationale"] = cap.rationale
+            out["position_capacity_factors"] = dict(cap.factors or {})
+            out["free_full_slots"] = cap.free_slots
+            out["capacity_regime"] = cap.regime
+            # Telegram /risk still uses max_open_positions as the live gate
+            if cap.enabled:
+                out["max_open_positions"] = cap.max_open_eff
+        except Exception:
+            out["max_open_eff"] = self.config.max_open_positions
+            out["position_capacity_enabled"] = False
         return out
 
 
@@ -723,7 +763,91 @@ class RiskManager:
 
             return dict(get_global_market_bias(self.config.raw) or {})
         except Exception:
-            return {"size_mult": 1.0, "block_buys": False}
+            return {"size_mult": 1.0, "block_buys": False, "regime": None}
+
+    def _process_uptime_sec(self) -> float | None:
+        try:
+            from services.market_oracle_store import process_uptime_sec
+
+            return float(process_uptime_sec())
+        except Exception:
+            return None
+
+    def _open_book_memory_counts(self) -> tuple[int, int, int]:
+        """soft_block / toxic / prefer among open positions — fail-open (0,0,0)."""
+        try:
+            from intelligence.memory.cache import get_coin_profile
+            from risk.position_capacity import count_open_book_memory_signals
+
+            return count_open_book_memory_signals(
+                list_active_positions(),
+                get_profile=lambda sym: get_coin_profile(
+                    sym, config=self.config.raw if hasattr(self.config, "raw") else None
+                ),
+            )
+        except Exception:
+            return 0, 0, 0
+
+    def _resolve_position_capacity(
+        self,
+        *,
+        full_slots: int | None = None,
+        equity: float | None = None,
+    ):
+        """Fusion + cash + memory → CapacitySnapshot (fail-open to static base)."""
+        from risk.cash_policy import MODE_STEADY
+        from risk.position_capacity import resolve_max_open_eff
+
+        base = int(self.config.max_open_positions)
+        risk = self.config.risk_config
+        bias = self._market_bias_for_cash()
+        try:
+            size_mult = float(bias.get("size_mult", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            size_mult = 1.0
+        block_buys = bool(bias.get("block_buys"))
+        regime = bias.get("regime")
+
+        cash_mode = MODE_STEADY
+        spendable_new = None
+        pol = self._evaluate_cash_policy(equity)
+        if pol is not None:
+            cash_mode = pol.mode
+            spendable_new = float(pol.spendable_new)
+            # Prefer policy-linked fusion signals when cash policy is on
+            if pol.enabled:
+                size_mult = float(pol.size_mult)
+                block_buys = bool(pol.block_buys)
+
+        throttle_at = float(risk.get("drawdown_throttle_pct", 10.0) or 10.0)
+        drawdown_active = float(self._equity_drawdown_pct()) >= throttle_at
+        soft_n, toxic_n, prefer_n = self._open_book_memory_counts()
+
+        # Inject avg_entry into capacity section from bot trade size (no hardcode)
+        risk_for_cap = dict(risk) if isinstance(risk, dict) else {}
+        pc = dict(risk_for_cap.get("position_capacity") or {})
+        if pc.get("enabled") and not pc.get("avg_entry_usdt"):
+            try:
+                pc["avg_entry_usdt"] = float(self._base_usdt_cap() or 0)
+            except Exception:
+                pass
+            risk_for_cap["position_capacity"] = pc
+
+        return resolve_max_open_eff(
+            base=base,
+            risk_config=risk_for_cap,
+            regime=regime,
+            size_mult=size_mult,
+            block_buys=block_buys,
+            cash_mode=cash_mode,
+            spendable_new=spendable_new,
+            soft_block_open=soft_n,
+            toxic_open=toxic_n,
+            prefer_open=prefer_n,
+            process_uptime_sec=self._process_uptime_sec(),
+            full_slots=full_slots,
+            drawdown_active=drawdown_active,
+        )
 
     def _evaluate_cash_policy(self, equity: float | None = None):
         """Adaptive cash evaluation when enabled; None when legacy path."""

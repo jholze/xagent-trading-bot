@@ -14,6 +14,11 @@ def handle(text: str) -> bool:
     aggression = _trading.config.aggression_config
 
     throttle = "ON (size halved)" if status["drawdown_throttle_active"] else "off"
+    if status.get("position_capacity_enabled"):
+        cap_line = status.get("position_capacity_rationale") or f"max_open_eff={status.get('max_open_eff')}"
+    else:
+        cap_line = "static"
+    full_slots = status.get("open_full_slots", status["open_positions"])
     msg = f"""<b>🛡️ Risk Status</b>
 
 <b>Portfolio</b>
@@ -21,7 +26,8 @@ Equity: <b>${status['portfolio_equity']:.0f}</b> | Balance: ${status['virtual_ba
 Drawdown: <b>{status['drawdown_pct']:.1f}%</b> | Throttle: {throttle}
 
 <b>Limits</b>
-Open positions: {status['open_positions']}/{status['max_open_positions']}
+Open positions: {full_slots}/{status['max_open_positions']} full slots
+Capacity: {cap_line}
 Daily buys (24h): {status.get('daily_buys', status['daily_trades'])}/{status.get('max_daily_buys', status['max_daily_trades'])}
 Daily DCA (24h): {status.get('daily_dca_buys', 0)}/{status.get('max_daily_dca_buys', 0) or '∞'} · ${status.get('daily_dca_usdt', 0):.0f}/${status.get('max_daily_dca_usdt', 0) or '∞'}
 Daily sells (24h): {status.get('daily_sells', 0)}/{status.get('max_daily_sells', 0) or '∞'}

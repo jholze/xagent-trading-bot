@@ -23,6 +23,12 @@ def _cfg(**risk_over) -> BotConfig:
     risk["cash_floor_basis"] = "initial"
     risk["dca_reserve_pct"] = 0
     risk["min_trade_usdt"] = 100.0
+    risk["venue_quality"] = {"enabled": False}
+    # Isolate static floor tests from adaptive capacity expansion
+    risk.setdefault(
+        "position_capacity",
+        {"enabled": False},
+    )
     risk.update(risk_over)
     return BotConfig(raw)
 
@@ -63,6 +69,9 @@ class TestCashFloor:
             return_value={"amount": 0, "average_entry": 0},
         ), patch.object(rm, "_trade_cooldown_blocked", return_value=(False, "")), patch.object(
             rm, "_daily_buy_limit_blocked", return_value=None
+        ), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"block_buys": False, "size_mult": 1.0, "regime": "NEUTRAL"},
         ):
             decision = rm.evaluate(order, "4h", source="entry_sensor_15m")
         assert not decision.approved
@@ -81,7 +90,12 @@ class TestCashFloor:
             return_value={"amount": 0},
         ), patch.object(rm, "_trade_cooldown_blocked", return_value=(False, "")), patch.object(
             rm, "_available_usdt", return_value=50_000.0
-        ), patch.object(rm, "_initial_capital", return_value=100_000.0):
+        ), patch.object(rm, "_initial_capital", return_value=100_000.0), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"block_buys": False, "size_mult": 1.0, "regime": "NEUTRAL"},
+        ), patch.object(rm, "_open_book_memory_counts", return_value=(0, 0, 0)), patch.object(
+            rm, "_process_uptime_sec", return_value=3600.0
+        ):
             decision = rm.evaluate(order, "4h", source="auto")
         assert not decision.approved
         assert decision.code == "max_open_positions"

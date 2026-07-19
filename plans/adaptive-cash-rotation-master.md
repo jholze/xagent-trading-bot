@@ -18,6 +18,8 @@
 | P2 Rotation tempo | [#92](https://github.com/jholze/xagent-trading-bot/issues/92) | open |
 | P3 Funding portfolio | [#93](https://github.com/jholze/xagent-trading-bot/issues/93) | open |
 | P4 Urgency + HARVEST | [#94](https://github.com/jholze/xagent-trading-bot/issues/94) | open |
+| P5 Capacity max_open_eff | [#110](https://github.com/jholze/xagent-trading-bot/issues/110) | open · `intelligent-position-capacity.md` |
+| P6 Slot eviction for entry | [#111](https://github.com/jholze/xagent-trading-bot/issues/111) | open · `slot-eviction-for-entry.md` |
 | Ops floor free $0 | [#67](https://github.com/jholze/xagent-trading-bot/issues/67) | **closed** (via #90 + staging) |
 | Memory urgency docs | [#71](https://github.com/jholze/xagent-trading-bot/issues/71) | open (feeds #94) |
 
