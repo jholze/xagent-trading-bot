@@ -576,6 +576,9 @@
   "memory": {
     "enabled": true,
     "profile_by_source": true,
+    "rebuild": {
+      "lookback_days": 180
+    },
     "rag": {
       "enabled": true,
       "embedding_backend": "hash",

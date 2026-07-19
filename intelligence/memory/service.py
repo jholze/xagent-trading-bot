@@ -133,8 +133,20 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     """One full memory maintenance cycle — ledger read-only."""
     store = store or MemoryStore()
     store.ensure_indexes()
+    # lookback: config memory.rebuild.lookback_days (default 180 ≈ 6 months)
+    lookback_days = 180
+    try:
+        from core.config import get_bot_config
+
+        mem = (get_bot_config().raw or {}).get("memory") or {}
+        rb = mem.get("rebuild") if isinstance(mem.get("rebuild"), dict) else {}
+        lookback_days = int(rb.get("lookback_days") or mem.get("lookback_days") or 180)
+    except Exception:
+        lookback_days = 180
+    lookback_days = max(30, min(400, lookback_days))
+
     out = {
-        "rebuild": rebuild_from_orders(store),
+        "rebuild": rebuild_from_orders(store, lookback_days=lookback_days),
         "events": sync_fusion_events(store),
         "social": {},
         "macro": {},
@@ -142,6 +154,7 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         "reflect": {},
         "weaviate_ready": False,
         "hermes": {},
+        "lookback_days": lookback_days,
     }
     try:
         out["social"] = sync_social_memory(store)
