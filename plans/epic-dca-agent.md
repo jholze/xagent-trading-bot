@@ -17,7 +17,8 @@
 | D4b | [#99](https://github.com/jholze/xagent-trading-bot/issues/99) | /ask policy snapshot |
 | D5 | [#100](https://github.com/jholze/xagent-trading-bot/issues/100) | Reflection |
 | D6 | [#101](https://github.com/jholze/xagent-trading-bot/issues/101) | Observability |
-| D7 | [#102](https://github.com/jholze/xagent-trading-bot/issues/102) | Scheduled DCA (optional) |
+| D7 | [#102](https://github.com/jholze/xagent-trading-bot/issues/102) | Scheduled DCA (optional, parked) |
+| D8 | [#103](https://github.com/jholze/xagent-trading-bot/issues/103) | **Coin Fact Layer** — news/facts → memory → DCA + watchlist |
 
 ---
 
@@ -161,7 +162,8 @@ flowchart TB
 | **D4b** | #99 | `/ask` optional Live-Policy-Snapshot (Alignment) | D3, #72 C4 |
 | **D5** | #100 | Reflection pass (rules first; Grok via Hermes optional) | D4 |
 | **D6** | #101 | Observability: logs/Telegram reason_codes + mult | D3 |
-| **D7** | #102 | *(optional)* Mode `scheduled` weekly DCA | D3 stable |
+| **D7** | #102 | *(optional, parked)* Mode `scheduled` weekly DCA | D3 stable |
+| **D8** | #103 | Coin Fact Layer (news/facts → memory → DCA policy + watchlist) | D3 done; preferred next |
 
 ---
 
