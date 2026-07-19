@@ -41,6 +41,11 @@ class TestRagBusContracts(unittest.TestCase):
 class TestAskBridgeRag(unittest.TestCase):
     def test_extract_symbol(self):
         self.assertEqual(_extract_symbol_from_question("DCA for ARIA/USDT bitte"), "ARIA/USDT")
+        self.assertEqual(
+            _extract_symbol_from_question("warum hast du heute ZBT verkauft"),
+            "ZBT/USDT",
+        )
+        self.assertEqual(_extract_symbol_from_question("warum ADA verkauft"), "ADA/USDT")
 
     def test_build_prompt_includes_retrieved(self):
         from hermes.memory.rag_retriever import RagRetriever

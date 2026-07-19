@@ -292,18 +292,26 @@ def _rate_limit_ok(chat_id: str | int) -> tuple[bool, str]:
     return True, ""
 
 
-def _extract_symbols(text: str) -> list[str]:
-    tokens = re.findall(r"\b[A-Z]{2,10}\b", text.upper())
-    skip = {
-        "USDT", "USD", "BTC", "ETH", "WARUM", "WAS", "WIE", "WURDE", "GEKAUFT", "WIRD",
-        "DER", "DIE", "DAS", "UND", "ASK", "IST", "SIND", "HAT", "HABEN", "NICHT",
+_ASK_SYMBOL_SKIP = frozenset(
+    {
+        "USDT", "USD", "WARUM", "WAS", "WIE", "WURDE", "GEKAUFT", "WIRD", "VERKAUFT",
+        "VERKAUFEN", "KAUFEN", "KAUFTE", "VERKAUFTE", "HAST", "HABEN", "HAT",
+        "DER", "DIE", "DAS", "UND", "ASK", "IST", "SIND", "NICHT", "DCA",
         "GEHTS", "DIR", "MIR", "DEIN", "DEINE", "MEIN", "MEINE", "HEUTE", "GESTERN",
         "KANN", "KÖNNEN", "WILL", "BITTE", "DANKE", "HALLO", "GUT", "JA", "NEIN",
         "WENN", "DANN", "AUCH", "NUR", "NOCH", "SCHON", "SEHR", "VIEL", "WENIG",
-        "MARKT", "MORGEN", "GERADE", "AKTUELL", "FRAGE", "ANTWORT",
+        "MARKT", "MORGEN", "GERADE", "AKTUELL", "FRAGE", "ANTWORT", "POSITION",
+        "POSITIONEN", "TRADE", "TRADES", "SIGNAL", "BOT", "DU", "ICH", "WIR",
         "CHECK", "MAL", "HTTPS", "HTTP", "DEX", "COM", "TOKEN", "SOLANA", "COINMARKETCAP",
+        "SOLL", "SOLLTE", "WELCHE", "WELCHER", "WELCHES", "LETZTE", "LETZTER", "LETZTES",
+        "SCHWERE", "VERLUST", "NACHKAUFEN", "KEINE", "DATEN", "UNCLEAR", "UNKLAR",
     }
-    return [t for t in tokens if t not in skip][:5]
+)
+
+
+def _extract_symbols(text: str) -> list[str]:
+    tokens = re.findall(r"\b[A-Z]{2,12}\b", text.upper())
+    return [t for t in tokens if t not in _ASK_SYMBOL_SKIP][:5]
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -778,22 +786,14 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
 
 
 def _extract_symbol_from_question(question: str) -> str | None:
-    import re
-
+    """Best-effort pair from free text. Bare tickers → BASE/USDT (not a whitelist of coins)."""
     q = question or ""
     m = re.search(r"\b([A-Z]{2,12})/USDT\b", q, re.I)
     if m:
-        return m.group(0).upper().replace("usdt", "USDT")
-    m = re.search(r"\b([A-Z]{2,12})\b", q)
-    if m and m.group(1).upper() not in ("DCA", "USDT", "USD", "BTC", "ETH", "WIE", "WAS", "SOLL"):
-        # Prefer base/USDT form when bare ticker
-        base = m.group(1).upper()
-        if base in ("BTC", "ETH", "SOL", "ARIA", "H", "WLD", "PEPE", "DOGE"):
-            return f"{base}/USDT"
-    # DCA questions often include BTC/ETH as words
-    for base in ("BTC", "ETH", "SOL", "ARIA"):
-        if re.search(rf"\b{base}\b", q, re.I):
-            return f"{base}/USDT"
+        return f"{m.group(1).upper()}/USDT"
+    bases = _extract_symbols(q)
+    if bases:
+        return f"{bases[0]}/USDT"
     return None
 
 
