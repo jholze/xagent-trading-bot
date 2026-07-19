@@ -64,6 +64,75 @@ class TestDcaPolicyPure(unittest.TestCase):
         self.assertLessEqual(usdt, 120.0)
 
 
+class TestDcaDecisionEvent(unittest.TestCase):
+    def test_persist_to_memory_store(self):
+        from intelligence.memory.store import InMemoryMemoryStore
+        from strategies.dca_decision_event import persist_dca_decision_event
+        from strategies.dca_policy import DcaContext, DcaPolicyResult
+
+        store = InMemoryMemoryStore()
+        eid = persist_dca_decision_event(
+            symbol="ZBT/USDT",
+            result=DcaPolicyResult(
+                size_mult=1.0,
+                skip=True,
+                reason_codes=("harvest_skip",),
+            ),
+            ctx=DcaContext(cash_mode="HARVEST", fusion_size_mult=0.4),
+            shadow=True,
+            base_usdt=500,
+            final_usdt=500,
+            applied="shadow",
+            policy_cfg={"persist_events": True, "index_rag": False},
+            store=store,
+            index_rag=False,
+        )
+        self.assertTrue(eid.startswith("dca_"))
+        ev = store.get_event(eid)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.event_type, "dca_decision")
+        self.assertIn("ZBT/USDT", ev.symbols)
+        self.assertIn("harvest_skip", ev.description)
+        self.assertTrue(ev.metadata.get("shadow"))
+
+    def test_persist_disabled(self):
+        from intelligence.memory.store import InMemoryMemoryStore
+        from strategies.dca_decision_event import persist_dca_decision_event
+        from strategies.dca_policy import DcaPolicyResult
+
+        store = InMemoryMemoryStore()
+        eid = persist_dca_decision_event(
+            symbol="ADA/USDT",
+            result=DcaPolicyResult(size_mult=1.0, skip=False, reason_codes=("steady",)),
+            policy_cfg={"persist_events": False},
+            store=store,
+        )
+        self.assertEqual(eid, "")
+
+    def test_emit_calls_persist(self):
+        from strategies.dca_policy import (
+            DcaContext,
+            DcaPolicyResult,
+            emit_dca_policy_audit,
+        )
+
+        with patch("logger.log"), patch(
+            "strategies.dca_decision_event.persist_dca_decision_event",
+            return_value="dca_abc",
+        ) as pers:
+            emit_dca_policy_audit(
+                symbol="ADA/USDT",
+                result=DcaPolicyResult(size_mult=1.35, skip=False, reason_codes=("deploy_boost",)),
+                ctx=DcaContext(cash_mode="DEPLOY"),
+                shadow=True,
+                base_usdt=200,
+                final_usdt=200,
+                applied="shadow",
+                policy_cfg={"log_audit": True, "persist_events": True, "telegram_audit": False},
+            )
+        pers.assert_called_once()
+
+
 class TestDcaPolicyAudit(unittest.TestCase):
     def test_format_audit_contains_mult_and_reasons(self):
         from strategies.dca_policy import (

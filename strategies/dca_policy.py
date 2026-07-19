@@ -66,6 +66,9 @@ def dca_policy_config(dca_cfg: dict | None) -> dict[str, Any]:
         "log_audit": True,
         "telegram_audit": False,
         "telegram_on_skip_only": True,
+        # D4 persist (#98)
+        "persist_events": True,
+        "index_rag": True,
     }
     raw = dict((dca_cfg or {}).get("policy") or {})
     return {**defaults, **raw}
@@ -135,6 +138,23 @@ def emit_dca_policy_audit(
             from telegram_notifier import send_telegram_message
 
             send_telegram_message(f"📊 <code>{line}</code>")
+        except Exception:
+            pass
+    # D4: memory + optional RAG (fail-open)
+    if cfg.get("persist_events", True):
+        try:
+            from strategies.dca_decision_event import persist_dca_decision_event
+
+            persist_dca_decision_event(
+                symbol=symbol,
+                result=result,
+                ctx=ctx,
+                shadow=shadow,
+                base_usdt=base_usdt,
+                final_usdt=final_usdt,
+                applied=applied,
+                policy_cfg=cfg,
+            )
         except Exception:
             pass
     return line

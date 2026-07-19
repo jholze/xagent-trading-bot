@@ -135,7 +135,15 @@ rationale += policy reasons
 
 | D2 #96 | `build_dca_context` — done |
 | D3 #97 | wire + pure `evaluate_dca_policy` + tests — done |
-| D6 #101 | Observability: `format_dca_policy_audit` / `emit_dca_policy_audit` INFO log; optional Telegram |
+| D6 #101 | Observability — done |
+| D4 #98 | `persist_dca_decision_event` → `memory_market_events` + optional RAG — done |
+
+### D4 persist
+
+- On every policy audit (`emit_dca_policy_audit`): write `MarketEvent` `event_type=dca_decision`
+- Config: `persist_events` (default true), `index_rag` (default true, fail-open)
+- Includes shadow decisions so staging learns without live size changes
+
 
 ### D6 config
 

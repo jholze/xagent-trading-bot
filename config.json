@@ -950,7 +950,9 @@
         "soft_block_mult": 0.6,
         "log_audit": true,
         "telegram_audit": false,
-        "telegram_on_skip_only": true
+        "telegram_on_skip_only": true,
+        "persist_events": true,
+        "index_rag": true
       },
       "sizing": {
         "enabled": true,
