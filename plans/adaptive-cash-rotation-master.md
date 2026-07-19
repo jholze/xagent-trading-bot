@@ -18,7 +18,7 @@
 | P2 Rotation tempo | [#92](https://github.com/jholze/xagent-trading-bot/issues/92) | open |
 | P3 Funding portfolio | [#93](https://github.com/jholze/xagent-trading-bot/issues/93) | open |
 | P4 Urgency + HARVEST | [#94](https://github.com/jholze/xagent-trading-bot/issues/94) | open |
-| Ops floor free $0 | [#67](https://github.com/jholze/xagent-trading-bot/issues/67) | open → close via #91 |
+| Ops floor free $0 | [#67](https://github.com/jholze/xagent-trading-bot/issues/67) | **closed** (via #90 + staging) |
 | Memory urgency docs | [#71](https://github.com/jholze/xagent-trading-bot/issues/71) | open (feeds #94) |
 
 ---
