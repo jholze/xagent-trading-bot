@@ -413,6 +413,16 @@ class BotConfig:
                 "MOMENTUM": "block",
                 "DEFENSIVE": "off",
             },
+            # Memory gates (coin facts + soft_block) — proactive bad-name filter
+            "memory_enabled": True,
+            "memory_honor_soft_block": True,
+            "memory_block_hard_negative": True,
+            "memory_block_structure_risk": True,
+            "memory_block_unlock": True,
+            "memory_size_down_flow_only": True,
+            "memory_flow_only_size_mult": 0.5,
+            "memory_size_down_profit_taking": True,
+            "memory_profit_taking_size_mult": 0.7,
         }
         raw = self._raw.get("entry_sensor_15m", {})
         merged = {**defaults, **raw}

@@ -21,6 +21,8 @@ class EntrySensor15mResult:
     rationale: str = ""
     shadow_only: bool = True
     volume_spike_ratio: float = 0.0
+    # Memory size-down (1.0 = full planned sensor USDT)
+    size_mult: float = 1.0
 
 
 def _metrics_key(symbol: str, tenant_id: str | None = None) -> str:
@@ -96,6 +98,10 @@ def evaluate_entry_sensor_15m(
     venue_ok: bool | None = None,
     venue_reason: str | None = None,
     now: datetime | None = None,
+    # Optional memory inputs (pure; caller loads). When omitted, no memory gate.
+    memory_flags: object | None = None,
+    memory_entry_bias: str = "neutral",
+    memory_size_mult: float | None = None,
 ) -> EntrySensor15mResult:
     """Evaluate 15m sensor; pure function — no I/O or position side effects."""
     _ = now
@@ -180,11 +186,30 @@ def evaluate_entry_sensor_15m(
             rationale="EMA breakout required but not met",
         )
 
+    # Memory gates (caller may inject flags; pure)
+    from strategies.sensor_entry_memory import apply_sensor_memory_entry_policy
+
+    mem = apply_sensor_memory_entry_policy(
+        flags=memory_flags,
+        entry_bias=memory_entry_bias,
+        cfg=cfg,
+    )
+    if not mem.allow:
+        return EntrySensor15mResult(
+            triggered=False,
+            shadow_only=shadow_only,
+            volume_spike_ratio=spike,
+            rationale=mem.reason or "memory_block",
+        )
+
     action = BUY_STRONG if tech_already_buy else BUY
     boost = min(15.0, (spike - vol_mult) * 5.0)
     rationale = f"15m vol spike {spike:.2f}x"
     if metrics.get("price_momentum"):
         rationale += ", EMA9 breakout"
+    size_m = float(memory_size_mult if memory_size_mult is not None else mem.size_mult)
+    if size_m < 0.999:
+        rationale += f" | {mem.reason or 'memory_size'}×{size_m:.2f}"
 
     return EntrySensor15mResult(
         triggered=True,
@@ -193,4 +218,5 @@ def evaluate_entry_sensor_15m(
         rationale=rationale,
         shadow_only=shadow_only,
         volume_spike_ratio=spike,
+        size_mult=size_m,
     )

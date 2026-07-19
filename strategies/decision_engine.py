@@ -267,6 +267,22 @@ class DecisionEngine:
         except Exception:
             venue_ok = None
 
+        # Memory: coin facts + profile (fail-open → empty / neutral)
+        memory_flags = None
+        memory_entry_bias = "neutral"
+        try:
+            from intelligence.memory.cache import get_entry_bias
+            from intelligence.memory.coin_facts import summarize_facts_for_symbol
+
+            memory_entry_bias = get_entry_bias(symbol) or "neutral"
+            if cfg.get("memory_enabled", True):
+                memory_flags = summarize_facts_for_symbol(
+                    symbol, config_raw=self.config.raw
+                )
+        except Exception:
+            memory_flags = None
+            memory_entry_bias = "neutral"
+
         sensor = evaluate_entry_sensor_15m(
             watched=True,
             metrics=metrics,
@@ -278,6 +294,8 @@ class DecisionEngine:
             gate_tradeable=exchange_tradeable,
             venue_ok=venue_ok,
             venue_reason=venue_reason,
+            memory_flags=memory_flags,
+            memory_entry_bias=memory_entry_bias,
         )
 
         if sensor is None or not sensor.triggered:
@@ -328,6 +346,12 @@ class DecisionEngine:
                 max_usdt_per_trade=base,
                 cfg=cfg,
             )
+            try:
+                sm = float(getattr(sensor, "size_mult", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                sm = 1.0
+            if sm < 0.999:
+                usdt = round(usdt * max(0.25, min(1.0, sm)), 2)
             if usdt > 0:
                 technical.dca_usdt = usdt
         except Exception:

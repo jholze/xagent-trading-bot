@@ -1335,7 +1335,16 @@
       "GRID": { "stable": 0.22, "volatile": 0.35 },
       "HYBRID": { "stable": 0.40, "volatile": 0.55 },
       "MOMENTUM": { "default": 0.30, "max": 0.35 }
-    }
+    },
+    "memory_enabled": true,
+    "memory_honor_soft_block": true,
+    "memory_block_hard_negative": true,
+    "memory_block_structure_risk": true,
+    "memory_block_unlock": true,
+    "memory_size_down_flow_only": true,
+    "memory_flow_only_size_mult": 0.5,
+    "memory_size_down_profit_taking": true,
+    "memory_profit_taking_size_mult": 0.7
   },
   "regime_detector": {
     "enabled": true,
