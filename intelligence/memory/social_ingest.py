@@ -576,7 +576,8 @@ def sync_lc_memory(
                 symbol=sym,
                 impact=clamp_impact(0.2 + min(0.3, g_delta / 40.0)),
                 description=(
-                    f"LC spike {sym} galaxy={galaxy:.0f} Δ={g_delta:+.0f} "
+                    f"LunarCrush lc_social_spike social spike extreme sentiment "
+                    f"{sym} galaxy={galaxy:.0f} Δ={g_delta:+.0f} "
                     f"sent={sentiment:.0f} {action}"
                 ),
                 metadata={
@@ -601,7 +602,8 @@ def sync_lc_memory(
                 symbol=sym,
                 impact=clamp_impact(-(0.15 + min(0.25, abs(g_delta) / 40.0))),
                 description=(
-                    f"LC fade {sym} galaxy={galaxy:.0f} Δ={g_delta:+.0f} sent={sentiment:.0f}"
+                    f"LunarCrush lc_social_fade social fade sentiment "
+                    f"{sym} galaxy={galaxy:.0f} Δ={g_delta:+.0f} sent={sentiment:.0f}"
                 ),
                 metadata={
                     "signal_id": sid,
@@ -625,7 +627,10 @@ def sync_lc_memory(
                 event_type=EVT_LC_SENTIMENT,
                 symbol=sym,
                 impact=impact,
-                description=f"LC sentiment extreme {sym} sent={sentiment:.0f}",
+                description=(
+                    f"LunarCrush lc_sentiment_extreme social sentiment extreme "
+                    f"{sym} sent={sentiment:.0f}"
+                ),
                 metadata={
                     "signal_id": sid,
                     "sentiment": sentiment,
@@ -645,7 +650,10 @@ def sync_lc_memory(
                 event_type=EVT_LC_SPIKE if action == "BUY" else EVT_LC_FADE,
                 symbol=sym,
                 impact=impact_from_action(action, conf),
-                description=f"LC signal {sym} {action} conf={conf:.0f} {rationale[:100]}",
+                description=(
+                    f"LunarCrush lc_signal social {action} {sym} "
+                    f"conf={conf:.0f} {rationale[:100]}"
+                ),
                 metadata={
                     "signal_id": sid,
                     "action": action,

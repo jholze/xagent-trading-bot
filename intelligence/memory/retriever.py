@@ -2,12 +2,118 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from intelligence.memory.embeddings import cosine, embed_text
 from intelligence.memory.models import CoinProfile, Lesson, MarketEvent
 from intelligence.memory.store import MemoryStore, resolve_memory_scope
 from intelligence.memory.vector_weaviate import WeaviateIndex, weaviate_enabled
+
+# Query → event_type hints so sparse but critical types aren't drowned by news flood.
+_QUERY_TYPE_HINTS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (
+        ("fomc", "fed", "cpi", "nfp", "macro", "calendar", "rate decision"),
+        ("macro_scheduled", "macro_window", "macro_pressure", "macro_print", "macro_news"),
+    ),
+    (
+        ("lunar", "lunarcrush", "lc_", "lc ", "social spike", "sentiment extreme", "galaxy"),
+        ("lc_social_spike", "lc_sentiment_extreme", "lc_social_fade", "cmc_social", "cmc_trending"),
+    ),
+    (
+        ("soft_block", "gross_loss", "gross loss", "rebuy", "cooloff", "sensor entry"),
+        ("trade_outcome", "soft_block", "sensor_lesson", "gross_loss"),
+    ),
+    (
+        ("unlock", "vesting"),
+        ("token_unlock", "structure_risk"),
+    ),
+    (
+        ("asia", "london", "session", "fakeout"),
+        ("session_open", "session_regime", "session_pressure"),
+    ),
+]
+
+
+def _query_tokens(query: str) -> set[str]:
+    return {t for t in re.findall(r"[a-z0-9_]{2,}", (query or "").lower()) if t}
+
+
+def _event_blob(e: MarketEvent) -> str:
+    return f"{e.event_type or ''} {e.description or ''} {e.source or ''}".lower()
+
+
+def _keyword_boost(query: str, blob: str) -> float:
+    """Overlap score so hash-embeddings still surface needle-rich events."""
+    toks = _query_tokens(query)
+    if not toks or not blob:
+        return 0.0
+    hits = sum(1 for t in toks if t in blob)
+    # substring boost for multi-word needles already tokenized
+    qlow = (query or "").lower()
+    for phrase in ("soft_block", "gross_loss", "gross loss", "fomc", "lunarcrush", "lc_"):
+        if phrase in qlow and phrase in blob:
+            hits += 1.5
+    return float(hits)
+
+
+def _type_hints_for_query(query: str) -> list[str]:
+    q = (query or "").lower()
+    out: list[str] = []
+    for needles, types in _QUERY_TYPE_HINTS:
+        if any(n in q for n in needles):
+            for t in types:
+                if t not in out:
+                    out.append(t)
+    return out
+
+
+def _score_event(query: str, qv: list[float], e: MarketEvent) -> float:
+    blob = _event_blob(e)
+    vec = e.embedding or embed_text(f"{e.event_type} {e.description}")
+    cos = float(cosine(qv, vec) or 0.0)
+    return cos + 0.12 * _keyword_boost(query, blob)
+
+
+def _candidate_events(
+    store: MemoryStore,
+    *,
+    query: str,
+    symbol: str | None,
+    event_type: str | None,
+    since_iso: str | None,
+) -> list[MarketEvent]:
+    """Recent pool + type-hinted pulls so macro/LC/soft_block survive news floods."""
+    by_id: dict[str, MarketEvent] = {}
+
+    def _add(rows: list[MarketEvent] | None) -> None:
+        for e in rows or []:
+            eid = getattr(e, "event_id", None) or ""
+            if eid and eid not in by_id:
+                by_id[eid] = e
+
+    if event_type:
+        _add(
+            store.list_events(
+                symbol=symbol, event_type=event_type, since_iso=since_iso, limit=80
+            )
+        )
+    else:
+        _add(store.list_events(symbol=symbol, since_iso=since_iso, limit=80))
+        for et in _type_hints_for_query(query):
+            _add(
+                store.list_events(
+                    symbol=symbol, event_type=et, since_iso=since_iso, limit=24
+                )
+            )
+            # Global (no symbol) for calendar/social that are BTC-tagged or multi-symbol
+            if symbol:
+                _add(
+                    store.list_events(
+                        symbol=None, event_type=et, since_iso=since_iso, limit=16
+                    )
+                )
+    return list(by_id.values())
 
 
 def similar_events(
@@ -20,35 +126,44 @@ def similar_events(
     store: MemoryStore | None = None,
     filters: dict[str, Any] | None = None,
 ) -> list[MarketEvent]:
-    """Vector + metadata filter retrieval for MarketEvents."""
+    """Hybrid retrieval: Weaviate (optional) + local cosine + keyword/type boosts."""
     store = store or MemoryStore()
     filters = filters or {}
     symbol = symbol or filters.get("symbol")
     event_type = event_type or filters.get("event_type")
     since_iso = since_iso or filters.get("since")
 
+    local_pool = _candidate_events(
+        store,
+        query=query,
+        symbol=symbol,
+        event_type=event_type,
+        since_iso=since_iso,
+    )
+    qv = embed_text(query)
+
     if weaviate_enabled():
         try:
             idx = WeaviateIndex()
-            ids = idx.search_events(query, symbol=symbol, event_type=event_type, k=k)
-            out = []
+            ids = idx.search_events(query, symbol=symbol, event_type=event_type, k=max(k, 12))
+            wv_hits: list[MarketEvent] = []
             for eid in ids:
                 e = store.get_event(eid)
                 if e:
                     if since_iso and e.timestamp < since_iso:
                         continue
-                    out.append(e)
-            if out:
-                return out[:k]
+                    wv_hits.append(e)
+            # Merge Weaviate hits into local pool, then hybrid-rank everything
+            if wv_hits:
+                by_id = {e.event_id: e for e in local_pool if getattr(e, "event_id", None)}
+                for e in wv_hits:
+                    if e.event_id:
+                        by_id[e.event_id] = e
+                local_pool = list(by_id.values())
         except Exception:
             pass
-    # local fallback
-    qv = embed_text(query)
-    events = store.list_events(symbol=symbol, event_type=event_type, since_iso=since_iso, limit=80)
-    scored = []
-    for e in events:
-        vec = e.embedding or embed_text(f"{e.event_type} {e.description}")
-        scored.append((cosine(qv, vec), e))
+
+    scored = [(_score_event(query, qv, e), e) for e in local_pool]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:k]]
 

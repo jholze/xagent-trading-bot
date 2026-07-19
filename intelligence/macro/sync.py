@@ -47,20 +47,26 @@ def _ingest_event(
     symbols: list[str] | None = None,
     metadata: dict | None = None,
     stable_key: str = "",
+    refresh: bool = False,
 ) -> bool:
+    """Write event. If refresh=True, update description/embedding when card already exists."""
     eid = make_event_id(source, stable_key or f"{event_type}|{description[:60]}")
-    if store.get_event(eid):
+    desc = (description or "")[:500]
+    existing = store.get_event(eid)
+    if existing and not refresh:
+        return False
+    if existing and refresh and (existing.description or "") == desc:
         return False
     ev = MarketEvent(
         event_id=eid,
-        timestamp=utc_now_iso(),
+        timestamp=(existing.timestamp if existing and existing.timestamp else utc_now_iso()),
         event_type=event_type,
-        symbols=symbols or ["BTC/USDT"],
+        symbols=symbols or (list(existing.symbols) if existing and existing.symbols else ["BTC/USDT"]),
         impact_score=max(-1.0, min(1.0, float(impact))),
-        description=description[:500],
+        description=desc,
         source=source,
-        metadata=dict(metadata or {}),
-        embedding=embed_event(description, event_type=event_type),
+        metadata={**(existing.metadata if existing and existing.metadata else {}), **dict(metadata or {})},
+        embedding=embed_event(desc, event_type=event_type),
     )
     return bool(store.upsert_event(ev))
 
@@ -208,12 +214,19 @@ def sync_macro_context(
             break
         corr = corr_by_code.get(e.event_code)
         imp = impact_score(e, corr, min_samples=min_hist if corr else 999)
-        # scheduled event card
+        # scheduled event card — rich text for retrieval (FOMC/Fed/calendar needles)
+        code = str(e.event_code or "").upper()
+        title = (e.title or "").strip()
+        fed_hint = "Fed rate decision " if code in ("FOMC", "FED") else ""
+        sched_desc = (
+            f"{code} {fed_hint}macro calendar scheduled {e.scheduled_at} {title} "
+            f"pre/post window high-impact"
+        ).strip()
         if _ingest_event(
             store,
             source=e.source or "macro",
             event_type="macro_scheduled",
-            description=f"{e.event_code} scheduled {e.scheduled_at} {e.title}".strip(),
+            description=sched_desc,
             impact=imp,
             metadata={
                 "event_code": e.event_code,
@@ -222,6 +235,7 @@ def sync_macro_context(
                 "corr": corr.as_dict() if corr else None,
             },
             stable_key=f"sched|{e.event_code}|{e.scheduled_at[:16]}",
+            refresh=True,
         ):
             counts["macro_events"] += 1
 
@@ -232,18 +246,22 @@ def sync_macro_context(
                 if w.get("kind") == "print"
                 else "macro_window"
             )
+            kind = w.get("kind")
+            win_desc = (
+                f"{code} macro calendar {kind} window {w.get('bucket')} "
+                f"{'in' if kind == 'pre' else 'ago'} "
+                f"{w.get('minutes_to_event') or w.get('minutes_since_event')}m "
+                f"{fed_hint}".strip()
+            )
             if _ingest_event(
                 store,
                 source=e.source or "macro",
                 event_type=et,
-                description=(
-                    f"{e.event_code} {w.get('bucket')} "
-                    f"{'in' if w.get('kind')=='pre' else 'ago'} "
-                    f"{w.get('minutes_to_event') or w.get('minutes_since_event')}m"
-                ),
+                description=win_desc,
                 impact=imp,
                 metadata={**w, "importance": e.importance},
                 stable_key=f"win|{e.event_code}|{e.scheduled_at[:13]}|{w.get('bucket')}",
+                refresh=True,
             ):
                 counts["macro_events"] += 1
             if w.get("kind") == "pre":

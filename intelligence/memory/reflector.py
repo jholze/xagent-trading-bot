@@ -153,6 +153,91 @@ def reflect(
         if changed and store.upsert_profile(prof):
             profile_updates += 1
 
+        # Explicit soft_block lesson/event so RAG + similar_events can retrieve it.
+        # Language follows evidence (gross_loss vs weak_history) — no fake sensor stamps.
+        rat = (prof.rationale or "").lower()
+        is_soft = prof.entry_bias == "soft_block" or "soft_block" in rat
+        is_gross = "gross_loss" in rat or "gross loss" in rat
+        if is_soft or is_gross:
+            feat = getattr(prof, "features", None) or {}
+            if not isinstance(feat, dict):
+                feat = {}
+            scope_lbl = str(feat.get("soft_block_scope") or "sensor_only")
+            loss_src = str(feat.get("last_loss_source") or "").lower()
+            sensorish = (
+                "sensor" in scope_lbl
+                or "sensor" in loss_src
+                or "sensor" in rat
+            )
+            head_bits = [prof.symbol + ":"]
+            if sensorish:
+                head_bits.append("sensor entry")
+            if is_gross:
+                head_bits.append("gross loss")
+            head_bits.append("soft_block rebuy cooloff")
+            text = (
+                f"{' '.join(head_bits)}. "
+                f"entry_bias={prof.entry_bias or 'soft_block'} size_bias={prof.size_bias} "
+                f"scope={scope_lbl}. "
+                f"{(prof.rationale or '')[:120]} "
+                "Avoid rebuy until cooloff TTL; prefer smaller size."
+            ).strip()
+            tags = [
+                "soft_block",
+                (prof.symbol or "").split("/")[0].lower(),
+            ]
+            if is_gross:
+                tags.append("gross_loss")
+            if sensorish:
+                tags.append("sensor")
+            lid = hashlib.sha256(
+                f"soft_block|{prof.symbol}|{prof.ledger_scope}".encode()
+            ).hexdigest()[:16]
+            if store.upsert_lesson(
+                Lesson(
+                    lesson_id=f"les_sb_{lid}",
+                    text=text[:500],
+                    confidence=0.65,
+                    tags=tags,
+                    symbols=[prof.symbol],
+                    sample_n=int(prof.sells_30d or 0) or 1,
+                    embedding=embed_text(text),
+                    tenant_id=tenant_id,
+                    source="reflector_soft_block",
+                )
+            ):
+                lessons += 1
+            try:
+                from intelligence.memory.embeddings import embed_event
+                from intelligence.memory.event_ingest import make_event_id
+                from intelligence.memory.models import MarketEvent
+
+                eid = make_event_id(
+                    "reflector",
+                    f"soft_block|{prof.symbol}|{prof.ledger_scope}",
+                )
+                store.upsert_event(
+                    MarketEvent(
+                        event_id=eid,
+                        timestamp=utc_now_iso(),
+                        event_type="soft_block",
+                        symbols=[prof.symbol],
+                        impact_score=-0.6,
+                        description=text[:500],
+                        source="reflector",
+                        metadata={
+                            "entry_bias": prof.entry_bias or "soft_block",
+                            "size_bias": prof.size_bias,
+                            "ledger_scope": prof.ledger_scope,
+                            "gross_loss": is_gross,
+                            "sensorish": sensorish,
+                        },
+                        embedding=embed_event(text, event_type="soft_block"),
+                    )
+                )
+            except Exception as e:
+                log(f"memory reflect soft_block event: {e}", "DEBUG")
+
     log(
         f"memory reflect: lessons={lessons} profile_updates={profile_updates} "
         f"profiles_seen={len(profiles)} scope={default_scope}",

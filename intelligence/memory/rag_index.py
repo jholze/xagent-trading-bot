@@ -121,15 +121,27 @@ def index_store_into_rag(
             pnl = getattr(tr, "pnl_usdt", None)
             reason = (getattr(tr, "reason", None) or "")[:200]
             outcome = getattr(tr, "outcome", "") or ""
+            src = (getattr(tr, "source", None) or "") or "memory"
             text = (
                 f"Trade {sym} {direction} outcome={outcome} "
-                f"pnl_usdt={pnl} reason={reason}"
+                f"pnl_usdt={pnl} reason={reason} source={src}"
             ).strip()
+            # Surface loss language so retrieval finds soft_block / gross loss paths
+            try:
+                pnl_f = float(pnl) if pnl is not None else None
+            except (TypeError, ValueError):
+                pnl_f = None
+            if pnl_f is not None and pnl_f < -1.0:
+                text += " gross loss"
+                if "sensor" in src.lower() or "sensor" in reason.lower():
+                    text += " sensor entry soft_block rebuy cooloff"
+                elif pnl_f <= -50:
+                    text += " soft_block rebuy cooloff avoid"
             meta = {
                 "type": "trade",
                 "source_id": getattr(tr, "trade_id", "") or "",
                 "symbol": sym,
-                "source": getattr(tr, "source", "") or "memory",
+                "source": src,
                 "ledger_scope": getattr(tr, "ledger_scope", "") or "",
             }
             if rag.add_to_memory(text, meta):
