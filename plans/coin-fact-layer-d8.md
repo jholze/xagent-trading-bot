@@ -36,32 +36,48 @@ Primary: CMC AI suite per slug (latest-updates + price-analysis)
 
 ## Primary source: CMC AI suite (all coins)
 
-CMC AI exposes a **per-slug family** of pages. We use at least two as first-class inputs (same universe, same pipeline).
+CMC AI exposes a **per-slug family** of pages. We use **three** as first-class inputs (same universe, same pipeline).
 
 ### Endpoints (v1 locked)
 
 | Role | URL | What we extract |
 |------|-----|-----------------|
-| **News / narrative** | `https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/` | Dated TLDR bullets, “what this means”, social summary, roadmap/partnerships |
-| **Price structure** | `https://coinmarketcap.com/cmc-ai/{slug}/price-analysis/` | 24h move vs BTC, **volume spike**, liquidity/turnover, support/resistance, “no catalyst” flag, outlook bias |
-| Optional later | `…/price-prediction/`, `…/what-is/` | Lower priority for DCA; prediction = noisy |
+| **News / narrative** | `…/cmc-ai/{slug}/latest-updates/` | Dated TLDR bullets, “what this means”, social summary, short-horizon catalysts |
+| **Price structure** | `…/cmc-ai/{slug}/price-analysis/` | 24h move vs BTC, **volume spike**, levels, “no catalyst”, short-term outlook |
+| **Structural drivers** | `…/cmc-ai/{slug}/price-prediction/` | Medium-term **bullish/bearish impact** sections (utility, unlocks, sector sentiment) — **not** “price will be $X” as a trade signal |
+| Optional later | `…/what-is/` | Static explainer; low refresh priority |
+
+Full URL base: `https://coinmarketcap.com/cmc-ai/{slug}/…`
 
 **Examples (ALLO):**
-- News: https://coinmarketcap.com/cmc-ai/allora/latest-updates/
-- Price analysis: https://coinmarketcap.com/cmc-ai/allora/price-analysis/
+- https://coinmarketcap.com/cmc-ai/allora/latest-updates/
+- https://coinmarketcap.com/cmc-ai/allora/price-analysis/
+- https://coinmarketcap.com/cmc-ai/allora/price-prediction/
 
-**Disclaimer on both:** *CMC AI can make mistakes* → never sole hard authority.
+**Disclaimer on all:** *CMC AI can make mistakes* → never sole hard authority.
 
-### Why both (complementary)
+### Why three pages (complementary)
 
-| latest-updates | price-analysis |
-|----------------|----------------|
-| **Why** narrative (AI rotation, unlocks, partnerships) | **How** the move trades (volume +174%, levels 0.40/0.50) |
-| Good for unlock / profit-taking / catalyst facts | Good for **volume-confirmed breakout** vs fragile pump |
-| Often multi-day stories | Often **same-day** market structure |
-| ALLO: 15.07 −10% cool-down story | ALLO 19.07: +15% vs BTC, volume surge, **no clear news catalyst** |
+| latest-updates | price-analysis | price-prediction |
+|----------------|----------------|------------------|
+| **Why now** (dated news) | **How it trades today** (vol, levels) | **Structural tug-of-war** (utility vs unlocks vs narrative) |
+| ALLO: 15.07 −10% cool-down | ALLO: +15% vol breakout, flow-only | ALLO: Quack/Kalshi utility **bullish** vs **20% float / vesting bearish** vs AI rotation **mixed** |
+| Short horizon | Intraday / few days | Weeks–months framing |
 
-Together they answer: *Is this news-driven or pure flow?* — critical for DCA (aggressive add only when structure + not hard-negative facts).
+**Critical rule for prediction page:**  
+Use **impact sections** (bullish/bearish drivers), **not** numeric price targets or “2026 price will be …”.  
+Those targets are noisy and must **never** alone allow DCA or size-up.
+
+Together they answer: *news? flow? structural headwind?* — all needed for smart DCA.
+
+### ALLO price-prediction snapshot (2026-07-18 CMC AI)
+
+Useful extractable facts (no price target used for trading):
+1. **Bullish:** real utility (Quack AI, Kalshi) → recurring demand for inference  
+2. **Bearish:** only ~20% circulating, large backer/team vesting → unlock sell pressure  
+3. **Mixed:** AI sector rotations → explosive upside and sharp pullbacks  
+
+That is exactly “facts for policy”, not fortune-telling.
 
 ### Why use it generally
 
@@ -75,10 +91,10 @@ Together they answer: *Is this news-driven or pure flow?* — critical for DCA (
 | Priority | Method | Notes |
 |----------|--------|--------|
 | **1** | CMC AI Agent Hub / MCP / official agent API if plan supports | Stable, ToS-friendly |
-| **2** | Controlled fetch of **both** pages (latest-updates + price-analysis) | Fail-open; rate-limited; parse TLDR / key levels only |
+| **2** | Controlled fetch of **three** pages (updates + analysis + prediction) | Fail-open; rate-limited; parse TLDR / drivers / levels only |
 | **3** | Degrade | Skip coin this cycle; DCA/watchlist fail-open |
 
-Budget: 2 pages × N coins — keep `max_coins_per_cycle` tight; cache by slug+endpoint+TTL.
+Budget: 3 pages × N coins — keep `max_coins_per_cycle` tight (e.g. 40–60); cache by slug+endpoint+TTL; prediction TTL can be longer (slower-changing).
 
 **Not** a substitute for `CMC_API_KEY` Pro endpoints already in the bot.
 
@@ -121,10 +137,24 @@ Slug resolution: Ticker/pair → CMC slug (reuse existing CMC info/map helpers w
 
 Optional metadata from price-analysis: `price`, `change_24h_pct`, `volume_24h`, `volume_change_pct`, `support`, `resistance`, `outlook` (bullish/bearish/cautious).
 
-Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description`, `source` (`cmc_ai_updates` \| `cmc_ai_price`), `url`, `as_of`, `ttl_hours`, `metadata.slug`.
+#### From `price-prediction` (structural drivers only)
+
+| CMC AI signal | event_type | polarity | DCA use |
+|---------------|------------|----------|---------|
+| Expanding utility / integrations (Quack, Kalshi, …) | `utility_adoption` | + | soft context; mult↑ only with oversold gates |
+| Supply unlocks / low float / vesting overhang | `unlock` / `supply_overhang` | − | mult↓ or skip if large (same as news unlock) |
+| Sector narrative / AI rotation dependency | `sector_rotation` | mixed | cap size; expect volatility |
+| Explicit numeric “price will hit $X by …” | **do not store as trade signal** | — | optional metadata only; **never** policy allow |
+
+`source=cmc_ai_prediction`. Prefer sections labeled Bullish/Bearish/Mixed Impact.
+
+Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description`, `source` (`cmc_ai_updates` \| `cmc_ai_price` \| `cmc_ai_prediction`), `url`, `as_of`, `ttl_hours`, `metadata.slug`.
 
 **Noise filter:** ignore pure pump-Telegram; CMC AI TLDR primary; community quotes secondary and capped.  
-**Conflict rule:** hard-negative from news **beats** bullish price-analysis for DCA skip.
+**Conflict rules:**  
+1. hard-negative (hack/delist) **beats** any bullish page  
+2. unlock/supply_overhang **beats** soft utility_adoption for DCA size  
+3. price-prediction **never** alone triggers DCA allow
 
 ## Principles (non-negotiable)
 
@@ -141,7 +171,7 @@ Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `descripti
 ### In
 
 - Spec + schema (MarketEvent / CoinFactEvent taxonomy)
-- **CMC AI latest-updates + price-analysis ingest for all scoped coins** (primary source)
+- **CMC AI suite ingest for all scoped coins:** latest-updates + price-analysis + price-prediction (primary source)
 - Persist memory_market_events (+ optional RAG)
 - Wire `build_dca_context` / `evaluate_dca_policy` with `fact_*` reason_codes
 - Watchlist consumption (phase C if large)
@@ -169,6 +199,8 @@ Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `descripti
 | flow_only_move | caution | no aggressive DCA |
 | structure_bias / structure_risk | +/− | levels in metadata; mult tweak |
 | relative_strength | + | watchlist rank boost |
+| utility_adoption | + | soft mult only with gates |
+| supply_overhang | − | same family as unlock |
 
 ## DCA policy hooks (v1 draft)
 
@@ -182,6 +214,9 @@ Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `descripti
 | volume_breakout + not hard-negative | mult × 1.1–1.2 (cap) | `fact_volume_breakout` |
 | flow_only_move (rally without catalyst) | mult ≤ 0.8; no boost | `fact_flow_only` |
 | structure_risk (lose support) | mult ≤ 0.5 or skip | `fact_structure_risk` |
+| utility_adoption (prediction page) | mult × 1.05–1.15 soft | `fact_utility` |
+| supply_overhang / vesting (prediction) | mult ≤ 0.5 or skip | `fact_unlock` (shared code) |
+| numeric price target only | **ignore for policy** | — |
 | no facts | mult 1.0 | fail-open |
 
 Skip beats size (same as cash/harvest).
@@ -196,7 +231,7 @@ Skip beats size (same as cash/harvest).
 ## Acceptance
 
 - [ ] Spec linked from #79 / #103
-- [ ] CMC AI path: for coins in portfolio∪watchlist (capped), fetch+parse latest-updates **and** price-analysis → symbol-scoped events
+- [ ] CMC AI path: for coins in portfolio∪watchlist (capped), fetch+parse **latest-updates, price-analysis, price-prediction** → symbol-scoped events (prediction = drivers only, no target trading)
 - [ ] Works for **arbitrary** in-scope tickers (not hard-coded ALLO)
 - [ ] `build_dca_context` exposes fact flags; policy emits `fact_*` reason_codes
 - [ ] Unit tests: negative fact → skip; no facts → unchanged; noise ignored; multi-symbol universe
@@ -208,7 +243,7 @@ Skip beats size (same as cash/harvest).
 | Phase | Work |
 |-------|------|
 | **A** | Schema + pure policy fact factors + tests (no network) |
-| **B** | CMC AI ingest (slug map, fetch, TLDR parse, persist) for universe A∪B |
+| **B** | CMC AI ingest (slug map, fetch all 3 endpoints, parse, persist) for universe A∪B |
 | **C** | Watchlist/sensor consumer + ops (interval, cap, cache) |
 
 ## Config sketch (v1)
@@ -222,14 +257,17 @@ Skip beats size (same as cash/harvest).
         "enabled": true,
         "endpoints": {
           "latest_updates": "https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/",
-          "price_analysis": "https://coinmarketcap.com/cmc-ai/{slug}/price-analysis/"
+          "price_analysis": "https://coinmarketcap.com/cmc-ai/{slug}/price-analysis/",
+          "price_prediction": "https://coinmarketcap.com/cmc-ai/{slug}/price-prediction/"
         },
         "prefer_mcp_or_api": true,
         "scrape_fallback": true,
         "ttl_hours_updates": 48,
         "ttl_hours_price": 12,
-        "max_coins_per_cycle": 60,
-        "interval_sec": 3600
+        "ttl_hours_prediction": 72,
+        "max_coins_per_cycle": 50,
+        "interval_sec": 3600,
+        "prediction_use_targets_for_policy": false
       }
     },
     "universe": ["open_positions", "watchlist", "trending_overlay"]
@@ -246,7 +284,7 @@ Skip beats size (same as cash/harvest).
 
 ## References
 
-- ALLO CMC AI: https://coinmarketcap.com/cmc-ai/allora/latest-updates/ · https://coinmarketcap.com/cmc-ai/allora/price-analysis/
+- ALLO CMC AI suite: [latest-updates](https://coinmarketcap.com/cmc-ai/allora/latest-updates/) · [price-analysis](https://coinmarketcap.com/cmc-ai/allora/price-analysis/) · [price-prediction](https://coinmarketcap.com/cmc-ai/allora/price-prediction/)
 - ALLO research (2026-07-19): AI rotation → 15.07 −10% narrative → 18.07 exit; memory 0 coin events
 - plans/epic-dca-agent.md · plans/dca-policy-v1.md
 - Existing CMC Pro usage: data/cmc_*.py, CMC_API_KEY
@@ -254,4 +292,4 @@ Skip beats size (same as cash/harvest).
 
 ## One-liner
 
-**CMC AI latest-updates + price-analysis for every portfolio and watchlist coin → shared memory facts (narrative + structure) → smarter DCA and ranking.**
+**CMC AI suite (updates + analysis + prediction drivers) for every portfolio and watchlist coin → shared memory facts → smarter DCA and ranking — never trade on numeric price targets alone.**
