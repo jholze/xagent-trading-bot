@@ -40,7 +40,16 @@ EVENT_TYPES = frozenset(
 
 HARD_NEGATIVE_TYPES = frozenset({"hack", "exploit", "sec_alert", "delisting"})
 UNLOCK_TYPES = frozenset({"unlock", "supply_unlock", "supply_overhang"})
-CMC_SOURCES = frozenset({"cmc_ai_updates", "cmc_ai_price", "cmc_ai_prediction"})
+CMC_SOURCES = frozenset(
+    {
+        "cmc_ai_updates",
+        "cmc_ai_price",
+        "cmc_ai_prediction",
+        "cmc_pro_quotes",
+        "cmc_pro_content",
+        "cmc_pro_trending",
+    }
+)
 
 _DEFAULTS: dict[str, Any] = {
     "enabled": False,
@@ -48,6 +57,14 @@ _DEFAULTS: dict[str, Any] = {
     "lookback_hours": 72,
     "max_events_per_symbol": 40,
     "sources": {
+        "cmc_pro": {
+            "enabled": True,
+            "quotes": True,
+            "content": True,
+            "trending_annotate": True,
+            "ttl_hours_quotes": 6,
+            "max_symbols_per_cycle": 40,
+        },
         "cmc_ai": {
             "enabled": True,
             "scrape_fallback": True,
@@ -58,7 +75,7 @@ _DEFAULTS: dict[str, Any] = {
             "interval_sec": 3600,
             "prediction_use_targets_for_policy": False,
             "max_events_per_coin_cycle": 8,
-        }
+        },
     },
     "universe": ["open_positions", "watchlist"],
 }
@@ -119,9 +136,13 @@ def coin_facts_config(config_raw: dict | None = None) -> dict[str, Any]:
     out = {**_DEFAULTS, **{k: v for k, v in user.items() if k != "sources"}}
     src_def = dict(_DEFAULTS.get("sources") or {})
     src_user = dict(user.get("sources") or {})
-    cmc_def = dict(src_def.get("cmc_ai") or {})
-    cmc_user = dict(src_user.get("cmc_ai") or {})
-    out["sources"] = {**src_def, **src_user, "cmc_ai": {**cmc_def, **cmc_user}}
+    merged_src = {**src_def, **src_user}
+    for key in ("cmc_ai", "cmc_pro"):
+        merged_src[key] = {
+            **dict(src_def.get(key) or {}),
+            **dict(src_user.get(key) or {}),
+        }
+    out["sources"] = merged_src
     return out
 
 

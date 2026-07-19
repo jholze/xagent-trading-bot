@@ -2,7 +2,8 @@
 **Related:** #72 Memory/RAG · #6 social (closed) · #86/#87 Gate (later) · #98 dca_decision · #99 LIVE_DCA_POLICY  
 **Status:** Implemented (default **off**) · plan: `plans/coin-fact-layer-d8-implementation.md`  
 **Code:** `intelligence/memory/coin_facts*.py` · policy/context hooks · Hermes `run_memory_cycle`  
-**Not this ticket:** #102 scheduled DCA stays `enabled: false`. Enable `memory.coin_facts.enabled` only after staging soak.
+**Follow-up:** [#105 D8b](https://github.com/jholze/xagent-trading-bot/issues/105) — **CMC Pro API** (`coin_facts_cmc_pro.py`) as structured quotes/content provider; HTML `cmc_ai` remains optional.  
+**Not this ticket:** #102 scheduled DCA stays `enabled: false`.
 
 ## Why
 

@@ -542,6 +542,14 @@
       "lookback_hours": 336,
       "max_events_per_symbol": 40,
       "sources": {
+        "cmc_pro": {
+          "enabled": true,
+          "quotes": true,
+          "content": true,
+          "trending_annotate": true,
+          "ttl_hours_quotes": 6,
+          "max_symbols_per_cycle": 40
+        },
         "cmc_ai": {
           "enabled": true,
           "scrape_fallback": true,

@@ -165,12 +165,20 @@ def sync_coin_facts(
         return {"enabled": True, "skipped": True, "reason": "memory_disabled", "events_written": 0}
 
     cfg = coin_facts_config(raw)
-    cmc = (cfg.get("sources") or {}).get("cmc_ai") or {}
-    if not cmc.get("enabled", True):
-        return {"enabled": True, "skipped": True, "reason": "cmc_ai_disabled", "events_written": 0}
+    cmc_ai = (cfg.get("sources") or {}).get("cmc_ai") or {}
+    cmc_pro = (cfg.get("sources") or {}).get("cmc_pro") or {}
+    pro_on = bool(cmc_pro.get("enabled", True))
+    ai_on = bool(cmc_ai.get("enabled", True))
+    if not pro_on and not ai_on:
+        return {
+            "enabled": True,
+            "skipped": True,
+            "reason": "all_sources_disabled",
+            "events_written": 0,
+        }
 
     try:
-        max_ev = max(1, int(cmc.get("max_events_per_coin_cycle") or 8))
+        max_ev = max(1, int(cmc_ai.get("max_events_per_coin_cycle") or 8))
     except (TypeError, ValueError):
         max_ev = 8
 
@@ -185,46 +193,71 @@ def sync_coin_facts(
     errors: list[str] = []
     per_coin: dict[str, int] = {}
     seen_ids: set[str] = set()
+    pro_written = 0
 
-    for sym in universe:
+    # --- D8b: CMC Pro (structured JSON) first ---
+    if pro_on:
         try:
-            slug = resolve_cmc_slug(sym)
-            if not slug:
-                continue
-            drafts = fetch_and_parse_coin(sym, fetch_fn=fetch_fn, slug=slug)
-            n = 0
-            for d in drafts:
-                if n >= max_ev:
-                    break
+            from intelligence.memory.coin_facts_cmc_pro import collect_cmc_pro_drafts
+
+            for sym, d in collect_cmc_pro_drafts(universe, config_raw=raw):
                 if d.event_type == "ignore_target":
                     continue
-                from intelligence.memory.coin_facts_cmc import build_cmc_ai_urls
-
-                urls = build_cmc_ai_urls(slug)
-                url = ""
-                ep = (d.metadata or {}).get("endpoint") or ""
-                if ep == "latest_updates":
-                    url = urls.get("latest_updates", "")
-                elif ep == "price_analysis":
-                    url = urls.get("price_analysis", "")
-                elif ep == "price_prediction":
-                    url = urls.get("price_prediction", "")
+                slug = resolve_cmc_slug(sym) or normalize_symbol(sym).split("/")[0].lower()
                 eid = persist_coin_fact(
-                    d, symbol=sym, slug=slug, url=url, store=store, embed=False
+                    d, symbol=sym, slug=slug, url="", store=store, embed=False
                 )
                 if eid and eid not in seen_ids:
                     seen_ids.add(eid)
                     written += 1
-                    n += 1
-            per_coin[sym] = n
+                    pro_written += 1
+                    per_coin[sym] = int(per_coin.get(sym) or 0) + 1
         except Exception as e:
-            errors.append(f"{sym}:{str(e)[:80]}")
+            errors.append(f"cmc_pro:{str(e)[:100]}")
+            log(f"coin_facts cmc_pro failed: {e}", "WARNING")
+
+    # --- D8: CMC AI HTML (optional fallback / parallel) ---
+    if ai_on:
+        for sym in universe:
+            try:
+                slug = resolve_cmc_slug(sym)
+                if not slug:
+                    continue
+                drafts = fetch_and_parse_coin(sym, fetch_fn=fetch_fn, slug=slug)
+                n = 0
+                for d in drafts:
+                    if n >= max_ev:
+                        break
+                    if d.event_type == "ignore_target":
+                        continue
+                    from intelligence.memory.coin_facts_cmc import build_cmc_ai_urls
+
+                    urls = build_cmc_ai_urls(slug)
+                    url = ""
+                    ep = (d.metadata or {}).get("endpoint") or ""
+                    if ep == "latest_updates":
+                        url = urls.get("latest_updates", "")
+                    elif ep == "price_analysis":
+                        url = urls.get("price_analysis", "")
+                    elif ep == "price_prediction":
+                        url = urls.get("price_prediction", "")
+                    eid = persist_coin_fact(
+                        d, symbol=sym, slug=slug, url=url, store=store, embed=False
+                    )
+                    if eid and eid not in seen_ids:
+                        seen_ids.add(eid)
+                        written += 1
+                        n += 1
+                        per_coin[sym] = int(per_coin.get(sym) or 0) + 1
+            except Exception as e:
+                errors.append(f"{sym}:{str(e)[:80]}")
 
     return {
         "enabled": True,
         "skipped": False,
         "coins": len(universe),
         "events_written": written,
+        "cmc_pro_events": pro_written,
         "per_coin": per_coin,
         "errors": errors[:10],
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
