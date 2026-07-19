@@ -47,6 +47,9 @@ class FundingSell:
 @dataclass
 class PortfolioDCAPlan:
     buy: DCATarget | None = None
+    # When scheduled calendar DCA is due, all equal-share targets for this cycle
+    # (dip path still uses single buy via max_buys semantics).
+    buys: list = field(default_factory=list)
     funding_sell: FundingSell | None = None
     shadow_only: bool = False
     audit: dict = field(default_factory=dict)
@@ -133,29 +136,6 @@ def _build_market(symbol: str, tf: str, price: float, position: dict, strategy_p
 
 
 
-def _portfolio_last_scheduled_run(coins: list[dict]) -> str | None:
-    """Earliest last_scheduled_dca_at across open positions (ISO), or None."""
-    stamps: list[str] = []
-    for coin in coins or []:
-        try:
-            symbol = coin.get("symbol", "")
-            if not symbol:
-                continue
-            coin_cfg = resolve_coin_config(coin)
-            tf = coin_cfg.get("timeframe", "4h")
-            pos = get_position(symbol, tf)
-            if float(pos.get("amount", 0) or 0) <= 0:
-                continue
-            ts = pos.get("last_scheduled_dca_at")
-            if ts:
-                stamps.append(str(ts))
-        except Exception:
-            continue
-    if not stamps:
-        return None
-    return min(stamps)
-
-
 def collect_dca_targets(
     coins: list[dict],
     price_map: dict[str, float],
@@ -163,9 +143,11 @@ def collect_dca_targets(
     config_raw: dict | None = None,
 ) -> list[DCATarget]:
     targets: list[DCATarget] = []
-    # per-call cache for scheduled plan
-    if hasattr(collect_dca_targets, "_sched_plan"):
-        delattr(collect_dca_targets, "_sched_plan")
+    # Per-call freeze: open universe + equal-share map (no stamping here).
+    if hasattr(collect_dca_targets, "_sched_shares"):
+        delattr(collect_dca_targets, "_sched_shares")
+    if hasattr(collect_dca_targets, "_sched_cfg"):
+        delattr(collect_dca_targets, "_sched_cfg")
 
     for coin in coins:
         try:
@@ -203,28 +185,41 @@ def collect_dca_targets(
                 try:
                     from strategies.dca_scheduled import (
                         collect_open_position_symbols,
+                        equal_share_allocations,
                         evaluate_scheduled_dca_addon,
-                        plan_scheduled_allocations,
+                        is_symbol_schedule_due,
                         scheduled_config,
                         scheduled_enabled,
                     )
 
                     if scheduled_enabled(strategy_params, config_raw=cfg_root):
                         scfg = scheduled_config(dca_cfg, config_raw=cfg_root)
-                        if not hasattr(collect_dca_targets, "_sched_plan"):
+                        if not hasattr(collect_dca_targets, "_sched_shares"):
                             open_syms = collect_open_position_symbols(coins)
-                            collect_dca_targets._sched_plan = plan_scheduled_allocations(  # type: ignore[attr-defined]
-                                open_syms,
-                                config=scfg,
-                                last_run=_portfolio_last_scheduled_run(coins),
+                            # Freeze shares once for the whole collect call so mid-loop
+                            # stamps (elsewhere) cannot change split math.
+                            collect_dca_targets._sched_shares = equal_share_allocations(  # type: ignore[attr-defined]
+                                open_syms, config=scfg
                             )
-                        plan = collect_dca_targets._sched_plan  # type: ignore[attr-defined]
-                        if plan.due and symbol in (plan.allocations or {}):
+                            collect_dca_targets._sched_cfg = scfg  # type: ignore[attr-defined]
+                        shares = collect_dca_targets._sched_shares  # type: ignore[attr-defined]
+                        scfg = collect_dca_targets._sched_cfg  # type: ignore[attr-defined]
+                        # Per-symbol due: unstamped coins remain eligible same cycle.
+                        if (
+                            scfg.get("enabled")
+                            and symbol in (shares or {})
+                            and is_symbol_schedule_due(
+                                symbol,
+                                timeframe=tf,
+                                config=scfg,
+                                last_run=pos.get("last_scheduled_dca_at"),
+                            )
+                        ):
                             sched_cand = evaluate_scheduled_dca_addon(
                                 market,
                                 pos,
                                 strategy_params,
-                                allocated_usdt=float(plan.allocations.get(symbol) or 0),
+                                allocated_usdt=float(shares.get(symbol) or 0),
                                 config_raw=cfg_root,
                             )
                             if sched_cand:
@@ -413,15 +408,33 @@ def build_portfolio_dca_plan(
     if not targets:
         return plan
 
-    top = targets[0]
-    plan.buy = top
-    plan.shadow_only = bool(top.candidate.shadow_only)
+    scheduled = [t for t in targets if str(t.source or "") == "dca_scheduled"]
+    dip = [t for t in targets if str(t.source or "") != "dca_scheduled"]
+
+    # Dip path: single top target (max_buys_per_cycle semantics).
+    # Scheduled path: all equal-share targets for this due cycle.
+    if dip:
+        top = dip[0]
+        plan.buy = top
+        plan.buys = [top]
+        plan.shadow_only = bool(top.candidate.shadow_only)
+        need = top.usdt_needed
+        plan.audit["mode"] = "dip"
+    else:
+        plan.buys = list(scheduled)
+        plan.buy = scheduled[0] if scheduled else None
+        plan.shadow_only = any(bool(t.candidate.shadow_only) for t in scheduled)
+        need = sum(float(t.usdt_needed or 0) for t in scheduled)
+        plan.audit["mode"] = "scheduled"
+        plan.audit["scheduled_n"] = len(scheduled)
+
+    if plan.buy is None:
+        return plan
 
     buffer = float(port_cfg.get("cash_buffer_usdt", 300.0))
-    need = top.usdt_needed
     if cash_available - buffer < need:
         funding = find_funding_sell(
-            top, coins, price_map,
+            plan.buy, coins, price_map,
             cash_available=cash_available,
             cash_needed=need,
             config_raw=cfg_root,
@@ -432,10 +445,11 @@ def build_portfolio_dca_plan(
             plan.audit["funding_usdt"] = funding.expected_usdt
             plan.audit["shortfall"] = max(0.0, need - (cash_available - buffer))
 
-    plan.audit["priority"] = round(top.priority, 2)
-    plan.audit["target"] = top.symbol
+    plan.audit["priority"] = round(plan.buy.priority, 2)
+    plan.audit["target"] = plan.buy.symbol
+    plan.audit["targets_exec"] = [t.symbol for t in plan.buys]
     plan.audit["usdt"] = need
-    plan.audit["score"] = top.score
+    plan.audit["score"] = plan.buy.score
     return plan
 
 

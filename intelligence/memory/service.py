@@ -166,6 +166,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         out["news"] = poll_and_ingest_news(store)
     except Exception as e:
         log(f"memory news cycle: {e}", "WARNING")
+    # #103 coin-fact layer (CMC AI → memory_market_events); fail-open
+    try:
+        from intelligence.memory.coin_facts_ingest import sync_coin_facts
+
+        out["coin_facts"] = sync_coin_facts(store)
+    except Exception as e:
+        log(f"memory coin_facts cycle: {e}", "WARNING")
+        out["coin_facts"] = {"error": str(e)[:200]}
     try:
         out["reflect"] = reflect(store)
     except Exception as e:

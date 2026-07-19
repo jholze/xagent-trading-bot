@@ -536,6 +536,26 @@
       "scrape_sources": [],
       "poll_sec": 600
     },
+    "coin_facts": {
+      "enabled": false,
+      "policy_apply": true,
+      "lookback_hours": 72,
+      "max_events_per_symbol": 40,
+      "sources": {
+        "cmc_ai": {
+          "enabled": true,
+          "scrape_fallback": true,
+          "ttl_hours_updates": 48,
+          "ttl_hours_price": 12,
+          "ttl_hours_prediction": 72,
+          "max_coins_per_cycle": 40,
+          "interval_sec": 3600,
+          "prediction_use_targets_for_policy": false,
+          "max_events_per_coin_cycle": 8
+        }
+      },
+      "universe": ["open_positions", "watchlist"]
+    },
     "onchain": {
       "defillama": true,
       "poll_sec": 3600

@@ -73,6 +73,7 @@ _CACHE_FIELDS = (
     "dca_rounds",
     "dca_max_rounds",
     "last_dca_at",
+    "last_scheduled_dca_at",
     "dca_total_usdt",
     "dca_recovery_rounds",
     "dca_recovery_max_rounds",
@@ -164,6 +165,7 @@ def _deserialize_position(raw: dict) -> dict:
         "dca_rounds": int(raw.get("dca_rounds", 0) or 0),
         "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
         "last_dca_at": raw.get("last_dca_at"),
+        "last_scheduled_dca_at": raw.get("last_scheduled_dca_at"),
         "dca_total_usdt": float(raw.get("dca_total_usdt", 0) or 0),
         "dca_recovery_rounds": int(raw.get("dca_recovery_rounds", 0) or 0),
         "dca_recovery_max_rounds": int(raw.get("dca_recovery_max_rounds", 0) or 0),
@@ -219,6 +221,7 @@ def _serialize_positions() -> dict:
             "dca_rounds": int(p.get("dca_rounds", 0) or 0),
             "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
             "last_dca_at": p.get("last_dca_at"),
+            "last_scheduled_dca_at": p.get("last_scheduled_dca_at"),
             "dca_total_usdt": float(p.get("dca_total_usdt", 0) or 0),
             "dca_recovery_rounds": int(p.get("dca_recovery_rounds", 0) or 0),
             "dca_recovery_max_rounds": int(p.get("dca_recovery_max_rounds", 0) or 0),
@@ -517,6 +520,7 @@ def _empty_position() -> dict:
         "dca_rounds": 0,
         "dca_max_rounds": 0,
         "last_dca_at": None,
+        "last_scheduled_dca_at": None,
         "dca_total_usdt": 0.0,
         "dca_recovery_rounds": 0,
         "dca_recovery_max_rounds": 0,
@@ -760,6 +764,7 @@ def update_position(
                 pos["dca_rounds"] = 0
                 pos["dca_max_rounds"] = 0
                 pos["last_dca_at"] = None
+                pos["last_scheduled_dca_at"] = None
                 pos["dca_total_usdt"] = 0.0
                 pos["dca_recovery_rounds"] = 0
                 pos["dca_recovery_max_rounds"] = 0

@@ -1,6 +1,8 @@
 **Parent epic:** #79 DCA Agent · **Ticket:** [#103](https://github.com/jholze/xagent-trading-bot/issues/103) D8  
 **Related:** #72 Memory/RAG · #6 social (closed) · #86/#87 Gate (later) · #98 dca_decision · #99 LIVE_DCA_POLICY  
-**Status:** Spec + primary source locked (CMC AI) · ready to implement
+**Status:** Implemented (default **off**) · plan: `plans/coin-fact-layer-d8-implementation.md`  
+**Code:** `intelligence/memory/coin_facts*.py` · policy/context hooks · Hermes `run_memory_cycle`  
+**Not this ticket:** #102 scheduled DCA stays `enabled: false`. Enable `memory.coin_facts.enabled` only after staging soak.
 
 ## Why
 

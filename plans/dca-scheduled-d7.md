@@ -48,4 +48,14 @@ When **disabled** (default): code path is never used; dip/recovery unchanged.
 
 ## State
 
-`position.last_scheduled_dca_at` (optional ISO) used for due-check; if missing, schedule is due when interval/weekday rules allow.
+`position.last_scheduled_dca_at` is **per symbol**. Due-check is per symbol so a multi-coin pass can fire every equal-share allocation in one cycle (first stamp does not block the rest).
+
+Budget: `total_usdt` is split across the open universe (`equal_share_allocations`); each due symbol receives its slice only.
+
+Stamp only after a real fire:
+- Decision engine: after scheduled BUY_DCA / shadow decision for that symbol
+- Portfolio: after live execute success, or for all scheduled targets on shadow pass
+
+Portfolio scheduled mode executes **all** due scheduled targets in one pass (dip path still top-1).
+
+Shadow: `dca_scheduled_shadow` forces execution HOLD; `shadow_action` keeps BUY_DCA.

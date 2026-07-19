@@ -122,6 +122,8 @@ class SignalOrchestrator:
             source = "lc"
         elif "dca_recovery" in (analysis.sources or []):
             source = "dca_recovery"
+        elif "dca_scheduled" in (analysis.sources or []):
+            source = "dca_scheduled"
         elif "dca" in (analysis.sources or []):
             source = "dca"
         elif "entry_sensor_15m" in (analysis.sources or []):
@@ -423,17 +425,33 @@ class SignalOrchestrator:
         plan = build_portfolio_dca_plan(coins, price_map, cash_available=cash, config_raw=self.config.raw)
         result = {"plan": plan.audit, "executed": False}
 
-        if not plan.buy:
+        buys = list(plan.buys) if plan.buys else ([plan.buy] if plan.buy else [])
+        if not buys:
             return result
 
         live = str(port_cfg.get("mode", "shadow")).lower() == "live"
         if plan.shadow_only or not live:
             result["shadow"] = True
+            # Stamp scheduled targets that would have fired so the cycle does not
+            # re-emit every pass; dip shadow leaves last_scheduled untouched.
+            try:
+                from strategies.dca_scheduled import stamp_last_scheduled_dca
+
+                for b in buys:
+                    if str(b.source or "") == "dca_scheduled":
+                        stamp_last_scheduled_dca(b.symbol, b.timeframe)
+            except Exception:
+                pass
+            total_usdt = sum(float(b.usdt_needed or 0) for b in buys)
             log(
-                f"DCA portfolio shadow: {plan.buy.symbol} ${plan.buy.usdt_needed:.0f} "
-                f"score={plan.buy.score} funding={getattr(plan.funding_sell, 'symbol', None)}",
+                f"DCA portfolio shadow: n={len(buys)} ${total_usdt:.0f} "
+                f"top={buys[0].symbol} funding={getattr(plan.funding_sell, 'symbol', None)}",
                 "INFO",
             )
+            result["shadow_buys"] = [
+                {"symbol": b.symbol, "usdt": b.usdt_needed, "source": b.source}
+                for b in buys
+            ]
             return result
 
         self.trading.refresh()
@@ -466,64 +484,87 @@ class SignalOrchestrator:
                 if sell_result.executed:
                     cash = risk._available_usdt()
                     log(
-                        f"DCA fund-sell {fs.symbol} ({fs.source}) → cash for {plan.buy.symbol}",
+                        f"DCA fund-sell {fs.symbol} ({fs.source}) → cash for portfolio DCA",
                         "INFO",
                     )
 
-        buy = plan.buy
-        price = float(price_map.get(buy.symbol, 0) or 0)
-        if price <= 0:
-            return result
+        executed_buys = []
+        any_ok = False
+        for buy in buys:
+            price = float(price_map.get(buy.symbol, 0) or 0)
+            if price <= 0:
+                continue
 
-        buy_order = TradeOrder(
-            type="BUY",
-            symbol=buy.symbol,
-            price=price,
-            amount=0,
-            usdt_amount=buy.usdt_needed,
-            signal=BUY_DCA,
-            source=buy.source,
-        )
-        buy_result = self.trading.execute_order(
-            buy_order,
-            buy.timeframe,
-            source=buy.source,
-            confidence=buy.score,
-        )
-        result["executed"] = bool(buy_result.executed)
-        result["buy"] = {
-            "symbol": buy.symbol,
-            "usdt": buy.usdt_needed,
-            "score": buy.score,
-            "message": buy_result.message,
-        }
-        if buy_result.executed and self.notify_callback:
-            coin = next((c for c in coins if c.get("symbol") == buy.symbol), {"symbol": buy.symbol})
-            rationale = buy.candidate.rationale
-            if plan.funding_sell:
-                rationale = (
-                    f"Portfolio-DCA: {plan.funding_sell.symbol} verkauft → "
-                    f"{buy.symbol} aufgestockt ({rationale})"
+            buy_order = TradeOrder(
+                type="BUY",
+                symbol=buy.symbol,
+                price=price,
+                amount=0,
+                usdt_amount=buy.usdt_needed,
+                signal=BUY_DCA,
+                source=buy.source,
+            )
+            buy_result = self.trading.execute_order(
+                buy_order,
+                buy.timeframe,
+                source=buy.source,
+                confidence=buy.score,
+            )
+            if buy_result.executed:
+                any_ok = True
+                if str(buy.source or "") == "dca_scheduled":
+                    try:
+                        from strategies.dca_scheduled import stamp_last_scheduled_dca
+
+                        stamp_last_scheduled_dca(buy.symbol, buy.timeframe)
+                    except Exception:
+                        pass
+            executed_buys.append(
+                {
+                    "symbol": buy.symbol,
+                    "usdt": buy.usdt_needed,
+                    "score": buy.score,
+                    "message": buy_result.message,
+                    "executed": bool(buy_result.executed),
+                    "source": buy.source,
+                }
+            )
+            if buy_result.executed and self.notify_callback:
+                coin = next(
+                    (c for c in coins if c.get("symbol") == buy.symbol),
+                    {"symbol": buy.symbol},
                 )
-            self.notify_callback(
-                "BUY_DCA",
-                coin,
-                price,
-                0,
-                0,
-                0,
-                "🟢",
-                "DCA",
-                executed=True,
-                trade_message=buy_result.message,
-                trade_result=buy_result,
-                sources=[buy.source, "dca_portfolio"],
-                timeframe=buy.timeframe,
-                why_de=rationale,
-            )
-        if not quiet:
-            print(
-                f"Portfolio DCA: {buy.symbol} ${buy.usdt_needed:.0f} "
-                f"(score {buy.score}) fund={getattr(plan.funding_sell, 'symbol', '-')}"
-            )
+                rationale = buy.candidate.rationale
+                if plan.funding_sell and buy is buys[0]:
+                    rationale = (
+                        f"Portfolio-DCA: {plan.funding_sell.symbol} verkauft → "
+                        f"{buy.symbol} aufgestockt ({rationale})"
+                    )
+                self.notify_callback(
+                    "BUY_DCA",
+                    coin,
+                    price,
+                    0,
+                    0,
+                    0,
+                    "🟢",
+                    "DCA",
+                    executed=True,
+                    trade_message=buy_result.message,
+                    trade_result=buy_result,
+                    sources=[buy.source, "dca_portfolio"],
+                    timeframe=buy.timeframe,
+                    why_de=rationale,
+                )
+            if not quiet:
+                print(
+                    f"Portfolio DCA: {buy.symbol} ${buy.usdt_needed:.0f} "
+                    f"(score {buy.score}) fund={getattr(plan.funding_sell, 'symbol', '-')}"
+                )
+
+        result["executed"] = any_ok
+        result["buys"] = executed_buys
+        # Back-compat single-buy summary
+        if executed_buys:
+            result["buy"] = executed_buys[0]
         return result

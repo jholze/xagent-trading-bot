@@ -1201,8 +1201,10 @@ class DecisionEngine:
                 if dca is None:
                     try:
                         from strategies.dca_scheduled import (
+                            equal_share_allocations,
                             evaluate_scheduled_dca_addon,
-                            plan_scheduled_allocations,
+                            is_symbol_schedule_due,
+                            open_symbols_for_schedule,
                             scheduled_config,
                             scheduled_enabled,
                         )
@@ -1212,33 +1214,26 @@ class DecisionEngine:
                                 dict((market.strategy_params or {}).get("dca") or {}),
                                 config_raw=self.config.raw,
                             )
-                            # Single-symbol allocation estimate (equal share of total)
-                            # Full multi-symbol split is used in portfolio collect path.
-                            max_n = max(1, int(scfg.get("max_symbols") or 10))
-                            alloc = float(scfg.get("total_usdt") or 0) / max_n
-                            last_run = position.get("last_scheduled_dca_at")
-                            plan = plan_scheduled_allocations(
-                                [coin.get("symbol") or market.symbol],
+                            sym = coin.get("symbol") or market.symbol
+                            # Per-symbol cadence: first fire must not block other open coins
+                            # in the same cycle (equal-share of total_usdt across universe).
+                            if is_symbol_schedule_due(
+                                sym,
+                                timeframe=market.timeframe,
                                 config=scfg,
-                                last_run=last_run,
-                            )
-                            if plan.due:
-                                # Prefer plan allocation for this symbol if present
-                                if plan.allocations:
-                                    alloc = float(
-                                        plan.allocations.get(
-                                            coin.get("symbol") or market.symbol,
-                                            alloc,
-                                        )
-                                        or alloc
+                                last_run=position.get("last_scheduled_dca_at"),
+                            ):
+                                open_syms = open_symbols_for_schedule(include_symbol=sym)
+                                shares = equal_share_allocations(open_syms, config=scfg)
+                                alloc = float(shares.get(sym) or 0)
+                                if alloc > 0:
+                                    dca = evaluate_scheduled_dca_addon(
+                                        market,
+                                        position,
+                                        market.strategy_params,
+                                        allocated_usdt=alloc,
+                                        config_raw=self.config.raw,
                                     )
-                                dca = evaluate_scheduled_dca_addon(
-                                    market,
-                                    position,
-                                    market.strategy_params,
-                                    allocated_usdt=alloc,
-                                    config_raw=self.config.raw,
-                                )
                     except Exception:
                         pass
                 if dca:
@@ -1260,6 +1255,17 @@ class DecisionEngine:
                         sources.append(dca.source)
                         structure_rationales.append(dca.rationale)
                         dca_usdt = dca.usdt_amount
+                        if str(dca.source or "") == "dca_scheduled":
+                            # Stamp only this symbol after it fires (shadow or live).
+                            try:
+                                from strategies.dca_scheduled import stamp_last_scheduled_dca as _stamp_sched
+
+                                _stamp_sched(
+                                    coin.get("symbol") or market.symbol,
+                                    market.timeframe,
+                                )
+                            except Exception:
+                                pass
                         if dca.shadow_only:
                             shadow_tag = (
                                 "dca_scheduled_shadow"
@@ -1319,7 +1325,11 @@ class DecisionEngine:
         )
         if "entry_sensor_shadow" in sources and sensor_shadow and not shadow_action:
             shadow_action = sensor_shadow
-        if ("dca_shadow" in sources or "dca_recovery_shadow" in sources) and normalized == BUY_DCA:
+        if (
+            "dca_shadow" in sources
+            or "dca_recovery_shadow" in sources
+            or "dca_scheduled_shadow" in sources
+        ) and normalized == BUY_DCA:
             shadow_action = execution_action
             normalized = HOLD
             execution_action = "HOLD"

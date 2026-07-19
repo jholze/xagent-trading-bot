@@ -27,6 +27,19 @@ class DcaContext:
     extreme_funding: bool = False
     rag_hit_count: int = 0
     fusion_missing: bool = False
+    # #103 coin-fact layer (fail-open defaults)
+    fact_hard_negative: bool = False
+    fact_unlock: bool = False
+    fact_profit_taking: bool = False
+    fact_flow_only: bool = False
+    fact_structure_risk: bool = False
+    fact_volume_breakout: bool = False
+    fact_catalyst: bool = False
+    fact_utility: bool = False
+    fact_noise_only: bool = False
+    fact_event_count: int = 0
+    fact_min_impact: float = 0.0
+    fact_summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,6 +84,14 @@ def dca_policy_config(dca_cfg: dict | None) -> dict[str, Any]:
         "index_rag": True,
         # D4b /ask live snapshot (#99)
         "ask_snapshot": True,
+        # #103 coin facts (multipliers; skip beats size)
+        "fact_unlock_mult": 0.5,
+        "fact_profit_taking_mult": 0.7,
+        "fact_flow_only_mult": 0.8,
+        "fact_structure_risk_mult": 0.5,
+        "fact_volume_breakout_mult": 1.1,
+        "fact_catalyst_mult": 1.1,
+        "fact_utility_mult": 1.1,
     }
     raw = dict((dca_cfg or {}).get("policy") or {})
     return {**defaults, **raw}
@@ -261,6 +282,53 @@ def evaluate_dca_policy(
     if not skip and not harvest and int(ctx.score or 0) >= ratio * max_s:
         mult *= _f(cfg, "score_boost_mult", 1.25)
         reasons.append("score_boost")
+
+    # 10) Coin facts (#103) — skip beats size; hard-neg beats soft bullish
+    if not skip and bool(getattr(ctx, "fact_hard_negative", False)):
+        skip = True
+        reasons.append("fact_hard_negative")
+
+    if not skip and bool(getattr(ctx, "fact_unlock", False)):
+        mult *= _f(cfg, "fact_unlock_mult", 0.5)
+        reasons.append("fact_unlock")
+        try:
+            min_imp = float(getattr(ctx, "fact_min_impact", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            min_imp = 0.0
+        if mult < 0.35 or min_imp <= -0.8:
+            skip = True
+            reasons.append("fact_unlock_skip")
+
+    if not skip and bool(getattr(ctx, "fact_structure_risk", False)):
+        mult *= _f(cfg, "fact_structure_risk_mult", 0.5)
+        reasons.append("fact_structure_risk")
+
+    if not skip and bool(getattr(ctx, "fact_profit_taking", False)):
+        mult *= _f(cfg, "fact_profit_taking_mult", 0.7)
+        reasons.append("fact_profit_taking")
+
+    if not skip and bool(getattr(ctx, "fact_flow_only", False)):
+        mult *= _f(cfg, "fact_flow_only_mult", 0.8)
+        reasons.append("fact_flow_only")
+
+    # Soft bullish facts only if not flow-only / hard-neg / unlock-skip
+    if not skip and not bool(getattr(ctx, "fact_flow_only", False)):
+        if bool(getattr(ctx, "fact_volume_breakout", False)):
+            mult *= _f(cfg, "fact_volume_breakout_mult", 1.1)
+            reasons.append("fact_volume_breakout")
+        loss = float(ctx.loss_pct if ctx.loss_pct is not None else 0.0)
+        oversold = loss <= -5.0
+        if oversold and bool(getattr(ctx, "fact_catalyst", False)):
+            mult *= _f(cfg, "fact_catalyst_mult", 1.1)
+            reasons.append("fact_catalyst")
+        if oversold and bool(getattr(ctx, "fact_utility", False)):
+            mult *= _f(cfg, "fact_utility_mult", 1.1)
+            reasons.append("fact_utility")
+
+    if bool(getattr(ctx, "fact_noise_only", False)) and not any(
+        c.startswith("fact_") for c in reasons
+    ):
+        reasons.append("fact_noise_ignore")
 
     max_m = max(0.0, _f(cfg, "max_policy_mult", 2.0))
     mult = max(0.0, min(max_m, mult))

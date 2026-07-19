@@ -140,4 +140,13 @@ def build_dca_context(
         except Exception:
             ctx.rag_hit_count = 0
 
+    # #103 coin facts from memory_market_events (fail-open; no ledger)
+    try:
+        from intelligence.memory.coin_facts import apply_facts_to_context, coin_facts_enabled
+
+        if coin_facts_enabled(raw if isinstance(raw, dict) else None):
+            apply_facts_to_context(ctx, config_raw=raw if isinstance(raw, dict) else None)
+    except Exception:
+        pass
+
     return ctx

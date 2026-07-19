@@ -406,3 +406,102 @@ def collect_open_position_symbols(
         except Exception:
             continue
     return out
+
+
+def open_symbols_for_schedule(*, include_symbol: str | None = None) -> list[str]:
+    """Open symbols for budget split (active positions + optional current symbol)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        from strategies.positions import list_active_positions
+
+        for lot in list_active_positions() or []:
+            sym = str((lot or {}).get("symbol") or "")
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+    except Exception:
+        pass
+    if include_symbol:
+        sym = str(include_symbol).strip()
+        if sym and sym not in seen:
+            out.append(sym)
+    return out or ([str(include_symbol)] if include_symbol else [])
+
+
+def last_scheduled_for_symbol(
+    symbol: str,
+    timeframe: str = "4h",
+) -> str | None:
+    """Per-symbol last_scheduled_dca_at (ISO) or None."""
+    try:
+        from strategies.positions import get_position
+
+        pos = get_position(symbol, timeframe)
+        ts = pos.get("last_scheduled_dca_at")
+        return str(ts) if ts else None
+    except Exception:
+        return None
+
+
+def is_symbol_schedule_due(
+    symbol: str,
+    *,
+    timeframe: str = "4h",
+    config: dict | None = None,
+    now: datetime | None = None,
+    last_run: datetime | str | None = None,
+) -> bool:
+    """True when *this* symbol may receive a scheduled allocation this cycle.
+
+    Cadence is per-symbol so multi-coin DE/portfolio passes can fire all
+    equal-share allocations in one cycle without the first stamp blocking the rest.
+    """
+    cfg = dict(config or {})
+    if last_run is None:
+        last_run = last_scheduled_for_symbol(symbol, timeframe)
+    return is_schedule_due(
+        now,
+        last_run,
+        interval_days=float(cfg.get("interval_days") or 7),
+        weekday=cfg.get("weekday"),
+    )
+
+
+def equal_share_allocations(
+    symbols: list[str],
+    *,
+    config: dict | None = None,
+) -> dict[str, float]:
+    """Split total_usdt across the open universe (ignores due-check)."""
+    cfg = dict(config or {})
+    if not cfg.get("enabled"):
+        return {}
+    try:
+        total = float(cfg.get("total_usdt") or 0)
+    except (TypeError, ValueError):
+        return {}
+    return split_usdt_budget(
+        total,
+        symbols,
+        min_usdt_per_symbol=float(cfg.get("min_usdt_per_symbol") or 0),
+        max_symbols=int(cfg.get("max_symbols") or 0),
+    )
+
+
+def stamp_last_scheduled_dca(
+    symbol: str,
+    timeframe: str,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Persist last_scheduled_dca_at on the position after a real fire/execute."""
+    from strategies.positions import set_position_field
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    stamp = now.isoformat().replace("+00:00", "Z")
+    set_position_field(symbol, timeframe, "last_scheduled_dca_at", stamp)
+    return stamp

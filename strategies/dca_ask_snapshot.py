@@ -69,6 +69,13 @@ def format_live_dca_policy_snapshot(
         action = "SKIP (no DCA)" if result.skip else "ALLOW DCA"
         mode = shadow and "shadow" or "live"
 
+        fact_line = ""
+        summary = str(getattr(ctx, "fact_summary", "") or "")
+        if summary:
+            fact_line = f"  facts: {summary[:200]}\n"
+        elif int(getattr(ctx, "fact_event_count", 0) or 0) > 0:
+            fact_line = f"  facts: n={ctx.fact_event_count}\n"
+
         return (
             "LIVE_DCA_POLICY (advisory only — no order from this block):\n"
             f"  symbol={sym}\n"
@@ -79,6 +86,7 @@ def format_live_dca_policy_snapshot(
             f"  fusion_size_mult={ctx.fusion_size_mult:.3f}\n"
             f"  spendable_dca={spd_s}\n"
             f"  entry_bias={ctx.entry_bias} size_bias={ctx.size_bias:.2f}\n"
+            f"{fact_line}"
             f"  reasons=[{codes}]\n"
             f"  policy_mode={mode} v{result.policy_version}\n"
             "  Use LIVE_DCA_POLICY together with RETRIEVED_MEMORY; "
