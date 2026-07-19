@@ -82,7 +82,18 @@ When a coin in **open positions ∪ watchlist** moves hard:
 4. Write `price_move_attribution` + optional RAG (`metadata.screen_tf`, `fine_impulse_pct`, `triggers[]`)
 
 CMC 24h quotes are **fallback** only when 1h OHLCV fails.  
-Config: `memory.move_attribution.*` · Kill: `MEMORY_MOVE_ATTRIBUTION=0`
+Config: `memory.move_attribution.*` · Kill: `MEMORY_MOVE_ATTRIBUTION=0`  
+Default **`enabled: false`** until local probe is OK; then set `enabled: true`.
+
+Local dry-run (no Mongo write):
+
+```bash
+python3 scripts/probe_move_attribution.py --offline
+python3 scripts/probe_move_attribution.py --symbols BTC/USDT,ETH/USDT,SOL/USDT
+python3 -m pytest tests/unit/test_move_attribution.py -q
+# Only after review:
+python3 scripts/probe_move_attribution.py --from-watchlist --top 15 --write
+```
 
 ## Backward enrich: open book + watchlist
 

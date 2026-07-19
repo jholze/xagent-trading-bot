@@ -603,7 +603,7 @@
       "index_rag": true
     },
     "move_attribution": {
-      "enabled": true,
+      "enabled": false,
       "screen_tf": "1h",
       "screen_bars": 1,
       "abs_chg_1h_pct": 4,
