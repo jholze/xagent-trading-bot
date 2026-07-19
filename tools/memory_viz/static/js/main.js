@@ -1,5 +1,5 @@
 /**
- * Boot Memory Cortex UI — load cortex, wire scene + HUD + WebSocket live stream.
+ * Boot Memory Cortex UI — compact HUD, zoom, WS live flash (no auto-drawer).
  */
 import { CortexScene } from "./scene.js";
 import { Hud } from "./hud.js";
@@ -19,12 +19,26 @@ const hud = new Hud({
     lastHitScores = new Map();
     hud.setStatus("hits cleared");
   },
-  onResetView: () => scene.resetCamera(),
+  onResetView: () => {
+    scene.resetCamera();
+    hud.setZoomSlider(scene.getZoomSliderValue());
+  },
   onLobeToggle: (lobe, on) => scene.setLobeEnabled(lobe, on),
   onSymbolToggle: () => {},
   onHitClick: async (index, id) => {
     scene.selectIndex(index);
     await openNode(id, lastHitScores.get(index));
+  },
+  onZoomIn: () => {
+    scene.zoomIn();
+    hud.setZoomSlider(scene.getZoomSliderValue());
+  },
+  onZoomOut: () => {
+    scene.zoomOut();
+    hud.setZoomSlider(scene.getZoomSliderValue());
+  },
+  onZoomSlider: (v) => {
+    scene.setZoomFromSlider(v);
   },
 });
 
@@ -36,6 +50,9 @@ hud.hooks.onSymbolsChanged = (activeList) => {
   }
 };
 
+scene.onZoomChange((v) => hud.setZoomSlider(v));
+
+// Click node → detail drawer (only intentional pick, not live ingest)
 scene.onPick(async (index, node) => {
   if (!node) return;
   await openNode(node.id, lastHitScores.get(index));
@@ -119,29 +136,19 @@ function connectWs() {
       return;
     }
     if (!msg || !msg.type) return;
-    if (msg.type === "hello") {
-      return;
-    }
-    if (msg.type === "ping") {
-      return;
-    }
+    if (msg.type === "hello" || msg.type === "ping") return;
     if (msg.type === "nodes_added" && Array.isArray(msg.nodes) && msg.nodes.length) {
       const existing = new Set(cortexNodes.map((n) => n.id));
       const fresh = msg.nodes.filter((n) => n && n.id && !existing.has(n.id));
       if (!fresh.length) return;
-      // reindex from server-provided i when present
       cortexNodes = cortexNodes.concat(fresh);
+      // flash only — no detail drawer
       scene.appendNodes(fresh);
       const label = fresh[0].title || fresh[0].id;
       hud.toast(`+${fresh.length} memory · ${String(label).slice(0, 40)}`);
       hud.setStatus(
         `LIVE · ${msg.node_count || cortexNodes.length} nodes · +${fresh.length} new`
       );
-      // open newest
-      const last = fresh[fresh.length - 1];
-      if (last && last.id) {
-        openNode(last.id, null);
-      }
     }
   };
 }
@@ -163,10 +170,11 @@ async function boot() {
     scene.setNodes(cortexNodes);
     scene.start();
     hud.bindCortex({ ...cortex, ...health });
+    hud.setZoomSlider(scene.getZoomSliderValue());
     const mode = health.demo ? "DEMO" : "LIVE";
     const src = health.source || (health.demo ? "demo" : "mongo");
     hud.setStatus(
-      `${mode}/${src} · ${health.node_count} nodes · dim ${health.embedding_dim || "?"} · ws…`
+      `${mode}/${src} · ${health.node_count} nodes · ws…`
     );
     connectWs();
   } catch (e) {

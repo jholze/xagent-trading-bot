@@ -14,38 +14,63 @@
   }
   </script>
 </head>
-<body>
+<body class="hud-compact">
   <div id="boot-bg"></div>
   <canvas id="cortex-canvas" aria-label="3D memory cortex"></canvas>
 
-  <header id="hud-top" class="glass">
-    <div class="brand">
-      <span class="brand-mark">◈</span>
-      <div>
-        <h1>Xagent Memory Cortex <span id="ws-dot" class="ws-dot" title="WebSocket"></span></h1>
-        <p id="status-line" class="muted">booting…</p>
+  <header id="hud-top" class="glass compact" data-mode="compact">
+    <div class="brand-row">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <div class="brand-text">
+          <h1>Cortex <span id="ws-dot" class="ws-dot" title="WebSocket"></span></h1>
+          <p id="status-line" class="muted">booting…</p>
+        </div>
+      </div>
+      <div class="brand-actions">
+        <button id="hud-expand" type="button" class="ghost icon-btn" title="Expand settings" aria-expanded="false">☰</button>
       </div>
     </div>
-    <div id="query-row">
+
+    <div id="hud-compact-bar" class="compact-bar">
       <input
-        id="query-input"
+        id="query-input-compact"
         type="search"
         autocomplete="off"
         spellcheck="false"
-        placeholder="Query the memory… e.g. ARIA volume"
-        aria-label="Query input"
+        placeholder="Query…"
+        aria-label="Query input compact"
       />
-      <button id="query-btn" type="button" title="Run query">⌕</button>
-      <select id="top-k" aria-label="Top K">
-        <option value="20">top 20</option>
-        <option value="40" selected>top 40</option>
-        <option value="60">top 60</option>
-      </select>
-      <button id="reset-view" type="button" class="ghost" title="Reset camera">reset</button>
-      <button id="clear-hits" type="button" class="ghost" title="Clear hits">clear</button>
+      <button id="query-btn-compact" type="button" title="Run query">⌕</button>
+      <div id="zoom-controls" class="zoom-controls" aria-label="Zoom">
+        <button id="zoom-out" type="button" class="zoom-btn" title="Zoom out">−</button>
+        <input id="zoom-slider" type="range" min="0" max="100" value="45" title="Zoom" aria-label="Zoom slider" />
+        <button id="zoom-in" type="button" class="zoom-btn" title="Zoom in">+</button>
+      </div>
     </div>
-    <div id="symbol-chips" class="chips" aria-label="Symbol filters"></div>
-    <div id="lobe-toggles" class="chips lobes" aria-label="Lobe toggles"></div>
+
+    <div id="hud-expanded" class="hud-expanded" hidden>
+      <div id="query-row">
+        <input
+          id="query-input"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Query the memory… e.g. ARIA volume"
+          aria-label="Query input"
+        />
+        <button id="query-btn" type="button" title="Run query">⌕</button>
+        <select id="top-k" aria-label="Top K">
+          <option value="20">top 20</option>
+          <option value="40" selected>top 40</option>
+          <option value="60">top 60</option>
+        </select>
+        <button id="reset-view" type="button" class="ghost" title="Reset camera">reset</button>
+        <button id="clear-hits" type="button" class="ghost" title="Clear hits">clear</button>
+      </div>
+      <div id="symbol-chips" class="chips" aria-label="Symbol filters"></div>
+      <div id="lobe-toggles" class="chips lobes" aria-label="Lobe toggles"></div>
+    </div>
   </header>
 
   <aside id="detail-drawer" class="glass drawer" hidden aria-live="polite">

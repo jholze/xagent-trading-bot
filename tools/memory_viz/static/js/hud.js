@@ -1,5 +1,5 @@
 /**
- * HUD: query, lobes, chips, hit strip, detail drawer.
+ * HUD: compact/expand settings, query, lobes, hits, drawer.
  */
 
 const LOBE_CSS = {
@@ -11,6 +11,8 @@ const LOBE_CSS = {
   other: "#64748b",
 };
 
+const PREF_KEY = "memory_viz_hud_mode";
+
 export class Hud {
   /**
    * @param {{
@@ -20,6 +22,9 @@ export class Hud {
    *  onLobeToggle: (lobe: string, on: boolean) => void,
    *  onSymbolToggle: (sym: string, on: boolean) => void,
    *  onHitClick: (index: number, id: string) => void,
+   *  onZoomIn?: () => void,
+   *  onZoomOut?: () => void,
+   *  onZoomSlider?: (value: number) => void,
    * }} hooks
    */
   constructor(hooks) {
@@ -27,10 +32,14 @@ export class Hud {
     this.lobeState = {};
     this.symbolState = {};
     this._nodeByIndex = [];
+    this.compact = true;
 
+    this.$panel = document.getElementById("hud-top");
     this.$status = document.getElementById("status-line");
     this.$input = document.getElementById("query-input");
+    this.$inputCompact = document.getElementById("query-input-compact");
     this.$btn = document.getElementById("query-btn");
+    this.$btnCompact = document.getElementById("query-btn-compact");
     this.$topK = document.getElementById("top-k");
     this.$hits = document.getElementById("hit-list");
     this.$lobes = document.getElementById("lobe-toggles");
@@ -42,12 +51,42 @@ export class Hud {
     this.$drawerBody = document.getElementById("drawer-body");
     this.$copy = document.getElementById("copy-id");
     this.$toast = document.getElementById("toast");
+    this.$expand = document.getElementById("hud-expand");
+    this.$expanded = document.getElementById("hud-expanded");
+    this.$zoomIn = document.getElementById("zoom-in");
+    this.$zoomOut = document.getElementById("zoom-out");
+    this.$zoomSlider = document.getElementById("zoom-slider");
     this._copyId = "";
 
-    this.$btn.addEventListener("click", () => this._runQuery());
-    this.$input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this._runQuery();
+    // default compact
+    let mode = "compact";
+    try {
+      const saved = localStorage.getItem(PREF_KEY);
+      if (saved === "expanded" || saved === "compact") mode = saved;
+    } catch (_) {}
+    this.setCompact(mode !== "expanded");
+
+    this.$expand.addEventListener("click", () => {
+      this.setCompact(!this.compact);
     });
+
+    const run = () => this._runQuery();
+    this.$btn.addEventListener("click", run);
+    this.$btnCompact.addEventListener("click", run);
+    this.$input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") run();
+    });
+    this.$inputCompact.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") run();
+    });
+    // keep query fields in sync
+    this.$input.addEventListener("input", () => {
+      this.$inputCompact.value = this.$input.value;
+    });
+    this.$inputCompact.addEventListener("input", () => {
+      this.$input.value = this.$inputCompact.value;
+    });
+
     document.getElementById("clear-hits").addEventListener("click", () => {
       this.hooks.onClear();
       this.setHits([]);
@@ -65,17 +104,55 @@ export class Hud {
       }
     });
 
+    this.$zoomIn.addEventListener("click", () => this.hooks.onZoomIn && this.hooks.onZoomIn());
+    this.$zoomOut.addEventListener("click", () => this.hooks.onZoomOut && this.hooks.onZoomOut());
+    this.$zoomSlider.addEventListener("input", () => {
+      const v = parseFloat(this.$zoomSlider.value);
+      if (this.hooks.onZoomSlider) this.hooks.onZoomSlider(v);
+    });
+
     window.addEventListener("keydown", (e) => {
-      if (e.key === "/" && document.activeElement !== this.$input) {
+      if (e.key === "/" && document.activeElement !== this.$input && document.activeElement !== this.$inputCompact) {
         e.preventDefault();
-        this.$input.focus();
+        if (this.compact) this.$inputCompact.focus();
+        else this.$input.focus();
       }
       if (e.key === "Escape") {
         this.hooks.onClear();
         this.setHits([]);
         this.$drawer.hidden = true;
       }
+      if (e.key === "+" || e.key === "=") {
+        if (document.activeElement?.tagName === "INPUT") return;
+        e.preventDefault();
+        this.hooks.onZoomIn && this.hooks.onZoomIn();
+      }
+      if (e.key === "-" || e.key === "_") {
+        if (document.activeElement?.tagName === "INPUT") return;
+        e.preventDefault();
+        this.hooks.onZoomOut && this.hooks.onZoomOut();
+      }
     });
+  }
+
+  setCompact(compact) {
+    this.compact = !!compact;
+    document.body.classList.toggle("hud-compact", this.compact);
+    document.body.classList.toggle("hud-expanded", !this.compact);
+    this.$panel.classList.toggle("compact", this.compact);
+    this.$panel.classList.toggle("expanded", !this.compact);
+    this.$panel.dataset.mode = this.compact ? "compact" : "expanded";
+    this.$expanded.hidden = this.compact;
+    this.$expand.setAttribute("aria-expanded", this.compact ? "false" : "true");
+    this.$expand.title = this.compact ? "Expand settings" : "Collapse settings";
+    this.$expand.textContent = this.compact ? "☰" : "▴";
+    try {
+      localStorage.setItem(PREF_KEY, this.compact ? "compact" : "expanded");
+    } catch (_) {}
+  }
+
+  setZoomSlider(value) {
+    if (this.$zoomSlider) this.$zoomSlider.value = String(Math.round(value));
   }
 
   setStatus(text) {
@@ -91,9 +168,6 @@ export class Hud {
     }, 1800);
   }
 
-  /**
-   * @param {{nodes: any[], lobes?: any[], demo?: boolean, node_count?: number, built_at?: string}} cortex
-   */
   bindCortex(cortex) {
     this._nodeByIndex = cortex.nodes || [];
     const lobes = cortex.lobes || [];
@@ -133,7 +207,7 @@ export class Hud {
     this.$chips.innerHTML = "";
     this.symbolState = {};
     for (const s of [...symbols].sort()) {
-      this.symbolState[s] = false; // off = not filtering; we use "active filters only if any on"
+      this.symbolState[s] = false;
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip";
@@ -145,7 +219,6 @@ export class Hud {
           .filter(([, v]) => v)
           .map(([k]) => k);
         this.hooks.onSymbolToggle(s, this.symbolState[s]);
-        // pass full set via custom: re-fire with aggregate
         if (this.hooks.onSymbolsChanged) {
           this.hooks.onSymbolsChanged(active);
         }
@@ -155,7 +228,7 @@ export class Hud {
 
     const mode = cortex.demo ? "DEMO" : "LIVE";
     this.setStatus(
-      `${mode} · ${cortex.node_count ?? this._nodeByIndex.length} nodes · built ${cortex.built_at || "—"}`
+      `${mode} · ${cortex.node_count ?? this._nodeByIndex.length} nodes`
     );
   }
 
@@ -199,7 +272,14 @@ export class Hud {
   }
 
   async _runQuery() {
-    const q = (this.$input.value || "").trim();
+    const q = (
+      (this.compact ? this.$inputCompact.value : this.$input.value) ||
+      this.$input.value ||
+      this.$inputCompact.value ||
+      ""
+    ).trim();
+    this.$input.value = q;
+    this.$inputCompact.value = q;
     const topK = parseInt(this.$topK.value || "40", 10) || 40;
     if (!q) {
       this.toast("enter a query");

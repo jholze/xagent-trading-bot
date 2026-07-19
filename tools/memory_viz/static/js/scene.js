@@ -37,14 +37,23 @@ export class CortexScene {
 
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.06;
-    this.controls.minDistance = 1.2;
-    this.controls.maxDistance = 14;
+    this.controls.dampingFactor = 0.08;
+    this.controls.minDistance = 0.8;
+    this.controls.maxDistance = 22;
+    // Trackpad/mouse wheel zoom was too slow on Mac — boost strongly
+    this.controls.zoomSpeed = 2.8;
+    this.controls.rotateSpeed = 0.9;
+    this.controls.panSpeed = 0.9;
+    this._distMin = this.controls.minDistance;
+    this._distMax = this.controls.maxDistance;
     this.controls.addEventListener("start", () => {
       this._idleSince = performance.now() + 1e9;
     });
     this.controls.addEventListener("end", () => {
       this._idleSince = performance.now();
+    });
+    this.controls.addEventListener("change", () => {
+      if (this._onZoomChange) this._onZoomChange(this.getZoomSliderValue());
     });
 
     // ambient dust
@@ -69,6 +78,59 @@ export class CortexScene {
 
   onPick(fn) {
     this._onPick = fn;
+  }
+
+  onZoomChange(fn) {
+    this._onZoomChange = fn;
+  }
+
+  /** Distance from camera to target. */
+  getDistance() {
+    return this.camera.position.distanceTo(this.controls.target);
+  }
+
+  /** Map distance → 0..100 slider (0 = far, 100 = close). */
+  getZoomSliderValue() {
+    const d = this.getDistance();
+    const t =
+      (Math.log(d) - Math.log(this._distMin)) /
+      (Math.log(this._distMax) - Math.log(this._distMin));
+    return Math.max(0, Math.min(100, (1 - t) * 100));
+  }
+
+  /** Slider 0..100 → set camera distance (100 = closest). */
+  setZoomFromSlider(value) {
+    const v = Math.max(0, Math.min(100, Number(value) || 0));
+    const t = 1 - v / 100;
+    const dist = Math.exp(
+      Math.log(this._distMin) + t * (Math.log(this._distMax) - Math.log(this._distMin))
+    );
+    this._setDistance(dist);
+  }
+
+  zoomBy(factor) {
+    const d = this.getDistance();
+    this._setDistance(d * factor);
+  }
+
+  zoomIn(step = 0.72) {
+    this.zoomBy(step);
+  }
+
+  zoomOut(step = 1.38) {
+    this.zoomBy(step);
+  }
+
+  _setDistance(dist) {
+    const d = Math.max(this._distMin, Math.min(this._distMax, dist));
+    const dir = new THREE.Vector3()
+      .subVectors(this.camera.position, this.controls.target)
+      .normalize();
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0.2, 1).normalize();
+    this.camera.position.copy(this.controls.target).addScaledVector(dir, d);
+    this.controls.update();
+    this._idleSince = performance.now();
+    if (this._onZoomChange) this._onZoomChange(this.getZoomSliderValue());
   }
 
   /**
@@ -168,15 +230,12 @@ export class CortexScene {
   }
 
   flashNew(indices) {
+    // Visual pulse only — no camera fly, no detail panel
     this.hitSet = new Set(indices || []);
+    this._selected = -1;
     this.applyVisibility();
-    if (indices && indices.length) {
-      this.selectIndex(indices[indices.length - 1]);
-    }
-    // clear flash after a few seconds so cortex settles
     clearTimeout(this._flashT);
     this._flashT = setTimeout(() => {
-      // keep last selected; clear hit glow
       this.clearHits();
     }, 4500);
   }
