@@ -153,6 +153,34 @@ export class CortexScene {
     this.applyVisibility();
   }
 
+  /**
+   * Append nodes and flash them as new memory arrivals.
+   * @param {Array} nodes
+   */
+  appendNodes(nodes) {
+    if (!nodes || !nodes.length) return;
+    const start = this.nodes.length;
+    const merged = this.nodes.concat(nodes);
+    this.setNodes(merged);
+    const indices = [];
+    for (let i = 0; i < nodes.length; i++) indices.push(start + i);
+    this.flashNew(indices);
+  }
+
+  flashNew(indices) {
+    this.hitSet = new Set(indices || []);
+    this.applyVisibility();
+    if (indices && indices.length) {
+      this.selectIndex(indices[indices.length - 1]);
+    }
+    // clear flash after a few seconds so cortex settles
+    clearTimeout(this._flashT);
+    this._flashT = setTimeout(() => {
+      // keep last selected; clear hit glow
+      this.clearHits();
+    }, 4500);
+  }
+
   setHits(indices) {
     this.hitSet = new Set(indices || []);
     this.applyVisibility();

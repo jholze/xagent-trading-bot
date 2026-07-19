@@ -1,6 +1,6 @@
 # Epic #88 — Memory Visualizer (RAG cortex)
 
-> **Status:** **V1 shipped** · demo live on Railway · Mongo export later  
+> **Status:** **V2 shipped** · WebSocket live + Mongo poll · Railway  
 > **Issue:** [#88](https://github.com/jholze/xagent-trading-bot/issues/88)  
 > **Depends on:** #72 Agent Bus + RAG (closed, shipped)  
 > **UX north star:** [Project Golem](https://github.com/CyberMagician/Project_Golem) — then **surpass** it for *trading memory* (not a generic wiki brain)

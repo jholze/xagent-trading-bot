@@ -1,5 +1,5 @@
 /**
- * Boot Memory Cortex UI — load cortex, wire scene + HUD + APIs.
+ * Boot Memory Cortex UI — load cortex, wire scene + HUD + WebSocket live stream.
  */
 import { CortexScene } from "./scene.js";
 import { Hud } from "./hud.js";
@@ -9,6 +9,8 @@ const scene = new CortexScene(canvas);
 
 let lastHitScores = new Map();
 let cortexNodes = [];
+let ws = null;
+let wsRetry = 0;
 
 const hud = new Hud({
   onQuery: runQuery,
@@ -26,7 +28,6 @@ const hud = new Hud({
   },
 });
 
-// aggregate symbol filter
 hud.hooks.onSymbolsChanged = (activeList) => {
   if (!activeList || !activeList.length) {
     scene.setSymbolFilter(null);
@@ -65,7 +66,11 @@ async function runQuery(q, topK) {
     lastHitScores = new Map(hits.map((h) => [h.i, h.score]));
     scene.setHits(indices);
     hud.setHits(hits);
-    hud.setStatus(`query “${q}” · ${hits.length} hits · top ${(hits[0] && hits[0].score != null) ? hits[0].score.toFixed(3) : "—"}`);
+    hud.setStatus(
+      `query “${q}” · ${hits.length} hits · top ${
+        hits[0] && hits[0].score != null ? hits[0].score.toFixed(3) : "—"
+      }`
+    );
     if (hits[0]) {
       scene.selectIndex(hits[0].i);
     }
@@ -73,6 +78,78 @@ async function runQuery(q, topK) {
     hud.setStatus("query failed");
     hud.toast(String(e.message || e));
   }
+}
+
+function connectWs() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws`;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    hud.toast("ws connect failed");
+    scheduleWsRetry();
+    return;
+  }
+  ws.onopen = () => {
+    wsRetry = 0;
+    const el = document.getElementById("ws-dot");
+    if (el) {
+      el.classList.add("on");
+      el.title = "WebSocket live";
+    }
+  };
+  ws.onclose = () => {
+    const el = document.getElementById("ws-dot");
+    if (el) {
+      el.classList.remove("on");
+      el.title = "WebSocket offline";
+    }
+    scheduleWsRetry();
+  };
+  ws.onerror = () => {
+    try {
+      ws.close();
+    } catch (_) {}
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (!msg || !msg.type) return;
+    if (msg.type === "hello") {
+      return;
+    }
+    if (msg.type === "ping") {
+      return;
+    }
+    if (msg.type === "nodes_added" && Array.isArray(msg.nodes) && msg.nodes.length) {
+      const existing = new Set(cortexNodes.map((n) => n.id));
+      const fresh = msg.nodes.filter((n) => n && n.id && !existing.has(n.id));
+      if (!fresh.length) return;
+      // reindex from server-provided i when present
+      cortexNodes = cortexNodes.concat(fresh);
+      scene.appendNodes(fresh);
+      const label = fresh[0].title || fresh[0].id;
+      hud.toast(`+${fresh.length} memory · ${String(label).slice(0, 40)}`);
+      hud.setStatus(
+        `LIVE · ${msg.node_count || cortexNodes.length} nodes · +${fresh.length} new`
+      );
+      // open newest
+      const last = fresh[fresh.length - 1];
+      if (last && last.id) {
+        openNode(last.id, null);
+      }
+    }
+  };
+}
+
+function scheduleWsRetry() {
+  wsRetry += 1;
+  const delay = Math.min(15000, 800 * wsRetry);
+  setTimeout(connectWs, delay);
 }
 
 async function boot() {
@@ -86,9 +163,12 @@ async function boot() {
     scene.setNodes(cortexNodes);
     scene.start();
     hud.bindCortex({ ...cortex, ...health });
+    const mode = health.demo ? "DEMO" : "LIVE";
+    const src = health.source || (health.demo ? "demo" : "mongo");
     hud.setStatus(
-      `${health.demo ? "DEMO" : "LIVE"} · ${health.node_count} nodes · dim ${health.embedding_dim || "?"} · ready`
+      `${mode}/${src} · ${health.node_count} nodes · dim ${health.embedding_dim || "?"} · ws…`
     );
+    connectWs();
   } catch (e) {
     hud.setStatus("boot failed — is the server running?");
     hud.toast(String(e.message || e));

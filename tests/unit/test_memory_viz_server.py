@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
-from tools.memory_viz.server import CortexHandler, ensure_store_loaded
+from tools.memory_viz.server import CortexHandler, ensure_store_loaded, reset_boot_for_tests
 from tools.memory_viz.store import reset_store_for_tests
+from tools.memory_viz.ws_hub import reset_hub_for_tests
 
 
 class TestMemoryVizServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        reset_boot_for_tests()
+        reset_hub_for_tests()
+        cls._env = mock.patch.dict(
+            os.environ,
+            {"MEMORY_VIZ_DEMO": "1", "MEMORY_VIZ_WATCHER": "0"},
+            clear=False,
+        )
+        cls._env.start()
         reset_store_for_tests().load_demo(variants_per_seed=3)
         ensure_store_loaded()
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), CortexHandler)
@@ -26,6 +37,8 @@ class TestMemoryVizServer(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        reset_boot_for_tests()
+        cls._env.stop()
 
     def _req(self, method: str, path: str, body: dict | None = None):
         conn = HTTPConnection("127.0.0.1", self.port, timeout=10)
