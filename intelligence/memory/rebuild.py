@@ -323,6 +323,121 @@ def load_filled_orders_readonly(
         return [], ledger_scope or "live"
 
 
+def trade_history_to_trade_memories(
+    rows: list[dict],
+    *,
+    ledger_scope: str,
+    tenant_id: str,
+    lookback_days: int = 90,
+) -> list[TradeMemory]:
+    """Map trade_history.trades[] rows → TradeMemory (READ-ONLY history doc).
+
+    Fills gaps when the orders collection is sparse (common on staging demo).
+    """
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=int(lookback_days))
+    out: list[TradeMemory] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        typ = str(row.get("type") or row.get("side") or "").upper()
+        if typ in ("BUY", "B"):
+            side = "buy"
+        elif typ in ("SELL", "S"):
+            side = "sell"
+        else:
+            continue
+        filled = _parse_ts(row.get("timestamp") or row.get("time") or row.get("filled_at"))
+        if filled is None or filled < since:
+            continue
+        sym = str(row.get("symbol") or "").strip()
+        if not sym:
+            continue
+        if "/" not in sym:
+            sym = f"{sym}/USDT"
+        try:
+            price = float(row.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            pnl_f = float(row["pnl"]) if row.get("pnl") is not None else None
+        except (TypeError, ValueError):
+            pnl_f = None
+        outcome = "open"
+        if side == "sell" and pnl_f is not None:
+            if pnl_f > 0.5:
+                outcome = "win"
+            elif pnl_f < -0.5:
+                outcome = "loss"
+            else:
+                outcome = "breakeven"
+        oid = str(row.get("order_id") or row.get("exchange_order_id") or "")
+        tid = oid or f"th_{sym}_{filled.strftime('%Y%m%d%H%M%S')}_{side}"
+        usdt = 0.0
+        try:
+            usdt = float(row.get("usdt_amount") or row.get("usdt_received") or 0)
+        except (TypeError, ValueError):
+            usdt = 0.0
+        out.append(
+            TradeMemory(
+                trade_id=f"{ledger_scope}:th:{tid}",
+                symbol=sym,
+                entry_time=filled.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                exit_time=filled.strftime("%Y-%m-%dT%H:%M:%SZ") if side == "sell" else "",
+                direction=side,
+                entry_price=price,
+                exit_price=price if side == "sell" else 0.0,
+                pnl_usdt=pnl_f,
+                source=str(row.get("source") or "trade_history"),
+                outcome=outcome,
+                reason=str(row.get("signal") or row.get("type") or side.upper()),
+                ledger_scope=ledger_scope,
+                tenant_id=tenant_id,
+                metadata={"usdt": usdt, "from": "trade_history"},
+            )
+        )
+    return out
+
+
+def load_trade_history_rows_readonly(
+    ledger_scope: str | None = None,
+    tenant_id: str = "default",
+) -> list[dict]:
+    """READ-ONLY trade_history document rows — never mutates ledger."""
+    try:
+        from data_manager import load_trade_history_document, resolve_ledger_scope
+
+        scope = ledger_scope or resolve_ledger_scope()
+        # demo scope uses demo history; paper/live as configured
+        hist_scope = "demo" if scope == "demo" else scope
+        if hist_scope == "live":
+            # live dry-run often uses live trade history helper
+            try:
+                from data_manager import load_live_trade_history
+
+                doc = load_live_trade_history() or {}
+                return list(doc.get("trades") or [])
+            except Exception:
+                pass
+        doc = load_trade_history_document(hist_scope, tenant_id=tenant_id) or {}
+        return list(doc.get("trades") or [])
+    except Exception as e:
+        log(f"memory rebuild: trade_history load failed (fail-open): {e}", "WARNING")
+        return []
+
+
+def _merge_trade_memories(*groups: list[TradeMemory]) -> list[TradeMemory]:
+    """Dedupe by trade_id; prefer first occurrence."""
+    by_id: dict[str, TradeMemory] = {}
+    for group in groups:
+        for t in group or []:
+            if not t or not t.trade_id:
+                continue
+            if t.trade_id not in by_id:
+                by_id[t.trade_id] = t
+    return list(by_id.values())
+
+
 def rebuild_from_orders(
     store: MemoryStore | None = None,
     *,
@@ -332,12 +447,22 @@ def rebuild_from_orders(
     min_samples: int = 3,
     config_raw: dict | None = None,
 ) -> dict[str, int]:
-    """Full rebuild of trade memories + profiles. Ledger read-only."""
+    """Full rebuild of trade memories + profiles. Ledger read-only.
+
+    Sources (merged, deduped):
+      1) filled orders collection
+      2) trade_history document (fills gaps when orders sparse)
+    """
     store = store or MemoryStore()
     orders, scope = load_filled_orders_readonly(ledger_scope, tenant_id)
-    trades = orders_to_trade_memories(
+    from_orders = orders_to_trade_memories(
         orders, ledger_scope=scope, tenant_id=tenant_id, lookback_days=lookback_days
     )
+    hist_rows = load_trade_history_rows_readonly(scope, tenant_id)
+    from_hist = trade_history_to_trade_memories(
+        hist_rows, ledger_scope=scope, tenant_id=tenant_id, lookback_days=lookback_days
+    )
+    trades = _merge_trade_memories(from_orders, from_hist)
     for t in trades:
         store.upsert_trade(t)
 
@@ -359,11 +484,16 @@ def rebuild_from_orders(
             n_prof += 1
 
     log(
-        f"memory rebuild: orders={len(orders)} trades={len(trades)} profiles={n_prof} scope={scope}",
+        f"memory rebuild: orders={len(orders)} hist_rows={len(hist_rows)} "
+        f"trades={len(trades)} (ord={len(from_orders)} hist={len(from_hist)}) "
+        f"profiles={n_prof} scope={scope}",
         "INFO",
     )
     return {
         "orders_read": len(orders),
+        "hist_rows_read": len(hist_rows),
+        "trades_from_orders": len(from_orders),
+        "trades_from_history": len(from_hist),
         "trades_written": len(trades),
         "profiles_written": n_prof,
         "ledger_scope": scope,

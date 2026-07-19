@@ -136,6 +136,7 @@ rationale += policy reasons
 | D2 #96 | `build_dca_context` — done |
 | D3 #97 | wire + pure `evaluate_dca_policy` + tests — done |
 | D6 #101 | Observability — done |
+| D4b #99 | LIVE_DCA_POLICY in /ask — done |
 | D4 #98 | `persist_dca_decision_event` → `memory_market_events` + optional RAG — done |
 
 ### D4 persist

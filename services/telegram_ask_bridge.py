@@ -757,6 +757,16 @@ def _build_ask_rag_prompt(question: str, context: dict, retriever=None) -> str:
             template="dca_advice_rag",
             hits=hits,
         )
+        # #99 live policy snapshot (same rules as hot-path DCA; no orders)
+        if symbol:
+            try:
+                from strategies.dca_ask_snapshot import format_live_dca_policy_snapshot
+
+                snap = format_live_dca_policy_snapshot(symbol, position=None)
+                if snap:
+                    prompt = f"{prompt}\n\n{snap}"
+            except Exception:
+                pass
         # Be explicit when the asked pair has zero memory evidence
         if symbol and not hits:
             prompt += (

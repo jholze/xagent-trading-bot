@@ -952,7 +952,8 @@
         "telegram_audit": false,
         "telegram_on_skip_only": true,
         "persist_events": true,
-        "index_rag": true
+        "index_rag": true,
+        "ask_snapshot": true
       },
       "sizing": {
         "enabled": true,

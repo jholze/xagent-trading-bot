@@ -69,6 +69,8 @@ def dca_policy_config(dca_cfg: dict | None) -> dict[str, Any]:
         # D4 persist (#98)
         "persist_events": True,
         "index_rag": True,
+        # D4b /ask live snapshot (#99)
+        "ask_snapshot": True,
     }
     raw = dict((dca_cfg or {}).get("policy") or {})
     return {**defaults, **raw}

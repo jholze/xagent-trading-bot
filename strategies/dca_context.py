@@ -17,8 +17,12 @@ def build_dca_context(
     max_score: int = 10,
     loss_pct: float = 0.0,
     config_raw: dict | None = None,
+    include_rag: bool = True,
 ) -> DcaContext:
-    """Assemble context; any failure → safe defaults (fail-open)."""
+    """Assemble context; any failure → safe defaults (fail-open).
+
+    include_rag: when False, skip vector retrieve (use from /ask which already RAGs).
+    """
     _ = market, strategy_params  # reserved for future tech flags
     sym = str(symbol or "").strip()
     if not sym and position:
@@ -119,20 +123,21 @@ def build_dca_context(
     except Exception:
         pass
 
-    # Optional RAG hit count (advisory only — never decides)
-    try:
-        from hermes.memory.rag_retriever import RagRetriever
-        from intelligence.memory.rag_config import rag_enabled
+    # Optional RAG hit count (advisory only — never decides). Skip when caller already RAGs.
+    if include_rag:
+        try:
+            from hermes.memory.rag_retriever import RagRetriever
+            from intelligence.memory.rag_config import rag_enabled
 
-        cfg = raw if isinstance(raw, dict) else None
-        if rag_enabled(cfg):
-            hits = RagRetriever(config=cfg).retrieve(
-                f"{sym} trade dca loss",
-                top_k=3,
-                filters={"symbol": sym} if sym else None,
-            )
-            ctx.rag_hit_count = len(hits or [])
-    except Exception:
-        ctx.rag_hit_count = 0
+            cfg = raw if isinstance(raw, dict) else None
+            if rag_enabled(cfg):
+                hits = RagRetriever(config=cfg).retrieve(
+                    f"{sym} trade dca loss",
+                    top_k=3,
+                    filters={"symbol": sym} if sym else None,
+                )
+                ctx.rag_hit_count = len(hits or [])
+        except Exception:
+            ctx.rag_hit_count = 0
 
     return ctx
