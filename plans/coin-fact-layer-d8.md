@@ -35,32 +35,51 @@ Primary: CMC AI latest-updates per slug
 
 **General rule:** every coin we trade or watch is eligible for fact ingest — not a special case for one narrative coin.
 
-## Primary source: CMC AI (all coins)
+## Primary source: CMC AI suite (all coins)
 
-### What it is
+CMC AI exposes a **per-slug family** of pages. We use at least two as first-class inputs (same universe, same pipeline).
 
-| Item | Detail |
-|------|--------|
-| Product | CMC AI “Latest … News Update” per asset |
-| URL pattern | `https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/` |
-| Example | ALLO → `…/cmc-ai/allora/latest-updates/` |
-| Content | Dated TLDR bullets, deep dives, social summary, roadmap/codebase notes |
-| Disclaimer | Page states *CMC AI can make mistakes* → never sole hard authority |
+### Endpoints (v1 locked)
+
+| Role | URL | What we extract |
+|------|-----|-----------------|
+| **News / narrative** | `https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/` | Dated TLDR bullets, “what this means”, social summary, roadmap/partnerships |
+| **Price structure** | `https://coinmarketcap.com/cmc-ai/{slug}/price-analysis/` | 24h move vs BTC, **volume spike**, liquidity/turnover, support/resistance, “no catalyst” flag, outlook bias |
+| Optional later | `…/price-prediction/`, `…/what-is/` | Lower priority for DCA; prediction = noisy |
+
+**Examples (ALLO):**
+- News: https://coinmarketcap.com/cmc-ai/allora/latest-updates/
+- Price analysis: https://coinmarketcap.com/cmc-ai/allora/price-analysis/
+
+**Disclaimer on both:** *CMC AI can make mistakes* → never sole hard authority.
+
+### Why both (complementary)
+
+| latest-updates | price-analysis |
+|----------------|----------------|
+| **Why** narrative (AI rotation, unlocks, partnerships) | **How** the move trades (volume +174%, levels 0.40/0.50) |
+| Good for unlock / profit-taking / catalyst facts | Good for **volume-confirmed breakout** vs fragile pump |
+| Often multi-day stories | Often **same-day** market structure |
+| ALLO: 15.07 −10% cool-down story | ALLO 19.07: +15% vs BTC, volume surge, **no clear news catalyst** |
+
+Together they answer: *Is this news-driven or pure flow?* — critical for DCA (aggressive add only when structure + not hard-negative facts).
 
 ### Why use it generally
 
-- **Coin-scoped** narrative (exactly what global Oracle/Santiment lack)
-- Structured enough to map → taxonomy (date + headline + polarity language)
-- Same pattern for **every** CMC-listed slug we care about (portfolio + watchlist)
-- Complements existing **CMC Pro API** (quotes/trending) — AI page is **narrative**, Pro is **market data**
+- **Coin-scoped** (exactly what global Oracle/Santiment lack)
+- Structured TLDR + levels map cleanly → taxonomy
+- Same URL pattern for **every** CMC slug in portfolio ∪ watchlist
+- Complements **CMC Pro API** (quotes/trending) — AI pages = narrative + structure; Pro = raw market numbers
 
 ### Access strategy (preferred order)
 
 | Priority | Method | Notes |
 |----------|--------|--------|
 | **1** | CMC AI Agent Hub / MCP / official agent API if plan supports | Stable, ToS-friendly |
-| **2** | Controlled fetch of latest-updates HTML/markdown | Fail-open; rate-limited; parse TLDR only |
+| **2** | Controlled fetch of **both** pages (latest-updates + price-analysis) | Fail-open; rate-limited; parse TLDR / key levels only |
 | **3** | Degrade | Skip coin this cycle; DCA/watchlist fail-open |
+
+Budget: 2 pages × N coins — keep `max_coins_per_cycle` tight; cache by slug+endpoint+TTL.
 
 **Not** a substitute for `CMC_API_KEY` Pro endpoints already in the bot.
 
@@ -80,7 +99,7 @@ Slug resolution: Ticker/pair → CMC slug (reuse existing CMC info/map helpers w
 
 ### Parse → CoinFactEvent (v1)
 
-From CMC AI page, prefer **TLDR dated items** first (highest signal/noise):
+#### From `latest-updates` (prefer dated TLDR items)
 
 | CMC AI signal | event_type | polarity hint |
 |---------------|------------|---------------|
@@ -91,9 +110,22 @@ From CMC AI page, prefer **TLDR dated items** first (highest signal/noise):
 | social “bullish signs” only | `social_spike` | mixed (cap) |
 | AI sector rotation | `sector_rotation` | +/neutral |
 
-Fields: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description` (TLDR line), `source=cmc_ai`, `url`, `as_of`, `ttl_hours`, `metadata.slug`.
+#### From `price-analysis` (structure / flow)
 
-**Noise filter:** ignore pure pump-signal Telegram content; CMC AI TLDR is primary; community quotes secondary and capped.
+| CMC AI signal | event_type | polarity hint | DCA use |
+|---------------|------------|---------------|---------|
+| Volume surge + price up (e.g. vol +174%) | `volume_breakout` | + | soft mult↑ only if not hard-negative news |
+| “No clear secondary driver / no news catalyst” | `flow_only_move` | neutral/caution | **no** aggressive DCA; fragile rally |
+| Outlook “cautiously bullish” + key support | `structure_bias` | +/mixed | metadata levels; not sole allow |
+| Break below support / volume fade risk | `structure_risk` | − | mult↓ |
+| Outperformance vs BTC stated | `relative_strength` | + | context for watchlist rank |
+
+Optional metadata from price-analysis: `price`, `change_24h_pct`, `volume_24h`, `volume_change_pct`, `support`, `resistance`, `outlook` (bullish/bearish/cautious).
+
+Fields common: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description`, `source` (`cmc_ai_updates` \| `cmc_ai_price`), `url`, `as_of`, `ttl_hours`, `metadata.slug`.
+
+**Noise filter:** ignore pure pump-Telegram; CMC AI TLDR primary; community quotes secondary and capped.  
+**Conflict rule:** hard-negative from news **beats** bullish price-analysis for DCA skip.
 
 ## Principles (non-negotiable)
 
@@ -134,6 +166,10 @@ Fields: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description` (TL
 | ai_narrative / sector_rotation | +/neutral | context or small mult |
 | social_spike | mixed | cap mult; never sole buy reason |
 | profit_taking_narrative | − | after pump: DCA cautious |
+| volume_breakout | + | soft mult only with gates |
+| flow_only_move | caution | no aggressive DCA |
+| structure_bias / structure_risk | +/− | levels in metadata; mult tweak |
+| relative_strength | + | watchlist rank boost |
 
 ## DCA policy hooks (v1 draft)
 
@@ -144,6 +180,9 @@ Fields: `symbols[]`, `event_type`, `impact_score` (−1…+1), `description` (TL
 | fresh positive catalyst + oversold gates | mult × 1.1–1.3 (cap) | `fact_catalyst` |
 | only social_spike / pump noise | ignore or mult ≤ 1.0 | `fact_noise_ignore` |
 | CMC AI profit-taking / cool-down | mult ≤ 0.7 | `fact_profit_taking` |
+| volume_breakout + not hard-negative | mult × 1.1–1.2 (cap) | `fact_volume_breakout` |
+| flow_only_move (rally without catalyst) | mult ≤ 0.8; no boost | `fact_flow_only` |
+| structure_risk (lose support) | mult ≤ 0.5 or skip | `fact_structure_risk` |
 | no facts | mult 1.0 | fail-open |
 
 Skip beats size (same as cash/harvest).
@@ -182,10 +221,14 @@ Skip beats size (same as cash/harvest).
     "sources": {
       "cmc_ai": {
         "enabled": true,
-        "url_template": "https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/",
+        "endpoints": {
+          "latest_updates": "https://coinmarketcap.com/cmc-ai/{slug}/latest-updates/",
+          "price_analysis": "https://coinmarketcap.com/cmc-ai/{slug}/price-analysis/"
+        },
         "prefer_mcp_or_api": true,
         "scrape_fallback": true,
-        "ttl_hours": 48,
+        "ttl_hours_updates": 48,
+        "ttl_hours_price": 12,
         "max_coins_per_cycle": 60,
         "interval_sec": 3600
       }
@@ -212,4 +255,4 @@ Skip beats size (same as cash/harvest).
 
 ## One-liner
 
-**CMC AI latest-updates for every portfolio and watchlist coin → shared memory facts → smarter DCA and ranking — general pipeline, not a one-coin hack.**
+**CMC AI latest-updates + price-analysis for every portfolio and watchlist coin → shared memory facts (narrative + structure) → smarter DCA and ranking.**
