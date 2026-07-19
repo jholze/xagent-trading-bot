@@ -283,50 +283,12 @@ def evaluate_dca_policy(
         mult *= _f(cfg, "score_boost_mult", 1.25)
         reasons.append("score_boost")
 
-    # 10) Coin facts (#103) — skip beats size; hard-neg beats soft bullish
-    if not skip and ctx.fact_hard_negative:
-        skip = True
-        reasons.append("fact_hard_negative")
+    # 10) Coin facts (#103) — declarative rules in dca_fact_policy
+    from strategies.dca_fact_policy import apply_coin_fact_policy
 
-    if not skip and ctx.fact_unlock:
-        mult *= _f(cfg, "fact_unlock_mult", 0.5)
-        reasons.append("fact_unlock")
-        try:
-            min_imp = float(ctx.fact_min_impact or 0.0)
-        except (TypeError, ValueError):
-            min_imp = 0.0
-        if mult < 0.35 or min_imp <= -0.8:
-            skip = True
-            reasons.append("fact_unlock_skip")
-
-    if not skip and ctx.fact_structure_risk:
-        mult *= _f(cfg, "fact_structure_risk_mult", 0.5)
-        reasons.append("fact_structure_risk")
-
-    if not skip and ctx.fact_profit_taking:
-        mult *= _f(cfg, "fact_profit_taking_mult", 0.7)
-        reasons.append("fact_profit_taking")
-
-    if not skip and ctx.fact_flow_only:
-        mult *= _f(cfg, "fact_flow_only_mult", 0.8)
-        reasons.append("fact_flow_only")
-
-    # Soft bullish facts only if not flow-only / hard-neg / unlock-skip
-    if not skip and not ctx.fact_flow_only:
-        if ctx.fact_volume_breakout:
-            mult *= _f(cfg, "fact_volume_breakout_mult", 1.1)
-            reasons.append("fact_volume_breakout")
-        loss = float(ctx.loss_pct if ctx.loss_pct is not None else 0.0)
-        oversold = loss <= -5.0
-        if oversold and ctx.fact_catalyst:
-            mult *= _f(cfg, "fact_catalyst_mult", 1.1)
-            reasons.append("fact_catalyst")
-        if oversold and ctx.fact_utility:
-            mult *= _f(cfg, "fact_utility_mult", 1.1)
-            reasons.append("fact_utility")
-
-    if ctx.fact_noise_only and not any(c.startswith("fact_") for c in reasons):
-        reasons.append("fact_noise_ignore")
+    mult, skip, reasons = apply_coin_fact_policy(
+        ctx, cfg, mult=mult, skip=skip, reasons=reasons
+    )
 
     max_m = max(0.0, _f(cfg, "max_policy_mult", 2.0))
     mult = max(0.0, min(max_m, mult))
