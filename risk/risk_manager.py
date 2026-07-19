@@ -436,7 +436,7 @@ class RiskManager:
         cash = self._available_usdt()
         floor_abs = self._cash_floor_abs()
         spendable = self._spendable_usdt(equity, is_dca=False)
-        return {
+        out = {
             "open_positions": count_open_positions(),
             "max_open_positions": self.config.max_open_positions,
             "daily_trades": self._daily_trades_count(),
@@ -461,6 +461,19 @@ class RiskManager:
             "spendable_usdt": round(spendable, 2),
             "ledger_source": self._ledger_source_label(),
         }
+        pol = self._evaluate_cash_policy(equity)
+        if pol is not None and pol.enabled:
+            out["cash_policy_enabled"] = True
+            out["cash_mode"] = pol.mode
+            out["cash_floor_pct_eff"] = round(pol.floor_pct_eff, 2)
+            out["spendable_new"] = round(pol.spendable_new, 2)
+            out["spendable_dca"] = round(pol.spendable_dca, 2)
+            out["dca_buffer_target"] = round(pol.dca_buffer_target, 2)
+            out["cash_policy_size_mult"] = round(pol.size_mult, 4)
+        else:
+            out["cash_policy_enabled"] = False
+        return out
+
 
     def _sensor_reentry_cooloff_blocked(self, order: TradeOrder, source: str):
         """Block sensor-family re-entry after a recent gross loss on the symbol."""
@@ -687,27 +700,96 @@ class RiskManager:
             return fetch_usdt_balance(self.config)
         return float(load_trade_history().get("virtual_balance", fallback))
 
+    def _cash_floor_basis_ref(
+        self, equity: float | None = None, *, adaptive: bool = False
+    ) -> float:
+        """Reference capital for floor % → absolute conversion."""
+        risk = self.config.risk_config
+        pol = risk.get("cash_policy") if isinstance(risk.get("cash_policy"), dict) else {}
+        # Adaptive floor_basis only when policy is active; else legacy cash_floor_basis
+        if adaptive and pol:
+            basis = str(pol.get("floor_basis") or risk.get("cash_floor_basis", "initial") or "initial")
+        else:
+            basis = str(risk.get("cash_floor_basis", "initial") or "initial")
+        basis = basis.lower()
+        if basis == "nav":
+            return float(equity if equity is not None else self._portfolio_equity())
+        return float(self._initial_capital())
+
+    def _market_bias_for_cash(self) -> dict:
+        """Fusion/global bias for cash policy; fail-open to neutral."""
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+
+            return dict(get_global_market_bias(self.config.raw) or {})
+        except Exception:
+            return {"size_mult": 1.0, "block_buys": False}
+
+    def _evaluate_cash_policy(self, equity: float | None = None):
+        """Adaptive cash evaluation when enabled; None when legacy path."""
+        from risk.cash_policy import evaluate_cash_policy, is_cash_policy_enabled
+
+        risk = self.config.risk_config
+        if not is_cash_policy_enabled(risk):
+            return None
+        eq = float(equity if equity is not None else self._portfolio_equity())
+        cash = float(self._available_usdt(eq))
+        bias = self._market_bias_for_cash()
+        try:
+            size_mult = float(bias.get("size_mult", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            size_mult = 1.0
+        block_buys = bool(bias.get("block_buys"))
+        throttle_at = float(risk.get("drawdown_throttle_pct", 10.0) or 10.0)
+        dd_pct = float(self._equity_drawdown_pct())
+        drawdown_active = dd_pct >= throttle_at
+        basis = self._cash_floor_basis_ref(eq, adaptive=True)
+        return evaluate_cash_policy(
+            cash_total=cash,
+            basis_for_floor=basis,
+            equity=eq,
+            size_mult=size_mult,
+            block_buys=block_buys,
+            drawdown_active=drawdown_active,
+            risk_config=risk,
+        )
+
     def _cash_floor_abs(self) -> float:
-        """Absolute min free cash (staging P1). Basis: initial capital by default."""
+        """Absolute min free cash. Adaptive floor when cash_policy.enabled."""
+        pol = self._evaluate_cash_policy()
+        if pol is not None and pol.enabled:
+            return float(pol.floor_abs)
         risk = self.config.risk_config
         pct = float(risk.get("cash_floor_pct", 0) or 0)
         if pct <= 0:
             return 0.0
-        basis = str(risk.get("cash_floor_basis", "initial") or "initial").lower()
-        if basis == "nav":
-            ref = self._portfolio_equity()
-        else:
-            ref = self._initial_capital()
+        ref = self._cash_floor_basis_ref(adaptive=False)
         return max(0.0, float(ref) * (pct / 100.0))
 
     def _cash_floor_blocked(self, *, is_dca: bool = False) -> "RiskDecision | None":
-        """Block buys when cash cannot cover floor + min trade."""
+        """Block buys when spendable for that bucket is below min trade."""
+        min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+        pol = self._evaluate_cash_policy()
+        if pol is not None and pol.enabled:
+            free = float(pol.spendable_dca if is_dca else pol.spendable_new)
+            if free >= min_trade:
+                return None
+            cash = float(self._available_usdt())
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Cash floor ({pol.mode}): free ${max(0.0, free):.2f} "
+                    f"({'dca' if is_dca else 'new'}) "
+                    f"(floor ${pol.floor_abs:.0f} / {pol.floor_pct_eff:.1f}%, "
+                    f"cash ${cash:.2f})"
+                ),
+                code="cash_floor",
+            )
+
         floor_abs = self._cash_floor_abs()
         if floor_abs <= 0:
             return None
-        # DCA also respects floor (plan: cash is production capital)
         cash = self._available_usdt()
-        min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
         free = cash - floor_abs
         if free >= min_trade:
             return None
@@ -721,6 +803,10 @@ class RiskManager:
         )
 
     def _spendable_usdt(self, equity: float, *, is_dca: bool) -> float:
+        pol = self._evaluate_cash_policy(equity)
+        if pol is not None and pol.enabled:
+            return float(pol.spendable_dca if is_dca else pol.spendable_new)
+
         balance = self._available_usdt(equity)
         floor_abs = self._cash_floor_abs()
         # Absolute floor first (initial capital %)
