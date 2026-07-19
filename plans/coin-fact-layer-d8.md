@@ -2,6 +2,7 @@
 **Related:** #72 Memory/RAG · #6 social (closed) · #86/#87 Gate (later) · #98 dca_decision · #99 LIVE_DCA_POLICY  
 **Status:** Implemented (default **off**) · plan: `plans/coin-fact-layer-d8-implementation.md`  
 **Code:** `intelligence/memory/coin_facts*.py` · policy/context hooks · Hermes `run_memory_cycle`  
+**MCP / Agent Hub:** epic [#107](https://github.com/jholze/xagent-trading-bot/issues/107) (split out of D8)
 **Follow-up:** [#105 D8b](https://github.com/jholze/xagent-trading-bot/issues/105) — **CMC Pro API** (`coin_facts_cmc_pro.py`) as structured quotes/content provider; HTML `cmc_ai` remains optional.  
 **Not this ticket:** #102 scheduled DCA stays `enabled: false`.
 
@@ -93,7 +94,9 @@ That is exactly “facts for policy”, not fortune-telling.
 
 | Priority | Method | Notes |
 |----------|--------|--------|
-| **1** | CMC AI Agent Hub / MCP / official agent API if plan supports | Stable, ToS-friendly |
+| **1** | **CMC Pro REST** (#105) | Stable JSON; staging |
+| **2** | HTML cmc-ai pages (optional) | Fail-open |
+| — | MCP / Agent Hub | **#107** (separate epic) |
 | **2** | Controlled fetch of **three** pages (updates + analysis + prediction) | Fail-open; rate-limited; parse TLDR / drivers / levels only |
 | **3** | Degrade | Skip coin this cycle; DCA/watchlist fail-open |
 
