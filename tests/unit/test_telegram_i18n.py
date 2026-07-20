@@ -17,7 +17,7 @@ class TestTelegramI18n(unittest.TestCase):
 
     def test_format_kwargs(self):
         set_user_language("de")
-        msg = t("portfolio_slots", open=3, max=24)
+        msg = t("portfolio_slots", full=3, max=24, lots=5, setup="HARVEST · eff=24")
         self.assertIn("3/24", msg)
 
     def test_money_helpers(self):

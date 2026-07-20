@@ -560,8 +560,58 @@ def format_portfolio_summary(
         if floor_pct > 0:
             floor_abs = max(0.0, float(initial) * (floor_pct / 100.0))
             spendable = max(0.0, float(balance) - floor_abs)
+            # Live slot setup (dynamic max_open_eff when capacity is on)
+            full_n = int(position_count or 0)
+            lots_n = int(position_count or 0)
             max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
-            open_n = int(position_count or 0)
+            setup = f"base={max_open}"
+            try:
+                from risk.risk_manager import RiskManager
+
+                st = RiskManager(cfg).status_summary()
+                full_n = int(st.get("open_full_slots", full_n) or full_n)
+                lots_n = int(st.get("open_positions", lots_n) or lots_n)
+                if st.get("position_capacity_enabled"):
+                    max_open = int(
+                        st.get("max_open_eff")
+                        or st.get("max_open_positions")
+                        or max_open
+                    )
+                    mode = str(st.get("cash_mode") or "").upper()
+                    regime = str(st.get("capacity_regime") or "").upper()
+                    bits = []
+                    if mode:
+                        bits.append(mode)
+                    if regime and regime not in ("NEUTRAL", ""):
+                        bits.append(regime)
+                    bits.append(f"eff={max_open}")
+                    factors = st.get("position_capacity_factors") or {}
+                    warm = factors.get("warmup") if isinstance(factors, dict) else None
+                    if warm:
+                        bits.append(f"warmup{int(warm):+d}")
+                    setup = " · ".join(bits) if bits else f"eff={max_open}"
+                else:
+                    max_open = int(
+                        st.get("max_open_positions")
+                        or getattr(cfg, "max_open_positions", 0)
+                        or 0
+                    )
+                    setup = f"static={max_open}"
+                # Prefer live spendable from cash policy when available
+                for sk in ("spendable_new", "spendable_usdt"):
+                    if st.get(sk) is not None:
+                        try:
+                            spendable = max(0.0, float(st.get(sk)))
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                if st.get("cash_floor_abs") is not None:
+                    try:
+                        floor_abs = max(0.0, float(st["cash_floor_abs"]))
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                setup = f"base={max_open}"
             floor_line = (
                 t(
                     "portfolio_cash_floor",
@@ -569,7 +619,13 @@ def format_portfolio_summary(
                     spendable=money(spendable),
                 )
                 + "\n"
-                + t("portfolio_slots", open=open_n, max=max_open)
+                + t(
+                    "portfolio_slots",
+                    full=full_n,
+                    max=max_open,
+                    lots=lots_n,
+                    setup=setup,
+                )
                 + "\n"
             )
     except Exception:

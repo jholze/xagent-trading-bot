@@ -61,7 +61,52 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Positionen (2)", msg)
         self.assertIn("Marktwert", msg)
 
-    def test_portfolio_summary_floor_line_without_risk_manager(self):
+    def test_portfolio_summary_floor_line_uses_live_capacity(self):
+        cfg = type("Cfg", (), {
+            "raw": {"risk": {"cash_floor_pct": 18}, "max_open_positions": 24},
+            "trading_mode": "live",
+            "risk_config": {"cash_floor_pct": 18},
+            "max_open_positions": 24,
+        })()
+        mock_status = {
+            "open_full_slots": 25,
+            "open_positions": 31,
+            "max_open_eff": 12,
+            "max_open_positions": 12,
+            "position_capacity_enabled": True,
+            "cash_mode": "HARVEST",
+            "capacity_regime": "NEUTRAL",
+            "position_capacity_factors": {"warmup": -6, "cash_mode": -4},
+            "spendable_new": 11000.0,
+            "cash_floor_abs": 18000.0,
+        }
+
+        class _MockRM:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def status_summary(self):
+                return mock_status
+
+        with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
+             patch("notifications.telegram_commands.position_display.initial_capital", return_value=100_000.0), \
+             patch("risk.risk_manager.RiskManager", _MockRM):
+            msg = format_portfolio_summary(
+                {"virtual_balance": 50.0, "realized_pnl": 0},
+                total_unreal=0.0,
+                position_count=31,
+                cash_balance=50.0,
+                positions_market_value=99_000.0,
+            )
+        self.assertIn("Cash-Floor", msg)
+        self.assertIn("$18,000", msg)
+        self.assertIn("Slots <b>25/12</b> full", msg)
+        self.assertIn("31 Lots", msg)
+        self.assertIn("HARVEST", msg)
+        self.assertIn("eff=12", msg)
+        self.assertIn("warmup-6", msg)
+
+    def test_portfolio_summary_floor_line_fallback_without_risk_manager(self):
         cfg = type("Cfg", (), {
             "raw": {"risk": {"cash_floor_pct": 18}, "max_open_positions": 24},
             "trading_mode": "live",
@@ -70,7 +115,7 @@ class TestPositionDisplay(unittest.TestCase):
         })()
         with patch("notifications.telegram_commands.position_display.get_bot_config", return_value=cfg), \
              patch("notifications.telegram_commands.position_display.initial_capital", return_value=100_000.0), \
-             patch("risk.risk_manager.RiskManager") as mock_rm:
+             patch("risk.risk_manager.RiskManager", side_effect=RuntimeError("no rm")):
             msg = format_portfolio_summary(
                 {"virtual_balance": 50.0, "realized_pnl": 0},
                 total_unreal=0.0,
@@ -78,10 +123,9 @@ class TestPositionDisplay(unittest.TestCase):
                 cash_balance=50.0,
                 positions_market_value=99_000.0,
             )
-        mock_rm.assert_not_called()
         self.assertIn("Cash-Floor", msg)
-        self.assertIn("$18,000", msg)
-        self.assertIn("Slots <b>12/24</b>", msg)
+        self.assertIn("Slots <b>12/24</b> full", msg)
+        self.assertIn("12 Lots", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
         msg = format_portfolio_summary(

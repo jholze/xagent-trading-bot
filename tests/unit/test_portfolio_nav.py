@@ -67,7 +67,7 @@ class TestPortfolioNav(unittest.TestCase):
         self.assertIn("$104,376", msg)
         self.assertIn("Marktwert", msg)
         self.assertIn("Wertzuwachs", msg)
-        self.assertIn("$+7548", msg)
+        self.assertIn("$+7,548", msg)
         self.assertIn("Einstand", msg)
         self.assertIn("Marktwert", msg)
         self.assertIn("Δ vs Entry", msg)
