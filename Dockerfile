@@ -22,7 +22,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# core/build_meta.json is written before deploy (scripts/write_build_meta.py).
+# Bake commit/branch when Railway (or CI) injects git env at build time.
+# runtime railway_start will not overwrite a real commit with "unknown".
+ARG RAILWAY_GIT_COMMIT_SHA=
+ARG RAILWAY_GIT_BRANCH=
+ARG GIT_COMMIT=
+ARG GIT_BRANCH=
+RUN RAILWAY_GIT_COMMIT_SHA="$RAILWAY_GIT_COMMIT_SHA" \
+    RAILWAY_GIT_BRANCH="$RAILWAY_GIT_BRANCH" \
+    GIT_COMMIT="$GIT_COMMIT" \
+    GIT_BRANCH="$GIT_BRANCH" \
+    python3 scripts/write_build_meta.py || true
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

@@ -45,7 +45,8 @@ def get_build_info() -> dict:
     baked = _read_baked_meta()
     railway_sha = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()
     railway_branch = (os.getenv("RAILWAY_GIT_BRANCH") or "").strip()
-    # Railway GitHub deploy sets RAILWAY_GIT_*; stale GIT_COMMIT/GIT_BRANCH must not override.
+    # Railway GitHub deploy sets RAILWAY_GIT_*; CLI `railway up` often has neither
+    # git nor RAILWAY_GIT_* — then baked build_meta.json is the only source.
     commit = (
         _short_sha(railway_sha)
         or _short_sha(os.getenv("GIT_COMMIT") or "")
@@ -61,6 +62,8 @@ def get_build_info() -> dict:
         or "unknown"
     )
     if branch == "HEAD":
+        branch = baked["branch"] or "unknown"
+    if not branch:
         branch = "unknown"
     on_railway = bool(os.getenv("RAILWAY_DEPLOY") or os.getenv("RAILWAY_ENVIRONMENT"))
     dirty = (
