@@ -57,6 +57,16 @@ class TestHeartbeats(unittest.TestCase):
         time.sleep(1.2)
         self.assertIn("test_worker", reg.stale_workers(ttl_sec=1))
 
+    def test_drop_removes_zombie(self):
+        reg = HeartbeatRegistry()
+        reg.clear()
+        reg.beat("hermes", ttl_sec=1)
+        time.sleep(1.2)
+        self.assertIn("hermes", reg.stale_workers(ttl_sec=1))
+        reg.drop("hermes")
+        self.assertNotIn("hermes", reg.stale_workers(ttl_sec=1))
+        self.assertNotIn("hermes", reg.all_workers())
+
 
 class TestArchitectureRuntime(unittest.TestCase):
     def test_ensure_started_idempotent(self):

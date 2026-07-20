@@ -110,6 +110,30 @@ def _heartbeat_tick(cfg):
         heartbeat_registry.beat(worker, ttl_sec=ttl, key_prefix=prefix)
     if hermes_runs_in_process(cfg):
         heartbeat_registry.beat("hermes", ttl_sec=ttl, key_prefix=prefix)
+    else:
+        # External Hermes must not linger as a zombie local entry → permanent stale spam
+        heartbeat_registry.drop("hermes")
+
+
+def _external_hermes_stale(arch: dict) -> bool:
+    """True when external Hermes Redis health key is missing/too old.
+
+    Fail-open if Redis unreachable (no spam when Redis is down).
+    """
+    from bus.heartbeats import heartbeat_registry
+
+    prefix = str(arch.get("key_prefix") or "aria:")
+    # Hermes cycles every HERMES_INTERVAL_SEC (default 1800); allow 2.5× margin
+    try:
+        import os
+
+        interval = max(120, int(os.environ.get("HERMES_INTERVAL_SEC", "1800")))
+    except (TypeError, ValueError):
+        interval = 1800
+    max_age = float(arch.get("hermes_heartbeat_max_age_sec") or (interval * 2.5))
+    return not heartbeat_registry.redis_alive(
+        "hermes", key_prefix=prefix, max_age_sec=max_age
+    )
 
 
 def _maybe_warn_stale(cfg):
@@ -120,7 +144,18 @@ def _maybe_warn_stale(cfg):
     if not arch.get("heartbeat_warn_enabled", True):
         return
     ttl = int(arch.get("heartbeat_ttl_sec", 120))
-    stale = heartbeat_registry.stale_workers(ttl_sec=ttl)
+    stale = list(heartbeat_registry.stale_workers(ttl_sec=ttl))
+
+    # External Hermes: never use local zombie; check Redis health key instead
+    if arch.get("hermes_external") or not hermes_runs_in_process(cfg):
+        heartbeat_registry.drop("hermes")
+        stale = [w for w in stale if w != "hermes"]
+        try:
+            if _external_hermes_stale(arch):
+                stale.append("hermes")
+        except Exception as e:
+            log(f"external hermes health check failed (fail-open): {e}", "DEBUG")
+
     if not stale:
         return
     now = time.time()

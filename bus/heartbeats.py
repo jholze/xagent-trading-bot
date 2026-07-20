@@ -25,6 +25,11 @@ class HeartbeatRegistry:
             except Exception:
                 pass
 
+    def drop(self, worker: str) -> None:
+        """Remove a worker from the local registry (stops permanent stale spam)."""
+        with _lock:
+            _local.pop(worker, None)
+
     def stale_workers(self, *, ttl_sec: int = 120) -> list[str]:
         cutoff = time.time()
         with _lock:
@@ -37,6 +42,36 @@ class HeartbeatRegistry:
     def clear(self):
         with _lock:
             _local.clear()
+
+    def redis_alive(
+        self,
+        worker: str,
+        *,
+        key_prefix: str = "aria:",
+        max_age_sec: float | None = None,
+    ) -> bool:
+        """True if Redis health key exists (and optional max age). Fail-open if Redis down."""
+        client = get_redis(key_prefix=key_prefix)
+        if not client:
+            return True
+        key = f"{key_prefix}health:{worker}"
+        try:
+            val = client.get(key)
+            if not val:
+                return False
+            if max_age_sec is None:
+                return True
+            try:
+                raw = str(val).replace("Z", "+00:00")
+                ts = datetime.fromisoformat(raw)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - ts).total_seconds()
+                return age <= float(max_age_sec)
+            except Exception:
+                return True
+        except Exception:
+            return True
 
 
 heartbeat_registry = HeartbeatRegistry()

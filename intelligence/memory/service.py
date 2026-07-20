@@ -334,6 +334,31 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     return out
 
 
+def _hermes_beat(ttl_sec: int) -> None:
+    """Write Redis + local health so external bot can see Hermes is alive."""
+    try:
+        from bus.heartbeats import heartbeat_registry
+
+        heartbeat_registry.beat("hermes", ttl_sec=max(60, int(ttl_sec)))
+    except Exception as e:
+        log(f"hermes heartbeat failed: {e}", "DEBUG")
+
+
+def _start_hermes_heartbeat_loop(interval: int) -> None:
+    """Background beat every 60s so long cycles / sleeps never look 'stale'."""
+    # TTL covers 2× cycle interval plus a cushion; beat often keeps Redis fresh.
+    ttl = max(300, int(interval) * 2 + 300)
+    beat_every = 60
+
+    def _loop() -> None:
+        while True:
+            _hermes_beat(ttl)
+            time.sleep(beat_every)
+
+    threading.Thread(target=_loop, daemon=True, name="hermes-heartbeat").start()
+    _hermes_beat(ttl)  # immediate
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -344,6 +369,7 @@ def main() -> None:
 
     httpd = HTTPServer(("0.0.0.0", port), _Health)
     threading.Thread(target=httpd.serve_forever, daemon=True, name="health").start()
+    _start_hermes_heartbeat_loop(interval)
     log(
         f"xagent-hermes memory service on :{port} interval={interval}s "
         f"live_evidence={_live_evidence_mode()} weaviate={weaviate_enabled()}",
@@ -354,6 +380,7 @@ def main() -> None:
     n = 0
     while True:
         try:
+            _hermes_beat(max(300, interval * 2 + 300))
             result = run_memory_cycle(store)
             n += 1
             _STATE["cycles"] = n
@@ -371,15 +398,11 @@ def main() -> None:
                     export_jsonl()
                 except Exception:
                     pass
-            try:
-                from bus.heartbeats import heartbeat_registry
-
-                heartbeat_registry.beat("hermes", ttl_sec=interval * 2)
-            except Exception:
-                pass
+            _hermes_beat(max(300, interval * 2 + 300))
         except Exception as e:
             _STATE["last_error"] = str(e)[:300]
             log(f"memory service cycle error: {e}", "ERROR")
+            _hermes_beat(max(300, interval * 2 + 300))
         time.sleep(interval)
 
 
