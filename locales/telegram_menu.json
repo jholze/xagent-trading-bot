@@ -33,6 +33,9 @@
             "positions",
             "positions_full",
             "orders",
+            "orders_blocked",
+            "orders_month",
+            "plan",
             "risk"
           ]
         },
@@ -169,9 +172,24 @@
         "hint": "❌ <b>/sell</b> — Position verkaufen\n\nDirekt: <code>/sell RAVE 30</code> (30 % verkaufen)\nOder Liste: <code>/sell</code> → dann <code>1 30</code>"
       },
       "orders": {
-        "description": "Auftragshistorie",
-        "help_line": "<code>/orders</code> — Auftragshistorie; <code>/orders NUMMER</code> für Details",
-        "hint": "❌ <b>/orders</b> — Auftragshistorie (Order-Ledger)\n\n<code>/orders</code> — Letzte Orders mit 24h-Statistik\n<code>/orders page 2</code> — Seite 2 (5 Orders pro Seite)\n<code>/orders 3</code> — Details zu Order Nr. 3"
+        "description": "Trades heute (ausgeführt)",
+        "help_line": "<code>/orders</code> — Ausgeführte Trades heute; <code>/orders NUMMER</code> Details",
+        "hint": "❌ <b>/orders</b> — Ausgeführte Trades <b>heute</b>\n\n<code>/orders</code> — Heutige Fills\n<code>/orders page 2</code> — Seite 2\n<code>/orders 3</code> — Details zu Order Nr. 3\n\nBlockiert: <code>/orders_blocked</code>\nMonat: <code>/orders_month</code>"
+      },
+      "orders_blocked": {
+        "description": "Blockierte Orders heute",
+        "help_line": "<code>/orders_blocked</code> — Abgelehnte/blockierte Orders heute",
+        "hint": "❌ <b>/orders_blocked</b> — Nicht ausgeführte Orders heute\n\n<code>/orders_blocked</code> — Rejected, cancelled, failed, …\n<code>/orders_blocked page 2</code> — Seite 2"
+      },
+      "orders_month": {
+        "description": "Trades dieses Monats (Weiter)",
+        "help_line": "<code>/orders_month</code> — Alle ausgeführten Trades im aktuellen Monat",
+        "hint": "❌ <b>/orders_month</b> — Ausgeführte Trades im <b>aktuellen Monat</b>\n\n<code>/orders_month</code> — Monats-Orderbuch\n<code>/orders_month page 2</code> — Seite 2 (Weiter)"
+      },
+      "plan": {
+        "description": "Plan vs. Portfolio (0,5%/Tag, 365 Tage)",
+        "help_line": "<code>/plan</code> — Wertentwicklung vs. Zielplan (auch <code>/performance</code>)",
+        "hint": "❌ <b>/plan</b> — Portfolio vs. Zielplan\n\n<code>/plan</code> oder <code>/performance</code>\nZiel: 0,5 %/Tag linear auf Startkapital, Horizont 365 Tage.\nZeigt NAV, Plan-heute, Δ und Chart."
       },
       "risk": {
         "description": "Risiko-Limits und Drawdown",
@@ -368,6 +386,9 @@
             "positions",
             "positions_full",
             "orders",
+            "orders_blocked",
+            "orders_month",
+            "plan",
             "risk"
           ]
         },
@@ -504,9 +525,24 @@
         "hint": "❌ <b>/sell</b> — Sell position\n\nDirect: <code>/sell RAVE 30</code> (sell 30%)\nOr list: <code>/sell</code> → then <code>1 30</code>"
       },
       "orders": {
-        "description": "Order history",
-        "help_line": "<code>/orders</code> — Order history; <code>/orders NUMBER</code> for details",
-        "hint": "❌ <b>/orders</b> — Order history (order ledger)\n\n<code>/orders</code> — Recent orders with 24h stats\n<code>/orders page 2</code> — Page 2 (5 orders per page)\n<code>/orders 3</code> — Details for order #3"
+        "description": "Today's executed trades",
+        "help_line": "<code>/orders</code> — Filled trades today; <code>/orders NUMBER</code> for details",
+        "hint": "❌ <b>/orders</b> — Executed trades <b>today</b>\n\n<code>/orders</code> — Today's fills\n<code>/orders page 2</code> — Page 2\n<code>/orders 3</code> — Details for order #3\n\nBlocked: <code>/orders_blocked</code>\nMonth: <code>/orders_month</code>"
+      },
+      "orders_blocked": {
+        "description": "Blocked orders today",
+        "help_line": "<code>/orders_blocked</code> — Rejected/blocked orders today",
+        "hint": "❌ <b>/orders_blocked</b> — Non-executed orders today\n\n<code>/orders_blocked</code> — Rejected, cancelled, failed, …\n<code>/orders_blocked page 2</code> — Page 2"
+      },
+      "orders_month": {
+        "description": "This month's trades (more)",
+        "help_line": "<code>/orders_month</code> — All filled trades in the current month",
+        "hint": "❌ <b>/orders_month</b> — Executed trades in the <b>current month</b>\n\n<code>/orders_month</code> — Monthly trade book\n<code>/orders_month page 2</code> — Page 2"
+      },
+      "plan": {
+        "description": "Plan vs portfolio (0.5%/day, 365 days)",
+        "help_line": "<code>/plan</code> — Performance vs target plan (also <code>/performance</code>)",
+        "hint": "❌ <b>/plan</b> — Portfolio vs target plan\n\n<code>/plan</code> or <code>/performance</code>\nTarget: 0.5%/day linear on start capital, 365-day horizon.\nShows NAV, plan-today, delta and chart."
       },
       "risk": {
         "description": "Risk limits and drawdown",

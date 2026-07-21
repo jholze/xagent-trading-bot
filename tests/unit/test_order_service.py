@@ -231,7 +231,9 @@ class TestOrderService(unittest.TestCase):
         )
         approved = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100, source="manual", order_id="exec2")
         result = TradeResult(True, "BUY", "ARIA/USDT", amount=2000, price=0.05, usdt_amount=100)
-        svc.link_execution_result("exec2", result, approved)
+        # Avoid slow Gate venue fetch (can exceed orders read-cache TTL mid-update)
+        with patch("services.venue_quality.stamp_venue_for_fill", return_value={"capture": "test"}):
+            svc.link_execution_result("exec2", result, approved)
         self.assertEqual(svc.get_by_id("exec2")["source"], "manual")
 
 

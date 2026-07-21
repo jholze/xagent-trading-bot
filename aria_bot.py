@@ -738,6 +738,15 @@ def _run_tenant_price_cycle(
     except Exception as e:
         log(f"Position snapshot failed: {e}", "WARNING")
 
+    try:
+        from services.portfolio_plan import portfolio_plan_config
+        from services.portfolio_nav_history import capture_current_nav_snapshot
+
+        if portfolio_plan_config(bot_config.raw).get("enabled", True):
+            capture_current_nav_snapshot()
+    except Exception as e:
+        log(f"Portfolio NAV daily snapshot failed: {e}", "DEBUG")
+
     if use_dashboard:
         render_cycle_dashboard(
             cycle_signals=cycle_signal_lines,

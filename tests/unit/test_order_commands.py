@@ -21,7 +21,7 @@ class TestOrderCommands(unittest.TestCase):
             "live": os.path.join(self.tmp.name, "orders.live.json"),
         })
         self.scope_patch.start()
-        self.scope = patch("services.order_service.resolve_ledger_scope", return_value="paper")
+        self.scope = patch("services.order_service.resolve_tenant_scope", return_value="paper")
         self.scope.start()
         svc = OrderService("paper")
         svc.create_from_request(
@@ -43,10 +43,11 @@ class TestOrderCommands(unittest.TestCase):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders"))
             msg = mock_send.call_args[0][0]
-            self.assertIn("Orderbuch", msg)
+            self.assertIn("Trades heute", msg)
             self.assertIn("PAPER", msg)
             self.assertIn("SOL", msg)
             self.assertNotIn("PENDING_CONFIRMATION", msg)
+            self.assertNotIn("Blockiert (24h, Auszug)", msg)
 
     def test_orders_detail_by_number(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
@@ -71,7 +72,7 @@ class TestOrderCommands(unittest.TestCase):
             self.assertTrue(order_commands.handle_callback({
                 "id": "cb1", "data": "orders_page:paper:1",
             }))
-            self.assertIn("Orderbuch", mock_send.call_args[0][0])
+            self.assertIn("Trades heute", mock_send.call_args[0][0])
 
     def test_orders_page_has_clickable_number_buttons(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn:

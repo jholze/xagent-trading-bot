@@ -21,6 +21,15 @@ ORDERS_PER_PAGE = 5
 PENDING_TTL_MINUTES = 10
 EXECUTED_STATUSES = frozenset({"filled"})
 TRADE_BOOK_STATUSES = frozenset({"filled"})
+# Non-executed attempts shown under /orders_blocked
+BLOCKED_STATUSES = frozenset({
+    "rejected",
+    "cancelled",
+    "failed",
+    "expired",
+    "pending_confirmation",
+    "executing",
+})
 
 STATUS_ICONS = {
     "pending_confirmation": "⏳",
@@ -88,9 +97,95 @@ def _parse_ts(value: str):
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", ""))
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        return _as_display_naive(dt)
     except Exception:
         return None
+
+
+def _process_local_tz():
+    """Timezone of naive datetime.now() stamps (UTC on Railway, local on Mac)."""
+    return datetime.now().astimezone().tzinfo
+
+
+def _as_display_naive(dt: datetime) -> datetime:
+    """Normalize to naive *display* clock for calendar day/month windows.
+
+    Naive ledger timestamps come from ``datetime.now()`` (process-local wall
+    clock — typically UTC on Railway). They are NOT already Europe/Berlin;
+    attach process-local tzinfo first, then convert to display_tz.
+    """
+    try:
+        from core.time_utils import display_tz
+
+        target = display_tz()
+    except Exception:
+        target = None
+    if dt.tzinfo is None:
+        local_tz = _process_local_tz()
+        if local_tz is not None:
+            dt = dt.replace(tzinfo=local_tz)
+        elif target is not None:
+            # Fallback: assume display tz if process tz unknown
+            dt = dt.replace(tzinfo=target)
+        else:
+            return dt
+    if target is None:
+        return dt.replace(tzinfo=None)
+    try:
+        return dt.astimezone(target).replace(tzinfo=None)
+    except Exception:
+        return dt.replace(tzinfo=None)
+
+
+def _display_now_naive() -> datetime:
+    try:
+        from core.time_utils import now_display
+
+        n = now_display()
+        # now_display is already in display tz; strip tz for window math
+        if n.tzinfo is not None:
+            return n.replace(tzinfo=None)
+        return _as_display_naive(n)
+    except Exception:
+        return _as_display_naive(datetime.now())
+
+
+def calendar_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """[start, end) for the current calendar day in display timezone."""
+    n = _as_display_naive(now) if now is not None else _display_now_naive()
+    start = n.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def calendar_month_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """[start, end) for the current calendar month in display timezone."""
+    n = _as_display_naive(now) if now is not None else _display_now_naive()
+    start = n.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+def order_event_ts(order: dict) -> datetime | None:
+    """Prefer fill time for executed trades, else created/updated."""
+    ts = order.get("timestamps") or {}
+    status = (order.get("status") or "").lower()
+    if status == "filled":
+        return _parse_ts(ts.get("filled") or ts.get("created") or ts.get("updated"))
+    return _parse_ts(ts.get("created") or ts.get("updated") or ts.get("filled"))
+
+
+def order_in_window(order: dict, start: datetime, end: datetime) -> bool:
+    ts = order_event_ts(order)
+    if ts is None:
+        return False
+    return start <= ts < end
 
 
 def _format_ts_short(value: str) -> str:
@@ -322,17 +417,17 @@ class OrderService:
         return changed
 
     def list_recent_rejected(self, *, hours: float = 24, limit: int = 5) -> list:
-        """Recent blocked orders for /orders (not in trade book by default)."""
+        """Recent rejected orders (legacy helper; prefer list_blocked_orders)."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=hours)
+        cutoff = _display_now_naive() - timedelta(hours=hours)
         rejected = []
         for order in reversed(data.get("orders", [])):
             if order.get("ledger_scope") != self.scope:
                 continue
             if order.get("status") != "rejected":
                 continue
-            ts = _parse_ts((order.get("timestamps") or {}).get("created"))
+            ts = order_event_ts(order)
             if not ts or ts < cutoff:
                 continue
             rejected.append(order)
@@ -340,33 +435,126 @@ class OrderService:
                 break
         return rejected
 
+    def _scoped_orders_newest_first(self) -> list:
+        self.expire_stale_pending()
+        self.reconcile_legacy_sources()
+        data = self._load()
+        orders = [o for o in data.get("orders", []) if o.get("ledger_scope") == self.scope]
+        return list(reversed(orders))
+
     def list_orders(
         self,
         *,
         status_filter: set = None,
         trade_book_only: bool = False,
         hours: float = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         page: int = 1,
         per_page: int = ORDERS_PER_PAGE,
     ) -> tuple[list, int]:
-        self.expire_stale_pending()
-        self.reconcile_legacy_sources()
-        data = self._load()
-        orders = [o for o in data.get("orders", []) if o.get("ledger_scope") == self.scope]
-        orders = list(reversed(orders))
+        orders = self._scoped_orders_newest_first()
         if trade_book_only:
             orders = [o for o in orders if o.get("status") in TRADE_BOOK_STATUSES]
         if status_filter:
             orders = [o for o in orders if o.get("status") in status_filter]
         if hours is not None:
-            cutoff = datetime.now() - timedelta(hours=hours)
+            cutoff = _display_now_naive() - timedelta(hours=hours)
             orders = [
                 o for o in orders
-                if (_parse_ts(o.get("timestamps", {}).get("created")) or datetime.min) >= cutoff
+                if (order_event_ts(o) or datetime.min) >= cutoff
             ]
+        if since is not None or until is not None:
+            start = since or datetime.min
+            end = until or datetime.max
+            orders = [o for o in orders if order_in_window(o, start, end)]
         total = len(orders)
-        start = (max(1, page) - 1) * per_page
-        return orders[start:start + per_page], max(1, (total + per_page - 1) // per_page)
+        start_i = (max(1, page) - 1) * per_page
+        return orders[start_i:start_i + per_page], max(1, (total + per_page - 1) // per_page)
+
+    def list_day_filled(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = ORDERS_PER_PAGE,
+        now: datetime | None = None,
+    ) -> tuple[list, int]:
+        """Executed (filled) trades for the current calendar day."""
+        start, end = calendar_day_bounds(now)
+        return self.list_orders(
+            trade_book_only=True,
+            since=start,
+            until=end,
+            page=page,
+            per_page=per_page,
+        )
+
+    def list_month_filled(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = ORDERS_PER_PAGE,
+        now: datetime | None = None,
+    ) -> tuple[list, int]:
+        """Executed (filled) trades for the current calendar month."""
+        start, end = calendar_month_bounds(now)
+        return self.list_orders(
+            trade_book_only=True,
+            since=start,
+            until=end,
+            page=page,
+            per_page=per_page,
+        )
+
+    def list_blocked_orders(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = ORDERS_PER_PAGE,
+        now: datetime | None = None,
+        day_only: bool = True,
+    ) -> tuple[list, int]:
+        """Blocked/non-executed order attempts (rejected, cancelled, failed, …)."""
+        kwargs: dict = {
+            "status_filter": set(BLOCKED_STATUSES),
+            "page": page,
+            "per_page": per_page,
+        }
+        if day_only:
+            start, end = calendar_day_bounds(now)
+            kwargs["since"] = start
+            kwargs["until"] = end
+        return self.list_orders(**kwargs)
+
+    def stats_day_filled(self, now: datetime | None = None) -> dict:
+        """Buy/sell counts for filled trades today (display calendar day)."""
+        start, end = calendar_day_bounds(now)
+        counts = {"filled": 0, "buys": 0, "sells": 0}
+        for o in self._scoped_orders_newest_first():
+            if o.get("status") != "filled":
+                continue
+            if not order_in_window(o, start, end):
+                continue
+            counts["filled"] += 1
+            side = (o.get("side") or "").lower()
+            if side == "buy":
+                counts["buys"] += 1
+            elif side == "sell":
+                counts["sells"] += 1
+        return counts
+
+    def stats_blocked_day(self, now: datetime | None = None) -> dict:
+        """Counts of blocked statuses for today."""
+        start, end = calendar_day_bounds(now)
+        counts = {st: 0 for st in sorted(BLOCKED_STATUSES)}
+        for o in self._scoped_orders_newest_first():
+            st = (o.get("status") or "").lower()
+            if st not in BLOCKED_STATUSES:
+                continue
+            if not order_in_window(o, start, end):
+                continue
+            counts[st] = counts.get(st, 0) + 1
+        return counts
 
     def stats_24h(self) -> dict:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
