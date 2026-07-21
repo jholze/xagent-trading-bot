@@ -12,6 +12,9 @@ from notifications.telegram_commands.utils import safe_int
 from notifications.telegram_commands.command_context import activate_command
 from telegram_notifier import send_telegram_message
 
+# Telegram hard limit 4096; leave headroom for prefix/HTML
+_WATCHLIST_CHUNK_LIMIT = 3900
+
 
 def _coin_symbol(coin: dict) -> str:
     sym = coin.get("symbol", "")
@@ -29,15 +32,60 @@ def _watchlist_mode_label() -> str:
 
 
 def format_watchlist_message(coins: list = None) -> str:
+    """Single-message format (may exceed Telegram limit — prefer chunk_watchlist_messages)."""
+    return "\n\n".join(chunk_watchlist_messages(coins))
+
+
+def chunk_watchlist_messages(coins: list = None, *, limit: int = _WATCHLIST_CHUNK_LIMIT) -> list[str]:
+    """Split watchlist into Telegram-safe HTML chunks (one line per coin)."""
     coins = coins if coins is not None else list_coins()
     if not coins:
-        return "📋 Watchlist ist leer."
+        return ["📋 Watchlist ist leer."]
     mode = _watchlist_mode_label()
     title = f"📋 <b>Watchlist</b> ({mode})" if mode else "📋 <b>Aktive Watchlist</b>"
-    msg = f"{title}\n\n"
+    header = f"{title}\n\n"
+    cont = "📋 <b>Watchlist</b> <i>(Fortsetzung)</i>\n\n"
+    chunks: list[str] = []
+    current = header
     for i, coin in enumerate(coins, 1):
-        msg += _format_coin_line(i, coin) + "\n"
-    return msg.rstrip()
+        line = _format_coin_line(i, coin) + "\n"
+        # hard-split oversized single line
+        if len(line) > limit:
+            if current.strip() and current != header and current != cont:
+                chunks.append(current.rstrip())
+            for start in range(0, len(line), limit):
+                chunks.append(line[start : start + limit].rstrip())
+            current = cont
+            continue
+        candidate = current + line
+        if len(candidate) > limit and current not in (header, cont):
+            chunks.append(current.rstrip())
+            current = cont + line
+        elif len(candidate) > limit:
+            # header alone + line still too long — emit line as own chunk
+            chunks.append(current.rstrip())
+            current = cont + line
+            if len(current) > limit:
+                chunks.append(current[:limit].rstrip())
+                current = cont
+        else:
+            current = candidate
+    if current.strip() and current not in (header, cont):
+        chunks.append(current.rstrip())
+    if not chunks:
+        return [header.rstrip() + "\n<i>Keine Einträge.</i>"]
+    if len(chunks) > 1:
+        tagged = []
+        total = len(chunks)
+        for i, ch in enumerate(chunks):
+            tagged.append(f"{ch}\n\n<i>({i + 1}/{total})</i>")
+        return tagged
+    return chunks
+
+
+def send_watchlist_messages(coins: list = None) -> None:
+    for part in chunk_watchlist_messages(coins):
+        send_telegram_message(part)
 
 
 def format_buy_list_message(coins: list, prices: dict) -> str:
@@ -125,7 +173,7 @@ def handle(text: str) -> bool:
         return True
 
     if text in ["/list", "/watchlist", "/show"]:
-        send_telegram_message(format_watchlist_message(list_coins()))
+        send_watchlist_messages(list_coins())
         return True
 
     return False
