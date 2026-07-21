@@ -91,6 +91,53 @@ class TestReloadRegistry(unittest.TestCase):
         self.assertIn("/reload ui", html)
         self.assertIn("/reload all", html)
 
+    def test_plan_startup_scopes_new_deploy_vs_restart(self):
+        from services.reload_registry import plan_startup_reload_scopes
+
+        scopes, reason = plan_startup_reload_scopes(
+            current_commit="abc1234",
+            previous_commit="old9999",
+            mode="deploy",
+        )
+        self.assertEqual(scopes, ["ui", "config", "lists", "cache"])
+        self.assertEqual(reason, "new_deploy")
+
+        scopes2, reason2 = plan_startup_reload_scopes(
+            current_commit="abc1234",
+            previous_commit="abc1234",
+            mode="deploy",
+        )
+        self.assertEqual(scopes2, ["cache"])
+        self.assertEqual(reason2, "same_commit_restart")
+
+        scopes3, reason3 = plan_startup_reload_scopes(
+            current_commit="abc1234",
+            previous_commit="abc1234",
+            mode="off",
+        )
+        self.assertEqual(scopes3, [])
+        self.assertEqual(reason3, "disabled")
+
+    def test_auto_reload_on_startup_new_deploy(self):
+        from services import reload_registry as rr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            audit = Path(tmp) / "audit.jsonl"
+            with patch.object(rr, "_BUILD_MARKER", marker), \
+                 patch.object(rr, "_AUDIT_PATH", audit), \
+                 patch.object(rr, "_current_build_commit", return_value="deadbee"), \
+                 patch.object(rr, "_read_build_marker", return_value={"commit": "cafebabe"}), \
+                 patch.object(rr, "_write_build_marker") as write_m, \
+                 patch.object(rr, "_auto_reload_mode", return_value="deploy"):
+                report = rr.auto_reload_on_startup(actor="test")
+            self.assertIsNotNone(report)
+            self.assertEqual(report.scopes, ["ui", "config", "lists", "cache"])
+            self.assertTrue(report.ok)
+            write_m.assert_called()
+            auto = rr.last_auto_reload()
+            self.assertEqual(auto.get("reason"), "new_deploy")
+
 
 class TestReloadCommand(unittest.TestCase):
     def test_handle_help(self):

@@ -999,19 +999,38 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Redis price cache check failed: {e}", "WARNING")
 
+    # Soft hot-reload after deploy/start when needed (Redis caches survive restarts)
+    _startup_reload_report = None
+    try:
+        from services.reload_registry import auto_reload_on_startup
+
+        _startup_reload_report = auto_reload_on_startup(actor="bot_start")
+        if _startup_reload_report is not None:
+            print(
+                f"Startup soft-reload: scopes={_startup_reload_report.scopes} "
+                f"ok={_startup_reload_report.ok}"
+            )
+    except Exception as e:
+        log(f"Startup auto-reload skipped: {e}", "WARNING")
+
     print(get_text("webhook_started"))
     print("Coin price webhook: GET/POST /api/coins/prices?symbols=BTC,ETH")
     print("Signal webhook: POST /api/signals/webhook?source=tradingview")
 
     try:
         from core.runtime_identity import format_startup_message, should_notify_startup
+        from services.reload_registry import format_auto_reload_startup_line
         from telegram_notifier import send_telegram_message
 
         if should_notify_startup():
+            _reload_line = format_auto_reload_startup_line(_startup_reload_report)
 
             def _startup_ping():
                 time.sleep(2)
-                send_telegram_message(format_startup_message())
+                msg = format_startup_message()
+                if _reload_line:
+                    msg = msg.rstrip() + "\n" + _reload_line
+                send_telegram_message(msg)
 
             threading.Thread(target=_startup_ping, daemon=True, name="startup-notify").start()
     except Exception as e:

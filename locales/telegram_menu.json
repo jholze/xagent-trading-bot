@@ -198,7 +198,7 @@
       "reload": {
         "description": "Soft-Reload (UI, Config, Listen, Caches)",
         "help_line": "<code>/reload</code> — Hilfe · <code>/reload ui|config|lists|cache|all</code>",
-        "hint": "🔄 <b>/reload</b> — Soft-Reload ohne Prozess-Restart\n\n<code>/reload ui</code> — Telegram-Texte/Menü\n<code>/reload config</code> — Config (nächster Cycle)\n<code>/reload lists</code> — Watchlist + X-Accounts\n<code>/reload cache</code> — Preis/OHLCV-Caches\n<code>/reload all</code> — alles\n\nCode/Risk/Orders brauchen Deploy/Restart."
+        "hint": "🔄 <b>/reload</b> — Soft-Reload ohne Prozess-Restart\n\n<code>/reload ui</code> — Telegram-Texte/Menü\n<code>/reload config</code> — Config (nächster Cycle)\n<code>/reload lists</code> — Watchlist + X-Accounts\n<code>/reload cache</code> — Preis/OHLCV-Caches\n<code>/reload all</code> — alles\n\nAuto nach Deploy: neuer Commit → all; Restart gleicher Commit → cache.\nAus: <code>HOT_RELOAD_ON_STARTUP=0</code>\nCode/Risk/Orders brauchen Deploy/Restart."
       },
       "live_confirm": {
         "description": "Live-Handel bestätigen",
@@ -533,7 +533,7 @@
       "reload": {
         "description": "Soft reload (UI, config, lists, caches)",
         "help_line": "<code>/reload</code> — help · <code>/reload ui|config|lists|cache|all</code>",
-        "hint": "🔄 <b>/reload</b> — Soft reload without process restart\n\n<code>/reload ui</code> — Telegram strings/menu\n<code>/reload config</code> — Config (next cycle)\n<code>/reload lists</code> — Watchlist + X accounts\n<code>/reload cache</code> — Price/OHLCV caches\n<code>/reload all</code> — everything\n\nCode/risk/orders need deploy/restart."
+        "hint": "🔄 <b>/reload</b> — Soft reload without process restart\n\n<code>/reload ui</code> — Telegram strings/menu\n<code>/reload config</code> — Config (next cycle)\n<code>/reload lists</code> — Watchlist + X accounts\n<code>/reload cache</code> — Price/OHLCV caches\n<code>/reload all</code> — everything\n\nAuto after deploy: new commit → all; same-commit restart → cache.\nOff: <code>HOT_RELOAD_ON_STARTUP=0</code>\nCode/risk/orders need deploy/restart."
       },
       "live_confirm": {
         "description": "Confirm live trading",

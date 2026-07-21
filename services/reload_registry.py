@@ -14,6 +14,7 @@ Never reloads strategy/risk/order modules — restart/deploy for those.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,8 +26,10 @@ from logger import log
 
 BOT_ROOT = Path(__file__).resolve().parents[1]
 _AUDIT_PATH = BOT_ROOT / "logs" / "reload_audit.jsonl"
+_BUILD_MARKER = BOT_ROOT / "run" / "last_soft_reload_build.json"
 _LOCK = threading.RLock()
 _LAST: dict[str, Any] | None = None
+_LAST_AUTO: dict[str, Any] | None = None
 
 SCOPES = ("ui", "config", "lists", "cache", "all")
 
@@ -77,8 +80,172 @@ def last_reload() -> dict[str, Any] | None:
         return dict(_LAST) if _LAST else None
 
 
+def last_auto_reload() -> dict[str, Any] | None:
+    with _LOCK:
+        return dict(_LAST_AUTO) if _LAST_AUTO else None
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _current_build_commit() -> str:
+    try:
+        from core.build_info import get_build_info
+
+        return str(get_build_info().get("commit") or "").strip() or "unknown"
+    except Exception:
+        return (os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("GIT_COMMIT") or "unknown")[:12]
+
+
+def _read_build_marker() -> dict[str, Any]:
+    """Last successful auto-reload build marker (disk, survives restarts on volume)."""
+    try:
+        if _BUILD_MARKER.exists():
+            return json.loads(_BUILD_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    # Redis fallback (shared across ephemeral containers)
+    try:
+        from bus.price_cache import price_cache_from_config
+
+        cache = price_cache_from_config()
+        client = cache._client()
+        if client:
+            raw = client.get(f"{cache.key_prefix}reload:last_build")
+            if raw:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                return json.loads(raw)
+    except Exception:
+        pass
+    return {}
+
+
+def _write_build_marker(commit: str, scopes: list[str], reason: str) -> None:
+    payload = {
+        "commit": commit,
+        "scopes": scopes,
+        "reason": reason,
+        "at": _utc_now_iso(),
+    }
+    try:
+        _BUILD_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BUILD_MARKER.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except Exception as e:
+        log(f"reload build marker write failed: {e}", "WARNING")
+    try:
+        from bus.price_cache import price_cache_from_config
+
+        cache = price_cache_from_config()
+        client = cache._client()
+        if client:
+            client.set(
+                f"{cache.key_prefix}reload:last_build",
+                json.dumps(payload, separators=(",", ":")),
+                ex=60 * 60 * 24 * 30,
+            )
+    except Exception:
+        pass
+
+
+def _auto_reload_mode() -> str:
+    """Return 'off' | 'deploy' | 'always'.
+
+    Env HOT_RELOAD_ON_STARTUP wins: 0/off, 1/always, deploy (default on Railway).
+    Config: observability.hot_reload_on_startup = false | true | \"deploy\" | \"always\"
+    """
+    env = (os.getenv("HOT_RELOAD_ON_STARTUP") or "").strip().lower()
+    if env in ("0", "false", "off", "no"):
+        return "off"
+    if env in ("1", "true", "yes", "always", "all"):
+        return "always"
+    if env in ("deploy", "deploy_only", "commit"):
+        return "deploy"
+    try:
+        from core.config import get_bot_config
+
+        raw = get_bot_config().observability_config.get("hot_reload_on_startup", None)
+        if raw is False or raw in (0, "0", "false", "off"):
+            return "off"
+        if raw is True or raw in (1, "1", "true", "always", "all"):
+            return "always"
+        if isinstance(raw, str) and raw.lower() in ("deploy", "deploy_only", "commit"):
+            return "deploy"
+    except Exception:
+        pass
+    # Default: on Railway bust caches after every start; full soft reload on new commit
+    if os.getenv("RAILWAY_DEPLOY") or os.getenv("RAILWAY_ENVIRONMENT"):
+        return "deploy"
+    return "deploy"
+
+
+def plan_startup_reload_scopes(
+    *,
+    current_commit: str | None = None,
+    previous_commit: str | None = None,
+    mode: str | None = None,
+) -> tuple[list[str], str]:
+    """Decide which scopes to reload on process start.
+
+    Returns (scopes, reason). Empty scopes means skip.
+    """
+    mode = mode or _auto_reload_mode()
+    if mode == "off":
+        return [], "disabled"
+
+    commit = (current_commit or _current_build_commit()).strip() or "unknown"
+    prev = previous_commit
+    if prev is None:
+        prev = str(_read_build_marker().get("commit") or "").strip()
+
+    new_deploy = (not prev) or (prev != commit)
+
+    if mode == "always":
+        return ["ui", "config", "lists", "cache"], "always"
+
+    # deploy mode (default):
+    # - new commit / first start → full soft reload
+    # - same commit restart → only cache (Redis survives container restarts)
+    if new_deploy:
+        return ["ui", "config", "lists", "cache"], "new_deploy" if prev else "first_start"
+    return ["cache"], "same_commit_restart"
+
+
+def auto_reload_on_startup(*, actor: str = "startup") -> ReloadReport | None:
+    """Run soft reload after process start when needed (esp. post-deploy).
+
+    Why automatic:
+    - Redis price/OHLCV keys survive Railway deploys → cache bust is required
+    - New image/commit → refresh config fingerprint + lists consumers
+    UI reload is cheap and keeps locale caches consistent after rolling starts.
+    """
+    scopes, reason = plan_startup_reload_scopes()
+    if not scopes:
+        log(f"startup auto-reload skipped ({reason})", "INFO")
+        return None
+
+    commit = _current_build_commit()
+    report = run_reload(scopes, source=f"startup:{reason}", actor=actor or "startup")
+    # Annotate report snapshot
+    with _LOCK:
+        global _LAST_AUTO
+        payload = report.as_dict()
+        payload["reason"] = reason
+        payload["build_commit"] = commit
+        _LAST_AUTO = payload
+        if _LAST is not None:
+            _LAST["reason"] = reason
+            _LAST["build_commit"] = commit
+
+    if report.ok:
+        _write_build_marker(commit, scopes, reason)
+    log(
+        f"startup auto-reload reason={reason} commit={commit} "
+        f"scopes={scopes} ok={report.ok}",
+        "INFO",
+    )
+    return report
 
 
 def _append_audit(report: ReloadReport) -> None:
@@ -338,6 +505,7 @@ def format_reload_report_html(report: ReloadReport) -> str:
 
 def format_reload_help_html() -> str:
     last = last_reload()
+    auto = last_auto_reload()
     lines = [
         "<b>🔄 Soft Reload</b>",
         "",
@@ -350,6 +518,10 @@ def format_reload_help_html() -> str:
         "<code>/reload cache</code> — Preis/OHLCV-Caches",
         "<code>/reload all</code> — alles oben",
         "",
+        "<i>Automatisch nach Deploy/Start:</i> neuer Commit → all; "
+        "gleicher Commit → nur cache (Redis). "
+        "Aus: <code>HOT_RELOAD_ON_STARTUP=0</code>",
+        "",
     ]
     if last:
         ok = "✅" if last.get("ok") else "⚠️"
@@ -359,4 +531,20 @@ def format_reload_help_html() -> str:
         )
     else:
         lines.append("Letzter Reload: <i>noch keiner in diesem Prozess</i>")
+    if auto:
+        lines.append(
+            f"Auto-Start: <code>{auto.get('reason', '?')}</code> · "
+            f"<code>{', '.join(auto.get('scopes') or [])}</code>"
+        )
     return "\n".join(lines)
+
+
+def format_auto_reload_startup_line(report: ReloadReport | None) -> str:
+    """One-line HTML for the startup Telegram ping."""
+    if report is None:
+        return ""
+    auto = last_auto_reload() or {}
+    reason = auto.get("reason") or "startup"
+    icon = "✅" if report.ok else "⚠️"
+    scopes = ", ".join(report.scopes)
+    return f"{icon} Soft-Reload ({reason}): <code>{scopes}</code>"

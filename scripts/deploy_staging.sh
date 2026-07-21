@@ -98,6 +98,8 @@ for d in items[:8]:
       echo "Health OK — live commit ${LIVE}"
       echo "Verify in Telegram: /mode"
       echo "  Expect: ${SHORT} · ${BRANCH} · staging"
+      echo "  Soft-reload runs automatically on bot start (new commit → all scopes;"
+      echo "  same commit restart → cache only). Manual: /reload"
       exit 0
     fi
   fi
