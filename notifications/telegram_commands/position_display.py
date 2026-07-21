@@ -427,18 +427,39 @@ def _trade_quantity_label(t: dict) -> str:
     return f"<code>{format_token_amount(amount)}</code>"
 
 
+def _trade_side_label(trade: dict) -> str:
+    """BUY always green; SELL green/red/yellow by realized PnL."""
+    from notifications.telegram_i18n import t as _t
+
+    side = (trade.get("type") or trade.get("side") or "").upper()
+    if side == "BUY":
+        return _t("trade_buy")
+    pnl_raw = trade.get("pnl")
+    try:
+        pnl = float(pnl_raw) if pnl_raw is not None else None
+    except (TypeError, ValueError):
+        pnl = None
+    if pnl is None:
+        icon = "⚪"
+    else:
+        icon = _pnl_emoji(pnl)
+    return _t("trade_sell_icon", icon=icon)
+
+
 def _trade_line(t: dict) -> str:
     from price_fetcher import format_usdt_price
     from notifications.coin_links import format_ticker_html
 
     ts = t.get("timestamp", "")[:16].replace("T", " ")
-    from notifications.telegram_i18n import t as _t
-
-    typ = _t("trade_buy") if t.get("type") == "BUY" else _t("trade_sell")
+    typ = _trade_side_label(t)
     sym = (t.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
     pnl = t.get("pnl")
-    pnl_part = f" · PnL <b>${pnl:+.1f}</b>" if pnl is not None else ""
+    try:
+        pnl_f = float(pnl) if pnl is not None else None
+    except (TypeError, ValueError):
+        pnl_f = None
+    pnl_part = f" · PnL <b>${pnl_f:+.1f}</b>" if pnl_f is not None else ""
     src = source_label(t.get("source", "auto"))
     return (
         f"\n{typ} <b>{sym_html}</b> · <i>{src}</i> · {ts}\n"
@@ -498,32 +519,6 @@ def format_portfolio_summary(
     wert_icon = _pnl_emoji(total_pnl)
     trade_icon = _pnl_emoji(trade_realized)
     lots_icon = _pnl_emoji(open_lots_mtm)
-    pos_label = t("pos_label_one") if position_count == 1 else t("pos_label_many")
-    coins_line = ""
-    if position_count > 0:
-        if pos_mv > 0:
-            coins_line = (
-                t("portfolio_coins", count=position_count, pos_label=pos_label) + "\n"
-                + t(
-                    "portfolio_cost_mark",
-                    cost=money(cost_basis),
-                    mark=money(pos_mv),
-                )
-                + "\n"
-                + t(
-                    "portfolio_delta_entry",
-                    icon=lots_icon,
-                    delta=signed_money(open_lots_mtm),
-                )
-                + "\n"
-            )
-        else:
-            coins_line = (
-                t("portfolio_coins", count=position_count, pos_label=pos_label) + "\n"
-                + t("portfolio_cost_mark_na", cost=money(cost_basis))
-                + "\n"
-            )
-
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
     daily_line = ""
     try:
@@ -553,65 +548,67 @@ def format_portfolio_summary(
             realized=signed_money(trade_realized),
         ) + "\n"
 
+    # Capacity / floor: "Kaufplätze" vs open coins (proposal B wording)
     floor_line = ""
+    slots_line = ""
+    full_n = int(position_count or 0)
+    lots_n = int(position_count or 0)
+    max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
+    setup = ""
     try:
         risk_cfg = cfg.risk_config if hasattr(cfg, "risk_config") else {}
         floor_pct = float((risk_cfg or {}).get("cash_floor_pct", 0) or 0)
-        if floor_pct > 0:
-            floor_abs = max(0.0, float(initial) * (floor_pct / 100.0))
-            spendable = max(0.0, float(balance) - floor_abs)
-            # Live slot setup (dynamic max_open_eff when capacity is on)
-            full_n = int(position_count or 0)
-            lots_n = int(position_count or 0)
-            max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
-            setup = f"base={max_open}"
-            try:
-                from risk.risk_manager import RiskManager
+        floor_abs = max(0.0, float(initial) * (floor_pct / 100.0)) if floor_pct > 0 else 0.0
+        spendable = max(0.0, float(balance) - floor_abs) if floor_pct > 0 else max(0.0, float(balance))
+        try:
+            from risk.risk_manager import RiskManager
 
-                st = RiskManager(cfg).status_summary()
-                full_n = int(st.get("open_full_slots", full_n) or full_n)
-                lots_n = int(st.get("open_positions", lots_n) or lots_n)
-                if st.get("position_capacity_enabled"):
-                    max_open = int(
-                        st.get("max_open_eff")
-                        or st.get("max_open_positions")
-                        or max_open
-                    )
-                    mode = str(st.get("cash_mode") or "").upper()
-                    regime = str(st.get("capacity_regime") or "").upper()
-                    bits = []
-                    if mode:
-                        bits.append(mode)
-                    if regime and regime not in ("NEUTRAL", ""):
-                        bits.append(regime)
-                    bits.append(f"eff={max_open}")
-                    factors = st.get("position_capacity_factors") or {}
-                    warm = factors.get("warmup") if isinstance(factors, dict) else None
-                    if warm:
-                        bits.append(f"warmup{int(warm):+d}")
-                    setup = " · ".join(bits) if bits else f"eff={max_open}"
-                else:
-                    max_open = int(
-                        st.get("max_open_positions")
-                        or getattr(cfg, "max_open_positions", 0)
-                        or 0
-                    )
-                    setup = f"static={max_open}"
-                # Prefer live spendable from cash policy when available
-                for sk in ("spendable_new", "spendable_usdt"):
-                    if st.get(sk) is not None:
-                        try:
-                            spendable = max(0.0, float(st.get(sk)))
-                            break
-                        except (TypeError, ValueError):
-                            pass
-                if st.get("cash_floor_abs") is not None:
+            st = RiskManager(cfg).status_summary()
+            full_n = int(st.get("open_full_slots", full_n) or full_n)
+            lots_n = int(st.get("open_positions", lots_n) or lots_n)
+            if st.get("position_capacity_enabled"):
+                max_open = int(
+                    st.get("max_open_eff")
+                    or st.get("max_open_positions")
+                    or max_open
+                )
+                mode = str(st.get("cash_mode") or "").upper()
+                regime = str(st.get("capacity_regime") or "").upper()
+                bits = []
+                if mode:
+                    bits.append(mode)
+                if regime and regime not in ("NEUTRAL", ""):
+                    bits.append(regime)
+                bits.append(f"eff={max_open}")
+                factors = st.get("position_capacity_factors") or {}
+                warm = factors.get("warmup") if isinstance(factors, dict) else None
+                if warm:
+                    bits.append(f"warmup{int(warm):+d}")
+                setup = " · ".join(bits) if bits else f"eff={max_open}"
+            else:
+                max_open = int(
+                    st.get("max_open_positions")
+                    or getattr(cfg, "max_open_positions", 0)
+                    or 0
+                )
+                setup = f"static={max_open}" if max_open else ""
+            for sk in ("spendable_new", "spendable_usdt"):
+                if st.get(sk) is not None:
                     try:
-                        floor_abs = max(0.0, float(st["cash_floor_abs"]))
+                        spendable = max(0.0, float(st.get(sk)))
+                        break
                     except (TypeError, ValueError):
                         pass
-            except Exception:
-                setup = f"base={max_open}"
+            if st.get("cash_floor_abs") is not None:
+                try:
+                    floor_abs = max(0.0, float(st["cash_floor_abs"]))
+                    floor_pct = floor_pct or 1.0  # show floor line when abs known
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            setup = f"base={max_open}" if max_open else ""
+
+        if floor_pct > 0 or floor_abs > 0:
             floor_line = (
                 t(
                     "portfolio_cash_floor",
@@ -619,23 +616,62 @@ def format_portfolio_summary(
                     spendable=money(spendable),
                 )
                 + "\n"
-                + t(
-                    "portfolio_slots",
+            )
+        if max_open > 0:
+            free_n = max(0, int(max_open) - int(full_n))
+            if free_n <= 0:
+                slots_line = t(
+                    "portfolio_buy_slots_full",
                     full=full_n,
                     max=max_open,
-                    lots=lots_n,
-                    setup=setup,
+                )
+            else:
+                slots_line = t(
+                    "portfolio_buy_slots_free",
+                    free=free_n,
+                    full=full_n,
+                    max=max_open,
+                )
+            if setup:
+                slots_line += f" · <i>{setup}</i>"
+            slots_line += "\n"
+    except Exception:
+        pass
+
+    tails_n = max(0, int(lots_n) - int(full_n))
+    coins_line = ""
+    if position_count > 0:
+        coins_line = t("portfolio_open_coins", count=position_count) + "\n"
+        if tails_n > 0:
+            coins_line += t(
+                "portfolio_open_breakdown",
+                full=full_n,
+                tails=tails_n,
+            ) + "\n"
+        if pos_mv > 0:
+            coins_line += (
+                t(
+                    "portfolio_cost_mark",
+                    cost=money(cost_basis),
+                    mark=money(pos_mv),
+                )
+                + "\n"
+                + t(
+                    "portfolio_delta_entry",
+                    icon=lots_icon,
+                    delta=signed_money(open_lots_mtm),
                 )
                 + "\n"
             )
-    except Exception:
-        pass
+        else:
+            coins_line += t("portfolio_cost_mark_na", cost=money(cost_basis)) + "\n"
 
     body = (
         f"<b>{t('portfolio_title')}</b>{mode_line}\n\n"
         + t("portfolio_cash", label=cash_label, balance=f"{balance:,.2f}")
         + "\n"
         + floor_line
+        + slots_line
         + coins_line
         + t("portfolio_nav", total=money(total_value))
         + "\n"

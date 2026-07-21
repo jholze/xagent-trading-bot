@@ -33,5 +33,11 @@ def _ensure_usage_cache() -> None:
     USAGE["unknown"] = {"hint": data.get("de", {}).get("unknown_hint", "")}
 
 
+def clear_usage_cache() -> None:
+    """Drop USAGE cache so next hint/help rebuilds from reloaded menu JSON."""
+    USAGE.clear()
+
+
 def hint(key: str) -> str:
+    _ensure_usage_cache()
     return command_hint(key, current_language())

@@ -100,8 +100,11 @@ class TestPositionDisplay(unittest.TestCase):
             )
         self.assertIn("Cash-Floor", msg)
         self.assertIn("$18,000", msg)
-        self.assertIn("Slots <b>25/12</b> full", msg)
-        self.assertIn("31 Lots", msg)
+        self.assertIn("Kaufplätze: voll", msg)
+        self.assertIn("<b>25</b> von <b>12</b>", msg)
+        self.assertIn("Portfolio: <b>31</b> offene Coins", msg)
+        self.assertIn("normale Positionen", msg)
+        self.assertIn("Restpositionen", msg)
         self.assertIn("HARVEST", msg)
         self.assertIn("eff=12", msg)
         self.assertIn("warmup-6", msg)
@@ -124,8 +127,10 @@ class TestPositionDisplay(unittest.TestCase):
                 positions_market_value=99_000.0,
             )
         self.assertIn("Cash-Floor", msg)
-        self.assertIn("Slots <b>12/24</b> full", msg)
-        self.assertIn("12 Lots", msg)
+        self.assertIn("Kaufplätze:", msg)
+        self.assertIn("frei", msg)
+        self.assertIn("<b>12</b> von <b>24</b>", msg)
+        self.assertIn("Portfolio: <b>12</b> offene Coins", msg)
 
     def test_portfolio_summary_total_value_uses_position_market_not_unreal_only(self):
         msg = format_portfolio_summary(
@@ -249,6 +254,20 @@ class TestPositionDisplay(unittest.TestCase):
         })
         self.assertIn("$38", line)
         self.assertNotIn("0.0000", line)
+
+    def test_trade_line_sell_dot_follows_pnl(self):
+        win = _trade_line({
+            "type": "SELL", "symbol": "BAS/USDT", "amount": 100, "price": 1.0,
+            "pnl": 50.0, "source": "grid", "timestamp": "2026-07-21T00:58:00",
+        })
+        loss = _trade_line({
+            "type": "SELL", "symbol": "LAB/USDT", "amount": 100, "price": 1.0,
+            "pnl": -163.0, "source": "auto", "timestamp": "2026-07-19T18:37:00",
+        })
+        self.assertIn("🟢", win)
+        self.assertIn("Verkauf", win)
+        self.assertIn("🔴", loss)
+        self.assertIn("Verkauf", loss)
 
     def test_resolve_portfolio_context_dry_run_uses_sim_cash(self):
         cfg = type("Cfg", (), {
@@ -462,9 +481,11 @@ class TestPositionDisplay(unittest.TestCase):
             active, {"ARIA/USDT": 0.05}, {"virtual_balance": 1000, "trades": []}, detail_level="summary",
         )
         self.assertIn("Gesamtwert", msg)
-        self.assertIn("Coins", msg)
+        self.assertIn("offene Coins", msg)
         self.assertNotIn("Positionen (1)", msg)
-        self.assertNotIn("📋", msg)
+        # summary has portfolio header only — no numbered position cards
+        self.assertNotIn("<b>1.</b>", msg)
+        self.assertNotIn("ARIA", msg)
 
     def test_format_sell_trade_detail_shows_remaining_position(self):
         result = TradeResult(

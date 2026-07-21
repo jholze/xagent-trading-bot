@@ -168,6 +168,25 @@ def price_cache_enabled(config_raw: dict | None = None) -> bool:
     return bool(arch.get("price_cache_enabled", True))
 
 
+def clear_redis_price_cache(cache: RedisPriceCache | None = None) -> int:
+    """Best-effort delete of Redis price keys for this bot prefix. Returns delete count."""
+    cache = cache or price_cache_from_config()
+    client = cache._client()
+    if not client:
+        return 0
+    pattern = f"{cache.key_prefix}price:*"
+    deleted = 0
+    try:
+        keys = list(client.scan_iter(match=pattern, count=200))
+        for i in range(0, len(keys), 200):
+            batch = keys[i : i + 200]
+            if batch:
+                deleted += int(client.delete(*batch))
+    except Exception:
+        return deleted
+    return deleted
+
+
 def reset_price_cache_for_tests() -> None:
     global _default_cache
     _default_cache = None

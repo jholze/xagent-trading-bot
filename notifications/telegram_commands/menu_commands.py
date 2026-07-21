@@ -41,7 +41,7 @@ _COMMAND_DISPATCH: dict[str, str] = {
 MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", ["positions", "positions_full", "buy", "sell", "orders", "risk"]),
-    ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel"]),
+    ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel", "reload"]),
     ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
@@ -52,7 +52,7 @@ MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
 MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", ["positions", "positions_full", "buy", "sell", "orders", "risk"]),
-    ("modus", ["mode", "gate", "dryrun", "maxpositions"]),
+    ("modus", ["mode", "gate", "dryrun", "maxpositions", "reload"]),
     ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy"]),
     ("hilfe", ["menu", "help"]),

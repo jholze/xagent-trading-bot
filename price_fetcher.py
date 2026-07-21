@@ -11,6 +11,14 @@ _price_cache = {}
 _last_good_cache = {}
 _CACHE_TTL_SECONDS = 30
 
+
+def clear_price_cache() -> int:
+    """Drop in-memory price TTL cache (soft hot-reload / tests). Returns entries cleared."""
+    n = len(_price_cache)
+    _price_cache.clear()
+    # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer
+    return n
+
 _CG_MAP = {"ARIA": "aria-ai", "RAVE": "ravedao", "HIGH": "highstreet"}
 
 

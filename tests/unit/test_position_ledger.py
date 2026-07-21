@@ -87,8 +87,24 @@ class TestPositionLedger(unittest.TestCase):
         self.assertIn("Entry", text)
         self.assertIn("Verkauf 30%", text)
         self.assertIn("real <b>$+30</b>", text)
+        self.assertIn("🟢", text)  # profitable sell
         self.assertIn("├─", text)
         self.assertIn("└─", text)
+
+    def test_sell_event_icon_red_on_loss(self):
+        from notifications.telegram_commands.position_ledger import format_event_line
+
+        line = format_event_line({
+            "kind": "sell",
+            "label": "Verkauf 50%",
+            "ts": "2026-07-19T18:37:00",
+            "usdt": 462.0,
+            "price": 0.01,
+            "source": "Auto",
+            "realized_usd": -163.0,
+        })
+        self.assertIn("🔴", line)
+        self.assertIn("real <b>$-163</b>", line)
 
     def test_re_entry_after_full_close_starts_new_cycle(self):
         orders = [

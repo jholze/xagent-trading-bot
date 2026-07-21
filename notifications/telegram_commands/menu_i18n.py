@@ -29,6 +29,13 @@ def _load_menu_data() -> dict:
     return _MENU_DATA
 
 
+def reload_menu_data() -> dict:
+    """Force re-read of telegram_menu.json + section help (soft hot-reload)."""
+    global _MENU_DATA
+    _MENU_DATA = None
+    return _load_menu_data()
+
+
 def resolve_language(code: str | None) -> str:
     """Map Telegram language_code (e.g. de-DE, en-US) to de or en."""
     if not code:

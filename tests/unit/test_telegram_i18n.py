@@ -17,8 +17,12 @@ class TestTelegramI18n(unittest.TestCase):
 
     def test_format_kwargs(self):
         set_user_language("de")
-        msg = t("portfolio_slots", full=3, max=24, lots=5, setup="HARVEST · eff=24")
-        self.assertIn("3/24", msg)
+        msg = t("portfolio_buy_slots_free", free=5, full=3, max=24)
+        self.assertIn("5", msg)
+        self.assertIn("3", msg)
+        self.assertIn("24", msg)
+        full = t("portfolio_buy_slots_full", full=24, max=24)
+        self.assertIn("voll", full)
 
     def test_money_helpers(self):
         self.assertEqual(money(1000), "1,000")

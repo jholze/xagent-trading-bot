@@ -101,9 +101,16 @@ def _buy_label(signal: str, dca_index: int, *, new_cycle: bool = False) -> str:
     return "Entry"
 
 
-def _event_icon(kind: str, label: str) -> str:
+def _event_icon(kind: str, label: str, realized_usd: float | None = None) -> str:
+    """Sell dots follow realized PnL: green profit, red loss, yellow flat."""
     if kind == "sell":
-        return "🔴"
+        if realized_usd is None:
+            return "⚪"
+        if realized_usd > 0.05:
+            return "🟢"
+        if realized_usd < -0.05:
+            return "🔴"
+        return "🟡"
     if label == "Entry (neu)":
         return "🔄"
     if label.startswith("DCA"):
@@ -290,7 +297,14 @@ def format_event_line(ev: dict) -> str:
     price = format_usdt_price(float(ev.get("price", 0) or 0))
     source = ev.get("source", "Auto")
     label = ev.get("label", "")
-    icon = _event_icon(ev.get("kind", ""), label)
+    realized_for_icon = None
+    if ev.get("kind") == "sell":
+        if "realized_usd" in ev and ev.get("realized_usd") is not None:
+            try:
+                realized_for_icon = float(ev.get("realized_usd"))
+            except (TypeError, ValueError):
+                realized_for_icon = None
+    icon = _event_icon(ev.get("kind", ""), label, realized_for_icon)
 
     if ev.get("kind") == "sell":
         realized = float(ev.get("realized_usd", 0) or 0)
