@@ -263,10 +263,34 @@ def _save_queue(data: dict) -> None:
 
 
 def _authorized_chat(chat_id: str | int | None) -> bool:
-    allowed = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not allowed:
+    """Operator TELEGRAM_CHAT_ID or any active tenant owner_chat_id may use /ask."""
+    cid = str(chat_id or "").strip()
+    if not cid:
         return False
-    return str(chat_id or "").strip() == str(allowed).strip()
+    allowed = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if allowed and cid == str(allowed).strip():
+        return True
+    # Multi-tenant: satellite owners (e.g. Henry) use their own chat_id
+    try:
+        from storage.tenant_registry import find_tenant_by_owner_chat_id
+
+        if find_tenant_by_owner_chat_id(cid):
+            return True
+    except Exception as e:
+        log(f"Ask bridge tenant auth lookup failed: {e}", "DEBUG")
+    # Active tenant context during webhook handling (shared bot)
+    try:
+        from core.tenant_context import current_tenant_context
+
+        ctx = current_tenant_context()
+        if ctx and str(getattr(ctx, "owner_chat_id", "") or "").strip() == cid:
+            return True
+        if ctx and str(getattr(ctx, "tenant_id", "") or "") not in ("", "default"):
+            # Message already routed to this tenant — trust chat for this request
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _rate_limit_ok(chat_id: str | int) -> tuple[bool, str]:
@@ -511,9 +535,28 @@ def enqueue_question(chat_id: str | int, question: str) -> tuple[str | None, str
         return None, reason
 
     qid = uuid.uuid4().hex[:10]
+    tenant_id = ""
+    try:
+        from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+
+        tid = str(resolve_tenant_id() or "").strip()
+        if tid and tid != DEFAULT_TENANT:
+            tenant_id = tid
+    except Exception:
+        tenant_id = ""
+    if not tenant_id:
+        try:
+            from storage.tenant_registry import find_tenant_by_owner_chat_id
+
+            doc = find_tenant_by_owner_chat_id(chat_id)
+            if doc:
+                tenant_id = str(doc.get("tenant_id") or "")
+        except Exception:
+            pass
     record = {
         "id": qid,
         "chat_id": str(chat_id),
+        "tenant_id": tenant_id or "default",
         "question": question,
         "status": "pending",
         "created_at": _utc_iso(),

@@ -58,9 +58,25 @@ class TestAskBridge(unittest.TestCase):
 
     @patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999"})
     def test_unauthorized_chat_rejected(self):
-        qid, err = bridge.enqueue_question("123", "Hallo?")
+        with patch.object(bridge, "_authorized_chat", return_value=False):
+            qid, err = bridge.enqueue_question("123", "Hallo?")
         self.assertIsNone(qid)
         self.assertIn("autorisiert", err.lower())
+
+    @patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999"})
+    def test_tenant_owner_chat_authorized(self):
+        """Satellite tenant (e.g. Henry) may /ask from their own chat_id."""
+        fake_tenant = {"tenant_id": "henry", "status": "active"}
+        with patch(
+            "storage.tenant_registry.find_tenant_by_owner_chat_id",
+            return_value=fake_tenant,
+        ):
+            qid, err = bridge.enqueue_question("6512212782", "Warum ONDO?")
+        self.assertFalse(err)
+        self.assertTrue(qid)
+        data = json.loads(self.tmp.read_text(encoding="utf-8"))
+        self.assertEqual(data["questions"][0]["chat_id"], "6512212782")
+        self.assertEqual(data["questions"][0].get("tenant_id"), "henry")
 
     @patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999"})
     @patch("telegram_notifier.send_telegram_message")
