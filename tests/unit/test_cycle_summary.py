@@ -247,7 +247,10 @@ class TestCycleSummary(unittest.TestCase):
         with patch("notifications.terminal_dashboard.list_active_positions", return_value=positions), \
              patch("price_fetcher.get_prices_batch", return_value={"ARIA/USDT": 2.0}), \
              patch("notifications.telegram_commands.position_display.load_trade_history_safe", return_value=live_hist), \
-             patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
+             patch(
+                 "notifications.telegram_commands.position_display._refresh_positions_for_snapshot",
+                 return_value=positions,
+             ), \
              patch("core.simulated_trading.uses_order_ledger_cash", return_value=True), \
              patch("data_manager.resolve_sim_cash_balance", return_value=1000.0), \
              patch("data_manager.resolve_sim_realized_pnl", return_value=5.0), \
