@@ -23,11 +23,19 @@ from services import portfolio_nav_history as nav_hist
 
 
 class TestPortfolioPlanMath(unittest.TestCase):
-    def test_linear_day_0_and_10_and_365(self):
+    def test_compound_default_day_0_10_365(self):
+        """Default is Zinseszins: S*(1.005)^t."""
         s = 100_000.0
         self.assertAlmostEqual(plan_nav_at_day(s, 0), 100_000.0)
-        self.assertAlmostEqual(plan_nav_at_day(s, 10), 105_000.0)
-        self.assertAlmostEqual(plan_nav_at_day(s, 365), 282_500.0)
+        self.assertAlmostEqual(plan_nav_at_day(s, 10), s * (1.005 ** 10), places=4)
+        self.assertAlmostEqual(plan_nav_at_day(s, 365), s * (1.005 ** 365), places=2)
+        # compound end >> linear end
+        self.assertGreater(plan_nav_at_day(s, 365), 282_500.0)
+
+    def test_linear_explicit(self):
+        s = 100_000.0
+        self.assertAlmostEqual(plan_nav_at_day(s, 10, compound=False), 105_000.0)
+        self.assertAlmostEqual(plan_nav_at_day(s, 365, compound=False), 282_500.0)
 
     def test_clamp_past_horizon(self):
         s = 100_000.0
@@ -40,11 +48,21 @@ class TestPortfolioPlanMath(unittest.TestCase):
         self.assertNotAlmostEqual(lin, cmpd)
         self.assertGreater(cmpd, lin)
 
-    def test_series_length(self):
-        ser = plan_series(1000, horizon_days=365)
+    def test_series_length_compound(self):
+        ser = plan_series(1000, horizon_days=365, compound=True)
         self.assertEqual(len(ser), 366)
         self.assertAlmostEqual(ser[0], 1000)
-        self.assertAlmostEqual(ser[-1], 1000 * 2.825)
+        self.assertAlmostEqual(ser[-1], 1000 * (1.005 ** 365), places=4)
+
+    def test_daily_step_compound(self):
+        from services.portfolio_plan import plan_daily_step_usd
+
+        s = 100_000.0
+        # at t=0, next step = S*0.005
+        self.assertAlmostEqual(plan_daily_step_usd(s, 0, compound=True), 500.0, places=4)
+        # at t=10, step = S*(1.005)^10 * 0.005
+        expect = s * (1.005 ** 10) * 0.005
+        self.assertAlmostEqual(plan_daily_step_usd(s, 10, compound=True), expect, places=4)
 
     def test_day_index(self):
         start = date(2026, 1, 1)
@@ -52,12 +70,18 @@ class TestPortfolioPlanMath(unittest.TestCase):
         self.assertEqual(day_index_for(start, date(2026, 1, 11)), 10)
         self.assertEqual(day_index_for(start, date(2027, 1, 2), horizon_days=365), 365)
 
-    def test_gap_negative(self):
+    def test_gap_compound_default(self):
         g = compute_gap(100_000, 99_000, 10)
-        self.assertAlmostEqual(g.nav_plan, 105_000)
-        self.assertAlmostEqual(g.delta_usd, 99_000 - 105_000)
+        self.assertTrue(g.compound)
+        self.assertAlmostEqual(g.nav_plan, 100_000 * (1.005 ** 10), places=4)
         self.assertEqual(g.days_remaining, 355)
         self.assertEqual(g.horizon_days, 365)
+
+    def test_config_default_compound_true(self):
+        from services.portfolio_plan import portfolio_plan_config
+
+        cfg = portfolio_plan_config({})
+        self.assertTrue(cfg["compound"])
 
 
 class TestNavHistory(unittest.TestCase):
@@ -136,7 +160,9 @@ class TestPlanCommand(unittest.TestCase):
         self.assertIn("365", html)
         self.assertIn("42", html)
         self.assertIn("Plan-Ende", html)
-        self.assertIn("99000", html.replace(",", ""))
+        self.assertIn("Zinseszins", html)
+        self.assertIn("0.005", html)  # S×(1+0.005)^t
+        self.assertIn("99000", html.replace(",", "").replace(".", ""))
 
 
 class TestPlanChart(unittest.TestCase):

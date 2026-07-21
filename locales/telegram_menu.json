@@ -187,9 +187,9 @@
         "hint": "❌ <b>/orders_month</b> — Ausgeführte Trades im <b>aktuellen Monat</b>\n\n<code>/orders_month</code> — Monats-Orderbuch\n<code>/orders_month page 2</code> — Seite 2 (Weiter)"
       },
       "plan": {
-        "description": "Plan vs. Portfolio (0,5%/Tag, 365 Tage)",
+        "description": "Plan vs. Portfolio (0,5%/Tag Zinseszins, 365 Tage)",
         "help_line": "<code>/plan</code> — Wertentwicklung vs. Zielplan (auch <code>/performance</code>)",
-        "hint": "❌ <b>/plan</b> — Portfolio vs. Zielplan\n\n<code>/plan</code> oder <code>/performance</code>\nZiel: 0,5 %/Tag linear auf Startkapital, Horizont 365 Tage.\nZeigt NAV, Plan-heute, Δ und Chart."
+        "hint": "❌ <b>/plan</b> — Portfolio vs. Zielplan\n\n<code>/plan</code> oder <code>/performance</code>\nZiel: 0,5 %/Tag <b>Zinseszins</b> S×(1,005)^t, Horizont 365 Tage.\nZeigt NAV, Plan-heute, Δ und Chart."
       },
       "risk": {
         "description": "Risiko-Limits und Drawdown",
@@ -540,9 +540,9 @@
         "hint": "❌ <b>/orders_month</b> — Executed trades in the <b>current month</b>\n\n<code>/orders_month</code> — Monthly trade book\n<code>/orders_month page 2</code> — Page 2"
       },
       "plan": {
-        "description": "Plan vs portfolio (0.5%/day, 365 days)",
+        "description": "Plan vs portfolio (0.5%/day compound, 365 days)",
         "help_line": "<code>/plan</code> — Performance vs target plan (also <code>/performance</code>)",
-        "hint": "❌ <b>/plan</b> — Portfolio vs target plan\n\n<code>/plan</code> or <code>/performance</code>\nTarget: 0.5%/day linear on start capital, 365-day horizon.\nShows NAV, plan-today, delta and chart."
+        "hint": "❌ <b>/plan</b> — Portfolio vs target plan\n\n<code>/plan</code> or <code>/performance</code>\nTarget: 0.5%/day <b>compound</b> S×(1.005)^t, 365-day horizon.\nShows NAV, plan-today, delta and chart."
       },
       "risk": {
         "description": "Risk limits and drawdown",

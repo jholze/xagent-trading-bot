@@ -54,13 +54,14 @@ def render_plan_vs_actual_png(
 
     fig, ax = plt.subplots(figsize=(9, 4.2), dpi=110)
     try:
+        mode_lbl = "Zinseszins" if compound else "linear"
         ax.plot(
             xs_plan,
             plan,
             color="#3498db",
             linestyle="--",
             linewidth=1.6,
-            label=f"Plan {daily_return_pct:g}%/d",
+            label=f"Plan {daily_return_pct:g}%/d ({mode_lbl})",
         )
         if act_x:
             ax.plot(

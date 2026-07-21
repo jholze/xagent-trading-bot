@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 DEFAULT_DAILY_RETURN_PCT = 0.5
 DEFAULT_HORIZON_DAYS = 365
+DEFAULT_COMPOUND = True  # 0.5%/Tag Zinseszins: S*(1+r)^t
 
 
 def portfolio_plan_config(config_raw: dict | None = None) -> dict[str, Any]:
@@ -20,10 +21,14 @@ def portfolio_plan_config(config_raw: dict | None = None) -> dict[str, Any]:
         except Exception:
             config_raw = {}
     raw = dict((config_raw or {}).get("portfolio_plan") or {})
+    if "compound" in raw:
+        compound = bool(raw.get("compound"))
+    else:
+        compound = DEFAULT_COMPOUND
     return {
         "enabled": bool(raw.get("enabled", True)),
         "daily_return_pct": float(raw.get("daily_return_pct", DEFAULT_DAILY_RETURN_PCT) or DEFAULT_DAILY_RETURN_PCT),
-        "compound": bool(raw.get("compound", False)),
+        "compound": compound,
         "horizon_days": int(raw.get("horizon_days", DEFAULT_HORIZON_DAYS) or DEFAULT_HORIZON_DAYS),
         "plan_start_date": (raw.get("plan_start_date") or None),
         "chart_default_days": int(raw.get("chart_default_days", DEFAULT_HORIZON_DAYS) or DEFAULT_HORIZON_DAYS),
@@ -40,10 +45,13 @@ def plan_nav_at_day(
     day_index: int,
     *,
     daily_return_pct: float = DEFAULT_DAILY_RETURN_PCT,
-    compound: bool = False,
+    compound: bool = DEFAULT_COMPOUND,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
 ) -> float:
-    """Plan NAV at day t (0 = start). Linear: S*(1 + r*t); compound: S*(1+r)^t.
+    """Plan NAV at day t (0 = start).
+
+    - compound (default): S * (1+r)^t  — Zinseszins 0.5%/Tag
+    - linear: S * (1 + r*t)            — 0.5% vom Startkapital pro Tag
 
     After horizon, clamp t to horizon (flat at end value).
     """
@@ -60,11 +68,62 @@ def plan_nav_at_day(
     return s * (1.0 + r * t)
 
 
+def plan_daily_step_usd(
+    start_capital: float,
+    day_index: int,
+    *,
+    daily_return_pct: float = DEFAULT_DAILY_RETURN_PCT,
+    compound: bool = DEFAULT_COMPOUND,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> float:
+    """USD increase from day t → t+1 on the plan curve (0 after horizon)."""
+    h = max(0, int(horizon_days))
+    t = max(0, int(day_index))
+    if h > 0 and t >= h:
+        return 0.0
+    now = plan_nav_at_day(
+        start_capital,
+        t,
+        daily_return_pct=daily_return_pct,
+        compound=compound,
+        horizon_days=h,
+    )
+    nxt = plan_nav_at_day(
+        start_capital,
+        t + 1,
+        daily_return_pct=daily_return_pct,
+        compound=compound,
+        horizon_days=h,
+    )
+    return float(nxt - now)
+
+
+def plan_total_return_pct(
+    start_capital: float,
+    *,
+    daily_return_pct: float = DEFAULT_DAILY_RETURN_PCT,
+    compound: bool = DEFAULT_COMPOUND,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> float:
+    """Total % gain over full horizon vs start capital."""
+    s = float(start_capital)
+    if s <= 0:
+        return 0.0
+    end = plan_nav_at_day(
+        start_capital,
+        int(horizon_days),
+        daily_return_pct=daily_return_pct,
+        compound=compound,
+        horizon_days=horizon_days,
+    )
+    return (end / s - 1.0) * 100.0
+
+
 def plan_series(
     start_capital: float,
     *,
     daily_return_pct: float = DEFAULT_DAILY_RETURN_PCT,
-    compound: bool = False,
+    compound: bool = DEFAULT_COMPOUND,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
 ) -> list[float]:
     """Plan values for days 0..horizon inclusive (horizon+1 points)."""
@@ -125,7 +184,7 @@ def compute_gap(
     day_index: int,
     *,
     daily_return_pct: float = DEFAULT_DAILY_RETURN_PCT,
-    compound: bool = False,
+    compound: bool = DEFAULT_COMPOUND,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
 ) -> PlanGap:
     h = max(0, int(horizon_days))

@@ -489,7 +489,7 @@
   "portfolio_plan": {
     "enabled": true,
     "daily_return_pct": 0.5,
-    "compound": false,
+    "compound": true,
     "horizon_days": 365,
     "plan_start_date": null,
     "chart_default_days": 365

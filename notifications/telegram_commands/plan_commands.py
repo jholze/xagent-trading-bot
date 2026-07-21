@@ -31,8 +31,35 @@ def format_plan_report_html(
     plan_start,
     mode: str = "",
 ) -> str:
+    from services.portfolio_plan import plan_daily_step_usd, plan_total_return_pct
+
     mode_bit = f" · <i>{mode}</i>" if mode else ""
     compound_l = "Zinseszins" if gap.compound else "linear auf Startkapital"
+    step = plan_daily_step_usd(
+        gap.start_capital,
+        gap.day_index,
+        daily_return_pct=gap.daily_return_pct,
+        compound=gap.compound,
+        horizon_days=gap.horizon_days,
+    )
+    total_ret = plan_total_return_pct(
+        gap.start_capital,
+        daily_return_pct=gap.daily_return_pct,
+        compound=gap.compound,
+        horizon_days=gap.horizon_days,
+    )
+    formula = (
+        f"S×(1+{gap.daily_return_pct/100:g})^t"
+        if gap.compound
+        else f"S×(1+{gap.daily_return_pct/100:g}×t)"
+    )
+    step_note = (
+        f"+{gap.daily_return_pct:g}% auf den Plan-Stand "
+        f"(nächster Tag ≈ ${_signed(step, decimals=0)})"
+        if gap.compound
+        else f"+{gap.daily_return_pct:g}% vom Startkapital "
+        f"(= ${_signed(gap.start_capital * gap.daily_return_pct / 100.0)}/Tag)"
+    )
     lines = [
         f"<b>📈 Plan vs. Portfolio ({gap.horizon_days} Tage)</b>{mode_bit}",
         (
@@ -40,6 +67,7 @@ def format_plan_report_html(
             f"Tag <b>{gap.day_index}</b> / {gap.horizon_days} · "
             f"Ziel {gap.daily_return_pct:g}%/Tag ({compound_l})"
         ),
+        f"Formel: <code>{formula}</code>",
         f"Plan-Start: <code>{plan_start.isoformat()}</code>",
         "",
         f"NAV jetzt:     <b>${gap.nav_actual:,.0f}</b>",
@@ -49,11 +77,13 @@ def format_plan_report_html(
             f"(<code>{gap.delta_pct:+.1f}%</code>)"
         ),
         "",
-        f"Plan-Ende t={gap.horizon_days}: <b>${gap.plan_end:,.0f}</b>",
+        (
+            f"Plan-Ende t={gap.horizon_days}: <b>${gap.plan_end:,.0f}</b> "
+            f"(<code>+{total_ret:.0f}%</code> vs. Start)"
+        ),
         f"Restlaufzeit:    <b>{gap.days_remaining}</b> Tage",
         "",
-        f"<i>Tagesziel: +{gap.daily_return_pct:g}% vom Startkapital "
-        f"(= ${_signed(gap.start_capital * gap.daily_return_pct / 100.0)}/Tag linear)</i>",
+        f"<i>Tagesziel: {step_note}</i>",
     ]
     return "\n".join(lines)
 
