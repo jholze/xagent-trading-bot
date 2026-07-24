@@ -40,11 +40,16 @@ def order_ledger_v2_enabled() -> bool:
 
 
 def order_ledger_v2_reads_enabled() -> bool:
-    """Prefer v2 for day list/stats when dual-write is on (default)."""
+    """Prefer v2 for day list/stats only when explicitly enabled.
+
+    Default **off** so partial dual-write (new fills only) cannot hide
+    historical blob day activity before backfill. Tests set
+    ``ORDER_LEDGER_V2_READS=1``.
+    """
     if not order_ledger_v2_enabled():
         return False
-    raw = (os.environ.get("ORDER_LEDGER_V2_READS") or "1").strip().lower()
-    return raw not in ("0", "false", "off", "no")
+    raw = (os.environ.get("ORDER_LEDGER_V2_READS") or "0").strip().lower()
+    return raw in ("1", "true", "on", "yes")
 
 
 def reset_order_ledger_v2_for_tests() -> None:
