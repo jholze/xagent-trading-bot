@@ -482,6 +482,7 @@ def format_portfolio_summary(
     include_position_header: bool = True,
     trade_realized: float = None,
     positions_cost_basis: float = None,
+    day_stats: dict = None,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     cfg = get_bot_config()
@@ -528,7 +529,9 @@ def format_portfolio_summary(
             total_value=total_value,
             prices=prices,
             cache_ttl_sec=180.0 if fast_daily_nav else 120.0,
-            lightweight=bool(fast_daily_nav),
+            # Interactive /portfolio: always lightweight; pass day_stats to skip 2nd load.
+            lightweight=True if fast_daily_nav or day_stats is not None else bool(fast_daily_nav),
+            day_stats=day_stats,
         )
         if daily_line:
             daily_line = f"{daily_line}\n"
@@ -717,6 +720,7 @@ def format_positions_message(
     price_sources: dict = None,
     fast_daily_nav: bool = False,
     detail_level: str = "full",
+    day_stats: dict = None,
 ) -> str:
     level = (detail_level or "full").strip().lower()
 
@@ -734,6 +738,7 @@ def format_positions_message(
                 fast_daily_nav=fast_daily_nav,
                 include_position_header=False,
                 trade_realized=trade_realized,
+                day_stats=day_stats,
             )
         from notifications.telegram_i18n import t
 
@@ -780,6 +785,7 @@ def format_positions_message(
             fast_daily_nav=fast_daily_nav,
             include_position_header=level != "summary",
             trade_realized=trade_realized,
+            day_stats=day_stats,
         ) + "\n"
 
     if gate_holdings:
@@ -905,17 +911,43 @@ def _sim_order_ledger_bundle(
     cfg,
     prefer_memory: bool = True,
 ) -> dict:
-    """One Mongo orders load + one replay → cash, realized, open lots."""
+    """Cash, realized, open lots — prefer warm memory to skip full order replay."""
     from core.sim_ledger_replay import replay_simulated_ledger
     from core.simulated_trading import simulated_ledger_scope
     from data_manager import load_orders, load_positions_document
     from services.ledger_sync import _reconcile_ladder_steps_in_snapshot
+    from services.order_service import OrderService, calendar_day_bounds
     from strategies.positions import (
         derive_positions_from_orders_and_cache,
         list_active_positions,
     )
 
     ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
+    active: list[dict] = []
+    if prefer_memory:
+        active = list_active_positions(tenant_id=tenant_id, scope=scope)
+
+    # Warm path: open lots in memory + cash/realized already on trade_history.
+    hist_cash = history.get("virtual_balance")
+    hist_realized = history.get("realized_pnl", history.get("total_pnl"))
+    if (
+        prefer_memory
+        and active
+        and hist_cash is not None
+        and hist_realized is not None
+    ):
+        # Day stats only (read-only OrderService, shared cache with /orders).
+        day_stats = OrderService(ledger_scope).stats_day_filled()
+        return {
+            "history": history,
+            "cash_balance": float(hist_cash),
+            "trade_realized": float(hist_realized or 0),
+            "active": active,
+            "gate_holdings": None,
+            "filled_orders": None,
+            "day_stats": day_stats,
+        }
+
     filled = [
         o
         for o in load_orders(ledger_scope, tenant_id=tenant_id).get("orders", [])
@@ -931,9 +963,6 @@ def _sim_order_ledger_bundle(
     cash = float(replayed["cash"])
     trade_realized = float(replayed["realized_pnl"])
 
-    active: list[dict] = []
-    if prefer_memory:
-        active = list_active_positions(tenant_id=tenant_id, scope=scope)
     if not active:
         order_snap = dict(replayed["positions"])
         _reconcile_ladder_steps_in_snapshot(order_snap)
@@ -943,6 +972,12 @@ def _sim_order_ledger_bundle(
         )
         active = _active_lots_from_merged(merged)
 
+    from services.order_service import order_in_window
+
+    start, end = calendar_day_bounds()
+    day_filled = [o for o in filled if order_in_window(o, start, end)]
+    day_stats = OrderService.stats_from_filled_orders(day_filled)
+
     return {
         "history": history,
         "cash_balance": cash,
@@ -950,6 +985,7 @@ def _sim_order_ledger_bundle(
         "active": active,
         "gate_holdings": None,
         "filled_orders": filled,
+        "day_stats": day_stats,
     }
 
 
@@ -1012,6 +1048,7 @@ def resolve_portfolio_context(
                 "trade_realized": bundle["trade_realized"],
                 "gate_holdings": None,
                 "active": bundle["active"],
+                "day_stats": bundle.get("day_stats"),
             }
 
         ledger_scope = simulated_ledger_scope(cfg.trading_mode, cfg.raw)
@@ -1141,8 +1178,9 @@ def send_positions_snapshot(
         trade_realized=ctx.get("trade_realized"),
         gate_holdings=ctx.get("gate_holdings"),
         price_sources=price_sources,
-        fast_daily_nav=fast,
+        fast_daily_nav=True if fast else False,
         detail_level=level,
+        day_stats=ctx.get("day_stats"),
     )
     if trade_result is not None and getattr(trade_result, "executed", False):
         msg = f"{format_trade_banner(trade_result)}\n\n{msg}"

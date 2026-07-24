@@ -70,8 +70,8 @@ def _perf_lines(stats: dict, *, period_label: str) -> list[str]:
     ]
 
 
-def _stats_header_day(ledger: OrderService) -> str:
-    stats = ledger.stats_day_filled()
+def _stats_header_day(ledger: OrderService, stats: dict | None = None) -> str:
+    stats = stats if stats is not None else ledger.stats_day_filled()
     scope = ledger.scope
     lines = [
         f"<b>📒 Trades heute — {_orders_header_label(scope)}</b>",
@@ -82,8 +82,16 @@ def _stats_header_day(ledger: OrderService) -> str:
     return "\n".join(lines)
 
 
-def _stats_header_blocked(ledger: OrderService) -> str:
-    counts = ledger.stats_blocked_day()
+def _stats_header_blocked(
+    ledger: OrderService,
+    orders: list | None = None,
+) -> str:
+    if orders is None:
+        counts = ledger.stats_blocked_day()
+        top_codes = ledger.stats_blocked_day_codes(top=3)
+    else:
+        counts = OrderService.stats_blocked_from_orders(orders)
+        top_codes = OrderService.blocked_codes_from_orders(orders, top=3)
     total = sum(counts.values())
     lines = [
         f"<b>🚫 Blockierte Orders — {_orders_header_label(ledger.scope)}</b>",
@@ -96,7 +104,6 @@ def _stats_header_blocked(ledger: OrderService) -> str:
             f"⚠️ {counts.get('failed', 0)} fehlgeschlagen"
         ),
     ]
-    top_codes = ledger.stats_blocked_day_codes(top=3)
     if top_codes:
         bits = " · ".join(f"<code>{code}</code> ×{n}" for code, n in top_codes)
         lines.append(f"Gründe: {bits}")
@@ -104,9 +111,9 @@ def _stats_header_blocked(ledger: OrderService) -> str:
     return "\n".join(lines)
 
 
-def _stats_header_month(ledger: OrderService) -> str:
+def _stats_header_month(ledger: OrderService, stats: dict | None = None) -> str:
     start, end = calendar_month_bounds()
-    stats = ledger.stats_month_filled()
+    stats = stats if stats is not None else ledger.stats_month_filled()
     last_day = end - timedelta(days=1)
     lines = [
         f"<b>📅 Trades {_month_label()} — {_orders_header_label(ledger.scope)}</b>",
@@ -178,12 +185,18 @@ def _fetch_all(ledger: OrderService, view: str) -> list:
     return ledger.list_day_filled_all()
 
 
-def _header_for_view(ledger: OrderService, view: str) -> str:
+def _header_for_view(
+    ledger: OrderService,
+    view: str,
+    *,
+    orders: list | None = None,
+    stats: dict | None = None,
+) -> str:
     if view == VIEW_BLOCKED:
-        return _stats_header_blocked(ledger)
+        return _stats_header_blocked(ledger, orders)
     if view == VIEW_MONTH:
-        return _stats_header_month(ledger)
-    return _stats_header_day(ledger)
+        return _stats_header_month(ledger, stats)
+    return _stats_header_day(ledger, stats)
 
 
 def _chunk_lines(header: str, body_lines: list[str], *, limit: int = _TELEGRAM_CHUNK_LIMIT) -> list[str]:
@@ -267,8 +280,12 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     """Render a full-list order view (day / blocked / month). ``page`` ignored."""
     view = view if view in _VIEWS else VIEW_DAY
     ledger = OrderService()
+    # Single ledger pass: body list + header stats from the same orders.
     orders = _fetch_all(ledger, view)
-    header = _header_for_view(ledger, view)
+    stats = None
+    if view in (VIEW_DAY, VIEW_MONTH):
+        stats = OrderService.stats_from_filled_orders(orders)
+    header = _header_for_view(ledger, view, orders=orders, stats=stats)
 
     if not orders:
         msg = header + "\n\n" + _empty_message(view)

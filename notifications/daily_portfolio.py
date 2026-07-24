@@ -127,17 +127,23 @@ def filled_orders_today(scope: str | None = None) -> list:
     return OrderService(target).list_day_filled_all()
 
 
-def today_activity_stats(trading_mode: str = None) -> tuple[int, int, float, bool]:
+def today_activity_stats(
+    trading_mode: str = None,
+    *,
+    day_stats: dict | None = None,
+) -> tuple[int, int, float, bool]:
     """Return (buys, sells, realized_pnl, has_activity) for the current day.
 
-    Simulated ledgers share ``OrderService.stats_day_filled`` with /orders so
-    portfolio line and order list never disagree on counts/PnL.
+    Simulated ledgers share ``OrderService`` day window with /orders.
+    Pass *day_stats* (from ``stats_from_filled_orders``) to avoid a second load.
     """
     mode = trading_mode or get_bot_config().trading_mode
     if is_simulated_trading(get_bot_config().raw):
         from services.order_service import OrderService
 
-        stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled()
+        stats = day_stats
+        if stats is None:
+            stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled()
         if int(stats.get("filled") or 0) <= 0:
             return 0, 0, 0.0, False
         return (
@@ -228,14 +234,17 @@ def format_daily_nav_line(
     prices: dict | None = None,
     cache_ttl_sec: float = _NAV_CACHE_TTL,
     lightweight: bool = False,
+    day_stats: dict | None = None,
 ) -> str:
     """One-line daily stats for cycle summary / portfolio.
 
-    lightweight=True (fast /positions): buy/sell counts only — skips day-start
-    ledger replay which re-loads the full order book.
+    lightweight=True (default for interactive /portfolio): buy/sell counts +
+    sell PnL only — skips day-start NAV replay.
     """
     mode = trading_mode or get_bot_config().trading_mode
-    buys, sells, realized_today, has_activity = today_activity_stats(mode)
+    buys, sells, realized_today, has_activity = today_activity_stats(
+        mode, day_stats=day_stats,
+    )
     if not has_activity:
         return ""
 
@@ -244,7 +253,8 @@ def format_daily_nav_line(
             return f"+${value:,.0f}"
         return f"-${abs(value):,.0f}"
 
-    if lightweight:
+    # Interactive portfolio always prefers the cheap path unless caller forces full.
+    if lightweight or day_stats is not None:
         return (
             f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
             f"Heute Verk. <b>{_signed_usd(realized_today)}</b>"

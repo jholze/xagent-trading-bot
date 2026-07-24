@@ -44,7 +44,10 @@ STATUS_ICONS = {
 }
 
 _ORDERS_READ_CACHE: dict[str, tuple[float, dict]] = {}
-_ORDERS_READ_CACHE_TTL = 2.0
+# Command read path: longer TTL; writes still invalidate via _save.
+_ORDERS_READ_CACHE_TTL = 20.0
+# Stop reverse day/month scans after this many consecutive stamps before window start.
+_WINDOW_EARLY_STOP_STREAK = 12
 
 SOURCE_LABELS = {
     "auto": "Auto",
@@ -420,7 +423,6 @@ class OrderService:
 
     def list_recent_rejected(self, *, hours: float = 24, limit: int = 5) -> list:
         """Recent rejected orders (legacy helper; prefer list_blocked_orders)."""
-        self.expire_stale_pending()
         data = self._load()
         cutoff = _display_now_naive() - timedelta(hours=hours)
         rejected = []
@@ -437,12 +439,50 @@ class OrderService:
                 break
         return rejected
 
-    def _scoped_orders_newest_first(self) -> list:
-        self.expire_stale_pending()
-        self.reconcile_legacy_sources()
+    def _scoped_orders_newest_first(self, *, mutate: bool = False) -> list:
+        """Newest-first scoped orders.
+
+        ``mutate=False`` (default for list/stats): pure read — no expire/reconcile.
+        ``mutate=True``: maintenance side-effects (writes) before read.
+        """
+        if mutate:
+            self.expire_stale_pending()
+            self.reconcile_legacy_sources()
         data = self._load()
         orders = [o for o in data.get("orders", []) if o.get("ledger_scope") == self.scope]
         return list(reversed(orders))
+
+    @staticmethod
+    def _filter_window_newest_first(
+        orders: list,
+        start: datetime,
+        end: datetime,
+        *,
+        early_stop: bool = True,
+        stop_streak: int = _WINDOW_EARLY_STOP_STREAK,
+    ) -> list:
+        """Keep orders in [start, end). ``orders`` must be newest-first.
+
+        When *early_stop* is set, stop after *stop_streak* consecutive stamps
+        strictly before *start* (append-only ledgers are roughly chronological).
+        """
+        out: list = []
+        streak = 0
+        for o in orders:
+            ts = order_event_ts(o)
+            if ts is None:
+                continue
+            if ts >= end:
+                streak = 0
+                continue
+            if ts < start:
+                streak += 1
+                if early_stop and streak >= max(1, stop_streak):
+                    break
+                continue
+            streak = 0
+            out.append(o)
+        return out
 
     def list_orders(
         self,
@@ -454,8 +494,9 @@ class OrderService:
         until: datetime | None = None,
         page: int = 1,
         per_page: int = ORDERS_PER_PAGE,
+        mutate: bool = False,
     ) -> tuple[list, int]:
-        orders = self._scoped_orders_newest_first()
+        orders = self._scoped_orders_newest_first(mutate=mutate)
         if trade_book_only:
             orders = [o for o in orders if o.get("status") in TRADE_BOOK_STATUSES]
         if status_filter:
@@ -469,7 +510,13 @@ class OrderService:
         if since is not None or until is not None:
             start = since or datetime.min
             end = until or datetime.max
-            orders = [o for o in orders if order_in_window(o, start, end)]
+            # Early-stop only when lower bound is real (day/month windows).
+            orders = self._filter_window_newest_first(
+                orders,
+                start,
+                end,
+                early_stop=since is not None,
+            )
         total = len(orders)
         start_i = (max(1, page) - 1) * per_page
         return orders[start_i:start_i + per_page], max(1, (total + per_page - 1) // per_page)
@@ -569,8 +616,9 @@ class OrderService:
             return price * amount
         return 0.0
 
-    def _stats_filled_window(self, start: datetime, end: datetime) -> dict:
-        """Buy/sell counts, volume and realized PnL for filled trades in [start, end)."""
+    @classmethod
+    def stats_from_filled_orders(cls, orders: list) -> dict:
+        """Pure stats from an already-filtered filled order list (no I/O)."""
         counts = {
             "filled": 0,
             "buys": 0,
@@ -581,14 +629,13 @@ class OrderService:
             "sell_wins": 0,
             "sell_losses": 0,
         }
-        for o in self._scoped_orders_newest_first():
-            if o.get("status") != "filled":
-                continue
-            if not order_in_window(o, start, end):
+        for o in orders:
+            st = (o.get("status") or "filled").lower()
+            if st != "filled":
                 continue
             counts["filled"] += 1
             side = (o.get("side") or "").lower()
-            notional = self._order_notional_usdt(o)
+            notional = cls._order_notional_usdt(o)
             if side == "buy":
                 counts["buys"] += 1
                 counts["buy_usdt"] += notional
@@ -606,6 +653,37 @@ class OrderService:
                     counts["sell_losses"] += 1
         return counts
 
+    @staticmethod
+    def stats_blocked_from_orders(orders: list) -> dict:
+        """Status counts from an already-filtered blocked order list (no I/O)."""
+        counts = {st: 0 for st in sorted(BLOCKED_STATUSES)}
+        for o in orders:
+            st = (o.get("status") or "").lower()
+            if st in counts:
+                counts[st] = counts.get(st, 0) + 1
+        return counts
+
+    @staticmethod
+    def blocked_codes_from_orders(orders: list, *, top: int = 3) -> list[tuple[str, int]]:
+        code_counts: dict[str, int] = {}
+        for o in orders:
+            code = str((o.get("risk") or {}).get("code") or "").strip()
+            if not code:
+                continue
+            code_counts[code] = code_counts.get(code, 0) + 1
+        ranked = sorted(code_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[: max(0, int(top or 0))]
+
+    def _stats_filled_window(self, start: datetime, end: datetime) -> dict:
+        """Buy/sell counts, volume and realized PnL for filled trades in [start, end)."""
+        orders = self._scoped_orders_newest_first(mutate=False)
+        filled = [
+            o for o in orders
+            if o.get("status") == "filled"
+        ]
+        in_window = self._filter_window_newest_first(filled, start, end, early_stop=True)
+        return self.stats_from_filled_orders(in_window)
+
     def stats_day_filled(self, now: datetime | None = None) -> dict:
         """Buy/sell counts + volume + realized PnL for filled trades today."""
         start, end = calendar_day_bounds(now)
@@ -618,33 +696,13 @@ class OrderService:
 
     def stats_blocked_day(self, now: datetime | None = None) -> dict:
         """Counts of blocked statuses for today."""
-        start, end = calendar_day_bounds(now)
-        counts = {st: 0 for st in sorted(BLOCKED_STATUSES)}
-        for o in self._scoped_orders_newest_first():
-            st = (o.get("status") or "").lower()
-            if st not in BLOCKED_STATUSES:
-                continue
-            if not order_in_window(o, start, end):
-                continue
-            counts[st] = counts.get(st, 0) + 1
-        return counts
+        orders = self.list_blocked_day_all(now=now)
+        return self.stats_blocked_from_orders(orders)
 
     def stats_blocked_day_codes(self, now: datetime | None = None, *, top: int = 3) -> list[tuple[str, int]]:
         """Top risk.code values among blocked orders today (for header)."""
-        start, end = calendar_day_bounds(now)
-        code_counts: dict[str, int] = {}
-        for o in self._scoped_orders_newest_first():
-            st = (o.get("status") or "").lower()
-            if st not in BLOCKED_STATUSES:
-                continue
-            if not order_in_window(o, start, end):
-                continue
-            code = str((o.get("risk") or {}).get("code") or "").strip()
-            if not code:
-                continue
-            code_counts[code] = code_counts.get(code, 0) + 1
-        ranked = sorted(code_counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        return ranked[: max(0, int(top or 0))]
+        orders = self.list_blocked_day_all(now=now)
+        return self.blocked_codes_from_orders(orders, top=top)
 
     def stats_24h(self) -> dict:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
