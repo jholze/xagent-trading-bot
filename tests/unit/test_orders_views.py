@@ -205,6 +205,12 @@ class TestOrderCommandViews(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        os.environ["ORDER_LEDGER_V2"] = "1"
+        os.environ["ORDER_LEDGER_V2_READS"] = "1"
+        os.environ["ORDER_LEDGER_V2_BACKEND"] = "memory"
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
+
+        reset_order_ledger_v2_for_tests()
         self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", {
             "demo": os.path.join(self.tmp.name, "orders.demo.json"),
             "paper": os.path.join(self.tmp.name, "orders.paper.json"),
@@ -222,11 +228,14 @@ class TestOrderCommandViews(unittest.TestCase):
             telegram_token="t2",
         )
         svc.update_status("t2", "filled", execution={"usdt": 140, "price": 70, "amount": 2})
+        # Stamp today + dual-write v2 so day_key matches display day
         data = svc._load()
         for o in data["orders"]:
             o.setdefault("timestamps", {})
             o["timestamps"]["filled"] = now.isoformat()
             o["timestamps"]["created"] = now.isoformat()
+            o["timestamps"]["updated"] = now.isoformat()
+            svc._dual_write_v2(o)
         svc._save(data)
         svc.create_from_request(
             TradeOrder("BUY", "ONDO/USDT", 1.0, 0, usdt_amount=50),
@@ -238,11 +247,18 @@ class TestOrderCommandViews(unittest.TestCase):
             if o.get("status") == "rejected":
                 o.setdefault("timestamps", {})
                 o["timestamps"]["created"] = now.isoformat()
+                o["timestamps"]["updated"] = now.isoformat()
+                svc._dual_write_v2(o)
         svc._save(data)
 
     def tearDown(self):
         self.scope.stop()
         self.scope_patch.stop()
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
+
+        reset_order_ledger_v2_for_tests()
+        for k in ("ORDER_LEDGER_V2", "ORDER_LEDGER_V2_READS", "ORDER_LEDGER_V2_BACKEND"):
+            os.environ.pop(k, None)
 
     def test_orders_shows_day_header_no_blocked_excerpt(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
@@ -266,17 +282,15 @@ class TestOrderCommandViews(unittest.TestCase):
             self.assertNotIn("Seite", msg)
 
     def test_orders_blocked_shows_risk_code(self):
+        from core.models import RiskDecision
+
         svc = OrderService("paper")
-        data = svc._load()
-        for o in data["orders"]:
-            if o.get("status") == "rejected" and "ONDO" in str(o.get("symbol", "")):
-                o["risk"] = {
-                    "approved": False,
-                    "message": "No amount to sell",
-                    "code": "no_amount",
-                }
-                o["error"] = "No amount to sell"
-        svc._save(data)
+        # Fresh rejected with risk code via OrderService (dual-writes v2)
+        svc.record_rejected(
+            TradeOrder("SELL", "LAB/USDT", 1.0, 1, signal="SELL_FULL"),
+            RiskDecision(approved=False, message="No amount to sell", code="no_amount"),
+            timeframe="1h",
+        )
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
              patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_msg:
             self.assertTrue(order_commands.handle("/orders_blocked"))
@@ -295,21 +309,33 @@ class TestOrderCommandViews(unittest.TestCase):
             self.assertTrue("Trades" in msg and ("Monat" in msg or any(c.isdigit() for c in msg)))
 
     def test_empty_day_message(self):
-        # wipe fills by using empty ledger scope file
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
+
+        reset_order_ledger_v2_for_tests()
         empty = OrderService("paper")
-        empty._save({"orders": []})
-        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_msg:
+        empty._save({"orders": [], "ledger_scope": "paper"})
+        with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_msg, \
+             patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn:
             order_commands.send_orders_view(order_commands.VIEW_DAY, 1)
-            msg = mock_msg.call_args[0][0]
+            self.assertTrue(mock_msg.called or mock_btn.called)
+            msg = (
+                mock_msg.call_args[0][0]
+                if mock_msg.called
+                else mock_btn.call_args[0][0]
+            )
             self.assertIn("Keine ausgeführten Trades", msg)
 
     def test_stats_day_filled_includes_pnl_and_volume(self):
         svc = OrderService("paper")
         data = svc._load()
+        sell_id = None
         for o in data["orders"]:
             if o.get("side") == "sell" and o.get("status") == "filled":
-                o["pnl"] = 12.5
-        svc._save(data)
+                sell_id = o.get("id")
+                break
+        self.assertIsNotNone(sell_id)
+        # update_status dual-writes v2 so day_stats include pnl
+        svc.update_status(sell_id, "filled", pnl=12.5)
         stats = svc.stats_day_filled()
         self.assertGreaterEqual(stats["sells"], 1)
         self.assertAlmostEqual(stats["realized_pnl"], 12.5)

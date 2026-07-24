@@ -21,8 +21,13 @@ from services.order_service import (
 class TestOrderService(unittest.TestCase):
     def setUp(self):
         from services import order_service
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
 
         order_service._ORDERS_READ_CACHE.clear()
+        os.environ["ORDER_LEDGER_V2"] = "1"
+        os.environ["ORDER_LEDGER_V2_READS"] = "1"
+        os.environ["ORDER_LEDGER_V2_BACKEND"] = "memory"
+        reset_order_ledger_v2_for_tests()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", {
@@ -36,8 +41,12 @@ class TestOrderService(unittest.TestCase):
 
     def tearDown(self):
         from services import order_service
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
 
         self.scope.stop()
+        reset_order_ledger_v2_for_tests()
+        for k in ("ORDER_LEDGER_V2", "ORDER_LEDGER_V2_READS", "ORDER_LEDGER_V2_BACKEND"):
+            os.environ.pop(k, None)
         self.scope_patch.stop()
         order_service._ORDERS_READ_CACHE.clear()
 
