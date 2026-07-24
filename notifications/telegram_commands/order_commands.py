@@ -222,6 +222,47 @@ def _chunk_lines(header: str, body_lines: list[str], *, limit: int = _TELEGRAM_C
     return chunks or [header]
 
 
+def _split_orders_by_side(orders: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Partition into (buys, sells, other) preserving relative order."""
+    buys: list[dict] = []
+    sells: list[dict] = []
+    other: list[dict] = []
+    for o in orders:
+        side = (o.get("side") or "").lower()
+        if side == "buy":
+            buys.append(o)
+        elif side == "sell":
+            sells.append(o)
+        else:
+            other.append(o)
+    return buys, sells, other
+
+
+def _body_lines_by_side(
+    orders: list[dict],
+    *,
+    show_block_reason: bool = False,
+) -> list[str]:
+    """Build list lines split into Käufe / Verkäufe sections."""
+    buys, sells, other = _split_orders_by_side(orders)
+    lines: list[str] = []
+
+    def _section(title: str, items: list[dict]) -> None:
+        if not items:
+            return
+        if lines:
+            lines.append("")  # blank line between sections
+        lines.append(f"<b>{title}</b> <i>({len(items)})</i>")
+        for o in items:
+            lines.append(format_order_line(o, show_block_reason=show_block_reason))
+
+    # Header order: 🟢 Käufe · 🔴 Verkäufe — same in the list
+    _section("🟢 Käufe", buys)
+    _section("🔴 Verkäufe", sells)
+    _section("· Sonstige", other)
+    return lines
+
+
 def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     """Render a full-list order view (day / blocked / month). ``page`` ignored."""
     view = view if view in _VIEWS else VIEW_DAY
@@ -235,10 +276,7 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
         return
 
     show_reason = view == VIEW_BLOCKED
-    body = [
-        format_order_line(o, show_block_reason=show_reason)
-        for o in orders
-    ]
+    body = _body_lines_by_side(orders, show_block_reason=show_reason)
     footer_bits = [
         "",
         "<i>Tippe eine <b>Ordernummer</b> / Button für Details</i>",
@@ -250,7 +288,10 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     body.extend(footer_bits)
 
     chunks = _chunk_lines(header, body, limit=_TELEGRAM_CHUNK_LIMIT)
-    buttons = _order_number_buttons(view, ledger.scope, orders, page=1)
+    # Buttons: buys then sells (matches list sections)
+    buys, sells, other = _split_orders_by_side(orders)
+    button_orders = buys + sells + other
+    buttons = _order_number_buttons(view, ledger.scope, button_orders, page=1)
 
     if len(chunks) == 1:
         if buttons:

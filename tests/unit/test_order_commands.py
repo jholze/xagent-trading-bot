@@ -47,6 +47,7 @@ class TestOrderCommands(unittest.TestCase):
             self.assertIn("PAPER", msg)
             self.assertIn("SOL", msg)
             self.assertIn("Tages-PnL", msg)
+            self.assertIn("Verkäufe", msg)  # section header for sells
             self.assertNotIn("Seite", msg)
             self.assertNotIn("PENDING_CONFIRMATION", msg)
             self.assertNotIn("Blockiert (24h, Auszug)", msg)
@@ -55,6 +56,20 @@ class TestOrderCommands(unittest.TestCase):
             self.assertFalse(
                 any("orders_page:" in (b.get("callback_data") or "") for row in buttons for b in row)
             )
+
+    def test_orders_body_splits_buys_and_sells(self):
+        buys = [{"side": "buy", "display_seq": 1, "status": "filled", "symbol": "AAA/USDT"}]
+        sells = [{"side": "sell", "display_seq": 2, "status": "filled", "symbol": "BBB/USDT"}]
+        with patch(
+            "notifications.telegram_commands.order_commands.format_order_line",
+            side_effect=lambda o, **k: f"line-{o['display_seq']}",
+        ):
+            lines = order_commands._body_lines_by_side(buys + sells)
+        text = "\n".join(lines)
+        self.assertIn("🟢 Käufe", text)
+        self.assertIn("🔴 Verkäufe", text)
+        self.assertLess(text.index("Käufe"), text.index("Verkäufe"))
+        self.assertLess(text.index("line-1"), text.index("line-2"))
 
     def test_order_alias(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
