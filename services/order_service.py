@@ -18,6 +18,8 @@ from data_manager import (
 )
 
 ORDERS_PER_PAGE = 5
+# Hard cap for full-list views (/orders, /orders_blocked, /orders_month) — no pager.
+ORDERS_LIST_HARD_CAP = 500
 PENDING_TTL_MINUTES = 10
 EXECUTED_STATUSES = frozenset({"filled"})
 TRADE_BOOK_STATUSES = frozenset({"filled"})
@@ -489,6 +491,13 @@ class OrderService:
             per_page=per_page,
         )
 
+    def list_day_filled_all(self, *, now: datetime | None = None) -> list:
+        """All filled trades for the display calendar day (no pager)."""
+        orders, _ = self.list_day_filled(
+            page=1, per_page=ORDERS_LIST_HARD_CAP, now=now,
+        )
+        return orders
+
     def list_month_filled(
         self,
         *,
@@ -505,6 +514,13 @@ class OrderService:
             page=page,
             per_page=per_page,
         )
+
+    def list_month_filled_all(self, *, now: datetime | None = None) -> list:
+        """All filled trades for the display calendar month (no pager)."""
+        orders, _ = self.list_month_filled(
+            page=1, per_page=ORDERS_LIST_HARD_CAP, now=now,
+        )
+        return orders
 
     def list_blocked_orders(
         self,
@@ -526,10 +542,45 @@ class OrderService:
             kwargs["until"] = end
         return self.list_orders(**kwargs)
 
-    def stats_day_filled(self, now: datetime | None = None) -> dict:
-        """Buy/sell counts for filled trades today (display calendar day)."""
-        start, end = calendar_day_bounds(now)
-        counts = {"filled": 0, "buys": 0, "sells": 0}
+    def list_blocked_day_all(self, *, now: datetime | None = None) -> list:
+        """All blocked attempts for the display calendar day (no pager)."""
+        orders, _ = self.list_blocked_orders(
+            page=1, per_page=ORDERS_LIST_HARD_CAP, now=now, day_only=True,
+        )
+        return orders
+
+    @staticmethod
+    def _order_notional_usdt(order: dict) -> float:
+        exe = order.get("execution") or {}
+        req = order.get("request") or {}
+        for bag in (exe, req):
+            try:
+                usdt = float(bag.get("usdt") or 0)
+            except (TypeError, ValueError):
+                usdt = 0.0
+            if usdt > 0:
+                return usdt
+        try:
+            price = float(exe.get("price") or req.get("price") or 0)
+            amount = float(exe.get("amount") or req.get("amount") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if price > 0 and amount > 0:
+            return price * amount
+        return 0.0
+
+    def _stats_filled_window(self, start: datetime, end: datetime) -> dict:
+        """Buy/sell counts, volume and realized PnL for filled trades in [start, end)."""
+        counts = {
+            "filled": 0,
+            "buys": 0,
+            "sells": 0,
+            "buy_usdt": 0.0,
+            "sell_usdt": 0.0,
+            "realized_pnl": 0.0,
+            "sell_wins": 0,
+            "sell_losses": 0,
+        }
         for o in self._scoped_orders_newest_first():
             if o.get("status") != "filled":
                 continue
@@ -537,11 +588,33 @@ class OrderService:
                 continue
             counts["filled"] += 1
             side = (o.get("side") or "").lower()
+            notional = self._order_notional_usdt(o)
             if side == "buy":
                 counts["buys"] += 1
+                counts["buy_usdt"] += notional
             elif side == "sell":
                 counts["sells"] += 1
+                counts["sell_usdt"] += notional
+                try:
+                    pnl = float(o["pnl"]) if o.get("pnl") is not None else 0.0
+                except (TypeError, ValueError):
+                    pnl = 0.0
+                counts["realized_pnl"] += pnl
+                if pnl > 0:
+                    counts["sell_wins"] += 1
+                elif pnl < 0:
+                    counts["sell_losses"] += 1
         return counts
+
+    def stats_day_filled(self, now: datetime | None = None) -> dict:
+        """Buy/sell counts + volume + realized PnL for filled trades today."""
+        start, end = calendar_day_bounds(now)
+        return self._stats_filled_window(start, end)
+
+    def stats_month_filled(self, now: datetime | None = None) -> dict:
+        """Buy/sell counts + volume + realized PnL for filled trades this month."""
+        start, end = calendar_month_bounds(now)
+        return self._stats_filled_window(start, end)
 
     def stats_blocked_day(self, now: datetime | None = None) -> dict:
         """Counts of blocked statuses for today."""
@@ -555,6 +628,23 @@ class OrderService:
                 continue
             counts[st] = counts.get(st, 0) + 1
         return counts
+
+    def stats_blocked_day_codes(self, now: datetime | None = None, *, top: int = 3) -> list[tuple[str, int]]:
+        """Top risk.code values among blocked orders today (for header)."""
+        start, end = calendar_day_bounds(now)
+        code_counts: dict[str, int] = {}
+        for o in self._scoped_orders_newest_first():
+            st = (o.get("status") or "").lower()
+            if st not in BLOCKED_STATUSES:
+                continue
+            if not order_in_window(o, start, end):
+                continue
+            code = str((o.get("risk") or {}).get("code") or "").strip()
+            if not code:
+                continue
+            code_counts[code] = code_counts.get(code, 0) + 1
+        ranked = sorted(code_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[: max(0, int(top or 0))]
 
     def stats_24h(self) -> dict:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
@@ -689,7 +779,19 @@ def _order_pnl_part(order: dict) -> str:
         return ""
 
 
-def format_order_line(order: dict) -> str:
+def _block_reason_parts(order: dict, *, msg_max: int = 48) -> tuple[str, str]:
+    """Return (risk_code, short_message) for blocked list lines."""
+    risk = order.get("risk") or {}
+    code = str(risk.get("code") or "").strip()
+    msg = str(risk.get("message") or order.get("error") or "").strip()
+    if msg and code and msg.lower() == code.lower():
+        msg = ""
+    if len(msg) > msg_max:
+        msg = msg[: max(1, msg_max - 1)].rstrip() + "…"
+    return code, msg
+
+
+def format_order_line(order: dict, *, show_block_reason: bool = False) -> str:
     from notifications.coin_links import format_ticker_html
     from notifications.telegram_i18n import t
 
@@ -716,9 +818,19 @@ def format_order_line(order: dict) -> str:
     pnl_part = _order_pnl_part(order)
     trade_ts = _order_trade_ts(order)
     date_part = f"  <i>{trade_ts}</i>" if trade_ts else ""
+    reason_part = ""
+    if show_block_reason:
+        code, msg = _block_reason_parts(order)
+        bits = []
+        if code:
+            bits.append(f"<code>{code}</code>")
+        if msg:
+            bits.append(msg)
+        if bits:
+            reason_part = "  · " + " · ".join(bits)
     return (
         f"{icon} <b>#{seq}</b> {status_label}  {side}  "
-        f"<b>{sym_html}</b>  {usdt}{pnl_part}  <i>{src}</i>{date_part}"
+        f"<b>{sym_html}</b>  {usdt}{pnl_part}{reason_part}  <i>{src}</i>{date_part}"
     )
 
 

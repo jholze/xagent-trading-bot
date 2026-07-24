@@ -251,6 +251,8 @@ class TestOrderCommandViews(unittest.TestCase):
             # buttons or message
             msg = (mock_btn.call_args[0][0] if mock_btn.called else mock_msg.call_args[0][0])
             self.assertIn("Trades heute", msg)
+            self.assertIn("Tages-PnL", msg)
+            self.assertNotIn("Seite", msg)
             self.assertNotIn("Blockiert (24h, Auszug)", msg)
             self.assertIn("/orders_blocked", msg)
 
@@ -261,6 +263,26 @@ class TestOrderCommandViews(unittest.TestCase):
             msg = (mock_btn.call_args[0][0] if mock_btn.called else mock_msg.call_args[0][0])
             self.assertIn("Blockierte Orders", msg)
             self.assertIn("ONDO", msg)
+            self.assertNotIn("Seite", msg)
+
+    def test_orders_blocked_shows_risk_code(self):
+        svc = OrderService("paper")
+        data = svc._load()
+        for o in data["orders"]:
+            if o.get("status") == "rejected" and "ONDO" in str(o.get("symbol", "")):
+                o["risk"] = {
+                    "approved": False,
+                    "message": "No amount to sell",
+                    "code": "no_amount",
+                }
+                o["error"] = "No amount to sell"
+        svc._save(data)
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
+             patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_msg:
+            self.assertTrue(order_commands.handle("/orders_blocked"))
+            msg = (mock_btn.call_args[0][0] if mock_btn.called else mock_msg.call_args[0][0])
+            self.assertIn("no_amount", msg)
+            self.assertIn("No amount to sell", msg)
 
     def test_orders_month_command(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
@@ -268,7 +290,8 @@ class TestOrderCommandViews(unittest.TestCase):
             self.assertTrue(order_commands.handle("/orders_month"))
             msg = (mock_btn.call_args[0][0] if mock_btn.called else mock_msg.call_args[0][0])
             self.assertIn("Trades", msg)
-            self.assertIn("Monat", msg.lower() + msg)  # header contains month label or Monat
+            self.assertIn("Monats-PnL", msg)
+            self.assertNotIn("Seite", msg)
             self.assertTrue("Trades" in msg and ("Monat" in msg or any(c.isdigit() for c in msg)))
 
     def test_empty_day_message(self):
@@ -279,6 +302,43 @@ class TestOrderCommandViews(unittest.TestCase):
             order_commands.send_orders_view(order_commands.VIEW_DAY, 1)
             msg = mock_msg.call_args[0][0]
             self.assertIn("Keine ausgeführten Trades", msg)
+
+    def test_stats_day_filled_includes_pnl_and_volume(self):
+        svc = OrderService("paper")
+        data = svc._load()
+        for o in data["orders"]:
+            if o.get("side") == "sell" and o.get("status") == "filled":
+                o["pnl"] = 12.5
+        svc._save(data)
+        stats = svc.stats_day_filled()
+        self.assertGreaterEqual(stats["sells"], 1)
+        self.assertAlmostEqual(stats["realized_pnl"], 12.5)
+        self.assertGreater(stats["sell_usdt"], 0)
+
+    def test_list_day_filled_all_no_page_slice(self):
+        svc = OrderService("paper")
+        # add extra fills so > ORDERS_PER_PAGE would matter if paginated
+        from services.order_service import ORDERS_PER_PAGE
+        now = datetime.now().replace(microsecond=0)
+        for i in range(ORDERS_PER_PAGE + 2):
+            tok = f"extra_{i}"
+            rec = svc.create_from_request(
+                TradeOrder("BUY", f"T{i}/USDT", 1.0, 0, usdt_amount=10),
+                status="filled",
+                telegram_token=tok,
+            )
+            svc.update_status(tok, "filled", execution={"usdt": 10, "price": 1.0, "amount": 10})
+            data = svc._load()
+            for o in data["orders"]:
+                if o.get("id") == (rec.get("id") or tok):
+                    o.setdefault("timestamps", {})
+                    o["timestamps"]["filled"] = now.isoformat()
+                    o["timestamps"]["created"] = now.isoformat()
+            svc._save(data)
+        all_orders = svc.list_day_filled_all()
+        page, pages = svc.list_day_filled(page=1, per_page=ORDERS_PER_PAGE)
+        self.assertGreater(len(all_orders), len(page))
+        self.assertGreater(len(all_orders), ORDERS_PER_PAGE)
 
     def test_pagination_callback_view_aware(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \

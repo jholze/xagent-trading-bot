@@ -39,15 +39,27 @@ class TestOrderCommands(unittest.TestCase):
         self.scope.stop()
         self.scope_patch.stop()
 
-    def test_orders_lists_page(self):
+    def test_orders_lists_full_day_with_performance(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders"))
             msg = mock_send.call_args[0][0]
             self.assertIn("Trades heute", msg)
             self.assertIn("PAPER", msg)
             self.assertIn("SOL", msg)
+            self.assertIn("Tages-PnL", msg)
+            self.assertNotIn("Seite", msg)
             self.assertNotIn("PENDING_CONFIRMATION", msg)
             self.assertNotIn("Blockiert (24h, Auszug)", msg)
+            buttons = mock_send.call_args[0][1]
+            # no pager buttons
+            self.assertFalse(
+                any("orders_page:" in (b.get("callback_data") or "") for row in buttons for b in row)
+            )
+
+    def test_order_alias(self):
+        with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
+            self.assertTrue(order_commands.handle("/order"))
+            self.assertIn("Trades heute", mock_send.call_args[0][0])
 
     def test_orders_detail_by_number(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
@@ -56,17 +68,19 @@ class TestOrderCommands(unittest.TestCase):
             self.assertIn("Order #1", msg)
             self.assertIn("ARIA", msg)
 
-    def test_orders_page_command(self):
+    def test_orders_page_command_still_works_no_pager_label(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send:
             self.assertTrue(order_commands.handle("/orders page 1"))
-            self.assertIn("Seite", mock_send.call_args[0][0])
+            msg = mock_send.call_args[0][0]
+            self.assertIn("Trades heute", msg)
+            self.assertNotIn("Seite", msg)
 
     def test_orders_invalid_shows_hint(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_send:
             self.assertTrue(order_commands.handle("/orders abc"))
             self.assertIn("/orders", mock_send.call_args[0][0])
 
-    def test_pagination_callback(self):
+    def test_pagination_callback_reloads_full_list(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_send, \
              patch("notifications.telegram_commands.order_commands.answer_callback_query"):
             self.assertTrue(order_commands.handle_callback({
