@@ -31,7 +31,7 @@ class TestOrderTenantCache(unittest.TestCase):
 
     def test_cache_isolated_per_tenant(self):
         with patch("services.order_service.load_orders", side_effect=self._fake_load):
-            with patch("services.order_service.resolve_ledger_scope", return_value="paper"):
+            with patch("services.order_service.resolve_tenant_scope", return_value="paper"):
                 with tenant_context("henry", scope="paper"):
                     a = OrderService()._load()
                     self.assertEqual(a["orders"][0]["symbol"], "henry/USDT")

@@ -48,6 +48,18 @@ _ORDERS_READ_CACHE: dict[str, tuple[float, dict]] = {}
 _ORDERS_READ_CACHE_TTL = 20.0
 # Stop reverse day/month scans after this many consecutive stamps before window start.
 _WINDOW_EARLY_STOP_STREAK = 12
+# Honest instrumentation: full-history blob loads via OrderService._load
+_BLOB_LOAD_COUNT = 0
+
+
+def reset_blob_load_count() -> None:
+    global _BLOB_LOAD_COUNT
+    _BLOB_LOAD_COUNT = 0
+
+
+def blob_load_count() -> int:
+    """How many times OrderService loaded the legacy full orders document."""
+    return _BLOB_LOAD_COUNT
 
 SOURCE_LABELS = {
     "auto": "Auto",
@@ -224,12 +236,14 @@ class OrderService:
         return f"{resolve_tenant_id()}:{self.scope}"
 
     def _load(self) -> dict:
+        global _BLOB_LOAD_COUNT
         now = time.time()
         key = self._cache_key()
         cached = _ORDERS_READ_CACHE.get(key)
         if cached and now - cached[0] < _ORDERS_READ_CACHE_TTL:
             data = cached[1]
         else:
+            _BLOB_LOAD_COUNT += 1
             data = load_orders(self.scope)
             if data.get("ledger_scope") != self.scope:
                 data["ledger_scope"] = self.scope
@@ -411,36 +425,34 @@ class OrderService:
         return n.strftime("%Y-%m-%d")
 
     def get_by_id(self, order_id: str) -> Optional[dict]:
-        # Prefer legacy blob during dual-write so mutate paths (expire/reconcile)
-        # that update the blob remain visible; v2 is kept in sync on those paths.
-        hit = self._find(self._load(), order_id=order_id)
-        if hit is not None:
-            return hit
+        """Lookup single order; prefer v2 when reads enabled (no full-blob load)."""
         try:
             from storage.order_ledger_v2 import get_order_ledger_v2, order_ledger_v2_reads_enabled
 
             store = get_order_ledger_v2()
             if store is not None and order_ledger_v2_reads_enabled():
-                return store.get_by_id(resolve_tenant_id(), self.scope, order_id)
+                hit = store.get_by_id(resolve_tenant_id(), self.scope, order_id)
+                if hit is not None:
+                    return hit
         except Exception:
             pass
-        return None
+        return self._find(self._load(), order_id=order_id)
 
     def get_by_display_seq(self, display_seq: int) -> Optional[dict]:
-        hit = self._find(self._load(), display_seq=display_seq)
-        if hit is not None:
-            return hit
+        """Lookup by display_seq; prefer v2 when reads enabled (no full-blob load)."""
         try:
             from storage.order_ledger_v2 import get_order_ledger_v2, order_ledger_v2_reads_enabled
 
             store = get_order_ledger_v2()
             if store is not None and order_ledger_v2_reads_enabled():
-                return store.get_by_display_seq(
+                hit = store.get_by_display_seq(
                     resolve_tenant_id(), self.scope, int(display_seq),
                 )
+                if hit is not None:
+                    return hit
         except Exception:
             pass
-        return None
+        return self._find(self._load(), display_seq=display_seq)
 
     def expire_stale_pending(self) -> int:
         data = self._load()
@@ -597,36 +609,61 @@ class OrderService:
             per_page=per_page,
         )
 
+    @staticmethod
+    def _merge_orders_by_id(*lists: list) -> list:
+        """Union order lists by id (first occurrence wins; preserve order)."""
+        seen: set[str] = set()
+        out: list = []
+        for lst in lists:
+            for o in lst or []:
+                oid = str(o.get("id") or "")
+                if not oid or oid in seen:
+                    continue
+                seen.add(oid)
+                out.append(o)
+        return out
+
     def list_day_filled_all(self, *, now: datetime | None = None) -> list:
         """All filled trades for the display calendar day (no pager).
 
-        Prefer order-ledger v2 day index (no full-history blob load).
+        Prefer order-ledger v2 day index. Until backfill is complete, union with
+        legacy day window so blob-only same-day fills are not dropped.
         """
+        v2_day: list = []
+        use_v2 = False
         try:
             from storage.order_ledger_v2 import (
                 get_order_ledger_v2,
+                order_ledger_v2_backfill_complete,
                 order_ledger_v2_reads_enabled,
             )
 
             store = get_order_ledger_v2()
             tid = resolve_tenant_id()
-            if (
-                store is not None
-                and order_ledger_v2_reads_enabled()
-                and store.has_tenant_orders(tid, self.scope)
-            ):
-                return store.query_day(
+            if store is not None and order_ledger_v2_reads_enabled():
+                use_v2 = True
+                v2_day = store.query_day(
                     tid,
                     self.scope,
                     self._v2_day_key(now),
                     filled_only=True,
                     limit=ORDERS_LIST_HARD_CAP,
                 )
+                if order_ledger_v2_backfill_complete() and store.has_tenant_orders(
+                    tid, self.scope
+                ):
+                    return v2_day
         except Exception:
-            pass
+            use_v2 = False
+
+        # Legacy day window (full blob) — always when v2 off; union when partial dual-write
         orders, _ = self.list_day_filled(
             page=1, per_page=ORDERS_LIST_HARD_CAP, now=now,
         )
+        if use_v2 and v2_day:
+            return self._merge_orders_by_id(v2_day, orders)[:ORDERS_LIST_HARD_CAP]
+        if use_v2 and not orders:
+            return v2_day
         return orders
 
     def list_month_filled(
@@ -656,11 +693,9 @@ class OrderService:
 
             store = get_order_ledger_v2()
             tid = resolve_tenant_id()
-            if (
-                store is not None
-                and order_ledger_v2_reads_enabled()
-                and store.has_tenant_orders(tid, self.scope)
-            ):
+            if store is not None and order_ledger_v2_reads_enabled():
+                from storage.order_ledger_v2 import order_ledger_v2_backfill_complete
+
                 start, end = calendar_month_bounds(now)
                 out: list = []
                 day = start
@@ -683,7 +718,15 @@ class OrderService:
                     ),
                     reverse=True,
                 )
-                return out[:ORDERS_LIST_HARD_CAP]
+                if order_ledger_v2_backfill_complete() and store.has_tenant_orders(
+                    tid, self.scope
+                ):
+                    return out[:ORDERS_LIST_HARD_CAP]
+                # Partial: union with legacy month window
+                legacy, _ = self.list_month_filled(
+                    page=1, per_page=ORDERS_LIST_HARD_CAP, now=now,
+                )
+                return self._merge_orders_by_id(out, legacy)[:ORDERS_LIST_HARD_CAP]
         except Exception:
             pass
         orders, _ = self.list_month_filled(
@@ -721,18 +764,26 @@ class OrderService:
 
             store = get_order_ledger_v2()
             tid = resolve_tenant_id()
-            if (
-                store is not None
-                and order_ledger_v2_reads_enabled()
-                and store.has_tenant_orders(tid, self.scope)
-            ):
-                return store.query_day(
+            if store is not None and order_ledger_v2_reads_enabled():
+                from storage.order_ledger_v2 import order_ledger_v2_backfill_complete
+
+                v2_b = store.query_day(
                     tid,
                     self.scope,
                     self._v2_day_key(now),
                     blocked_only=True,
                     limit=ORDERS_LIST_HARD_CAP,
                 )
+                if order_ledger_v2_backfill_complete() and store.has_tenant_orders(
+                    tid, self.scope
+                ):
+                    return v2_b
+                orders, _ = self.list_blocked_orders(
+                    page=1, per_page=ORDERS_LIST_HARD_CAP, now=now, day_only=True,
+                )
+                if v2_b:
+                    return self._merge_orders_by_id(v2_b, orders)[:ORDERS_LIST_HARD_CAP]
+                return orders
         except Exception:
             pass
         orders, _ = self.list_blocked_orders(
@@ -829,31 +880,39 @@ class OrderService:
         return self.stats_from_filled_orders(in_window)
 
     def stats_day_filled(self, now: datetime | None = None) -> dict:
-        """Buy/sell counts + volume + realized PnL for filled trades today."""
+        """Buy/sell counts + volume + realized PnL for filled trades today.
+
+        After backfill: pure v2 day_stats (no blob). Before backfill with
+        READS=1: recompute from unioned day list so blob-only fills count.
+        """
         try:
             from storage.order_ledger_v2 import (
                 get_order_ledger_v2,
+                order_ledger_v2_backfill_complete,
                 order_ledger_v2_reads_enabled,
             )
 
             store = get_order_ledger_v2()
             tid = resolve_tenant_id()
-            if (
-                store is not None
-                and order_ledger_v2_reads_enabled()
-                and store.has_tenant_orders(tid, self.scope)
-            ):
-                stats = store.get_day_stats(tid, self.scope, self._v2_day_key(now))
-                return {
-                    "filled": int(stats.get("filled") or 0),
-                    "buys": int(stats.get("buys") or 0),
-                    "sells": int(stats.get("sells") or 0),
-                    "buy_usdt": float(stats.get("buy_usdt") or 0),
-                    "sell_usdt": float(stats.get("sell_usdt") or 0),
-                    "realized_pnl": float(stats.get("realized_pnl") or 0),
-                    "sell_wins": int(stats.get("sell_wins") or 0),
-                    "sell_losses": int(stats.get("sell_losses") or 0),
-                }
+            if store is not None and order_ledger_v2_reads_enabled():
+                if order_ledger_v2_backfill_complete() and store.has_tenant_orders(
+                    tid, self.scope
+                ):
+                    stats = store.get_day_stats(
+                        tid, self.scope, self._v2_day_key(now),
+                    )
+                    return {
+                        "filled": int(stats.get("filled") or 0),
+                        "buys": int(stats.get("buys") or 0),
+                        "sells": int(stats.get("sells") or 0),
+                        "buy_usdt": float(stats.get("buy_usdt") or 0),
+                        "sell_usdt": float(stats.get("sell_usdt") or 0),
+                        "realized_pnl": float(stats.get("realized_pnl") or 0),
+                        "sell_wins": int(stats.get("sell_wins") or 0),
+                        "sell_losses": int(stats.get("sell_losses") or 0),
+                    }
+                # Partial dual-write: parity with unioned day list
+                return self.stats_from_filled_orders(self.list_day_filled_all(now=now))
         except Exception:
             pass
         start, end = calendar_day_bounds(now)

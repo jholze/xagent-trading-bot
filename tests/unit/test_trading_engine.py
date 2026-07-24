@@ -36,7 +36,7 @@ class TestIdempotency(unittest.TestCase):
         self.orders = {"orders": [], "ledger_scope": "paper"}
         self.save = patch("services.order_service.save_orders", side_effect=self._save)
         self.load = patch("services.order_service.load_orders", return_value=self.orders)
-        self.scope = patch("services.order_service.resolve_ledger_scope", return_value="paper")
+        self.scope = patch("services.order_service.resolve_tenant_scope", return_value="paper")
         self.save.start()
         self.load.start()
         self.scope.start()

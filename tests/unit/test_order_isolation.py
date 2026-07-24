@@ -20,11 +20,24 @@ class TestOrderIsolation(unittest.TestCase):
             "paper": os.path.join(self.tmp.name, "orders.paper.json"),
             "live": os.path.join(self.tmp.name, "orders.live.json"),
         }
-        self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", self.files)
-        self.scope_patch.start()
+        # Force local JSON ledger so ORDERS_SCOPE_FILES patch is authoritative
+        # (dev configs often use mongo + multi-tenant, which ignore temp files).
+        self.patches = [
+            patch("data_manager.ORDERS_SCOPE_FILES", self.files),
+            patch("data_manager._ledger_reads_mongo_orders", return_value=False),
+            patch("data_manager._ledger_writes_mongo", return_value=False),
+            patch("data_manager._ledger_writes_json", return_value=True),
+            patch("data_manager._should_refuse_demo_json_fallback", return_value=False),
+            patch("data_manager._reject_demo_mongo_orders_downgrade", return_value=False),
+            patch("data_manager._demo_ledger_backend_is_mongo", return_value=False),
+            patch("core.tenant_context.multi_tenant_enabled", return_value=False),
+        ]
+        for p in self.patches:
+            p.start()
 
     def tearDown(self):
-        self.scope_patch.stop()
+        for p in reversed(self.patches):
+            p.stop()
 
     def test_demo_mode_uses_demo_scope(self):
         with patch("data_manager.is_demo_mode", return_value=True):

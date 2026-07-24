@@ -52,6 +52,17 @@ def order_ledger_v2_reads_enabled() -> bool:
     return raw in ("1", "true", "on", "yes")
 
 
+def order_ledger_v2_backfill_complete() -> bool:
+    """When true, day reads may trust v2 alone (no blob union).
+
+    Set ``ORDER_LEDGER_V2_BACKFILL_COMPLETE=1`` after historical orders are
+    migrated into v2. Until then, day list/stats union v2 with legacy day
+    window so blob-only same-day fills are not dropped.
+    """
+    raw = (os.environ.get("ORDER_LEDGER_V2_BACKFILL_COMPLETE") or "0").strip().lower()
+    return raw in ("1", "true", "on", "yes")
+
+
 def reset_order_ledger_v2_for_tests() -> None:
     """Drop process singleton (tests)."""
     global _STORE
