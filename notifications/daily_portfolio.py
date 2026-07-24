@@ -116,32 +116,36 @@ def trades_today(trades: list = None) -> list:
 
 
 def filled_orders_today(scope: str | None = None) -> list:
-    """Filled demo/paper orders today (source of truth when trade_history.trades is empty)."""
+    """Filled demo/paper orders for the *display* calendar day (same window as /orders).
+
+    Uses OrderService Berlin/display-TZ day bounds — not raw ``date.today()`` string
+    prefix on UTC fill stamps (that drifted vs /orders headers).
+    """
+    from services.order_service import OrderService
+
     target = scope or resolve_ledger_scope()
-    today = date.today().isoformat()
-    return [
-        o
-        for o in load_orders(target).get("orders", [])
-        if o.get("status") == "filled"
-        and ((o.get("timestamps") or {}).get("filled") or "").startswith(today)
-    ]
+    return OrderService(target).list_day_filled_all()
 
 
 def today_activity_stats(trading_mode: str = None) -> tuple[int, int, float, bool]:
-    """Return (buys, sells, realized_pnl, has_activity) for the current day."""
+    """Return (buys, sells, realized_pnl, has_activity) for the current day.
+
+    Simulated ledgers share ``OrderService.stats_day_filled`` with /orders so
+    portfolio line and order list never disagree on counts/PnL.
+    """
     mode = trading_mode or get_bot_config().trading_mode
     if is_simulated_trading(get_bot_config().raw):
-        orders = filled_orders_today(resolve_ledger_scope(mode))
-        if not orders:
+        from services.order_service import OrderService
+
+        stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled()
+        if int(stats.get("filled") or 0) <= 0:
             return 0, 0, 0.0, False
-        buys = sum(1 for o in orders if (o.get("side") or "").lower() == "buy")
-        sells = sum(1 for o in orders if (o.get("side") or "").lower() == "sell")
-        realized = sum(
-            float(o.get("pnl") or 0)
-            for o in orders
-            if (o.get("side") or "").lower() == "sell"
+        return (
+            int(stats.get("buys") or 0),
+            int(stats.get("sells") or 0),
+            round(float(stats.get("realized_pnl") or 0), 2),
+            True,
         )
-        return buys, sells, realized, True
     today = trades_today()
     if not today:
         return 0, 0, 0.0, False
