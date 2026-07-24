@@ -116,7 +116,7 @@ def resolve_effective_timeframe(
     range_24h_pct: float | None = None,
     change_24h_pct: float | None = None,
 ) -> str:
-    """Pick analysis timeframe: legacy positions keep their TF; volatile coins use 1h."""
+    """Pick analysis timeframe: open lots keep their TF; volatile coins use 1h."""
     cfg = get_bot_config()
     symbol = coin.get("symbol", "")
     watchlist_tf = coin.get("timeframe", "4h")
@@ -124,19 +124,17 @@ def resolve_effective_timeframe(
     volatile_tf = str(va_cfg.get("timeframe") or "").strip()
 
     from intelligence.strategy_backtest import classify_coin
+    from strategies.positions import find_open_position_for_symbol
 
     coin_class = classify_coin(symbol, coin.get("strategy_params"))
     if coin_class == "large_cap":
         return watchlist_tf
 
-    candidate_tfs = [watchlist_tf]
-    if volatile_tf:
-        candidate_tfs.extend([volatile_tf, "4h", "1h"])
-    else:
-        candidate_tfs.extend(["4h", "1h"])
-    for tf in dict.fromkeys(candidate_tfs):
-        if tf and _has_open_position(symbol, tf):
-            return tf
+    # Any open lot for this symbol wins (not only candidate TFs) — avoids
+    # volatile 1h entries being analysed/sold against an empty 4h key.
+    open_lot = find_open_position_for_symbol(symbol, preferred_timeframe=watchlist_tf)
+    if open_lot:
+        return open_lot[0]
 
     if not va_cfg.get("enabled", False) or not volatile_tf:
         return watchlist_tf

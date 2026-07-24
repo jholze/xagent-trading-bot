@@ -552,6 +552,69 @@ def get_key(symbol, timeframe):
     return f"{symbol.replace('/', '_')}_{timeframe}"
 
 
+def parse_position_key(key: str) -> tuple[str, str]:
+    """Split store key ``BASE_QUOTE_tf`` → (``BASE/QUOTE``, timeframe)."""
+    base, _, tf = str(key or "").rpartition("_")
+    if not base or not tf:
+        return "", ""
+    symbol = base.replace("_", "/") if "/" not in base else base
+    return symbol, tf
+
+
+def _symbol_key_base(symbol: str) -> str:
+    return str(symbol or "").replace("/", "_").upper()
+
+
+def find_open_position_for_symbol(
+    symbol: str,
+    preferred_timeframe: str | None = None,
+) -> tuple[str, dict] | None:
+    """
+    Find an open lot for *symbol* on any timeframe in the active tenant store.
+
+    Returns ``(timeframe, position)`` or ``None``.
+
+    Preference order:
+    1. *preferred_timeframe* if that lot is open
+    2. largest amount
+    3. most recent ``entry_at`` / ``last_trade_at`` (stable tie-break)
+    """
+    _activate(_resolve_store_key())
+    want = _symbol_key_base(symbol)
+    if not want:
+        return None
+
+    matches: list[tuple[str, dict]] = []
+    with _positions_lock:
+        store = _active_store()
+        for key, raw in store.items():
+            sym, tf = parse_position_key(key)
+            if _symbol_key_base(sym) != want:
+                continue
+            if not is_open_position(raw):
+                continue
+            # Copy under lock so callers can read safely without holding it.
+            matches.append((tf, dict(raw)))
+
+    if not matches:
+        return None
+
+    if preferred_timeframe:
+        pref = str(preferred_timeframe).strip()
+        for tf, pos in matches:
+            if tf == pref:
+                return tf, pos
+
+    def _sort_key(item: tuple[str, dict]):
+        tf, pos = item
+        amount = float(pos.get("amount", 0) or 0)
+        ts = str(pos.get("entry_at") or pos.get("last_trade_at") or "")
+        return (amount, ts)
+
+    matches.sort(key=_sort_key, reverse=True)
+    return matches[0]
+
+
 def init_position(symbol, timeframe):
     """Ensure position key exists on the active tenant store (never KeyError)."""
     _activate(_resolve_store_key())

@@ -453,6 +453,16 @@ class DecisionEngine:
         symbol = coin["symbol"]
         pos = get_position(symbol, tf)
         has_position = float(pos["amount"]) > 0
+        if not has_position:
+            # Defense: lot may sit on another TF than resolve_effective_timeframe
+            # returned (e.g. store race / legacy key). Bind analysis to the real lot.
+            from strategies.positions import find_open_position_for_symbol
+
+            found = find_open_position_for_symbol(symbol, preferred_timeframe=tf)
+            if found:
+                tf, pos = found
+                has_position = True
+                coin = resolve_coin_config({**coin, "timeframe": tf})
         frozen = pos.get("strategy_tier") if has_position else None
         va_cfg = self.config.volatile_altcoin_config
         if has_position and not frozen and va_cfg.get("freeze_tier_on_entry", True):

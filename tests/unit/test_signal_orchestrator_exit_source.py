@@ -43,12 +43,16 @@ class TestOrchestratorExitSource(unittest.TestCase):
         orch = SignalOrchestrator()
         orch.trading = trading
 
-        with patch("services.signal_orchestrator.get_position", return_value={"amount": 100.0}), \
-             patch("services.signal_orchestrator.resolve_coin_config", return_value={"strategy_params": {}}), \
-             patch(
-                 "strategies.positions.sell_fraction_for_signal",
-                 return_value=0.5,
-             ):
+        with patch(
+            "services.signal_orchestrator.find_open_position_for_symbol",
+            return_value=("4h", {"amount": 100.0}),
+        ), patch(
+            "services.signal_orchestrator.resolve_coin_config",
+            return_value={"strategy_params": {}},
+        ), patch(
+            "strategies.positions.sell_fraction_for_signal",
+            return_value=0.5,
+        ):
             orch.execute_if_needed(
                 _analysis(),
                 coin={"symbol": "LAB/USDT", "timeframe": "4h"},

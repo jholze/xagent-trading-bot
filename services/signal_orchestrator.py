@@ -8,7 +8,7 @@ from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
 from core.actions import BUY_DCA, SELL_FULL, is_buy, is_sell
-from strategies.positions import get_position
+from strategies.positions import find_open_position_for_symbol, get_position
 from strategies.decision_engine import DecisionEngine
 from strategies.dca_portfolio import build_portfolio_dca_plan, portfolio_config
 from strategies.registry import resolve_coin_config
@@ -151,7 +151,16 @@ class SignalOrchestrator:
                 entry_15m_vol_ratio=vol_ratio,
             )
         else:
-            pos = get_position(symbol, tf)
+            # Size and execute against the open lot TF (may differ from analysis TF
+            # e.g. volatile entry on 1h while watchlist analysis runs 4h).
+            found = find_open_position_for_symbol(symbol, preferred_timeframe=tf)
+            if not found:
+                log(
+                    f"Skip sell {symbol}: no open lot (analysis_tf={tf})",
+                    "WARNING",
+                )
+                return None
+            pos_tf, pos = found
             from strategies.positions import sell_fraction_for_signal
 
             strategy_params = getattr(analysis, "strategy_params", None) or {}
@@ -160,7 +169,7 @@ class SignalOrchestrator:
                     from strategies.registry import resolve_strategy_params
 
                     strategy_params = resolve_strategy_params(
-                        {"symbol": symbol, "timeframe": tf},
+                        {"symbol": symbol, "timeframe": pos_tf},
                         has_position=True,
                         atr_pct=getattr(analysis, "atr_pct", 3.0),
                         frozen_tier=pos.get("strategy_tier"),
@@ -168,9 +177,16 @@ class SignalOrchestrator:
                 except Exception:
                     strategy_params = {}
             fraction = sell_fraction_for_signal(
-                analysis.action, symbol, tf, current_price, strategy_params,
+                analysis.action, symbol, pos_tf, current_price, strategy_params,
             )
-            amount_sold = float(pos["amount"]) * fraction
+            amount_sold = float(pos.get("amount", 0) or 0) * fraction
+            if amount_sold <= 0:
+                log(
+                    f"Skip sell {symbol}: resolved amount=0 "
+                    f"(lot_tf={pos_tf}, analysis_tf={tf})",
+                    "WARNING",
+                )
+                return None
             sell_signal = analysis.normalized_action or analysis.action
             from strategies.exit_attribution import resolve_exit_source, truncate_rationale
 
@@ -189,6 +205,7 @@ class SignalOrchestrator:
                 exit_source=exit_src,
                 exit_rationale=truncate_rationale(getattr(analysis, "rationale", "") or ""),
             )
+            tf = pos_tf
 
         from bus.trade_intents import make_idempotency_key
         from core.tenant_context import resolve_tenant_scope

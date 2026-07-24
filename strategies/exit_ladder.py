@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from strategies.positions import get_position
+from strategies.positions import find_open_position_for_symbol, get_position
 
 TERMINAL_SIGNALS = frozenset(
     {"SELL_STOP_FULL", "SELL_FULL", "SELL_STOP", "SELL_TRAIL_FULL"}
@@ -126,6 +126,11 @@ def resolve_sell_amount(
 
     pos = get_position(symbol, timeframe)
     amount = float(pos.get("amount", 0) or 0)
+    if amount <= 0:
+        found = find_open_position_for_symbol(symbol, preferred_timeframe=timeframe)
+        if found:
+            _, pos = found
+            amount = float(pos.get("amount", 0) or 0)
     if amount <= 0 or price <= 0:
         return 0.0
 
@@ -166,6 +171,10 @@ def resolve_sell_fraction(
         return None
     pos = get_position(symbol, timeframe)
     held = float(pos.get("amount", 0) or 0)
+    if held <= 0:
+        found = find_open_position_for_symbol(symbol, preferred_timeframe=timeframe)
+        if found:
+            held = float(found[1].get("amount", 0) or 0)
     if held <= 0:
         return 0.0
     return min(1.0, amount / held)

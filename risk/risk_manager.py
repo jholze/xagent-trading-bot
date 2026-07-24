@@ -15,7 +15,14 @@ from data_manager import (
 from services.gate_balance import fetch_portfolio_equity, fetch_usdt_balance
 from services.market_service import MarketService
 from services.portfolio_service import PortfolioService
-from strategies.positions import count_open_full_slots, count_open_positions, get_position, list_active_positions
+from strategies.positions import (
+    count_open_full_slots,
+    count_open_positions,
+    find_open_position_for_symbol,
+    get_position,
+    list_active_positions,
+    sell_fraction_for_signal,
+)
 
 
 def _is_emergency_sell(signal: str) -> bool:
@@ -78,6 +85,8 @@ class RiskManager:
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             order = self._resolve_sell_order(order, timeframe, source)
+            if order.amount <= 0:
+                order = self._fill_sell_amount_from_open_lot(order, timeframe)
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
@@ -1150,6 +1159,51 @@ class RiskManager:
             ),
         }
 
+    def _fill_sell_amount_from_open_lot(
+        self, order: TradeOrder, timeframe: str
+    ) -> TradeOrder:
+        """
+        If sell amount is missing/zero, size from any open lot for the symbol.
+
+        Guards against analysis TF ≠ position TF (e.g. 4h signal vs 1h volatile lot).
+        """
+        found = find_open_position_for_symbol(
+            order.symbol, preferred_timeframe=timeframe
+        )
+        if not found:
+            return order
+        pos_tf, pos = found
+        held = float(pos.get("amount", 0) or 0)
+        if held <= 0:
+            return order
+        try:
+            fraction = sell_fraction_for_signal(
+                order.signal or "SELL_FULL",
+                order.symbol,
+                pos_tf,
+                float(order.price or 0),
+                None,
+            )
+        except Exception:
+            fraction = 1.0
+        amount = held * float(fraction or 0)
+        if amount <= 0:
+            return order
+        return TradeOrder(
+            type=order.type,
+            symbol=order.symbol,
+            price=order.price,
+            amount=amount,
+            usdt_amount=order.usdt_amount,
+            signal=order.signal,
+            source=order.source,
+            order_id=order.order_id,
+            timestamp=order.timestamp,
+            exit_source=getattr(order, "exit_source", None),
+            exit_rationale=getattr(order, "exit_rationale", None),
+            idempotency_key=getattr(order, "idempotency_key", None),
+        )
+
     def _resolve_sell_order(self, order: TradeOrder, timeframe: str, source: str) -> TradeOrder:
         """Upgrade partial sells to full close when the lot is dust or nearly exited."""
         if source == "manual" or _is_emergency_sell(order.signal):
@@ -1159,6 +1213,13 @@ class RiskManager:
 
         pos = get_position(order.symbol, timeframe)
         amount = float(pos.get("amount", 0))
+        if amount <= 0:
+            found = find_open_position_for_symbol(
+                order.symbol, preferred_timeframe=timeframe
+            )
+            if found:
+                pos = found[1]
+                amount = float(pos.get("amount", 0) or 0)
         if amount <= 0:
             return order
 
