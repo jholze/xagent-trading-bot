@@ -77,5 +77,5 @@ Gate catalog / sources  →  WQE (hard + score + tier + regime)  →  Scan / Sen
 ## Next
 
 1. ~~Implement **#125 (W1)** adapter only (pure, tests).~~ **done** — `services/watchlist_quality/memory_bias.py`  
-2. **#126 (W2)** shadow on staging 48h → go/no-go Soft.  
+2. ~~**#126 (W2)** shadow score + metrics.~~ **done** — `scoring.py` / `engine.py` / `store.py`; mode=`shadow`  
 3. Soft → Enforce hinter Flag (#127 → #128).
