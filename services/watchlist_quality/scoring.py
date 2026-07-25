@@ -127,6 +127,8 @@ class CoinQualityScore:
     flags: list[str] = field(default_factory=list)
     tier_hint: str = "T2"  # shadow hint only — not enforced in W2
     memory: dict[str, Any] = field(default_factory=dict)
+    quality_shadow_ai: float | None = None
+    ai: dict[str, Any] = field(default_factory=dict)
     updated_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
