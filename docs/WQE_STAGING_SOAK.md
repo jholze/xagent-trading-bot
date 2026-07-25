@@ -12,12 +12,19 @@
 
 ## Data collection (logging)
 
-| Source | Path / command | Contents |
-|--------|----------------|----------|
-| **Event log (primary)** | `logs/wqe_events.jsonl` | `wqe_sync`, `wqe_coin`, `wqe_buy_block`, `wqe_soft_apply` |
-| **Human logs** | `logs/aria_log.txt` + Railway | lines `wqe_event …` / `watchlist_quality_sync …` |
-| **Score snapshot** | `watchlist_quality_scores.json` | last full score set |
-| **Telegram** | `/wqe` · `/wqe soak` | live summary + counters |
+| Source | Path / command | Contents | Survives redeploy? |
+|--------|----------------|----------|--------------------|
+| **Event log (primary)** | `logs/wqe_events.jsonl` | `wqe_sync`, `wqe_coin`, `wqe_buy_block`, `wqe_soft_apply` | **Yes** on staging (volume `/app/logs`) |
+| **Score snapshot** | `logs/watchlist_quality_scores*.json` | last full score set | **Yes** on staging (same volume) |
+| **Human logs** | `logs/aria_log.txt` + Railway stdout | `wqe_event …` / `watchlist_quality_sync …` | stdout yes; file yes on volume |
+| **Telegram** | `/wqe` · `/wqe soak` | live summary + counters | n/a |
+
+### Railway volume (staging `xagent-test`)
+
+- **Volume:** `xagent-test-volume`  
+- **Mount:** `/app/logs` (WORKDIR is `/app` → same as relative `logs/`)  
+- **Size:** 50 GB (default)  
+- WQE scores write under `LOG_DIR` / `WQE_DATA_DIR` so they land on the volume  
 
 Event log is **on by default** whenever `mode` is shadow/soft/enforce (`event_log: true`).  
 Disable with `"event_log": false` if needed.

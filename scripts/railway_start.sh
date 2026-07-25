@@ -33,10 +33,23 @@ b = get_build_info()
 print(f"Build revision: {b['commit']} @ {b['branch']}" + (" (dirty)" if b['dirty'] else ""))
 PY
 
+# Persistent volume for logs + WQE scores (mount /app/logs on xagent-test)
+# Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume is attached.
+if [[ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ]]; then
+  echo "Volume mount: ${RAILWAY_VOLUME_MOUNT_PATH} (name=${RAILWAY_VOLUME_NAME:-?})"
+  mkdir -p "${RAILWAY_VOLUME_MOUNT_PATH}"
+  # Prefer volume for LOG_DIR if mount is /app/logs (default WORKDIR layout)
+  if [[ "${RAILWAY_VOLUME_MOUNT_PATH}" == "/app/logs" ]] || [[ "${RAILWAY_VOLUME_MOUNT_PATH}" == *"/logs" ]]; then
+    export WQE_DATA_DIR="${WQE_DATA_DIR:-${RAILWAY_VOLUME_MOUNT_PATH}}"
+    echo "WQE_DATA_DIR=${WQE_DATA_DIR} (scores + wqe_events survive redeploy)"
+  fi
+fi
+mkdir -p logs
+
 # Demo mode (same as local scripts/start_demo_with_ngrok.sh)
 export DEMO_MODE=1
 export MONGODB_DB="${MONGODB_DB:-xagent_test}"
-# Full Mongo ledger on Railway (ephemeral disk — no JSON SOT for orders/positions)
+# Full Mongo ledger on Railway (orders/positions in Mongo; logs on volume)
 export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
 
 # Reduce CPU on small Railway plans (override in Railway vars if desired)
