@@ -23,7 +23,15 @@ def watchlist_quality_section(config: dict | None) -> dict[str, Any]:
 
 
 def wqe_mode(config: dict | None = None) -> str:
-    """off | shadow | soft | enforce — default off until explicitly enabled."""
+    """off | shadow | soft | enforce — default off until explicitly enabled.
+
+    Env override: ``WATCHLIST_QUALITY_MODE`` (Railway-friendly, beats config).
+    """
+    import os
+
+    env = (os.environ.get("WATCHLIST_QUALITY_MODE") or "").strip().lower()
+    if env in _VALID_MODES:
+        return env
     sec = watchlist_quality_section(config)
     mode = str(sec.get("mode") or "off").strip().lower()
     if mode not in _VALID_MODES:
