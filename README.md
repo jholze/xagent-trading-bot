@@ -138,6 +138,16 @@ DEMO_MODE=1 DEMO_LEDGER_BACKEND=mongo python3 aria_bot.py --demo
 
 Details: [DOCUMENTATION.md §5](DOCUMENTATION.md#5-demo-modus---demo)
 
+### Local stack (Railway-Parität)
+
+Gleicher Service-Zuschnitt wie Staging (`xagent-test`, Hermes, Weaviate, …) auf dem Mac — siehe **[docs/LOCAL_STACK.md](docs/LOCAL_STACK.md)** · Issue [#132](https://github.com/jholze/xagent-trading-bot/issues/132).
+
+```bash
+bash scripts/local_stack_up.sh      # Mongo/Redis + Weaviate
+bash scripts/local_stack_bot.sh     # Demo-Bot + ngrok
+bash scripts/local_stack_health.sh
+```
+
 ---
 
 ## Strategien (Kurz)
