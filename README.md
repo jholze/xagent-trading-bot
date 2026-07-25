@@ -146,7 +146,10 @@ Gleicher Service-Zuschnitt wie Staging (`xagent-test`, Hermes, Weaviate, …) au
 bash scripts/local_stack_up.sh      # Mongo/Redis + Weaviate
 bash scripts/local_stack_bot.sh     # Demo-Bot + ngrok
 bash scripts/local_stack_health.sh
+bash scripts/local_stack_test.sh --unit --telegram
 ```
+
+**Watchlist Quality Engine (WQE)** — det score + Memory/RAG/AI shadow + soft floors: **[docs/WQE_ARCHITECTURE.md](docs/WQE_ARCHITECTURE.md)** · Epic [#124](https://github.com/jholze/xagent-trading-bot/issues/124).
 
 ---
 

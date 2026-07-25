@@ -27,7 +27,16 @@ _sync_lock = threading.Lock()
 def sync_trending_watchlist_once(bot_config: BotConfig = None, *, force: bool = False) -> dict:
     """Single entry point for CMC trending overlay sync (thread-safe)."""
     with _sync_lock:
-        return TrendingWatchlistSync(bot_config).sync_if_needed(force=force)
+        overlay = TrendingWatchlistSync(bot_config).sync_if_needed(force=force)
+    # W2: shadow quality scores only (never changes effective watchlist membership)
+    try:
+        from services.watchlist_quality.engine import maybe_run_shadow_after_watchlist_load
+
+        cfg = (bot_config.raw if bot_config else None) or None
+        maybe_run_shadow_after_watchlist_load(config=cfg)
+    except Exception:
+        pass
+    return overlay
 
 
 class TrendingWatchlistSync:

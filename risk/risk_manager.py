@@ -186,6 +186,64 @@ class RiskManager:
                             )
                 except Exception:
                     pass
+                # WQE-R1: quality gate for all new entries (soft/enforce); DCA/open exempt
+                if not has_position and not self._is_dca_buy(source, order):
+                    try:
+                        from services.watchlist_quality.config import wqe_mode
+                        from services.watchlist_quality.enforce import buy_allowed
+                        from services.watchlist_quality.store import load_quality_scores
+
+                        raw = self.config.raw if hasattr(self.config, "raw") else None
+                        if wqe_mode(raw) in ("soft", "enforce"):
+                            try:
+                                from core.tenant_context import current_tenant_id
+
+                                tid = current_tenant_id() or "default"
+                            except Exception:
+                                tid = "default"
+                            data = load_quality_scores(tenant_id=tid)
+                            scored = None
+                            for c in data.get("coins") or []:
+                                if isinstance(c, dict) and c.get("symbol") == order.symbol:
+                                    scored = c
+                                    break
+                            ok, reason = buy_allowed(
+                                order.symbol,
+                                scored_row=scored,
+                                config=raw,
+                                source=str(source or ""),
+                                is_new_add=True,
+                                has_open_position=False,
+                            )
+                            if not ok:
+                                try:
+                                    from services.watchlist_quality.metrics import note_buy_blocked
+                                    from services.watchlist_quality.event_log import log_buy_block
+
+                                    note_buy_blocked(reason)
+                                    q = None
+                                    if scored:
+                                        q = scored.get("quality_shadow_ai")
+                                        if q is None:
+                                            q = scored.get("quality_score")
+                                    log_buy_block(
+                                        order.symbol,
+                                        reason,
+                                        source=str(source or ""),
+                                        mode=mode,
+                                        quality_score=q,
+                                        config=raw,
+                                    )
+                                except Exception:
+                                    pass
+                                return RiskDecision(
+                                    approved=False,
+                                    message=f"WQE block {order.symbol}: {reason}",
+                                    code="watchlist_quality",
+                                    size_multiplier=0.0,
+                                )
+                    except Exception:
+                        pass
                 # Re-entry cooloff after gross loss (sensor-entry-guard)
                 try:
                     cool = self._sensor_reentry_cooloff_blocked(order, source)
