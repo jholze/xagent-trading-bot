@@ -10,6 +10,34 @@
 - [ ] Telegram `/wqe` responds
 - [ ] Rollback known: set `watchlist_quality.mode` → `off` and redeploy/reload
 
+## Data collection (logging)
+
+| Source | Path / command | Contents |
+|--------|----------------|----------|
+| **Event log (primary)** | `logs/wqe_events.jsonl` | `wqe_sync`, `wqe_coin`, `wqe_buy_block`, `wqe_soft_apply` |
+| **Human logs** | `logs/aria_log.txt` + Railway | lines `wqe_event …` / `watchlist_quality_sync …` |
+| **Score snapshot** | `watchlist_quality_scores.json` | last full score set |
+| **Telegram** | `/wqe` · `/wqe soak` | live summary + counters |
+
+Event log is **on by default** whenever `mode` is shadow/soft/enforce (`event_log: true`).  
+Disable with `"event_log": false` if needed.
+
+### Useful jq (local / after log pull)
+
+```bash
+# sync summaries
+grep '"type": "wqe_sync"' logs/wqe_events.jsonl | tail -5
+
+# coins demoted by AI
+grep '"type": "wqe_coin"' logs/wqe_events.jsonl | grep '"stance": "demote"' | tail -20
+
+# buy blocks
+grep '"type": "wqe_buy_block"' logs/wqe_events.jsonl | tail -20
+
+# soft drops over time
+grep '"type": "wqe_soft_apply"' logs/wqe_events.jsonl | tail -10
+```
+
 ## Phase A — Shadow 48h
 
 ```json

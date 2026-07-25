@@ -306,6 +306,7 @@ class BotConfig:
         """WQE-R11: defaults mode=off; unknown modes coerced via wqe_mode()."""
         defaults = {
             "mode": "off",
+            "event_log": True,  # logs/wqe_events.jsonl when mode != off
             "min_buy_score": 0.40,
             "honor_memory_soft_block": True,
             "drop_t3": True,

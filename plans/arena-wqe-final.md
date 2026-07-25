@@ -74,3 +74,9 @@ services/watchlist_quality/
 - [ ] local_stack_test green  
 - [ ] 48h shadow on Railway staging  
 - [ ] soft only after empty-list risk reviewed  
+
+## Soak data logging
+
+Primary: `logs/wqe_events.jsonl` (`wqe_sync`, `wqe_coin`, `wqe_buy_block`, `wqe_soft_apply`).
+Human: `watchlist_quality_sync` / `wqe_event` lines in `aria_log.txt`.
+Toggle: `watchlist_quality.event_log` (default on when mode ≠ off).

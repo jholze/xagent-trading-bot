@@ -218,8 +218,22 @@ class RiskManager:
                             if not ok:
                                 try:
                                     from services.watchlist_quality.metrics import note_buy_blocked
+                                    from services.watchlist_quality.event_log import log_buy_block
 
                                     note_buy_blocked(reason)
+                                    q = None
+                                    if scored:
+                                        q = scored.get("quality_shadow_ai")
+                                        if q is None:
+                                            q = scored.get("quality_score")
+                                    log_buy_block(
+                                        order.symbol,
+                                        reason,
+                                        source=str(source or ""),
+                                        mode=mode,
+                                        quality_score=q,
+                                        config=raw,
+                                    )
                                 except Exception:
                                     pass
                                 return RiskDecision(

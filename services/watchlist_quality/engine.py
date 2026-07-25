@@ -296,6 +296,13 @@ def run_shadow_score(
         f"behavior_change=false",
         "INFO",
     )
+    try:
+        from services.watchlist_quality.event_log import log_sync_summary
+
+        summary["tenant_id"] = tenant_id
+        log_sync_summary(summary, config=config)
+    except Exception as e:
+        log(f"wqe event_log sync failed: {e}", "DEBUG")
 
     try:
         from services.watchlist_quality.metrics import note_ai, note_scored

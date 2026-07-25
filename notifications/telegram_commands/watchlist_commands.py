@@ -158,6 +158,12 @@ def _format_wqe_status() -> str:
         except Exception:
             snap = {}
         age_s = f"{age:.0f}s" if age is not None else "—"
+        try:
+            from services.watchlist_quality.event_log import log_path
+
+            elog = log_path()
+        except Exception:
+            elog = "logs/wqe_events.jsonl"
         lines = [
             f"<b>WQE</b> mode=<code>{mode}</code>",
             f"scores_as_of={data.get('updated_at') or '—'} age={age_s}",
@@ -165,6 +171,7 @@ def _format_wqe_status() -> str:
             format_soak_report(),
             f"metrics blocked={snap.get('wqe_buy_blocked_total', 0)} "
             f"ai_ok={snap.get('wqe_ai_ok', 0)} ai_err={snap.get('wqe_ai_error', 0)}",
+            f"event_log=<code>{elog}</code>",
             "",
             "<b>Top scores</b>",
         ]

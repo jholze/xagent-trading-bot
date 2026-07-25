@@ -162,6 +162,19 @@ def apply_wqe_to_watchlist(
             f"WQE {mode}: n_in={n_in} n_out={len(softed)} open={len(open_syms)} tenant={tenant_id}",
             "INFO",
         )
+        try:
+            from services.watchlist_quality.event_log import log_soft_apply
+
+            log_soft_apply(
+                mode=mode,
+                n_in=n_in,
+                n_out=len(softed),
+                open_n=len(open_syms),
+                tenant_id=tenant_id,
+                config=cfg,
+            )
+        except Exception:
+            pass
         return softed
     except Exception as e:
         log(f"WQE apply_wqe_to_watchlist fail-open: {e}", "WARNING")
