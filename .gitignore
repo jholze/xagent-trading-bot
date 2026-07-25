@@ -1,6 +1,7 @@
 # Secrets and sensitive files
 .env
 .env.local
+deploy/local/env.stack
 *.log
 aria_bot.log
 logs/
