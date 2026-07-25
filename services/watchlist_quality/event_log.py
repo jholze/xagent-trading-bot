@@ -18,6 +18,13 @@ WQE_EVENTS_LOG = os.path.join(LOG_DIR, "wqe_events.jsonl")
 
 def _enabled(config: dict | None = None) -> bool:
     try:
+        import os
+
+        env = (os.environ.get("WATCHLIST_QUALITY_EVENT_LOG") or "").strip().lower()
+        if env in ("0", "false", "no", "off"):
+            return False
+        if env in ("1", "true", "yes", "on"):
+            return True
         if config is None:
             from core.config import get_bot_config
 
@@ -26,8 +33,9 @@ def _enabled(config: dict | None = None) -> bool:
         # default True when mode != off so shadow always produces data
         if "event_log" in wq:
             return bool(wq.get("event_log"))
-        mode = str(wq.get("mode") or "off").lower()
-        return mode in ("shadow", "soft", "enforce")
+        from services.watchlist_quality.config import wqe_mode
+
+        return wqe_mode(config) in ("shadow", "soft", "enforce")
     except Exception:
         return True
 

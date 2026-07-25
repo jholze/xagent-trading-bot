@@ -370,7 +370,12 @@
       "skip_if_warmup": true,
       "skip_if_block_buys": true,
       "skip_if_crash": true,
-      "sources": ["entry_sensor_15m", "vol_spike_15m", "entry_sensor", "15m_sensor"],
+      "sources": [
+        "entry_sensor_15m",
+        "vol_spike_15m",
+        "entry_sensor",
+        "15m_sensor"
+      ],
       "memory": {
         "enabled": true,
         "weight": 0.55,
@@ -459,7 +464,11 @@
       "max_spread_pct": 1.5,
       "min_top_book_usdt_per_side": 200,
       "min_volume_to_order_multiple": 20,
-      "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
+      "apply_to": [
+        "entry_sensor_15m",
+        "vol_spike_15m",
+        "grid_new_entry"
+      ],
       "cache_ttl_sec": 90,
       "on_fetch_error": "block_sensor"
     },
@@ -646,7 +655,10 @@
       "soft_block_ttl_hours": 336,
       "size_bias_cap": 0.5,
       "soft_block_scope": "sensor_only",
-      "apply_to_sources": ["entry_sensor_15m", "vol_spike_15m"]
+      "apply_to_sources": [
+        "entry_sensor_15m",
+        "vol_spike_15m"
+      ]
     },
     "venue_learning": {
       "enabled": true,
@@ -700,7 +712,10 @@
           "max_events_per_coin_cycle": 8
         }
       },
-      "universe": ["open_positions", "watchlist"]
+      "universe": [
+        "open_positions",
+        "watchlist"
+      ]
     },
     "onchain": {
       "defillama": true,
@@ -1000,10 +1015,22 @@
       "volatile_enter_score": 4,
       "volatile_exit_score": 2,
       "atr_bands": [
-        {"min_pct": 10.0, "points": 4},
-        {"min_pct": 6.0, "points": 3},
-        {"min_pct": 5.0, "points": 2},
-        {"min_pct": 4.0, "points": 1}
+        {
+          "min_pct": 10.0,
+          "points": 4
+        },
+        {
+          "min_pct": 6.0,
+          "points": 3
+        },
+        {
+          "min_pct": 5.0,
+          "points": 2
+        },
+        {
+          "min_pct": 4.0,
+          "points": 1
+        }
       ],
       "class_points": {
         "meme": 2,
@@ -1159,7 +1186,7 @@
       "sizing": {
         "enabled": true,
         "base_mode": "max",
-        "notional_ratio": 0.30,
+        "notional_ratio": 0.3,
         "min_multiplier": 0.55,
         "max_multiplier": 1.0,
         "loss_depth_boost": 0.15,
@@ -1382,7 +1409,9 @@
   },
   "entry_guard": {
     "enabled": true,
-    "sources": ["entry_sensor_15m"],
+    "sources": [
+      "entry_sensor_15m"
+    ],
     "fresh_entry_window_minutes": 120,
     "vol_spike_mult": 2.0,
     "vol_exhaustion_15m_max": 0.85,
@@ -1390,10 +1419,22 @@
     "mega_pump_gain_pct": 12,
     "block_loss_sells_minutes": 15,
     "by_tier": {
-      "meme": {"min_hold_minutes": 30, "min_gain_structure_pct": 6},
-      "volatile": {"min_hold_minutes": 45, "min_gain_structure_pct": 8},
-      "normal": {"min_hold_minutes": 60, "min_gain_structure_pct": 10},
-      "large_cap": {"min_hold_minutes": 90, "min_gain_structure_pct": 12}
+      "meme": {
+        "min_hold_minutes": 30,
+        "min_gain_structure_pct": 6
+      },
+      "volatile": {
+        "min_hold_minutes": 45,
+        "min_gain_structure_pct": 8
+      },
+      "normal": {
+        "min_hold_minutes": 60,
+        "min_gain_structure_pct": 10
+      },
+      "large_cap": {
+        "min_hold_minutes": 90,
+        "min_gain_structure_pct": 12
+      }
     }
   },
   "exit_sensor": {
@@ -1467,9 +1508,18 @@
       "DEFENSIVE": "off"
     },
     "size_hint_by_mode": {
-      "GRID": { "stable": 0.22, "volatile": 0.35 },
-      "HYBRID": { "stable": 0.40, "volatile": 0.55 },
-      "MOMENTUM": { "default": 0.30, "max": 0.35 }
+      "GRID": {
+        "stable": 0.22,
+        "volatile": 0.35
+      },
+      "HYBRID": {
+        "stable": 0.4,
+        "volatile": 0.55
+      },
+      "MOMENTUM": {
+        "default": 0.3,
+        "max": 0.35
+      }
     },
     "memory_enabled": true,
     "memory_honor_soft_block": true,
@@ -1487,7 +1537,12 @@
     "sentiment_weight": 0.38,
     "cooldown_bars": 6,
     "hysteresis": 0.15,
-    "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"]
+    "sentiment_sources": [
+      "lunarcrush",
+      "santiment",
+      "x",
+      "fear_greed"
+    ]
   },
   "strategy_allocator": {
     "enabled": true,
@@ -1512,15 +1567,26 @@
     "assumed_fee_pct": 0.1,
     "max_levels": 12,
     "use_limit_orders": false,
-    "pure_grid_tiers": ["stable"],
-    "pure_grid_classes": ["large_cap"],
-    "hybrid_tiers": ["volatile"],
-    "no_pure_grid_classes": ["meme"],
+    "pure_grid_tiers": [
+      "stable"
+    ],
+    "pure_grid_classes": [
+      "large_cap"
+    ],
+    "hybrid_tiers": [
+      "volatile"
+    ],
+    "no_pure_grid_classes": [
+      "meme"
+    ],
     "sell_policy": {
       "enabled": true,
       "require_sell_above_center": true,
       "min_sell_gain_pct": 0.0,
-      "green_only_modes": ["GRID", "HYBRID"],
+      "green_only_modes": [
+        "GRID",
+        "HYBRID"
+      ],
       "soft_underwater_modes": [],
       "underwater_max_slice": 0.12,
       "green_buffer_pct": 0.15,
@@ -1539,5 +1605,32 @@
     "default_tenant": "default",
     "onboarding_enabled": true,
     "require_webhook_secret": true
+  },
+  "watchlist_quality": {
+    "mode": "shadow",
+    "event_log": true,
+    "min_buy_score": 0.4,
+    "honor_memory_soft_block": true,
+    "drop_t3": true,
+    "vol_floors": {
+      "t1_min_quote_vol_usd": 750000
+    },
+    "memory": {
+      "enabled": true,
+      "prefer_boost": 0.15,
+      "soft_penalty": 0.4,
+      "soft_penalty_sensor_only": 0.15,
+      "exclude_new_adds_on_soft_block": true,
+      "apply_size_bias_to_score": true
+    },
+    "ai": {
+      "enabled": true,
+      "mode": "shadow",
+      "max_coins_per_cycle": 12,
+      "max_adjust": 0.2,
+      "require_evidence": true,
+      "background_ai": false,
+      "sort_by": ""
+    }
   }
 }
