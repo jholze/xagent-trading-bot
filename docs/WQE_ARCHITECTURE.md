@@ -81,8 +81,37 @@ candidates
 
 ## Operator
 
-- Telegram: `/wqe` — mode, top scores, soak line  
-- Telegram: `/wqe soak` — AI agreement metrics from last score file
+- Telegram: `/wqe` — mode, top scores, soak line, score age  
+- Telegram: `/wqe soak` — AI agreement metrics from last score file  
+- Staging soak: [`WQE_STAGING_SOAK.md`](WQE_STAGING_SOAK.md)
+
+## Residual integration (R-track)
+
+| Area | Status |
+|------|--------|
+| All BUY paths via RiskManager WQE gate | R1 |
+| Sensor loop unified | R2 `get_sensor_watch_coins` |
+| Tenant score files | R3 `watchlist_quality_scores.{tenant}.json` |
+| Manual `/buy` warn/block | R4 |
+| Background rescore | R5 |
+| Webhook observe + risk gate | R6 |
+| Grid/Hermes policy helpers | R7 `policy.py` |
+| Venue quote_vol batch | R12 `venue_batch.py` |
+| In-process metrics | R9 `metrics.snapshot()` |
+
+## Interaction matrix (R14)
+
+| System | Interaction with WQE |
+|--------|----------------------|
+| **position_capacity** | Fewer candidates → less open pressure; no code conflict |
+| **slot_eviction** | Eviction still for high-conviction entry; if WQE would block buy, entry should fail at risk with `watchlist_quality` (log both) |
+| **cash / fusion** | Fusion `size_mult` still sizes; WQE demote is orthogonal (double caution OK) |
+| **Memory soft_block** | Risk path still enforces; WQE adds list-level + buy_allowed |
+| **Sells / DCA** | Never blocked by WQE |
+
+## Config defaults (R11)
+
+`BotConfig.watchlist_quality_config` merges defaults with **mode=off**. Unknown mode → `off` via `wqe_mode()`.
 
 ## Local usage
 

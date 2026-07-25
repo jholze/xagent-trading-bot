@@ -302,6 +302,42 @@ class BotConfig:
         return bool(self.hermes_config.get("enabled", False))
 
     @property
+    def watchlist_quality_config(self) -> dict:
+        """WQE-R11: defaults mode=off; unknown modes coerced via wqe_mode()."""
+        defaults = {
+            "mode": "off",
+            "min_buy_score": 0.40,
+            "honor_memory_soft_block": True,
+            "drop_t3": True,
+            "vol_floors": {"t1_min_quote_vol_usd": 750_000},
+            "memory": {
+                "enabled": True,
+                "prefer_boost": 0.15,
+                "soft_penalty": 0.40,
+                "soft_penalty_sensor_only": 0.15,
+                "exclude_new_adds_on_soft_block": True,
+                "apply_size_bias_to_score": True,
+            },
+            "ai": {
+                "enabled": True,
+                "mode": "shadow",
+                "max_coins_per_cycle": 12,
+                "max_adjust": 0.2,
+                "require_evidence": True,
+                "background_ai": False,
+                "sort_by": "",
+            },
+        }
+        raw = self._raw.get("watchlist_quality") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        merged = {**defaults, **raw}
+        for k in ("memory", "ai", "vol_floors"):
+            if isinstance(defaults.get(k), dict):
+                merged[k] = {**defaults[k], **(raw.get(k) if isinstance(raw.get(k), dict) else {})}
+        return merged
+
+    @property
     def architecture_config(self) -> dict:
         defaults = {
             "mode": "monolith",

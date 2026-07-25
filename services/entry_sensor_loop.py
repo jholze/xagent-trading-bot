@@ -26,8 +26,19 @@ _last_watch_seed_at: float = 0.0
 _WATCH_SEED_INTERVAL_SEC = 600.0
 
 
+def _sensor_coins():
+    """R2: unified sensor universe (WQE-aware)."""
+    try:
+        from services.watchlist_quality.universe import get_sensor_watch_coins
+        from core.config import get_bot_config
+
+        return get_sensor_watch_coins(get_bot_config().raw)
+    except Exception:
+        return [c for c in load_effective_watchlist() if c.get("active", True)]
+
+
 def _coin_by_symbol(symbol: str, entry: dict | None = None) -> dict | None:
-    for coin in load_effective_watchlist():
+    for coin in _sensor_coins():
         if coin.get("symbol") == symbol and coin.get("active", True):
             return coin
     if entry and watch_15m_state.is_webhook_watch(entry):

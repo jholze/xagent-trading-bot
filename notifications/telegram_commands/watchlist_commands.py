@@ -148,11 +148,23 @@ def _format_wqe_status() -> str:
         mode = wqe_mode(cfg)
         data = load_quality_scores()
         coins = data.get("coins") or []
+        age = None
+        try:
+            from services.watchlist_quality.store import score_age_seconds
+            from services.watchlist_quality.metrics import snapshot
+
+            age = score_age_seconds()
+            snap = snapshot()
+        except Exception:
+            snap = {}
+        age_s = f"{age:.0f}s" if age is not None else "—"
         lines = [
             f"<b>WQE</b> mode=<code>{mode}</code>",
-            f"scores_as_of={data.get('updated_at') or '—'}",
+            f"scores_as_of={data.get('updated_at') or '—'} age={age_s}",
             f"n_scored={len(coins)}",
             format_soak_report(),
+            f"metrics blocked={snap.get('wqe_buy_blocked_total', 0)} "
+            f"ai_ok={snap.get('wqe_ai_ok', 0)} ai_err={snap.get('wqe_ai_error', 0)}",
             "",
             "<b>Top scores</b>",
         ]

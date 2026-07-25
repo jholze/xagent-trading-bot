@@ -28,6 +28,10 @@ from services.watchlist_quality.universe import (
 )
 from services.watchlist_quality.soak import compute_ai_agreement_metrics, format_soak_report
 from services.watchlist_quality.runtime import apply_wqe_to_watchlist
+from services.watchlist_quality.metrics import snapshot as wqe_metrics_snapshot
+from services.watchlist_quality.universe import get_sensor_watch_coins
+from services.watchlist_quality.policy import filter_for_grid
+from services.watchlist_quality.venue_batch import attach_quote_volumes
 
 __all__ = [
     "MemoryWqeInput",
@@ -53,4 +57,8 @@ __all__ = [
     "rank_cmc_candidates_by_wqe",
     "compute_ai_agreement_metrics",
     "format_soak_report",
+    "wqe_metrics_snapshot",
+    "get_sensor_watch_coins",
+    "filter_for_grid",
+    "attach_quote_volumes",
 ]

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any
 
 from logger import log
-from services.watchlist_quality.config import wqe_mode
+from services.watchlist_quality.config import vol_floor_t1_usd, wqe_mode
 from services.watchlist_quality.engine import run_shadow_score
 from services.watchlist_quality.enforce import apply_enforce_tiers, filter_new_adds_memory
 from services.watchlist_quality.soft import apply_soft_watchlist
-from services.watchlist_quality.config import vol_floor_t1_usd
+from services.watchlist_quality.venue_batch import attach_quote_volumes
 
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _CACHE_TTL = 45.0
@@ -34,6 +35,12 @@ def _open_symbols() -> set[str]:
         return set()
 
 
+def _cache_key(tenant_id: str, mode: str, coins: list[dict[str, Any]]) -> str:
+    syms = sorted(str(c.get("symbol") or "") for c in coins if isinstance(c, dict))
+    h = hashlib.sha1("|".join(syms).encode()).hexdigest()[:12]
+    return f"{tenant_id}|{mode}|{len(syms)}|{h}"
+
+
 def apply_wqe_to_watchlist(
     coins: list[dict[str, Any]],
     *,
@@ -41,6 +48,7 @@ def apply_wqe_to_watchlist(
     base_symbols: set[str] | None = None,
     tenant_id: str = "default",
     llm_json_fn=None,
+    attach_vol: bool = True,
 ) -> list[dict[str, Any]]:
     """Score candidates and apply soft or enforce membership rules.
 
@@ -50,7 +58,7 @@ def apply_wqe_to_watchlist(
     if mode not in ("soft", "enforce") or not coins:
         return list(coins)
 
-    cache_key = f"{tenant_id}|{mode}|{len(coins)}"
+    cache_key = _cache_key(tenant_id, mode, coins)
     now = time.time()
     hit = _CACHE.get(cache_key)
     if hit and now - hit[0] <= _CACHE_TTL:
@@ -58,27 +66,42 @@ def apply_wqe_to_watchlist(
 
     try:
         open_syms = _open_symbols()
-        # Disable live LLM in hot path unless explicitly enabled (use prior scores / det only)
+        work = list(coins)
+        if attach_vol:
+            try:
+                work = attach_quote_volumes(work, config=config)
+            except Exception:
+                pass
+
         cfg = dict(config or {})
         wq = dict(cfg.get("watchlist_quality") or {})
         ai = dict(wq.get("ai") or {})
-        # Hot path: do not block on LLM — critic optional via injected fn only
         if llm_json_fn is None:
             ai["enabled"] = False
         wq["ai"] = ai
-        # keep mode
         cfg["watchlist_quality"] = wq
 
+        n_in = len(work)
         summary = run_shadow_score(
-            coins,
+            work,
             config=cfg,
             persist=True,
             open_symbols=open_syms,
             llm_json_fn=llm_json_fn,
+            tenant_id=tenant_id,
         )
+        try:
+            from services.watchlist_quality.metrics import note_scored
+
+            note_scored(int(summary.get("scored") or 0))
+        except Exception:
+            pass
+
         scored_rows = []
-        by_sym = {str(c.get("symbol")): c for c in (summary.get("coins") or []) if c.get("symbol")}
-        for c in coins:
+        by_sym = {
+            str(c.get("symbol")): c for c in (summary.get("coins") or []) if c.get("symbol")
+        }
+        for c in work:
             sym = str(c.get("symbol") or "")
             row = dict(c)
             sc = by_sym.get(sym) or {}
@@ -106,12 +129,19 @@ def apply_wqe_to_watchlist(
             min_quote_vol_usd=vol_floor_t1_usd(cfg),
             use_ai_score=True,
         )
+        dropped = max(0, n_in - len(softed))
+        if dropped:
+            try:
+                from services.watchlist_quality.metrics import note_soft_dropped
+
+                note_soft_dropped(dropped)
+            except Exception:
+                pass
 
         if mode == "enforce":
             softed = filter_new_adds_memory(
                 softed, base_symbols=base_symbols, open_symbols=open_syms
             )
-            # regime label best-effort
             regime = "neutral"
             try:
                 from services.watchlist_quality.engine import _regime_hints
@@ -129,10 +159,14 @@ def apply_wqe_to_watchlist(
 
         _CACHE[cache_key] = (now, softed)
         log(
-            f"WQE {mode}: n_in={len(coins)} n_out={len(softed)} open={len(open_syms)}",
+            f"WQE {mode}: n_in={n_in} n_out={len(softed)} open={len(open_syms)} tenant={tenant_id}",
             "INFO",
         )
         return softed
     except Exception as e:
         log(f"WQE apply_wqe_to_watchlist fail-open: {e}", "WARNING")
         return list(coins)
+
+
+def clear_runtime_cache() -> None:
+    _CACHE.clear()

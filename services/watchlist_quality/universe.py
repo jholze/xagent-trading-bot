@@ -18,6 +18,40 @@ def _score_map_from_store() -> dict[str, dict[str, Any]]:
     return out
 
 
+def get_sensor_watch_coins(
+    config: dict | None = None,
+    *,
+    candidates: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """R2: single entry for entry_sensor_loop + eval — always includes open positions."""
+    mode = wqe_mode(config)
+    if candidates is None:
+        try:
+            from data_manager import load_effective_watchlist
+
+            candidates = load_effective_watchlist()
+        except Exception:
+            candidates = []
+    if mode not in ("soft", "enforce"):
+        return [c for c in (candidates or []) if isinstance(c, dict) and c.get("active", True)]
+
+    uni = sensor_universe(candidates, config=config)
+    # ensure open positions monitored even if filtered
+    try:
+        from strategies.positions import get_open_positions
+
+        have = {str(c.get("symbol")) for c in uni if c.get("symbol")}
+        for p in get_open_positions() or []:
+            sym = p.get("symbol") if isinstance(p, dict) else getattr(p, "symbol", None)
+            if not sym or str(sym) in have:
+                continue
+            uni.append({"symbol": str(sym), "active": True, "is_open": True, "tier": "POS"})
+            have.add(str(sym))
+    except Exception:
+        pass
+    return uni
+
+
 def sensor_universe(
     candidates: list[dict[str, Any]] | None = None,
     *,

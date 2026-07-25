@@ -174,6 +174,27 @@ def _loop():
                 except Exception as e:
                     log(f"Background strategy backtest failed: {e}", "WARNING")
 
+            # WQE-R5: periodic det+memory rescore (no LLM on hot path)
+            try:
+                from services.watchlist_quality.config import wqe_shadow_active
+                from services.watchlist_quality.engine import maybe_run_shadow_after_watchlist_load
+
+                raw = cfg.raw
+                if wqe_shadow_active(raw):
+                    wq2 = dict(raw.get("watchlist_quality") or {})
+                    ai = dict(wq2.get("ai") or {})
+                    ai["enabled"] = bool(ai.get("background_ai", False))
+                    wq2["ai"] = ai
+                    raw2 = dict(raw)
+                    raw2["watchlist_quality"] = wq2
+                    try:
+                        coins = wl  # from cycle above when social enabled
+                    except NameError:
+                        coins = load_effective_watchlist()
+                    maybe_run_shadow_after_watchlist_load(coins, config=raw2)
+            except Exception as e:
+                log(f"Background WQE rescore skipped: {e}", "DEBUG")
+
             time.sleep(max(30, interval))
         except Exception as e:
             log(f"Background runtime loop error: {e}", "ERROR")

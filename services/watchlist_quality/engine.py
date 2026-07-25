@@ -181,6 +181,7 @@ def run_shadow_score(
     llm_json_fn=None,
     rag_pack_fn=None,
     open_symbols: set[str] | list[str] | None = None,
+    tenant_id: str = "default",
 ) -> dict[str, Any]:
     """Score candidates, optional AI fuse, log + persist. Shadow: no membership change.
 
@@ -296,10 +297,22 @@ def run_shadow_score(
         "INFO",
     )
 
+    try:
+        from services.watchlist_quality.metrics import note_ai, note_scored
+
+        note_scored(len(scored))
+        for _ in range(ai_ok):
+            note_ai(True)
+        for _ in range(ai_err):
+            note_ai(False)
+    except Exception:
+        pass
+
     if persist:
         payload = {
             "updated_at": summary["updated_at"],
             "mode": mode,
+            "tenant_id": tenant_id,
             "summary": {
                 k: v
                 for k, v in summary.items()
@@ -309,7 +322,7 @@ def run_shadow_score(
         }
         if "soft_scan" in summary:
             payload["soft_scan"] = summary["soft_scan"]
-        ok = save_quality_scores(payload)
+        ok = save_quality_scores(payload, tenant_id=tenant_id)
         if not ok:
             log("watchlist_quality_sync persist failed", "WARNING")
         summary["persisted"] = ok

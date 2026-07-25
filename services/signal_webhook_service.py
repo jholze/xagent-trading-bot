@@ -128,11 +128,32 @@ def process_signal_webhook(
         webhook_event_type=signal.event_type,
     )
 
+    # WQE-R6: still accept/watch for observe; mark non-tradeable under enforce
+    wqe_tradeable = True
+    wqe_reason = "ok"
+    try:
+        from services.watchlist_quality.config import wqe_mode
+        from services.watchlist_quality.universe import cmc_only_buy_allowed
+
+        mode = wqe_mode(config_raw)
+        if mode in ("soft", "enforce"):
+            wqe_tradeable, wqe_reason = cmc_only_buy_allowed(
+                signal.symbol, config=config_raw, source="webhook"
+            )
+            if not wqe_tradeable:
+                log(
+                    f"signal_webhook observe-only {signal.symbol}: WQE {wqe_reason}",
+                    "INFO",
+                )
+    except Exception:
+        pass
+
     eval_enqueued = 0
     try:
         from bus.eval_queue import eval_queue_enabled
         from services.eval_queue_runtime import enqueue_webhook_eval
 
+        # Under enforce, still enqueue for analysis but buy path hits risk WQE gate
         if eval_queue_enabled(config_raw):
             eval_enqueued = enqueue_webhook_eval(
                 signal.symbol, timeframe, config_raw=config_raw,

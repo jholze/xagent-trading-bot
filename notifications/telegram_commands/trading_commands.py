@@ -67,6 +67,47 @@ def handle(text: str) -> bool:
             send_telegram_message(hint("buy"))
             return True
 
+        # WQE-R4: warn (soft/shadow) or block (enforce) manual buys
+        try:
+            from services.watchlist_quality.config import wqe_mode
+            from services.watchlist_quality.enforce import buy_allowed
+            from services.watchlist_quality.store import load_quality_scores
+
+            cfg = get_bot_config().raw
+            mode = wqe_mode(cfg)
+            if mode in ("shadow", "soft", "enforce"):
+                data = load_quality_scores()
+                scored = next(
+                    (c for c in (data.get("coins") or []) if c.get("symbol") == sym),
+                    {"symbol": sym},
+                )
+                ok, reason = buy_allowed(
+                    sym,
+                    scored_row=scored,
+                    config=cfg,
+                    source="manual_telegram",
+                    is_new_add=True,
+                )
+                q = scored.get("quality_shadow_ai")
+                if q is None:
+                    q = scored.get("quality_score")
+                if mode == "enforce" and not ok:
+                    send_telegram_message(
+                        f"❌ WQE block <code>{sym}</code>: {reason}"
+                        + (f" (score={q})" if q is not None else "")
+                    )
+                    return True
+                if mode in ("shadow", "soft") and (
+                    not ok or (q is not None and float(q) < 0.4)
+                ):
+                    send_telegram_message(
+                        f"⚠️ WQE hint <code>{sym}</code>: {reason if not ok else 'low_score'}"
+                        + (f" score={q}" if q is not None else "")
+                        + " — fortfahren möglich"
+                    )
+        except Exception:
+            pass
+
         price = get_prices(sym)[0]
         if price and price > 0:
             request_buy_confirmation(_trading, symbol=sym, timeframe="4h", price=price, usdt=usdt)
