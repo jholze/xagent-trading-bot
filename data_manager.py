@@ -466,9 +466,13 @@ def prune_non_gate_watchlist_sources(config: dict = None) -> dict:
 
 
 def load_effective_watchlist(tenant_id: str | None = None):
-    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay. Supports tenant scoping."""
+    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay. Supports tenant scoping.
+
+    When ``watchlist_quality.mode`` is soft/enforce, applies WQE filter/sort (fail-open).
+    """
     cfg = load_config(tenant_id=tenant_id)
     coins = list(load_watchlist(tenant_id=tenant_id))
+    base_syms = {c.get("symbol") for c in coins if c.get("symbol")}
     if uses_watchlist_expansion(cfg):
         coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
     if is_dry_run_enhanced(cfg):
@@ -489,7 +493,22 @@ def load_effective_watchlist(tenant_id: str | None = None):
         kept, _ = prune_watchlist_coins_gate_only(coins)
         coins = kept
 
-    return filter_watchlist_coins(coins, cfg)
+    coins = filter_watchlist_coins(coins, cfg)
+
+    # WQE soft/enforce: reorder/filter scan set (never raises)
+    try:
+        from services.watchlist_quality.config import wqe_mode
+        from services.watchlist_quality.runtime import apply_wqe_to_watchlist
+
+        mode = wqe_mode(cfg)
+        if mode in ("soft", "enforce"):
+            coins = apply_wqe_to_watchlist(
+                coins, config=cfg, base_symbols=base_syms, tenant_id=tenant_id or "default"
+            )
+    except Exception as e:
+        log(f"WQE watchlist transform skipped: {e}", "DEBUG")
+
+    return coins
 
 
 def save_full_coin(coin_data):

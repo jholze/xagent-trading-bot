@@ -20,6 +20,14 @@ from services.watchlist_quality.ai_critic import (
     run_ai_critic,
 )
 from services.watchlist_quality.soft import apply_soft_watchlist
+from services.watchlist_quality.enforce import apply_enforce_tiers, buy_allowed
+from services.watchlist_quality.universe import (
+    cmc_only_buy_allowed,
+    rank_cmc_candidates_by_wqe,
+    sensor_universe,
+)
+from services.watchlist_quality.soak import compute_ai_agreement_metrics, format_soak_report
+from services.watchlist_quality.runtime import apply_wqe_to_watchlist
 
 __all__ = [
     "MemoryWqeInput",
@@ -30,6 +38,7 @@ __all__ = [
     "run_shadow_score",
     "maybe_run_shadow_after_watchlist_load",
     "apply_soft_to_effective_candidates",
+    "apply_wqe_to_watchlist",
     "RagPack",
     "build_rag_pack",
     "AiCriticResult",
@@ -37,4 +46,11 @@ __all__ = [
     "parse_critic_payload",
     "fuse_quality",
     "apply_soft_watchlist",
+    "apply_enforce_tiers",
+    "buy_allowed",
+    "sensor_universe",
+    "cmc_only_buy_allowed",
+    "rank_cmc_candidates_by_wqe",
+    "compute_ai_agreement_metrics",
+    "format_soak_report",
 ]

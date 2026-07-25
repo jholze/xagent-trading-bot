@@ -107,7 +107,11 @@ def soft_scan_order(
     config: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Config-aware soft transform (reads vol floor from watchlist_quality)."""
-    from services.watchlist_quality.config import vol_floor_t1_usd, ai_config, wqe_mode
+    from services.watchlist_quality.config import (
+        use_ai_sort_score,
+        vol_floor_t1_usd,
+        wqe_mode,
+    )
 
     mode = wqe_mode(config)
     if mode not in ("soft", "enforce"):
@@ -117,21 +121,11 @@ def soft_scan_order(
         return rows
 
     floor = vol_floor_t1_usd(config)
-    ai = ai_config(config)
-    use_ai = bool(ai.get("enabled", True)) and str(ai.get("mode") or "shadow") in (
-        "shadow",
-        "soft",
-        "enforce",
-    )
-    # soft-sort by AI only when ai.mode is soft/enforce OR sort_by flag
-    sort_by = str(ai.get("sort_by") or "").lower()
-    use_ai_score = use_ai and (
-        sort_by in ("quality_shadow_ai", "ai")
-        or str(ai.get("mode") or "") in ("soft", "enforce")
-    )
+    # AI5: use_ai_score True prefers quality_shadow_ai when present on rows
+    use_ai_score = use_ai_sort_score(config) or True
     return apply_soft_watchlist(
         scored_coins,
         open_symbols=open_symbols,
         min_quote_vol_usd=floor,
-        use_ai_score=use_ai_score or True,  # prefer shadow_ai field if present
+        use_ai_score=use_ai_score,
     )

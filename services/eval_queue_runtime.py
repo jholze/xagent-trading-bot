@@ -55,6 +55,19 @@ _last_meta_seed_at: dict[str, float] = {}
 
 
 def _coin_for_symbol(symbol: str, timeframe: str) -> dict:
+    # Prefer WQE sensor universe when soft/enforce (W5); fail-open to full list
+    try:
+        from services.watchlist_quality.config import wqe_mode
+        from services.watchlist_quality.universe import sensor_universe
+        from core.config import get_bot_config
+
+        cfg = get_bot_config().raw
+        if wqe_mode(cfg) in ("soft", "enforce"):
+            for coin in sensor_universe(load_effective_watchlist(), config=cfg):
+                if coin.get("symbol") == symbol and coin.get("active", True):
+                    return coin
+    except Exception:
+        pass
     for coin in load_effective_watchlist():
         if coin.get("symbol") == symbol and coin.get("active", True):
             return coin

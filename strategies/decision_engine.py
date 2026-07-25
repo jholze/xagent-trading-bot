@@ -579,7 +579,28 @@ class DecisionEngine:
         if rank <= 0 or rank > top_n:
             return False
         min_conf = float(fusion.get("cmc_only_buy_min_confidence", 58))
-        return float(cmc_signal.confidence) >= min_conf
+        if float(cmc_signal.confidence) < min_conf:
+            return False
+        # W5: optional WQE gate for CMC-only (soft/enforce)
+        try:
+            from services.watchlist_quality.universe import cmc_only_buy_allowed
+
+            sym = getattr(cmc_signal, "symbol", None) or strategy_params.get("symbol")
+            if sym:
+                ok, reason = cmc_only_buy_allowed(
+                    str(sym),
+                    trending_rank=rank,
+                    config=getattr(self.config, "raw", None),
+                )
+                if not ok:
+                    log(
+                        f"WQE blocked CMC-only buy {sym}: {reason}",
+                        "INFO",
+                    )
+                    return False
+        except Exception:
+            pass
+        return True
 
     def _cmc_sell_threshold(self, strategy_params: dict = None, cmc_signal=None) -> float:
         params = strategy_params or {}

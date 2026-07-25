@@ -47,7 +47,6 @@ def score_weights(config: dict | None = None) -> dict[str, float]:
             except (TypeError, ValueError):
                 pass
     total = sum(out.values()) or 1.0
-    # Normalize so weights sum to 1
     return {k: v / total for k, v in out.items()}
 
 
@@ -60,13 +59,21 @@ def vol_floor_t1_usd(config: dict | None = None) -> float:
         return 750_000.0
 
 
+def min_buy_score(config: dict | None = None) -> float:
+    sec = watchlist_quality_section(config)
+    try:
+        return float(sec.get("min_buy_score", 0.40) or 0.40)
+    except (TypeError, ValueError):
+        return 0.40
+
+
 def ai_config(config: dict | None = None) -> dict[str, Any]:
     """watchlist_quality.ai.* defaults for shadow critic."""
     sec = watchlist_quality_section(config)
     raw = sec.get("ai") if isinstance(sec.get("ai"), dict) else {}
     defaults: dict[str, Any] = {
         "enabled": True,
-        "mode": "shadow",  # shadow | soft | enforce (sort authority)
+        "mode": "shadow",
         "rag_enabled": True,
         "max_coins_per_cycle": 12,
         "min_det_score_to_call": 0.0,
@@ -76,7 +83,7 @@ def ai_config(config: dict | None = None) -> dict[str, Any]:
         "require_evidence": True,
         "max_evidence_chars": 1500,
         "log_rationales": True,
-        "sort_by": "",  # quality_shadow_ai when soft-sort desired
+        "sort_by": "",
     }
     out = {**defaults, **raw}
     out["enabled"] = bool(out.get("enabled", True))
@@ -90,6 +97,17 @@ def ai_config(config: dict | None = None) -> dict[str, Any]:
     except (TypeError, ValueError):
         out["max_adjust"] = 0.2
     return out
+
+
+def use_ai_sort_score(config: dict | None = None) -> bool:
+    """AI5: sort by quality_shadow_ai when configured."""
+    ai = ai_config(config)
+    if not ai.get("enabled", True):
+        return False
+    sort_by = str(ai.get("sort_by") or "").lower()
+    if sort_by in ("quality_shadow_ai", "ai", "shadow_ai"):
+        return True
+    return str(ai.get("mode") or "").lower() in ("soft", "enforce")
 
 
 def ai_shadow_enabled(config: dict | None = None) -> bool:

@@ -72,8 +72,17 @@ candidates
 | `ai_critic.py` | AI2 LLM + fuse math |
 | `engine.py` | Orchestrator `run_shadow_score` |
 | `soft.py` | W3 vol floor + sort |
+| `enforce.py` | W4 tiers/caps/buy gate/memory exclude |
+| `universe.py` | W5 sensor + CMC-only helpers |
+| `runtime.py` | Soft/enforce glue for `load_effective_watchlist` |
+| `soak.py` | AI4/W6 metrics + report text |
 | `store.py` | Score artifact JSON |
 | `config.py` | mode / weights / ai / floors |
+
+## Operator
+
+- Telegram: `/wqe` — mode, top scores, soak line  
+- Telegram: `/wqe soak` — AI agreement metrics from last score file
 
 ## Local usage
 

@@ -136,7 +136,67 @@ def resolve_coin_by_display_index(coins: list, index: int):
     return None
 
 
+def _format_wqe_status() -> str:
+    """W6: operator visibility for scores / soak / mode."""
+    try:
+        from services.watchlist_quality.config import wqe_mode
+        from services.watchlist_quality.soak import format_soak_report
+        from services.watchlist_quality.store import load_quality_scores
+        from core.config import get_bot_config
+
+        cfg = get_bot_config().raw
+        mode = wqe_mode(cfg)
+        data = load_quality_scores()
+        coins = data.get("coins") or []
+        lines = [
+            f"<b>WQE</b> mode=<code>{mode}</code>",
+            f"scores_as_of={data.get('updated_at') or '—'}",
+            f"n_scored={len(coins)}",
+            format_soak_report(),
+            "",
+            "<b>Top scores</b>",
+        ]
+        ranked = sorted(
+            [c for c in coins if isinstance(c, dict)],
+            key=lambda c: float(
+                c.get("quality_shadow_ai")
+                if c.get("quality_shadow_ai") is not None
+                else c.get("quality_score")
+                or 0
+            ),
+            reverse=True,
+        )[:12]
+        for i, c in enumerate(ranked, 1):
+            q = c.get("quality_shadow_ai")
+            if q is None:
+                q = c.get("quality_score")
+            tier = c.get("tier_hint") or c.get("tier") or "?"
+            lines.append(
+                f"{i}. <code>{c.get('symbol')}</code> "
+                f"q={q} tier={tier} "
+                f"ai={(c.get('ai') or {}).get('stance', '—')}"
+            )
+        if not ranked:
+            lines.append("<i>No scores yet — set watchlist_quality.mode=shadow and sync.</i>")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"WQE status error: {e}"
+
+
 def handle(text: str) -> bool:
+    if text in ("/wqe", "/watchlist_quality", "/wqescores"):
+        send_telegram_message(_format_wqe_status())
+        return True
+
+    if text in ("/wqe soak", "/wqe_soak"):
+        try:
+            from services.watchlist_quality.soak import format_soak_report
+
+            send_telegram_message(format_soak_report())
+        except Exception as e:
+            send_telegram_message(f"WQE soak error: {e}")
+        return True
+
     if text == "/add":
         activate_command("add")
         send_telegram_message(hint("add"))
