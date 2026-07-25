@@ -1,0 +1,64 @@
+# Local infra mirroring Railway staging plugins + Weaviate.
+# Usage:
+#   docker compose -f deploy/local/docker-compose.yml up -d
+#   docker compose -f deploy/local/docker-compose.yml --profile full up -d
+#
+# Default profile: Weaviate only (Mongo/Redis usually via brew on Mac).
+# Profile "full": also Mongo + Redis in Docker (ports 27017 / 6379).
+
+name: xagent-local
+
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.27.6
+    container_name: xagent-local-weaviate
+    ports:
+      - "${WEAVIATE_HOST_PORT:-8080}:8080"
+      - "${WEAVIATE_GRPC_PORT:-50051}:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      CLUSTER_HOSTNAME: node1
+      RAFT_BOOTSTRAP_EXPECT: 1
+    volumes:
+      - xagent_weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+    # Host health: curl WEAVIATE_URL/v1/.well-known/ready (local_stack_health.sh)
+    # Container wget is not always present in the image.
+
+  mongo:
+    profiles: ["full"]
+    image: mongo:7
+    container_name: xagent-local-mongo
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - xagent_mongo_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  redis:
+    profiles: ["full"]
+    image: redis:7-alpine
+    container_name: xagent-local-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  xagent_weaviate_data:
+  xagent_mongo_data:
