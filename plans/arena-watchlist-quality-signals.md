@@ -3,6 +3,7 @@
 > **Modus:** Full-Arena (Research + 3 Kandidaten + Winner + PR-Plan)  
 > **Datum:** 2026-07-25 · **Update:** Memory→WQE-Schnitt + Epic (2026-07-25)  
 > **Branch-Basis:** `staging`  
+> **Working branch:** [`epic/wqe-124-watchlist-quality-engine`](https://github.com/jholze/xagent-trading-bot/tree/epic/wqe-124-watchlist-quality-engine)  
 > **Scope:** **Plan + Epic/Tickets** — Implementation erst nach Freigabe PR1  
 > **Ziel:** Deutlich bessere **Universe-Selektion** → höhere Signal-Qualität → bessere **BUY**-Entscheidungen  
 > **Nicht-Ziel:** Jarvis, Order-Ledger-v2, reines UI-Kosmetik, Hand-Picked Coins  

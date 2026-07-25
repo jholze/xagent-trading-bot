@@ -1,6 +1,7 @@
 # Epic: Watchlist Quality Engine (WQE)
 
 > **GitHub:** [#124](https://github.com/jholze/xagent-trading-bot/issues/124)  
+> **Branch:** [`epic/wqe-124-watchlist-quality-engine`](https://github.com/jholze/xagent-trading-bot/tree/epic/wqe-124-watchlist-quality-engine) (base: `staging`)  
 > **Status:** Open · plan ready · implementation pending  
 > **Updated:** 2026-07-25  
 > **Priority:** P2  
