@@ -153,7 +153,8 @@
     "trending_watchlist": {
       "enabled": true,
       "live_enabled": true,
-      "max_coins": 18,
+      "max_coins": 50,
+      "fetch_limit": 100,
       "refresh_hours": 1,
       "gate_only": true,
       "prune_non_gate": true,
@@ -1632,5 +1633,13 @@
       "background_ai": false,
       "sort_by": ""
     }
+  },
+  "universe": {
+    "split_enabled": true,
+    "observe_max_coins": 100,
+    "trade_max_coins": 40,
+    "trade_include_open_positions": true,
+    "trade_include_base": true,
+    "trade_rank_by": "quality_score"
   }
 }

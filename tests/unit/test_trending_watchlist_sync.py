@@ -73,6 +73,43 @@ class TestTrendingWatchlistSync(unittest.TestCase):
     def setUp(self):
         tw_module._sync_lock = threading.Lock()
 
+    def test_fetch_limit_before_gate_then_max_coins(self):
+        """CMC pull uses fetch_limit; after Gate filter only max_coins kept."""
+        cfg = _enhanced_config()
+        cfg._raw["live"]["trending_watchlist"]["max_coins"] = 2
+        cfg._raw["live"]["trending_watchlist"]["fetch_limit"] = 5
+        cfg._raw["live"]["trending_watchlist"]["refresh_hours"] = 0
+        # 5 symbols returned; only 3 have Gate prices → keep 2 by max_coins
+        provider = MagicMock()
+        provider.fetch_trending_symbols.return_value = (
+            ["A", "B", "C", "D", "E"],
+            "trending/latest",
+        )
+        gate = {
+            "A/USDT": 1.0,
+            "B/USDT": 1.0,
+            "C/USDT": 1.0,
+            # D, E missing → dropped by gate filter
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            overlay_path = self._overlay_path(tmp)
+            self._write_overlay(overlay_path, {"coins": [], "refreshed_at": ""})
+            with _sync_patches(
+                overlay_path=overlay_path,
+                provider=provider,
+                gate_prices=gate,
+                base_watchlist=[{"symbol": "BTC/USDT"}],
+            ):
+                out = TrendingWatchlistSync(cfg).sync_if_needed(force=True)
+        provider.fetch_trending_symbols.assert_called()
+        call_kw = provider.fetch_trending_symbols.call_args
+        # limit= fetch_limit (5)
+        self.assertEqual(call_kw.kwargs.get("limit") or call_kw.args[0], 5)
+        coins = out.get("coins") or []
+        self.assertEqual(len(coins), 2)
+        self.assertTrue(all(c["symbol"] in gate for c in coins))
+
+
     def _overlay_path(self, tmp: str) -> str:
         return os.path.join(tmp, "watchlist.dry_run_overlay.json")
 

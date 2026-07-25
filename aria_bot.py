@@ -44,6 +44,7 @@ try:
         list_coins,
         load_trade_history,
         load_effective_watchlist,
+        load_trade_watchlist,
     )
     from notifications.terminal_dashboard import build_cycle_summary, render_cycle_dashboard
     from price_fetcher import get_prices, get_prices_batch
@@ -562,12 +563,16 @@ def _run_tenant_price_cycle(
         except Exception as e:
             log(f"Tenant cycle init failed: {e}", "WARNING")
 
-    watchlist = load_effective_watchlist()
-    active_symbols = [
-        coin["symbol"] for coin in watchlist if coin.get("active", True)
-    ]
+    # Observe = broad (memory/WQE); trade = positions + top discovery for process_coin
+    observe_watchlist = load_effective_watchlist()
+    watchlist = observe_watchlist
+    active_observe = [coin for coin in observe_watchlist if coin.get("active", True)]
+    active_symbols = [coin["symbol"] for coin in active_observe]
     if not use_dashboard:
-        print(f"Aktive Coins ({len(active_symbols)}): " + " • ".join(active_symbols))
+        print(
+            f"Aktive Coins observe ({len(active_symbols)}): "
+            + " • ".join(active_symbols)
+        )
         print("-" * 90)
         print("Prüfe Coins + X-Signale:\n")
 
@@ -650,7 +655,6 @@ def _run_tenant_price_cycle(
                     f"AltRank: {signal.alt_rank} | Sentiment: {signal.sentiment:.0f}%"
                 )
 
-    active_coins = [coin for coin in watchlist if coin.get("active", True)]
     from core.cycle_order import order_watchlist_positions_first
     from core.tenant_context import multi_tenant_enabled
     from strategies.positions import list_active_positions, list_active_positions_from_ledger
@@ -660,6 +664,18 @@ def _run_tenant_price_cycle(
         open_positions = list_active_positions_from_ledger()
     else:
         open_positions = list_active_positions()
+
+    trade_watchlist = load_trade_watchlist(
+        observe_coins=observe_watchlist,
+        open_positions=open_positions,
+    )
+    active_coins = [coin for coin in trade_watchlist if coin.get("active", True)]
+    if not use_dashboard and len(active_coins) != len(active_observe):
+        print(
+            f"Trade universe ({len(active_coins)} of {len(active_observe)} observe): "
+            + " • ".join(c["symbol"] for c in active_coins[:40])
+            + (" …" if len(active_coins) > 40 else "")
+        )
     scan_coins = order_watchlist_positions_first(active_coins, open_positions)
     price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
@@ -685,7 +701,8 @@ def _run_tenant_price_cycle(
         from services.eval_queue_runtime import get_recent_coin_results, seed_meta_producers
 
         seed_meta_producers(
-            watchlist=active_coins,
+            # Observe set: more symbols for memory/sensor queue coverage
+            watchlist=active_observe,
             open_positions=open_positions,
             x_signals=x_signals,
             cmc_signals=cmc_signals,
@@ -847,7 +864,7 @@ def _run_tenant_price_cycle(
         log_cycle_summary(
             config=bot_config.raw,
             duration_sec=float(time.time() - cycle_started),
-            n_watchlist=len(active_coins),
+            n_watchlist=len(active_observe),
             n_open_positions=len(open_positions),
             coin_results=coin_results,
             eval_processed_delta=len(coin_results) if coin_results is not None else None,
