@@ -92,6 +92,14 @@ try:
 except Exception as e:
     log(f"CMC capability probe on startup failed: {e}", "WARNING")
 
+# R15: soak boot fingerprint (mode, volume, commit) → logs/cycle_summary.jsonl
+try:
+    from services.watchlist_quality.soak_log import log_boot_fingerprint
+
+    log_boot_fingerprint()
+except Exception as e:
+    log(f"WQE boot fingerprint failed: {e}", "DEBUG")
+
 
 def _flush_positions_on_exit(*_args) -> None:
     try:
@@ -830,6 +838,23 @@ def _run_tenant_price_cycle(
             "total_value": float(portfolio_snap.get("total_value", 0) or 0),
         },
     )
+
+    # R15: durable cycle_summary.jsonl on volume (fail-open, no trading impact)
+    try:
+        from services.watchlist_quality.soak_log import log_cycle_summary
+        from core.tenant_context import resolve_tenant_id
+
+        log_cycle_summary(
+            config=bot_config.raw,
+            duration_sec=float(time.time() - cycle_started),
+            n_watchlist=len(active_coins),
+            n_open_positions=len(open_positions),
+            coin_results=coin_results,
+            eval_processed_delta=len(coin_results) if coin_results is not None else None,
+            tenant_id=resolve_tenant_id() or "default",
+        )
+    except Exception as e:
+        log(f"cycle_summary soak log failed: {e}", "DEBUG")
 
 
 def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None):

@@ -118,10 +118,14 @@ candidates
 | Artifact | Path | Backend |
 |----------|------|---------|
 | WQE events | `/app/logs/wqe_events.jsonl` | Volume `xagent-test-volume` → `/app/logs` |
+| Cycle summary + boot fingerprint | `/app/logs/cycle_summary.jsonl` | same volume (R15) |
+| Risk rejects (all BUY codes) | `/app/logs/risk_rejects.jsonl` | same volume (R15) |
 | Score snapshots | `/app/logs/watchlist_quality_scores*.json` | same volume |
 | Orders / memory | Mongo | not on volume |
 
-Redeploy no longer wipes soak history for WQE files. Railway **stdout** remains a second copy of `wqe_event` lines.
+Redeploy no longer wipes soak history for WQE files. Railway **stdout** remains a second copy of `wqe_event` / `cycle_summary` / `risk_reject` lines.
+
+Module: `services/watchlist_quality/soak_log.py` (fail-open; independent of `observability.json_logs`).
 
 ## Local usage
 

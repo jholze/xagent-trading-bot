@@ -164,6 +164,21 @@ def _format_wqe_status() -> str:
             elog = log_path()
         except Exception:
             elog = "logs/wqe_events.jsonl"
+        try:
+            from services.watchlist_quality.soak_log import (
+                cycle_summary_path,
+                last_cycle_summary_age_sec,
+            )
+            from services.watchlist_quality.store import scores_path
+
+            clog = cycle_summary_path()
+            slog = scores_path()
+            c_age = last_cycle_summary_age_sec()
+            c_age_s = f"{c_age:.0f}s" if c_age is not None else "—"
+        except Exception:
+            clog = "logs/cycle_summary.jsonl"
+            slog = "logs/watchlist_quality_scores.json"
+            c_age_s = "—"
         lines = [
             f"<b>WQE</b> mode=<code>{mode}</code>",
             f"scores_as_of={data.get('updated_at') or '—'} age={age_s}",
@@ -172,6 +187,8 @@ def _format_wqe_status() -> str:
             f"metrics blocked={snap.get('wqe_buy_blocked_total', 0)} "
             f"ai_ok={snap.get('wqe_ai_ok', 0)} ai_err={snap.get('wqe_ai_error', 0)}",
             f"event_log=<code>{elog}</code>",
+            f"scores=<code>{slog}</code>",
+            f"cycle_summary=<code>{clog}</code> last_age={c_age_s}",
             "",
             "<b>Top scores</b>",
         ]
