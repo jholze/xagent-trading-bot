@@ -465,12 +465,17 @@ def prune_non_gate_watchlist_sources(config: dict = None) -> dict:
     return {"removed": removed_all, "by_source": by_source}
 
 
-def load_effective_watchlist(tenant_id: str | None = None):
-    """Base watchlist + dry-run/demo expansion + optional CMC trending overlay. Supports tenant scoping.
+def build_merged_watchlist_coins(
+    tenant_id: str | None = None,
+    *,
+    config: dict | None = None,
+    apply_wqe: bool = True,
+) -> list:
+    """Merge base + expansion + overlays + Gate/profile filters (+ optional WQE soft/enforce).
 
-    When ``watchlist_quality.mode`` is soft/enforce, applies WQE filter/sort (fail-open).
+    This is the raw observe candidate set *before* universe observe_max cap.
     """
-    cfg = load_config(tenant_id=tenant_id)
+    cfg = config if config is not None else load_config(tenant_id=tenant_id)
     coins = list(load_watchlist(tenant_id=tenant_id))
     base_syms = {c.get("symbol") for c in coins if c.get("symbol")}
     if uses_watchlist_expansion(cfg):
@@ -495,20 +500,78 @@ def load_effective_watchlist(tenant_id: str | None = None):
 
     coins = filter_watchlist_coins(coins, cfg)
 
-    # WQE soft/enforce: reorder/filter scan set (never raises)
-    try:
-        from services.watchlist_quality.config import wqe_mode
-        from services.watchlist_quality.runtime import apply_wqe_to_watchlist
+    if apply_wqe:
+        try:
+            from services.watchlist_quality.config import wqe_mode
+            from services.watchlist_quality.runtime import apply_wqe_to_watchlist
 
-        mode = wqe_mode(cfg)
-        if mode in ("soft", "enforce"):
-            coins = apply_wqe_to_watchlist(
-                coins, config=cfg, base_symbols=base_syms, tenant_id=tenant_id or "default"
-            )
-    except Exception as e:
-        log(f"WQE watchlist transform skipped: {e}", "DEBUG")
+            mode = wqe_mode(cfg)
+            if mode in ("soft", "enforce"):
+                coins = apply_wqe_to_watchlist(
+                    coins,
+                    config=cfg,
+                    base_symbols=base_syms,
+                    tenant_id=tenant_id or "default",
+                )
+        except Exception as e:
+            log(f"WQE watchlist transform skipped: {e}", "DEBUG")
 
     return coins
+
+
+def load_effective_watchlist(tenant_id: str | None = None):
+    """Observe universe (broad when universe.split_enabled).
+
+    Used for memory, WQE scoring, listings, Telegram /list.
+    Trade scan uses ``load_trade_watchlist`` when split is on.
+    """
+    try:
+        from services.universe.split import load_observe_universe, universe_split_enabled
+
+        cfg = load_config(tenant_id=tenant_id)
+        if universe_split_enabled(cfg):
+            return load_observe_universe(tenant_id=tenant_id, config=cfg)
+    except Exception as e:
+        log(f"observe universe failed, fallback merge: {e}", "DEBUG")
+    return build_merged_watchlist_coins(tenant_id=tenant_id)
+
+
+def load_trade_watchlist(
+    tenant_id: str | None = None,
+    *,
+    observe_coins: list | None = None,
+    open_positions: list | None = None,
+):
+    """Trade-eligible coins for process_coin / BUY path (positions always kept)."""
+    try:
+        from services.universe.split import load_trade_universe, universe_split_enabled
+
+        cfg = load_config(tenant_id=tenant_id)
+        if not universe_split_enabled(cfg):
+            return list(observe_coins) if observe_coins is not None else load_effective_watchlist(
+                tenant_id=tenant_id
+            )
+        open_syms = None
+        if open_positions is not None:
+            open_syms = set()
+            for p in open_positions:
+                if isinstance(p, dict):
+                    s = p.get("symbol")
+                else:
+                    s = getattr(p, "symbol", None)
+                if s:
+                    open_syms.add(str(s).strip())
+        return load_trade_universe(
+            tenant_id=tenant_id,
+            observe_coins=observe_coins,
+            open_symbols=open_syms,
+            config=cfg,
+        )
+    except Exception as e:
+        log(f"trade universe failed, fallback effective: {e}", "DEBUG")
+        return list(observe_coins) if observe_coins is not None else load_effective_watchlist(
+            tenant_id=tenant_id
+        )
 
 
 def save_full_coin(coin_data):

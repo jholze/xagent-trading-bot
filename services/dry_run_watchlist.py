@@ -84,9 +84,15 @@ class TrendingWatchlistSync:
                 pass
 
         max_coins = int(tw_cfg.get("max_coins", 15))
+        # Fetch more from CMC than we keep — Gate filter often drops DEX-only names
+        try:
+            fetch_limit = int(tw_cfg.get("fetch_limit") or max_coins)
+        except (TypeError, ValueError):
+            fetch_limit = max_coins
+        fetch_limit = max(fetch_limit, max_coins)
         source_priority = tw_cfg.get("source_priority") or ["trending/latest"]
         symbols, source = self.provider.fetch_trending_symbols(
-            limit=max_coins,
+            limit=fetch_limit,
             source_priority=source_priority,
         )
         if not symbols:
@@ -139,7 +145,8 @@ class TrendingWatchlistSync:
         self._save_overlay(overlay)
         log(
             f"CMC trending watchlist sync: {len(coins)}/{max_coins} Gate-tradeable "
-            f"(source: {source or 'unknown'}, +{len(added)} -{len(removed)})",
+            f"(fetch_limit={fetch_limit}, source: {source or 'unknown'}, "
+            f"+{len(added)} -{len(removed)})",
             "INFO",
         )
         if not old_syms:

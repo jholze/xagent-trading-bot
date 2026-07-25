@@ -152,6 +152,27 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
+            # Universe split: new BUYs only on trade-eligible set (observe is broader)
+            try:
+                from services.universe.split import is_trade_eligible, universe_split_enabled
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                if universe_split_enabled(raw_cfg) and not self._is_dca_buy(source, order):
+                    if not is_trade_eligible(
+                        order.symbol,
+                        config=raw_cfg,
+                    ):
+                        return RiskDecision(
+                            approved=False,
+                            message=(
+                                f"Outside trade universe (observe-only): {order.symbol}"
+                            ),
+                            code="universe_trade_cap",
+                            size_multiplier=0.0,
+                        )
+            except Exception:
+                pass
+
             try:
                 from services.market_policy_fusion import get_global_market_bias
 

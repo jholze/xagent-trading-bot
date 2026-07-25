@@ -74,6 +74,8 @@ class BotConfig:
             "enabled": True,
             "live_enabled": True,
             "max_coins": 15,
+            # Pull more CMC names than max_coins so Gate filter can still fill the cap
+            "fetch_limit": 0,  # 0 → same as max_coins unless set
             "refresh_hours": 1,
             "exchange_only": True,
             "gate_only": True,  # legacy
@@ -88,7 +90,27 @@ class BotConfig:
         }
         cmc_tw = self.cmc_config.get("trending_watchlist") or {}
         live_tw = self.live_config.get("trending_watchlist") or {}
-        return {**defaults, **live_tw, **cmc_tw}
+        merged = {**defaults, **live_tw, **cmc_tw}
+        try:
+            max_c = int(merged.get("max_coins") or 15)
+        except (TypeError, ValueError):
+            max_c = 15
+        try:
+            fl = int(merged.get("fetch_limit") or 0)
+        except (TypeError, ValueError):
+            fl = 0
+        if fl <= 0:
+            fl = max_c
+        merged["max_coins"] = max_c
+        merged["fetch_limit"] = max(fl, max_c)
+        return merged
+
+    @property
+    def universe_config(self) -> dict:
+        """Observe vs trade universe split (option C)."""
+        from services.universe.split import universe_split_config
+
+        return universe_split_config(self._raw)
 
     @property
     def cmc_trending_fusion_config(self) -> dict:
