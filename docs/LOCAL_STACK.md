@@ -93,19 +93,31 @@ Host brew Mongo/Redis stay up unless you stop them yourself.
 One gate for “can we ship this feature to staging?”:
 
 ```bash
-# Infra + pre-staging smokes + recommended unit slice
-bash scripts/local_stack_test.sh --up --unit
+# Infra + pre-staging smokes + recommended unit slice + Telegram T1
+bash scripts/local_stack_test.sh --up --unit --telegram
 ```
 
 | Flag | What it runs |
 |------|----------------|
 | (none) | Infra health + `verify_pre_staging.sh` |
 | `--up` | `local_stack_up.sh --full` first |
-| `--unit` | High-signal unit slice (orders, ledger, memory, dry-run) |
+| `--unit` | High-signal unit slice (orders, ledger, dry-run) |
 | `--full-unit` | All `tests/unit` (slow) |
+| `--telegram` | **Offline** Telegram command smokes (T1 capture) · Issue [#133](https://github.com/jholze/xagent-trading-bot/issues/133) |
 
 Python: scripts auto-pick **3.13 with pymongo** (not bare Homebrew 3.14).  
 Override: `export LOCAL_STACK_PYTHON=/path/to/python3.13`
+
+### Telegram testing layers
+
+| Layer | Command | Network |
+|-------|---------|---------|
+| **T1 offline** | `bash scripts/local_stack_test.sh --telegram` | none (mocks send) |
+| **T1 pytest only** | `pytest tests/unit/test_telegram_command_smokes.py -q` | none |
+| **Live bot + ngrok** | `bash scripts/local_stack_bot.sh` then type in Telegram app | real Telegram |
+| **T3 Telethon E2E** | set `TELEGRAM_E2E=1` + session secrets, then `pytest tests/e2e_telegram -m telegram_e2e` | real Telegram |
+
+T1 captures `/help`, `/mode`, `/list`, `/positions`, `/orders`, unknown command via `dispatch_command` — no `api.telegram.org`.
 
 Manual steps after the gate is green:
 

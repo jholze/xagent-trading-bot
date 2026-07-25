@@ -15,13 +15,16 @@ local_stack_load_env
 DO_UP=0
 DO_UNIT=0
 DO_FULL_UNIT=0
+DO_TELEGRAM=0
 for arg in "$@"; do
   case "$arg" in
     --up) DO_UP=1 ;;
     --unit) DO_UNIT=1 ;;
     --full-unit) DO_FULL_UNIT=1 ;;
+    --telegram) DO_TELEGRAM=1 ;;
     -h|--help)
-      echo "Usage: bash scripts/local_stack_test.sh [--up] [--unit|--full-unit]"
+      echo "Usage: bash scripts/local_stack_test.sh [--up] [--unit|--full-unit] [--telegram]"
+      echo "  --telegram  offline Telegram command smokes (T1 capture harness)"
       exit 0
       ;;
   esac
@@ -57,15 +60,16 @@ if [[ "$(command -v python3)" != "$PY" ]]; then
 fi
 bash scripts/verify_pre_staging.sh
 
+step=3
 if [[ "$DO_UNIT" == "1" || "$DO_FULL_UNIT" == "1" ]]; then
   echo ""
-  echo "--- 3/3 Unit tests ---"
+  echo "--- ${step}/n Unit tests ---"
   unset MONGO_URL
   export MONGODB_URI="${MONGODB_URI}"
   export MONGODB_TEST_DB="${MONGODB_TEST_DB}"
   export MONGODB_DB="${MONGODB_TEST_DB}"
   if [[ "$DO_FULL_UNIT" == "1" ]]; then
-    "$PY" -m pytest tests/unit -q --tb=line -m "not integration"
+    "$PY" -m pytest tests/unit -q --tb=line -m "not integration and not telegram_e2e"
   else
     # Fast, high-signal slice for day-to-day feature counter-tests
     # (omit network-flaky memory news polls from the default gate)
@@ -81,11 +85,25 @@ if [[ "$DO_UNIT" == "1" || "$DO_FULL_UNIT" == "1" ]]; then
       tests/unit/test_order_isolation.py \
       -q --tb=line
   fi
+  step=$((step + 1))
 else
   echo ""
-  echo "--- 3/3 Unit tests skipped (pass --unit or --full-unit) ---"
+  echo "--- Unit tests skipped (pass --unit or --full-unit) ---"
+fi
+
+if [[ "$DO_TELEGRAM" == "1" ]]; then
+  echo ""
+  echo "--- Telegram T1 command smokes (offline capture) ---"
+  unset MONGO_URL
+  export MONGODB_URI="${MONGODB_URI}"
+  export MONGODB_TEST_DB="${MONGODB_TEST_DB}"
+  export MONGODB_DB="${MONGODB_TEST_DB}"
+  "$PY" -m pytest tests/unit/test_telegram_command_smokes.py -q --tb=short
+  # Optional live Telethon (skipped unless TELEGRAM_E2E=1)
+  "$PY" -m pytest tests/e2e_telegram -q --tb=line -m telegram_e2e || true
 fi
 
 echo ""
 echo "OK — local counter-test gate green"
 echo "Next: exercise feature with bot (bash scripts/local_stack_bot.sh) then deploy_staging from staging branch"
+echo "Telegram offline: bash scripts/local_stack_test.sh --telegram"

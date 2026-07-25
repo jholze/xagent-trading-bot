@@ -1,10 +1,12 @@
 # Plan: Lokaler Live-naher Pre-Staging-Test (Mac) + Headless Telegram
 
-> **Status:** Plan only — no implementation yet  
-> **Datum:** 2026-07-25 · **Update:** Zielbild „Mac local ≈ live“  
-> **Branch-Kontext:** unabhängig von WQE (#124); eigenes Backlog-Thema  
+> **Status:** T1 harness implemented · T3 Telethon optional scaffold  
+> **GitHub:** [#133](https://github.com/jholze/xagent-trading-bot/issues/133) (Telegram harness) · Parent [#132](https://github.com/jholze/xagent-trading-bot/issues/132) (LPSE)  
+> **Datum:** 2026-07-25 · **Update:** Zielbild „Mac local ≈ live“ + T1 code  
+> **Branch:** `feat/local-stack-parity-132`  
 > **Primärziel:** Auf dem **MacBook alle neuen Features sauber testen, bevor sie nach Staging gehen** — möglichst **live-nah**, inkl. Bot-Lauf, Ledger, Signale, Risk, Telegram, Webhooks  
 > **Telegram headless** ist **eine Säule**, nicht das Gesamtziel  
+> **Run T1:** `bash scripts/local_stack_test.sh --telegram`  
 
 ---
 
