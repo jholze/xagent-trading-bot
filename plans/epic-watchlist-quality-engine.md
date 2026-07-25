@@ -79,3 +79,25 @@ Gate catalog / sources  →  WQE (hard + score + tier + regime)  →  Scan / Sen
 1. ~~Implement **#125 (W1)** adapter only (pure, tests).~~ **done** — `services/watchlist_quality/memory_bias.py`  
 2. ~~**#126 (W2)** shadow score + metrics.~~ **done** — `scoring.py` / `engine.py` / `store.py`; mode=`shadow`  
 3. Soft → Enforce hinter Flag (#127 → #128).
+
+
+## Children — AI Shadow Critic track
+
+| Phase | Issue | Title | Depends |
+|-------|-------|--------|---------|
+| AI1 | [#135](https://github.com/jholze/xagent-trading-bot/issues/135) | RAG evidence pack per symbol | W1/W2 done |
+| AI2 | [#136](https://github.com/jholze/xagent-trading-bot/issues/136) | LLM critic structured JSON | AI1 |
+| AI3 | [#137](https://github.com/jholze/xagent-trading-bot/issues/137) | Fuse into shadow scores + logs | AI2 |
+| AI4 | [#138](https://github.com/jholze/xagent-trading-bot/issues/138) | Soak metrics det vs AI | AI3 |
+| AI5 | [#139](https://github.com/jholze/xagent-trading-bot/issues/139) | Optional soft-sort by quality_shadow_ai | AI4 + preferably W3 |
+
+Plan: [`wqe-ai-shadow-critic.md`](wqe-ai-shadow-critic.md)
+
+### Recommended order
+
+1. AI1 → AI2 → AI3 (shadow only)
+2. W3 soft floors (#127)
+3. AI4 soak
+4. W4 enforce (#128) + AI5 flag sort
+5. W5 → W6
+
