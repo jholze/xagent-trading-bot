@@ -113,6 +113,16 @@ candidates
 
 `BotConfig.watchlist_quality_config` merges defaults with **mode=off**. Unknown mode → `off` via `wqe_mode()`.
 
+## Persistence on Railway staging
+
+| Artifact | Path | Backend |
+|----------|------|---------|
+| WQE events | `/app/logs/wqe_events.jsonl` | Volume `xagent-test-volume` → `/app/logs` |
+| Score snapshots | `/app/logs/watchlist_quality_scores*.json` | same volume |
+| Orders / memory | Mongo | not on volume |
+
+Redeploy no longer wipes soak history for WQE files. Railway **stdout** remains a second copy of `wqe_event` lines.
+
 ## Local usage
 
 ```bash
