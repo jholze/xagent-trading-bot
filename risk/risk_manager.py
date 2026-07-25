@@ -66,6 +66,44 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
+        decision = self._evaluate_impl(
+            order,
+            timeframe=timeframe,
+            source=source,
+            trust_score=trust_score,
+            confidence=confidence,
+            indicators=indicators,
+        )
+        # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
+        try:
+            if (
+                str(getattr(order, "type", "") or "").upper() == "BUY"
+                and not getattr(decision, "approved", True)
+            ):
+                from services.watchlist_quality.soak_log import log_risk_reject
+
+                raw = self.config.raw if hasattr(self.config, "raw") else None
+                log_risk_reject(
+                    symbol=getattr(order, "symbol", "") or "",
+                    side="BUY",
+                    source=str(source or ""),
+                    code=getattr(decision, "code", "") or "",
+                    message=getattr(decision, "message", "") or "",
+                    config=raw,
+                )
+        except Exception:
+            pass
+        return decision
+
+    def _evaluate_impl(
+        self,
+        order: TradeOrder,
+        timeframe: str = "4h",
+        source: str = "auto",
+        trust_score: float = None,
+        confidence: float = None,
+        indicators: dict = None,
+    ) -> RiskDecision:
         from core.test_symbols import is_phantom_test_symbol
 
         cfg = self.config.raw if hasattr(self.config, "raw") else self.config
