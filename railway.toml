@@ -5,6 +5,7 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "bash scripts/railway_start.sh"
 healthcheckPath = "/health"
-healthcheckTimeout = 60
+# Boot can run WQE soft + gainer scan; 60s was killing deploys after go-live.
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
