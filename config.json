@@ -1141,7 +1141,7 @@
       "fixed_usdt": 500,
       "policy": {
         "enabled": true,
-        "shadow": true,
+        "shadow": false,
         "policy_version": "1",
         "max_policy_mult": 2.0,
         "harvest_mode": "skip",
@@ -1608,7 +1608,7 @@
     "require_webhook_secret": true
   },
   "watchlist_quality": {
-    "mode": "shadow",
+    "mode": "soft",
     "event_log": true,
     "min_buy_score": 0.4,
     "honor_memory_soft_block": true,
@@ -1631,7 +1631,7 @@
       "max_adjust": 0.2,
       "require_evidence": true,
       "background_ai": false,
-      "sort_by": ""
+      "sort_by": "quality_shadow_ai"
     }
   },
   "universe": {
@@ -1641,5 +1641,34 @@
     "trade_include_open_positions": true,
     "trade_include_base": true,
     "trade_rank_by": "quality_score"
+  },
+  "gainer_universe": {
+    "enabled": true,
+    "mode": "trade_expand",
+    "poll_sec": 60,
+    "daily_refresh_sec": 900,
+    "universe_top_by_volume": 250,
+    "min_volume_usdt_24h": 500000,
+    "blacklist_suffixes": ["3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR"],
+    "blacklist_bases": [],
+    "blacklist_name_keywords": [],
+    "live_top_n": 50,
+    "daily_history_days": 10,
+    "daily_top_max": 80,
+    "min_day_ret_pct": 3,
+    "daily_min_volume": 300000,
+    "prev_top_ttl_hours": 36,
+    "enable_continuation": true,
+    "streak_min_days_in_top20": 2,
+    "streak_lookback_days": 3,
+    "continuation_max_chase_pct_today": 15,
+    "expand_inject_max": 40,
+    "trade_max_with_expand": 80,
+    "scan_workers": 8
+  },
+  "exit_rotation": {
+    "enabled": true,
+    "profile": "rot_mid",
+    "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off."
   }
 }

@@ -563,6 +563,14 @@ def _run_tenant_price_cycle(
         except Exception as e:
             log(f"Tenant cycle init failed: {e}", "WARNING")
 
+    # Gate top-movers refresh (feature-flagged; fail-open). Does not place orders.
+    try:
+        from services.gainer_universe.runtime import maybe_refresh_gainer_universe
+
+        maybe_refresh_gainer_universe(get_config())
+    except Exception as e:
+        log(f"gainer_universe refresh skip: {e}", "DEBUG")
+
     # Observe = broad (memory/WQE); trade = positions + top discovery for process_coin
     observe_watchlist = load_effective_watchlist()
     watchlist = observe_watchlist

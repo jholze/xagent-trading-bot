@@ -19,7 +19,14 @@ class ProfitMaxLifetimeCandidate:
 
 
 def profit_max_lifetime_config(strategy_params: dict | None) -> dict:
-    return dict((strategy_params or {}).get("profit_max_lifetime") or {})
+    cfg = dict((strategy_params or {}).get("profit_max_lifetime") or {})
+    try:
+        from services.exit_rotation import apply_exit_section_overlay
+
+        cfg = apply_exit_section_overlay(cfg, "profit_max_lifetime")
+    except Exception:
+        pass
+    return cfg
 
 
 def _gain_pct(market: MarketContext) -> float:

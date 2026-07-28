@@ -20,7 +20,14 @@ class TrailingTakeProfitCandidate:
 
 
 def trailing_take_profit_config(strategy_params: dict | None) -> dict:
-    return dict((strategy_params or {}).get("trailing_take_profit") or {})
+    cfg = dict((strategy_params or {}).get("trailing_take_profit") or {})
+    try:
+        from services.exit_rotation import apply_exit_section_overlay
+
+        cfg = apply_exit_section_overlay(cfg, "trailing_take_profit")
+    except Exception:
+        pass
+    return cfg
 
 
 def _gain_pct(market: MarketContext) -> float:

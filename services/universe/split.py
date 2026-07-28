@@ -253,6 +253,18 @@ def load_observe_universe(
     }
     open_syms = _open_symbols_live()
     forced = base_syms | open_syms
+    # Gainer movers into observe (shadow + trade_expand) — fail-open
+    try:
+        from services.gainer_universe.config import gainer_universe_enabled
+        from services.gainer_universe.inject import merge_gainers_into_observe
+        from services.gainer_universe.store import load_gainer_state
+
+        if gainer_universe_enabled(cfg):
+            coins = merge_gainers_into_observe(coins, load_gainer_state(), None)
+            # refresh forced after merge not required — cap keeps base|open
+    except Exception as e:
+        log(f"gainer observe inject skip: {e}", "DEBUG")
+
     capped = apply_observe_cap(
         coins,
         max_coins=int(ucfg.get("observe_max_coins") or 100),
@@ -312,6 +324,25 @@ def load_trade_universe(
         rank_by=str(ucfg.get("trade_rank_by") or "quality_score"),
         quality_lookup=qlookup,
     )
+    # Gate prev-day expand into trade (mode=trade_expand only) — fail-open
+    try:
+        from services.gainer_universe.config import gainer_trade_expand_enabled
+        from services.gainer_universe.inject import merge_expand_into_trade
+        from services.gainer_universe.store import load_gainer_state
+
+        if gainer_trade_expand_enabled(cfg):
+            before = len(trade)
+            trade = merge_expand_into_trade(
+                trade, load_gainer_state(), root_config=cfg
+            )
+            if len(trade) != before:
+                log(
+                    f"gainer trade expand: {before} → {len(trade)} coins",
+                    "INFO",
+                )
+    except Exception as e:
+        log(f"gainer trade inject skip: {e}", "DEBUG")
+
     log(
         f"universe split: observe={len(observe_coins)} trade={len(trade)} "
         f"open={len(open_set)} max_trade={ucfg.get('trade_max_coins')}",
