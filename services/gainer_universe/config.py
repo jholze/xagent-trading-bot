@@ -30,6 +30,15 @@ _DEFAULTS: dict[str, Any] = {
     "expand_inject_max": 40,
     "trade_max_with_expand": 80,
     "scan_workers": 8,
+    # Issue #162 — live heat into trade + DE priority + prev-day chase guard
+    "live_heat_trade": True,
+    "live_heat_min_pct": 8.0,
+    "live_heat_max_pct": 35.0,
+    "live_heat_ttl_hours": 10.0,
+    "scan_prefer_gainer": True,
+    "chase_guard_enabled": True,
+    "chase_max_gain_from_prev_close_pct": 18.0,
+    "chase_guard_sources": ["gate_prev_top"],
 }
 
 

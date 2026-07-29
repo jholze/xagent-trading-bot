@@ -1664,11 +1664,19 @@
     "continuation_max_chase_pct_today": 15,
     "expand_inject_max": 40,
     "trade_max_with_expand": 80,
-    "scan_workers": 8
+    "scan_workers": 8,
+    "live_heat_trade": true,
+    "live_heat_min_pct": 8,
+    "live_heat_max_pct": 35,
+    "live_heat_ttl_hours": 10,
+    "scan_prefer_gainer": true,
+    "chase_guard_enabled": true,
+    "chase_max_gain_from_prev_close_pct": 18,
+    "chase_guard_sources": ["gate_prev_top"]
   },
   "exit_rotation": {
     "enabled": true,
     "profile": "rot_mid",
-    "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off."
+    "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off. Issue #162 flags under gainer_universe."
   }
 }

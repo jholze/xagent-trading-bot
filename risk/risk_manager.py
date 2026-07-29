@@ -173,6 +173,26 @@ class RiskManager:
             except Exception:
                 pass
 
+            # Issue #162: prev-day gainer chase guard (new entries only, not DCA add)
+            if not self._is_dca_buy(source, order):
+                try:
+                    from services.gainer_universe.chase_guard import check_gainer_chase_guard
+
+                    raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                    px = float(getattr(order, "price", 0) or 0)
+                    blocked, gmsg = check_gainer_chase_guard(
+                        order.symbol, px, config=raw_cfg
+                    )
+                    if blocked:
+                        return RiskDecision(
+                            approved=False,
+                            message=gmsg,
+                            code="gainer_chase_guard",
+                            size_multiplier=0.0,
+                        )
+                except Exception:
+                    pass
+
             try:
                 from services.market_policy_fusion import get_global_market_bias
 

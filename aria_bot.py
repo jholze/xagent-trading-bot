@@ -684,7 +684,18 @@ def _run_tenant_price_cycle(
             + " • ".join(c["symbol"] for c in active_coins[:40])
             + (" …" if len(active_coins) > 40 else "")
         )
-    scan_coins = order_watchlist_positions_first(active_coins, open_positions)
+    prefer_gainer = False
+    try:
+        from services.gainer_universe.config import gainer_universe_config
+
+        prefer_gainer = bool(
+            gainer_universe_config(bot_config.raw).get("scan_prefer_gainer", True)
+        )
+    except Exception:
+        prefer_gainer = False
+    scan_coins = order_watchlist_positions_first(
+        active_coins, open_positions, prefer_gainer=prefer_gainer
+    )
     price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
     try:

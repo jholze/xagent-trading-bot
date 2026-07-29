@@ -277,11 +277,42 @@ def build_eligible(
                 }
             )
 
+    # Same-day heat → short trade eligibility (still DE-gated; not auto-buy)
+    if cfg.get("live_heat_trade", True) and live_top:
+        lo = float(cfg.get("live_heat_min_pct") or 8.0)
+        hi = float(cfg.get("live_heat_max_pct") or 35.0)
+        heat_ttl = float(cfg.get("live_heat_ttl_hours") or 10.0)
+        heat_until = (now + timedelta(hours=heat_ttl)).isoformat()
+        for r in live_top:
+            sym = r.get("symbol")
+            if not sym or sym in seen:
+                continue
+            pct = float(r.get("pct_24h") or 0)
+            if pct < lo or pct > hi:
+                continue
+            seen.add(sym)
+            eligible.append(
+                {
+                    "symbol": sym,
+                    "source": "gainer_live_heat",
+                    "rank": int(r.get("rank") or 0),
+                    "day_ret": pct,
+                    "day": today,
+                    "eligible_until": heat_until,
+                    "pct_24h": pct,
+                }
+            )
+
     cap = int(cfg.get("expand_inject_max") or 40)
-    # prefer higher day_ret / rank
+    # prefer prev_top, then live heat, then continuation
+    src_rank = {
+        "gate_prev_top": 0,
+        "gainer_live_heat": 1,
+        "gainer_continuation": 2,
+    }
     eligible.sort(
         key=lambda x: (
-            0 if x.get("source") == "gate_prev_top" else 1,
+            src_rank.get(str(x.get("source") or ""), 9),
             -float(x.get("day_ret") or 0),
             int(x.get("rank") or 999),
         )
