@@ -10,6 +10,7 @@ from core.actions import (
     SELL_PARTIAL_10,
     SELL_PARTIAL_20,
     SELL_PARTIAL_30,
+    SELL_PARTIAL_50,
     is_sell,
 )
 
@@ -17,10 +18,13 @@ PROFIT_PARTIAL_ACTIONS = frozenset({
     SELL_PARTIAL_10,
     SELL_PARTIAL_20,
     SELL_PARTIAL_30,
+    SELL_PARTIAL_50,
     "SELL_10",
     "SELL_20",
     "SELL_30",
     "SELL_TP",
+    "SELL_STOP_PARTIAL",
+    "SELL_50",
 })
 from core.models import MarketContext
 from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_enabled
@@ -48,6 +52,10 @@ POLICY_DEFAULTS = {
     "tail_exempt_notional_usdt": 800.0,
     "trail_exit_full_close": True,
     "profit_exit_full_close": False,
+    # When true: also upgrade grid level sells to SELL_FULL (no stuck 30–70% tails)
+    "grid_profit_full_close": False,
+    # Master: profit partials + grid → full close on green (user preference: no partials)
+    "prefer_full_close": False,
 }
 
 
@@ -302,10 +310,21 @@ def filter_profit_full_close(
     strategy_profile: str | None = None,
     sell_sources: list[str] | None = None,
 ) -> list[tuple]:
-    """Staging/test mode: close entire position on profit partial signals (no ladder tails)."""
-    if not cfg.get("profit_exit_full_close"):
+    """Close entire position on profit signals (no ladder/grid tails).
+
+    - profit_exit_full_close: non-grid profit partials → SELL_FULL
+    - grid_profit_full_close / prefer_full_close: also grid level sells → SELL_FULL
+    """
+    prefer = bool(cfg.get("prefer_full_close"))
+    profit_full = prefer or bool(cfg.get("profit_exit_full_close"))
+    grid_full = prefer or bool(cfg.get("grid_profit_full_close"))
+    if not profit_full and not grid_full:
         return candidates
-    if is_grid_profit_sell_context(strategy_profile, sell_sources):
+
+    grid_ctx = is_grid_profit_sell_context(strategy_profile, sell_sources)
+    if grid_ctx and not grid_full:
+        return candidates
+    if not grid_ctx and not profit_full:
         return candidates
     if not can_rotation_evict(market, position, cfg):
         return candidates
@@ -313,10 +332,23 @@ def filter_profit_full_close(
     upgraded: list[tuple] = []
     for action, priority, source in candidates:
         src = (source or "").lower()
-        if "stop" in src or action not in PROFIT_PARTIAL_ACTIONS:
+        # Keep hard stops as-is (may still be partial stop); profit path → full
+        if "stop" in src and "partial" not in str(action).lower():
             upgraded.append((action, priority, source))
             continue
-        upgraded.append((SELL_FULL, max(priority, 5), source))
+        if action == SELL_FULL:
+            upgraded.append((action, priority, source))
+            continue
+        if is_sell(action) and (
+            action in PROFIT_PARTIAL_ACTIONS
+            or "partial" in str(action).lower()
+            or (grid_full and grid_ctx)
+            or prefer
+            or profit_full
+        ):
+            upgraded.append((SELL_FULL, max(priority, 5), source))
+            continue
+        upgraded.append((action, priority, source))
     return upgraded
 
 

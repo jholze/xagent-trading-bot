@@ -9,7 +9,7 @@ from decimal import Decimal
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from core.actions import SELL_FULL, SELL_PARTIAL_30
+from core.actions import SELL_FULL, SELL_PARTIAL_30, SELL_PARTIAL_50
 from core.models import MarketContext
 from strategies.positions import count_open_full_slots, get_key, positions, update_position
 from strategies.sell_rotation_policy import (
@@ -130,8 +130,8 @@ class TestSellRotationPolicy(unittest.TestCase):
         out = filter_profit_full_close(cands, market, pos, cfg)
         self.assertEqual(out[0][0], SELL_PARTIAL_30)
 
-    def test_profit_full_close_skips_grid_profile(self):
-        cfg = {**self.cfg, "profit_exit_full_close": True}
+    def test_profit_full_close_skips_grid_profile_unless_flag(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True, "grid_profit_full_close": False}
         market = self._market(1.0, 1.08)
         pos = {}
         cands = [(SELL_PARTIAL_30, 3, "technical")]
@@ -140,8 +140,30 @@ class TestSellRotationPolicy(unittest.TestCase):
         )
         self.assertEqual(out[0][0], SELL_PARTIAL_30)
 
-    def test_profit_full_close_skips_grid_source(self):
-        cfg = {**self.cfg, "profit_exit_full_close": True}
+    def test_grid_profit_full_close_upgrades_grid(self):
+        cfg = {
+            **self.cfg,
+            "profit_exit_full_close": True,
+            "grid_profit_full_close": True,
+        }
+        market = self._market(1.0, 1.08)
+        cands = [(SELL_PARTIAL_50, 3, "grid")]
+        out = filter_profit_full_close(
+            cands, market, {}, cfg, strategy_profile="grid", sell_sources=["grid"],
+        )
+        self.assertEqual(out[0][0], SELL_FULL)
+
+    def test_prefer_full_close_upgrades_grid(self):
+        cfg = {**self.cfg, "prefer_full_close": True}
+        market = self._market(1.0, 1.08)
+        cands = [(SELL_PARTIAL_50, 3, "grid")]
+        out = filter_profit_full_close(
+            cands, market, {}, cfg, strategy_profile="grid", sell_sources=["grid"],
+        )
+        self.assertEqual(out[0][0], SELL_FULL)
+
+    def test_profit_full_close_skips_grid_source_unless_flag(self):
+        cfg = {**self.cfg, "profit_exit_full_close": True, "grid_profit_full_close": False}
         market = self._market(1.0, 1.08)
         cands = [(SELL_PARTIAL_30, 3, "technical")]
         out = filter_profit_full_close(

@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from core.actions import HOLD, SELL_PARTIAL_50
+from core.actions import HOLD, SELL_FULL, SELL_PARTIAL_50
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from logger import log
@@ -387,9 +387,29 @@ class GridStrategy(BaseStrategy):
             dca_usdt = round(base * buy_frac, 2)
 
         is_sell = "SELL" in str(act.action or "").upper()
+        sell_action = act.action
+        # Prefer full close on green grid sells (no 20–50% tails stuck in book)
+        if is_sell:
+            prefer_full = False
+            try:
+                from strategies.sell_rotation_policy import rotation_config
+
+                rcfg = rotation_config(
+                    get_bot_config().raw if hasattr(get_bot_config(), "raw") else None,
+                    params,
+                )
+                prefer_full = bool(
+                    rcfg.get("prefer_full_close") or rcfg.get("grid_profit_full_close")
+                )
+            except Exception:
+                prefer_full = False
+            if prefer_full and avg_entry > 0 and price >= avg_entry:
+                sell_action = SELL_FULL
         sources = ["grid", f"mode_{mode.lower()}"]
         if is_sell:
             sources.append("grid_sell")
+            if sell_action == SELL_FULL:
+                sources.append("grid_full_close")
         if mem_bits:
             sources.append("grid_memory")
 
@@ -397,11 +417,13 @@ class GridStrategy(BaseStrategy):
             f"{act.rationale} | mode={mode} | tier={vol_tier or coin_class or '?'} "
             f"| spacing×{spacing_mult:.2f} | levels={plan_tf}"
         )
+        if is_sell and sell_action == SELL_FULL:
+            rat = f"{rat} | full_close"
         if mem_bits:
             rat = f"{rat} | {' · '.join(mem_bits)}"
 
         return SignalAnalysis(
-            action=act.action,
+            action=sell_action if is_sell else act.action,
             symbol=symbol,
             timeframe=tf,
             rsi=market.rsi,
@@ -410,7 +432,7 @@ class GridStrategy(BaseStrategy):
             ampel_emoji="🔵" if act.action != HOLD else "🟡",
             ampel_text=act.rationale or "Grid monitoring",
             sources=sources,
-            normalized_action=act.action,
+            normalized_action=sell_action if is_sell else act.action,
             rationale=rat,
             strategy_profile="grid",
             confidence=0.72 if act.action != HOLD else 0.55,

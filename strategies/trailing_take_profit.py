@@ -77,7 +77,7 @@ def _hours_since(iso_ts: str | None, now: datetime) -> float | None:
 
 
 def _resolve_action(position: dict, strategy_params: dict | None) -> str | None:
-    """Partial sells use exit ladder tiers; terminal step is full close."""
+    """Resolve TTP action. max_steps=1 (config default) → always full close."""
     if ladder_enabled(strategy_params):
         tiers = ladder_config(strategy_params).get("tiers") or []
         if not tiers:
@@ -89,11 +89,12 @@ def _resolve_action(position: dict, strategy_params: dict | None) -> str | None:
             return SELL_FULL
         return SELL_PARTIAL_30
 
-    max_steps = int(trailing_take_profit_config(strategy_params).get("max_steps", 3))
+    # Default max_steps=1: one trail hit = full close (no partial tails)
+    max_steps = int(trailing_take_profit_config(strategy_params).get("max_steps", 1))
     steps = int(position.get("trail_tp_steps", 0) or 0)
     if steps >= max_steps:
         return None
-    return SELL_FULL if steps >= max_steps - 1 else SELL_PARTIAL_30
+    return SELL_FULL if max_steps <= 1 or steps >= max_steps - 1 else SELL_PARTIAL_30
 
 
 def evaluate_trailing_take_profit(

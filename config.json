@@ -470,7 +470,7 @@
     "min_trade_usdt": 100.0,
     "min_sell_notional_usdt": 300,
     "min_position_usdt_for_partial_sell": 500,
-    "block_partial_sell_if_sold_percent_above": 0.75,
+    "block_partial_sell_if_sold_percent_above": 0.99,
     "dust_sweep_max_position_usdt": 500,
     "dust_sweep_sold_percent_min": 0.5,
     "dust_sweep_min_remainder_usdt": 100,
@@ -504,11 +504,13 @@
       "pre_arm_ta_allowed": true,
       "pre_arm_min_gain_pct": 10,
       "pre_arm_max_gain_pct": 15,
-      "tail_idle_hours": 24,
-      "tail_exempt_sold_pct": 0.5,
-      "tail_exempt_notional_usdt": 800,
+      "tail_idle_hours": 12,
+      "tail_exempt_sold_pct": 0.25,
+      "tail_exempt_notional_usdt": 500,
       "trail_exit_full_close": true,
-      "profit_exit_full_close": true
+      "profit_exit_full_close": true,
+      "grid_profit_full_close": true,
+      "prefer_full_close": true
     }
   },
   "update_interval": 120,
