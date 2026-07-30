@@ -479,6 +479,24 @@ class RiskManager:
                 "drawdown_multiplier": 1.0,
                 "total_multiplier": 1.0,
             }
+            # Mild size lift under moderate_deploy (NEUTRAL/RISK_ON only)
+            try:
+                from risk.moderate_deploy import size_boost_for_regime
+                from services.market_policy_fusion import get_global_market_bias
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                bias = get_global_market_bias(raw_cfg) or {}
+                regime = bias.get("regime")
+                md_boost = size_boost_for_regime(
+                    raw_cfg, regime, is_dca=True
+                )
+                if md_boost > 1.0:
+                    sized = float(sized) * md_boost
+                    factors["moderate_deploy_mult"] = round(md_boost, 3)
+                    factors["total_multiplier"] = round(md_boost, 3)
+                    factors["global_regime"] = regime
+            except Exception:
+                pass
         else:
             if indicators is None:
                 indicators = self.market.fetch_indicators(order.symbol, timeframe, order.price)
@@ -1234,6 +1252,25 @@ class RiskManager:
         )
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
+        md_boost = 1.0
+        # Moderate deploy: lift size in NEUTRAL/RISK_ON only (config flag; no RISK_OFF sprint)
+        try:
+            from risk.moderate_deploy import (
+                effective_max_total_multiplier,
+                size_boost_for_regime,
+            )
+
+            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            md_boost = size_boost_for_regime(
+                raw_cfg, global_regime, is_dca=False
+            )
+            if md_boost > 1.0 and global_mult > 0:
+                total *= md_boost
+                max_mult = effective_max_total_multiplier(
+                    raw_cfg, base_max=max_mult, boost=md_boost
+                )
+        except Exception:
+            md_boost = 1.0
         # Allow CRASH/warmup (0) to zero out size; otherwise keep floor.
         if global_mult <= 0:
             total = 0.0
@@ -1259,6 +1296,7 @@ class RiskManager:
             "calendar_risk": calendar_risk,
             "session_risk": session_risk,
             "pm_risk": pm_risk,
+            "moderate_deploy_mult": round(md_boost, 3),
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors

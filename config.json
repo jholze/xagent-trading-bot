@@ -328,6 +328,20 @@
   "risk": {
     "cash_floor_pct": 18,
     "cash_floor_basis": "initial",
+    "moderate_deploy": {
+      "enabled": true,
+      "size_boost_risk_on": 1.55,
+      "size_boost_neutral": 1.5,
+      "size_boost_risk_off": 1.0,
+      "size_boost_crash": 1.0,
+      "size_boost_warmup": 1.0,
+      "size_boost_default": 1.0,
+      "max_total_multiplier": 1.6,
+      "apply_to_dca": true,
+      "dca_boost_scale": 0.7,
+      "max_boost": 1.75,
+      "_rollback": "Set enabled=false. Also universe.trade_max_coins→40, gainer expand_inject_max→40 if desired."
+    },
     "cash_policy": {
       "enabled": true,
       "mode": "adaptive",
@@ -1637,7 +1651,7 @@
   "universe": {
     "split_enabled": true,
     "observe_max_coins": 100,
-    "trade_max_coins": 40,
+    "trade_max_coins": 58,
     "trade_include_open_positions": true,
     "trade_include_base": true,
     "trade_rank_by": "quality_score"
@@ -1662,7 +1676,7 @@
     "streak_min_days_in_top20": 2,
     "streak_lookback_days": 3,
     "continuation_max_chase_pct_today": 15,
-    "expand_inject_max": 40,
+    "expand_inject_max": 48,
     "trade_max_with_expand": 80,
     "scan_workers": 8,
     "live_heat_trade": true,
@@ -1677,6 +1691,6 @@
   "exit_rotation": {
     "enabled": true,
     "profile": "rot_mid",
-    "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off. Issue #162 flags under gainer_universe."
+    "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off. Issue #162 flags under gainer_universe. moderate_deploy: risk.moderate_deploy.enabled=false; universe.trade_max_coins 58→40."
   }
 }
