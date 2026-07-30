@@ -13,7 +13,7 @@
     "exchange": "gate",
     "api_key_env": "GATE_API_KEY",
     "api_secret_env": "GATE_API_SECRET",
-    "max_usdt_per_trade": 6000,
+    "max_usdt_per_trade": 4500,
     "require_min_trust_score": 70,
     "dry_run": true,
     "dry_run_enhanced": true,
@@ -53,7 +53,7 @@
     "min_hours_between_sells": 2
   },
   "initial_capital_usdt": 100000,
-  "max_usdt_per_trade": 6000,
+  "max_usdt_per_trade": 4500,
   "max_position_percent": 30,
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
@@ -342,7 +342,7 @@
       "max_boost": 2.5,
       "cash_rich_pct": 50,
       "cash_rich_extra_mult": 1.3,
-      "_rollback": "enabled=false; max_open 36→24; max_usdt 6000→2500; cash_floor 12→18; cash_rich off via enabled=false."
+      "_rollback": "enabled=false; max_open 36→24; max_usdt 4500→2500; cash_floor 12→18; cash_rich off via enabled=false."
     },
     "cash_policy": {
       "enabled": true,
