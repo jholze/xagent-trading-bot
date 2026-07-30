@@ -115,10 +115,16 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
             or bool(snap.get("block_new_entries"))
         )
     )
+    # Warmup with max_new_buys<=0 fully blocks; with allowance only soft-throttle size
     if warmup_active and cfg["warmup_max_new_buys"] <= 0:
         block_buys = True
         sensor = "block" if sensor == "active" else sensor
         size_mult = min(size_mult, 0.0)
+    elif warmup_active and cfg["warmup_max_new_buys"] > 0:
+        # Keep regime size but floor at 0.35 so redeploys do not stall capital deploy
+        size_mult = max(0.35, min(size_mult, 0.85))
+        if sensor == "block":
+            sensor = "shadow"
 
     return {
         "active": True,

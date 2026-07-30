@@ -376,10 +376,10 @@ class GridStrategy(BaseStrategy):
         else:
             self._persist_plan(plan, force=False)
 
-        # HYBRID: mild buys (smaller slice)
+        # HYBRID: slightly smaller than pure grid (was 0.6 — too timid with full cash)
         buy_frac = act.buy_usdt_frac
         if mode == MODE_HYBRID and act.action == "BUY":
-            buy_frac = max(0.05, buy_frac * 0.6)
+            buy_frac = max(0.08, buy_frac * 0.85)
 
         dca_usdt = 0.0
         if act.action == "BUY" and buy_frac > 0:
