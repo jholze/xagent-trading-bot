@@ -25,6 +25,9 @@ _DEFAULTS: dict[str, Any] = {
     # DCA gets a milder lift: 1 + (boost-1)*scale  (1.5 with 0.7 → 1.35)
     "dca_boost_scale": 0.7,
     "max_boost": 1.75,
+    # When cash is a large share of equity, deploy harder (anti cash-parking)
+    "cash_rich_pct": 55.0,
+    "cash_rich_extra_mult": 1.25,
 }
 
 
@@ -49,6 +52,8 @@ def moderate_deploy_config(config: dict | None = None) -> dict[str, Any]:
         "max_total_multiplier",
         "dca_boost_scale",
         "max_boost",
+        "cash_rich_pct",
+        "cash_rich_extra_mult",
     ):
         try:
             out[k] = float(out.get(k) if out.get(k) is not None else _DEFAULTS[k])
@@ -57,6 +62,8 @@ def moderate_deploy_config(config: dict | None = None) -> dict[str, Any]:
     out["dca_boost_scale"] = max(0.0, min(1.0, float(out["dca_boost_scale"])))
     out["max_boost"] = max(1.0, float(out["max_boost"]))
     out["max_total_multiplier"] = max(1.0, float(out["max_total_multiplier"]))
+    out["cash_rich_pct"] = max(0.0, min(100.0, float(out["cash_rich_pct"])))
+    out["cash_rich_extra_mult"] = max(1.0, float(out["cash_rich_extra_mult"]))
     return out
 
 
@@ -84,8 +91,13 @@ def size_boost_for_regime(
     regime: str | None,
     *,
     is_dca: bool = False,
+    cash_pct: float | None = None,
 ) -> float:
-    """Return size multiplier ≥1.0 (1.0 = no change). Fail-open → 1.0."""
+    """Return size multiplier ≥1.0 (1.0 = no change). Fail-open → 1.0.
+
+    cash_pct: cash as % of equity (0–100). When above cash_rich_pct, apply extra mult
+    so parked capital deploys faster without lowering exit rules.
+    """
     try:
         cfg = moderate_deploy_config(config)
         if not cfg.get("enabled"):
@@ -107,6 +119,13 @@ def size_boost_for_regime(
         if is_dca and boost > 1.0:
             scale = float(cfg.get("dca_boost_scale") or 0.7)
             boost = 1.0 + (boost - 1.0) * scale
+        # Cash parking antidote (skip on CRASH)
+        if (
+            reg != "CRASH"
+            and cash_pct is not None
+            and float(cash_pct) >= float(cfg.get("cash_rich_pct") or 55.0)
+        ):
+            boost *= float(cfg.get("cash_rich_extra_mult") or 1.25)
         boost = min(float(cfg.get("max_boost") or 1.75), boost)
         return boost
     except Exception:

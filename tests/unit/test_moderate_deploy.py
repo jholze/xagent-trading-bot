@@ -76,6 +76,15 @@ class TestSizeBoostForRegime(unittest.TestCase):
             size_boost_for_regime(self.cfg, "RISK_OFF", is_dca=True), 1.0
         )
 
+    def test_cash_rich_extra_mult(self):
+        self.cfg["risk"]["moderate_deploy"]["cash_rich_pct"] = 50
+        self.cfg["risk"]["moderate_deploy"]["cash_rich_extra_mult"] = 1.3
+        self.cfg["risk"]["moderate_deploy"]["max_boost"] = 3.0
+        base = size_boost_for_regime(self.cfg, "NEUTRAL", cash_pct=20)
+        rich = size_boost_for_regime(self.cfg, "NEUTRAL", cash_pct=80)
+        self.assertAlmostEqual(base, 1.5)
+        self.assertAlmostEqual(rich, 1.5 * 1.3)
+
     def test_max_total_ceiling_only_when_boosting(self):
         self.assertAlmostEqual(
             effective_max_total_multiplier(self.cfg, base_max=1.25, boost=1.0),

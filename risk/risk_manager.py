@@ -479,7 +479,7 @@ class RiskManager:
                 "drawdown_multiplier": 1.0,
                 "total_multiplier": 1.0,
             }
-            # Mild size lift under moderate_deploy (NEUTRAL/RISK_ON only)
+            # Mild size lift under moderate_deploy (+ cash-rich boost)
             try:
                 from risk.moderate_deploy import size_boost_for_regime
                 from services.market_policy_fusion import get_global_market_bias
@@ -487,14 +487,24 @@ class RiskManager:
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
                 bias = get_global_market_bias(raw_cfg) or {}
                 regime = bias.get("regime")
+                cash_pct = None
+                try:
+                    eq = float(self._portfolio_equity(order.price, order.symbol) or 0)
+                    cash = float(self._available_usdt(eq) or 0)
+                    if eq > 0:
+                        cash_pct = 100.0 * cash / eq
+                except Exception:
+                    cash_pct = None
                 md_boost = size_boost_for_regime(
-                    raw_cfg, regime, is_dca=True
+                    raw_cfg, regime, is_dca=True, cash_pct=cash_pct
                 )
                 if md_boost > 1.0:
                     sized = float(sized) * md_boost
                     factors["moderate_deploy_mult"] = round(md_boost, 3)
                     factors["total_multiplier"] = round(md_boost, 3)
                     factors["global_regime"] = regime
+                    if cash_pct is not None:
+                        factors["cash_pct"] = round(cash_pct, 1)
             except Exception:
                 pass
         else:
@@ -1253,7 +1263,7 @@ class RiskManager:
         max_mult = float(aggression.get("max_position_multiplier", 2.0))
         min_mult = float(risk.get("min_size_multiplier", 0.25))
         md_boost = 1.0
-        # Moderate deploy: lift size in NEUTRAL/RISK_ON only (config flag; no RISK_OFF sprint)
+        # Moderate deploy: lift size when not CRASH; extra when cash-rich
         try:
             from risk.moderate_deploy import (
                 effective_max_total_multiplier,
@@ -1261,8 +1271,19 @@ class RiskManager:
             )
 
             raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            cash_pct = None
+            try:
+                eq = float(self._portfolio_equity(order.price, order.symbol) or 0)
+                cash = float(self._available_usdt(eq) or 0)
+                if eq > 0:
+                    cash_pct = 100.0 * cash / eq
+            except Exception:
+                cash_pct = None
             md_boost = size_boost_for_regime(
-                raw_cfg, global_regime, is_dca=False
+                raw_cfg,
+                global_regime,
+                is_dca=False,
+                cash_pct=cash_pct,
             )
             if md_boost > 1.0 and global_mult > 0:
                 total *= md_boost
