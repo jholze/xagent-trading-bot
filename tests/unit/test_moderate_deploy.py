@@ -142,6 +142,10 @@ class TestDynamicSizeWiresBoost(unittest.TestCase):
             "intelligence.memory.cache.get_size_bias", return_value=1.0
         ), patch(
             "intelligence.memory.cache.get_coin_profile", return_value=None
+        ), patch.object(
+            risk, "_available_usdt", return_value=10_000.0
+        ), patch.object(
+            risk, "_portfolio_equity", return_value=100_000.0  # cash 10% — not rich
         ):
             sized_n, fac_n = risk._dynamic_size(
                 1000.0, order, "4h", "grid", 70.0, 50.0, {"atr_pct": 3.0}
@@ -154,6 +158,10 @@ class TestDynamicSizeWiresBoost(unittest.TestCase):
             "intelligence.memory.cache.get_size_bias", return_value=1.0
         ), patch(
             "intelligence.memory.cache.get_coin_profile", return_value=None
+        ), patch.object(
+            risk, "_available_usdt", return_value=10_000.0
+        ), patch.object(
+            risk, "_portfolio_equity", return_value=100_000.0
         ):
             # disable boost to get baseline under RISK_OFF path
             raw["risk"]["moderate_deploy"]["enabled"] = False
@@ -167,7 +175,7 @@ class TestDynamicSizeWiresBoost(unittest.TestCase):
 
         self.assertGreater(fac_n.get("moderate_deploy_mult", 1), 1.0)
         self.assertAlmostEqual(fac_off.get("moderate_deploy_mult", 1), 1.0)
-        # RISK_OFF size unchanged by flag
+        # RISK_OFF size unchanged by flag when not cash-rich
         self.assertAlmostEqual(sized_off, sized_off_base, places=2)
         # NEUTRAL with boost should be larger than pure RISK_OFF size
         self.assertGreater(sized_n, sized_off)
