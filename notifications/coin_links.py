@@ -66,13 +66,18 @@ def _save_cache(cache: dict):
 
 
 def _watchlist_name_for_ticker(ticker: str) -> str:
-    try:
-        from data_manager import load_effective_watchlist
+    """Best-effort name/slug from base watchlist only — never effective/WQE list.
 
-        for coin in load_effective_watchlist():
+    Hot paths (/orders list) must not call load_effective_watchlist (WQE soft
+    can take multi-seconds per call).
+    """
+    try:
+        from data_manager import load_watchlist
+
+        for coin in load_watchlist() or []:
             if normalize_ticker(coin.get("symbol", "")) == ticker:
                 if coin.get("cmc_slug"):
-                    return coin["cmc_slug"]
+                    return str(coin["cmc_slug"])
                 return coin.get("name") or ""
     except Exception:
         pass
@@ -127,7 +132,17 @@ def _resolve_slug_from_api(ticker: str, name_hint: str = "") -> str:
         return ""
 
 
-def resolve_cmc_slug(ticker: str, name: str = None) -> str:
+def resolve_cmc_slug(
+    ticker: str,
+    name: str = None,
+    *,
+    allow_network: bool = False,
+    allow_watchlist: bool = False,
+) -> str:
+    """Resolve CMC slug. Default is cache-only (safe for /orders hot path).
+
+    Set allow_network=True for detail views where a single CMC lookup is ok.
+    """
     ticker = normalize_ticker(ticker)
     if not ticker:
         return ""
@@ -135,23 +150,43 @@ def resolve_cmc_slug(ticker: str, name: str = None) -> str:
     if ticker in cache and cache[ticker]:
         return cache[ticker]
 
-    name_hint = name or _watchlist_name_for_ticker(ticker)
-    if name_hint and "/" not in name_hint and " " not in name_hint and name_hint.islower():
+    name_hint = name or ""
+    if not name_hint and allow_watchlist:
+        name_hint = _watchlist_name_for_ticker(ticker)
+    if name_hint and "/" not in name_hint and " " not in name_hint and str(name_hint).islower():
         slug = name_hint
+    elif allow_network:
+        slug = _resolve_slug_from_api(
+            ticker, name_hint if " " in str(name_hint) else name_hint
+        )
     else:
-        slug = _resolve_slug_from_api(ticker, name_hint if " " in str(name_hint) else name_hint)
+        slug = ""
 
     if slug:
         cache[ticker] = slug
-        _save_cache(cache)
+        try:
+            _save_cache(cache)
+        except Exception:
+            pass
     return slug or ""
 
 
-def cmc_coin_url(ticker: str, name: str = None) -> str:
+def cmc_coin_url(
+    ticker: str,
+    name: str = None,
+    *,
+    allow_network: bool = False,
+    allow_watchlist: bool = False,
+) -> str:
     ticker = normalize_ticker(ticker)
     if not ticker:
         return f"{_CMC_BASE}/"
-    slug = resolve_cmc_slug(ticker, name=name)
+    slug = resolve_cmc_slug(
+        ticker,
+        name=name,
+        allow_network=allow_network,
+        allow_watchlist=allow_watchlist,
+    )
     if slug:
         return f"{_CMC_BASE}/currencies/{slug}/"
     return f"{_CMC_BASE}/search/?q={ticker}"
@@ -173,12 +208,27 @@ def format_link_html(label: str, url: str) -> str:
     return f'<a href="{escape(url, quote=True)}">{escape(label)}</a>'
 
 
-def format_ticker_html(ticker: str, name: str = None, *, symbol_suffix: str = "/USDT") -> str:
+def format_ticker_html(
+    ticker: str,
+    name: str = None,
+    *,
+    symbol_suffix: str = "/USDT",
+    allow_network: bool = False,
+) -> str:
+    """HTML ticker. Lists: allow_network=False (cache/search URL only, no CMC API)."""
     if not coin_links_enabled():
         t = normalize_ticker(ticker) or escape(str(ticker))
         return f"{t}{symbol_suffix}" if symbol_suffix else t
     t = normalize_ticker(ticker) or str(ticker)
-    url = cmc_coin_url(t, name=name)
+    # Prefer Gate trade URL for list hot path (no slug resolve). CMC only when cached/network ok.
+    if allow_network:
+        url = cmc_coin_url(t, name=name, allow_network=True, allow_watchlist=True)
+    else:
+        slug = resolve_cmc_slug(t, name=name, allow_network=False, allow_watchlist=False)
+        if slug:
+            url = f"{_CMC_BASE}/currencies/{slug}/"
+        else:
+            url = gate_trade_url(t)
     inner = escape(t)
     if symbol_suffix:
         return f'<a href="{escape(url, quote=True)}">{inner}</a>{symbol_suffix}'
@@ -191,7 +241,13 @@ def format_links_line(ticker: str, name: str = None) -> str:
         return ""
     parts = []
     if cfg.get("show_cmc", True):
-        parts.append(format_link_html("CMC", cmc_coin_url(ticker, name=name)))
+        # Detail/links line: allow one network resolve per coin (cached after)
+        parts.append(
+            format_link_html(
+                "CMC",
+                cmc_coin_url(ticker, name=name, allow_network=True, allow_watchlist=True),
+            )
+        )
     if cfg.get("show_gate", True):
         parts.append(format_link_html("Gate", gate_trade_url(ticker)))
     if cfg.get("show_tradingview", True):

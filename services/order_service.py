@@ -45,7 +45,8 @@ STATUS_ICONS = {
 
 _ORDERS_READ_CACHE: dict[str, tuple[float, dict]] = {}
 # Command read path: longer TTL; writes still invalidate via _save.
-_ORDERS_READ_CACHE_TTL = 20.0
+# 90s cuts repeat /orders cold blob cost without feeling stale for operators.
+_ORDERS_READ_CACHE_TTL = 90.0
 # Stop reverse day/month scans after this many consecutive stamps before window start.
 _WINDOW_EARLY_STOP_STREAK = 12
 # Honest instrumentation: full-history blob loads via OrderService._load
@@ -1084,7 +1085,8 @@ def format_order_line(order: dict, *, show_block_reason: bool = False) -> str:
 
     icon = STATUS_ICONS.get(order.get("status", ""), "·")
     sym = (order.get("symbol") or "").replace("/USDT", "")
-    sym_html = format_ticker_html(sym, symbol_suffix="")
+    # List hot path: never CMC API / effective-watchlist (was multi-second per line)
+    sym_html = format_ticker_html(sym, symbol_suffix="", allow_network=False)
     status_raw = (order.get("status") or "").lower()
     status_key = f"order_status_{status_raw}"
     status_label = t(status_key) if status_raw in (

@@ -278,10 +278,15 @@ def _body_lines_by_side(
 
 def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     """Render a full-list order view (day / blocked / month). ``page`` ignored."""
+    import time
+
     view = view if view in _VIEWS else VIEW_DAY
+    t0 = time.perf_counter()
     ledger = OrderService()
     # Single ledger pass: body list + header stats from the same orders.
+    t_fetch0 = time.perf_counter()
     orders = _fetch_all(ledger, view)
+    fetch_ms = (time.perf_counter() - t_fetch0) * 1000.0
     stats = None
     if view in (VIEW_DAY, VIEW_MONTH):
         stats = OrderService.stats_from_filled_orders(orders)
@@ -290,10 +295,22 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     if not orders:
         msg = header + "\n\n" + _empty_message(view)
         send_telegram_message(msg)
+        try:
+            from logger import log
+
+            log(
+                f"orders_view view={view} n=0 fetch_ms={fetch_ms:.0f} "
+                f"total_ms={(time.perf_counter() - t0) * 1000:.0f}",
+                "INFO",
+            )
+        except Exception:
+            pass
         return
 
     show_reason = view == VIEW_BLOCKED
+    t_fmt0 = time.perf_counter()
     body = _body_lines_by_side(orders, show_block_reason=show_reason)
+    fmt_ms = (time.perf_counter() - t_fmt0) * 1000.0
     footer_bits = [
         "",
         "<i>Tippe eine <b>Ordernummer</b> / Button für Details</i>",
@@ -310,19 +327,31 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     button_orders = buys + sells + other
     buttons = _order_number_buttons(view, ledger.scope, button_orders, page=1)
 
+    t_tg0 = time.perf_counter()
     if len(chunks) == 1:
         if buttons:
             send_telegram_buttons(chunks[0], buttons)
         else:
             send_telegram_message(chunks[0])
-        return
-
-    for ch in chunks[:-1]:
-        send_telegram_message(ch)
-    if buttons:
-        send_telegram_buttons(chunks[-1], buttons)
     else:
-        send_telegram_message(chunks[-1])
+        for ch in chunks[:-1]:
+            send_telegram_message(ch)
+        if buttons:
+            send_telegram_buttons(chunks[-1], buttons)
+        else:
+            send_telegram_message(chunks[-1])
+    tg_ms = (time.perf_counter() - t_tg0) * 1000.0
+    try:
+        from logger import log
+
+        log(
+            f"orders_view view={view} n={len(orders)} chunks={len(chunks)} "
+            f"fetch_ms={fetch_ms:.0f} fmt_ms={fmt_ms:.0f} tg_ms={tg_ms:.0f} "
+            f"total_ms={(time.perf_counter() - t0) * 1000:.0f}",
+            "INFO",
+        )
+    except Exception:
+        pass
 
 
 def send_orders_page(page: int = 1) -> None:
