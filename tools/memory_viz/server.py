@@ -93,6 +93,11 @@ def _broadcast_nodes_added(
     )
 
 
+# Client closed the socket mid-response (proxy timeout, tab close, health probe).
+# Without catching these, ThreadingHTTPServer.handle_error dumps full tracebacks.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 class CortexHandler(BaseHTTPRequestHandler):
     server_version = "MemoryCortex/0.2"
     protocol_version = "HTTP/1.1"
@@ -101,15 +106,37 @@ class CortexHandler(BaseHTTPRequestHandler):
         if os.environ.get("MEMORY_VIZ_VERBOSE"):
             super().log_message(fmt, *args)
 
+    def log_error(self, fmt: str, *args: Any) -> None:
+        """Quiet client-disconnect noise; real errors still go to stderr when verbose."""
+        try:
+            msg = fmt % args if args else str(fmt)
+        except Exception:
+            msg = str(fmt)
+        if "Broken pipe" in msg or "BrokenPipeError" in msg:
+            return
+        if "Connection reset" in msg or "Connection aborted" in msg:
+            return
+        if os.environ.get("MEMORY_VIZ_VERBOSE"):
+            super().log_error(fmt, *args)
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except _CLIENT_GONE:
+            pass
+
     def _send(self, code: int, body: bytes, content_type: str) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except _CLIENT_GONE:
+            return
 
     def _json(self, code: int, obj: Any) -> None:
         raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
