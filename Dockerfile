@@ -1,24 +1,18 @@
+# Fast Railway image: TA-Lib comes as a manylinux wheel (0.6+) — no Sourceforge
+# C compile (was make -j1 + wget to prdownloads.sourceforge.net every cold build).
 FROM python:3.13-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     curl \
-    wget \
-    && rm -rf /var/lib/apt/lists/* \
-    && wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
-    && tar -xzf ta-lib-0.4.0-src.tar.gz \
-    && cd ta-lib \
-    && ./configure --prefix=/usr \
-    && make -j1 \
-    && make install \
-    && cd .. \
-    && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz \
-    && ldconfig
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && python -c "import talib; print('talib', getattr(talib, '__version__', 'ok'))"
 
 COPY . .
 
