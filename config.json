@@ -491,6 +491,83 @@
     },
     "sensor_entry": {
       "reentry_cooloff_hours_after_gross_loss": 168
+    },
+    "rebuy_cooldown": {
+      "enabled": true,
+      "base_hours_by_regime": {
+        "RISK_ON": 1.0,
+        "NEUTRAL": 2.0,
+        "RISK_OFF": 3.5,
+        "CRASH": 6.0,
+        "WARMUP": 3.0
+      },
+      "min_hours": 0.75,
+      "max_hours": 8.0,
+      "stop_loss_hours": 24.0,
+      "block_rebuy_if_last_sell_was_stop": true,
+      "quality_mult": {
+        "high_conviction_entry": 0.7,
+        "default": 1.0,
+        "weak_or_unknown": 1.25
+      },
+      "vol_tier_mult": {
+        "meme": 0.85,
+        "volatile": 0.9,
+        "stable": 1.1,
+        "large_cap": 1.15
+      },
+      "memory": {
+        "enabled": true,
+        "source": "coin_profile",
+        "min_samples": 3,
+        "win_rate_high": 0.55,
+        "win_rate_low": 0.4,
+        "high_wr_mult": 0.75,
+        "low_wr_mult": 1.4,
+        "prefer_mult": 0.85,
+        "soft_block_mult": 1.5,
+        "soft_block_min_hours": 4.0,
+        "size_bias_weight": 0.15,
+        "pnl_strong_usdt": 20,
+        "pnl_strong_mult": 0.9,
+        "pnl_weak_usdt": -50,
+        "pnl_weak_mult": 1.25,
+        "avg_pnl_weak_usdt": -15,
+        "avg_pnl_weak_mult": 1.15,
+        "risk_score_high": 0.65,
+        "risk_score_high_mult": 1.2,
+        "risk_score_low": 0.35,
+        "risk_score_low_mult": 0.9,
+        "dca_heavy_count": 4,
+        "dca_heavy_mult": 1.1,
+        "channel_pnl_weak_usdt": -30,
+        "channel_pnl_weak_mult": 1.2,
+        "channel_pnl_strong_usdt": 30,
+        "channel_pnl_strong_mult": 0.9,
+        "venue_thin_min_entries": 2,
+        "venue_thin_loss_mult": 1.2,
+        "gross_loss_cooloff_hours": 12.0,
+        "gross_loss_pct": -8.0,
+        "gross_loss_usdt": 500,
+        "structure_risk_mult": 1.35,
+        "missing_profile_mult": 1.0
+      },
+      "exit_source_mult": {
+        "trailing_take_profit": 0.85,
+        "bb_upper": 0.9,
+        "profit_max_lifetime": 0.85,
+        "trailing_stop": 1.05,
+        "vol_structure": 1.1,
+        "exit_sensor": 1.1,
+        "ladder_tail": 1.0,
+        "technical": 1.0,
+        "grid": 1.0,
+        "social": 1.05,
+        "stop": 1.0,
+        "default": 1.0
+      },
+      "log": true,
+      "_rollback": "enabled=false → architecture.min_hours_after_sell_before_rebuy (4.0)"
     }
   },
   "sell_policy": {

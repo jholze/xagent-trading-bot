@@ -165,7 +165,9 @@ class TestTradeCooldown(unittest.TestCase):
              patch.object(risk, "_portfolio_equity", return_value=5000.0), \
              patch.object(risk, "_daily_buys_count", return_value=0), \
              patch("risk.risk_manager.count_open_positions", return_value=0), \
-             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}), \
+             patch("services.universe.split.universe_split_enabled", return_value=False), \
+             patch("services.universe.split.is_trade_eligible", return_value=True):
             decision = risk.evaluate(order, self.tf)
 
         self.assertTrue(decision.approved)
@@ -190,7 +192,9 @@ class TestTradeCooldown(unittest.TestCase):
              patch.object(risk, "_portfolio_equity", return_value=5000.0), \
              patch.object(risk, "_daily_buys_count", return_value=0), \
              patch("risk.risk_manager.count_open_positions", return_value=0), \
-             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
+             patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}), \
+             patch("services.universe.split.universe_split_enabled", return_value=False), \
+             patch("services.universe.split.is_trade_eligible", return_value=True):
             decision = risk.evaluate(order, self.tf)
 
         self.assertTrue(decision.approved)

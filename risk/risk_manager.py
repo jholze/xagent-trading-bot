@@ -1636,19 +1636,104 @@ class RiskManager:
     ) -> tuple[bool, str]:
         if source == "manual":
             return False, ""
+
+        from risk.rebuy_cooldown import (
+            format_rebuy_reject_message,
+            prepare_dynamic_config,
+            rebuy_cooldown_config,
+            rebuy_cooldown_enabled,
+            resolve_rebuy_cooldown_hours,
+            signal_quality_from_confidence,
+        )
+
         arch = self.config.architecture_config
-        min_hours = float(
+        last_signal = str(pos.get("last_sell_signal") or "")
+        fallback_hours = float(
             params.get("min_hours_after_sell_before_rebuy")
             or defaults.get("min_hours_after_sell_before_rebuy")
             or self.config.min_hours_after_sell_before_rebuy
         )
-        last_signal = str(pos.get("last_sell_signal") or "")
+        risk_cfg = self.config.risk_config or {}
+        try:
+            elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
+        except TypeError:
+            # aware/naive mix — treat as no cooldown rather than crash
+            return False, ""
+
+        if not rebuy_cooldown_enabled(risk_cfg, self.config.raw):
+            return self._legacy_rebuy_after_sell_blocked(
+                last_signal, arch, fallback_hours, elapsed
+            )
+
+        cfg = prepare_dynamic_config(
+            rebuy_cooldown_config(risk_cfg, self.config.raw), arch
+        )
+        regime = None
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+
+            regime = (get_global_market_bias() or {}).get("regime")
+        except Exception:
+            pass
+        profile = None
+        try:
+            from intelligence.memory.cache import get_coin_profile
+
+            profile = get_coin_profile(order.symbol, config=self.config.raw)
+        except Exception:
+            pass
+
+        last_exit = (
+            pos.get("last_exit_source")
+            or pos.get("exit_source")
+            or pos.get("last_sell_exit_source")
+        )
+        vol_tier = pos.get("strategy_tier") or params.get("volatility_tier")
+        result = resolve_rebuy_cooldown_hours(
+            regime=regime,
+            last_sell_signal=last_signal,
+            last_exit_source=str(last_exit) if last_exit else None,
+            order_signal=str(getattr(order, "signal", None) or "") or None,
+            volatility_tier=str(vol_tier) if vol_tier else None,
+            signal_quality=signal_quality_from_confidence(
+                getattr(order, "confidence", None)
+            ),
+            profile=profile,
+            config=cfg,
+            fallback_hours=fallback_hours,
+        )
+        if cfg.get("log"):
+            try:
+                from logger import log
+
+                log(
+                    f"rebuy_cooldown symbol={order.symbol} hours={result.hours:.2f} "
+                    f"elapsed={elapsed:.2f} regime={regime} "
+                    f"factors={result.factors} reasons={result.reasons}",
+                    "DEBUG",
+                )
+            except Exception:
+                pass
+        if result.hours <= 0:
+            return False, ""
+        if elapsed < result.hours:
+            return True, format_rebuy_reject_message(elapsed_h=elapsed, result=result)
+        return False, ""
+
+    def _legacy_rebuy_after_sell_blocked(
+        self,
+        last_signal: str,
+        arch: dict,
+        fallback_hours: float,
+        elapsed: float,
+    ) -> tuple[bool, str]:
+        """Flat hours when risk.rebuy_cooldown.enabled is false."""
+        min_hours = fallback_hours
         stop_sell = _is_stop_loss_sell(last_signal)
         if arch.get("block_rebuy_if_last_sell_was_stop", False) and stop_sell:
             min_hours = float(arch.get("rebuy_after_stop_loss_hours", 24.0))
         if min_hours <= 0:
             return False, ""
-        elapsed = (datetime.now() - last_ts).total_seconds() / 3600.0
         if elapsed < min_hours:
             label = "Stop-loss rebuy cooldown" if stop_sell else "Rebuy cooldown"
             return True, (
