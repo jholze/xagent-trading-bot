@@ -1,0 +1,12 @@
+# Railway config for xagent-memory-cortex only (not the trading bot).
+# Service setting: railwayConfigFile = railway.cortex.toml
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m tools.memory_viz.server"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
