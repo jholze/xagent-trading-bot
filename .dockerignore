@@ -19,3 +19,10 @@ auswertungen
 plans
 *.md
 !README.md
+# Large local/demo artifacts — not needed at runtime
+data/demo_ledger*.json
+data/*_backup*.json
+data/railway_seed
+**/*.ipynb
+.grok
+node_modules

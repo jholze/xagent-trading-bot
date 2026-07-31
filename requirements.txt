@@ -12,7 +12,6 @@ pymongo>=4.6.0
 redis>=5.0.0
 cryptography>=42.0.0
 
-# Technical analysis - requires TA-Lib C library to be installed on the system first
-# On macOS: brew install ta-lib
-# On Ubuntu: apt-get install -y libta-lib-dev
-TA-Lib>=0.4.28
+# Technical analysis — 0.6+ ships manylinux wheels (no system C compile in Docker).
+# Local macOS still: brew install ta-lib if building from source.
+TA-Lib>=0.6.0
