@@ -678,7 +678,7 @@ function connectSSE() {
 
 setInterval(() => {
   fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});
-}, 1200);
+}, 400);
 
 connectSSE();
 fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});

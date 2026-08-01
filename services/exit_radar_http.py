@@ -317,14 +317,20 @@ def register_exit_radar_routes(app) -> None:
                 while True:
                     if cq is not None:
                         try:
-                            ev = cq.get(timeout=12.0)
+                            ev = cq.get(timeout=2.0)
                             yield f"data: {json.dumps(ev)}\n\n"
+                            # periodic full snapshot so cards stay hot
+                            if int(time.time()) % 2 == 0:
+                                try:
+                                    yield f"data: {json.dumps(build_radar_snapshot())}\n\n"
+                                except Exception:
+                                    pass
                             continue
                         except queue.Empty:
                             pass
                     else:
-                        time.sleep(12)
-                    # heartbeat + soft refresh
+                        time.sleep(2)
+                    # heartbeat + soft refresh (every ~2s, not 12s)
                     try:
                         yield f"data: {json.dumps(build_radar_snapshot())}\n\n"
                     except Exception:
