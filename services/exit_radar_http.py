@@ -72,52 +72,62 @@ def build_radar_snapshot() -> dict[str, Any]:
             if row.get("last_price"):
                 prices.setdefault(sym, float(row["last_price"]))
 
-    pos_rows: list[dict[str, Any]] = []
-    try:
-        from scripts.gate_ws_live_dashboard import load_open_positions
-        from data_manager import resolve_ledger_scope
+    def _rows_from_hub() -> list[dict[str, Any]]:
+        if hub is None:
+            return []
+        out: list[dict[str, Any]] = []
+        for row in hub.book_snapshot():
+            pos = dict(row.get("position") or {})
+            entry = float(pos.get("average_entry") or row.get("average_entry") or 0)
+            params = dict(row.get("strategy_params") or {})
+            out.append(
+                {
+                    "symbol": row["symbol"],
+                    "timeframe": row.get("timeframe") or "1h",
+                    "entry": entry,
+                    "amount": float(pos.get("amount") or 0),
+                    "recent_high": float(
+                        pos.get("recent_high") or row.get("recent_high") or 0
+                    ),
+                    "ttp": params.get("trailing_take_profit")
+                    or {"enabled": True, "arm_gain_pct": 12, "min_gain_pct": 10},
+                    "trailing_stop": params.get("trailing_stop")
+                    or {
+                        "enabled": True,
+                        "activation_gain_pct": 5,
+                        "min_trail_pct": 8,
+                        "max_trail_pct": 25,
+                        "atr_multiplier": 2,
+                    },
+                    "life": params.get("profit_max_lifetime")
+                    or {
+                        "enabled": True,
+                        "arm_gain_pct": 3,
+                        "max_hours": 96,
+                        "min_gain_pct": 1,
+                    },
+                    "stop_loss_pct": 50,
+                    "partial_stop_pct": 25,
+                    "prefer_full_close": True,
+                }
+            )
+        return out
 
-        scope = resolve_ledger_scope()
-        pos_rows = load_open_positions(str(scope or "demo"))
-    except Exception as exc:
-        log(f"exit_radar load_open_positions: {exc}", "DEBUG")
-        # fallback from hub book only
-        if hub is not None:
-            for row in hub.book_snapshot():
-                pos = dict(row.get("position") or {})
-                entry = float(pos.get("average_entry") or row.get("average_entry") or 0)
-                pos_rows.append(
-                    {
-                        "symbol": row["symbol"],
-                        "timeframe": row.get("timeframe") or "1h",
-                        "entry": entry,
-                        "amount": float(pos.get("amount") or 0),
-                        "recent_high": float(
-                            pos.get("recent_high") or row.get("recent_high") or 0
-                        ),
-                        "ttp": (row.get("strategy_params") or {}).get(
-                            "trailing_take_profit"
-                        )
-                        or {"enabled": True, "arm_gain_pct": 12, "min_gain_pct": 10},
-                        "trailing_stop": (row.get("strategy_params") or {}).get(
-                            "trailing_stop"
-                        )
-                        or {
-                            "enabled": True,
-                            "activation_gain_pct": 5,
-                            "min_trail_pct": 8,
-                            "max_trail_pct": 25,
-                            "atr_multiplier": 2,
-                        },
-                        "life": (row.get("strategy_params") or {}).get(
-                            "profit_max_lifetime"
-                        )
-                        or {"enabled": True, "arm_gain_pct": 3, "max_hours": 96, "min_gain_pct": 1},
-                        "stop_loss_pct": 50,
-                        "partial_stop_pct": 25,
-                        "prefer_full_close": True,
-                    }
-                )
+    # Prefer in-memory hub book (no Mongo) when the WS hub is live — avoids
+    # close_client thrash from prepare_operator_mongo on every snapshot (#192).
+    pos_rows: list[dict[str, Any]] = []
+    if hub is not None and bot_hub.get("running") and int(bot_hub.get("symbols") or 0) > 0:
+        pos_rows = _rows_from_hub()
+    if not pos_rows:
+        try:
+            from scripts.gate_ws_live_dashboard import load_open_positions
+            from data_manager import resolve_ledger_scope
+
+            scope = resolve_ledger_scope()
+            pos_rows = load_open_positions(str(scope or "demo"))
+        except Exception as exc:
+            log(f"exit_radar load_open_positions: {exc}", "DEBUG")
+            pos_rows = _rows_from_hub()
 
     # overlay live recent_high from hub
     hub_peaks: dict[str, float] = {}

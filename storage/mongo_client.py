@@ -69,7 +69,16 @@ def apply_operator_mongo_target(
     mongo_url: str | None = None,
     allow_remote: bool = True,
 ) -> str:
-    """Pin process to operator/Railway ledger DB (xagent_test), not xagent_pytest."""
+    """Pin process to operator/Railway ledger DB (xagent_test), not xagent_pytest.
+
+    Only closes the shared MongoClient when the resolved URI/DB actually changes.
+    Hot paths (Exit Radar snapshot, portfolio threads) must not thrash close —
+    that caused ``Cannot use MongoClient after close`` under concurrency (#188/#192).
+    """
+    before_uri = resolve_mongo_uri(None)
+    before_db = resolve_database_name(config=None)
+    had_pytest = bool(os.environ.get("PYTEST_RUNNING") or os.environ.get("PYTEST_CURRENT_TEST"))
+
     os.environ.pop("PYTEST_RUNNING", None)
     os.environ.pop("PYTEST_CURRENT_TEST", None)
     os.environ["FORCE_OPERATOR_MONGO"] = "1"
@@ -85,8 +94,13 @@ def apply_operator_mongo_target(
         os.environ.pop("MONGODB_URI", None)
     os.environ.setdefault("DEMO_MODE", "1")
     os.environ.setdefault("DEMO_LEDGER_BACKEND", "mongo")
-    close_client()
-    return resolve_database_name(config=None)
+
+    after_uri = resolve_mongo_uri(None)
+    after_db = resolve_database_name(config=None)
+    # Reconnect only when target moved or we left pytest isolation.
+    if had_pytest or after_uri != before_uri or after_db != before_db:
+        close_client()
+    return after_db
 
 
 def operator_mongo_summary(*, config: dict | None = None) -> dict:
@@ -163,12 +177,21 @@ def _client_is_closed(client: MongoClient | None) -> bool:
     return bool(getattr(client, "_closed", False))
 
 
+def _drop_closed_singleton() -> None:
+    """Forget a closed singleton without calling close() again (already dead)."""
+    global _client, _client_uri
+    with _client_lock:
+        if _client is not None and _client_is_closed(_client):
+            _client = None
+            _client_uri = None
+
+
 def get_client(config: dict | None = None) -> MongoClient:
     """Return a process-wide MongoClient, reopening if closed or URI changed.
 
     Thread-safe. Concurrent callers never receive a client that is already closed
     at return time. Do **not** call close_client() from request hot-paths — that
-    races Telegram portfolio threads with ``Cannot use MongoClient after close``.
+    races portfolio / exit-radar threads with ``Cannot use MongoClient after close``.
     """
     global _client, _client_uri
     uri = resolve_mongo_uri(config)
@@ -176,11 +199,12 @@ def get_client(config: dict | None = None) -> MongoClient:
         if _client is not None and (not _client_is_closed(_client)) and _client_uri == uri:
             return _client
         if _client is not None:
-            try:
-                if not _client_is_closed(_client):
+            # Already closed: drop ref only. URI change: close old then replace.
+            if not _client_is_closed(_client):
+                try:
                     _client.close()
-            except Exception:
-                pass
+                except Exception:
+                    pass
             _client = None
             _client_uri = None
         _client = MongoClient(uri, serverSelectionTimeoutMS=5000)
@@ -205,9 +229,12 @@ def get_database(*, test: bool = False, config: dict | None = None) -> Database:
             return db
         except InvalidOperation as e:
             last_err = e
-            # Always reopen once on InvalidOperation (closed client / killed topology).
+            # Drop dead singleton and recreate — do not thrash close() on live peers.
             if attempt == 0:
-                close_client()
+                _drop_closed_singleton()
+                if not _client_is_closed(_client):
+                    # Topology killed while still referenced as open — force reopen.
+                    close_client()
                 continue
             raise
         except Exception as e:
@@ -216,7 +243,7 @@ def get_database(*, test: bool = False, config: dict | None = None) -> Database:
                 # Retry once. Only drop the singleton when it is already closed;
                 # never close a healthy shared client on timeouts (thread race).
                 if _client_is_closed(_client):
-                    close_client()
+                    _drop_closed_singleton()
                 continue
             raise
     assert last_err is not None
