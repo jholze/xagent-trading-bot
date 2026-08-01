@@ -475,13 +475,21 @@ def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
     return rows
 
 
-def _sync_positions_from_ledger() -> None:
-    """Sidecar: reload open positions from Mongo into in-memory book."""
-    try:
-        from data_manager import resolve_ledger_scope
-        from services.ledger_sync import rebuild_positions_from_orders
+_book_io_lock = threading.Lock()
 
-        rebuild_positions_from_orders(resolve_ledger_scope() or "demo")
+
+def _sync_positions_from_ledger() -> None:
+    """Sidecar: read-only reload of open positions from Mongo into memory.
+
+    Uses load_positions (not rebuild_positions_from_orders) so we never write
+    the ledger from the radar process and avoid thrashing concurrent Flask IO.
+    """
+    try:
+        from data_manager import load_positions, resolve_ledger_scope
+
+        scope = str(resolve_ledger_scope() or "demo")
+        with _book_io_lock:
+            load_positions(scope)
     except Exception as exc:
         log(f"exit_realtime ledger sync: {exc}", "DEBUG")
 

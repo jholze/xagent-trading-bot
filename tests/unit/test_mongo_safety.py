@@ -145,3 +145,54 @@ def test_get_client_reopens_after_close(monkeypatch):
     assert db is not None
     db.command("ping")
     mc.close_client()
+
+
+def test_apply_operator_mongo_target_idempotent_skips_close(monkeypatch):
+    """Repeated prepare must not close a healthy shared client (#192)."""
+    from storage import mongo_client as mc
+    from unittest.mock import patch
+
+    remote = "mongodb://mongo:secret@hayabusa.proxy.rlwy.net:10592"
+    monkeypatch.delenv("PYTEST_RUNNING", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("MONGO_URL", remote)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.setenv("MONGODB_DB", DEV_DB_NAME)
+    monkeypatch.setenv("DEMO_ALLOW_REMOTE_MONGO", "1")
+    monkeypatch.setenv("FORCE_OPERATOR_MONGO", "1")
+
+    mc.close_client()
+    # Seed a fake open client so we can detect close_client calls.
+    sentinel = object()
+    mc._client = sentinel  # type: ignore[assignment]
+    mc._client_uri = remote
+
+    with patch.object(mc, "close_client") as mock_close:
+        # Same target → no close
+        apply_operator_mongo_target(mongo_url=remote, db=DEV_DB_NAME)
+        mock_close.assert_not_called()
+
+        # DB change → close once
+        apply_operator_mongo_target(mongo_url=remote, db="other_db")
+        mock_close.assert_called_once()
+
+    mc._client = None
+    mc._client_uri = None
+
+
+def test_prepare_operator_mongo_idempotent(monkeypatch):
+    from scripts.operator_mongo import prepare_operator_mongo
+    from storage import mongo_client as mc
+    from unittest.mock import patch
+
+    remote = "mongodb://mongo:secret@hayabusa.proxy.rlwy.net:10592"
+    monkeypatch.delenv("PYTEST_RUNNING", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("MONGO_URL", remote)
+    monkeypatch.setenv("MONGODB_DB", DEV_DB_NAME)
+    monkeypatch.setenv("FORCE_OPERATOR_MONGO", "1")
+    monkeypatch.setenv("DEMO_ALLOW_REMOTE_MONGO", "1")
+
+    with patch.object(mc, "apply_operator_mongo_target") as mock_apply:
+        prepare_operator_mongo(mongo_url=remote, db=DEV_DB_NAME)
+        mock_apply.assert_not_called()
