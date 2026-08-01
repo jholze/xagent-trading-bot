@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Exit Radar · Gate WS + Trail Hub</title>
+<style>
+  /* Interior.dev-inspired: reserved widths, tabular nums, reduced-motion, spring easing */
+  :root {
+    --bg: #0c0c0b;
+    --bg2: #141412;
+    --panel: #1a1a17;
+    --panel2: #22221e;
+    --border: rgba(255,255,255,0.09);
+    --border-strong: rgba(255,255,255,0.16);
+    --text: #f5f5f0;
+    --muted: #8a8a80;
+    --muted2: #5c5c54;
+    --accent: #93b0ff;
+    --accent-deep: #4568ff;
+    --ok: #6ee7a8;
+    --warn: #f0c674;
+    --err: #ff7a8a;
+    --fire: #ff5c7a;
+    --tick: #c4b5fd;
+    --ease: cubic-bezier(0.23, 1, 0.32, 1);
+    --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    background:
+      radial-gradient(900px 480px at 12% -8%, rgba(69,104,255,0.14), transparent 55%),
+      radial-gradient(700px 400px at 90% 0%, rgba(148,176,255,0.08), transparent 50%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  /* Header — reserved badge widths (no jump) */
+  header {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(12,12,11,0.82);
+    backdrop-filter: blur(14px);
+    position: sticky; top: 0; z-index: 40;
+  }
+  .brand { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .brand h1 {
+    margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  .brand p {
+    margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.35;
+    max-width: 52ch;
+  }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .badge {
+    display: inline-grid;
+    grid-template-columns: 10px minmax(7.5rem, auto);
+    align-items: center; gap: 8px;
+    min-height: 32px; padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 12px; color: var(--muted);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .badge strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted2);
+    transition: background .25s var(--ease), box-shadow .25s var(--ease);
+  }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(110,231,168,0.15); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,122,138,0.15); }
+
+  main { padding: 18px 22px 48px; display: grid; gap: 16px; max-width: 1440px; margin: 0 auto; }
+
+  /* Pipeline — Action Feedback moments */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+  }
+  @media (max-width: 1100px) { .pipeline { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px) { .pipeline { grid-template-columns: repeat(2, 1fr); } }
+  .stage {
+    position: relative; overflow: hidden;
+    min-height: 96px;
+    padding: 14px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--panel) 0%, var(--bg2) 100%);
+    transition: border-color .25s var(--ease), transform .25s var(--spring), box-shadow .3s var(--ease);
+  }
+  .stage .name {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted2);
+  }
+  .stage .label {
+    margin-top: 8px; font-size: 13.5px; font-weight: 600;
+    min-height: 1.25em; /* reserved */
+  }
+  .stage .hint {
+    margin-top: 6px; font-size: 11.5px; color: var(--muted); line-height: 1.35;
+    min-height: 2.6em;
+  }
+  .stage .sheen {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: linear-gradient(105deg, transparent 30%, rgba(147,176,255,0.12) 50%, transparent 70%);
+  }
+  .stage.active {
+    border-color: rgba(147,176,255,0.45);
+    box-shadow: 0 0 0 1px rgba(69,104,255,0.2), 0 12px 40px rgba(0,0,0,0.35);
+    transform: translateY(-2px);
+  }
+  .stage.active .sheen { animation: sheen .75s var(--ease); }
+  .stage.active.connect { border-color: rgba(110,231,168,0.5); }
+  .stage.active.exit_eval, .stage.active.fire {
+    border-color: rgba(255,92,122,0.55);
+    box-shadow: 0 0 0 1px rgba(255,92,122,0.25), 0 16px 48px rgba(255,92,122,0.12);
+  }
+  @keyframes sheen {
+    from { opacity: 0; transform: translateX(-50%); }
+    40% { opacity: 1; }
+    to { opacity: 0; transform: translateX(50%); }
+  }
+
+  /* KPI strip — Data moments (fixed min-width per cell) */
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 8px;
+  }
+  @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    min-height: 76px;
+    padding: 12px 12px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .kpi .k {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--muted2);
+  }
+  .kpi .v {
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 20px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    min-height: 1.2em;
+  }
+  .kpi.fire .v { color: var(--fire); }
+  .kpi.ok .v { color: var(--ok); }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.err .v { color: var(--err); }
+  .kpi .sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 1.2em; }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.95fr);
+    gap: 14px;
+  }
+  @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .panel {
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    padding: 14px;
+    min-height: 200px;
+  }
+  .panel-hd {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-bottom: 12px;
+  }
+  .panel-hd h2 {
+    margin: 0; font-size: 11px; font-weight: 650;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  }
+  .panel-hd .meta {
+    font-family: var(--mono); font-size: 11px; color: var(--muted2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Position cards — Poll-Results style rows */
+  .pos-list { display: grid; gap: 8px; max-height: 640px; overflow: auto; padding-right: 2px; }
+  .pos-card {
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    padding: 12px 12px 10px;
+    transition: border-color .2s var(--ease), background .2s var(--ease), transform .2s var(--spring);
+  }
+  .pos-card:hover { border-color: var(--border-strong); }
+  .pos-card.would {
+    border-color: rgba(255,92,122,0.5);
+    background: linear-gradient(180deg, rgba(255,92,122,0.08), var(--bg2));
+    animation: firePulse 1.2s var(--ease) 1;
+  }
+  .pos-card.near {
+    border-color: rgba(240,198,116,0.4);
+    background: linear-gradient(180deg, rgba(240,198,116,0.06), var(--bg2));
+  }
+  @keyframes firePulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,92,122,0.35); }
+    100% { box-shadow: 0 0 0 12px rgba(255,92,122,0); }
+  }
+  .pos-top {
+    display: grid;
+    grid-template-columns: minmax(7rem, 1.2fr) minmax(5rem, 0.8fr) minmax(4.5rem, 0.7fr) auto;
+    gap: 10px; align-items: start;
+  }
+  @media (max-width: 720px) {
+    .pos-top { grid-template-columns: 1fr 1fr; }
+  }
+  .sym { font-weight: 650; font-size: 13.5px; letter-spacing: -0.01em; }
+  .sym .tf { display: block; margin-top: 3px; font-size: 11px; font-weight: 500; color: var(--muted); }
+  .num {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 13px; font-weight: 600;
+  }
+  .num.up { color: var(--ok); }
+  .num.dn { color: var(--err); }
+  .num .sub { display: block; margin-top: 2px; font-size: 10.5px; font-weight: 500; color: var(--muted); }
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; min-width: 7rem; }
+  .pill {
+    display: inline-grid; place-items: center;
+    min-height: 22px; min-width: 3.2rem; padding: 0 8px;
+    border-radius: 999px; font-size: 10.5px; font-weight: 650;
+    border: 1px solid var(--border); color: var(--muted); background: var(--panel);
+  }
+  .pill.fire { color: #fff; background: var(--fire); border-color: var(--fire); }
+  .pill.near { color: #1a1400; background: var(--warn); border-color: var(--warn); }
+  .pill.ok { color: var(--ok); border-color: rgba(110,231,168,0.35); }
+  .pill.armed { color: var(--accent); border-color: rgba(147,176,255,0.35); background: rgba(69,104,255,0.12); }
+
+  /* Interior-like progress rows */
+  .tracks { display: grid; gap: 6px; margin-top: 10px; }
+  .track {
+    position: relative; height: 34px; width: 100%;
+    border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.35);
+  }
+  .track .fill {
+    position: absolute; inset: 3px; right: auto;
+    width: 0%; max-width: calc(100% - 6px);
+    border-radius: 5px;
+    background: rgba(147,176,255,0.22);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+    transition: width .45s var(--ease);
+  }
+  .track.fire .fill { background: rgba(255,92,122,0.35); }
+  .track.warn .fill { background: rgba(240,198,116,0.3); }
+  .track.ok .fill { background: rgba(110,231,168,0.25); }
+  .track .row {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 100%; padding: 0 12px; gap: 10px;
+  }
+  .track .lbl { font-size: 12px; color: var(--text); min-width: 0; flex: 1; truncate; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track .pct {
+    font-family: var(--mono); font-size: 11px; tabular-nums;
+    color: var(--muted); min-width: 3.2rem; text-align: right;
+  }
+
+  /* Feed + toast (Notification moment) */
+  .feed {
+    height: 520px; overflow: auto;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+    background: #0a0a09; border-radius: 10px;
+    border: 1px solid var(--border); padding: 10px 12px;
+  }
+  .feed .line { margin: 0 0 6px; word-break: break-word; }
+  .feed .ts { color: var(--muted2); }
+  .feed .tick { color: #b8c4ef; }
+  .feed .would_exit, .feed .fire { color: var(--fire); font-weight: 700; }
+  .feed .exit_update { color: var(--warn); }
+  .feed .error { color: var(--err); }
+  .feed .hub { color: var(--accent); }
+
+  #toasts {
+    position: fixed; right: 16px; bottom: 16px; z-index: 50;
+    display: flex; flex-direction: column-reverse; gap: 8px;
+    width: min(360px, calc(100vw - 24px));
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,92,122,0.4);
+    background: rgba(26,26,23,0.94);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    animation: toastIn .35s var(--spring);
+  }
+  .toast .t { font-size: 12px; font-weight: 650; color: var(--fire); }
+  .toast .b { margin-top: 4px; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(12px) scale(0.96); }
+    to { opacity: 1; transform: none; }
+  }
+
+  footer {
+    max-width: 1440px; margin: 0 auto; padding: 0 22px 28px;
+    font-size: 11.5px; color: var(--muted2); line-height: 1.5;
+  }
+  footer code {
+    font-family: var(--mono); font-size: 11px;
+    padding: 1px 6px; border-radius: 6px;
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); border: 0;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Exit Radar · Gate WS + Trail Hub</h1>
+    <p>Live ticks · TTP / trailing stop / SL proximity · optional bot hub stats. Interior-style motion: reserved widths, tabular numbers, reduced-motion safe.</p>
+  </div>
+  <div class="badges">
+    <span class="badge"><span id="connDot" class="dot"></span><span id="connLabel">connecting…</span></span>
+    <span class="badge"><span class="dot on" id="sseDot"></span><span>SSE <strong id="sseLabel">…</strong></span></span>
+    <span class="badge"><span class="dot" id="hubDot"></span><span>Bot hub <strong id="hubLabel">—</strong></span></span>
+    <span class="badge"><span>stage <strong id="lastStage">idle</strong></span></span>
+  </div>
+</header>
+
+<main>
+  <section class="pipeline" id="pipeline" aria-label="Pipeline">
+    <div class="stage" data-stage="connect"><div class="sheen"></div>
+      <div class="name">1 · Connect</div><div class="label">Gate WSS</div>
+      <div class="hint">wss://api.gateio.ws/ws/v4/</div></div>
+    <div class="stage" data-stage="subscribe"><div class="sheen"></div>
+      <div class="name">2 · Subscribe</div><div class="label">spot.tickers</div>
+      <div class="hint">Open ledger symbols</div></div>
+    <div class="stage" data-stage="tick_in"><div class="sheen"></div>
+      <div class="name">3 · Tick</div><div class="label">Last price</div>
+      <div class="hint">Every WS update</div></div>
+    <div class="stage" data-stage="delta"><div class="sheen"></div>
+      <div class="name">4 · Δ filter</div><div class="label">Move detect</div>
+      <div class="hint">|Δ| ≥ min_delta</div></div>
+    <div class="stage" data-stage="enqueue"><div class="sheen"></div>
+      <div class="name">5 · Enqueue</div><div class="label">Sim priority</div>
+      <div class="hint">position_delta</div></div>
+    <div class="stage" data-stage="exit_eval"><div class="sheen"></div>
+      <div class="name">6 · Exit fire</div><div class="label">Trail / TTP</div>
+      <div class="hint">Would or live sell</div></div>
+  </section>
+
+  <section class="kpis" aria-label="Key metrics">
+    <div class="kpi"><div class="k">Updates</div><div class="v" id="sUpdates">0</div><div class="sub" id="sRate">0/s</div></div>
+    <div class="kpi"><div class="k">Positions</div><div class="v" id="sPos">0</div><div class="sub">open book</div></div>
+    <div class="kpi fire"><div class="k">Would exit</div><div class="v" id="sWould">0</div><div class="sub">radar fire</div></div>
+    <div class="kpi warn"><div class="k">Near</div><div class="v" id="sNear">0</div><div class="sub">approaching</div></div>
+    <div class="kpi ok"><div class="k">In profit</div><div class="v" id="sProfit">0</div><div class="sub">gain &gt; 0</div></div>
+    <div class="kpi err"><div class="k">In loss</div><div class="v" id="sLoss">0</div><div class="sub">under water</div></div>
+    <div class="kpi"><div class="k">uPnL</div><div class="v" id="sPnl">—</div><div class="sub" id="sNotional">— USDT</div></div>
+    <div class="kpi"><div class="k">Bot hub</div><div class="v" id="sHubExec">—</div><div class="sub" id="sHubTicks">exit_rt</div></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <div class="panel-hd">
+        <h2>Position exit cards</h2>
+        <span class="meta" id="posMeta">—</span>
+      </div>
+      <div class="pos-list" id="posList" role="list"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd">
+        <h2>Event feed</h2>
+        <span class="meta">live SSE</span>
+      </div>
+      <div class="feed" id="feed" aria-live="polite"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Probe UI on Gate public WS + ledger params. Live bot sells go through <code>exit_realtime</code> (<code>source=exit_ws</code>).
+  Thresholds: min_delta=<code id="thDelta">?</code>, enqueue=<code id="thEnq">?</code>.
+  Motion: spring-like CSS · reserved badge widths · <code>prefers-reduced-motion</code> honoured.
+  Inspired by interior.dev interaction moments (data / async / notification / action feedback).
+</footer>
+
+<div id="toasts" aria-live="assertive"></div>
+<span class="sr-only" id="spoken" role="status"></span>
+
+<script>
+/* ---------- interior-style helpers: no layout jump, tabular nums ---------- */
+const stageEls = {};
+document.querySelectorAll('.stage').forEach(el => { stageEls[el.dataset.stage] = el; });
+let lastStageTimer = null;
+const numEls = {};
+
+function activateStage(name) {
+  Object.values(stageEls).forEach(el => {
+    el.classList.remove('active','connect','tick_in','delta','enqueue','exit_eval','fire');
+  });
+  const el = stageEls[name];
+  if (!el) return;
+  el.classList.add('active', name);
+  const sheen = el.querySelector('.sheen');
+  if (sheen) { sheen.style.animation = 'none'; void sheen.offsetWidth; sheen.style.animation = ''; }
+  clearTimeout(lastStageTimer);
+  lastStageTimer = setTimeout(() => el.classList.remove('active', name), 650);
+  document.getElementById('lastStage').textContent = name;
+}
+
+function fmtPx(x) {
+  if (x == null || x === 0) return '—';
+  if (x >= 1000) return x.toLocaleString(undefined,{maximumFractionDigits:2});
+  if (x >= 1) return x.toLocaleString(undefined,{maximumFractionDigits:4});
+  if (x >= 0.0001) return x.toFixed(6);
+  return Number(x).toExponential(3);
+}
+function fmtPct(x, d=2) {
+  if (x == null || Number.isNaN(x)) return '—';
+  const n = Number(x);
+  return (n>=0?'+':'') + n.toFixed(d) + '%';
+}
+function fmtUsd(x) {
+  if (x == null || Number.isNaN(x)) return '—';
+  const n = Number(x);
+  const sign = n>=0?'+':'';
+  if (Math.abs(n) >= 1000) return sign + n.toLocaleString(undefined,{maximumFractionDigits:0});
+  return sign + n.toFixed(2);
+}
+function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+
+/** Animated number without width jump — mono tabular + optional tween */
+function setNum(id, value, {prefix='', suffix='', digits=0} = {}) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const next = prefix + (typeof value === 'number'
+    ? value.toLocaleString(undefined, {maximumFractionDigits: digits, minimumFractionDigits: digits})
+    : String(value)) + suffix;
+  if (el.textContent !== next) el.textContent = next;
+}
+
+function addFeed(cls, text) {
+  const feed = document.getElementById('feed');
+  const line = document.createElement('div');
+  line.className = 'line ' + (cls||'');
+  const ts = new Date().toISOString().slice(11,23);
+  line.innerHTML = `<span class="ts">[${ts}]</span> ${text}`;
+  feed.prepend(line);
+  while (feed.children.length > 200) feed.removeChild(feed.lastChild);
+}
+
+function toast(title, body) {
+  const root = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `<div class="t">${title}</div><div class="b">${body||''}</div>`;
+  root.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 4200);
+  setTimeout(() => el.remove(), 4600);
+  document.getElementById('spoken').textContent = title + ' ' + (body||'');
+}
+
+function trackHtml(label, pct, cls, right) {
+  const w = clamp(pct, 0, 100);
+  return `<div class="track ${cls||''}">
+    <div class="fill" style="width:${w.toFixed(1)}%"></div>
+    <div class="row"><span class="lbl">${label}</span><span class="pct">${right}</span></div>
+  </div>`;
+}
+
+function statusPills(r) {
+  const pills = [];
+  if (r.would_exit) {
+    (r.would_sources||[]).forEach(s => pills.push(`<span class="pill fire">${s}</span>`));
+  } else if (r.near_exit) {
+    (r.near_sources||[]).forEach(s => pills.push(`<span class="pill near">near ${s}</span>`));
+  } else if (r.status === 'armed') {
+    pills.push(`<span class="pill armed">armed</span>`);
+  } else if (r.status === 'in_profit') {
+    pills.push(`<span class="pill ok">in profit</span>`);
+  } else {
+    pills.push(`<span class="pill">${r.status||'idle'}</span>`);
+  }
+  return pills.join('');
+}
+
+function renderPositions(exits) {
+  const list = document.getElementById('posList');
+  const rows = (exits||[]).slice().sort((a,b) => {
+    const ua = a.would_exit ? 2 : (a.near_exit ? 1 : 0);
+    const ub = b.would_exit ? 2 : (b.near_exit ? 1 : 0);
+    if (ub !== ua) return ub - ua;
+    return (b.urgency||0) - (a.urgency||0);
+  });
+  document.getElementById('posMeta').textContent = rows.length + ' symbols';
+
+  list.innerHTML = rows.map(r => {
+    const g = r.gain_pct;
+    const gCls = g == null ? '' : (g>=0 ? 'up' : 'dn');
+    const cardCls = r.would_exit ? 'would' : (r.near_exit ? 'near' : '');
+    const ttp = r.ttp || {};
+    const ts = r.trailing_stop || {};
+    const sl = r.stop_loss || {};
+    const life = r.life || {};
+
+    let ttpPct = 0, ttpCls = '', ttpRight = 'off';
+    if (ttp.enabled) {
+      if (!ttp.armed) {
+        ttpPct = clamp(100 * (1 - Math.max(0, ttp.dist_to_arm_pp) / Math.max(ttp.arm_gain_pct||12,1)), 0, 100);
+        ttpRight = `arm ${ttp.arm_gain_pct}%`;
+        ttpCls = '';
+      } else {
+        ttpPct = clamp(100 * (ttp.drop_pct||0) / Math.max(ttp.trail_pct||6, 0.01), 0, 100);
+        ttpRight = `${(ttp.drop_pct||0).toFixed(1)}/${ttp.trail_pct}%`;
+        ttpCls = ttp.would ? 'fire' : (ttp.near ? 'warn' : 'ok');
+      }
+    }
+
+    let tsPct = 0, tsCls = '', tsRight = 'off';
+    if (ts.enabled !== false) {
+      if (!ts.active) {
+        tsPct = clamp(100 * ((g||0) / Math.max(ts.activation_gain_pct||5, 1)), 0, 100);
+        tsRight = `act +${ts.activation_gain_pct}%`;
+      } else {
+        tsPct = clamp(100 * (r.drop_from_high_pct||0) / Math.max(ts.trail_pct||8, 0.01), 0, 100);
+        tsRight = `trail ${ts.trail_pct}%`;
+        tsCls = ts.would ? 'fire' : (ts.near ? 'warn' : 'ok');
+      }
+    }
+
+    const slPct = g == null ? 0 : clamp(100 * Math.max(0, -g) / Math.max(sl.pct||50,1), 0, 100);
+    const slCls = sl.would ? 'fire' : (sl.near ? 'warn' : (g<0?'warn':''));
+    const lifePct = life.enabled ? clamp(100*(life.progress||0),0,100) : 0;
+    const lifeRight = life.enabled
+      ? (life.skip_runner ? 'runner' : `${life.hold_hours??'—'}h/${life.max_hours}h`)
+      : 'off';
+
+    return `<article class="pos-card ${cardCls}" role="listitem">
+      <div class="pos-top">
+        <div class="sym">${r.symbol}<span class="tf">${r.timeframe||''} · ${fmtUsd(r.notional_usdt).replace('+','')} USDT</span></div>
+        <div class="num ${gCls}">${fmtPx(r.price)}<span class="sub">entry ${fmtPx(r.entry)}</span></div>
+        <div class="num ${gCls}">${fmtPct(g,2)}<span class="sub">peak ${fmtPct(r.peak_gain_pct,2)} · ${fmtUsd(r.pnl_usdt)}</span></div>
+        <div class="pills">${statusPills(r)}</div>
+      </div>
+      <div class="tracks">
+        ${ttp.enabled ? trackHtml('TTP trail', ttpPct, ttpCls, ttpRight) : ''}
+        ${ts.enabled !== false ? trackHtml('ATR trail stop', tsPct, tsCls, tsRight) : ''}
+        ${trackHtml('Stop-loss depth', slPct, slCls, `−${sl.pct||50}%`)}
+        ${life.enabled ? trackHtml('Profit lifetime', lifePct, life.would?'fire':'warn', lifeRight) : ''}
+      </div>
+    </article>`;
+  }).join('');
+}
+
+function applySnapshot(s) {
+  const connected = !!s.connected;
+  const subscribed = !!s.subscribed;
+  const dot = document.getElementById('connDot');
+  const lab = document.getElementById('connLabel');
+  dot.className = 'dot ' + (connected ? 'on' : 'err');
+  lab.textContent = connected ? (subscribed ? 'WS live · subscribed' : 'WS connected') : 'WS down';
+
+  if (s.last_stage) document.getElementById('lastStage').textContent = s.last_stage;
+  const st = s.stats || {};
+  setNum('sUpdates', st.ticker_updates ?? 0);
+  document.getElementById('sRate').textContent = (st.updates_per_sec ?? 0) + '/s';
+  const es = s.exit_summary || {};
+  setNum('sPos', es.positions ?? st.positions ?? 0);
+  setNum('sWould', es.would_exit ?? 0);
+  setNum('sNear', es.near_exit ?? 0);
+  setNum('sProfit', es.in_profit ?? 0);
+  setNum('sLoss', es.in_loss ?? 0);
+  document.getElementById('sPnl').textContent = fmtUsd(es.total_pnl_usdt);
+  document.getElementById('sNotional').textContent =
+    (es.total_notional_usdt!=null ? Number(es.total_notional_usdt).toLocaleString(undefined,{maximumFractionDigits:0}) : '—') + ' USDT';
+
+  if (s.thresholds) {
+    document.getElementById('thDelta').textContent = s.thresholds.min_delta_pct + '%';
+    document.getElementById('thEnq').textContent = s.thresholds.enqueue_threshold_pct + '%';
+  }
+
+  // Bot exit_realtime hub (if server injects)
+  const hub = s.bot_hub;
+  const hubDot = document.getElementById('hubDot');
+  const hubLab = document.getElementById('hubLabel');
+  if (hub && hub.running) {
+    hubDot.className = 'dot on';
+    hubLab.textContent = (hub.mode || 'live') + ' · ' + (hub.symbols ?? 0) + ' sym';
+    setNum('sHubExec', hub.executed ?? 0);
+    document.getElementById('sHubTicks').textContent =
+      (hub.ticks ?? 0) + ' ticks · fires ' + (hub.fires ?? 0);
+  } else {
+    hubDot.className = 'dot';
+    hubLab.textContent = hub && hub.disabled ? 'off' : 'n/a';
+    document.getElementById('sHubExec').textContent = '—';
+    document.getElementById('sHubTicks').textContent = 'bot hub not in process';
+  }
+
+  if (s.exits) renderPositions(s.exits);
+}
+
+function handleEvent(ev) {
+  if (!ev || !ev.type) return;
+  if (ev.type === 'snapshot') { applySnapshot(ev); return; }
+  if (ev.stage) activateStage(ev.stage);
+  if (ev.type === 'tick') {
+    if (Math.random() < 0.1 || Math.abs(ev.delta_pct||0) >= 0.08) {
+      addFeed('tick', `${ev.symbol} ${fmtPx(ev.last)} Δ${(ev.delta_pct||0).toFixed(3)}%`);
+    }
+  } else if (ev.type === 'delta') {
+    addFeed('delta', ev.msg || `Δ ${ev.symbol}`);
+  } else if (ev.type === 'enqueue') {
+    addFeed('enqueue', ev.msg || `enqueue ${ev.symbol}`);
+    activateStage('enqueue');
+  } else if (ev.type === 'would_exit') {
+    addFeed('would_exit', ev.msg || `WOULD EXIT ${ev.symbol}`);
+    activateStage('exit_eval');
+    toast('Would exit', ev.msg || ev.symbol);
+  } else if (ev.type === 'exit_update') {
+    if (ev.exit && (ev.exit.would_exit || ev.exit.near_exit)) {
+      const tag = ev.exit.would_exit ? 'FIRE' : 'near';
+      addFeed('exit_update', `${tag} ${ev.symbol} ${fmtPct(ev.exit.gain_pct)} ${(ev.exit.would_sources||ev.exit.near_sources||[]).join(',')}`);
+      if (ev.exit.would_exit) toast('Exit radar FIRE', `${ev.symbol} ${fmtPct(ev.exit.gain_pct)}`);
+    }
+  } else if (ev.type === 'stage') {
+    addFeed('stage', ev.msg || ev.stage);
+  } else if (ev.type === 'error') {
+    addFeed('error', 'ERR ' + (ev.msg||''));
+  } else if (ev.type === 'hub') {
+    addFeed('hub', ev.msg || JSON.stringify(ev));
+  }
+}
+
+function connectSSE() {
+  const es = new EventSource('/events');
+  const sseDot = document.getElementById('sseDot');
+  document.getElementById('sseLabel').textContent = '…';
+  es.onopen = () => {
+    document.getElementById('sseLabel').textContent = 'live';
+    sseDot.className = 'dot on';
+  };
+  es.onerror = () => {
+    document.getElementById('sseLabel').textContent = 'retry';
+    sseDot.className = 'dot warn';
+  };
+  es.onmessage = (msg) => {
+    try { handleEvent(JSON.parse(msg.data)); } catch (e) {}
+  };
+}
+
+setInterval(() => {
+  fetch('/api/snapshot').then(r => r.json()).then(applySnapshot).catch(()=>{});
+}, 1200);
+
+connectSSE();
+fetch('/api/snapshot').then(r => r.json()).then(applySnapshot).catch(()=>{});
+</script>
+</body>
+</html>
