@@ -118,3 +118,30 @@ def test_local_demo_refuses_remote_mongo(monkeypatch):
     monkeypatch.delenv("FORCE_OPERATOR_MONGO", raising=False)
     with pytest.raises(SystemExit, match="refuses remote MongoDB"):
         assert_safe_demo_mongo_db()
+
+
+def test_get_client_reopens_after_close(monkeypatch):
+    """Portfolio threads must not keep a closed singleton (MongoClient after close)."""
+    from storage import mongo_client as mc
+
+    force_local_test_mongo(dev=False)
+    monkeypatch.setenv("MONGODB_DB", TEST_DB_NAME)
+    mc.close_client()
+
+    first = mc.get_client()
+    assert first is not None
+    assert not getattr(first, "_closed", False)
+
+    mc.close_client()
+    assert getattr(first, "_closed", False) is True
+
+    second = mc.get_client()
+    assert second is not first
+    assert not getattr(second, "_closed", False)
+
+    # get_database recovers after an explicit close of a held client path
+    mc.close_client()
+    db = mc.get_database(test=True)
+    assert db is not None
+    db.command("ping")
+    mc.close_client()

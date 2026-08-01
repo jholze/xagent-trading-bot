@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Optional
 
 from pymongo import MongoClient
 from pymongo.database import Database
+from pymongo.errors import InvalidOperation
 
 DEFAULT_URI = "mongodb://127.0.0.1:27017"
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -15,6 +17,8 @@ DEV_DB_NAME = "xagent_test"
 TEST_DB_NAME = "xagent_pytest"
 
 _client: Optional[MongoClient] = None
+_client_uri: Optional[str] = None
+_client_lock = threading.RLock()
 
 
 def mongo_uri_host(uri: str) -> str:
@@ -152,38 +156,78 @@ def resolve_database_name(*, test: bool = False, config: dict | None = None) -> 
     return cfg.get("db_name") or PROD_DB_NAME
 
 
+def _client_is_closed(client: MongoClient | None) -> bool:
+    """Best-effort: PyMongo sets ``_closed`` after MongoClient.close()."""
+    if client is None:
+        return True
+    return bool(getattr(client, "_closed", False))
+
+
 def get_client(config: dict | None = None) -> MongoClient:
-    global _client
+    """Return a process-wide MongoClient, reopening if closed or URI changed.
+
+    Thread-safe. Concurrent callers never receive a client that is already closed
+    at return time. Do **not** call close_client() from request hot-paths — that
+    races Telegram portfolio threads with ``Cannot use MongoClient after close``.
+    """
+    global _client, _client_uri
     uri = resolve_mongo_uri(config)
-    if _client is None:
+    with _client_lock:
+        if _client is not None and (not _client_is_closed(_client)) and _client_uri == uri:
+            return _client
+        if _client is not None:
+            try:
+                if not _client_is_closed(_client):
+                    _client.close()
+            except Exception:
+                pass
+            _client = None
+            _client_uri = None
         _client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-    return _client
+        _client_uri = uri
+        return _client
 
 
 def get_database(*, test: bool = False, config: dict | None = None) -> Database:
-    try:
-        client = get_client(config)
-        db = client[resolve_database_name(test=test, config=config)]
-        db.command("ping")
-        return db
-    except Exception:
-        close_client()
-        client = get_client(config)
-        db = client[resolve_database_name(test=test, config=config)]
-        db.command("ping")
-        return db
+    """Return a live database handle; reopen once if the client was closed.
+
+    Transient network errors no longer call ``close_client()`` — that raced
+    concurrent portfolio/ledger threads with
+    ``Cannot use MongoClient after close``.
+    """
+    name = resolve_database_name(test=test, config=config)
+    last_err: Exception | None = None
+    for attempt in range(2):
+        try:
+            client = get_client(config)
+            db = client[name]
+            db.command("ping")
+            return db
+        except InvalidOperation as e:
+            last_err = e
+            if attempt == 0 and (
+                _client_is_closed(_client) or "after close" in str(e).lower()
+            ):
+                close_client()
+                continue
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                # Retry once. Only drop the singleton when it is already closed;
+                # never close a healthy shared client on timeouts (thread race).
+                if _client_is_closed(_client):
+                    close_client()
+                continue
+            raise
+    assert last_err is not None
+    raise last_err
 
 
 def ping_database(*, test: bool = False, config: dict | None = None) -> bool:
-    try:
-        db = get_database(test=test, config=config)
-        db.command("ping")
-        return True
-    except Exception:
-        close_client()
-        db = get_database(test=test, config=config)
-        db.command("ping")
-        return True
+    db = get_database(test=test, config=config)
+    db.command("ping")
+    return True
 
 
 def assert_safe_dev_db_mutation(db_name: str, *, action: str = "write") -> None:
@@ -211,10 +255,17 @@ def drop_database(*, test: bool = False, config: dict | None = None) -> None:
 
 
 def close_client() -> None:
-    global _client
-    if _client is not None:
-        _client.close()
-        _client = None
+    """Close and forget the shared client (URI switch, tests, process teardown)."""
+    global _client, _client_uri
+    with _client_lock:
+        if _client is not None:
+            try:
+                if not _client_is_closed(_client):
+                    _client.close()
+            except Exception:
+                pass
+            _client = None
+            _client_uri = None
 
 
 def assert_safe_demo_mongo_db() -> str:
