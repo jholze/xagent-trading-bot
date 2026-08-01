@@ -549,6 +549,14 @@ class RiskManager:
                     sized = min(float(sized), float(abs_cap))
                     factors["sensor_max_usdt_absolute"] = float(abs_cap)
 
+        # Hard per-ticket ceiling AFTER multipliers (moderate_deploy / cash-rich / DCA
+        # boosts must not push above max_usdt_per_trade — e.g. 4500 * 1.38 was ~6.2k).
+        ticket_cap = float(self._base_usdt_cap() or 0)
+        if ticket_cap > 0 and float(sized) > ticket_cap:
+            sized = ticket_cap
+            factors["ticket_capped"] = True
+            factors["ticket_cap_usdt"] = ticket_cap
+
         equity = self._portfolio_equity(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
         max_position_value = equity * (self.config.max_position_percent / 100.0)
