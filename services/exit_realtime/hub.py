@@ -226,17 +226,16 @@ class ExitRealtimeHub:
             if not pos.get("average_entry") and row.get("average_entry"):
                 pos["average_entry"] = row["average_entry"]
 
-        # light GUI tick (throttled by random-ish skip in UI; always store last price)
-        if self._stats["ticks"] % 3 == 0:
-            self._broadcast_gui(
-                {
-                    "type": "tick",
-                    "stage": "tick_in",
-                    "symbol": sym,
-                    "last": price,
-                    "delta_pct": 0,
-                }
-            )
+        # GUI tick stream (UI further samples feed lines)
+        self._broadcast_gui(
+            {
+                "type": "tick",
+                "stage": "tick_in",
+                "symbol": sym,
+                "last": price,
+                "delta_pct": 0,
+            }
+        )
 
         cfg = exit_realtime_config(self._raw)
         mode = exit_realtime_mode(self._raw)
