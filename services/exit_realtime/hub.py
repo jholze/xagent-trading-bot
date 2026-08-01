@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import ssl
 import threading
 import time
+from collections import deque
 from typing import Any, Callable
 
 from logger import log
@@ -72,6 +74,11 @@ class ExitRealtimeHub:
         self._book: dict[str, dict[str, Any]] = {}
         self._gate_to_symbol: dict[str, str] = {}
         self._last_fire: dict[str, float] = {}
+        self._last_prices: dict[str, float] = {}
+        self._connected = False
+        self._event_q: deque[dict[str, Any]] = deque(maxlen=200)
+        self._gui_clients: list[queue.Queue] = []
+        self._gui_lock = threading.Lock()
         self._stats = {
             "ticks": 0,
             "fires": 0,
@@ -80,10 +87,73 @@ class ExitRealtimeHub:
             "reconnects": 0,
             "last_tick_at": 0.0,
             "symbols": 0,
+            "connected": False,
         }
 
     def stats(self) -> dict[str, Any]:
-        return dict(self._stats)
+        out = dict(self._stats)
+        out["connected"] = self._connected
+        out["gui_clients"] = len(self._gui_clients)
+        return out
+
+    def last_prices(self) -> dict[str, float]:
+        with self._pos_lock:
+            return dict(self._last_prices)
+
+    def book_snapshot(self) -> list[dict[str, Any]]:
+        with self._pos_lock:
+            rows = []
+            for sym, row in self._book.items():
+                r = {
+                    "symbol": sym,
+                    "timeframe": row.get("timeframe"),
+                    "average_entry": row.get("average_entry")
+                    or (row.get("position") or {}).get("average_entry"),
+                    "recent_high": row.get("recent_high")
+                    or (row.get("position") or {}).get("recent_high"),
+                    "last_price": self._last_prices.get(sym),
+                    "strategy_tier": row.get("strategy_tier"),
+                    "position": dict(row.get("position") or {}),
+                    "strategy_params": dict(row.get("strategy_params") or {}),
+                    "atr_pct": row.get("atr_pct"),
+                }
+                rows.append(r)
+            return rows
+
+    def subscribe_gui(self) -> queue.Queue:
+        cq: queue.Queue = queue.Queue(maxsize=300)
+        with self._gui_lock:
+            self._gui_clients.append(cq)
+        return cq
+
+    def unsubscribe_gui(self, cq: queue.Queue) -> None:
+        with self._gui_lock:
+            try:
+                self._gui_clients.remove(cq)
+            except ValueError:
+                pass
+
+    def _broadcast_gui(self, event: dict[str, Any]) -> None:
+        self._event_q.appendleft(event)
+        with self._gui_lock:
+            dead: list[queue.Queue] = []
+            for cq in self._gui_clients:
+                try:
+                    cq.put_nowait(event)
+                except queue.Full:
+                    try:
+                        cq.get_nowait()
+                    except Exception:
+                        pass
+                    try:
+                        cq.put_nowait(event)
+                    except Exception:
+                        dead.append(cq)
+            for cq in dead:
+                try:
+                    self._gui_clients.remove(cq)
+                except ValueError:
+                    pass
 
     def update_book(self, positions: list[dict[str, Any]]) -> list[str]:
         book: dict[str, dict[str, Any]] = {}
@@ -130,6 +200,7 @@ class ExitRealtimeHub:
         self._stats["last_tick_at"] = time.time()
         with self._pos_lock:
             sym = self._gate_to_symbol.get(gate_pair) or from_gate_pair(gate_pair)
+            self._last_prices[sym] = float(price)
             row = self._book.get(sym)
             if not row:
                 return
@@ -154,6 +225,18 @@ class ExitRealtimeHub:
                 pos["recent_high"] = snapshot["recent_high"]
             if not pos.get("average_entry") and row.get("average_entry"):
                 pos["average_entry"] = row["average_entry"]
+
+        # light GUI tick (throttled by random-ish skip in UI; always store last price)
+        if self._stats["ticks"] % 3 == 0:
+            self._broadcast_gui(
+                {
+                    "type": "tick",
+                    "stage": "tick_in",
+                    "symbol": sym,
+                    "last": price,
+                    "delta_pct": 0,
+                }
+            )
 
         cfg = exit_realtime_config(self._raw)
         mode = exit_realtime_mode(self._raw)
@@ -216,9 +299,19 @@ class ExitRealtimeHub:
                     gp = to_gate_pair(sym)
                     self._gate_to_symbol.pop(gp, None)
                     self._stats["symbols"] = len(self._book)
+                self._broadcast_gui(
+                    {
+                        "type": "would_exit",
+                        "stage": "exit_eval",
+                        "symbol": sym,
+                        "msg": f"LIVE SELL {sym} {src} @ {price}",
+                        "executed": True,
+                    }
+                )
             else:
                 self._stats["blocked"] += 1
             _log_event(ev, live=True)
+            self._broadcast_gui({**ev, "type": "hub", "msg": f"{src} executed={ev.get('executed')}"})
 
     def _run_loop(self) -> None:
         try:
@@ -264,6 +357,11 @@ class ExitRealtimeHub:
                 self.on_ticker(str(pair).upper(), px)
 
             def on_open(ws) -> None:
+                self._connected = True
+                self._stats["connected"] = True
+                self._broadcast_gui(
+                    {"type": "stage", "stage": "connect", "msg": "Gate WSS connected"}
+                )
                 for gp in pairs:
                     try:
                         ws.send(
@@ -279,12 +377,21 @@ class ExitRealtimeHub:
                         time.sleep(0.05)
                     except Exception as exc:
                         log(f"exit_realtime subscribe {gp}: {exc}", "DEBUG")
+                self._broadcast_gui(
+                    {
+                        "type": "stage",
+                        "stage": "subscribe",
+                        "msg": f"subscribed {len(pairs)} pairs",
+                    }
+                )
 
             def on_error(_ws, err) -> None:
                 log(f"exit_realtime ws error: {err}", "WARNING")
+                self._broadcast_gui({"type": "error", "msg": str(err)[:160]})
 
             def on_close(_ws, *_a) -> None:
-                pass
+                self._connected = False
+                self._stats["connected"] = False
 
             try:
                 ws = websocket.WebSocketApp(
@@ -298,6 +405,9 @@ class ExitRealtimeHub:
                 ws.run_forever(sslopt={"context": _ssl_context()}, ping_interval=20)
             except Exception as exc:
                 log(f"exit_realtime run_forever: {exc}", "WARNING")
+            finally:
+                self._connected = False
+                self._stats["connected"] = False
 
             if self._stop.is_set():
                 break

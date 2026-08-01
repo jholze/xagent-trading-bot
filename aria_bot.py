@@ -149,6 +149,13 @@ except Exception as e:
 # Flask für Webhook
 app = Flask(__name__)
 
+try:
+    from services.exit_radar_http import register_exit_radar_routes
+
+    register_exit_radar_routes(app)
+except Exception as _exit_radar_exc:
+    log(f"exit_radar routes not registered: {_exit_radar_exc}", "WARNING")
+
 
 @app.route("/health", methods=["GET"])
 def health():

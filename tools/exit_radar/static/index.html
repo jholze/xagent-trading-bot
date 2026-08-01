@@ -653,8 +653,14 @@ function handleEvent(ev) {
   }
 }
 
+/** Base path: standalone / or Flask /exit-radar */
+const BASE = (typeof window.EXIT_RADAR_BASE === 'string' && window.EXIT_RADAR_BASE)
+  ? window.EXIT_RADAR_BASE.replace(/\/$/, '')
+  : (location.pathname.startsWith('/exit-radar') ? '/exit-radar' : '');
+const API = (path) => BASE + path;
+
 function connectSSE() {
-  const es = new EventSource('/events');
+  const es = new EventSource(API('/events'));
   const sseDot = document.getElementById('sseDot');
   document.getElementById('sseLabel').textContent = '…';
   es.onopen = () => {
@@ -671,11 +677,11 @@ function connectSSE() {
 }
 
 setInterval(() => {
-  fetch('/api/snapshot').then(r => r.json()).then(applySnapshot).catch(()=>{});
+  fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});
 }, 1200);
 
 connectSSE();
-fetch('/api/snapshot').then(r => r.json()).then(applySnapshot).catch(()=>{});
+fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});
 </script>
 </body>
 </html>
