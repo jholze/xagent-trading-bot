@@ -1,4 +1,4 @@
-"""Gate public WS hub for shadow exit evaluation (no orders)."""
+"""Gate public WS hub: trail eval → live SELL via TradingService (staging-first)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from services.exit_realtime.config import (
     exit_realtime_mode,
     exit_realtime_sources,
 )
+from services.exit_realtime.execute import try_execute_trail_exit
 from services.exit_realtime.shadow_eval import (
     evaluate_would_sells,
     from_gate_pair,
@@ -37,21 +38,23 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-def _log_shadow_event(event: dict[str, Any]) -> None:
+def _log_event(event: dict[str, Any], *, live: bool) -> None:
+    name = "exit_ws_live" if live else "exit_ws_event"
     try:
         from logger import LOG_DIR
         import os
 
-        path = os.path.join(LOG_DIR, "exit_ws_shadow.jsonl")
+        path = os.path.join(LOG_DIR, "exit_ws_events.jsonl")
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
         pass
     try:
         log(
-            f"exit_ws_shadow symbol={event.get('symbol')} src={event.get('source')} "
+            f"{name} symbol={event.get('symbol')} src={event.get('source')} "
             f"gain={event.get('gain_pct')} drop={event.get('drop_from_high_pct')} "
-            f"px={event.get('price')} :: {event.get('rationale', '')[:80]}",
+            f"executed={event.get('executed')} px={event.get('price')} "
+            f":: {str(event.get('rationale') or event.get('message') or '')[:80]}",
             "INFO",
         )
     except Exception:
@@ -59,20 +62,21 @@ def _log_shadow_event(event: dict[str, Any]) -> None:
 
 
 class ExitRealtimeHub:
-    """Background Gate ticker stream → pure trail evaluators → shadow logs."""
+    """Background Gate ticker stream → pure trail evaluators → live SELL."""
 
     def __init__(self, raw_config: dict | None = None) -> None:
         self._raw = raw_config
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pos_lock = threading.Lock()
-        # symbol -> position snapshot + strategy_params + timeframe
         self._book: dict[str, dict[str, Any]] = {}
         self._gate_to_symbol: dict[str, str] = {}
-        self._last_fire: dict[str, float] = {}  # key symbol|source -> mono time
+        self._last_fire: dict[str, float] = {}
         self._stats = {
             "ticks": 0,
-            "shadow_fires": 0,
+            "fires": 0,
+            "executed": 0,
+            "blocked": 0,
             "reconnects": 0,
             "last_tick_at": 0.0,
             "symbols": 0,
@@ -82,7 +86,6 @@ class ExitRealtimeHub:
         return dict(self._stats)
 
     def update_book(self, positions: list[dict[str, Any]]) -> list[str]:
-        """Replace open-position book. Returns gate pairs to subscribe."""
         book: dict[str, dict[str, Any]] = {}
         gmap: dict[str, str] = {}
         for row in positions:
@@ -105,7 +108,8 @@ class ExitRealtimeHub:
             target=self._run_loop, name="exit-realtime-ws", daemon=True
         )
         self._thread.start()
-        log("exit_realtime hub started (shadow)", "INFO")
+        mode = exit_realtime_mode(self._raw)
+        log(f"exit_realtime hub started mode={mode}", "INFO")
 
     def stop(self) -> None:
         self._stop.set()
@@ -129,19 +133,41 @@ class ExitRealtimeHub:
             row = self._book.get(sym)
             if not row:
                 return
-            # bump in-memory peak
             rh = float(row.get("recent_high") or 0)
             if price > rh:
                 row["recent_high"] = price
-            snapshot = dict(row)
+                # keep nested position peak in sync for eval
+                pos0 = row.get("position")
+                if isinstance(pos0, dict):
+                    pos0["recent_high"] = price
+            snapshot = {
+                "symbol": row.get("symbol"),
+                "timeframe": row.get("timeframe"),
+                "strategy_params": dict(row.get("strategy_params") or {}),
+                "atr_pct": row.get("atr_pct"),
+                "position": dict(row.get("position") or {}),
+                "recent_high": row.get("recent_high"),
+            }
+            # ensure position has peak + entry
+            pos = snapshot["position"]
+            if snapshot.get("recent_high"):
+                pos["recent_high"] = snapshot["recent_high"]
+            if not pos.get("average_entry") and row.get("average_entry"):
+                pos["average_entry"] = row["average_entry"]
 
         cfg = exit_realtime_config(self._raw)
+        mode = exit_realtime_mode(self._raw)
         sources = exit_realtime_sources(self._raw)
-        cooldown = float(cfg.get("shadow_cooldown_sec", 30) or 30)
+        cooldown = float(
+            cfg.get("live_cooldown_sec")
+            or cfg.get("shadow_cooldown_sec")
+            or 15
+            or 15
+        )
         atr = float(snapshot.get("atr_pct") or cfg.get("default_atr_pct", 3.0) or 3.0)
         params = dict(snapshot.get("strategy_params") or {})
         tf = str(snapshot.get("timeframe") or "1h")
-        pos = dict(snapshot.get("position") or snapshot)
+        pos = dict(snapshot.get("position") or {})
 
         events = evaluate_would_sells(
             symbol=sym,
@@ -155,13 +181,44 @@ class ExitRealtimeHub:
         for ev in events:
             if ev.get("error") or not ev.get("action"):
                 continue
+            # Skip pure strategy-shadow candidates (mode=shadow inside trail config)
+            if ev.get("strategy_shadow") and mode == "live":
+                # still fire if strategy is live; strategy_shadow means trail rule in shadow
+                continue
             src = str(ev.get("source") or "")
             if not self._debounce_ok(sym, src, cooldown):
                 continue
-            ev["mode"] = exit_realtime_mode(self._raw)
+
+            ev["mode"] = mode
             ev["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            _log_shadow_event(ev)
-            self._stats["shadow_fires"] += 1
+            self._stats["fires"] += 1
+
+            if mode != "live":
+                # log-only path (if someone leaves mode=shadow)
+                _log_event(ev, live=False)
+                continue
+
+            result = try_execute_trail_exit(
+                symbol=sym,
+                timeframe=tf,
+                price=price,
+                action=str(ev.get("action") or "SELL_FULL"),
+                exit_source=src,
+                rationale=str(ev.get("rationale") or ""),
+            )
+            ev["executed"] = bool(result.get("executed"))
+            ev["message"] = result.get("message")
+            if result.get("executed"):
+                self._stats["executed"] += 1
+                # drop from book so we stop ticking this symbol until refresh
+                with self._pos_lock:
+                    self._book.pop(sym, None)
+                    gp = to_gate_pair(sym)
+                    self._gate_to_symbol.pop(gp, None)
+                    self._stats["symbols"] = len(self._book)
+            else:
+                self._stats["blocked"] += 1
+            _log_event(ev, live=True)
 
     def _run_loop(self) -> None:
         try:
@@ -186,8 +243,6 @@ class ExitRealtimeHub:
                 time.sleep(5)
                 continue
 
-            ws_holder: dict[str, Any] = {"ws": None}
-
             def on_message(_ws, message: str) -> None:
                 try:
                     data = json.loads(message)
@@ -198,7 +253,6 @@ class ExitRealtimeHub:
                 result = data.get("result")
                 if not isinstance(result, dict):
                     return
-                # spot.tickers push: currency_pair, last, ...
                 pair = result.get("currency_pair") or result.get("s")
                 last = result.get("last") or result.get("c")
                 if not pair or last is None:
@@ -210,7 +264,6 @@ class ExitRealtimeHub:
                 self.on_ticker(str(pair).upper(), px)
 
             def on_open(ws) -> None:
-                # Gate: subscribe one-by-one (batch fails on unknown pairs)
                 for gp in pairs:
                     try:
                         ws.send(
@@ -241,7 +294,6 @@ class ExitRealtimeHub:
                     on_error=on_error,
                     on_close=on_close,
                 )
-                ws_holder["ws"] = ws
                 self._stats["reconnects"] += 1
                 ws.run_forever(sslopt={"context": _ssl_context()}, ping_interval=20)
             except Exception as exc:
@@ -264,7 +316,6 @@ def get_hub() -> ExitRealtimeHub | None:
 
 
 def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
-    """Build position rows for hub from in-memory positions."""
     from core.config import get_bot_config
     from strategies.positions import is_open_position, parse_position_key, positions
 
@@ -334,7 +385,7 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
 
 
 def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
-    """Idempotent start of shadow hub when config enables it."""
+    """Idempotent start when config enables exit_realtime."""
     global _hub, _refresh_thread
     if raw is None:
         try:
@@ -348,9 +399,6 @@ def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
         return None
     mode = exit_realtime_mode(raw)
     if mode == "off":
-        return None
-    # Phase 1: shadow only — live is a no-op for orders but hub may still log
-    if mode not in ("shadow", "live"):
         return None
 
     with _hub_lock:
@@ -376,9 +424,4 @@ def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
                 target=_refresh_loop, args=(_getter,), daemon=True, name="exit-rt-book"
             )
             _refresh_thread.start()
-        if mode == "live":
-            log(
-                "exit_realtime mode=live but order path not wired yet (shadow logs only)",
-                "INFO",
-            )
         return _hub

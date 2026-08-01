@@ -1776,15 +1776,15 @@
     "_rollback": "Set enabled=false or profile=base to restore pre-rotation TTP/lifetime knobs without code revert. gainer: enabled=false or mode=off. Issue #162 flags under gainer_universe. moderate_deploy: risk.moderate_deploy.enabled=false; universe.trade_max_coins 58→40."
   },
   "exit_realtime": {
-    "enabled": false,
-    "mode": "shadow",
+    "enabled": true,
+    "mode": "live",
     "sources": ["trailing_take_profit", "trailing_stop"],
-    "shadow_cooldown_sec": 30,
+    "live_cooldown_sec": 15,
     "book_refresh_sec": 30,
     "reconnect_backoff_sec": 3,
     "reconnect_max_sec": 60,
     "default_atr_pct": 3.0,
-    "_doc": "Gate public WS trail eval. Phase1 shadow only (no orders). Kill: enabled=false. Epic #178 / issue #179.",
+    "_doc": "Gate WS trail TP/stop → TradingService SELL (staging demo). Kill: enabled=false. Epic #178.",
     "_rollback": "enabled=false → cycle-only exits"
   }
 }
