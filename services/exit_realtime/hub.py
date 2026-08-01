@@ -481,11 +481,13 @@ _book_io_lock = threading.Lock()
 def _sync_positions_from_ledger() -> None:
     """Sidecar: read-only reload of open positions from Mongo into memory.
 
-    Uses load_positions (not rebuild_positions_from_orders) so we never write
-    the ledger from the radar process and avoid thrashing concurrent Flask IO.
+    Uses strategies.positions.load_positions (not rebuild_positions_from_orders)
+    so we never write the ledger from the radar process and avoid thrashing
+    concurrent Flask IO.
     """
     try:
-        from data_manager import load_positions, resolve_ledger_scope
+        from data_manager import resolve_ledger_scope
+        from strategies.positions import load_positions
 
         scope = str(resolve_ledger_scope() or "demo")
         with _book_io_lock:
