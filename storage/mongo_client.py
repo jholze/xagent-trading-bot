@@ -205,9 +205,8 @@ def get_database(*, test: bool = False, config: dict | None = None) -> Database:
             return db
         except InvalidOperation as e:
             last_err = e
-            if attempt == 0 and (
-                _client_is_closed(_client) or "after close" in str(e).lower()
-            ):
+            # Always reopen once on InvalidOperation (closed client / killed topology).
+            if attempt == 0:
                 close_client()
                 continue
             raise

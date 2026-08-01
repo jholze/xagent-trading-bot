@@ -17,6 +17,13 @@ _FULL_COMMANDS = {
 }
 
 
+def _is_mongo_client_closed_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "after close" in msg or (
+        exc.__class__.__name__ == "InvalidOperation" and "mongoclient" in msg
+    )
+
+
 def _build_positions(
     chat_id: str,
     *,
@@ -26,22 +33,36 @@ def _build_positions(
     owner_chat_id: str,
     lang: str,
 ):
-    try:
-        set_user_language(lang)
-        with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
-            send_positions_snapshot(
-                fast=True,
-                chat_id=chat_id or None,
-                detail_level=detail_level,
-                tenant_id=tenant_id,
-                scope=scope,
-            )
-    except Exception as e:
-        set_user_language(lang)
-        send_telegram_message(
-            t("portfolio_load_failed", error=e),
-            chat_id=chat_id or None,
-        )
+    set_user_language(lang)
+    last_err: Exception | None = None
+    for attempt in range(2):
+        try:
+            with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
+                send_positions_snapshot(
+                    fast=True,
+                    chat_id=chat_id or None,
+                    detail_level=detail_level,
+                    tenant_id=tenant_id,
+                    scope=scope,
+                )
+            return
+        except Exception as e:
+            last_err = e
+            if attempt == 0 and _is_mongo_client_closed_error(e):
+                # Shared client was closed mid-request — drop + reopen, retry once.
+                try:
+                    from storage.mongo_client import close_client
+
+                    close_client()
+                except Exception:
+                    pass
+                continue
+            break
+    set_user_language(lang)
+    send_telegram_message(
+        t("portfolio_load_failed", error=last_err),
+        chat_id=chat_id or None,
+    )
 
 
 def handle(text: str) -> bool:
