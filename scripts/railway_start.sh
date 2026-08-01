@@ -22,6 +22,17 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-hermes" || "${RUN_HERMES:-}" == "1"
   # Hermes is read-only on ledger; never run ledger repair/seed
   exec python3 -m intelligence.memory.service
 fi
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-exit-radar" || "${RAILWAY_SERVICE_NAME:-}" == "exit-radar" || "${RUN_EXIT_RADAR:-}" == "1" ]]; then
+  echo "=== Exit radar + Gate WS sidecar start ==="
+  export PYTHONUNBUFFERED=1
+  export RUN_EXIT_RADAR=1
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
+  export EXIT_REALTIME_OWNER="${EXIT_REALTIME_OWNER:-sidecar}"
+  exec python3 -m services.exit_radar_sidecar
+fi
 
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true

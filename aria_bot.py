@@ -156,6 +156,13 @@ try:
 except Exception as _exit_radar_exc:
     log(f"exit_radar routes not registered: {_exit_radar_exc}", "WARNING")
 
+try:
+    from services.exit_realtime.fire_http import register_exit_ws_fire_routes
+
+    register_exit_ws_fire_routes(app)
+except Exception as _exit_fire_exc:
+    log(f"exit_ws fire route not registered: {_exit_fire_exc}", "WARNING")
+
 
 @app.route("/health", methods=["GET"])
 def health():

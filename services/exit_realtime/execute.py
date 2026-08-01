@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 
 from logger import log
@@ -18,6 +21,71 @@ def recently_exited(symbol: str, within_sec: float = 120.0) -> bool:
     return t > 0 and (time.monotonic() - t) < within_sec
 
 
+def _remote_execute_trail_exit(
+    *,
+    url: str,
+    symbol: str,
+    timeframe: str,
+    price: float,
+    action: str,
+    exit_source: str,
+    rationale: str,
+    token: str,
+    timeout_sec: float = 30.0,
+) -> dict[str, Any]:
+    """POST fire request to bot ``/internal/exit-ws/fire`` (sidecar path)."""
+    payload = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "price": price,
+        "action": action,
+        "exit_source": exit_source,
+        "rationale": rationale,
+        "idempotency_key": f"{symbol}|{timeframe}|{exit_source}|{price:.8g}",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "xagent-exit-radar-sidecar/1",
+    }
+    if token:
+        headers["X-Exit-Ws-Token"] = token
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict):
+                return {
+                    "ok": False,
+                    "executed": False,
+                    "message": "bad_remote_response",
+                    "remote": True,
+                }
+            data.setdefault("remote", True)
+            return data
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "executed": False,
+            "message": f"remote_http_{e.code}:{detail or e.reason}",
+            "remote": True,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "executed": False,
+            "message": f"remote_error:{e}"[:200],
+            "remote": True,
+        }
+
+
 def try_execute_trail_exit(
     *,
     symbol: str,
@@ -27,11 +95,36 @@ def try_execute_trail_exit(
     exit_source: str,
     rationale: str = "",
     trading: Any | None = None,
+    force_local: bool = False,
 ) -> dict[str, Any]:
     """
     Full-position SELL through RiskManager + order path.
+
+    When ``EXIT_EXECUTE_URL`` is set (sidecar), posts to the bot internal
+    fire endpoint instead of executing locally — bot remains sole write path.
     Returns {ok, executed, message, ...}.
     """
+    from services.exit_realtime.config import exit_execute_url, exit_ws_internal_token
+
+    sym = str(symbol or "")
+    tf = str(timeframe or "1h")
+    px = float(price or 0)
+    if not sym or px <= 0:
+        return {"ok": False, "executed": False, "message": "bad_args"}
+
+    remote_url = "" if force_local else exit_execute_url()
+    if remote_url:
+        return _remote_execute_trail_exit(
+            url=remote_url,
+            symbol=sym,
+            timeframe=tf,
+            price=px,
+            action=action,
+            exit_source=exit_source,
+            rationale=rationale,
+            token=exit_ws_internal_token(),
+        )
+
     from core.actions import SELL_FULL
     from core.models import TradeOrder
     from strategies.positions import (
@@ -39,12 +132,6 @@ def try_execute_trail_exit(
         is_open_position,
         mark_trailing_take_profit_step,
     )
-
-    sym = str(symbol or "")
-    tf = str(timeframe or "1h")
-    px = float(price or 0)
-    if not sym or px <= 0:
-        return {"ok": False, "executed": False, "message": "bad_args"}
 
     with _inflight_lock:
         if sym in _inflight:

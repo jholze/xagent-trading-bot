@@ -475,7 +475,20 @@ def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
     return rows
 
 
+def _sync_positions_from_ledger() -> None:
+    """Sidecar: reload open positions from Mongo into in-memory book."""
+    try:
+        from data_manager import resolve_ledger_scope
+        from services.ledger_sync import rebuild_positions_from_orders
+
+        rebuild_positions_from_orders(resolve_ledger_scope() or "demo")
+    except Exception as exc:
+        log(f"exit_realtime ledger sync: {exc}", "DEBUG")
+
+
 def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
+    from services.exit_realtime.config import is_exit_radar_sidecar_process
+
     while not _refresh_stop.is_set():
         hub = get_hub()
         if hub is None:
@@ -485,6 +498,8 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
             if not exit_realtime_enabled(raw) or exit_realtime_mode(raw) == "off":
                 time.sleep(10)
                 continue
+            if is_exit_radar_sidecar_process():
+                _sync_positions_from_ledger()
             rows = _load_open_book(raw)
             hub.update_book(rows)
         except Exception as exc:
@@ -494,7 +509,7 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
 
 
 def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
-    """Idempotent start when config enables exit_realtime."""
+    """Idempotent start when config enables exit_realtime and this process owns the hub."""
     global _hub, _refresh_thread
     if raw is None:
         try:
@@ -504,7 +519,9 @@ def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
         except Exception:
             raw = {}
 
-    if not exit_realtime_enabled(raw):
+    from services.exit_realtime.config import exit_realtime_should_run_hub
+
+    if not exit_realtime_should_run_hub(raw):
         return None
     mode = exit_realtime_mode(raw)
     if mode == "off":

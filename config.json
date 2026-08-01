@@ -1778,13 +1778,15 @@
   "exit_realtime": {
     "enabled": true,
     "mode": "live",
+    "owner": "bot",
     "sources": ["trailing_take_profit", "trailing_stop"],
     "live_cooldown_sec": 15,
     "book_refresh_sec": 30,
     "reconnect_backoff_sec": 3,
     "reconnect_max_sec": 60,
     "default_atr_pct": 3.0,
-    "_doc": "Gate WS trail TP/stop → TradingService SELL (staging demo). Kill: enabled=false. Epic #178.",
-    "_rollback": "enabled=false → cycle-only exits"
+    "_doc": "Gate WS trail TP/stop → TradingService SELL. owner=bot (in-process) | sidecar (xagent-exit-radar). Kill: enabled=false. Epic #178 / #190.",
+    "_rollback": "owner=bot + enabled=false on sidecar; or enabled=false → cycle-only exits",
+    "_sidecar": "Set owner=sidecar + EXIT_EXECUTE_URL + EXIT_WS_INTERNAL_TOKEN on both services"
   }
 }
