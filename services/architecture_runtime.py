@@ -37,6 +37,7 @@ def ensure_started(force_refresh: bool = False):
         ensure_background()
         ensure_trading_engine()
         _ensure_eval_worker()
+        _ensure_exit_realtime()
 
         if mode == "direct":
             _started = True
@@ -70,6 +71,16 @@ def _ensure_eval_worker():
             ensure_started(_orchestrator)
     except Exception as e:
         log(f"Eval worker ensure failed: {e}", "WARNING")
+
+
+def _ensure_exit_realtime():
+    """Optional Gate WS shadow trail eval (exit_realtime.enabled)."""
+    try:
+        from services.exit_realtime import ensure_started as ensure_exit_rt
+
+        ensure_exit_rt()
+    except Exception as e:
+        log(f"exit_realtime ensure failed: {e}", "WARNING")
 
 
 def register_eval_orchestrator(orchestrator) -> None:
