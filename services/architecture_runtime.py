@@ -74,10 +74,21 @@ def _ensure_eval_worker():
 
 
 def _ensure_exit_realtime():
-    """Optional Gate WS shadow trail eval (exit_realtime.enabled)."""
+    """Optional Gate WS trail hub — only when this process owns it (bot vs sidecar)."""
     try:
+        from services.exit_realtime.config import (
+            exit_realtime_owner,
+            exit_realtime_should_run_hub,
+        )
         from services.exit_realtime import ensure_started as ensure_exit_rt
 
+        if not exit_realtime_should_run_hub():
+            log(
+                f"exit_realtime hub skipped in bot process "
+                f"(owner={exit_realtime_owner()})",
+                "INFO",
+            )
+            return
         ensure_exit_rt()
     except Exception as e:
         log(f"exit_realtime ensure failed: {e}", "WARNING")
