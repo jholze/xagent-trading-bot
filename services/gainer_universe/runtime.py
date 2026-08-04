@@ -17,7 +17,31 @@ _last_live_mono: float = 0.0
 _process_cache: dict[str, Any] = {}
 
 
-def _refresh_sync(cfg: dict) -> dict:
+def _push_ws_watch(state: dict, config: dict | None = None) -> None:
+    """Seed exit_realtime hub watch set for WS board identify (fail-open)."""
+    try:
+        from services.gainer_universe.ws_board import (
+            watch_symbols_from_gainer_state,
+            ws_board_enabled,
+        )
+
+        if not ws_board_enabled(config):
+            return
+        syms = watch_symbols_from_gainer_state(state, config)
+        if not syms:
+            return
+        from services.exit_realtime.hub import get_hub
+
+        hub = get_hub()
+        if hub is None:
+            return
+        hub.update_watch_set(syms)
+        log(f"gainer_ws_board watch seeded n={len(syms)}", "DEBUG")
+    except Exception as e:
+        log(f"gainer_ws_board seed skip: {e}", "DEBUG")
+
+
+def _refresh_sync(cfg: dict, root_config: dict | None = None) -> dict:
     """Blocking scan (call under lock or from worker)."""
     global _last_live_mono, _process_cache
     prev = load_gainer_state()
@@ -35,6 +59,7 @@ def _refresh_sync(cfg: dict) -> dict:
             f"err={snap.get('last_error') or '-'}",
             "INFO",
         )
+        _push_ws_watch(state, root_config if isinstance(root_config, dict) else None)
         return state
     except Exception as e:
         log(f"gainer_universe refresh failed (fail-open): {e}", "WARNING")
@@ -54,6 +79,8 @@ def maybe_refresh_gainer_universe(config: dict | None = None) -> dict:
     cfg = gainer_universe_config(config)
     poll = float(cfg.get("poll_sec") or 60)
 
+    root = config if isinstance(config, dict) else None
+
     with _lock:
         now_m = time.monotonic()
         if _last_live_mono and (now_m - _last_live_mono) < poll and _process_cache:
@@ -66,7 +93,7 @@ def maybe_refresh_gainer_universe(config: dict | None = None) -> dict:
             def _bg():
                 try:
                     with _lock:
-                        _refresh_sync(cfg)
+                        _refresh_sync(cfg, root)
                 except Exception as e:
                     log(f"gainer_universe bg refresh failed: {e}", "WARNING")
 
@@ -74,7 +101,7 @@ def maybe_refresh_gainer_universe(config: dict | None = None) -> dict:
             log("gainer_universe cold start: daily/live scan deferred to background", "INFO")
             return prev or {}
 
-        return _refresh_sync(cfg)
+        return _refresh_sync(cfg, root)
 
 
 def reset_gainer_runtime_cache() -> None:

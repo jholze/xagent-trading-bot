@@ -39,6 +39,15 @@ _DEFAULTS: dict[str, Any] = {
     "chase_guard_enabled": True,
     "chase_max_gain_from_prev_close_pct": 18.0,
     "chase_guard_sources": ["gate_prev_top"],
+    # WS board identify (shadow logs only — no auto-buy)
+    "ws_board": {
+        "enabled": False,
+        "mode": "shadow",
+        "max_watch": 40,
+        "log_top_n": 15,
+        "log_interval_sec": 30,
+        "min_pct_to_rank": 5.0,
+    },
 }
 
 
