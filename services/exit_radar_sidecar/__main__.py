@@ -84,6 +84,64 @@ def _start_hub() -> None:
     )
 
 
+def _start_watch_self_seed() -> None:
+    """Background: REST live_top → hub watch when ws_board enabled (sidecar).
+
+    Complements bot POST /internal/exit-ws/watch-set so identify works even if
+    the bot cannot reach the radar URL yet.
+    """
+    import threading
+    import time
+
+    from logger import log
+
+    def _loop() -> None:
+        from services.exit_realtime.hub import get_hub
+        from services.gainer_universe.config import gainer_universe_config
+        from services.gainer_universe.scanner import (
+            fetch_gate_tickers,
+            filter_and_rank_live,
+        )
+        from services.gainer_universe.ws_board import (
+            watch_symbols_from_gainer_state,
+            ws_board_enabled,
+        )
+
+        while True:
+            try:
+                if not ws_board_enabled():
+                    time.sleep(60)
+                    continue
+                cfg = gainer_universe_config()
+                poll = max(30.0, float(cfg.get("poll_sec") or 60))
+                hub = get_hub()
+                if hub is None:
+                    time.sleep(poll)
+                    continue
+                tickers = fetch_gate_tickers() or {}
+                live_top = filter_and_rank_live(tickers, cfg) if tickers else []
+                syms = watch_symbols_from_gainer_state(
+                    {"live_top": live_top, "eligible": []},
+                    {"gainer_universe": {**cfg}},
+                )
+                if syms:
+                    hub.update_watch_set(syms)
+                    log(
+                        f"exit-radar self-seed watch n={len(syms)} "
+                        f"top={syms[0] if syms else '-'}",
+                        "INFO",
+                    )
+                time.sleep(poll)
+            except Exception as exc:
+                log(f"exit-radar watch self-seed: {exc}", "DEBUG")
+                time.sleep(60)
+
+    threading.Thread(
+        target=_loop, name="exit-radar-watch-seed", daemon=True
+    ).start()
+    log("exit-radar watch self-seed thread started", "INFO")
+
+
 def main() -> None:
     _bootstrap_env()
 
@@ -123,6 +181,19 @@ def main() -> None:
     except Exception as exc:
         log(f"exit-radar routes failed: {exc}", "ERROR")
         raise
+
+    try:
+        from services.exit_realtime.watch_http import register_exit_ws_watch_routes
+
+        register_exit_ws_watch_routes(app)
+    except Exception as exc:
+        log(f"exit-ws watch-set route failed: {exc}", "WARNING")
+
+    # Optional self-seed if bot push is late (REST live_top only, light)
+    try:
+        _start_watch_self_seed()
+    except Exception as exc:
+        log(f"exit-radar watch self-seed failed: {exc}", "DEBUG")
 
     port = int(os.environ.get("PORT") or os.environ.get("EXIT_RADAR_PORT") or "5000")
     log(f"exit-radar sidecar listening on 0.0.0.0:{port}", "INFO")

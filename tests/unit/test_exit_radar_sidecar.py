@@ -211,5 +211,88 @@ class TestFireHttpAuth(unittest.TestCase):
         self.assertEqual(kwargs["symbol"], "TAG/USDT")
 
 
+class TestWatchSetHttp(unittest.TestCase):
+    def tearDown(self):
+        for k in (
+            "EXIT_WS_INTERNAL_TOKEN",
+            "EXIT_RADAR_URL",
+            "RAILWAY_SERVICE_XAGENT_EXIT_RADAR_URL",
+        ):
+            os.environ.pop(k, None)
+
+    def test_watch_set_unauthorized(self):
+        from flask import Flask
+
+        from services.exit_realtime.watch_http import register_exit_ws_watch_routes
+
+        os.environ["EXIT_WS_INTERNAL_TOKEN"] = "good"
+        app = Flask(__name__)
+        register_exit_ws_watch_routes(app)
+        client = app.test_client()
+        r = client.post(
+            "/internal/exit-ws/watch-set",
+            json={"symbols": ["ETH/USDT"]},
+            headers={"X-Exit-Ws-Token": "bad"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_watch_set_applies_to_hub(self):
+        from flask import Flask
+
+        from services.exit_realtime.watch_http import register_exit_ws_watch_routes
+
+        os.environ["EXIT_WS_INTERNAL_TOKEN"] = "good"
+        app = Flask(__name__)
+        register_exit_ws_watch_routes(app)
+        client = app.test_client()
+
+        mock_hub = MagicMock()
+        mock_hub.update_watch_set.return_value = ["ETH/USDT", "SOL/USDT"]
+        mock_hub.stats.return_value = {"watch": 2, "connected": True}
+
+        with patch(
+            "services.exit_realtime.hub.get_hub",
+            return_value=mock_hub,
+        ):
+            r = client.post(
+                "/internal/exit-ws/watch-set",
+                json={"symbols": ["ETH/USDT", "SOL/USDT"]},
+                headers={"X-Exit-Ws-Token": "good"},
+            )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["applied"], 2)
+        mock_hub.update_watch_set.assert_called_once()
+
+    def test_push_watch_set_remote(self):
+        from services.exit_realtime.watch_http import push_watch_set_remote
+
+        os.environ["EXIT_RADAR_URL"] = "https://radar.example"
+        os.environ["EXIT_WS_INTERNAL_TOKEN"] = "tok"
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True, "applied": 2}).encode()
+
+        with patch(
+            "services.exit_realtime.watch_http.urllib.request.urlopen",
+            return_value=_Resp(),
+        ) as mock_open:
+            r = push_watch_set_remote(["AAA/USDT", "BBB/USDT"])
+        self.assertTrue(r.get("ok"))
+        self.assertEqual(r.get("applied"), 2)
+        req = mock_open.call_args[0][0]
+        self.assertIn("/internal/exit-ws/watch-set", req.full_url)
+
+
 if __name__ == "__main__":
     unittest.main()

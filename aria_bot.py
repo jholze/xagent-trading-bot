@@ -158,8 +158,10 @@ except Exception as _exit_radar_exc:
 
 try:
     from services.exit_realtime.fire_http import register_exit_ws_fire_routes
+    from services.exit_realtime.watch_http import register_exit_ws_watch_routes
 
     register_exit_ws_fire_routes(app)
+    register_exit_ws_watch_routes(app)
 except Exception as _exit_fire_exc:
     log(f"exit_ws fire route not registered: {_exit_fire_exc}", "WARNING")
 
