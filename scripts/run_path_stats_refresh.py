@@ -241,7 +241,7 @@ def main() -> int:
         print("No symbols — empty open book / watchlist")
         return 1
 
-    market = MarketService(config=cfg)
+    market = MarketService(config_raw=cfg)
     report: dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": scope,
