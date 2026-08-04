@@ -17,6 +17,8 @@ COL_PROFILES = "memory_coin_profiles"
 COL_EVENTS = "memory_market_events"
 COL_TRADES = "memory_trades"
 COL_LESSONS = "memory_lessons"
+# Path-stats (episode backtests) — see intelligence.memory.path_stats
+# COL_PATH_STATS = "memory_path_stats" (owned by path_stats module)
 
 _FORBIDDEN = frozenset(
     {
