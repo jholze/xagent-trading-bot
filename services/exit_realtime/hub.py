@@ -64,7 +64,11 @@ def _log_event(event: dict[str, Any], *, live: bool) -> None:
 
 
 class ExitRealtimeHub:
-    """Background Gate ticker stream → pure trail evaluators → live SELL."""
+    """Background Gate ticker stream → trail exits + optional gainer board identify.
+
+    - OPEN positions: trail/TTP eval → SELL (unchanged)
+    - Watch set (REST-seeded): ticks feed gainer_universe.ws_board (shadow log only)
+    """
 
     def __init__(self, raw_config: dict | None = None) -> None:
         self._raw = raw_config
@@ -73,9 +77,14 @@ class ExitRealtimeHub:
         self._pos_lock = threading.Lock()
         self._book: dict[str, dict[str, Any]] = {}
         self._gate_to_symbol: dict[str, str] = {}
+        # Identify watch (non-position); unioned into subscribe set
+        self._watch_symbols: set[str] = set()
+        self._watch_gate: dict[str, str] = {}
         self._last_fire: dict[str, float] = {}
         self._last_prices: dict[str, float] = {}
         self._connected = False
+        self._ws: Any = None
+        self._subscribed: set[str] = set()
         self._event_q: deque[dict[str, Any]] = deque(maxlen=200)
         self._gui_clients: list[queue.Queue] = []
         self._gui_lock = threading.Lock()
@@ -87,6 +96,7 @@ class ExitRealtimeHub:
             "reconnects": 0,
             "last_tick_at": 0.0,
             "symbols": 0,
+            "watch": 0,
             "connected": False,
         }
 
@@ -168,7 +178,60 @@ class ExitRealtimeHub:
             self._book = book
             self._gate_to_symbol = gmap
             self._stats["symbols"] = len(book)
+        self._request_subscribe_sync()
         return sorted(gmap.keys())
+
+    def update_watch_set(self, symbols: list[str]) -> list[str]:
+        """REST-seeded identify universe (no exit eval). Empty clears watch."""
+        wset: set[str] = set()
+        wgate: dict[str, str] = {}
+        for raw in symbols or []:
+            sym = str(raw or "").strip().upper().replace("-", "/")
+            if not sym:
+                continue
+            if "_" in sym and "/" not in sym:
+                a, b = sym.rsplit("_", 1)
+                sym = f"{a}/{b}"
+            wset.add(sym)
+            wgate[to_gate_pair(sym)] = sym
+        with self._pos_lock:
+            self._watch_symbols = wset
+            self._watch_gate = wgate
+            self._stats["watch"] = len(wset)
+        self._request_subscribe_sync()
+        return sorted(wset)
+
+    def _desired_gate_pairs(self) -> list[str]:
+        with self._pos_lock:
+            pairs = set(self._gate_to_symbol.keys()) | set(self._watch_gate.keys())
+        return sorted(pairs)
+
+    def _request_subscribe_sync(self) -> None:
+        """Best-effort subscribe new pairs on live WS (no-op if disconnected)."""
+        ws = self._ws
+        if ws is None or not self._connected:
+            return
+        try:
+            desired = set(self._desired_gate_pairs())
+            new = desired - self._subscribed
+            for gp in sorted(new):
+                try:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "time": int(time.time()),
+                                "channel": CHANNEL,
+                                "event": "subscribe",
+                                "payload": [gp],
+                            }
+                        )
+                    )
+                    self._subscribed.add(gp)
+                    time.sleep(0.03)
+                except Exception as exc:
+                    log(f"exit_realtime watch-sub {gp}: {exc}", "DEBUG")
+        except Exception as exc:
+            log(f"exit_realtime subscribe sync: {exc}", "DEBUG")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -193,38 +256,75 @@ class ExitRealtimeHub:
         self._last_fire[key] = now
         return True
 
-    def on_ticker(self, gate_pair: str, price: float) -> None:
+    def on_ticker(
+        self,
+        gate_pair: str,
+        price: float,
+        *,
+        pct_24h: float | None = None,
+        quote_volume: float | None = None,
+    ) -> None:
         if price <= 0:
             return
         self._stats["ticks"] += 1
         self._stats["last_tick_at"] = time.time()
         with self._pos_lock:
-            sym = self._gate_to_symbol.get(gate_pair) or from_gate_pair(gate_pair)
+            sym = (
+                self._gate_to_symbol.get(gate_pair)
+                or self._watch_gate.get(gate_pair)
+                or from_gate_pair(gate_pair)
+            )
             self._last_prices[sym] = float(price)
+            in_watch = sym in self._watch_symbols or gate_pair in self._watch_gate
             row = self._book.get(sym)
-            if not row:
-                return
-            rh = float(row.get("recent_high") or 0)
-            if price > rh:
-                row["recent_high"] = price
-                # keep nested position peak in sync for eval
-                pos0 = row.get("position")
-                if isinstance(pos0, dict):
-                    pos0["recent_high"] = price
-            snapshot = {
-                "symbol": row.get("symbol"),
-                "timeframe": row.get("timeframe"),
-                "strategy_params": dict(row.get("strategy_params") or {}),
-                "atr_pct": row.get("atr_pct"),
-                "position": dict(row.get("position") or {}),
-                "recent_high": row.get("recent_high"),
-            }
-            # ensure position has peak + entry
-            pos = snapshot["position"]
-            if snapshot.get("recent_high"):
-                pos["recent_high"] = snapshot["recent_high"]
-            if not pos.get("average_entry") and row.get("average_entry"):
-                pos["average_entry"] = row["average_entry"]
+            snapshot = None
+            if row:
+                rh = float(row.get("recent_high") or 0)
+                if price > rh:
+                    row["recent_high"] = price
+                    # keep nested position peak in sync for eval
+                    pos0 = row.get("position")
+                    if isinstance(pos0, dict):
+                        pos0["recent_high"] = price
+                snapshot = {
+                    "symbol": row.get("symbol"),
+                    "timeframe": row.get("timeframe"),
+                    "strategy_params": dict(row.get("strategy_params") or {}),
+                    "atr_pct": row.get("atr_pct"),
+                    "position": dict(row.get("position") or {}),
+                    "recent_high": row.get("recent_high"),
+                }
+                # ensure position has peak + entry
+                pos = snapshot["position"]
+                if snapshot.get("recent_high"):
+                    pos["recent_high"] = snapshot["recent_high"]
+                if not pos.get("average_entry") and row.get("average_entry"):
+                    pos["average_entry"] = row["average_entry"]
+
+        # Identify board (watch or any tick we track) — never places orders
+        if in_watch or snapshot is None:
+            try:
+                from services.gainer_universe.ws_board import (
+                    get_ws_board,
+                    ws_board_enabled,
+                )
+
+                if ws_board_enabled(self._raw if isinstance(self._raw, dict) else None):
+                    get_ws_board().on_tick(
+                        sym,
+                        last=float(price),
+                        pct_24h=pct_24h,
+                        quote_volume=quote_volume,
+                    )
+                    get_ws_board().maybe_log_board(
+                        self._raw if isinstance(self._raw, dict) else None
+                    )
+            except Exception:
+                pass
+
+        # No open position → identify-only path done
+        if snapshot is None:
+            return
 
         # GUI tick stream (UI further samples feed lines)
         self._broadcast_gui(
@@ -328,9 +428,7 @@ class ExitRealtimeHub:
         max_backoff = float(cfg.get("reconnect_max_sec", 60) or 60)
 
         while not self._stop.is_set():
-            pairs: list[str] = []
-            with self._pos_lock:
-                pairs = sorted(self._gate_to_symbol.keys())
+            pairs = self._desired_gate_pairs()
             if not pairs:
                 time.sleep(5)
                 continue
@@ -353,15 +451,39 @@ class ExitRealtimeHub:
                     px = float(last)
                 except (TypeError, ValueError):
                     return
-                self.on_ticker(str(pair).upper(), px)
+                pct: float | None = None
+                for k in ("change_percentage", "change_percent", "change"):
+                    if result.get(k) is not None:
+                        try:
+                            pct = float(result.get(k))
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                qv: float | None = None
+                for k in ("quote_volume", "quoteVolume", "base_volume"):
+                    if result.get(k) is not None:
+                        try:
+                            qv = float(result.get(k))
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                self.on_ticker(
+                    str(pair).upper(),
+                    px,
+                    pct_24h=pct,
+                    quote_volume=qv,
+                )
 
             def on_open(ws) -> None:
+                self._ws = ws
                 self._connected = True
                 self._stats["connected"] = True
+                self._subscribed = set()
                 self._broadcast_gui(
                     {"type": "stage", "stage": "connect", "msg": "Gate WSS connected"}
                 )
-                for gp in pairs:
+                live_pairs = self._desired_gate_pairs()
+                for gp in live_pairs:
                     try:
                         ws.send(
                             json.dumps(
@@ -373,6 +495,7 @@ class ExitRealtimeHub:
                                 }
                             )
                         )
+                        self._subscribed.add(gp)
                         time.sleep(0.05)
                     except Exception as exc:
                         log(f"exit_realtime subscribe {gp}: {exc}", "DEBUG")
@@ -380,7 +503,7 @@ class ExitRealtimeHub:
                     {
                         "type": "stage",
                         "stage": "subscribe",
-                        "msg": f"subscribed {len(pairs)} pairs",
+                        "msg": f"subscribed {len(live_pairs)} pairs",
                     }
                 )
 
@@ -391,6 +514,8 @@ class ExitRealtimeHub:
             def on_close(_ws, *_a) -> None:
                 self._connected = False
                 self._stats["connected"] = False
+                self._ws = None
+                self._subscribed = set()
 
             try:
                 ws = websocket.WebSocketApp(
@@ -407,6 +532,8 @@ class ExitRealtimeHub:
             finally:
                 self._connected = False
                 self._stats["connected"] = False
+                self._ws = None
+                self._subscribed = set()
 
             if self._stop.is_set():
                 break
