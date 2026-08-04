@@ -18,7 +18,11 @@ _process_cache: dict[str, Any] = {}
 
 
 def _push_ws_watch(state: dict, config: dict | None = None) -> None:
-    """Seed exit_realtime hub watch set for WS board identify (fail-open)."""
+    """Seed WS board watch set: local hub (owner=bot) or remote sidecar.
+
+    Staging uses EXIT_REALTIME_OWNER=sidecar — local get_hub() is None on the
+    bot, so we POST /internal/exit-ws/watch-set to the exit-radar service.
+    """
     try:
         from services.gainer_universe.ws_board import (
             watch_symbols_from_gainer_state,
@@ -30,13 +34,28 @@ def _push_ws_watch(state: dict, config: dict | None = None) -> None:
         syms = watch_symbols_from_gainer_state(state, config)
         if not syms:
             return
+
         from services.exit_realtime.hub import get_hub
 
         hub = get_hub()
-        if hub is None:
+        if hub is not None:
+            hub.update_watch_set(syms)
+            log(f"gainer_ws_board watch seeded local n={len(syms)}", "INFO")
             return
-        hub.update_watch_set(syms)
-        log(f"gainer_ws_board watch seeded n={len(syms)}", "DEBUG")
+
+        from services.exit_realtime.watch_http import push_watch_set_remote
+
+        result = push_watch_set_remote(syms)
+        if result.get("ok"):
+            log(
+                f"gainer_ws_board watch seeded remote n={result.get('applied', len(syms))}",
+                "INFO",
+            )
+        else:
+            log(
+                f"gainer_ws_board remote seed skip: {result.get('message')}",
+                "DEBUG",
+            )
     except Exception as e:
         log(f"gainer_ws_board seed skip: {e}", "DEBUG")
 
