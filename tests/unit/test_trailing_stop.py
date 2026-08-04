@@ -95,6 +95,79 @@ class TestTrailingStop(unittest.TestCase):
         cand = evaluate_trailing_stop(market, pos, self._params(mode="shadow"))
         self.assertTrue(cand.shadow_only)
 
+    def test_arm_on_peak_survives_giveback_to_entry(self):
+        """IDOL-class: peak +10%, price ~entry → must still evaluate (not disarm)."""
+        market = MarketContext(
+            symbol="IDOL/USDT",
+            timeframe="1h",
+            current_price=0.01586,
+            has_position=True,
+            average_entry=0.01588,
+            atr_pct=3.0,
+        )
+        pos = {"recent_high": 0.017508}
+        # peak_gain ~10.3%, drop from peak ~9.4% >= min_trail 8
+        cand = evaluate_trailing_stop(
+            market,
+            pos,
+            self._params(
+                activation_gain_pct=5,
+                min_trail_pct=8,
+                atr_multiplier=2.0,
+                arm_on_peak=True,
+            ),
+        )
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.source, "trailing_stop")
+
+    def test_legacy_current_gain_arm_disarms_on_dump(self):
+        market = MarketContext(
+            symbol="IDOL/USDT",
+            timeframe="1h",
+            current_price=0.01586,
+            has_position=True,
+            average_entry=0.01588,
+            atr_pct=3.0,
+        )
+        pos = {"recent_high": 0.017508}
+        cand = evaluate_trailing_stop(
+            market,
+            pos,
+            self._params(
+                activation_gain_pct=5,
+                min_trail_pct=8,
+                atr_multiplier=2.0,
+                arm_on_peak=False,
+                breakeven_exit_after_arm=False,
+            ),
+        )
+        self.assertIsNone(cand)
+
+    def test_breakeven_exit_after_arm_when_trail_not_hit(self):
+        # Peak +6% only: drop back to entry is ~5.7% < min_trail 8 → BE path
+        market = MarketContext(
+            symbol="X/USDT",
+            timeframe="1h",
+            current_price=1.0,
+            has_position=True,
+            average_entry=1.0,
+            atr_pct=3.0,
+        )
+        pos = {"recent_high": 1.06}
+        cand = evaluate_trailing_stop(
+            market,
+            pos,
+            self._params(
+                activation_gain_pct=5,
+                min_trail_pct=8,
+                atr_multiplier=2.0,
+                arm_on_peak=True,
+                breakeven_exit_after_arm=True,
+            ),
+        )
+        self.assertIsNotNone(cand)
+        self.assertIn("BE", cand.rationale)
+
 
 if __name__ == "__main__":
     unittest.main()

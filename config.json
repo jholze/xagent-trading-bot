@@ -1210,7 +1210,11 @@
       "atr_multiplier": 2.0,
       "activation_gain_pct": 5,
       "min_trail_pct": 8,
-      "max_trail_pct": 25
+      "max_trail_pct": 25,
+      "arm_on_peak": true,
+      "breakeven_exit_after_arm": true,
+      "be_buffer_pct": 0,
+      "_doc": "arm_on_peak: do not disarm when price dumps (IDOL). breakeven_exit_after_arm: sell if price back to entry after peak arm."
     },
     "trailing_take_profit": {
       "enabled": true,
@@ -1221,11 +1225,12 @@
       "trail_pct_max": 12,
       "trail_pct_scale_start_pct": 18,
       "trail_pct_scale_peak_pct": 45,
-      "arm_gain_pct": 12,
-      "min_gain_pct": 10,
-      "min_gain_pct_floor": 8,
+      "arm_gain_pct": 10,
+      "min_gain_pct": 8,
+      "min_gain_pct_floor": 6,
       "max_steps": 1,
-      "cooldown_hours": 6
+      "cooldown_hours": 6,
+      "_doc": "arm 10 (was 12) reduces dead zone vs TS for volatile mid-runners"
     },
     "profit_max_lifetime": {
       "enabled": true,
