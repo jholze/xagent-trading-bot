@@ -214,6 +214,19 @@ def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -
     return profile
 
 
+def _apply_path_stats_soft_bias(result: dict, symbol: str, has_position: bool, cfg) -> dict:
+    """Soft-bias trail/arm from path-stats memory (positions only). Fail-open."""
+    if not has_position or not result or not symbol:
+        return result
+    try:
+        from intelligence.memory.path_stats_bias import apply_path_stats_soft_bias
+
+        raw = getattr(cfg, "raw", None) if cfg is not None else None
+        return apply_path_stats_soft_bias(result, symbol, config=raw)
+    except Exception:
+        return result
+
+
 def resolve_strategy_params(
     coin: dict,
     has_position: bool = False,
@@ -228,6 +241,7 @@ def resolve_strategy_params(
     Pick strategy params.
     Erweitert um regime_result + allocation (von RegimeDetector + StrategyAllocator).
     Bestehende volatility_tier Logik wird erweitert, nicht ersetzt.
+    Open positions get optional path-stats soft bias on trail/arm knobs.
     """
     cfg = get_bot_config()
     symbol = coin.get("symbol", "")
@@ -255,6 +269,10 @@ def resolve_strategy_params(
         if getattr(allocation, "grid_params", None):
             regime_profile["grid"] = allocation.grid_params
 
+    def _out(result: dict) -> dict:
+        result.update(regime_profile)
+        return _apply_path_stats_soft_bias(result, symbol, has_position, cfg)
+
     explicit = _explicit_strategy_entry(symbol, tf)
     if explicit:
         base = dict(explicit)
@@ -271,8 +289,7 @@ def resolve_strategy_params(
             cfg=cfg,
         )
         result.update(preserved)
-        result.update(regime_profile)
-        return result
+        return _out(result)
 
     hermes_params = _hermes_memory_params(symbol, tf)
     volatile_active = has_position and tier == "volatile"
@@ -289,18 +306,15 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
-        result.update(regime_profile)
-        return result
+        return _out(result)
 
     if volatile_active:
         result = _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
-        result.update(regime_profile)
-        return result
+        return _out(result)
 
     if coin.get("source") == "cmc_trending" and tier == "volatile":
         result = _pure_volatile_profile(va_cfg, tier, symbol, tf, cfg)
-        result.update(regime_profile)
-        return result
+        return _out(result)
 
     if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
         profile = dict(cfg.altcoin_social_config)
@@ -318,8 +332,7 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
-        result.update(regime_profile)
-        return result
+        return _out(result)
 
     params = cfg.strategy_params(symbol, tf)
     base = dict(params) if params else {}
@@ -334,8 +347,7 @@ def resolve_strategy_params(
         stable_cfg=stable_cfg,
         cfg=cfg,
     )
-    result.update(regime_profile)
-    return result
+    return _out(result)
 
 def resolve_coin_config(coin: dict) -> dict:
     """Merge watchlist coin with matching config.strategies[] entry."""

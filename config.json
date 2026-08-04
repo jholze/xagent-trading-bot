@@ -907,7 +907,7 @@
     },
     "path_stats": {
       "enabled": false,
-      "_doc": "Market-path episode stats in memory_path_stats. Universe: open + recent trade symbols + watchlist. Kill: enabled=false or MEMORY_PATH_STATS=0. No DE wiring in v1.",
+      "_doc": "Market-path episode stats in memory_path_stats. Universe: open + recent trade symbols + watchlist. Kill: enabled=false or MEMORY_PATH_STATS=0. Soft bias (trail/arm) is separate under soft_bias.",
       "timeframe": "1h",
       "ohlcv_limit": 500,
       "trough_lookback": 48,
@@ -916,7 +916,25 @@
       "min_ok_samples": 5,
       "include_trade_symbols": true,
       "trade_orders_scan": 500,
-      "_rollback": "enabled=false; optional drop collection memory_path_stats"
+      "refresh_in_memory_cycle": true,
+      "refresh_interval_hours": 12,
+      "cycle_limit": 40,
+      "soft_bias": {
+        "enabled": true,
+        "_doc": "Soft trail/arm bias for open positions when quality=ok. Same kill as path_stats. Never flips floor_at_entry/arm_on_peak. soft_bias.enabled=false keeps stats write/read without exit bias.",
+        "require_quality": "ok",
+        "prefer_band_pct": 10,
+        "max_trail_delta_pct": 3.0,
+        "max_arm_delta_pct": 2.0,
+        "tighten_if_giveback_above": 0.10,
+        "loosen_if_giveback_below": 0.05,
+        "high_trail_hit_rate": 0.55,
+        "high_extension_rate": 0.40,
+        "min_trail_floor_pct": 5.0,
+        "max_trail_ceil_pct": 30.0,
+        "ttp_trail_scale": 0.5
+      },
+      "_rollback": "MEMORY_PATH_STATS=0 or enabled=false (kills write+bias); soft_bias.enabled=false (bias only); optional drop collection memory_path_stats"
     }
   },
   "hermes": {
