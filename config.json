@@ -1212,9 +1212,9 @@
       "min_trail_pct": 8,
       "max_trail_pct": 25,
       "arm_on_peak": true,
-      "breakeven_exit_after_arm": true,
+      "floor_at_entry": true,
       "be_buffer_pct": 0,
-      "_doc": "arm_on_peak: do not disarm when price dumps (IDOL). breakeven_exit_after_arm: sell if price back to entry after peak arm."
+      "_doc": "stop=max(entry, peak*(1-trail)). arm_on_peak sticky. Prevents LAB-class free-fall past entry after a real peak (needs continuous eval)."
     },
     "trailing_take_profit": {
       "enabled": true,
@@ -1228,9 +1228,11 @@
       "arm_gain_pct": 10,
       "min_gain_pct": 8,
       "min_gain_pct_floor": 6,
+      "trail_above_zero_after_arm": true,
+      "priority": 7,
       "max_steps": 1,
       "cooldown_hours": 6,
-      "_doc": "arm 10 (was 12) reduces dead zone vs TS for volatile mid-runners"
+      "_doc": "priority 7 > TS 6. trail_above_zero_after_arm: take peak giveback while still green."
     },
     "profit_max_lifetime": {
       "enabled": true,

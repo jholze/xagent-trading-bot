@@ -127,12 +127,20 @@ def evaluate_trailing_take_profit(
         min_gain = float(cfg.get("min_gain_pct_floor", 8.0))
     else:
         min_gain = float(cfg.get("min_gain_pct", 10.0))
-    if gain < min_gain:
+    # Hard floor: TTP never sells at a loss (TS handles dump-to-underwater).
+    if gain < 0:
+        return None
+    # Soft min_gain: after a real peak, allow trail exit above 0 even if below
+    # min_gain — captures giveback from peak without waiting for min_gain wall.
+    allow_soft = bool(cfg.get("trail_above_zero_after_arm", True))
+    if gain < min_gain and not (allow_soft and peak_gain >= arm_gain and gain > 0):
         return None
 
     recent_high = float(position.get("recent_high") or 0) or market.current_price
     if recent_high <= 0:
         return None
+    if recent_high < market.current_price:
+        recent_high = market.current_price
     drop_pct = (1 - market.current_price / recent_high) * 100
     trail_pct = resolve_trail_pct(peak_gain, cfg)
     if drop_pct < trail_pct:
@@ -145,10 +153,12 @@ def evaluate_trailing_take_profit(
         return None
 
     shadow = mode == "shadow"
+    # Higher than trailing_stop (6) so profit-take wins in DE when both fire.
+    priority = int(cfg.get("priority", 7))
     return TrailingTakeProfitCandidate(
         action=action,
         source="trailing_take_profit",
-        priority=5,
+        priority=priority,
         rationale=(
             f"TrailTP->{action} (drop {drop_pct:.1f}% from high, "
             f"trail {trail_pct:.1f}%, peak={peak_gain:.1f}%, gain={gain:.1f}%)"
