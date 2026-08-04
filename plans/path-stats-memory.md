@@ -57,7 +57,13 @@ python scripts/run_path_stats_refresh.py --dry-run --limit 30
 MEMORY_PATH_STATS=1 python scripts/run_path_stats_refresh.py --write
 ```
 
-Universe: open positions (demo) ∪ optional watchlist sample.
+Universe (priority order, unique symbols, capped by `--limit`):
+
+1. **Open positions**
+2. **Symbols from recent filled trades** (ledger orders, newest first; scan up to `--trade-orders`, default 500)
+3. Optional **watchlist** fill-up
+
+Flags: `--no-trades`, `--no-watchlist`.
 
 ## Success (spike)
 

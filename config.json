@@ -907,13 +907,15 @@
     },
     "path_stats": {
       "enabled": false,
-      "_doc": "Market-path episode stats in memory_path_stats. Kill: enabled=false or MEMORY_PATH_STATS=0. No DE wiring in v1.",
+      "_doc": "Market-path episode stats in memory_path_stats. Universe: open + recent trade symbols + watchlist. Kill: enabled=false or MEMORY_PATH_STATS=0. No DE wiring in v1.",
       "timeframe": "1h",
       "ohlcv_limit": 500,
       "trough_lookback": 48,
       "forward_bars": 24,
       "bands_pct": [5, 8, 10, 12, 15, 20],
       "min_ok_samples": 5,
+      "include_trade_symbols": true,
+      "trade_orders_scan": 500,
       "_rollback": "enabled=false; optional drop collection memory_path_stats"
     }
   },

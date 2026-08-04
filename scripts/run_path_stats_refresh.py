@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Multi-coin path-stats refresh (offline spike).
 
-Universe: open demo positions (+ optional watchlist). Pure OHLCV episodes →
-summaries. Writes only when MEMORY_PATH_STATS=1 or --write with config enabled.
+Universe (default):
+  1) open positions
+  2) symbols from recent filled trades (ledger orders)
+  3) optional watchlist fill-up
+
+Pure OHLCV episodes → summaries. Writes only when MEMORY_PATH_STATS=1
+or --write with config enabled.
 
 Rollback: MEMORY_PATH_STATS=0 / memory.path_stats.enabled=false — no writes;
 this script never touches DE/trail.
 
 Examples:
-  python scripts/run_path_stats_refresh.py --dry-run --limit 40
+  python scripts/run_path_stats_refresh.py --dry-run --limit 60
   MEMORY_PATH_STATS=1 python scripts/run_path_stats_refresh.py --write
 """
 
@@ -26,6 +31,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _norm_symbol(raw: str) -> str:
+    s = str(raw or "").strip().upper().replace("-", "/")
+    if not s:
+        return ""
+    if "/" not in s and s.endswith("USDT") and len(s) > 4:
+        s = f"{s[:-4]}/USDT"
+    return s
+
+
 def _symbols_from_positions(scope: str, limit: int) -> list[str]:
     from strategies.positions import is_open_position, load_positions, parse_position_key, positions
 
@@ -37,7 +51,53 @@ def _symbols_from_positions(scope: str, limit: int) -> list[str]:
         sym, _tf = parse_position_key(key)
         if not sym:
             sym = str(pos.get("symbol") or "").replace("_", "/")
+        sym = _norm_symbol(sym)
         if sym and sym not in out:
+            out.append(sym)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _order_ts(o: dict) -> str:
+    for k in (
+        "filled_at",
+        "timestamp",
+        "ts",
+        "created_at",
+        "updated_at",
+        "time",
+        "closed_at",
+    ):
+        v = o.get(k)
+        if v:
+            return str(v)
+    return ""
+
+
+def _symbols_from_trades(scope: str, *, max_orders: int, limit: int) -> list[str]:
+    """Unique symbols from recent filled orders (newest first)."""
+    from data_manager import load_orders
+
+    doc = load_orders(scope) or {}
+    orders = list(doc.get("orders") or [])
+    # newest first
+    orders.sort(key=_order_ts, reverse=True)
+    out: list[str] = []
+    scanned = 0
+    for o in orders:
+        if scanned >= max_orders:
+            break
+        status = str(o.get("status") or "").lower()
+        if status and status not in ("filled", "closed", "complete", "completed"):
+            # still count buy/sell rows without status as filled-ish if amount present
+            if not (o.get("amount") or o.get("filled") or o.get("qty")):
+                continue
+        scanned += 1
+        sym = _norm_symbol(str(o.get("symbol") or o.get("pair") or ""))
+        if not sym:
+            continue
+        if sym not in out:
             out.append(sym)
         if len(out) >= limit:
             break
@@ -62,6 +122,7 @@ def _symbols_from_watchlist(limit: int) -> list[str]:
                 s = str(c.get("symbol") or "")
             else:
                 continue
+            s = _norm_symbol(s)
             if s and s not in out:
                 out.append(s)
             if len(out) >= limit:
@@ -71,15 +132,59 @@ def _symbols_from_watchlist(limit: int) -> list[str]:
     return []
 
 
+def _merge_universe(
+    *,
+    open_syms: list[str],
+    trade_syms: list[str],
+    watch_syms: list[str],
+    limit: int,
+) -> tuple[list[str], dict[str, str]]:
+    """Priority: open → trades → watchlist. source map for report."""
+    out: list[str] = []
+    source: dict[str, str] = {}
+    for s in open_syms:
+        if s not in source:
+            source[s] = "open"
+            out.append(s)
+        if len(out) >= limit:
+            return out, source
+    for s in trade_syms:
+        if s not in source:
+            source[s] = "trade"
+            out.append(s)
+        elif source[s] == "watch":
+            source[s] = "trade"
+        if len(out) >= limit:
+            return out, source
+    for s in watch_syms:
+        if s not in source:
+            source[s] = "watch"
+            out.append(s)
+        if len(out) >= limit:
+            return out, source
+    return out, source
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Refresh multi-coin path-stats memory")
     ap.add_argument("--dry-run", action="store_true", help="Compute only; never write Mongo")
     ap.add_argument("--write", action="store_true", help="Write if path_stats enabled")
-    ap.add_argument("--limit", type=int, default=40, help="Max symbols")
+    ap.add_argument("--limit", type=int, default=80, help="Max unique symbols")
+    ap.add_argument(
+        "--trade-orders",
+        type=int,
+        default=500,
+        help="How many recent filled orders to scan for symbols (default 500)",
+    )
     ap.add_argument("--timeframe", default=None)
     ap.add_argument("--ohlcv-limit", type=int, default=None)
     ap.add_argument("--include-watchlist", action="store_true", default=True)
     ap.add_argument("--no-watchlist", action="store_true")
+    ap.add_argument(
+        "--no-trades",
+        action="store_true",
+        help="Skip symbols from recent ledger trades",
+    )
     ap.add_argument("--out", default="", help="Write JSON report path")
     args = ap.parse_args()
 
@@ -110,17 +215,27 @@ def main() -> int:
     if args.write and not enabled:
         print("WARN: --write ignored (path_stats disabled). Set MEMORY_PATH_STATS=1 or config enabled.")
 
-    symbols = _symbols_from_positions(scope, args.limit)
+    open_syms = _symbols_from_positions(scope, args.limit)
+    trade_syms: list[str] = []
+    if not args.no_trades:
+        trade_syms = _symbols_from_trades(
+            scope, max_orders=max(1, args.trade_orders), limit=args.limit
+        )
+    watch_syms: list[str] = []
     if not args.no_watchlist and args.include_watchlist:
-        for s in _symbols_from_watchlist(args.limit):
-            if s not in symbols:
-                symbols.append(s)
-            if len(symbols) >= args.limit:
-                break
+        watch_syms = _symbols_from_watchlist(args.limit)
+
+    symbols, sym_source = _merge_universe(
+        open_syms=open_syms,
+        trade_syms=trade_syms,
+        watch_syms=watch_syms,
+        limit=args.limit,
+    )
 
     print(
-        f"path_stats refresh symbols={len(symbols)} tf={timeframe} "
-        f"scope={scope} enabled={enabled} write={do_write}"
+        f"path_stats refresh symbols={len(symbols)} "
+        f"(open={len(open_syms)} trades={len(trade_syms)} watch={len(watch_syms)}) "
+        f"tf={timeframe} scope={scope} enabled={enabled} write={do_write}"
     )
     if not symbols:
         print("No symbols — empty open book / watchlist")
@@ -133,13 +248,35 @@ def main() -> int:
         "timeframe": timeframe,
         "enabled": enabled,
         "write": do_write,
+        "universe": {
+            "open": open_syms,
+            "from_trades": trade_syms,
+            "watchlist": watch_syms,
+            "merged": symbols,
+            "source_by_symbol": sym_source,
+        },
         "symbols": [],
-        "summary": {"ok": 0, "thin": 0, "errors": 0, "bands": 0, "writes": 0},
+        "summary": {
+            "ok": 0,
+            "thin": 0,
+            "errors": 0,
+            "bands": 0,
+            "writes": 0,
+            "n_open": len(open_syms),
+            "n_trade_syms": len(trade_syms),
+            "n_watch": len(watch_syms),
+            "n_merged": len(symbols),
+        },
     }
 
     all_summaries = []
     for sym in symbols:
-        row: dict = {"symbol": sym, "bands": [], "error": None}
+        row: dict = {
+            "symbol": sym,
+            "source": sym_source.get(sym, "unknown"),
+            "bands": [],
+            "error": None,
+        }
         try:
             df = market.fetch_ohlcv(sym, timeframe, limit=ohlcv_limit)
             if df is None or getattr(df, "empty", True):
