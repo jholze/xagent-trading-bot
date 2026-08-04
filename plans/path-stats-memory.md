@@ -44,8 +44,17 @@ Aggregate per `(symbol, timeframe, band)` → medians / rates + `n` + `sample_qu
 | Drop `memory_path_stats` | Optional wipe; ledger untouched |
 | Revert git PR | No DE/trail wiring in this PR → zero behavior change when flag off |
 
-**This PR does not wire path stats into DecisionEngine or trailing_stop.**  
-Consumers = future PR behind the same flag.
+## Soft bias (exit knobs)
+
+When `path_stats` is enabled **and** `soft_bias.enabled` (default true):
+
+- Live reads `memory_path_stats` for open positions only (`resolve_strategy_params`).
+- Quality `ok` band near activation/prefer_band → small trail/arm deltas (±3 trail, ±2 arm).
+- High median giveback / trail-hit → tighten; low giveback + high extension → loosen.
+- Never flips `floor_at_entry` / `arm_on_peak`. Fail-open if missing/thin/error.
+- Meta on params: `_path_stats_bias` for audit.
+
+Refresh: `refresh_in_memory_cycle` (throttled, default 12h) in hermes memory cycle + CLI.
 
 ## CLI
 

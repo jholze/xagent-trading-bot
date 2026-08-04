@@ -227,6 +227,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
     except Exception as e:
         log(f"memory rag index cycle: {e}", "WARNING")
         out["rag_index"] = {"error": str(e)[:200]}
+    # Path-stats refresh (throttled; soft-bias consumers read memory_path_stats)
+    try:
+        from intelligence.memory.path_stats_refresh import maybe_refresh_path_stats
+
+        out["path_stats"] = maybe_refresh_path_stats()
+    except Exception as e:
+        log(f"memory path_stats cycle: {e}", "WARNING")
+        out["path_stats"] = {"error": str(e)[:200]}
     if weaviate_enabled():
         try:
             idx = WeaviateIndex()
