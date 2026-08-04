@@ -75,11 +75,25 @@ class TestTrailingTakeProfit(unittest.TestCase):
         cand = evaluate_trailing_take_profit(self._market(current_price=1.12), pos, self._params())
         self.assertEqual(cand.action, SELL_FULL)
 
-    def test_skips_when_gain_below_min(self):
+    def test_skips_when_gain_below_min_if_soft_trail_disabled(self):
         pos = {"recent_high": 1.20, "exit_ladder_step": 0}
+        params = self._params()
+        params["trailing_take_profit"]["trail_above_zero_after_arm"] = False
         self.assertIsNone(
-            evaluate_trailing_take_profit(self._market(current_price=1.05), pos, self._params())
+            evaluate_trailing_take_profit(
+                self._market(current_price=1.05), pos, params
+            )
         )
+
+    def test_allows_green_trail_below_min_after_peak_arm(self):
+        """Peak +20%, gain +5%, drop from high large → still take profit (not wait min_gain)."""
+        pos = {"recent_high": 1.20, "exit_ladder_step": 0}
+        cand = evaluate_trailing_take_profit(
+            self._market(current_price=1.05), pos, self._params()
+        )
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.source, "trailing_take_profit")
+        self.assertGreaterEqual(cand.priority, 6)
 
     def test_completed_ladder_returns_full_close(self):
         pos = {"recent_high": 1.20, "exit_ladder_step": 3}

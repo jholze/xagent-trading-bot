@@ -36,19 +36,38 @@ def compute_trail_pct(atr_pct: float, cfg: dict) -> float:
     return max(lo, min(hi, raw))
 
 
+def compute_stop_price(
+    entry: float,
+    recent_high: float,
+    trail_pct: float,
+    *,
+    floor_at_entry: bool = True,
+    be_buffer_pct: float = 0.0,
+) -> float:
+    """Stop level from peak trail, never below entry floor when floor_at_entry.
+
+    LAB-class: peak +19%, trail 10% → stop ~+7% vs entry (not free fall to -5%).
+    Continuous eval must sell near this level; late eval can still fill worse.
+    """
+    if recent_high <= 0 or entry <= 0:
+        return entry
+    raw = recent_high * (1.0 - float(trail_pct) / 100.0)
+    if not floor_at_entry:
+        return raw
+    floor = entry * (1.0 + float(be_buffer_pct) / 100.0)
+    return max(floor, raw)
+
+
 def evaluate_trailing_stop(
     market: MarketContext,
     position: dict,
     strategy_params: dict | None,
 ) -> TrailingStopCandidate | None:
-    """Fire full SELL when drop from peak exceeds trail, after arm.
+    """Full SELL when price hits stop after arm.
 
-    Arm uses **peak gain** (recent_high vs entry) by default so a dump back
-    toward entry does not disarm the stop (IDOL-class bug: current gain <
-    activation after giveback → never sells).
-
-    Optional after-arm floor: if price is back at/below entry (plus buffer),
-    exit even when drop < ATR trail — protects full giveback of the run.
+    Arm uses **peak gain** (default) so dumps do not disarm the stop.
+    Stop = max(entry floor, peak × (1 − trail%)) so after a real peak the
+    stop sits **above entry** — not a free ride back to −5% (LAB).
     """
     cfg = trailing_config(strategy_params)
     if not cfg or not cfg.get("enabled", True):
@@ -70,7 +89,6 @@ def evaluate_trailing_stop(
     peak_gain_pct = (recent_high / entry - 1.0) * 100.0
 
     activation = float(cfg.get("activation_gain_pct", 10.0))
-    # Default: arm on peak (sticky). Legacy: arm only while current gain high.
     arm_on_peak = cfg.get("arm_on_peak", True)
     if arm_on_peak:
         if peak_gain_pct < activation:
@@ -79,31 +97,35 @@ def evaluate_trailing_stop(
         if gain_pct < activation:
             return None
 
-    drop_pct = (1.0 - price / recent_high) * 100.0
     trail_pct = compute_trail_pct(market.atr_pct, cfg)
-
-    # Full giveback of the run: price back at entry (or slightly above with buffer)
-    be_after_arm = cfg.get("breakeven_exit_after_arm", True)
+    # Cap trail so theoretical stop is not forced miles under entry by huge ATR
+    # (stop floor still applies; this keeps drop-distance sane vs peak height).
     be_buffer = float(cfg.get("be_buffer_pct") or 0.0)
-    entry_floor = entry * (1.0 + be_buffer / 100.0)
-    hit_breakeven = bool(be_after_arm and price <= entry_floor)
+    floor_at_entry = cfg.get("floor_at_entry", True)
+    if floor_at_entry and peak_gain_pct > 0:
+        # trail cannot exceed peak_gain − buffer or stop would sit under floor anyway
+        trail_pct = min(trail_pct, max(peak_gain_pct - be_buffer, 0.0))
 
-    hit_trail = drop_pct >= trail_pct
-    if not hit_trail and not hit_breakeven:
+    stop_px = compute_stop_price(
+        entry,
+        recent_high,
+        trail_pct,
+        floor_at_entry=floor_at_entry,
+        be_buffer_pct=be_buffer,
+    )
+    drop_pct = (1.0 - price / recent_high) * 100.0 if recent_high > 0 else 0.0
+
+    if price > stop_px:
         return None
 
     mode = str(cfg.get("mode", "live")).strip().lower()
     shadow = mode == "shadow"
-    if hit_breakeven and not hit_trail:
-        why = (
-            f"Trail->BE after arm (peak {peak_gain_pct:.1f}%, now {gain_pct:.1f}%, "
-            f"drop {drop_pct:.1f}% < trail {trail_pct:.1f}%)"
-        )
-    else:
-        why = (
-            f"Trail->ATR stop (drop {drop_pct:.1f}% from high, trail {trail_pct:.1f}%, "
-            f"peak {peak_gain_pct:.1f}%)"
-        )
+    stop_gain = (stop_px / entry - 1.0) * 100.0
+    why = (
+        f"Trail->stop (px {price:.6g} <= stop {stop_px:.6g} "
+        f"[~{stop_gain:+.1f}% vs entry], drop {drop_pct:.1f}%, "
+        f"trail {trail_pct:.1f}%, peak {peak_gain_pct:.1f}%)"
+    )
     return TrailingStopCandidate(
         action=SELL_FULL,
         source="trailing_stop",
