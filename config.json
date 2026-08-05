@@ -1819,6 +1819,16 @@
     },
     "_experiment": "GIS-14 Gate Identify & Sell (virtual); rollback: expand_inject_max 55, live_top_n 50, heat 8-35, ws_board.enabled false"
   },
+  "gainer_entry": {
+    "enabled": true,
+    "max_open": 3,
+    "max_buys_per_day": 6,
+    "require_eligible": true,
+    "timeframe": "1h",
+    "max_notional_pct_of_vol": 2.0,
+    "_doc": "WS-2 balloon: consume POST /internal/gainer-signal → demo buy. Kill: enabled=false or GAINER_ENTRY_ENABLED=0. Parallel to grid/DCA.",
+    "_rollback": "gainer_entry.enabled=false"
+  },
   "exit_rotation": {
     "enabled": true,
     "profile": "rot_mid",

@@ -30,6 +30,24 @@ def _is_dca_order(order: dict) -> bool:
     return signal == "BUY_DCA" or source in ("dca", "dca_recovery")
 
 
+def _entry_source_tag(source: str | None) -> str | None:
+    """Mirror PortfolioService tagging for entry_sensor + gainer_* sources."""
+    s = (source or "").strip()
+    if not s:
+        return None
+    if s == "entry_sensor_15m":
+        return s
+    try:
+        from services.gainer_signal.pure import is_gainer_source
+
+        if is_gainer_source(s):
+            return s
+    except Exception:
+        if s.startswith("gainer_") or s == "gate_prev_top":
+            return s
+    return None
+
+
 def _empty_order_position() -> dict:
     return {
         "amount": 0.0,
@@ -99,8 +117,9 @@ def _apply_acknowledged_buy(
     new_amount = old_amount + amount
     if old_amount <= 0:
         _reset_position_cycle(pos, amount=new_amount, price=price, trade_ts=trade_ts)
-        if source == "entry_sensor_15m":
-            pos["entry_source"] = "entry_sensor_15m"
+        tagged = _entry_source_tag(source)
+        if tagged:
+            pos["entry_source"] = tagged
             pos["entry_at"] = trade_ts
     elif _is_dca_order(order):
         pos["average_entry"] = (pos["average_entry"] * old_amount + price * amount) / new_amount
@@ -119,9 +138,11 @@ def _apply_acknowledged_buy(
         pos["last_action"] = "BUY"
         pos["last_trade_type"] = "BUY"
         pos["last_trade_at"] = trade_ts
-        if source == "entry_sensor_15m":
-            pos["entry_source"] = "entry_sensor_15m"
-            pos["entry_at"] = trade_ts
+        if not pos.get("entry_source"):
+            tagged = _entry_source_tag(source)
+            if tagged:
+                pos["entry_source"] = tagged
+                pos["entry_at"] = pos.get("entry_at") or trade_ts
 
 
 def _apply_acknowledged_sell(

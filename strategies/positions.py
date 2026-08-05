@@ -977,6 +977,8 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "peak_amount": float(p.get("peak_amount", 0) or 0),
         "sold_percent": float(p.get("sold_percent", 0)),
         "last_action": p.get("last_action"),
+        "entry_source": p.get("entry_source"),
+        "first_buy_at": p.get("first_buy_at"),
         "highlight": highlight,
     }
 
