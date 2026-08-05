@@ -9,9 +9,12 @@ import time
 from typing import Any, Callable
 
 from logger import log
+from services.gainer_signal.atr_cache import AtrPctCache
 from services.gainer_signal.board import LeadersBoard, get_board
 from services.gainer_signal.pure import (
     DEFAULT_ELIGIBLE_MIN_VOL,
+    DEFAULT_ENTRY_POLICY,
+    DEFAULT_HARD_CEILING,
     DEFAULT_HEAT_MAX,
     DEFAULT_HEAT_MIN,
     DEFAULT_RECOGNIZE_TOP_N,
@@ -66,6 +69,9 @@ class GainerWsRuntime:
         heat_min: float = DEFAULT_HEAT_MIN,
         heat_max: float = DEFAULT_HEAT_MAX,
         signal_max_rank: int = DEFAULT_SIGNAL_MAX_RANK,
+        entry_policy: str = DEFAULT_ENTRY_POLICY,
+        hard_ceiling: float = DEFAULT_HARD_CEILING,
+        atr_ttl_sec: float = 600.0,
     ) -> None:
         self.board = board or get_board()
         self.top_n = int(top_n)
@@ -77,6 +83,9 @@ class GainerWsRuntime:
         self.heat_min = float(heat_min)
         self.heat_max = float(heat_max)
         self.signal_max_rank = int(signal_max_rank)
+        self.entry_policy = str(entry_policy or DEFAULT_ENTRY_POLICY)
+        self.hard_ceiling = float(hard_ceiling)
+        self.atr_cache = AtrPctCache(ttl_sec=atr_ttl_sec)
         self._stop = threading.Event()
         self._rest_thread: threading.Thread | None = None
         self._ws_thread: threading.Thread | None = None
@@ -110,10 +119,54 @@ class GainerWsRuntime:
                     self._tickers_live[normalize_symbol(k) or k] = v
             merged = dict(self._tickers_live)
         leaders, _ = self.board.apply_tickers(
-            merged, top_n=self.top_n, min_vol=self.min_vol, from_rest=True
+            merged,
+            top_n=self.top_n,
+            min_vol=self.min_vol,
+            from_rest=True,
+            max_rank_track=self.signal_max_rank,
         )
         self._maybe_emit_signals()
         return leaders
+
+    def _fetch_atr_pct(self, symbol: str) -> float | None:
+        try:
+            from services.market_service import MarketService
+
+            ms = MarketService()
+            last = 0.0
+            with self._tick_lock:
+                t = self._tickers_live.get(symbol) or {}
+                try:
+                    last = float(t.get("last") or 0)
+                except (TypeError, ValueError):
+                    last = 0.0
+            ind = ms.fetch_indicators(symbol, "1h", last or 1.0, limit=100)
+            if not ind:
+                return None
+            atr_pct = ind.get("atr_pct")
+            if atr_pct is None:
+                return None
+            return float(atr_pct)
+        except Exception as e:
+            log(f"gainer_signal atr fetch {symbol}: {e}", "DEBUG")
+            return None
+
+    def _atr_map_for_candidates(self) -> dict[str, float]:
+        leaders = self.board.leaders()
+        syms = [
+            str(r.get("symbol"))
+            for r in leaders
+            if r.get("eligible") and int(r.get("rank") or 999) <= self.signal_max_rank
+        ]
+        if self.entry_policy.strip().lower() not in (
+            "coin_aware_v1",
+            "coin_aware",
+            "v1",
+            "bucket",
+        ):
+            # fixed_v0: ATR optional (meta only)
+            return self.atr_cache.ensure_many(syms[: self.signal_max_rank], fetch_fn=self._fetch_atr_pct)
+        return self.atr_cache.ensure_many(syms, fetch_fn=self._fetch_atr_pct)
 
     def _rest_loop(self) -> None:
         while not self._stop.is_set():
@@ -121,7 +174,7 @@ class GainerWsRuntime:
                 self.seed_once()
                 log(
                     f"gainer_signal rest seed recognized={self.board.stats().get('n_recognized')} "
-                    f"eligible={self.board.stats().get('n_eligible')}",
+                    f"eligible={self.board.stats().get('n_eligible')} policy={self.entry_policy}",
                     "INFO",
                 )
             except Exception as e:
@@ -129,10 +182,18 @@ class GainerWsRuntime:
             self._stop.wait(self.rest_seed_sec)
 
     def _maybe_emit_signals(self) -> None:
+        atr_map = {}
+        try:
+            atr_map = self._atr_map_for_candidates()
+        except Exception as e:
+            log(f"gainer_signal atr map: {e}", "WARNING")
         signals = self.board.select_signals(
             heat_min=self.heat_min,
             heat_max=self.heat_max,
             max_rank=self.signal_max_rank,
+            entry_policy=self.entry_policy,
+            hard_ceiling=self.hard_ceiling,
+            atr_by_symbol=atr_map,
         )
         self.board.note_prev_after_signals()
         now = time.time()

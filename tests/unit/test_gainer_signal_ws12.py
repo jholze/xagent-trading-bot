@@ -23,6 +23,7 @@ from services.gainer_signal.pure import (
     is_eligible,
     rank_leaders_from_tickers,
     select_entry_signals,
+    vol_bucket_from_atr_pct,
 )
 from services.gainer_signal.push import push_signal_to_bot
 from services.portfolio_service import PortfolioService
@@ -120,6 +121,126 @@ class TestPureBoard(unittest.TestCase):
             leaders, max_rank=20, heat_min=12, heat_max=40, prev_board=prev
         )
         self.assertEqual(sigs, [])
+
+    def test_vol_bucket_from_atr(self):
+        self.assertEqual(vol_bucket_from_atr_pct(2.0), "low")
+        self.assertEqual(vol_bucket_from_atr_pct(4.0), "mid")
+        self.assertEqual(vol_bucket_from_atr_pct(7.0), "high")
+        self.assertIsNone(vol_bucket_from_atr_pct(None))
+
+    def test_coin_aware_mid_band_and_atr_required(self):
+        leaders = [
+            {
+                "symbol": "MID/USDT",
+                "rank": 4,
+                "pct_24h": 22.0,
+                "quote_vol": 2e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+            {
+                "symbol": "NOATR/USDT",
+                "rank": 5,
+                "pct_24h": 22.0,
+                "quote_vol": 2e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+            {
+                "symbol": "PEAK/USDT",
+                "rank": 2,
+                "pct_24h": 60.0,
+                "quote_vol": 5e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+        ]
+        atr = {"MID/USDT": 4.0, "PEAK/USDT": 8.0}  # PEAK high bucket max 45
+        state = {
+            "MID/USDT": {"scans_in_top_k": 2, "first_seen_top_k_at": 0},
+            "NOATR/USDT": {"scans_in_top_k": 3, "first_seen_top_k_at": 0},
+            "PEAK/USDT": {"scans_in_top_k": 5, "first_seen_top_k_at": 0},
+        }
+        sigs = select_entry_signals(
+            leaders,
+            entry_policy="coin_aware_v1",
+            max_rank=20,
+            hard_ceiling=50,
+            atr_by_symbol=atr,
+            symbol_state=state,
+            now_ts=1000.0,
+        )
+        syms = [s["symbol"] for s in sigs]
+        self.assertIn("MID/USDT", syms)
+        self.assertNotIn("NOATR/USDT", syms)
+        self.assertNotIn("PEAK/USDT", syms)  # 60 > hard 50 and > high band 45
+
+    def test_coin_aware_high_needs_fresh_not_only_dwell(self):
+        leaders = [
+            {
+                "symbol": "H/USDT",
+                "rank": 3,
+                "pct_24h": 30.0,
+                "quote_vol": 3e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+        ]
+        atr = {"H/USDT": 9.0}  # high
+        # old first_seen, many scans, no improve
+        state = {
+            "H/USDT": {
+                "scans_in_top_k": 10,
+                "first_seen_top_k_at": 0.0,
+                "prev_rank": 3,
+            }
+        }
+        sigs = select_entry_signals(
+            leaders,
+            entry_policy="coin_aware_v1",
+            atr_by_symbol=atr,
+            symbol_state=state,
+            now_ts=3600.0 * 2,  # 2h age
+            first_seen_max_min=15,
+        )
+        self.assertEqual(sigs, [])
+        # fresh first_seen → ok
+        state["H/USDT"]["first_seen_top_k_at"] = 3600.0 * 2 - 60
+        sigs2 = select_entry_signals(
+            leaders,
+            entry_policy="coin_aware_v1",
+            atr_by_symbol=atr,
+            symbol_state=state,
+            now_ts=3600.0 * 2,
+            first_seen_max_min=15,
+        )
+        self.assertEqual(len(sigs2), 1)
+
+    def test_memory_block_coin_facts(self):
+        class _Flags:
+            hard_negative = True
+            structure_risk = False
+            unlock = False
+            flow_only = False
+            profit_taking = False
+
+        body, status = process_gainer_signal(
+            {
+                "symbol": "BAD/USDT",
+                "last": 1.0,
+                "quote_vol": 5e6,
+                "eligible": True,
+                "rank": 2,
+                "pct_24h": 20,
+                "flags": _Flags(),
+            },
+            config={"gainer_entry": {"enabled": True}, "memory": {"enabled": True}},
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=MagicMock(),
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "blocked_coin_facts")
 
     def test_caps(self):
         ok, reason = check_gainer_entry_caps(open_gainer_count=3, gainer_buys_today=0)

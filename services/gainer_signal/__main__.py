@@ -11,9 +11,12 @@ Env:
   GAINER_ELIGIBLE_MIN_VOL      default 500000
   GAINER_REST_SEED_SEC         default 60
   GAINER_WS_MAX_SUBS           default 120
-  GAINER_HEAT_MIN              entry heat floor % (default 12)
-  GAINER_HEAT_MAX              entry heat ceiling % (default 40; anti peak-FOMO)
+  GAINER_HEAT_MIN              fixed_v0 floor % (default 12)
+  GAINER_HEAT_MAX              fixed_v0 ceiling % (default 40)
   GAINER_SIGNAL_MAX_RANK       only rank <= N can emit entry (default 20)
+  GAINER_ENTRY_POLICY          fixed_v0 | coin_aware_v1 (default fixed_v0)
+  GAINER_HARD_CEILING          coin_aware global max pct_24h (default 50)
+  GAINER_ATR_TTL_SEC           ATR cache TTL (default 600)
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ def main() -> None:
     from services.gainer_signal.board import get_board, reset_board
     from services.gainer_signal.pure import (
         DEFAULT_ELIGIBLE_MIN_VOL,
+        DEFAULT_ENTRY_POLICY,
+        DEFAULT_HARD_CEILING,
         DEFAULT_HEAT_MAX,
         DEFAULT_HEAT_MIN,
         DEFAULT_RECOGNIZE_TOP_N,
@@ -48,6 +53,11 @@ def main() -> None:
     heat_min = float(os.environ.get("GAINER_HEAT_MIN") or DEFAULT_HEAT_MIN)
     heat_max = float(os.environ.get("GAINER_HEAT_MAX") or DEFAULT_HEAT_MAX)
     signal_max_rank = int(os.environ.get("GAINER_SIGNAL_MAX_RANK") or DEFAULT_SIGNAL_MAX_RANK)
+    entry_policy = (
+        os.environ.get("GAINER_ENTRY_POLICY") or DEFAULT_ENTRY_POLICY
+    ).strip() or DEFAULT_ENTRY_POLICY
+    hard_ceiling = float(os.environ.get("GAINER_HARD_CEILING") or DEFAULT_HARD_CEILING)
+    atr_ttl = float(os.environ.get("GAINER_ATR_TTL_SEC") or 600)
     push = str(os.environ.get("GAINER_SIGNAL_PUSH") or "1").strip() not in (
         "0",
         "false",
@@ -66,8 +76,10 @@ def main() -> None:
         heat_min=heat_min,
         heat_max=heat_max,
         signal_max_rank=signal_max_rank,
+        entry_policy=entry_policy,
+        hard_ceiling=hard_ceiling,
+        atr_ttl_sec=atr_ttl,
     )
-    # initial seed before serving
     try:
         runtime.seed_once()
     except Exception as e:
@@ -75,6 +87,21 @@ def main() -> None:
     runtime.start()
 
     app = Flask(__name__)
+
+    def _select_kwargs() -> dict:
+        atr_map = {}
+        try:
+            atr_map = runtime._atr_map_for_candidates()
+        except Exception:
+            pass
+        return {
+            "heat_min": heat_min,
+            "heat_max": heat_max,
+            "max_rank": signal_max_rank,
+            "entry_policy": entry_policy,
+            "hard_ceiling": hard_ceiling,
+            "atr_by_symbol": atr_map,
+        }
 
     @app.route("/health", methods=["GET"])
     def health():
@@ -100,6 +127,9 @@ def main() -> None:
                     "heat_min": heat_min,
                     "heat_max": heat_max,
                     "signal_max_rank": signal_max_rank,
+                    "entry_policy": entry_policy,
+                    "hard_ceiling": hard_ceiling,
+                    "atr_ttl_sec": atr_ttl,
                     "push_enabled": push,
                 }
             ),
@@ -135,19 +165,21 @@ def main() -> None:
 
     @app.route("/signals/preview", methods=["GET"])
     def signals_preview():
-        sigs = board.select_signals(
-            heat_min=heat_min,
-            heat_max=heat_max,
-            max_rank=signal_max_rank,
-        )
+        # optional override for dual-log
+        pol = (request.args.get("policy") or entry_policy).strip()
+        kw = _select_kwargs()
+        kw["entry_policy"] = pol
+        sigs = board.select_signals(**kw)
         return (
             jsonify(
                 {
                     "ok": True,
                     "n": len(sigs),
                     "signals": sigs,
+                    "entry_policy": pol,
                     "heat_min": heat_min,
                     "heat_max": heat_max,
+                    "hard_ceiling": hard_ceiling,
                     "signal_max_rank": signal_max_rank,
                 }
             ),
@@ -157,7 +189,8 @@ def main() -> None:
     port = int(os.environ.get("PORT") or os.environ.get("GAINER_SIGNAL_PORT") or "5101")
     log(
         f"=== gainer-signal service listen 0.0.0.0:{port} top_n={top_n} "
-        f"min_vol={min_vol} heat={heat_min}-{heat_max} push={push} ===",
+        f"min_vol={min_vol} policy={entry_policy} heat={heat_min}-{heat_max} "
+        f"hard_ceil={hard_ceiling} push={push} ===",
         "INFO",
     )
     app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
