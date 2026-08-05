@@ -33,6 +33,15 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-exit-radar" || "${RAILWAY_SERVICE_N
   export EXIT_REALTIME_OWNER="${EXIT_REALTIME_OWNER:-sidecar}"
   exec python3 -m services.exit_radar_sidecar
 fi
+# Gainer signal board only — NO Mongo/ledger touch; optional push to bot.
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gainer-signal" || "${RUN_GAINER_SIGNAL:-}" == "1" ]]; then
+  echo "=== Gainer signal service (WS board, no ledger) ==="
+  export PYTHONUNBUFFERED=1
+  unset MONGO_URL || true
+  unset MONGODB_URI || true
+  export GAINER_SIGNAL_PUSH="${GAINER_SIGNAL_PUSH:-1}"
+  exec python3 -m services.gainer_signal
+fi
 
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true
