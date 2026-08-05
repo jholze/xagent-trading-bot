@@ -11,6 +11,7 @@ from flask import Flask
 
 from services.gainer_signal.board import LeadersBoard, reset_board
 from services.gainer_signal.bot_http import (
+    count_gainer_buys_today_from_fills,
     gainer_entry_enabled,
     process_gainer_signal,
     register_gainer_signal_routes,
@@ -24,6 +25,8 @@ from services.gainer_signal.pure import (
     select_entry_signals,
 )
 from services.gainer_signal.push import push_signal_to_bot
+from services.portfolio_service import PortfolioService
+from strategies.positions import get_position, list_active_positions, positions
 
 
 class TestPureBoard(unittest.TestCase):
@@ -338,6 +341,189 @@ class TestBotHttp(unittest.TestCase):
         )
         # may fail execute without full bot — at least not 401
         self.assertNotEqual(r.status_code, 401)
+
+
+class TestRealBuyPathCaps(unittest.TestCase):
+    """Honest path: PortfolioService.execute_buy must tag entry_source so caps work."""
+
+    def setUp(self):
+        self._backup = {k: dict(v) for k, v in positions.items()}
+        positions.clear()
+        os.environ.pop("GAINER_ENTRY_ENABLED", None)
+
+    def tearDown(self):
+        positions.clear()
+        positions.update(self._backup)
+
+    def test_portfolio_buy_tags_gainer_entry_source(self):
+        ps = PortfolioService()
+        r = ps.execute_buy(
+            "GREAL1/USDT",
+            "1h",
+            1.0,
+            usdt_amount=100,
+            source="gainer_live_heat",
+            sync_virtual_ledger=False,
+        )
+        self.assertTrue(r.executed)
+        pos = get_position("GREAL1/USDT", "1h")
+        self.assertEqual(pos.get("entry_source"), "gainer_live_heat")
+        lots = list_active_positions()
+        self.assertEqual(count_open_gainer_positions(lots), 1)
+        tagged = [L for L in lots if L.get("symbol") == "GREAL1/USDT"]
+        self.assertTrue(tagged)
+        self.assertEqual(tagged[0].get("entry_source"), "gainer_live_heat")
+
+    def test_fourth_open_rejected_after_real_portfolio_buys(self):
+        """Drive 3 real PortfolioService buys, then process_gainer_signal must reject 4th."""
+        ps = PortfolioService()
+        for i in range(3):
+            r = ps.execute_buy(
+                f"GCAP{i}/USDT",
+                "1h",
+                1.0,
+                usdt_amount=50,
+                source="gainer_rank_entry",
+                sync_virtual_ledger=False,
+            )
+            self.assertTrue(r.executed, msg=r.message)
+
+        # entry_source must be visible via list_active_positions (not only get_position)
+        lots = list_active_positions()
+        self.assertEqual(count_open_gainer_positions(lots), 3)
+
+        exec_fn = MagicMock()
+        body, status = process_gainer_signal(
+            {
+                "symbol": "GCAPNEW/USDT",
+                "last": 1.0,
+                "quote_vol": 5e6,
+                "eligible": True,
+                "rank": 1,
+                "pct_24h": 20,
+                "source": "gainer_live_heat",
+            },
+            config={
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "max_usdt_per_trade": 100,
+            },
+            # None → live list_active_positions path
+            positions=None,
+            gainer_buys_today=0,
+            execute_buy=exec_fn,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "max_open_gainer")
+        self.assertEqual(body.get("open_gainer_count"), 3)
+        exec_fn.assert_not_called()
+
+    def test_day_buy_cap_from_ledger_fills(self):
+        """When gainer_buys_today is None, ledger day fills must block the 7th buy."""
+        fills = [
+            {
+                "side": "buy",
+                "status": "filled",
+                "source": "gainer_live_heat",
+                "day_key": "2099-01-01",
+            }
+            for _ in range(6)
+        ]
+        self.assertEqual(
+            count_gainer_buys_today_from_fills(fills, day_scoped=True),
+            6,
+        )
+        with patch(
+            "services.gainer_signal.bot_http.load_gainer_buys_today_from_ledger",
+            return_value=6,
+        ):
+            exec_fn = MagicMock()
+            body, status = process_gainer_signal(
+                {
+                    "symbol": "GDAY/USDT",
+                    "last": 1.0,
+                    "quote_vol": 5e6,
+                    "eligible": True,
+                    "rank": 1,
+                    "pct_24h": 18,
+                    "source": "gainer_signal",
+                },
+                config={
+                    "gainer_entry": {
+                        "enabled": True,
+                        "max_open": 3,
+                        "max_buys_per_day": 6,
+                    },
+                    "max_usdt_per_trade": 100,
+                },
+                positions=[],
+                gainer_buys_today=None,  # force ledger path
+                execute_buy=exec_fn,
+            )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "max_buys_per_day")
+        exec_fn.assert_not_called()
+
+    def test_default_execute_buy_uses_portfolio_tagging(self):
+        """Default execute_buy path (TradingService-shaped) via PortfolioService only.
+
+        Avoid full TradingService/Risk (needs market/config); assert the portfolio
+        boundary that gate_adapter._sync_local_ledger calls tags entry_source.
+        """
+        ps = PortfolioService()
+        # Mimic gate_adapter._sync_local_ledger BUY branch
+        local = ps.execute_buy(
+            "GWIRE/USDT",
+            "1h",
+            0.5,
+            usdt_amount=200,
+            source="gainer_live_heat",
+            order_id="test-ord",
+            sync_virtual_ledger=False,
+        )
+        self.assertTrue(local.executed)
+        pos = get_position("GWIRE/USDT", "1h")
+        self.assertEqual(pos["entry_source"], "gainer_live_heat")
+        # And process_gainer_signal default path wiring: source reaches execute kwargs
+        seen = {}
+
+        def _exec(**kw):
+            seen.update(kw)
+            # real portfolio write
+            return ps.execute_buy(
+                kw["symbol"],
+                kw.get("timeframe") or "1h",
+                float(kw["price"]),
+                usdt_amount=float(kw["usdt"]),
+                source=kw["source"],
+                sync_virtual_ledger=False,
+            )
+
+        body, st = process_gainer_signal(
+            {
+                "symbol": "GWIRE2/USDT",
+                "last": 0.5,
+                "quote_vol": 3e6,
+                "eligible": True,
+                "rank": 2,
+                "pct_24h": 22,
+                "source": "gainer_live_heat",
+                "trigger": "heat",
+            },
+            config={
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "max_usdt_per_trade": 200,
+            },
+            positions=list_active_positions(),
+            gainer_buys_today=0,
+            execute_buy=_exec,
+        )
+        self.assertEqual(st, 200)
+        self.assertTrue(body["executed"])
+        self.assertEqual(seen.get("source"), "gainer_live_heat")
+        self.assertEqual(
+            get_position("GWIRE2/USDT", "1h").get("entry_source"),
+            "gainer_live_heat",
+        )
 
 
 class TestServiceAppHealth(unittest.TestCase):

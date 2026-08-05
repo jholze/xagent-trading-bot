@@ -39,3 +39,9 @@ curl -sS -X POST http://127.0.0.1:5000/internal/gainer-signal \
 
 - Bot: `gainer_entry.enabled=false` or `GAINER_ENTRY_ENABLED=0`
 - Service: stop / `GAINER_SIGNAL_PUSH=0`
+
+## Caps (WS-2)
+
+- **max_open=3**: counts open lots with `entry_source` / source under `gainer_*` (PortfolioService tags `entry_source` on buy for gainer sources; `list_active_positions` exposes it).
+- **max_buys_per_day=6**: `max(process-local counter, OrderService.list_day_filled_all gainer buys)` so restarts still see ledger day fills.
+- Both enforced in `process_gainer_signal` before any execute.

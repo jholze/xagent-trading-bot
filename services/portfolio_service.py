@@ -6,6 +6,28 @@ from data_manager import load_trade_history, record_trade
 from strategies.positions import get_position, sell_fraction_for_signal, update_position
 
 
+def _default_entry_source(source: str | None) -> str | None:
+    """Sources that must be tagged on the open lot for guards/caps.
+
+    entry_sensor_15m: sell-guard tagging.
+    gainer_*: concurrent open-slot caps (WS-2 balloon).
+    """
+    s = (source or "").strip()
+    if not s:
+        return None
+    if s == "entry_sensor_15m":
+        return s
+    try:
+        from services.gainer_signal.pure import is_gainer_source
+
+        if is_gainer_source(s):
+            return s
+    except Exception:
+        if s.startswith("gainer_") or s == "gate_prev_top":
+            return s
+    return None
+
+
 class PortfolioService:
     """Single entry point for position and trade ledger updates."""
 
@@ -29,7 +51,7 @@ class PortfolioService:
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
         signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
-        effective_entry_source = entry_source or (source if source == "entry_sensor_15m" else None)
+        effective_entry_source = entry_source or _default_entry_source(source)
         update_position(
             symbol,
             timeframe,

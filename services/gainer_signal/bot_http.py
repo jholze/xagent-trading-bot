@@ -100,9 +100,22 @@ def _get_day_buys() -> int:
     return int(_day_buys.get(d) or 0)
 
 
-def count_gainer_buys_today_from_fills(fills: list[dict[str, Any]] | None) -> int:
+def count_gainer_buys_today_from_fills(
+    fills: list[dict[str, Any]] | None,
+    *,
+    day_key: str | None = None,
+    day_scoped: bool = False,
+) -> int:
+    """Count filled gainer BUY orders.
+
+    - day_scoped=True: list already filtered to the trading day (e.g. OrderService.list_day_filled_all)
+    - day_key set: only count orders matching that day_key / filled ts prefix
+    - both unset: use UTC calendar day (legacy)
+    """
     n = 0
-    day = _utc_day()
+    day = day_key
+    if day is None and not day_scoped:
+        day = _utc_day()
     for o in fills or []:
         if str(o.get("side") or "").lower() != "buy":
             continue
@@ -110,11 +123,29 @@ def count_gainer_buys_today_from_fills(fills: list[dict[str, Any]] | None) -> in
             continue
         if not is_gainer_source(o.get("source")):
             continue
-        dk = str(o.get("day_key") or "")
-        ts = str((o.get("timestamps") or {}).get("filled") or o.get("ts_event") or "")
-        if dk == day or ts.startswith(day):
-            n += 1
+        if not day_scoped and day is not None:
+            dk = str(o.get("day_key") or "")
+            ts = str(
+                (o.get("timestamps") or {}).get("filled")
+                or o.get("ts_event")
+                or o.get("timestamp")
+                or ""
+            )
+            if dk != day and not ts.startswith(day):
+                continue
+        n += 1
     return n
+
+
+def load_gainer_buys_today_from_ledger() -> int | None:
+    """Best-effort day count from orders ledger. None if ledger unavailable."""
+    try:
+        from services.order_service import OrderService
+
+        fills = OrderService().list_day_filled_all()
+        return count_gainer_buys_today_from_fills(fills, day_scoped=True)
+    except Exception:
+        return None
 
 
 def process_gainer_signal(
@@ -174,19 +205,13 @@ def process_gainer_signal(
             positions = []
     open_n = count_open_gainer_positions(positions)
 
-    buys_today = (
-        int(gainer_buys_today)
-        if gainer_buys_today is not None
-        else _get_day_buys()
-    )
-    # try ledger for more accurate day count when available
-    if gainer_buys_today is None:
-        try:
-            from storage.order_ledger_v2 import display_day_key_now
-            # best-effort: local counter only unless caller injects
-            pass
-        except Exception:
-            pass
+    if gainer_buys_today is not None:
+        buys_today = int(gainer_buys_today)
+    else:
+        # Prefer ledger day book (survives restart/multi-worker); floor with process-local.
+        ledger_n = load_gainer_buys_today_from_ledger()
+        local_n = _get_day_buys()
+        buys_today = max(local_n, int(ledger_n) if ledger_n is not None else 0)
 
     ok_cap, cap_reason = check_gainer_entry_caps(
         open_gainer_count=open_n,
