@@ -42,6 +42,26 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gainer-signal" || "${RUN_GAINER_SIG
   export GAINER_SIGNAL_PUSH="${GAINER_SIGNAL_PUSH:-1}"
   exec python3 -m services.gainer_signal
 fi
+# GIS daily monitor — one-shot (Railway Cron). Reads orders_v2, writes report to Mongo + files.
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:-}" == "1" ]]; then
+  echo "=== GIS daily monitor (one-shot, no laptop) ==="
+  export PYTHONUNBUFFERED=1
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
+  DAY="${GIS_MONITOR_DAY:-yesterday}"
+  TOP="${GIS_MONITOR_TOP:-20}"
+  SCOPE="${GIS_MONITOR_SCOPE:-demo}"
+  OUT="${GIS_MONITOR_OUT_DIR:-/tmp/gis_monitor}"
+  mkdir -p "$OUT"
+  exec python3 scripts/gis_daily_monitor.py \
+    --day "$DAY" \
+    --top "$TOP" \
+    --scope "$SCOPE" \
+    --out-dir "$OUT" \
+    --persist-mongo
+fi
 
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true
