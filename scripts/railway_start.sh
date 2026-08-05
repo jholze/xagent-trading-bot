@@ -50,17 +50,10 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:
   export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
   export MONGODB_DB="${MONGODB_DB:-xagent_test}"
   export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
-  DAY="${GIS_MONITOR_DAY:-yesterday}"
-  TOP="${GIS_MONITOR_TOP:-20}"
-  SCOPE="${GIS_MONITOR_SCOPE:-demo}"
-  OUT="${GIS_MONITOR_OUT_DIR:-/tmp/gis_monitor}"
-  mkdir -p "$OUT"
-  exec python3 scripts/gis_daily_monitor.py \
-    --day "$DAY" \
-    --top "$TOP" \
-    --scope "$SCOPE" \
-    --out-dir "$OUT" \
-    --persist-mongo
+  export GIS_MONITOR_OUT_DIR="${GIS_MONITOR_OUT_DIR:-/tmp/gis_monitor}"
+  mkdir -p "${GIS_MONITOR_OUT_DIR}"
+  # Serves /health during run so Railway healthcheck can pass; exits after report.
+  exec python3 scripts/gis_monitor_railway_entry.py
 fi
 
 echo "=== X-Agent Railway start ==="

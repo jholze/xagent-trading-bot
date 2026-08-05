@@ -41,3 +41,25 @@ railway run -s xagent-gis-monitor -- python3 scripts/gis_daily_monitor.py --day 
 
 ### Kill
 Delete service or set cron empty / disable schedule in Railway UI.
+
+---
+
+## Alternative: GitHub Actions (often easier)
+
+Workflow: `.github/workflows/gis-daily-monitor.yml`
+
+1. Repo → Settings → Secrets → Actions  
+   - `MONGO_URL` = same as Railway bot  
+   - optional `MONGODB_DB=xagent_test`
+2. Schedule: **06:15 UTC** daily + manual “Run workflow”
+3. Report: Mongo `gis_daily_monitor` + Actions **Artifacts** (30 days)
+
+Laptop stays off either way.
+
+### Read latest report from Mongo (any machine)
+
+```js
+// mongosh / Compass
+use xagent_test
+db.gis_daily_monitor.find().sort({day_key:-1}).limit(3)
+```
