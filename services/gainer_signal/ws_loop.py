@@ -12,7 +12,10 @@ from logger import log
 from services.gainer_signal.board import LeadersBoard, get_board
 from services.gainer_signal.pure import (
     DEFAULT_ELIGIBLE_MIN_VOL,
+    DEFAULT_HEAT_MAX,
+    DEFAULT_HEAT_MIN,
     DEFAULT_RECOGNIZE_TOP_N,
+    DEFAULT_SIGNAL_MAX_RANK,
     normalize_symbol,
 )
 from services.gainer_signal.push import push_signal_to_bot
@@ -60,6 +63,9 @@ class GainerWsRuntime:
         ws_max_subscriptions: int = 120,
         push_enabled: bool = True,
         signal_cooldown_sec: float = 300.0,
+        heat_min: float = DEFAULT_HEAT_MIN,
+        heat_max: float = DEFAULT_HEAT_MAX,
+        signal_max_rank: int = DEFAULT_SIGNAL_MAX_RANK,
     ) -> None:
         self.board = board or get_board()
         self.top_n = int(top_n)
@@ -68,6 +74,9 @@ class GainerWsRuntime:
         self.ws_max_subscriptions = int(ws_max_subscriptions)
         self.push_enabled = bool(push_enabled)
         self.signal_cooldown_sec = float(signal_cooldown_sec)
+        self.heat_min = float(heat_min)
+        self.heat_max = float(heat_max)
+        self.signal_max_rank = int(signal_max_rank)
         self._stop = threading.Event()
         self._rest_thread: threading.Thread | None = None
         self._ws_thread: threading.Thread | None = None
@@ -120,7 +129,11 @@ class GainerWsRuntime:
             self._stop.wait(self.rest_seed_sec)
 
     def _maybe_emit_signals(self) -> None:
-        signals = self.board.select_signals()
+        signals = self.board.select_signals(
+            heat_min=self.heat_min,
+            heat_max=self.heat_max,
+            max_rank=self.signal_max_rank,
+        )
         self.board.note_prev_after_signals()
         now = time.time()
         for sig in signals:

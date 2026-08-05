@@ -11,8 +11,9 @@ from typing import Any
 DEFAULT_ELIGIBLE_MIN_VOL = 500_000.0
 DEFAULT_RECOGNIZE_TOP_N = 100
 DEFAULT_LEVERAGE_SUFFIXES = ("3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR")
+# Align with gainer_universe live_heat_max_pct (GIS-14 freeze): buy early heat, not parabolic tops.
 DEFAULT_HEAT_MIN = 12.0
-DEFAULT_HEAT_MAX = 80.0
+DEFAULT_HEAT_MAX = 40.0
 DEFAULT_SIGNAL_MAX_RANK = 20
 
 _STABLES = frozenset(
@@ -188,7 +189,10 @@ def select_entry_signals(
     """Pick buy candidates from eligible leaders (simple heat + sticky improve).
 
     - heat: eligible, rank<=max_rank, heat_min <= pct <= heat_max
-    - sticky: was already on prev board in top max_rank and still eligible (rank stable/improved)
+    - sticky: same band + was already on prev board in top max_rank (rank stable/improved)
+
+    Coins above heat_max stay on the recognize board but are never entry signals
+    (anti peak-FOMO; e.g. BLESS at +80% is board-visible, not buyable).
     """
     prev = prev_board or {}
     signals: list[dict[str, Any]] = []
@@ -203,15 +207,14 @@ def select_entry_signals(
         sym = str(row.get("symbol") or "")
         if not sym or sym in seen:
             continue
-        trigger = None
-        if heat_min <= pct <= heat_max:
-            trigger = "heat"
+        # Hard ceiling: never buy already-parabolic leaders.
+        if pct < float(heat_min) or pct > float(heat_max):
+            continue
+        trigger = "heat"
         prev_row = prev.get(sym)
         if prev_row and int(prev_row.get("rank") or 999) <= max_rank:
             if rank <= int(prev_row.get("rank") or 999):
                 trigger = "t1_sticky"
-        if not trigger:
-            continue
         seen.add(sym)
         source = "gainer_live_heat" if trigger == "heat" else "gainer_rank_entry"
         signals.append(
