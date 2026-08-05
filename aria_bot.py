@@ -165,6 +165,13 @@ try:
 except Exception as _exit_fire_exc:
     log(f"exit_ws fire route not registered: {_exit_fire_exc}", "WARNING")
 
+try:
+    from services.gainer_signal.bot_http import register_gainer_signal_routes
+
+    register_gainer_signal_routes(app)
+except Exception as _gainer_sig_exc:
+    log(f"gainer_signal route not registered: {_gainer_sig_exc}", "WARNING")
+
 
 @app.route("/health", methods=["GET"])
 def health():

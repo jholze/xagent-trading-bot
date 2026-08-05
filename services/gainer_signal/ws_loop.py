@@ -1,0 +1,251 @@
+"""REST seed + Gate public spot.tickers WS loop for leaders board."""
+
+from __future__ import annotations
+
+import json
+import ssl
+import threading
+import time
+from typing import Any, Callable
+
+from logger import log
+from services.gainer_signal.board import LeadersBoard, get_board
+from services.gainer_signal.pure import (
+    DEFAULT_ELIGIBLE_MIN_VOL,
+    DEFAULT_RECOGNIZE_TOP_N,
+    normalize_symbol,
+)
+from services.gainer_signal.push import push_signal_to_bot
+
+WS_URL = "wss://api.gateio.ws/ws/v4/"
+CHANNEL = "spot.tickers"
+
+
+def _ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+
+        ctx.load_verify_locations(certifi.where())
+    except Exception:
+        pass
+    return ctx
+
+
+def fetch_gate_tickers() -> dict[str, Any]:
+    import ccxt
+
+    ex = ccxt.gate({"enableRateLimit": True, "options": {"defaultType": "spot"}})
+    return ex.fetch_tickers() or {}
+
+
+def to_gate_pair(symbol: str) -> str:
+    s = normalize_symbol(symbol)
+    if "/" in s:
+        a, b = s.split("/", 1)
+        return f"{a}_{b}"
+    return s
+
+
+class GainerWsRuntime:
+    """Background REST seed + optional WS subscribe on top symbols."""
+
+    def __init__(
+        self,
+        board: LeadersBoard | None = None,
+        *,
+        top_n: int = DEFAULT_RECOGNIZE_TOP_N,
+        min_vol: float = DEFAULT_ELIGIBLE_MIN_VOL,
+        rest_seed_sec: float = 60.0,
+        ws_max_subscriptions: int = 120,
+        push_enabled: bool = True,
+        signal_cooldown_sec: float = 300.0,
+    ) -> None:
+        self.board = board or get_board()
+        self.top_n = int(top_n)
+        self.min_vol = float(min_vol)
+        self.rest_seed_sec = float(rest_seed_sec)
+        self.ws_max_subscriptions = int(ws_max_subscriptions)
+        self.push_enabled = bool(push_enabled)
+        self.signal_cooldown_sec = float(signal_cooldown_sec)
+        self._stop = threading.Event()
+        self._rest_thread: threading.Thread | None = None
+        self._ws_thread: threading.Thread | None = None
+        self._last_signal_at: dict[str, float] = {}
+        self._tickers_live: dict[str, dict[str, Any]] = {}
+        self._tick_lock = threading.Lock()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def start(self) -> None:
+        self._stop.clear()
+        if not self._rest_thread or not self._rest_thread.is_alive():
+            self._rest_thread = threading.Thread(
+                target=self._rest_loop, name="gainer-signal-rest", daemon=True
+            )
+            self._rest_thread.start()
+        if not self._ws_thread or not self._ws_thread.is_alive():
+            self._ws_thread = threading.Thread(
+                target=self._ws_loop, name="gainer-signal-ws", daemon=True
+            )
+            self._ws_thread.start()
+
+    def seed_once(self, tickers: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Apply one REST (or provided) ticker book and maybe emit signals."""
+        data = tickers if tickers is not None else fetch_gate_tickers()
+        with self._tick_lock:
+            # merge
+            for k, v in (data or {}).items():
+                if isinstance(v, dict):
+                    self._tickers_live[normalize_symbol(k) or k] = v
+            merged = dict(self._tickers_live)
+        leaders, _ = self.board.apply_tickers(
+            merged, top_n=self.top_n, min_vol=self.min_vol, from_rest=True
+        )
+        self._maybe_emit_signals()
+        return leaders
+
+    def _rest_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.seed_once()
+                log(
+                    f"gainer_signal rest seed recognized={self.board.stats().get('n_recognized')} "
+                    f"eligible={self.board.stats().get('n_eligible')}",
+                    "INFO",
+                )
+            except Exception as e:
+                log(f"gainer_signal rest seed failed: {e}", "WARNING")
+            self._stop.wait(self.rest_seed_sec)
+
+    def _maybe_emit_signals(self) -> None:
+        signals = self.board.select_signals()
+        self.board.note_prev_after_signals()
+        now = time.time()
+        for sig in signals:
+            sym = sig["symbol"]
+            last = self._last_signal_at.get(sym, 0)
+            if now - last < self.signal_cooldown_sec:
+                continue
+            self._last_signal_at[sym] = now
+            self.board.record_signal_emit(1)
+            if not self.push_enabled:
+                continue
+            result = push_signal_to_bot(sig)
+            self.board.record_push(bool(result.get("ok")))
+            if result.get("ok"):
+                log(
+                    f"gainer_signal pushed {sym} trigger={sig.get('trigger')} "
+                    f"rank={sig.get('rank')}",
+                    "INFO",
+                )
+            else:
+                log(
+                    f"gainer_signal push skip {sym}: {result.get('message')}",
+                    "DEBUG",
+                )
+
+    def _ws_loop(self) -> None:
+        try:
+            import websocket
+        except ImportError:
+            log(
+                "gainer_signal: websocket-client missing — REST-only mode "
+                "(pip install websocket-client)",
+                "WARNING",
+            )
+            return
+
+        backoff = 3.0
+        while not self._stop.is_set():
+            # subscribe top symbols from current board + some volume leaders
+            leaders = self.board.leaders()
+            pairs = [to_gate_pair(r["symbol"]) for r in leaders[: self.ws_max_subscriptions]]
+            if not pairs:
+                self._stop.wait(5)
+                continue
+
+            def on_message(_ws, message: str) -> None:
+                try:
+                    data = json.loads(message)
+                except Exception:
+                    return
+                if data.get("event") in ("subscribe", "unsubscribe"):
+                    return
+                result = data.get("result")
+                if not isinstance(result, dict):
+                    return
+                pair = result.get("currency_pair") or result.get("s")
+                if not pair:
+                    return
+                sym = normalize_symbol(str(pair).replace("_", "/"))
+                # build ticker-like dict
+                t: dict[str, Any] = {"info": result}
+                if result.get("last") is not None:
+                    t["last"] = result.get("last")
+                if result.get("change_percentage") is not None:
+                    t["percentage"] = result.get("change_percentage")
+                # quote volume fields vary
+                for k in ("quote_volume", "base_volume"):
+                    if result.get(k) is not None:
+                        t[k if k != "base_volume" else "baseVolume"] = result.get(k)
+                with self._tick_lock:
+                    self._tickers_live[sym] = {**self._tickers_live.get(sym, {}), **t}
+                    merged = dict(self._tickers_live)
+                self.board.bump_tick()
+                # light re-rank every N ticks would be expensive; rely on REST seed
+                # but update board periodically from merged
+                if self.board.stats().get("ticks", 0) % 50 == 0:
+                    self.board.apply_tickers(
+                        merged, top_n=self.top_n, min_vol=self.min_vol, from_rest=False
+                    )
+
+            def on_open(ws) -> None:
+                self.board.set_connected(True)
+                self.board.bump_reconnect()
+                n = 0
+                for gp in pairs:
+                    try:
+                        ws.send(
+                            json.dumps(
+                                {
+                                    "time": int(time.time()),
+                                    "channel": CHANNEL,
+                                    "event": "subscribe",
+                                    "payload": [gp],
+                                }
+                            )
+                        )
+                        n += 1
+                        time.sleep(0.03)
+                    except Exception as exc:
+                        log(f"gainer_signal subscribe {gp}: {exc}", "DEBUG")
+                self.board.set_subscribed(n)
+                log(f"gainer_signal WS subscribed n={n}", "INFO")
+
+            def on_error(_ws, err) -> None:
+                log(f"gainer_signal ws error: {err}", "WARNING")
+
+            def on_close(_ws, *_a) -> None:
+                self.board.set_connected(False)
+                self.board.set_subscribed(0)
+
+            try:
+                ws = websocket.WebSocketApp(
+                    WS_URL,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                )
+                ws.run_forever(sslopt={"context": _ssl_context()}, ping_interval=20)
+            except Exception as exc:
+                log(f"gainer_signal run_forever: {exc}", "WARNING")
+            finally:
+                self.board.set_connected(False)
+
+            if self._stop.is_set():
+                break
+            time.sleep(backoff)
+            backoff = min(60.0, backoff * 1.5)
