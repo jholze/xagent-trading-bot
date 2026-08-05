@@ -324,6 +324,50 @@ def write_report(report: dict[str, Any], out_dir: Path) -> tuple[Path, Path]:
     return jp, mp
 
 
+def persist_report_mongo(report: dict[str, Any]) -> dict[str, Any]:
+    """Upsert full report into Mongo (survives ephemeral Railway disk).
+
+    Collection: gis_daily_monitor
+    Key: day_key + scope (+ tenant_id if set)
+    Read-only for orders; this is a *new* collection, not orders_v2.
+    """
+    meta: dict[str, Any] = {"persist": "skip"}
+    uri = (os.environ.get("MONGO_URL") or os.environ.get("MONGODB_URI") or "").strip()
+    dbn = (os.environ.get("MONGODB_DB") or os.environ.get("MONGODB_TEST_DB") or "xagent_test").strip()
+    if not uri:
+        meta["persist"] = "skip"
+        meta["reason"] = "MONGO_URL unset"
+        return meta
+    try:
+        from pymongo import MongoClient
+
+        cli = MongoClient(uri, serverSelectionTimeoutMS=8000)
+        cli.admin.command("ping")
+        col = cli[dbn]["gis_daily_monitor"]
+        key = {
+            "day_key": report.get("day_key"),
+            "scope": report.get("scope") or "demo",
+            "tenant_id": report.get("tenant_id"),
+        }
+        doc = {
+            **key,
+            "report": report,
+            "kpis": report.get("kpis"),
+            "generated_at": report.get("generated_at"),
+            "updated_at": _utc_now().isoformat(),
+        }
+        col.update_one(key, {"$set": doc}, upsert=True)
+        meta["persist"] = "ok"
+        meta["db"] = dbn
+        meta["collection"] = "gis_daily_monitor"
+        meta["day_key"] = key["day_key"]
+        return meta
+    except Exception as e:
+        meta["persist"] = "error"
+        meta["reason"] = str(e)[:200]
+        return meta
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="GIS daily monitor: IST leaders vs demo fills")
     p.add_argument(
@@ -359,6 +403,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=10,
         help="eligible rank<=N not bought counts as missed (default 10)",
+    )
+    p.add_argument(
+        "--persist-mongo",
+        action="store_true",
+        help="upsert report into Mongo collection gis_daily_monitor (for headless/cron)",
     )
     args = p.parse_args(argv)
 
@@ -403,14 +452,30 @@ def main(argv: list[str] | None = None) -> int:
         recognized_source=rec_src,
         missed_rank_max=int(args.missed_rank_max),
     )
-    jp, mp = write_report(report, Path(args.out_dir))
+    out_dir = Path(os.environ.get("GIS_MONITOR_OUT_DIR") or args.out_dir)
+    jp, mp = write_report(report, out_dir)
     print(f"  wrote {jp}", flush=True)
     print(f"  wrote {mp}", flush=True)
+    if args.persist_mongo or str(os.environ.get("GIS_MONITOR_PERSIST_MONGO") or "").strip() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        pmeta = persist_report_mongo(report)
+        print(f"  mongo_persist={pmeta.get('persist')} {pmeta.get('reason') or pmeta}", flush=True)
     k = report["kpis"]
     print(
         f"  KPIs: leaders={k['n_leaders']} eligible={k['n_eligible_in_top']} "
         f"recall={k['recall_proxy']}({k['recall_proxy_reason']}) "
         f"missed_liquid={k['missed_liquid_count']} buys={k['n_buy_fills']} sells={k['n_sell_fills']}",
+        flush=True,
+    )
+    # One-line summary for Railway log search
+    print(
+        f"GIS_MONITOR_DONE day={day_key} recall={k.get('recall_proxy')} "
+        f"missed={k.get('missed_liquid_count')} buys={k.get('n_buy_fills')} "
+        f"gainer_exp={k.get('gainer_sell_expectancy')}",
         flush=True,
     )
     return 0
