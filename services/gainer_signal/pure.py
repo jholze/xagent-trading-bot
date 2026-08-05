@@ -21,11 +21,13 @@ DEFAULT_FIRST_SEEN_TOP_K_MAX_MIN = 15.0
 # ATR% (1h, 14) → vol bucket
 DEFAULT_ATR_LOW_LT = 3.0
 DEFAULT_ATR_HIGH_GT = 6.0
-# pct_24h bands per bucket (hypotheses)
+# pct_24h bands per bucket (tuned after 30d fixed_v0 vs coin_aware backtest:
+# mid [10,35] had worst median 24h PnL — tighten; high max 45 still allowed
+# late FOMO — cap at 40).
 BUCKET_BANDS: dict[str, tuple[float, float]] = {
     "low": (8.0, 20.0),
-    "mid": (10.0, 35.0),
-    "high": (12.0, 45.0),
+    "mid": (10.0, 28.0),
+    "high": (12.0, 40.0),
 }
 
 _STABLES = frozenset(
