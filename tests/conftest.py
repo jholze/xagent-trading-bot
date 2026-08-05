@@ -227,6 +227,146 @@ def telegram_credentials(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
 
 
+# ---------------------------------------------------------------------------
+# Local unit-suite progress (always on for tests/unit unless UNIT_TEST_PROGRESS=0)
+# ---------------------------------------------------------------------------
+import time as _time
+
+_PROGRESS: dict = {
+    "total": 0,
+    "done": 0,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "errors": 0,
+    "t0": 0.0,
+    "enabled": True,
+    "every": 1,  # print every N completed tests; failures always print
+    "last_print": 0,
+}
+
+
+def _progress_enabled(config) -> bool:
+    env = (os.environ.get("UNIT_TEST_PROGRESS") or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    # Default: on for local human runs; off when CI sets CI=true and no override
+    if (os.environ.get("CI") or "").strip().lower() in ("1", "true", "yes") and env == "":
+        # still show summary every 50 in CI
+        return True
+    return True
+
+
+def pytest_collection_finish(session):
+    """Announce local unit suite size + isolation."""
+    _PROGRESS["total"] = len(session.items)
+    _PROGRESS["done"] = 0
+    _PROGRESS["passed"] = 0
+    _PROGRESS["failed"] = 0
+    _PROGRESS["skipped"] = 0
+    _PROGRESS["errors"] = 0
+    _PROGRESS["t0"] = _time.time()
+    _PROGRESS["enabled"] = _progress_enabled(session.config)
+    # denser progress when quiet (-q) so the run is not silent
+    quiet = session.config.getoption("quiet", default=0) or 0
+    if quiet:
+        _PROGRESS["every"] = int(os.environ.get("UNIT_TEST_PROGRESS_EVERY") or 10)
+    else:
+        _PROGRESS["every"] = int(os.environ.get("UNIT_TEST_PROGRESS_EVERY") or 1)
+    if not _PROGRESS["enabled"]:
+        return
+    try:
+        unit_n = sum(1 for i in session.items if "unit" in Path(str(i.path)).parts)
+    except Exception:
+        unit_n = _PROGRESS["total"]
+    print(
+        f"\n{'='*60}\n"
+        f"  LOCAL tests  |  collected={_PROGRESS['total']}  (unit≈{unit_n})\n"
+        f"  mongo={TEST_DB_NAME} @ 127.0.0.1  |  never Railway/remote\n"
+        f"  progress every {_PROGRESS['every']} test(s)"
+        f"  (UNIT_TEST_PROGRESS=0 to silence)\n"
+        f"{'='*60}\n",
+        flush=True,
+    )
+
+
+def _fmt_nodeid(nodeid: str) -> str:
+    # tests/unit/foo.py::Test::test_x → unit/foo.py::test_x
+    s = nodeid.replace("tests/", "")
+    if len(s) > 72:
+        return "…" + s[-71:]
+    return s
+
+
+def pytest_runtest_logreport(report):
+    """Print live progress after each call (or setup skip/fail)."""
+    if not _PROGRESS.get("enabled"):
+        return
+    # Count call outcomes; also setup failures and skips
+    if report.when == "call":
+        pass
+    elif report.when == "setup" and (report.failed or report.skipped):
+        pass
+    else:
+        return
+
+    _PROGRESS["done"] += 1
+    if report.skipped:
+        _PROGRESS["skipped"] += 1
+        status = "SKIP"
+    elif report.failed:
+        if report.when == "call":
+            _PROGRESS["failed"] += 1
+        else:
+            _PROGRESS["errors"] += 1
+        status = "FAIL" if report.when == "call" else "ERROR"
+    elif report.passed and report.when == "call":
+        _PROGRESS["passed"] += 1
+        status = "PASS"
+    else:
+        status = report.outcome.upper()[:4]
+
+    total = max(1, _PROGRESS["total"])
+    done = _PROGRESS["done"]
+    pct = 100.0 * done / total
+    elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
+    rate = done / elapsed if elapsed > 0.5 else 0.0
+    eta = (total - done) / rate if rate > 0 else 0.0
+
+    always = status in ("FAIL", "ERROR") or done == total
+    every = max(1, int(_PROGRESS.get("every") or 1))
+    if not always and (done % every) != 0:
+        return
+
+    print(
+        f"[{done:4d}/{total} {pct:5.1f}% | "
+        f"ok={_PROGRESS['passed']} fail={_PROGRESS['failed']} "
+        f"err={_PROGRESS['errors']} skip={_PROGRESS['skipped']} | "
+        f"{elapsed:6.1f}s eta={eta:5.0f}s] "
+        f"{status} {_fmt_nodeid(report.nodeid)}",
+        flush=True,
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
+        return
+    elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
+    print(
+        f"\n{'='*60}\n"
+        f"  LOCAL suite done  exit={exitstatus}  "
+        f"{elapsed:.1f}s\n"
+        f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
+        f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
+        f"total={_PROGRESS['total']}\n"
+        f"  db={TEST_DB_NAME} (local only)\n"
+        f"{'='*60}\n",
+        flush=True,
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolate_bot_logs(tmp_path, monkeypatch):
     """Keep test runs from appending to logs/aria_log.txt while the bot is live."""
