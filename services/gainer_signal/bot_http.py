@@ -240,8 +240,39 @@ def process_gainer_signal(
     max_usdt = float((raw_cfg or {}).get("max_usdt_per_trade") or 500)
     if cfg.get("default_usdt"):
         max_usdt = float(cfg["default_usdt"])
+
+    # Coin-facts memory gate (best-effort; fail-open if no flags)
+    memory_size_mult = 1.0
+    memory_reason = ""
+    try:
+        from strategies.sensor_entry_memory import apply_sensor_memory_entry_policy
+
+        flags = data.get("coin_facts_flags") or data.get("flags")
+        entry_bias = str(data.get("entry_bias") or "neutral")
+        mem_cfg = {}
+        if isinstance(raw_cfg, dict):
+            mem = (raw_cfg.get("memory") or {}) if isinstance(raw_cfg.get("memory"), dict) else {}
+            mem_cfg = dict(mem.get("sensor_entry") or mem.get("entry_policy") or {})
+            if "memory_enabled" not in mem_cfg:
+                mem_cfg["memory_enabled"] = bool(mem.get("enabled", True))
+        verdict = apply_sensor_memory_entry_policy(
+            flags=flags, entry_bias=entry_bias, cfg=mem_cfg
+        )
+        if not verdict.allow:
+            return {
+                "ok": False,
+                "executed": False,
+                "message": "blocked_coin_facts",
+                "reject_reason": verdict.reason or "coin_facts",
+            }, 409
+        memory_size_mult = float(verdict.size_mult or 1.0)
+        memory_reason = verdict.reason or ""
+    except Exception as e:
+        log(f"gainer_entry memory gate skip {sym}: {e}", "DEBUG")
+
+    usdt = float(max_usdt) * max(0.0, min(1.0, memory_size_mult))
     usdt = clamp_usdt_to_vol(
-        max_usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
+        usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
     )
     if usdt < 10:
         return {
@@ -265,15 +296,27 @@ def process_gainer_signal(
         pct = 0.0
 
     timeframe = str(data.get("timeframe") or cfg["timeframe"] or "1h")
+    gainer_meta = {
+        "leader_rank": rank,
+        "pct_24h": pct,
+        "quote_vol": quote_vol,
+        "trigger": trigger,
+        "source": source,
+        "entry_source": source,
+        "entry_policy": data.get("entry_policy"),
+        "vol_bucket": data.get("vol_bucket"),
+        "atr_pct": data.get("atr_pct"),
+        "extension_score": data.get("extension_score", pct),
+        "band_lo": data.get("band_lo"),
+        "band_hi": data.get("band_hi"),
+        "scans_in_top_k": data.get("scans_in_top_k"),
+        "rank_improved": data.get("rank_improved"),
+        "hard_ceiling": data.get("hard_ceiling"),
+        "memory_size_mult": memory_size_mult,
+        "memory_reason": memory_reason or None,
+    }
     request_extra = {
-        "gainer_meta": {
-            "leader_rank": rank,
-            "pct_24h": pct,
-            "quote_vol": quote_vol,
-            "trigger": trigger,
-            "source": source,
-            "entry_source": source,
-        },
+        "gainer_meta": gainer_meta,
         "entry_source": source,
         "leader_rank": rank,
         "pct_24h": pct,

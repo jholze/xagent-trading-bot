@@ -1829,6 +1829,16 @@
     "_doc": "WS-2 balloon: consume POST /internal/gainer-signal → demo buy. Kill: enabled=false or GAINER_ENTRY_ENABLED=0. Parallel to grid/DCA.",
     "_rollback": "gainer_entry.enabled=false"
   },
+  "gainer_signal": {
+    "entry_policy": "fixed_v0",
+    "hard_ceiling": 50,
+    "heat_min": 12,
+    "heat_max": 40,
+    "signal_max_rank": 20,
+    "atr_ttl_sec": 600,
+    "_doc": "Signal service policy. fixed_v0=global 12-40; coin_aware_v1=vol-bucket bands + rank quality + hard_ceiling. Env GAINER_ENTRY_POLICY overrides. Rollback: entry_policy fixed_v0.",
+    "_rollback": "entry_policy=fixed_v0 or GAINER_ENTRY_POLICY=fixed_v0"
+  },
   "exit_rotation": {
     "enabled": true,
     "profile": "rot_mid",
