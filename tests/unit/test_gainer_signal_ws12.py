@@ -74,10 +74,52 @@ class TestPureBoard(unittest.TestCase):
                 "eligible": True,
             },
         ]
-        sigs = select_entry_signals(leaders, max_rank=20, heat_min=12, heat_max=80)
+        sigs = select_entry_signals(leaders, max_rank=20, heat_min=12, heat_max=40)
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["symbol"], "A/USDT")
         self.assertEqual(sigs[0]["trigger"], "heat")
+
+    def test_select_rejects_parabolic_above_heat_max(self):
+        """Board may list BLESS at +80%; entry signals must not (anti peak-FOMO)."""
+        leaders = [
+            {
+                "symbol": "BLESS/USDT",
+                "rank": 3,
+                "pct_24h": 80.0,
+                "quote_vol": 5e6,
+                "last": 0.02,
+                "eligible": True,
+            },
+            {
+                "symbol": "EARLY/USDT",
+                "rank": 5,
+                "pct_24h": 22.0,
+                "quote_vol": 2e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+        ]
+        sigs = select_entry_signals(leaders, max_rank=20, heat_min=12, heat_max=40)
+        syms = [s["symbol"] for s in sigs]
+        self.assertNotIn("BLESS/USDT", syms)
+        self.assertIn("EARLY/USDT", syms)
+
+    def test_sticky_also_respects_heat_ceiling(self):
+        leaders = [
+            {
+                "symbol": "PEAK/USDT",
+                "rank": 2,
+                "pct_24h": 70.0,
+                "quote_vol": 4e6,
+                "last": 1.0,
+                "eligible": True,
+            },
+        ]
+        prev = {"PEAK/USDT": {"rank": 3, "pct_24h": 50.0}}
+        sigs = select_entry_signals(
+            leaders, max_rank=20, heat_min=12, heat_max=40, prev_board=prev
+        )
+        self.assertEqual(sigs, [])
 
     def test_caps(self):
         ok, reason = check_gainer_entry_caps(open_gainer_count=3, gainer_buys_today=0)

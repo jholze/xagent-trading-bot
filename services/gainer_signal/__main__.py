@@ -11,6 +11,9 @@ Env:
   GAINER_ELIGIBLE_MIN_VOL      default 500000
   GAINER_REST_SEED_SEC         default 60
   GAINER_WS_MAX_SUBS           default 120
+  GAINER_HEAT_MIN              entry heat floor % (default 12)
+  GAINER_HEAT_MAX              entry heat ceiling % (default 40; anti peak-FOMO)
+  GAINER_SIGNAL_MAX_RANK       only rank <= N can emit entry (default 20)
 """
 
 from __future__ import annotations
@@ -29,13 +32,22 @@ def main() -> None:
 
     from logger import log
     from services.gainer_signal.board import get_board, reset_board
-    from services.gainer_signal.pure import DEFAULT_ELIGIBLE_MIN_VOL, DEFAULT_RECOGNIZE_TOP_N
+    from services.gainer_signal.pure import (
+        DEFAULT_ELIGIBLE_MIN_VOL,
+        DEFAULT_HEAT_MAX,
+        DEFAULT_HEAT_MIN,
+        DEFAULT_RECOGNIZE_TOP_N,
+        DEFAULT_SIGNAL_MAX_RANK,
+    )
     from services.gainer_signal.ws_loop import GainerWsRuntime
 
     top_n = int(os.environ.get("GAINER_RECOGNIZE_TOP_N") or DEFAULT_RECOGNIZE_TOP_N)
     min_vol = float(os.environ.get("GAINER_ELIGIBLE_MIN_VOL") or DEFAULT_ELIGIBLE_MIN_VOL)
     rest_sec = float(os.environ.get("GAINER_REST_SEED_SEC") or 60)
     ws_max = int(os.environ.get("GAINER_WS_MAX_SUBS") or 120)
+    heat_min = float(os.environ.get("GAINER_HEAT_MIN") or DEFAULT_HEAT_MIN)
+    heat_max = float(os.environ.get("GAINER_HEAT_MAX") or DEFAULT_HEAT_MAX)
+    signal_max_rank = int(os.environ.get("GAINER_SIGNAL_MAX_RANK") or DEFAULT_SIGNAL_MAX_RANK)
     push = str(os.environ.get("GAINER_SIGNAL_PUSH") or "1").strip() not in (
         "0",
         "false",
@@ -51,6 +63,9 @@ def main() -> None:
         rest_seed_sec=rest_sec,
         ws_max_subscriptions=ws_max,
         push_enabled=push,
+        heat_min=heat_min,
+        heat_max=heat_max,
+        signal_max_rank=signal_max_rank,
     )
     # initial seed before serving
     try:
@@ -82,6 +97,9 @@ def main() -> None:
                     "reconnects": st.get("reconnects"),
                     "top_n": top_n,
                     "eligible_min_vol": min_vol,
+                    "heat_min": heat_min,
+                    "heat_max": heat_max,
+                    "signal_max_rank": signal_max_rank,
                     "push_enabled": push,
                 }
             ),
@@ -117,13 +135,29 @@ def main() -> None:
 
     @app.route("/signals/preview", methods=["GET"])
     def signals_preview():
-        sigs = board.select_signals()
-        return jsonify({"ok": True, "n": len(sigs), "signals": sigs}), 200
+        sigs = board.select_signals(
+            heat_min=heat_min,
+            heat_max=heat_max,
+            max_rank=signal_max_rank,
+        )
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "n": len(sigs),
+                    "signals": sigs,
+                    "heat_min": heat_min,
+                    "heat_max": heat_max,
+                    "signal_max_rank": signal_max_rank,
+                }
+            ),
+            200,
+        )
 
     port = int(os.environ.get("PORT") or os.environ.get("GAINER_SIGNAL_PORT") or "5101")
     log(
         f"=== gainer-signal service listen 0.0.0.0:{port} top_n={top_n} "
-        f"min_vol={min_vol} push={push} ===",
+        f"min_vol={min_vol} heat={heat_min}-{heat_max} push={push} ===",
         "INFO",
     )
     app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
