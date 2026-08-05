@@ -1,0 +1,52 @@
+# Headless GIS monitor — no laptop required.
+# Secrets: MONGO_URL (required), MONGODB_DB (optional, default xagent_test)
+name: GIS daily monitor
+
+on:
+  schedule:
+    # 06:15 UTC daily (~08:15 Berlin summer)
+    - cron: "15 6 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "yesterday | today | YYYY-MM-DD"
+        required: false
+        default: "yesterday"
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install deps
+        run: |
+          pip install -U pip
+          pip install -r requirements.txt
+      - name: Run GIS monitor
+        env:
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          MONGODB_DB: ${{ secrets.MONGODB_DB || 'xagent_test' }}
+          DEMO_ALLOW_REMOTE_MONGO: "1"
+          DEMO_LEDGER_BACKEND: mongo
+          DEMO_MODE: "1"
+          GIS_MONITOR_PERSIST_MONGO: "1"
+        run: |
+          DAY="${{ github.event.inputs.day || 'yesterday' }}"
+          mkdir -p auswertungen/gis
+          python3 scripts/gis_daily_monitor.py \
+            --day "$DAY" \
+            --top 20 \
+            --scope demo \
+            --out-dir auswertungen/gis \
+            --persist-mongo
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gis-monitor-${{ github.run_id }}
+          path: auswertungen/gis/*
+          retention-days: 30
