@@ -912,7 +912,14 @@
       "ohlcv_limit": 500,
       "trough_lookback": 48,
       "forward_bars": 24,
-      "bands_pct": [5, 8, 10, 12, 15, 20],
+      "bands_pct": [
+        5,
+        8,
+        10,
+        12,
+        15,
+        20
+      ],
       "min_ok_samples": 5,
       "include_trade_symbols": true,
       "trade_orders_scan": 500,
@@ -926,10 +933,10 @@
         "prefer_band_pct": 10,
         "max_trail_delta_pct": 3.0,
         "max_arm_delta_pct": 2.0,
-        "tighten_if_giveback_above": 0.10,
+        "tighten_if_giveback_above": 0.1,
         "loosen_if_giveback_below": 0.05,
         "high_trail_hit_rate": 0.55,
-        "high_extension_rate": 0.40,
+        "high_extension_rate": 0.4,
         "min_trail_floor_pct": 5.0,
         "max_trail_ceil_pct": 30.0,
         "ttp_trail_scale": 0.5
@@ -1789,7 +1796,16 @@
     "daily_refresh_sec": 900,
     "universe_top_by_volume": 250,
     "min_volume_usdt_24h": 500000,
-    "blacklist_suffixes": ["3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR"],
+    "blacklist_suffixes": [
+      "3L",
+      "3S",
+      "5L",
+      "5S",
+      "UP",
+      "DOWN",
+      "BULL",
+      "BEAR"
+    ],
     "blacklist_bases": [],
     "blacklist_name_keywords": [],
     "live_top_n": 25,
@@ -1812,7 +1828,9 @@
     "scan_prefer_gainer": true,
     "chase_guard_enabled": true,
     "chase_max_gain_from_prev_close_pct": 15,
-    "chase_guard_sources": ["gate_prev_top"],
+    "chase_guard_sources": [
+      "gate_prev_top"
+    ],
     "ws_board": {
       "enabled": true,
       "mode": "shadow",
@@ -1826,14 +1844,15 @@
     "_experiment": "GIS-14 Gate Identify & Sell (virtual); rollback: expand_inject_max 55, live_top_n 50, heat 8-35, ws_board.enabled false"
   },
   "gainer_entry": {
-    "enabled": false,
+    "enabled": true,
+    "require_de_confirm": true,
     "max_open": 3,
     "max_buys_per_day": 6,
     "require_eligible": true,
     "timeframe": "1h",
     "max_notional_pct_of_vol": 2.0,
-    "_doc": "Direct board→buy is OFF by product intent. Leaders board is observe/scorecard (did we catch early?), not a buy trigger. Buys need full DE/indicators. Kill remains GAINER_ENTRY_ENABLED=0. Re-enable only with an indicator gate (not raw rank).",
-    "_rollback": "Do not re-enable without TA/memory gate. Board service may still push for logging; bot must reject."
+    "_doc": "Gainer nominates only. require_de_confirm=true → DecisionEngine (TA + personal recipes) must BUY; memory/risk still apply. Kill: enabled=false or GAINER_ENTRY_ENABLED=0. require_de_confirm=false restores raw rank-buy (not recommended).",
+    "_rollback": "gainer_entry.enabled=false or GAINER_ENTRY_ENABLED=0"
   },
   "gainer_signal": {
     "entry_policy": "fixed_v0",
@@ -1854,7 +1873,10 @@
     "enabled": true,
     "mode": "live",
     "owner": "bot",
-    "sources": ["trailing_take_profit", "trailing_stop"],
+    "sources": [
+      "trailing_take_profit",
+      "trailing_stop"
+    ],
     "live_cooldown_sec": 15,
     "book_refresh_sec": 30,
     "reconnect_backoff_sec": 3,
@@ -1863,5 +1885,104 @@
     "_doc": "Gate WS trail TP/stop → TradingService SELL. owner=bot (in-process) | sidecar (xagent-exit-radar). Kill: enabled=false. Epic #178 / #190.",
     "_rollback": "owner=bot + enabled=false on sidecar; or enabled=false → cycle-only exits",
     "_sidecar": "Set owner=sidecar + EXIT_EXECUTE_URL + EXIT_WS_INTERNAL_TOKEN on both services"
+  },
+  "grid_states": {
+    "AAA/USDT_1h": {
+      "symbol": "AAA/USDT",
+      "timeframe": "1h",
+      "center": 1.0,
+      "spacing": 0.024,
+      "last_recenter_price": 1.0,
+      "n_buy_levels": 6,
+      "n_sell_levels": 6,
+      "touch_eps": 0.001,
+      "levels": [
+        {
+          "index": 1,
+          "price": 0.976,
+          "side": "buy",
+          "slice_pct": 0.15,
+          "filled": false
+        },
+        {
+          "index": 2,
+          "price": 0.952,
+          "side": "buy",
+          "slice_pct": 0.18,
+          "filled": false
+        },
+        {
+          "index": 3,
+          "price": 0.9279999999999999,
+          "side": "buy",
+          "slice_pct": 0.21,
+          "filled": false
+        },
+        {
+          "index": 4,
+          "price": 0.904,
+          "side": "buy",
+          "slice_pct": 0.24,
+          "filled": false
+        },
+        {
+          "index": 5,
+          "price": 0.88,
+          "side": "buy",
+          "slice_pct": 0.27,
+          "filled": false
+        },
+        {
+          "index": 6,
+          "price": 0.856,
+          "side": "buy",
+          "slice_pct": 0.3,
+          "filled": false
+        },
+        {
+          "index": 1,
+          "price": 1.024,
+          "side": "sell",
+          "slice_pct": 0.22,
+          "filled": false
+        },
+        {
+          "index": 2,
+          "price": 1.048,
+          "side": "sell",
+          "slice_pct": 0.26,
+          "filled": false
+        },
+        {
+          "index": 3,
+          "price": 1.072,
+          "side": "sell",
+          "slice_pct": 0.3,
+          "filled": false
+        },
+        {
+          "index": 4,
+          "price": 1.096,
+          "side": "sell",
+          "slice_pct": 0.34,
+          "filled": false
+        },
+        {
+          "index": 5,
+          "price": 1.12,
+          "side": "sell",
+          "slice_pct": 0.38,
+          "filled": false
+        },
+        {
+          "index": 6,
+          "price": 1.1440000000000001,
+          "side": "sell",
+          "slice_pct": 0.42,
+          "filled": false
+        }
+      ],
+      "center_price": 1.0
+    }
   }
 }
