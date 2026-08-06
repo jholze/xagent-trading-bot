@@ -793,22 +793,33 @@ def update_position(
                 pos["last_dca_at"] = datetime.now().isoformat()
                 pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
+                params = None
+                try:
+                    from strategies.registry import resolve_strategy_params
+
+                    params = resolve_strategy_params(
+                        {"symbol": symbol, "timeframe": timeframe},
+                        has_position=True,
+                        frozen_tier=pos.get("strategy_tier"),
+                    )
+                except Exception:
+                    params = None
                 if not int(pos.get("dca_max_rounds", 0) or 0):
                     from strategies.dca import dca_config as _dca_cfg
 
-                    params = None
-                    try:
-                        from strategies.registry import resolve_strategy_params
-
-                        params = resolve_strategy_params(
-                            {"symbol": symbol, "timeframe": timeframe},
-                            has_position=True,
-                            frozen_tier=pos.get("strategy_tier"),
-                        )
-                    except Exception:
-                        params = None
                     cfg = _dca_cfg(params)
                     pos["dca_max_rounds"] = int(cfg.get("max_rounds", 3))
+                # Recovery mode: re-base trail peak so WS trail_stop does not use pre-dump high
+                try:
+                    from strategies.dca import (
+                        reanchor_recent_high_after_dca,
+                        should_reanchor_peak_on_dca,
+                    )
+
+                    if should_reanchor_peak_on_dca(params):
+                        reanchor_recent_high_after_dca(pos, float(current_price))
+                except Exception:
+                    pass
             elif _is_addon_buy(old_amount, pos):
                 pos["last_action"] = "BUY"
                 pos["last_trade_type"] = "BUY"

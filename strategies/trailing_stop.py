@@ -62,18 +62,33 @@ def evaluate_trailing_stop(
     market: MarketContext,
     position: dict,
     strategy_params: dict | None,
+    *,
+    now=None,
 ) -> TrailingStopCandidate | None:
     """Full SELL when price hits stop after arm.
 
     Arm uses **peak gain** (default) so dumps do not disarm the stop.
     Stop = max(entry floor, peak × (1 − trail%)) so after a real peak the
     stop sits **above entry** — not a free ride back to −5% (LAB).
+
+    After DCA, trail exits are paused for a grace window (see strategies.dca).
     """
     cfg = trailing_config(strategy_params)
     if not cfg or not cfg.get("enabled", True):
         return None
     if not market.has_position or market.average_entry <= 0:
         return None
+
+    try:
+        from strategies.dca import trail_exits_paused_after_dca
+
+        paused, _why = trail_exits_paused_after_dca(
+            position, strategy_params, now=now
+        )
+        if paused:
+            return None
+    except Exception:
+        pass
 
     entry = market.average_entry
     price = market.current_price

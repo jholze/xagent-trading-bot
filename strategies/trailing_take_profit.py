@@ -113,6 +113,17 @@ def evaluate_trailing_take_profit(
     if not market.has_position or market.average_entry <= 0:
         return None
 
+    try:
+        from strategies.dca import trail_exits_paused_after_dca
+
+        paused, _why = trail_exits_paused_after_dca(
+            position, strategy_params, now=now
+        )
+        if paused:
+            return None
+    except Exception:
+        pass
+
     action = _resolve_action(position, strategy_params)
     if not action:
         return None

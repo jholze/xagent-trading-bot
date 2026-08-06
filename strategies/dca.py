@@ -95,6 +95,111 @@ def _hours_since_last_dca(position: dict) -> float | None:
     return min(elapsed) if elapsed else None
 
 
+def _hours_since_at(iso_ts: str | None, now: datetime | None) -> float | None:
+    """Hours since timestamp using explicit *now* (testable; avoids wall-clock only)."""
+    if not iso_ts:
+        return None
+    try:
+        last_ts = datetime.fromisoformat(str(iso_ts).replace("Z", ""))
+    except Exception:
+        return None
+    ref = now or datetime.now()
+    if last_ts.tzinfo is not None and ref.tzinfo is None:
+        ref = ref.replace(tzinfo=last_ts.tzinfo)
+    elif last_ts.tzinfo is None and ref.tzinfo is not None:
+        last_ts = last_ts.replace(tzinfo=ref.tzinfo)
+    return (ref - last_ts).total_seconds() / 3600.0
+
+
+def trail_grace_hours_after_dca(strategy_params: dict | None) -> float:
+    """Grace window for suppressing trail TP/stop after DCA (recovery mode)."""
+    cfg = dca_config(strategy_params)
+    if "trail_grace_hours_after_dca" in cfg and cfg.get("trail_grace_hours_after_dca") is not None:
+        try:
+            return max(0.0, float(cfg.get("trail_grace_hours_after_dca")))
+        except (TypeError, ValueError):
+            pass
+    # Fall back to same grace as hard-stop grace after DCA
+    try:
+        g = float(cfg.get("grace_hours_after_dca") or 0)
+    except (TypeError, ValueError):
+        g = 0.0
+    if g <= 0:
+        try:
+            g = float(cfg.get("interval_hours") or 12)
+        except (TypeError, ValueError):
+            g = 12.0
+    return max(0.0, g)
+
+
+def trail_exits_paused_after_dca(
+    position: dict | None,
+    strategy_params: dict | None = None,
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """True → do not fire trailing_stop / trailing_take_profit (DCA recovery window).
+
+    Product: after DCA, bag is in recovery — old peak-based trail must not
+    immediately stop out the new average (BEAT-class failure). Mirrors intent of
+    pause_partial_stop_during_dca for classic SL, extended to trail exits.
+    """
+    pos = position or {}
+    cfg = dca_config(strategy_params)
+    if not bool(cfg.get("pause_trail_exits_after_dca", True)):
+        return False, ""
+    if _total_dca_rounds(pos) <= 0 and not pos.get("last_dca_at") and not pos.get(
+        "last_dca_recovery_at"
+    ):
+        return False, ""
+
+    grace_h = trail_grace_hours_after_dca(strategy_params)
+    if grace_h <= 0:
+        return False, ""
+
+    elapsed: list[float] = []
+    for ts_key in ("last_dca_recovery_at", "last_dca_at"):
+        h = _hours_since_at(pos.get(ts_key), now)
+        if h is not None:
+            elapsed.append(h)
+    if not elapsed:
+        # Rounds>0 but missing timestamps: fail-closed into pause (safer than
+        # immediate trail on stale peak after DCA ledger repair).
+        if _total_dca_rounds(pos) > 0:
+            return True, "dca_trail_pause:missing_ts"
+        return False, ""
+
+    age = min(elapsed)
+    if age < grace_h:
+        return True, f"dca_trail_pause:{age:.2f}h<{grace_h:.1f}h"
+    return False, ""
+
+
+def should_reanchor_peak_on_dca(strategy_params: dict | None = None) -> bool:
+    cfg = dca_config(strategy_params)
+    return bool(cfg.get("reanchor_peak_on_dca", True))
+
+
+def reanchor_recent_high_after_dca(position: dict, fill_price: float) -> float:
+    """Reset trail peak after DCA so stop is not computed from pre-dump high.
+
+    Sets recent_high = max(fill, new average_entry). Call after average_entry updated.
+    """
+    avg = float(position.get("average_entry") or 0)
+    px = float(fill_price or 0)
+    if avg <= 0 and px <= 0:
+        return float(position.get("recent_high") or 0)
+    if avg <= 0:
+        new_high = px
+    elif px <= 0:
+        new_high = avg
+    else:
+        new_high = max(px, avg)
+    position["recent_high"] = float(new_high)
+    position["trail_peak_reanchored_at"] = datetime.now().isoformat()
+    return float(new_high)
+
+
 def _cascade_ref_price(position: dict, entry: float) -> float:
     for key in ("last_recovery_ref_price", "last_buy_price", "average_entry"):
         val = float(position.get(key, 0) or 0)
