@@ -234,7 +234,7 @@ class TestPureBoard(unittest.TestCase):
                 "pct_24h": 20,
                 "flags": _Flags(),
             },
-            config={"gainer_entry": {"enabled": True}, "memory": {"enabled": True}},
+            config={"gainer_entry": {"enabled": True, "require_de_confirm": False}, "memory": {"enabled": True}},
             positions=[],
             gainer_buys_today=0,
             execute_buy=MagicMock(),
@@ -335,6 +335,64 @@ class TestBotHttp(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertEqual(body["message"], "gainer_entry_disabled")
 
+    def test_de_hold_blocks_buy(self):
+        buy = MagicMock()
+        body, status = process_gainer_signal(
+            {
+                "symbol": "HOT/USDT",
+                "last": 1.0,
+                "quote_vol": 5e6,
+                "eligible": True,
+                "rank": 3,
+                "pct_24h": 18,
+            },
+            config={
+                "gainer_entry": {
+                    "enabled": True,
+                    "require_de_confirm": True,
+                    "max_open": 3,
+                    "max_buys_per_day": 6,
+                },
+                "max_usdt_per_trade": 500,
+            },
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=buy,
+            de_allows_buy=lambda *a, **k: (False, "de_hold:HOLD:rsi high", ["technical"]),
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "de_hold")
+        buy.assert_not_called()
+
+    def test_de_buy_allows_execute(self):
+        buy = MagicMock(return_value=type("R", (), {"executed": True, "message": "ok", "order_id": "1"})())
+        body, status = process_gainer_signal(
+            {
+                "symbol": "OK/USDT",
+                "last": 1.0,
+                "quote_vol": 5e6,
+                "eligible": True,
+                "rank": 2,
+                "pct_24h": 15,
+            },
+            config={
+                "gainer_entry": {
+                    "enabled": True,
+                    "require_de_confirm": True,
+                    "max_open": 3,
+                    "max_buys_per_day": 6,
+                },
+                "max_usdt_per_trade": 500,
+            },
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=buy,
+            de_allows_buy=lambda *a, **k: (True, "de_buy:BUY", ["technical"]),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("executed"))
+        buy.assert_called_once()
+
     def test_default_disabled_without_config_key(self):
         """Product: board is not a buy source — default OFF when config omits flag."""
         self.assertFalse(gainer_entry_enabled({}))
@@ -368,7 +426,7 @@ class TestBotHttp(unittest.TestCase):
                 "rank": 1,
                 "pct_24h": 20,
             },
-            config={"gainer_entry": {"enabled": True, "require_eligible": True}},
+            config={"gainer_entry": {"enabled": True, "require_eligible": True, "require_de_confirm": False}},
             positions=[],
             gainer_buys_today=0,
             execute_buy=MagicMock(),
@@ -392,7 +450,7 @@ class TestBotHttp(unittest.TestCase):
                 "source": "gainer_live_heat",
             },
             config={
-                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6, "require_de_confirm": False},
                 "max_usdt_per_trade": 500,
             },
             positions=positions,
@@ -415,7 +473,7 @@ class TestBotHttp(unittest.TestCase):
                 "pct_24h": 22,
             },
             config={
-                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6, "require_de_confirm": False},
                 "max_usdt_per_trade": 500,
             },
             positions=[],
@@ -444,7 +502,7 @@ class TestBotHttp(unittest.TestCase):
                 "source": "gainer_live_heat",
             },
             config={
-                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6, "require_de_confirm": False},
                 "max_usdt_per_trade": 1000,
             },
             positions=[],
@@ -505,7 +563,7 @@ class TestBotHttp(unittest.TestCase):
                     "pct_24h": 15,
                     "source": "gainer_rank_entry",
                 },
-                config={"gainer_entry": {"enabled": True}, "max_usdt_per_trade": 200},
+                config={"gainer_entry": {"enabled": True, "require_de_confirm": False}, "max_usdt_per_trade": 200},
                 positions=[],
                 gainer_buys_today=1,
                 execute_buy=_exec,
@@ -590,7 +648,7 @@ class TestRealBuyPathCaps(unittest.TestCase):
                 "source": "gainer_live_heat",
             },
             config={
-                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6, "require_de_confirm": False},
                 "max_usdt_per_trade": 100,
             },
             # None → live list_active_positions path
@@ -638,6 +696,7 @@ class TestRealBuyPathCaps(unittest.TestCase):
                         "enabled": True,
                         "max_open": 3,
                         "max_buys_per_day": 6,
+                        "require_de_confirm": False,
                     },
                     "max_usdt_per_trade": 100,
                 },
@@ -696,7 +755,7 @@ class TestRealBuyPathCaps(unittest.TestCase):
                 "trigger": "heat",
             },
             config={
-                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6},
+                "gainer_entry": {"enabled": True, "max_open": 3, "max_buys_per_day": 6, "require_de_confirm": False},
                 "max_usdt_per_trade": 200,
             },
             positions=list_active_positions(),

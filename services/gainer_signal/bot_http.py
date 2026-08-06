@@ -60,11 +60,17 @@ def gainer_entry_config(config: dict | None = None) -> dict[str, Any]:
     ge = (raw or {}).get("gainer_entry") if isinstance(raw, dict) else {}
     if not isinstance(ge, dict):
         ge = {}
+    # require_de_confirm: rank/heat only nominates; DecisionEngine (+ recipes/memory
+    # via DE) must emit BUY. Default ON so board never bypasses indicators.
+    require_de = ge.get("require_de_confirm")
+    if require_de is None:
+        require_de = True
     return {
         "enabled": gainer_entry_enabled(raw if isinstance(raw, dict) else None),
         "max_open": int(ge.get("max_open") or 3),
         "max_buys_per_day": int(ge.get("max_buys_per_day") or 6),
         "require_eligible": bool(ge.get("require_eligible", True)),
+        "require_de_confirm": bool(require_de),
         "timeframe": str(ge.get("timeframe") or "1h"),
         "max_notional_pct_of_vol": float(ge.get("max_notional_pct_of_vol") or 2.0),
         "default_usdt": float(ge.get("default_usdt") or 0) or None,
@@ -149,6 +155,33 @@ def load_gainer_buys_today_from_ledger() -> int | None:
         return None
 
 
+def _default_de_allows_buy(symbol: str, price: float, timeframe: str, data: dict) -> tuple[bool, str, list]:
+    """Run DecisionEngine on gainer nominee; BUY only if TA/recipe path agrees."""
+    from core.actions import is_buy
+    from services.signal_orchestrator import SignalOrchestrator
+
+    coin = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": str(data.get("source") or "gainer_rank_entry"),
+        "gainer_meta": {
+            "leader_rank": data.get("rank"),
+            "pct_24h": data.get("pct_24h"),
+            "trigger": data.get("trigger"),
+        },
+    }
+    orch = SignalOrchestrator()
+    analysis = orch.analyze(coin, float(price))
+    if analysis is None:
+        return False, "de_no_analysis", []
+    action = getattr(analysis, "action", "HOLD")
+    sources = list(getattr(analysis, "sources", None) or [])
+    rationale = str(getattr(analysis, "rationale", "") or "")[:200]
+    if not is_buy(action):
+        return False, f"de_hold:{action}:{rationale}", sources
+    return True, f"de_buy:{action}", sources
+
+
 def process_gainer_signal(
     data: dict[str, Any],
     *,
@@ -156,8 +189,12 @@ def process_gainer_signal(
     positions: list[dict[str, Any]] | None = None,
     gainer_buys_today: int | None = None,
     execute_buy: Callable[..., Any] | None = None,
+    de_allows_buy: Callable[..., tuple[bool, str, list]] | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Core consume logic (testable). Returns (body, http_status)."""
+    """Core consume logic (testable). Returns (body, http_status).
+
+    With require_de_confirm (default True), board/heat only nominates; DE must BUY.
+    """
     cfg = gainer_entry_config(config)
     if not cfg["enabled"]:
         return {"ok": False, "executed": False, "message": "gainer_entry_disabled"}, 503
@@ -297,6 +334,38 @@ def process_gainer_signal(
         pct = 0.0
 
     timeframe = str(data.get("timeframe") or cfg["timeframe"] or "1h")
+
+    # DecisionEngine gate: indicators + personal recipes (via registry) + TA merge
+    de_sources: list = []
+    de_reason = ""
+    if cfg.get("require_de_confirm", True):
+        checker = de_allows_buy or _default_de_allows_buy
+        try:
+            ok_de, de_reason, de_sources = checker(sym, price, timeframe, data)
+        except Exception as e:
+            log(f"gainer_entry DE gate error {sym}: {e}", "WARNING")
+            return {
+                "ok": False,
+                "executed": False,
+                "message": "de_gate_error",
+                "reject_reason": str(e)[:160],
+            }, 500
+        if not ok_de:
+            log(
+                f"gainer_entry DE reject {sym} rank={rank} pct={pct} why={de_reason[:120]}",
+                "INFO",
+            )
+            return {
+                "ok": False,
+                "executed": False,
+                "message": "de_hold",
+                "reject_reason": de_reason,
+                "de_sources": de_sources,
+                "symbol": sym,
+                "rank": rank,
+                "pct_24h": pct,
+            }, 409
+
     gainer_meta = {
         "leader_rank": rank,
         "pct_24h": pct,
@@ -315,6 +384,9 @@ def process_gainer_signal(
         "hard_ceiling": data.get("hard_ceiling"),
         "memory_size_mult": memory_size_mult,
         "memory_reason": memory_reason or None,
+        "de_confirm": bool(cfg.get("require_de_confirm", True)),
+        "de_reason": de_reason or None,
+        "de_sources": de_sources or None,
     }
     request_extra = {
         "gainer_meta": gainer_meta,
