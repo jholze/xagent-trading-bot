@@ -177,22 +177,59 @@ class TestRegistryWiresPersonal(unittest.TestCase):
             }
         )
 
-        def _fake_load(symbol, tf):
-            return dict(personal)
-
         with patch(
-            "strategies.entry_recipe.load_personal_params", side_effect=_fake_load
+            "strategies.registry._hermes_memory_params",
+            return_value={**personal, "symbol": "AAA/USDT", "timeframe": "1h"},
         ):
-            with patch(
-                "strategies.registry._hermes_memory_params",
-                return_value={**personal, "symbol": "AAA/USDT", "timeframe": "1h"},
-            ):
-                coin = {"symbol": "AAA/USDT", "timeframe": "1h"}
-                params = resolve_strategy_params(coin, has_position=False, atr_pct=5.0)
+            coin = {"symbol": "AAA/USDT", "timeframe": "1h"}
+            params = resolve_strategy_params(coin, has_position=False, atr_pct=5.0)
         self.assertEqual(params["rsi_buy_low"], 24)
         self.assertEqual(params["rsi_buy_high"], 41)
         self.assertEqual(params["volume_multiplier"], 1.45)
         self.assertEqual(params["buy_regime"], "dip")
+
+    def test_personal_beats_config_strategies_entry_on_4h(self):
+        """Live path: config.strategies[] must not hide personal_entry_v1 buy keys."""
+        from strategies.registry import resolve_strategy_params
+
+        personal = {
+            "rsi_buy_low": 21,
+            "rsi_buy_high": 39,
+            "volume_multiplier": 1.77,
+            "buy_regime": "dip",
+            "strategy_profile": STRATEGY_PROFILE_PERSONAL,
+            "personal_entry_renewed_at": "2026-08-06T12:00:00+00:00",
+            "reversal_rsi_cross_low": 32,
+            "reversal_rsi_cross_high": 38,
+            "reversal_volume_multiplier": 1.0,
+        }
+        explicit = {
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "rsi_buy_low": 25,
+            "rsi_buy_high": 55,
+            "volume_multiplier": 0.85,
+            "buy_regime": "both",
+            "strategy_class": "technical_rsi_bb",
+        }
+        with patch(
+            "strategies.registry._hermes_memory_params",
+            return_value={**personal, "symbol": "ARIA/USDT", "timeframe": "4h"},
+        ):
+            with patch(
+                "strategies.registry._explicit_strategy_entry",
+                return_value=explicit,
+            ):
+                params = resolve_strategy_params(
+                    {"symbol": "ARIA/USDT", "timeframe": "4h"},
+                    has_position=False,
+                    atr_pct=3.0,
+                )
+        self.assertEqual(params["rsi_buy_low"], 21)
+        self.assertEqual(params["rsi_buy_high"], 39)
+        self.assertEqual(params["volume_multiplier"], 1.77)
+        self.assertEqual(params["buy_regime"], "dip")
+        self.assertEqual(params.get("strategy_profile"), STRATEGY_PROFILE_PERSONAL)
 
 
 class TestGainerEntryRemainsOff(unittest.TestCase):

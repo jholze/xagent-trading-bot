@@ -303,6 +303,33 @@ def resolve_strategy_params(
         result.update(regime_profile)
         return _apply_path_stats_soft_bias(result, symbol, has_position, cfg)
 
+    # Personal / Hermes buy keys always beat config.strategies[] and tier overlay.
+    # Load before explicit short-circuit so ARIA/USDT-style config entries still
+    # receive renewed personal_entry_v1 params on the live TF (often 4h).
+    hermes_params = _hermes_memory_params(symbol, tf)
+    from strategies.entry_recipe import preserve_buy_params
+
+    def _prefer_personal(result: dict) -> dict:
+        if not hermes_params:
+            return result
+        preferred = {
+            k: hermes_params[k]
+            for k in _BUY_PARAM_KEYS
+            if k in hermes_params and hermes_params[k] is not None
+        }
+        meta = {
+            k: hermes_params[k]
+            for k in (
+                "strategy_profile",
+                "personal_entry_renewed_at",
+                "personal_entry_fallback",
+                "personal_entry_score",
+                "hermes_baseline_updated_at",
+            )
+            if hermes_params.get(k) is not None
+        }
+        return preserve_buy_params(result, {**meta, **preferred})
+
     explicit = _explicit_strategy_entry(symbol, tf)
     if explicit:
         base = dict(explicit)
@@ -319,15 +346,13 @@ def resolve_strategy_params(
             cfg=cfg,
         )
         result.update(preserved)
-        return _out(result)
+        # Personal buy knobs win over stale config.strategies[] (skeptic bug).
+        return _out(_prefer_personal(result))
 
-    hermes_params = _hermes_memory_params(symbol, tf)
     volatile_active = has_position and tier == "volatile"
 
     if hermes_params:
         # Tier overlay may rewrite buy knobs — personal/Hermes entry keys win.
-        from strategies.entry_recipe import preserve_buy_params
-
         preferred_buy = {
             k: hermes_params[k]
             for k in _BUY_PARAM_KEYS
