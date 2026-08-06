@@ -72,18 +72,14 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
         )
 
         personal = load_personal_params(symbol, tf)
-        if personal and (
-            personal.get("strategy_profile") == STRATEGY_PROFILE_PERSONAL
-            or personal.get("personal_entry_renewed_at")
-        ):
+        # load_personal_params already excludes tier-fallback stamps
+        if personal and personal.get("strategy_profile") == STRATEGY_PROFILE_PERSONAL:
             personal = dict(personal)
             personal.update(
                 {
                     "symbol": symbol,
                     "timeframe": tf,
-                    "strategy_profile": personal.get(
-                        "strategy_profile", STRATEGY_PROFILE_PERSONAL
-                    ),
+                    "strategy_profile": STRATEGY_PROFILE_PERSONAL,
                 }
             )
             return personal
@@ -92,6 +88,7 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
 
     try:
         from hermes.memory import store
+        from strategies.entry_recipe import is_personal_fallback_profile
 
         profile = store.load_profile(symbol, tf)
     except Exception:
@@ -99,6 +96,9 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
 
     params = dict(profile.get("params") or {})
     if not params:
+        return None
+    # Audit-only fallback profiles must not feed buy-key prefer path
+    if is_personal_fallback_profile(params):
         return None
 
     profile_name = params.get("strategy_profile") or "hermes_baseline"
@@ -312,6 +312,16 @@ def resolve_strategy_params(
     def _prefer_personal(result: dict) -> dict:
         if not hermes_params:
             return result
+        from strategies.entry_recipe import (
+            STRATEGY_PROFILE_PERSONAL,
+            is_personal_fallback_profile,
+        )
+
+        # Never clobber config.strategies with tier-default "personal" fallbacks
+        if is_personal_fallback_profile(hermes_params):
+            return result
+        if hermes_params.get("strategy_profile") != STRATEGY_PROFILE_PERSONAL:
+            return result
         preferred = {
             k: hermes_params[k]
             for k in _BUY_PARAM_KEYS
@@ -322,7 +332,6 @@ def resolve_strategy_params(
             for k in (
                 "strategy_profile",
                 "personal_entry_renewed_at",
-                "personal_entry_fallback",
                 "personal_entry_score",
                 "hermes_baseline_updated_at",
             )

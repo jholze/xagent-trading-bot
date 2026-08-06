@@ -30,6 +30,8 @@ PERSONAL_BUY_PARAM_KEYS: tuple[str, ...] = (
 )
 
 STRATEGY_PROFILE_PERSONAL = "personal_entry_v1"
+# Written when search falls back to tier defaults — must NOT override config.strategies[].
+STRATEGY_PROFILE_TIER_FALLBACK = "entry_recipe_tier_fallback"
 MIN_TRADES_FOR_PERSONAL = 2
 MIN_BARS_FOR_SCORE = 40
 
@@ -458,6 +460,15 @@ def select_best_params(
     return best_params, best, base_score, ""
 
 
+def is_personal_fallback_profile(params: dict | None) -> bool:
+    """True when renewal stored tier defaults (must not clobber config.strategies)."""
+    if not params:
+        return False
+    if params.get("personal_entry_fallback"):
+        return True
+    return str(params.get("strategy_profile") or "") == STRATEGY_PROFILE_TIER_FALLBACK
+
+
 def build_personal_profile_payload(
     symbol: str,
     timeframe: str,
@@ -467,18 +478,22 @@ def build_personal_profile_payload(
     fallback_reason: str = "",
     tier: str | None = "volatile",
 ) -> dict[str, Any]:
-    """Hermes-compatible profile document for save_profile."""
+    """Hermes-compatible profile document for save_profile.
+
+    On fallback we persist a *non-personal* profile marker so resolve leaves
+    config.strategies[] / tier path intact (does not stamp generic 28/48/1.15).
+    """
     now = datetime.now(timezone.utc).isoformat()
     personal = normalize_personal_params(params)
     used_fallback = bool(fallback_reason)
     if used_fallback:
         personal = tier_default_buy_params(tier)
-    personal["strategy_profile"] = STRATEGY_PROFILE_PERSONAL
-    personal["personal_entry_renewed_at"] = now
-    if used_fallback:
+        personal["strategy_profile"] = STRATEGY_PROFILE_TIER_FALLBACK
         personal["personal_entry_fallback"] = fallback_reason
     else:
+        personal["strategy_profile"] = STRATEGY_PROFILE_PERSONAL
         personal.pop("personal_entry_fallback", None)
+    personal["personal_entry_renewed_at"] = now
     personal["personal_entry_score"] = {
         "total_return_pct": score.total_return_pct,
         "trades": score.trades,
@@ -487,6 +502,7 @@ def build_personal_profile_payload(
         "buy_signals": score.buy_signals,
         "bars": score.bars,
         "primary_metric": PRIMARY_METRIC,
+        "fallback": bool(used_fallback),
     }
     return {
         "symbol": symbol,
@@ -505,7 +521,11 @@ def build_personal_profile_payload(
 
 
 def load_personal_params(symbol: str, timeframe: str) -> dict | None:
-    """Load personal/hermes params if profile has buy keys."""
+    """Load *winning* personal_entry_v1 params only.
+
+    Tier-fallback stamps (personal_entry_fallback / entry_recipe_tier_fallback)
+    return None so config.strategies[] and tier defaults stay authoritative.
+    """
     try:
         from hermes.memory import store
 
@@ -515,14 +535,14 @@ def load_personal_params(symbol: str, timeframe: str) -> dict | None:
     params = dict(profile.get("params") or {})
     if not any(k in params for k in PERSONAL_BUY_PARAM_KEYS):
         return None
+    if is_personal_fallback_profile(params):
+        return None
+    if str(params.get("strategy_profile") or "") != STRATEGY_PROFILE_PERSONAL:
+        return None
     out = normalize_personal_params(params)
-    out["strategy_profile"] = params.get(
-        "strategy_profile", STRATEGY_PROFILE_PERSONAL
-    )
+    out["strategy_profile"] = STRATEGY_PROFILE_PERSONAL
     if params.get("personal_entry_renewed_at"):
         out["personal_entry_renewed_at"] = params["personal_entry_renewed_at"]
-    if params.get("personal_entry_fallback"):
-        out["personal_entry_fallback"] = params["personal_entry_fallback"]
     if params.get("personal_entry_score"):
         out["personal_entry_score"] = params["personal_entry_score"]
     return out

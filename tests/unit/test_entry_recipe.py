@@ -141,10 +141,14 @@ class TestScoreAndSelect(unittest.TestCase):
                         profile = store.load_profile("TEST1/USDT", "1h")
                     params = profile.get("params") or {}
                     self.assertIn("rsi_buy_low", params)
-                    self.assertEqual(
-                        params.get("strategy_profile"), STRATEGY_PROFILE_PERSONAL
-                    )
                     self.assertTrue(params.get("personal_entry_renewed_at"))
+                    # Either winning personal recipe or explicit tier-fallback stamp
+                    self.assertIn(
+                        params.get("strategy_profile"),
+                        (STRATEGY_PROFILE_PERSONAL, "entry_recipe_tier_fallback"),
+                    )
+                    if params.get("strategy_profile") == "entry_recipe_tier_fallback":
+                        self.assertTrue(params.get("personal_entry_fallback"))
 
     def test_compare_cohort_primary_metric(self):
         from strategies.entry_recipe import RenewalResult
@@ -230,6 +234,68 @@ class TestRegistryWiresPersonal(unittest.TestCase):
         self.assertEqual(params["volume_multiplier"], 1.77)
         self.assertEqual(params["buy_regime"], "dip")
         self.assertEqual(params.get("strategy_profile"), STRATEGY_PROFILE_PERSONAL)
+
+    def test_fallback_profile_does_not_clobber_config_strategies(self):
+        """min_trades / worse-than-tier fallback must not stamp tier defaults over config."""
+        from strategies.entry_recipe import (
+            STRATEGY_PROFILE_TIER_FALLBACK,
+            build_personal_profile_payload,
+            is_personal_fallback_profile,
+            load_personal_params,
+            score_entry_params_on_df,
+            tier_default_buy_params,
+        )
+        from strategies.registry import resolve_strategy_params
+
+        df = add_indicators(_synth_df(seed=3))
+        sc = score_entry_params_on_df(df, tier_default_buy_params("volatile"))
+        payload = build_personal_profile_payload(
+            "SOL/USDT",
+            "4h",
+            sc.params,
+            sc,
+            fallback_reason="min_trades:1<2",
+            tier="volatile",
+        )
+        self.assertTrue(is_personal_fallback_profile(payload["params"]))
+        self.assertEqual(
+            payload["params"]["strategy_profile"], STRATEGY_PROFILE_TIER_FALLBACK
+        )
+        self.assertEqual(payload["params"]["personal_entry_fallback"], "min_trades:1<2")
+
+        # load_personal_params must ignore fallback stamps
+        with patch("hermes.memory.store.load_profile", return_value=payload):
+            self.assertIsNone(load_personal_params("SOL/USDT", "4h"))
+
+        explicit = {
+            "symbol": "SOL/USDT",
+            "timeframe": "4h",
+            "rsi_buy_low": 32,
+            "rsi_buy_high": 50,
+            "volume_multiplier": 1.05,
+            "buy_regime": "dip",
+            "strategy_class": "technical_rsi_bb",
+        }
+        # Simulate store still holding fallback profile; resolve must keep config
+        with patch("hermes.memory.store.load_profile", return_value=payload):
+            with patch(
+                "strategies.registry._explicit_strategy_entry",
+                return_value=explicit,
+            ):
+                params = resolve_strategy_params(
+                    {"symbol": "SOL/USDT", "timeframe": "4h"},
+                    has_position=False,
+                    atr_pct=3.0,
+                )
+        self.assertEqual(params["rsi_buy_low"], 32)
+        self.assertEqual(params["rsi_buy_high"], 50)
+        self.assertEqual(float(params["volume_multiplier"]), 1.05)
+        self.assertEqual(params["buy_regime"], "dip")
+        # Must not be generic volatile stamp 28/48/1.15
+        self.assertNotEqual(
+            (params["rsi_buy_low"], params["rsi_buy_high"], float(params["volume_multiplier"])),
+            (28, 48, 1.15),
+        )
 
 
 class TestGainerEntryRemainsOff(unittest.TestCase):
