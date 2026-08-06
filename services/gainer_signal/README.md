@@ -28,17 +28,21 @@ curl -sS -X POST http://127.0.0.1:5000/internal/gainer-signal \
   -d '{"symbol":"BLESS/USDT","last":0.02,"quote_vol":5000000,"rank":3,"pct_24h":25,"eligible":true,"trigger":"heat","source":"gainer_live_heat"}'
 ```
 
+## Product intent
+
+**Leaders board ≠ buy trigger.** Board/WS is for recognize + scorecard (“did we already hold top gainers early?”) and optional universe inject so DecisionEngine can evaluate with full indicators. Direct `POST /internal/gainer-signal` → market buy without TA/memory was a WS-2 balloon and is **disabled by default**.
+
 ## Staging
 
 1. Deploy service `xagent-gainer-signal` (root: repo, start: `python -m services.gainer_signal`).
-2. Env on service: `GAINER_SIGNAL_TOKEN`, `GAINER_SIGNAL_BOT_URL=https://xagent-test-test.up.railway.app`, `GAINER_SIGNAL_PUSH=1`.
-3. Env on bot: same `GAINER_SIGNAL_TOKEN` (or shared `EXIT_WS_INTERNAL_TOKEN`), `gainer_entry.enabled=true` in config.
-4. Legacy `gainer_universe` stays on (balloon).
+2. Env on service: `GAINER_SIGNAL_TOKEN`, `GAINER_SIGNAL_BOT_URL=…`, `GAINER_SIGNAL_PUSH=0` (logging only until indicator-gated entry exists).
+3. Env on bot: same token; `gainer_entry.enabled=false` (default) / `GAINER_ENTRY_ENABLED=0`.
+4. `gainer_universe` may still expand trade candidates; **DE/indicators** decide buys, not rank alone.
 
 ## Kill
 
-- Bot: `gainer_entry.enabled=false` or `GAINER_ENTRY_ENABLED=0`
-- Service: stop / `GAINER_SIGNAL_PUSH=0`
+- Bot: `gainer_entry.enabled=false` or `GAINER_ENTRY_ENABLED=0` (default)
+- Service: `GAINER_SIGNAL_PUSH=0`
 
 ## Caps (WS-2)
 
