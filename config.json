@@ -1349,6 +1349,9 @@
       "max_rounds": 4,
       "grace_hours_after_dca": 12,
       "pause_partial_stop_during_dca": true,
+      "pause_trail_exits_after_dca": true,
+      "trail_grace_hours_after_dca": 12,
+      "reanchor_peak_on_dca": true,
       "stop_loss_widen_pct_per_round": 6,
       "scoring": {
         "enabled": true,
@@ -1449,6 +1452,9 @@
       "max_rounds": 2,
       "grace_hours_after_dca": 24,
       "pause_partial_stop_during_dca": true,
+      "pause_trail_exits_after_dca": true,
+      "trail_grace_hours_after_dca": 24,
+      "reanchor_peak_on_dca": true,
       "stop_loss_widen_pct_per_round": 5,
       "scoring": {
         "enabled": true,
