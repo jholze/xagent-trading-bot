@@ -335,6 +335,29 @@ class TestBotHttp(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertEqual(body["message"], "gainer_entry_disabled")
 
+    def test_default_disabled_without_config_key(self):
+        """Product: board is not a buy source — default OFF when config omits flag."""
+        self.assertFalse(gainer_entry_enabled({}))
+        self.assertFalse(gainer_entry_enabled({"gainer_entry": {}}))
+        buy = MagicMock()
+        body, status = process_gainer_signal(
+            {
+                "symbol": "A/USDT",
+                "last": 1.0,
+                "quote_vol": 2e6,
+                "eligible": True,
+                "rank": 1,
+                "pct_24h": 20,
+            },
+            config={},
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=buy,
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(body["message"], "gainer_entry_disabled")
+        buy.assert_not_called()
+
     def test_not_eligible(self):
         body, status = process_gainer_signal(
             {

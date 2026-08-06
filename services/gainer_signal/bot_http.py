@@ -43,8 +43,9 @@ def gainer_entry_enabled(config: dict | None = None) -> bool:
     ge = (raw or {}).get("gainer_entry") if isinstance(raw, dict) else {}
     if isinstance(ge, dict) and "enabled" in ge:
         return bool(ge.get("enabled"))
-    # default: enabled (staging balloon)
-    return True
+    # default OFF: leaders board is observe/scorecard, not a buy decision source.
+    # Re-enable only with an indicator/DE gate — never raw rank→market order.
+    return False
 
 
 def gainer_entry_config(config: dict | None = None) -> dict[str, Any]:
