@@ -60,7 +60,36 @@ from core.models import RegimeResult, AllocationDecision
 
 
 def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
-    """Load per-coin params Hermes learned (survives sell/rebuy cycles)."""
+    """Load per-coin params Hermes / personal entry renewal (survives restarts).
+
+    Prefer personal_entry_v1 tags from entry_recipe renewal; otherwise Hermes
+    baseline params. Buy keys are preserved after tier overlay in resolve.
+    """
+    try:
+        from strategies.entry_recipe import (
+            STRATEGY_PROFILE_PERSONAL,
+            load_personal_params,
+        )
+
+        personal = load_personal_params(symbol, tf)
+        if personal and (
+            personal.get("strategy_profile") == STRATEGY_PROFILE_PERSONAL
+            or personal.get("personal_entry_renewed_at")
+        ):
+            personal = dict(personal)
+            personal.update(
+                {
+                    "symbol": symbol,
+                    "timeframe": tf,
+                    "strategy_profile": personal.get(
+                        "strategy_profile", STRATEGY_PROFILE_PERSONAL
+                    ),
+                }
+            )
+            return personal
+    except Exception:
+        pass
+
     try:
         from hermes.memory import store
 
@@ -72,10 +101,11 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
     if not params:
         return None
 
+    profile_name = params.get("strategy_profile") or "hermes_baseline"
     params.update({
         "symbol": symbol,
         "timeframe": tf,
-        "strategy_profile": "hermes_baseline",
+        "strategy_profile": profile_name,
         "hermes_baseline_updated_at": profile.get("updated_at"),
     })
     return params
@@ -295,7 +325,16 @@ def resolve_strategy_params(
     volatile_active = has_position and tier == "volatile"
 
     if hermes_params:
+        # Tier overlay may rewrite buy knobs — personal/Hermes entry keys win.
+        from strategies.entry_recipe import preserve_buy_params
+
+        preferred_buy = {
+            k: hermes_params[k]
+            for k in _BUY_PARAM_KEYS
+            if k in hermes_params
+        }
         base = _buy_profile_overlay(hermes_params, coin, tier, cfg)
+        base = preserve_buy_params(base, {**hermes_params, **preferred_buy})
         result = apply_position_sell_overlay(
             base,
             tier=tier,
@@ -306,6 +345,7 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
+        result = preserve_buy_params(result, {**hermes_params, **preferred_buy})
         return _out(result)
 
     if volatile_active:
