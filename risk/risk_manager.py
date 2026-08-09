@@ -166,8 +166,9 @@ class RiskManager:
 
         # Position lock no_dca: block all BUY_DCA paths (cycle, recovery, sniper)
         # Defense-in-depth — sniper/bot_http and DE also check, Risk is final rail.
-        try:
-            if self._is_dca_buy(source, order):
+        # Fail-closed: lock-check errors must not approve adds on locked lots.
+        if self._is_dca_buy(source, order):
+            try:
                 from strategies.position_lock import dca_blocked, log_lock_block
 
                 pos = get_position(order.symbol, timeframe)
@@ -182,8 +183,21 @@ class RiskManager:
                         message=lock_msg,
                         code="position_locked",
                     )
-        except Exception:
-            pass
+            except Exception as exc:
+                try:
+                    from logger import log
+
+                    log(
+                        f"position_lock dca check error {order.symbol}: {exc}",
+                        "ERROR",
+                    )
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message=f"position_lock_check_error: {exc}"[:200],
+                    code="position_lock_check_error",
+                )
 
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
         try:
@@ -879,12 +893,17 @@ class RiskManager:
 
     @staticmethod
     def _is_dca_buy(source: str, order: TradeOrder) -> bool:
-        return source in ("dca", "dca_recovery") or order.signal == "BUY_DCA"
+        src = str(source or "").strip().lower()
+        if src in ("dca", "dca_recovery", "dca_sniper", "dca_scheduled"):
+            return True
+        return str(getattr(order, "signal", "") or "").upper() == "BUY_DCA"
 
     @staticmethod
     def _order_is_dca(order: dict) -> bool:
         src = str(order.get("source", "")).lower()
-        return src in ("dca", "dca_recovery") or str(order.get("signal", "")).upper() == "BUY_DCA"
+        if src in ("dca", "dca_recovery", "dca_sniper", "dca_scheduled"):
+            return True
+        return str(order.get("signal", "")).upper() == "BUY_DCA"
 
     @staticmethod
     def _filled_order_usdt(order: dict) -> float:

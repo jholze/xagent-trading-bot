@@ -296,7 +296,7 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not symbol or usdt <= 0:
         return {"ok": False, "executed": False, "message": "bad_args"}, 400
 
-    # Position lock no_dca (via central gates)
+    # Position lock no_dca (via central gates). Fail-closed: never add if check breaks.
     try:
         from strategies.position_gates import dca_add_blocked
 
@@ -307,9 +307,16 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
                 "ok": False,
                 "executed": False,
                 "message": why or "position_locked_no_dca",
+                "code": "position_locked",
             }, 409
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"dca_sniper lock check fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
 
     try:
         price = float(data.get("price") or 0)

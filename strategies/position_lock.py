@@ -27,12 +27,9 @@ MODE_NO_MANUAL_SELL = "no_manual_sell"
 ALL_MODES = frozenset(
     {MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT, MODE_NO_MANUAL_SELL}
 )
-# Sell-hold default: DCA / sniper recovery still allowed (ops intent).
+# Sell-hold default (Telegram /lock): DCA / sniper still allowed.
+# Explicit ``no_dca`` in stored modes is always honored (ops full-hold locks).
 DEFAULT_MODES: tuple[str, ...] = (MODE_NO_AUTO_SELL, MODE_NO_EVICT)
-# Pre-2026-08 telegram default included no_dca — reinterpret as sell-only.
-_LEGACY_DEFAULT_MODES = frozenset(
-    {MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT}
-)
 
 # Order / signal sources treated as *manual* (bypass no_auto_sell)
 _MANUAL_SOURCES = frozenset(
@@ -110,9 +107,8 @@ def lock_is_active(lock: dict | None, *, now: datetime | None = None) -> bool:
 def lock_modes(lock: dict | None) -> set[str]:
     """Effective modes for an active lock document.
 
-    Exact legacy default ``{no_auto_sell, no_dca, no_evict}`` is treated as the
-    new sell-only default (DCA allowed). Explicit custom mode sets that still
-    include ``no_dca`` keep blocking DCA.
+    Stored modes are honored as written. Empty/missing modes → DEFAULT_MODES
+    (sell-only; DCA allowed). Any set that includes ``no_dca`` blocks DCA.
     """
     if not lock:
         return set()
@@ -121,8 +117,6 @@ def lock_modes(lock: dict | None) -> set[str]:
         return set(DEFAULT_MODES)
     modes = {str(m) for m in raw if m in ALL_MODES}
     if not modes:
-        return set(DEFAULT_MODES)
-    if modes == _LEGACY_DEFAULT_MODES:
         return set(DEFAULT_MODES)
     return modes
 
