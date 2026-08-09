@@ -1,7 +1,8 @@
 """Deep analysis pass for DCA sniper — Memory/RAG/facts + policy before size.
 
 Reuses #79 stack:
-  build_dca_context → analyze_candidate → evaluate_dca_policy → size
+  build_dca_context → multi-TF structure → analyze_candidate → evaluate_dca_policy → size
+  + quality gate (no heavy on thin context)
 
 Fail-open on I/O; policy skip beats size. Never calls Grok.
 """
@@ -13,6 +14,7 @@ from typing import Any
 
 from logger import log
 from services.dca_sniper.checklist import analyze_candidate
+from services.dca_sniper.quality import apply_quality_to_size, context_quality
 
 
 @dataclass
@@ -26,6 +28,7 @@ class DeepAnalysisResult:
     policy_mult: float = 1.0
     policy_reasons: list[str] = field(default_factory=list)
     context: dict[str, Any] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
     deep: bool = True
     enriched_row: dict[str, Any] = field(default_factory=dict)
 
@@ -42,7 +45,6 @@ def enrich_candidate_from_context(
     unlock = bool(getattr(ctx, "fact_unlock", False))
     out["hard_negative"] = hard_neg
     out["unlock_risk"] = hard_neg or unlock
-    # Social: prefer explicit cand flag; context has no dedicated social yet
     out["social_block"] = bool(out.get("social_block") or out.get("block_buys"))
     if bool(getattr(ctx, "block_buys", False)):
         out["social_block"] = True
@@ -61,6 +63,57 @@ def enrich_candidate_from_context(
         out["context"] = ctx.to_dict() if hasattr(ctx, "to_dict") else {}
     except Exception:
         out["context"] = {}
+    return out
+
+
+def _enrich_structure_multi_tf(row: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """Fill reclaim/free_fall from multi-TF when missing or force multi."""
+    out = dict(row)
+    force = bool(cfg.get("deep_structure_multi_tf", True))
+    need = force or out.get("reclaim_ok") is None or out.get("free_fall") is None
+    if not need:
+        return out
+    try:
+        from services.dca_sniper.structure import structure_flags_multi_tf
+
+        tfs = cfg.get("deep_structure_timeframes") or ("15m", "1h", "4h")
+        if isinstance(tfs, str):
+            tfs = [x.strip() for x in tfs.split(",") if x.strip()]
+        multi = structure_flags_multi_tf(str(out.get("symbol") or ""), tfs)
+        # Prefer multi aggregate over unknown; keep existing True/False if multi None
+        if multi.get("free_fall") is not None:
+            out["free_fall"] = multi.get("free_fall")
+        if multi.get("reclaim_ok") is not None:
+            out["reclaim_ok"] = multi.get("reclaim_ok")
+        if multi.get("structure_ok") is not None:
+            out["structure_ok"] = multi.get("structure_ok")
+        out["structure_by_tf"] = multi.get("structure_by_tf") or {}
+        out["structure_source"] = "multi_tf"
+    except Exception as e:
+        log(f"dca_sniper multi-tf structure skip: {e}", "DEBUG")
+        out.setdefault("structure_source", "snapshot")
+    return out
+
+
+def _enrich_social_soft(row: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort social/noise flags from coin facts / profile (fail-open)."""
+    out = dict(row)
+    # fact_noise / social_spike via fact_summary text heuristics if set
+    summary = str(out.get("fact_summary") or "").lower()
+    if "social" in summary or "viral" in summary or "pump" in summary:
+        out["social_noise"] = True
+    # santiment global regime: only soft note, never hard block alone
+    try:
+        from services.santiment_store import get_latest_snapshot
+
+        snap = get_latest_snapshot(allow_redis=True) or {}
+        regime = str(snap.get("regime") or snap.get("state") or "").upper()
+        out["santiment_regime"] = regime or None
+        if regime in ("RISK_OFF", "BEAR", "CRASH"):
+            # soft: mark social caution (checklist stays non-hard unless block_buys)
+            out["social_caution"] = True
+    except Exception:
+        pass
     return out
 
 
@@ -83,7 +136,6 @@ def _build_context(
         "recovery_hold": row.get("recovery_hold"),
         "sniper_focus": row.get("sniper_focus"),
     }
-    # Prefer bot cash snapshot for spendable when context risk path fails
     ctx = build_dca_context(
         symbol=symbol,
         position=pos,
@@ -100,7 +152,6 @@ def _build_context(
             pass
     if not ctx.cash_mode and cash.get("cash_mode"):
         ctx.cash_mode = str(cash.get("cash_mode") or "")
-    # Funding extreme from candidate snapshot
     try:
         fr = row.get("funding_rate_pct")
         if fr is not None and abs(float(fr)) > 0.05:
@@ -126,7 +177,11 @@ def deep_analyze_candidate(
     row0 = dict(row)
     row0.setdefault("sniper_cfg", cfg)
 
-    # Seed score from shallow technical pass (no context yet)
+    # Multi-TF structure before scoring
+    row0 = _enrich_structure_multi_tf(row0, cfg)
+    row0 = _enrich_social_soft(row0)
+
+    # Seed score from technical pass
     seed = analyze_candidate(row0, cash)
     seed_score = int(round(float(seed.get("score") or 0)))
 
@@ -140,25 +195,42 @@ def deep_analyze_candidate(
         )
     except Exception as e:
         log(f"dca_sniper deep context fail {row0.get('symbol')}: {e}", "DEBUG")
-        # fail-open: shallow analysis only
         usdt, reason = size_fn(row0, seed, cash, cfg)
         hard = list(seed.get("hard_fail") or [])
+        q = context_quality(row0, None, min_signals=int(cfg.get("deep_min_context_signals") or 3))
+        usdt, reason, extra = apply_quality_to_size(
+            usdt=usdt, size_reason=reason, quality=q, cfg=cfg
+        )
+        hard = hard + extra
         if usdt <= 0 and reason:
-            hard = hard + [reason]
+            hard = list(dict.fromkeys(hard + [reason]))
         return DeepAnalysisResult(
             score=float(seed.get("score") or 0),
             hard_fail=hard,
-            checklist={**(seed.get("checklist") or {}), "size_reason": reason, "deep_error": str(e)[:80]},
+            checklist={
+                **(seed.get("checklist") or {}),
+                "size_reason": reason,
+                "deep_error": str(e)[:80],
+                "quality": q,
+            },
             usdt=float(usdt or 0),
             size_reason=str(reason or ""),
+            quality=q,
             deep=False,
             enriched_row=row0,
         )
 
     enriched = enrich_candidate_from_context(row0, ctx)
     enriched["sniper_cfg"] = cfg
+    # keep structure fields from row0
+    for k in ("reclaim_ok", "free_fall", "structure_ok", "structure_by_tf", "structure_source"):
+        if k in row0:
+            enriched[k] = row0[k]
+    for k in ("social_noise", "social_caution", "santiment_regime"):
+        if k in row0:
+            enriched[k] = row0[k]
+
     analysis = analyze_candidate(enriched, cash)
-    # refresh ctx score for policy score_boost
     try:
         ctx.score = int(round(float(analysis.get("score") or 0)))
     except (TypeError, ValueError):
@@ -171,8 +243,7 @@ def deep_analyze_candidate(
         emit_dca_policy_audit,
     )
 
-    # Resolve policy cfg: prefer config_raw.dca.policy, force enabled for sniper apply
-    dca_sec = {}
+    dca_sec: dict[str, Any] = {}
     try:
         raw = config_raw
         if raw is None:
@@ -183,7 +254,6 @@ def deep_analyze_candidate(
     except Exception:
         dca_sec = {}
     pcfg = dca_policy_config(dca_sec)
-    # Sniper deep path applies policy for real unless deep_policy_shadow
     shadow = bool(cfg.get("deep_policy_shadow", False)) or not apply_policy
     pcfg = {**pcfg, "enabled": True, "shadow": shadow}
 
@@ -210,8 +280,19 @@ def deep_analyze_candidate(
             if usdt < float(cfg.get("min_meaningful_usdt") or 200):
                 size_reason = "policy_size_too_small"
                 usdt = 0.0
-        if usdt <= 0 and size_reason and size_reason not in hard:
-            hard = hard + [size_reason]
+
+    # Quality gate: no HEAVY on thin memory/structure context
+    q = context_quality(
+        enriched,
+        enriched.get("context") if isinstance(enriched.get("context"), dict) else None,
+        min_signals=int(cfg.get("deep_min_context_signals") or 3),
+    )
+    usdt, size_reason, q_extra = apply_quality_to_size(
+        usdt=usdt, size_reason=size_reason, quality=q, cfg=cfg
+    )
+    hard = list(dict.fromkeys(hard + q_extra))
+    if usdt <= 0 and size_reason and size_reason not in hard:
+        hard = hard + [size_reason]
 
     checklist = {
         **(analysis.get("checklist") or {}),
@@ -223,9 +304,16 @@ def deep_analyze_candidate(
         "rag_hit_count": int(getattr(ctx, "rag_hit_count", 0) or 0),
         "dca_lesson_count": int(getattr(ctx, "dca_lesson_count", 0) or 0),
         "cash_mode": str(getattr(ctx, "cash_mode", "") or ""),
+        "quality": q,
+        "structure_source": enriched.get("structure_source"),
+        "structure_by_tf": {
+            k: {kk: vv for kk, vv in (v or {}).items() if kk != "bars"}
+            for k, v in (enriched.get("structure_by_tf") or {}).items()
+        }
+        if isinstance(enriched.get("structure_by_tf"), dict)
+        else None,
     }
 
-    # Persist / audit (fail-open)
     try:
         emit_dca_policy_audit(
             symbol=str(enriched.get("symbol") or ""),
@@ -239,6 +327,20 @@ def deep_analyze_candidate(
     except Exception as e:
         log(f"dca_sniper deep audit fail: {e}", "DEBUG")
 
+    # Structured operator log line for soak visibility
+    try:
+        flags = q.get("flags") or {}
+        log(
+            f"dca_sniper deep {enriched.get('symbol')} score={analysis.get('score')} "
+            f"q={q.get('score')}/{q.get('max_score')} thin={q.get('thin')} "
+            f"rag={flags.get('has_rag')} facts={flags.get('has_facts')} "
+            f"lessons={flags.get('has_lessons')} struct={flags.get('has_structure')} "
+            f"usdt={usdt} reason={size_reason} policy={policy_reasons}",
+            "INFO",
+        )
+    except Exception:
+        pass
+
     return DeepAnalysisResult(
         score=float(analysis.get("score") or 0),
         hard_fail=hard,
@@ -249,6 +351,7 @@ def deep_analyze_candidate(
         policy_mult=float(policy.size_mult),
         policy_reasons=policy_reasons,
         context=enriched.get("context") or {},
+        quality=q,
         deep=True,
         enriched_row=enriched,
     )

@@ -2150,6 +2150,12 @@
     "deep_include_rag": true,
     "deep_apply_policy": true,
     "deep_policy_shadow": false,
+    "deep_structure_multi_tf": true,
+    "deep_structure_timeframes": ["15m", "1h", "4h"],
+    "deep_min_context_signals": 3,
+    "deep_require_context_for_heavy": true,
+    "deep_allow_small_if_thin": true,
+    "deep_block_if_zero_signals": false,
     "in_process_tick": false,
     "profile_f": {
       "major": 0.55,

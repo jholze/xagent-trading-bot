@@ -130,6 +130,14 @@ def _as_candidate_views(
                 hard = hard + [size_reason]
             # Prefer enriched meta for rank identity
             row = deep.enriched_row or row
+            try:
+                from services.dca_sniper import state as sniper_state
+
+                sniper_state.record_deep_quality(
+                    deep.quality, policy_skip=bool(deep.policy_skip)
+                )
+            except Exception:
+                pass
         else:
             analysis = analyze_candidate(row, cash)
             usdt, size_reason = _size_for_row(row, analysis, cash, cfg)
@@ -223,9 +231,23 @@ def run_cycle(
     )
     audit["n_focus"] = len(batch)
     audit["ranked_top"] = [
-        {"symbol": v.symbol, "score": v.score, "usdt": v.usdt_suggest, "loss": v.loss_pct}
+        {
+            "symbol": v.symbol,
+            "score": v.score,
+            "usdt": v.usdt_suggest,
+            "loss": v.loss_pct,
+            "deep": (v.checklist or {}).get("deep"),
+            "quality": (v.checklist or {}).get("quality"),
+            "policy_reasons": (v.checklist or {}).get("policy_reasons"),
+            "size_reason": (v.checklist or {}).get("size_reason"),
+        }
         for v in views[:5]
     ]
+    try:
+        st = sniper_state.get_state()
+        audit["deep_metrics"] = dict((st.get("metrics") or {}))
+    except Exception:
+        audit["deep_metrics"] = {}
 
     if not batch:
         dec = {"action": "WAIT", "reason": "no_heavy_yes_or_cash", "cash": cash}

@@ -21,6 +21,12 @@ _state: dict[str, Any] = {
         "waits": 0,
         "cash_floor_breaches": 0,
         "wakes": 0,
+        "deep_passes": 0,
+        "deep_thin": 0,
+        "deep_rich": 0,
+        "deep_rag_hits": 0,
+        "deep_with_facts": 0,
+        "policy_skips": 0,
     },
 }
 
@@ -111,6 +117,26 @@ def set_focus(entries: list[dict[str, Any]]) -> None:
         pass
 
 
+def record_deep_quality(quality: dict[str, Any] | None, *, policy_skip: bool = False) -> None:
+    """Accumulate deep-pass quality metrics (call per analyzed candidate)."""
+    q = quality if isinstance(quality, dict) else {}
+    flags = q.get("flags") if isinstance(q.get("flags"), dict) else {}
+    with _lock:
+        m = _state.setdefault("metrics", {})
+        m["deep_passes"] = int(m.get("deep_passes") or 0) + 1
+        if q.get("thin"):
+            m["deep_thin"] = int(m.get("deep_thin") or 0) + 1
+        if q.get("rich"):
+            m["deep_rich"] = int(m.get("deep_rich") or 0) + 1
+        if flags.get("has_rag"):
+            m["deep_rag_hits"] = int(m.get("deep_rag_hits") or 0) + 1
+        if flags.get("has_facts"):
+            m["deep_with_facts"] = int(m.get("deep_with_facts") or 0) + 1
+        if policy_skip:
+            m["policy_skips"] = int(m.get("policy_skips") or 0) + 1
+    # do not save every candidate — batch save from add_decision / set_focus
+
+
 def add_decision(decision: dict[str, Any], *, maxlen: int = 50) -> None:
     with _lock:
         buf = list(_state.get("last_decisions") or [])
@@ -131,6 +157,21 @@ def add_decision(decision: dict[str, Any], *, maxlen: int = 50) -> None:
             m["waits"] = int(m.get("waits") or 0) + 1
         elif act == "WAKE":
             m["wakes"] = int(m.get("wakes") or 0) + 1
+        # optional quality attached on decision
+        q = decision.get("quality") if isinstance(decision.get("quality"), dict) else None
+        if q is not None:
+            flags = q.get("flags") if isinstance(q.get("flags"), dict) else {}
+            m["deep_passes"] = int(m.get("deep_passes") or 0) + 1
+            if q.get("thin"):
+                m["deep_thin"] = int(m.get("deep_thin") or 0) + 1
+            if q.get("rich"):
+                m["deep_rich"] = int(m.get("deep_rich") or 0) + 1
+            if flags.get("has_rag"):
+                m["deep_rag_hits"] = int(m.get("deep_rag_hits") or 0) + 1
+            if flags.get("has_facts"):
+                m["deep_with_facts"] = int(m.get("deep_with_facts") or 0) + 1
+        if decision.get("policy_skip"):
+            m["policy_skips"] = int(m.get("policy_skips") or 0) + 1
     save_state()
     try:
         from services.dca_sniper.redis_bus import publish_event

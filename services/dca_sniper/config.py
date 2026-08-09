@@ -104,6 +104,15 @@ def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
         "deep_include_rag": bool(sec.get("deep_include_rag", True)),
         "deep_apply_policy": bool(sec.get("deep_apply_policy", True)),
         "deep_policy_shadow": bool(sec.get("deep_policy_shadow", False)),
+        "deep_structure_multi_tf": bool(sec.get("deep_structure_multi_tf", True)),
+        "deep_structure_timeframes": sec.get("deep_structure_timeframes")
+        or ["15m", "1h", "4h"],
+        "deep_min_context_signals": int(sec.get("deep_min_context_signals") or 3),
+        "deep_require_context_for_heavy": bool(
+            sec.get("deep_require_context_for_heavy", True)
+        ),
+        "deep_allow_small_if_thin": bool(sec.get("deep_allow_small_if_thin", True)),
+        "deep_block_if_zero_signals": bool(sec.get("deep_block_if_zero_signals", False)),
         "in_process_tick": bool(in_proc),
         "require_reclaim_for_dca": bool(sec.get("require_reclaim_for_dca", True)),
         "require_reclaim_for_heavy": bool(sec.get("require_reclaim_for_heavy", True)),

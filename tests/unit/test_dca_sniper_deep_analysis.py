@@ -237,5 +237,128 @@ class TestChecklistMemoryFacts(unittest.TestCase):
         self.assertIn("rag_hits", mb.get("reason") or "")
 
 
+class TestContextQuality(unittest.TestCase):
+    def test_thin_blocks_heavy(self):
+        from services.dca_sniper.quality import apply_quality_to_size, context_quality
+
+        thin_cand = _row(entry_bias="neutral")  # almost no signals
+        q = context_quality(thin_cand, {}, min_signals=3)
+        self.assertTrue(q["thin"])
+        usdt, reason, extra = apply_quality_to_size(
+            usdt=1500,
+            size_reason="DCA_HEAVY",
+            quality=q,
+            cfg=_cfg(deep_require_context_for_heavy=True, deep_allow_small_if_thin=True),
+        )
+        self.assertLessEqual(usdt, 500)
+        self.assertIn("thin", reason.lower())
+
+    def test_rich_keeps_heavy(self):
+        from services.dca_sniper.quality import apply_quality_to_size, context_quality
+
+        rich = _row(
+            entry_bias="prefer",
+            rag_hit_count=2,
+            dca_lesson_count=1,
+            fact_event_count=1,
+            fact_summary="ok",
+            reclaim_ok=True,
+            free_fall=False,
+            rsi=30,
+            funding_rate_pct=0.01,
+            cash_mode="STEADY",
+        )
+        q = context_quality(rich, {}, min_signals=3)
+        self.assertFalse(q["thin"])
+        usdt, reason, extra = apply_quality_to_size(
+            usdt=1500,
+            size_reason="DCA_HEAVY",
+            quality=q,
+            cfg=_cfg(deep_require_context_for_heavy=True),
+        )
+        self.assertEqual(usdt, 1500)
+        self.assertEqual(reason, "DCA_HEAVY")
+        self.assertEqual(extra, [])
+
+
+class TestMultiTfStructure(unittest.TestCase):
+    def test_aggregate_free_fall_any(self):
+        from services.dca_sniper import structure as st
+
+        with patch.object(
+            st,
+            "structure_flags_for_symbol",
+            side_effect=[
+                {"free_fall": False, "reclaim_ok": False, "structure_ok": False},
+                {"free_fall": True, "reclaim_ok": False, "structure_ok": False},
+                {"free_fall": False, "reclaim_ok": True, "structure_ok": True},
+            ],
+        ):
+            m = st.structure_flags_multi_tf("X/USDT", ("15m", "1h", "4h"))
+        self.assertTrue(m["free_fall"])
+        self.assertTrue(m["reclaim_ok"])  # 4h reclaim
+        self.assertFalse(m["structure_ok"])  # free_fall wins
+        self.assertIn("1h", m["structure_by_tf"])
+
+
+class TestDeepQualityGateIntegration(unittest.TestCase):
+    def test_thin_context_demotes_heavy_in_deep_pass(self):
+        # Almost no context channels → thin → demote heavy
+        ctx = _ctx(
+            entry_bias="neutral",
+            cash_mode="",
+            size_bias=1.0,
+            rag_hit_count=0,
+            dca_lesson_count=0,
+            fact_event_count=0,
+            fact_summary="",
+        )
+
+        def fake_size(row, analysis, cash, cfg):
+            return 1800.0, "DCA_HEAVY"
+
+        with patch(
+            "services.dca_sniper.deep_analysis._build_context", return_value=ctx
+        ), patch(
+            # no structure either
+            "services.dca_sniper.deep_analysis._enrich_structure_multi_tf",
+            side_effect=lambda r, c: {
+                **r,
+                "reclaim_ok": None,
+                "free_fall": None,
+                "structure_ok": None,
+            },
+        ), patch(
+            "services.dca_sniper.deep_analysis._enrich_social_soft",
+            side_effect=lambda r: r,
+        ), patch(
+            "strategies.dca_policy.emit_dca_policy_audit", return_value="ok"
+        ), patch(
+            "strategies.dca_policy.evaluate_dca_policy",
+            return_value=DcaPolicyResult(size_mult=1.0, skip=False, reason_codes=("steady",)),
+        ):
+            r = deep_analyze_candidate(
+                _row(
+                    reclaim_ok=None,
+                    free_fall=None,
+                    loss_pct=-30,
+                    rsi=None,
+                    atr_pct=None,
+                    funding_rate_pct=None,
+                    cash_mode="",
+                ),
+                {"spendable_dca": 5000, "equity": 100000, "cash_mode": ""},
+                _cfg(
+                    deep_min_context_signals=3,
+                    deep_require_context_for_heavy=True,
+                    deep_allow_small_if_thin=True,
+                ),
+                size_fn=fake_size,
+            )
+        self.assertTrue(r.quality.get("thin"), r.quality)
+        self.assertNotEqual(r.size_reason, "DCA_HEAVY")
+        self.assertIn("quality", r.checklist)
+
+
 if __name__ == "__main__":
     unittest.main()

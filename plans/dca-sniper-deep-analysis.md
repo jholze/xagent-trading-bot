@@ -2,7 +2,7 @@
 
 **Ticket:** [#236](https://github.com/jholze/xagent-trading-bot/issues/236)  
 **Branch:** `feat/dca-sniper-deep-memory`  
-**Status:** Implemented locally (tests green) — **no deploy** until operator review  
+**Status:** Implemented + quality gates (tests green) — **no deploy** until operator review  
 **Date:** 2026-08-09  
 
 ---
@@ -107,3 +107,15 @@ No schema migration.
 - Code + unit proof above  
 - Short demo script or unittest output showing “context filled → decision”  
 - **No deploy** until you say so  
+
+---
+
+## 8. Quality gates (follow-up hardening)
+
+| Gate | Behavior |
+|------|----------|
+| `context_quality` | Counts profile/rag/lessons/facts/structure/ta/funding/cash_mode |
+| `deep_min_context_signals` | default 3 — below = **thin** |
+| `deep_require_context_for_heavy` | thin ⇒ demote **HEAVY → SMALL** (or block) |
+| multi-TF structure | 15m/1h/4h aggregate free_fall/reclaim |
+| metrics | `deep_passes`, `deep_thin`, `deep_rich`, `deep_rag_hits`, `deep_with_facts`, `policy_skips` |
