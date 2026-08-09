@@ -131,9 +131,11 @@ def _enrich_santiment(
         pack = build_santiment_enrichment(
             str(row.get("symbol") or ""),
             config_raw=config_raw,
-            fetch_asset=bool(cfg.get("deep_santiment_asset_fetch", True)),
-            asset_ttl_sec=float(cfg.get("deep_santiment_asset_ttl_sec") or 1800),
+            # Default OFF: global Redis regime is free; per-asset burns API quota.
+            fetch_asset=bool(cfg.get("deep_santiment_asset_fetch", False)),
+            asset_ttl_sec=float(cfg.get("deep_santiment_asset_ttl_sec") or 21600),
             lean=bool(cfg.get("deep_santiment_lean", True)),
+            micro=bool(cfg.get("deep_santiment_micro", True)),
         )
         enriched = apply_santiment_to_candidate(row, pack)
         return enriched, pack

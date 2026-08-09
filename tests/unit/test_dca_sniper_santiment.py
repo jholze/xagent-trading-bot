@@ -153,7 +153,7 @@ class TestBuildEnrichment(unittest.TestCase):
             },
         ):
             pack = build_santiment_enrichment(
-                "BTC/USDT", fetch_asset=True, config_raw={}
+                "BTC/USDT", fetch_asset=False, config_raw={}
             )
         self.assertTrue(pack["social_block"])
         self.assertEqual(pack["regime"], "CRASH")

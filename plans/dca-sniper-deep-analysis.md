@@ -149,11 +149,14 @@ Wired in: `deep_analysis._enrich_santiment` + `apply_santiment_size` after evide
 
 | Config | Default | Notes |
 |--------|---------|-------|
-| `deep_santiment_enabled` | true | Master for deep path |
-| `deep_santiment_asset_fetch` | true | Needs API key; else global-only |
-| `deep_santiment_asset_ttl_sec` | 1800 | Rate-limit thrift (Pro ~5k calls/mo) |
-| `deep_santiment_lean` | true | Fewer metrics per asset |
+| `deep_santiment_enabled` | true | Master for deep path (global Redis) |
+| `deep_santiment_asset_fetch` | **false** | Opt-in only — burns SanAPI quota |
+| `deep_santiment_asset_ttl_sec` | 21600 | 6h cache if asset fetch on |
+| `deep_santiment_micro` | true | 1 metric (DAA) per asset |
 | `deep_santiment_block_buys` | true | Honor CRASH global block |
+
+**Sidecar thrift (Pro budget):** poll **1h**, **3 core** metrics (btc/eth DAA + btc vol),
+optional social+funding every 6th poll, **no** lag double-fetch. Target ~2–3k calls/mo.
 
 Tests: `tests/unit/test_dca_sniper_santiment.py`  
 Quality flag: `has_santiment` in `context_quality`.

@@ -207,6 +207,90 @@ class TestSantimentClientHelpers(unittest.TestCase):
         self.assertGreaterEqual(cfg["poll_interval_sec"], 1800)
 
 
+class TestSantimentLeanAndAsset(unittest.TestCase):
+    """Lean profile (staging #237) + sniper micro asset fetch (deep-memory)."""
+
+    def _fresh_series(self, v0=100.0, v1=110.0):
+        now = datetime.now(timezone.utc)
+        return [
+            {
+                "datetime": (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "value": v0,
+            },
+            {
+                "datetime": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "value": v1,
+            },
+        ]
+
+    def test_lean_fetch_four_core_no_social(self):
+        from services.santiment_sidecar.client import SantimentClient
+
+        client = SantimentClient(
+            "fake-key",
+            inter_request_delay_sec=0,
+            fetch_social=False,
+            fetch_leverage=False,
+            fetch_dev=False,
+        )
+        calls = {"n": 0}
+
+        def fake_ts(**kwargs):
+            calls["n"] += 1
+            return self._fresh_series()
+
+        with patch.object(client, "get_metric_timeseries", side_effect=fake_ts):
+            res = client.fetch_features()
+        self.assertEqual(calls["n"], 4)
+        self.assertEqual(res.meta.get("metric_profile"), "lean")
+        self.assertIn("btc_daa", res.meta["metrics_ok"])
+        self.assertIn("eth_vol_1d", res.meta["metrics_ok"])
+        self.assertNotIn("btc_social_volume", res.meta["metrics_ok"])
+        self.assertNotIn("social", res.meta.get("policy_inputs") or [])
+
+    def test_lean_no_leverage_research_double_fetch(self):
+        from services.santiment_sidecar.client import SantimentClient
+
+        client = SantimentClient(
+            "fake-key",
+            inter_request_delay_sec=0,
+            fetch_social=False,
+            fetch_leverage=True,
+            fetch_dev=False,
+            leverage_research_fallback=False,
+        )
+        calls = {"n": 0}
+
+        def fake_ts(**kwargs):
+            calls["n"] += 1
+            metric = kwargs.get("metric") or ""
+            if metric in ("daily_active_addresses", "price_volatility_1d"):
+                return self._fresh_series()
+            return []  # funding/OI empty — must not lag-retry when fallback off
+
+        with patch.object(client, "get_metric_timeseries", side_effect=fake_ts):
+            res = client.fetch_features()
+        # 4 lean + 2 leverage live fails = 6 (not 8 with research lag)
+        self.assertEqual(calls["n"], 6)
+        self.assertFalse(res.meta.get("leverage_fresh"))
+
+    def test_asset_micro_one_call(self):
+        from services.santiment_sidecar.client import SantimentClient
+
+        client = SantimentClient("fake-key", inter_request_delay_sec=0)
+        calls = {"n": 0}
+
+        def fake_ts(**kwargs):
+            calls["n"] += 1
+            return self._fresh_series()
+
+        with patch.object(client, "get_metric_timeseries", side_effect=fake_ts):
+            out = client.fetch_asset_signals("ethereum", micro=True, try_research=False)
+        self.assertEqual(out["meta"]["api_calls_this_fetch"], 1)
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("daa", out["meta"]["metrics_ok"])
+
+
 class TestSantimentSnapshot(unittest.TestCase):
     def test_meta_on_snapshot(self):
         snap = build_snapshot(

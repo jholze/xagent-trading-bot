@@ -116,13 +116,14 @@ def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
         "deep_gather_evidence": bool(sec.get("deep_gather_evidence", True)),
         "deep_news_lookback_hours": float(sec.get("deep_news_lookback_hours") or 72),
         "deep_hard_news_blocks_heavy": bool(sec.get("deep_hard_news_blocks_heavy", True)),
-        # Santiment Pro: global regime via Redis snapshot + optional per-asset SanAPI
+        # Santiment Pro: global regime via Redis (0 API). Asset fetch opt-in + thrifty.
         "deep_santiment_enabled": bool(sec.get("deep_santiment_enabled", True)),
-        "deep_santiment_asset_fetch": bool(sec.get("deep_santiment_asset_fetch", True)),
+        "deep_santiment_asset_fetch": bool(sec.get("deep_santiment_asset_fetch", False)),
         "deep_santiment_asset_ttl_sec": float(
-            sec.get("deep_santiment_asset_ttl_sec") or 1800
+            sec.get("deep_santiment_asset_ttl_sec") or 21600
         ),
         "deep_santiment_lean": bool(sec.get("deep_santiment_lean", True)),
+        "deep_santiment_micro": bool(sec.get("deep_santiment_micro", True)),
         "deep_santiment_block_buys": bool(sec.get("deep_santiment_block_buys", True)),
         "in_process_tick": bool(in_proc),
         "require_reclaim_for_dca": bool(sec.get("require_reclaim_for_dca", True)),

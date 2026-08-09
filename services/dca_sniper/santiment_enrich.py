@@ -75,8 +75,8 @@ _SLUG_MAP: dict[str, str] = {
 
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
-# Long TTL: Sanbase Pro is rate-limited (~5k calls/mo); each asset fetch is N metrics.
-_DEFAULT_TTL = 1800.0  # 30 min
+# Long TTL: Sanbase Pro is rate-limited (~5k calls/mo). Prefer global Redis only.
+_DEFAULT_TTL = 21600.0  # 6h — asset API is optional/expensive
 
 
 def resolve_santiment_slug(symbol: str) -> str | None:
@@ -155,15 +155,17 @@ def fetch_asset_santiment(
     ttl_sec: float | None = None,
     force: bool = False,
     lean: bool = True,
+    micro: bool = True,
 ) -> dict[str, Any]:
     """Per-asset SanAPI bundle (cached). Fail-open.
 
-    Needs SANTIMENT_API_KEY on the sniper process (optional). Without key,
-    returns available=False — global regime snapshot still works via Redis.
+    Prefer **off** in sniper config — global regime via Redis is enough and free
+    of extra API calls. When enabled: micro=1 metric (DAA), 6h TTL, no lag retry.
     """
     slug = resolve_santiment_slug(symbol)
     ttl = float(ttl_sec if ttl_sec is not None else _DEFAULT_TTL)
-    cache_key = f"asset:{'lean' if lean else 'full'}:{slug or symbol}"
+    mode = "micro" if micro else ("lean" if lean else "full")
+    cache_key = f"asset:{mode}:{slug or symbol}"
     if not force:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -188,11 +190,16 @@ def fetch_asset_santiment(
         from services.santiment_sidecar.client import SantimentClient
 
         client = SantimentClient(key)
-        raw = client.fetch_asset_signals(slug, lean=lean)
+        raw = client.fetch_asset_signals(
+            slug, lean=lean, micro=micro, try_research=False
+        )
         features = dict(raw.get("features") or {})
         meta = dict(raw.get("meta") or {})
-        # available if any live metric; research-only still useful as soft score
-        live = [k for k in (meta.get("metrics_ok") or []) if not str(k).startswith("research_")]
+        live = [
+            k
+            for k in (meta.get("metrics_ok") or [])
+            if not str(k).startswith("research_")
+        ]
         out = {
             "available": bool(live or features),
             "symbol": symbol,
@@ -202,6 +209,7 @@ def fetch_asset_santiment(
             "meta": meta,
             "policy_fresh": bool(meta.get("fresh")),
             "from_cache": False,
+            "api_calls": meta.get("api_calls_this_fetch"),
         }
         _cache_set(cache_key, out, ttl)
         return out
@@ -380,14 +388,16 @@ def build_santiment_enrichment(
     symbol: str,
     *,
     config_raw: dict | None = None,
-    fetch_asset: bool = True,
+    fetch_asset: bool = False,
     api_key: str | None = None,
     asset_ttl_sec: float | None = None,
     lean: bool = True,
+    micro: bool = True,
 ) -> dict[str, Any]:
-    """Full Santiment pack for one sniper candidate.
+    """Santiment pack for one sniper candidate.
 
-    Always includes global regime (Redis/store). Per-asset only if enabled + key.
+    Always includes global regime (Redis/store) — **zero** SanAPI calls.
+    Per-asset SanAPI only if fetch_asset=True (default off; thrift).
     """
     global_pol = get_global_santiment(config_raw)
     snap = get_global_snapshot()
@@ -400,7 +410,11 @@ def build_santiment_enrichment(
     }
     if fetch_asset:
         asset = fetch_asset_santiment(
-            symbol, api_key=api_key, ttl_sec=asset_ttl_sec, lean=lean
+            symbol,
+            api_key=api_key,
+            ttl_sec=asset_ttl_sec,
+            lean=lean,
+            micro=micro,
         )
         asset["score"] = score_asset_signals(dict(asset.get("features") or {}))
 
