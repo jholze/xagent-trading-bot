@@ -80,6 +80,17 @@ def build_radar_snapshot() -> dict[str, Any]:
             pos = dict(row.get("position") or {})
             entry = float(pos.get("average_entry") or row.get("average_entry") or 0)
             params = dict(row.get("strategy_params") or {})
+            lock_active = False
+            lock_modes: list[str] = []
+            try:
+                from strategies.position_lock import get_lock, lock_is_active
+
+                lk = get_lock(pos)
+                if lk and lock_is_active(lk):
+                    lock_active = True
+                    lock_modes = list(lk.get("modes") or [])
+            except Exception:
+                pass
             out.append(
                 {
                     "symbol": row["symbol"],
@@ -89,6 +100,21 @@ def build_radar_snapshot() -> dict[str, Any]:
                     "recent_high": float(
                         pos.get("recent_high") or row.get("recent_high") or 0
                     ),
+                    "peak_epoch_high": float(pos.get("peak_epoch_high") or 0) or None,
+                    "strategy_tier": pos.get("strategy_tier") or row.get("strategy_tier"),
+                    "first_buy_at": pos.get("first_buy_at") or pos.get("entry_at"),
+                    "profit_armed_at": pos.get("profit_armed_at"),
+                    "trail_tp_steps": int(pos.get("trail_tp_steps") or 0),
+                    "sold_percent": float(pos.get("sold_percent") or 0),
+                    "dca_rounds": int(pos.get("dca_rounds") or 0),
+                    # DCA sniper / recovery_hold (parity with gate_ws_live_dashboard)
+                    "recovery_hold": bool(pos.get("recovery_hold")),
+                    "sniper_focus": bool(pos.get("sniper_focus")),
+                    "dca_heavy_used": bool(pos.get("dca_heavy_used")),
+                    "last_sniper_score": pos.get("last_sniper_score"),
+                    "last_sniper_reason": pos.get("last_sniper_reason"),
+                    "position_locked": lock_active,
+                    "lock_modes": lock_modes,
                     "ttp": params.get("trailing_take_profit")
                     or {"enabled": True, "arm_gain_pct": 12, "min_gain_pct": 10},
                     "trailing_stop": params.get("trailing_stop")
@@ -202,6 +228,8 @@ def build_radar_snapshot() -> dict[str, Any]:
     n_near = sum(1 for e in exits if e.get("near_exit") and not e.get("would_exit"))
     n_profit = sum(1 for e in exits if (e.get("gain_pct") is not None and e["gain_pct"] > 0))
     n_loss = sum(1 for e in exits if (e.get("gain_pct") is not None and e["gain_pct"] < 0))
+    n_hold = sum(1 for e in exits if e.get("recovery_hold") or e.get("sniper_focus"))
+    n_hold_block = sum(1 for e in exits if e.get("blocked_by_hold"))
     total_pnl = sum(float(e.get("pnl_usdt") or 0) for e in exits)
     total_notional = sum(float(e.get("notional_usdt") or 0) for e in exits)
 
@@ -213,6 +241,14 @@ def build_radar_snapshot() -> dict[str, Any]:
         # rough: not accurate without start time
         rate = 0.0
 
+    dca_sniper: dict[str, Any] = {"ok": False, "source": None, "healthy": False}
+    try:
+        from scripts.gate_ws_live_dashboard import fetch_dca_sniper_status
+
+        dca_sniper = fetch_dca_sniper_status()
+    except Exception as exc:
+        dca_sniper = {"ok": False, "source": None, "healthy": False, "error": str(exc)[:80]}
+
     return {
         "type": "snapshot",
         "connected": connected,
@@ -220,6 +256,7 @@ def build_radar_snapshot() -> dict[str, Any]:
         "last_stage": "tick_in" if connected else "connect",
         "stages": {},
         "bot_hub": bot_hub,
+        "dca_sniper": dca_sniper,
         "stats": {
             "ticker_updates": ticks,
             "updates_per_sec": rate,
@@ -236,6 +273,8 @@ def build_radar_snapshot() -> dict[str, Any]:
             "armed": 0,
             "in_profit": n_profit,
             "in_loss": n_loss,
+            "recovery_hold": n_hold,
+            "hold_blocked": n_hold_block,
             "total_pnl_usdt": round(total_pnl, 2),
             "total_notional_usdt": round(total_notional, 2),
         },

@@ -111,6 +111,197 @@ def _resolve_trail_pct(peak_gain_pct: float, ttp: dict) -> float:
     return lo + t * (hi - lo)
 
 
+def fetch_dca_sniper_status() -> dict[str, Any]:
+    """Best-effort DCA sniper health for the live board.
+
+    Order: HTTP (DCA_SNIPER_URL) → Redis heartbeat/state → local state file
+    → bot config flag only. Never raises; board must stay up if sniper is down.
+    """
+    out: dict[str, Any] = {
+        "ok": False,
+        "source": None,
+        "enabled": None,
+        "standalone": None,
+        "redis": None,
+        "healthy": False,
+        "heartbeat": None,
+        "focus": [],
+        "open_focus_holds": None,
+        "last_cycle_at": None,
+        "error": None,
+    }
+
+    def _focus_symbols(raw: Any) -> list[str]:
+        if isinstance(raw, dict):
+            return [str(k) for k in raw.keys() if k]
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for x in raw:
+            if isinstance(x, dict) and x.get("symbol"):
+                out.append(str(x["symbol"]))
+            elif isinstance(x, str) and x and not x.startswith("{"):
+                out.append(x)
+        return out
+
+    def _normalize(payload: dict[str, Any], *, source: str) -> dict[str, Any]:
+        st = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        focus = _focus_symbols(payload.get("focus") or st.get("focus") or [])
+        last_audit = payload.get("last_audit") if isinstance(payload.get("last_audit"), dict) else {}
+        return {
+            "ok": bool(payload.get("ok", True)),
+            "source": source,
+            "enabled": payload.get("enabled"),
+            "standalone": payload.get("standalone"),
+            "redis": payload.get("redis"),
+            "healthy": True,
+            "heartbeat": payload.get("heartbeat") or st.get("updated_at") or st.get("last_cycle_at"),
+            "focus": focus[:12],
+            "open_focus_holds": payload.get("open_focus_holds")
+            if payload.get("open_focus_holds") is not None
+            else (len(focus) if focus else None),
+            "last_cycle_at": last_audit.get("ts")
+            or st.get("last_cycle_at")
+            or payload.get("last_cycle_at"),
+            "watch": payload.get("watch") or [],
+            "config": payload.get("config") if isinstance(payload.get("config"), dict) else None,
+            "error": None,
+        }
+
+    # 1) HTTP: standalone service
+    base = (
+        os.environ.get("DCA_SNIPER_URL")
+        or os.environ.get("DCA_SNIPER_PUBLIC_URL")
+        or ""
+    ).strip().rstrip("/")
+    if base:
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                f"{base}/status",
+                headers={"Accept": "application/json", "User-Agent": "exit-radar/1"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                body = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            if isinstance(body, dict):
+                return _normalize(body, source="http_status")
+        except Exception as e:
+            out["error"] = f"http:{type(e).__name__}"
+            try:
+                import urllib.request
+
+                req = urllib.request.Request(
+                    f"{base}/health",
+                    headers={"Accept": "application/json", "User-Agent": "exit-radar/1"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=1.2) as resp:
+                    body = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+                if isinstance(body, dict) and body.get("ok"):
+                    return _normalize({**body, "ok": True}, source="http_health")
+            except Exception as e2:
+                out["error"] = f"http:{type(e2).__name__}"
+
+    # 2) Redis heartbeat + state
+    try:
+        from services.dca_sniper.redis_bus import (
+            KEY_HEALTH,
+            key_prefix,
+            load_state_redis,
+            redis_available,
+        )
+        from bus.redis_client import get_redis
+
+        if redis_available():
+            c = get_redis()
+            hb = None
+            if c is not None:
+                try:
+                    pfx = key_prefix()
+                    if not pfx.endswith(":"):
+                        pfx = pfx + ":"
+                    raw_hb = c.get(f"{pfx}{KEY_HEALTH}")
+                    if raw_hb:
+                        hb = (
+                            raw_hb.decode()
+                            if isinstance(raw_hb, (bytes, bytearray))
+                            else str(raw_hb)
+                        )
+                except Exception:
+                    pass
+            st = load_state_redis() or {}
+            focus = _focus_symbols(st.get("focus") or [])
+            healthy = bool(hb) or bool(st)
+            if healthy:
+                return {
+                    "ok": True,
+                    "source": "redis",
+                    "enabled": True,
+                    "standalone": True,
+                    "redis": True,
+                    "healthy": True,
+                    "heartbeat": hb or st.get("updated_at"),
+                    "focus": focus[:12],
+                    "open_focus_holds": len(focus) if focus else None,
+                    "last_cycle_at": st.get("last_cycle_at"),
+                    "watch": st.get("watch") or [],
+                    "config": None,
+                    "error": None,
+                }
+            out["redis"] = True
+            out["source"] = "redis"
+            out["healthy"] = False
+            out["error"] = out.get("error") or "redis_no_heartbeat"
+    except Exception as e:
+        out["error"] = out.get("error") or f"redis:{type(e).__name__}"
+
+    # 3) Local state file (operator / same host)
+    try:
+        p = ROOT / "data" / "dca_sniper_state.json"
+        if p.is_file():
+            st = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(st, dict):
+                focus = _focus_symbols(st.get("focus") or [])
+                return {
+                    "ok": True,
+                    "source": "local_file",
+                    "enabled": None,
+                    "standalone": None,
+                    "redis": None,
+                    "healthy": True,
+                    "heartbeat": st.get("updated_at") or st.get("last_cycle_at"),
+                    "focus": focus[:12],
+                    "open_focus_holds": len(focus),
+                    "last_cycle_at": st.get("last_cycle_at"),
+                    "watch": [],
+                    "config": None,
+                    "error": None,
+                }
+    except Exception as e:
+        out["error"] = out.get("error") or f"file:{type(e).__name__}"
+
+    # 4) Config flag only (bot process may know enabled)
+    try:
+        from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled
+
+        cfg = dca_sniper_config()
+        out["enabled"] = dca_sniper_enabled()
+        out["source"] = "config"
+        out["config"] = {
+            "max_focus_slots": cfg.get("max_focus_slots"),
+            "in_process_tick": cfg.get("in_process_tick"),
+            "ws_enabled": cfg.get("ws_enabled"),
+        }
+        out["ok"] = True
+        out["healthy"] = False  # service not confirmed online
+    except Exception:
+        pass
+
+    return out
+
+
 def load_open_positions(scope: str) -> list[dict[str, Any]]:
     """Load open ledger positions + resolved exit params (read-only)."""
     os.environ.setdefault("DEMO_MODE", "1")
@@ -171,6 +362,19 @@ def load_open_positions(scope: str) -> list[dict[str, Any]]:
         if sl is None:
             sl = global_sl
 
+        # Position lock summary (optional)
+        lock_active = False
+        lock_modes: list[str] = []
+        try:
+            from strategies.position_lock import get_lock, lock_is_active
+
+            lk = get_lock(pos)
+            if lk and lock_is_active(lk):
+                lock_active = True
+                lock_modes = list(lk.get("modes") or [])
+        except Exception:
+            pass
+
         out.append(
             {
                 "symbol": symbol,
@@ -178,12 +382,21 @@ def load_open_positions(scope: str) -> list[dict[str, Any]]:
                 "entry": entry,
                 "amount": float(pos.get("amount") or 0),
                 "recent_high": float(pos.get("recent_high") or 0),
+                "peak_epoch_high": float(pos.get("peak_epoch_high") or 0) or None,
                 "strategy_tier": pos.get("strategy_tier"),
                 "first_buy_at": pos.get("first_buy_at") or pos.get("entry_at"),
                 "profit_armed_at": pos.get("profit_armed_at"),
                 "trail_tp_steps": int(pos.get("trail_tp_steps") or 0),
                 "sold_percent": float(pos.get("sold_percent") or 0),
                 "dca_rounds": int(pos.get("dca_rounds") or 0),
+                # DCA sniper / recovery_hold (live board)
+                "recovery_hold": bool(pos.get("recovery_hold")),
+                "sniper_focus": bool(pos.get("sniper_focus")),
+                "dca_heavy_used": bool(pos.get("dca_heavy_used")),
+                "last_sniper_score": pos.get("last_sniper_score"),
+                "last_sniper_reason": pos.get("last_sniper_reason"),
+                "position_locked": lock_active,
+                "lock_modes": lock_modes,
                 "ttp": {
                     "enabled": bool(ttp.get("enabled", False)),
                     "arm_gain_pct": float(ttp.get("arm_gain_pct") or 12),
@@ -250,7 +463,17 @@ def evaluate_position(
     # Live peak tracking for viz (starts from ledger recent_high or max(entry, price))
     ledger_high = float(pos.get("recent_high") or 0)
     live_high = float(pos.get("_live_high") or 0)
-    recent_high = max(ledger_high, live_high, entry, price)
+    epoch = float(pos.get("peak_epoch_high") or 0)
+    recovery_hold_flag = bool(pos.get("recovery_hold") or pos.get("sniper_focus"))
+    # Under recovery_hold: prefer post-DCA epoch peak (never pre-dump lifetime high)
+    if recovery_hold_flag and epoch > 0:
+        recent_high = max(epoch, price, live_high if live_high and live_high <= epoch * 1.5 else 0)
+        if recent_high <= 0:
+            recent_high = max(epoch, price)
+    else:
+        recent_high = max(ledger_high, live_high, entry, price)
+        if epoch > 0:
+            recent_high = max(recent_high, epoch)
     pos["_live_high"] = recent_high
 
     gain = (price / entry - 1.0) * 100.0
@@ -317,20 +540,22 @@ def evaluate_position(
 
     # --- Profit max lifetime ---
     hold_h = _hours_since(pos.get("first_buy_at"))
+    life_arm = float(life.get("arm_gain_pct") or 3)
+    life_max_h = float(life.get("max_hours") or 96)
+    life_min_g = float(life.get("min_gain_pct") or 1)
+    life_skip_peak = float(life.get("skip_if_peak_above_pct") or 999)
     profit_armed = bool(pos.get("profit_armed_at")) or (
-        life.get("enabled") and peak_gain >= float(life["arm_gain_pct"])
+        life.get("enabled") and peak_gain >= life_arm
     )
     # arm in viz when peak crosses life arm (don't mutate ledger)
-    if life.get("enabled") and peak_gain >= float(life["arm_gain_pct"]):
+    if life.get("enabled") and peak_gain >= life_arm:
         profit_armed = True
-    life_skip = peak_gain >= float(life["skip_if_peak_above_pct"])
+    life_skip = peak_gain >= life_skip_peak
     life_would = False
     life_progress = 0.0
     if life.get("enabled") and profit_armed and not life_skip and hold_h is not None:
-        life_progress = min(1.0, hold_h / max(0.01, float(life["max_hours"])))
-        life_would = (
-            hold_h >= float(life["max_hours"]) and gain >= float(life["min_gain_pct"])
-        )
+        life_progress = min(1.0, hold_h / max(0.01, life_max_h))
+        life_would = hold_h >= life_max_h and gain >= life_min_g
 
     # --- Soft TA gates (thresholds only — no RSI/BB without candles) ---
     rsi_gate = pos.get("rsi_sell_min_gain_pct")
@@ -371,14 +596,56 @@ def evaluate_position(
     if next_tier is not None and dist_next_tier is not None and dist_next_tier <= 3.0:
         near_sources.append(f"tp_tier_{int(next_tier)}")
 
+    # recovery_hold / sniper_focus: mirror bot sell gates (Hard SL still fires)
+    recovery_hold = recovery_hold_flag
+    blocked_by_hold: list[str] = []
+    raw_would = list(would_sources)
+    raw_near = list(near_sources)
+    if recovery_hold:
+        hold_blockable = {
+            "trailing_take_profit",
+            "trailing_stop",
+            "partial_stop",
+            "profit_max_lifetime",
+            "safety_tp",
+        }
+        blocked_by_hold = [
+            s for s in would_sources if s in hold_blockable or s.startswith("tp_tier_")
+        ]
+        would_sources = [s for s in would_sources if s not in blocked_by_hold]
+        near_blocked = [
+            s for s in near_sources if s in hold_blockable or s.startswith("tp_tier_")
+        ]
+        blocked_by_hold = list(dict.fromkeys(blocked_by_hold + near_blocked))
+        near_sources = [s for s in near_sources if s not in near_blocked]
+        if ttp_would:
+            ttp_would = False
+        if ts_would:
+            ts_would = False
+        if life_would and "profit_max_lifetime" in blocked_by_hold:
+            life_would = False
+
+    # BE+ distance for hold promote (avg × 1.02)
+    be_buffer = 2.0
+    try:
+        from strategies.recovery_hold import recovery_hold_config
+
+        be_buffer = float(recovery_hold_config().get("be_buffer_pct") or 2.0)
+    except Exception:
+        pass
+    be_price = entry * (1.0 + be_buffer / 100.0)
+    be_dist_pp = ((price / be_price) - 1.0) * 100.0 if be_price > 0 else None
+    be_plus_ready = recovery_hold and price >= be_price
+
     # urgency: higher = more interesting on the radar
     urgency = 0.0
     if would_sources:
         urgency = 100.0 + len(would_sources) * 10
+    elif blocked_by_hold:
+        urgency = 55.0  # hold blocking interesting trail
     elif near_sources:
         urgency = 60.0 + (10.0 - min(ttp_room if ttp_near else 10, 10))
     else:
-        # progress toward interesting states
         if ttp_armed:
             urgency = 40.0 + max(0.0, 10.0 - ttp_room)
         elif peak_gain > 0:
@@ -386,6 +653,8 @@ def evaluate_position(
             urgency = 20.0 * max(0.0, min(1.0, peak_gain / max(arm, 1.0)))
         if gain < 0:
             urgency = max(urgency, 15.0 * min(1.0, abs(gain) / max(sl_pct, 1.0)))
+        if recovery_hold:
+            urgency = max(urgency, 35.0)
 
     notional = float(pos.get("amount") or 0) * price
     pnl_usdt = float(pos.get("amount") or 0) * (price - entry)
@@ -393,6 +662,10 @@ def evaluate_position(
     status = "idle"
     if would_sources:
         status = "would_exit"
+    elif recovery_hold and blocked_by_hold:
+        status = "recovery_hold"
+    elif recovery_hold:
+        status = "recovery_hold"
     elif near_sources:
         status = "near_exit"
     elif ttp_armed or ts_active:
@@ -409,6 +682,7 @@ def evaluate_position(
         "price": price,
         "entry": entry,
         "recent_high": recent_high,
+        "peak_epoch_high": epoch or None,
         "gain_pct": round(gain, 3),
         "peak_gain_pct": round(peak_gain, 3),
         "drop_from_high_pct": round(drop_from_high, 3),
@@ -418,12 +692,26 @@ def evaluate_position(
         "sold_percent": pos.get("sold_percent"),
         "dca_rounds": pos.get("dca_rounds"),
         "strategy_tier": pos.get("strategy_tier"),
+        "recovery_hold": recovery_hold,
+        "sniper_focus": bool(pos.get("sniper_focus")),
+        "dca_heavy_used": bool(pos.get("dca_heavy_used")),
+        "position_locked": bool(pos.get("position_locked")),
+        "lock_modes": list(pos.get("lock_modes") or []),
+        "be_plus": {
+            "buffer_pct": be_buffer,
+            "price": be_price,
+            "dist_pp": round(be_dist_pp, 2) if be_dist_pp is not None else None,
+            "ready": be_plus_ready,
+        },
         "status": status,
         "urgency": round(urgency, 2),
         "would_exit": bool(would_sources),
         "would_sources": would_sources,
         "near_exit": bool(near_sources),
         "near_sources": near_sources,
+        "blocked_by_hold": blocked_by_hold,
+        "raw_would_sources": raw_would,
+        "raw_near_sources": raw_near,
         "prefer_full_close": bool(pos.get("prefer_full_close", True)),
         "ttp": {
             "enabled": bool(ttp.get("enabled")),
@@ -435,8 +723,9 @@ def evaluate_position(
             "room_pp": round(ttp_room, 3),
             "fire_price": ttp_fire_price,
             "min_gain_pct": float(ttp["min_gain_pct"]),
-            "would": ttp_would,
-            "near": ttp_near,
+            "would": ttp_would and not recovery_hold,
+            "near": ttp_near and not recovery_hold,
+            "blocked_hold": recovery_hold and "trailing_take_profit" in blocked_by_hold,
         },
         "trailing_stop": {
             "enabled": bool(ts.get("enabled", True)),
@@ -445,8 +734,9 @@ def evaluate_position(
             "trail_pct": round(ts_trail, 2),
             "room_pp": round(ts_room, 3),
             "fire_price": ts_fire_price,
-            "would": ts_would,
-            "near": ts_near,
+            "would": ts_would and not recovery_hold,
+            "near": ts_near and not recovery_hold,
+            "blocked_hold": recovery_hold and "trailing_stop" in blocked_by_hold,
             "atr_pct_est": atr_pct_est,
         },
         "stop_loss": {
@@ -716,6 +1006,10 @@ class Hub:
         except Exception:
             bot_hub = {"running": False, "disabled": True, "error": True}
 
+        n_hold = sum(1 for e in exits if e.get("recovery_hold") or e.get("sniper_focus"))
+        n_hold_block = sum(1 for e in exits if e.get("blocked_by_hold"))
+        dca_sniper = fetch_dca_sniper_status()
+
         return {
             "type": "snapshot",
             "connected": self.stats["connected"],
@@ -723,6 +1017,7 @@ class Hub:
             "last_stage": self.stats["last_stage"],
             "stages": dict(self.stats["stages"]),
             "bot_hub": bot_hub,
+            "dca_sniper": dca_sniper,
             "stats": {
                 "messages": self.stats["messages"],
                 "ticker_updates": self.stats["ticker_updates"],
@@ -742,6 +1037,8 @@ class Hub:
                 "armed": n_armed,
                 "in_profit": n_profit,
                 "in_loss": n_loss,
+                "recovery_hold": n_hold,
+                "hold_blocked": n_hold_block,
                 "total_pnl_usdt": round(total_pnl, 2),
                 "total_notional_usdt": round(total_notional, 2),
             },

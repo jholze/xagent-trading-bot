@@ -62,7 +62,7 @@
   }
   .brand p {
     margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.35;
-    max-width: 52ch;
+    max-width: 64ch;
   }
   .badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .badge {
@@ -140,11 +140,12 @@
   /* KPI strip — Data moments (fixed min-width per cell) */
   .kpis {
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
+    grid-template-columns: repeat(9, minmax(0, 1fr));
     gap: 8px;
   }
-  @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(4, 1fr); } }
-  @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 1200px) { .kpis { grid-template-columns: repeat(5, 1fr); } }
+  @media (max-width: 720px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 480px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
   .kpi {
     min-height: 76px;
     padding: 12px 12px 10px;
@@ -169,6 +170,7 @@
   .kpi.ok .v { color: var(--ok); }
   .kpi.warn .v { color: var(--warn); }
   .kpi.err .v { color: var(--err); }
+  .kpi.hold .v { color: var(--tick); }
   .kpi .sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 1.2em; }
 
   .grid2 {
@@ -217,6 +219,14 @@
     border-color: rgba(240,198,116,0.4);
     background: linear-gradient(180deg, rgba(240,198,116,0.06), var(--bg2));
   }
+  .pos-card.hold {
+    border-color: rgba(196,181,253,0.45);
+    background: linear-gradient(180deg, rgba(196,181,253,0.08), var(--bg2));
+  }
+  .pos-card.hold.blocked {
+    border-color: rgba(240,198,116,0.5);
+    box-shadow: inset 0 0 0 1px rgba(240,198,116,0.12);
+  }
   @keyframes firePulse {
     0% { box-shadow: 0 0 0 0 rgba(255,92,122,0.35); }
     100% { box-shadow: 0 0 0 12px rgba(255,92,122,0); }
@@ -249,6 +259,9 @@
   .pill.near { color: #1a1400; background: var(--warn); border-color: var(--warn); }
   .pill.ok { color: var(--ok); border-color: rgba(110,231,168,0.35); }
   .pill.armed { color: var(--accent); border-color: rgba(147,176,255,0.35); background: rgba(69,104,255,0.12); }
+  .pill.hold { color: var(--tick); border-color: rgba(196,181,253,0.45); background: rgba(196,181,253,0.12); }
+  .pill.block { color: var(--warn); border-color: rgba(240,198,116,0.4); background: rgba(240,198,116,0.1); }
+  .pill.be { color: var(--ok); border-color: rgba(110,231,168,0.45); background: rgba(110,231,168,0.1); }
 
   /* Interior-like progress rows */
   .tracks { display: grid; gap: 6px; margin-top: 10px; }
@@ -338,12 +351,13 @@
 <header>
   <div class="brand">
     <h1>Exit Radar · Gate WS + Trail Hub</h1>
-    <p>Live ticks · TTP / trailing stop / SL proximity · optional bot hub stats. Interior-style motion: reserved widths, tabular numbers, reduced-motion safe.</p>
+    <p>Live ticks · TTP / trail / SL · recovery_hold blocks false FIRE · DCA sniper status. Reserved widths, tabular nums, reduced-motion safe.</p>
   </div>
   <div class="badges">
     <span class="badge"><span id="connDot" class="dot"></span><span id="connLabel">connecting…</span></span>
     <span class="badge"><span class="dot on" id="sseDot"></span><span>SSE <strong id="sseLabel">…</strong></span></span>
     <span class="badge"><span class="dot" id="hubDot"></span><span>Bot hub <strong id="hubLabel">—</strong></span></span>
+    <span class="badge"><span class="dot" id="sniperDot"></span><span>Sniper <strong id="sniperLabel">—</strong></span></span>
     <span class="badge"><span>stage <strong id="lastStage">idle</strong></span></span>
   </div>
 </header>
@@ -375,6 +389,7 @@
     <div class="kpi"><div class="k">Positions</div><div class="v" id="sPos">0</div><div class="sub">open book</div></div>
     <div class="kpi fire"><div class="k">Would exit</div><div class="v" id="sWould">0</div><div class="sub">radar fire</div></div>
     <div class="kpi warn"><div class="k">Near</div><div class="v" id="sNear">0</div><div class="sub">approaching</div></div>
+    <div class="kpi hold"><div class="k">Recovery hold</div><div class="v" id="sHold">0</div><div class="sub" id="sHoldBlock">blocked 0</div></div>
     <div class="kpi ok"><div class="k">In profit</div><div class="v" id="sProfit">0</div><div class="sub">gain &gt; 0</div></div>
     <div class="kpi err"><div class="k">In loss</div><div class="v" id="sLoss">0</div><div class="sub">under water</div></div>
     <div class="kpi"><div class="k">uPnL</div><div class="v" id="sPnl">—</div><div class="sub" id="sNotional">— USDT</div></div>
@@ -401,9 +416,9 @@
 
 <footer>
   Probe UI on Gate public WS + ledger params. Live bot sells go through <code>exit_realtime</code> (<code>source=exit_ws</code>).
+  Under <code>recovery_hold</code> / <code>sniper_focus</code> the board suppresses trail/TTP/partial/life FIRE (hard SL still fires) and shows raw would-sources as blocked.
   Thresholds: min_delta=<code id="thDelta">?</code>, enqueue=<code id="thEnq">?</code>.
-  Motion: spring-like CSS · reserved badge widths · <code>prefers-reduced-motion</code> honoured.
-  Inspired by interior.dev interaction moments (data / async / notification / action feedback).
+  Sniper badge: HTTP <code>DCA_SNIPER_URL</code> → Redis heartbeat → local state.
 </footer>
 
 <div id="toasts" aria-live="assertive"></div>
@@ -492,10 +507,22 @@ function trackHtml(label, pct, cls, right) {
 
 function statusPills(r) {
   const pills = [];
+  if (r.sniper_focus) pills.push(`<span class="pill hold">sniper</span>`);
+  if (r.recovery_hold) {
+    if (r.be_plus && r.be_plus.ready) pills.push(`<span class="pill be">BE+ ready</span>`);
+    else pills.push(`<span class="pill hold">hold</span>`);
+  }
+  if (r.dca_heavy_used) pills.push(`<span class="pill hold">heavy</span>`);
+  if (r.position_locked) pills.push(`<span class="pill">lock</span>`);
   if (r.would_exit) {
     (r.would_sources||[]).forEach(s => pills.push(`<span class="pill fire">${s}</span>`));
+  } else if ((r.blocked_by_hold||[]).length) {
+    (r.blocked_by_hold||[]).slice(0, 3).forEach(s =>
+      pills.push(`<span class="pill block">∅ ${s}</span>`));
   } else if (r.near_exit) {
     (r.near_sources||[]).forEach(s => pills.push(`<span class="pill near">near ${s}</span>`));
+  } else if (r.status === 'recovery_hold') {
+    pills.push(`<span class="pill hold">recovery_hold</span>`);
   } else if (r.status === 'armed') {
     pills.push(`<span class="pill armed">armed</span>`);
   } else if (r.status === 'in_profit') {
@@ -506,11 +533,18 @@ function statusPills(r) {
   return pills.join('');
 }
 
+function rankRow(r) {
+  if (r.would_exit) return 4;
+  if (r.near_exit) return 3;
+  if ((r.blocked_by_hold||[]).length) return 2;
+  if (r.recovery_hold || r.sniper_focus) return 1;
+  return 0;
+}
+
 function renderPositions(exits) {
   const list = document.getElementById('posList');
   const rows = (exits||[]).slice().sort((a,b) => {
-    const ua = a.would_exit ? 2 : (a.near_exit ? 1 : 0);
-    const ub = b.would_exit ? 2 : (b.near_exit ? 1 : 0);
+    const ua = rankRow(a), ub = rankRow(b);
     if (ub !== ua) return ub - ua;
     return (b.urgency||0) - (a.urgency||0);
   });
@@ -519,15 +553,24 @@ function renderPositions(exits) {
   list.innerHTML = rows.map(r => {
     const g = r.gain_pct;
     const gCls = g == null ? '' : (g>=0 ? 'up' : 'dn');
-    const cardCls = r.would_exit ? 'would' : (r.near_exit ? 'near' : '');
+    const blocked = (r.blocked_by_hold||[]).length > 0;
+    let cardCls = '';
+    if (r.would_exit) cardCls = 'would';
+    else if (r.near_exit) cardCls = 'near';
+    else if (r.recovery_hold || r.sniper_focus) cardCls = blocked ? 'hold blocked' : 'hold';
     const ttp = r.ttp || {};
     const ts = r.trailing_stop || {};
     const sl = r.stop_loss || {};
     const life = r.life || {};
+    const be = r.be_plus || {};
 
     let ttpPct = 0, ttpCls = '', ttpRight = 'off';
     if (ttp.enabled) {
-      if (!ttp.armed) {
+      if (ttp.blocked_hold) {
+        ttpPct = clamp(100 * (ttp.drop_pct||0) / Math.max(ttp.trail_pct||6, 0.01), 0, 100);
+        ttpRight = 'HOLD block';
+        ttpCls = 'warn';
+      } else if (!ttp.armed) {
         ttpPct = clamp(100 * (1 - Math.max(0, ttp.dist_to_arm_pp) / Math.max(ttp.arm_gain_pct||12,1)), 0, 100);
         ttpRight = `arm ${ttp.arm_gain_pct}%`;
         ttpCls = '';
@@ -540,7 +583,11 @@ function renderPositions(exits) {
 
     let tsPct = 0, tsCls = '', tsRight = 'off';
     if (ts.enabled !== false) {
-      if (!ts.active) {
+      if (ts.blocked_hold) {
+        tsPct = clamp(100 * (r.drop_from_high_pct||0) / Math.max(ts.trail_pct||8, 0.01), 0, 100);
+        tsRight = 'HOLD block';
+        tsCls = 'warn';
+      } else if (!ts.active) {
         tsPct = clamp(100 * ((g||0) / Math.max(ts.activation_gain_pct||5, 1)), 0, 100);
         tsRight = `act +${ts.activation_gain_pct}%`;
       } else {
@@ -553,22 +600,49 @@ function renderPositions(exits) {
     const slPct = g == null ? 0 : clamp(100 * Math.max(0, -g) / Math.max(sl.pct||50,1), 0, 100);
     const slCls = sl.would ? 'fire' : (sl.near ? 'warn' : (g<0?'warn':''));
     const lifePct = life.enabled ? clamp(100*(life.progress||0),0,100) : 0;
-    const lifeRight = life.enabled
+    let lifeRight = life.enabled
       ? (life.skip_runner ? 'runner' : `${life.hold_hours??'—'}h/${life.max_hours}h`)
       : 'off';
+    let lifeCls = life.would ? 'fire' : 'warn';
+    if (r.recovery_hold && life.enabled) {
+      lifeCls = 'warn';
+      lifeRight = 'HOLD block';
+    }
+
+    // BE+ track under recovery_hold (promote distance)
+    let beTrack = '';
+    if (r.recovery_hold && be && be.price) {
+      const dist = be.dist_pp;
+      // progress: 0 at -20pp under BE, 100 at BE+
+      const bePct = dist == null ? 0 : clamp(100 * (1 + Math.min(dist, 0) / 20), 0, 100);
+      const beRight = be.ready
+        ? 'ready'
+        : (dist != null ? `${dist.toFixed(1)}pp` : '—');
+      beTrack = trackHtml(
+        `BE+${be.buffer_pct != null ? be.buffer_pct : 2}% promote`,
+        be.ready ? 100 : bePct,
+        be.ready ? 'ok' : 'warn',
+        beRight
+      );
+    }
+
+    const epochNote = r.peak_epoch_high
+      ? ` · epoch ${fmtPx(r.peak_epoch_high)}`
+      : '';
 
     return `<article class="pos-card ${cardCls}" role="listitem">
       <div class="pos-top">
-        <div class="sym">${r.symbol}<span class="tf">${r.timeframe||''} · ${fmtUsd(r.notional_usdt).replace('+','')} USDT</span></div>
-        <div class="num ${gCls}">${fmtPx(r.price)}<span class="sub">entry ${fmtPx(r.entry)}</span></div>
+        <div class="sym">${r.symbol}<span class="tf">${r.timeframe||''} · ${fmtUsd(r.notional_usdt).replace('+','')} USDT${r.dca_rounds ? ' · dca'+r.dca_rounds : ''}</span></div>
+        <div class="num ${gCls}">${fmtPx(r.price)}<span class="sub">entry ${fmtPx(r.entry)}${epochNote}</span></div>
         <div class="num ${gCls}">${fmtPct(g,2)}<span class="sub">peak ${fmtPct(r.peak_gain_pct,2)} · ${fmtUsd(r.pnl_usdt)}</span></div>
         <div class="pills">${statusPills(r)}</div>
       </div>
       <div class="tracks">
+        ${beTrack}
         ${ttp.enabled ? trackHtml('TTP trail', ttpPct, ttpCls, ttpRight) : ''}
         ${ts.enabled !== false ? trackHtml('ATR trail stop', tsPct, tsCls, tsRight) : ''}
         ${trackHtml('Stop-loss depth', slPct, slCls, `−${sl.pct||50}%`)}
-        ${life.enabled ? trackHtml('Profit lifetime', lifePct, life.would?'fire':'warn', lifeRight) : ''}
+        ${life.enabled ? trackHtml('Profit lifetime', lifePct, lifeCls, lifeRight) : ''}
       </div>
     </article>`;
   }).join('');
@@ -590,6 +664,9 @@ function applySnapshot(s) {
   setNum('sPos', es.positions ?? st.positions ?? 0);
   setNum('sWould', es.would_exit ?? 0);
   setNum('sNear', es.near_exit ?? 0);
+  setNum('sHold', es.recovery_hold ?? 0);
+  document.getElementById('sHoldBlock').textContent =
+    'blocked ' + (es.hold_blocked ?? 0);
   setNum('sProfit', es.in_profit ?? 0);
   setNum('sLoss', es.in_loss ?? 0);
   document.getElementById('sPnl').textContent = fmtUsd(es.total_pnl_usdt);
@@ -618,6 +695,27 @@ function applySnapshot(s) {
     document.getElementById('sHubTicks').textContent = 'bot hub not in process';
   }
 
+  // DCA sniper standalone service
+  const sn = s.dca_sniper || {};
+  const snDot = document.getElementById('sniperDot');
+  const snLab = document.getElementById('sniperLabel');
+  if (sn.healthy) {
+    snDot.className = 'dot on';
+    const nFocus = Array.isArray(sn.focus) ? sn.focus.length : (sn.open_focus_holds ?? 0);
+    const src = sn.source || 'ok';
+    snLab.textContent = (sn.enabled === false ? 'cfg off' : 'live') +
+      ' · ' + nFocus + ' focus · ' + src;
+  } else if (sn.enabled) {
+    snDot.className = 'dot warn';
+    snLab.textContent = 'enabled · no heartbeat';
+  } else if (sn.enabled === false) {
+    snDot.className = 'dot';
+    snLab.textContent = 'off';
+  } else {
+    snDot.className = 'dot';
+    snLab.textContent = sn.error ? ('err · ' + String(sn.error).slice(0, 18)) : 'n/a';
+  }
+
   if (s.exits) renderPositions(s.exits);
 }
 
@@ -639,10 +737,19 @@ function handleEvent(ev) {
     activateStage('exit_eval');
     toast('Would exit', ev.msg || ev.symbol);
   } else if (ev.type === 'exit_update') {
-    if (ev.exit && (ev.exit.would_exit || ev.exit.near_exit)) {
-      const tag = ev.exit.would_exit ? 'FIRE' : 'near';
-      addFeed('exit_update', `${tag} ${ev.symbol} ${fmtPct(ev.exit.gain_pct)} ${(ev.exit.would_sources||ev.exit.near_sources||[]).join(',')}`);
+    if (ev.exit && (ev.exit.would_exit || ev.exit.near_exit || (ev.exit.blocked_by_hold||[]).length)) {
+      let tag = 'near';
+      if (ev.exit.would_exit) tag = 'FIRE';
+      else if ((ev.exit.blocked_by_hold||[]).length) tag = 'HOLD∅';
+      const srcs = ev.exit.would_exit
+        ? (ev.exit.would_sources||[])
+        : ((ev.exit.blocked_by_hold||[]).length
+            ? ev.exit.blocked_by_hold
+            : (ev.exit.near_sources||[]));
+      addFeed('exit_update', `${tag} ${ev.symbol} ${fmtPct(ev.exit.gain_pct)} ${srcs.join(',')}`);
       if (ev.exit.would_exit) toast('Exit radar FIRE', `${ev.symbol} ${fmtPct(ev.exit.gain_pct)}`);
+      else if ((ev.exit.blocked_by_hold||[]).length)
+        addFeed('hub', `hold blocked ${ev.symbol}: ${srcs.join(',')}`);
     }
   } else if (ev.type === 'stage') {
     addFeed('stage', ev.msg || ev.stage);

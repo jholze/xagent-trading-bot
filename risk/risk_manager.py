@@ -164,6 +164,27 @@ class RiskManager:
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
+        # Position lock no_dca: block all BUY_DCA paths (cycle, recovery, sniper)
+        # Defense-in-depth — sniper/bot_http and DE also check, Risk is final rail.
+        try:
+            if self._is_dca_buy(source, order):
+                from strategies.position_lock import dca_blocked, log_lock_block
+
+                pos = get_position(order.symbol, timeframe)
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                locked, lock_msg = dca_blocked(pos, config=raw_cfg)
+                if locked:
+                    log_lock_block(
+                        order.symbol, lock_msg, source=str(source or "dca")
+                    )
+                    return RiskDecision(
+                        approved=False,
+                        message=lock_msg,
+                        code="position_locked",
+                    )
+        except Exception:
+            pass
+
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
         try:
             from core.stablecoins import (
