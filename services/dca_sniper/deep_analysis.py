@@ -20,6 +20,11 @@ from services.dca_sniper.evidence import (
     apply_evidence_to_candidate,
     gather_evidence,
 )
+from services.dca_sniper.santiment_enrich import (
+    apply_santiment_size,
+    apply_santiment_to_candidate,
+    build_santiment_enrichment,
+)
 
 
 @dataclass
@@ -101,25 +106,40 @@ def _enrich_structure_multi_tf(row: dict[str, Any], cfg: dict[str, Any]) -> dict
 
 
 def _enrich_social_soft(row: dict[str, Any]) -> dict[str, Any]:
-    """Best-effort social/noise flags from coin facts / profile (fail-open)."""
+    """Best-effort social/noise flags from coin facts / profile (fail-open).
+
+    Santiment regime is applied fully via ``_enrich_santiment``; this only
+    covers text heuristics when Santiment pack is disabled/unavailable.
+    """
     out = dict(row)
-    # fact_noise / social_spike via fact_summary text heuristics if set
     summary = str(out.get("fact_summary") or "").lower()
     if "social" in summary or "viral" in summary or "pump" in summary:
         out["social_noise"] = True
-    # santiment global regime: only soft note, never hard block alone
-    try:
-        from services.santiment_store import get_latest_snapshot
-
-        snap = get_latest_snapshot(allow_redis=True) or {}
-        regime = str(snap.get("regime") or snap.get("state") or "").upper()
-        out["santiment_regime"] = regime or None
-        if regime in ("RISK_OFF", "BEAR", "CRASH"):
-            # soft: mark social caution (checklist stays non-hard unless block_buys)
-            out["social_caution"] = True
-    except Exception:
-        pass
     return out
+
+
+def _enrich_santiment(
+    row: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    config_raw: dict | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Apply global + per-asset Santiment Pro pack. Fail-open."""
+    if not bool(cfg.get("deep_santiment_enabled", True)):
+        return row, None
+    try:
+        pack = build_santiment_enrichment(
+            str(row.get("symbol") or ""),
+            config_raw=config_raw,
+            fetch_asset=bool(cfg.get("deep_santiment_asset_fetch", True)),
+            asset_ttl_sec=float(cfg.get("deep_santiment_asset_ttl_sec") or 1800),
+            lean=bool(cfg.get("deep_santiment_lean", True)),
+        )
+        enriched = apply_santiment_to_candidate(row, pack)
+        return enriched, pack
+    except Exception as e:
+        log(f"dca_sniper santiment enrich skip: {e}", "DEBUG")
+        return row, None
 
 
 def _build_context(
@@ -192,10 +212,13 @@ def deep_analyze_candidate(
     row0 = dict(row)
     row0.setdefault("sniper_cfg", cfg)
     evidence_pack = None
+    santiment_pack: dict[str, Any] | None = None
 
     # Multi-TF structure before scoring
     row0 = _enrich_structure_multi_tf(row0, cfg)
     row0 = _enrich_social_soft(row0)
+    # Santiment Pro: global regime (Redis) + optional per-asset metrics
+    row0, santiment_pack = _enrich_santiment(row0, cfg, config_raw=config_raw)
 
     # Seed score from technical pass
     seed = analyze_candidate(row0, cash)
@@ -218,6 +241,11 @@ def deep_analyze_candidate(
             usdt=usdt, size_reason=reason, quality=q, cfg=cfg
         )
         hard = hard + extra
+        if santiment_pack is not None:
+            usdt, reason, s_extra = apply_santiment_size(
+                usdt, reason, santiment_pack, cfg=cfg
+            )
+            hard = list(dict.fromkeys(hard + s_extra))
         if usdt <= 0 and reason:
             hard = list(dict.fromkeys(hard + [reason]))
         return DeepAnalysisResult(
@@ -228,6 +256,13 @@ def deep_analyze_candidate(
                 "size_reason": reason,
                 "deep_error": str(e)[:80],
                 "quality": q,
+                "santiment": {
+                    "regime": (santiment_pack or {}).get("regime"),
+                    "combined_size_mult": (santiment_pack or {}).get("combined_size_mult"),
+                    "social_block": (santiment_pack or {}).get("social_block"),
+                }
+                if santiment_pack
+                else None,
             },
             usdt=float(usdt or 0),
             size_reason=str(reason or ""),
@@ -242,9 +277,20 @@ def deep_analyze_candidate(
     for k in ("reclaim_ok", "free_fall", "structure_ok", "structure_by_tf", "structure_source"):
         if k in row0:
             enriched[k] = row0[k]
-    for k in ("social_noise", "social_caution", "santiment_regime"):
+    for k in (
+        "social_noise",
+        "social_caution",
+        "santiment_regime",
+        "santiment",
+        "santiment_fresh",
+        "santiment_exchange_distribution",
+        "block_buys",
+        "social_block",
+    ):
         if k in row0:
             enriched[k] = row0[k]
+    if santiment_pack is not None:
+        enriched = apply_santiment_to_candidate(enriched, santiment_pack)
 
     # News/facts/path/wallet evidence (memory-first; wallet adapter optional)
     evidence_pack = None
@@ -350,8 +396,19 @@ def deep_analyze_candidate(
             usdt, size_reason, evidence_pack, cfg=cfg
         )
         hard = list(dict.fromkeys(hard + e_extra))
+    if santiment_pack is not None:
+        usdt, size_reason, s_extra = apply_santiment_size(
+            usdt, size_reason, santiment_pack, cfg=cfg
+        )
+        hard = list(dict.fromkeys(hard + s_extra))
     if usdt <= 0 and size_reason and size_reason not in hard:
         hard = hard + [size_reason]
+
+    asset_score = {}
+    if santiment_pack and isinstance(santiment_pack.get("asset"), dict):
+        asset_score = (santiment_pack["asset"].get("score") or {}) if isinstance(
+            santiment_pack["asset"].get("score"), dict
+        ) else {}
 
     checklist = {
         **(analysis.get("checklist") or {}),
@@ -374,6 +431,23 @@ def deep_analyze_candidate(
             for k, v in (enriched.get("structure_by_tf") or {}).items()
         }
         if isinstance(enriched.get("structure_by_tf"), dict)
+        else None,
+        "santiment": {
+            "regime": (santiment_pack or {}).get("regime"),
+            "snapshot_fresh": (santiment_pack or {}).get("snapshot_fresh"),
+            "combined_size_mult": (santiment_pack or {}).get("combined_size_mult"),
+            "global_size_mult": (santiment_pack or {}).get("global_size_mult"),
+            "asset_size_mult": (santiment_pack or {}).get("asset_size_mult"),
+            "social_block": (santiment_pack or {}).get("social_block"),
+            "social_caution": (santiment_pack or {}).get("social_caution"),
+            "rationale": (santiment_pack or {}).get("rationale"),
+            "asset_available": bool(
+                ((santiment_pack or {}).get("asset") or {}).get("available")
+            ),
+            "asset_hints": list(asset_score.get("hints") or []),
+            "scores": (santiment_pack or {}).get("scores"),
+        }
+        if santiment_pack
         else None,
     }
 
@@ -398,6 +472,8 @@ def deep_analyze_candidate(
             f"q={q.get('score')}/{q.get('max_score')} thin={q.get('thin')} "
             f"rag={flags.get('has_rag')} facts={flags.get('has_facts')} "
             f"lessons={flags.get('has_lessons')} struct={flags.get('has_structure')} "
+            f"san={flags.get('has_santiment')} "
+            f"regime={(santiment_pack or {}).get('regime')} "
             f"usdt={usdt} reason={size_reason} policy={policy_reasons}",
             "INFO",
         )

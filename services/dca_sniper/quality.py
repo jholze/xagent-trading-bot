@@ -46,6 +46,13 @@ def context_signal_flags(cand: dict[str, Any] | None, ctx: dict[str, Any] | None
     facts_fresh = bool(c.get("facts_fresh"))
     path_ok = bool((c.get("path_stats") or {}).get("available")) if isinstance(c.get("path_stats"), dict) else False
     wallet_ok = bool((c.get("wallet") or {}).get("available")) if isinstance(c.get("wallet"), dict) else False
+    san = c.get("santiment") if isinstance(c.get("santiment"), dict) else {}
+    has_santiment = bool(
+        c.get("santiment_fresh")
+        or san.get("snapshot_fresh")
+        or san.get("regime")
+        or (isinstance(san.get("asset"), dict) and san["asset"].get("available"))
+    )
 
     reclaim = c.get("reclaim_ok")
     free_fall = c.get("free_fall")
@@ -67,6 +74,7 @@ def context_signal_flags(cand: dict[str, Any] | None, ctx: dict[str, Any] | None
         "has_cash_mode": bool(str(c.get("cash_mode") or x.get("cash_mode") or "").strip()),
         "has_path_stats": path_ok,
         "has_wallet": wallet_ok,
+        "has_santiment": has_santiment,
     }
 
 

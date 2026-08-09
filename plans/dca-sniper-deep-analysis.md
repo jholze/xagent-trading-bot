@@ -132,3 +132,28 @@ No schema migration.
 
 Module: `services/dca_sniper/evidence.py`  
 Checklist layer: `news` (hard on hack/unlock-class).
+
+---
+
+## 10. Santiment Pro (full stack utilization)
+
+| Layer | Source | Effect on sniper |
+|-------|--------|------------------|
+| **Global regime** | Sidecar → Redis `aria:santiment:latest` → `get_santiment_policy` | CRASH/`block_buys` → size 0; RISK_OFF size_mult + social_caution; size_mult scales adds |
+| **Per-asset** | SanAPI via `SANTIMENT_API_KEY` (optional on sniper) | DAA/vol/social/flows/MVRV → soft size mult; exchange inflow demotes HEAVY |
+| **Lag rule** | Sanbase Pro often ~30d lag on social/funding/flows | Stale → `research_*` half-weight only; never alone hard-block |
+
+Module: `services/dca_sniper/santiment_enrich.py`  
+Client: `services/santiment_sidecar/client.py` (`fetch_asset_signals`, lean metric set)  
+Wired in: `deep_analysis._enrich_santiment` + `apply_santiment_size` after evidence.
+
+| Config | Default | Notes |
+|--------|---------|-------|
+| `deep_santiment_enabled` | true | Master for deep path |
+| `deep_santiment_asset_fetch` | true | Needs API key; else global-only |
+| `deep_santiment_asset_ttl_sec` | 1800 | Rate-limit thrift (Pro ~5k calls/mo) |
+| `deep_santiment_lean` | true | Fewer metrics per asset |
+| `deep_santiment_block_buys` | true | Honor CRASH global block |
+
+Tests: `tests/unit/test_dca_sniper_santiment.py`  
+Quality flag: `has_santiment` in `context_quality`.

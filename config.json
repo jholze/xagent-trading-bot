@@ -2159,6 +2159,11 @@
     "deep_gather_evidence": true,
     "deep_news_lookback_hours": 72,
     "deep_hard_news_blocks_heavy": true,
+    "deep_santiment_enabled": true,
+    "deep_santiment_asset_fetch": true,
+    "deep_santiment_asset_ttl_sec": 1800,
+    "deep_santiment_lean": true,
+    "deep_santiment_block_buys": true,
     "in_process_tick": false,
     "profile_f": {
       "major": 0.55,

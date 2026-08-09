@@ -50,6 +50,10 @@ def _cfg(**kw):
         "deep_include_rag": True,
         "deep_apply_policy": True,
         "deep_policy_shadow": False,
+        # Isolate non-santiment deep tests from live Redis regime snapshots
+        "deep_santiment_enabled": False,
+        "deep_gather_evidence": False,
+        "deep_structure_multi_tf": False,
         "min_dd_pct_for_dca": 12,
         "max_dd_pct_for_dca": 55,
         "max_dd_pct_for_heavy": 55,
