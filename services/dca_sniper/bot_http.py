@@ -563,7 +563,8 @@ def list_fund_winners(*, min_gain_pct: float = 3.0, limit: int = 10) -> list[dic
 
 
 def register_dca_sniper_routes(app) -> None:
-    from flask import jsonify
+    from flask import jsonify, request
+
     @app.route("/internal/dca-sniper/candidates", methods=["GET"])
     def dca_sniper_candidates():
         ok, err = _check_token()
