@@ -32,6 +32,7 @@ _STATE = {
     "last_error": "",
     "polls": 0,
     "pushes": 0,
+    "next_backoff_sec": None,
 }
 
 
@@ -79,6 +80,8 @@ def _start_health_server(port: int) -> None:
 
 
 def run_once(cfg: dict, client: SantimentClient) -> dict:
+    """One poll cycle. Returns snapshot; sets _STATE['next_backoff_sec'] on 429."""
+    _STATE["next_backoff_sec"] = None
     if client.available():
         fetched = client.fetch_features()
         features = fetched.features
@@ -94,6 +97,22 @@ def run_once(cfg: dict, client: SantimentClient) -> dict:
             "social_fresh": False,
             "lagged_excluded_from_policy": True,
         }
+    if meta.get("rate_limited"):
+        retry = meta.get("rate_limit_retry_sec")
+        try:
+            retry_f = float(retry) if retry is not None else None
+        except (TypeError, ValueError):
+            retry_f = None
+        # Cap insane "3 weeks" waits from monthly exhaustion — keep polling later.
+        max_backoff = float(cfg.get("rate_limit_backoff_sec") or 7200)
+        if retry_f is not None and retry_f > max_backoff:
+            log.warning(
+                "Santiment suggested retry_after=%.0fs — using max backoff %.0fs",
+                retry_f,
+                max_backoff,
+            )
+            retry_f = max_backoff
+        _STATE["next_backoff_sec"] = retry_f or max_backoff
     snap = build_snapshot(
         features,
         meta=meta,
@@ -122,12 +141,13 @@ def run_once(cfg: dict, client: SantimentClient) -> dict:
             _STATE["_prev_pushed"] = snap
             _STATE["last_error"] = ""
             log.info(
-                "pushed regime=%s size_mult=%s conf=%.2f lag=%s ok=%s (%s)",
+                "pushed regime=%s size_mult=%s conf=%.2f lag=%s ok=%s profile=%s (%s)",
                 snap["regime"],
                 snap["size_mult"],
                 snap["confidence"],
                 (snap.get("meta") or {}).get("data_lag_days_max"),
                 len((snap.get("meta") or {}).get("metrics_ok") or []),
+                (snap.get("meta") or {}).get("metric_profile"),
                 msg,
             )
         else:
@@ -145,23 +165,42 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     log.info(
-        "starting santiment sidecar poll=%ss heartbeat=%ss dry_run=%s ingest=%s",
+        "starting santiment sidecar poll=%ss heartbeat=%ss profile=%s delay=%.2fs "
+        "dry_run=%s ingest=%s",
         cfg["poll_interval_sec"],
         cfg["heartbeat_sec"],
+        cfg.get("metric_profile"),
+        cfg.get("inter_request_delay_sec"),
         cfg["dry_run"],
         bool(cfg["bot_ingest_url"]),
     )
     _start_health_server(cfg["port"])
-    client = SantimentClient(cfg["api_key"])
+    client = SantimentClient(
+        cfg["api_key"],
+        inter_request_delay_sec=float(cfg.get("inter_request_delay_sec") or 0),
+        abort_on_rate_limit=bool(cfg.get("abort_on_rate_limit", True)),
+        fetch_social=bool(cfg.get("fetch_social")),
+        fetch_leverage=bool(cfg.get("fetch_leverage")),
+        fetch_dev=bool(cfg.get("fetch_dev")),
+        leverage_research_fallback=bool(cfg.get("leverage_research_fallback")),
+    )
     backoff = cfg["poll_interval_sec"]
     while True:
         try:
             run_once(cfg, client)
-            backoff = cfg["poll_interval_sec"]
+            extra = _STATE.get("next_backoff_sec")
+            if extra is not None:
+                backoff = max(cfg["poll_interval_sec"], float(extra))
+                log.info("next poll in %.0fs (rate-limit backoff)", backoff)
+            else:
+                backoff = cfg["poll_interval_sec"]
         except Exception as e:
             _STATE["last_error"] = str(e)
             log.exception("poll cycle failed: %s", e)
-            backoff = min(3600, max(backoff * 2, cfg["poll_interval_sec"]))
+            backoff = min(
+                float(cfg.get("rate_limit_backoff_sec") or 7200),
+                max(backoff * 2, cfg["poll_interval_sec"]),
+            )
         time.sleep(backoff)
 
 
