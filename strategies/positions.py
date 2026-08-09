@@ -998,7 +998,7 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
     amount = p.get("amount", 0)
     if hasattr(amount, "__float__"):
         amount = float(amount)
-    return {
+    lot = {
         "symbol": symbol,
         "timeframe": tf,
         "amount": float(amount or 0),
@@ -1013,6 +1013,11 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "first_buy_at": p.get("first_buy_at"),
         "highlight": highlight,
     }
+    # Surface position lock for /positions, /sell, Telegram 🔒 badge
+    lock = p.get("lock")
+    if isinstance(lock, dict) and lock:
+        lot["lock"] = dict(lock)
+    return lot
 
 
 def list_active_positions_from_ledger(
