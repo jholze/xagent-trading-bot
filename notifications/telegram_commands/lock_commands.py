@@ -30,7 +30,9 @@ from telegram_notifier import send_telegram_message
 def _fmt_lock(lock: dict | None) -> str:
     if not lock or not lock_is_active(lock):
         return "unlocked"
-    modes = ",".join(lock.get("modes") or list(DEFAULT_MODES))
+    from strategies.position_lock import lock_modes
+
+    modes = ",".join(sorted(lock_modes(lock)) or list(DEFAULT_MODES))
     until = lock.get("until") or "∞"
     why = lock.get("reason") or ""
     by = lock.get("locked_by") or ""
@@ -143,7 +145,8 @@ def _handle_lock(text: str) -> bool:
         f"modes: <code>{','.join(lock.get('modes') or [])}</code>\n"
         f"until: <code>{until_s}</code>\n"
         f"reason: <i>{lock.get('reason')}</i>\n\n"
-        f"Auto-Sell / Trail / DCA / Eviction blockiert.\n"
+        f"Auto-Sell / Trail / Eviction blockiert.\n"
+        f"DCA + Sniper bleiben erlaubt (Lock = nur Verkaufs-Hold).\n"
         f"Manueller <code>/sell</code> bleibt möglich.\n"
         f"Unlock: <code>/unlock {sym.split('/')[0]}</code>"
     )
@@ -173,6 +176,6 @@ def _handle_unlock(text: str) -> bool:
     set_position_lock(sym, tf, None, persist=True)
     send_telegram_message(
         f"🔓 <b>Unlocked</b> <code>{sym}</code> ({tf})\n"
-        f"Auto-Sell / DCA / Eviction wieder erlaubt."
+        f"Auto-Sell / Trail / Eviction wieder erlaubt."
     )
     return True

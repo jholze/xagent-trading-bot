@@ -83,12 +83,16 @@ def build_radar_snapshot() -> dict[str, Any]:
             lock_active = False
             lock_modes: list[str] = []
             try:
-                from strategies.position_lock import get_lock, lock_is_active
+                from strategies.position_lock import (
+                    get_lock,
+                    lock_is_active,
+                    lock_modes as _lock_modes,
+                )
 
                 lk = get_lock(pos)
                 if lk and lock_is_active(lk):
                     lock_active = True
-                    lock_modes = list(lk.get("modes") or [])
+                    lock_modes = sorted(_lock_modes(lk))
             except Exception:
                 pass
             out.append(

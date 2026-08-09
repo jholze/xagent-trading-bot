@@ -94,7 +94,7 @@ _CACHE_FIELDS = (
     "trail_tp_steps",
     "last_trail_tp_at",
     "profit_max_lifetime_done",
-    "lock",  # position_lock: no_auto_sell / no_dca / no_evict
+    "lock",  # position_lock: no_auto_sell / no_evict (no_dca optional)
 )
 
 
