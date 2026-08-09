@@ -343,6 +343,20 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
             "message": "cannot_fund_sell_recovery_hold",
         }, 409
 
+    # Position lock no_auto_sell: fund-from-winner is auto, not manual
+    try:
+        from strategies.position_lock import auto_sell_blocked
+
+        locked, why = auto_sell_blocked(pos, "dca_sniper_fund")
+        if locked:
+            return {
+                "ok": False,
+                "executed": False,
+                "message": why or "position_locked_no_auto_sell",
+            }, 409
+    except Exception:
+        pass
+
     try:
         price = float(data.get("price") or 0)
     except (TypeError, ValueError):
