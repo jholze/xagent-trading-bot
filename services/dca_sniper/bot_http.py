@@ -15,13 +15,13 @@ import os
 from datetime import datetime
 from typing import Any
 
-from flask import Flask, jsonify, request
-
 from logger import log
 from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled, internal_token
 
 
 def _check_token() -> tuple[bool, Any]:
+    from flask import jsonify, request
+
     expected = internal_token()
     if not expected:
         return False, (
@@ -45,7 +45,7 @@ def _check_token() -> tuple[bool, Any]:
     return True, None
 
 
-def _snapshot_cash() -> dict[str, Any]:
+def snapshot_cash() -> dict[str, Any]:
     try:
         from core.config import get_bot_config
         from risk.risk_manager import RiskManager
@@ -82,11 +82,11 @@ def _snapshot_cash() -> dict[str, Any]:
         }
 
 
-def _build_candidates() -> list[dict[str, Any]]:
+def build_candidates() -> list[dict[str, Any]]:
     from strategies.positions import get_position, list_active_positions
     from strategies.registry import resolve_strategy_params
 
-    cash = _snapshot_cash()
+    cash = snapshot_cash()
     out: list[dict[str, Any]] = []
     try:
         lots = list_active_positions()
@@ -153,9 +153,9 @@ def _build_candidates() -> list[dict[str, Any]]:
                 skipped["green"] += 1
                 continue
             try:
-                from strategies.position_lock import dca_blocked
+                from strategies.position_gates import dca_add_blocked
 
-                blocked, _why = dca_blocked(pos)
+                blocked, _why = dca_add_blocked(pos)
                 if blocked:
                     skipped["locked_dca"] += 1
                     continue
@@ -296,12 +296,12 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not symbol or usdt <= 0:
         return {"ok": False, "executed": False, "message": "bad_args"}, 400
 
-    # Staging parity with #227 position lock (no_dca)
+    # Position lock no_dca (via central gates)
     try:
-        from strategies.position_lock import dca_blocked
+        from strategies.position_gates import dca_add_blocked
 
         pos0 = get_position(symbol, tf)
-        blocked, why = dca_blocked(pos0)
+        blocked, why = dca_add_blocked(pos0)
         if blocked:
             return {
                 "ok": False,
@@ -494,13 +494,82 @@ def promote_position(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     return {"ok": True, "cleared": cleared}, 200
 
 
-def register_dca_sniper_routes(app: Flask) -> None:
+
+
+def list_fund_winners(*, min_gain_pct: float = 3.0, limit: int = 10) -> list[dict[str, Any]]:
+    """Green open lots eligible for fund-from-winner sells."""
+    winners: list[dict[str, Any]] = []
+    try:
+        from strategies.positions import get_position, list_active_positions
+        from price_fetcher import get_prices_batch
+        from strategies.position_lock import auto_sell_blocked
+
+        lots = list_active_positions()
+        price_map: dict[str, float] = {}
+        try:
+            raw = get_prices_batch(
+                [str(l.get("symbol") or "") for l in lots if l.get("symbol")]
+            ) or {}
+            for s, px in raw.items():
+                try:
+                    v = float(px or 0)
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v > 0:
+                    price_map[str(s).upper()] = v
+        except Exception:
+            pass
+        for lot in lots:
+            symbol = str(lot.get("symbol") or "")
+            tf = str(lot.get("timeframe") or "1h")
+            pos = get_position(symbol, tf) or lot
+            avg = float(pos.get("average_entry") or lot.get("average_entry") or 0)
+            amount = float(pos.get("amount") or lot.get("amount") or 0)
+            if avg <= 0 or amount <= 0 or not symbol:
+                continue
+            if pos.get("recovery_hold") or pos.get("sniper_focus"):
+                continue
+            try:
+                locked, _ = auto_sell_blocked(pos, "dca_sniper_fund")
+                if locked:
+                    continue
+            except Exception:
+                pass
+            mark = float(
+                pos.get("current_price")
+                or lot.get("current_price")
+                or lot.get("mark")
+                or price_map.get(symbol.upper())
+                or 0
+            )
+            if mark <= 0:
+                continue
+            gain = (mark / avg - 1.0) * 100.0
+            if gain < float(min_gain_pct):
+                continue
+            winners.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": tf,
+                    "gain_pct": round(gain, 2),
+                    "notional": round(amount * mark, 2),
+                    "mark": mark,
+                }
+            )
+        winners.sort(key=lambda w: float(w.get("gain_pct") or 0), reverse=True)
+    except Exception:
+        pass
+    return winners[: int(limit)]
+
+
+def register_dca_sniper_routes(app) -> None:
+    from flask import jsonify
     @app.route("/internal/dca-sniper/candidates", methods=["GET"])
     def dca_sniper_candidates():
         ok, err = _check_token()
         if not ok:
             return err
-        cands = _build_candidates()
+        cands = build_candidates()
         return jsonify({"ok": True, "candidates": cands, "n": len(cands)}), 200
 
     @app.route("/internal/dca-sniper/cash", methods=["GET"])
@@ -508,72 +577,8 @@ def register_dca_sniper_routes(app: Flask) -> None:
         ok, err = _check_token()
         if not ok:
             return err
-        body = {"ok": True, **_snapshot_cash()}
-        # Funding candidates: green open lots (not recovery_hold)
-        winners = []
-        try:
-            from strategies.positions import get_position, list_active_positions
-            from price_fetcher import get_prices_batch
-
-            lots = list_active_positions()
-            price_map: dict[str, float] = {}
-            try:
-                raw = get_prices_batch(
-                    [str(l.get("symbol") or "") for l in lots if l.get("symbol")]
-                ) or {}
-                for s, px in raw.items():
-                    try:
-                        v = float(px or 0)
-                    except (TypeError, ValueError):
-                        v = 0.0
-                    if v > 0:
-                        price_map[str(s).upper()] = v
-            except Exception:
-                pass
-            for lot in lots:
-                symbol = str(lot.get("symbol") or "")
-                tf = str(lot.get("timeframe") or "1h")
-                pos = get_position(symbol, tf) or lot
-                avg = float(pos.get("average_entry") or lot.get("average_entry") or 0)
-                amount = float(pos.get("amount") or lot.get("amount") or 0)
-                if avg <= 0 or amount <= 0 or not symbol:
-                    continue
-                if pos.get("recovery_hold") or pos.get("sniper_focus"):
-                    continue
-                # fund-from-winner is auto-sell: skip no_auto_sell locks
-                try:
-                    from strategies.position_lock import auto_sell_blocked
-
-                    locked, _ = auto_sell_blocked(pos, "dca_sniper_fund")
-                    if locked:
-                        continue
-                except Exception:
-                    pass
-                mark = float(
-                    pos.get("current_price")
-                    or lot.get("current_price")
-                    or lot.get("mark")
-                    or price_map.get(symbol.upper())
-                    or 0
-                )
-                if mark <= 0:
-                    continue
-                gain = (mark / avg - 1.0) * 100.0
-                if gain < 3.0:
-                    continue
-                winners.append(
-                    {
-                        "symbol": symbol,
-                        "timeframe": tf,
-                        "gain_pct": round(gain, 2),
-                        "notional": round(amount * mark, 2),
-                        "mark": mark,
-                    }
-                )
-            winners.sort(key=lambda w: float(w.get("gain_pct") or 0), reverse=True)
-        except Exception:
-            pass
-        body["winners"] = winners[:10]
+        body = {"ok": True, **snapshot_cash()}
+        body["winners"] = list_fund_winners()
         return jsonify(body), 200
 
     @app.route("/internal/dca-sniper/status", methods=["GET"])
@@ -643,3 +648,8 @@ def register_dca_sniper_routes(app: Flask) -> None:
         "(/internal/dca-sniper/{candidates,cash,status,execute,fund-sell,promote})",
         "INFO",
     )
+
+
+# Back-compat private names
+_snapshot_cash = snapshot_cash
+_build_candidates = build_candidates

@@ -51,14 +51,20 @@ class TestDcaSniperBotHttp(unittest.TestCase):
         mock_trading = MagicMock()
         mock_trading.execute_order.return_value = mock_result
 
-        with patch(
-            "services.trading_service.TradingService", return_value=mock_trading
-        ), patch("strategies.positions.get_position", return_value=pos), patch(
-            "strategies.positions.flush_positions"
+        # TradingService pulls ccxt; stub module before execute imports it.
+        fake_ts = MagicMock()
+        fake_ts.TradingService.return_value = mock_trading
+        fake_ms = MagicMock()
+        fake_ms.MarketService.return_value.get_price.return_value = 0.8
+        with patch.dict(
+            "sys.modules",
+            {
+                "services.trading_service": fake_ts,
+                "services.market_service": fake_ms,
+            },
         ), patch(
-            "services.market_service.MarketService"
-        ) as MS:
-            MS.return_value.get_price.return_value = 0.8
+            "strategies.positions.get_position", return_value=pos
+        ), patch("strategies.positions.flush_positions"):
             body, code = execute_sniper_dca(
                 {
                     "symbol": "Y/USDT",
@@ -70,7 +76,7 @@ class TestDcaSniperBotHttp(unittest.TestCase):
                     "score": 8,
                 }
             )
-        self.assertTrue(body.get("executed"))
+        self.assertTrue(body.get("executed"), body)
         self.assertTrue(pos.get("recovery_hold"))
         self.assertTrue(pos.get("sniper_focus"))
         self.assertTrue(pos.get("dca_heavy_used"))

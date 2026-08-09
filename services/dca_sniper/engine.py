@@ -29,20 +29,22 @@ def _size_for_row(
     cfg: dict[str, Any],
 ) -> tuple[float, str]:
     """Return (usdt, reason_code) using best-path rules: reclaim + small-before-heavy."""
-    loss = abs(min(0.0, float(row.get("loss_pct") or 0)))
-    min_dd = float(cfg.get("min_dd_pct_for_dca") or 12)
-    max_dd = float(cfg.get("max_dd_pct_for_dca") or 55)
-    if loss < min_dd:
-        return 0.0, "loss_too_shallow"
-    if loss > max_dd:
-        return 0.0, "loss_too_deep"
+    from services.dca_sniper.policy import dd_band_ok, dd_pct_from_loss, reclaim_allows_dca
+
+    loss = dd_pct_from_loss(float(row.get("loss_pct") or 0))
+    ok_band, band_why = dd_band_ok(float(row.get("loss_pct") or 0), cfg)
+    if not ok_band:
+        return 0.0, band_why
 
     reclaim = row.get("reclaim_ok")
     free_fall = row.get("free_fall")
-    if free_fall is True:
-        return 0.0, "free_fall"
-    if cfg.get("require_reclaim_for_dca", True) and reclaim is False:
-        return 0.0, "no_reclaim"
+    ok_rc, rc_why = reclaim_allows_dca(
+        reclaim_ok=reclaim if reclaim is None else bool(reclaim),
+        free_fall=free_fall if free_fall is None else bool(free_fall),
+        require_reclaim=bool(cfg.get("require_reclaim_for_dca", True)),
+    )
+    if not ok_rc:
+        return 0.0, rc_why
     # unknown reclaim: allow small only if not free-fall; never heavy
     reclaim_yes = reclaim is True
 
@@ -110,6 +112,8 @@ def _as_candidate_views(
             exclude_grid=bool(cfg.get("exclude_grid", True)),
         ):
             continue
+        row = dict(row)
+        row.setdefault("sniper_cfg", cfg)
         analysis = analyze_candidate(row, cash)
         usdt, size_reason = _size_for_row(row, analysis, cash, cfg)
         loss = float(row.get("loss_pct") or 0)
