@@ -351,6 +351,18 @@ class ExitRealtimeHub:
         tf = str(snapshot.get("timeframe") or "1h")
         pos = dict(snapshot.get("position") or {})
 
+        # Position lock: skip trail eval noise for locked lots (execute/risk still hard-block)
+        try:
+            from strategies.position_lock import auto_sell_blocked
+            from strategies.positions import get_position
+
+            live_pos = get_position(sym, tf) or pos
+            locked, _ = auto_sell_blocked(live_pos, "exit_ws")
+            if locked:
+                return
+        except Exception:
+            pass
+
         events = evaluate_would_sells(
             symbol=sym,
             timeframe=tf,

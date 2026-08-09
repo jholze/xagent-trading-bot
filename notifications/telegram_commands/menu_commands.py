@@ -41,7 +41,7 @@ _COMMAND_DISPATCH: dict[str, str] = {
 MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", [
-        "positions", "positions_full", "buy", "sell",
+        "positions", "positions_full", "buy", "sell", "lock", "unlock",
         "orders", "orders_blocked", "orders_month", "plan", "risk",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel", "reload"]),
@@ -55,7 +55,7 @@ MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
 MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", [
-        "positions", "positions_full", "buy", "sell",
+        "positions", "positions_full", "buy", "sell", "lock", "unlock",
         "orders", "orders_blocked", "orders_month", "plan", "risk",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "reload"]),

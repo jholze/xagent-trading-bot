@@ -511,6 +511,14 @@ def should_dca(
     strategy_params: dict | None,
 ) -> DCADecision:
     """Multi-factor DCA gate: hard accumulation rules, then optional scoring."""
+    try:
+        from strategies.position_lock import dca_blocked
+
+        locked, lock_msg = dca_blocked(position)
+        if locked:
+            return DCADecision(should_dca=False, blocked_reason=lock_msg)
+    except Exception:
+        pass
     cfg = dca_config(strategy_params)
     ok, blocked_reason, loss_pct = _check_hard_gates(
         market, position, strategy_params, cfg

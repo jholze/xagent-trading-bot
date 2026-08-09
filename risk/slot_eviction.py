@@ -540,6 +540,18 @@ def plan_slot_eviction(
     for c in candidates:
         if c.symbol == demand.symbol:
             continue
+        # Position lock: never evict locked lots
+        try:
+            from strategies.position_lock import eviction_blocked
+            from strategies.positions import get_position
+
+            tf = getattr(c, "timeframe", None) or "1h"
+            pos = get_position(c.symbol, tf)
+            locked, _msg = eviction_blocked(pos)
+            if locked:
+                continue
+        except Exception:
+            pass
         veto = c.veto
         if c.trail_armed:
             veto = veto or "trail_armed"

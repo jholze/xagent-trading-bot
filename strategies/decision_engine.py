@@ -1373,6 +1373,34 @@ class DecisionEngine:
                 normalized = HOLD
                 sources.append("coin_filter_blocked")
 
+        # Position lock: suppress auto sells (manual still via TradingService + risk)
+        if market.has_position and is_sell(normalized):
+            try:
+                from strategies.position_lock import auto_sell_blocked
+
+                locked, lock_msg = auto_sell_blocked(
+                    position, "auto", config=self.config.raw
+                )
+                if locked:
+                    structure_rationales.append(f"[Lock] {lock_msg}")
+                    sources.append("position_locked")
+                    normalized = HOLD
+            except Exception:
+                pass
+
+        # Position lock: suppress DCA add-ons
+        if market.has_position and normalized == BUY_DCA:
+            try:
+                from strategies.position_lock import dca_blocked
+
+                locked, lock_msg = dca_blocked(position, config=self.config.raw)
+                if locked:
+                    structure_rationales.append(f"[Lock] {lock_msg}")
+                    sources.append("position_locked")
+                    normalized = HOLD
+            except Exception:
+                pass
+
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
         normalized, execution_action, shadow_action = self._apply_shadow_mode(
