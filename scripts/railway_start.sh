@@ -42,6 +42,17 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gainer-signal" || "${RUN_GAINER_SIG
   export GAINER_SIGNAL_PUSH="${GAINER_SIGNAL_PUSH:-1}"
   exec python3 -m services.gainer_signal
 fi
+# DCA Sniper standalone — Redis + bot internal APIs; no ledger writes in this process.
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-dca-sniper" || "${RUN_DCA_SNIPER:-}" == "1" ]]; then
+  echo "=== DCA Sniper service (standalone, Redis + bot HTTP) ==="
+  export PYTHONUNBUFFERED=1
+  export RUN_DCA_SNIPER=1
+  export DCA_SNIPER_ENABLED="${DCA_SNIPER_ENABLED:-1}"
+  export DCA_SNIPER_IN_PROCESS=0
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  # Prefer shared Redis; do not require Mongo for the sniper process itself
+  exec python3 -m services.dca_sniper
+fi
 # GIS daily monitor — one-shot (Railway Cron). Reads orders_v2, writes report to Mongo + files.
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:-}" == "1" ]]; then
   echo "=== GIS daily monitor (one-shot, no laptop) ==="

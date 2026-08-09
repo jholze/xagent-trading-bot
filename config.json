@@ -2136,7 +2136,7 @@
     "max_bag_pct_equity": 5.0,
     "small_dca_usdt": 500,
     "deep_analysis_cooldown_sec": 300,
-    "in_process_tick": true,
+    "in_process_tick": false,
     "profile_f": {
       "major": 0.55,
       "volatile": 0.75,
@@ -2149,6 +2149,9 @@
     "heavy_only_on_reclaim": true,
     "max_dd_pct_for_heavy": 55,
     "min_dd_pct_for_dca": 12,
-    "max_dd_pct_for_dca": 55
+    "max_dd_pct_for_dca": 55,
+    "standalone": true,
+    "ws_move_pct": 1.5,
+    "redis_enabled": true
   }
 }

@@ -11,6 +11,8 @@ from services.dca_sniper.config import bot_base_url, internal_token
 
 
 class DcaSniperBotClient:
+    """HTTP client from standalone sniper → bot internal APIs only (ledger stays on bot)."""
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -18,6 +20,10 @@ class DcaSniperBotClient:
         timeout_sec: float = 30.0,
     ):
         self.base = (base_url or bot_base_url()).rstrip("/")
+        # strip accidental path suffixes
+        for suffix in ("/internal/dca-sniper", "/internal"):
+            if self.base.endswith(suffix):
+                self.base = self.base[: -len(suffix)]
         self.token = token if token is not None else internal_token()
         self.timeout = timeout_sec
 
