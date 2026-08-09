@@ -94,6 +94,7 @@ _CACHE_FIELDS = (
     "trail_tp_steps",
     "last_trail_tp_at",
     "profit_max_lifetime_done",
+    "lock",  # position_lock: no_auto_sell / no_dca / no_evict
 )
 
 
@@ -181,6 +182,7 @@ def _deserialize_position(raw: dict) -> dict:
         "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),
         "last_trail_tp_at": raw.get("last_trail_tp_at"),
         "profit_max_lifetime_done": bool(raw.get("profit_max_lifetime_done", False)),
+        "lock": dict(raw["lock"]) if isinstance(raw.get("lock"), dict) else None,
     }
 
 
@@ -238,6 +240,9 @@ def _serialize_positions() -> dict:
             "last_trail_tp_at": p.get("last_trail_tp_at"),
             "profit_max_lifetime_done": bool(p.get("profit_max_lifetime_done", False)),
         }
+        lock = p.get("lock")
+        if isinstance(lock, dict) and lock:
+            data["positions"][tf]["lock"] = dict(lock)
     return data
 
 
@@ -637,6 +642,22 @@ def set_position_field(symbol: str, timeframe: str, field: str, value) -> None:
     key = get_key(symbol, timeframe)
     with _positions_lock:
         _ensure_key(_active_store(), key)[field] = value
+
+
+def set_position_lock(symbol: str, timeframe: str, lock: dict | None, *, persist: bool = True) -> dict:
+    """Set or clear position lock; returns the updated position dict (copy of lock state)."""
+    init_position(symbol, timeframe)
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = _ensure_key(_active_store(), key)
+        if lock is None:
+            pos.pop("lock", None)
+        else:
+            pos["lock"] = dict(lock)
+        out = dict(pos.get("lock") or {}) if lock else {}
+    if persist:
+        flush_positions(force=True)
+    return out
 
 
 def reset_rsi_sell_tiers_if_cooled(

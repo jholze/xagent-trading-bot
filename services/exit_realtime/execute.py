@@ -148,6 +148,21 @@ def try_execute_trail_exit(
         if amount <= 0:
             return {"ok": False, "executed": False, "message": "amount_zero"}
 
+        try:
+            from strategies.position_lock import auto_sell_blocked, log_lock_block
+
+            locked, lock_msg = auto_sell_blocked(pos, "exit_ws")
+            if locked:
+                log_lock_block(sym, lock_msg, source="exit_ws")
+                return {
+                    "ok": False,
+                    "executed": False,
+                    "message": lock_msg,
+                    "code": "position_locked",
+                }
+        except Exception:
+            pass
+
         signal = str(action or SELL_FULL).strip() or SELL_FULL
         # Prefer full close for trail sources
         if "PARTIAL" not in signal.upper() and signal.upper() in (

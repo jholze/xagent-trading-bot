@@ -122,6 +122,23 @@ class RiskManager:
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
+            # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell
+            try:
+                from strategies.position_lock import auto_sell_blocked, log_lock_block
+
+                pos = get_position(order.symbol, timeframe)
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                sell_src = source or getattr(order, "source", None) or ""
+                locked, lock_msg = auto_sell_blocked(pos, sell_src, config=raw_cfg)
+                if locked:
+                    log_lock_block(order.symbol, lock_msg, source=str(sell_src))
+                    return RiskDecision(
+                        approved=False,
+                        message=lock_msg,
+                        code="position_locked",
+                    )
+            except Exception:
+                pass
             order = self._resolve_sell_order(order, timeframe, source)
             if order.amount <= 0:
                 order = self._fill_sell_amount_from_open_lot(order, timeframe)

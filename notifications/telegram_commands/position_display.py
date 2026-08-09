@@ -281,12 +281,21 @@ def format_position_card(
 
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
+    lock_badge = ""
+    try:
+        from strategies.position_lock import lock_summary
+
+        ls = lock_summary(p)
+        if ls:
+            lock_badge = " 🔒"
+    except Exception:
+        pass
 
     value_part = ""
     if m["value_usdt"] > 0:
         value_part = f" · Wert <b>${m['value_usdt']:,.0f}</b>"
     header = (
-        f"{prefix}<b>{ticker_html}</b> {pnl_icon} "
+        f"{prefix}<b>{ticker_html}</b>{lock_badge} {pnl_icon} "
         f"<code>{_fmt_pct(m['unreal_pct'])}</code>{value_part}"
     )
 
@@ -309,6 +318,16 @@ def format_position_card(
         sold_val = f"{m['sold_pct']:.0f}%" if not m["sold_warn"] else f"⚠️ {sold_raw_pct:.0f}%"
         sold_line = f"\n   └ Bereits verkauft: <b>{sold_val}</b>"
 
+    lock_line = ""
+    try:
+        from strategies.position_lock import lock_summary
+
+        ls = lock_summary(p)
+        if ls:
+            lock_line = f"\n   └ {ls}"
+    except Exception:
+        pass
+
     last = p.get("last_action")
     last_line = f" · Letzte Aktion: <b>{last}</b>" if last else ""
 
@@ -326,7 +345,7 @@ def format_position_card(
         f"{header}\n"
         f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
         f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
-        f"{sold_line}{last_line}{missing_line}"
+        f"{sold_line}{lock_line}{last_line}{missing_line}"
     )
 
 
@@ -343,10 +362,18 @@ def format_position_compact_line(
     ticker_html = format_ticker_html(sym.split("/")[0], symbol_suffix="")
     m = _position_metrics(p, price)
     icon = _pnl_emoji(m["unreal"])
+    lock_badge = ""
+    try:
+        from strategies.position_lock import is_position_locked
+
+        if is_position_locked(p):
+            lock_badge = " 🔒"
+    except Exception:
+        pass
     missing = " · <i>kein Kurs</i>" if price_source == "missing" and m["value_usdt"] <= 0 else ""
     tf = p.get("timeframe", "4h")
     return (
-        f"<b>{index}.</b> {ticker_html} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
+        f"<b>{index}.</b> {ticker_html}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
         f"· <b>${m['value_usdt']:.0f}</b> · PnL <b>${m['unreal']:+.0f}</b>{missing}"
     )
 
