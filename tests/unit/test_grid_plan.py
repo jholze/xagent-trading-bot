@@ -265,6 +265,41 @@ class TestGridPlan(unittest.TestCase):
         )
         self.assertIn("SELL", ok.action)
 
+    def test_sell_guard_min_gain_1pct_blocks_micro_profit(self):
+        """Staging policy: min_sell_gain_pct=1.0 blocks sub-1% grid harvests (TAO-class noise)."""
+        plan = build_grid_plan("T/USDT", "1h", 100.0, atr_pct=2.0, spacing_atr_mult=1.0)
+        sell_lv = min((lv for lv in plan.levels if lv.side == "sell"), key=lambda x: x.price)
+        raw = evaluate_plan_at_price(
+            plan, sell_lv.price * 1.001, has_position=True,
+        )
+        pol = {
+            "enabled": True,
+            "min_sell_gain_pct": 1.0,
+            "green_buffer_pct": 0.15,
+            "green_only_modes": ["GRID", "HYBRID"],
+        }
+        # +0.5% over entry → below 1% floor
+        blocked = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=100.5,
+            average_entry=100.0,
+            mode="GRID",
+            policy=pol,
+        )
+        self.assertEqual(blocked.action, "HOLD")
+        self.assertIn("min", blocked.rationale.lower())
+        # +2% clear of 1% + buffer
+        ok = apply_grid_sell_guards(
+            raw,
+            plan=plan,
+            sell_price=102.0,
+            average_entry=100.0,
+            mode="GRID",
+            policy=pol,
+        )
+        self.assertIn("SELL", ok.action)
+
     def test_block_recenter_below_entry(self):
         self.assertTrue(
             should_block_recenter_below_entry(

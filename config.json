@@ -1429,6 +1429,12 @@
     "rsi_sell_30": 68,
     "rsi_sell_20": 78,
     "rsi_sell_min_gain_pct": 15,
+    "bb_sell_enabled": true,
+    "bb_sell_upper_ratio": 0.99,
+    "bb_sell_rsi_min": 62,
+    "bb_sell_min_gain_pct": 2,
+    "_bb_sell_min_gain_pct_doc": "Block bb_upper micro sells on stable/grid lots (e.g. TAO +0.1%). Volatile stays at 12. Kill: 0.",
+    "bb_sell_requires_ta": false,
     "take_profit_pct": null,
     "safety_tp_pct": 18,
     "safety_tp_min_gain_pct": 50,
@@ -1539,6 +1545,9 @@
     "buy_regime": "both",
     "rsi_buy_low": 28,
     "rsi_buy_high": 52,
+    "bb_sell_enabled": true,
+    "bb_sell_min_gain_pct": 2,
+    "_bb_sell_min_gain_pct_doc": "Align mid-cap structure sells with stable floor; no sub-2% bb_upper full/partial noise.",
     "dca": {
       "enabled": true,
       "mode": "live",
@@ -1754,7 +1763,8 @@
     "sell_policy": {
       "enabled": true,
       "require_sell_above_center": true,
-      "min_sell_gain_pct": 0.0,
+      "min_sell_gain_pct": 1.0,
+      "_min_sell_gain_pct_doc": "Block pure grid level harvests below this gain % vs entry (plus green_buffer_pct). Staging: 1.0 stops sub-1% micro closes. Kill: 0.0.",
       "green_only_modes": [
         "GRID",
         "HYBRID"

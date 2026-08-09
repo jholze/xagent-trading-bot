@@ -563,8 +563,9 @@ class BotConfig:
             "sell_policy": {
                 "enabled": True,
                 "require_sell_above_center": True,
-                # Harvest only in profit (GRID+HYBRID). Soft underwater is opt-in.
-                "min_sell_gain_pct": 0.0,
+                # Harvest only above min gain (GRID+HYBRID). Soft underwater is opt-in.
+                # 1.0 ≈ fee-aware floor; with green_buffer_pct 0.15 → ~+1.15% over entry.
+                "min_sell_gain_pct": 1.0,
                 "green_only_modes": ["GRID", "HYBRID"],
                 "soft_underwater_modes": [],
                 "underwater_max_slice": 0.12,
