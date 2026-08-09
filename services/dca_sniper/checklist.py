@@ -107,15 +107,21 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
         "reason": f"funding={funding}",
     }
 
-    # Facts / unlock
+    # Facts / unlock (from deep context or bot snapshot)
+    fact_summary = str(cand.get("fact_summary") or "")[:80]
+    fact_n = int(cand.get("fact_event_count") or 0)
     layers["facts"] = {
         "pass": not unlock_risk,
         "hard": True,
-        "score": 0.0 if unlock_risk else 3.0,
-        "reason": "unlock_or_hard_neg" if unlock_risk else "facts_ok",
+        "score": 0.0 if unlock_risk else (3.0 if fact_n == 0 else min(4.0, 2.5 + 0.2 * fact_n)),
+        "reason": (
+            "unlock_or_hard_neg"
+            if unlock_risk
+            else (f"facts_ok n={fact_n}" + (f" {fact_summary}" if fact_summary else ""))
+        ),
     }
 
-    # Social
+    # Social / block_buys (fusion or explicit)
     layers["social"] = {
         "pass": not social_block,
         "hard": bool(social_block),
@@ -123,18 +129,40 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
         "reason": "block_buys" if social_block else "social_ok",
     }
 
-    # Memory
+    # Memory — entry_bias + RAG hits + DCA lessons (deep path fills these)
     mem_score = 2.0
     mem_hard = False
+    mem_bits = [f"entry_bias={entry_bias}"]
     if entry_bias == "soft_block":
         mem_score = 0.5
+        mem_bits.append("soft_block")
     elif entry_bias == "prefer":
         mem_score = 4.0
+        mem_bits.append("prefer")
+    rag_hits = 0
+    try:
+        rag_hits = int(cand.get("rag_hit_count") or 0)
+    except (TypeError, ValueError):
+        rag_hits = 0
+    if rag_hits > 0:
+        mem_score = min(5.0, mem_score + min(1.5, 0.4 * rag_hits))
+        mem_bits.append(f"rag_hits={rag_hits}")
+    lesson_n = 0
+    try:
+        lesson_n = int(cand.get("dca_lesson_count") or 0)
+    except (TypeError, ValueError):
+        lesson_n = 0
+    if lesson_n > 0:
+        mem_score = min(5.0, mem_score + min(1.0, 0.25 * lesson_n))
+        mem_bits.append(f"dca_lessons={lesson_n}")
+        summary = str(cand.get("dca_lesson_summary") or "").strip()
+        if summary:
+            mem_bits.append(summary[:40])
     layers["memory"] = {
         "pass": not mem_hard,
         "hard": mem_hard,
         "score": mem_score,
-        "reason": f"entry_bias={entry_bias}",
+        "reason": ",".join(mem_bits),
     }
 
     # Portfolio / cash
@@ -143,6 +171,37 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
         "hard": False,
         "score": 3.0 if spendable >= 200 else 1.0,
         "reason": f"spendable_dca={spendable:.0f}",
+    }
+
+    # News / evidence brief (deep path)
+    news_n = 0
+    try:
+        news_n = int(cand.get("news_count") or 0)
+    except (TypeError, ValueError):
+        news_n = 0
+    hard_news = bool(cand.get("hard_news"))
+    news_score = 2.0
+    news_pass = True
+    news_hard = False
+    news_reason = "no_news"
+    if hard_news:
+        news_score = 0.0
+        news_pass = False
+        news_hard = True
+        news_reason = "hard_news"
+    elif news_n > 0:
+        news_score = min(4.0, 2.0 + 0.3 * news_n)
+        brief = cand.get("news_brief") or []
+        news_reason = f"news_n={news_n}"
+        if isinstance(brief, list) and brief:
+            news_reason += f" top={str(brief[0])[:50]}"
+        if cand.get("facts_fresh"):
+            news_reason += ",fresh"
+    layers["news"] = {
+        "pass": news_pass,
+        "hard": news_hard,
+        "score": news_score,
+        "reason": news_reason,
     }
 
     return layers

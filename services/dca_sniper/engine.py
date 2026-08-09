@@ -102,8 +102,11 @@ def _as_candidate_views(
     rows: list[dict[str, Any]],
     cash: dict[str, Any],
     cfg: dict[str, Any],
+    *,
+    config_raw: dict | None = None,
 ) -> list[CandidateView]:
     views: list[CandidateView] = []
+    deep_on = bool(cfg.get("deep_analysis_enabled", True))
     for row in rows:
         if is_grid_excluded(
             strategy_profile=str(row.get("strategy_profile") or ""),
@@ -114,13 +117,36 @@ def _as_candidate_views(
             continue
         row = dict(row)
         row.setdefault("sniper_cfg", cfg)
-        analysis = analyze_candidate(row, cash)
-        usdt, size_reason = _size_for_row(row, analysis, cash, cfg)
+        if deep_on:
+            from services.dca_sniper.deep_analysis import deep_analyze_candidate
+
+            deep = deep_analyze_candidate(row, cash, cfg, config_raw=config_raw)
+            score = float(deep.score)
+            hard = list(deep.hard_fail or [])
+            usdt = float(deep.usdt or 0)
+            size_reason = str(deep.size_reason or "")
+            checklist = dict(deep.checklist or {})
+            if usdt <= 0 and size_reason and size_reason not in hard:
+                hard = hard + [size_reason]
+            # Prefer enriched meta for rank identity
+            row = deep.enriched_row or row
+            try:
+                from services.dca_sniper import state as sniper_state
+
+                sniper_state.record_deep_quality(
+                    deep.quality, policy_skip=bool(deep.policy_skip)
+                )
+            except Exception:
+                pass
+        else:
+            analysis = analyze_candidate(row, cash)
+            usdt, size_reason = _size_for_row(row, analysis, cash, cfg)
+            score = float(analysis["score"])
+            hard = list(analysis.get("hard_fail") or [])
+            if usdt <= 0 and size_reason:
+                hard = hard + [size_reason]
+            checklist = {**(analysis.get("checklist") or {}), "size_reason": size_reason, "deep": False}
         loss = float(row.get("loss_pct") or 0)
-        score = float(analysis["score"])
-        hard = list(analysis.get("hard_fail") or [])
-        if usdt <= 0 and size_reason:
-            hard = hard + [size_reason]
         v = CandidateView(
             symbol=str(row.get("symbol") or ""),
             timeframe=str(row.get("timeframe") or "1h"),
@@ -136,8 +162,8 @@ def _as_candidate_views(
             strategy_class=str(row.get("strategy_class") or ""),
             has_grid_plan=bool(row.get("has_grid_plan")),
             score=score,
-            checklist={**(analysis.get("checklist") or {}), "size_reason": size_reason},
-            hard_fail=hard if usdt <= 0 else list(analysis.get("hard_fail") or []),
+            checklist=checklist,
+            hard_fail=list(hard),
             usdt_suggest=usdt,
             rank_priority=rank_priority(score, loss, float(row.get("notional") or 0)),
         )
@@ -192,7 +218,7 @@ def run_cycle(
     rows = list(cand_resp.get("candidates") or [])
     audit["n_candidates"] = len(rows)
 
-    views = _as_candidate_views(rows, cash, cfg)
+    views = _as_candidate_views(rows, cash, cfg, config_raw=config)
     open_focus = sum(1 for v in views if v.recovery_hold or v.sniper_focus)
     # select_focus_batch uses heavy_min_score as quality floor; allow smalls via usdt>0
     batch = select_focus_batch(
@@ -205,9 +231,23 @@ def run_cycle(
     )
     audit["n_focus"] = len(batch)
     audit["ranked_top"] = [
-        {"symbol": v.symbol, "score": v.score, "usdt": v.usdt_suggest, "loss": v.loss_pct}
+        {
+            "symbol": v.symbol,
+            "score": v.score,
+            "usdt": v.usdt_suggest,
+            "loss": v.loss_pct,
+            "deep": (v.checklist or {}).get("deep"),
+            "quality": (v.checklist or {}).get("quality"),
+            "policy_reasons": (v.checklist or {}).get("policy_reasons"),
+            "size_reason": (v.checklist or {}).get("size_reason"),
+        }
         for v in views[:5]
     ]
+    try:
+        st = sniper_state.get_state()
+        audit["deep_metrics"] = dict((st.get("metrics") or {}))
+    except Exception:
+        audit["deep_metrics"] = {}
 
     if not batch:
         dec = {"action": "WAIT", "reason": "no_heavy_yes_or_cash", "cash": cash}

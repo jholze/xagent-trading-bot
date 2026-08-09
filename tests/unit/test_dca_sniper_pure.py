@@ -231,17 +231,44 @@ class TestDcaSniperEngineDry(unittest.TestCase):
                 }
             ],
         }
-        audit = run_cycle(client, dry_run=True)
+        # Shallow path here: deep analysis is covered in test_dca_sniper_deep_analysis
+        # (avoids live fusion HARVEST skips in unit env).
+        audit = run_cycle(
+            client,
+            dry_run=True,
+            config={
+                "dca_sniper": {
+                    "enabled": True,
+                    "deep_analysis_enabled": False,
+                    "notify_only": False,
+                    "prefer_small_before_heavy": True,
+                    "require_reclaim_for_dca": True,
+                    "heavy_only_on_reclaim": True,
+                    "min_dd_pct_for_dca": 12,
+                    "max_dd_pct_for_dca": 55,
+                    "small_dca_usdt": 500,
+                    "min_meaningful_usdt": 200,
+                    "max_single_add_usdt": 2500,
+                    "heavy_min_score": 6.5,
+                    "max_focus_slots": 2,
+                    "min_cash_after_focus": 150,
+                    "exclude_grid": True,
+                    "profile_f": {"volatile": 0.75, "default": 0.65},
+                    "max_bag_pct_equity": 5,
+                }
+            },
+        )
         self.assertNotIn("error", audit)
         actions = audit.get("actions") or []
-        # sharp path: small or heavy depending score/reclaim (both are live DCA intents)
+        # dry path: small or heavy depending score/reclaim (both are live DCA intents)
         self.assertTrue(
             any(
                 str(a.get("action") or "").startswith("DCA_") or a.get("dry_run")
                 for a in actions
-            )
+            ),
+            msg=f"actions={actions}",
         )
-        self.assertTrue(any(a.get("dry_run") for a in actions))
+        self.assertTrue(any(a.get("dry_run") for a in actions), msg=f"actions={actions}")
 
 
 class TestDcaSniperConfig(unittest.TestCase):

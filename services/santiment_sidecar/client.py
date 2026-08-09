@@ -476,3 +476,117 @@ class SantimentClient:
     def fetch_mvp_features(self) -> dict[str, float]:
         """Back-compat: features dict only."""
         return self.fetch_features().features
+
+    # Per-asset (DCA sniper opt-in). Prefer micro — 1 call/slug, no research lag.
+    ASSET_SIGNAL_METRICS: list[tuple[str, str, str]] = [
+        ("daa", "daily_active_addresses", "1d"),
+        ("vol_1d", "price_volatility_1d", "1d"),
+        ("dev_activity", "dev_activity", "1d"),
+        ("social_volume", "social_volume_total", "1d"),
+        ("exchange_inflow", "exchange_inflow", "1d"),
+        ("exchange_outflow", "exchange_outflow", "1d"),
+        ("mvrv", "mvrv_usd", "1d"),
+    ]
+    ASSET_SIGNAL_METRICS_LEAN: list[tuple[str, str, str]] = [
+        ("daa", "daily_active_addresses", "1d"),
+        ("vol_1d", "price_volatility_1d", "1d"),
+        ("social_volume", "social_volume_total", "1d"),
+    ]
+    ASSET_SIGNAL_METRICS_MICRO: list[tuple[str, str, str]] = [
+        ("daa", "daily_active_addresses", "1d"),
+    ]
+
+    def fetch_asset_signals(
+        self,
+        slug: str,
+        *,
+        metrics: list[tuple[str, str, str]] | None = None,
+        lean: bool = True,
+        micro: bool = True,
+        try_research: bool = False,
+    ) -> dict[str, Any]:
+        """Per-asset SanAPI bundle for sniper (default: 1 DAA call, no lag retry)."""
+        slug = str(slug or "").strip().lower()
+        out_features: dict[str, float] = {}
+        ok: list[str] = []
+        failed: list[str] = []
+        research_keys: list[str] = []
+        lags: list[float] = []
+        calls = 0
+        if not slug or not self.available():
+            return {
+                "slug": slug,
+                "features": {},
+                "meta": {
+                    "metrics_ok": [],
+                    "metrics_failed": ["no_slug_or_key"],
+                    "research_only": [],
+                    "fresh": False,
+                    "api_calls_this_fetch": 0,
+                },
+            }
+        from_iso, to_iso = self._recent_window()
+        if metrics is not None:
+            metric_list = metrics
+        elif micro:
+            metric_list = self.ASSET_SIGNAL_METRICS_MICRO
+        elif lean:
+            metric_list = self.ASSET_SIGNAL_METRICS_LEAN
+        else:
+            metric_list = self.ASSET_SIGNAL_METRICS
+
+        for key, metric, interval in metric_list:
+            series, err = self._fetch_one(
+                key, slug, metric, from_iso, to_iso, interval=interval
+            )
+            calls += 1
+            if err and isinstance(err, RateLimitError):
+                failed.append(f"{key}_rate_limited")
+                break
+            if not series:
+                if try_research:
+                    lag_from, lag_to = self._lagged_research_window()
+                    series_lag, err_lag = self._fetch_one(
+                        key, slug, metric, lag_from, lag_to, interval=interval
+                    )
+                    calls += 1
+                    if err_lag and isinstance(err_lag, RateLimitError):
+                        failed.append(f"{key}_rate_limited")
+                        break
+                    if series_lag:
+                        rkey = f"research_{key}"
+                        self._apply_series(out_features, rkey, series_lag)
+                        research_keys.append(key)
+                        ok.append(rkey)
+                        continue
+                failed.append(key)
+                if err:
+                    log.debug("asset %s %s fail: %s", slug, metric, err)
+                continue
+            if not is_series_fresh(series):
+                failed.append(f"{key}_stale")
+                if try_research:
+                    rkey = f"research_{key}"
+                    lag = self._apply_series(out_features, rkey, series)
+                    research_keys.append(key)
+                    if lag is not None:
+                        lags.append(lag)
+                continue
+            lag = self._apply_series(out_features, key, series)
+            ok.append(key)
+            if lag is not None:
+                lags.append(lag)
+
+        return {
+            "slug": slug,
+            "features": out_features,
+            "meta": {
+                "metrics_ok": ok,
+                "metrics_failed": failed,
+                "research_only": research_keys,
+                "fresh": bool(ok) and any(not k.startswith("research_") for k in ok),
+                "data_lag_days_max": round(max(lags), 3) if lags else None,
+                "api_calls_this_fetch": calls,
+                "micro": micro,
+            },
+        }

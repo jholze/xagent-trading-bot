@@ -210,6 +210,7 @@ def score_checklist(layers: dict[str, Any]) -> tuple[float, list[str], dict[str,
         "facts": 1.5,
         "social": 0.8,
         "memory": 1.0,
+        "news": 1.2,
         "portfolio": 1.2,
     }
     for key, w in weights.items():

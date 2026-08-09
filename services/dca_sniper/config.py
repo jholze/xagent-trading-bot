@@ -100,6 +100,31 @@ def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
         "max_bag_pct_equity": float(sec.get("max_bag_pct_equity") or 5.0),
         "small_dca_usdt": float(sec.get("small_dca_usdt") or 500),
         "deep_analysis_cooldown_sec": float(sec.get("deep_analysis_cooldown_sec") or 300),
+        "deep_analysis_enabled": bool(sec.get("deep_analysis_enabled", True)),
+        "deep_include_rag": bool(sec.get("deep_include_rag", True)),
+        "deep_apply_policy": bool(sec.get("deep_apply_policy", True)),
+        "deep_policy_shadow": bool(sec.get("deep_policy_shadow", False)),
+        "deep_structure_multi_tf": bool(sec.get("deep_structure_multi_tf", True)),
+        "deep_structure_timeframes": sec.get("deep_structure_timeframes")
+        or ["15m", "1h", "4h"],
+        "deep_min_context_signals": int(sec.get("deep_min_context_signals") or 3),
+        "deep_require_context_for_heavy": bool(
+            sec.get("deep_require_context_for_heavy", True)
+        ),
+        "deep_allow_small_if_thin": bool(sec.get("deep_allow_small_if_thin", True)),
+        "deep_block_if_zero_signals": bool(sec.get("deep_block_if_zero_signals", False)),
+        "deep_gather_evidence": bool(sec.get("deep_gather_evidence", True)),
+        "deep_news_lookback_hours": float(sec.get("deep_news_lookback_hours") or 72),
+        "deep_hard_news_blocks_heavy": bool(sec.get("deep_hard_news_blocks_heavy", True)),
+        # Santiment Pro: global regime via Redis (0 API). Asset fetch opt-in + thrifty.
+        "deep_santiment_enabled": bool(sec.get("deep_santiment_enabled", True)),
+        "deep_santiment_asset_fetch": bool(sec.get("deep_santiment_asset_fetch", False)),
+        "deep_santiment_asset_ttl_sec": float(
+            sec.get("deep_santiment_asset_ttl_sec") or 21600
+        ),
+        "deep_santiment_lean": bool(sec.get("deep_santiment_lean", True)),
+        "deep_santiment_micro": bool(sec.get("deep_santiment_micro", True)),
+        "deep_santiment_block_buys": bool(sec.get("deep_santiment_block_buys", True)),
         "in_process_tick": bool(in_proc),
         "require_reclaim_for_dca": bool(sec.get("require_reclaim_for_dca", True)),
         "require_reclaim_for_heavy": bool(sec.get("require_reclaim_for_heavy", True)),
