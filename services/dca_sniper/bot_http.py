@@ -83,7 +83,7 @@ def _snapshot_cash() -> dict[str, Any]:
 
 
 def _build_candidates() -> list[dict[str, Any]]:
-    from strategies.positions import list_active_positions
+    from strategies.positions import get_position, list_active_positions
     from strategies.registry import resolve_strategy_params
 
     cash = _snapshot_cash()
@@ -94,15 +94,50 @@ def _build_candidates() -> list[dict[str, Any]]:
         log(f"dca_sniper list positions: {e}", "WARNING")
         lots = []
 
+    # Bulk marks — list_active lots often lack current_price
+    price_map: dict[str, float] = {}
+    try:
+        from price_fetcher import get_prices_batch
+
+        syms = []
+        for lot in lots:
+            s = str(lot.get("symbol") or "")
+            if s:
+                syms.append(s)
+        if syms:
+            raw = get_prices_batch(syms) or {}
+            for s, px in raw.items():
+                try:
+                    v = float(px or 0)
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v > 0:
+                    price_map[str(s).upper()] = v
+    except Exception as e:
+        log(f"dca_sniper bulk prices skip: {e}", "DEBUG")
+
+    skipped = {"no_mark": 0, "green": 0, "locked_dca": 0, "bad_lot": 0, "err": 0}
     for lot in lots:
         try:
             symbol = str(lot.get("symbol") or "")
             tf = str(lot.get("timeframe") or "1h")
-            avg = float(lot.get("average_entry") or 0)
-            amount = float(lot.get("amount") or 0)
+            # Full position for lock / recovery_hold / dca meta (lot summary can be thin)
+            pos = get_position(symbol, tf) or lot
+            avg = float(pos.get("average_entry") or lot.get("average_entry") or 0)
+            amount = float(pos.get("amount") or lot.get("amount") or 0)
             if not symbol or amount <= 0 or avg <= 0:
+                skipped["bad_lot"] += 1
                 continue
-            mark = float(lot.get("current_price") or lot.get("mark") or lot.get("last_price") or 0)
+            mark = float(
+                pos.get("current_price")
+                or pos.get("mark")
+                or pos.get("last_price")
+                or lot.get("current_price")
+                or lot.get("mark")
+                or 0
+            )
+            if mark <= 0:
+                mark = float(price_map.get(symbol.upper()) or 0)
             if mark <= 0:
                 try:
                     from services.market_service import MarketService
@@ -111,15 +146,18 @@ def _build_candidates() -> list[dict[str, Any]]:
                 except Exception:
                     mark = 0.0
             if mark <= 0:
+                skipped["no_mark"] += 1
                 continue
             loss = (mark / avg - 1.0) * 100.0
             if loss >= -1.0:  # only red-ish bags
+                skipped["green"] += 1
                 continue
             try:
                 from strategies.position_lock import dca_blocked
 
-                blocked, _why = dca_blocked(lot)
+                blocked, _why = dca_blocked(pos)
                 if blocked:
+                    skipped["locked_dca"] += 1
                     continue
             except Exception:
                 pass
@@ -129,17 +167,19 @@ def _build_candidates() -> list[dict[str, Any]]:
                 params = resolve_strategy_params(
                     {"symbol": symbol, "timeframe": tf},
                     has_position=True,
-                    frozen_tier=lot.get("strategy_tier"),
+                    frozen_tier=pos.get("strategy_tier") or lot.get("strategy_tier"),
                 )
             except Exception:
                 params = {}
             profile = str(
-                lot.get("strategy_profile")
+                pos.get("strategy_profile")
+                or lot.get("strategy_profile")
                 or params.get("strategy_profile")
                 or ""
             )
             sclass = str(
-                lot.get("strategy_class")
+                pos.get("strategy_class")
+                or lot.get("strategy_class")
                 or params.get("strategy_class")
                 or ""
             )
@@ -171,7 +211,12 @@ def _build_candidates() -> list[dict[str, Any]]:
             entry_bias = "neutral"
             try:
                 entry_bias = str(
-                    (params.get("entry_bias") or lot.get("entry_bias") or "neutral")
+                    (
+                        params.get("entry_bias")
+                        or pos.get("entry_bias")
+                        or lot.get("entry_bias")
+                        or "neutral"
+                    )
                 )
             except Exception:
                 pass
@@ -192,15 +237,16 @@ def _build_candidates() -> list[dict[str, Any]]:
                 "mark": mark,
                 "loss_pct": round(loss, 3),
                 "notional": round(notional, 2),
-                "dca_rounds": int(lot.get("dca_rounds") or 0),
+                "dca_rounds": int(pos.get("dca_rounds") or lot.get("dca_rounds") or 0),
                 "max_rounds": int(
                     (params.get("dca") or {}).get("max_rounds")
+                    or pos.get("dca_max_rounds")
                     or lot.get("dca_max_rounds")
                     or 4
                 ),
-                "recovery_hold": bool(lot.get("recovery_hold")),
-                "sniper_focus": bool(lot.get("sniper_focus")),
-                "dca_heavy_used": bool(lot.get("dca_heavy_used")),
+                "recovery_hold": bool(pos.get("recovery_hold") or lot.get("recovery_hold")),
+                "sniper_focus": bool(pos.get("sniper_focus") or lot.get("sniper_focus")),
+                "dca_heavy_used": bool(pos.get("dca_heavy_used") or lot.get("dca_heavy_used")),
                 "strategy_profile": profile,
                 "strategy_class": sclass,
                 "has_grid_plan": has_grid,
@@ -208,17 +254,29 @@ def _build_candidates() -> list[dict[str, Any]]:
                 "atr_pct": atr,
                 "funding_rate_pct": funding,
                 "entry_bias": entry_bias,
-                "peak_epoch_high": lot.get("peak_epoch_high"),
-                "last_dca_at": lot.get("last_dca_at"),
+                "peak_epoch_high": pos.get("peak_epoch_high") or lot.get("peak_epoch_high"),
+                "last_dca_at": pos.get("last_dca_at") or lot.get("last_dca_at"),
                 "spendable_dca": cash.get("spendable_dca"),
                 "free_fall": struct.get("free_fall"),
                 "reclaim_ok": struct.get("reclaim_ok"),
                 "structure_ok": struct.get("structure_ok"),
+                "position_locked": bool((pos.get("lock") or {}).get("enabled")),
             }
             out.append(row)
         except Exception as e:
+            skipped["err"] += 1
             log(f"dca_sniper candidate skip: {e}", "DEBUG")
             continue
+    if not out:
+        log(
+            f"dca_sniper candidates empty lots={len(lots)} skip={skipped}",
+            "INFO",
+        )
+    else:
+        log(
+            f"dca_sniper candidates n={len(out)} lots={len(lots)} skip={skipped}",
+            "INFO",
+        )
     return out
 
 
@@ -454,16 +512,50 @@ def register_dca_sniper_routes(app: Flask) -> None:
         # Funding candidates: green open lots (not recovery_hold)
         winners = []
         try:
-            from strategies.positions import list_active_positions
+            from strategies.positions import get_position, list_active_positions
+            from price_fetcher import get_prices_batch
 
-            for lot in list_active_positions():
-                avg = float(lot.get("average_entry") or 0)
-                amount = float(lot.get("amount") or 0)
-                if avg <= 0 or amount <= 0:
+            lots = list_active_positions()
+            price_map: dict[str, float] = {}
+            try:
+                raw = get_prices_batch(
+                    [str(l.get("symbol") or "") for l in lots if l.get("symbol")]
+                ) or {}
+                for s, px in raw.items():
+                    try:
+                        v = float(px or 0)
+                    except (TypeError, ValueError):
+                        v = 0.0
+                    if v > 0:
+                        price_map[str(s).upper()] = v
+            except Exception:
+                pass
+            for lot in lots:
+                symbol = str(lot.get("symbol") or "")
+                tf = str(lot.get("timeframe") or "1h")
+                pos = get_position(symbol, tf) or lot
+                avg = float(pos.get("average_entry") or lot.get("average_entry") or 0)
+                amount = float(pos.get("amount") or lot.get("amount") or 0)
+                if avg <= 0 or amount <= 0 or not symbol:
                     continue
-                if lot.get("recovery_hold") or lot.get("sniper_focus"):
+                if pos.get("recovery_hold") or pos.get("sniper_focus"):
                     continue
-                mark = float(lot.get("current_price") or lot.get("mark") or 0)
+                # fund-from-winner is auto-sell: skip no_auto_sell locks
+                try:
+                    from strategies.position_lock import auto_sell_blocked
+
+                    locked, _ = auto_sell_blocked(pos, "dca_sniper_fund")
+                    if locked:
+                        continue
+                except Exception:
+                    pass
+                mark = float(
+                    pos.get("current_price")
+                    or lot.get("current_price")
+                    or lot.get("mark")
+                    or price_map.get(symbol.upper())
+                    or 0
+                )
                 if mark <= 0:
                     continue
                 gain = (mark / avg - 1.0) * 100.0
@@ -471,8 +563,8 @@ def register_dca_sniper_routes(app: Flask) -> None:
                     continue
                 winners.append(
                     {
-                        "symbol": lot.get("symbol"),
-                        "timeframe": lot.get("timeframe") or "1h",
+                        "symbol": symbol,
+                        "timeframe": tf,
                         "gain_pct": round(gain, 2),
                         "notional": round(amount * mark, 2),
                         "mark": mark,

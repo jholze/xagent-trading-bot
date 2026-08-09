@@ -1027,6 +1027,17 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "entry_source": p.get("entry_source"),
         "first_buy_at": p.get("first_buy_at"),
         "highlight": highlight,
+        # overlays needed by sniper / lock / board (not order-derived)
+        "strategy_tier": p.get("strategy_tier"),
+        "dca_rounds": int(p.get("dca_rounds") or 0),
+        "dca_heavy_used": bool(p.get("dca_heavy_used")),
+        "recovery_hold": bool(p.get("recovery_hold")),
+        "sniper_focus": bool(p.get("sniper_focus")),
+        "peak_epoch_high": p.get("peak_epoch_high"),
+        "last_dca_at": p.get("last_dca_at"),
+        "recent_high": p.get("recent_high"),
+        "lock": p.get("lock"),
+        "current_price": p.get("current_price") or p.get("mark") or p.get("last_price"),
     }
     # Surface position lock for /positions, /sell, Telegram 🔒 badge
     lock = p.get("lock")
