@@ -3,10 +3,10 @@
 | | |
 |--|--|
 | **Typ** | Config / Risk policy |
-| **Branch** | `fix/grid-min-gain-bb-stable` |
+| **Branch** | `fix/grid-min-gain-bb-stable` + follow-up `fix/stable-bb-sell-overlay` |
 | **Priorität** | Mittel–Hoch (Fees + Lärm durch 5‑Min-Roundtrips) |
 | **Scope** | Staging-first |
-| **Status** | Done |
+| **Status** | Done (config + stable overlay wiring) |
 
 ## Problem
 
@@ -53,6 +53,16 @@ Volatile unverändert (`bb_sell_min_gain_pct: 12`).
 - [x] Unit: stable-like bb_sell_min_gain_pct=2 blocks +0,1 % TAO case
 - [x] PR → staging deploy
 - [x] Ticket closed
+
+## Follow-up (2026-08-09): stable overlay wiring
+
+Config `stable_altcoin.bb_sell_min_gain_pct=2` alone was **not enough**:
+`overlay_stable_sell` only merged `BASE_SELL_KEYS` and dropped all `bb_sell_*`.
+Live DE still saw default `bb_sell_min_gain_pct=0` → WLD/ETH/BNB micro `bb_upper`
+full closes after deploy of #231.
+
+**Fix:** merge `STABLE_STRUCTURE_SELL_KEYS` (incl. `bb_sell_min_gain_pct`) in
+`overlay_stable_sell` — same structure knobs volatile already got.
 
 ## Non-goals
 
