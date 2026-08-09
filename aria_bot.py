@@ -172,6 +172,13 @@ try:
 except Exception as _gainer_sig_exc:
     log(f"gainer_signal route not registered: {_gainer_sig_exc}", "WARNING")
 
+try:
+    from services.dca_sniper.bot_http import register_dca_sniper_routes
+
+    register_dca_sniper_routes(app)
+except Exception as _dca_sniper_exc:
+    log(f"dca_sniper routes not registered: {_dca_sniper_exc}", "WARNING")
+
 
 @app.route("/health", methods=["GET"])
 def health():

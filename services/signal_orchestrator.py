@@ -445,6 +445,30 @@ class SignalOrchestrator:
         port_cfg = {**port_cfg, **portfolio_config(volatile_dca)}
         if not port_cfg.get("enabled"):
             return {"skipped": True, "reason": "portfolio_disabled"}
+        # Epic #222: when dca_sniper owns heavy/focus, skip portfolio cycle DCA
+        # and run in-process sniper tick (staging sharp — real execute, no log-only).
+        try:
+            from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled
+
+            scfg = dca_sniper_config(self.config.raw)
+            if dca_sniper_enabled(self.config.raw) and scfg.get(
+                "disable_cycle_dca_when_enabled", True
+            ):
+                sniper_audit = None
+                if scfg.get("in_process_tick", True):
+                    try:
+                        from services.dca_sniper.inprocess import maybe_tick_dca_sniper
+
+                        sniper_audit = maybe_tick_dca_sniper()
+                    except Exception as se:
+                        log(f"dca_sniper in-process tick failed: {se}", "WARNING")
+                return {
+                    "skipped": True,
+                    "reason": "dca_sniper_authority",
+                    "sniper": sniper_audit,
+                }
+        except Exception:
+            pass
 
         risk = RiskManager(self.config, self.market)
         cash = risk._available_usdt()

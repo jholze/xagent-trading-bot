@@ -124,6 +124,29 @@ def evaluate_trailing_take_profit(
     except Exception:
         pass
 
+    try:
+        from strategies.recovery_hold import (
+            auto_sells_blocked_reason,
+            maybe_promote_recovery_hold,
+        )
+
+        if position is not None and market.current_price > 0:
+            if maybe_promote_recovery_hold(
+                position, market.current_price, strategy_params=strategy_params
+            ):
+                try:
+                    from strategies.positions import flush_positions
+
+                    flush_positions()
+                except Exception:
+                    pass
+        if auto_sells_blocked_reason(
+            position, "trailing_take_profit", strategy_params=strategy_params
+        ):
+            return None
+    except Exception:
+        pass
+
     action = _resolve_action(position, strategy_params)
     if not action:
         return None

@@ -438,7 +438,7 @@ class TestDCARisk(unittest.TestCase):
             symbol=self.symbol,
             price=1.0,
             amount=0,
-            usdt_amount=20,
+            usdt_amount=150,  # >= risk.min_trade_usdt (100)
             signal="BUY_DCA",
             source="dca",
         )
@@ -448,7 +448,7 @@ class TestDCARisk(unittest.TestCase):
              patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
             decision = risk.evaluate(order, self.tf, source="dca")
 
-        self.assertTrue(decision.approved)
+        self.assertTrue(decision.approved, msg=getattr(decision, "code", None) or decision.message)
 
     def test_dca_interval_blocks_rapid_addon(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
@@ -526,7 +526,7 @@ class TestDCARisk(unittest.TestCase):
             symbol=self.symbol,
             price=1.0,
             amount=0,
-            usdt_amount=20,
+            usdt_amount=150,  # >= risk.min_trade_usdt (100)
             signal="BUY_DCA",
             source="dca",
         )
@@ -538,7 +538,7 @@ class TestDCARisk(unittest.TestCase):
              patch("risk.risk_manager.load_trade_history", return_value={"virtual_balance": 5000.0}):
             decision = risk.evaluate(order, self.tf, source="dca")
 
-        self.assertTrue(decision.approved)
+        self.assertTrue(decision.approved, msg=getattr(decision, "code", None) or decision.message)
 
     def test_dca_usdt_daily_cap_blocks_oversized_addon(self):
         from core.config import BotConfig
@@ -556,7 +556,7 @@ class TestDCARisk(unittest.TestCase):
             symbol=self.symbol,
             price=1.0,
             amount=0,
-            usdt_amount=20,
+            usdt_amount=150,  # >= min_trade; 90+150 > max_daily_dca_usdt 100
             signal="BUY_DCA",
             source="dca",
         )

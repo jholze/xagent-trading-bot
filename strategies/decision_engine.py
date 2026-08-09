@@ -800,9 +800,21 @@ class DecisionEngine:
         tech_norm = normalize(technical.action)
         if is_sell(technical.action):
             pri = self.SELL_PRIORITY.get(tech_norm, 1)
-            if "stop_loss" in technical.sources:
+            # Label hard/partial stop distinctly so recovery_hold can allow full SL only
+            tech_src = "technical"
+            if "stop_loss" in (technical.sources or []):
                 pri = 7
-            candidates.append((tech_norm, pri, "technical"))
+                act_u = str(technical.action or "").upper()
+                if "PARTIAL" in act_u or tech_norm in (
+                    SELL_PARTIAL_10,
+                    SELL_PARTIAL_20,
+                    SELL_PARTIAL_30,
+                    SELL_PARTIAL_50,
+                ):
+                    tech_src = "partial_stop"
+                else:
+                    tech_src = "stop_loss"
+            candidates.append((tech_norm, pri, tech_src))
 
         if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):
             candidates.append((SELL_FULL, 6, "x_stop_loss"))
@@ -946,6 +958,41 @@ class DecisionEngine:
                 structure_rationales.append(
                     "Trail-exclusive blocked: " + ", ".join(policy_audit.trail_exclusive_blocked)
                 )
+
+        # Recovery hold (#223): drop trail/TTP/partial/BB/social while focus recovering
+        if market and position and candidates:
+            try:
+                from strategies.recovery_hold import (
+                    filter_sell_candidates_for_recovery_hold,
+                    maybe_promote_recovery_hold,
+                )
+
+                if maybe_promote_recovery_hold(
+                    position,
+                    float(market.current_price or 0),
+                    strategy_params=strategy_params,
+                    config_raw=self.config.raw,
+                ):
+                    try:
+                        from strategies.positions import flush_positions
+
+                        flush_positions()
+                    except Exception:
+                        pass
+                    structure_rationales.append("recovery_hold cleared BE+")
+                candidates, rh_blocked = filter_sell_candidates_for_recovery_hold(
+                    candidates,
+                    position,
+                    strategy_params=strategy_params,
+                    config_raw=self.config.raw,
+                )
+                if rh_blocked:
+                    sources.append("recovery_hold_block")
+                    structure_rationales.append(
+                        "recovery_hold blocked: " + ", ".join(sorted(set(rh_blocked)))
+                    )
+            except Exception as exc:
+                log(f"recovery_hold filter failed: {exc}", "DEBUG")
 
         if not candidates:
             return HOLD, sources, technical.confidence, structure_rationales, sell_source, sell_policy_audit
@@ -1194,6 +1241,11 @@ class DecisionEngine:
             "regime_defensive",
             "exposure_multiplier",
             "allocation",
+            # Preserve explicit cycle/test DCA + exit overlays after re-resolve
+            "dca",
+            "recovery_hold",
+            "trailing_stop",
+            "trailing_take_profit",
         )
         _preserved_cycle = {
             k: market.strategy_params.get(k)
@@ -1251,9 +1303,31 @@ class DecisionEngine:
                 technical, x_signal, cmc_signal, all_social, market, position, lc_signal
             )
             if normalized == HOLD:
-                dca = evaluate_dca_addon(market, position, market.strategy_params)
+                # Epic #222: sniper owns heavy DCA when enabled
+                _sniper_blocks_cycle_dca = False
+                try:
+                    from services.dca_sniper.config import (
+                        dca_sniper_config,
+                        dca_sniper_enabled,
+                    )
+
+                    _sc = dca_sniper_config(self.config.raw)
+                    _sniper_blocks_cycle_dca = bool(
+                        dca_sniper_enabled(self.config.raw)
+                        and _sc.get("disable_cycle_dca_when_enabled", True)
+                    )
+                except Exception:
+                    _sniper_blocks_cycle_dca = False
+                dca = None
+                if not _sniper_blocks_cycle_dca:
+                    dca = evaluate_dca_addon(market, position, market.strategy_params)
+                elif position and (
+                    position.get("recovery_hold") or position.get("sniper_focus")
+                ):
+                    sources.append("dca_sniper_focus_hold")
                 # #102: optional scheduled calendar DCA when dip path yields nothing
-                if dca is None:
+                # (skipped when dca_sniper owns cycle DCA authority)
+                if dca is None and not _sniper_blocks_cycle_dca:
                     try:
                         from strategies.dca_scheduled import (
                             equal_share_allocations,

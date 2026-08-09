@@ -112,6 +112,34 @@ def try_execute_trail_exit(
     if not sym or px <= 0:
         return {"ok": False, "executed": False, "message": "bad_args"}
 
+    # recovery_hold / sniper_focus: block trail-class WS fires (hard SL not via this path)
+    try:
+        from strategies.positions import get_position
+        from strategies.recovery_hold import (
+            auto_sells_blocked_reason,
+            maybe_promote_recovery_hold,
+        )
+
+        pos = get_position(sym, tf) or {}
+        if pos:
+            if maybe_promote_recovery_hold(pos, px):
+                try:
+                    from strategies.positions import flush_positions
+
+                    flush_positions()
+                except Exception:
+                    pass
+            block = auto_sells_blocked_reason(pos, str(exit_source or "trailing_stop"))
+            if block:
+                return {
+                    "ok": True,
+                    "executed": False,
+                    "message": block,
+                    "recovery_hold": True,
+                }
+    except Exception as e:
+        log(f"exit_ws recovery_hold check skip: {e}", "DEBUG")
+
     remote_url = "" if force_local else exit_execute_url()
     if remote_url:
         return _remote_execute_trail_exit(
