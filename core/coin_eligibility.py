@@ -40,13 +40,28 @@ def passes_coin_filters(
     context: str = "buy",
 ) -> tuple[bool, str]:
     """Return (ok, reason). context: 'buy' | 'watchlist'."""
+    symbol = coin.get("symbol", "") or (market.symbol if market else "")
+    if not symbol:
+        return False, "missing symbol"
+
+    # Permanent stablecoin rail (GUSD/USDP/USDC/…) — not volatility_tier "stable".
+    # Independent of coin_filters.enabled so it cannot be accidentally disabled.
+    if context == "buy":
+        try:
+            from core.stablecoins import (
+                is_stablecoin_symbol,
+                stablecoin_block_reason,
+                stablecoin_buys_blocked,
+            )
+
+            if stablecoin_buys_blocked(cfg) and is_stablecoin_symbol(symbol):
+                return False, stablecoin_block_reason(symbol)
+        except Exception:
+            pass
+
     filters = coin_filters_config(cfg)
     if not filters.get("enabled", True):
         return True, ""
-
-    symbol = coin.get("symbol", "")
-    if not symbol:
-        return False, "missing symbol"
 
     from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
 
