@@ -19,8 +19,9 @@ BASE_SELL_KEYS = (
     "profit_max_lifetime",
 )
 
-VOLATILE_EXTRA_KEYS = (
-    "mode",
+# Structure / BB sells must be overlaid for stable too (not only volatile).
+# Without this, config stable_altcoin.bb_sell_min_gain_pct never reaches DE.
+STABLE_STRUCTURE_SELL_KEYS = (
     "bb_sell_enabled",
     "bb_sell_upper_ratio",
     "bb_sell_rsi_min",
@@ -34,6 +35,11 @@ VOLATILE_EXTRA_KEYS = (
     "vol_dump_min_multiplier",
     "vol_dump_price_drop_pct",
     "vol_dump_requires_prior_gain_pct",
+)
+
+VOLATILE_EXTRA_KEYS = (
+    "mode",
+    *STABLE_STRUCTURE_SELL_KEYS,
     "vol_buy_boost_enabled",
     "vol_buy_boost_min",
     "cmc_sell_requires_ta",
@@ -127,7 +133,7 @@ def overlay_stable_sell(
         tier=tier,
         symbol=symbol,
         tf=tf,
-        keys=BASE_SELL_KEYS,
+        keys=BASE_SELL_KEYS + STABLE_STRUCTURE_SELL_KEYS,
         strategy_profile=profile,
     )
 

@@ -43,6 +43,55 @@ class TestSellProfile(unittest.TestCase):
         self.assertEqual(result["strategy_profile"], "hermes_baseline+stable_sell")
         self.assertEqual(result["take_profit_tiers"], [60, 100, 150])
 
+    def test_stable_overlay_applies_bb_sell_min_gain(self):
+        """Stable structure sells must receive bb_sell_min_gain_pct (TAO/WLD fix)."""
+        base = {"strategy_profile": "hermes_baseline"}
+        stable_cfg = {
+            "enabled": True,
+            "bb_sell_enabled": True,
+            "bb_sell_min_gain_pct": 2,
+            "bb_sell_rsi_min": 62,
+            "bb_sell_upper_ratio": 0.99,
+            "bb_sell_requires_ta": False,
+        }
+        result = apply_position_sell_overlay(
+            base,
+            tier="stable",
+            has_position=True,
+            symbol="WLD/USDT",
+            tf="1h",
+            volatile_cfg={},
+            stable_cfg=stable_cfg,
+        )
+        self.assertEqual(result.get("bb_sell_min_gain_pct"), 2)
+        self.assertTrue(result.get("bb_sell_enabled"))
+        self.assertEqual(result.get("bb_sell_rsi_min"), 62)
+
+        # End-to-end: structure path respects overlaid floor
+        from core.models import MarketContext
+        from strategies.market_structure import evaluate_market_structure_sells
+
+        entry, px = 0.3227, 0.3229  # ~+0.06%
+        market = MarketContext(
+            symbol="WLD/USDT",
+            timeframe="1h",
+            current_price=px,
+            rsi=77.0,
+            lower_bb=0.3,
+            middle_bb=0.31,
+            upper_bb=0.3158,
+            atr_pct=3.0,
+            vol_multiplier=1.0,
+            has_position=True,
+            average_entry=entry,
+        )
+        cands = evaluate_market_structure_sells(
+            market,
+            result,
+            {"rsi_sell_tiers_done": {}, "recent_high": px},
+        )
+        self.assertEqual(cands, [])
+
     def test_no_overlay_without_position(self):
         base = {"strategy_profile": "hermes_baseline"}
         result = apply_position_sell_overlay(
