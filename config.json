@@ -2146,6 +2146,10 @@
     "max_bag_pct_equity": 5.0,
     "small_dca_usdt": 500,
     "deep_analysis_cooldown_sec": 300,
+    "deep_analysis_enabled": true,
+    "deep_include_rag": true,
+    "deep_apply_policy": true,
+    "deep_policy_shadow": false,
     "in_process_tick": false,
     "profile_f": {
       "major": 0.55,
