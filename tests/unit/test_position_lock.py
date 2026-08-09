@@ -257,6 +257,25 @@ class TestSerializeLock(unittest.TestCase):
         self.assertEqual(pos["lock"]["reason"], "test")
         self.assertTrue(is_position_locked(pos))
 
+    def test_active_lot_surfaces_lock_for_positions_cmd(self):
+        """/positions uses _active_lot_from_store_key — must pass lock through."""
+        from strategies.positions import _active_lot_from_store_key
+
+        lock = build_lock(reason="hold_after_revert", locked_by="ops")
+        lot = _active_lot_from_store_key(
+            "BLESS_USDT_1h",
+            {
+                "amount": 181087.0,
+                "average_entry": 0.023,
+                "sold_percent": 0.0,
+                "lock": lock,
+            },
+        )
+        self.assertEqual(lot["symbol"], "BLESS/USDT")
+        self.assertIsInstance(lot.get("lock"), dict)
+        self.assertEqual(lot["lock"]["reason"], "hold_after_revert")
+        self.assertTrue(is_position_locked(lot))
+
 
 class TestDisplayLockBadge(unittest.TestCase):
     def test_compact_line_shows_lock(self):
