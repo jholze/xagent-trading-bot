@@ -13,6 +13,8 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
     Expects optional precomputed: rsi, atr_pct, funding_rate_pct, entry_bias,
     structure_ok, unlock_risk, social_block, etc.
     """
+    from services.dca_sniper.policy import dd_band_ok, dd_pct_from_loss
+
     loss = float(cand.get("loss_pct") or 0)
     rounds = int(cand.get("dca_rounds") or 0)
     max_rounds = int(cand.get("max_rounds") or 4)
@@ -25,18 +27,23 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
     unlock_risk = bool(cand.get("unlock_risk") or cand.get("hard_negative"))
     social_block = bool(cand.get("social_block") or cand.get("block_buys"))
     spendable = float((cash or {}).get("spendable_dca") or cand.get("spendable_dca") or 0)
+    sniper_cfg = cand.get("sniper_cfg") if isinstance(cand.get("sniper_cfg"), dict) else {}
 
-    # Position layer
-    pos_pass = -40.0 <= loss <= -3.0 and rounds < max_rounds and remainder >= 150
+    # Position layer — same DD band as sizer (policy.dd_band_ok)
+    band_ok, band_why = dd_band_ok(loss, sniper_cfg, for_checklist=True)
+    pos_pass = band_ok and rounds < max_rounds and remainder >= 150
     pos_score = 0.0
     if pos_pass:
-        pos_score = min(5.0, abs(loss) / 8.0)
+        pos_score = min(5.0, dd_pct_from_loss(loss) / 8.0)
     layers: dict[str, Any] = {
         "position": {
             "pass": pos_pass,
             "hard": True,
             "score": pos_score,
-            "reason": f"loss={loss:.1f}% rounds={rounds}/{max_rounds} rem={remainder:.0f}",
+            "reason": (
+                f"loss={loss:.1f}% rounds={rounds}/{max_rounds} rem={remainder:.0f}"
+                + (f" band={band_why}" if not band_ok else "")
+            ),
         }
     }
 

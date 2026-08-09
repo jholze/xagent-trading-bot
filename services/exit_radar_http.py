@@ -58,7 +58,7 @@ def build_radar_snapshot() -> dict[str, Any]:
     started = time.time()
 
     try:
-        from scripts.gate_ws_live_dashboard import evaluate_position
+        from services.exit_radar import evaluate_position
     except Exception:
         evaluate_position = None  # type: ignore
 
@@ -150,7 +150,7 @@ def build_radar_snapshot() -> dict[str, Any]:
         pos_rows = _rows_from_hub()
     if not pos_rows:
         try:
-            from scripts.gate_ws_live_dashboard import load_open_positions
+            from services.exit_radar import load_open_positions
             from data_manager import resolve_ledger_scope
 
             scope = resolve_ledger_scope()
@@ -247,7 +247,7 @@ def build_radar_snapshot() -> dict[str, Any]:
 
     dca_sniper: dict[str, Any] = {"ok": False, "source": None, "healthy": False}
     try:
-        from scripts.gate_ws_live_dashboard import fetch_dca_sniper_status
+        from services.exit_radar import fetch_dca_sniper_status
 
         dca_sniper = fetch_dca_sniper_status()
     except Exception as exc:
