@@ -2007,6 +2007,148 @@
         }
       ],
       "center_price": 1.0
+    },
+    "DCAE/USDT_1h": {
+      "symbol": "DCAE/USDT",
+      "timeframe": "1h",
+      "center": 0.92,
+      "spacing": 0.022080000000000002,
+      "last_recenter_price": 0.92,
+      "n_buy_levels": 6,
+      "n_sell_levels": 6,
+      "touch_eps": 0.001,
+      "levels": [
+        {
+          "index": 1,
+          "price": 0.89792,
+          "side": "buy",
+          "slice_pct": 0.15,
+          "filled": false
+        },
+        {
+          "index": 2,
+          "price": 0.8758400000000001,
+          "side": "buy",
+          "slice_pct": 0.18,
+          "filled": false
+        },
+        {
+          "index": 3,
+          "price": 0.8537600000000001,
+          "side": "buy",
+          "slice_pct": 0.21,
+          "filled": false
+        },
+        {
+          "index": 4,
+          "price": 0.83168,
+          "side": "buy",
+          "slice_pct": 0.24,
+          "filled": false
+        },
+        {
+          "index": 5,
+          "price": 0.8096,
+          "side": "buy",
+          "slice_pct": 0.27,
+          "filled": false
+        },
+        {
+          "index": 6,
+          "price": 0.78752,
+          "side": "buy",
+          "slice_pct": 0.3,
+          "filled": false
+        },
+        {
+          "index": 1,
+          "price": 0.94208,
+          "side": "sell",
+          "slice_pct": 0.22,
+          "filled": false
+        },
+        {
+          "index": 2,
+          "price": 0.96416,
+          "side": "sell",
+          "slice_pct": 0.26,
+          "filled": false
+        },
+        {
+          "index": 3,
+          "price": 0.98624,
+          "side": "sell",
+          "slice_pct": 0.3,
+          "filled": false
+        },
+        {
+          "index": 4,
+          "price": 1.00832,
+          "side": "sell",
+          "slice_pct": 0.34,
+          "filled": false
+        },
+        {
+          "index": 5,
+          "price": 1.0304,
+          "side": "sell",
+          "slice_pct": 0.38,
+          "filled": false
+        },
+        {
+          "index": 6,
+          "price": 1.05248,
+          "side": "sell",
+          "slice_pct": 0.42,
+          "filled": false
+        }
+      ],
+      "center_price": 0.92
     }
+  },
+  "recovery_hold": {
+    "enforce": true,
+    "be_buffer_pct": 2.0,
+    "timeout_days": 14,
+    "set_on_dca": false,
+    "stamp_peak_epoch_on_dca": true
+  },
+  "dca_sniper": {
+    "enabled": true,
+    "mode": "live",
+    "notify_only": false,
+    "max_focus_slots": 2,
+    "poll_interval_sec": 180,
+    "poll_fallback_sec": 60,
+    "ws_enabled": true,
+    "heavy_min_score": 6.5,
+    "min_meaningful_usdt": 200,
+    "min_cash_after_focus": 150,
+    "soft_claim_enabled": true,
+    "soft_claim_max_pct_equity": 3.0,
+    "fund_from_winner_enabled": true,
+    "max_fund_sells_per_cycle": 1,
+    "exclude_grid": true,
+    "disable_cycle_dca_when_enabled": true,
+    "be_buffer_pct": 2.0,
+    "timeout_days": 14,
+    "max_single_add_usdt": 2500,
+    "max_bag_pct_equity": 5.0,
+    "small_dca_usdt": 500,
+    "deep_analysis_cooldown_sec": 300,
+    "in_process_tick": true,
+    "profile_f": {
+      "major": 0.55,
+      "volatile": 0.75,
+      "meme": 0.8,
+      "default": 0.65
+    },
+    "require_reclaim_for_dca": true,
+    "require_reclaim_for_heavy": true,
+    "prefer_small_before_heavy": true,
+    "heavy_only_on_reclaim": true,
+    "max_dd_pct_for_heavy": 55,
+    "min_dd_pct_for_dca": 12,
+    "max_dd_pct_for_dca": 55
   }
 }

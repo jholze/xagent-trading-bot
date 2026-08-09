@@ -841,6 +841,21 @@ def update_position(
                         reanchor_recent_high_after_dca(pos, float(current_price))
                 except Exception:
                     pass
+                # Epoch peak for sniper/recovery_hold (clamp stale pre-DCA recent_high)
+                try:
+                    from strategies.recovery_hold import (
+                        stamp_peak_epoch_on_dca,
+                        recovery_hold_config,
+                        set_recovery_hold,
+                    )
+
+                    rh_cfg = recovery_hold_config(params)
+                    if rh_cfg.get("stamp_peak_epoch_on_dca", True):
+                        stamp_peak_epoch_on_dca(pos, float(current_price))
+                    if rh_cfg.get("set_on_dca"):
+                        set_recovery_hold(pos, sniper_focus=False, heavy=False)
+                except Exception:
+                    pass
             elif _is_addon_buy(old_amount, pos):
                 pos["last_action"] = "BUY"
                 pos["last_trade_type"] = "BUY"

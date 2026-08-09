@@ -90,13 +90,39 @@ def evaluate_trailing_stop(
     except Exception:
         pass
 
+    try:
+        from strategies.recovery_hold import (
+            auto_sells_blocked_reason,
+            maybe_promote_recovery_hold,
+        )
+
+        # BE+ may clear hold before trail eval (persist only when cleared)
+        if position is not None and market.current_price > 0:
+            if maybe_promote_recovery_hold(
+                position, market.current_price, strategy_params=strategy_params
+            ):
+                try:
+                    from strategies.positions import flush_positions
+
+                    flush_positions()
+                except Exception:
+                    pass
+        if auto_sells_blocked_reason(
+            position, "trailing_stop", strategy_params=strategy_params
+        ):
+            return None
+    except Exception:
+        pass
+
     entry = market.average_entry
     price = market.current_price
     if price <= 0 or entry <= 0:
         return None
 
     gain_pct = (price / entry - 1.0) * 100.0
-    recent_high = float(position.get("recent_high") or 0) or price
+    # Peak for trail: ledger recent_high (reanchor + stamp_peak_epoch_on_dca fix stale peaks)
+    # Do NOT clamp to peak_epoch_high on every tick — that would ignore post-DCA run-ups.
+    recent_high = float((position or {}).get("recent_high") or 0) or price
     if recent_high <= 0:
         return None
     if recent_high < price:
