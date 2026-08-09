@@ -155,8 +155,9 @@ Wired in: `deep_analysis._enrich_santiment` + `apply_santiment_size` after evide
 | `deep_santiment_micro` | true | 1 metric (DAA) per asset |
 | `deep_santiment_block_buys` | true | Honor CRASH global block |
 
-**Sidecar thrift (Pro budget):** poll **1h**, **3 core** metrics (btc/eth DAA + btc vol),
-optional social+funding every 6th poll, **no** lag double-fetch. Target ~2–3k calls/mo.
+**Sidecar thrift (staging #237 SSOT):** lean profile = **4** metrics (BTC/ETH DAA+vol),
+poll **30m**, inter-request delay, **abort on 429**, no social/leverage by default.
+Sniper adds optional `fetch_asset_signals` (micro DAA, opt-in only).
 
 Tests: `tests/unit/test_dca_sniper_santiment.py`  
 Quality flag: `has_santiment` in `context_quality`.
