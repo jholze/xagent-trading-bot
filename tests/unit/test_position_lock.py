@@ -77,12 +77,19 @@ class TestPositionLockCore(unittest.TestCase):
         pos_both = _locked_pos(modes=[MODE_NO_AUTO_SELL, MODE_NO_DCA])
         self.assertTrue(dca_blocked(pos_both)[0])
 
-    def test_legacy_default_triple_allows_dca(self):
-        """Old telegram locks {no_auto_sell,no_dca,no_evict} → sell-only (DCA free)."""
+    def test_ops_triple_with_no_dca_blocks_dca(self):
+        """Explicit modes including no_dca are honored (BLESS ops lock / sniper)."""
         pos = _locked_pos(
             modes=[MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT],
-            reason="telegram_lock",
+            reason="hold_after_revert",
         )
+        self.assertTrue(auto_sell_blocked(pos, "exit_ws")[0])
+        self.assertTrue(dca_blocked(pos)[0])
+        self.assertTrue(eviction_blocked(pos)[0])
+
+    def test_default_telegram_modes_allow_dca(self):
+        """Telegram DEFAULT_MODES = sell-only; DCA/sniper still allowed."""
+        pos = _locked_pos(modes=list(DEFAULT_MODES), reason="telegram_lock")
         self.assertTrue(auto_sell_blocked(pos, "exit_ws")[0])
         self.assertFalse(dca_blocked(pos)[0])
         self.assertTrue(eviction_blocked(pos)[0])
@@ -242,7 +249,10 @@ class TestDcaLock(unittest.TestCase):
     def test_should_dca_blocked(self):
         from strategies.dca import should_dca
 
-        pos = _locked_pos()
+        pos = _locked_pos(
+            modes=[MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT],
+            reason="hold_after_revert",
+        )
         market = MagicMock()
         market.current_price = 0.9
         market.average_entry = 1.0
