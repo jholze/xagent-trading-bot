@@ -28,6 +28,15 @@
       "exclude_symbols": [
         "USDT",
         "USDC",
+        "USDP",
+        "GUSD",
+        "DAI",
+        "FDUSD",
+        "TUSD",
+        "USDD",
+        "USDE",
+        "PYUSD",
+        "BUSD",
         "BTC",
         "ETH",
         "SOL"
@@ -168,6 +177,15 @@
       "exclude_symbols": [
         "USDT",
         "USDC",
+        "USDP",
+        "GUSD",
+        "DAI",
+        "FDUSD",
+        "TUSD",
+        "USDD",
+        "USDE",
+        "PYUSD",
+        "BUSD",
         "BTC",
         "ETH",
         "SOL"
@@ -326,6 +344,8 @@
     }
   },
   "risk": {
+    "block_stablecoin_buys": true,
+    "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
     "cash_floor_pct": 12,
     "cash_floor_basis": "initial",
     "moderate_deploy": {

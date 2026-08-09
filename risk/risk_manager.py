@@ -147,6 +147,25 @@ class RiskManager:
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
+        # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
+        try:
+            from core.stablecoins import (
+                is_stablecoin_symbol,
+                stablecoin_block_reason,
+                stablecoin_buys_blocked,
+            )
+
+            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            if stablecoin_buys_blocked(raw_cfg) and is_stablecoin_symbol(order.symbol):
+                return RiskDecision(
+                    approved=False,
+                    message=stablecoin_block_reason(order.symbol),
+                    code="stablecoin_blocked",
+                    size_multiplier=0.0,
+                )
+        except Exception:
+            pass
+
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
 
