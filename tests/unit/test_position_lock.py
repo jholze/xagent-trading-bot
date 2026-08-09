@@ -64,12 +64,28 @@ class TestPositionLockCore(unittest.TestCase):
         self.assertIn(MODE_NO_MANUAL_SELL, msg)
 
     def test_dca_and_eviction(self):
+        # Default lock = sell-hold only: DCA allowed, eviction blocked
         pos = _locked_pos()
-        self.assertTrue(dca_blocked(pos)[0])
+        self.assertFalse(dca_blocked(pos)[0])
         self.assertTrue(eviction_blocked(pos)[0])
         unlocked = {"amount": Decimal("1")}
         self.assertFalse(dca_blocked(unlocked)[0])
         self.assertFalse(eviction_blocked(unlocked)[0])
+        # Explicit no_dca still blocks DCA (not the exact legacy triple)
+        pos_nd = _locked_pos(modes=[MODE_NO_DCA])
+        self.assertTrue(dca_blocked(pos_nd)[0])
+        pos_both = _locked_pos(modes=[MODE_NO_AUTO_SELL, MODE_NO_DCA])
+        self.assertTrue(dca_blocked(pos_both)[0])
+
+    def test_legacy_default_triple_allows_dca(self):
+        """Old telegram locks {no_auto_sell,no_dca,no_evict} → sell-only (DCA free)."""
+        pos = _locked_pos(
+            modes=[MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT],
+            reason="telegram_lock",
+        )
+        self.assertTrue(auto_sell_blocked(pos, "exit_ws")[0])
+        self.assertFalse(dca_blocked(pos)[0])
+        self.assertTrue(eviction_blocked(pos)[0])
 
     def test_until_expiry(self):
         past = datetime.now(timezone.utc) - timedelta(hours=1)

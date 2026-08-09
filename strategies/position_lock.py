@@ -1,4 +1,7 @@
-"""Position lock — block auto-exits / DCA / eviction while held.
+"""Position lock — block auto-exits / eviction while held.
+
+Default intent: **prevent accidental sells** (trail / exit_ws / eviction).
+DCA and DCA sniper stay allowed unless mode ``no_dca`` is set explicitly.
 
 Persists on the position document under key ``lock``. Manual sells still allowed
 unless mode ``no_manual_sell`` is set (default off).
@@ -24,7 +27,12 @@ MODE_NO_MANUAL_SELL = "no_manual_sell"
 ALL_MODES = frozenset(
     {MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT, MODE_NO_MANUAL_SELL}
 )
-DEFAULT_MODES: tuple[str, ...] = (MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT)
+# Sell-hold default: DCA / sniper recovery still allowed (ops intent).
+DEFAULT_MODES: tuple[str, ...] = (MODE_NO_AUTO_SELL, MODE_NO_EVICT)
+# Pre-2026-08 telegram default included no_dca — reinterpret as sell-only.
+_LEGACY_DEFAULT_MODES = frozenset(
+    {MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT}
+)
 
 # Order / signal sources treated as *manual* (bypass no_auto_sell)
 _MANUAL_SOURCES = frozenset(
@@ -99,6 +107,26 @@ def lock_is_active(lock: dict | None, *, now: datetime | None = None) -> bool:
     return n < until
 
 
+def lock_modes(lock: dict | None) -> set[str]:
+    """Effective modes for an active lock document.
+
+    Exact legacy default ``{no_auto_sell, no_dca, no_evict}`` is treated as the
+    new sell-only default (DCA allowed). Explicit custom mode sets that still
+    include ``no_dca`` keep blocking DCA.
+    """
+    if not lock:
+        return set()
+    raw = lock.get("modes")
+    if not raw:
+        return set(DEFAULT_MODES)
+    modes = {str(m) for m in raw if m in ALL_MODES}
+    if not modes:
+        return set(DEFAULT_MODES)
+    if modes == _LEGACY_DEFAULT_MODES:
+        return set(DEFAULT_MODES)
+    return modes
+
+
 def is_position_locked(
     pos: dict | None,
     *,
@@ -113,8 +141,7 @@ def is_position_locked(
         return False
     if mode is None:
         return True
-    modes = set(lock.get("modes") or DEFAULT_MODES)
-    return mode in modes
+    return mode in lock_modes(lock)
 
 
 def is_manual_source(source: str | None) -> bool:
@@ -247,7 +274,7 @@ def lock_summary(pos: dict | None) -> str:
     lock = get_lock(pos)
     if not lock or not lock_is_active(lock):
         return ""
-    modes = ",".join(lock.get("modes") or [])
+    modes = ",".join(sorted(lock_modes(lock)))
     until = lock.get("until") or "∞"
     why = lock.get("reason") or ""
     return f"🔒 {why} [{modes}] until={until}"

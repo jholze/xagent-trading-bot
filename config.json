@@ -348,7 +348,7 @@
     "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
     "position_locks": {
       "enabled": true,
-      "_doc": "Per-position lock on pos.lock: blocks auto-sell (exit_ws/trail/TA), DCA, slot eviction. Manual /sell still allowed unless mode no_manual_sell. Persist via positions cache. Kill: enabled=false. Telegram: /lock SYMBOL [duration] [reason], /unlock SYMBOL."
+      "_doc": "Per-position lock on pos.lock: default blocks auto-sell (exit_ws/trail/TA) + slot eviction. DCA and sniper stay allowed unless mode no_dca is set explicitly. Manual /sell still allowed unless no_manual_sell. Kill: enabled=false. Telegram: /lock SYMBOL [duration] [reason], /unlock SYMBOL."
     },
     "cash_floor_pct": 12,
     "cash_floor_basis": "initial",
