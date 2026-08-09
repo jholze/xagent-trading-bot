@@ -143,6 +143,69 @@ class TestSantimentClientHelpers(unittest.TestCase):
         self.assertLess(series_lag_days(fresh, now=now), 1.0)
         self.assertGreater(series_lag_days(stale, now=now), 20.0)
 
+    def test_lean_fetch_stops_on_rate_limit(self):
+        """Thrifty: abort remaining metrics after first 429 (don't burn quota)."""
+        from services.santiment_sidecar.client import RateLimitError, SantimentClient
+
+        client = SantimentClient(
+            "test-key",
+            inter_request_delay_sec=0,
+            abort_on_rate_limit=True,
+            fetch_social=False,
+            fetch_leverage=False,
+            fetch_dev=False,
+        )
+        calls = {"n": 0}
+
+        def fake_ts(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                now = datetime.now(timezone.utc)
+                return [
+                    {
+                        "datetime": (now - timedelta(hours=12)).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                        "value": 100.0,
+                    },
+                    {
+                        "datetime": (now - timedelta(hours=6)).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                        "value": 110.0,
+                    },
+                ]
+            raise RateLimitError("Santiment rate limited (429)", retry_after_sec=3600)
+
+        with patch.object(client, "get_metric_timeseries", side_effect=fake_ts):
+            result = client.fetch_features()
+        # lean has 4 metrics; after ok+429 should stop (2 calls not 4)
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(result.meta.get("rate_limited"))
+        self.assertEqual(result.meta.get("rate_limit_retry_sec"), 3600)
+        self.assertEqual(result.meta.get("metric_profile"), "lean")
+        self.assertIn("btc_daa", result.meta.get("metrics_ok") or [])
+
+    def test_config_lean_defaults(self):
+        from services.santiment_sidecar.config import load_config
+
+        with patch.dict(os.environ, {}, clear=False):
+            # clear thrifty overrides if any
+            for k in (
+                "SANTIMENT_METRIC_PROFILE",
+                "POLL_INTERVAL_SEC",
+                "SANTIMENT_FETCH_SOCIAL",
+                "SANTIMENT_FETCH_LEVERAGE",
+                "SANTIMENT_FETCH_DEV",
+            ):
+                os.environ.pop(k, None)
+            cfg = load_config()
+        self.assertEqual(cfg["metric_profile"], "lean")
+        self.assertFalse(cfg["fetch_social"])
+        self.assertFalse(cfg["fetch_leverage"])
+        self.assertFalse(cfg["fetch_dev"])
+        self.assertGreaterEqual(cfg["poll_interval_sec"], 1800)
+
 
 class TestSantimentSnapshot(unittest.TestCase):
     def test_meta_on_snapshot(self):
