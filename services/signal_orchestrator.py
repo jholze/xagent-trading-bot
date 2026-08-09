@@ -445,8 +445,9 @@ class SignalOrchestrator:
         port_cfg = {**port_cfg, **portfolio_config(volatile_dca)}
         if not port_cfg.get("enabled"):
             return {"skipped": True, "reason": "portfolio_disabled"}
-        # Epic #222: when dca_sniper owns heavy/focus, skip portfolio cycle DCA
-        # and run in-process sniper tick (staging sharp — real execute, no log-only).
+        # Epic #222: when dca_sniper owns heavy/focus, skip portfolio cycle DCA.
+        # Default: standalone xagent-dca-sniper service (Redis/WS). Optional
+        # in_process_tick only if explicitly enabled (fallback).
         try:
             from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled
 
@@ -455,7 +456,7 @@ class SignalOrchestrator:
                 "disable_cycle_dca_when_enabled", True
             ):
                 sniper_audit = None
-                if scfg.get("in_process_tick", True):
+                if scfg.get("in_process_tick", False):
                     try:
                         from services.dca_sniper.inprocess import maybe_tick_dca_sniper
 
@@ -465,6 +466,7 @@ class SignalOrchestrator:
                 return {
                     "skipped": True,
                     "reason": "dca_sniper_authority",
+                    "sniper_standalone": not bool(scfg.get("in_process_tick")),
                     "sniper": sniper_audit,
                 }
         except Exception:
