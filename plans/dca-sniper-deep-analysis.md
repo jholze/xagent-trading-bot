@@ -114,8 +114,21 @@ No schema migration.
 
 | Gate | Behavior |
 |------|----------|
-| `context_quality` | Counts profile/rag/lessons/facts/structure/ta/funding/cash_mode |
+| `context_quality` | Counts profile/rag/lessons/facts/structure/ta/funding/cash_mode + news/path/wallet |
 | `deep_min_context_signals` | default 3 — below = **thin** |
 | `deep_require_context_for_heavy` | thin ⇒ demote **HEAVY → SMALL** (or block) |
 | multi-TF structure | 15m/1h/4h aggregate free_fall/reclaim |
 | metrics | `deep_passes`, `deep_thin`, `deep_rich`, `deep_rag_hits`, `deep_with_facts`, `policy_skips` |
+
+---
+
+## 9. Evidence layer (news / path / wallet)
+
+| Channel | Strategy | Decision effect |
+|---------|----------|-----------------|
+| **News/facts** | Read Memory events (ingest async elsewhere); never live-scrape in sniper | hard_news demotes/blocks heavy; unlock/hack → flags + policy |
+| **Path stats** | Precomputed recovery quality | high giveback → size ×0.85 |
+| **Wallet/on-chain** | Provider adapter; default **unavailable** (no invented whales) | when feed exists: exchange inflow soft mult↓ |
+
+Module: `services/dca_sniper/evidence.py`  
+Checklist layer: `news` (hard on hack/unlock-class).

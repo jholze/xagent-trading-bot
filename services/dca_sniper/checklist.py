@@ -173,6 +173,37 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
         "reason": f"spendable_dca={spendable:.0f}",
     }
 
+    # News / evidence brief (deep path)
+    news_n = 0
+    try:
+        news_n = int(cand.get("news_count") or 0)
+    except (TypeError, ValueError):
+        news_n = 0
+    hard_news = bool(cand.get("hard_news"))
+    news_score = 2.0
+    news_pass = True
+    news_hard = False
+    news_reason = "no_news"
+    if hard_news:
+        news_score = 0.0
+        news_pass = False
+        news_hard = True
+        news_reason = "hard_news"
+    elif news_n > 0:
+        news_score = min(4.0, 2.0 + 0.3 * news_n)
+        brief = cand.get("news_brief") or []
+        news_reason = f"news_n={news_n}"
+        if isinstance(brief, list) and brief:
+            news_reason += f" top={str(brief[0])[:50]}"
+        if cand.get("facts_fresh"):
+            news_reason += ",fresh"
+    layers["news"] = {
+        "pass": news_pass,
+        "hard": news_hard,
+        "score": news_score,
+        "reason": news_reason,
+    }
+
     return layers
 
 

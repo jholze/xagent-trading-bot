@@ -2156,6 +2156,9 @@
     "deep_require_context_for_heavy": true,
     "deep_allow_small_if_thin": true,
     "deep_block_if_zero_signals": false,
+    "deep_gather_evidence": true,
+    "deep_news_lookback_hours": 72,
+    "deep_hard_news_blocks_heavy": true,
     "in_process_tick": false,
     "profile_f": {
       "major": 0.55,

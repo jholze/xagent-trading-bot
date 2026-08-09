@@ -15,6 +15,11 @@ from typing import Any
 from logger import log
 from services.dca_sniper.checklist import analyze_candidate
 from services.dca_sniper.quality import apply_quality_to_size, context_quality
+from services.dca_sniper.evidence import (
+    apply_evidence_size_adjust,
+    apply_evidence_to_candidate,
+    gather_evidence,
+)
 
 
 @dataclass
@@ -158,6 +163,16 @@ def _build_context(
             ctx.extreme_funding = True
     except (TypeError, ValueError):
         pass
+    # Force fact flags for sniper (fail-open) even if global coin_facts toggle is off
+    try:
+        from intelligence.memory.coin_facts import (
+            apply_fact_flags_to_context,
+            summarize_facts_for_symbol,
+        )
+        flags = summarize_facts_for_symbol(symbol, config_raw=config_raw)
+        apply_fact_flags_to_context(ctx, flags)
+    except Exception:
+        pass
     return ctx
 
 
@@ -176,6 +191,7 @@ def deep_analyze_candidate(
     apply_policy = bool(cfg.get("deep_apply_policy", True))
     row0 = dict(row)
     row0.setdefault("sniper_cfg", cfg)
+    evidence_pack = None
 
     # Multi-TF structure before scoring
     row0 = _enrich_structure_multi_tf(row0, cfg)
@@ -229,6 +245,44 @@ def deep_analyze_candidate(
     for k in ("social_noise", "social_caution", "santiment_regime"):
         if k in row0:
             enriched[k] = row0[k]
+
+    # News/facts/path/wallet evidence (memory-first; wallet adapter optional)
+    evidence_pack = None
+    try:
+        if bool(cfg.get("deep_gather_evidence", True)):
+            evidence_pack = gather_evidence(
+                str(enriched.get("symbol") or ""),
+                config_raw=config_raw,
+                lookback_hours=float(cfg.get("deep_news_lookback_hours") or 72),
+                wallet_provider=cfg.get("_wallet_provider"),  # tests inject
+            )
+            enriched = apply_evidence_to_candidate(enriched, evidence_pack)
+            # Force fact flags onto ctx for policy when evidence found hard news
+            if evidence_pack.hard_news:
+                if any(
+                    n.event_type in ("hack", "exploit", "sec_alert", "delisting")
+                    for n in evidence_pack.news
+                ):
+                    ctx.fact_hard_negative = True
+                if any(
+                    n.event_type in ("unlock", "supply_unlock", "supply_overhang")
+                    for n in evidence_pack.news
+                ):
+                    ctx.fact_unlock = True
+            if evidence_pack.news and not getattr(ctx, "fact_event_count", 0):
+                ctx.fact_event_count = len(evidence_pack.news)
+                if not getattr(ctx, "fact_summary", ""):
+                    ctx.fact_summary = evidence_pack.news[0].description[:160]
+            # re-sync cand flags from ctx after forced facts
+            enriched = enrich_candidate_from_context(enriched, ctx)
+            for k in ("reclaim_ok", "free_fall", "structure_ok", "structure_by_tf", "evidence", "news_brief", "facts_fresh", "hard_news", "path_stats", "wallet"):
+                if k in row0 or k in enriched:
+                    pass
+            # preserve evidence after re-enrich
+            if evidence_pack is not None:
+                enriched = apply_evidence_to_candidate(enriched, evidence_pack)
+    except Exception as e:
+        log(f"dca_sniper evidence gather skip: {e}", "DEBUG")
 
     analysis = analyze_candidate(enriched, cash)
     try:
@@ -291,6 +345,11 @@ def deep_analyze_candidate(
         usdt=usdt, size_reason=size_reason, quality=q, cfg=cfg
     )
     hard = list(dict.fromkeys(hard + q_extra))
+    if evidence_pack is not None:
+        usdt, size_reason, e_extra = apply_evidence_size_adjust(
+            usdt, size_reason, evidence_pack, cfg=cfg
+        )
+        hard = list(dict.fromkeys(hard + e_extra))
     if usdt <= 0 and size_reason and size_reason not in hard:
         hard = hard + [size_reason]
 
@@ -305,6 +364,10 @@ def deep_analyze_candidate(
         "dca_lesson_count": int(getattr(ctx, "dca_lesson_count", 0) or 0),
         "cash_mode": str(getattr(ctx, "cash_mode", "") or ""),
         "quality": q,
+        "evidence": (evidence_pack.to_dict() if evidence_pack is not None else enriched.get("evidence")),
+        "news_brief": enriched.get("news_brief"),
+        "facts_fresh": enriched.get("facts_fresh"),
+        "hard_news": enriched.get("hard_news"),
         "structure_source": enriched.get("structure_source"),
         "structure_by_tf": {
             k: {kk: vv for kk, vv in (v or {}).items() if kk != "bars"}

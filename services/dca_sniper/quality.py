@@ -39,6 +39,13 @@ def context_signal_flags(cand: dict[str, Any] | None, ctx: dict[str, Any] | None
     except (TypeError, ValueError):
         facts_n = 0
     fact_summary = str(c.get("fact_summary") or x.get("fact_summary") or "").strip()
+    try:
+        news_n = int(c.get("news_count") or 0)
+    except (TypeError, ValueError):
+        news_n = 0
+    facts_fresh = bool(c.get("facts_fresh"))
+    path_ok = bool((c.get("path_stats") or {}).get("available")) if isinstance(c.get("path_stats"), dict) else False
+    wallet_ok = bool((c.get("wallet") or {}).get("available")) if isinstance(c.get("wallet"), dict) else False
 
     reclaim = c.get("reclaim_ok")
     free_fall = c.get("free_fall")
@@ -52,11 +59,14 @@ def context_signal_flags(cand: dict[str, Any] | None, ctx: dict[str, Any] | None
         "has_profile": entry_bias not in ("", "neutral") or abs(size_bias - 1.0) > 0.05,
         "has_rag": rag > 0,
         "has_lessons": lessons > 0,
-        "has_facts": facts_n > 0 or bool(fact_summary),
+        "has_facts": facts_n > 0 or bool(fact_summary) or news_n > 0 or facts_fresh,
+        "has_fresh_news": facts_fresh or news_n > 0,
         "has_structure": structure_known,
         "has_ta": c.get("rsi") is not None or c.get("atr_pct") is not None,
         "has_funding": c.get("funding_rate_pct") is not None,
         "has_cash_mode": bool(str(c.get("cash_mode") or x.get("cash_mode") or "").strip()),
+        "has_path_stats": path_ok,
+        "has_wallet": wallet_ok,
     }
 
 
