@@ -734,12 +734,16 @@ def fetch_move_snaps_cmc_fallback(
         )
 
         want = list(dict.fromkeys(["BTC/USDT"] + list(symbols)))
-        quotes = fetch_quotes_for_symbols(want, config_raw=config_raw) or {}
-        if "BTC/USDT" in quotes:
-            btc_snap = parse_quote_snap("BTC/USDT", quotes["BTC/USDT"])
+        # Returns (base→row dict, btc_chg_24h); keys are base symbols (e.g. "BTC").
+        quotes, btc_chg = fetch_quotes_for_symbols(want)
+        if not quotes:
+            return out
+        if btc_chg is None and "BTC" in quotes:
+            btc_snap = parse_quote_snap("BTC/USDT", quotes["BTC"])
             btc_chg = float(btc_snap.chg)
         for sym in symbols:
-            q = quotes.get(sym) or quotes.get(sym.replace("/USDT", ""))
+            base = sym.replace("/USDT", "").upper() if isinstance(sym, str) else ""
+            q = quotes.get(base) or quotes.get(sym) or quotes.get(str(sym).replace("/USDT", ""))
             if not q:
                 continue
             snap = parse_quote_snap(sym, q, btc_chg_24h=btc_chg)

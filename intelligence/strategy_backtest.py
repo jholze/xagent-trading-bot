@@ -17,6 +17,35 @@ from logger import log
 
 _OHLCV_CACHE: dict[tuple, tuple[float, list]] = {}
 _CACHE_TTL = 86400
+_CACHE_MAX_ENTRIES = 50
+
+
+def _ohlcv_cache_get(key: tuple, now: float) -> list | None:
+    """Return cached bars if fresh; sweep expired and enforce size cap."""
+    expired = [k for k, (ts, _) in _OHLCV_CACHE.items() if now - ts >= _CACHE_TTL]
+    for k in expired:
+        _OHLCV_CACHE.pop(k, None)
+    entry = _OHLCV_CACHE.get(key)
+    if entry is not None:
+        cached_at, data = entry
+        if now - cached_at < _CACHE_TTL:
+            # Touch as most-recently-used by re-inserting with same timestamp.
+            _OHLCV_CACHE.pop(key, None)
+            _OHLCV_CACHE[key] = (cached_at, data)
+            return data
+        _OHLCV_CACHE.pop(key, None)
+    return None
+
+
+def _ohlcv_cache_put(key: tuple, now: float, bars: list) -> None:
+    _OHLCV_CACHE[key] = (now, bars)
+    if len(_OHLCV_CACHE) <= _CACHE_MAX_ENTRIES:
+        return
+    # Drop oldest entries (by insert/cached_at order via sorted timestamps).
+    overflow = len(_OHLCV_CACHE) - _CACHE_MAX_ENTRIES
+    oldest = sorted(_OHLCV_CACHE.items(), key=lambda item: item[1][0])[:overflow]
+    for k, _ in oldest:
+        _OHLCV_CACHE.pop(k, None)
 
 
 @dataclass
@@ -191,15 +220,14 @@ class StrategyBacktester:
     def _default_fetch_ohlcv(self, symbol: str, timeframe: str, days: int) -> list:
         key = (symbol, timeframe, days)
         now = time.time()
-        if key in _OHLCV_CACHE:
-            cached_at, data = _OHLCV_CACHE[key]
-            if now - cached_at < _CACHE_TTL:
-                return data
+        cached = _ohlcv_cache_get(key, now)
+        if cached is not None:
+            return cached
         since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
         exchange = ccxt.gate({"enableRateLimit": True})
         try:
             bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
-            _OHLCV_CACHE[key] = (now, bars)
+            _ohlcv_cache_put(key, now, bars)
             return bars
         except Exception as e:
             log(f"Strategy backtest OHLCV fetch failed for {symbol}: {e}", "WARNING")

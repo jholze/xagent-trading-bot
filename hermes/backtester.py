@@ -196,7 +196,9 @@ class Backtester:
         metrics = self._compute_metrics(
             trades, balance, position, df.iloc[-1]["close"], max_drawdown_pct, capital
         )
-        metrics = enrich_sandbox_metrics(metrics, trades, len(df) - 20)
+        metrics = enrich_sandbox_metrics(
+            metrics, trades, len(df) - 20, timeframe=timeframe
+        )
         return BacktestResult(
             symbol=symbol,
             timeframe=timeframe,

@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -205,7 +205,7 @@ class TestXPipeline(unittest.TestCase):
             "coin": "SOL",
             "parsed_action": "BUY",
             "signal_price": 100.0,
-            "timestamp": (datetime.now() - timedelta(hours=25)).isoformat(),
+            "timestamp": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         }
         self.assertTrue(tracker._evaluate_post(post, 5.0))
         self.assertFalse(tracker._evaluate_post(post, 1.0))
@@ -219,7 +219,7 @@ class TestXPipeline(unittest.TestCase):
                 "coin": "SOL",
                 "parsed_action": "BUY",
                 "signal_price": 100.0,
-                "timestamp": (datetime.now() - timedelta(hours=25)).isoformat(),
+                "timestamp": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
             }]
         }
         with patch("intelligence.accuracy_tracker.load_x_posts", return_value=old_posts), \
@@ -241,7 +241,7 @@ class TestXPipeline(unittest.TestCase):
                 "account": "Trader1",
                 "was_correct": True,
                 "outcome_24h": 5.0,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ] * 3
         mock_posts.return_value = {"posts": posts}

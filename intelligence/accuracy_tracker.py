@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from data_manager import get_config, load_x_accounts, load_x_posts, save_x_accounts, save_x_posts
 from logger import log
@@ -22,9 +22,12 @@ class AccuracyTracker:
 
     def _parse_ts(self, ts: str) -> datetime:
         try:
-            return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
         except Exception:
-            return datetime.now() - timedelta(days=30)
+            return datetime.now(timezone.utc) - timedelta(days=30)
 
     def _price_return_pct(self, signal_price: float, current_price: float) -> float:
         if not signal_price or signal_price <= 0 or not current_price:
@@ -43,7 +46,7 @@ class AccuracyTracker:
         data = load_x_posts()
         posts = data.get("posts", [])
         updated = 0
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         for post in posts:
             if post.get("coin") in (None, "", "UNKNOWN"):

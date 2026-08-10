@@ -6,6 +6,7 @@ Never touches orders/positions. Social alone never forces BUY / soft_block.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -179,7 +180,12 @@ def append_social_feed(entry: dict[str, Any]) -> bool:
         doc.setdefault("ingested_at", utc_now_iso())
         sid = str(doc.get("post_id") or doc.get("signal_id") or "")
         source = str(doc.get("source") or "social")
-        _id = f"{source}:{sid}" if sid else f"{source}:{hash(str(doc)) & 0xFFFFFFFF:x}"
+        # Stable across process restarts (Python's hash() is randomized per process).
+        _id = (
+            f"{source}:{sid}"
+            if sid
+            else f"{source}:{hashlib.sha256(str(doc).encode()).hexdigest()[:16]}"
+        )
         doc["_id"] = _id
         get_database()[COL_SOCIAL_FEED].replace_one({"_id": _id}, doc, upsert=True)
         return True

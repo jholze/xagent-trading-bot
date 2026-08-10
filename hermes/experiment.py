@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from core.config import get_bot_config
 from hermes.memory import store
+from logger import log
 
 
 @dataclass
@@ -87,9 +88,13 @@ class ExperimentRunner:
         options = [r for r in BUY_REGIMES if r != current]
         return random.choice(options) if options else current
 
-    def _mutate(self, variable: str, old_value: float) -> float:
+    def _mutate(self, variable: str, old_value: float) -> float | None:
+        bounds = BOUNDS.get(variable)
+        if bounds is None:
+            log(f"experiment: variable '{variable}' has no configured BOUNDS; skipping", "WARNING")
+            return None
         step = MUTATION_STEPS.get(variable, 1)
-        low, high = BOUNDS.get(variable, (old_value - step, old_value + step))
+        low, high = bounds
         direction = random.choice([-1, 1])
         new_value = old_value + direction * step
         new_value = max(low, min(high, new_value))
@@ -114,42 +119,89 @@ class ExperimentRunner:
     ) -> ExperimentProposal:
         if grok_proposal and grok_proposal.get("variable") in self.tunable_params:
             variable = grok_proposal["variable"]
-            if variable == "buy_regime":
-                old_value = str(baseline_params.get("buy_regime", "dip"))
-                new_value = str(grok_proposal.get("new_value", old_value))
-                if new_value not in BUY_REGIMES:
-                    new_value = self._mutate_regime(old_value)
-            else:
-                old_value = float(baseline_params.get(variable, grok_proposal.get("old_value", 0)))
-                new_value = float(grok_proposal.get("new_value", old_value))
-                low, high = BOUNDS.get(variable, (new_value, new_value))
-                new_value = max(low, min(high, new_value))
-                int_vars = (
-                    "rsi_buy_low", "rsi_buy_high", "rsi_sell_30", "rsi_sell_20",
-                    "reversal_rsi_cross_low", "reversal_rsi_cross_high",
-                )
-                if variable in int_vars:
-                    new_value = int(round(new_value))
+            try:
+                if variable == "buy_regime":
+                    old_value = str(baseline_params.get("buy_regime", "dip"))
+                    new_value = str(grok_proposal.get("new_value", old_value))
+                    if new_value not in BUY_REGIMES:
+                        new_value = self._mutate_regime(old_value)
                 else:
-                    new_value = round(new_value, 2)
-            params = copy.deepcopy(baseline_params)
-            params[variable] = new_value
-            return ExperimentProposal(
-                variable=variable,
-                old_value=old_value,
-                new_value=new_value,
-                params=params,
-                hypothesis=grok_proposal.get("hypothesis", f"Adjust {variable} from {old_value} to {new_value}"),
-                source=grok_proposal.get("source", "grok"),
-            )
+                    bounds = BOUNDS.get(variable)
+                    if bounds is None:
+                        log(
+                            f"experiment: variable '{variable}' has no configured BOUNDS; "
+                            "rejecting Grok proposal, falling back to heuristics",
+                            "WARNING",
+                        )
+                        raise ValueError(f"no BOUNDS for {variable}")
+                    old_value = float(baseline_params.get(variable, grok_proposal.get("old_value", 0)))
+                    new_value = float(grok_proposal.get("new_value", old_value))
+                    low, high = bounds
+                    new_value = max(low, min(high, new_value))
+                    int_vars = (
+                        "rsi_buy_low", "rsi_buy_high", "rsi_sell_30", "rsi_sell_20",
+                        "reversal_rsi_cross_low", "reversal_rsi_cross_high",
+                    )
+                    if variable in int_vars:
+                        new_value = int(round(new_value))
+                    else:
+                        new_value = round(new_value, 2)
+                params = copy.deepcopy(baseline_params)
+                params[variable] = new_value
+                return ExperimentProposal(
+                    variable=variable,
+                    old_value=old_value,
+                    new_value=new_value,
+                    params=params,
+                    hypothesis=grok_proposal.get(
+                        "hypothesis", f"Adjust {variable} from {old_value} to {new_value}"
+                    ),
+                    source=grok_proposal.get("source", "grok"),
+                )
+            except (ValueError, TypeError) as e:
+                # Non-numeric new_value (or missing bounds) → same path as GrokError fallback.
+                log(
+                    f"experiment: invalid Grok proposal for '{variable}' ({e}); "
+                    "falling back to heuristics",
+                    "WARNING",
+                )
 
         variable = self._pick_variable(baseline_params, symbol, timeframe)
+        # Prefer variables we can actually clamp; retry a few times if unbounded.
+        for _ in range(max(3, len(self.tunable_params))):
+            if variable == "buy_regime" or variable in BOUNDS:
+                break
+            log(f"experiment: variable '{variable}' has no configured BOUNDS; skipping", "WARNING")
+            variable = self._pick_variable(baseline_params, symbol, timeframe)
         if variable == "buy_regime":
             old_value = str(baseline_params.get("buy_regime", "dip"))
             new_value = self._mutate_regime(old_value)
         else:
             old_value = float(baseline_params.get(variable, MUTATION_STEPS.get(variable, 1)))
             new_value = self._mutate(variable, old_value)
+            if new_value is None:
+                # Unbounded variable — fall back to a known bounded tunable.
+                for fallback in self.tunable_params:
+                    if fallback == "buy_regime":
+                        old_value = str(baseline_params.get("buy_regime", "dip"))
+                        new_value = self._mutate_regime(old_value)
+                        variable = fallback
+                        break
+                    if fallback in BOUNDS:
+                        variable = fallback
+                        old_value = float(
+                            baseline_params.get(variable, MUTATION_STEPS.get(variable, 1))
+                        )
+                        new_value = self._mutate(variable, old_value)
+                        if new_value is not None:
+                            break
+                if new_value is None:
+                    # Last resort: keep first bounded MUTATION_STEPS key.
+                    variable = next(iter(BOUNDS))
+                    old_value = float(
+                        baseline_params.get(variable, MUTATION_STEPS.get(variable, 1))
+                    )
+                    new_value = self._mutate(variable, old_value)
         params = copy.deepcopy(baseline_params)
         params[variable] = new_value
         return ExperimentProposal(

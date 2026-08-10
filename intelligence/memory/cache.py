@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
 
 from intelligence.memory.models import CoinProfile
 from intelligence.memory.store import MemoryStore, memory_enabled, resolve_memory_scope

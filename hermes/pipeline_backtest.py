@@ -229,7 +229,12 @@ class PipelineBacktester:
             realized_pnl=round(realized_pnl, 2),
             equity=round(equity, 2),
         )
-        metrics = enrich_sandbox_metrics(metrics, metric_trades if window_metrics_only else trades, bars_tested)
+        metrics = enrich_sandbox_metrics(
+            metrics,
+            metric_trades if window_metrics_only else trades,
+            bars_tested,
+            timeframe=timeframe,
+        )
 
         return PipelineBacktestResult(
             symbol=symbol,

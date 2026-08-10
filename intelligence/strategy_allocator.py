@@ -9,12 +9,9 @@ from __future__ import annotations
 
 from typing import Dict
 
-from core.models import RegimeResult, AllocationDecision
+from core.models import AllocationDecision, RegimeResult
 from core.config import get_bot_config
 from logger import log
-
-# Re-export for convenience / existing imports in tests
-from core.models import AllocationDecision  # noqa: F401
 
 
 class StrategyAllocator:

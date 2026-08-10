@@ -214,7 +214,10 @@ class TestXAccountBacktest(unittest.TestCase):
         mock_answer.assert_called_once_with("cb1")
         mock_save.assert_called_once()
         mock_send.assert_called_once()
-        self.assertIn("Added", mock_send.call_args[0][0])
+        # Locale-agnostic: DE "hinzugefügt" / EN "Added"
+        sent = mock_send.call_args[0][0]
+        self.assertIn("NewTrader", sent)
+        self.assertTrue("Added" in sent or "hinzugefügt" in sent)
 
     @patch("notifications.telegram_commands.x_commands.load_x_accounts")
     @patch("notifications.telegram_commands.x_commands.save_x_accounts")
@@ -223,7 +226,8 @@ class TestXAccountBacktest(unittest.TestCase):
         ok, msg = add_x_account("CryptoCapo_")
         self.assertFalse(ok)
         mock_save.assert_not_called()
-        self.assertIn("already", msg)
+        # Locale-agnostic: DE "bereits" / EN "already"
+        self.assertTrue("already" in msg.lower() or "bereits" in msg.lower())
 
 
 if __name__ == "__main__":

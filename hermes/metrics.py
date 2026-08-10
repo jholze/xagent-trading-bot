@@ -3,8 +3,52 @@
 from __future__ import annotations
 
 import math
+import re
 
 from core.models import SandboxMetrics
+
+# Mirrors services/market_service._TF_HOURS (hours per bar).
+_TF_HOURS = {
+    "15m": 0.25,
+    "30m": 0.5,
+    "1h": 1.0,
+    "2h": 2.0,
+    "4h": 4.0,
+    "6h": 6.0,
+    "12h": 12.0,
+    "1d": 24.0,
+}
+
+
+def timeframe_to_hours(timeframe: str | None) -> float | None:
+    """Parse a timeframe string (e.g. '4h', '15m', '1d') to bar length in hours."""
+    if not timeframe:
+        return None
+    tf = str(timeframe).strip().lower()
+    if tf in _TF_HOURS:
+        return _TF_HOURS[tf]
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(m|h|d|w)", tf)
+    if not m:
+        return None
+    n = float(m.group(1))
+    unit = m.group(2)
+    if unit == "m":
+        return n / 60.0
+    if unit == "h":
+        return n
+    if unit == "d":
+        return n * 24.0
+    if unit == "w":
+        return n * 24.0 * 7.0
+    return None
+
+
+def bars_per_day_for_timeframe(timeframe: str | None, default: float = 6.0) -> float:
+    """Bars per calendar day for a timeframe (e.g. '4h'→6, '1h'→24, '15m'→96)."""
+    hours = timeframe_to_hours(timeframe)
+    if hours is None or hours <= 0:
+        return default
+    return 24.0 / hours
 
 
 def compute_trade_quality(trades: list) -> dict:
@@ -35,8 +79,16 @@ def compute_trade_quality(trades: list) -> dict:
     }
 
 
-def opportunity_score(trades: list, bars_tested: int, bars_per_day: float = 6.0) -> float:
+def opportunity_score(
+    trades: list,
+    bars_tested: int,
+    bars_per_day: float = 6.0,
+    *,
+    timeframe: str | None = None,
+) -> float:
     """Trades per week × positive trade quality."""
+    if timeframe is not None:
+        bars_per_day = bars_per_day_for_timeframe(timeframe, default=bars_per_day)
     tq = compute_trade_quality(trades)
     quality = max(0.0, float(tq["trade_quality"]))
     if bars_tested <= 0:
@@ -52,12 +104,18 @@ def enrich_sandbox_metrics(
     metrics: SandboxMetrics,
     trades: list,
     bars_tested: int,
-    bars_per_day: float = 6.0,
+    bars_per_day: float | None = None,
+    *,
+    timeframe: str | None = None,
 ) -> SandboxMetrics:
+    if bars_per_day is None:
+        bars_per_day = bars_per_day_for_timeframe(timeframe, default=6.0)
     tq = compute_trade_quality(trades)
     buys = len([t for t in trades if t.get("type") == "BUY"])
     metrics.trade_quality = tq["trade_quality"]
-    metrics.opportunity_score = opportunity_score(trades, bars_tested, bars_per_day)
+    metrics.opportunity_score = opportunity_score(
+        trades, bars_tested, bars_per_day, timeframe=timeframe
+    )
     metrics.buy_signals = buys
     return metrics
 

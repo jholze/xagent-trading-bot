@@ -7,7 +7,7 @@ Never touches orders, positions, trade_history, or cash collections.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable
+from typing import Any
 
 from intelligence.memory.models import CoinProfile, Lesson, MarketEvent, TradeMemory
 from logger import log

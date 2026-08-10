@@ -54,6 +54,8 @@ class BacktestResult:
     tweets_fetched: int
     signals: List[BacktestSignal] = field(default_factory=list)
     skipped_no_price: int = 0
+    skipped_too_recent: int = 0
+    skipped_predates_lookahead: int = 0
     skipped_non_trade: int = 0
     error: str = ""
 
@@ -136,6 +138,8 @@ class BacktestResult:
             f"Tweets geladen: {self.tweets_fetched}",
             f"BUY/SELL-Signale: {stats['samples']}",
             f"Übersprungen (kein Preis): {self.skipped_no_price}",
+            f"Übersprungen (zu frisch): {self.skipped_too_recent}",
+            f"Übersprungen (Lookahead-Fenster): {self.skipped_predates_lookahead}",
             f"Übersprungen (HOLD/IGNORE): {self.skipped_non_trade}",
         ]
 
@@ -319,10 +323,10 @@ class XAccountBacktester:
                 continue
             signal_time = self._parse_ts(post.created_at)
             if signal_time > now - min_age:
-                result.skipped_no_price += 1
+                result.skipped_too_recent += 1
                 continue
             if signal_time > now - timedelta(days=self.max_hold_days):
-                result.skipped_no_price += 1
+                result.skipped_predates_lookahead += 1
                 continue
             trade_candidates.append((post, parsed, signal_time))
 

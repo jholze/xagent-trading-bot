@@ -111,31 +111,35 @@ def fetch_polymarket_live(market_ids: list[str]) -> list[PmMarket]:
         # Gamma API sample endpoint pattern; fail soft if schema changes
         out: list[PmMarket] = []
         for mid in market_ids[:10]:
-            url = f"https://gamma-api.polymarket.com/markets/{mid}"
-            req = Request(url, headers={"User-Agent": "xagent-macro/1.0"})
-            with urlopen(req, timeout=4) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-            # try common fields
-            prob = raw.get("lastTradePrice") or raw.get("outcomePrices")
-            if isinstance(prob, str) and "," in prob:
-                try:
-                    prob = float(json.loads(prob)[0] if prob.startswith("[") else prob.split(",")[0])
-                except Exception:
-                    prob = 0.5
             try:
-                p = float(prob)
-            except Exception:
-                p = 0.5
-            if p > 1.0:
-                p = p / 100.0
-            out.append(
-                PmMarket(
-                    market_id=str(mid),
-                    title=str(raw.get("question") or raw.get("title") or mid)[:200],
-                    prob=max(0.0, min(1.0, p)),
-                    metadata={"source": "gamma"},
+                url = f"https://gamma-api.polymarket.com/markets/{mid}"
+                req = Request(url, headers={"User-Agent": "xagent-macro/1.0"})
+                with urlopen(req, timeout=4) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+                # try common fields
+                prob = raw.get("lastTradePrice") or raw.get("outcomePrices")
+                if isinstance(prob, str) and "," in prob:
+                    try:
+                        prob = float(json.loads(prob)[0] if prob.startswith("[") else prob.split(",")[0])
+                    except Exception:
+                        prob = 0.5
+                try:
+                    p = float(prob)
+                except Exception:
+                    p = 0.5
+                if p > 1.0:
+                    p = p / 100.0
+                out.append(
+                    PmMarket(
+                        market_id=str(mid),
+                        title=str(raw.get("question") or raw.get("title") or mid)[:200],
+                        prob=max(0.0, min(1.0, p)),
+                        metadata={"source": "gamma"},
+                    )
                 )
-            )
+            except Exception:
+                # Best-effort: one bad market ID must not discard the whole batch.
+                continue
         return out
     except Exception:
         return []

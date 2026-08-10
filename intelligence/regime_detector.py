@@ -21,9 +21,6 @@ from core.models import RegimeResult
 from intelligence.volatility_classifier import volatility_tier, tier_score, classify_coin
 from logger import log
 
-# Re-export for convenience / existing imports in tests
-from core.models import RegimeResult  # noqa: F401
-
 
 DEFAULT_REGIMES = [
     "RANGING",
@@ -145,9 +142,11 @@ class RegimeDetector:
         else:
             adx = plus_di = minus_di = np.nan
 
-        trend_strength = min(max((adx or 0) / 50.0, 0.0), 1.0)  # 0..1
+        # NaN is truthy in Python, so `adx or 0` does not default when talib fails.
+        adx_safe = 0.0 if adx != adx else float(adx)
+        trend_strength = min(max(adx_safe / 50.0, 0.0), 1.0)  # 0..1
         direction = 0.0
-        if plus_di and minus_di and (plus_di + minus_di) > 0:
+        if plus_di == plus_di and minus_di == minus_di and (plus_di + minus_di) > 0:
             direction = (plus_di - minus_di) / (plus_di + minus_di)
 
         # --- 200 EMA Slope ---
@@ -177,7 +176,7 @@ class RegimeDetector:
         )
 
         components = {
-            "adx": float(adx or 0),
+            "adx": float(adx_safe),
             "direction": float(direction),
             "ema200_slope": float(ema_slope),
             "bb_width": float(bb_width),
