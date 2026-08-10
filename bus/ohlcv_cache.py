@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
 from bus.redis_client import get_redis, resolve_redis_url
+
+# Bound in-process RAM cache growth (MRU eviction when exceeded).
+_RAM_MAX_ENTRIES = 256
 
 
 @dataclass(frozen=True)
@@ -57,16 +61,29 @@ class OhlcvCache:
         self.redis_url = redis_url
         self.key_prefix = key_prefix
         self.config_raw = config_raw
-        self._ram: dict[tuple[str, str, int], CachedOhlcvBars] = {}
+        self._ram: OrderedDict[tuple[str, str, int], CachedOhlcvBars] = OrderedDict()
         self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
+        self._ram_max_entries = _RAM_MAX_ENTRIES
 
     def _client(self):
         return get_redis(self.redis_url, key_prefix=self.key_prefix)
 
     def _cache_key(self, symbol: str, timeframe: str, limit: int) -> tuple[str, str, int]:
         return (symbol, timeframe, int(limit))
+
+    def _ram_put(self, key: tuple[str, str, int], entry: CachedOhlcvBars) -> None:
+        """Insert/update RAM entry as most-recent; evict oldest when over cap."""
+        if key in self._ram:
+            self._ram.move_to_end(key)
+        self._ram[key] = entry
+        while len(self._ram) > self._ram_max_entries:
+            self._ram.popitem(last=False)
+
+    def _ram_touch(self, key: tuple[str, str, int]) -> None:
+        if key in self._ram:
+            self._ram.move_to_end(key)
 
     def _is_fresh(self, entry: CachedOhlcvBars, timeframe: str) -> bool:
         return entry.age_sec <= ttl_for_timeframe(timeframe, self.config_raw)
@@ -123,13 +140,14 @@ class OhlcvCache:
         with self._lock:
             entry = self._ram.get(key)
             if entry and self._is_fresh(entry, timeframe):
+                self._ram_touch(key)
                 self._hits += 1
                 return entry
 
         redis_exact = self._load_redis_entry(symbol, timeframe, limit)
         if redis_exact is not None:
             with self._lock:
-                self._ram[key] = redis_exact
+                self._ram_put(key, redis_exact)
                 self._hits += 1
             return redis_exact
 
@@ -150,7 +168,7 @@ class OhlcvCache:
                     # Prefer smallest sufficient store (less over-fetch noise)
                     best = min(candidates, key=lambda e: int(e.limit))
                     sliced = self._slice_entry(best, limit)
-                    self._ram[key] = sliced
+                    self._ram_put(key, sliced)
                     self._hits += 1
                     return sliced
 
@@ -163,7 +181,7 @@ class OhlcvCache:
                     continue
                 sliced = self._slice_entry(found, limit)
                 with self._lock:
-                    self._ram[key] = sliced
+                    self._ram_put(key, sliced)
                     self._hits += 1
                 return sliced
 
@@ -193,7 +211,7 @@ class OhlcvCache:
         )
         key = self._cache_key(symbol, timeframe, limit)
         with self._lock:
-            self._ram[key] = entry
+            self._ram_put(key, entry)
 
         client = self._client()
         if not client:

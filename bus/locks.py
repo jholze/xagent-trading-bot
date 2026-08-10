@@ -9,7 +9,20 @@ import uuid
 from bus.redis_client import get_redis
 from logger import log
 
-_thread_lock = threading.Lock()
+# Guards mutation of the per-scope lock map only.
+_lock_map_guard = threading.Lock()
+_thread_locks: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _thread_lock_for(tenant_id: str, scope: str) -> threading.Lock:
+    """Lazily create a process-local lock per (tenant_id, scope)."""
+    key = (tenant_id or "", scope or "paper")
+    with _lock_map_guard:
+        lock = _thread_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _thread_locks[key] = lock
+        return lock
 
 
 class LedgerLock:
@@ -37,9 +50,12 @@ class LedgerLock:
         self._token = uuid.uuid4().hex
         self._redis = None
         self._held_redis = False
+        self._thread_lock = _thread_lock_for(self.tenant_id, self.scope)
+        self._held_thread = False
 
     def __enter__(self):
-        _thread_lock.acquire()
+        self._thread_lock.acquire()
+        self._held_thread = True
         if not self.enabled:
             return self
         self._redis = get_redis(self.redis_url, key_prefix=self.key_prefix)
@@ -52,8 +68,13 @@ class LedgerLock:
                     self._held_redis = True
                     return self
             except Exception as e:
-                log(f"Ledger redis lock error ({self.scope}): {e}", "WARNING")
-                return self
+                # Fail loudly: order execution must not proceed without the lock.
+                log(f"Ledger redis lock error ({self.scope}): {e}", "ERROR")
+                self._thread_lock.release()
+                self._held_thread = False
+                raise RuntimeError(
+                    f"Ledger Redis lock failed for {self.tenant_id}:{self.scope}: {e}"
+                ) from e
             time.sleep(0.05)
         log(f"Ledger lock timeout ({self.scope})", "WARNING")
         return self
@@ -66,7 +87,10 @@ class LedgerLock:
                     self._redis.delete(self._redis_key)
             except Exception:
                 pass
-        _thread_lock.release()
+            self._held_redis = False
+        if self._held_thread:
+            self._thread_lock.release()
+            self._held_thread = False
         return False
 
 

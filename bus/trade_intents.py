@@ -88,34 +88,38 @@ class TradeIntentQueue:
             pass
 
     def _loop(self):
-        while self._running:
-            try:
-                intent = self._queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            if intent is None:
-                break
-            try:
-                if self._executor is None:
-                    intent.set_error("No executor")
+        try:
+            while self._running:
+                try:
+                    intent = self._queue.get(timeout=1.0)
+                except queue.Empty:
                     continue
-                from bus.heartbeats import heartbeat_registry
-                from core.config import get_bot_config
+                if intent is None:
+                    break
+                try:
+                    if self._executor is None:
+                        intent.set_error("No executor")
+                        continue
+                    from bus.heartbeats import heartbeat_registry
+                    from core.config import get_bot_config
 
-                arch = get_bot_config().architecture_config
-                heartbeat_registry.beat(
-                    "trading_engine",
-                    meta={"intent": intent.intent_id},
-                    ttl_sec=int(arch.get("heartbeat_ttl_sec", 120)),
-                    key_prefix=arch.get("key_prefix", "aria:"),
-                )
-                result = self._executor(intent)
-                intent.set_result(result)
-            except Exception as e:
-                log(f"Trade intent {intent.intent_id} failed: {e}", "ERROR")
-                intent.set_error(str(e))
-            finally:
-                self._queue.task_done()
+                    arch = get_bot_config().architecture_config
+                    heartbeat_registry.beat(
+                        "trading_engine",
+                        meta={"intent": intent.intent_id},
+                        ttl_sec=int(arch.get("heartbeat_ttl_sec", 120)),
+                        key_prefix=arch.get("key_prefix", "aria:"),
+                    )
+                    result = self._executor(intent)
+                    intent.set_result(result)
+                except Exception as e:
+                    log(f"Trade intent {intent.intent_id} failed: {e}", "ERROR")
+                    intent.set_error(str(e))
+                finally:
+                    self._queue.task_done()
+        finally:
+            self._running = False
+            log("Trade intent queue loop stopped", "CRITICAL")
 
 
 trade_intent_queue = TradeIntentQueue()

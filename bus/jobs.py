@@ -89,33 +89,37 @@ class HeavyJobQueue:
             log(f"Deferred notification flush failed: {e}", "WARNING")
 
     def _loop(self):
-        while self._running:
-            try:
-                job = self._queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            if job is None:
-                break
-            try:
+        try:
+            while self._running:
                 try:
-                    from bus.heartbeats import heartbeat_registry
-                    from core.config import get_bot_config
+                    job = self._queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                if job is None:
+                    break
+                try:
+                    try:
+                        from bus.heartbeats import heartbeat_registry
+                        from core.config import get_bot_config
 
-                    arch = get_bot_config().architecture_config
-                    heartbeat_registry.beat(
-                        "heavy_job_worker",
-                        meta={"job": job.kind},
-                        ttl_sec=int(arch.get("heartbeat_ttl_sec", 120)),
-                        key_prefix=arch.get("key_prefix", "aria:"),
-                    )
-                except Exception:
-                    pass
-                job.run()
-            except Exception as e:
-                log(f"Heavy job {job.kind} ({job.job_id}) failed: {e}", "ERROR")
-            finally:
-                self._finish_session(job)
-                self._queue.task_done()
+                        arch = get_bot_config().architecture_config
+                        heartbeat_registry.beat(
+                            "heavy_job_worker",
+                            meta={"job": job.kind},
+                            ttl_sec=int(arch.get("heartbeat_ttl_sec", 120)),
+                            key_prefix=arch.get("key_prefix", "aria:"),
+                        )
+                    except Exception:
+                        pass
+                    job.run()
+                except Exception as e:
+                    log(f"Heavy job {job.kind} ({job.job_id}) failed: {e}", "ERROR")
+                finally:
+                    self._finish_session(job)
+                    self._queue.task_done()
+        finally:
+            self._running = False
+            log("Heavy job worker loop stopped", "CRITICAL")
 
 
 heavy_job_queue = HeavyJobQueue()

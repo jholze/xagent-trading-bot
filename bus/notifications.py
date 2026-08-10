@@ -127,14 +127,18 @@ class NotificationPublisher:
             self._not_empty.notify_all()
 
     def _loop(self):
-        while self._running:
-            with self._not_empty:
-                while self._running and not self._heap:
-                    self._not_empty.wait(timeout=1.0)
-                if not self._running:
-                    break
-                _prio, _seq, msg = heapq.heappop(self._heap)
-            self._dispatch(msg)
+        try:
+            while self._running:
+                with self._not_empty:
+                    while self._running and not self._heap:
+                        self._not_empty.wait(timeout=1.0)
+                    if not self._running:
+                        break
+                    _prio, _seq, msg = heapq.heappop(self._heap)
+                self._dispatch(msg)
+        finally:
+            self._running = False
+            log("Notification worker loop stopped", "CRITICAL")
 
     def _dispatch(self, msg: NotificationMessage):
         if _send_fn is None:
