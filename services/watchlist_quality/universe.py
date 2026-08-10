@@ -61,7 +61,7 @@ def sensor_universe(
 ) -> list[dict[str, Any]]:
     """Universe for entry_sensor: T1 ∪ (T2 if score ≥ threshold). Fail-open if WQE off."""
     mode = wqe_mode(config)
-    if mode == "off":
+    if mode not in ("soft", "enforce"):
         return list(candidates or [])
 
     scores = _score_map_from_store()

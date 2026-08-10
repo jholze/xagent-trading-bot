@@ -45,7 +45,6 @@ class SignalOrchestrator:
         return self.decision_engine.evaluate(coin, current_price, x_signals, cmc_signals, lc_signals)
 
     def _build_social_context(self, symbol: str, x_signals=None, cmc_signals=None, lc_signals=None, coin: dict = None) -> dict:
-        base = symbol.split("/")[0]
         ctx = {}
         coin_x = self.decision_engine._signals_for_coin(symbol, x_signals)
         coin_cmc = self.decision_engine._signals_for_coin(symbol, cmc_signals)
@@ -296,13 +295,14 @@ class SignalOrchestrator:
         if analysis is None:
             return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
-        trade_result = self.execute_if_needed(analysis, coin, current_price)
-        self.audit.record(coin, analysis, trade_result, current_price)
-
         symbol = coin["symbol"]
         tf = analysis.timeframe
+        # Capture pre-trade position so full-exit SELLs still notify (post-trade amount is 0).
         pos = get_position(symbol, tf)
-        has_position = float(pos.get("amount", 0)) > 0
+        had_position_before = float(pos.get("amount", 0)) > 0
+
+        trade_result = self.execute_if_needed(analysis, coin, current_price)
+        self.audit.record(coin, analysis, trade_result, current_price)
 
         if self.config.raw.get("debug", False):
             print(get_text("debug_ampel_change").format(
@@ -316,7 +316,7 @@ class SignalOrchestrator:
             ))
 
         should_notify = analysis.should_notify
-        if is_sell(analysis.action) and not has_position:
+        if is_sell(analysis.action) and not had_position_before:
             should_notify = False
 
         trade_executed = bool(trade_result.executed) if trade_result else False
@@ -362,7 +362,7 @@ class SignalOrchestrator:
                 blockers={
                     "open_positions": count_open_positions(),
                     "max_open_positions": self.config.max_open_positions,
-                    "has_position": has_position,
+                    "has_position": had_position_before,
                 },
             )
             if hold_why:
@@ -379,6 +379,7 @@ class SignalOrchestrator:
         pos["last_ampel"] = analysis.ampel_emoji
         pos["last_rsi"] = analysis.rsi
 
+        has_position = float(pos.get("amount", 0)) > 0
         unrealized = 0.0
         if has_position and pos.get("average_entry", 0) > 0:
             unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])

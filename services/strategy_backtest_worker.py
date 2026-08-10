@@ -97,6 +97,10 @@ class StrategyBacktestWorker:
             symbol, tf = self._force_queue.pop(0)
             for entry in list_strategy_targets():
                 if entry["symbol"] == symbol and entry.get("timeframe", "4h") == tf:
+                    key = coin_key(symbol, entry.get("timeframe", "4h"))
+                    stored = get_strategy_backtest_entry(key)
+                    if stored.get("locked"):
+                        return None
                     return entry["symbol"], entry.get("timeframe", "4h"), entry
             return None
 

@@ -28,8 +28,8 @@ def load_config() -> dict:
         "api_key": (os.getenv("SANTIMENT_API_KEY") or "").strip(),
         "bot_ingest_url": (os.getenv("BOT_INGEST_URL") or "").strip(),
         "bot_ingest_token": (os.getenv("BOT_INGEST_TOKEN") or os.getenv("SANTIMENT_INGEST_TOKEN") or "").strip(),
-        # Default 30m (was 15m) — ~half the monthly call volume for same metric set.
-        "poll_interval_sec": max(60, _int("POLL_INTERVAL_SEC", 1800)),
+        # Default 1h — thrift API budget target (~2.2–3k Sanbase calls/month with lean metrics).
+        "poll_interval_sec": max(60, _int("POLL_INTERVAL_SEC", 3600)),
         "heartbeat_sec": max(300, _int("HEARTBEAT_SEC", 3600)),
         "size_delta_push": float(os.getenv("SIZE_DELTA_PUSH", "0.1") or 0.1),
         "dry_run": _bool("DRY_RUN", False),

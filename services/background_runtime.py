@@ -187,11 +187,7 @@ def _loop():
                     wq2["ai"] = ai
                     raw2 = dict(raw)
                     raw2["watchlist_quality"] = wq2
-                    try:
-                        coins = wl  # from cycle above when social enabled
-                    except NameError:
-                        coins = load_effective_watchlist()
-                    maybe_run_shadow_after_watchlist_load(coins, config=raw2)
+                    maybe_run_shadow_after_watchlist_load(wl, config=raw2)
             except Exception as e:
                 log(f"Background WQE rescore skipped: {e}", "DEBUG")
 

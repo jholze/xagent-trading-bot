@@ -277,6 +277,8 @@ class OrderService:
             return None
         data = self._load()
         for order in reversed(data.get("orders", [])):
+            if order.get("ledger_scope") != self.scope:
+                continue
             if order.get("idempotency_key") == key:
                 return order
         return None
@@ -457,7 +459,7 @@ class OrderService:
 
     def expire_stale_pending(self) -> int:
         data = self._load()
-        cutoff = datetime.now() - timedelta(minutes=PENDING_TTL_MINUTES)
+        cutoff = _display_now_naive() - timedelta(minutes=PENDING_TTL_MINUTES)
         count = 0
         touched: list[dict] = []
         for o in data.get("orders", []):
@@ -938,7 +940,7 @@ class OrderService:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = _display_now_naive() - timedelta(hours=24)
         counts = {
             "filled": 0,
             "rejected": 0,
@@ -963,7 +965,7 @@ class OrderService:
         """Filled buy/sell counts for the classic order book view."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = _display_now_naive() - timedelta(hours=24)
         counts = {"filled": 0, "buys": 0, "sells": 0}
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:

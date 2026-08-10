@@ -122,7 +122,7 @@ def soft_scan_order(
 
     floor = vol_floor_t1_usd(config)
     # AI5: use_ai_score True prefers quality_shadow_ai when present on rows
-    use_ai_score = use_ai_sort_score(config) or True
+    use_ai_score = use_ai_sort_score(config)
     return apply_soft_watchlist(
         scored_coins,
         open_symbols=open_symbols,

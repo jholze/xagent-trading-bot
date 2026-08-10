@@ -471,7 +471,9 @@ class MarketService:
             try:
                 exchange = self._get_spot_exchange(ex_name)
                 bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-                if cache and bars:
+                if not bars:
+                    continue
+                if cache:
                     cache.set(symbol, timeframe, limit, bars, exchange=ex_name)
                 return self._bars_to_dataframe(bars)
             except Exception as e:

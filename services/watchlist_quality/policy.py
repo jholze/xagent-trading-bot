@@ -24,7 +24,7 @@ def filter_for_grid(
     allow_t2: bool = True,
 ) -> list[dict[str, Any]]:
     """Prefer T1 (+ optional T2). Fail-open to input if WQE off or no scores."""
-    if wqe_mode(config) == "off":
+    if wqe_mode(config) not in ("soft", "enforce"):
         return list(coins or [])
     tiers = _tier_map()
     if not tiers:

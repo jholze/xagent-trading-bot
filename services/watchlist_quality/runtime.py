@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections import OrderedDict
 from typing import Any
 
 from logger import log
@@ -13,8 +14,9 @@ from services.watchlist_quality.enforce import apply_enforce_tiers, filter_new_a
 from services.watchlist_quality.soft import apply_soft_watchlist
 from services.watchlist_quality.venue_batch import attach_quote_volumes
 
-_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_CACHE: OrderedDict[str, tuple[float, list[dict[str, Any]]]] = OrderedDict()
 _CACHE_TTL = 45.0
+_CACHE_MAX = 20
 
 
 def _open_symbols() -> set[str]:
@@ -62,6 +64,7 @@ def apply_wqe_to_watchlist(
     now = time.time()
     hit = _CACHE.get(cache_key)
     if hit and now - hit[0] <= _CACHE_TTL:
+        _CACHE.move_to_end(cache_key)
         return list(hit[1])
 
     try:
@@ -158,6 +161,9 @@ def apply_wqe_to_watchlist(
             )
 
         _CACHE[cache_key] = (now, softed)
+        _CACHE.move_to_end(cache_key)
+        while len(_CACHE) > _CACHE_MAX:
+            _CACHE.popitem(last=False)
         log(
             f"WQE {mode}: n_in={n_in} n_out={len(softed)} open={len(open_syms)} tenant={tenant_id}",
             "INFO",
