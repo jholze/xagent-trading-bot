@@ -529,8 +529,9 @@ class BotConfig:
             "neutral_sentiment_threshold": 0.35,
             "confirm_sentiment_threshold": 0.45,
             "defensive_sentiment_threshold": -0.55,
-            "default_grid_weight": 0.6,
-            "default_momentum_weight": 0.4
+            # Experiment grid-share v1 (2026-08-10): was 0.6/0.4
+            "default_grid_weight": 0.4,
+            "default_momentum_weight": 0.6
         }
         raw = self._raw.get("strategy_allocator", {})
         return {**defaults, **raw}

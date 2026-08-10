@@ -610,8 +610,9 @@
       "tail_exempt_notional_usdt": 500,
       "trail_exit_full_close": true,
       "profit_exit_full_close": true,
-      "grid_profit_full_close": true,
-      "prefer_full_close": true
+      "grid_profit_full_close": false,
+      "prefer_full_close": false,
+      "_experiment_grid_share_v1": "2026-08-10: disable grid full-close upgrades so level harvests can leave tails; trail/profit non-grid full-close stays. Kill: both true."
     }
   },
   "update_interval": 120,
@@ -1730,8 +1731,9 @@
     "neutral_sentiment_threshold": 0.35,
     "confirm_sentiment_threshold": 0.45,
     "defensive_sentiment_threshold": -0.55,
-    "default_grid_weight": 0.6,
-    "default_momentum_weight": 0.4
+    "default_grid_weight": 0.4,
+    "default_momentum_weight": 0.6,
+    "_experiment_grid_share_v1": "2026-08-10: weight 0.6→0.4 so RANGING stable tends HYBRID not pure GRID. Kill: 0.6/0.4."
   },
   "grid": {
     "enabled": true,
