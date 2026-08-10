@@ -2,12 +2,12 @@
 
 | | |
 |--|--|
-| **Typ** | **feature** (shadow discovery; log-only, no capital) |
-| **Branch** | `feature/gainer-relvol-shadow-v0` |
-| **Priorität** | **Hoch** (unlocks Klasse-B discovery design) |
-| **Scope** | Staging / paper (demo ledger); market data global |
-| **Horizon** | 5–10 Tage Shadow → scorecard; **no live buys** in v0 |
-| **Status** | Implementing |
+| **Typ** | **feature** (RelVol discovery + **staging/paper trade**) |
+| **Branch** | `feature/gainer-relvol-trade-v1` (follows shadow-v0) |
+| **Priorität** | **Hoch** |
+| **Scope** | Staging / paper demo ledger; `mode=trade` |
+| **Horizon** | live paper fills; monitor daily |
+| **Status** | Trade path enabled (v1) |
 | **Related** | Früherkennungs-Befund 2026-08-10; `ticket-experiment-gainer-catch-v1.md` (Klasse A only) |
 
 ## Problem

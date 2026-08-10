@@ -1894,7 +1894,7 @@
   },
   "gainer_relvol_shadow": {
     "enabled": true,
-    "mode": "shadow",
+    "mode": "trade",
     "poll_sec": 3600,
     "max_symbols": 150,
     "ohlcv_limit": 30,
@@ -1908,8 +1908,17 @@
     "min_volume_discover": 0,
     "prod_min_vol_compare": 500000,
     "fetch_workers": 6,
-    "_doc": "Discovery shadow: RelVol ignition log only (no orders). See plans/ticket-experiment-gainer-relvol-shadow-v0.md. Kill: enabled=false.",
-    "_experiment": "feature/gainer-relvol-shadow-v0"
+    "require_de_confirm": false,
+    "max_open": 4,
+    "max_buys_per_day": 8,
+    "max_ticket_usdt": 500,
+    "min_ticket_usdt": 50,
+    "participation": 0.02,
+    "max_pct_of_vol_24h": 0.02,
+    "timeframe": "1h",
+    "tenants": ["default", "henry"],
+    "_doc": "RelVol ignition → staging/paper BUY (source=gainer_relvol). Size=participation×1h qvol, capped. Kill: mode=shadow or enabled=false.",
+    "_experiment": "feature/gainer-relvol-trade-v1"
   },
   "gainer_signal": {
     "entry_policy": "fixed_v0",

@@ -57,6 +57,7 @@ GAINER_SOURCES = frozenset(
         "gate_prev_top",
         "gainer_sniper",
         "gainer_signal",
+        "gainer_relvol",
     }
 )
 

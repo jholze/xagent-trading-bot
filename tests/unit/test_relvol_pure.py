@@ -86,6 +86,26 @@ class TestRelvolPure(unittest.TestCase):
         b = _bar(0, 2, 3, 1, 2, 10)
         self.assertGreater(qvol_ccxt(b), 0)
 
+    def test_size_usdt_participation(self):
+        from services.gainer_universe.relvol_shadow import size_usdt_for_signal
+
+        cfg = {
+            "participation": 0.02,
+            "max_ticket_usdt": 500,
+            "min_ticket_usdt": 50,
+            "max_pct_of_vol_24h": 0.02,
+        }
+        # 1h qvol 50k → 2% = 1000 → capped 500
+        u = size_usdt_for_signal(
+            qvol_1h=50_000, abs_vol_24h=1_000_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u, 500.0)
+        # too thin
+        u2 = size_usdt_for_signal(
+            qvol_1h=1_000, abs_vol_24h=2_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u2, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
