@@ -456,22 +456,66 @@ def check_gainer_entry_caps(
     return True, ""
 
 
-def count_open_gainer_positions(positions: list[dict[str, Any]] | None) -> int:
+def count_open_gainer_positions(
+    positions: list[dict[str, Any]] | None,
+    *,
+    source_exact: str | None = None,
+) -> int:
+    """Count open lots with gainer-ish entry_source.
+
+    If source_exact is set (e.g. ``gainer_relvol``), only that source is counted
+    so RelVol can have an independent cap pool from catch-v1 heat/rank.
+    """
     n = 0
+    want = (source_exact or "").strip().lower() or None
     for p in positions or []:
         if not isinstance(p, dict):
             continue
-        src = (
+        try:
+            if float(p.get("amount") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        src = str(
             p.get("entry_source")
             or p.get("source")
             or (p.get("position") or {}).get("entry_source")
             or ""
-        )
-        if is_gainer_source(str(src)):
+        ).strip()
+        src_l = src.lower()
+        if want:
+            if src_l == want or src_l.endswith(want):
+                n += 1
+            continue
+        if is_gainer_source(src):
             n += 1
             continue
-        # also check strategy tag
         strat = str(p.get("strategy") or "")
         if strat.startswith("gainer"):
             n += 1
     return n
+
+
+def position_has_symbol_open(
+    positions: list[dict[str, Any]] | None,
+    symbol: str,
+) -> bool:
+    """True if *symbol* already has an open lot in *positions*."""
+    want = normalize_symbol(symbol)
+    if not want:
+        return False
+    for p in positions or []:
+        if not isinstance(p, dict):
+            continue
+        sym = normalize_symbol(
+            str(p.get("symbol") or (p.get("position") or {}).get("symbol") or "")
+        )
+        if sym == want:
+            amt = p.get("amount")
+            try:
+                if float(amt or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                if amt:
+                    return True
+    return False

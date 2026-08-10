@@ -1916,10 +1916,11 @@
     "min_ticket_usdt": 50,
     "participation": 0.02,
     "max_pct_of_vol_24h": 0.02,
+    "max_pct_24h": 40,
     "timeframe": "1h",
     "tenants": ["default", "henry"],
-    "_doc": "RelVol trades via gainer_signal REST+WS ticker stream (not bot OHLCV mass-scan). Bot sizes BUY source=gainer_relvol. Kill: mode=off or GAINER_RELVOL_ENABLED=0 on gainer-signal.",
-    "_experiment": "feature/gainer-relvol-trade-v1"
+    "_doc": "RelVol via gainer-signal REST+WS. Bot enforces mode=trade, separate caps, already_open, extension max_pct_24h, fail-closed size. Kill bot: mode=shadow|off. Kill signal svc: GAINER_RELVOL_ENABLED=0 or GAINER_RELVOL_MODE=shadow.",
+    "_experiment": "fix/relvol-review-hard-fixes"
   },
   "gainer_signal": {
     "entry_policy": "fixed_v0",
