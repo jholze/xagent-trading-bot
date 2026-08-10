@@ -333,7 +333,8 @@ def score_entry_params_on_df(
                 and rsi_lo <= rsi <= rsi_hi
                 and vol_m >= vol_need
             )
-            crossed = last_rsi < rev_lo <= rsi or last_rsi < rev_hi <= rsi
+            # Match production technical_rsi_bb: both thresholds (low then high), not either alone
+            crossed = last_rsi < rev_lo and rsi >= rev_hi
             rev = (
                 regime in ("reversal", "both")
                 and crossed

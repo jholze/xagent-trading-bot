@@ -18,8 +18,6 @@ from core.actions import (
 import time
 import pandas as pd
 
-import pandas as pd
-
 from core.config import get_bot_config
 from core.models import MarketContext, SignalAnalysis
 from data_manager import is_dry_run_enhanced, load_effective_watchlist

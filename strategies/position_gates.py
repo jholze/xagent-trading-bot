@@ -7,19 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-# Trail-class sources blocked under recovery_hold (hard SL may still fire)
-HOLD_BLOCKABLE_SOURCES = frozenset(
-    {
-        "trailing_take_profit",
-        "trailing_stop",
-        "partial_stop",
-        "profit_max_lifetime",
-        "safety_tp",
-        "exit_ws",
-        "auto",
-        "dca_sniper_fund",
-    }
-)
+# Canonical list lives in recovery_hold (live decision path uses it directly).
+from strategies.recovery_hold import _BLOCKED_SOURCES as HOLD_BLOCKABLE_SOURCES
 
 _MANUAL = frozenset(
     {"manual", "telegram", "user", "operator", "confirm", "manual_order", "manual_sell"}
