@@ -27,7 +27,7 @@ TRAIL_EXCLUSIVE_BLOCK_SOURCES = STRUCTURE_SOURCES | frozenset({
 
 SOCIAL_SOURCES = frozenset({"cmc", "lc", "x", "x_take_profit"})
 
-STOP_SOURCES = frozenset({"x_stop_loss", "stop_loss", "technical"})
+STOP_SOURCES = frozenset({"x_stop_loss", "stop_loss", "partial_stop"})
 
 # Portfolio hygiene: free a full slot for high-conviction new entry (#111)
 SLOT_EVICT_SOURCES = frozenset({"slot_evict_for_entry"})

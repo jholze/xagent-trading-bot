@@ -25,19 +25,43 @@ from strategies.positions import (
 )
 
 
-def _is_emergency_sell(signal: str) -> bool:
+def _is_ambiguous_partial_stop_label(signal: str) -> bool:
+    """SELL_STOP_PARTIAL is a legacy label shared by two distinct cases:
+    a genuine partial stop-loss AND SELL_PARTIAL_50 (an ordinary 50%
+    profit-take sell), which maps to this same string via
+    core.actions.NORMALIZED_TO_LEGACY. The label alone can't tell them
+    apart — callers must consult exit_source when they have it.
+    """
+    return signal == "SELL_STOP_PARTIAL"
+
+
+def _is_emergency_sell(signal: str, exit_source: str = "") -> bool:
     signal = signal or ""
-    return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal
+    if _is_ambiguous_partial_stop_label(signal):
+        es = (exit_source or "").strip()
+        if es:
+            from strategies.sell_sources import STOP_SOURCES
+
+            return es in STOP_SOURCES
+        return True
+    return signal in ("SELL_STOP_FULL", "SELL_FULL") or "STOP" in signal
 
 
-def _is_stop_loss_sell(signal: str) -> bool:
+def _is_stop_loss_sell(signal: str, exit_source: str = "") -> bool:
     signal = signal or ""
-    return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL") or "STOP" in signal
+    if _is_ambiguous_partial_stop_label(signal):
+        es = (exit_source or "").strip()
+        if es:
+            from strategies.sell_sources import STOP_SOURCES
+
+            return es in STOP_SOURCES
+        return True
+    return signal == "SELL_STOP_FULL" or "STOP" in signal
 
 
-def _is_partial_sell(signal: str) -> bool:
+def _is_partial_sell(signal: str, exit_source: str = "") -> bool:
     signal = signal or ""
-    if _is_emergency_sell(signal):
+    if _is_emergency_sell(signal, exit_source):
         return False
     if "FULL" in signal:
         return False
@@ -1486,9 +1510,9 @@ class RiskManager:
 
     def _resolve_sell_order(self, order: TradeOrder, timeframe: str, source: str) -> TradeOrder:
         """Upgrade partial sells to full close when the lot is dust or nearly exited."""
-        if source == "manual" or _is_emergency_sell(order.signal):
+        if source == "manual" or _is_emergency_sell(order.signal, getattr(order, "exit_source", "")):
             return order
-        if not _is_partial_sell(order.signal) or order.price <= 0:
+        if not _is_partial_sell(order.signal, getattr(order, "exit_source", "")) or order.price <= 0:
             return order
 
         pos = get_position(order.symbol, timeframe)
@@ -1562,12 +1586,14 @@ class RiskManager:
             source=order.source,
             order_id=order.order_id,
             timestamp=order.timestamp,
+            exit_source=getattr(order, "exit_source", ""),
+            exit_rationale=getattr(order, "exit_rationale", ""),
         )
 
     def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
-        if source == "manual" or _is_emergency_sell(order.signal):
+        if source == "manual" or _is_emergency_sell(order.signal, getattr(order, "exit_source", "")):
             return False, ""
-        if not _is_partial_sell(order.signal) or order.price <= 0:
+        if not _is_partial_sell(order.signal, getattr(order, "exit_source", "")) or order.price <= 0:
             return False, ""
 
         params = self.config.strategy_params(order.symbol, timeframe)

@@ -124,14 +124,15 @@ def classify_15m_pump_state(
 
 def _is_stop_loss_source(sell_source: str, action: str) -> bool:
     src = (sell_source or "").lower()
+    if src:
+        # Trust the specific winning candidate's source when we have it.
+        # `action` alone is ambiguous: SELL_PARTIAL_50 (a normal 50% partial
+        # sell) shares the legacy "SELL_STOP_PARTIAL" label with a genuine
+        # partial stop-loss, so string-matching on `action` misclassifies
+        # ordinary profit-taking sells as emergencies.
+        return src in STOP_SOURCES
     act = (action or "").upper()
-    if src in STOP_SOURCES and "stop" in act:
-        return True
-    if "STOP" in act or act in ("SELL_FULL", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"):
-        return True
-    if src == "x_stop_loss":
-        return True
-    return False
+    return "STOP" in act or act in ("SELL_FULL", "SELL_STOP_FULL", "SELL_STOP_PARTIAL")
 
 
 def entry_sell_allowed(

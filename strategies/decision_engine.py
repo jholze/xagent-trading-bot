@@ -28,6 +28,7 @@ from strategies.market_structure import (
     evaluate_market_structure_sells,
 )
 from strategies.dca import evaluate_dca_addon
+from strategies.sell_sources import STOP_SOURCES
 
 from strategies.sell_rotation_policy import (
     apply_rotation_sell_filters,
@@ -1488,11 +1489,13 @@ class DecisionEngine:
             shadow_action = execution_action
             normalized = HOLD
             execution_action = "HOLD"
-        stop_sources = {"x_stop_loss", "stop_loss", "technical"}
-        is_stop_sell = (
-            "STOP" in (normalized or "").upper()
-            or bool(stop_sources.intersection(sources))
-        )
+        # Check the specific winning candidate's source, not the merged
+        # `sources` list: `sources` accumulates every strategy's tags across
+        # the whole cycle and always contains "technical" (seeded by every
+        # TechnicalRSIStrategy.analyze call, sell or not), so intersecting
+        # against it made is_stop_sell True for virtually every sell and
+        # left the shadow gate permanently inert.
+        is_stop_sell = (sell_source or "") in STOP_SOURCES
         if policy_shadow_active(self.config.raw) and is_sell(normalized) and not is_stop_sell:
             if not shadow_action:
                 shadow_action = execution_action
