@@ -106,6 +106,24 @@ class TestRelvolPure(unittest.TestCase):
         )
         self.assertEqual(u2, 0.0)
 
+    def test_count_open_source_exact(self):
+        from services.gainer_signal.pure import (
+            count_open_gainer_positions,
+            position_has_symbol_open,
+        )
+
+        positions = [
+            {"symbol": "A/USDT", "amount": 1, "entry_source": "gainer_relvol"},
+            {"symbol": "B/USDT", "amount": 1, "entry_source": "gainer_live_heat"},
+            {"symbol": "C/USDT", "amount": 0, "entry_source": "gainer_relvol"},
+        ]
+        self.assertEqual(
+            count_open_gainer_positions(positions, source_exact="gainer_relvol"), 1
+        )
+        self.assertEqual(count_open_gainer_positions(positions), 2)
+        self.assertTrue(position_has_symbol_open(positions, "A/USDT"))
+        self.assertFalse(position_has_symbol_open(positions, "Z/USDT"))
+
 
 if __name__ == "__main__":
     unittest.main()
