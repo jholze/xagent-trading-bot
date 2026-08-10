@@ -18,7 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from tools.memory_viz.mongo_source import mongo_configured
 from tools.memory_viz.store import LEDGER_COLLECTIONS, get_store
@@ -33,6 +33,7 @@ from tools.memory_viz.ws_hub import (
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 _BOOTED = False
 _BOOT_LOCK = threading.Lock()
+_TOKEN_WARNED = False
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -40,6 +41,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not v:
         return default
     return v in ("1", "true", "yes", "on")
+
+
+def _memory_viz_token() -> str:
+    """Optional shared secret; empty means unauthenticated (legacy) access."""
+    return (os.environ.get("MEMORY_VIZ_TOKEN") or "").strip()
+
+
+def _warn_if_token_unset() -> None:
+    global _TOKEN_WARNED
+    if _TOKEN_WARNED:
+        return
+    if _memory_viz_token():
+        return
+    _TOKEN_WARNED = True
+    print(
+        "WARNING: memory-viz running with MEMORY_VIZ_TOKEN unset — "
+        "ingest and internal trading-memory read endpoints are publicly accessible; "
+        "set MEMORY_VIZ_TOKEN to restrict access.",
+        flush=True,
+    )
 
 
 def reset_boot_for_tests() -> None:
@@ -157,8 +178,23 @@ class CortexHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, X-Memory-Viz-Token",
+        )
         self.end_headers()
+
+    def _token_authorized(self, parsed) -> bool:
+        """If MEMORY_VIZ_TOKEN is set, require matching header or ?token=."""
+        required = _memory_viz_token()
+        if not required:
+            return True
+        hdr = (self.headers.get("X-Memory-Viz-Token") or "").strip()
+        if hdr and hdr == required:
+            return True
+        qs = parse_qs(parsed.query or "")
+        qtok = ((qs.get("token") or [""])[0] or "").strip()
+        return bool(qtok) and qtok == required
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -198,11 +234,13 @@ class CortexHandler(BaseHTTPRequestHandler):
                 h["watcher_added"] = w.added_total
             return self._json(200, h)
         if path == "/api/cortex":
+            if not self._token_authorized(parsed):
+                return self._json(401, {"error": "unauthorized"})
             return self._json(200, get_store().public_cortex())
         if path == "/api/graph":
+            if not self._token_authorized(parsed):
+                return self._json(401, {"error": "unauthorized"})
             # optional query knn / min_sim
-            from urllib.parse import parse_qs
-
             qs = parse_qs(parsed.query or "")
             try:
                 knn = int((qs.get("knn") or ["5"])[0])
@@ -220,6 +258,8 @@ class CortexHandler(BaseHTTPRequestHandler):
             )
         m = re.fullmatch(r"/api/node/([^/]+)", path)
         if m:
+            if not self._token_authorized(parsed):
+                return self._json(401, {"error": "unauthorized"})
             node = get_store().get_node(m.group(1))
             if not node:
                 return self._json(404, {"error": "not_found"})
@@ -234,6 +274,8 @@ class CortexHandler(BaseHTTPRequestHandler):
         body = self._read_json()
 
         if path == "/api/query":
+            if not self._token_authorized(parsed):
+                return self._json(401, {"error": "unauthorized"})
             q = str(body.get("query") or body.get("q") or "")
             try:
                 top_k = int(body.get("top_k") or body.get("k") or 40)
@@ -244,6 +286,8 @@ class CortexHandler(BaseHTTPRequestHandler):
 
         # Live inject — always available in demo; with mongo if MEMORY_VIZ_ALLOW_INGEST=1
         if path == "/api/ingest":
+            if not self._token_authorized(parsed):
+                return self._json(401, {"error": "unauthorized"})
             store = get_store()
             allow = store.is_demo or _env_bool("MEMORY_VIZ_ALLOW_INGEST", True)
             if not allow:
@@ -375,6 +419,7 @@ class CortexHandler(BaseHTTPRequestHandler):
 
 def run(host: str | None = None, port: int | None = None) -> None:
     ensure_store_loaded()
+    _warn_if_token_unset()
     host = host or (os.environ.get("MEMORY_VIZ_HOST") or "0.0.0.0").strip()
     if port is None:
         port = int(os.environ.get("PORT") or os.environ.get("MEMORY_VIZ_PORT") or "8765")

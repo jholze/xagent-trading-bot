@@ -208,8 +208,9 @@ def _social_detail_lines(social_ctx: dict | None) -> list[str]:
     lines = []
     x = social_ctx.get("x")
     if x:
+        account = escape(str(x.get("account", "?") or "?"))
         lines.append(
-            f"X: @{x.get('account', '?')} → {x.get('action', '?')} "
+            f"X: @{account} → {x.get('action', '?')} "
             f"({x.get('confidence', 0)}%, Trust {x.get('trust_score', '?')})"
         )
     cmc = social_ctx.get("cmc")
@@ -222,7 +223,7 @@ def _social_detail_lines(social_ctx: dict | None) -> list[str]:
             f"({cmc.get('confidence', 0)}%) — {cmc_score_line_de(kind, bull, bear)}"
         )
         if cmc.get("rationale"):
-            lines.append(f"  \"{cmc['rationale'][:100]}\"")
+            lines.append(f'  "{escape(str(cmc["rationale"])[:100])}"')
     lc = social_ctx.get("lc")
     if lc:
         lines.append(
@@ -231,7 +232,7 @@ def _social_detail_lines(social_ctx: dict | None) -> list[str]:
             f"Sentiment {lc.get('sentiment', 0):.0f}%"
         )
         if lc.get("rationale"):
-            lines.append(f"  \"{lc['rationale'][:100]}\"")
+            lines.append(f'  "{escape(str(lc["rationale"])[:100])}"')
     return lines
 
 
@@ -480,7 +481,7 @@ def explain_lc_signal(signal) -> str:
         f"Galaxy {galaxy:.0f}, AltRank {alt_rank}, Sentiment {sentiment:.0f}%.{links_part}"
     )
     if rat:
-        line += f"\n  {rat[:120]}"
+        line += f"\n  {escape(str(rat)[:120])}"
     return line
 
 
@@ -581,14 +582,14 @@ def explain_cmc_signal(signal) -> str:
         f"{cmc_score_line_de(kind, bull, bear)}.{links_part}"
     )
     if rat:
-        line += f"\n  {rat[:120]}"
+        line += f"\n  {escape(str(rat)[:120])}"
     return line
 
 
 def explain_x_signal(signal) -> str:
     from notifications.coin_links import format_links_line, format_ticker_html
 
-    account = getattr(signal, "account", "?")
+    account = escape(str(getattr(signal, "account", "?") or "?"))
     action = getattr(signal, "action", "?")
     coin = getattr(signal, "coin", "?")
     conf = getattr(signal, "confidence", 0)
@@ -604,7 +605,7 @@ def explain_x_signal(signal) -> str:
         f"({conf}%, effektiv {eff:.0f}%, Trust {trust}).{links_part}"
     )
     if rat:
-        line += f"\n  {rat[:120]}"
+        line += f"\n  {escape(str(rat)[:120])}"
     return line
 
 
@@ -620,7 +621,7 @@ def format_decision_entry(entry: dict, show_technical: bool = True) -> str:
     why = explain_rationale(entry.get("rationale", ""))
     line = f"{status} <b>{sym_html}</b> {action} — {why[:100]}"
     if show_technical and entry.get("rationale"):
-        line += f"\n  <code>{entry['rationale']}</code>"
+        line += f"\n  <code>{escape(str(entry['rationale']))}</code>"
     if entry.get("trade_message") and not executed:
         line += f"\n  <i>{explain_risk(entry['trade_message'])}</i>"
     line += f"\n  <i>{ts}</i>"

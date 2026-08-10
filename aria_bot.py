@@ -388,7 +388,12 @@ def signal_webhook():
         except Exception:
             body = None
 
-    result = process_signal_webhook(body, source=source, config_raw=cfg.raw)
+    result = process_signal_webhook(
+        body,
+        source=source,
+        config_raw=cfg.raw,
+        client_ip=request.remote_addr,
+    )
     status = 200 if result.ok else 400
     if result.message == "rate_limit":
         status = 429

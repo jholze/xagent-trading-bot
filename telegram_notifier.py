@@ -1,4 +1,6 @@
 import os
+from html import escape
+
 import requests
 
 from core.runtime_identity import message_prefix
@@ -11,6 +13,14 @@ _BOT_USERNAME_CACHE: str | None = None
 
 def _bot_token() -> str | None:
     return os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def _redact_token(msg: str, token: str | None) -> str:
+    """Strip bot token from exception/log strings (URL-in-exception leak)."""
+    text = str(msg)
+    if token:
+        text = text.replace(str(token), "***")
+    return text
 
 
 def get_bot_username() -> str:
@@ -31,7 +41,7 @@ def get_bot_username() -> str:
             if body.get("ok"):
                 _BOT_USERNAME_CACHE = str((body.get("result") or {}).get("username") or "")
     except Exception as e:
-        log(f"getMe failed: {e}", "WARNING")
+        log(f"getMe failed: {_redact_token(e, token)}", "WARNING")
     return _BOT_USERNAME_CACHE or ""
 
 
@@ -333,7 +343,9 @@ def send_x_recommendation_message(recommendation):
     """Clean message for X recommendations with raw tweet and rationale."""
     emoji = "🟢" if recommendation["action"] == "BUY" else "🔴" if recommendation["action"] == "SELL" else "📋" if recommendation["action"] == "ADD_TO_WATCHLIST" else "⏸️"
     title = recommendation["action"]
-    raw = recommendation.get("raw_tweet", "—")[:100] + "..." if len(recommendation.get("raw_tweet", "")) > 100 else recommendation.get("raw_tweet", "—")
+    raw_src = recommendation.get("raw_tweet", "—") or "—"
+    raw = raw_src[:100] + "..." if len(raw_src) > 100 else raw_src
+    raw = escape(str(raw))
     tp = recommendation.get("price_target")
     sl = recommendation.get("stop_loss")
     target_lines = ""
@@ -349,13 +361,15 @@ def send_x_recommendation_message(recommendation):
     symbol_html = format_ticker_html(coin)
     links_line = format_links_line(coin)
     links_block = f"{links_line}\n\n" if links_line else ""
+    account = escape(str(recommendation.get("account", "Unknown") or "Unknown"))
+    rationale = escape(str(recommendation.get("rationale", "—") or "—"))
     msg = f"""{emoji} <b>{title} EMPFEHLUNG</b> — {symbol_html}/USDT
 
-{links_block}<b>Von:</b> @{recommendation.get("account", "Unknown")}
+{links_block}<b>Von:</b> @{account}
 <b>Empfehlung:</b> {act_de}
 <b>Tweet:</b> {raw}
 <b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {recommendation.get("trust_at_signal", "—")}
-<b>Warum:</b> {recommendation.get("rationale", "—")}{target_lines}
+<b>Warum:</b> {rationale}{target_lines}
 
 🕒 {format_display_hms()}
 """
@@ -485,7 +499,7 @@ def send_telegram_photo(caption: str, photo_path: str, reply_markup=None) -> boo
             response = requests.post(url, data=payload, files={"photo": photo_file}, timeout=20)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error sending Telegram photo: {e}")
+        print(f"Error sending Telegram photo: {_redact_token(e, bot_token)}")
         return False
 
 
@@ -525,7 +539,7 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
             return False
         return True
     except Exception as e:
-        log(f"Error sending Telegram message: {e}", "WARNING")
+        log(f"Error sending Telegram message: {_redact_token(e, bot_token)}", "WARNING")
         return False
 
 
@@ -620,7 +634,7 @@ def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
         response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error editing Telegram message: {e}")
+        print(f"Error editing Telegram message: {_redact_token(e, bot_token)}")
         return False
 
 
@@ -636,7 +650,7 @@ def answer_callback_query(callback_id, text=None):
         response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error answering callback query: {e}")
+        print(f"Error answering callback query: {_redact_token(e, bot_token)}")
         return False
 
 
@@ -715,7 +729,7 @@ def set_webhook_for_bot(token: str, tenant_id: str) -> bool:
             log(f"setWebhook failed for {tenant_id}: {resp.text[:200]}", "WARNING")
             return False
     except Exception as e:
-        log(f"setWebhook exception for {tenant_id}: {e}", "ERROR")
+        log(f"setWebhook exception for {tenant_id}: {_redact_token(e, token)}", "ERROR")
         return False
 
 
@@ -736,5 +750,5 @@ def send_message_with_bot_token(token: str, chat_id: str | int, text: str) -> bo
         )
         return resp.status_code == 200 and resp.json().get("ok", False)
     except Exception as e:
-        log(f"send_message_with_bot_token failed: {e}", "WARNING")
+        log(f"send_message_with_bot_token failed: {_redact_token(e, token)}", "WARNING")
         return False

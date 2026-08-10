@@ -70,6 +70,7 @@ def process_signal_webhook(
     *,
     source: str = "generic",
     config_raw: dict | None = None,
+    client_ip: str | None = None,
 ) -> SignalWebhookResult:
     if not signal_webhook_enabled(config_raw):
         return SignalWebhookResult(ok=False, message="signal_webhook_disabled")
@@ -80,7 +81,12 @@ def process_signal_webhook(
 
     arch = _arch(config_raw)
     rate_limit = int(arch.get("signal_webhook_rate_limit_per_min", 10))
-    accepted, status = store_ingest(signal, config_raw=config_raw, rate_limit_per_min=rate_limit)
+    accepted, status = store_ingest(
+        signal,
+        config_raw=config_raw,
+        rate_limit_per_min=rate_limit,
+        client_ip=client_ip,
+    )
     if not accepted:
         return SignalWebhookResult(ok=False, signal=signal, message=status)
 

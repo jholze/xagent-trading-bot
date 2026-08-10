@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,17 +19,60 @@ _lock = threading.Lock()
 _rate_buckets: dict[str, deque[float]] = {}
 _recent_events: list[dict[str, Any]] = []
 _MAX_RECENT = 200
+# Mirror logger.py decisions.jsonl defaults (50 MiB, keep 3 archives).
+_AUDIT_MAX_BYTES = 52_428_800
+_AUDIT_ROTATE_KEEP = 3
 
 
 def _audit_path() -> Path:
     return Path("logs/signal_webhooks.jsonl")
 
 
-def _rate_limit_ok(source: str, limit_per_min: int) -> bool:
+def _maybe_rotate_audit() -> None:
+    """Size-based rotation for signal_webhooks.jsonl (same approach as logger decisions)."""
+    path = _audit_path()
+    max_bytes = _AUDIT_MAX_BYTES
+    keep = max(1, _AUDIT_ROTATE_KEEP)
+    if max_bytes <= 0 or not path.is_file():
+        return
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+    except OSError:
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = path.parent
+    archive = log_dir / f"signal_webhooks.{stamp}.jsonl"
+    try:
+        os.replace(path, archive)
+    except OSError as e:
+        log(f"signal_webhook audit rotate failed: {e}", "WARNING")
+        return
+
+    try:
+        archives = sorted(
+            f
+            for f in os.listdir(log_dir)
+            if f.startswith("signal_webhooks.")
+            and f.endswith(".jsonl")
+            and f != "signal_webhooks.jsonl"
+        )
+    except OSError:
+        return
+    while len(archives) > keep:
+        try:
+            os.remove(log_dir / archives.pop(0))
+        except OSError:
+            break
+
+
+def _rate_limit_ok(client_ip: str, limit_per_min: int) -> bool:
+    """Rate-limit by remote client IP (not attacker-controlled source string)."""
     if limit_per_min <= 0:
         return True
     now = time.time()
-    key = source or "generic"
+    key = (client_ip or "").strip() or "unknown"
     with _lock:
         bucket = _rate_buckets.setdefault(key, deque())
         while bucket and now - bucket[0] > 60.0:
@@ -47,6 +92,7 @@ def append_audit(signal: ExternalSignal, *, status: str, detail: str = "") -> No
     }
     path = _audit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    _maybe_rotate_audit()
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, default=str) + "\n")
     with _lock:
@@ -79,8 +125,9 @@ def ingest(
     *,
     config_raw: dict | None = None,
     rate_limit_per_min: int = 10,
+    client_ip: str | None = None,
 ) -> tuple[bool, str]:
-    if not _rate_limit_ok(signal.source, rate_limit_per_min):
+    if not _rate_limit_ok(client_ip or "unknown", rate_limit_per_min):
         append_audit(signal, status="rejected", detail="rate_limit")
         return False, "rate_limit"
 

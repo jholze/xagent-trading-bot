@@ -1,6 +1,7 @@
 import os
 import threading
 from datetime import datetime
+from html import escape
 
 from bus.jobs import heavy_job_queue
 from data_manager import get_config, load_x_accounts, load_x_posts, save_x_accounts
@@ -148,10 +149,11 @@ def handle(text: str) -> bool:
         else:
             msg = "<b>📋 Monitored X Accounts:</b>\n\n"
             for a in accounts:
-                handle_name = a.get("handle", a)
+                handle_name = escape(str(a.get("handle", a) or ""))
                 trust = a.get("trust_score", 70)
                 enabled = "🟢" if a.get("enabled", True) else "🔴"
-                msg += f"{enabled} @{handle_name} | Trust: {trust} | {a.get('notes', '')}\n"
+                notes = escape(str(a.get("notes", "") or ""))
+                msg += f"{enabled} @{handle_name} | Trust: {trust} | {notes}\n"
             send_telegram_message(msg)
         return True
 
@@ -165,8 +167,16 @@ def handle(text: str) -> bool:
                 ts = p.get("timestamp", "")[:16].replace("T", " ")
                 rec = p.get("action", "IGNORE")
                 emoji = "🟢" if rec == "BUY" else "🔴" if rec == "SELL" else "📋" if rec == "ADD_TO_WATCHLIST" else "⏸️"
-                raw = p.get("raw_tweet", "—")[:80] + "..." if len(p.get("raw_tweet", "")) > 80 else p.get("raw_tweet", "—")
-                msg += f"{emoji} {ts} | @{p.get('account')} | {rec} {p.get('coin')} | {p.get('confidence')}% \nRaw: {raw}\nRationale: {p.get('rationale', '')[:80]}...\n\n"
+                raw_src = p.get("raw_tweet", "—") or "—"
+                raw = raw_src[:80] + "..." if len(raw_src) > 80 else raw_src
+                raw = escape(str(raw))
+                account = escape(str(p.get("account") or ""))
+                coin = escape(str(p.get("coin") or ""))
+                rat = escape(str(p.get("rationale", "") or "")[:80])
+                msg += (
+                    f"{emoji} {ts} | @{account} | {rec} {coin} | {p.get('confidence')}% \n"
+                    f"Raw: {raw}\nRationale: {rat}...\n\n"
+                )
             send_telegram_message(msg)
         return True
 
@@ -178,7 +188,13 @@ def handle(text: str) -> bool:
         else:
             msg = "<b>📡 Latest X Signals:</b>\n\n"
             for s in signals[:8]:
-                msg += f"@{s.account} | {s.action} {s.coin} | {s.confidence}% | Score: {s.score:.2f}\n{s.rationale[:80]}\n\n"
+                account = escape(str(getattr(s, "account", "") or ""))
+                coin = escape(str(getattr(s, "coin", "") or ""))
+                rat = escape(str(getattr(s, "rationale", "") or "")[:80])
+                msg += (
+                    f"@{account} | {s.action} {coin} | {s.confidence}% | "
+                    f"Score: {s.score:.2f}\n{rat}\n\n"
+                )
             send_telegram_message(msg)
         return True
 
