@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from logger import log
+
 
 def signal_webhook_token_ok(provided: str | None, config_raw: dict | None = None) -> bool:
     env_token = os.environ.get("SIGNAL_WEBHOOK_TOKEN", "").strip()
@@ -17,4 +19,12 @@ def signal_webhook_token_ok(provided: str | None, config_raw: dict | None = None
     cfg_token = str(arch.get("signal_webhook_token") or "").strip()
     if cfg_token:
         return (provided or "").strip() == cfg_token
-    return True
+    allow_no_token = bool(arch.get("signal_webhook_allow_no_token", True))
+    if allow_no_token:
+        log(
+            "signal_webhook: no token configured — request allowed unauthenticated "
+            "(set architecture.signal_webhook_token or SIGNAL_WEBHOOK_TOKEN, or set "
+            "architecture.signal_webhook_allow_no_token=false to close this)",
+            "WARNING",
+        )
+    return allow_no_token

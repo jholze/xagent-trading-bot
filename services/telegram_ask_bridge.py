@@ -285,9 +285,6 @@ def _authorized_chat(chat_id: str | int | None) -> bool:
         ctx = current_tenant_context()
         if ctx and str(getattr(ctx, "owner_chat_id", "") or "").strip() == cid:
             return True
-        if ctx and str(getattr(ctx, "tenant_id", "") or "") not in ("", "default"):
-            # Message already routed to this tenant — trust chat for this request
-            return True
     except Exception:
         pass
     return False

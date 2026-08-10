@@ -327,7 +327,7 @@ class GoalEngine:
                 baseline_better=True,
                 meets_success_criteria=False,
             )
-        if cf_result.pnl_delta < min_delta and not self.meets_success_criteria(variant_metrics):
+        if cf_result.pnl_delta < min_delta:
             return Verdict(
                 promoted=False,
                 reason=(
