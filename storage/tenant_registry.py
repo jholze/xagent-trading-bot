@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from cryptography.fernet import Fernet, InvalidToken
 
 from core.tenant_context import DEFAULT_TENANT
+from logger import log
 from storage.mongo_client import get_database
 
 TENANTS_COLLECTION = "tenants"

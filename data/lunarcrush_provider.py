@@ -240,9 +240,6 @@ class LunarCrushApiProvider(LunarCrushDataProvider):
         self._coin_cache[key] = (time.time(), metrics)
         return metrics
 
-    def _fetch_coin(self, symbol: str) -> Optional[RawLCMetrics]:
-        return self._fetch_coin_enriched(symbol)
-
 
 _LC_PROVIDER = None
 _LC_LIST_TIER_BLOCKED = False

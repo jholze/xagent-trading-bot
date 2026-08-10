@@ -217,9 +217,13 @@ JSON:"""
                     if post.post_id == post_id:
                         account = post.account
                         break
-            signal = self._signal_from_data(account or "unknown", item, post_id)
-            by_id[post_id] = signal
-            self._cache_signal(post_id, signal)
+            try:
+                signal = self._signal_from_data(account or "unknown", item, post_id)
+                by_id[post_id] = signal
+                self._cache_signal(post_id, signal)
+            except Exception:
+                # Skip malformed items so one bad parse does not discard the batch.
+                continue
         return by_id
 
     def _parse_posts_chunk(self, posts: List[RawPost]) -> Dict[str, XSignal]:

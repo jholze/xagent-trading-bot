@@ -122,25 +122,33 @@ def _apply_price_fallbacks(
 def _fetch_gate_single(symbol: str):
     pair = symbol.replace("/", "_").upper()
     url = f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={pair}"
-    response = requests.get(url, timeout=6)
-    if response.status_code == 200:
-        data = response.json()
-        if data and len(data) > 0:
-            price = float(data[0].get("last", 0))
-            if price:
-                return price
-    return None
+    try:
+        response = requests.get(url, timeout=6)
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                price = float(data[0].get("last", 0))
+                if price:
+                    return price
+        return None
+    except Exception as e:
+        print(f"   [Price] Gate single failed: {e}")
+        return None
 
 
 def _fetch_coingecko_single(cg_id: str):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd"
-    response = requests.get(url, timeout=6)
-    if response.status_code == 200:
-        data = response.json()
-        price = data.get(cg_id, {}).get("usd")
-        if price:
-            return float(price)
-    return None
+    try:
+        response = requests.get(url, timeout=6)
+        if response.status_code == 200:
+            data = response.json()
+            price = data.get(cg_id, {}).get("usd")
+            if price:
+                return float(price)
+        return None
+    except Exception as e:
+        print(f"   [Price] CoinGecko single failed: {e}")
+        return None
 
 
 def _fetch_gate_bulk(symbols: list[str]) -> dict[str, float]:

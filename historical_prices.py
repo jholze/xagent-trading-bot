@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta, timezone
 
 import ccxt
@@ -6,7 +7,10 @@ import talib
 
 from logger import log
 
-_ohlcv_cache: dict[tuple, list] = {}
+# Cache entries: (value, cached_at_timestamp). TTL avoids serving incomplete
+# windows forever after a partial successful fetch.
+_OHLCV_CACHE_TTL_SEC = 3600
+_ohlcv_cache: dict[tuple, tuple[list, float]] = {}
 _indicator_cache: dict[tuple, dict] = {}
 
 
@@ -47,8 +51,11 @@ def _fetch_ohlcv_range(
     start = _normalize_dt(start)
     end = _normalize_dt(end)
     key = (symbol, start.isoformat(), end.isoformat(), timeframe)
-    if key in _ohlcv_cache:
-        return _ohlcv_cache[key]
+    cached = _ohlcv_cache.get(key)
+    if cached is not None:
+        value, cached_at = cached
+        if (time.time() - cached_at) < _OHLCV_CACHE_TTL_SEC:
+            return value
 
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
@@ -76,7 +83,7 @@ def _fetch_ohlcv_range(
         return []
 
     bars = [b for b in _dedupe_bars(merged) if start_ms <= int(b[0]) <= end_ms]
-    _ohlcv_cache[key] = bars
+    _ohlcv_cache[key] = (bars, time.time())
     return bars
 
 

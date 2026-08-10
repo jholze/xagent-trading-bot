@@ -2,6 +2,8 @@ import json
 import locale
 import os
 import shutil
+import time
+import uuid
 from datetime import datetime
 
 from logger import log
@@ -69,7 +71,7 @@ def atomic_write_json(path: str, data: dict):
     dir_name = os.path.dirname(path) or "."
     os.makedirs(dir_name, exist_ok=True)
 
-    tmp_path = path + ".tmp"
+    tmp_path = f"{path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -1394,7 +1396,13 @@ def _load_orders_json(scope: str) -> dict:
             data["ledger_scope"] = scope
         return data
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
+        log(f"Failed to load {path}: {e}", "CRITICAL")
+        try:
+            corrupt_path = f"{path}.corrupted.{int(time.time())}"
+            shutil.copy2(path, corrupt_path)
+            log(f"Preserved corrupted ledger at {corrupt_path}", "CRITICAL")
+        except Exception as copy_err:
+            log(f"Could not preserve corrupted {path}: {copy_err}", "CRITICAL")
         return _empty_orders(scope)
 
 
@@ -1488,7 +1496,13 @@ def _load_positions_json(scope: str) -> dict:
         data["ledger_scope"] = scope
         return data
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
+        log(f"Failed to load {path}: {e}", "CRITICAL")
+        try:
+            corrupt_path = f"{path}.corrupted.{int(time.time())}"
+            shutil.copy2(path, corrupt_path)
+            log(f"Preserved corrupted ledger at {corrupt_path}", "CRITICAL")
+        except Exception as copy_err:
+            log(f"Could not preserve corrupted {path}: {copy_err}", "CRITICAL")
         return _empty_positions(scope)
 
 

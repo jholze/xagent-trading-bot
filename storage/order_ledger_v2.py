@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Protocol
 
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
@@ -141,13 +141,8 @@ def _parse_to_display_naive(value: str | None) -> datetime | None:
     except Exception:
         target = None
     if dt.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        if local_tz is not None:
-            dt = dt.replace(tzinfo=local_tz)
-        elif target is not None:
-            dt = dt.replace(tzinfo=target)
-        else:
-            return dt
+        # Naive timestamps are treated as UTC (not server local time).
+        dt = dt.replace(tzinfo=timezone.utc)
     if target is None:
         return dt.replace(tzinfo=None)
     try:

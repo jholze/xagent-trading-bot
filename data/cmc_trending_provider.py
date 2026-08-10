@@ -239,26 +239,30 @@ class CMCTrendingProvider:
 
     def fetch_listings_momentum_details(self, limit: int = 15) -> list[dict]:
         """Return filtered listing rows for signal generation (symbol, pct, mcap, volume)."""
-        filt = listings_filter_config()
-        rows = self._fetch_listings_raw(
-            limit=filt["scan_limit"],
-            sort="market_cap",
-            sort_dir="desc",
-        )
-        out: list[tuple[float, dict]] = []
-        for item in rows:
-            ok, chg = self._passes_listings_filter(item, filt)
-            if not ok or chg < filt["min_pct_change_24h"]:
-                continue
-            q = self._listing_quote(item)
-            out.append((
-                chg,
-                {
-                    "symbol": (item.get("symbol") or "").upper(),
-                    "pct_change_24h": chg,
-                    "market_cap": float(q.get("market_cap") or 0),
-                    "volume_24h": float(q.get("volume_24h") or 0),
-                },
-            ))
-        out.sort(key=lambda x: x[0], reverse=True)
-        return [row for _, row in out[:limit]]
+        try:
+            filt = listings_filter_config()
+            rows = self._fetch_listings_raw(
+                limit=filt["scan_limit"],
+                sort="market_cap",
+                sort_dir="desc",
+            )
+            out: list[tuple[float, dict]] = []
+            for item in rows:
+                ok, chg = self._passes_listings_filter(item, filt)
+                if not ok or chg < filt["min_pct_change_24h"]:
+                    continue
+                q = self._listing_quote(item)
+                out.append((
+                    chg,
+                    {
+                        "symbol": (item.get("symbol") or "").upper(),
+                        "pct_change_24h": chg,
+                        "market_cap": float(q.get("market_cap") or 0),
+                        "volume_24h": float(q.get("volume_24h") or 0),
+                    },
+                ))
+            out.sort(key=lambda x: x[0], reverse=True)
+            return [row for _, row in out[:limit]]
+        except Exception as e:
+            log(f"CMC listings momentum details error: {e}", "WARNING")
+            return []
