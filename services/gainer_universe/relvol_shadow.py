@@ -44,6 +44,8 @@ _DEFAULT: dict[str, Any] = {
     "prod_min_vol_compare": 500_000.0,
     "fetch_workers": 6,
     "log_path": "",
+    # Primary path: gainer_signal REST+WS ticker stream (not this OHLCV mass-scan)
+    "bot_ohlcv_scan": False,
     # trade path (staging / paper)
     "require_de_confirm": False,  # ignition *is* the signal
     "max_open": 4,
@@ -517,10 +519,17 @@ def run_relvol_shadow_once(config: dict | None = None) -> dict[str, Any]:
 
 
 def maybe_run_relvol_shadow(config: dict | None = None) -> dict[str, Any]:
+    """Optional bot-side OHLCV mass-scan — **off by default**.
+
+    Primary RelVol path is gainer_signal REST seed + spot.tickers WS
+    (see services/gainer_signal/relvol_tracker.py + ws_loop).
+    """
     global _last_run_mono
     if not relvol_shadow_enabled(config):
         return {}
     cfg = relvol_shadow_config(config)
+    if not bool(cfg.get("bot_ohlcv_scan", False)):
+        return {"skipped": True, "reason": "ws_primary_bot_ohlcv_scan_off"}
     poll = float(cfg.get("poll_sec") or 3600)
     with _lock:
         now_m = time.monotonic()
