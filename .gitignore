@@ -89,7 +89,8 @@ hermes/memory/baseline.json
 hermes/memory/experiments.json
 hermes/memory/skills.json
 
-# Generated daily reports (keep README + template tracked)
+# Generated daily reports / backups (keep README + template tracked)
 auswertungen/20*.md
+auswertungen/*.json
 
 data/dca_sniper_state.json

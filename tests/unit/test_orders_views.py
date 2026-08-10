@@ -368,18 +368,20 @@ class TestOrderCommandViews(unittest.TestCase):
 
     def test_pagination_callback_view_aware(self):
         with patch("notifications.telegram_commands.order_commands.send_telegram_buttons") as mock_btn, \
-             patch("notifications.telegram_commands.order_commands.send_telegram_message"), \
+             patch("notifications.telegram_commands.order_commands.send_telegram_message") as mock_msg, \
              patch("notifications.telegram_commands.order_commands.answer_callback_query"):
             self.assertTrue(order_commands.handle_callback({
                 "id": "cb1",
                 "data": "orders_page:blocked:paper:1",
             }))
-            msg = mock_btn.call_args[0][0] if mock_btn.called else ""
-            if not msg:
-                # empty buttons path uses send_telegram_message — already ok if handled
-                self.assertTrue(True)
-            else:
-                self.assertIn("Blockierte", msg)
+            # Buttons path or empty-list message path — both must render blocked header
+            self.assertTrue(mock_btn.called or mock_msg.called)
+            msg = (
+                mock_btn.call_args[0][0]
+                if mock_btn.called
+                else mock_msg.call_args[0][0]
+            )
+            self.assertIn("Blockierte", msg)
 
     def test_menu_registers_new_keys(self):
         from notifications.telegram_commands.menu_commands import MENU_SECTIONS_OPERATOR

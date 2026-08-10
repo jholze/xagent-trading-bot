@@ -506,11 +506,17 @@ class TestVirtualTrading(unittest.TestCase):
             "status": "🟢 Running",
             "next_update": 42
         }
-        try:
-            print_dashboard(test_data)
-            self.assertTrue(True)  # No exception = success
-        except Exception as e:
-            self.fail(f"UI rendering failed with: {e}")
+        with patch("terminal_ui.console") as mock_console, \
+             patch("terminal_ui.rprint") as mock_rprint:
+            try:
+                print_dashboard(test_data)
+            except Exception as e:
+                self.fail(f"UI rendering failed with: {e}")
+            mock_console.clear.assert_called_once()
+            self.assertGreaterEqual(mock_rprint.call_count, 2)
+            # Footer advertises next_update seconds from test_data
+            footer = str(mock_rprint.call_args_list[-1])
+            self.assertIn("42", footer)
 
     def test_pnl_calculation(self):
         # Test average entry and PnL consistency
@@ -609,7 +615,6 @@ class TestVirtualTrading(unittest.TestCase):
         history = load_trade_history()
         self.assertIsNotNone(config)
         self.assertIn("virtual_trading", config)
-        self.assertTrue(True)
 
     def test_sell_command_list(self):
         update_position("REAL/USDT", "4h", "BUY", 0.5, 100)

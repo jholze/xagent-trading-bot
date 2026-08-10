@@ -386,9 +386,12 @@ class TestFractionFreesFullSlot(unittest.TestCase):
             "average_entry": new_notional / max(1e-9, 1.0 * (1.0 - frac)) if frac < 1 else 1.0,
             "sold_percent": new_sold,
         }
-        # if full close, not open
+        # Full close → remaining bag gone; partial → remaining is tail-class
         if frac >= 0.99:
-            self.assertTrue(True)
+            remaining = 1.0 * (1.0 - frac)
+            self.assertLessEqual(remaining, 1e-9)
+            self.assertEqual(action, "SELL_FULL")
+            self.assertLessEqual(new_notional, 1e-6)
         else:
             self.assertTrue(
                 is_tail_position(
