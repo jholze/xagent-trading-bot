@@ -79,6 +79,15 @@ def _refresh_sync(cfg: dict, root_config: dict | None = None) -> dict:
             "INFO",
         )
         _push_ws_watch(state, root_config if isinstance(root_config, dict) else None)
+        # RelVol shadow (discovery log only — never blocks cycle)
+        try:
+            from services.gainer_universe.relvol_shadow import maybe_run_relvol_shadow
+
+            maybe_run_relvol_shadow(
+                root_config if isinstance(root_config, dict) else None
+            )
+        except Exception as e:
+            log(f"relvol_shadow hook skip: {e}", "DEBUG")
         return state
     except Exception as e:
         log(f"gainer_universe refresh failed (fail-open): {e}", "WARNING")
