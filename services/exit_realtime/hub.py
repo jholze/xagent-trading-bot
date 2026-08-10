@@ -353,15 +353,17 @@ class ExitRealtimeHub:
 
         # Position lock: skip trail eval noise for locked lots (execute/risk still hard-block)
         try:
-            from strategies.position_lock import auto_sell_blocked
+            from strategies.position_lock import attach_lock_from_ledger, auto_sell_blocked
             from strategies.positions import get_position
 
             live_pos = get_position(sym, tf) or pos
+            live_pos = attach_lock_from_ledger(live_pos, sym, tf) or live_pos
             locked, _ = auto_sell_blocked(live_pos, "exit_ws")
             if locked:
                 return
         except Exception:
-            pass
+            # Fail-closed on lock-check errors: do not evaluate trail sells
+            return
 
         events = evaluate_would_sells(
             symbol=sym,

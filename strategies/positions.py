@@ -416,6 +416,29 @@ def _cancel_flush_timer() -> None:
             _flush_timer = None
 
 
+def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
+    """Keep active locks from Mongo when in-memory serialize lost them.
+
+    Ops can set lock out-of-process; a stale bot flush must not wipe it.
+    """
+    if not isinstance(payload, dict) or not isinstance(existing, dict):
+        return payload
+    pos_out = payload.get("positions")
+    pos_old = existing.get("positions")
+    if not isinstance(pos_out, dict) or not isinstance(pos_old, dict):
+        return payload
+    for key, row in pos_out.items():
+        if not isinstance(row, dict):
+            continue
+        cur = row.get("lock")
+        if isinstance(cur, dict) and cur.get("enabled", True):
+            continue
+        old_lock = (pos_old.get(key) or {}).get("lock") if isinstance(pos_old.get(key), dict) else None
+        if isinstance(old_lock, dict) and old_lock.get("enabled", True):
+            row["lock"] = dict(old_lock)
+    return payload
+
+
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
     from core.tenant_context import resolve_tenant_id
 
@@ -428,6 +451,11 @@ def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
         try:
             payload = _serialize_positions()
             payload["ledger_scope"] = target
+            try:
+                existing = load_positions_document(target, tenant_id=tid)
+                payload = _preserve_locks_from_existing_doc(payload, existing)
+            except Exception as e:
+                log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
             if not save_positions_document(payload, target, tenant_id=tid):
                 log(f"Failed to save positions ({target})", "ERROR")
         except Exception as e:

@@ -122,11 +122,18 @@ class RiskManager:
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
-            # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell
+            # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell.
+            # Fail-closed: never approve auto-sell if the lock check itself breaks
+            # (matches DCA lock policy; avoids trail re-selling after ops revert+lock).
             try:
-                from strategies.position_lock import auto_sell_blocked, log_lock_block
+                from strategies.position_lock import (
+                    attach_lock_from_ledger,
+                    auto_sell_blocked,
+                    log_lock_block,
+                )
 
                 pos = get_position(order.symbol, timeframe)
+                pos = attach_lock_from_ledger(pos, order.symbol, timeframe) or pos
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
                 sell_src = source or getattr(order, "source", None) or ""
                 locked, lock_msg = auto_sell_blocked(pos, sell_src, config=raw_cfg)
@@ -137,8 +144,21 @@ class RiskManager:
                         message=lock_msg,
                         code="position_locked",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    from logger import log
+
+                    log(
+                        f"position_lock sell check error {order.symbol}: {exc}",
+                        "ERROR",
+                    )
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message=f"position_lock_check_error: {exc}"[:200],
+                    code="position_lock_check_error",
+                )
             order = self._resolve_sell_order(order, timeframe, source)
             if order.amount <= 0:
                 order = self._fill_sell_amount_from_open_lot(order, timeframe)

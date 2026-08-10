@@ -92,6 +92,52 @@ def get_lock(pos: dict | None) -> dict[str, Any] | None:
     return raw
 
 
+def attach_lock_from_ledger(
+    pos: dict | None,
+    symbol: str,
+    timeframe: str = "1h",
+    *,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+) -> dict | None:
+    """If *pos* is open but has no lock in RAM, pull lock from Mongo/positions doc.
+
+    Fixes: ops set lock out-of-process, then bot RAM still sells via exit_ws.
+    Fail-open only when ledger read breaks (caller may still fail-closed).
+    """
+    if not isinstance(pos, dict):
+        return pos
+    if get_lock(pos):
+        return pos
+    try:
+        from data_manager import load_positions_document
+        from strategies.positions import has_position_amount
+
+        if not has_position_amount(pos):
+            return pos
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        tid = resolve_tenant_id(tenant_id)
+        sc = resolve_tenant_scope(scope)
+        doc = load_positions_document(sc, tenant_id=tid)
+        key = f"{str(symbol).replace('/', '_')}_{timeframe}"
+        cached = (doc.get("positions") or {}).get(key) or {}
+        lk = cached.get(LOCK_KEY)
+        if isinstance(lk, dict) and lk.get("enabled", True):
+            pos = dict(pos)
+            pos[LOCK_KEY] = dict(lk)
+            # Keep RAM in sync so subsequent checks/flushes see the lock
+            try:
+                from strategies.positions import set_position_lock
+
+                set_position_lock(symbol, timeframe, pos[LOCK_KEY], persist=False)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return pos
+
+
 def lock_is_active(lock: dict | None, *, now: datetime | None = None) -> bool:
     if not lock or not lock.get("enabled", True):
         return False
