@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import threading
 import time
@@ -92,6 +93,24 @@ class GainerWsRuntime:
         self._last_signal_at: dict[str, float] = {}
         self._tickers_live: dict[str, dict[str, Any]] = {}
         self._tick_lock = threading.Lock()
+        # RelVol on ticker stream (REST seed + WS) — not bot OHLCV mass-scan
+        self._relvol_enabled = str(
+            os.environ.get("GAINER_RELVOL_ENABLED") or "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        self._relvol = None
+        if self._relvol_enabled:
+            try:
+                from services.gainer_signal.relvol_tracker import RelvolTracker
+
+                self._relvol = RelvolTracker(
+                    mult=float(os.environ.get("GAINER_RELVOL_MULT") or 10),
+                    baseline_hours=float(os.environ.get("GAINER_RELVOL_BASELINE_H") or 12),
+                    min_ign_qvol=float(os.environ.get("GAINER_RELVOL_MIN_QVOL") or 5000),
+                    cooldown_sec=float(os.environ.get("GAINER_RELVOL_COOLDOWN_SEC") or 8 * 3600),
+                )
+            except Exception as e:
+                log(f"gainer_signal relvol init skip: {e}", "WARNING")
+                self._relvol = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -126,6 +145,7 @@ class GainerWsRuntime:
             max_rank_track=self.signal_max_rank,
         )
         self._maybe_emit_signals()
+        self._maybe_emit_relvol(merged)
         return leaders
 
     def _fetch_atr_pct(self, symbol: str) -> float | None:
@@ -219,6 +239,45 @@ class GainerWsRuntime:
                     f"gainer_signal push skip {sym}: {result.get('message')}",
                     "DEBUG",
                 )
+
+    def _maybe_emit_relvol(self, tickers: dict[str, Any]) -> None:
+        """Sample full ticker book into RelVol tracker; push ignitions to bot."""
+        if not self._relvol or not self.push_enabled:
+            return
+        try:
+            n = self._relvol.sample_tickers(tickers)
+            fires = self._relvol.evaluate()
+            if fires:
+                log(
+                    f"gainer_signal relvol fires={len(fires)} sampled={n}",
+                    "INFO",
+                )
+            for sig in fires:
+                sym = sig.get("symbol") or ""
+                # enrich pct from live tickers if present
+                with self._tick_lock:
+                    t = self._tickers_live.get(sym) or tickers.get(sym) or {}
+                try:
+                    from services.gainer_signal.pure import parse_pct_24h
+
+                    sig["pct_24h"] = parse_pct_24h(t) if isinstance(t, dict) else 0.0
+                except Exception:
+                    pass
+                result = push_signal_to_bot(sig)
+                self.board.record_push(bool(result.get("ok")))
+                if result.get("ok"):
+                    log(
+                        f"gainer_signal RELVOL pushed {sym} factor={sig.get('factor')} "
+                        f"qvol_1h={sig.get('qvol_1h')} abs24={sig.get('quote_vol')}",
+                        "INFO",
+                    )
+                else:
+                    log(
+                        f"gainer_signal RELVOL push skip {sym}: {result.get('message')}",
+                        "INFO",
+                    )
+        except Exception as e:
+            log(f"gainer_signal relvol emit: {e}", "WARNING")
 
     def _ws_loop(self) -> None:
         try:

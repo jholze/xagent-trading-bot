@@ -216,7 +216,12 @@ def process_gainer_signal(
         quote_vol = 0.0
     lev = bool(data.get("leverage")) or is_leverage_symbol(sym)
     eligible_flag = data.get("eligible")
-    if cfg["require_eligible"]:
+    source_early = str(data.get("source") or data.get("entry_source") or "")
+    # RelVol discovery: intentionally below 500k abs vol — do not apply min_vol cut
+    is_relvol = source_early == "gainer_relvol" or str(
+        data.get("trigger") or ""
+    ).startswith("relvol")
+    if cfg["require_eligible"] and not is_relvol:
         if eligible_flag is False:
             return {
                 "ok": False,
@@ -232,6 +237,13 @@ def process_gainer_signal(
                 "message": "not_eligible",
                 "reject_reason": reason,
             }, 409
+    elif is_relvol and lev:
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "not_eligible",
+            "reject_reason": "leverage",
+        }, 409
 
     # positions
     if positions is None:
@@ -309,9 +321,29 @@ def process_gainer_signal(
         log(f"gainer_entry memory gate skip {sym}: {e}", "DEBUG")
 
     usdt = float(max_usdt) * max(0.0, min(1.0, memory_size_mult))
-    usdt = clamp_usdt_to_vol(
-        usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
-    )
+    if is_relvol:
+        # Size from 1h RelVol liquidity, not full max_usdt_per_trade
+        try:
+            from services.gainer_universe.relvol_shadow import size_usdt_for_signal
+            from data_manager import get_config
+
+            raw = get_config()
+            rcfg = (raw or {}).get("gainer_relvol_shadow") or {}
+            q1 = float(data.get("qvol_1h") or data.get("qvol") or 0)
+            usdt = size_usdt_for_signal(
+                qvol_1h=q1,
+                abs_vol_24h=float(quote_vol or 0),
+                cfg=rcfg if isinstance(rcfg, dict) else {},
+                max_usdt_per_trade=float(max_usdt),
+            )
+            usdt = float(usdt) * max(0.0, min(1.0, memory_size_mult))
+        except Exception as e:
+            log(f"gainer_relvol size fallback {sym}: {e}", "DEBUG")
+            usdt = min(float(max_usdt), 500.0) * max(0.0, min(1.0, memory_size_mult))
+    else:
+        usdt = clamp_usdt_to_vol(
+            usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
+        )
     if usdt < 10:
         return {
             "ok": False,
@@ -321,7 +353,9 @@ def process_gainer_signal(
         }, 409
 
     source = str(data.get("source") or "gainer_rank_entry")
-    if not is_gainer_source(source):
+    if is_relvol:
+        source = "gainer_relvol"
+    elif not is_gainer_source(source):
         source = "gainer_signal"
     trigger = str(data.get("trigger") or "")
     try:
@@ -336,9 +370,19 @@ def process_gainer_signal(
     timeframe = str(data.get("timeframe") or cfg["timeframe"] or "1h")
 
     # DecisionEngine gate: indicators + personal recipes (via registry) + TA merge
+    # RelVol: ignition *is* the signal — skip DE by default (config require_de_confirm)
     de_sources: list = []
     de_reason = ""
-    if cfg.get("require_de_confirm", True):
+    need_de = bool(cfg.get("require_de_confirm", True))
+    if is_relvol:
+        try:
+            from data_manager import get_config
+
+            rcfg = (get_config() or {}).get("gainer_relvol_shadow") or {}
+            need_de = bool(rcfg.get("require_de_confirm", False))
+        except Exception:
+            need_de = False
+    if need_de:
         checker = de_allows_buy or _default_de_allows_buy
         try:
             ok_de, de_reason, de_sources = checker(sym, price, timeframe, data)

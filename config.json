@@ -1908,6 +1908,7 @@
     "min_volume_discover": 0,
     "prod_min_vol_compare": 500000,
     "fetch_workers": 6,
+    "bot_ohlcv_scan": false,
     "require_de_confirm": false,
     "max_open": 4,
     "max_buys_per_day": 8,
@@ -1917,7 +1918,7 @@
     "max_pct_of_vol_24h": 0.02,
     "timeframe": "1h",
     "tenants": ["default", "henry"],
-    "_doc": "RelVol ignition → staging/paper BUY (source=gainer_relvol). Size=participation×1h qvol, capped. Kill: mode=shadow or enabled=false.",
+    "_doc": "RelVol trades via gainer_signal REST+WS ticker stream (not bot OHLCV mass-scan). Bot sizes BUY source=gainer_relvol. Kill: mode=off or GAINER_RELVOL_ENABLED=0 on gainer-signal.",
     "_experiment": "feature/gainer-relvol-trade-v1"
   },
   "gainer_signal": {
