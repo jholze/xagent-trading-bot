@@ -37,8 +37,14 @@ EXPERIMENT = {
     },
     "gainer_relvol_shadow": {
         "enabled": True,
-        "mode": "shadow",
-        "_experiment": "feature/gainer-relvol-shadow-v0",
+        "mode": "trade",
+        "require_de_confirm": False,
+        "max_open": 4,
+        "max_buys_per_day": 8,
+        "max_ticket_usdt": 500,
+        "min_ticket_usdt": 50,
+        "participation": 0.02,
+        "_experiment": "feature/gainer-relvol-trade-v1",
     },
 }
 
