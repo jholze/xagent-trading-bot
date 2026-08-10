@@ -132,7 +132,9 @@ def fetch_dca_sniper_status() -> dict[str, Any]:
                     pass
             st = load_state_redis() or {}
             focus = _focus_symbols(st.get("focus") or [])
-            healthy = bool(hb) or bool(st)
+            # Heartbeat expires ~120s; state blob has 24h TTL — do not treat
+            # stale state as healthy after the sniper process has died.
+            healthy = bool(hb)
             if healthy:
                 return {
                     "ok": True,

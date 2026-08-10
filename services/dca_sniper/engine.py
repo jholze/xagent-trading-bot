@@ -61,7 +61,6 @@ def _size_for_row(
         reclaim_yes
         and score >= float(cfg.get("heavy_min_score") or 6.5)
         and loss <= float(cfg.get("max_dd_pct_for_heavy") or 55)
-        and not bool(cfg.get("prefer_small_before_heavy") is False and False)
     )
     if cfg.get("heavy_only_on_reclaim", True) and not reclaim_yes:
         heavy_ok = False
