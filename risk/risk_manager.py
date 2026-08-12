@@ -243,12 +243,17 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
-            # Universe split: new BUYs only on trade-eligible set (observe is broader)
+            # Universe split: new BUYs only on trade-eligible set (observe is broader).
+            # RelVol ignition deliberately discovers thin/off-universe names — exempt.
             try:
                 from services.universe.split import is_trade_eligible, universe_split_enabled
 
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                if universe_split_enabled(raw_cfg) and not self._is_dca_buy(source, order):
+                if (
+                    universe_split_enabled(raw_cfg)
+                    and not self._is_dca_buy(source, order)
+                    and not self._is_relvol_buy(source, order)
+                ):
                     if not is_trade_eligible(
                         order.symbol,
                         config=raw_cfg,
@@ -917,6 +922,15 @@ class RiskManager:
         if src in ("dca", "dca_recovery", "dca_sniper", "dca_scheduled"):
             return True
         return str(getattr(order, "signal", "") or "").upper() == "BUY_DCA"
+
+    @staticmethod
+    def _is_relvol_buy(source: str, order: TradeOrder) -> bool:
+        """RelVol discovery path — allowed outside the 500k trade universe."""
+        src = str(source or "").strip().lower()
+        if src == "gainer_relvol" or src.startswith("relvol"):
+            return True
+        sig = str(getattr(order, "signal", "") or "").upper()
+        return sig == "GAINER_RELVOL"
 
     @staticmethod
     def _order_is_dca(order: dict) -> bool:
