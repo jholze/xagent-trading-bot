@@ -76,10 +76,28 @@ def push_signal_to_bot(
             return out
     except urllib.error.HTTPError as e:
         try:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
+            detail = e.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             detail = str(e)
-        return {"ok": False, "message": f"http_{e.code}", "detail": detail, "http_status": e.code}
+        out: dict[str, Any] = {
+            "ok": False,
+            "message": f"http_{e.code}",
+            "detail": detail,
+            "http_status": e.code,
+        }
+        # Surface bot reject reason (extension_cap, already_open, …) for ops logs
+        try:
+            body = json.loads(detail) if detail else {}
+            if isinstance(body, dict):
+                bot_msg = body.get("message") or body.get("reject_reason")
+                if bot_msg:
+                    out["message"] = f"http_{e.code}:{bot_msg}"
+                    out["bot_message"] = body.get("message")
+                    out["reject_reason"] = body.get("reject_reason")
+                    out["symbol"] = body.get("symbol")
+        except Exception:
+            pass
+        return out
     except Exception as e:
         log(f"gainer_signal push fail: {e}", "DEBUG")
         return {"ok": False, "message": str(e)[:160]}

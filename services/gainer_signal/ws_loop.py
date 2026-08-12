@@ -322,9 +322,12 @@ class GainerWsRuntime:
                             "INFO",
                         )
                     else:
+                        why = str(result.get("message") or "skip")
+                        # push.py already flattens bot body into message/reject_reason
+                        if result.get("reject_reason") and result.get("reject_reason") not in why:
+                            why = f"{why} ({result.get('reject_reason')})"
                         log(
-                            f"gainer_signal RELVOL push skip tenant={tid} {sym}: "
-                            f"{result.get('message')}",
+                            f"gainer_signal RELVOL push skip tenant={tid} {sym}: {why}",
                             "INFO",
                         )
         except Exception as e:

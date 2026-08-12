@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from services.gainer_universe.relvol_pure import (
     abs_vol_24h_from_qs,
@@ -123,6 +125,49 @@ class TestRelvolPure(unittest.TestCase):
         self.assertEqual(count_open_gainer_positions(positions), 2)
         self.assertTrue(position_has_symbol_open(positions, "A/USDT"))
         self.assertFalse(position_has_symbol_open(positions, "Z/USDT"))
+
+    def test_relvol_shadow_config_none_loads_bot_config(self):
+        """HTTP consume path passes config=None — must not fall back to defaults only."""
+        from services.gainer_universe import relvol_shadow as m
+
+        with patch.object(
+            m,
+            "_bot_raw_config",
+            return_value={
+                "gainer_relvol_shadow": {
+                    "enabled": True,
+                    "mode": "trade",
+                    "max_open": 4,
+                }
+            },
+        ):
+            cfg = m.relvol_shadow_config(None)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["mode"], "trade")
+        self.assertEqual(cfg["max_open"], 4)
+
+    def test_relvol_shadow_config_none_defaults_when_bot_unavailable(self):
+        from services.gainer_universe import relvol_shadow as m
+
+        with patch.object(m, "_bot_raw_config", return_value={}):
+            cfg = m.relvol_shadow_config(None)
+        self.assertFalse(cfg["enabled"])
+        self.assertEqual(cfg["mode"], "shadow")
+
+    def test_relvol_env_kill_switch_overrides_config(self):
+        from services.gainer_universe import relvol_shadow as m
+
+        cfg_in = {
+            "gainer_relvol_shadow": {"enabled": True, "mode": "trade"},
+        }
+        with patch.dict(os.environ, {"GAINER_RELVOL_MODE": "shadow", "GAINER_RELVOL_ENABLED": "1"}):
+            cfg = m.relvol_shadow_config(cfg_in)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["mode"], "shadow")
+        with patch.dict(os.environ, {"GAINER_RELVOL_ENABLED": "0", "GAINER_RELVOL_MODE": "trade"}):
+            cfg2 = m.relvol_shadow_config(cfg_in)
+        self.assertFalse(cfg2["enabled"])
+        self.assertEqual(cfg2["mode"], "trade")
 
 
 if __name__ == "__main__":
