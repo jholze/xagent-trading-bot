@@ -232,7 +232,7 @@ def score_entry_demand(
         "vol_spike_15m",
         "entry_sensor",
         "15m_sensor",
-        "gainer_relvol",  # RelVol ignition (thin discovery) may free a slot
+        # intentionally no gainer_relvol: eviction path can be slow/blocking on HTTP consume
     ]
     source_l = (source or "").lower()
     allowed = {str(s).lower() for s in sources}
