@@ -586,6 +586,15 @@ def process_gainer_signal(
                 source=src,
                 signal=sig,
             )
+            # Reuse spike channel so slot-eviction can score RelVol demand (factor≥5 → +2)
+            if src == "gainer_relvol":
+                try:
+                    meta = (kwargs.get("request_extra") or {}).get("gainer_meta") or {}
+                    factor = float(meta.get("relvol_factor") or meta.get("factor") or 0)
+                    if factor > 0:
+                        order.entry_15m_vol_ratio = factor
+                except Exception:
+                    pass
             return ts.execute_order(
                 order,
                 kwargs.get("timeframe") or "1h",

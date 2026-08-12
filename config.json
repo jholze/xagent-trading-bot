@@ -415,7 +415,8 @@
         "entry_sensor_15m",
         "vol_spike_15m",
         "entry_sensor",
-        "15m_sensor"
+        "15m_sensor",
+        "gainer_relvol"
       ],
       "memory": {
         "enabled": true,
