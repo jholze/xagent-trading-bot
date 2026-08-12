@@ -11,6 +11,7 @@ Kill: gainer_relvol_shadow.enabled=false or mode=off
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -54,6 +55,7 @@ _DEFAULT: dict[str, Any] = {
     "min_ticket_usdt": 50.0,
     "participation": 0.02,  # of 1h quote vol
     "max_pct_of_vol_24h": 0.02,
+    "max_pct_24h": 40.0,  # do not chase already-extended day moves
     "timeframe": "1h",
     "tenants": ["default", "henry"],  # empty = current context only
 }
@@ -64,8 +66,42 @@ _last_fire_ts: dict[str, float] = {}
 _day_buys: dict[str, dict[str, int]] = {}  # day -> tenant -> count
 
 
+def _bot_raw_config() -> dict[str, Any]:
+    """Tenant-aware bot config raw dict; empty on failure."""
+    try:
+        from core.config import get_bot_config
+
+        raw = get_bot_config().raw
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return None
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
 def relvol_shadow_config(config: dict | None = None) -> dict[str, Any]:
+    """Merge ``gainer_relvol_shadow`` over defaults.
+
+    When ``config`` is None (HTTP consume path), load tenant-aware bot config so
+    staging ``mode=trade`` / enabled flags are not silently replaced by defaults
+    (``enabled=False``, ``mode=shadow``).
+
+    Env kill/force (wins over config):
+      GAINER_RELVOL_ENABLED=0|1
+      GAINER_RELVOL_MODE=shadow|trade|off
+    """
     raw: dict = {}
+    if config is None:
+        config = _bot_raw_config()
     if isinstance(config, dict):
         block = config.get("gainer_relvol_shadow")
         if isinstance(block, dict):
@@ -76,9 +112,19 @@ def relvol_shadow_config(config: dict | None = None) -> dict[str, Any]:
     if mode not in ("shadow", "trade", "off"):
         mode = "shadow"
     out["mode"] = mode
+
+    # Ops kill switches — last word after file/tenant config
+    env_en = _env_bool("GAINER_RELVOL_ENABLED")
+    if env_en is not None:
+        out["enabled"] = env_en
+    env_mode = (os.environ.get("GAINER_RELVOL_MODE") or "").strip().lower()
+    if env_mode in ("shadow", "trade", "off"):
+        out["mode"] = env_mode
+
     out["poll_sec"] = max(300.0, float(out.get("poll_sec") or 3600))
     out["max_symbols"] = max(20, int(out.get("max_symbols") or 150))
     out["ohlcv_limit"] = max(int(out.get("win") or 12) + 5, int(out.get("ohlcv_limit") or 30))
+    out["max_pct_24h"] = float(out.get("max_pct_24h") or 40.0)
     return out
 
 
