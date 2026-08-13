@@ -170,6 +170,27 @@ def evaluate_trailing_take_profit(
     if gain < min_gain and not (allow_soft and peak_gain >= arm_gain and gain > 0):
         return None
 
+    # Group overlay: once armed past full_close_gain_pct, close fully instead of trailing.
+    full_close_raw = cfg.get("full_close_gain_pct")
+    if full_close_raw is not None:
+        try:
+            full_close_gain = float(full_close_raw)
+        except (TypeError, ValueError):
+            full_close_gain = None
+        if full_close_gain is not None and gain >= full_close_gain:
+            shadow = mode == "shadow"
+            priority = int(cfg.get("priority", 7))
+            return TrailingTakeProfitCandidate(
+                action=SELL_FULL,
+                source="trailing_take_profit",
+                priority=priority,
+                rationale=(
+                    f"TrailTP->SELL_FULL full_close {gain:.1f}%>= {full_close_gain:.1f}% "
+                    f"(armed peak={peak_gain:.1f}%)"
+                ),
+                shadow_only=shadow,
+            )
+
     recent_high = float(position.get("recent_high") or 0) or market.current_price
     if recent_high <= 0:
         return None

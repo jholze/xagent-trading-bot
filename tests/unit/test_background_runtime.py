@@ -84,6 +84,79 @@ class TestBackgroundRuntime(unittest.TestCase):
         self.assertTrue(bg.social_ever_fetched())
 
 
+class TestNewsPulseTick(unittest.TestCase):
+    def setUp(self):
+        bg._last_news_pulse_at = 0.0
+
+    def tearDown(self):
+        bg._last_news_pulse_at = 0.0
+
+    def test_disabled_flag_is_noop(self):
+        cfg = {
+            "sell_policy": {
+                "correlated_tier": {
+                    "news_pulse_enabled": False,
+                    "news_pulse_poll_interval_sec": 1,
+                }
+            }
+        }
+        with patch("intelligence.memory.news_providers.poll_and_ingest_news") as poll:
+            bg._maybe_tick_news_pulse(cfg)
+        poll.assert_not_called()
+        self.assertEqual(bg._last_news_pulse_at, 0.0)
+
+    def test_enabled_polls_and_caches_then_self_gates(self):
+        cfg = {
+            "sell_policy": {
+                "correlated_tier": {
+                    "news_pulse_enabled": True,
+                    "news_pulse_poll_interval_sec": 900,
+                    "news_pulse_since_minutes": 30,
+                }
+            }
+        }
+        pulse = {
+            "bearish_score": 0.4,
+            "confidence": 0.2,
+            "event_count": 1,
+            "top_events": [],
+        }
+        with patch("intelligence.memory.news_providers.poll_and_ingest_news") as poll, patch(
+            "intelligence.memory.market_pulse.market_pulse_score",
+            return_value=pulse,
+        ) as score, patch(
+            "intelligence.memory.market_pulse.set_cached_market_pulse"
+        ) as cache:
+            bg._maybe_tick_news_pulse(cfg)
+            bg._maybe_tick_news_pulse(cfg)
+        poll.assert_called_once()
+        score.assert_called_once()
+        cache.assert_called_once_with(pulse)
+        self.assertGreater(bg._last_news_pulse_at, 0.0)
+
+    def test_poll_error_still_scores_and_does_not_raise(self):
+        cfg = {
+            "sell_policy": {
+                "correlated_tier": {
+                    "news_pulse_enabled": True,
+                    "news_pulse_poll_interval_sec": 1,
+                }
+            }
+        }
+        with patch(
+            "intelligence.memory.news_providers.poll_and_ingest_news",
+            side_effect=RuntimeError("rss down"),
+        ), patch(
+            "intelligence.memory.market_pulse.market_pulse_score",
+            return_value={"bearish_score": 0.0, "confidence": 0.0, "event_count": 0, "top_events": []},
+        ) as score, patch(
+            "intelligence.memory.market_pulse.set_cached_market_pulse"
+        ) as cache:
+            bg._maybe_tick_news_pulse(cfg)
+        score.assert_called_once()
+        cache.assert_called_once()
+
+
 class TestDedup(unittest.TestCase):
     def test_try_claim_id_memory_fallback(self):
         from bus.dedup import clear_memory, try_claim_id

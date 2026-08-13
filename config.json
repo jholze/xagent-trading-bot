@@ -612,7 +612,56 @@
       "profit_exit_full_close": true,
       "grid_profit_full_close": false,
       "prefer_full_close": false,
-      "_experiment_grid_share_v1": "2026-08-10: disable grid full-close upgrades so level harvests can leave tails; trail/profit non-grid full-close stays. Kill: both true."
+      "_experiment_grid_share_v1": "2026-08-10: disable grid full-close upgrades so level harvests can leave tails; trail/profit non-grid full-close stays. Kill: both true.",
+      "stagnant_rotation_enabled": false,
+      "stagnant_gain_pct": 8.0,
+      "stagnant_idle_hours": 24.0,
+      "stagnant_slack_slots": 2,
+      "stagnant_gain_pct_stable": 8.0,
+      "stagnant_idle_hours_stable": 24.0,
+      "_doc_stagnant_tier": "stable-tier override, mirrors arm_gain_pct_stable. Starts equal to global default; tune with staging data."
+    },
+    "correlated_tier": {
+      "enabled": false,
+      "tenants": ["default", "henry"],
+      "groups": {
+        "us_stock": {
+          "proxy_symbols": ["CRWVG/USDT", "NBISG/USDT", "SOXLG/USDT", "MVLLG/USDT"],
+          "member_symbols": ["CRWVG/USDT", "NBISG/USDT", "SOXLG/USDT", "MVLLG/USDT"],
+          "drawdown_pct": 5.0,
+          "window_sec": 600,
+          "min_confirming": 2,
+          "trailing_take_profit": {
+            "trail_pct": 3.5,
+            "arm_gain_pct": 10,
+            "min_gain_pct": 8
+          },
+          "trailing_stop": {
+            "activation_gain_pct": 8,
+            "min_trail_pct": 6,
+            "max_trail_pct": 15
+          },
+          "full_close_gain_pct": 12
+        },
+        "crypto_market": {
+          "proxy_symbols": ["BTC/USDT", "ETH/USDT"],
+          "member_symbols": "*",
+          "drawdown_pct": 4.0,
+          "window_sec": 900,
+          "min_confirming": 1
+        }
+      },
+      "eval_interval_sec": 5,
+      "flag_ttl_sec": 30,
+      "regime_amplify_enabled": false,
+      "regime_amplify_regimes": ["RISK_OFF", "CRASH"],
+      "news_pulse_enabled": false,
+      "news_pulse_poll_interval_sec": 900,
+      "news_pulse_since_minutes": 30,
+      "news_pulse_bearish_threshold": 0.55,
+      "news_pulse_min_confidence": 0.34,
+      "news_pulse_max_combined_delta": 1,
+      "_doc": "Generic correlated-drawdown detector + per-group trail overlay. Kill: enabled=false (or remove a groups.<name> entry). Amplifiers default off."
     }
   },
   "update_interval": 120,

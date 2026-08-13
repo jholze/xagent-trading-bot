@@ -1,0 +1,360 @@
+{
+  "generated": "2026-08-12T20:09:17.794717+00:00",
+  "phase": 2,
+  "timeframe": "4h",
+  "window": {
+    "start": "2026-05-14T19:00:00+00:00",
+    "end": "2026-08-12T19:00:00+00:00",
+    "days": 90
+  },
+  "seed": 42,
+  "phase1_source": "/private/tmp/claude-502/-Users-jholze-Documents-scripts-trading-bot/3e992640-c6a9-431b-a66e-0446eeac2ab5/scratchpad/correlated-tier-experiment/auswertungen/gis/correlated_tier_backtest_90d_4h_20260812_193405.json",
+  "us_stock_listing": {
+    "CRWVG/USDT": {
+      "first_ts": 1784779200,
+      "last_ts": 1786550400,
+      "first_dt": "2026-07-23T04:00:00",
+      "last_dt": "2026-08-12T16:00:00",
+      "n_bars": 124,
+      "effective_days": 20.5,
+      "coverage_of_window": 0.2278
+    },
+    "MVLLG/USDT": {
+      "first_ts": 1784779200,
+      "last_ts": 1786550400,
+      "first_dt": "2026-07-23T04:00:00",
+      "last_dt": "2026-08-12T16:00:00",
+      "n_bars": 124,
+      "effective_days": 20.5,
+      "coverage_of_window": 0.2278
+    },
+    "NBISG/USDT": {
+      "first_ts": 1783584000,
+      "last_ts": 1786550400,
+      "first_dt": "2026-07-09T08:00:00",
+      "last_dt": "2026-08-12T16:00:00",
+      "n_bars": 207,
+      "effective_days": 34.33,
+      "coverage_of_window": 0.3815
+    },
+    "SOXLG/USDT": {
+      "first_ts": 1783584000,
+      "last_ts": 1786550400,
+      "first_dt": "2026-07-09T08:00:00",
+      "last_dt": "2026-08-12T16:00:00",
+      "n_bars": 207,
+      "effective_days": 34.33,
+      "coverage_of_window": 0.3815
+    }
+  },
+  "shuffled": {
+    "seed": 42,
+    "target_buys": 195,
+    "planned_entries": 195,
+    "targets": {
+      "GORK/USDT": 9,
+      "NYAN/USDT": 10,
+      "PEPE/USDT": 3,
+      "GAS/USDT": 2,
+      "LAB/USDT": 3,
+      "SUI/USDT": 3,
+      "GNC/USDT": 54,
+      "TREE/USDT": 5,
+      "HIGH/USDT": 4,
+      "LIT/USDT": 3,
+      "AARK/USDT": 7,
+      "ZEC/USDT": 3,
+      "U/USDT": 9,
+      "DOGE/USDT": 5,
+      "HMSTR/USDT": 3,
+      "WLD/USDT": 3,
+      "ADA/USDT": 2,
+      "BNB/USDT": 2,
+      "BEAT/USDT": 3,
+      "SKYAI/USDT": 2,
+      "TRX/USDT": 1,
+      "H/USDT": 3,
+      "ZBT/USDT": 2,
+      "ARIA/USDT": 3,
+      "GMRT/USDT": 10,
+      "XAI/USDT": 1,
+      "VELVET/USDT": 2,
+      "TRUMP/USDT": 1,
+      "XPL/USDT": 3,
+      "SIREN/USDT": 2,
+      "STG/USDT": 3,
+      "TRB/USDT": 2,
+      "JUP/USDT": 1,
+      "HYPE/USDT": 2,
+      "RAVE/USDT": 4,
+      "SPCX/USDT": 1,
+      "LIKE/USDT": 3,
+      "NEAR/USDT": 1,
+      "RIF/USDT": 2,
+      "TYCOON/USDT": 4,
+      "MAGMA/USDT": 2,
+      "NBISG/USDT": 2,
+      "SOXLG/USDT": 1,
+      "MVLLG/USDT": 2,
+      "CRWVG/USDT": 2
+    },
+    "n": 141,
+    "n_buys": 71,
+    "win_rate": 0.2624,
+    "avg_pct": -6.42,
+    "median_pct": -4.0,
+    "total_pnl_usdt": -8124.71,
+    "return_on_start_pct": -8.12,
+    "max_drawdown_pct": -8.48,
+    "sharpe_like": -3.05,
+    "by_group": {
+      "crypto_market": {
+        "n": 116,
+        "win_rate": 0.2414,
+        "total_pnl_usdt": -7969.43,
+        "avg_pct": -8.42,
+        "median_pct": -4.04
+      },
+      "us_stock": {
+        "n": 25,
+        "win_rate": 0.36,
+        "total_pnl_usdt": -155.28,
+        "avg_pct": 2.86,
+        "median_pct": -1.76
+      }
+    },
+    "exit_reasons": {
+      "shuffled_hold": 140,
+      "end_of_window": 1
+    },
+    "peak_open": 11,
+    "skipped_no_slot": 0,
+    "stagnant_rotation_n": 0,
+    "timing_edge_vs_experiment_pnl": -7960.17,
+    "timing_edge_vs_experiment_avg_pct": -6.66,
+    "us_stock_pnl": -155.28,
+    "us_stock_avg_pct": 2.86,
+    "crypto_market_pnl": -7969.43
+  },
+  "regime": {
+    "symbols": [
+      "BTC/USDT",
+      "CRWVG/USDT",
+      "ETH/USDT",
+      "MVLLG/USDT",
+      "NBISG/USDT",
+      "SOXLG/USDT"
+    ],
+    "baseline": {
+      "n": 33,
+      "n_buys": 12,
+      "win_rate": 0.3636,
+      "avg_pct": -14.55,
+      "median_pct": -5.2,
+      "total_pnl_usdt": -2235.67,
+      "return_on_start_pct": -2.24,
+      "max_drawdown_pct": -3.74,
+      "sharpe_like": -3.52,
+      "by_group": {
+        "us_stock": {
+          "n": 31,
+          "win_rate": 0.3871,
+          "total_pnl_usdt": -699.32,
+          "avg_pct": -14.39,
+          "median_pct": -4.88
+        },
+        "crypto_market": {
+          "n": 2,
+          "win_rate": 0.0,
+          "total_pnl_usdt": -1536.36,
+          "avg_pct": -17.09,
+          "median_pct": -17.09
+        }
+      },
+      "exit_reasons": {
+        "end_of_window": 4,
+        "bb_upper": 2,
+        "trailing_take_profit": 3,
+        "tail_idle": 6,
+        "partial_stop": 14,
+        "trailing_stop": 4
+      },
+      "peak_open": 6,
+      "skipped_no_slot": 0,
+      "stagnant_rotation_n": 0,
+      "by_regime": {
+        "chop_bucket": {
+          "n": 33,
+          "total_pnl_usdt": -2235.67,
+          "avg_pct": -14.55,
+          "by_group": {
+            "us_stock": {
+              "n": 31,
+              "win_rate": 0.3871,
+              "total_pnl_usdt": -699.32,
+              "avg_pct": -14.39,
+              "median_pct": -4.88
+            },
+            "crypto_market": {
+              "n": 2,
+              "win_rate": 0.0,
+              "total_pnl_usdt": -1536.36,
+              "avg_pct": -17.09,
+              "median_pct": -17.09
+            }
+          }
+        }
+      }
+    },
+    "experiment": {
+      "n": 25,
+      "n_buys": 12,
+      "win_rate": 0.52,
+      "avg_pct": -7.48,
+      "median_pct": 0.11,
+      "total_pnl_usdt": -2941.74,
+      "return_on_start_pct": -2.94,
+      "max_drawdown_pct": -4.46,
+      "sharpe_like": -1.96,
+      "by_group": {
+        "us_stock": {
+          "n": 23,
+          "win_rate": 0.5652,
+          "total_pnl_usdt": -1405.38,
+          "avg_pct": -6.65,
+          "median_pct": 1.13
+        },
+        "crypto_market": {
+          "n": 2,
+          "win_rate": 0.0,
+          "total_pnl_usdt": -1536.36,
+          "avg_pct": -17.09,
+          "median_pct": -17.09
+        }
+      },
+      "exit_reasons": {
+        "end_of_window": 4,
+        "bb_upper": 2,
+        "trailing_take_profit": 6,
+        "tail_idle": 5,
+        "partial_stop": 7,
+        "trailing_stop": 1
+      },
+      "peak_open": 6,
+      "skipped_no_slot": 0,
+      "stagnant_rotation_n": 0,
+      "by_regime": {
+        "chop_bucket": {
+          "n": 25,
+          "total_pnl_usdt": -2941.74,
+          "avg_pct": -7.48,
+          "by_group": {
+            "us_stock": {
+              "n": 23,
+              "win_rate": 0.5652,
+              "total_pnl_usdt": -1405.38,
+              "avg_pct": -6.65,
+              "median_pct": 1.13
+            },
+            "crypto_market": {
+              "n": 2,
+              "win_rate": 0.0,
+              "total_pnl_usdt": -1536.36,
+              "avg_pct": -17.09,
+              "median_pct": -17.09
+            }
+          }
+        }
+      }
+    },
+    "delta_us_stock_pnl_by_regime": {
+      "chop_bucket": {
+        "baseline_n": 31,
+        "experiment_n": 23,
+        "baseline_pnl": -699.32,
+        "experiment_pnl": -1405.38,
+        "delta_pnl": -706.06,
+        "baseline_avg_pct": -14.39,
+        "experiment_avg_pct": -6.65
+      }
+    },
+    "note": "us_stock-only tape: no 36-slot competition. Overlay path is real. Use for regime concentration, not as a restatement of Phase 1 headlines."
+  },
+  "walk_forward": {
+    "fold_days": 30,
+    "step_days": 30,
+    "folds_total": 3,
+    "folds_with_us_stock_sample": 2,
+    "folds_won": 1,
+    "folds_won_score": "1/2",
+    "folds": [
+      {
+        "fold_id": 0,
+        "start": "2026-05-14T19:00:00",
+        "end": "2026-06-13T19:00:00",
+        "start_ts": 1778785200,
+        "end_ts": 1781377200,
+        "us_stock_sample": false,
+        "baseline_us_stock_n": 0,
+        "experiment_us_stock_n": 0,
+        "baseline_us_stock_pnl": 0.0,
+        "experiment_us_stock_pnl": 0.0,
+        "delta_us_stock_pnl": 0.0,
+        "experiment_beat_baseline": false,
+        "baseline_pnl": -7215.33,
+        "experiment_pnl": -7215.33,
+        "baseline_n": 157,
+        "experiment_n": 157,
+        "stagnant_rotation_n": 0
+      },
+      {
+        "fold_id": 1,
+        "start": "2026-06-13T19:00:00",
+        "end": "2026-07-13T19:00:00",
+        "start_ts": 1781377200,
+        "end_ts": 1783969200,
+        "us_stock_sample": true,
+        "baseline_us_stock_n": 2,
+        "experiment_us_stock_n": 2,
+        "baseline_us_stock_pnl": -249.76,
+        "experiment_us_stock_pnl": -249.76,
+        "delta_us_stock_pnl": 0.0,
+        "experiment_beat_baseline": false,
+        "baseline_pnl": -6502.92,
+        "experiment_pnl": -6502.92,
+        "baseline_n": 144,
+        "experiment_n": 144,
+        "stagnant_rotation_n": 0
+      },
+      {
+        "fold_id": 2,
+        "start": "2026-07-13T19:00:00",
+        "end": "2026-08-12T19:00:00",
+        "start_ts": 1783969200,
+        "end_ts": 1786561200,
+        "us_stock_sample": true,
+        "baseline_us_stock_n": 22,
+        "experiment_us_stock_n": 22,
+        "baseline_us_stock_pnl": -144.22,
+        "experiment_us_stock_pnl": 481.61,
+        "delta_us_stock_pnl": 625.83,
+        "experiment_beat_baseline": true,
+        "baseline_pnl": 1044.94,
+        "experiment_pnl": 1670.77,
+        "baseline_n": 160,
+        "experiment_n": 160,
+        "stagnant_rotation_n": 0
+      }
+    ]
+  },
+  "sweep": [],
+  "benchmark": {
+    "btc_buy_hold": {
+      "btc_buy_hold_pct": -22.22,
+      "pnl_usdt": -22215.78,
+      "entry_open": 81420.5,
+      "exit_close": 63332.3,
+      "bars": 564
+    }
+  }
+}

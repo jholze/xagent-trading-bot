@@ -301,7 +301,17 @@ def resolve_strategy_params(
 
     def _out(result: dict) -> dict:
         result.update(regime_profile)
-        return _apply_path_stats_soft_bias(result, symbol, has_position, cfg)
+        result = _apply_path_stats_soft_bias(result, symbol, has_position, cfg)
+        try:
+            from strategies.correlated_tier_overlay import apply_correlated_tier_overlay
+
+            raw = getattr(cfg, "raw", None) if cfg is not None else None
+            result = apply_correlated_tier_overlay(
+                result, symbol, raw if isinstance(raw, dict) else {}
+            )
+        except Exception:
+            pass
+        return result
 
     # Personal / Hermes buy keys always beat config.strategies[] and tier overlay.
     # Load before explicit short-circuit so ARIA/USDT-style config entries still
