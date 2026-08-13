@@ -9,11 +9,11 @@ That is the genuine paper-ledger literal (see ``core/config.py`` and
 Default tenant is never written. This script is idempotent (check-then-create
 / update). Does not fabricate a Telegram ``owner_chat_id``.
 
-CRITICAL follow-up (not optional for the trading loop):
-  ``core/tenant_routing.py::iter_price_cycle_tenants`` skips any non-default
-  tenant whose ``telegram.owner_chat_id`` is empty. After ``--apply``, bind a
-  real chat via the existing Telegram invite flow
-  (``/start ctexp`` / operator invite link). Do not invent a fake chat id.
+Price-cycle gate (PR #260): ``iter_price_cycle_tenants`` includes a tenant
+without ``owner_chat_id`` when ``telegram.headless=true``. This script sets
+that flag. Notifications fall back to the operator chat, tagged ``[ctexp]``.
+Optional: still bind a real chat via ``/start ctexp`` if you want a private
+inbox. Do not invent a fake chat id.
 
   MONGO_PUBLIC_URL=... MONGODB_DB=xagent_test \\
     python3 scripts/setup_ctexp_tenant.py --dry-run
@@ -161,6 +161,7 @@ def _new_tenant_doc(disk_cfg: dict) -> dict:
         "features": ["basic"],
         "telegram": {
             "owner_chat_id": "",
+            "headless": True,
             "bot_token_enc": "",
             "bot_token_ref": "env:TELEGRAM_BOT_TOKEN",
             "webhook_secret": secrets.token_urlsafe(32),
@@ -268,11 +269,12 @@ def main() -> int:
         "watchlist_coins": len(watchlist),
         "watchlist_source": watchlist_source,
         "owner_chat_id": owner or None,
-        "owner_chat_required_for_price_cycle": True,
+        "telegram_headless": True,
+        "owner_chat_required_for_price_cycle": False,
         "manual_followup": (
-            "iter_price_cycle_tenants skips tenants with empty "
-            "telegram.owner_chat_id. Bind a real Telegram chat via "
-            f"/start {tid} (operator invite link). Do not fabricate a chat id."
+            "PR #260: telegram.headless=true lets this tenant join the "
+            "price cycle without owner_chat_id. Operator chat gets "
+            f"[{tid}] tags. Optional: /start {tid} for a private inbox."
         ),
     }
     print(json.dumps({"tenant": tid, "before": before, "after": after}, indent=2))
@@ -281,8 +283,8 @@ def main() -> int:
         print("dry-run only (pass --apply to write)")
         if not owner:
             print(
-                "NOTE: owner_chat_id is empty — after --apply, bind Telegram "
-                f"via /start {tid} or the tenant will not join the price cycle.",
+                "NOTE: no owner_chat_id — after --apply, telegram.headless=true "
+                "is enough for the price cycle (PR #260).",
                 file=sys.stderr,
             )
         return 0
@@ -304,6 +306,7 @@ def main() -> int:
             "status": "active",
             "defaults.trading_mode": "paper",
             "defaults.ledger_scope": "paper",
+            "telegram.headless": True,
             "updated_at": _now_iso(),
         }
         if not ((existing_tenant.get("defaults") or {}).get("ui_language")):
@@ -337,8 +340,8 @@ def main() -> int:
     print(f"applied; backup_id={bak_id}")
     if not owner:
         print(
-            f"MANUAL: bind Telegram owner via /start {tid} before the "
-            "price-cycle loop will pick this tenant up.",
+            f"headless=true — {tid} joins the price cycle without a Telegram "
+            f"chat (PR #260). Optional: /start {tid} for a private inbox.",
             file=sys.stderr,
         )
     return 0

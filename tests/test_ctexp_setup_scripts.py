@@ -104,6 +104,12 @@ class TestDeepMergePreservesGroups(unittest.TestCase):
 
 
 class TestSetupConfigOverride(unittest.TestCase):
+    def test_new_tenant_doc_is_headless_without_owner_chat(self):
+        doc = setup._new_tenant_doc({"max_open_positions": 36, "dry_run_defaults": {}})
+        tg = doc["telegram"]
+        self.assertEqual(tg.get("owner_chat_id"), "")
+        self.assertTrue(tg.get("headless"))
+
     def test_desired_body_only_overrides_trading_mode(self):
         disk = setup._load_disk_config()
         body = setup.desired_tenant_config_body(disk)
