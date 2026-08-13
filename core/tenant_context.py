@@ -18,6 +18,7 @@ class TenantContext:
     owner_chat_id: str = ""
     bot_token: str = ""
     redis_prefix: str = ""
+    headless: bool = False
 
     def __post_init__(self) -> None:
         if not self.tenant_id:
@@ -77,6 +78,7 @@ def tenant_context(
     scope: str | None = None,
     owner_chat_id: str = "",
     bot_token: str = "",
+    headless: bool = False,
 ) -> Iterator[TenantContext]:
     from data_manager import resolve_ledger_scope
 
@@ -86,6 +88,7 @@ def tenant_context(
         scope=resolved_scope,
         owner_chat_id=owner_chat_id,
         bot_token=bot_token,
+        headless=headless,
     )
     token = _ctx.set(ctx)
     try:
