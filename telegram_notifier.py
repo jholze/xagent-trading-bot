@@ -59,6 +59,20 @@ def _chat_id() -> str | None:
         pass
     return _env_chat_id()
 
+
+def _headless_tenant_tag() -> str:
+    """Tag messages from a headless tenant sharing the operator's chat, so several
+    such tenants stay distinguishable in one inbox."""
+    try:
+        from core.tenant_context import DEFAULT_TENANT, current_tenant_context
+
+        ctx = current_tenant_context()
+        if ctx and ctx.headless and ctx.tenant_id and ctx.tenant_id != DEFAULT_TENANT:
+            return f"[{ctx.tenant_id}] "
+    except Exception:
+        pass
+    return ""
+
 search_results = {}
 
 
@@ -503,7 +517,7 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
         print("⚠️ Telegram not configured")
         return False
 
-    prefix = message_prefix()
+    prefix = message_prefix() + _headless_tenant_tag()
     if prefix:
         text = prefix + text
 

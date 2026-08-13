@@ -108,6 +108,17 @@ class TestIterPriceCycleTenants(unittest.TestCase):
         self.assertIn("henry", ids)
         self.assertNotIn("ghost", ids)
 
+    @patch("core.tenant_routing.multi_tenant_enabled", return_value=True)
+    @patch("storage.tenant_registry.list_active_tenants")
+    def test_includes_headless_without_owner_chat(self, mock_list, _mt):
+        mock_list.return_value = [
+            {"tenant_id": "ctexp", "status": "active", "telegram": {"owner_chat_id": "", "headless": True}},
+            {"tenant_id": "ghost", "status": "active", "telegram": {"owner_chat_id": ""}},
+        ]
+        ids = iter_price_cycle_tenants()
+        self.assertIn("ctexp", ids)
+        self.assertNotIn("ghost", ids)
+
 
 if __name__ == "__main__":
     unittest.main()
