@@ -114,6 +114,24 @@ class TestTrailingTakeProfit(unittest.TestCase):
         self.assertGreater(resolve_trail_pct(30.0, cfg), 6.0)
         self.assertLess(resolve_trail_pct(30.0, cfg), 12.0)
 
+    def test_full_close_gain_prefers_sell_full_without_trail_drop(self):
+        """Once armed past full_close_gain_pct, close fully instead of waiting to trail."""
+        pos = {"recent_high": 1.13, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}
+        params = self._params(
+            dynamic_trail=False,
+            trail_pct=6.0,
+            arm_gain_pct=10.0,
+            min_gain_pct=8.0,
+            full_close_gain_pct=12.0,
+        )
+        params["exit_ladder"]["enabled"] = False
+        cand = evaluate_trailing_take_profit(
+            self._market(current_price=1.13), pos, params,
+        )
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.action, SELL_FULL)
+        self.assertIn("full_close", cand.rationale)
+
     def test_dynamic_trail_triggers_on_modest_peak_pullback(self):
         """Peak +13%, current +9.5%: tight trail should fire (closes exit_sensor gap)."""
         pos = {"recent_high": 1.13, "exit_ladder_step": 0, "peak_amount": 100.0, "amount": 100.0}

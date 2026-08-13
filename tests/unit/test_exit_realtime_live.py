@@ -150,6 +150,37 @@ class TestTryExecuteTrailExit(unittest.TestCase):
 
 
 class TestHubLivePath(unittest.TestCase):
+    def test_correlated_tier_watch_survives_gainer_watch_update(self):
+        raw = {
+            "exit_realtime": {"enabled": True, "mode": "shadow"},
+            "sell_policy": {
+                "correlated_tier": {
+                    "enabled": True,
+                    "groups": {
+                        "crypto_market": {
+                            "proxy_symbols": ["BTC/USDT", "ETH/USDT"],
+                            "member_symbols": "*",
+                            "drawdown_pct": 4.0,
+                            "window_sec": 900,
+                            "min_confirming": 1,
+                        }
+                    },
+                    "eval_interval_sec": 5,
+                    "flag_ttl_sec": 30,
+                }
+            },
+        }
+        hub = ExitRealtimeHub(raw)
+        self.assertIn("BTC/USDT", hub._ct_watch_symbols)
+        pairs = hub._desired_gate_pairs()
+        self.assertIn("BTC_USDT", pairs)
+        hub.update_watch_set(["SOL/USDT"])
+        self.assertIn("BTC/USDT", hub._ct_watch_symbols)
+        self.assertIn("SOL/USDT", hub._watch_symbols)
+        pairs2 = hub._desired_gate_pairs()
+        self.assertIn("BTC_USDT", pairs2)
+        self.assertIn("SOL_USDT", pairs2)
+
     def test_on_ticker_live_executes(self):
         raw = {
             "exit_realtime": {

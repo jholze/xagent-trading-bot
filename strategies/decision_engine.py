@@ -46,6 +46,7 @@ from intelligence.volatility_classifier import volatility_tier
 from intelligence.regime_detector import RegimeDetector
 from intelligence.strategy_allocator import StrategyAllocator
 from strategies.positions import (
+    count_open_full_slots,
     count_open_positions,
     flush_positions,
     get_position,
@@ -943,6 +944,19 @@ class DecisionEngine:
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
 
+        if market and position:
+            try:
+                open_full_slots = count_open_full_slots(self.config.raw)
+            except Exception:
+                open_full_slots = 0
+            try:
+                eff_cap = int(self.config.max_open_positions)
+            except Exception:
+                eff_cap = 0
+        else:
+            open_full_slots = 0
+            eff_cap = 0
+
         if market and position and candidates:
             candidates, policy_audit = apply_rotation_sell_filters(
                 candidates,
@@ -952,12 +966,38 @@ class DecisionEngine:
                 self.config.raw,
                 strategy_profile=getattr(technical, "strategy_profile", None),
                 sell_sources=sources,
+                open_full_slots=open_full_slots,
+                eff_cap=eff_cap,
             )
             sell_policy_audit = audit_to_dict(policy_audit)
             if policy_audit.trail_exclusive_blocked:
                 structure_rationales.append(
                     "Trail-exclusive blocked: " + ", ".join(policy_audit.trail_exclusive_blocked)
                 )
+        elif market and position:
+            # Stagnant must be able to originate a sell with no other candidates.
+            # Do not run the full extras loop here — that would also let
+            # already-on tail_idle/ladder_terminal fire standalone.
+            try:
+                from strategies.sell_rotation_policy import (
+                    evaluate_stagnant_rotation_close,
+                    rotation_config,
+                )
+
+                rot_cfg = rotation_config(self.config.raw, strategy_params)
+                extra = evaluate_stagnant_rotation_close(
+                    market,
+                    position,
+                    rot_cfg,
+                    open_full_slots=open_full_slots,
+                    eff_cap=eff_cap,
+                )
+                if extra:
+                    candidates.append((extra.action, extra.priority, extra.source))
+                    sources.append(extra.source)
+                    structure_rationales.append(extra.rationale)
+            except Exception:
+                pass
 
         # Recovery hold (#223): drop trail/TTP/partial/BB/social while focus recovering
         if market and position and candidates:

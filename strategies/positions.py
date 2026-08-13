@@ -508,6 +508,9 @@ def update_market_snapshot(
         new_high = max(old_high, candidate)
         if new_high > old_high:
             pos["recent_high"] = new_high
+            # Stagnant-rotation idle clock: time since last genuine progress,
+            # not time since last fill (which partial-sells/DCA reset).
+            pos["peak_at"] = datetime.now().isoformat()
             changed = True
     if changed:
         flush_positions()
@@ -744,6 +747,7 @@ def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: f
         pos = _ensure_key(_active_store(), key)
         pos["last_trail_tp_at"] = datetime.now().isoformat()
         pos["recent_high"] = float(current_price)
+        pos["peak_at"] = datetime.now().isoformat()
     flush_positions()
 
 
@@ -897,6 +901,7 @@ def update_position(
                 pos["last_action"] = "BUY"
                 pos["rsi_sell_tiers_done"] = {}
                 pos["recent_high"] = current_price
+                pos["peak_at"] = datetime.now().isoformat()
                 pos["exit_ladder_step"] = 0
                 pos["last_trade_type"] = "BUY"
                 pos["dca_rounds"] = 0

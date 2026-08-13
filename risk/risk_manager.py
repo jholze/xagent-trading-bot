@@ -243,6 +243,19 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
+            try:
+                from services.correlated_tier.api import correlated_tier_selloff_active
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                if correlated_tier_selloff_active(order.symbol, raw_cfg):
+                    return RiskDecision(
+                        approved=False,
+                        message=f"Correlated-tier selloff active for {order.symbol}",
+                        code="correlated_tier_selloff",
+                        size_multiplier=0.0,
+                    )
+            except Exception:
+                pass
             # Universe split: new BUYs only on trade-eligible set (observe is broader).
             # RelVol ignition deliberately discovers thin/off-universe names — exempt.
             try:

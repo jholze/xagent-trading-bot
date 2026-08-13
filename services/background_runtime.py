@@ -15,6 +15,7 @@ _thread: threading.Thread | None = None
 _last_fetch_at = 0.0
 _last_accuracy: dict = {}
 _fetch_in_progress = False
+_last_news_pulse_at = 0.0
 
 
 def register_pipeline(pipeline) -> None:
@@ -115,6 +116,54 @@ def _publish_snapshot(watchlist: list):
         log(f"Background snapshot publish failed: {e}", "WARNING")
 
 
+def _maybe_tick_news_pulse(cfg=None) -> None:
+    """Self-gated news ingest + market-pulse cache refresh.
+
+    No-op unless sell_policy.correlated_tier.news_pulse_enabled is true.
+    Fail-open: any error is swallowed so the rest of the background loop
+    keeps running and callers never see a fabricated pulse.
+    """
+    global _last_news_pulse_at
+    try:
+        raw = None
+        if cfg is not None:
+            raw = getattr(cfg, "raw", None)
+            if raw is None and isinstance(cfg, dict):
+                raw = cfg
+        from services.correlated_tier.config import correlated_tier_config
+
+        ct = correlated_tier_config(raw if isinstance(raw, dict) else None)
+        if not ct.get("news_pulse_enabled"):
+            return
+        interval = float(ct.get("news_pulse_poll_interval_sec") or 900)
+        now = time.time()
+        if _last_news_pulse_at > 0 and (now - _last_news_pulse_at) < interval:
+            return
+        try:
+            from intelligence.memory.news_providers import poll_and_ingest_news
+
+            poll_and_ingest_news(config=raw if isinstance(raw, dict) else None)
+        except Exception as e:
+            log(f"Background news ingest skipped: {e}", "DEBUG")
+        try:
+            from intelligence.memory.market_pulse import (
+                market_pulse_score,
+                set_cached_market_pulse,
+            )
+
+            since = int(ct.get("news_pulse_since_minutes") or 30)
+            result = market_pulse_score(
+                since_minutes=since,
+                config_raw=raw if isinstance(raw, dict) else None,
+            )
+            set_cached_market_pulse(result)
+        except Exception as e:
+            log(f"Background market pulse score skipped: {e}", "DEBUG")
+        _last_news_pulse_at = now
+    except Exception as e:
+        log(f"Background news pulse failed: {e}", "WARNING")
+
+
 def _loop():
     global _last_fetch_at, _last_accuracy
     while _running:
@@ -123,6 +172,10 @@ def _loop():
 
             cfg = get_bot_config()
             cfg.refresh()
+            try:
+                _maybe_tick_news_pulse(cfg)
+            except Exception as e:
+                log(f"Background news pulse failed: {e}", "WARNING")
             arch = cfg.architecture_config
             if not arch.get("background_social_enabled", True):
                 time.sleep(5)

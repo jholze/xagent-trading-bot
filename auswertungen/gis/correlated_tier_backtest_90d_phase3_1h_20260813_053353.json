@@ -1,0 +1,1550 @@
+{
+  "generated": "2026-08-13T05:33:53.008685+00:00",
+  "phase": 3,
+  "timeframe": "1h",
+  "window": {
+    "start": "2026-05-14T19:00:00+00:00",
+    "end": "2026-08-12T19:00:00+00:00",
+    "days": 90
+  },
+  "phase1_source": "/private/tmp/claude-502/-Users-jholze-Documents-scripts-trading-bot/3e992640-c6a9-431b-a66e-0446eeac2ab5/scratchpad/correlated-tier-experiment/auswertungen/gis/correlated_tier_backtest_90d_1h_20260812_193319.json",
+  "phase1_4h_capacity": {
+    "skipped_no_slot": 0,
+    "peak_open": 35,
+    "n_buys": 197
+  },
+  "phase1_1h_capacity": {
+    "skipped_no_slot": 42,
+    "peak_open": 36,
+    "n_buys": 453
+  },
+  "params": {
+    "fee_rt": 0.002,
+    "slip_bps": 25.0,
+    "ticket": 4500.0,
+    "max_open": 36,
+    "cash_floor": 12000.0,
+    "start_equity": 100000.0,
+    "tight_overrides": {
+      "max_open_positions": 18,
+      "stagnant_slack_slots": 8,
+      "stagnant_gain_pct": 6.0,
+      "stagnant_idle_hours": 12.0
+    },
+    "redeploy_window_sec": 14400,
+    "forward_horizons_sec": {
+      "24h": 86400,
+      "72h": 259200,
+      "7d": 604800
+    }
+  },
+  "baseline": {
+    "n": 1308,
+    "n_buys": 453,
+    "peak_open": 36,
+    "skipped_no_slot": 43,
+    "skipped_cash_floor": 142,
+    "skipped_too_illiquid": 1773,
+    "n_capacity_rejections": 43,
+    "total_pnl_usdt": -15101.77,
+    "avg_pct": -7.59,
+    "win_rate": 0.4411,
+    "by_group": {
+      "crypto_market": {
+        "n": 1235,
+        "win_rate": 0.4227,
+        "total_pnl_usdt": -14523.31,
+        "avg_pct": -7.87,
+        "median_pct": -1.09
+      },
+      "us_stock": {
+        "n": 73,
+        "win_rate": 0.7534,
+        "total_pnl_usdt": -578.46,
+        "avg_pct": -2.93,
+        "median_pct": 3.49
+      }
+    },
+    "exit_reasons": {
+      "stop_loss": 7,
+      "partial_stop": 386,
+      "tail_idle": 89,
+      "trailing_take_profit": 96,
+      "trailing_stop": 396,
+      "bb_upper": 301,
+      "end_of_window": 33
+    },
+    "stagnant_rotation_n": 0
+  },
+  "reject_vs_taken": {
+    "n_rejected": 43,
+    "n_taken": 453,
+    "horizons": {
+      "24h": {
+        "rejected": {
+          "n": 42,
+          "mean": -0.03164433333381405,
+          "median": -0.012341917711052475,
+          "pct_positive": 0.38095238095238093
+        },
+        "taken": {
+          "n": 451,
+          "mean": 0.004224189268595291,
+          "median": -0.007528684227673166,
+          "pct_positive": 0.44789356984478934
+        },
+        "mean_delta_rejected_minus_taken": -0.03586852260240934
+      },
+      "72h": {
+        "rejected": {
+          "n": 40,
+          "mean": -0.05168040785004224,
+          "median": -0.010714916943330488,
+          "pct_positive": 0.35
+        },
+        "taken": {
+          "n": 443,
+          "mean": 0.02407889266806189,
+          "median": -0.014118018863983561,
+          "pct_positive": 0.45372460496614
+        },
+        "mean_delta_rejected_minus_taken": -0.07575930051810413
+      },
+      "7d": {
+        "rejected": {
+          "n": 40,
+          "mean": -0.022432410506442582,
+          "median": -0.026777991157625414,
+          "pct_positive": 0.45
+        },
+        "taken": {
+          "n": 430,
+          "mean": 0.030758097908489258,
+          "median": -0.042444571917989726,
+          "pct_positive": 0.39069767441860465
+        },
+        "mean_delta_rejected_minus_taken": -0.053190508414931836
+      }
+    },
+    "rejected_by_group": {
+      "crypto_market": 42,
+      "us_stock": 1
+    },
+    "rejected": [
+      {
+        "symbol": "TYCOON/USDT",
+        "action": "BUY",
+        "signal_ts": 1781798400,
+        "fill_ts": 1781802000,
+        "signal_close": 0.0003687,
+        "raw_open": 0.000368,
+        "would_be_entry_price": 0.00036891999999999996,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-18T16:00:00",
+        "fill_dt": "2026-06-18T17:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.019733275506885084,
+            "exit_ts": 1781888400,
+            "exit_price": 0.0003762
+          },
+          "72h": {
+            "ret": -0.04721890924861749,
+            "exit_ts": 1782061200,
+            "exit_price": 0.0003515
+          },
+          "7d": {
+            "ret": -0.07378293396942415,
+            "exit_ts": 1782406800,
+            "exit_price": 0.0003417
+          }
+        }
+      },
+      {
+        "symbol": "SIREN/USDT",
+        "action": "BUY",
+        "signal_ts": 1781852400,
+        "fill_ts": 1781856000,
+        "signal_close": 0.09951,
+        "raw_open": 0.09997,
+        "would_be_entry_price": 0.100219925,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-19T07:00:00",
+        "fill_dt": "2026-06-19T08:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.0044908734465725075,
+            "exit_ts": 1781942400,
+            "exit_price": 0.10067
+          },
+          "72h": {
+            "ret": -0.06765046970450239,
+            "exit_ts": 1782115200,
+            "exit_price": 0.09344
+          },
+          "7d": {
+            "ret": -0.18638933325883056,
+            "exit_ts": 1782460800,
+            "exit_price": 0.08154
+          }
+        }
+      },
+      {
+        "symbol": "SIREN/USDT",
+        "action": "BUY",
+        "signal_ts": 1781859600,
+        "fill_ts": 1781863200,
+        "signal_close": 0.09918,
+        "raw_open": 0.09918,
+        "would_be_entry_price": 0.09942795,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-19T09:00:00",
+        "fill_dt": "2026-06-19T10:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.014160505169824034,
+            "exit_ts": 1781949600,
+            "exit_price": 0.09802
+          },
+          "72h": {
+            "ret": -0.07460628525480018,
+            "exit_ts": 1782122400,
+            "exit_price": 0.09201
+          },
+          "7d": {
+            "ret": -0.16995170874990373,
+            "exit_ts": 1782468000,
+            "exit_price": 0.08253
+          }
+        }
+      },
+      {
+        "symbol": "LIT/USDT",
+        "action": "BUY",
+        "signal_ts": 1782194400,
+        "fill_ts": 1782198000,
+        "signal_close": 1.5215,
+        "raw_open": 1.5213,
+        "would_be_entry_price": 1.52510325,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-23T06:00:00",
+        "fill_dt": "2026-06-23T07:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.015013245824504029,
+            "exit_ts": 1782284400,
+            "exit_price": 1.548
+          },
+          "72h": {
+            "ret": 0.09271290320835668,
+            "exit_ts": 1782457200,
+            "exit_price": 1.6665
+          },
+          "7d": {
+            "ret": 0.2447026127575298,
+            "exit_ts": 1782802800,
+            "exit_price": 1.8983
+          }
+        }
+      },
+      {
+        "symbol": "TREE/USDT",
+        "action": "BUY",
+        "signal_ts": 1782194400,
+        "fill_ts": 1782198000,
+        "signal_close": 0.04347,
+        "raw_open": 0.04345,
+        "would_be_entry_price": 0.043558625000000004,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-23T06:00:00",
+        "fill_dt": "2026-06-23T07:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.009673744292892472,
+            "exit_ts": 1782284400,
+            "exit_price": 0.04398
+          },
+          "72h": {
+            "ret": -0.0054782491412437295,
+            "exit_ts": 1782457200,
+            "exit_price": 0.04332
+          },
+          "7d": {
+            "ret": -0.06241301234830077,
+            "exit_ts": 1782802800,
+            "exit_price": 0.04084
+          }
+        }
+      },
+      {
+        "symbol": "TYCOON/USDT",
+        "action": "BUY",
+        "signal_ts": 1782194400,
+        "fill_ts": 1782198000,
+        "signal_close": 0.0003464,
+        "raw_open": 0.0003465,
+        "would_be_entry_price": 0.00034736625,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-23T06:00:00",
+        "fill_dt": "2026-06-23T07:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.023221167859571845,
+            "exit_ts": 1782284400,
+            "exit_price": 0.0003393
+          },
+          "72h": {
+            "ret": -0.03588791369340005,
+            "exit_ts": 1782457200,
+            "exit_price": 0.0003349
+          },
+          "7d": {
+            "ret": -0.1786766849110989,
+            "exit_ts": 1782802800,
+            "exit_price": 0.0002853
+          }
+        }
+      },
+      {
+        "symbol": "TYCOON/USDT",
+        "action": "BUY",
+        "signal_ts": 1782226800,
+        "fill_ts": 1782230400,
+        "signal_close": 0.0003505,
+        "raw_open": 0.0003505,
+        "would_be_entry_price": 0.00035137625,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-23T15:00:00",
+        "fill_dt": "2026-06-23T16:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.042052500702594475,
+            "exit_ts": 1782316800,
+            "exit_price": 0.0003366
+          },
+          "72h": {
+            "ret": -0.26062162710200243,
+            "exit_ts": 1782489600,
+            "exit_price": 0.0002598
+          },
+          "7d": {
+            "ret": -0.18178875208554934,
+            "exit_ts": 1782835200,
+            "exit_price": 0.0002875
+          }
+        }
+      },
+      {
+        "symbol": "GNC/USDT",
+        "action": "BUY",
+        "signal_ts": 1782306000,
+        "fill_ts": 1782309600,
+        "signal_close": 7.922e-08,
+        "raw_open": 7.922e-08,
+        "would_be_entry_price": 7.941805e-08,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T13:00:00",
+        "fill_dt": "2026-06-24T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.05651171238780106,
+            "exit_ts": 1782396000,
+            "exit_price": 7.493e-08
+          },
+          "72h": {
+            "ret": 0.14457607558986907,
+            "exit_ts": 1782568800,
+            "exit_price": 9.09e-08
+          },
+          "7d": {
+            "ret": 0.14999046186603682,
+            "exit_ts": 1782914400,
+            "exit_price": 9.133e-08
+          }
+        }
+      },
+      {
+        "symbol": "LIT/USDT",
+        "action": "BUY",
+        "signal_ts": 1782306000,
+        "fill_ts": 1782309600,
+        "signal_close": 1.5046,
+        "raw_open": 1.5054,
+        "would_be_entry_price": 1.5091635,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T13:00:00",
+        "fill_dt": "2026-06-24T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.057473229375081036,
+            "exit_ts": 1782396000,
+            "exit_price": 1.5959
+          },
+          "72h": {
+            "ret": 0.20172532664618514,
+            "exit_ts": 1782568800,
+            "exit_price": 1.8136
+          },
+          "7d": {
+            "ret": 0.19880980423923567,
+            "exit_ts": 1782914400,
+            "exit_price": 1.8092
+          }
+        }
+      },
+      {
+        "symbol": "NYAN/USDT",
+        "action": "BUY",
+        "signal_ts": 1782306000,
+        "fill_ts": 1782309600,
+        "signal_close": 0.0009086,
+        "raw_open": 0.0009041,
+        "would_be_entry_price": 0.00090636025,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T13:00:00",
+        "fill_dt": "2026-06-24T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.02224308711685008,
+            "exit_ts": 1782396000,
+            "exit_price": 0.0008862
+          },
+          "72h": {
+            "ret": -0.18211329325177272,
+            "exit_ts": 1782568800,
+            "exit_price": 0.0007413
+          },
+          "7d": {
+            "ret": -0.30822208939546947,
+            "exit_ts": 1782914400,
+            "exit_price": 0.000627
+          }
+        }
+      },
+      {
+        "symbol": "TREE/USDT",
+        "action": "BUY",
+        "signal_ts": 1782306000,
+        "fill_ts": 1782309600,
+        "signal_close": 0.04235,
+        "raw_open": 0.04256,
+        "would_be_entry_price": 0.0426664,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T13:00:00",
+        "fill_dt": "2026-06-24T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.010696941855886655,
+            "exit_ts": 1782396000,
+            "exit_price": 0.04221
+          },
+          "72h": {
+            "ret": -0.005306283164269843,
+            "exit_ts": 1782568800,
+            "exit_price": 0.04244
+          },
+          "7d": {
+            "ret": -0.03483771773573585,
+            "exit_ts": 1782914400,
+            "exit_price": 0.04118
+          }
+        }
+      },
+      {
+        "symbol": "LIT/USDT",
+        "action": "BUY",
+        "signal_ts": 1782320400,
+        "fill_ts": 1782324000,
+        "signal_close": 1.4805,
+        "raw_open": 1.4805,
+        "would_be_entry_price": 1.48420125,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T17:00:00",
+        "fill_dt": "2026-06-24T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.10079411400576577,
+            "exit_ts": 1782410400,
+            "exit_price": 1.6338
+          },
+          "72h": {
+            "ret": 0.20165644652300374,
+            "exit_ts": 1782583200,
+            "exit_price": 1.7835
+          },
+          "7d": {
+            "ret": 0.2410042101770229,
+            "exit_ts": 1782928800,
+            "exit_price": 1.8419
+          }
+        }
+      },
+      {
+        "symbol": "NYAN/USDT",
+        "action": "BUY",
+        "signal_ts": 1782320400,
+        "fill_ts": 1782324000,
+        "signal_close": 0.0008781,
+        "raw_open": 0.0008781,
+        "would_be_entry_price": 0.00088029525,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T17:00:00",
+        "fill_dt": "2026-06-24T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.006821290924834633,
+            "exit_ts": 1782410400,
+            "exit_price": 0.0008863
+          },
+          "72h": {
+            "ret": -0.15789617176737014,
+            "exit_ts": 1782583200,
+            "exit_price": 0.0007413
+          },
+          "7d": {
+            "ret": -0.2298038641012774,
+            "exit_ts": 1782928800,
+            "exit_price": 0.000678
+          }
+        }
+      },
+      {
+        "symbol": "RAVE/USDT",
+        "action": "BUY",
+        "signal_ts": 1782320400,
+        "fill_ts": 1782324000,
+        "signal_close": 0.3832,
+        "raw_open": 0.3835,
+        "would_be_entry_price": 0.38445874999999996,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-24T17:00:00",
+        "fill_dt": "2026-06-24T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.05841654013597031,
+            "exit_ts": 1782410400,
+            "exit_price": 0.362
+          },
+          "72h": {
+            "ret": 0.5489308020691428,
+            "exit_ts": 1782583200,
+            "exit_price": 0.5955
+          },
+          "7d": {
+            "ret": 0.16293360471051854,
+            "exit_ts": 1782928800,
+            "exit_price": 0.4471
+          }
+        }
+      },
+      {
+        "symbol": "GNC/USDT",
+        "action": "BUY",
+        "signal_ts": 1782838800,
+        "fill_ts": 1782842400,
+        "signal_close": 8.731e-08,
+        "raw_open": 8.731e-08,
+        "would_be_entry_price": 8.7528275e-08,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-06-30T17:00:00",
+        "fill_dt": "2026-06-30T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.0013512776300002027,
+            "exit_ts": 1782928800,
+            "exit_price": 8.741e-08
+          },
+          "72h": {
+            "ret": -0.077098229115106,
+            "exit_ts": 1783101600,
+            "exit_price": 8.078e-08
+          },
+          "7d": {
+            "ret": -0.17740867165495955,
+            "exit_ts": 1783447200,
+            "exit_price": 7.2e-08
+          }
+        }
+      },
+      {
+        "symbol": "WLD/USDT",
+        "action": "BUY",
+        "signal_ts": 1782889200,
+        "fill_ts": 1782892800,
+        "signal_close": 0.3916,
+        "raw_open": 0.3916,
+        "would_be_entry_price": 0.39257899999999996,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-01T07:00:00",
+        "fill_dt": "2026-07-01T08:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.05394837726928836,
+            "exit_ts": 1782979200,
+            "exit_price": 0.3714
+          },
+          "72h": {
+            "ret": 0.08564136135656786,
+            "exit_ts": 1783152000,
+            "exit_price": 0.4262
+          },
+          "7d": {
+            "ret": -0.06617521568907148,
+            "exit_ts": 1783497600,
+            "exit_price": 0.3666
+          }
+        }
+      },
+      {
+        "symbol": "LIKE/USDT",
+        "action": "BUY",
+        "signal_ts": 1782907200,
+        "fill_ts": 1782910800,
+        "signal_close": 0.00081,
+        "raw_open": 0.00081,
+        "would_be_entry_price": 0.000812025,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-01T12:00:00",
+        "fill_dt": "2026-07-01T13:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.012345679012345623,
+            "exit_ts": 1782997200,
+            "exit_price": 0.000802
+          },
+          "72h": {
+            "ret": -0.0037252547643236156,
+            "exit_ts": 1783170000,
+            "exit_price": 0.000809
+          },
+          "7d": {
+            "ret": 0.033342569502170516,
+            "exit_ts": 1783515600,
+            "exit_price": 0.0008391
+          }
+        }
+      },
+      {
+        "symbol": "NYAN/USDT",
+        "action": "BUY",
+        "signal_ts": 1783429200,
+        "fill_ts": 1783432800,
+        "signal_close": 0.0006085,
+        "raw_open": 0.0006085,
+        "would_be_entry_price": 0.00061002125,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-07T13:00:00",
+        "fill_dt": "2026-07-07T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.08790062641260443,
+            "exit_ts": 1783519200,
+            "exit_price": 0.0005564
+          },
+          "72h": {
+            "ret": -0.12429280127536535,
+            "exit_ts": 1783692000,
+            "exit_price": 0.0005342
+          },
+          "7d": {
+            "ret": -0.03593522356803136,
+            "exit_ts": 1784037600,
+            "exit_price": 0.0005881
+          }
+        }
+      },
+      {
+        "symbol": "GNC/USDT",
+        "action": "BUY",
+        "signal_ts": 1783789200,
+        "fill_ts": 1783792800,
+        "signal_close": 6.495e-08,
+        "raw_open": 6.495e-08,
+        "would_be_entry_price": 6.511237499999999e-08,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-11T17:00:00",
+        "fill_dt": "2026-07-11T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.04173745774132831,
+            "exit_ts": 1783879200,
+            "exit_price": 6.783e-08
+          },
+          "72h": {
+            "ret": -0.11583627536240226,
+            "exit_ts": 1784052000,
+            "exit_price": 5.757e-08
+          },
+          "7d": {
+            "ret": 0.03313694209434104,
+            "exit_ts": 1784397600,
+            "exit_price": 6.727e-08
+          }
+        }
+      },
+      {
+        "symbol": "LIKE/USDT",
+        "action": "BUY",
+        "signal_ts": 1783789200,
+        "fill_ts": 1783792800,
+        "signal_close": 0.0008239,
+        "raw_open": 0.0008231,
+        "would_be_entry_price": 0.00082515775,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-11T17:00:00",
+        "fill_dt": "2026-07-11T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.0011419028664518827,
+            "exit_ts": 1783879200,
+            "exit_price": 0.0008261
+          },
+          "72h": {
+            "ret": -0.020672107848469068,
+            "exit_ts": 1784052000,
+            "exit_price": 0.0008081
+          },
+          "7d": {
+            "ret": -0.10562556068824414,
+            "exit_ts": 1784397600,
+            "exit_price": 0.000738
+          }
+        }
+      },
+      {
+        "symbol": "GMRT/USDT",
+        "action": "BUY",
+        "signal_ts": 1784296800,
+        "fill_ts": 1784300400,
+        "signal_close": 0.342731,
+        "raw_open": 0.342731,
+        "would_be_entry_price": 0.3435878275,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-17T14:00:00",
+        "fill_dt": "2026-07-17T15:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.5912689892950296,
+            "exit_ts": 1784386800,
+            "exit_price": 0.140435
+          },
+          "72h": {
+            "ret": -0.8571224121727653,
+            "exit_ts": 1784559600,
+            "exit_price": 0.049091
+          },
+          "7d": {
+            "ret": -0.8355093065687841,
+            "exit_ts": 1784905200,
+            "exit_price": 0.056517
+          }
+        }
+      },
+      {
+        "symbol": "GORK/USDT",
+        "action": "BUY",
+        "signal_ts": 1784296800,
+        "fill_ts": 1784300400,
+        "signal_close": 0.0009595,
+        "raw_open": 0.0009595,
+        "would_be_entry_price": 0.0009618987499999999,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-17T14:00:00",
+        "fill_dt": "2026-07-17T15:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.03191474154634255,
+            "exit_ts": 1784386800,
+            "exit_price": 0.0009312
+          },
+          "72h": {
+            "ret": -0.042726690309141,
+            "exit_ts": 1784559600,
+            "exit_price": 0.0009208
+          },
+          "7d": {
+            "ret": -0.05915253554493127,
+            "exit_ts": 1784905200,
+            "exit_price": 0.000905
+          }
+        }
+      },
+      {
+        "symbol": "LIKE/USDT",
+        "action": "BUY",
+        "signal_ts": 1784617200,
+        "fill_ts": 1784620800,
+        "signal_close": 0.0007081,
+        "raw_open": 0.000714,
+        "would_be_entry_price": 0.0007157849999999999,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-21T07:00:00",
+        "fill_dt": "2026-07-21T08:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.04440579224208374,
+            "exit_ts": 1784707200,
+            "exit_price": 0.000684
+          },
+          "72h": {
+            "ret": -0.035883680155353814,
+            "exit_ts": 1784880000,
+            "exit_price": 0.0006901
+          },
+          "7d": {
+            "ret": -0.06536180557010829,
+            "exit_ts": 1785225600,
+            "exit_price": 0.000669
+          }
+        }
+      },
+      {
+        "symbol": "NYAN/USDT",
+        "action": "BUY",
+        "signal_ts": 1784617200,
+        "fill_ts": 1784620800,
+        "signal_close": 0.0005513,
+        "raw_open": 0.0005526,
+        "would_be_entry_price": 0.0005539815,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-21T07:00:00",
+        "fill_dt": "2026-07-21T08:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.031261874268364576,
+            "exit_ts": 1784707200,
+            "exit_price": 0.0005713
+          },
+          "72h": {
+            "ret": -0.005020925789038122,
+            "exit_ts": 1784880000,
+            "exit_price": 0.0005512
+          },
+          "7d": {
+            "ret": -0.1757847509348237,
+            "exit_ts": 1785225600,
+            "exit_price": 0.0004566
+          }
+        }
+      },
+      {
+        "symbol": "GMRT/USDT",
+        "action": "BUY",
+        "signal_ts": 1784858400,
+        "fill_ts": 1784862000,
+        "signal_close": 0.056642,
+        "raw_open": 0.056642,
+        "would_be_entry_price": 0.056783604999999994,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-24T02:00:00",
+        "fill_dt": "2026-07-24T03:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.012338156409759327,
+            "exit_ts": 1784948400,
+            "exit_price": 0.056083
+          },
+          "72h": {
+            "ret": -0.7869455452854746,
+            "exit_ts": 1785121200,
+            "exit_price": 0.012098
+          },
+          "7d": {
+            "ret": -0.3705401409438517,
+            "exit_ts": 1785466800,
+            "exit_price": 0.035743
+          }
+        }
+      },
+      {
+        "symbol": "GNC/USDT",
+        "action": "BUY",
+        "signal_ts": 1784858400,
+        "fill_ts": 1784862000,
+        "signal_close": 8.154e-08,
+        "raw_open": 8.154e-08,
+        "would_be_entry_price": 8.174384999999999e-08,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-24T02:00:00",
+        "fill_dt": "2026-07-24T03:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.2023864792274892,
+            "exit_ts": 1784948400,
+            "exit_price": 6.52e-08
+          },
+          "72h": {
+            "ret": -0.18256847457025815,
+            "exit_ts": 1785121200,
+            "exit_price": 6.682e-08
+          },
+          "7d": {
+            "ret": -0.22905515216129402,
+            "exit_ts": 1785466800,
+            "exit_price": 6.302e-08
+          }
+        }
+      },
+      {
+        "symbol": "STG/USDT",
+        "action": "BUY",
+        "signal_ts": 1784858400,
+        "fill_ts": 1784862000,
+        "signal_close": 0.1358,
+        "raw_open": 0.1364,
+        "would_be_entry_price": 0.13674099999999997,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-24T02:00:00",
+        "fill_dt": "2026-07-24T03:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.023701742710671714,
+            "exit_ts": 1784948400,
+            "exit_price": 0.1335
+          },
+          "72h": {
+            "ret": -0.020045194930561894,
+            "exit_ts": 1785121200,
+            "exit_price": 0.134
+          },
+          "7d": {
+            "ret": -0.0982953174249126,
+            "exit_ts": 1785466800,
+            "exit_price": 0.1233
+          }
+        }
+      },
+      {
+        "symbol": "GMRT/USDT",
+        "action": "BUY",
+        "signal_ts": 1784890800,
+        "fill_ts": 1784894400,
+        "signal_close": 0.056642,
+        "raw_open": 0.056642,
+        "would_be_entry_price": 0.056783604999999994,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-24T11:00:00",
+        "fill_dt": "2026-07-24T12:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.6651850476911425,
+            "exit_ts": 1784980800,
+            "exit_price": 0.019012
+          },
+          "72h": {
+            "ret": -0.872797790841212,
+            "exit_ts": 1785153600,
+            "exit_price": 0.007223
+          },
+          "7d": {
+            "ret": 0.5497430992625425,
+            "exit_ts": 1785499200,
+            "exit_price": 0.088
+          }
+        }
+      },
+      {
+        "symbol": "LIKE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785096000,
+        "fill_ts": 1785099600,
+        "signal_close": 0.000678,
+        "raw_open": 0.0006761,
+        "would_be_entry_price": 0.0006777902499999999,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-26T20:00:00",
+        "fill_dt": "2026-07-26T21:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.008542834601117377,
+            "exit_ts": 1785186000,
+            "exit_price": 0.000672
+          },
+          "72h": {
+            "ret": 0.00635853053359825,
+            "exit_ts": 1785358800,
+            "exit_price": 0.0006821
+          },
+          "7d": {
+            "ret": -0.003969148272640277,
+            "exit_ts": 1785704400,
+            "exit_price": 0.0006751
+          }
+        }
+      },
+      {
+        "symbol": "RIF/USDT",
+        "action": "BUY",
+        "signal_ts": 1785146400,
+        "fill_ts": 1785150000,
+        "signal_close": 0.069,
+        "raw_open": 0.06913,
+        "would_be_entry_price": 0.069302825,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-27T10:00:00",
+        "fill_dt": "2026-07-27T11:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.14122331954000433,
+            "exit_ts": 1785236400,
+            "exit_price": 0.07909
+          },
+          "72h": {
+            "ret": 0.35636606444253904,
+            "exit_ts": 1785409200,
+            "exit_price": 0.094
+          },
+          "7d": {
+            "ret": 0.12982407282819985,
+            "exit_ts": 1785754800,
+            "exit_price": 0.0783
+          }
+        }
+      },
+      {
+        "symbol": "GORK/USDT",
+        "action": "BUY",
+        "signal_ts": 1785178800,
+        "fill_ts": 1785182400,
+        "signal_close": 0.0009538,
+        "raw_open": 0.0009538,
+        "would_be_entry_price": 0.0009561845,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-27T19:00:00",
+        "fill_dt": "2026-07-27T20:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.03585552788190971,
+            "exit_ts": 1785268800,
+            "exit_price": 0.0009219
+          },
+          "72h": {
+            "ret": -0.014834480165700215,
+            "exit_ts": 1785441600,
+            "exit_price": 0.000942
+          },
+          "7d": {
+            "ret": 0.17320454368377658,
+            "exit_ts": 1785787200,
+            "exit_price": 0.0011218
+          }
+        }
+      },
+      {
+        "symbol": "LIKE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785178800,
+        "fill_ts": 1785182400,
+        "signal_close": 0.00067,
+        "raw_open": 0.000669,
+        "would_be_entry_price": 0.0006706724999999999,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-27T19:00:00",
+        "fill_dt": "2026-07-27T20:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.009948969131729601,
+            "exit_ts": 1785268800,
+            "exit_price": 0.000664
+          },
+          "72h": {
+            "ret": 0.030309130015022223,
+            "exit_ts": 1785441600,
+            "exit_price": 0.000691
+          },
+          "7d": {
+            "ret": 0.011074704867129581,
+            "exit_ts": 1785787200,
+            "exit_price": 0.0006781
+          }
+        }
+      },
+      {
+        "symbol": "PEPE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785261600,
+        "fill_ts": 1785265200,
+        "signal_close": 2.804e-06,
+        "raw_open": 2.804e-06,
+        "would_be_entry_price": 2.81101e-06,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-28T18:00:00",
+        "fill_dt": "2026-07-28T19:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.03664519158594237,
+            "exit_ts": 1785351600,
+            "exit_price": 2.708e-06
+          },
+          "72h": {
+            "ret": -0.020992454669318206,
+            "exit_ts": 1785524400,
+            "exit_price": 2.752e-06
+          },
+          "7d": {
+            "ret": 0.03983977289301688,
+            "exit_ts": 1785870000,
+            "exit_price": 2.923e-06
+          }
+        }
+      },
+      {
+        "symbol": "VELVET/USDT",
+        "action": "BUY",
+        "signal_ts": 1785261600,
+        "fill_ts": 1785265200,
+        "signal_close": 0.40269,
+        "raw_open": 0.40127,
+        "would_be_entry_price": 0.402273175,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-28T18:00:00",
+        "fill_dt": "2026-07-28T19:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.14327782358343932,
+            "exit_ts": 1785351600,
+            "exit_price": 0.45991
+          },
+          "72h": {
+            "ret": 0.01535480211923157,
+            "exit_ts": 1785524400,
+            "exit_price": 0.40845
+          },
+          "7d": {
+            "ret": 0.10551741363316114,
+            "exit_ts": 1785870000,
+            "exit_price": 0.44472
+          }
+        }
+      },
+      {
+        "symbol": "SOXLG/USDT",
+        "action": "BUY",
+        "signal_ts": 1785337200,
+        "fill_ts": 1785340800,
+        "signal_close": 95.97,
+        "raw_open": 96.0,
+        "would_be_entry_price": 96.24,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "us_stock",
+        "dt": "2026-07-29T15:00:00",
+        "fill_dt": "2026-07-29T16:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.1904613466334164,
+            "exit_ts": 1785427200,
+            "exit_price": 114.57
+          },
+          "72h": {
+            "ret": 0.1707190357439734,
+            "exit_ts": 1785600000,
+            "exit_price": 112.67
+          },
+          "7d": {
+            "ret": 0.4262261014131339,
+            "exit_ts": 1785945600,
+            "exit_price": 137.26
+          }
+        }
+      },
+      {
+        "symbol": "PEPE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785344400,
+        "fill_ts": 1785348000,
+        "signal_close": 2.744e-06,
+        "raw_open": 2.744e-06,
+        "would_be_entry_price": 2.75086e-06,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-07-29T17:00:00",
+        "fill_dt": "2026-07-29T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.005503733377925313,
+            "exit_ts": 1785434400,
+            "exit_price": 2.766e-06
+          },
+          "72h": {
+            "ret": 0.0011414612157651938,
+            "exit_ts": 1785607200,
+            "exit_price": 2.754e-06
+          },
+          "7d": {
+            "ret": 0.04549122819772733,
+            "exit_ts": 1785952800,
+            "exit_price": 2.876e-06
+          }
+        }
+      },
+      {
+        "symbol": "NEAR/USDT",
+        "action": "BUY",
+        "signal_ts": 1785603600,
+        "fill_ts": 1785607200,
+        "signal_close": 1.661,
+        "raw_open": 1.66,
+        "would_be_entry_price": 1.6641499999999998,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-01T17:00:00",
+        "fill_dt": "2026-08-01T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.027551602920409923,
+            "exit_ts": 1785693600,
+            "exit_price": 1.71
+          },
+          "72h": {
+            "ret": 0.04678063876453464,
+            "exit_ts": 1785866400,
+            "exit_price": 1.742
+          },
+          "7d": {
+            "ret": -0.018718264579514976,
+            "exit_ts": 1786212000,
+            "exit_price": 1.633
+          }
+        }
+      },
+      {
+        "symbol": "PEPE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785603600,
+        "fill_ts": 1785607200,
+        "signal_close": 2.759e-06,
+        "raw_open": 2.758e-06,
+        "would_be_entry_price": 2.764895e-06,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-01T17:00:00",
+        "fill_dt": "2026-08-01T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": 0.05392790684637205,
+            "exit_ts": 1785693600,
+            "exit_price": 2.914e-06
+          },
+          "72h": {
+            "ret": 0.05465126162114653,
+            "exit_ts": 1785866400,
+            "exit_price": 2.916e-06
+          },
+          "7d": {
+            "ret": 0.03729074702655977,
+            "exit_ts": 1786212000,
+            "exit_price": 2.868e-06
+          }
+        }
+      },
+      {
+        "symbol": "RAVE/USDT",
+        "action": "BUY",
+        "signal_ts": 1785603600,
+        "fill_ts": 1785607200,
+        "signal_close": 0.3504,
+        "raw_open": 0.3484,
+        "would_be_entry_price": 0.34927099999999994,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-01T17:00:00",
+        "fill_dt": "2026-08-01T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.019386092747465167,
+            "exit_ts": 1785693600,
+            "exit_price": 0.3425
+          },
+          "72h": {
+            "ret": -0.00020328054719664923,
+            "exit_ts": 1785866400,
+            "exit_price": 0.3492
+          },
+          "7d": {
+            "ret": 0.12319660092020257,
+            "exit_ts": 1786212000,
+            "exit_price": 0.3923
+          }
+        }
+      },
+      {
+        "symbol": "STG/USDT",
+        "action": "BUY",
+        "signal_ts": 1785603600,
+        "fill_ts": 1785607200,
+        "signal_close": 0.1217,
+        "raw_open": 0.1216,
+        "would_be_entry_price": 0.121904,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-01T17:00:00",
+        "fill_dt": "2026-08-01T18:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.01890011812573833,
+            "exit_ts": 1785693600,
+            "exit_price": 0.1196
+          },
+          "72h": {
+            "ret": -0.0065953537209607616,
+            "exit_ts": 1785866400,
+            "exit_price": 0.1211
+          },
+          "7d": {
+            "ret": 0.06477227982674894,
+            "exit_ts": 1786212000,
+            "exit_price": 0.1298
+          }
+        }
+      },
+      {
+        "symbol": "XAI/USDT",
+        "action": "BUY",
+        "signal_ts": 1786366800,
+        "fill_ts": 1786370400,
+        "signal_close": 0.006824,
+        "raw_open": 0.006836,
+        "would_be_entry_price": 0.00685309,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-10T13:00:00",
+        "fill_dt": "2026-08-10T14:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.04014101668006698,
+            "exit_ts": 1786456800,
+            "exit_price": 0.006578
+          },
+          "72h": null,
+          "7d": null
+        }
+      },
+      {
+        "symbol": "ZBT/USDT",
+        "action": "BUY",
+        "signal_ts": 1786410000,
+        "fill_ts": 1786413600,
+        "signal_close": 0.10109,
+        "raw_open": 0.10109,
+        "would_be_entry_price": 0.101342725,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-11T01:00:00",
+        "fill_dt": "2026-08-11T02:00:00",
+        "forward": {
+          "24h": {
+            "ret": -0.05567962574521257,
+            "exit_ts": 1786500000,
+            "exit_price": 0.0957
+          },
+          "72h": null,
+          "7d": null
+        }
+      },
+      {
+        "symbol": "STG/USDT",
+        "action": "BUY",
+        "signal_ts": 1786521600,
+        "fill_ts": 1786525200,
+        "signal_close": 0.1337,
+        "raw_open": 0.1339,
+        "would_be_entry_price": 0.13423474999999999,
+        "open_slots": 36,
+        "max_open_eff": 36,
+        "code": "max_open_positions",
+        "group": "crypto_market",
+        "dt": "2026-08-12T08:00:00",
+        "fill_dt": "2026-08-12T09:00:00",
+        "forward": {
+          "24h": null,
+          "72h": null,
+          "7d": null
+        }
+      }
+    ]
+  },
+  "tight_fire": {
+    "n": 427,
+    "n_buys": 169,
+    "peak_open": 18,
+    "skipped_no_slot": 218,
+    "skipped_cash_floor": 0,
+    "skipped_too_illiquid": 329,
+    "n_capacity_rejections": 218,
+    "total_pnl_usdt": -8393.07,
+    "avg_pct": -11.06,
+    "win_rate": 0.4473,
+    "by_group": {
+      "crypto_market": {
+        "n": 425,
+        "win_rate": 0.4447,
+        "total_pnl_usdt": -8471.52,
+        "avg_pct": -11.17,
+        "median_pct": -0.81
+      },
+      "us_stock": {
+        "n": 2,
+        "win_rate": 1.0,
+        "total_pnl_usdt": 78.45,
+        "avg_pct": 12.61,
+        "median_pct": 12.61
+      }
+    },
+    "exit_reasons": {
+      "stop_loss": 1,
+      "partial_stop": 155,
+      "tail_idle": 26,
+      "trailing_take_profit": 34,
+      "trailing_stop": 89,
+      "bb_upper": 104,
+      "end_of_window": 18
+    },
+    "stagnant_rotation_n": 0
+  },
+  "redeploys": [],
+  "tight_fire_nearby_trades": [],
+  "runtime_bounds": [
+    "Exactly 2 new full-universe simulation passes (production baseline + the one Phase-2 tight point that fired). No sweep, no 4h, no walk-forward.",
+    "1h only because Phase 1 4h already had skipped_no_slot=0.",
+    "Reuse Phase 1 window + OHLCV cache. No network if the cache hits.",
+    "Forward returns are a price lookup, not a third simulation of shadow exits.",
+    "Tight pass is experiment-only (flags on, peak_stamp=on_progress). No second tight-baseline \u2014 Phase 2 already has that delta."
+  ],
+  "limitations": [
+    "Forward returns are a cached-OHLCV close lookup at entry_ts + {24h, 72h, 7d}, not a re-simulated shadow position with its own stop / trail / rotation / fee path. That is deliberate: the question is 'was the missed name better on a hold', not 'would DecisionEngine have exited it well'.",
+    "The sim still uses the Phase-1/2 static knobs.max_open ceiling. Live risk.position_capacity (enabled in config.json, adaptive max_open_eff from regime / cash mode / memory) is not replayed \u2014 same isolation as Phase 1/2. The reject code we log is still risk_manager's max_open_positions.",
+    "Capacity is checked at fill time (next-bar open), which is the sim analogue of RiskManager.evaluate. A skipped pending BUY is discarded, not queued: freeing a slot does not automatically admit the last rejected name. Redeploy requires a fresh BUY fill in the window.",
+    "Other skip reasons (cash floor, participation/illiquidity) are counted separately and are not capacity-rejections. Universe-trade-cap and rebuy-cooldown are not wired into this engine (Phase 1 limitation, unchanged).",
+    "1h only. Phase 1 4h baseline had skipped_no_slot=0 (peak_open=35 < 36), so a 4h pass would add a simulation pass and zero capacity-reject observations.",
+    "Part B has n=1 fire by construction (the only Phase-2 sweep point that fired). A single event cannot support a general claim about redeploy quality.",
+    "config.json is never written. All flag/knob changes are in-memory deep copies."
+  ],
+  "persisted_flags": {
+    "sell_policy.correlated_tier.enabled": false,
+    "sell_policy.rotation.stagnant_rotation_enabled": false
+  },
+  "files": [
+    "/private/tmp/claude-502/-Users-jholze-Documents-scripts-trading-bot/3e992640-c6a9-431b-a66e-0446eeac2ab5/scratchpad/correlated-tier-experiment/auswertungen/gis/correlated_tier_backtest_90d_phase3_1h_20260813_053353.json",
+    "/private/tmp/claude-502/-Users-jholze-Documents-scripts-trading-bot/3e992640-c6a9-431b-a66e-0446eeac2ab5/scratchpad/correlated-tier-experiment/auswertungen/gis/2026-08-13_correlated-tier-opportunity-cost-phase3.md"
+  ],
+  "verdict_sentence": "Capacity does bind on 1h (43 max_open_positions rejects vs 453 taken BUYs), but the names we could not buy were worse on mean hold-return at every horizon than the names we did buy. The one Phase-2 stagnant_rotation fire did not reproduce on a clean re-run of the same tight knobs, so there is no redeploy event to score.",
+  "verdict": "Capacity binds often enough on 1h to talk about, and the evidence that freed slots would have caught something better is not there.\n\n1. Production max_open=36 binds intermittently (43 denies, 19 days, 19 symbols). Illiquidity (1773) and cash-floor (142) deny more BUYs than slots. 4h never binds.\n2. Mean 24h/72h/7d hold-return of rejected candidates is worse than taken BUYs by 3.59 / 7.58 / 5.32 pp. Medians are mixed (rejected less-bad at 72h/7d) because taken names have a winner tail.\n3. Part B is too thin: the Phase-2 n=1 fire did not reproduce (0 fires, 218 capacity rejects on the tight book). Cannot score redeploy quality.\n\nDo not flip stagnant_rotation_enabled or correlated_tier.enabled in config.json."
+}
