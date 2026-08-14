@@ -168,6 +168,10 @@ class TechnicalRSIStrategy(BaseStrategy):
                     sources.append("reversal")
         elif market.has_position:
             pos = _position_state(market, symbol, tf)
+            if not int(pos.get("dca_rounds") or 0) and not pos.get("last_dca_at"):
+                live = get_position(symbol, tf)
+                if live:
+                    pos = {**live, **pos}
             last_rsi = float(pos.get("last_rsi", 45.0))
             _reset_tiers_if_cooled(market, symbol, tf, market.rsi, rsi_sell_30, rsi_sell_20)
 

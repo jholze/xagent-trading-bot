@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from unittest import TestCase
 
 from core.models import MarketContext
-from strategies.dca import effective_stop_loss_thresholds
+from strategies.dca import effective_stop_loss_thresholds, should_pause_partial_stop
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
 
@@ -115,6 +115,42 @@ class TechnicalDcaStopLossTests(TestCase):
             },
         )
         self.assertEqual(result.action, "SELL_STOP_FULL")
+
+    def test_pause_while_dca_rounds_remain_even_if_flag_off(self):
+        pos = {"dca_rounds": 1, "dca_max_rounds": 2, "last_dca_at": "2026-08-09T16:42:32"}
+        self.assertTrue(
+            should_pause_partial_stop(
+                pos, {"dca": {"pause_partial_stop_during_dca": False, "max_rounds": 2}}
+            )
+        )
+        done = {"dca_rounds": 2, "dca_max_rounds": 2}
+        self.assertFalse(
+            should_pause_partial_stop(
+                done, {"dca": {"pause_partial_stop_during_dca": False, "max_rounds": 2}}
+            )
+        )
+
+    def test_last_dca_at_counts_as_open_dca_without_rounds_field(self):
+        pos = {"last_dca_at": "2026-08-09T16:42:32"}
+        self.assertTrue(should_pause_partial_stop(pos, {"dca": {}}))
+        full, partial, _ = effective_stop_loss_thresholds(pos, {"partial_stop_pct": 25}, 50.0)
+        self.assertIsNone(partial)
+        self.assertGreaterEqual(full, 50.0)
+
+    def test_lab_style_minus_35_holds_when_dca_round_open(self):
+        result = self._analyze_with_position(
+            entry=0.1319,
+            price=0.0848,
+            dca_rounds=1,
+            last_dca_at="2026-08-09T16:42:32",
+            dca_cfg={
+                "max_rounds": 2,
+                "pause_partial_stop_during_dca": True,
+                "stop_loss_widen_pct_per_round": 5,
+                "grace_hours_after_dca": 0,
+            },
+        )
+        self.assertEqual(result.action, "HOLD")
 
     def test_volatile_partial_stop_pct_override(self):
         full, partial, grace = effective_stop_loss_thresholds(

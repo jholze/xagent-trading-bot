@@ -238,6 +238,37 @@ def _apply_cascade_scoring(decision: DCADecision, cfg: dict) -> DCADecision:
     return decision
 
 
+def _dca_rounds_used(position: dict | None) -> int:
+    pos = position or {}
+    used = _total_dca_rounds(pos)
+    if used <= 0 and pos.get("last_dca_at"):
+        return 1
+    return used
+
+
+def should_pause_partial_stop(
+    position: dict | None,
+    strategy_params: dict | None = None,
+) -> bool:
+    """True while a loser still has unused DCA rounds (or any completed DCA + pause flag).
+
+    Live hole 2026-08-14: TA emitted SELL_STOP_PARTIAL on LAB with dca_rounds=1/2.
+    Pause whenever rounds remain, even if *pause_partial_stop_during_dca* is missing
+    from the resolved strategy overlay.
+    """
+    pos = position or {}
+    used = _dca_rounds_used(pos)
+    if used <= 0:
+        return False
+    cfg = dca_config(strategy_params)
+    if cfg.get("pause_partial_stop_during_dca", True):
+        return True
+    frozen = int(pos.get("dca_max_rounds", 0) or 0)
+    cfg_max = int(cfg.get("max_rounds", 0) or 0)
+    mx = frozen if frozen > 0 else cfg_max
+    return mx > 0 and used < mx
+
+
 def effective_stop_loss_thresholds(
     position: dict,
     strategy_params: dict | None,
@@ -257,6 +288,8 @@ def effective_stop_loss_thresholds(
     dca_rounds = int(position.get("dca_rounds", 0) or 0)
     recovery_rounds = int(position.get("dca_recovery_rounds", 0) or 0)
     total_dca_rounds = dca_rounds + recovery_rounds
+    if total_dca_rounds <= 0:
+        total_dca_rounds = _dca_rounds_used(position)
     widen = float(dca_cfg.get("stop_loss_widen_pct_per_round", 0))
     full_stop = stop_loss_pct + total_dca_rounds * widen
 
@@ -275,7 +308,7 @@ def effective_stop_loss_thresholds(
         and grace_elapsed < grace_hours
     )
 
-    if dca_cfg.get("pause_partial_stop_during_dca", True) and total_dca_rounds > 0:
+    if should_pause_partial_stop(position, params):
         partial_effective: float | None = None
     else:
         partial_effective = partial_stop
