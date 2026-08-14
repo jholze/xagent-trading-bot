@@ -1008,9 +1008,10 @@ def count_open_full_slots(config_raw: dict | None = None) -> int:
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
+    store = _active_store()
     with _positions_lock:
         return sum(
-            1 for p in positions.values()
+            1 for p in store.values()
             if is_open_position(p) and not _is_tail(p, cfg)
         )
 
@@ -1023,9 +1024,10 @@ def count_open_tail_slots(config_raw: dict | None = None) -> int:
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
+    store = _active_store()
     with _positions_lock:
         return sum(
-            1 for p in positions.values()
+            1 for p in store.values()
             if is_open_position(p) and _is_tail(p, cfg)
         )
 
