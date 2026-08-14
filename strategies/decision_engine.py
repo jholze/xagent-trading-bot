@@ -815,7 +815,23 @@ class DecisionEngine:
                     tech_src = "partial_stop"
                 else:
                     tech_src = "stop_loss"
-            candidates.append((tech_norm, pri, tech_src))
+            skip_partial = False
+            if tech_src == "partial_stop":
+                try:
+                    from strategies.dca import should_pause_partial_stop
+
+                    skip_partial = should_pause_partial_stop(
+                        position,
+                        getattr(market, "strategy_params", None) if market else None,
+                    )
+                except Exception:
+                    skip_partial = False
+            if not skip_partial:
+                candidates.append((tech_norm, pri, tech_src))
+            elif position:
+                structure_rationales.append(
+                    "partial_stop paused (DCA rounds still open)"
+                )
 
         if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):
             candidates.append((SELL_FULL, 6, "x_stop_loss"))
