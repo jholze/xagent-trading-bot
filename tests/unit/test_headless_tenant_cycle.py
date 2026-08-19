@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from core.tenant_context import current_tenant_context
 from core.tenant_routing import tenant_cycle_context
-from telegram_notifier import _headless_tenant_tag
+from telegram_notifier import _chat_id, _headless_tenant_tag
 
 
 class TestTenantCycleContextHeadless(unittest.TestCase):
@@ -66,6 +66,50 @@ class TestHeadlessNotificationTag(unittest.TestCase):
 
     def test_tag_absent_outside_tenant_context(self):
         self.assertEqual(_headless_tenant_tag(), "")
+
+
+class TestSatelliteNotifyDoesNotLeakToOperator(unittest.TestCase):
+    """Henry RelVol fills used empty owner_chat → TELEGRAM_CHAT_ID (operator)."""
+
+    def setUp(self):
+        os.environ["TELEGRAM_CHAT_ID"] = "111-operator"
+
+    def tearDown(self):
+        os.environ.pop("TELEGRAM_CHAT_ID", None)
+
+    @patch("strategies.positions.activate_tenant_positions")
+    @patch("storage.tenant_registry.get_tenant")
+    def test_henry_cycle_notifies_owner_not_operator(self, mock_get, _activate):
+        mock_get.return_value = {
+            "tenant_id": "henry",
+            "status": "active",
+            "telegram": {"owner_chat_id": "6512212782"},
+        }
+        with tenant_cycle_context("henry"):
+            self.assertEqual(_chat_id(), "6512212782")
+
+    @patch("core.tenant_context.current_tenant_context")
+    def test_henry_context_without_owner_does_not_use_operator(self, mock_ctx):
+        from types import SimpleNamespace
+
+        mock_ctx.return_value = SimpleNamespace(
+            tenant_id="henry",
+            owner_chat_id="",
+            headless=False,
+        )
+        self.assertIsNone(_chat_id())
+
+    @patch("strategies.positions.activate_tenant_positions")
+    @patch("storage.tenant_registry.get_tenant")
+    def test_headless_still_uses_operator_chat(self, mock_get, _activate):
+        mock_get.return_value = {
+            "tenant_id": "ctexp",
+            "status": "active",
+            "telegram": {"owner_chat_id": "", "headless": True},
+        }
+        with tenant_cycle_context("ctexp"):
+            self.assertEqual(_chat_id(), "111-operator")
+            self.assertEqual(_headless_tenant_tag(), "[ctexp] ")
 
 
 if __name__ == "__main__":

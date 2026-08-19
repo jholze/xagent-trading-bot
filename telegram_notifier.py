@@ -48,13 +48,22 @@ def _env_chat_id() -> str | None:
 
 
 def _chat_id() -> str | None:
-    """Notification target: tenant owner chat when in tenant context, else operator env."""
+    """Notification target: tenant owner chat when in tenant context, else operator env.
+
+    Satellite tenants without an owner chat must not fall through to TELEGRAM_CHAT_ID
+    unless they are headless (tagged operator inbox). RelVol HTTP used to wrap
+    ``tenant_context(henry)`` with empty owner → Henry fills landed in the operator chat.
+    """
     try:
-        from core.tenant_context import current_tenant_context
+        from core.tenant_context import DEFAULT_TENANT, current_tenant_context
 
         ctx = current_tenant_context()
-        if ctx and ctx.owner_chat_id:
-            return str(ctx.owner_chat_id)
+        if ctx:
+            owner = str(ctx.owner_chat_id or "").strip()
+            if owner:
+                return owner
+            if ctx.tenant_id and ctx.tenant_id != DEFAULT_TENANT and not ctx.headless:
+                return None
     except Exception:
         pass
     return _env_chat_id()

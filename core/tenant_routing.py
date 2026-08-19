@@ -145,7 +145,11 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
     doc = get_tenant(tenant_id, test=test) or {}
     tg = doc.get("telegram") or {}
     headless = bool(tg.get("headless"))
-    owner = str(tg.get("owner_chat_id") or _operator_chat_id() or "")
+    owner = str(tg.get("owner_chat_id") or "").strip()
+    # Headless paper tenants share the operator inbox (tagged). Bound tenants
+    # must never fall back — that leaked Henry fills into the operator chat.
+    if not owner and (headless or tenant_id == DEFAULT_TENANT):
+        owner = _operator_chat_id()
     scope = _effective_ledger_scope(doc if tenant_id != DEFAULT_TENANT else None)
     with tenant_context(tenant_id, scope=scope, owner_chat_id=owner, headless=headless):
         from strategies.positions import activate_tenant_positions
