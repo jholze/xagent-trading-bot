@@ -1030,8 +1030,6 @@ class DecisionEngine:
                     config_raw=self.config.raw,
                 ):
                     try:
-                        from strategies.positions import flush_positions
-
                         flush_positions()
                     except Exception:
                         pass
