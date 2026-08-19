@@ -695,9 +695,9 @@ def register_gainer_signal_routes(app: Flask) -> None:
         ).strip().lower() or "default"
         try:
             from core.config import get_bot_config
-            from core.tenant_context import tenant_context
+            from core.tenant_routing import tenant_cycle_context
 
-            with tenant_context(tid):
+            with tenant_cycle_context(tid):
                 try:
                     raw = get_bot_config().raw
                     cfg = raw if isinstance(raw, dict) else None
@@ -705,7 +705,7 @@ def register_gainer_signal_routes(app: Flask) -> None:
                     cfg = None
                 body, status = process_gainer_signal(data, config=cfg)
         except Exception as e:
-            log(f"gainer_signal route tenant_context fail tid={tid}: {e}", "WARNING")
+            log(f"gainer_signal route tenant_cycle_context fail tid={tid}: {e}", "WARNING")
             body, status = process_gainer_signal(data)
         if isinstance(body, dict):
             body.setdefault("tenant_id", tid)
