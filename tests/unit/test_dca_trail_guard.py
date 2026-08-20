@@ -102,12 +102,17 @@ class TestDcaTrailGuard(unittest.TestCase):
         cand = evaluate_trailing_stop(market, pos, params, now=now)
         self.assertIsNone(cand)
 
-        # After grace → can fire
         pos_old = dict(pos)
         pos_old["last_dca_at"] = (now - timedelta(hours=13)).isoformat()
+        # After grace, still underwater vs blended entry → DCA zone, not trail
         cand2 = evaluate_trailing_stop(market, pos_old, params, now=now)
-        self.assertIsNotNone(cand2)
-        self.assertEqual(cand2.source, "trailing_stop")
+        self.assertIsNone(cand2)
+
+        # Recovered above entry, still below trail stop → trail may fire
+        market_green = _mkt("BEAT/USDT", 2.25, entry, atr=6.0)
+        cand3 = evaluate_trailing_stop(market_green, pos_old, params, now=now)
+        self.assertIsNotNone(cand3)
+        self.assertEqual(cand3.source, "trailing_stop")
 
     def test_ttp_also_paused_in_grace(self):
         now = datetime(2026, 8, 6, 12, 0, 0)

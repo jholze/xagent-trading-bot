@@ -1421,6 +1421,7 @@
         "stale_winner_max_gain_pct": 8
       },
       "loss_pct_min": -25,
+      "_loss_pct_min_doc": "Configured floor only. evaluate extends to -stop_loss_pct; sl_proximity still blocks the last band. Kill: set loss_pct_min more negative than SL.",
       "loss_pct_max": -3,
       "max_sold_percent": 0.85,
       "min_remainder_usdt": 150,
