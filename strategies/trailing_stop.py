@@ -71,6 +71,10 @@ def evaluate_trailing_stop(
     Stop = max(entry floor, peak × (1 − trail%)) so after a real peak the
     stop sits **above entry** — not a free ride back to −5% (LAB).
 
+    If price has already crashed *through* the floor (``floor_breach_pct``,
+    default 1%), skip: paper would fill at the crashed print (HANA −32%).
+    Hard SL and DCA own that zone.
+
     After DCA, trail exits are paused for a grace window (see strategies.dca).
     """
     cfg = trailing_config(strategy_params)
@@ -158,6 +162,14 @@ def evaluate_trailing_stop(
 
     if price > stop_px:
         return None
+
+    # floor_at_entry: do not market-dump a crash through the floor.
+    # Henry HANA 2026-08-20: stop sat at entry (~+0%) but px was already -32%;
+    # paper filled at the crashed print. Tiny BE wiggle stays a trail fire.
+    if floor_at_entry:
+        breach_pct = float(cfg.get("floor_breach_pct") or 1.0)
+        if gain_pct < -abs(breach_pct):
+            return None
 
     mode = str(cfg.get("mode", "live")).strip().lower()
     shadow = mode == "shadow"

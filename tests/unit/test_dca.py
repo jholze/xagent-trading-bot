@@ -13,7 +13,12 @@ from core.actions import BUY_DCA
 from core.models import MarketContext, TradeOrder
 from risk.risk_manager import RiskManager
 from services.market_service import MarketService
-from strategies.dca import dca_enabled, evaluate_dca_addon, should_dca
+from strategies.dca import (
+    _check_hard_gates,
+    dca_enabled,
+    evaluate_dca_addon,
+    should_dca,
+)
 from strategies.decision_engine import DecisionEngine
 from strategies.positions import get_key, get_position, positions, update_position
 
@@ -109,6 +114,48 @@ class TestDCAModule(unittest.TestCase):
     def test_dca_enabled(self):
         self.assertTrue(dca_enabled(self.params))
         self.assertFalse(dca_enabled({"dca": {"enabled": False}}))
+
+    def test_dca_window_extends_toward_stop_loss(self):
+        """Henry BLESS hole: loss_pct_min -25 while SL is 50 → DCA dead, then SL dumps.
+
+        Window must reach SL*(1-proximity), still blocked in the last proximity band.
+        """
+        from strategies.dca import dca_config
+
+        params = {
+            "stop_loss_pct": 50.0,
+            "dca": {
+                "enabled": True,
+                "loss_pct_min": -25,
+                "loss_pct_max": -3,
+                "sl_proximity_pct": 15,
+                "max_rounds": 4,
+                "interval_hours": 0,
+                "min_remainder_usdt": 50,
+            },
+        }
+        cfg = dca_config(params)
+        pos = {"amount": 100, "average_entry": 1.0, "dca_rounds": 2}
+
+        # -35% is past the old -25 floor, still 15%+ away from -50 SL
+        ok, reason, loss = _check_hard_gates(
+            self._market(1.0, 0.65), pos, params, cfg
+        )
+        self.assertTrue(ok, msg=reason)
+        self.assertAlmostEqual(loss, -35.0, places=1)
+
+        # inside proximity of 50% SL (buffer 7.5pp → blocked from ~-42.5 to -50)
+        ok_near, reason_near, _ = _check_hard_gates(
+            self._market(1.0, 0.54), pos, params, cfg
+        )
+        self.assertFalse(ok_near)
+        self.assertEqual(reason_near, "near_stop_loss")
+
+        # still too green for DCA
+        ok_mild, reason_mild, _ = _check_hard_gates(
+            self._market(1.0, 0.99), pos, params, cfg
+        )
+        self.assertFalse(ok_mild)
 
     def test_dca_triggers_with_scoring(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)

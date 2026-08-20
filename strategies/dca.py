@@ -326,6 +326,36 @@ def _effective_max_dca_rounds(position: dict, cfg: dict) -> int:
     return frozen
 
 
+def _stop_loss_pct(strategy_params: dict | None) -> float:
+    params = strategy_params or {}
+    try:
+        raw = params.get("stop_loss_pct")
+        if raw is not None:
+            return float(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(get_bot_config().stop_loss_pct or 0)
+    except Exception:
+        return 0.0
+
+
+def _effective_loss_pct_min(cfg: dict, strategy_params: dict | None) -> float:
+    """Deepest unrealized loss still eligible for DCA.
+
+    Configured ``loss_pct_min`` (-25) used to die while ``stop_loss_pct`` was 50,
+    so BLESS sat in a no-DCA / no-hold band until hard SL dumped it. Extend the
+    floor to ``-stop_loss_pct`` and let ``_near_stop_loss`` cut the last proximity
+    band.
+    """
+    configured = float(cfg.get("loss_pct_min", -25))
+    stop_pct = _stop_loss_pct(strategy_params)
+    if stop_pct <= 0:
+        return configured
+    # Full SL depth; `_near_stop_loss` cuts the last sl_proximity band.
+    return min(configured, -stop_pct)
+
+
 def _near_stop_loss(
     loss_pct: float,
     strategy_params: dict,
@@ -335,10 +365,7 @@ def _near_stop_loss(
     proximity = float(cfg.get("sl_proximity_pct", 15))
     if proximity <= 0:
         return False
-    stop_pct = float(
-        strategy_params.get("stop_loss_pct")
-        or get_bot_config().stop_loss_pct
-    )
+    stop_pct = _stop_loss_pct(strategy_params)
     margin = stop_pct + loss_pct
     if margin <= 0:
         return False
@@ -519,7 +546,7 @@ def _check_hard_gates(
     if remainder < float(tail["min_remainder_usdt"]):
         return False, f"remainder<{tail['min_remainder_usdt']:.0f}", 0.0
 
-    loss_min = float(cfg.get("loss_pct_min", -25))
+    loss_min = _effective_loss_pct_min(cfg, strategy_params)
     loss_max = float(cfg.get("loss_pct_max", -3))
     if loss_pct < loss_min or loss_pct > loss_max:
         return False, f"loss_pct {loss_pct:.1f}% outside [{loss_min}, {loss_max}]", 0.0
