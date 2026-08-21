@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from data.lunarcrush_scorer import LunarCrushSignal
-from services.social_pipeline import SocialPipeline
+from services.social_pipeline import SocialPipeline, _cap_lc_watchlist
 
 
 class TestSocialPipelineLcInterval(unittest.TestCase):
@@ -78,6 +78,29 @@ class TestSocialPipelineLcInterval(unittest.TestCase):
         pipeline.process_lc_signals(force=True)
 
         pipeline.lc_provider.fetch_for_watchlist.assert_called_once()
+
+
+class TestCapLcWatchlist(unittest.TestCase):
+    def test_keeps_open_lots_then_caps(self):
+        wl = [
+            {"symbol": "AAA/USDT"},
+            {"symbol": "ETH/USDT"},
+            {"symbol": "BBB/USDT"},
+            {"symbol": "BTC/USDT"},
+        ]
+        with patch(
+            "strategies.positions.list_active_positions",
+            return_value=[{"symbol": "ETH/USDT"}, {"symbol": "BTC/USDT"}],
+        ):
+            out = _cap_lc_watchlist(wl, {"max_fetch_coins": 3})
+        syms = [c["symbol"] for c in out]
+        self.assertEqual(len(syms), 3)
+        self.assertIn("ETH/USDT", syms)
+        self.assertIn("BTC/USDT", syms)
+
+    def test_no_cap_when_zero(self):
+        wl = [{"symbol": "A/USDT"}, {"symbol": "B/USDT"}]
+        self.assertEqual(len(_cap_lc_watchlist(wl, {})), 2)
 
 
 if __name__ == "__main__":
