@@ -246,12 +246,12 @@ class TestGrindFilterAndHarvest(unittest.TestCase):
         )
         self.assertTrue(skip)
 
-    def test_disk_default_disabled(self):
+    def test_module_default_disabled_disk_enabled_for_staging(self):
         self.assertFalse(oracle_climax_config({})["enabled"])
         cfg_path = _ROOT / "config.json"
         raw = json.loads(cfg_path.read_text(encoding="utf-8"))
         block = (raw.get("sell_policy") or {}).get("oracle_climax") or {}
-        self.assertFalse(bool(block.get("enabled", False)))
+        self.assertTrue(bool(block.get("enabled")))
 
 
 class TestTrailingTakeProfitClimax(unittest.TestCase):

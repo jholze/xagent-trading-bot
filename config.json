@@ -666,7 +666,7 @@
       "_doc": "Generic correlated-drawdown detector + per-group trail overlay. Kill: enabled=false (or remove a groups.<name> entry). Amplifiers default off."
     },
     "oracle_climax": {
-      "enabled": false,
+      "enabled": true,
       "min_btc_24h_pct": 6.0,
       "min_eth_24h_pct": 10.0,
       "min_breadth_green": 0.70,
@@ -678,7 +678,7 @@
       "dump_15m_max_pct": -0.80,
       "harvest_min_gain_pct": 12.0,
       "tighten_trail_pct": 1.5,
-      "_doc": "Two-stage overlay: Oracle RISK_ON grind holds BB/TTP runners; climax stall tightens trail; 1h/15m dump harvests lots ≥12%. Fusion RISK_OFF/CRASH never sells. Disk default off — enable per tenant (Henry first). Kill: enabled=false."
+      "_doc": "Two-stage overlay: Oracle RISK_ON grind holds BB/TTP runners; climax stall tightens trail; 1h/15m dump harvests lots ≥12% live (staging). Fusion RISK_OFF/CRASH never sells. Disk on for default; ctexp overlay disables. Kill: enabled=false."
     }
   },
   "update_interval": 120,
@@ -1988,7 +1988,7 @@
     "fetch_workers": 6,
     "bot_ohlcv_scan": false,
     "require_de_confirm": false,
-    "max_open": 4,
+    "max_open": 8,
     "max_buys_per_day": 8,
     "max_ticket_usdt": 500,
     "min_ticket_usdt": 50,

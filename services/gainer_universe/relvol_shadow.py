@@ -49,7 +49,7 @@ _DEFAULT: dict[str, Any] = {
     "bot_ohlcv_scan": False,
     # trade path (staging / paper)
     "require_de_confirm": False,  # ignition *is* the signal
-    "max_open": 4,
+    "max_open": 8,
     "max_buys_per_day": 8,
     "max_ticket_usdt": 500.0,
     "min_ticket_usdt": 50.0,
