@@ -233,6 +233,31 @@ class TestTrailingStop(unittest.TestCase):
             )
         )
 
+    def test_grind_skips_be_trail_like_h_usdt(self):
+        from strategies.oracle_climax import ClimaxDecision, MODE_GRIND
+
+        market = MarketContext(
+            symbol="H/USDT",
+            timeframe="4h",
+            current_price=0.95,
+            has_position=True,
+            average_entry=0.85,
+            atr_pct=10.0,
+        )
+        pos = {"recent_high": 1.2}
+        raw = {"sell_policy": {"oracle_climax": {"enabled": True}}}
+        self.assertIsNone(
+            evaluate_trailing_stop(
+                market,
+                pos,
+                self._params(),
+                climax_decision=ClimaxDecision(MODE_GRIND, ("grind",), {}),
+                config_raw=raw,
+            )
+        )
+        live = evaluate_trailing_stop(market, pos, self._params())
+        self.assertIsNotNone(live)
+
 
 if __name__ == "__main__":
     unittest.main()

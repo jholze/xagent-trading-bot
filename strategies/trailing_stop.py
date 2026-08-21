@@ -64,6 +64,8 @@ def evaluate_trailing_stop(
     strategy_params: dict | None,
     *,
     now=None,
+    climax_decision=None,
+    config_raw: dict | None = None,
 ) -> TrailingStopCandidate | None:
     """Full SELL when price hits stop after arm.
 
@@ -82,6 +84,17 @@ def evaluate_trailing_stop(
         return None
     if not market.has_position or market.average_entry <= 0:
         return None
+
+    try:
+        from strategies.oracle_climax import climax_ttp_adjust
+
+        _cfg, skip = climax_ttp_adjust(
+            {}, config_raw=config_raw, climax_decision=climax_decision
+        )
+        if skip:
+            return None
+    except Exception:
+        pass
 
     try:
         from strategies.dca import trail_exits_paused_after_dca

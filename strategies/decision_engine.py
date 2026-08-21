@@ -1010,7 +1010,13 @@ class DecisionEngine:
                 if life.shadow_only:
                     sources.append("profit_max_lifetime_shadow")
 
-            trail = evaluate_trailing_stop(market, position, strategy_params)
+            trail = evaluate_trailing_stop(
+                market,
+                position,
+                strategy_params,
+                climax_decision=climax_dec,
+                config_raw=self.config.raw,
+            )
             if trail:
                 candidates.append((trail.action, trail.priority, trail.source))
                 sources.append(trail.source)
