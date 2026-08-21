@@ -31,3 +31,6 @@ STOP_SOURCES = frozenset({"x_stop_loss", "stop_loss", "technical"})
 
 # Portfolio hygiene: free a full slot for high-conviction new entry (#111)
 SLOT_EVICT_SOURCES = frozenset({"slot_evict_for_entry"})
+
+# Oracle RISK_ON climax dump harvest (sell_policy.oracle_climax)
+CLIMAX_HARVEST_SOURCE = "oracle_climax_harvest"

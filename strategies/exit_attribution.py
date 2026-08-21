@@ -20,6 +20,7 @@ _EXIT_PRIORITY: tuple[str, ...] = (
     "tail_idle",
     "trailing_stop",
     "trailing_take_profit",
+    "oracle_climax_harvest",
     "profit_max_lifetime",
     "time_profit_exit",
     "x_stop_loss",

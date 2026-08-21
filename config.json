@@ -102,14 +102,16 @@
   "x_weight": 0.0,
   "technical_weight": 0.45,
   "onchain_weight": 0.25,
-  "lc_weight": 0.0,
+  "lc_weight": 0.18,
   "lunarcrush": {
-    "enabled": false,
+    "enabled": true,
     "use_mock": false,
     "use_list_endpoint": false,
     "api_key_env": "LUNARCRUSH_API_KEY",
     "cache_ttl_sec": 1800,
     "fetch_interval_sec": 1800,
+    "max_fetch_coins": 40,
+    "_doc": "Third social source for DE + dynamic chorus. Individual plan: per-coin, not list API. Kill: enabled=false and lc_weight 0.",
     "signal_ttl_hours": 4,
     "trust_score": 72,
     "min_confidence": 45,
@@ -662,6 +664,21 @@
       "news_pulse_min_confidence": 0.34,
       "news_pulse_max_combined_delta": 1,
       "_doc": "Generic correlated-drawdown detector + per-group trail overlay. Kill: enabled=false (or remove a groups.<name> entry). Amplifiers default off."
+    },
+    "oracle_climax": {
+      "enabled": true,
+      "min_btc_24h_pct": 6.0,
+      "min_eth_24h_pct": 10.0,
+      "min_breadth_green": 0.70,
+      "min_btc_4h_pct": 1.0,
+      "min_trend_4h": 0.0,
+      "stall_1h_max_pct": 0.40,
+      "stall_1h_min_pct": -0.80,
+      "harvest_1h_max_pct": -0.30,
+      "dump_15m_max_pct": -0.80,
+      "harvest_min_gain_pct": 12.0,
+      "tighten_trail_pct": 1.5,
+      "_doc": "Two-stage overlay: Oracle RISK_ON grind holds BB/TTP runners; climax stall tightens trail; 1h/15m dump harvests lots ≥12% live (staging). Fusion RISK_OFF/CRASH never sells. Disk on for default; ctexp overlay disables. Kill: enabled=false."
     }
   },
   "update_interval": 120,
@@ -1774,7 +1791,18 @@
       "santiment",
       "x",
       "fear_greed"
-    ]
+    ],
+    "dynamic_social": {
+      "enabled": true,
+      "min_sources": 2,
+      "bull_sentiment_weight": 0.55,
+      "bear_sentiment_weight": 0.48,
+      "cmc_chorus_trust_mult": 1.25,
+      "quotes_bull_min_conf": 80,
+      "block_on_fusion_risk_off": true,
+      "block_on_climax_harvest": true,
+      "_doc": "Raise CMC/Santiment/Lunar weight only when ≥2 agree (not always). Quotes-BUY 88% + RISK_ON is a chorus. Lunar joins if enabled. Kill: enabled=false."
+    }
   },
   "strategy_allocator": {
     "enabled": true,
@@ -1960,7 +1988,7 @@
     "fetch_workers": 6,
     "bot_ohlcv_scan": false,
     "require_de_confirm": false,
-    "max_open": 4,
+    "max_open": 8,
     "max_buys_per_day": 8,
     "max_ticket_usdt": 500,
     "min_ticket_usdt": 50,

@@ -126,6 +126,21 @@ class DecisionEngine:
         if self._tenant_regime_detector is not None:
             for timeframe, limit in (("4h", 300), ("1h", 300), ("15m", 50)):
                 self.market.prefetch_btc_ohlcv(timeframe, limit)
+        try:
+            from strategies.oracle_climax import begin_cycle
+
+            begin_cycle(raw)
+        except Exception as exc:
+            log(f"oracle_climax begin_cycle: {exc}", "DEBUG")
+
+    def _oracle_climax_state(self):
+        from strategies.oracle_climax import ClimaxDecision, MODE_IDLE, current_climax, oracle_climax_config
+
+        try:
+            return current_climax(self.config.raw)
+        except Exception as exc:
+            log(f"oracle_climax resolve: {exc}", "DEBUG")
+            return ClimaxDecision(MODE_IDLE, ("error",), {}), oracle_climax_config({})
 
     def _entry_sensor_cfg(self) -> dict:
         return self.config.entry_sensor_15m_config
@@ -393,6 +408,11 @@ class DecisionEngine:
                         # map conf to soft x_sentiment when no explicit field
                         if "x_sentiment" not in ctx:
                             ctx["x_sentiment"] = (float(getattr(s, "confidence", 50)) - 50) / 50.0
+                if key == "cmc":
+                    ctx["cmc_action"] = getattr(s, "action", "")
+                    ctx["cmc_quotes_fallback"] = bool(getattr(s, "quotes_fallback", False))
+                if key == "lc":
+                    ctx["lc_action"] = getattr(s, "action", "")
         # P1/P3: global Santiment sidecar → soft sentiment for RegimeDetector
         try:
             from services.market_policy_fusion import get_global_market_bias, inject_global_sentiment
@@ -401,6 +421,15 @@ class DecisionEngine:
             if santiment_risk_config(self.config.raw).get("inject_regime_sentiment", True):
                 bias = get_global_market_bias(self.config.raw)
                 ctx = inject_global_sentiment(ctx, bias)
+                if isinstance(bias, dict) and bias.get("regime"):
+                    ctx["fusion_regime"] = bias.get("regime")
+        except Exception:
+            pass
+        try:
+            from strategies.oracle_climax import current_climax
+
+            dec, _oc = current_climax(self.config.raw)
+            ctx["climax_mode"] = getattr(dec, "mode", "")
         except Exception:
             pass
         return ctx
@@ -628,7 +657,35 @@ class DecisionEngine:
         params = strategy_params or {}
         if params.get("cmc_trust_score") is not None:
             return float(params["cmc_trust_score"])
-        return float(getattr(cmc_signal, "trust_score", 65.0))
+        base = float(getattr(cmc_signal, "trust_score", 65.0))
+        try:
+            from intelligence.social_dynamic_weight import (
+                dynamic_social_config,
+                evaluate_social_chorus,
+            )
+
+            ctx = {
+                "cmc_action": getattr(cmc_signal, "action", ""),
+                "cmc_confidence": getattr(cmc_signal, "confidence", 0),
+                "cmc_quotes_fallback": bool(getattr(cmc_signal, "quotes_fallback", False)),
+            }
+            try:
+                from services.market_policy_fusion import get_global_market_bias
+
+                bias = get_global_market_bias(self.config.raw) or {}
+                ctx["fusion_regime"] = bias.get("regime")
+                if bias.get("sentiment") is not None:
+                    ctx["santiment_sentiment"] = bias.get("sentiment")
+            except Exception:
+                pass
+            chorus = evaluate_social_chorus(
+                ctx, cfg=dynamic_social_config(self.config.raw)
+            )
+            if chorus.boost_buys and chorus.cmc_trust_mult > 1.0:
+                return min(95.0, base * float(chorus.cmc_trust_mult))
+        except Exception:
+            pass
+        return base
 
     def _lc_buy_threshold(self, strategy_params: dict = None) -> float:
         params = strategy_params or {}
@@ -887,7 +944,10 @@ class DecisionEngine:
                     candidates.append((SELL_PARTIAL_10, 1, "lc"))
                     sources.append("lc")
 
+        climax_dec = None
+        climax_cfg = None
         if market and position:
+            climax_dec, climax_cfg = self._oracle_climax_state()
             ta_bearish = is_sell(technical.action)
             for cand in evaluate_market_structure_sells(
                 market, strategy_params, position, ta_bearish=ta_bearish,
@@ -928,7 +988,13 @@ class DecisionEngine:
             if sync_profit_armed_at(market, position, strategy_params):
                 flush_positions()
 
-            trail_tp = evaluate_trailing_take_profit(market, position, strategy_params)
+            trail_tp = evaluate_trailing_take_profit(
+                market,
+                position,
+                strategy_params,
+                climax_decision=climax_dec,
+                config_raw=self.config.raw,
+            )
             if trail_tp:
                 candidates.append((trail_tp.action, trail_tp.priority, trail_tp.source))
                 sources.append(trail_tp.source)
@@ -959,6 +1025,46 @@ class DecisionEngine:
                 structure_rationales.append(tpe.rationale)
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
+
+        if market and position and climax_dec is not None:
+            try:
+                from strategies.oracle_climax import (
+                    HARVEST_SOURCE,
+                    MODE_GRIND,
+                    MODE_HARVEST,
+                    filter_grind_candidates,
+                    harvest_candidate,
+                    position_blocked_from_harvest,
+                )
+
+                if climax_dec.mode == MODE_GRIND and candidates:
+                    candidates, blocked = filter_grind_candidates(candidates, climax_dec)
+                    if blocked:
+                        structure_rationales.append(
+                            "oracle_climax grind blocked: "
+                            + ", ".join(sorted(set(blocked)))
+                        )
+                if climax_dec.mode == MODE_HARVEST:
+                    gain_pct = (
+                        (market.current_price / market.average_entry - 1) * 100
+                        if market.average_entry > 0
+                        else 0.0
+                    )
+                    locked = position_blocked_from_harvest(position, self.config.raw)
+                    extra = harvest_candidate(
+                        gain_pct=gain_pct,
+                        decision=climax_dec,
+                        cfg=climax_cfg or {},
+                        locked=locked,
+                    )
+                    if extra:
+                        candidates.append(extra)
+                        sources.append(HARVEST_SOURCE)
+                        structure_rationales.append(
+                            f"oracle_climax harvest gain={gain_pct:.1f}%"
+                        )
+            except Exception as exc:
+                log(f"oracle_climax overlay failed: {exc}", "DEBUG")
 
         if market and position:
             try:

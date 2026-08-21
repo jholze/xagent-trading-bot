@@ -14,6 +14,7 @@ HOLD_BLOCKABLE_SOURCES = frozenset(
         "trailing_stop",
         "partial_stop",
         "profit_max_lifetime",
+        "oracle_climax_harvest",
         "safety_tp",
         "exit_ws",
         "auto",

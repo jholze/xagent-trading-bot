@@ -33,6 +33,7 @@ _BLOCKED_SOURCES = frozenset(
         "time_profit_shadow",
         "profit_max_lifetime",
         "profit_max_lifetime_shadow",
+        "oracle_climax_harvest",
         "exit_sensor",
         "exit_sensor_shadow",
         "cmc",
