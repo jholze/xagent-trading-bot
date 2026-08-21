@@ -185,9 +185,10 @@ class TestGrindFilterAndHarvest(unittest.TestCase):
         ]
         kept, blocked = filter_grind_candidates(cands, dec)
         srcs = {c[2] for c in kept}
-        self.assertEqual(srcs, {"stop_loss", "trailing_stop"})
+        self.assertEqual(srcs, {"stop_loss"})
         self.assertIn("bb_upper", blocked)
         self.assertIn("trailing_take_profit", blocked)
+        self.assertIn("trailing_stop", blocked)
         self.assertTrue(GRIND_BLOCK_SOURCES)
 
     def test_non_grind_does_not_filter(self):

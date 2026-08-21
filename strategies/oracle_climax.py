@@ -26,6 +26,7 @@ GRIND_BLOCK_SOURCES = frozenset(
     {
         "bb_upper",
         "trailing_take_profit",
+        "trailing_stop",
         "profit_max_lifetime",
         "time_profit_exit",
         "exit_volume_climax",
