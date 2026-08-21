@@ -34,6 +34,7 @@ _EXIT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "trailing_take_profit",
             "trail_tp",
             "ttp",
+            "oracle_climax_harvest",
             "profit_max_lifetime",
             "time_profit",
         ),

@@ -103,6 +103,8 @@ def evaluate_trailing_take_profit(
     strategy_params: dict | None,
     *,
     now: datetime | None = None,
+    climax_decision=None,
+    config_raw: dict | None = None,
 ) -> TrailingTakeProfitCandidate | None:
     cfg = trailing_take_profit_config(strategy_params)
     if not cfg.get("enabled", False):
@@ -112,6 +114,17 @@ def evaluate_trailing_take_profit(
         return None
     if not market.has_position or market.average_entry <= 0:
         return None
+
+    try:
+        from strategies.oracle_climax import climax_ttp_adjust
+
+        cfg, skip = climax_ttp_adjust(
+            cfg, config_raw=config_raw, climax_decision=climax_decision
+        )
+        if skip:
+            return None
+    except Exception:
+        pass
 
     try:
         from strategies.dca import trail_exits_paused_after_dca
