@@ -408,6 +408,11 @@ class DecisionEngine:
                         # map conf to soft x_sentiment when no explicit field
                         if "x_sentiment" not in ctx:
                             ctx["x_sentiment"] = (float(getattr(s, "confidence", 50)) - 50) / 50.0
+                if key == "cmc":
+                    ctx["cmc_action"] = getattr(s, "action", "")
+                    ctx["cmc_quotes_fallback"] = bool(getattr(s, "quotes_fallback", False))
+                if key == "lc":
+                    ctx["lc_action"] = getattr(s, "action", "")
         # P1/P3: global Santiment sidecar → soft sentiment for RegimeDetector
         try:
             from services.market_policy_fusion import get_global_market_bias, inject_global_sentiment
@@ -416,6 +421,15 @@ class DecisionEngine:
             if santiment_risk_config(self.config.raw).get("inject_regime_sentiment", True):
                 bias = get_global_market_bias(self.config.raw)
                 ctx = inject_global_sentiment(ctx, bias)
+                if isinstance(bias, dict) and bias.get("regime"):
+                    ctx["fusion_regime"] = bias.get("regime")
+        except Exception:
+            pass
+        try:
+            from strategies.oracle_climax import current_climax
+
+            dec, _oc = current_climax(self.config.raw)
+            ctx["climax_mode"] = getattr(dec, "mode", "")
         except Exception:
             pass
         return ctx
@@ -643,7 +657,35 @@ class DecisionEngine:
         params = strategy_params or {}
         if params.get("cmc_trust_score") is not None:
             return float(params["cmc_trust_score"])
-        return float(getattr(cmc_signal, "trust_score", 65.0))
+        base = float(getattr(cmc_signal, "trust_score", 65.0))
+        try:
+            from intelligence.social_dynamic_weight import (
+                dynamic_social_config,
+                evaluate_social_chorus,
+            )
+
+            ctx = {
+                "cmc_action": getattr(cmc_signal, "action", ""),
+                "cmc_confidence": getattr(cmc_signal, "confidence", 0),
+                "cmc_quotes_fallback": bool(getattr(cmc_signal, "quotes_fallback", False)),
+            }
+            try:
+                from services.market_policy_fusion import get_global_market_bias
+
+                bias = get_global_market_bias(self.config.raw) or {}
+                ctx["fusion_regime"] = bias.get("regime")
+                if bias.get("sentiment") is not None:
+                    ctx["santiment_sentiment"] = bias.get("sentiment")
+            except Exception:
+                pass
+            chorus = evaluate_social_chorus(
+                ctx, cfg=dynamic_social_config(self.config.raw)
+            )
+            if chorus.boost_buys and chorus.cmc_trust_mult > 1.0:
+                return min(95.0, base * float(chorus.cmc_trust_mult))
+        except Exception:
+            pass
+        return base
 
     def _lc_buy_threshold(self, strategy_params: dict = None) -> float:
         params = strategy_params or {}

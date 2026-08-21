@@ -1789,7 +1789,18 @@
       "santiment",
       "x",
       "fear_greed"
-    ]
+    ],
+    "dynamic_social": {
+      "enabled": true,
+      "min_sources": 2,
+      "bull_sentiment_weight": 0.55,
+      "bear_sentiment_weight": 0.48,
+      "cmc_chorus_trust_mult": 1.25,
+      "quotes_bull_min_conf": 80,
+      "block_on_fusion_risk_off": true,
+      "block_on_climax_harvest": true,
+      "_doc": "Raise CMC/Santiment/Lunar weight only when ≥2 agree (not always). Quotes-BUY 88% + RISK_ON is a chorus. Lunar joins if enabled. Kill: enabled=false."
+    }
   },
   "strategy_allocator": {
     "enabled": true,

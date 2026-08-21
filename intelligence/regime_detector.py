@@ -110,6 +110,26 @@ class RegimeDetector:
             scores.append(s)
             weights.append(0.7)  # etwas geringeres Gewicht, da global
 
+        # CMC (was previously dropped: only cmc_sentiment/action on ctx)
+        cmc_sent = social_context.get("cmc_sentiment")
+        if cmc_sent is None and social_context.get("cmc_action"):
+            act = str(social_context.get("cmc_action") or "").upper()
+            try:
+                conf = float(social_context.get("cmc_confidence") or 50)
+            except (TypeError, ValueError):
+                conf = 50.0
+            if act == "BUY":
+                cmc_sent = 50.0 + conf / 2.0
+            elif act == "SELL":
+                cmc_sent = 50.0 - conf / 2.0
+        if cmc_sent is not None:
+            try:
+                s = (float(cmc_sent) - 50.0) / 50.0
+                scores.append(s)
+                weights.append(1.0)
+            except (TypeError, ValueError):
+                pass
+
         if not scores:
             return 0.0
 
@@ -234,8 +254,30 @@ class RegimeDetector:
         # 3. Sentiment Score (robust)
         sentiment_score = self._normalize_sentiment(social_context or {})
 
-        # 4. Weighted Score (konfigurierbar)
-        weighted = self.tech_weight * tech_score + self.sentiment_weight * sentiment_score
+        # 4. Weighted Score — dynamic social chorus can raise sentiment when sources agree
+        tech_w = self.tech_weight
+        sent_w = self.sentiment_weight
+        chorus_label = "off"
+        chorus_sources: tuple[str, ...] = ()
+        try:
+            from intelligence.social_dynamic_weight import evaluate_social_chorus
+
+            ds = {}
+            if isinstance(self.cfg, dict):
+                ds = dict(self.cfg.get("dynamic_social") or {})
+            chorus = evaluate_social_chorus(
+                social_context or {},
+                cfg=ds,
+                climax_mode=str((social_context or {}).get("climax_mode") or "") or None,
+            )
+            tech_w = float(chorus.tech_weight)
+            sent_w = float(chorus.sentiment_weight)
+            chorus_label = chorus.agree
+            chorus_sources = chorus.sources
+        except Exception:
+            pass
+
+        weighted = tech_w * tech_score + sent_w * sentiment_score
 
         # 5. Regime Mapping mit Hysteresis + Cooldown
         regime = self._map_to_regime(
@@ -256,8 +298,10 @@ class RegimeDetector:
                 **tech_components,
             },
             details={
-                "tech_weight": self.tech_weight,
-                "sentiment_weight": self.sentiment_weight,
+                "tech_weight": round(float(tech_w), 4),
+                "sentiment_weight": round(float(sent_w), 4),
+                "social_chorus": chorus_label,
+                "social_chorus_sources": list(chorus_sources),
                 "bars_in_regime": self._bars_in_regime.get(key, 0),
             },
         )
