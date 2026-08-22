@@ -1,0 +1,33 @@
+:root {
+  --bg: #0c0c0b;
+  --bg2: #141412;
+  --panel: #1a1a17;
+  --panel2: #22221e;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #f5f5f0;
+  --muted: #8a8a80;
+  --muted2: #5c5c54;
+  --accent: #93b0ff;
+  --accent-deep: #4568ff;
+  --ok: #6ee7a8;
+  --warn: #f0c674;
+  --err: #ff7a8a;
+  --fire: #ff5c7a;
+  --tick: #c4b5fd;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
