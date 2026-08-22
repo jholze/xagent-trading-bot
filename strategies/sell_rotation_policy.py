@@ -31,6 +31,7 @@ from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_en
 from strategies.positions import is_open_position, position_notional_usdt
 from strategies.sell_sources import (
     STRUCTURE_SOURCES,
+    TRAIL_ALLOW_RSI_SOURCES,
     TRAIL_EXCLUSIVE_BLOCK_SOURCES,
     TRAIL_ROTATION_SOURCES,
 )
@@ -87,6 +88,12 @@ def rotation_config(config_raw: dict | None, strategy_params: dict | None = None
     root = sell_policy_root(config_raw)
     rotation = dict(root.get("rotation") or {})
     cfg = {**POLICY_DEFAULTS, **rotation}
+    try:
+        from strategies.indicator_regime import trail_allow_rsi
+
+        cfg["trail_allow_rsi"] = trail_allow_rsi(config_raw)
+    except Exception:
+        cfg["trail_allow_rsi"] = False
     if strategy_params:
         sp = dict(strategy_params.get("sell_policy") or {})
         cfg.update(sp.get("rotation") or {})
@@ -338,8 +345,12 @@ def filter_trail_exclusive(
     blocked_labels: list[str] = []
     kept: list[tuple] = []
 
+    allow_rsi = bool(cfg.get("trail_allow_rsi"))
     for action, priority, source in candidates:
         src = (source or "").lower()
+        if allow_rsi and src in TRAIL_ALLOW_RSI_SOURCES:
+            kept.append((action, priority, source))
+            continue
         if gain < arm and src in BLOCKED_BELOW_ARM:
             blocked_labels.append(source)
             continue

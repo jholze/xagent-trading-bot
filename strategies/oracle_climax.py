@@ -3,7 +3,7 @@
 Idle: overlay off, oracle not RISK_ON, or Fusion RISK_OFF/CRASH (18 Aug false alarm).
 Grind: Oracle RISK_ON, not yet climax — suppress BB/TTP full-close so runners can extend.
 Tighten: climax armed (extension + hot breadth) and 1h stall — tighter TTP trail.
-Harvest: climax armed and 1h rolling over (or 15m dump if the feature exists) —
+Harvest: climax armed and 1h dump ≤ harvest_1h_max_pct (default −1.0) or 15m dump —
          SELL_FULL on lots with gain ≥ harvest_min.
 
 Fusion NEUTRAL is allowed (19–20 Aug tape). Disk default enabled=false.
@@ -46,7 +46,7 @@ _DEFAULTS: dict[str, Any] = {
     "min_trend_4h": 0.0,
     "stall_1h_max_pct": 0.40,
     "stall_1h_min_pct": -0.80,
-    "harvest_1h_max_pct": -0.30,
+    "harvest_1h_max_pct": -1.0,
     "dump_15m_max_pct": -0.80,
     "harvest_min_gain_pct": 12.0,
     "harvest_priority": HARVEST_PRIORITY,

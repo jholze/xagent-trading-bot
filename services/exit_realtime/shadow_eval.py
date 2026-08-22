@@ -116,6 +116,37 @@ def evaluate_would_sells(
         except Exception as exc:
             out.append({"source": "trailing_stop", "error": str(exc)[:160]})
 
+    if "rsi_sell" in allowed:
+        try:
+            from core.actions import SELL_FULL
+            from strategies.indicator_regime import (
+                apply_rsi_sell_overlay,
+                rsi_full_close,
+                trail_allow_rsi,
+            )
+
+            if trail_allow_rsi(None):
+                params = apply_rsi_sell_overlay(dict(strategy_params or {}))
+                last_rsi = float(pos.get("last_rsi") or 0)
+                rsi_20 = float(params.get("rsi_sell_20") or 78)
+                min_gain = float(params.get("rsi_sell_min_gain_pct") or 15)
+                if last_rsi >= rsi_20 and gain >= min_gain:
+                    action = SELL_FULL if rsi_full_close(None) else "SELL_20"
+                    out.append(
+                        {
+                            "source": "rsi_sell",
+                            "action": action,
+                            "priority": 5,
+                            "rationale": (
+                                f"WS RSI->{action} (rsi={last_rsi:.0f}>={rsi_20:.0f}, "
+                                f"gain={gain:.1f}%)"
+                            ),
+                            "strategy_shadow": False,
+                        }
+                    )
+        except Exception as exc:
+            out.append({"source": "rsi_sell", "error": str(exc)[:160]})
+
     if not out:
         return []
 

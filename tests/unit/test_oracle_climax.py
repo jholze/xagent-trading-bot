@@ -137,9 +137,19 @@ class TestOracleClimaxMode(unittest.TestCase):
         self.assertEqual(dec.mode, MODE_TIGHTEN)
         self.assertIn("stall_1h", dec.reasons)
 
-    def test_armed_dump_1h_is_harvest(self):
+    def test_armed_shallow_1h_red_is_tighten_not_harvest(self):
+        """Melt-up 1h −0.5% is noise; harvest only at ≤ −1.0%."""
         dec = evaluate_climax_mode(
             oracle_snap=_snap(**_armed_feats(btc_ret_1h_pct=-0.5)),
+            fusion_regime="NEUTRAL",
+            cfg=_cfg(),
+        )
+        self.assertEqual(dec.mode, MODE_TIGHTEN)
+        self.assertIn("stall_1h", dec.reasons)
+
+    def test_armed_dump_1h_is_harvest(self):
+        dec = evaluate_climax_mode(
+            oracle_snap=_snap(**_armed_feats(btc_ret_1h_pct=-1.2)),
             fusion_regime="NEUTRAL",
             cfg=_cfg(),
         )
