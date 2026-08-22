@@ -27,6 +27,26 @@ class TestCashPolicyPure(unittest.TestCase):
             resolve_cash_mode(size_mult=1.5, block_buys=True), MODE_HARVEST
         )
 
+    def test_size_mult_deploy_080_treats_fusion_085_as_deploy(self):
+        """Disk 0.80: Santiment NEUTRAL / warmup cap 0.85 is DEPLOY. Kill: 1.0."""
+        self.assertEqual(
+            resolve_cash_mode(size_mult=0.85, size_mult_deploy=0.80),
+            MODE_DEPLOY,
+        )
+        self.assertEqual(
+            resolve_cash_mode(size_mult=0.79, size_mult_deploy=0.80),
+            MODE_STEADY,
+        )
+        self.assertEqual(
+            resolve_cash_mode(size_mult=0.69, size_mult_deploy=0.80),
+            MODE_HARVEST,
+        )
+        # Kill: threshold 1.0 keeps 0.85 in STEADY
+        self.assertEqual(
+            resolve_cash_mode(size_mult=0.85, size_mult_deploy=1.0),
+            MODE_STEADY,
+        )
+
     def test_floor_pct_risk_on_lower_than_risk_off(self):
         deploy_pct, deploy_mode, _ = floor_pct_effective(
             floor_pct_base=12,
@@ -135,6 +155,43 @@ class TestCashPolicyPure(unittest.TestCase):
         self.assertFalse(is_cash_policy_enabled({}))
         self.assertFalse(is_cash_policy_enabled({"cash_policy": {"enabled": False}}))
         self.assertTrue(is_cash_policy_enabled({"cash_policy": {"enabled": True}}))
+
+    def test_evaluate_deploy_threshold_080_from_config(self):
+        risk = {
+            "cash_floor_pct": 18,
+            "cash_policy": {
+                "enabled": True,
+                "floor_pct_base": 12,
+                "floor_pct_min": 5,
+                "floor_pct_max": 25,
+                "dca_buffer_usdt": 800,
+                "dca_buffer_pct_equity": 0,
+                "dca_floor_haircut": 0,
+                "link_fusion_size_mult": True,
+                "size_mult_deploy": 0.80,
+                "size_mult_harvest": 0.7,
+            },
+        }
+        deploy = evaluate_cash_policy(
+            cash_total=20_000,
+            basis_for_floor=100_000,
+            equity=100_000,
+            size_mult=0.85,
+            risk_config=risk,
+        )
+        steady_kill = evaluate_cash_policy(
+            cash_total=20_000,
+            basis_for_floor=100_000,
+            equity=100_000,
+            size_mult=0.85,
+            risk_config={
+                **risk,
+                "cash_policy": {**risk["cash_policy"], "size_mult_deploy": 1.0},
+            },
+        )
+        self.assertEqual(deploy.mode, MODE_DEPLOY)
+        self.assertEqual(steady_kill.mode, MODE_STEADY)
+        self.assertLess(deploy.floor_pct_eff, steady_kill.floor_pct_eff)
 
 
 class TestRiskManagerCashPolicy(unittest.TestCase):
