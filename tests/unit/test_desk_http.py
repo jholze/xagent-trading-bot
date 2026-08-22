@@ -240,7 +240,10 @@ def test_desk_ohlcv_query_token_and_default_tf(monkeypatch):
     assert captured.get("tf") == "1h"
 
 
-def test_desk_spa_missing_build_is_404(monkeypatch):
+def test_desk_spa_missing_build_is_404(monkeypatch, tmp_path):
+    import services.desk_http as desk_http
+
+    monkeypatch.setattr(desk_http, "_DIST", tmp_path / "missing-dist")
     client = _client(monkeypatch, exit_token="secret")
     rv = client.get("/desk")
     assert rv.status_code == 404
