@@ -36,16 +36,23 @@ CLIMAX_ON = {
             "min_trend_4h": 0.0,
             "stall_1h_max_pct": 0.40,
             "stall_1h_min_pct": -0.80,
-            "harvest_1h_max_pct": -0.30,
+            "harvest_1h_max_pct": -1.0,
             "dump_15m_max_pct": -0.80,
             "harvest_min_gain_pct": 12.0,
             "tighten_trail_pct": 1.5,
             "_experiment": "feature/oracle-climax-two-stage",
             "_doc": (
-                "2026-08-21: Oracle RISK_ON grind holds BB/TTP; dump harvests ≥12% live. "
+                "2026-08-21: Oracle RISK_ON grind holds BB/TTP/TS; harvest BTC 1h ≤ −1.0%. "
                 "Fusion RISK_OFF/CRASH never sells. Kill: enabled=false."
             ),
-        }
+        },
+        "indicator_regime": {
+            "enabled": True,
+            "trail_allow_rsi": True,
+            "rsi_full_close": True,
+            "tenants": ["default", "henry"],
+            "_doc": "RSI SELL_FULL through exclusive; grind RSI +8. Kill: enabled=false.",
+        },
     }
 }
 

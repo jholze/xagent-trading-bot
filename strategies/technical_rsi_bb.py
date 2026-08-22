@@ -123,9 +123,15 @@ class TechnicalRSIStrategy(BaseStrategy):
         rsi_buy_high = params.get("rsi_buy_high", 48)
         volume_multiplier_min = params.get("volume_multiplier", 1.2)
         stop_loss_pct = params.get("stop_loss_pct", config.stop_loss_pct)
+        rsi_sell_mode = params.get("rsi_sell_mode", "cross")
+        try:
+            from strategies.indicator_regime import apply_rsi_sell_overlay
+
+            params = apply_rsi_sell_overlay(params, config.raw)
+        except Exception:
+            pass
         rsi_sell_30 = params.get("rsi_sell_30", 70)
         rsi_sell_20 = params.get("rsi_sell_20", 80)
-        rsi_sell_mode = params.get("rsi_sell_mode", "cross")
         rsi_sell_min_gain = float(params.get("rsi_sell_min_gain_pct", 0))
         take_profit_pct = params.get("take_profit_pct")
         take_profit_tiers = params.get("take_profit_tiers") or []

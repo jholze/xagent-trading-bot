@@ -884,6 +884,18 @@ class DecisionEngine:
                 except Exception:
                     skip_partial = False
             if not skip_partial:
+                if tech_src == "technical":
+                    try:
+                        from strategies.indicator_regime import relabel_technical_as_rsi_sell
+
+                        tech_norm, tech_src = relabel_technical_as_rsi_sell(
+                            action=tech_norm,
+                            source=tech_src,
+                            technical_sources=technical.sources,
+                            config_raw=self.config.raw,
+                        )
+                    except Exception:
+                        pass
                 candidates.append((tech_norm, pri, tech_src))
             elif position:
                 structure_rationales.append(
@@ -976,6 +988,7 @@ class DecisionEngine:
                         metrics_15m=metrics_15m,
                         metrics_1h=metrics_1h,
                         btc_rs_delta=btc_delta,
+                        config_raw=self.config.raw,
                     ):
                         candidates.append((cand.action, cand.priority, cand.source))
                         sources.append(cand.source)
@@ -1031,6 +1044,14 @@ class DecisionEngine:
                 structure_rationales.append(tpe.rationale)
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
+
+        if market and position and candidates:
+            try:
+                from strategies.indicator_regime import normalize_rsi_candidates
+
+                candidates = normalize_rsi_candidates(candidates, self.config.raw)
+            except Exception:
+                pass
 
         if market and position and climax_dec is not None:
             try:
