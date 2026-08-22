@@ -2,6 +2,7 @@ import json
 import locale
 import os
 import shutil
+import tempfile
 from datetime import datetime
 
 from logger import log
@@ -62,20 +63,36 @@ def _should_use_mongo_for_tenant_config(config: dict = None) -> bool:
 
 
 def atomic_write_json(path: str, data: dict):
-    """
-    Write JSON data atomically using a temp file + rename.
-    This greatly reduces the risk of corrupted files on crash or kill.
+    """Write JSON atomically (temp file in the same dir, then replace).
+
+    Unique tmp names so concurrent writers (WQE + tenants at boot) do not
+    steal each other's ``path.tmp`` (Railway: ENOENT on os.replace).
     """
     dir_name = os.path.dirname(path) or "."
     os.makedirs(dir_name, exist_ok=True)
 
-    tmp_path = path + ".tmp"
+    fd = None
+    tmp_path = None
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".",
+            suffix=".tmp",
+            dir=dir_name,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None
             json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)  # atomic rename
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
     except Exception as e:
-        if os.path.exists(tmp_path):
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except Exception:
