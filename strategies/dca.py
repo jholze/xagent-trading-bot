@@ -416,6 +416,35 @@ def _score_atr_distance(
     return 0
 
 
+def _oversold_remaining_round(
+    market: MarketContext,
+    position: dict | None,
+    cfg: dict,
+) -> bool:
+    """Unused DCA round + RSI below cap → allow add even if scoring missed cores.
+
+    LAB 2026-08-22: −40%, RSI 37.7, rounds 1/2. Scoring rsi_soft=35 gave 0 RSI
+    points so min_core failed; sniper was not focusing the bag. Kill: 0.
+    """
+    try:
+        cap = float(cfg.get("remaining_round_oversold_rsi") or 0)
+    except (TypeError, ValueError):
+        return False
+    if cap <= 0:
+        return False
+    pos = position or {}
+    used = _total_dca_rounds(pos)
+    if used <= 0:
+        return False
+    if used >= _effective_max_dca_rounds(pos, cfg):
+        return False
+    try:
+        rsi = float(getattr(market, "rsi", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return rsi < cap
+
+
 def _score_rsi(rsi: float, tier_cfg: dict) -> int:
     hard = float(tier_cfg.get("rsi_hard", 30))
     soft = float(tier_cfg.get("rsi_soft", 35))
@@ -594,7 +623,36 @@ def should_dca(
         ):
             decision = _apply_cascade_scoring(decision, cfg)
         if not decision.should_dca:
-            return decision
+            oversold = _oversold_remaining_round(market, position, cfg)
+            if not oversold:
+                return decision
+            from strategies.dca_sizing import compute_dca_usdt
+
+            rounds = _total_dca_rounds(position)
+            min_score = int(scoring_cfg.get("min_score", 6))
+            max_score = int(scoring_cfg.get("max_score", 10))
+            usdt_amount = compute_dca_usdt(
+                base_usdt=float(cfg.get("fixed_usdt", 20)),
+                score=max(int(decision.score or 0), 1),
+                max_score=max_score,
+                min_score=min_score,
+                loss_pct=loss_pct,
+                round_index=rounds,
+                max_rounds=int(cfg.get("max_rounds", 4)),
+                dca_cfg=cfg,
+                position_notional_usdt=_position_notional_for_sizing(position, market),
+            )
+            bd = dict(decision.breakdown or {})
+            bd["oversold_remaining_round"] = 1
+            return DCADecision(
+                should_dca=True,
+                score=max(int(decision.score or 0), 1),
+                max_score=max_score,
+                breakdown=bd,
+                blocked_reason=None,
+                usdt_amount=usdt_amount,
+                shadow_only=str(cfg.get("mode", "shadow")) == "shadow",
+            )
         decision.blocked_reason = None
         return decision
 
@@ -642,7 +700,16 @@ def evaluate_dca_addon(
     sold = float(position.get("sold_percent", 0) or 0)
     sold_tag = f" sold {sold:.0%}" if sold >= 0.01 else ""
 
-    if decision.score > 0:
+    if decision.breakdown.get("oversold_remaining_round"):
+        try:
+            rsi_v = float(getattr(market, "rsi", 0) or 0)
+        except (TypeError, ValueError):
+            rsi_v = 0.0
+        rationale = (
+            f"DCA oversold RSI={rsi_v:.1f} loss {loss_pct:.1f}%{sold_tag} "
+            f"round {rounds + 1}/{max_rounds}"
+        )
+    elif decision.score > 0:
         core = {k: v for k, v in decision.breakdown.items() if k != "bb_support" and v > 0}
         rationale = (
             f"DCA score {decision.score}/{decision.max_score} "

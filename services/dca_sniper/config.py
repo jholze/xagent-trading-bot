@@ -136,6 +136,30 @@ def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
     }
 
 
+def sniper_skips_portfolio_dca(config: dict | None = None) -> bool:
+    """Portfolio DCA pass is skipped while sniper owns heavy/focus.
+
+    Cycle DCA for *unfocused* lots must not defer into this skipped pass.
+    Kill: dca_sniper.enabled=false or disable_cycle_dca_when_enabled=false.
+    """
+    if not dca_sniper_enabled(config):
+        return False
+    return bool(dca_sniper_config(config).get("disable_cycle_dca_when_enabled", True))
+
+
+def sniper_owns_cycle_dca(config: dict | None = None, position: dict | None = None) -> bool:
+    """Block per-coin cycle DCA only on sniper-owned bags.
+
+    max_focus_slots=2 left LAB-class unfocused losers with unused rounds and
+    no sniper add (reclaim gate). Unfocused lots keep classic dip DCA.
+    Kill: disable_cycle_dca_when_enabled=false (restores cycle everywhere).
+    """
+    if not sniper_skips_portfolio_dca(config):
+        return False
+    pos = position or {}
+    return bool(pos.get("sniper_focus") or pos.get("recovery_hold"))
+
+
 def internal_token() -> str:
     return (
         (os.environ.get("DCA_SNIPER_TOKEN") or "").strip()
