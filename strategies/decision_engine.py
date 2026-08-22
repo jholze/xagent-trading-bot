@@ -653,7 +653,7 @@ class DecisionEngine:
             return bool(self.config.dry_run_defaults.get("cmc_sell_requires_ta", True))
         return bool(self.config.cmc_config.get("sell_requires_ta", True))
 
-    def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None) -> float:
+    def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None, lc_signal=None) -> float:
         params = strategy_params or {}
         if params.get("cmc_trust_score") is not None:
             return float(params["cmc_trust_score"])
@@ -669,6 +669,10 @@ class DecisionEngine:
                 "cmc_confidence": getattr(cmc_signal, "confidence", 0),
                 "cmc_quotes_fallback": bool(getattr(cmc_signal, "quotes_fallback", False)),
             }
+            if lc_signal is not None:
+                ctx["lc_action"] = getattr(lc_signal, "action", "")
+                if getattr(lc_signal, "sentiment", None) is not None:
+                    ctx["lunarcrush_sentiment"] = getattr(lc_signal, "sentiment")
             try:
                 from services.market_policy_fusion import get_global_market_bias
 
@@ -766,7 +770,7 @@ class DecisionEngine:
 
         strategy_params = market.strategy_params or {}
         if cmc_signal and cmc_signal.action == "BUY":
-            trust = self._cmc_trust_score(cmc_signal, strategy_params)
+            trust = self._cmc_trust_score(cmc_signal, strategy_params, lc_signal=lc_signal)
             cmc_eff = float(cmc_signal.confidence) * (trust / 100.0)
             cmc_eff *= consensus
             if cmc_eff >= self._cmc_buy_threshold(strategy_params, cmc_signal):
@@ -925,7 +929,7 @@ class DecisionEngine:
             if getattr(cmc_signal, "quotes_fallback", False) and not quotes_as_signal:
                 pass
             else:
-                trust = self._cmc_trust_score(cmc_signal, strategy_params)
+                trust = self._cmc_trust_score(cmc_signal, strategy_params, lc_signal=lc_signal)
                 eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
                 requires_ta = self._cmc_sell_requires_ta(strategy_params)
                 ta_bearish = is_sell(technical.action)

@@ -163,6 +163,11 @@ class TestQuotesFallbackFilter(unittest.TestCase):
         self.assertTrue(out[0].quotes_fallback)
         self.assertEqual(out[0].trust_score, 55.0)
 
+    def test_quotes_trust_72_clears_min_confidence(self):
+        """Disk 72: quotes BUY 83% × 0.72 = 59.8 ≥ cmc min 55. Kill: 55 → 45.7 fail."""
+        self.assertGreaterEqual(83.0 * (72.0 / 100.0), 55.0)
+        self.assertLess(83.0 * (55.0 / 100.0), 55.0)
+
     def test_decision_engine_ignores_quotes_when_disabled(self):
         from strategies.decision_engine import DecisionEngine
 

@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from bus.eval_queue import (
     PRIORITY_ENTRY_15M,
     PRIORITY_POSITION_HEARTBEAT,
+    PRIORITY_SOCIAL,
     PRIORITY_WEBHOOK,
     enqueue_eval,
     eval_member_key,
@@ -123,6 +124,27 @@ class TestEvalQueue(unittest.TestCase):
                 "SOL/USDT", "4h", reason="stale", priority=50, config_raw=CFG,
             )
         self.assertFalse(blocked)
+
+    def test_social_priority_upgrades_heartbeat(self):
+        """CMC/Lunar jobs must not sit behind 365 position heartbeats."""
+        self.assertLess(PRIORITY_SOCIAL, PRIORITY_POSITION_HEARTBEAT)
+        client, _, _ = _mock_redis_client()
+        with patch("bus.eval_queue._client", return_value=client):
+            self.assertTrue(
+                enqueue_eval(
+                    "PEPE/USDT", "4h", reason="position_heartbeat",
+                    priority=PRIORITY_POSITION_HEARTBEAT, config_raw=CFG,
+                )
+            )
+            self.assertTrue(
+                enqueue_eval(
+                    "PEPE/USDT", "4h", reason="social_cmc",
+                    priority=PRIORITY_SOCIAL, config_raw=CFG,
+                )
+            )
+            jobs = pop_eval_batch(1, config_raw=CFG)
+        self.assertEqual(jobs[0].reason, "social_cmc")
+        self.assertEqual(jobs[0].priority, PRIORITY_SOCIAL)
 
     def test_force_bypasses_debounce(self):
         client, _, _ = _mock_redis_client()

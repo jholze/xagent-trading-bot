@@ -31,6 +31,25 @@ class TestSocialChorus(unittest.TestCase):
         self.assertEqual(c.agree, "thin")
         self.assertFalse(c.boost_buys)
 
+    def test_cmc_quotes_plus_lunar_boosts_on_neutral_fusion(self):
+        """Live hole: Fusion NEUTRAL so Santiment does not vote; Lunar BUY is the 2nd source."""
+        c = evaluate_social_chorus(
+            {
+                "cmc_action": "BUY",
+                "cmc_confidence": 83,
+                "cmc_quotes_fallback": True,
+                "lc_action": "BUY",
+                "fusion_regime": "NEUTRAL",
+            },
+            cfg=_cfg(),
+        )
+        self.assertEqual(c.agree, "bull")
+        self.assertTrue(c.boost_buys)
+        self.assertIn("cmc", c.sources)
+        self.assertIn("lunar", c.sources)
+        self.assertNotIn("santiment", c.sources)
+        self.assertGreaterEqual(83.0 * (55.0 * c.cmc_trust_mult / 100.0), 55.0)
+
     def test_cmc_quotes_plus_santiment_risk_on_boosts(self):
         """Live tape: CMC derived BUY 88% + Oracle/Santiment RISK_ON → chorus."""
         c = evaluate_social_chorus(
@@ -168,6 +187,43 @@ class TestRegimeUsesChorusWeights(unittest.TestCase):
         self.assertIn(result.details.get("social_chorus"), ("bull", "thin", "mixed", "bear"))
         if result.details.get("social_chorus") == "bull":
             self.assertGreaterEqual(float(result.details["sentiment_weight"]), 0.50)
+
+
+class TestCmcTrustLunarWire(unittest.TestCase):
+    def test_trust_boosts_when_lunar_buy_and_fusion_neutral(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine()
+        cmc = SimpleNamespace(
+            action="BUY", confidence=83, quotes_fallback=True, trust_score=55.0
+        )
+        lc = SimpleNamespace(action="BUY", sentiment=80)
+        with patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"regime": "NEUTRAL", "sentiment": 0.0},
+        ):
+            trust = engine._cmc_trust_score(cmc, {}, lc_signal=lc)
+        self.assertAlmostEqual(trust, 55.0 * 1.25, places=2)
+
+    def test_trust_stays_base_without_lunar_on_neutral(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from strategies.decision_engine import DecisionEngine
+
+        engine = DecisionEngine()
+        cmc = SimpleNamespace(
+            action="BUY", confidence=83, quotes_fallback=True, trust_score=55.0
+        )
+        with patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"regime": "NEUTRAL", "sentiment": 0.0},
+        ):
+            trust = engine._cmc_trust_score(cmc, {}, lc_signal=None)
+        self.assertEqual(trust, 55.0)
 
 
 if __name__ == "__main__":
