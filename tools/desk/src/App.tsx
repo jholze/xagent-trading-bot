@@ -61,37 +61,53 @@ export default function App() {
   const [tf, setTf] = useState<Timeframe>('1h')
   const [snap, setSnap] = useState<DeskSnapshot>(() => emptySnapshot('default', 'LAB/USDT'))
   const [ohlcv, setOhlcv] = useState<OhlcvPack>(() => emptyOhlcv())
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
 
   useEffect(() => {
     setOhlcv(emptyOhlcv())
-  }, [tenant, symbol])
+  }, [tenant, symbol, tf])
 
   useEffect(() => {
-    const ac = new AbortController()
-    void (async () => {
+    let cancelled = false
+    let ac = new AbortController()
+
+    const load = async () => {
+      ac.abort()
+      ac = new AbortController()
+      const signal = ac.signal
       try {
         const next = await fetchSnapshot({
           tenant,
           symbol,
           tf,
-          signal: ac.signal,
+          signal,
         })
-        if (ac.signal.aborted) return
+        if (cancelled || signal.aborted) return
         setSnap(next)
         const pack = await fetchOhlcv({
           symbol: next.symbol || symbol,
           tf,
-          signal: ac.signal,
+          signal,
         })
-        if (ac.signal.aborted) return
+        if (cancelled || signal.aborted) return
         setOhlcv(pack)
+        setUpdatedAt(Date.now())
       } catch {
-        if (ac.signal.aborted) return
+        if (cancelled || signal.aborted) return
         setSnap(emptySnapshot(tenant, symbol))
         setOhlcv(emptyOhlcv())
       }
-    })()
-    return () => ac.abort()
+    }
+
+    void load()
+    const tick = window.setInterval(() => {
+      void load()
+    }, 10_000)
+    return () => {
+      cancelled = true
+      ac.abort()
+      window.clearInterval(tick)
+    }
   }, [tenant, symbol, tf])
 
   const lots = snap.lots ?? []
@@ -118,7 +134,13 @@ export default function App() {
       <header className="desk-header">
         <div className="brand">
           <h1>xagent desk</h1>
-          <p>paper · read-only · {tenant}</p>
+          <p>
+            paper · read-only · {tenant}
+            {snap.dev_fixture || ohlcv.dev_fixture ? ' · dev fixture' : ''}
+            {updatedAt
+              ? ` · ${new Date(updatedAt).toLocaleTimeString()}`
+              : ''}
+          </p>
         </div>
         <div className="header-right">
           <div className="badges" aria-label="Desk badges">
@@ -204,6 +226,7 @@ export default function App() {
 
         <section className="pane pane-chart" aria-label="Chart">
           <Chart
+            key={`${snap.symbol || symbol}:${tf}`}
             symbol={snap.symbol || symbol}
             tf={tf}
             onTfChange={setTf}

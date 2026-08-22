@@ -397,6 +397,9 @@ export function Chart({
           <i className="swatch" style={{ background: LIVE_COLOR }} />
           live {formatPx(live)}
         </span>
+        <span className="legend-item">
+          {tf} · {candles.length} bars
+        </span>
       </div>
       <div className="chart-stage">
         <div ref={hostRef} className="chart-canvas" aria-label="chart" />

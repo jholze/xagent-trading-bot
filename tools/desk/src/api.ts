@@ -67,6 +67,8 @@ export type DeskSnapshot = {
   conflict?: string | null
   next_edge?: string
   partial_stop_paused?: boolean
+  /** DEV-only. Production never sets this. */
+  dev_fixture?: boolean
 }
 
 export type OhlcvBar = {
@@ -87,6 +89,8 @@ export type OhlcvPack = {
   bb_lower?: Array<number | null>
   last_rsi?: number | null
   at_lower_bb?: boolean | null
+  /** DEV-only. Production never sets this. */
+  dev_fixture?: boolean
 }
 
 export type FetchSnapshotArgs = {
@@ -147,6 +151,14 @@ function deskHeaders(token?: string): HeadersInit {
   return headers
 }
 
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  if (!signal) return timeout
+  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any
+  if (typeof any === 'function') return any([signal, timeout])
+  return timeout
+}
+
 function isAbort(err: unknown): boolean {
   return (
     (err instanceof DOMException && err.name === 'AbortError') ||
@@ -189,13 +201,14 @@ export async function fetchSnapshot(args: FetchSnapshotArgs): Promise<DeskSnapsh
   try {
     const res = await fetch(url, {
       headers: deskHeaders(args.token),
-      signal: args.signal,
+      signal: withTimeout(args.signal, 4000),
     })
+    if (!res.ok) return await fallbackSnapshot(args)
     const body = await readJson<DeskSnapshot>(res)
-    if (body && body.ok === true) return body
+    if (body && body.ok === true) return { ...body, dev_fixture: false }
     return await fallbackSnapshot(args)
   } catch (err) {
-    if (isAbort(err)) throw err
+    if (isAbort(err) && args.signal?.aborted) throw err
     return await fallbackSnapshot(args)
   }
 }
@@ -208,13 +221,16 @@ export async function fetchOhlcv(args: FetchOhlcvArgs): Promise<OhlcvPack> {
   try {
     const res = await fetch(url, {
       headers: deskHeaders(args.token),
-      signal: args.signal,
+      signal: withTimeout(args.signal, 8000),
     })
+    if (!res.ok) return await fallbackOhlcv(args)
     const body = await readJson<OhlcvPack>(res)
-    if (body && body.ok === true) return body
+    if (body && body.ok === true && (body.bars?.length ?? 0) > 0) {
+      return { ...body, dev_fixture: false }
+    }
     return await fallbackOhlcv(args)
   } catch (err) {
-    if (isAbort(err)) throw err
+    if (isAbort(err) && args.signal?.aborted) throw err
     return await fallbackOhlcv(args)
   }
 }

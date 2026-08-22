@@ -11,7 +11,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/internal': {
-        target: 'http://127.0.0.1:5000',
+        // macOS AirPlay often owns :5000 — override with DESK_API=http://127.0.0.1:5055
+        target: process.env.DESK_API || 'http://127.0.0.1:5000',
         changeOrigin: true,
       },
     },

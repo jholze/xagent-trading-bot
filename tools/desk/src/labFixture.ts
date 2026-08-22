@@ -27,10 +27,12 @@ function tfMs(tf: string): number {
   return 60 * 60 * 1000
 }
 
-function makeBars(tf: string, n = 96): OhlcvBar[] {
+function makeBars(tf: string): OhlcvBar[] {
   const step = tfMs(tf)
+  const n = tf === '15m' ? 160 : tf === '4h' ? 48 : 80
+  const seed = tf === '15m' ? 0.161 : tf === '4h' ? 0.119 : 0.148
   const bars: OhlcvBar[] = []
-  let close = 0.148
+  let close = seed
   for (let i = 0; i < n; i++) {
     const ts = END_TS_MS - (n - 1 - i) * step
     const t = i / Math.max(n - 1, 1)
@@ -144,6 +146,7 @@ export function labSnapshot(args: FetchSnapshotArgs): DeskSnapshot {
     conflict: null,
     next_edge: LAB_NEXT_EDGE,
     partial_stop_paused: true,
+    dev_fixture: true,
   }
 }
 
@@ -167,5 +170,6 @@ export function labOhlcv(args: FetchOhlcvArgs): OhlcvPack {
     bb_lower: bb.lower,
     last_rsi: lastRsi,
     at_lower_bb: atLower,
+    dev_fixture: true,
   }
 }
