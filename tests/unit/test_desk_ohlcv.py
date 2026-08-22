@@ -1,3 +1,7 @@
+import json
+
+import numpy as np
+
 from services.desk.ohlcv import build_ohlcv_pack
 
 
@@ -53,6 +57,34 @@ def test_at_lower_bb_none_during_warmup():
     assert out["at_lower_bb"] is None
 
 
+def test_pack_json_safe_with_numpy_ts():
+    rows = [{
+        "ts": np.int64(i),
+        "open": np.float64(1),
+        "high": np.float64(1.1),
+        "low": np.float64(0.9),
+        "close": np.float64(1.0 + i * 0.001),
+    } for i in range(30)]
+    json.dumps(build_ohlcv_pack(rows))
+
+
+def test_non_finite_ohlc_and_ts_become_none():
+    rows = [{
+        "ts": float("inf"),
+        "open": float("inf"),
+        "high": float("nan"),
+        "low": 1.0,
+        "close": 1.0,
+    }]
+    out = build_ohlcv_pack(rows)
+    bar = out["bars"][0]
+    assert bar["ts"] is None
+    assert bar["open"] is None
+    assert bar["high"] is None
+    assert bar["low"] == 1.0
+    json.dumps(out)
+
+
 def test_at_lower_bb_true_when_close_near_lower():
     rows = [{"ts": i, "open": 100, "high": 101, "low": 99, "close": 100.0} for i in range(19)]
     rows.append({"ts": 19, "open": 80, "high": 90, "low": 40, "close": 50.0})
@@ -60,6 +92,31 @@ def test_at_lower_bb_true_when_close_near_lower():
     assert out["ok"] is True
     assert out["bb_lower"][-1] is not None
     assert out["at_lower_bb"] is True
+
+
+def test_at_lower_bb_true_within_live_1_02_ratio():
+    """1.5% above lower band still counts (live BB support 1.02, not 0.2%)."""
+    rows = [{"ts": i, "open": 100, "high": 101, "low": 99, "close": 100.0} for i in range(19)]
+    rows.append({"ts": 19, "open": 100, "high": 102, "low": 99, "close": 101.3})
+    out = build_ohlcv_pack(rows, rsi_period=14, bb_period=20)
+    lower = out["bb_lower"][-1]
+    close = out["closes"][-1]
+    assert lower is not None and close is not None
+    ratio = close / lower
+    assert ratio > 1.002
+    assert ratio <= 1.02
+    assert out["at_lower_bb"] is True
+
+
+def test_at_lower_bb_false_beyond_live_1_02_ratio():
+    rows = [{"ts": i, "open": 100, "high": 101, "low": 99, "close": 100.0} for i in range(19)]
+    rows.append({"ts": 19, "open": 100, "high": 103, "low": 99, "close": 101.5})
+    out = build_ohlcv_pack(rows, rsi_period=14, bb_period=20)
+    lower = out["bb_lower"][-1]
+    close = out["closes"][-1]
+    assert lower is not None and close is not None
+    assert close / lower > 1.02
+    assert out["at_lower_bb"] is False
 
 
 def test_at_lower_bb_false_on_rising_series():

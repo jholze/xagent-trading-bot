@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -11,8 +12,9 @@ try:
 except ImportError:  # pragma: no cover - test env normally has talib
     talib = None
 
-# Last close is at/near the lower band when close <= lower * 1.002. None while BB is warming up.
-_AT_LOWER_BB_FACTOR = 1.002
+# Last close is at/near the lower band when close <= lower * 1.02. None while BB is warming up.
+# Match live BB support ratio 1.02 (strategies/dca.py _score_bb_support, market_structure).
+_AT_LOWER_BB_FACTOR = 1.02
 
 
 def _unavailable() -> dict:
@@ -26,9 +28,21 @@ def _as_float(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if number != number:  # NaN
+    if not math.isfinite(number):
         return None
     return number
+
+
+def _as_ts(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number)
 
 
 def _optional_floats(values) -> list[float | None]:
@@ -38,7 +52,7 @@ def _optional_floats(values) -> list[float | None]:
 def _bar(row: Any) -> dict:
     src = row if isinstance(row, dict) else {}
     return {
-        "ts": src.get("ts"),
+        "ts": _as_ts(src.get("ts")),
         "open": _as_float(src.get("open")),
         "high": _as_float(src.get("high")),
         "low": _as_float(src.get("low")),
