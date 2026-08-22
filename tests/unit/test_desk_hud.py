@@ -84,6 +84,20 @@ def test_memory_structure_risk_blocks():
     assert hud["memory"]["flag"] == "structure_risk"
 
 
+def test_memory_hard_negative_blocks():
+    facts = _lab(memory_flag="hard_negative")
+    hud = build_hud(facts)
+    assert hud["memory"]["stance"] == "BLOCK"
+    assert hud["memory"]["flag"] == "hard_negative"
+
+
+def test_memory_unlock_blocks():
+    facts = _lab(memory_flag="unlock")
+    hud = build_hud(facts)
+    assert hud["memory"]["stance"] == "BLOCK"
+    assert hud["memory"]["flag"] == "unlock"
+
+
 def test_memory_flow_only_size_down():
     facts = _lab(memory_flag="flow_only")
     hud = build_hud(facts)
@@ -124,3 +138,37 @@ def test_fusion_crash_does_not_social_add():
     line = next_edge(facts, hud)
     assert not line.startswith("SOCIAL:")
     assert "→ add" not in line
+
+
+def _social_add_candidate(**overrides):
+    """TA not MISS and no remaining DCA — social would add if fusion were NEUTRAL."""
+    return _lab(at_lower_bb=True, dca_rounds=2, dca_max_rounds=2, **overrides)
+
+
+def _assert_no_social_add(facts):
+    hud = build_hud(facts)
+    assert hud["ta"]["stance"] != "MISS"
+    assert hud["social"]["stance"] == "BLOCK"
+    line = next_edge(facts, hud)
+    assert not line.startswith("SOCIAL:")
+    assert "→ add" not in line
+    return hud, line
+
+
+def test_fusion_crash_without_dca_does_not_social_add():
+    _assert_no_social_add(_social_add_candidate(fusion_regime="CRASH"))
+
+
+def test_fusion_risk_off_without_dca_does_not_social_add():
+    _assert_no_social_add(_social_add_candidate(fusion_regime="RISK_OFF"))
+
+
+def test_fusion_neutral_without_dca_social_armed():
+    facts = _social_add_candidate(fusion_regime="NEUTRAL")
+    hud = build_hud(facts)
+    assert hud["ta"]["stance"] != "MISS"
+    assert hud["social"]["stance"] == "ARMED"
+    line = next_edge(facts, hud)
+    assert line.startswith("SOCIAL:")
+    assert "→ add" in line
+
