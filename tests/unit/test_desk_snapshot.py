@@ -157,3 +157,41 @@ def test_snapshot_unknown_tenant_rejected():
     )
     assert snap["ok"] is False
     assert snap["error"] == "tenant_not_allowed"
+
+
+def test_facts_overlay_keeps_lot_dca_and_adds_ta():
+    snap = build_snapshot(
+        tenant_id="default",
+        symbol="LAB/USDT",
+        config_raw={
+            "desk": {"enabled": True, "tenants": ["default", "henry"]},
+            "dca": {"max_rounds": 2, "pause_partial_stop_during_dca": True},
+        },
+        lots=[
+            {
+                "symbol": "LAB/USDT",
+                "timeframe": "1h",
+                "amount": 1,
+                "average_entry": 0.132,
+                "dca_rounds": 1,
+                "source": "grid",
+                # real list_active_positions DTO: NO dca_max_rounds, NO partial_stop_paused
+            }
+        ],
+        fusion={"regime": "NEUTRAL", "size_mult": 0.85},
+        cash_mode="DEPLOY",
+        relvol_open=8,
+        relvol_max=8,
+        facts={
+            "rsi": 37.7,
+            "at_lower_bb": False,
+            "cmc_confidence": 83.0,
+            "cmc_trust": 72.0,
+        },
+    )
+    assert snap["ok"] is True
+    assert snap["hud"]["ta"]["stance"] == "MISS"
+    assert snap["hud"]["ta"]["path"] == "DCA 1/2"
+    assert snap["partial_stop_paused"] is True
+    assert "DCA" in snap["next_edge"]
+    assert "RSI" in snap["next_edge"]

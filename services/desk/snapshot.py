@@ -8,6 +8,7 @@ from services.desk.hud import build_hud, next_edge as compose_next_edge
 
 _DEFAULT_TENANTS = ("default", "henry")
 _DEFAULT_RELVOL_MAX = 8
+_DEFAULT_DCA_MAX_ROUNDS = 2
 _DEFAULT_SIZE_MULT_DEPLOY = 0.80
 _BADGE_EMPTY = "—"
 _CONFLICT_SOCIAL_MEMORY = "SOCIAL ARMED · MEMORY BLOCK"
@@ -216,16 +217,69 @@ def _load_social_facts(symbol: str) -> dict:
         return {}
 
 
-def _load_facts(
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _selected_lot(lots: list[dict] | None, symbol: str) -> dict | None:
+    for lot in lots or []:
+        if not isinstance(lot, dict):
+            continue
+        if str(lot.get("symbol") or "") == symbol:
+            return lot
+    return None
+
+
+def _config_dca_max_rounds(config_raw: dict | None) -> int:
+    if not isinstance(config_raw, dict):
+        return _DEFAULT_DCA_MAX_ROUNDS
+    dca = config_raw.get("dca")
+    if not isinstance(dca, dict):
+        return _DEFAULT_DCA_MAX_ROUNDS
+    mx = _int_or_none(dca.get("max_rounds"))
+    return mx if mx is not None else _DEFAULT_DCA_MAX_ROUNDS
+
+
+def _lot_dca_max_rounds(lot: dict, config_raw: dict | None) -> int:
+    mx = _int_or_none(lot.get("dca_max_rounds"))
+    if mx is not None:
+        return mx
+    return _config_dca_max_rounds(config_raw)
+
+
+def _lot_partial_stop_paused(
+    lot: dict, dca_rounds: int, dca_max: int, config_raw: dict | None
+) -> bool:
+    if lot.get("partial_stop_paused") is not None:
+        return bool(lot.get("partial_stop_paused"))
+    try:
+        from strategies.dca import should_pause_partial_stop
+
+        return bool(
+            should_pause_partial_stop(
+                {"dca_rounds": dca_rounds, "dca_max_rounds": dca_max},
+                strategy_params=config_raw,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _compose_base_facts(
     *,
     symbol: str,
-    tenant_id: str,
-    config_raw: dict | None,
+    lots: list[dict] | None,
     fusion: dict | None,
     relvol_open: int | None,
     relvol_max: int | None,
-    lots: list[dict] | None,
+    config_raw: dict | None,
 ) -> dict:
+    """Pure facts from already-resolved lots / fusion / relvol. No Mongo."""
     facts: dict = {}
     if isinstance(fusion, dict):
         regime = fusion.get("regime") or fusion.get("state")
@@ -235,20 +289,47 @@ def _load_facts(
         facts["relvol_open"] = relvol_open
     if relvol_max is not None:
         facts["relvol_max"] = relvol_max
-    facts.update(_load_memory_facts(symbol, tenant_id, config_raw))
-    facts.update(_load_social_facts(symbol))
-    for lot in lots or []:
-        if not isinstance(lot, dict):
-            continue
-        if str(lot.get("symbol") or "") != symbol:
-            continue
-        if lot.get("dca_rounds") is not None:
-            facts.setdefault("dca_rounds", lot.get("dca_rounds"))
-        if lot.get("dca_max_rounds") is not None:
-            facts.setdefault("dca_max_rounds", lot.get("dca_max_rounds"))
-        if lot.get("partial_stop_paused") is not None:
-            facts.setdefault("partial_stop_paused", lot.get("partial_stop_paused"))
-        break
+
+    lot = _selected_lot(lots, symbol)
+    if lot is None:
+        return facts
+
+    used = _int_or_none(lot.get("dca_rounds"))
+    if used is None:
+        used = 0
+    mx = _lot_dca_max_rounds(lot, config_raw)
+    facts["dca_rounds"] = used
+    facts["dca_max_rounds"] = mx
+    facts["partial_stop_paused"] = _lot_partial_stop_paused(lot, used, mx, config_raw)
+    return facts
+
+
+def _merge_facts(
+    *,
+    symbol: str,
+    tenant_id: str,
+    config_raw: dict | None,
+    fusion: dict | None,
+    relvol_open: int | None,
+    relvol_max: int | None,
+    lots: list[dict] | None,
+    overlay: dict | None,
+) -> dict:
+    """Base (lots/fusion/relvol) + optional live memory/social + caller overlay."""
+    overlay = overlay if isinstance(overlay, dict) else {}
+    facts = _compose_base_facts(
+        symbol=symbol,
+        lots=lots,
+        fusion=fusion,
+        relvol_open=relvol_open,
+        relvol_max=relvol_max,
+        config_raw=config_raw,
+    )
+    if "memory_bias" not in overlay and "memory_flag" not in overlay:
+        facts.update(_load_memory_facts(symbol, tenant_id, config_raw))
+    if "cmc_confidence" not in overlay:
+        facts.update(_load_social_facts(symbol))
+    facts.update(overlay)
     return facts
 
 
@@ -309,7 +390,8 @@ def build_snapshot(
     """Assemble a read-only desk snapshot.
 
     Keyword-injectable: tests pass lots/fusion/cash/relvol/facts and never hit Mongo.
-    Live wiring runs only when those kwargs are omitted; every helper is fail-open.
+    ``facts=`` overlays a base composed from lots/fusion/relvol (caller wins).
+    Live memory/social I/O runs only when those keys are missing from the overlay.
     Enabled + tenant allowlist are checked before any live load.
     """
     if config_raw is None:
@@ -341,18 +423,16 @@ def build_snapshot(
     if cash_mode is None:
         cash_mode = _load_cash_mode(fusion, config_raw)
 
-    if facts is None:
-        facts = _load_facts(
-            symbol=symbol,
-            tenant_id=tenant_id,
-            config_raw=config_raw,
-            fusion=fusion,
-            relvol_open=relvol_open,
-            relvol_max=relvol_max,
-            lots=lots,
-        )
-    elif not isinstance(facts, dict):
-        facts = {}
+    facts = _merge_facts(
+        symbol=symbol,
+        tenant_id=tenant_id,
+        config_raw=config_raw,
+        fusion=fusion,
+        relvol_open=relvol_open,
+        relvol_max=relvol_max,
+        lots=lots,
+        overlay=facts,
+    )
 
     hud = build_hud(facts)
     return {
