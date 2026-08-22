@@ -1493,15 +1493,10 @@ class DecisionEngine:
                 # Epic #222: sniper owns heavy DCA when enabled
                 _sniper_blocks_cycle_dca = False
                 try:
-                    from services.dca_sniper.config import (
-                        dca_sniper_config,
-                        dca_sniper_enabled,
-                    )
+                    from services.dca_sniper.config import sniper_owns_cycle_dca
 
-                    _sc = dca_sniper_config(self.config.raw)
-                    _sniper_blocks_cycle_dca = bool(
-                        dca_sniper_enabled(self.config.raw)
-                        and _sc.get("disable_cycle_dca_when_enabled", True)
+                    _sniper_blocks_cycle_dca = sniper_owns_cycle_dca(
+                        self.config.raw, position
                     )
                 except Exception:
                     _sniper_blocks_cycle_dca = False
@@ -1555,10 +1550,18 @@ class DecisionEngine:
                 if dca:
                     from strategies.dca_portfolio import should_defer_per_coin_dca
 
+                    sniper_ate_portfolio = False
+                    try:
+                        from services.dca_sniper.config import sniper_skips_portfolio_dca
+
+                        sniper_ate_portfolio = sniper_skips_portfolio_dca(self.config.raw)
+                    except Exception:
+                        sniper_ate_portfolio = False
                     defer = (
                         not dca.shadow_only
                         and should_defer_per_coin_dca(market.strategy_params, self.config.raw)
                         and str(dca.source or "") != "dca_scheduled"
+                        and not sniper_ate_portfolio
                     )
                     if defer:
                         sources.append(dca.source)

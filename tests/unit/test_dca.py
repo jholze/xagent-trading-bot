@@ -187,6 +187,58 @@ class TestDCAModule(unittest.TestCase):
         self.assertFalse(decision.should_dca)
         self.assertIn("score", decision.blocked_reason or "")
 
+    def test_oversold_remaining_round_allows_lab_style_dip(self):
+        """LAB hole: −8% (or deeper), RSI 37.7, rounds 1/2, scoring cores miss."""
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["average_entry"] = 1.0
+        pos["dca_rounds"] = 1
+        pos["dca_max_rounds"] = 2
+        pos["amount"] = 100
+        params = dict(self.params)
+        params["dca"] = _scoring_dca_cfg()
+        params["dca"]["remaining_round_oversold_rsi"] = 40
+        params["dca"]["interval_hours"] = 0
+        params["stop_loss_pct"] = 50
+        weak = self._market(
+            1.0,
+            0.60,
+            rsi=37.7,
+            atr_pct=8.0,
+            funding_rate_pct=0.01,
+            btc_underperf_ratio=None,
+            lower_bb=0.4,
+        )
+        without = should_dca(weak, pos, {**params, "dca": {**params["dca"], "remaining_round_oversold_rsi": 0}})
+        self.assertFalse(without.should_dca, msg=without.blocked_reason)
+        with_flag = should_dca(weak, pos, params)
+        self.assertTrue(with_flag.should_dca, msg=with_flag.blocked_reason)
+        self.assertEqual(with_flag.breakdown.get("oversold_remaining_round"), 1)
+        cand = evaluate_dca_addon(weak, pos, params)
+        self.assertIsNotNone(cand)
+        self.assertIn("oversold", cand.rationale.lower())
+
+    def test_oversold_remaining_round_skips_first_round(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["average_entry"] = 1.0
+        pos["dca_rounds"] = 0
+        params = dict(self.params)
+        params["dca"] = _scoring_dca_cfg()
+        params["dca"]["remaining_round_oversold_rsi"] = 40
+        params["dca"]["interval_hours"] = 0
+        weak = self._market(
+            1.0,
+            0.90,
+            rsi=37.7,
+            atr_pct=8.0,
+            funding_rate_pct=0.01,
+            btc_underperf_ratio=None,
+            lower_bb=0.4,
+        )
+        decision = should_dca(weak, pos, params)
+        self.assertFalse(decision.should_dca)
+
     def test_scoring_disabled_uses_legacy_dip(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)
