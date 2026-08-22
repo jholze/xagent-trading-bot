@@ -18,8 +18,8 @@ Ein **read-only** Paper-Desk, der auf einem Coin **zeigt was der Bot denkt und w
 | Layout | Jesse-klassisch: Lots \| Chart \| HUD |
 | Tenants | Toggle default \| henry (ctexp out) |
 | Mode | Paper, keine Orders vom UI |
-| Deploy | Railway service `xagent-desk`, Token wie Exit-WS |
-| Kill | Service aus / Flag `desk.enabled=false` |
+| Deploy | Bot `/desk/` (kein split `xagent-desk` Service), Token wie Exit-WS |
+| Kill | Flag `desk.enabled=false` |
 
 ## Chart (Mitte)
 
@@ -65,6 +65,17 @@ Order-Buttons, Cap-Editoren, Radar/Cortex iframe, Lesson-Editor, RAG-Chat, Live-
 
 Fixture LAB: −40 %, RSI 37.7, DCA 1/2, PS paused, CMC quotes armed, Fusion NEUTRAL, RelVol 8/8.  
 Operator sieht in 3s: underwater, Stop absichtlich pausiert, eine DCA-Runde offen, Social würde kaufen, RelVol-Pfad ist ein anderes Tor.
+
+## Deploy
+
+v0 is served from the bot at `/desk/` (not a split `xagent-desk` Railway service).
+Kill: `desk.enabled=false` in `config.json`.
+Open: `https://xagent-test-test.up.railway.app/desk/?token=`
+Auth: `EXIT_WS_INTERNAL_TOKEN` or `DESK_TOKEN`, header `X-Exit-Ws-Token`.
+Paper, read-only, tenants default+henry; RelVol is display-only.
+APIs return 503 if the token is unset.
+Dist is baked in Docker (`node:22-slim` stage → `/app/tools/desk/dist`).
+Do not commit `dist/` or `node_modules`.
 
 ## Agenten-Konsens (2026-08-22)
 

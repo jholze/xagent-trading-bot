@@ -75,6 +75,9 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:
   exec python3 scripts/gis_monitor_railway_entry.py
 fi
 
+# Desk v0 is in-process Flask on aria_bot at /desk — no extra Railway process
+# and no xagent-desk service. Kill: desk.enabled=false in config.json.
+
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true
 python3 - <<'PY' 2>/dev/null || true
