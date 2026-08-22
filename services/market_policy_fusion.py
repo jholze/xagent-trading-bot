@@ -1,7 +1,9 @@
 """Global market bias fusion (Market Oracle + Santiment).
 
 Arena collision rules:
-1. Size applied ONCE in RiskManager — fusion takes min(size_mult).
+1. Size applied ONCE in RiskManager — fusion takes min(size_mult), except:
+   Oracle RISK_ON does not let Santiment NEUTRAL/RISK_ON size drag down
+   (Santiment RISK_OFF/CRASH still min). Kill: architecture.fusion_oracle_risk_on_keep_size=false.
 2. Never force MODE_DEFENSIVE from global RISK_OFF (Grid 50% dump).
 3. Soft sentiment for RegimeDetector stays > allocator defensive_thresh (-0.55)
    for RISK_OFF.
@@ -27,6 +29,8 @@ _REGIME_SENTIMENT = {
 
 _SEVERITY = {"active": 0, "shadow": 1, "block": 2}
 _STATE_RANK = {"RISK_ON": 0, "NEUTRAL": 1, "WARMUP": 2, "RISK_OFF": 3, "CRASH": 4}
+_SAN_SIZE_DRAG_BLOCKS = frozenset({"RISK_OFF", "CRASH"})
+_KEEP_ORACLE_SIZE_TENANTS = ("default", "henry")
 
 
 def _worse_regime(a: str | None, b: str | None) -> str | None:
@@ -40,6 +44,55 @@ def _worse_regime(a: str | None, b: str | None) -> str | None:
 
 def _worse_sensor(a: str, b: str) -> str:
     return a if _SEVERITY.get(a, 0) >= _SEVERITY.get(b, 0) else b
+
+
+def _layer_regime(pol: dict[str, Any] | None) -> str:
+    if not pol:
+        return ""
+    return str(pol.get("regime") or pol.get("state") or "").upper()
+
+
+def _keep_oracle_size_on_risk_on(config_raw: dict | None) -> bool:
+    """Oracle RISK_ON: skip Santiment size min unless Santiment is RISK_OFF/CRASH.
+
+    Kill: architecture.fusion_oracle_risk_on_keep_size=false.
+    Tenants: architecture.fusion_oracle_risk_on_keep_size_tenants (empty = all).
+    Staging default: default+henry.
+    """
+    arch = (config_raw or {}).get("architecture") or {}
+    if not bool(arch.get("fusion_oracle_risk_on_keep_size", True)):
+        return False
+    raw_tenants = arch.get("fusion_oracle_risk_on_keep_size_tenants")
+    if raw_tenants is None:
+        allowed = set(_KEEP_ORACLE_SIZE_TENANTS)
+    elif isinstance(raw_tenants, str):
+        allowed = {t.strip() for t in raw_tenants.split(",") if t.strip()}
+    else:
+        allowed = {str(t).strip() for t in raw_tenants if str(t).strip()}
+    if not allowed:
+        return True
+    try:
+        from core.tenant_context import resolve_tenant_id
+
+        tid = resolve_tenant_id()
+    except Exception:
+        tid = "default"
+    return tid in allowed
+
+
+def _skip_santiment_size_drag(
+    *,
+    keep_oracle_size: bool,
+    ora: dict[str, Any],
+    san: dict[str, Any],
+) -> bool:
+    if not keep_oracle_size:
+        return False
+    if not ora.get("active") or not ora.get("apply_size_mult"):
+        return False
+    if _layer_regime(ora) != "RISK_ON":
+        return False
+    return _layer_regime(san) not in _SAN_SIZE_DRAG_BLOCKS
 
 
 def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
@@ -84,6 +137,11 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
     as_ofs = []
     apply_size = False
     apply_sensor = False
+    skip_san_size = _skip_santiment_size_drag(
+        keep_oracle_size=_keep_oracle_size_on_risk_on(config_raw),
+        ora=ora,
+        san=san,
+    )
 
     for name, pol in layers:
         sources.append(name)
@@ -95,7 +153,10 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
                 sm_f = 1.0 if sm is None else float(sm)
             except Exception:
                 sm_f = 1.0
-            size = min(size, sm_f)
+            if name == "santiment" and skip_san_size:
+                rationales.append("fusion:skip_santiment_size oracle=RISK_ON")
+            else:
+                size = min(size, sm_f)
         if pol.get("apply_sensor_policy"):
             apply_sensor = True
             sensor = _worse_sensor(sensor, str(pol.get("sensor_policy") or "active"))

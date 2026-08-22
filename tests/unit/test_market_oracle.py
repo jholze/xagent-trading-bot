@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from core.tenant_context import tenant_context
 from services.market_oracle.regime import StateHysteresis, decide, raw_state_from_features
 from services.market_oracle.snapshot import build_snapshot
 from services.market_oracle_ingest import process_market_oracle_ingest
@@ -330,6 +331,99 @@ class TestOraclePolicy(unittest.TestCase):
         self.assertEqual(bias["sensor_policy"], "shadow")
         self.assertIn("santiment", bias["sources"])
         self.assertIn("oracle", bias["sources"])
+
+    def _store_ora_san(self, *, ora_state, ora_size, san_regime, san_size):
+        store_snapshot(
+            {
+                "source": "market_oracle",
+                "state": ora_state,
+                "size_mult": ora_size,
+                "sensor_policy": "active",
+                "ttl_sec": 900,
+            }
+        )
+        store_san(
+            {
+                "source": "santiment",
+                "regime": san_regime,
+                "size_mult": san_size,
+                "sensor_policy": "active",
+                "ttl_sec": 1800,
+            }
+        )
+
+    def _keep_size_arch(self, **extra):
+        arch = {
+            "santiment_risk_enabled": True,
+            "market_oracle_risk_enabled": True,
+            "market_oracle_warmup_sec": 0,
+            "fusion_oracle_risk_on_keep_size": True,
+            "fusion_oracle_risk_on_keep_size_tenants": ["default", "henry"],
+        }
+        arch.update(extra)
+        return {"architecture": arch}
+
+    def test_oracle_risk_on_skips_santiment_neutral_size(self):
+        """Melt-up: Oracle RISK_ON 1.0 must not be pulled to Santiment NEUTRAL 0.85."""
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="NEUTRAL", san_size=0.85
+        )
+        bias = get_global_market_bias(self._keep_size_arch())
+        self.assertTrue(bias["active"])
+        self.assertEqual(bias["regime"], "NEUTRAL")  # worse() still
+        self.assertAlmostEqual(bias["size_mult"], 1.0)
+        self.assertIn("skip_santiment_size", bias["rationale"])
+
+    def test_oracle_risk_on_skips_santiment_risk_on_cap(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="RISK_ON", san_size=0.9
+        )
+        bias = get_global_market_bias(self._keep_size_arch())
+        self.assertEqual(bias["regime"], "RISK_ON")
+        self.assertAlmostEqual(bias["size_mult"], 1.0)
+
+    def test_oracle_risk_on_still_mins_santiment_risk_off(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="RISK_OFF", san_size=0.35
+        )
+        bias = get_global_market_bias(self._keep_size_arch())
+        self.assertEqual(bias["regime"], "RISK_OFF")
+        self.assertAlmostEqual(bias["size_mult"], 0.35)
+        self.assertNotIn("skip_santiment_size", bias["rationale"])
+
+    def test_oracle_risk_on_still_mins_santiment_crash(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="CRASH", san_size=0.0
+        )
+        bias = get_global_market_bias(self._keep_size_arch())
+        self.assertEqual(bias["regime"], "CRASH")
+        self.assertAlmostEqual(bias["size_mult"], 0.0)
+
+    def test_keep_size_kill_flag_restores_min(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="NEUTRAL", san_size=0.85
+        )
+        bias = get_global_market_bias(
+            self._keep_size_arch(fusion_oracle_risk_on_keep_size=False)
+        )
+        self.assertAlmostEqual(bias["size_mult"], 0.85)
+        self.assertNotIn("skip_santiment_size", bias["rationale"])
+
+    def test_keep_size_skipped_for_ctexp_tenant(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="NEUTRAL", san_size=0.85
+        )
+        with tenant_context("ctexp"):
+            bias = get_global_market_bias(self._keep_size_arch())
+        self.assertAlmostEqual(bias["size_mult"], 0.85)
+
+    def test_keep_size_applies_for_henry_tenant(self):
+        self._store_ora_san(
+            ora_state="RISK_ON", ora_size=1.0, san_regime="NEUTRAL", san_size=0.85
+        )
+        with tenant_context("henry"):
+            bias = get_global_market_bias(self._keep_size_arch())
+        self.assertAlmostEqual(bias["size_mult"], 1.0)
 
     def test_ingest(self):
         cfg = {
