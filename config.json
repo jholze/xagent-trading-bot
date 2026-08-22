@@ -2049,6 +2049,11 @@
     "_rollback": "owner=bot + enabled=false on sidecar; or enabled=false → cycle-only exits",
     "_sidecar": "Set owner=sidecar + EXIT_EXECUTE_URL + EXIT_WS_INTERNAL_TOKEN on both services"
   },
+  "desk": {
+    "enabled": true,
+    "tenants": ["default", "henry"],
+    "_doc": "Read-only React desk at /desk. Kill: enabled=false."
+  },
   "grid_states": {
     "AAA/USDT_1h": {
       "symbol": "AAA/USDT",
