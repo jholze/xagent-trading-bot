@@ -57,6 +57,10 @@ def _load_lots(tenant_id: str) -> list[dict]:
 
         with tenant_context(tenant_id):
             lots = list_active_positions(tenant_id=tenant_id)
+            if not lots:
+                from strategies.positions import list_active_positions_from_ledger
+
+                lots = list_active_positions_from_ledger(tenant_id=tenant_id)
         if not isinstance(lots, list):
             return []
         return [lot for lot in lots if isinstance(lot, dict)]
