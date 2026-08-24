@@ -53,7 +53,7 @@ Grok TUI / Team
     ▼
 xagent-mcp  (Railway test, PORT, /health)
     │  authorize()
-    ├─ read  → build_snapshot / lots / fusion  (Mongo, fail-open)
+    ├─ read  → snapshot / lots / orders / memory / why  (Mongo, fail-open)
     └─ write → POST xagent-test /internal/mcp/execute
                     X-Exit-Ws-Token + tenant_id + actor_id
                     TradingService.execute_buy/sell + set_position_lock
@@ -81,6 +81,9 @@ Operator creates Railway service **`xagent-mcp`** in env **test** (not this PR; 
 | `xagent_whoami` | — | actor_id, role, tenants, caps |
 | `xagent_snapshot` | `read` | Desk-Snapshot (lots, HUD, next_edge, badges) |
 | `xagent_lots` | `read` | Offene Lots, tenant-scoped |
+| `xagent_orders` | `read` | Filled/rejected Orders: source, signal, risk, size (tenant-scoped) |
+| `xagent_memory` | `read` | CoinProfile, FactFlags, Events, TradeMemory, Lessons, RAG (keine Embeddings) |
+| `xagent_why` | `read` | Why-Pack pro Coin: Lot + HUD + Orders/Signale + Memory + Facts + RAG |
 | `xagent_buy` | `trade` | `symbol`, `usdt`, `timeframe`; Bot sized/blocked |
 | `xagent_sell` | `trade` | `symbol`, `pct` 0–100 oder `amount`; Bot sized/blocked |
 | `xagent_lock` / `xagent_unlock` | `lock` | Position lock wie Telegram `/lock` |

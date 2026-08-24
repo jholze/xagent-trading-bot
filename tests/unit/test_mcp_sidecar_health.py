@@ -115,3 +115,36 @@ def test_sidecar_does_not_import_aria_bot():
     assert "aria_bot" not in sys.modules
     sidecar_app.create_app()
     assert "aria_bot" not in sys.modules
+
+
+def test_why_missing_symbol_after_auth(monkeypatch):
+    monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
+    monkeypatch.delenv("MCP_ACTORS_JSON", raising=False)
+    from services.mcp_sidecar.app import invoke_tool
+
+    out = invoke_tool(
+        "xagent_why",
+        authorization="Bearer owner-secret",
+        config_raw=_ENABLED,
+        tenant="default",
+    )
+    assert out["ok"] is False
+    assert out["error"] == "missing_symbol"
+
+
+def test_orders_unauthorized(monkeypatch):
+    monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
+    from services.mcp_sidecar.app import invoke_tool
+
+    out = invoke_tool("xagent_orders", authorization="", config_raw=_ENABLED)
+    assert out["ok"] is False
+    assert out["error"] == "unauthorized"
+
+
+def test_memory_unauthorized(monkeypatch):
+    monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
+    from services.mcp_sidecar.app import invoke_tool
+
+    out = invoke_tool("xagent_memory", authorization=None, config_raw=_ENABLED)
+    assert out["ok"] is False
+    assert out["error"] == "unauthorized"
