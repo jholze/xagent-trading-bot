@@ -2055,6 +2055,12 @@
     "tenants": ["default", "henry"],
     "_doc": "Read-only React desk at /desk. Kill: enabled=false."
   },
+  "mcp": {
+    "enabled": true,
+    "allow_writes": true,
+    "tenants": ["default", "henry", "ctexp"],
+    "_doc": "Grok MCP sidecar xagent-mcp. Kill: enabled=false (deaf) or allow_writes=false (reads only)."
+  },
   "grid_states": {
     "AAA/USDT_1h": {
       "symbol": "AAA/USDT",
