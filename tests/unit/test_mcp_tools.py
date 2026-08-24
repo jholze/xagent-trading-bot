@@ -237,7 +237,7 @@ def test_execute_posts_json_with_token(monkeypatch):
     out = execute(action="buy", tenant_id="henry", symbol="LAB/USDT", usdt=25, actor_id="jens")
     assert out.get("ok") is True
     assert captured["url"] == "https://bot.example/internal/mcp/execute"
-    assert captured["timeout"] == 8
+    assert captured["timeout"] == 45
     assert captured["method"] == "POST"
     assert captured["token"] == "secret"
     import json
@@ -245,3 +245,31 @@ def test_execute_posts_json_with_token(monkeypatch):
     body = json.loads(captured["data"].decode("utf-8"))
     assert body["action"] == "buy"
     assert body["tenant_id"] == "henry"
+
+
+def test_execute_timeout_env_override(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setenv("MCP_BOT_URL", "https://bot.example")
+    monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
+    monkeypatch.setenv("MCP_BOT_TIMEOUT_SEC", "60")
+    monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from services.mcp_client import execute
+
+    execute(action="buy", tenant_id="default", symbol="BLESS/USDT", usdt=2500)
+    assert captured["timeout"] == 60

@@ -9,7 +9,18 @@ import urllib.request
 from typing import Any
 
 EXECUTE_PATH = "/internal/mcp/execute"
-TIMEOUT_SEC = 8
+TIMEOUT_SEC = 45
+
+
+def _timeout_sec() -> float:
+    raw = (os.environ.get("MCP_BOT_TIMEOUT_SEC") or "").strip()
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        n = TIMEOUT_SEC
+    if n < 5:
+        return float(TIMEOUT_SEC)
+    return n
 
 
 def _bot_base_url() -> str:
@@ -49,7 +60,7 @@ def execute(**body: Any) -> dict[str, Any]:
         headers["X-Exit-Ws-Token"] = tok
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
+        with urllib.request.urlopen(req, timeout=_timeout_sec()) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return _parse_body(raw)
     except urllib.error.HTTPError as e:
