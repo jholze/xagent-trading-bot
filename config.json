@@ -2058,8 +2058,10 @@
   "mcp": {
     "enabled": true,
     "allow_writes": true,
+    "allow_live": false,
+    "write_rate_per_min": 20,
     "tenants": ["default", "henry", "ctexp"],
-    "_doc": "Grok MCP sidecar xagent-mcp. Kill: enabled=false (deaf) or allow_writes=false (reads only)."
+    "_doc": "Grok MCP sidecar xagent-mcp. Kill: enabled=false (deaf) or allow_writes=false (reads only). allow_live=false blocks real Gate fills even if this image is on main."
   },
   "grid_states": {
     "AAA/USDT_1h": {

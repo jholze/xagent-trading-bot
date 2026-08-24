@@ -19,7 +19,7 @@ Ein **MCP-Server**, den ein Grok-Trading-Team an den Paper-Bot hängt. Team-Mitg
 | Authz | Eine Funktion `authorize(actor, action, tenant_id)` vor jedem Tool |
 | Writes | `TradingService` + `RiskManager` unter `tenant_context` |
 | Paper | `DEMO_MODE=1` / ledger paper. Kein Live. |
-| Kill | `mcp.enabled=false` und/oder Service aus; `mcp.allow_writes=false` → nur Reads |
+| Kill | `mcp.enabled=false` und/oder Service aus; `mcp.allow_writes=false` → nur Reads. `allow_live=false` blockt echte Gate-Fills. |
 | Tenants | Owner `*`. Operator genau einer. ctexp ist für Owner sichtbar (Telegram `[ctexp]` ist Owner-Inbox, kein Ledger-Mix). |
 
 ## Berechtigungsschicht
@@ -110,7 +110,7 @@ MCP-Sidecar setzt `X-Exit-Ws-Token` aus `EXIT_WS_INTERNAL_TOKEN` oder `MCP_BOT_T
 |---|---|
 | Authz / Token | **Fail-closed** |
 | Snapshot/Mongo read | **Fail-open** leere Lots + error string |
-| Write HTTP | Fehler an Grok zurück, **kein** Retry-Storm; Timeout 8s |
+| Write HTTP | Fehler an Grok zurück, **kein** Retry-Storm; Timeout 45s. Idempotency 30s-Bucket. Writes 20/min/Actor. Bot-Execute: HMAC-Token, Tenant-Allowlist, `allow_live=false`. |
 | Bot Risk | Reject ist Erfolg des Gates, nicht MCP-Crash |
 
 ## Test / Abnahme

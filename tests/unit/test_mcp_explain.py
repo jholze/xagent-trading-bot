@@ -298,6 +298,22 @@ def test_memory_pack_symbol_strips_embeddings():
     assert pack["rag"][0]["chunk_id"] == "c1"
 
 
+def test_memory_pack_drops_other_tenant_lessons():
+    store = _store()
+    store.lessons.append(
+        FakeLesson(
+            lesson_id="l-henry",
+            text="henry only",
+            symbols=["BLESS/USDT"],
+            tenant_id="henry",
+        )
+    )
+    pack = memory_pack("default", "BLESS/USDT", store=store, facts_fn=lambda **_k: {})
+    ids = [x["lesson_id"] for x in pack["lessons"]]
+    assert "l1" in ids
+    assert "l-henry" not in ids
+
+
 def test_memory_pack_fail_open_store():
     class Boom:
         def get_profile(self, *_a, **_k):

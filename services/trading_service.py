@@ -272,24 +272,52 @@ class TradingService:
         return result
 
     def execute_buy(
-        self, symbol: str, timeframe: str, price: float, usdt: float = None, order_id: str = None,
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        usdt: float = None,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
     ) -> TradeResult:
+        src = source or "manual"
         order = TradeOrder(
             type="BUY",
             symbol=symbol,
             price=price,
             amount=0,
             usdt_amount=usdt or 0,
-            source="manual",
+            source=src,
             order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
         )
-        return self.execute_order(order, timeframe, source="manual", order_id=order_id)
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
 
     def execute_sell(
-        self, symbol: str, timeframe: str, price: float, signal: str, amount: float, order_id: str = None,
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        signal: str,
+        amount: float,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
     ) -> TradeResult:
+        src = source or "manual"
         order = TradeOrder(
-            type="SELL", symbol=symbol, price=price, amount=amount, signal=signal, source="manual",
+            type="SELL",
+            symbol=symbol,
+            price=price,
+            amount=amount,
+            signal=signal,
+            source=src,
             order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
         )
-        return self.execute_order(order, timeframe, source="manual", order_id=order_id)
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
