@@ -6,7 +6,7 @@
 
 **Beginner-friendly:** Every important Telegram message explains **why** the bot did something — in plain language, no trading background required.
 
-> **Full documentation:** [DOCUMENTATION.en.md](DOCUMENTATION.en.md) — architecture, strategies, **transparency & glossary**, all Telegram commands, Hermes, demo mode. **Confused?** → [§18 decision guide](DOCUMENTATION.en.md#18-changelog--decision-guide-version-20)
+> **Full documentation:** [DOCUMENTATION.en.md](DOCUMENTATION.en.md) — architecture, strategies, **transparency & glossary**, all Telegram commands, Hermes, demo mode, **Grok MCP**. **Confused?** → [§18 decision guide](DOCUMENTATION.en.md#18-changelog--decision-guide-version-20)
 
 ---
 
@@ -158,9 +158,10 @@ execution/               # Paper + Gate.io adapter
 notifications/           # Telegram commands + user_explain.py
 hermes/                  # Self-improvement agent
 config.json              # Strategies, limits, modes
-DOCUMENTATION.en.md      # Full docs (incl. §17 feature-branch workflow)
+DOCUMENTATION.en.md      # Full docs (incl. §17 feature-branch workflow, §19 Grok MCP)
 HERMES_DOCUMENTATION.md  # Hermes for beginners (EN)
 HERMES_DOKUMENTATION.md  # Hermes für Einsteiger (DE)
+plans/mcp-xagent.md      # Grok MCP sidecar (paper, Railway test)
 ```
 
 ---

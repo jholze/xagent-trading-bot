@@ -1,6 +1,8 @@
 # xagent MCP v0 — Grok Trading Team
 
-**Status:** Spec lock (operator 2026-08-23)  
+**English operator handbook:** [mcp-xagent.md](mcp-xagent.md) (canonical). This file is the German spec lock.
+
+**Status:** Shipped on Railway env **test** (paper).  
 **Branch:** `feat/mcp-xagent-grok`  
 **Nicht:** Production/`xagent-bot`. Nicht Exchange direkt. Nicht RelVol-Cap ändern. Nicht `correlated_tier.enabled=true`. Nicht Jesse als Engine.
 
