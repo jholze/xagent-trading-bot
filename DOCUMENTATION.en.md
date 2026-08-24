@@ -86,6 +86,7 @@ flowchart TB
 | Ask bridge | `services/telegram_ask_bridge.py` | `/ask` → Cursor/Grok queue (decoupled from webhook) |
 | Notification bus | `services/notification_bus.py` | Async Telegram with rate limit (Phase 3) |
 | Background runtime | `services/background_runtime.py` | Social/backtest parallel to trading cycle |
+| Grok MCP sidecar | `services/mcp_sidecar/`, `services/mcp_tools.py` | Paper reads + buys/sells for a Grok team ([§19](#19-grok-mcp-xagent-mcp)) |
 
 ### Internal Runtime (Architecture Phases 0–5, Monolith)
 
@@ -1068,11 +1069,18 @@ New BUY signal → BLOCKED (except manual /ask)
   },
   "observability": {
     "ask_bridge": { "enabled": true, "response_mode": "cursor_only" }
+  },
+  "mcp": {
+    "enabled": true,
+    "allow_writes": true,
+    "allow_live": false,
+    "write_rate_per_min": 20,
+    "tenants": ["default", "henry", "ctexp"]
   }
 }
 ```
 
-`volatile_altcoin` — sections 6.5–6.9. `architecture` — section 2. `ask_bridge` — section 7. `telegram_command_menu` — see section 7 (menu button, section keyboard, DE/EN). Optional: `"button_text": "Menü"` for a fixed button title.
+`volatile_altcoin` — sections 6.5–6.9. `architecture` — section 2. `ask_bridge` — section 7. `telegram_command_menu` — see section 7 (menu button, section keyboard, DE/EN). Optional: `"button_text": "Menü"` for a fixed button title. `mcp` — [§19](#19-grok-mcp-xagent-mcp).
 
 ### `.env` (do not commit)
 
@@ -1193,8 +1201,8 @@ Switching branches changes **code and tracked config** — not automatically the
 | Branch | Role | Railway |
 |--------|------|---------|
 | `feature/*` | Development, local tests | — |
-| **`staging`** | Integration, Railway demo bot | Service `xagent-test` (env `test`) |
-| `main` | Stable, production-ready | production (later) |
+| **`staging`** | Integration, Railway demo bot | `xagent-test` + sidecar `xagent-mcp` (env `test`) |
+| `main` | Stable, production-ready | production (later) — **do not enable MCP writes on live Gate** |
 
 **Mongo on Railway staging:** `xagent_test` (ledger name unchanged — do not rename).
 
@@ -1309,4 +1317,22 @@ flowchart TD
 
 ---
 
-**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub issues in the repo
+## 19. Grok MCP (`xagent-mcp`)
+
+Paper-only sidecar so a Grok trading team can **read** why coins were bought (orders, signals, memory, facts, RAG) and optionally **buy / sell / lock** through `TradingService` + `RiskManager`. It is a second Railway service in env **test** — not inside the price loop, not production `xagent-bot`.
+
+Full operator handbook (tools, ACL, env, kill switches, idempotency): **[plans/mcp-xagent.md](plans/mcp-xagent.md)**.
+
+| | |
+|---|---|
+| MCP | `https://xagent-mcp-test.up.railway.app/mcp` |
+| Health | `GET /health` → `{ok:true, service:xagent-mcp}` |
+| Auth | Bearer `MCP_OWNER_TOKEN` (owner = all tenants). Operator = one tenant |
+| Kill | `mcp.enabled=false` or stop the service; `mcp.allow_writes=false` → reads only |
+| Live Gate | `mcp.allow_live=false` blocks real fills even if this image is on `main` |
+
+Grok TUI: remote URL + Bearer. Reconnect after deploys that add tools. Writes are paper (`DEMO_MODE=1`); retries within 30s share an idempotency key so a timeout does not double-fill.
+
+---
+
+**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo
