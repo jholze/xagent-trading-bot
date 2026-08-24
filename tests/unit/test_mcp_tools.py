@@ -1,8 +1,17 @@
 from services.mcp_authz import Actor, authorize
-from services.mcp_tools import tool_snapshot, tool_lots, tool_whoami
+from services.mcp_tools import (
+    tool_snapshot,
+    tool_lots,
+    tool_whoami,
+    tool_buy,
+    tool_sell,
+    tool_lock,
+    tool_unlock,
+)
 
 OWNER = Actor("jens", "owner", ("*",), ("read", "trade", "lock", "config_read", "kill"))
 HENRY = Actor("henry-op", "operator", ("henry",), ("read", "trade", "lock"))
+OBS = Actor("o", "observer", ("henry",), ("read",))
 
 
 def test_whoami():
@@ -69,3 +78,170 @@ def test_owner_uses_requested_tenant():
     assert out["ok"] is True
     assert out["tenant_id"] == "ctexp"
     assert calls[0]["tenant_id"] == "ctexp"
+
+
+def test_buy_denied_for_observer():
+    called = []
+    out = tool_buy(OBS, tenant="henry", symbol="LAB/USDT", usdt=10, execute_fn=lambda **k: called.append(k) or {"ok": True})
+    assert out["error"] == "forbidden" and called == []
+
+
+def test_owner_buy_posts_tenant():
+    called = []
+    out = tool_buy(OWNER, tenant="henry", symbol="LAB/USDT", usdt=25, execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True})
+    assert out["ok"] is True
+    assert called[0]["tenant_id"] == "henry"
+    assert called[0]["action"] == "buy"
+    assert called[0]["actor_id"] == "jens"
+
+
+def test_operator_buy_forced_off_default():
+    called = []
+    out = tool_buy(HENRY, tenant="default", symbol="LAB/USDT", usdt=10, execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True})
+    assert called[0]["tenant_id"] == "henry"
+
+
+def test_buy_writes_disabled_does_not_call():
+    called = []
+    out = tool_buy(
+        OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        usdt=10,
+        writes_enabled=False,
+        execute_fn=lambda **k: called.append(k) or {"ok": True},
+    )
+    assert out["ok"] is False and out["error"] == "writes_disabled"
+    assert called == []
+
+
+def test_sell_denied_for_observer():
+    called = []
+    out = tool_sell(
+        OBS,
+        tenant="henry",
+        symbol="LAB/USDT",
+        pct=50,
+        execute_fn=lambda **k: called.append(k) or {"ok": True},
+    )
+    assert out["error"] == "forbidden" and called == []
+
+
+def test_owner_sell_posts():
+    called = []
+    out = tool_sell(
+        OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        pct=50,
+        execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
+    )
+    assert out["ok"] is True
+    assert called[0]["action"] == "sell"
+    assert called[0]["tenant_id"] == "henry"
+    assert called[0]["actor_id"] == "jens"
+    assert called[0]["pct"] == 50
+
+
+def test_lock_denied_for_observer():
+    called = []
+    out = tool_lock(
+        OBS,
+        tenant="henry",
+        symbol="LAB/USDT",
+        execute_fn=lambda **k: called.append(k) or {"ok": True},
+    )
+    assert out["error"] == "forbidden" and called == []
+
+
+def test_owner_lock_and_unlock_post():
+    called = []
+    out = tool_lock(
+        OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        reason="hold",
+        execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
+    )
+    assert out["ok"] is True
+    assert called[0]["action"] == "lock"
+    assert called[0]["tenant_id"] == "henry"
+    assert called[0]["actor_id"] == "jens"
+    called.clear()
+    out = tool_unlock(
+        OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
+    )
+    assert out["ok"] is True
+    assert called[0]["action"] == "unlock"
+    assert called[0]["tenant_id"] == "henry"
+
+
+def test_operator_lock_forced_off_default():
+    called = []
+    tool_lock(
+        HENRY,
+        tenant="default",
+        symbol="LAB/USDT",
+        execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
+    )
+    assert called[0]["tenant_id"] == "henry"
+
+
+def test_execute_network_error_is_bot_unreachable(monkeypatch):
+    import urllib.error
+
+    monkeypatch.setenv("MCP_BOT_URL", "https://bot.example")
+    monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
+    monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+
+    def boom(*_a, **_k):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    from services.mcp_client import execute
+
+    out = execute(action="buy", tenant_id="henry", symbol="LAB/USDT", usdt=10)
+    assert out == {"ok": False, "error": "bot_unreachable"}
+
+
+def test_execute_posts_json_with_token(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"ok": true, "executed": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["method"] = req.get_method()
+        captured["data"] = req.data
+        captured["token"] = req.get_header("X-exit-ws-token")
+        return _Resp()
+
+    monkeypatch.setenv("MCP_BOT_URL", "https://bot.example")
+    monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
+    monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from services.mcp_client import execute
+
+    out = execute(action="buy", tenant_id="henry", symbol="LAB/USDT", usdt=25, actor_id="jens")
+    assert out.get("ok") is True
+    assert captured["url"] == "https://bot.example/internal/mcp/execute"
+    assert captured["timeout"] == 8
+    assert captured["method"] == "POST"
+    assert captured["token"] == "secret"
+    import json
+
+    body = json.loads(captured["data"].decode("utf-8"))
+    assert body["action"] == "buy"
+    assert body["tenant_id"] == "henry"

@@ -56,3 +56,154 @@ def tool_lots(actor, tenant=None, symbol=None, snapshot_fn=None):
     if not isinstance(lots, list):
         lots = []
     return {"ok": True, "tenant_id": out.get("tenant_id"), "lots": lots}
+
+
+def _call_execute(execute_fn, **kwargs) -> dict:
+    fn = execute_fn
+    if fn is None:
+        from services.mcp_client import execute
+
+        fn = execute
+    try:
+        out = fn(**kwargs)
+    except Exception:
+        return {"ok": False, "error": "bot_unreachable"}
+    if not isinstance(out, dict):
+        return {"ok": False, "error": "bot_unreachable"}
+    return out
+
+
+def _write(
+    actor,
+    cap: str,
+    action: str,
+    tenant,
+    execute_fn,
+    payload: dict,
+    *,
+    writes_enabled: bool = True,
+    enabled: bool = True,
+) -> dict:
+    tenant_id = _effective_tenant(actor, tenant)
+    ok, err = authorize(
+        actor, cap, tenant_id, enabled=enabled, writes_enabled=writes_enabled
+    )
+    if not ok:
+        return {"ok": False, "error": err}
+    body = {
+        "action": action,
+        "tenant_id": tenant_id,
+        "actor_id": actor.actor_id if actor else "",
+    }
+    for key, val in payload.items():
+        if val is not None:
+            body[key] = val
+    return _call_execute(execute_fn, **body)
+
+
+def tool_buy(
+    actor,
+    tenant=None,
+    symbol=None,
+    usdt=None,
+    execute_fn=None,
+    timeframe="1h",
+    price=None,
+    writes_enabled=True,
+    enabled=True,
+):
+    return _write(
+        actor,
+        "trade",
+        "buy",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "usdt": usdt,
+            "timeframe": timeframe or "1h",
+            "price": price,
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+    )
+
+
+def tool_sell(
+    actor,
+    tenant=None,
+    symbol=None,
+    pct=None,
+    amount=None,
+    execute_fn=None,
+    timeframe="1h",
+    price=None,
+    writes_enabled=True,
+    enabled=True,
+):
+    return _write(
+        actor,
+        "trade",
+        "sell",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "pct": pct,
+            "amount": amount,
+            "timeframe": timeframe or "1h",
+            "price": price,
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+    )
+
+
+def tool_lock(
+    actor,
+    tenant=None,
+    symbol=None,
+    reason=None,
+    execute_fn=None,
+    timeframe="1h",
+    writes_enabled=True,
+    enabled=True,
+):
+    return _write(
+        actor,
+        "lock",
+        "lock",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "reason": reason,
+            "timeframe": timeframe or "1h",
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+    )
+
+
+def tool_unlock(
+    actor,
+    tenant=None,
+    symbol=None,
+    execute_fn=None,
+    timeframe="1h",
+    writes_enabled=True,
+    enabled=True,
+):
+    return _write(
+        actor,
+        "lock",
+        "unlock",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "timeframe": timeframe or "1h",
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+    )
