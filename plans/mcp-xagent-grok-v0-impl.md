@@ -19,7 +19,8 @@
 | `services/mcp_authz.py` | `Actor`, `authorize()`, cap/role constants |
 | `services/mcp_tokens.py` | SHA-256 hash, lookup, env bootstrap |
 | `services/mcp_client.py` | HTTP write client to bot execute |
-| `services/mcp_tools.py` | Tool bodies (whoami, snapshot, lots, buy, sell, lock) |
+| `services/mcp_tools.py` | Tool bodies (whoami, snapshot, lots, orders, memory, why, buy, sell, lock) |
+| `services/mcp_explain.py` | Fail-open orders/memory/why packs (no embeddings) |
 | `services/mcp_sidecar/__init__.py` | package |
 | `services/mcp_sidecar/__main__.py` | FastMCP + `/health` |
 | `services/mcp_bot_http.py` | Flask `POST /internal/mcp/execute` on the bot |
@@ -30,6 +31,7 @@
 | `tests/unit/test_mcp_authz.py` | ACL |
 | `tests/unit/test_mcp_tokens.py` | hash/lookup |
 | `tests/unit/test_mcp_tools.py` | tools with fakes |
+| `tests/unit/test_mcp_explain.py` | why-pack / orders / memory, tenant force, strip embeddings |
 | `tests/unit/test_mcp_bot_http.py` | execute route token + tenant_context |
 
 **Out of this plan:** RelVol caps, live trading, production `xagent-bot`, Desk UI, new Mongo collection UI.

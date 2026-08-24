@@ -16,10 +16,13 @@ from services.mcp_tools import (
     tool_buy,
     tool_lock,
     tool_lots,
+    tool_memory,
+    tool_orders,
     tool_sell,
     tool_snapshot,
     tool_unlock,
     tool_whoami,
+    tool_why,
 )
 
 SERVICE_NAME = "xagent-mcp"
@@ -128,6 +131,29 @@ def invoke_tool(
         return tool_snapshot(actor, tenant=tenant, symbol=symbol)
     if name == "xagent_lots":
         return tool_lots(actor, tenant=tenant, symbol=symbol)
+    if name == "xagent_orders":
+        return tool_orders(
+            actor,
+            tenant=tenant,
+            symbol=symbol,
+            hours=kwargs.get("hours"),
+            limit=kwargs.get("limit"),
+            statuses=kwargs.get("statuses"),
+        )
+    if name == "xagent_memory":
+        return tool_memory(
+            actor,
+            tenant=tenant,
+            symbol=symbol,
+            query=kwargs.get("query"),
+        )
+    if name == "xagent_why":
+        return tool_why(
+            actor,
+            tenant=tenant,
+            symbol=symbol,
+            query=kwargs.get("query"),
+        )
     if name == "xagent_buy":
         return tool_buy(
             actor,
@@ -190,6 +216,46 @@ def xagent_snapshot(ctx: Context, tenant: str = "default", symbol: str | None = 
 def xagent_lots(ctx: Context, tenant: str = "default", symbol: str | None = None) -> dict:
     """Open lots for a tenant."""
     return _call("xagent_lots", ctx, tenant=tenant, symbol=symbol)
+
+
+def xagent_orders(
+    ctx: Context,
+    tenant: str = "default",
+    symbol: str | None = None,
+    hours: float | None = 168,
+    limit: int | None = 40,
+    statuses: str | None = None,
+) -> dict:
+    """Filled/rejected/failed orders for a tenant. Includes source, signal, risk, size."""
+    return _call(
+        "xagent_orders",
+        ctx,
+        tenant=tenant,
+        symbol=symbol,
+        hours=hours,
+        limit=limit,
+        statuses=statuses,
+    )
+
+
+def xagent_memory(
+    ctx: Context,
+    tenant: str = "default",
+    symbol: str | None = None,
+    query: str | None = None,
+) -> dict:
+    """CoinProfile, fact flags, market events, trade memory, lessons, RAG hits. No embeddings."""
+    return _call("xagent_memory", ctx, tenant=tenant, symbol=symbol, query=query)
+
+
+def xagent_why(
+    ctx: Context,
+    tenant: str = "default",
+    symbol: str | None = None,
+    query: str | None = None,
+) -> dict:
+    """Why this coin was bought: lot, HUD, orders+signals, profile, facts, events, RAG."""
+    return _call("xagent_why", ctx, tenant=tenant, symbol=symbol, query=query)
 
 
 def xagent_buy(
@@ -272,6 +338,9 @@ def _register_tools(mcp: FastMCP) -> None:
     mcp.tool()(xagent_whoami)
     mcp.tool()(xagent_snapshot)
     mcp.tool()(xagent_lots)
+    mcp.tool()(xagent_orders)
+    mcp.tool()(xagent_memory)
+    mcp.tool()(xagent_why)
     mcp.tool()(xagent_buy)
     mcp.tool()(xagent_sell)
     mcp.tool()(xagent_lock)
