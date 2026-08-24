@@ -249,6 +249,14 @@ def sanitize_trade(trade: Any) -> dict:
     return _json_safe(_pick(src, _TRADE_KEYS))
 
 
+def _same_tenant(obj: Any, tenant_id: str) -> bool:
+    src = _as_mapping(obj)
+    tid = str(src.get("tenant_id") or "").strip()
+    if not tid:
+        return True
+    return tid == str(tenant_id or "").strip()
+
+
 def sanitize_lesson(lesson: Any) -> dict:
     src = _as_mapping(lesson)
     out = _pick(src, _LESSON_KEYS)
@@ -458,7 +466,11 @@ def memory_pack(
         lessons = _call_section(
             errors,
             "lessons",
-            lambda: [sanitize_lesson(L) for L in (store.list_lessons(symbol=sym, limit=lesson_limit) or [])],
+            lambda: [
+                sanitize_lesson(L)
+                for L in (store.list_lessons(symbol=sym, limit=lesson_limit) or [])
+                if _same_tenant(L, tenant_id)
+            ],
             [],
         )
     elif store is not None:

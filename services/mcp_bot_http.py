@@ -8,12 +8,20 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from logger import log
+from services.mcp_authz import (
+    mcp_enabled,
+    mcp_live_writes_blocked,
+    mcp_tenant_allowed,
+    mcp_writes_enabled,
+)
+from services.mcp_tokens import tokens_match
 
 
 def _expected_token() -> str:
-    return (
-        os.environ.get("MCP_BOT_TOKEN") or os.environ.get("EXIT_WS_INTERNAL_TOKEN") or ""
-    ).strip()
+    dedicated = (os.environ.get("MCP_BOT_TOKEN") or "").strip()
+    if dedicated:
+        return dedicated
+    return (os.environ.get("EXIT_WS_INTERNAL_TOKEN") or "").strip()
 
 
 def _got_token() -> str:
@@ -50,7 +58,7 @@ def register_mcp_bot_routes(app: Flask) -> None:
         expected = _expected_token()
         if not expected:
             return jsonify({"ok": False, "error": "not_configured"}), 503
-        if _got_token() != expected:
+        if not tokens_match(_got_token(), expected):
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
         data: dict[str, Any] = request.get_json(silent=True) or {}
@@ -60,12 +68,24 @@ def register_mcp_bot_routes(app: Flask) -> None:
         if not action or not tenant_id or not symbol:
             return jsonify({"ok": False, "error": "bad_args"}), 400
 
+        cfg = _config_raw()
+        if not mcp_enabled(cfg):
+            return jsonify({"ok": False, "error": "mcp_disabled"}), 503
+        if not mcp_tenant_allowed(tenant_id, cfg):
+            return jsonify({"ok": False, "error": "tenant_forbidden"}), 403
+        if action in ("buy", "sell", "lock", "unlock"):
+            if not mcp_writes_enabled(cfg):
+                return jsonify({"ok": False, "error": "writes_disabled"}), 403
+            if mcp_live_writes_blocked(cfg):
+                return jsonify({"ok": False, "error": "live_forbidden"}), 403
+
         timeframe = str(data.get("timeframe") or "1h").strip() or "1h"
         actor_id = str(data.get("actor_id") or "").strip()
         reason = str(data.get("reason") or "").strip()
         price = _as_float(data.get("price"))
         usdt = _as_float(data.get("usdt"))
         source = f"mcp:{actor_id}" if actor_id else "mcp"
+        idem = str(data.get("idempotency_key") or "").strip() or None
 
         from core.tenant_context import tenant_context
 
@@ -74,7 +94,12 @@ def register_mcp_bot_routes(app: Flask) -> None:
                 from services.trading_service import TradingService
 
                 result = TradingService().execute_buy(
-                    symbol, timeframe, price=price, usdt=usdt
+                    symbol,
+                    timeframe,
+                    price=price,
+                    usdt=usdt,
+                    source=source,
+                    idempotency_key=idem,
                 )
                 return jsonify(_result_body(result)), 200
 
@@ -89,7 +114,13 @@ def register_mcp_bot_routes(app: Flask) -> None:
                 from services.trading_service import TradingService
 
                 result = TradingService().execute_sell(
-                    symbol, timeframe, price, signal=source, amount=amount
+                    symbol,
+                    timeframe,
+                    price,
+                    signal=source,
+                    amount=amount,
+                    source=source,
+                    idempotency_key=idem,
                 )
                 return jsonify(_result_body(result)), 200
 
@@ -117,6 +148,16 @@ def register_mcp_bot_routes(app: Flask) -> None:
         return jsonify({"ok": False, "error": "bad_action"}), 400
 
     log("mcp execute route registered (/internal/mcp/execute)", "INFO")
+
+
+def _config_raw() -> dict:
+    try:
+        from data_manager import get_config
+
+        cfg = get_config()
+    except Exception:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
 def _sell_amount(data: dict[str, Any], symbol: str, timeframe: str) -> float | None:

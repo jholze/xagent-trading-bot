@@ -1,7 +1,41 @@
 from __future__ import annotations
 
-from services.mcp_authz import Actor, authorize
+import hashlib
+import time
+
+from services.mcp_authz import Actor, authorize, check_write_rate, mcp_write_rate_per_min
 from services.mcp_explain import list_orders_public, memory_pack, why_pack
+
+IDEMPOTENCY_BUCKET_SEC = 30
+
+
+def write_idempotency_key(
+    *,
+    actor_id: str,
+    action: str,
+    tenant_id: str,
+    symbol: str | None,
+    usdt=None,
+    pct=None,
+    amount=None,
+    now: float | None = None,
+    bucket_sec: int = IDEMPOTENCY_BUCKET_SEC,
+) -> str:
+    ts = float(now if now is not None else time.time())
+    bucket = int(ts // max(1, int(bucket_sec)))
+    raw = "|".join(
+        [
+            str(actor_id or ""),
+            str(action or ""),
+            str(tenant_id or ""),
+            str(symbol or "").upper(),
+            "" if usdt is None else str(usdt),
+            "" if pct is None else str(pct),
+            "" if amount is None else str(amount),
+            str(bucket),
+        ]
+    )
+    return "mcp:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def tool_whoami(actor: Actor | None) -> dict:
@@ -84,6 +118,8 @@ def _write(
     *,
     writes_enabled: bool = True,
     enabled: bool = True,
+    rate_per_min: int | None = None,
+    now: float | None = None,
 ) -> dict:
     tenant_id = _effective_tenant(actor, tenant)
     ok, err = authorize(
@@ -91,10 +127,25 @@ def _write(
     )
     if not ok:
         return {"ok": False, "error": err}
+    actor_id = actor.actor_id if actor else ""
+    per = rate_per_min if rate_per_min is not None else mcp_write_rate_per_min()
+    ok, err = check_write_rate(actor_id, per_min=per, now=now)
+    if not ok:
+        return {"ok": False, "error": err}
     body = {
         "action": action,
         "tenant_id": tenant_id,
-        "actor_id": actor.actor_id if actor else "",
+        "actor_id": actor_id,
+        "idempotency_key": write_idempotency_key(
+            actor_id=actor_id,
+            action=action,
+            tenant_id=tenant_id,
+            symbol=payload.get("symbol"),
+            usdt=payload.get("usdt"),
+            pct=payload.get("pct"),
+            amount=payload.get("amount"),
+            now=now,
+        ),
     }
     for key, val in payload.items():
         if val is not None:
@@ -112,6 +163,8 @@ def tool_buy(
     price=None,
     writes_enabled=True,
     enabled=True,
+    rate_per_min=None,
+    now=None,
 ):
     return _write(
         actor,
@@ -127,6 +180,8 @@ def tool_buy(
         },
         writes_enabled=writes_enabled,
         enabled=enabled,
+        rate_per_min=rate_per_min,
+        now=now,
     )
 
 

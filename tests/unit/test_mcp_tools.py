@@ -1,4 +1,4 @@
-from services.mcp_authz import Actor, authorize
+from services.mcp_authz import Actor, authorize, reset_write_rate
 from services.mcp_tools import (
     tool_snapshot,
     tool_lots,
@@ -7,6 +7,7 @@ from services.mcp_tools import (
     tool_sell,
     tool_lock,
     tool_unlock,
+    write_idempotency_key,
 )
 
 OWNER = Actor("jens", "owner", ("*",), ("read", "trade", "lock", "config_read", "kill"))
@@ -87,12 +88,14 @@ def test_buy_denied_for_observer():
 
 
 def test_owner_buy_posts_tenant():
+    reset_write_rate()
     called = []
     out = tool_buy(OWNER, tenant="henry", symbol="LAB/USDT", usdt=25, execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True})
     assert out["ok"] is True
     assert called[0]["tenant_id"] == "henry"
     assert called[0]["action"] == "buy"
     assert called[0]["actor_id"] == "jens"
+    assert str(called[0].get("idempotency_key") or "").startswith("mcp:")
 
 
 def test_operator_buy_forced_off_default():
@@ -245,6 +248,59 @@ def test_execute_posts_json_with_token(monkeypatch):
     body = json.loads(captured["data"].decode("utf-8"))
     assert body["action"] == "buy"
     assert body["tenant_id"] == "henry"
+
+
+def test_write_idempotency_stable_in_same_bucket():
+    a = write_idempotency_key(
+        actor_id="jens",
+        action="buy",
+        tenant_id="default",
+        symbol="BLESS/USDT",
+        usdt=2500,
+        now=90.0,
+    )
+    b = write_idempotency_key(
+        actor_id="jens",
+        action="buy",
+        tenant_id="default",
+        symbol="BLESS/USDT",
+        usdt=2500,
+        now=110.0,
+    )
+    c = write_idempotency_key(
+        actor_id="jens",
+        action="buy",
+        tenant_id="default",
+        symbol="BLESS/USDT",
+        usdt=2500,
+        now=120.0,
+    )
+    assert a == b
+    assert a != c
+    assert a.startswith("mcp:")
+
+
+def test_buy_rate_limited_does_not_call():
+    reset_write_rate()
+    called = []
+
+    def exec_fn(**k):
+        called.append(k)
+        return {"ok": True, "executed": True}
+
+    kwargs = dict(
+        actor=OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        usdt=10,
+        execute_fn=exec_fn,
+        rate_per_min=1,
+        now=2_000_000.0,
+    )
+    assert tool_buy(**kwargs)["ok"] is True
+    out = tool_buy(**kwargs)
+    assert out["ok"] is False and out["error"] == "rate_limited"
+    assert len(called) == 1
 
 
 def test_execute_timeout_env_override(monkeypatch):
