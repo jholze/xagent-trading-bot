@@ -74,6 +74,16 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:
   # Serves /health during run so Railway healthcheck can pass; exits after report.
   exec python3 scripts/gis_monitor_railway_entry.py
 fi
+# Grok MCP sidecar — FastMCP + /health, no price loop / aria_bot. Same image as bot.
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-mcp" || "${RUN_MCP_SIDECAR:-}" == "1" ]]; then
+  echo "=== xagent MCP sidecar (Grok team, no price loop) ==="
+  export PYTHONUNBUFFERED=1
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
+  exec python3 -m services.mcp_sidecar
+fi
 
 # Desk v0 is in-process Flask on aria_bot at /desk — no extra Railway process
 # and no xagent-desk service. Kill: desk.enabled=false in config.json.

@@ -64,6 +64,16 @@ Gleiches Docker-Image wie der Bot (`railway_start.sh` Selector, wie Santiment/Ra
 
 Health: `GET /health` → `{ok:true, service:xagent-mcp}`. Railway healthcheck muss auf diesem Service `/health` treffen (nicht den Bot-Boot).
 
+## Deploy
+
+Operator creates Railway service **`xagent-mcp`** in env **test** (not this PR; not production / not `xagent-bot`). Same Docker image and `scripts/railway_start.sh` as the bot; selector `RAILWAY_SERVICE_NAME=xagent-mcp` or `RUN_MCP_SIDECAR=1`.
+
+- Health: `GET /health` → `{ok:true, service:xagent-mcp}`
+- MCP: streamable HTTP at `/mcp` (`https://<xagent-mcp-domain>/mcp`)
+- Env: `MCP_OWNER_TOKEN` (required); optional `MCP_ACTORS_JSON`; `MCP_BOT_URL` = paper bot URL (`xagent-test`); `EXIT_WS_INTERNAL_TOKEN` or `MCP_BOT_TOKEN` for bot execute
+- Kill: `mcp.enabled=false` or stop the service; `mcp.allow_writes=false` → reads only
+- Grok TUI: remote MCP URL + Bearer owner/operator token
+
 ## Tools (v0)
 
 | Tool | Action | Notes |
