@@ -50,9 +50,12 @@ class TestShortCover(unittest.TestCase):
         self.assertIsNotNone(hit)
         self.assertEqual(hit["source"], "time_cap")
 
-    def test_disabled(self):
+    def test_kill_switch_still_covers_open_short(self):
         pos, mark = _short(mark=130.0)
-        self.assertIsNone(evaluate_short_cover(pos, mark, config_raw={"shorts": {"enabled": False}}))
+        hit = evaluate_short_cover(
+            pos, mark, config_raw={"shorts": {"enabled": False, "leverage_default": 2, "volatile": {"stop_margin_pct": 0.10}}},
+        )
+        self.assertIsNotNone(hit)
 
     def test_long_ignored(self):
         pos = {"side": "long", "amount": 1, "average_entry": 100}

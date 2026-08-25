@@ -82,6 +82,35 @@ def test_snapshot_lists_open_lots_and_selects_lab():
     assert snap["hud"]["memory"]["stance"] == "IDLE"
 
 
+def test_snapshot_short_lot_skips_dca_path():
+    snap = build_snapshot(
+        tenant_id="default",
+        symbol="H/USDT",
+        config_raw={"desk": {"enabled": True, "tenants": ["default", "henry"]}},
+        lots=[
+            {
+                "symbol": "H/USDT",
+                "timeframe": "4h",
+                "amount": 100,
+                "average_entry": 2.0,
+                "side": "short",
+                "leverage": 2,
+                "dca_rounds": 0,
+                "dca_max_rounds": 3,
+            }
+        ],
+        fusion={"regime": "NEUTRAL", "size_mult": 1.0},
+        cash_mode="DEPLOY",
+        relvol_open=0,
+        relvol_max=8,
+        facts={"rsi": 55, "at_lower_bb": False},
+    )
+    assert snap["ok"] is True
+    assert snap["hud"]["ta"]["path"] != "DCA 0/3"
+    assert "DCA" not in str(snap["hud"]["ta"].get("path") or "")
+    assert snap["partial_stop_paused"] is False
+
+
 def test_snapshot_rejects_ctexp_tenant():
     snap = build_snapshot(
         tenant_id="ctexp",

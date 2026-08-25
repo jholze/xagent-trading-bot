@@ -1,7 +1,7 @@
 # Paper shorts v0 — Simulated Live sleeve
 
 **Branch:** `feat/shorts-paper-v0`  
-**Status:** first round (P0). Improve after soak.  
+**Status:** review-fixes round (P0.1). Paper only, not merged.  
 **Not:** Gate futures, Jesse engine, `bb_upper` auto, live `allow_live`.
 
 ## Why this shape (team + other bots)
@@ -39,4 +39,23 @@ Math SSOT, config, lot `side`/`leverage`, `SHORT`/`COVER` on paper/dry-run, risk
 
 ## Kill / rollback
 
-`shorts.enabled=false`. Existing shorts still `cover`. Redeploy previous staging SHA if Book-replay breaks NAV.
+`shorts.enabled=false` blocks new SHORT. Existing shorts still COVER (liq/stop/trail/time/manual). Redeploy previous staging SHA if Book-replay breaks NAV.
+
+## Review fixes (P0.1 / P0.2)
+
+- One-way also hops TFs (`find_open_position_for_symbol`); sell-repair will not size a SELL from a short.
+- SHORT refused on an open long in portfolio + `update_position`.
+- Dry-run / `record_trade` cash: SHORT locks margin, COVER returns margin+PnL (not BUY-else-SELL).
+- Order-ledger replay skips SELL on a short lot.
+- NAV for shorts is margin+uPnL; unknown NAV / short-book errors fail-closed.
+- `recent_low` flushed with `force=True`.
+- Trade-tree Gesamt uses short Wert/uPnL; desk skips DCA on shorts.
+
+- One-way both directions: BUY/SELL on a short lot fail-closed (risk, portfolio, `update_position`).
+- Hub/execute: short-side errors never fall through to long TTP/SELL.
+- Auto-short after full allowlisted exit uses `_execute_order_locked` (no nested `ledger_lock`) and `auto_notional_pct` (default 0.35).
+- Leverage persisted on order record + request + execution for Book replay.
+- `recent_low` flushed so sidecar reload keeps the trail.
+- `market_cap_min_usd` and `max_margin_pct` enforced in risk.
+- Cycle fallback COVER; RSI stamped before eval.
+- UI: Einstand=margin for shorts, SHORT/COVER banners, `/sell` skips shorts, trade tree, desk `side`.

@@ -298,6 +298,12 @@ def _compose_base_facts(
     if lot is None:
         return facts
 
+    if str(lot.get("side") or "").lower() == "short":
+        facts["dca_rounds"] = 0
+        facts["dca_max_rounds"] = 0
+        facts["partial_stop_paused"] = False
+        return facts
+
     used = _int_or_none(lot.get("dca_rounds"))
     if used is None:
         used = 0

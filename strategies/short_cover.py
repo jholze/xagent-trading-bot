@@ -16,7 +16,7 @@ from strategies.short_math import (
     should_stop_or_liquidate,
     stop_price,
 )
-from strategies.short_policy import resolve_short_params, shorts_enabled
+from strategies.short_policy import resolve_short_params
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -39,9 +39,10 @@ def evaluate_short_cover(
     symbol: str | None = None,
     config_raw: dict | None = None,
 ) -> dict[str, Any] | None:
-    """Return {source, rationale} if this tick should COVER, else None."""
-    if not shorts_enabled(config_raw):
-        return None
+    """Return {source, rationale} if this tick should COVER, else None.
+
+    Kill (`shorts.enabled=false`) must still cover open lots (liq/stop/trail/time).
+    """
     if not is_short(pos) or float((pos or {}).get("amount") or 0) <= 0:
         return None
     px = float(mark or 0)

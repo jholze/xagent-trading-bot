@@ -7,6 +7,7 @@ from services.trading_service import TradingService
 from notifications.telegram_commands.position_display import (
     chunk_positions_message,
     format_sell_list_message,
+    long_lots_for_sell,
     position_symbol,
     resolve_position_by_display_index,
     resolve_position_by_symbol,
@@ -118,7 +119,7 @@ def handle(text: str) -> bool:
     if text.startswith("/sell"):
         parts = [p.strip() for p in text.split() if p.strip()]
         if len(parts) == 1:
-            active = list_active_positions()
+            active = long_lots_for_sell(list_active_positions())
             if not active:
                 send_telegram_message(t("no_positions_sell"))
                 return True
@@ -129,7 +130,8 @@ def handle(text: str) -> bool:
                 send_telegram_message(chunk)
             return True
 
-        active = list_active_positions()
+        all_lots = list_active_positions()
+        active = long_lots_for_sell(all_lots)
         if not active:
             send_telegram_message(t("no_positions_sell"))
             return True
@@ -140,7 +142,7 @@ def handle(text: str) -> bool:
             send_telegram_message(t("invalid_sell_pct"))
             return True
 
-        symbols = [position_symbol(p) for p in active]
+        symbols = [position_symbol(p) for p in all_lots]
         prices = get_prices_batch(symbols)
 
         if arg.replace(".", "").isdigit():
@@ -150,7 +152,19 @@ def handle(text: str) -> bool:
                 return True
             p = resolve_position_by_display_index(active, prices, idx)
         else:
-            p = resolve_position_by_symbol(active, arg, prices)
+            p = resolve_position_by_symbol(all_lots, arg, prices)
+            if p is not None:
+                try:
+                    from strategies.short_math import is_short
+
+                    if is_short(p):
+                        send_telegram_message(t("sell_is_short_use_cover", arg=arg.upper()))
+                        return True
+                except Exception:
+                    pass
+                if p not in active and p.get("symbol") not in {x.get("symbol") for x in active}:
+                    send_telegram_message(t("sell_is_short_use_cover", arg=arg.upper()))
+                    return True
 
         if not p:
             send_telegram_message(t("no_open_position", arg=arg.upper()))

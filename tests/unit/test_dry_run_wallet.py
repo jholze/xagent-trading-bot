@@ -67,6 +67,13 @@ class TestDryRunWallet(unittest.TestCase):
                 trades = history["trades"]
                 self.assertAlmostEqual(compute_sim_cash_from_trades(trades, 5000), 5020.0)
 
+    def test_short_and_cover_adjust_margin_not_notional(self):
+        trades = [
+            {"type": "SHORT", "usdt_amount": 400, "leverage": 2, "margin_usdt": 200},
+            {"type": "COVER", "usdt_amount": 360, "margin_usdt": 200, "pnl": 40},
+        ]
+        self.assertAlmostEqual(compute_sim_cash_from_trades(trades, 5000), 5040.0)
+
     def test_record_live_trade_updates_virtual_balance_plain_dry_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "live_trade_history.json")

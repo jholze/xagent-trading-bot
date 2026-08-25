@@ -121,6 +121,35 @@ class RiskManager:
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
 
+        # One-way: never BUY or SELL an open short (any TF — sell repair hops TFs).
+        try:
+            from strategies.short_math import is_short as _is_short
+
+            side_pos = get_position(order.symbol, timeframe)
+            if _is_short(side_pos) and float((side_pos or {}).get("amount") or 0) > 1e-12:
+                return RiskDecision(
+                    approved=False,
+                    message="one-way: cover short before long buy/sell",
+                    code="one_way",
+                )
+            found = find_open_position_for_symbol(
+                order.symbol, preferred_timeframe=timeframe
+            )
+            if found:
+                _, hop = found
+                if _is_short(hop) and float((hop or {}).get("amount") or 0) > 1e-12:
+                    return RiskDecision(
+                        approved=False,
+                        message="one-way: cover short before long buy/sell",
+                        code="one_way",
+                    )
+        except Exception as exc:
+            return RiskDecision(
+                approved=False,
+                message=f"side_check_error: {exc}"[:200],
+                code="side_check_error",
+            )
+
         if order.type == "SELL":
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
@@ -1503,6 +1532,13 @@ class RiskManager:
         if not found:
             return order
         pos_tf, pos = found
+        try:
+            from strategies.short_math import is_short as _is_short
+
+            if _is_short(pos) and float(pos.get("amount") or 0) > 1e-12:
+                return order
+        except Exception:
+            return order
         held = float(pos.get("amount", 0) or 0)
         if held <= 0:
             return order
@@ -1679,8 +1715,6 @@ class RiskManager:
         from strategies.short_policy import resolve_short_params, shorts_allow_live, shorts_enabled
 
         raw = self.config.raw if hasattr(self.config, "raw") else {}
-        if not shorts_enabled(raw):
-            return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
         if is_real_live_trading(raw) and not shorts_allow_live(raw):
             return RiskDecision(
                 approved=False,
@@ -1704,8 +1738,13 @@ class RiskManager:
                 amount=order.amount or float(pos.get("amount") or 0),
                 signal=order.signal or "COVER",
                 source=source or order.source,
+                exit_source=getattr(order, "exit_source", "") or "",
+                exit_rationale=getattr(order, "exit_rationale", "") or "",
             )
             return RiskDecision(approved=True, order=out, message="ok")
+
+        if not shorts_enabled(raw):
+            return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
 
         # SHORT open
         if is_short(pos) and float((pos or {}).get("amount") or 0) > 0:
@@ -1717,33 +1756,98 @@ class RiskManager:
                 code="one_way",
             )
         n_short = 0
+        open_margin = 0.0
         try:
+            from strategies.short_math import margin_usdt as _mgn
+
             for p in list_active_positions():
                 if is_short(p) and float(p.get("amount") or 0) > 0:
                     n_short += 1
-        except Exception:
-            n_short = 0
+                    open_margin += _mgn(
+                        float(p.get("amount") or 0),
+                        float(p.get("average_entry") or 0),
+                        float(p.get("leverage") or params.get("leverage") or 2),
+                    )
+        except Exception as exc:
+            return RiskDecision(
+                approved=False,
+                message=f"short book check failed: {exc}"[:200],
+                code="shorts_slots",
+            )
         if n_short >= int(params.get("max_open") or 6) and not (
             is_short(pos) and float((pos or {}).get("amount") or 0) > 0
         ):
             return RiskDecision(approved=False, message="shorts.max_open reached", code="shorts_slots")
+        if (source or order.source or "") != "manual":
+            min_mcap = float(params.get("market_cap_min_usd") or 0)
+            if min_mcap > 0:
+                mcap = None
+                try:
+                    from data.cmc_market_cap import resolve_market_cap_usd
+
+                    mcap = resolve_market_cap_usd(order.symbol)
+                except Exception:
+                    mcap = None
+                if mcap is None or float(mcap) < min_mcap:
+                    return RiskDecision(
+                        approved=False,
+                        message=f"short mcap {mcap} < min {min_mcap:.0f}",
+                        code="short_mcap",
+                    )
+        else:
+            min_mcap = float(params.get("market_cap_min_usd") or 0)
+            if min_mcap > 0:
+                try:
+                    from data.cmc_market_cap import resolve_market_cap_usd
+
+                    mcap = resolve_market_cap_usd(order.symbol)
+                except Exception:
+                    mcap = None
+                if mcap is not None and float(mcap) < min_mcap:
+                    return RiskDecision(
+                        approved=False,
+                        message=f"short mcap {mcap} < min {min_mcap:.0f}",
+                        code="short_mcap",
+                    )
         lev = clamp_leverage(order.leverage or params["leverage"], cap=params["leverage_cap"])
         usdt = float(order.usdt_amount or 0) or float(self.config.max_usdt_per_trade)
         if order.price <= 0:
             return RiskDecision(approved=False, message="invalid price", code="bad_price")
         qty = usdt / order.price
         margin = margin_usdt(qty, order.price, lev)
-        cash = 0.0
         try:
-            cash = float(self._available_usdt(fallback=usdt))
-        except Exception:
-            cash = float(usdt)
+            cash = float(self._available_usdt(fallback=0))
+        except Exception as exc:
+            return RiskDecision(
+                approved=False,
+                message=f"short cash unknown: {exc}"[:200],
+                code="short_margin",
+            )
         if margin > cash + 1e-6:
             return RiskDecision(
                 approved=False,
                 message=f"short margin {margin:.0f} > cash {cash:.0f}",
                 code="short_margin",
             )
+        max_pct = float(params.get("max_margin_pct") or 0)
+        if max_pct > 0:
+            try:
+                nav = float(self._portfolio_equity(order.price, order.symbol) or 0)
+            except Exception:
+                nav = 0.0
+            if nav <= 0:
+                return RiskDecision(
+                    approved=False,
+                    message="short margin cap: NAV unknown",
+                    code="short_margin_pct",
+                )
+            limit = nav * (max_pct / 100.0)
+            if open_margin + margin > limit + 1e-6:
+                return RiskDecision(
+                    approved=False,
+                    message=f"short margin {open_margin + margin:.0f} > {max_pct:g}% NAV",
+                    code="short_margin_pct",
+                )
         out = TradeOrder(
             type="SHORT",
             symbol=order.symbol,

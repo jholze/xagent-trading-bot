@@ -383,9 +383,17 @@ class TradingService:
         )
 
     def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> None:
-        """Open a paper short after a qualifying bearish full exit (allowlist)."""
+        """Open a paper short after a qualifying bearish full exit (allowlist).
+
+        Must not call ``execute_order`` / ``execute_short`` — those re-acquire
+        ``ledger_lock`` (not re-entrant). Caller already holds the lock.
+        """
         from strategies.positions import get_position, is_open_position
-        from strategies.short_policy import is_auto_short_source, shorts_enabled
+        from strategies.short_policy import (
+            auto_short_notional_usdt,
+            is_auto_short_source,
+            shorts_enabled,
+        )
 
         raw = self.config.raw
         if not shorts_enabled(raw):
@@ -398,16 +406,32 @@ class TradingService:
         if is_open_position(pos):
             return
         px = float(getattr(sell_result, "price", 0) or approved_order.price or 0)
-        usdt = float(getattr(sell_result, "usdt_amount", 0) or approved_order.usdt_amount or 0)
+        sell_usdt = float(getattr(sell_result, "usdt_amount", 0) or approved_order.usdt_amount or 0)
         if px <= 0:
             return
+        usdt = auto_short_notional_usdt(
+            sell_usdt,
+            cap=float(self.max_usdt_for_order()),
+            config_raw=raw,
+        )
         if usdt <= 0:
-            usdt = float(self.max_usdt_for_order())
-        self.execute_short(
-            sym,
-            timeframe,
-            px,
-            usdt=usdt,
+            return
+        idem = f"autoshort|{sym}|{timeframe}|{src}|{px:.8g}"
+        order = TradeOrder(
+            type="SHORT",
+            symbol=sym,
+            price=px,
+            amount=0,
+            usdt_amount=usdt,
             source="auto",
-            idempotency_key=f"autoshort|{sym}|{timeframe}|{src}|{px:.8g}",
+            signal="SHORT",
+            exit_source=src,
+            idempotency_key=idem,
+        )
+        self._execute_order_locked(
+            order,
+            timeframe,
+            source="auto",
+            idempotency_key=idem,
+            _lock_held=True,
         )

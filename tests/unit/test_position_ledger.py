@@ -59,6 +59,62 @@ class TestPositionLedger(unittest.TestCase):
         self.assertEqual(events[1]["kind"], "sell")
         self.assertAlmostEqual(events[1]["realized_usd"], 30.0)
 
+    def test_short_and_cover_in_tree(self):
+        orders = [
+            {
+                "status": "filled",
+                "side": "short",
+                "signal": "SHORT",
+                "source": "auto",
+                "execution": {"price": 2.0, "amount": 10, "usdt": 20},
+                "leverage": 2,
+                "timestamps": {"filled": "2026-08-01T10:00:00"},
+            },
+            {
+                "status": "filled",
+                "side": "cover",
+                "signal": "COVER",
+                "source": "exit_ws",
+                "pnl": 5.0,
+                "execution": {"price": 1.5, "amount": 10, "usdt": 15},
+                "timestamps": {"filled": "2026-08-01T12:00:00"},
+            },
+        ]
+        events = replay_position_events(orders, mark_price=1.5)
+        self.assertEqual(events[0]["label"], "Short")
+        self.assertEqual(events[1]["label"], "Cover")
+        self.assertEqual(events[1]["kind"], "sell")
+        self.assertAlmostEqual(events[1]["realized_usd"], 5.0)
+        self.assertTrue(events[0].get("closed"))
+
+    def test_open_short_gesamt_uses_margin_and_flipped_pnl(self):
+        from notifications.telegram_commands.position_ledger import build_position_trade_tree
+
+        pos = {
+            "symbol": "H/USDT",
+            "timeframe": "4h",
+            "amount": 100,
+            "average_entry": 2.0,
+            "side": "short",
+            "leverage": 2,
+        }
+        orders = [
+            {
+                "status": "filled",
+                "side": "short",
+                "signal": "SHORT",
+                "source": "auto",
+                "execution": {"price": 2.0, "amount": 100, "usdt": 200},
+                "leverage": 2,
+                "timestamps": {"filled": "2026-08-01T10:00:00"},
+            },
+        ]
+        lines = build_position_trade_tree(pos, mark_price=1.8, orders=orders)
+        joined = "\n".join(lines)
+        self.assertIn("Gesamt", joined)
+        self.assertIn("$+20", joined)
+        self.assertNotIn("$-20", joined)
+
     def test_dca_labels_increment(self):
         orders = [
             _buy("2026-06-24T10:00:00", 1000, 1.0, 1000),

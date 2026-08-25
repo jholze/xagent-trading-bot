@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from strategies.short_policy import is_auto_short_source, resolve_short_params, shorts_enabled
+from strategies.short_policy import (
+    auto_short_notional_usdt,
+    is_auto_short_source,
+    resolve_short_params,
+    shorts_enabled,
+)
 
 
 CFG = {
@@ -45,3 +50,9 @@ class TestShortPolicy(unittest.TestCase):
         self.assertTrue(is_auto_short_source("rsi_sell", CFG))
         self.assertFalse(is_auto_short_source("bb_upper", CFG))
         self.assertFalse(is_auto_short_source("trailing_take_profit", CFG))
+
+    def test_auto_notional_fraction(self):
+        self.assertAlmostEqual(
+            auto_short_notional_usdt(1000, cap=500, config_raw={"shorts": {"auto_notional_pct": 0.35}}),
+            350,
+        )

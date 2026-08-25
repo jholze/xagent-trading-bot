@@ -161,15 +161,17 @@ def try_execute_trail_exit(
         return {"ok": False, "executed": False, "message": "bad_args"}
 
     # recovery_hold / sniper_focus: block trail-class WS fires (hard SL not via this path)
+    # Short lots skip this — cover (liq/stop/time) must still fire.
     try:
         from strategies.positions import get_position
         from strategies.recovery_hold import (
             auto_sells_blocked_reason,
             maybe_promote_recovery_hold,
         )
+        from strategies.short_math import is_short as _is_short_lot
 
         pos = get_position(sym, tf) or {}
-        if pos:
+        if pos and not _is_short_lot(pos):
             if maybe_promote_recovery_hold(pos, px):
                 try:
                     from strategies.positions import flush_positions
@@ -224,21 +226,28 @@ def try_execute_trail_exit(
         if amount <= 0:
             return {"ok": False, "executed": False, "message": "amount_zero"}
 
+        short_lot = False
         try:
             from strategies.short_math import is_short as _is_short
 
-            if _is_short(pos):
-                return _execute_short_cover(
-                    symbol=sym,
-                    timeframe=tf,
-                    price=px,
-                    amount=amount,
-                    exit_source=exit_source,
-                    rationale=rationale,
-                    trading=trading,
-                )
-        except Exception:
-            pass
+            short_lot = bool(_is_short(pos))
+        except Exception as exc:
+            log(f"exit_ws side check failed {sym}: {exc}", "ERROR")
+            return {
+                "ok": False,
+                "executed": False,
+                "message": f"side_check_error:{exc}"[:200],
+            }
+        if short_lot or str(action or "").upper() == "COVER":
+            return _execute_short_cover(
+                symbol=sym,
+                timeframe=tf,
+                price=px,
+                amount=amount,
+                exit_source=exit_source,
+                rationale=rationale,
+                trading=trading,
+            )
 
         try:
             from strategies.position_lock import (
@@ -259,12 +268,7 @@ def try_execute_trail_exit(
                 }
         except Exception as exc:
             # Fail-closed: do not trail-sell if lock check is broken
-            try:
-                from logger import log
-
-                log(f"exit_ws position_lock check error {sym}: {exc}", "ERROR")
-            except Exception:
-                pass
+            log(f"exit_ws position_lock check error {sym}: {exc}", "ERROR")
             return {
                 "ok": False,
                 "executed": False,

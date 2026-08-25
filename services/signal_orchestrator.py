@@ -105,6 +105,16 @@ class SignalOrchestrator:
         self.trading.refresh()
         symbol = analysis.symbol
         tf = analysis.timeframe
+        try:
+            from strategies.short_math import is_short as _is_short
+
+            lot = get_position(symbol, tf)
+            if _is_short(lot) and float(lot.get("amount") or 0) > 1e-12:
+                log(f"Skip long {analysis.action} {symbol}: open short (one-way)", "WARNING")
+                return None
+        except Exception as exc:
+            log(f"Skip long {analysis.action} {symbol}: side check {exc}", "ERROR")
+            return None
         coin_cfg = resolve_coin_config(coin)
         strategy_params = coin_cfg.get("strategy_params") or {}
         request_extra = {}
@@ -225,6 +235,46 @@ class SignalOrchestrator:
             idempotency_key=idem,
         )
 
+    def _cycle_short_cover(self, pos: dict, analysis, current_price: float):
+        """Cycle fallback for paper shorts (WS is primary). Fail-closed on errors.
+
+        Returns (handled, trade_result). handled=True means do not run long BUY/SELL.
+        """
+        try:
+            from strategies.short_math import is_short
+
+            if not is_short(pos) or float((pos or {}).get("amount") or 0) <= 1e-12:
+                return False, None
+        except Exception as exc:
+            log(f"cycle short side check fail {getattr(analysis, 'symbol', '?')}: {exc}", "ERROR")
+            return True, None
+        try:
+            from strategies.short_cover import evaluate_short_cover
+
+            hit = evaluate_short_cover(
+                pos,
+                current_price,
+                symbol=analysis.symbol,
+                config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+            )
+            if not hit:
+                return True, None
+            lot_tf = str((pos or {}).get("timeframe") or analysis.timeframe)
+            order = TradeOrder(
+                type="COVER",
+                symbol=analysis.symbol,
+                price=current_price,
+                amount=float(pos.get("amount") or 0),
+                signal="COVER",
+                source="auto",
+                exit_source=str(hit.get("source") or "short_cover"),
+                exit_rationale=str(hit.get("rationale") or "")[:240],
+            )
+            return True, self.trading.execute_order(order, lot_tf, source="auto")
+        except Exception as exc:
+            log(f"cycle short cover skip {analysis.symbol}: {exc}", "WARNING")
+            return True, None
+
     def process_entry_sensor(
         self,
         coin: dict,
@@ -296,7 +346,24 @@ class SignalOrchestrator:
         if analysis is None:
             return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
-        trade_result = self.execute_if_needed(analysis, coin, current_price)
+        symbol = coin["symbol"]
+        tf = analysis.timeframe
+        found = find_open_position_for_symbol(symbol, preferred_timeframe=tf)
+        if found:
+            lot_tf, pos = found
+            pos["timeframe"] = lot_tf
+        else:
+            pos = get_position(symbol, tf)
+        pos["last_rsi"] = analysis.rsi
+        try:
+            from strategies.positions import set_position_field
+
+            set_position_field(symbol, str(pos.get("timeframe") or tf), "last_rsi", analysis.rsi)
+        except Exception:
+            pass
+        handled_short, trade_result = self._cycle_short_cover(pos, analysis, current_price)
+        if not handled_short:
+            trade_result = self.execute_if_needed(analysis, coin, current_price)
         self.audit.record(coin, analysis, trade_result, current_price)
 
         symbol = coin["symbol"]
@@ -381,7 +448,20 @@ class SignalOrchestrator:
 
         unrealized = 0.0
         if has_position and pos.get("average_entry", 0) > 0:
-            unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])
+            try:
+                from strategies.short_math import is_short, unrealized_pnl
+
+                if is_short(pos):
+                    unrealized = unrealized_pnl(
+                        "short",
+                        float(pos["amount"]),
+                        float(pos["average_entry"]),
+                        current_price,
+                    )
+                else:
+                    unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])
+            except Exception:
+                unrealized = (current_price - pos["average_entry"]) * float(pos["amount"])
 
         history = (
             load_live_trade_history()

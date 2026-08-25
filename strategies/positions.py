@@ -848,6 +848,14 @@ def update_position(
         pos = _ensure_key(store, key)
         was_open = is_open_position(pos)
         if signal in ("BUY", "BUY_DCA") and amount_traded > 0:
+            if str(pos.get("side") or "long").lower() == "short" and float(pos.get("amount") or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on short {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
             old_amount = pos["amount"]
             old_average = pos.get("average_entry", current_price)
             new_amount = old_amount + Decimal(str(amount_traded))
@@ -952,6 +960,14 @@ def update_position(
         elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
             old_amount = pos["amount"]
             old_side = str(pos.get("side") or "long").lower()
+            if old_side != "short" and float(old_amount or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on long {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
             adding = old_side == "short" and float(old_amount or 0) > 0
             if adding:
                 new_amount = old_amount + Decimal(str(amount_traded))
@@ -998,6 +1014,14 @@ def update_position(
                 if peak > 0:
                     pos["sold_percent"] = 1.0 - float(pos["amount"]) / peak
         elif "SELL" in signal:
+            if str(pos.get("side") or "long").lower() == "short" and float(pos.get("amount") or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on short {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
             original_amount = float(pos["amount"])
             strategy_params = None
             try:

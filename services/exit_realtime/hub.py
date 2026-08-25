@@ -466,20 +466,31 @@ class ExitRealtimeHub:
             # Fail-closed on lock-check errors: do not evaluate trail sells
             return
 
+        short_lot = False
+        live_for_side = pos
         try:
-            from strategies.short_cover import evaluate_short_cover
+            from strategies.positions import get_position as _get_pos_side
             from strategies.short_math import is_short as _lot_is_short
 
-            live_for_side = get_position(sym, tf) or pos
-            if _lot_is_short(live_for_side):
+            live_for_side = _get_pos_side(sym, tf) or pos
+            short_lot = bool(_lot_is_short(live_for_side))
+        except Exception as exc:
+            log(f"exit_realtime short side check fail {sym}: {exc}", "ERROR")
+            return
+
+        if short_lot:
+            try:
+                from strategies.short_cover import evaluate_short_cover
+
                 try:
                     rl = float(live_for_side.get("recent_low") or price)
                     if price < rl:
                         live_for_side["recent_low"] = price
                         pos["recent_low"] = price
-                        from strategies.positions import set_position_field
+                        from strategies.positions import flush_positions, set_position_field
 
                         set_position_field(sym, tf, "recent_low", price)
+                        flush_positions(force=True)
                 except Exception:
                     pass
                 hit = evaluate_short_cover(
@@ -514,9 +525,9 @@ class ExitRealtimeHub:
                             "executed": True,
                         }
                     )
-                return
-        except Exception as exc:
-            log(f"exit_realtime short cover skip {sym}: {exc}", "DEBUG")
+            except Exception as exc:
+                log(f"exit_realtime short cover skip {sym}: {exc}", "WARNING")
+            return
 
         events = evaluate_would_sells(
             symbol=sym,

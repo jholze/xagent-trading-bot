@@ -9,6 +9,8 @@ export type DeskLot = {
   amount?: number
   average_entry?: number
   entry_price?: number
+  side?: 'long' | 'short' | string
+  leverage?: number | null
   pnl_pct?: number
   dca_rounds?: number
   dca_max_rounds?: number
@@ -274,7 +276,7 @@ export function lotNextDcaPrice(lot: DeskLot | null | undefined): number | null 
 }
 
 export function dcaRemaining(lot: DeskLot | null | undefined): boolean {
-  if (!lot) return false
+  if (!lot || lot.side === 'short') return false
   const used = asFiniteNumber(lot.dca_rounds)
   const max = asFiniteNumber(lot.dca_max_rounds)
   if (used == null || max == null) return false
@@ -294,9 +296,10 @@ export function dcaRoundsRemain(
   lot: DeskLot | null | undefined,
   hud?: DeskHud | null,
 ): boolean {
+  if (!lot || lot.side === 'short') return false
   if (dcaRemaining(lot)) return true
   const used = asFiniteNumber(lot?.dca_rounds)
-  const max = asFiniteNumber(lot?.dca_max_rounds)
+  const max = asFiniteNumber(lot.dca_max_rounds)
   if (used != null && max != null) return false
   return dcaRemainingFromHud(hud) === true
 }

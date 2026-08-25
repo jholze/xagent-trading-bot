@@ -74,6 +74,7 @@
     "leverage_cap": 5,
     "max_open": 6,
     "max_margin_pct": 20,
+    "auto_notional_pct": 0.35,
     "liquidation_buffer": 0.05,
     "fee_rate": 0.001,
     "funding_rate_8h": 0.0001,

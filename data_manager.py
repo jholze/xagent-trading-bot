@@ -1125,23 +1125,52 @@ def _reconcile_scoped_trade_history(
 _SIM_CASH_EPS = 0.01
 
 
+def _trade_margin_usdt(trade: dict) -> float:
+    try:
+        stored = float(trade.get("margin_usdt") or 0)
+    except (TypeError, ValueError):
+        stored = 0.0
+    if stored > 0:
+        return stored
+    try:
+        notion = float(trade.get("usdt_amount") or 0)
+        lev = float(trade.get("leverage") or 2) or 2.0
+    except (TypeError, ValueError):
+        return 0.0
+    if notion <= 0 or lev <= 0:
+        return 0.0
+    return notion / lev
+
+
 def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float:
     """Replay dry-run trades from starting capital to derive sim USDT cash."""
     balance = float(initial)
     for trade in trades or []:
-        if trade.get("type") == "BUY":
+        typ = str(trade.get("type") or "").upper()
+        if typ == "BUY":
             usdt = float(trade.get("usdt_amount") or 0)
             if usdt > balance + _SIM_CASH_EPS:
                 continue
             balance -= usdt
-        elif trade.get("type") == "SELL":
+        elif typ == "SELL":
             balance += float(trade.get("usdt_received") or 0)
+        elif typ == "SHORT":
+            margin = _trade_margin_usdt(trade)
+            if margin > balance + _SIM_CASH_EPS:
+                continue
+            balance -= margin
+        elif typ == "COVER":
+            balance += _trade_margin_usdt(trade) + float(trade.get("pnl") or 0)
     return round(max(0.0, balance), 8)
 
 
 def compute_sim_realized_pnl(trades: list) -> float:
     return round(
-        sum(float(t.get("pnl") or 0) for t in (trades or []) if t.get("type") == "SELL"),
+        sum(
+            float(t.get("pnl") or 0)
+            for t in (trades or [])
+            if str(t.get("type") or "").upper() in ("SELL", "COVER")
+        ),
         8,
     )
 
@@ -1260,18 +1289,24 @@ def record_live_trade(trade):
 def record_trade(trade):
     history = load_trade_history()
     history.setdefault("trades", []).append(trade)
-    if trade.get("type") == "BUY":
+    typ = str(trade.get("type") or "").upper()
+    if typ == "BUY":
         history["virtual_balance"] = max(0, history["virtual_balance"] - trade.get("usdt_amount", 0))
-    else:
+    elif typ == "SELL":
         history["virtual_balance"] += trade.get("usdt_received", 0)
         history["realized_pnl"] += trade.get("pnl", 0)
+    elif typ == "SHORT":
+        history["virtual_balance"] = max(0, float(history.get("virtual_balance") or 0) - _trade_margin_usdt(trade))
+    elif typ == "COVER":
+        history["virtual_balance"] = float(history.get("virtual_balance") or 0) + _trade_margin_usdt(trade) + float(trade.get("pnl") or 0)
+        history["realized_pnl"] = float(history.get("realized_pnl") or 0) + float(trade.get("pnl") or 0)
     try:
         from strategies.positions import count_open_positions
         history["open_positions"] = count_open_positions()
     except Exception:
-        if trade.get("type") == "BUY":
+        if typ in ("BUY", "SHORT"):
             history["open_positions"] = history.get("open_positions", 0) + 1
-        else:
+        elif typ in ("SELL", "COVER"):
             history["open_positions"] = max(0, history.get("open_positions", 0) - 1)
     save_trade_history(history)
     return history

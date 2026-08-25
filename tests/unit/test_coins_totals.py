@@ -30,6 +30,20 @@ class TestCoinsTotals(unittest.TestCase):
         self.assertEqual(totals["marktwert"], 0.0)
         self.assertEqual(totals["missing_prices"], 1)
 
+    def test_short_einstand_is_margin_not_notional(self):
+        active = [{
+            "symbol": "H/USDT",
+            "amount": 100,
+            "average_entry": 2.0,
+            "side": "short",
+            "leverage": 2,
+        }]
+        prices = {"H/USDT": 1.8}
+        totals = aggregate_open_coins_totals(active, prices)
+        self.assertAlmostEqual(totals["cost_basis"], 100.0, places=2)
+        self.assertAlmostEqual(totals["unreal"], 20.0, places=2)
+        self.assertAlmostEqual(totals["marktwert"], 120.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

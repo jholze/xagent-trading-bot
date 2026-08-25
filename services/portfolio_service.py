@@ -48,6 +48,13 @@ class PortfolioService:
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
+        from strategies.short_math import is_short
+
+        existing = get_position(symbol, timeframe)
+        if is_short(existing) and float(existing.get("amount") or 0) > 1e-12:
+            return TradeResult(
+                False, "BUY", symbol, message="one-way: cover short before buy",
+            )
         usdt = usdt_amount or self.config.max_usdt_per_trade
         amount = usdt / price
         signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
@@ -88,6 +95,12 @@ class PortfolioService:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
         pos = get_position(symbol, timeframe)
+        from strategies.short_math import is_short
+
+        if is_short(pos) and float(pos.get("amount") or 0) > 1e-12:
+            return TradeResult(
+                False, "SELL", symbol, message="one-way: cover short — do not sell",
+            )
         if amount is None:
             fraction = sell_fraction_for_signal(signal)
             amount = float(pos["amount"]) * fraction
@@ -132,8 +145,14 @@ class PortfolioService:
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
-        from strategies.short_math import clamp_leverage, margin_usdt
+        from strategies.short_math import clamp_leverage, is_short, margin_usdt
         from strategies.short_policy import resolve_short_params
+
+        existing = get_position(symbol, timeframe)
+        if float(existing.get("amount") or 0) > 1e-12 and not is_short(existing):
+            return TradeResult(
+                False, "SHORT", symbol, message="one-way: close long before short",
+            )
 
         params = resolve_short_params(symbol=symbol, config_raw=self.config.raw)
         lev = clamp_leverage(leverage or params["leverage"], cap=params["leverage_cap"])
@@ -179,7 +198,7 @@ class PortfolioService:
         if price <= 0:
             return TradeResult(False, "COVER", symbol, message="Invalid price")
         pos = get_position(symbol, timeframe)
-        from strategies.short_math import is_short, unrealized_pnl
+        from strategies.short_math import is_short, margin_usdt, unrealized_pnl
 
         if not is_short(pos) or float(pos.get("amount") or 0) <= 0:
             return TradeResult(False, "COVER", symbol, message="No short to cover")
@@ -219,6 +238,7 @@ class PortfolioService:
                 "price": price,
                 "amount": qty,
                 "usdt_amount": price * qty,
+                "margin_usdt": margin_usdt(qty, entry, float(pos.get("leverage") or 2) or 2.0),
                 "pnl": pnl,
                 "source": source,
                 "order_id": order_id,

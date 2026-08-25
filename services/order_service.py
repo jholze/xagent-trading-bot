@@ -313,10 +313,12 @@ class OrderService:
             "tenant_id": resolve_tenant_id(),
             "trading_mode": cfg.trading_mode,
             "ledger_scope": self.scope,
+            **_leverage_payload(order),
             "request": {
                 "price": float(order.price or 0),
                 "amount": float(order.amount or 0) or None,
                 "usdt": float(order.usdt_amount or 0) or None,
+                **_leverage_payload(order),
                 **(request_extra or {}),
             },
             "risk": self._risk_snapshot(risk),
@@ -356,10 +358,12 @@ class OrderService:
             "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
             "trading_mode": get_bot_config().trading_mode,
             "ledger_scope": self.scope,
+            **_leverage_payload(order),
             "request": {
                 "price": float(order.price or 0),
                 "amount": float(order.amount or 0) or None,
                 "usdt": float(order.usdt_amount or 0) or None,
+                **_leverage_payload(order),
                 **(request_extra or {}),
             },
             "risk": self._risk_snapshot(decision, approved=False),
@@ -1008,6 +1012,9 @@ class OrderService:
                 "exchange_order_id": getattr(result, "exchange_order_id", None),
                 "fee": float(getattr(result, "fee", 0) or 0) or None,
             }
+            lev_pay = _leverage_payload(approved_order)
+            if lev_pay:
+                execution.update(lev_pay)
             # Sensor-entry-guard: stamp Gate venue metrics at fill for memory learning
             try:
                 side = (approved_order.type if approved_order else "") or ""
@@ -1049,6 +1056,17 @@ class OrderService:
             "approved_usdt": approved_usdt,
             "checked_at": _now(),
         }
+
+
+def _leverage_payload(order: TradeOrder | None) -> dict:
+    lev = getattr(order, "leverage", None) if order is not None else None
+    try:
+        val = float(lev) if lev is not None else 0.0
+    except (TypeError, ValueError):
+        return {}
+    if val <= 0:
+        return {}
+    return {"leverage": val}
 
 
 def _fmt_price(price) -> str:

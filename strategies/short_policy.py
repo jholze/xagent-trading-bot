@@ -30,6 +30,7 @@ def shorts_config(raw: dict | None = None) -> dict[str, Any]:
 
 
 def shorts_enabled(raw: dict | None = None) -> bool:
+    """New SHORT opens. Kill does *not* block COVER on existing lots."""
     return bool(shorts_config(raw).get("enabled"))
 
 
@@ -37,10 +38,39 @@ def shorts_allow_live(raw: dict | None = None) -> bool:
     return bool(shorts_config(raw).get("allow_live"))
 
 
+def shorts_cover_allowed(_raw: dict | None = None) -> bool:
+    """Existing shorts must still cover when the kill switch is on."""
+    return True
+
+
 def is_auto_short_source(source: str | None, raw: dict | None = None) -> bool:
     allow = shorts_config(raw).get("auto_sources") or AUTO_SOURCES
     s = str(source or "").strip()
     return s in set(allow)
+
+
+def auto_short_notional_usdt(
+    sell_usdt: float,
+    *,
+    cap: float,
+    config_raw: dict | None = None,
+) -> float:
+    """Size auto-shorts as a fraction of the qualifying sell, capped by ticket size."""
+    cfg = shorts_config(config_raw)
+    try:
+        pct = float(cfg.get("auto_notional_pct") if cfg.get("auto_notional_pct") is not None else 0.35)
+    except (TypeError, ValueError):
+        pct = 0.35
+    pct = min(1.0, max(0.0, pct))
+    cap_f = max(0.0, float(cap or 0))
+    try:
+        sell = max(0.0, float(sell_usdt or 0))
+    except (TypeError, ValueError):
+        sell = 0.0
+    raw = sell * pct if sell > 0 else cap_f * pct
+    if cap_f > 0:
+        raw = min(raw, cap_f)
+    return raw
 
 
 def _tier_key(tier: str | None) -> str:

@@ -317,6 +317,8 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
             pos = positions.get(key)
             if not pos:
                 continue
+            if str(pos.get("side") or "").lower() == "short":
+                continue
             original = float(pos.get("amount") or 0)
             if original <= _SIM_CASH_EPS:
                 continue
