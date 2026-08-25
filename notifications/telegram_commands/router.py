@@ -34,10 +34,20 @@ _HANDLERS = [
 ]
 
 
+def _strip_bot_suffix(text: str) -> str:
+    """Telegram may send `/short@BotName` from the slash picker."""
+    if not text.startswith("/"):
+        return text
+    head, sep, tail = text.partition(" ")
+    if "@" in head:
+        head = head.split("@", 1)[0]
+    return f"{head} {tail}".strip() if sep else head
+
+
 def dispatch_command(text: str) -> bool:
     if not isinstance(text, str):
         return False
-    text = text.strip()
+    text = _strip_bot_suffix(text.strip())
     log(f"[DEBUG] Empfangener Befehl: '{text}'", "DEBUG")
 
     try:

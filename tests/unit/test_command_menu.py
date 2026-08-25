@@ -73,13 +73,16 @@ class TestCommandMenu(unittest.TestCase):
             ok = register_bot_commands(token="test-token")
 
         self.assertTrue(ok)
-        # de + en + default fallback + setChatMenuButton
-        self.assertEqual(mock_post.call_count, 4)
+        # de + en + default fallback + setChatMenuButton + chat-scoped operator inbox
+        self.assertGreaterEqual(mock_post.call_count, 4)
+        urls = [c[0][0] for c in mock_post.call_args_list]
         set_cmds = [c for c in mock_post.call_args_list if "/setMyCommands" in c[0][0]]
-        self.assertEqual(len(set_cmds), 3)
+        self.assertGreaterEqual(len(set_cmds), 3)
+        self.assertTrue(any("/setChatMenuButton" in u for u in urls))
+        self.assertTrue(any(c["command"] == "short" for c in all_bot_commands("de")))
+        self.assertTrue(any(c["command"] == "cover" for c in all_bot_commands("de")))
         langs = [c[1]["json"].get("language_code") for c in set_cmds]
         self.assertEqual(sorted([l for l in langs if l]), ["de", "en"])
-        self.assertIn("/setChatMenuButton", mock_post.call_args_list[-1][0][0])
 
     def test_register_commands_for_chat_uses_chat_scope(self):
         mock_resp = MagicMock()
@@ -103,6 +106,8 @@ class TestCommandMenu(unittest.TestCase):
         self.assertEqual(len(payload["commands"]), sat_n)
         self.assertFalse(any(c["command"] == "onboard" for c in payload["commands"]))
         self.assertFalse(any(c["command"] == "live_confirm" for c in payload["commands"]))
+        self.assertTrue(any(c["command"] == "short" for c in payload["commands"]))
+        self.assertTrue(any(c["command"] == "cover" for c in payload["commands"]))
 
     def test_register_without_token_returns_false(self):
         with patch.dict("os.environ", {}, clear=True):

@@ -286,6 +286,14 @@ def reload_ui() -> ScopeResult:
     except Exception as e:
         meta["usage_hints"] = f"skip:{e}"
 
+    try:
+        from notifications.telegram_commands.command_menu import register_bot_commands
+
+        ok = register_bot_commands()
+        meta["telegram_slash"] = "ok" if ok else "skip"
+    except Exception as e:
+        meta["telegram_slash"] = f"skip:{e}"
+
     return ScopeResult("ui", True, "telegram_messages + menu/help reloaded", meta)
 
 
