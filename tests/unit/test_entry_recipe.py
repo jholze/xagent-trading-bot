@@ -165,6 +165,42 @@ class TestScoreAndSelect(unittest.TestCase):
         self.assertAlmostEqual(summary["baseline_mean_total_return_pct"], 1.5)
         self.assertTrue(summary["equal_or_better"])
 
+    def test_reversal_requires_full_rsi_band_cross(self):
+        """Partial band entry must not count; last_rsi < lo and rsi >= hi must."""
+        params = {
+            "buy_regime": "reversal",
+            "reversal_rsi_cross_low": 32,
+            "reversal_rsi_cross_high": 38,
+            "reversal_volume_multiplier": 1.0,
+        }
+        # last bar: last_rsi=31, rsi=34 — old formula (lo<=rsi) would fire
+        partial = score_entry_params_on_df(_reversal_df(31.0, 34.0), params)
+        self.assertEqual(partial.buy_signals, 0)
+        # last bar: last_rsi=31, rsi=38 — full cross through the band
+        full = score_entry_params_on_df(_reversal_df(31.0, 38.0), params)
+        self.assertGreaterEqual(full.buy_signals, 1)
+        # last bar: last_rsi=35, rsi=38 — inside-band rise (old: last < hi <= rsi)
+        inside = score_entry_params_on_df(_reversal_df(35.0, 38.0), params)
+        self.assertEqual(inside.buy_signals, 0)
+
+
+def _reversal_df(prev_rsi: float, rsi: float, n: int = 45) -> pd.DataFrame:
+    """Pre-scored bars: no dip (price >> BB), volume always qualifies."""
+    close = [100.0] * n
+    rsi_col = [50.0] * (n - 2) + [prev_rsi, rsi]
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": [101.0] * n,
+            "low": [99.0] * n,
+            "close": close,
+            "volume": [2000.0] * n,
+            "rsi": rsi_col,
+            "lower_bb": [50.0] * n,
+            "vol_mult": [2.0] * n,
+        }
+    )
+
 
 class TestRegistryWiresPersonal(unittest.TestCase):
     def test_resolve_prefers_personal_buy_keys(self):

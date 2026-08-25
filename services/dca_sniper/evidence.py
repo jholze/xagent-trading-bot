@@ -120,8 +120,8 @@ def events_to_news_items(
                 source=src,
             )
         )
-    # worst impact first, then freshest
-    items.sort(key=lambda n: (n.impact, -(n.age_hours if n.age_hours is not None else 1e9)))
+    # worst impact first, then freshest (smallest age_hours first)
+    items.sort(key=lambda n: (n.impact, n.age_hours if n.age_hours is not None else 1e9))
     freshest = min(ages) if ages else None
     return items[:max_items], freshest
 

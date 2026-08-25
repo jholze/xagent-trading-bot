@@ -18,6 +18,7 @@ from bus.eval_queue import (
     eval_queue_config,
     eval_queue_enabled,
     last_processed_at,
+    mark_eval_processed,
     pop_eval_batch,
     queue_depth,
 )
@@ -239,6 +240,12 @@ def _worker_loop(orchestrator) -> None:
                     break
                 try:
                     result = process_eval_job(orchestrator, job)
+                    mark_eval_processed(
+                        job.symbol,
+                        job.timeframe,
+                        config_raw=cfg_raw,
+                        tenant_id=job.tenant_id or None,
+                    )
                     _record_result(result, job)
                     _bump_stats(symbol=job.symbol, reason=job.reason)
                     log(

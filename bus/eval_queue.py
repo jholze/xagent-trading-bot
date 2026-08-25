@@ -210,7 +210,7 @@ def pop_eval_batch(
 
     arch = _arch(config_raw)
     prefix = str(arch.get("key_prefix", "aria:"))
-    queue_key, meta_key, processed_key = _keys(prefix)
+    queue_key, meta_key, _ = _keys(prefix)
 
     try:
         items = client.zpopmin(queue_key, count=max(1, int(count)))
@@ -235,10 +235,6 @@ def pop_eval_batch(
                 tenant_id = str(meta.get("tenant_id") or tenant_id)
         except Exception:
             pass
-        try:
-            client.hset(processed_key, member, str(now))
-        except Exception:
-            pass
         jobs.append(
             EvalJob(
                 symbol=symbol,
@@ -251,6 +247,33 @@ def pop_eval_batch(
             )
         )
     return jobs
+
+
+def mark_eval_processed(
+    symbol: str,
+    timeframe: str,
+    *,
+    config_raw: dict | None = None,
+    tenant_id: str | None = None,
+    processed_at: float | None = None,
+) -> bool:
+    """Stamp processed only after a successful evaluation, not at dequeue."""
+    client = _client(config_raw)
+    if not client:
+        return False
+    arch = _arch(config_raw)
+    _, _, processed_key = _keys(str(arch.get("key_prefix", "aria:")))
+    member = eval_member_key(_resolve_enqueue_tenant(tenant_id), symbol, timeframe)
+    try:
+        client.hset(
+            processed_key,
+            member,
+            str(processed_at if processed_at is not None else time.time()),
+        )
+        return True
+    except Exception as e:
+        log(f"eval_queue mark_processed failed {member}: {e}", "WARNING")
+        return False
 
 
 def queue_depth(config_raw: dict | None = None) -> int:

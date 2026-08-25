@@ -13,6 +13,7 @@ from bus.eval_queue import (
     enqueue_eval,
     eval_member_key,
     eval_queue_enabled,
+    mark_eval_processed,
     peek_eval_queue,
     pop_eval_batch,
     queue_depth,
@@ -187,6 +188,22 @@ class TestEvalQueue(unittest.TestCase):
             jobs = pop_eval_batch(1, config_raw=CFG)
         self.assertEqual(jobs[0].tenant_id, "henry")
         self.assertEqual(jobs[0].symbol, "SUI/USDT")
+
+    def test_pop_does_not_stamp_processed(self):
+        client, _, hashes = _mock_redis_client()
+        with patch("bus.eval_queue._client", return_value=client):
+            enqueue_eval("AAA/USDT", "1h", reason="stale", priority=50, config_raw=CFG)
+            pop_eval_batch(1, config_raw=CFG)
+        processed = hashes.get("test:eval:processed") or {}
+        self.assertEqual(processed, {})
+
+    def test_mark_eval_processed_stamps_after_eval(self):
+        client, _, hashes = _mock_redis_client()
+        with patch("bus.eval_queue._client", return_value=client):
+            ok = mark_eval_processed("AAA/USDT", "1h", config_raw=CFG)
+        self.assertTrue(ok)
+        processed = hashes.get("test:eval:processed") or {}
+        self.assertTrue(any("AAA/USDT" in k for k in processed))
 
 
 class TestEvalMetaProducers(unittest.TestCase):

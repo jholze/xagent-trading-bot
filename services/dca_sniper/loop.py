@@ -126,6 +126,7 @@ class DcaSniperLoop:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._wake.clear()
             try:
                 from services.dca_sniper.redis_bus import beat
 
@@ -169,5 +170,4 @@ class DcaSniperLoop:
             except Exception as e:
                 log(f"dca_sniper cycle error: {e}", "ERROR")
                 self._last_audit = {"error": str(e)[:200]}
-            self._wake.clear()
             self._wake.wait(timeout=self._interval())
