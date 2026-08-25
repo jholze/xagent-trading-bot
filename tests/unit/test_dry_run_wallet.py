@@ -28,6 +28,14 @@ class TestDryRunWallet(unittest.TestCase):
         raw.setdefault("live", {})["dry_run"] = True
         raw["live"]["dry_run_enhanced"] = True
         raw["live"]["simulated_balance_usdt"] = 5000
+        uni = dict(raw.get("universe") or {})
+        uni["split_enabled"] = False
+        raw["universe"] = uni
+        risk = dict(raw.get("risk") or {})
+        risk["position_capacity"] = {"enabled": False}
+        risk["cash_policy"] = {"enabled": False}
+        risk["slot_eviction"] = {"enabled": False}
+        raw["risk"] = risk
         cfg = BotConfig()
         cfg._raw = raw
         return cfg
@@ -119,7 +127,8 @@ class TestDryRunWallet(unittest.TestCase):
 
     def test_fetch_usdt_balance_returns_simulated_in_enhanced_mode(self):
         cfg = self._enhanced_config()
-        with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 4321.0}):
+        with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 4321.0}), \
+             patch("services.gate_balance.uses_order_ledger_cash", return_value=False):
             self.assertAlmostEqual(fetch_usdt_balance(cfg), 4321.0)
 
     def test_fetch_usdt_balance_returns_simulated_in_plain_dry_run(self):
@@ -130,7 +139,8 @@ class TestDryRunWallet(unittest.TestCase):
         raw["live"]["simulated_balance_usdt"] = 5000
         cfg = BotConfig()
         cfg._raw = raw
-        with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 3952.19}):
+        with patch("services.gate_balance.load_live_trade_history", return_value={"virtual_balance": 3952.19}), \
+             patch("services.gate_balance.uses_order_ledger_cash", return_value=False):
             self.assertAlmostEqual(fetch_usdt_balance(cfg), 3952.19)
 
     def test_risk_status_uses_simulated_ledger(self):
@@ -138,7 +148,8 @@ class TestDryRunWallet(unittest.TestCase):
         rm = RiskManager(cfg)
         with patch("risk.risk_manager.load_live_trade_history", return_value={"virtual_balance": 4800.0, "trades": []}), \
              patch("risk.risk_manager.count_open_positions", return_value=1), \
-             patch.object(rm, "_daily_trades_count", return_value=2):
+             patch.object(rm, "_daily_trades_count", return_value=2), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=False):
             summary = rm.status_summary()
         self.assertEqual(summary["ledger_source"], "simulated")
         self.assertEqual(summary["virtual_balance"], 4800.0)

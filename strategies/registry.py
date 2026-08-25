@@ -389,7 +389,8 @@ def resolve_strategy_params(
             stable_cfg=stable_cfg,
             cfg=cfg,
         )
-        result = preserve_buy_params(result, {**hermes_params, **preferred_buy})
+        # Restore buy knobs only — not strategy_profile, or +volatile overlay is clobbered.
+        result = preserve_buy_params(result, preferred_buy)
         return _out(result)
 
     if volatile_active:

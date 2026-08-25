@@ -258,10 +258,12 @@ class TestRSIChurnPrevention(unittest.TestCase):
             strategy_params={
                 "rsi_sell_30": 72,
                 "rsi_sell_20": 84,
+                "rsi_sell_min_gain_pct": 0,
                 "take_profit_pct": 12,
             },
         )
-        return strategy.analyze({"symbol": self.symbol, "timeframe": self.tf}, market)
+        with patch("strategies.indicator_regime.overlay_active", return_value=False):
+            return strategy.analyze({"symbol": self.symbol, "timeframe": self.tf}, market)
 
     def test_rsi_high_without_cross_stays_hold(self):
         analysis = self._analyze(rsi=75.0, last_rsi=74.0)

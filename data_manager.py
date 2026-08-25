@@ -209,7 +209,8 @@ def save_watchlist(coins, tenant_id: str | None = None):
     try:
         atomic_write_json(path, {"coins": coins})
         return True
-    except Exception:
+    except Exception as e:
+        log(f"Failed to save watchlist: {e}", "ERROR")
         return False
 
 

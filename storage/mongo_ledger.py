@@ -115,14 +115,18 @@ class MongoLedgerStore:
 
         # Multi-tenant: compound default:<scope> is canonical (read == write).
         # Legacy scope docs are merged on startup via merge_operator_ledger_scope().
+        # Paper/live: never fall back to `_id: paper` (mixes leftover operator book).
+        # Demo staging still uses `_id: demo` for the operator default tenant.
         if collection == TRADE_HISTORY_COLLECTION and (legacy or compound):
             from storage.ledger_merge import merge_trade_history_docs
 
             return merge_trade_history_docs(legacy, compound) or compound or legacy
-        if compound and _legacy_has_payload(compound, collection):
-            return compound
-        if legacy and _legacy_has_payload(legacy, collection):
-            return legacy
+        if scope == "demo":
+            if compound and _legacy_has_payload(compound, collection):
+                return compound
+            if legacy and _legacy_has_payload(legacy, collection):
+                return legacy
+            return compound or legacy
         return compound
 
     def _prepare_payload(

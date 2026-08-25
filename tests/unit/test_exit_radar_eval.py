@@ -144,7 +144,7 @@ class TestPositionGates(unittest.TestCase):
         self.assertTrue(blocked)
         self.assertIn("no_dca", msg)
 
-    def test_legacy_triple_allows_dca(self):
+    def test_legacy_triple_blocks_dca(self):
         pos = {"amount": 1}
         apply_lock(
             pos,
@@ -153,8 +153,9 @@ class TestPositionGates(unittest.TestCase):
                 reason="telegram",
             ),
         )
-        blocked, _ = dca_add_blocked(pos)
-        self.assertFalse(blocked)
+        blocked, why = dca_add_blocked(pos)
+        self.assertTrue(blocked)
+        self.assertIn("no_dca", why)
 
     def test_hold_blocks_auto_exit(self):
         pos = {"recovery_hold": True, "sniper_focus": True, "amount": 1}

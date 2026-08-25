@@ -22,6 +22,9 @@ class TestLiveGateReadiness(unittest.TestCase):
         live = raw.setdefault("live", {})
         live["dry_run"] = dry_run
         live["dry_run_enhanced"] = enhanced
+        risk = raw.setdefault("risk", {})
+        risk["cash_floor_pct"] = 0
+        risk["cash_policy"] = {"enabled": False}
         cfg = BotConfig()
         cfg._raw = raw
         return cfg
@@ -38,12 +41,23 @@ class TestLiveGateReadiness(unittest.TestCase):
              patch("risk.risk_manager.fetch_portfolio_equity", return_value=500.0), \
              patch("risk.risk_manager.count_open_positions", return_value=1), \
              patch("risk.risk_manager.get_position", return_value={"amount": 0}), \
-             patch.object(rm, "_daily_trades_count", return_value=0):
+             patch("risk.risk_manager.find_open_position_for_symbol", return_value=None), \
+             patch("core.simulated_trading.is_demo_mode", return_value=False), \
+             patch("core.simulated_trading.is_simulated_trading", return_value=False), \
+             patch("core.simulated_trading.uses_order_ledger_cash", return_value=False), \
+             patch("data_manager.is_demo_mode", return_value=False), \
+             patch("services.market_policy_fusion.get_global_market_bias", return_value={
+                 "active": False, "block_buys": False, "apply_size_mult": False, "size_mult": 1.0,
+             }), \
+             patch("services.correlated_tier.api.correlated_tier_selloff_active", return_value=False), \
+             patch("services.gainer_universe.chase_guard.check_gainer_chase_guard", return_value=(False, "")), \
+             patch.object(rm, "_daily_trades_count", return_value=0), \
+             patch.object(rm, "_available_usdt", return_value=30.0):
             decision = rm.evaluate(
                 TradeOrder("BUY", "SOL/USDT", 100, 0, usdt_amount=200),
                 source="manual",
             )
-        self.assertTrue(decision.approved)
+        self.assertTrue(decision.approved, f"{decision.code}: {decision.message}")
         self.assertLessEqual(decision.order.usdt_amount, 30.0)
 
     def test_risk_status_summary_uses_gate_ledger(self):

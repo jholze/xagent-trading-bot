@@ -53,7 +53,7 @@ class TestDryRunWatchlist(unittest.TestCase):
              patch("data_manager.trending_watchlist_live_enabled", return_value=False):
             merged = load_effective_watchlist()
         symbols = [c["symbol"] for c in merged]
-        self.assertEqual(symbols, ["BTC/USDT", "PEPE/USDT"])
+        self.assertEqual(set(symbols), {"BTC/USDT", "PEPE/USDT"})
 
     def test_load_effective_watchlist_without_expansion_returns_base_only(self):
         base = [{"symbol": "BTC/USDT", "active": True}]

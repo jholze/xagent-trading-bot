@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from unittest.mock import patch
 
 from strategies.decision_engine import DecisionEngine
 from core.models import MarketContext
@@ -25,7 +26,12 @@ def test_cmc_threshold_override_via_strategy_params():
     )
     cmc = CMCCommunitySignal(coin="ARIA", action="BUY", confidence=84)
     coin = {"symbol": "ARIA/USDT", "timeframe": "4h", "strategy_params": market.strategy_params}
-    analysis = engine.evaluate_with_market(coin, market, cmc_signals=[cmc])
+    with patch("services.watchlist_quality.universe.cmc_only_buy_allowed", return_value=(True, "")), \
+         patch("services.market_policy_fusion.get_global_market_bias", return_value={"active": False}), \
+         patch("strategies.decision_engine.resolve_coin_config", side_effect=lambda c: {
+             **c, "strategy_class": "technical_rsi_bb", "strategy_params": market.strategy_params,
+         }):
+        analysis = engine.evaluate_with_market(coin, market, cmc_signals=[cmc])
     assert analysis.action == "BUY"
     assert "cmc" in analysis.sources
 

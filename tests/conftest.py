@@ -46,9 +46,37 @@ def isolate_test_mongo(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def demo_mode_env(monkeypatch):
+def demo_mode_env(monkeypatch, request):
     """Unit tests run with isolated demo JSON paths when touching data files."""
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    if "live_gate_readiness" in nodeid or "mongo_backend" in nodeid:
+        monkeypatch.setenv("DEMO_MODE", "0")
+        return
     monkeypatch.setenv("DEMO_MODE", "1")
+
+
+@pytest.fixture(autouse=True)
+def disable_universe_split_unless_explicit(monkeypatch, request):
+    """Production config.json has universe.split_enabled=true; most unit tests
+    were written against an open watchlist. Keep split on only for universe tests.
+    """
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    if "universe" in nodeid or "relvol_risk_universe" in nodeid:
+        return
+    monkeypatch.setattr(
+        "services.universe.split.universe_split_enabled",
+        lambda config=None: False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolate_operator_production_flags(monkeypatch, request):
+    """Keep unit tests off operator MT / WQE flags unless the test is about them."""
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    if "mongo_ledger" not in nodeid and "tenant_" not in nodeid:
+        monkeypatch.setenv("MULTI_TENANT_ENABLED", "0")
+    if "watchlist_quality" not in nodeid and "wqe" not in nodeid:
+        monkeypatch.setenv("WATCHLIST_QUALITY_MODE", "off")
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +150,7 @@ def clear_ledger_caches():
 
 
 @pytest.fixture(autouse=True)
-def normalize_unit_test_config(monkeypatch):
+def normalize_unit_test_config(monkeypatch, request):
     """Keep unit tests independent of operator-scaled production config.json."""
     import copy
 
@@ -151,6 +179,21 @@ def normalize_unit_test_config(monkeypatch):
     arch = cfg.setdefault("architecture", {})
     arch["ledger_backend"] = "local"
     arch["ledger_dual_write"] = False
+    cfg.setdefault("multi_tenant", {})["enabled"] = False
+    cfg.setdefault("watchlist_quality", {})["mode"] = "off"
+    risk.setdefault("cash_policy", {})["enabled"] = False
+    risk.setdefault("position_capacity", {})["enabled"] = False
+    cfg["x_weight"] = 0.40
+    cfg["technical_weight"] = 0.27
+    cfg["onchain_weight"] = 0.15
+    cfg["lc_weight"] = 0.18
+    nodeid = getattr(request, "node", None)
+    nodeid = getattr(nodeid, "nodeid", "") or ""
+    if "indicator_regime" not in nodeid:
+        cfg.setdefault("sell_policy", {}).setdefault("indicator_regime", {})["enabled"] = False
+    if "regime" not in nodeid and "allocator" not in nodeid:
+        cfg.setdefault("regime_detector", {})["enabled"] = False
+        cfg.setdefault("strategy_allocator", {})["enabled"] = False
 
     def _disable_exit_ladders(node):
         if isinstance(node, dict):

@@ -32,6 +32,9 @@ def _cfg(**risk_over) -> BotConfig:
     risk["slot_eviction"] = {"enabled": False}
     risk.update(risk_over)
     raw["risk"] = risk
+    uni = dict(raw.get("universe") or {})
+    uni["split_enabled"] = False
+    raw["universe"] = uni
     return BotConfig(raw)
 
 

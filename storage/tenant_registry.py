@@ -175,6 +175,13 @@ def link_tenant_owner_chat(
     if current and current != cid and current != op_chat:
         return False, "Dieser Tenant ist bereits mit einem anderen Chat verbunden."
 
+    existing = find_tenant_by_owner_chat_id(cid, test=test)
+    existing_tid = str((existing or {}).get("tenant_id") or "").strip().lower()
+    if existing_tid and existing_tid != tid:
+        return False, (
+            f"Chat bereits mit <code>{existing_tid}</code> verbunden."
+        )
+
     try:
         db = get_database(test=test)
         coll = db[TENANTS_COLLECTION]
@@ -205,9 +212,10 @@ def find_tenant_by_owner_chat_id(chat_id: str | int, *, test: bool = False) -> d
     try:
         db = get_database(test=test)
         coll = db[TENANTS_COLLECTION]
+        # Oldest binding wins — a later tenant must not steal the chat (Henry 2026-08-15).
         return coll.find_one(
             {"status": "active", "telegram.owner_chat_id": cid},
-            sort=[("updated_at", -1)],
+            sort=[("created_at", 1), ("updated_at", 1)],
         )
     except Exception as e:
         log(f"tenant_registry: find by chat_id failed: {e}", "WARNING")
