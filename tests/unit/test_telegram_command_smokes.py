@@ -76,6 +76,16 @@ class TestTelegramP0Smokes:
         assert dispatch_command("") is False
         assert dispatch_command(None) is False  # type: ignore[arg-type]
 
+    def test_short_is_a_real_command_not_unknown(self, tg):
+        from notifications.telegram_commands.router import _strip_bot_suffix
+
+        assert _strip_bot_suffix("/short@xagent_test_bot H") == "/short H"
+        assert _strip_bot_suffix("/addx @Trader") == "/addx @Trader"
+        assert dispatch_command("/short@xagent_test_bot") is True
+        assert tg
+        assert not any_text_contains(tg, "unbekannt")
+        assert any_text_contains(tg, "short", "Paper", "Hebel", "cover")
+
 
 class TestTelegramCallbackSmoke:
     def test_menu_callback_safe(self, tg):

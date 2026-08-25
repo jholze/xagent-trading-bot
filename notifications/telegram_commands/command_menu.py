@@ -29,6 +29,46 @@ _DEFAULT_BUTTON_TEXT = "Menü"
 TELEGRAM_MENU_COMMAND_KEYS: list[str] = all_menu_command_keys()
 
 
+def _owner_chat_ids() -> list[int]:
+    """Operator inbox + every active tenant owner chat (chat-scoped slash lists)."""
+    ids: list[int] = []
+    seen: set[int] = set()
+
+    def _add(raw: object) -> None:
+        s = str(raw or "").strip()
+        if not s:
+            return
+        try:
+            n = int(s)
+        except ValueError:
+            return
+        if n in seen:
+            return
+        seen.add(n)
+        ids.append(n)
+
+    _add(os.getenv("TELEGRAM_CHAT_ID"))
+    try:
+        from storage.tenant_registry import list_active_tenants
+
+        for tenant in list_active_tenants() or []:
+            _add((tenant.get("telegram") or {}).get("owner_chat_id"))
+    except Exception as e:
+        log(f"command menu: tenant owner chats skipped: {e}", "DEBUG")
+    return ids
+
+
+def refresh_chat_command_menus(token: str | None = None) -> int:
+    """Re-publish chat-scoped slash menus so new commands (e.g. /short) appear."""
+    ok = 0
+    for cid in _owner_chat_ids():
+        if register_commands_for_chat(cid, token=token):
+            ok += 1
+    if ok:
+        log(f"Telegram chat command menus refreshed ({ok} chats)", "INFO")
+    return ok
+
+
 def menu_button_text(lang: str | None = None) -> str:
     try:
         from core.config import get_bot_config
@@ -236,6 +276,10 @@ def register_bot_commands(token: str | None = None, *, send_keyboard: bool = Fal
         from notifications.telegram_commands.menu_i18n import set_user_language
 
         set_user_language(default_lang)
+        try:
+            refresh_chat_command_menus(token=token)
+        except Exception as e:
+            log(f"Telegram chat command menu refresh skipped: {e}", "WARNING")
         if send_keyboard:
             send_main_section_keyboard(lang=default_lang)
         return True
