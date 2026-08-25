@@ -283,6 +283,26 @@ class TestSerializeLock(unittest.TestCase):
         self.assertEqual(pos["lock"]["reason"], "test")
         self.assertTrue(is_position_locked(pos))
 
+    def test_preserve_does_not_restore_lock_after_explicit_unlock(self):
+        from strategies.positions import _preserve_locks_from_existing_doc
+
+        old_lock = {
+            "enabled": True,
+            "modes": list(DEFAULT_MODES),
+            "reason": "ops restore H after grind trail BE dump 2026-08-21",
+        }
+        existing = {"positions": {"H_USDT_4h": {"amount": 1, "lock": old_lock}}}
+        # Telegram /unlock pops-or-tombstones; serialize used to omit the key.
+        unlocked_omit = {"positions": {"H_USDT_4h": {"amount": 1}}}
+        out = _preserve_locks_from_existing_doc(unlocked_omit, existing)
+        self.assertEqual(out["positions"]["H_USDT_4h"].get("lock"), old_lock)
+
+        tombstone = {"enabled": False, "cleared_by": "unlock"}
+        unlocked = {"positions": {"H_USDT_4h": {"amount": 1, "lock": tombstone}}}
+        out2 = _preserve_locks_from_existing_doc(unlocked, existing)
+        self.assertEqual(out2["positions"]["H_USDT_4h"]["lock"], tombstone)
+        self.assertFalse(is_position_locked(out2["positions"]["H_USDT_4h"]))
+
     def test_deserialize_keeps_zero_entry_vol_ratio(self):
         from strategies.positions import _deserialize_position
 
