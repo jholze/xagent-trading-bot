@@ -176,7 +176,7 @@ def _deserialize_position(raw: dict) -> dict:
         "first_buy_at": raw.get("first_buy_at"),
         "entry_source": raw.get("entry_source"),
         "entry_at": raw.get("entry_at"),
-        "entry_15m_vol_ratio": float(raw.get("entry_15m_vol_ratio", 0) or 0) or None,
+        "entry_15m_vol_ratio": float(raw.get("entry_15m_vol_ratio", 0) or 0),
         "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
         "profit_armed_at": raw.get("profit_armed_at"),
         "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),

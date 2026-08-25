@@ -54,6 +54,20 @@ class TestNewsItems(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertAlmostEqual(freshest or 0, 5.0, delta=0.1)
 
+    def test_same_impact_freshest_first(self):
+        now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+        older = (now - timedelta(hours=5)).isoformat()
+        newer = (now - timedelta(hours=1)).isoformat()
+        items, _ = events_to_news_items(
+            [
+                _Ev("catalyst", -0.5, "old", created_at=older),
+                _Ev("catalyst", -0.5, "new", created_at=newer),
+            ],
+            now=now,
+            max_items=4,
+        )
+        self.assertEqual(items[0].description, "new")
+
 
 class TestWalletAdapter(unittest.TestCase):
     def test_unavailable_without_provider(self):

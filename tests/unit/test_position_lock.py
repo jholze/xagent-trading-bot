@@ -283,6 +283,12 @@ class TestSerializeLock(unittest.TestCase):
         self.assertEqual(pos["lock"]["reason"], "test")
         self.assertTrue(is_position_locked(pos))
 
+    def test_deserialize_keeps_zero_entry_vol_ratio(self):
+        from strategies.positions import _deserialize_position
+
+        pos = _deserialize_position({"amount": 1, "average_entry": 1.0, "entry_15m_vol_ratio": 0.0})
+        self.assertEqual(pos["entry_15m_vol_ratio"], 0.0)
+
     def test_active_lot_surfaces_lock_for_positions_cmd(self):
         """/positions uses _active_lot_from_store_key — must pass lock through."""
         from strategies.positions import _active_lot_from_store_key

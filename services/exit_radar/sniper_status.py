@@ -132,7 +132,7 @@ def fetch_dca_sniper_status() -> dict[str, Any]:
                     pass
             st = load_state_redis() or {}
             focus = _focus_symbols(st.get("focus") or [])
-            healthy = bool(hb) or bool(st)
+            healthy = bool(hb)
             if healthy:
                 return {
                     "ok": True,
