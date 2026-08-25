@@ -70,6 +70,17 @@ class TestSignalWebhookService(unittest.TestCase):
             self.assertFalse(signal_webhook_token_ok("bad", {}))
             self.assertTrue(signal_webhook_token_ok("secret", {}))
 
+    def test_no_token_allows_by_default(self):
+        env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(signal_webhook_token_ok("anything", {}))
+
+    def test_allow_no_token_false_denies(self):
+        env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
+        cfg = {"architecture": {"signal_webhook_allow_no_token": False}}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(signal_webhook_token_ok("anything", cfg))
+
 
 class TestSignalWebhookRoute(unittest.TestCase):
     def setUp(self):
