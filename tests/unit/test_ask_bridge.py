@@ -64,6 +64,21 @@ class TestAskBridge(unittest.TestCase):
         self.assertIn("autorisiert", err.lower())
 
     @patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999"})
+    def test_nondefault_tenant_context_does_not_authorize_stranger(self):
+        from types import SimpleNamespace
+
+        fake_ctx = SimpleNamespace(tenant_id="henry", owner_chat_id="111")
+        with patch(
+            "storage.tenant_registry.find_tenant_by_owner_chat_id",
+            return_value=None,
+        ), patch(
+            "core.tenant_context.current_tenant_context",
+            return_value=fake_ctx,
+        ):
+            self.assertFalse(bridge._authorized_chat("12345"))
+            self.assertTrue(bridge._authorized_chat("111"))
+
+    @patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999"})
     def test_tenant_owner_chat_authorized(self):
         """Satellite tenant (e.g. Henry) may /ask from their own chat_id."""
         fake_tenant = {"tenant_id": "henry", "status": "active"}

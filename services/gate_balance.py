@@ -31,7 +31,9 @@ def get_gate_adapter(config: BotConfig = None):
 
 
 def _balance_cache_key(cfg: BotConfig) -> str:
-    return f"{cfg.trading_mode}:{bool(is_live_dry_run(cfg.raw))}"
+    from core.tenant_context import resolve_tenant_id
+
+    return f"{resolve_tenant_id()}:{cfg.trading_mode}:{bool(is_live_dry_run(cfg.raw))}"
 
 
 def fetch_balance_bundle(config: BotConfig = None, *, min_amount: float = 0.0, max_age_sec: float = None) -> dict:

@@ -111,7 +111,8 @@ class TestPositionsFastPath(unittest.TestCase):
         exchange.fetch_balance.return_value = {"USDT": {"free": 123.0}, "free": {"USDT": 123.0, "BTC": 0.1}}
         adapter._get_exchange.return_value = exchange
 
-        with patch("services.gate_balance.is_live_dry_run", return_value=False), \
+        with patch("services.gate_balance.is_simulated_trading", return_value=False), \
+             patch("services.gate_balance.is_live_dry_run", return_value=False), \
              patch("services.gate_balance.uses_exchange_ledger", return_value=True), \
              patch("services.gate_balance.get_gate_adapter", return_value=adapter):
             first = fetch_balance_bundle(cfg)
@@ -119,6 +120,22 @@ class TestPositionsFastPath(unittest.TestCase):
         self.assertEqual(first["usdt"], 123.0)
         self.assertTrue(second["from_cache"])
         exchange.fetch_balance.assert_called_once()
+
+    def test_balance_cache_key_includes_tenant(self):
+        import services.gate_balance as gb
+        from core.tenant_context import tenant_context
+
+        cfg = MagicMock()
+        cfg.trading_mode = "live"
+        cfg.raw = {"live": {"dry_run": False}}
+        with patch("services.gate_balance.is_live_dry_run", return_value=False):
+            with tenant_context("henry"):
+                k_h = gb._balance_cache_key(cfg)
+            with tenant_context("default"):
+                k_d = gb._balance_cache_key(cfg)
+        self.assertIn("henry", k_h)
+        self.assertIn("default", k_d)
+        self.assertNotEqual(k_h, k_d)
 
 
 if __name__ == "__main__":

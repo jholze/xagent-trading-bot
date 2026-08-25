@@ -370,6 +370,7 @@ def run_cycle(
             sniper_state.add_decision(dec)
             audit["actions"].append(dec)
             spendable_left = max(0.0, spendable_left - usdt)
+            free_above = max(0.0, free_above - float(plan.get("claim") or 0))
             focus_set.append(
                 {
                     "symbol": v.symbol,
@@ -401,6 +402,7 @@ def run_cycle(
         )
         if resp.get("executed"):
             spendable_left = max(0.0, spendable_left - usdt)
+            free_above = max(0.0, free_above - float(plan.get("claim") or 0))
             focus_set.append(
                 {
                     "symbol": v.symbol,

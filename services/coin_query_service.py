@@ -55,7 +55,16 @@ def webhook_token_ok(provided: str | None, config_raw: dict | None = None) -> bo
     cfg_token = str(arch.get("coin_query_webhook_token") or "").strip()
     if cfg_token:
         return (provided or "").strip() == cfg_token
-    return True
+    allow_no_token = bool(arch.get("coin_query_webhook_allow_no_token", True))
+    if allow_no_token:
+        from logger import log
+
+        log(
+            "coin_query_webhook: no token configured — request allowed unauthenticated "
+            "(set COIN_WEBHOOK_TOKEN or architecture.coin_query_webhook_allow_no_token=false)",
+            "WARNING",
+        )
+    return allow_no_token
 
 
 def query_coin_prices(

@@ -127,3 +127,27 @@ def test_dual_blocks_small_cf_delta():
     )
     assert result.promoted is False
     assert "Dual blocked" in result.reason
+
+
+def test_dual_blocks_small_cf_delta_even_when_success_criteria_pass():
+    """min_live_pnl_delta_usdt is not optional just because backtest metrics look good."""
+    goals = _hermes_dual()
+    cf = _cf_positive()
+    cf.pnl_delta = 1.0
+    cf.variant_pnl = 11.0
+    result = goals.evaluate_with_live_and_counterfactual(
+        _rejected_wf(),
+        _live_h(),
+        cf,
+        "take_profit_pct",
+        {
+            "trades": 12,
+            "sharpe": 2.0,
+            "opportunity_score": 1.0,
+            "trade_quality": 1.0,
+            "win_rate": 70,
+            "max_drawdown_pct": 4,
+        },
+    )
+    assert result.promoted is False
+    assert "cf_delta" in result.reason
