@@ -29,10 +29,13 @@ Our 60d sell tape: `bb_upper` is a coin-flip; `rsi_sell` only 4h edge. Auto allo
 
 Math SSOT, config, lot `side`/`leverage`, `SHORT`/`COVER` on paper/dry-run, risk gates, Telegram `/short` `/cover`. Radar PnL side-aware.
 
-## P0.5 (this commit)
+## Shipped on this branch
 
-WS tick: stop / liquidation / time-cap → `COVER` on the same `spot.tickers` hub.  
-Auto-short after a **full** sell whose `exit_source` is in the RSI/climax allowlist (not `bb_upper`).
+- Tick: liq, stop, trail-down, RSI-cover, time-cap → COVER  
+- Auto-short after full RSI/climax sells  
+- Paper funding on cover (`funding_rate_8h`)  
+- Telegram /positions `S` badge + side-aware PnL/NAV  
+- MCP `xagent_short` / `xagent_cover`
 
 ## Kill / rollback
 

@@ -4,7 +4,9 @@ from services.mcp_tools import (
     tool_lots,
     tool_whoami,
     tool_buy,
+    tool_cover,
     tool_sell,
+    tool_short,
     tool_lock,
     tool_unlock,
     write_idempotency_key,
@@ -144,6 +146,46 @@ def test_owner_sell_posts():
     assert called[0]["tenant_id"] == "henry"
     assert called[0]["actor_id"] == "jens"
     assert called[0]["pct"] == 50
+
+
+def test_short_denied_for_observer():
+    called = []
+    out = tool_short(
+        OBS,
+        tenant="henry",
+        symbol="LAB/USDT",
+        usdt=10,
+        execute_fn=lambda **k: called.append(k) or {"ok": True},
+    )
+    assert out["error"] == "forbidden" and called == []
+
+
+def test_owner_short_posts():
+    reset_write_rate()
+    called = []
+    out = tool_short(
+        OWNER,
+        tenant="henry",
+        symbol="LAB/USDT",
+        usdt=25,
+        leverage=2,
+        execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
+    )
+    assert out["ok"] is True
+    assert called[0]["action"] == "short"
+    assert called[0]["tenant_id"] == "henry"
+
+
+def test_cover_denied_for_observer():
+    called = []
+    out = tool_cover(
+        OBS,
+        tenant="henry",
+        symbol="LAB/USDT",
+        pct=100,
+        execute_fn=lambda **k: called.append(k) or {"ok": True},
+    )
+    assert out["error"] == "forbidden" and called == []
 
 
 def test_lock_denied_for_observer():

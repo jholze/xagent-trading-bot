@@ -159,11 +159,37 @@ def aggregate_open_coins_totals(active: list, prices: dict) -> dict:
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
+    sold_raw = _effective_sold_fraction(p)
+    sold_pct = sold_raw * 100
+    side = "long"
+    try:
+        from strategies.short_math import is_short, snapshot
+
+        if is_short(p):
+            side = "short"
+            snap = snapshot(p, price)
+            unreal = float(snap.get("pnl") or 0)
+            margin = float(snap.get("margin") or 0)
+            value_usdt = margin + unreal
+            unreal_pct = float(snap.get("roe_pct") or 0)
+            return {
+                "entry": entry,
+                "amount": amount,
+                "price": price,
+                "value_usdt": value_usdt,
+                "unreal": unreal,
+                "unreal_pct": unreal_pct,
+                "sold_pct": sold_pct,
+                "sold_warn": float(p.get("sold_percent", 0) or 0) > 1.0,
+                "side": side,
+                "leverage": snap.get("leverage"),
+                "liq_price": snap.get("liq_price"),
+            }
+    except Exception:
+        pass
     value_usdt = price * amount if price > 0 else 0.0
     unreal = (price - entry) * amount if entry > 0 and price > 0 else 0.0
     unreal_pct = ((price / entry) - 1) * 100 if entry > 0 and price > 0 else 0.0
-    sold_raw = _effective_sold_fraction(p)
-    sold_pct = sold_raw * 100
     return {
         "entry": entry,
         "amount": amount,
@@ -173,6 +199,7 @@ def _position_metrics(p: dict, price: float) -> dict:
         "unreal_pct": unreal_pct,
         "sold_pct": sold_pct,
         "sold_warn": float(p.get("sold_percent", 0) or 0) > 1.0,
+        "side": side,
     }
 
 
@@ -281,6 +308,7 @@ def format_position_card(
 
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
+    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
     lock_badge = ""
     try:
         from strategies.position_lock import lock_summary
@@ -295,7 +323,7 @@ def format_position_card(
     if m["value_usdt"] > 0:
         value_part = f" · Wert <b>${m['value_usdt']:,.0f}</b>"
     header = (
-        f"{prefix}<b>{ticker_html}</b>{lock_badge} {pnl_icon} "
+        f"{prefix}<b>{ticker_html}</b>{side_badge}{lock_badge} {pnl_icon} "
         f"<code>{_fmt_pct(m['unreal_pct'])}</code>{value_part}"
     )
 
@@ -362,6 +390,7 @@ def format_position_compact_line(
     ticker_html = format_ticker_html(sym.split("/")[0], symbol_suffix="")
     m = _position_metrics(p, price)
     icon = _pnl_emoji(m["unreal"])
+    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
     lock_badge = ""
     try:
         from strategies.position_lock import is_position_locked
@@ -373,7 +402,7 @@ def format_position_compact_line(
     missing = " · <i>kein Kurs</i>" if price_source == "missing" and m["value_usdt"] <= 0 else ""
     tf = p.get("timeframe", "4h")
     return (
-        f"<b>{index}.</b> {ticker_html}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
+        f"<b>{index}.</b> {ticker_html}{side_badge}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
         f"· <b>${m['value_usdt']:.0f}</b> · PnL <b>${m['unreal']:+.0f}</b>{missing}"
     )
 

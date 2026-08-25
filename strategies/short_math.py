@@ -56,6 +56,13 @@ def unrealized_pnl(side: str, qty: float, entry: float, mark: float) -> float:
     return q * (m - e)
 
 
+def funding_cost_usdt(notional: float, hours: float, rate_8h: float) -> float:
+    """Paper funding: shorts pay when rate_8h > 0. Charged on notional."""
+    if notional <= 0 or hours <= 0:
+        return 0.0
+    return float(notional) * float(rate_8h or 0) * (float(hours) / 8.0)
+
+
 def roe_pct(pnl: float, margin: float) -> float:
     if margin <= 0:
         return 0.0

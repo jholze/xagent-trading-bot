@@ -1,6 +1,6 @@
-"""Tick cover rules for paper shorts: stop, liquidation, time-cap.
+"""Tick cover rules for paper shorts: liq, stop, trail-down, RSI-cover, time-cap.
 
-Trail-TP / RSI-cover come later. No DCA/grid/RelVol.
+No DCA/grid/RelVol.
 """
 
 from __future__ import annotations
@@ -73,6 +73,31 @@ def evaluate_short_cover(
         return {
             "source": "trailing_stop",
             "rationale": f"mark {px:g} >= stop {stop:g} (margin risk)",
+        }
+    gain_pct = (entry - px) / entry * 100.0
+    low = float((pos or {}).get("recent_low") or px)
+    if low <= 0:
+        low = px
+    low = min(low, px)
+    arm = float(params.get("trail_arm_pct") or 4.0)
+    retrace_need = float(params.get("trail_retrace_pct") or 1.5)
+    if gain_pct >= arm and low > 0 and px > low:
+        bounce = (px - low) / low * 100.0
+        if bounce >= retrace_need:
+            return {
+                "source": "trailing_take_profit",
+                "rationale": f"short trail: gain {gain_pct:.1f}% then bounce {bounce:.1f}% from {low:g}",
+            }
+    rsi = (pos or {}).get("last_rsi")
+    try:
+        rsi_f = float(rsi) if rsi is not None else None
+    except (TypeError, ValueError):
+        rsi_f = None
+    rsi_lo = float(params.get("rsi_cover_below") or 32)
+    if rsi_f is not None and rsi_f <= rsi_lo and gain_pct > 0:
+        return {
+            "source": "rsi_cover",
+            "rationale": f"RSI {rsi_f:.1f} <= {rsi_lo:g} while short in profit",
         }
     opened = _parse_ts((pos or {}).get("entry_at") or (pos or {}).get("first_buy_at"))
     n = now or datetime.now(timezone.utc)

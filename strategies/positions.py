@@ -97,6 +97,7 @@ _CACHE_FIELDS = (
     "lock",  # position_lock: no_auto_sell / no_evict (no_dca optional)
     "side",
     "leverage",
+    "recent_low",
 )
 
 
@@ -187,6 +188,7 @@ def _deserialize_position(raw: dict) -> dict:
         "lock": dict(raw["lock"]) if isinstance(raw.get("lock"), dict) else None,
         "side": str(raw.get("side") or "long").strip().lower() or "long",
         "leverage": float(raw.get("leverage") or 0) or None,
+        "recent_low": float(raw["recent_low"]) if raw.get("recent_low") not in (None, "") else None,
     }
 
 
@@ -253,6 +255,8 @@ def _serialize_positions() -> dict:
         lev = p.get("leverage")
         if lev:
             data["positions"][tf]["leverage"] = float(lev)
+        if p.get("recent_low"):
+            data["positions"][tf]["recent_low"] = float(p["recent_low"])
     return data
 
 
@@ -585,6 +589,7 @@ def _empty_position() -> dict:
         "profit_max_lifetime_done": False,
         "side": "long",
         "leverage": None,
+        "recent_low": None,
     }
 
 
@@ -974,6 +979,7 @@ def update_position(
             pos["last_trade_type"] = "SHORT"
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["recent_high"] = max(float(pos.get("recent_high") or 0), float(current_price))
+            pos["recent_low"] = float(current_price)
             if entry_source:
                 pos["entry_source"] = entry_source
         elif signal in ("COVER", "COVER_FULL") and amount_traded > 0:
@@ -1137,6 +1143,9 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "peak_epoch_high": p.get("peak_epoch_high"),
         "last_dca_at": p.get("last_dca_at"),
         "recent_high": p.get("recent_high"),
+        "recent_low": p.get("recent_low"),
+        "side": str(p.get("side") or "long").lower() or "long",
+        "leverage": p.get("leverage"),
         "lock": p.get("lock"),
         "current_price": p.get("current_price") or p.get("mark") or p.get("last_price"),
     }

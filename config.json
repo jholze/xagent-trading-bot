@@ -76,6 +76,7 @@
     "max_margin_pct": 20,
     "liquidation_buffer": 0.05,
     "fee_rate": 0.001,
+    "funding_rate_8h": 0.0001,
     "auto_sources": [
       "rsi_sell",
       "exit_1h_rsi_rollover",
@@ -85,12 +86,18 @@
     "volatile": {
       "time_cap_hours": 4,
       "stop_margin_pct": 0.12,
-      "market_cap_min_usd": 50000000
+      "market_cap_min_usd": 50000000,
+      "trail_arm_pct": 4,
+      "trail_retrace_pct": 1.5,
+      "rsi_cover_below": 32
     },
     "stable": {
       "time_cap_hours": 8,
       "stop_margin_pct": 0.08,
-      "market_cap_min_usd": 100000000
+      "market_cap_min_usd": 100000000,
+      "trail_arm_pct": 3,
+      "trail_retrace_pct": 1.0,
+      "rsi_cover_below": 35
     },
     "coins": {}
   },

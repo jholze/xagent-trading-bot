@@ -187,6 +187,30 @@ class PortfolioService:
         qty = min(qty, float(pos["amount"]))
         entry = float(pos.get("average_entry") or price)
         pnl = unrealized_pnl("short", qty, entry, price)
+        try:
+            from datetime import timezone as _tz
+            from strategies.short_math import funding_cost_usdt, notional_usdt
+            from strategies.short_policy import resolve_short_params
+
+            opened = pos.get("entry_at") or pos.get("first_buy_at")
+            hours = 0.0
+            if opened:
+                try:
+                    t0 = datetime.fromisoformat(str(opened).replace("Z", "+00:00"))
+                    if t0.tzinfo is None:
+                        t0 = t0.replace(tzinfo=_tz.utc)
+                    hours = max(0.0, (datetime.now(_tz.utc) - t0).total_seconds() / 3600.0)
+                except Exception:
+                    hours = 0.0
+            params = resolve_short_params(symbol=symbol, lot=pos, config_raw=self.config.raw)
+            fund = funding_cost_usdt(
+                notional_usdt(qty, entry),
+                hours,
+                float(params.get("funding_rate_8h") or 0),
+            )
+            pnl -= fund
+        except Exception:
+            pass
         update_position(symbol, timeframe, "COVER", price, qty)
         if sync_virtual_ledger:
             record_trade({

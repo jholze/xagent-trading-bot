@@ -69,3 +69,10 @@ class TestShortMath(unittest.TestCase):
 
     def test_roe(self):
         self.assertAlmostEqual(roe_pct(5, 10), 50.0)
+
+    def test_funding_scales_with_hours(self):
+        from strategies.short_math import funding_cost_usdt
+
+        eight = funding_cost_usdt(10_000, 8, 0.0001)
+        self.assertAlmostEqual(eight, 1.0)
+        self.assertAlmostEqual(funding_cost_usdt(10_000, 4, 0.0001), 0.5)

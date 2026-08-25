@@ -472,6 +472,16 @@ class ExitRealtimeHub:
 
             live_for_side = get_position(sym, tf) or pos
             if _lot_is_short(live_for_side):
+                try:
+                    rl = float(live_for_side.get("recent_low") or price)
+                    if price < rl:
+                        live_for_side["recent_low"] = price
+                        pos["recent_low"] = price
+                        from strategies.positions import set_position_field
+
+                        set_position_field(sym, tf, "recent_low", price)
+                except Exception:
+                    pass
                 hit = evaluate_short_cover(
                     live_for_side,
                     price,

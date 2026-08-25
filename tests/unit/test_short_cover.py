@@ -57,3 +57,17 @@ class TestShortCover(unittest.TestCase):
     def test_long_ignored(self):
         pos = {"side": "long", "amount": 1, "average_entry": 100}
         self.assertIsNone(evaluate_short_cover(pos, 50, config_raw=CFG))
+
+    def test_trail_after_arm_and_bounce(self):
+        pos, _ = _short(mark=90)
+        pos["recent_low"] = 90.0
+        hit = evaluate_short_cover(pos, 92.0, config_raw=CFG)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "trailing_take_profit")
+
+    def test_rsi_cover_in_profit(self):
+        pos, mark = _short(mark=94.0)
+        pos["last_rsi"] = 28
+        hit = evaluate_short_cover(pos, mark, config_raw=CFG)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "rsi_cover")
