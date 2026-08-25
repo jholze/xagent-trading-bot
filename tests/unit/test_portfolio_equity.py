@@ -30,9 +30,15 @@ class TestPortfolioEquity(unittest.TestCase):
 
         self._reconcile_patcher = patch(
             "data_manager._reconcile_scoped_trade_history",
-            side_effect=lambda history, scope, config=None: (history, False),
+            side_effect=lambda history, scope, config=None, **kwargs: (history, False),
         )
         self._reconcile_patcher.start()
+        self._mt_patcher = patch("core.tenant_context.multi_tenant_enabled", return_value=False)
+        self._mt_patcher.start()
+        self._mongo_hist_patcher = patch(
+            "data_manager._ledger_reads_mongo_trade_history", return_value=False
+        )
+        self._mongo_hist_patcher.start()
 
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
@@ -53,6 +59,8 @@ class TestPortfolioEquity(unittest.TestCase):
     def tearDown(self):
         from decimal import Decimal
 
+        self._mongo_hist_patcher.stop()
+        self._mt_patcher.stop()
         self._reconcile_patcher.stop()
         clear_positions_memory()
         positions.update(self._positions_backup)
@@ -174,8 +182,19 @@ class TestPortfolioEquity(unittest.TestCase):
         ) as mock_send:
             from notifications.telegram_commands.portfolio_commands import _build_positions
 
-            _build_positions("12345", detail_level="compact")
-            mock_send.assert_called_once_with(fast=True, chat_id="12345", detail_level="compact")
+            _build_positions(
+                "12345",
+                detail_level="compact",
+                tenant_id="default",
+                scope="demo",
+                owner_chat_id="12345",
+                lang="de",
+            )
+            mock_send.assert_called_once()
+            kwargs = mock_send.call_args.kwargs
+            self.assertEqual(kwargs.get("fast"), True)
+            self.assertEqual(kwargs.get("chat_id"), "12345")
+            self.assertEqual(kwargs.get("detail_level"), "compact")
 
     def test_pnl_percent_uses_config_initial_capital(self):
         svc = self._service()
@@ -186,8 +205,19 @@ class TestPortfolioEquity(unittest.TestCase):
         ) as mock_send:
             from notifications.telegram_commands.portfolio_commands import _build_positions
 
-            _build_positions("12345", detail_level="compact")
-            mock_send.assert_called_once_with(fast=True, chat_id="12345", detail_level="compact")
+            _build_positions(
+                "12345",
+                detail_level="compact",
+                tenant_id="default",
+                scope="demo",
+                owner_chat_id="12345",
+                lang="de",
+            )
+            mock_send.assert_called_once()
+            kwargs = mock_send.call_args.kwargs
+            self.assertEqual(kwargs.get("fast"), True)
+            self.assertEqual(kwargs.get("chat_id"), "12345")
+            self.assertEqual(kwargs.get("detail_level"), "compact")
 
 
 if __name__ == "__main__":

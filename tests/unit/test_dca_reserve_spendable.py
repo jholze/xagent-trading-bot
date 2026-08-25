@@ -22,6 +22,13 @@ def _railway_like_config() -> BotConfig:
     risk["dca_reserve_pct"] = 18
     risk["cash_floor_pct"] = 0  # isolate legacy reserve tests
     risk["min_trade_usdt"] = 100.0
+    risk["position_capacity"] = {"enabled": False}
+    risk["cash_policy"] = {"enabled": False}
+    risk["slot_eviction"] = {"enabled": False}
+    risk["venue_quality"] = {"enabled": False}
+    uni = dict(raw.get("universe") or {})
+    uni["split_enabled"] = False
+    raw["universe"] = uni
     return BotConfig(raw)
 
 

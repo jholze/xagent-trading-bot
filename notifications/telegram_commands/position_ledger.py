@@ -103,7 +103,9 @@ def _buy_label(signal: str, dca_index: int, *, new_cycle: bool = False) -> str:
 
 def _event_icon(kind: str, label: str, realized_usd: float | None = None) -> str:
     """Sell dots follow realized PnL: green profit, red loss, yellow flat."""
-    if kind == "sell":
+    if kind == "short" or label == "Short":
+        return "🔴"
+    if kind in ("sell", "cover") or label == "Cover":
         if realized_usd is None:
             return "⚪"
         if realized_usd > 0.05:
@@ -159,15 +161,18 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
         signal = (order.get("signal") or "").strip()
         source = source_label(order.get("source", "auto"))
 
-        if side == "buy" and amount > 0 and price > 0:
+        if side in ("buy", "short") and amount > 0 and price > 0:
             was_closed = _open_qty(lots) <= 1e-12
             new_cycle = was_closed and bool(events)
             if new_cycle:
                 cycle += 1
                 dca_count = 0
             sig_upper = signal.upper()
-            is_dca = sig_upper == "BUY_DCA" or "DCA" in sig_upper
-            if is_dca and not was_closed:
+            is_short_open = side == "short"
+            is_dca = (not is_short_open) and (sig_upper == "BUY_DCA" or "DCA" in sig_upper)
+            if is_short_open:
+                label = "Short"
+            elif is_dca and not was_closed:
                 dca_count += 1
                 label = _buy_label(signal, dca_count)
             else:
@@ -176,7 +181,7 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             lots.append(lot)
             events.append(
                 _Event(
-                    kind="buy",
+                    kind="short" if is_short_open else "buy",
                     label=label,
                     ts=ts,
                     usdt=usdt,
@@ -188,7 +193,7 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
                     lot=lot,
                 )
             )
-        elif side == "sell" and amount > 0:
+        elif side in ("sell", "cover") and amount > 0:
             sell_qty = amount
             for lot in lots:
                 if sell_qty <= 1e-12:
@@ -202,8 +207,8 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             realized = float(pnl) if pnl is not None else None
             events.append(
                 _Event(
-                    kind="sell",
-                    label=_sell_label(signal),
+                    kind="cover" if side == "cover" else "sell",
+                    label="Cover" if side == "cover" else _sell_label(signal),
                     ts=ts,
                     usdt=usdt,
                     price=price,
@@ -219,8 +224,9 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
     mark = float(mark_price or 0)
     out: list[dict] = []
     for ev in events:
+        is_exit = ev.kind in ("sell", "cover")
         row = {
-            "kind": "sell" if ev.kind == "sell" else "entry",
+            "kind": "sell" if is_exit else "entry",
             "label": ev.label,
             "ts": ev.ts,
             "usdt": ev.usdt,
@@ -230,7 +236,7 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             "display_seq": ev.display_seq,
             "cycle": ev.cycle,
         }
-        if ev.kind == "sell":
+        if is_exit:
             row["realized_usd"] = ev.realized_usd if ev.realized_usd is not None else 0.0
             if ev.cycle_closed:
                 row["cycle_closed"] = True
@@ -238,10 +244,21 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             remaining = ev.lot.remaining
             row["remaining_qty"] = remaining
             row["original_qty"] = ev.lot.qty
+            short_open = ev.kind == "short"
             if mark > 0 and remaining > 1e-12:
                 row["open_qty"] = remaining
-                row["open_pct"] = (mark / ev.lot.price - 1) * 100 if ev.lot.price > 0 else 0.0
-                row["open_usd"] = (mark - ev.lot.price) * remaining
+                if ev.lot.price > 0:
+                    row["open_pct"] = (
+                        (ev.lot.price / mark - 1) * 100 if short_open
+                        else (mark / ev.lot.price - 1) * 100
+                    )
+                    row["open_usd"] = (
+                        (ev.lot.price - mark) * remaining if short_open
+                        else (mark - ev.lot.price) * remaining
+                    )
+                else:
+                    row["open_pct"] = 0.0
+                    row["open_usd"] = 0.0
             elif remaining > 1e-12:
                 row["open_qty"] = remaining
                 row["open_pct"] = 0.0
@@ -255,7 +272,7 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             row["open_qty"] = 0.0
             row["open_pct"] = 0.0
             row["open_usd"] = 0.0
-        if ev.kind == "buy":
+        if ev.kind in ("buy", "short"):
             remaining = float(row.get("remaining_qty", row.get("open_qty", 0)) or 0)
             if remaining <= 1e-12:
                 row["closed"] = True
@@ -298,7 +315,7 @@ def format_event_line(ev: dict) -> str:
     source = ev.get("source", "Auto")
     label = ev.get("label", "")
     realized_for_icon = None
-    if ev.get("kind") == "sell":
+    if ev.get("kind") == "sell" or label == "Cover":
         if "realized_usd" in ev and ev.get("realized_usd") is not None:
             try:
                 realized_for_icon = float(ev.get("realized_usd"))
@@ -306,7 +323,7 @@ def format_event_line(ev: dict) -> str:
                 realized_for_icon = None
     icon = _event_icon(ev.get("kind", ""), label, realized_for_icon)
 
-    if ev.get("kind") == "sell":
+    if ev.get("kind") == "sell" or label == "Cover":
         realized = float(ev.get("realized_usd", 0) or 0)
         return (
             f"{icon} {label} · <b>${usdt:,.0f}</b> @{price} · {ts} · {source} · "
@@ -372,8 +389,21 @@ def build_position_trade_tree(
     prior_cycles = current_cycle - 1
 
     realized = cycle_realized_usd(events)
-    unreal = (mark - entry) * amount if entry > 0 and mark > 0 and amount > 0 else cycle_unreal_usd(events)
-    value_usdt = mark * amount if mark > 0 and amount > 0 else 0.0
+    is_short_lot = str(position.get("side") or "").lower() == "short"
+    if is_short_lot and amount > 0 and entry > 0:
+        try:
+            from strategies.short_math import snapshot
+
+            snap = snapshot(position, mark)
+            unreal = float(snap.get("pnl") or 0)
+            value_usdt = float(snap.get("margin") or 0) + unreal
+        except Exception:
+            unreal = (entry - mark) * amount if mark > 0 else cycle_unreal_usd(events)
+            lev = float(position.get("leverage") or 2) or 2.0
+            value_usdt = (amount * entry / lev) + unreal
+    else:
+        unreal = (mark - entry) * amount if entry > 0 and mark > 0 and amount > 0 else cycle_unreal_usd(events)
+        value_usdt = mark * amount if mark > 0 and amount > 0 else 0.0
 
     hidden = max(0, len(events) - max_events)
     visible = events[-max_events:] if hidden else events

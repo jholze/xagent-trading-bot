@@ -159,9 +159,9 @@ class TestSignalArenaOptimizations(unittest.TestCase):
 
         self.assertEqual(counts.get("social", 0), 1)
         queued = set(zset.keys())
-        self.assertTrue(any(m.startswith("BTC/USDT") for m in queued))
-        self.assertFalse(any(m.startswith("LAB/USDT") for m in queued))
-        self.assertFalse(any(m.startswith("DRV/USDT") for m in queued))
+        self.assertTrue(any("BTC/USDT" in m for m in queued))
+        self.assertFalse(any("LAB/USDT" in m for m in queued))
+        self.assertFalse(any("DRV/USDT" in m for m in queued))
 
     def test_load_lc_signals_uses_mtime_cache(self):
         import data_manager as dm

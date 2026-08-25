@@ -259,9 +259,9 @@ class TestPureBoard(unittest.TestCase):
 
     def test_count_open_gainer(self):
         positions = [
-            {"symbol": "A/USDT", "entry_source": "gainer_live_heat"},
-            {"symbol": "B/USDT", "source": "grid"},
-            {"symbol": "C/USDT", "entry_source": "gainer_rank_entry"},
+            {"symbol": "A/USDT", "entry_source": "gainer_live_heat", "amount": 1},
+            {"symbol": "B/USDT", "source": "grid", "amount": 1},
+            {"symbol": "C/USDT", "entry_source": "gainer_rank_entry", "amount": 1},
         ]
         self.assertEqual(count_open_gainer_positions(positions), 2)
 
@@ -436,7 +436,8 @@ class TestBotHttp(unittest.TestCase):
 
     def test_max_open_reject(self):
         positions = [
-            {"symbol": f"X{i}/USDT", "entry_source": "gainer_live_heat"} for i in range(3)
+            {"symbol": f"X{i}/USDT", "entry_source": "gainer_live_heat", "amount": 1}
+            for i in range(3)
         ]
         exec_fn = MagicMock()
         body, status = process_gainer_signal(

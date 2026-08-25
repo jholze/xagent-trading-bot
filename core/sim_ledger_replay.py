@@ -224,6 +224,86 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
                 trade_ts=trade_ts,
                 source=source,
             )
+        elif side == "short":
+            if amount <= 0 or price <= 0:
+                continue
+            usdt = _filled_order_usdt(order)
+            try:
+                lev = float(
+                    order.get("leverage")
+                    or (request or {}).get("leverage")
+                    or (execution or {}).get("leverage")
+                    or 2
+                )
+            except (TypeError, ValueError):
+                lev = 2.0
+            lev = max(1.0, lev)
+            margin = usdt / lev if lev else usdt
+            if margin > balance + _SIM_CASH_EPS:
+                continue
+            balance -= margin
+            from strategies.positions import get_key
+
+            symbol = order.get("symbol", "")
+            timeframe = order.get("timeframe", "4h")
+            if not symbol:
+                continue
+            key = get_key(symbol, timeframe)
+            pos = positions.setdefault(key, _empty_order_position())
+            old = float(pos.get("amount") or 0)
+            if old <= 0 or str(pos.get("side") or "") != "short":
+                pos.update({
+                    "amount": amount,
+                    "peak_amount": amount,
+                    "average_entry": price,
+                    "side": "short",
+                    "leverage": lev,
+                    "sold_percent": 0.0,
+                    "last_action": "SHORT",
+                    "last_trade_type": "SHORT",
+                    "last_trade_at": trade_ts,
+                })
+            else:
+                new_a = old + amount
+                pos["average_entry"] = (float(pos.get("average_entry") or price) * old + price * amount) / new_a
+                pos["amount"] = new_a
+                pos["leverage"] = lev
+                pos["side"] = "short"
+                pos["last_action"] = "SHORT"
+                pos["last_trade_at"] = trade_ts
+        elif side == "cover":
+            if amount <= 0:
+                continue
+            from strategies.positions import get_key
+
+            symbol = order.get("symbol", "")
+            timeframe = order.get("timeframe", "4h")
+            if not symbol:
+                continue
+            key = get_key(symbol, timeframe)
+            pos = positions.get(key)
+            if not pos or str(pos.get("side") or "") != "short":
+                continue
+            original = float(pos.get("amount") or 0)
+            if original <= _SIM_CASH_EPS:
+                continue
+            cover_amt = min(amount, original)
+            entry = float(pos.get("average_entry") or price)
+            lev = float(pos.get("leverage") or 2) or 2.0
+            frac = cover_amt / original if original else 1.0
+            margin_back = (original * entry / lev) * frac
+            pnl = cover_amt * (entry - price)
+            balance += margin_back + pnl
+            pos["amount"] = original - cover_amt
+            pos["last_action"] = "COVER"
+            pos["last_trade_type"] = "COVER"
+            pos["last_trade_at"] = trade_ts
+            pos["realized_pnl"] = float(pos.get("realized_pnl") or 0) + pnl
+            if pos["amount"] <= _SIM_CASH_EPS:
+                pos["amount"] = 0.0
+                pos["side"] = "long"
+                pos["leverage"] = None
+            realized_pnl += pnl
         elif side == "sell":
             if amount <= 0:
                 continue
@@ -236,6 +316,8 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
             key = get_key(symbol, timeframe)
             pos = positions.get(key)
             if not pos:
+                continue
+            if str(pos.get("side") or "").lower() == "short":
                 continue
             original = float(pos.get("amount") or 0)
             if original <= _SIM_CASH_EPS:

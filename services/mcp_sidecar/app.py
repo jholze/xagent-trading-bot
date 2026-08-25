@@ -14,11 +14,13 @@ from services.mcp_authz import mcp_enabled, mcp_writes_enabled
 from services.mcp_tokens import actor_from_bearer, bootstrap_from_env
 from services.mcp_tools import (
     tool_buy,
+    tool_cover,
     tool_lock,
     tool_lots,
     tool_memory,
     tool_orders,
     tool_sell,
+    tool_short,
     tool_snapshot,
     tool_unlock,
     tool_whoami,
@@ -177,6 +179,30 @@ def invoke_tool(
             enabled=enabled,
             writes_enabled=writes,
         )
+    if name == "xagent_short":
+        return tool_short(
+            actor,
+            tenant=tenant,
+            symbol=symbol,
+            usdt=kwargs.get("usdt"),
+            leverage=kwargs.get("leverage"),
+            timeframe=timeframe,
+            price=price,
+            enabled=enabled,
+            writes_enabled=writes,
+        )
+    if name == "xagent_cover":
+        return tool_cover(
+            actor,
+            tenant=tenant,
+            symbol=symbol,
+            pct=kwargs.get("pct"),
+            amount=kwargs.get("amount"),
+            timeframe=timeframe,
+            price=price,
+            enabled=enabled,
+            writes_enabled=writes,
+        )
     if name == "xagent_lock":
         return tool_lock(
             actor,
@@ -300,6 +326,50 @@ def xagent_sell(
     )
 
 
+def xagent_short(
+    ctx: Context,
+    symbol: str,
+    usdt: float,
+    tenant: str = "default",
+    timeframe: str = "1h",
+    price: float | None = None,
+    leverage: float | None = None,
+) -> dict:
+    """Paper short via TradingService (isolated, sized/blocked by RiskManager)."""
+    return _call(
+        "xagent_short",
+        ctx,
+        symbol=symbol,
+        usdt=usdt,
+        tenant=tenant,
+        timeframe=timeframe,
+        price=price,
+        leverage=leverage,
+    )
+
+
+def xagent_cover(
+    ctx: Context,
+    symbol: str,
+    tenant: str = "default",
+    pct: float | None = None,
+    amount: float | None = None,
+    timeframe: str = "1h",
+    price: float | None = None,
+) -> dict:
+    """Cover a paper short (pct 0–100 or amount)."""
+    return _call(
+        "xagent_cover",
+        ctx,
+        symbol=symbol,
+        tenant=tenant,
+        pct=pct,
+        amount=amount,
+        timeframe=timeframe,
+        price=price,
+    )
+
+
 def xagent_lock(
     ctx: Context,
     symbol: str,
@@ -343,6 +413,8 @@ def _register_tools(mcp: FastMCP) -> None:
     mcp.tool()(xagent_why)
     mcp.tool()(xagent_buy)
     mcp.tool()(xagent_sell)
+    mcp.tool()(xagent_short)
+    mcp.tool()(xagent_cover)
     mcp.tool()(xagent_lock)
     mcp.tool()(xagent_unlock)
 

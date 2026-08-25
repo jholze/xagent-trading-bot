@@ -73,7 +73,7 @@ def register_mcp_bot_routes(app: Flask) -> None:
             return jsonify({"ok": False, "error": "mcp_disabled"}), 503
         if not mcp_tenant_allowed(tenant_id, cfg):
             return jsonify({"ok": False, "error": "tenant_forbidden"}), 403
-        if action in ("buy", "sell", "lock", "unlock"):
+        if action in ("buy", "sell", "short", "cover", "lock", "unlock"):
             if not mcp_writes_enabled(cfg):
                 return jsonify({"ok": False, "error": "writes_disabled"}), 403
             if mcp_live_writes_blocked(cfg):
@@ -118,6 +118,41 @@ def register_mcp_bot_routes(app: Flask) -> None:
                     timeframe,
                     price,
                     signal=source,
+                    amount=amount,
+                    source=source,
+                    idempotency_key=idem,
+                )
+                return jsonify(_result_body(result)), 200
+
+            if action == "short":
+                from services.trading_service import TradingService
+
+                lev = _as_float(data.get("leverage"))
+                result = TradingService().execute_short(
+                    symbol,
+                    timeframe,
+                    price=price,
+                    usdt=usdt,
+                    leverage=lev if lev else None,
+                    source=source,
+                    idempotency_key=idem,
+                )
+                return jsonify(_result_body(result)), 200
+
+            if action == "cover":
+                amount = _sell_amount(data, symbol, timeframe)
+                if amount is None:
+                    return jsonify({"ok": False, "error": "amount_or_pct_required"}), 400
+                if amount <= 0:
+                    return jsonify(
+                        {"ok": False, "executed": False, "message": "bad_amount"}
+                    ), 400
+                from services.trading_service import TradingService
+
+                result = TradingService().execute_cover(
+                    symbol,
+                    timeframe,
+                    price,
                     amount=amount,
                     source=source,
                     idempotency_key=idem,

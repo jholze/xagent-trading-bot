@@ -92,6 +92,9 @@ class TestExitSensorSells(unittest.TestCase):
         cfg = exit_sensor_config()
         cfg["enabled"] = True
         cfg["mode"] = "live"
+        rollover = dict(cfg.get("rsi_rollover_1h") or {})
+        rollover.update({"enabled": True, "peak_rsi_min": 70, "current_rsi_max": 60, "min_gain_pct": 7})
+        cfg["rsi_rollover_1h"] = rollover
         cfg.update(overrides)
         return cfg
 
@@ -195,6 +198,7 @@ class TestExitSensorSells(unittest.TestCase):
             metrics_15m=None,
             metrics_1h=metrics_1h,
             btc_rs_delta=None,
+            config_raw={"sell_policy": {"indicator_regime": {"enabled": False}}},
         )
         self.assertIn("exit_1h_rsi_rollover", [c.source for c in cands])
 

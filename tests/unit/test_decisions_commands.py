@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,14 +52,30 @@ class TestDecisionsCommands(unittest.TestCase):
                     "timestamp": "2026-07-14T12:00:00",
                 },
             )
+            entry = {
+                "symbol": "BTC/USDT",
+                "action": "HOLD",
+                "normalized_action": "HOLD",
+                "rationale": "Grid monitoring",
+                "timestamp": "2026-07-14T12:00:00",
+            }
             with patch("notifications.telegram_commands.decisions_commands.DECISIONS_LOG_FILE", str(log_path)), \
                  patch("notifications.telegram_commands.decisions_commands.send_telegram_message", side_effect=_capture), \
                  patch("notifications.telegram_commands.decisions_commands.threading.Thread", side_effect=thread_factory), \
                  patch("notifications.telegram_commands.decisions_commands.current_chat_id", return_value="651111"), \
                  patch(
                      "notifications.telegram_commands.decisions_commands.tenant_snapshot",
-                     return_value=("henry", "demo", "651111"),
+                     return_value=("default", "demo", "651111"),
                  ), \
+                 patch(
+                     "notifications.telegram_commands.decisions_commands.tenant_context",
+                     return_value=nullcontext(),
+                 ), \
+                 patch(
+                     "notifications.telegram_commands.decisions_commands._load_decisions",
+                     return_value=[entry],
+                 ), \
+                 patch("notifications.coin_links.format_links_line", return_value=""), \
                  patch("notifications.telegram_commands.decisions_commands.resolve_coin_config", return_value={}):
                 self.assertTrue(decisions_commands.handle("/why BTC"))
 

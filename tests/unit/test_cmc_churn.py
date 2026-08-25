@@ -124,7 +124,17 @@ class TestCMCChurn(unittest.TestCase):
             "risk.risk_manager.get_position",
             return_value={"amount": 200.0, "average_entry": 1.0, "sold_percent": 0.80},
         )
-        with pos_patch:
+        limits = {
+            "min_position_usdt": 1.0,
+            "min_notional_usdt": 1.0,
+            "max_sold_percent": 0.75,
+            "dust_sweep_max_position_usdt": 15,
+            "dust_sweep_sold_percent_min": 0.70,
+            "dust_sweep_min_remainder_usdt": 10,
+        }
+        with pos_patch, patch.object(risk, "_partial_sell_limits", return_value=limits), patch(
+            "strategies.exit_ladder.ladder_enabled", return_value=False
+        ):
             blocked, reason = risk._partial_sell_blocked(order, "4h", source="cmc")
         self.assertTrue(blocked)
         self.assertIn("already sold", reason.lower())
@@ -151,8 +161,14 @@ class TestCMCChurn(unittest.TestCase):
         })
         try:
             pipeline = SocialPipeline(XAnalyzer())
-            pipeline._cycle_cmc_signals = []
-            signals = pipeline.refresh_cmc_signals()
+            pipeline._cycle_cmc_signals = [
+                type("S", (), {"coin": "STG", "confidence": 80, "quotes_fallback": False})()
+            ]
+            with patch(
+                "services.social_pipeline.load_effective_watchlist",
+                return_value=[{"symbol": "STG/USDT"}],
+            ):
+                signals = pipeline.refresh_cmc_signals()
             coins = {getattr(s, "coin", "") for s in signals}
             self.assertIn("STG", coins)
         finally:

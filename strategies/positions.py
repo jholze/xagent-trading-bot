@@ -95,6 +95,9 @@ _CACHE_FIELDS = (
     "last_trail_tp_at",
     "profit_max_lifetime_done",
     "lock",  # position_lock: no_auto_sell / no_evict (no_dca optional)
+    "side",
+    "leverage",
+    "recent_low",
 )
 
 
@@ -183,6 +186,9 @@ def _deserialize_position(raw: dict) -> dict:
         "last_trail_tp_at": raw.get("last_trail_tp_at"),
         "profit_max_lifetime_done": bool(raw.get("profit_max_lifetime_done", False)),
         "lock": dict(raw["lock"]) if isinstance(raw.get("lock"), dict) else None,
+        "side": str(raw.get("side") or "long").strip().lower() or "long",
+        "leverage": float(raw.get("leverage") or 0) or None,
+        "recent_low": float(raw["recent_low"]) if raw.get("recent_low") not in (None, "") else None,
     }
 
 
@@ -243,6 +249,14 @@ def _serialize_positions() -> dict:
         lock = p.get("lock")
         if isinstance(lock, dict) and lock:
             data["positions"][tf]["lock"] = dict(lock)
+        side = str(p.get("side") or "long").strip().lower()
+        if side == "short":
+            data["positions"][tf]["side"] = "short"
+        lev = p.get("leverage")
+        if lev:
+            data["positions"][tf]["leverage"] = float(lev)
+        if p.get("recent_low"):
+            data["positions"][tf]["recent_low"] = float(p["recent_low"])
     return data
 
 
@@ -573,6 +587,9 @@ def _empty_position() -> dict:
         "trail_tp_steps": 0,
         "last_trail_tp_at": None,
         "profit_max_lifetime_done": False,
+        "side": "long",
+        "leverage": None,
+        "recent_low": None,
     }
 
 
@@ -820,6 +837,7 @@ def update_position(
     *,
     entry_source: str | None = None,
     entry_15m_vol_ratio: float | None = None,
+    leverage: float | None = None,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
@@ -830,6 +848,14 @@ def update_position(
         pos = _ensure_key(store, key)
         was_open = is_open_position(pos)
         if signal in ("BUY", "BUY_DCA") and amount_traded > 0:
+            if str(pos.get("side") or "long").lower() == "short" and float(pos.get("amount") or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on short {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
             old_amount = pos["amount"]
             old_average = pos.get("average_entry", current_price)
             new_amount = old_amount + Decimal(str(amount_traded))
@@ -930,7 +956,72 @@ def update_position(
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
                 pos["strategy_tier"] = None
+                pos["side"] = "long"
+        elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
+            old_amount = pos["amount"]
+            old_side = str(pos.get("side") or "long").lower()
+            if old_side != "short" and float(old_amount or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on long {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
+            adding = old_side == "short" and float(old_amount or 0) > 0
+            if adding:
+                new_amount = old_amount + Decimal(str(amount_traded))
+                old_average = float(pos.get("average_entry") or current_price)
+                pos["average_entry"] = float(
+                    (old_average * float(old_amount) + current_price * float(amount_traded))
+                    / float(new_amount)
+                )
+                pos["amount"] = new_amount
+            else:
+                pos["amount"] = Decimal(str(amount_traded))
+                pos["average_entry"] = current_price
+                pos["peak_amount"] = float(amount_traded)
+                pos["sold_percent"] = 0.0
+                pos["first_buy_at"] = datetime.now().isoformat()
+                pos["entry_at"] = pos["first_buy_at"]
+                pos["dca_rounds"] = 0
+                pos["dca_total_usdt"] = 0.0
+            pos["side"] = "short"
+            if leverage:
+                pos["leverage"] = float(leverage)
+            elif not pos.get("leverage"):
+                pos["leverage"] = 2.0
+            pos["last_action"] = "SHORT"
+            pos["last_trade_type"] = "SHORT"
+            pos["last_trade_at"] = datetime.now().isoformat()
+            pos["recent_high"] = max(float(pos.get("recent_high") or 0), float(current_price))
+            pos["recent_low"] = float(current_price)
+            if entry_source:
+                pos["entry_source"] = entry_source
+        elif signal in ("COVER", "COVER_FULL") and amount_traded > 0:
+            sell_amount = min(Decimal(str(amount_traded)), pos["amount"])
+            pos["amount"] = pos["amount"] - sell_amount
+            pos["last_action"] = "COVER"
+            pos["last_trade_type"] = "COVER"
+            pos["last_trade_at"] = datetime.now().isoformat()
+            if float(pos["amount"] or 0) <= 1e-12:
+                pos["amount"] = Decimal("0")
+                pos["sold_percent"] = 1.0
+                pos["side"] = "long"
+                pos["leverage"] = None
+            else:
+                peak = float(pos.get("peak_amount") or 0) or float(sell_amount + pos["amount"])
+                if peak > 0:
+                    pos["sold_percent"] = 1.0 - float(pos["amount"]) / peak
         elif "SELL" in signal:
+            if str(pos.get("side") or "long").lower() == "short" and float(pos.get("amount") or 0) > 1e-12:
+                from logger import log as _log
+
+                _log(
+                    f"one-way: refuse {signal} on short {symbol} {timeframe}",
+                    "ERROR",
+                )
+                return
             original_amount = float(pos["amount"])
             strategy_params = None
             try:
@@ -1076,6 +1167,9 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "peak_epoch_high": p.get("peak_epoch_high"),
         "last_dca_at": p.get("last_dca_at"),
         "recent_high": p.get("recent_high"),
+        "recent_low": p.get("recent_low"),
+        "side": str(p.get("side") or "long").lower() or "long",
+        "leverage": p.get("leverage"),
         "lock": p.get("lock"),
         "current_price": p.get("current_price") or p.get("mark") or p.get("last_price"),
     }

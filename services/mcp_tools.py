@@ -215,6 +215,70 @@ def tool_sell(
     )
 
 
+def tool_short(
+    actor,
+    tenant=None,
+    symbol=None,
+    usdt=None,
+    leverage=None,
+    execute_fn=None,
+    timeframe="1h",
+    price=None,
+    writes_enabled=True,
+    enabled=True,
+    rate_per_min=None,
+    now=None,
+):
+    return _write(
+        actor,
+        "trade",
+        "short",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "usdt": usdt,
+            "leverage": leverage,
+            "timeframe": timeframe or "1h",
+            "price": price,
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+        rate_per_min=rate_per_min,
+        now=now,
+    )
+
+
+def tool_cover(
+    actor,
+    tenant=None,
+    symbol=None,
+    pct=None,
+    amount=None,
+    execute_fn=None,
+    timeframe="1h",
+    price=None,
+    writes_enabled=True,
+    enabled=True,
+):
+    return _write(
+        actor,
+        "trade",
+        "cover",
+        tenant,
+        execute_fn,
+        {
+            "symbol": symbol,
+            "pct": pct,
+            "amount": amount,
+            "timeframe": timeframe or "1h",
+            "price": price,
+        },
+        writes_enabled=writes_enabled,
+        enabled=enabled,
+    )
+
+
 def tool_lock(
     actor,
     tenant=None,

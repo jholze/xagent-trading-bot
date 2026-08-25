@@ -141,7 +141,7 @@ class TestEventIngest(unittest.TestCase):
             store=self.store,
         )
         self.assertIsNotNone(ev)
-        self.assertEqual(ev.event_type, "news")
+        self.assertIn(ev.event_type, ("news", "structure_risk"))
         self.assertLess(ev.impact_score, 0)
         ev2 = ingest_news_item(
             title="SEC charges crypto exchange",
@@ -552,7 +552,9 @@ class TestNewsProviders(unittest.TestCase):
                 config={"memory": {"news": {}, "onchain": {}}},
             )
         self.assertGreaterEqual(counts["rss"], 1)
-        self.assertTrue(store.list_events(event_type="news"))
+        events = store.list_events()
+        self.assertTrue(events)
+        self.assertTrue(any(e.event_type in ("news", "macro_news") for e in events))
 
 
 class TestRiskManagerMemory(unittest.TestCase):

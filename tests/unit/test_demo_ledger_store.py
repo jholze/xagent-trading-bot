@@ -99,12 +99,14 @@ class TestDemoMongoLedgerStore(unittest.TestCase):
             def load_positions(self, scope, tenant_id=None):
                 return {"ledger_scope": scope, "positions": {}}
 
-            def save_trade_history(self, data, scope):
+            def save_trade_history(self, data, scope, tenant_id=None, **kwargs):
                 self.history = dict(data)
                 return True
 
         store = FakeStore()
-        with patch("data_manager._mongo_ledger_store", return_value=store):
+        with patch("data_manager._mongo_ledger_store", return_value=store), patch(
+            "core.tenant_context.multi_tenant_enabled", return_value=False
+        ):
             history = load_trade_history_document("demo", self.cfg)
             reconciled = reconcile_demo_trade_history_on_startup(self.cfg)
 
@@ -114,7 +116,10 @@ class TestDemoMongoLedgerStore(unittest.TestCase):
         expected_cash = initial_capital(scope="demo", config=self.cfg) - buy_usdt
         self.assertAlmostEqual(history["virtual_balance"], expected_cash, places=2)
         self.assertNotAlmostEqual(history["virtual_balance"], 4000.0, places=2)
-        self.assertAlmostEqual(reconciled["virtual_balance"], expected_cash, places=2)
+        tenant_hist = reconciled.get("default") if isinstance(reconciled, dict) else None
+        if not isinstance(tenant_hist, dict):
+            tenant_hist = reconciled
+        self.assertAlmostEqual(tenant_hist["virtual_balance"], expected_cash, places=2)
 
     def test_load_live_trade_history_in_demo_matches_order_reconciled_cash(self):
         filled_order = {
@@ -148,7 +153,7 @@ class TestDemoMongoLedgerStore(unittest.TestCase):
             def load_positions(self, scope, tenant_id=None):
                 return {"ledger_scope": scope, "positions": {}}
 
-            def save_trade_history(self, data, scope):
+            def save_trade_history(self, data, scope, tenant_id=None, **kwargs):
                 self.history = dict(data)
                 return True
 

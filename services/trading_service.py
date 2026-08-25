@@ -253,7 +253,7 @@ class TradingService:
                 f"executed (${approved_order.usdt_amount:.0f})",
                 "INFO",
             )
-            if approved_order.type in ("BUY", "SELL"):
+            if approved_order.type in ("BUY", "SELL", "SHORT", "COVER"):
                 try:
                     from core.tenant_context import tenant_snapshot
                     from notifications.telegram_commands.position_display import send_positions_snapshot
@@ -267,6 +267,13 @@ class TradingService:
                     )
                 except Exception as e:
                     log(f"Positions snapshot failed: {e}", "WARNING")
+            if approved_order.type == "SELL" and result.executed:
+                try:
+                    self._maybe_auto_short_after_sell(
+                        approved_order, timeframe, result
+                    )
+                except Exception as e:
+                    log(f"auto-short after sell skip: {e}", "DEBUG")
         elif decision.size_multiplier != 1.0 and not result.message:
             result.message = f"Size multiplier: {decision.size_multiplier:.2f}x"
         return result
@@ -320,4 +327,111 @@ class TradingService:
         )
         return self.execute_order(
             order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
+
+    def execute_short(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        usdt: float = None,
+        leverage: float | None = None,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
+    ) -> TradeResult:
+        src = source or "manual"
+        order = TradeOrder(
+            type="SHORT",
+            symbol=symbol,
+            price=price,
+            amount=0,
+            usdt_amount=usdt or 0,
+            source=src,
+            signal="SHORT",
+            leverage=leverage,
+            order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
+        )
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
+
+    def execute_cover(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        amount: float = None,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
+    ) -> TradeResult:
+        src = source or "manual"
+        order = TradeOrder(
+            type="COVER",
+            symbol=symbol,
+            price=price,
+            amount=amount or 0,
+            signal="COVER",
+            source=src,
+            order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
+        )
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
+
+    def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> None:
+        """Open a paper short after a qualifying bearish full exit (allowlist).
+
+        Must not call ``execute_order`` / ``execute_short`` — those re-acquire
+        ``ledger_lock`` (not re-entrant). Caller already holds the lock.
+        """
+        from strategies.positions import get_position, is_open_position
+        from strategies.short_policy import (
+            auto_short_notional_usdt,
+            is_auto_short_source,
+            shorts_enabled,
+        )
+
+        raw = self.config.raw
+        if not shorts_enabled(raw):
+            return
+        src = str(getattr(approved_order, "exit_source", None) or "")
+        if not is_auto_short_source(src, raw):
+            return
+        sym = approved_order.symbol
+        pos = get_position(sym, timeframe)
+        if is_open_position(pos):
+            return
+        px = float(getattr(sell_result, "price", 0) or approved_order.price or 0)
+        sell_usdt = float(getattr(sell_result, "usdt_amount", 0) or approved_order.usdt_amount or 0)
+        if px <= 0:
+            return
+        usdt = auto_short_notional_usdt(
+            sell_usdt,
+            cap=float(self.max_usdt_for_order()),
+            config_raw=raw,
+        )
+        if usdt <= 0:
+            return
+        idem = f"autoshort|{sym}|{timeframe}|{src}|{px:.8g}"
+        order = TradeOrder(
+            type="SHORT",
+            symbol=sym,
+            price=px,
+            amount=0,
+            usdt_amount=usdt,
+            source="auto",
+            signal="SHORT",
+            exit_source=src,
+            idempotency_key=idem,
+        )
+        self._execute_order_locked(
+            order,
+            timeframe,
+            source="auto",
+            idempotency_key=idem,
+            _lock_held=True,
         )

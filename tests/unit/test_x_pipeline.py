@@ -74,14 +74,14 @@ class TestXPipeline(unittest.TestCase):
         self.assertTrue(rec["recommended"])
 
     @patch("services.social_pipeline.send_x_recommendation_message")
-    @patch("services.social_pipeline.get_prices")
+    @patch("services.social_pipeline.get_prices_batch")
     @patch("x_analyzer.ask_grok_json")
     def test_process_new_posts_single_batch_parse(self, mock_grok, mock_prices, mock_notify):
         mock_grok.return_value = json.dumps([{
             "post_id": "post_1",
             **json.loads(self._valid_grok_json()),
         }])
-        mock_prices.return_value = (150.0, 150.0, None)
+        mock_prices.return_value = {"SOL/USDT": 150.0}
 
         post = RawPost("post_1", "CryptoCapo_", "SOL looking strong", datetime.now().isoformat())
         provider = MagicMock()
@@ -163,11 +163,11 @@ class TestXPipeline(unittest.TestCase):
         self.assertEqual(rec["stop_loss"], 150)
 
     @patch("services.social_pipeline.send_x_recommendation_message")
-    @patch("services.social_pipeline.get_prices")
+    @patch("services.social_pipeline.get_prices_batch")
     @patch("x_analyzer.ask_grok_json")
     def test_process_new_posts_persists_price_levels(self, mock_grok, mock_prices, mock_notify):
         mock_grok.return_value = self._valid_grok_json(coin="SOL", action="BUY", confidence=85)
-        mock_prices.return_value = (150.0, 150.0, None)
+        mock_prices.return_value = {"SOL/USDT": 150.0}
 
         post = RawPost("post_levels_persist_test", "CryptoCapo_", "SOL tp 200", datetime.now().isoformat())
         provider = MagicMock()

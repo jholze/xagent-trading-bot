@@ -30,21 +30,27 @@ def mongo_test_env(monkeypatch):
 
 def _mongo_config(base: dict) -> dict:
     cfg = json.loads(json.dumps(base))
+    cfg["trading_mode"] = "paper"
+    cfg["virtual_trading"] = True
     cfg.setdefault("architecture", {})
     cfg["architecture"]["ledger_backend"] = "mongo"
     cfg["architecture"]["ledger_dual_write"] = False
     cfg.setdefault("paper", {})
     cfg["paper"]["backend"] = "mongo"
+    cfg.setdefault("live", {})["dry_run"] = False
     return cfg
 
 
 def _local_config(base: dict) -> dict:
     cfg = json.loads(json.dumps(base))
+    cfg["trading_mode"] = "paper"
+    cfg["virtual_trading"] = True
     cfg.setdefault("architecture", {})
     cfg["architecture"]["ledger_backend"] = "local"
     cfg["architecture"]["ledger_dual_write"] = False
     cfg.setdefault("paper", {})
     cfg["paper"]["backend"] = "local"
+    cfg.setdefault("live", {})["dry_run"] = False
     return cfg
 
 
@@ -177,6 +183,13 @@ def _apply_backend_config(monkeypatch, cfg: dict, paths: dict):
     order_service._ORDERS_READ_CACHE.clear()
     monkeypatch.setattr(data_manager, "is_demo_mode", lambda: False)
     monkeypatch.setattr(data_manager, "resolve_ledger_scope", lambda trading_mode=None: "paper")
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setattr("core.simulated_trading.is_demo_mode", lambda: False)
+    monkeypatch.setattr(data_manager, "reload_config", lambda tenant_id=None, **kwargs: cfg)
+    monkeypatch.setattr("core.config.reload_config", lambda tenant_id=None, **kwargs: cfg)
+    cfg["trading_mode"] = "paper"
+    cfg["virtual_trading"] = True
+    cfg.setdefault("live", {})["dry_run"] = False
 
 
 def _normalize_positions(positions: dict) -> dict:

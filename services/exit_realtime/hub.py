@@ -466,6 +466,69 @@ class ExitRealtimeHub:
             # Fail-closed on lock-check errors: do not evaluate trail sells
             return
 
+        short_lot = False
+        live_for_side = pos
+        try:
+            from strategies.positions import get_position as _get_pos_side
+            from strategies.short_math import is_short as _lot_is_short
+
+            live_for_side = _get_pos_side(sym, tf) or pos
+            short_lot = bool(_lot_is_short(live_for_side))
+        except Exception as exc:
+            log(f"exit_realtime short side check fail {sym}: {exc}", "ERROR")
+            return
+
+        if short_lot:
+            try:
+                from strategies.short_cover import evaluate_short_cover
+
+                try:
+                    rl = float(live_for_side.get("recent_low") or price)
+                    if price < rl:
+                        live_for_side["recent_low"] = price
+                        pos["recent_low"] = price
+                        from strategies.positions import flush_positions, set_position_field
+
+                        set_position_field(sym, tf, "recent_low", price)
+                        flush_positions(force=True)
+                except Exception:
+                    pass
+                hit = evaluate_short_cover(
+                    live_for_side,
+                    price,
+                    symbol=sym,
+                    config_raw=self._raw if isinstance(self._raw, dict) else None,
+                )
+                if not hit:
+                    return
+                src = str(hit.get("source") or "short_cover")
+                if not self._debounce_ok(sym, src, cooldown):
+                    return
+                result = try_execute_trail_exit(
+                    symbol=sym,
+                    timeframe=tf,
+                    price=price,
+                    action="COVER",
+                    exit_source=src,
+                    rationale=str(hit.get("rationale") or ""),
+                )
+                if result.get("executed"):
+                    self._stats["executed"] += 1
+                    with self._pos_lock:
+                        self._book.pop(sym, None)
+                    self._broadcast_gui(
+                        {
+                            "type": "would_exit",
+                            "stage": "short_cover",
+                            "symbol": sym,
+                            "msg": f"COVER {sym} {src} @ {price}",
+                            "executed": True,
+                        }
+                    )
+            except Exception as exc:
+                log(f"exit_realtime short cover skip {sym}: {exc}", "WARNING")
+            return
+
         events = evaluate_would_sells(
             symbol=sym,
             timeframe=tf,

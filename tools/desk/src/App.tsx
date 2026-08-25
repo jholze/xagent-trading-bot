@@ -204,8 +204,12 @@ export default function App() {
                     <div className="lot-top">
                       <div className="sym">
                         {lot.symbol}
+                        {lot.side === 'short' ? ' S' : ''}
                         <span className="tf">
-                          {lotTimeframe(lot)} · {lotSource(lot)} · DCA {formatDca(lot)}
+                          {lotTimeframe(lot)} · {lotSource(lot)}
+                          {lot.side === 'short'
+                            ? ` · ${lot.leverage ? `${lot.leverage}×` : 'short'}`
+                            : ` · DCA ${formatDca(lot)}`}
                         </span>
                       </div>
                       <div className={`num${up ? ' up' : ''}${dn ? ' dn' : ''}`}>

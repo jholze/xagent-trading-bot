@@ -135,7 +135,8 @@ class TestVolatileProfile(unittest.TestCase):
             sim_state={"rsi_sell_tiers_done": {}, "last_rsi": 60},
         )
         coin = {"symbol": "H/USDT", "timeframe": "4h", "strategy_params": params}
-        result = strategy.analyze(coin, market)
+        with patch("strategies.indicator_regime.overlay_active", return_value=False):
+            result = strategy.analyze(coin, market)
         self.assertEqual(result.normalized_action, "SELL_PARTIAL_30")
 
     def test_rsi_level_blocked_by_low_gain(self):

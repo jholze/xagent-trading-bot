@@ -112,6 +112,59 @@ class TestTryExecuteTrailExit(unittest.TestCase):
         mark_tp.assert_called_once()
         self.assertTrue(recently_exited("TAG/USDT", within_sec=120))
 
+    def test_short_lot_covers_never_sells(self):
+        trading = MagicMock()
+        trading.execute_order.return_value = SimpleNamespace(
+            executed=True, message="ok cover"
+        )
+        pos = {
+            "amount": 50.0,
+            "average_entry": 1.0,
+            "side": "short",
+            "leverage": 2,
+        }
+        with patch(
+            "strategies.positions.get_position", return_value=pos
+        ), patch(
+            "strategies.positions.is_open_position", return_value=True
+        ):
+            r = try_execute_trail_exit(
+                symbol="SHRT/USDT",
+                timeframe="4h",
+                price=1.2,
+                action="SELL_FULL",
+                exit_source="trailing_stop",
+                trading=trading,
+                force_local=True,
+            )
+        self.assertTrue(r["executed"])
+        order = trading.execute_order.call_args[0][0]
+        self.assertEqual(order.type, "COVER")
+        self.assertNotEqual(order.type, "SELL")
+
+    def test_side_check_error_does_not_sell(self):
+        trading = MagicMock()
+        pos = {"amount": 50.0, "average_entry": 1.0, "side": "short"}
+        with patch(
+            "strategies.positions.get_position", return_value=pos
+        ), patch(
+            "strategies.positions.is_open_position", return_value=True
+        ), patch(
+            "strategies.short_math.is_short", side_effect=RuntimeError("boom")
+        ):
+            r = try_execute_trail_exit(
+                symbol="ERR/USDT",
+                timeframe="4h",
+                price=1.2,
+                action="SELL_FULL",
+                exit_source="trailing_stop",
+                trading=trading,
+                force_local=True,
+            )
+        self.assertFalse(r["executed"])
+        self.assertIn("side_check", r["message"])
+        trading.execute_order.assert_not_called()
+
     def test_inflight_blocks_second(self):
         import services.exit_realtime.execute as ex
 

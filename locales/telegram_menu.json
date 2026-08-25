@@ -30,6 +30,8 @@
           "keys": [
             "buy",
             "sell",
+            "short",
+            "cover",
             "lock",
             "unlock",
             "positions",
@@ -172,6 +174,16 @@
         "help_line": "<code>/sell SYMBOL PROZENT</code> oder <code>/sell NUMMER PROZENT</code> — z.B. <code>/sell RAVE 30</code> oder <code>/sell 1 30</code>",
         "context_footer": "Danach nur noch: <code>{example}</code> (Symbol oder Nummer + Prozent)",
         "hint": "❌ <b>/sell</b> — Position verkaufen\n\nDirekt: <code>/sell RAVE 30</code> (30 % verkaufen)\nOder Liste: <code>/sell</code> → dann <code>1 30</code>"
+      },
+      "short": {
+        "description": "Paper-Short eröffnen",
+        "help_line": "<code>/short SYMBOL [USDT] [Hebel]</code> — z.B. <code>/short H</code> oder <code>/short H 400 2</code>",
+        "hint": "❌ <b>/short</b> — Isolated Paper-Short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, Hebel)\nCover: <code>/cover H</code>"
+      },
+      "cover": {
+        "description": "Paper-Short schließen",
+        "help_line": "<code>/cover SYMBOL [PROZENT]</code> — z.B. <code>/cover H</code> oder <code>/cover H 50</code>",
+        "hint": "❌ <b>/cover</b> — Short schließen\n\n<code>/cover H</code> (100 %)\n<code>/cover H 50</code> (50 %)"
       },
       "lock": {
         "description": "Position gegen Auto-Sell locken",
@@ -395,6 +407,8 @@
           "keys": [
             "buy",
             "sell",
+            "short",
+            "cover",
             "lock",
             "unlock",
             "positions",
@@ -537,6 +551,16 @@
         "help_line": "<code>/sell SYMBOL PERCENT</code> or <code>/sell NUMBER PERCENT</code> — e.g. <code>/sell RAVE 30</code> or <code>/sell 1 30</code>",
         "context_footer": "Then send only: <code>{example}</code> (symbol or number + percent)",
         "hint": "❌ <b>/sell</b> — Sell position\n\nDirect: <code>/sell RAVE 30</code> (sell 30%)\nOr list: <code>/sell</code> → then <code>1 30</code>"
+      },
+      "short": {
+        "description": "Open paper short",
+        "help_line": "<code>/short SYMBOL [USDT] [leverage]</code> — e.g. <code>/short H</code> or <code>/short H 400 2</code>",
+        "hint": "❌ <b>/short</b> — Isolated paper short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, leverage)\nCover: <code>/cover H</code>"
+      },
+      "cover": {
+        "description": "Close paper short",
+        "help_line": "<code>/cover SYMBOL [PERCENT]</code> — e.g. <code>/cover H</code> or <code>/cover H 50</code>",
+        "hint": "❌ <b>/cover</b> — Close short\n\n<code>/cover H</code> (100%)\n<code>/cover H 50</code> (50%)"
       },
       "lock": {
         "description": "Lock position against auto-sell",

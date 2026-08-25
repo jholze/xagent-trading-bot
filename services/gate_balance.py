@@ -136,6 +136,15 @@ def _equity_cash_plus_positions(
         amount = float(p.get("amount", 0) or 0)
         price = float(prices.get(sym, 0) or 0)
         if price > 0 and amount > 0:
+            try:
+                from strategies.short_math import is_short, snapshot
+
+                if is_short(p):
+                    snap = snapshot(p, price)
+                    total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
+                    continue
+            except Exception:
+                pass
             total += amount * price
     return total
 

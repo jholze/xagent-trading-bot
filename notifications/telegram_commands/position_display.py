@@ -125,11 +125,19 @@ def _effective_sold_fraction(p: dict) -> float:
 
 
 def _position_cost_basis(p: dict) -> float:
-    """USDT invested in this open lot at entry (entry × amount)."""
+    """USDT invested in this open lot: long notional, short isolated margin."""
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0) or 0)
     if entry <= 0 or amount <= 0:
         return 0.0
+    try:
+        from strategies.short_math import is_short, margin_usdt
+
+        if is_short(p):
+            lev = float(p.get("leverage") or 2) or 2.0
+            return margin_usdt(amount, entry, lev)
+    except Exception:
+        pass
     return entry * amount
 
 
@@ -159,11 +167,37 @@ def aggregate_open_coins_totals(active: list, prices: dict) -> dict:
 def _position_metrics(p: dict, price: float) -> dict:
     entry = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
     amount = float(p.get("amount", 0))
+    sold_raw = _effective_sold_fraction(p)
+    sold_pct = sold_raw * 100
+    side = "long"
+    try:
+        from strategies.short_math import is_short, snapshot
+
+        if is_short(p):
+            side = "short"
+            snap = snapshot(p, price)
+            unreal = float(snap.get("pnl") or 0)
+            margin = float(snap.get("margin") or 0)
+            value_usdt = margin + unreal
+            unreal_pct = float(snap.get("roe_pct") or 0)
+            return {
+                "entry": entry,
+                "amount": amount,
+                "price": price,
+                "value_usdt": value_usdt,
+                "unreal": unreal,
+                "unreal_pct": unreal_pct,
+                "sold_pct": sold_pct,
+                "sold_warn": float(p.get("sold_percent", 0) or 0) > 1.0,
+                "side": side,
+                "leverage": snap.get("leverage"),
+                "liq_price": snap.get("liq_price"),
+            }
+    except Exception:
+        pass
     value_usdt = price * amount if price > 0 else 0.0
     unreal = (price - entry) * amount if entry > 0 and price > 0 else 0.0
     unreal_pct = ((price / entry) - 1) * 100 if entry > 0 and price > 0 else 0.0
-    sold_raw = _effective_sold_fraction(p)
-    sold_pct = sold_raw * 100
     return {
         "entry": entry,
         "amount": amount,
@@ -173,6 +207,7 @@ def _position_metrics(p: dict, price: float) -> dict:
         "unreal_pct": unreal_pct,
         "sold_pct": sold_pct,
         "sold_warn": float(p.get("sold_percent", 0) or 0) > 1.0,
+        "side": side,
     }
 
 
@@ -281,6 +316,7 @@ def format_position_card(
 
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
+    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
     lock_badge = ""
     try:
         from strategies.position_lock import lock_summary
@@ -295,7 +331,7 @@ def format_position_card(
     if m["value_usdt"] > 0:
         value_part = f" · Wert <b>${m['value_usdt']:,.0f}</b>"
     header = (
-        f"{prefix}<b>{ticker_html}</b>{lock_badge} {pnl_icon} "
+        f"{prefix}<b>{ticker_html}</b>{side_badge}{lock_badge} {pnl_icon} "
         f"<code>{_fmt_pct(m['unreal_pct'])}</code>{value_part}"
     )
 
@@ -313,10 +349,17 @@ def format_position_card(
         return header + "\n" + "\n".join(tree_lines)
 
     sold_line = ""
-    if m["sold_pct"] > 0 or m["sold_warn"]:
+    if m.get("side") != "short" and (m["sold_pct"] > 0 or m["sold_warn"]):
         sold_raw_pct = float(p.get("sold_percent", 0) or 0) * 100
         sold_val = f"{m['sold_pct']:.0f}%" if not m["sold_warn"] else f"⚠️ {sold_raw_pct:.0f}%"
         sold_line = f"\n   └ Bereits verkauft: <b>{sold_val}</b>"
+    lev_line = ""
+    if m.get("side") == "short":
+        lev = m.get("leverage")
+        liq = m.get("liq_price")
+        lev_part = f" · {float(lev):g}×" if lev else ""
+        liq_part = f" · liq {format_usdt_price(float(liq))}" if liq else ""
+        lev_line = f"{lev_part}{liq_part}"
 
     lock_line = ""
     try:
@@ -341,10 +384,11 @@ def format_position_card(
     if price_source == "missing" and m["value_usdt"] <= 0:
         missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
+    value_label = "Wert"
     return (
         f"{header}\n"
-        f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}\n"
-        f"   └ Wert <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
+        f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}{lev_line}\n"
+        f"   └ {value_label} <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
         f"{sold_line}{lock_line}{last_line}{missing_line}"
     )
 
@@ -362,6 +406,7 @@ def format_position_compact_line(
     ticker_html = format_ticker_html(sym.split("/")[0], symbol_suffix="")
     m = _position_metrics(p, price)
     icon = _pnl_emoji(m["unreal"])
+    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
     lock_badge = ""
     try:
         from strategies.position_lock import is_position_locked
@@ -373,7 +418,7 @@ def format_position_compact_line(
     missing = " · <i>kein Kurs</i>" if price_source == "missing" and m["value_usdt"] <= 0 else ""
     tf = p.get("timeframe", "4h")
     return (
-        f"<b>{index}.</b> {ticker_html}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
+        f"<b>{index}.</b> {ticker_html}{side_badge}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
         f"· <b>${m['value_usdt']:.0f}</b> · PnL <b>${m['unreal']:+.0f}</b>{missing}"
     )
 
@@ -461,6 +506,19 @@ def _trade_side_label(trade: dict) -> str:
     side = (trade.get("type") or trade.get("side") or "").upper()
     if side == "BUY":
         return _t("trade_buy")
+    if side == "SHORT":
+        return _t("trade_short")
+    if side == "COVER":
+        pnl_raw = trade.get("pnl")
+        try:
+            pnl = float(pnl_raw) if pnl_raw is not None else None
+        except (TypeError, ValueError):
+            pnl = None
+        if pnl is None:
+            icon = "⚪"
+        else:
+            icon = _pnl_emoji(pnl)
+        return _t("trade_cover_icon", icon=icon)
     pnl_raw = trade.get("pnl")
     try:
         pnl = float(pnl_raw) if pnl_raw is not None else None
@@ -871,9 +929,24 @@ def format_positions_message(
     return msg
 
 
+def _is_long_lot(p: dict) -> bool:
+    try:
+        from strategies.short_math import is_short
+
+        return not (is_short(p) and float(p.get("amount") or 0) > 0)
+    except Exception:
+        return str(p.get("side") or "long").strip().lower() != "short"
+
+
+def long_lots_for_sell(active: list) -> list:
+    """ /sell only lists longs. Shorts are covered via /cover. """
+    return [p for p in (active or []) if _is_long_lot(p)]
+
+
 def format_sell_list_message(active: list, prices: dict) -> str:
+    longs = long_lots_for_sell(active)
     msg = format_positions_message(
-        active,
+        longs,
         prices,
         load_trade_history_safe(),
         include_trades=False,
@@ -1131,11 +1204,21 @@ def format_trade_banner(result) -> str:
             f"{t('buy_done', sym=sym)}\n"
             f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
         )
+    if result.order_type == "SHORT":
+        return (
+            f"{t('short_done', sym=sym)}\n"
+            f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
+        )
     pnl_part = (
         t("sell_done_pnl", pnl=f"{float(result.pnl):+.1f}")
         if result.pnl is not None
         else ""
     )
+    if result.order_type == "COVER":
+        return (
+            f"{t('cover_done', sym=sym)}\n"
+            f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
+        )
     return (
         f"{t('sell_done', sym=sym)}\n"
         f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
