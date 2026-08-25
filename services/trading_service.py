@@ -253,7 +253,7 @@ class TradingService:
                 f"executed (${approved_order.usdt_amount:.0f})",
                 "INFO",
             )
-            if approved_order.type in ("BUY", "SELL"):
+            if approved_order.type in ("BUY", "SELL", "SHORT", "COVER"):
                 try:
                     from core.tenant_context import tenant_snapshot
                     from notifications.telegram_commands.position_display import send_positions_snapshot
@@ -314,6 +314,59 @@ class TradingService:
             price=price,
             amount=amount,
             signal=signal,
+            source=src,
+            order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
+        )
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
+
+    def execute_short(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        usdt: float = None,
+        leverage: float | None = None,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
+    ) -> TradeResult:
+        src = source or "manual"
+        order = TradeOrder(
+            type="SHORT",
+            symbol=symbol,
+            price=price,
+            amount=0,
+            usdt_amount=usdt or 0,
+            source=src,
+            signal="SHORT",
+            leverage=leverage,
+            order_id=order_id or "",
+            idempotency_key=idempotency_key or "",
+        )
+        return self.execute_order(
+            order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
+        )
+
+    def execute_cover(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        amount: float = None,
+        order_id: str = None,
+        source: str = "manual",
+        idempotency_key: str | None = None,
+    ) -> TradeResult:
+        src = source or "manual"
+        order = TradeOrder(
+            type="COVER",
+            symbol=symbol,
+            price=price,
+            amount=amount or 0,
+            signal="COVER",
             source=src,
             order_id=order_id or "",
             idempotency_key=idempotency_key or "",

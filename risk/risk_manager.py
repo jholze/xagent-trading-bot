@@ -118,6 +118,9 @@ class RiskManager:
                 code="phantom_symbol",
             )
 
+        if order.type in ("SHORT", "COVER"):
+            return self._evaluate_short_or_cover(order, timeframe, source=source)
+
         if order.type == "SELL":
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
@@ -1664,6 +1667,94 @@ class RiskManager:
     def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
         """Backward-compatible alias for tests and callers."""
         return self._partial_sell_blocked(order, timeframe, source)
+
+    def _evaluate_short_or_cover(
+        self,
+        order: TradeOrder,
+        timeframe: str,
+        source: str = "auto",
+    ) -> RiskDecision:
+        from core.simulated_trading import is_real_live_trading
+        from strategies.short_math import clamp_leverage, is_short, margin_usdt
+        from strategies.short_policy import resolve_short_params, shorts_allow_live, shorts_enabled
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        if not shorts_enabled(raw):
+            return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
+        if is_real_live_trading(raw) and not shorts_allow_live(raw):
+            return RiskDecision(
+                approved=False,
+                message="shorts.allow_live=false (no Gate futures in v0)",
+                code="shorts_live_blocked",
+            )
+        pos = get_position(order.symbol, timeframe)
+        params = resolve_short_params(
+            symbol=order.symbol,
+            tier=pos.get("strategy_tier") if isinstance(pos, dict) else None,
+            lot=pos if isinstance(pos, dict) else None,
+            config_raw=raw,
+        )
+        if order.type == "COVER":
+            if not is_short(pos) or float((pos or {}).get("amount") or 0) <= 0:
+                return RiskDecision(approved=False, message="no short to cover", code="no_short")
+            out = TradeOrder(
+                type="COVER",
+                symbol=order.symbol,
+                price=order.price,
+                amount=order.amount or float(pos.get("amount") or 0),
+                signal=order.signal or "COVER",
+                source=source or order.source,
+            )
+            return RiskDecision(approved=True, order=out, message="ok")
+
+        # SHORT open
+        if is_short(pos) and float((pos or {}).get("amount") or 0) > 0:
+            pass  # add to existing short
+        elif float((pos or {}).get("amount") or 0) > 1e-12:
+            return RiskDecision(
+                approved=False,
+                message="one-way: close long before short",
+                code="one_way",
+            )
+        n_short = 0
+        try:
+            for p in list_active_positions():
+                if is_short(p) and float(p.get("amount") or 0) > 0:
+                    n_short += 1
+        except Exception:
+            n_short = 0
+        if n_short >= int(params.get("max_open") or 6) and not (
+            is_short(pos) and float((pos or {}).get("amount") or 0) > 0
+        ):
+            return RiskDecision(approved=False, message="shorts.max_open reached", code="shorts_slots")
+        lev = clamp_leverage(order.leverage or params["leverage"], cap=params["leverage_cap"])
+        usdt = float(order.usdt_amount or 0) or float(self.config.max_usdt_per_trade)
+        if order.price <= 0:
+            return RiskDecision(approved=False, message="invalid price", code="bad_price")
+        qty = usdt / order.price
+        margin = margin_usdt(qty, order.price, lev)
+        cash = 0.0
+        try:
+            cash = float(self._available_usdt(fallback=usdt))
+        except Exception:
+            cash = float(usdt)
+        if margin > cash + 1e-6:
+            return RiskDecision(
+                approved=False,
+                message=f"short margin {margin:.0f} > cash {cash:.0f}",
+                code="short_margin",
+            )
+        out = TradeOrder(
+            type="SHORT",
+            symbol=order.symbol,
+            price=order.price,
+            amount=qty,
+            usdt_amount=usdt,
+            signal=order.signal or "SHORT",
+            source=source or order.source,
+            leverage=lev,
+        )
+        return RiskDecision(approved=True, order=out, message="ok")
 
     def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
         if source == "manual":

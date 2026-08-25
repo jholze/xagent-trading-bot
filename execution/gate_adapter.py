@@ -95,9 +95,23 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
 
         try:
+            if order.type in ("SHORT", "COVER"):
+                return TradeResult(
+                    executed=False,
+                    order_type=order.type,
+                    symbol=order.symbol,
+                    message="shorts.allow_live=false — no Gate futures in v0",
+                )
             if order.type == "BUY":
                 return self._execute_buy(exchange, order, timeframe)
-            return self._execute_sell(exchange, order, timeframe)
+            if order.type == "SELL":
+                return self._execute_sell(exchange, order, timeframe)
+            return TradeResult(
+                executed=False,
+                order_type=order.type,
+                symbol=order.symbol,
+                message=f"Unsupported Gate order type {order.type}",
+            )
         except Exception as e:
             log(f"Gate execution failed for {order.symbol}: {e}", "ERROR")
             return TradeResult(
@@ -242,11 +256,34 @@ class GateExecutionAdapter(ExecutionAdapter):
                 sync_virtual_ledger=sync_virtual,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             )
-        else:
+        elif order.type == "SHORT":
+            local = self.portfolio.execute_short(
+                order.symbol,
+                timeframe,
+                order.price,
+                order.usdt_amount,
+                source=order.source,
+                order_id=oid,
+                leverage=getattr(order, "leverage", None),
+                sync_virtual_ledger=sync_virtual,
+            )
+        elif order.type == "COVER":
+            local = self.portfolio.execute_cover(
+                order.symbol,
+                timeframe,
+                order.price,
+                order.amount,
+                source=order.source,
+                order_id=oid,
+                sync_virtual_ledger=sync_virtual,
+            )
+        elif order.type == "SELL":
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
             )
+        else:
+            return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")
 
         record_live_trade({
             "type": order.type,

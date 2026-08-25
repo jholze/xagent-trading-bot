@@ -118,6 +118,92 @@ class PortfolioService:
             True, "SELL", symbol, amount=amount, price=price, usdt_amount=received, pnl=pnl, order_id=order_id or "",
         )
 
+    def execute_short(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        usdt_amount: float = None,
+        source: str = "manual",
+        order_id: str = None,
+        leverage: float | None = None,
+        entry_source: str | None = None,
+        sync_virtual_ledger: bool = True,
+    ) -> TradeResult:
+        if price <= 0:
+            return TradeResult(False, "SHORT", symbol, message="Invalid price")
+        from strategies.short_math import clamp_leverage, margin_usdt
+        from strategies.short_policy import resolve_short_params
+
+        params = resolve_short_params(symbol=symbol, config_raw=self.config.raw)
+        lev = clamp_leverage(leverage or params["leverage"], cap=params["leverage_cap"])
+        notional = usdt_amount or self.config.max_usdt_per_trade
+        margin = margin_usdt(notional / price, price, lev) if price else 0.0
+        amount = notional / price
+        update_position(
+            symbol,
+            timeframe,
+            "SHORT",
+            price,
+            amount,
+            entry_source=entry_source or source,
+            leverage=lev,
+        )
+        if sync_virtual_ledger:
+            record_trade({
+                "type": "SHORT",
+                "symbol": symbol,
+                "price": price,
+                "amount": amount,
+                "usdt_amount": notional,
+                "margin_usdt": margin,
+                "leverage": lev,
+                "source": source,
+                "order_id": order_id,
+                "timestamp": datetime.now().isoformat(),
+            })
+        return TradeResult(
+            True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional, order_id=order_id or "",
+        )
+
+    def execute_cover(
+        self,
+        symbol: str,
+        timeframe: str,
+        price: float,
+        amount: float = None,
+        source: str = "manual",
+        order_id: str = None,
+        sync_virtual_ledger: bool = True,
+    ) -> TradeResult:
+        if price <= 0:
+            return TradeResult(False, "COVER", symbol, message="Invalid price")
+        pos = get_position(symbol, timeframe)
+        from strategies.short_math import is_short, unrealized_pnl
+
+        if not is_short(pos) or float(pos.get("amount") or 0) <= 0:
+            return TradeResult(False, "COVER", symbol, message="No short to cover")
+        qty = float(amount) if amount and amount > 0 else float(pos["amount"])
+        qty = min(qty, float(pos["amount"]))
+        entry = float(pos.get("average_entry") or price)
+        pnl = unrealized_pnl("short", qty, entry, price)
+        update_position(symbol, timeframe, "COVER", price, qty)
+        if sync_virtual_ledger:
+            record_trade({
+                "type": "COVER",
+                "symbol": symbol,
+                "price": price,
+                "amount": qty,
+                "usdt_amount": price * qty,
+                "pnl": pnl,
+                "source": source,
+                "order_id": order_id,
+                "timestamp": datetime.now().isoformat(),
+            })
+        return TradeResult(
+            True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl, order_id=order_id or "",
+        )
+
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
         source = order.source or "auto"
         oid = order.order_id or None
@@ -131,6 +217,28 @@ class PortfolioService:
                 order_id=oid,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             )
+        if order.type == "SHORT":
+            return self.execute_short(
+                order.symbol,
+                timeframe,
+                order.price,
+                order.usdt_amount or None,
+                source=source,
+                order_id=oid,
+                leverage=getattr(order, "leverage", None),
+                entry_source=order.signal or source,
+            )
+        if order.type == "COVER":
+            return self.execute_cover(
+                order.symbol,
+                timeframe,
+                order.price,
+                order.amount or None,
+                source=source,
+                order_id=oid,
+            )
+        if order.type != "SELL":
+            return TradeResult(False, order.type, order.symbol, message=f"Unknown order type {order.type}")
         return self.execute_sell(
             order.symbol, timeframe, order.price, order.signal or "SELL", order.amount or None,
             source=source, order_id=oid,

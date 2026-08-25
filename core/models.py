@@ -125,6 +125,7 @@ class TradeOrder:
     order_id: str = ""
     idempotency_key: str = ""
     entry_15m_vol_ratio: float | None = None
+    leverage: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

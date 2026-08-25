@@ -67,6 +67,33 @@
   "slippage_percent": 1.5,
   "stop_loss_pct": 50.0,
   "max_open_positions": 36,
+  "shorts": {
+    "enabled": true,
+    "allow_live": false,
+    "leverage_default": 2,
+    "leverage_cap": 5,
+    "max_open": 6,
+    "max_margin_pct": 20,
+    "liquidation_buffer": 0.05,
+    "fee_rate": 0.001,
+    "auto_sources": [
+      "rsi_sell",
+      "exit_1h_rsi_rollover",
+      "oracle_climax_harvest",
+      "exit_volume_climax"
+    ],
+    "volatile": {
+      "time_cap_hours": 4,
+      "stop_margin_pct": 0.12,
+      "market_cap_min_usd": 50000000
+    },
+    "stable": {
+      "time_cap_hours": 8,
+      "stop_margin_pct": 0.08,
+      "market_cap_min_usd": 100000000
+    },
+    "coins": {}
+  },
   "trade_cooldown_hours": 0.35,
   "debug": false,
   "use_mock_x_data": false,

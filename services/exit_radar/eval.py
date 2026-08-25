@@ -259,7 +259,13 @@ def evaluate_position(
             urgency = max(urgency, 35.0)
 
     notional = float(pos.get("amount") or 0) * price
-    pnl_usdt = float(pos.get("amount") or 0) * (price - entry)
+    try:
+        from strategies.short_math import snapshot as _short_snap
+
+        _ss = _short_snap(pos, price)
+        pnl_usdt = float(_ss.get("pnl") or 0)
+    except Exception:
+        pnl_usdt = float(pos.get("amount") or 0) * (price - entry)
 
     status = "idle"
     if would_sources:
