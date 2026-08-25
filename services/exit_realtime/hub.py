@@ -466,6 +466,48 @@ class ExitRealtimeHub:
             # Fail-closed on lock-check errors: do not evaluate trail sells
             return
 
+        try:
+            from strategies.short_cover import evaluate_short_cover
+            from strategies.short_math import is_short as _lot_is_short
+
+            live_for_side = get_position(sym, tf) or pos
+            if _lot_is_short(live_for_side):
+                hit = evaluate_short_cover(
+                    live_for_side,
+                    price,
+                    symbol=sym,
+                    config_raw=self._raw if isinstance(self._raw, dict) else None,
+                )
+                if not hit:
+                    return
+                src = str(hit.get("source") or "short_cover")
+                if not self._debounce_ok(sym, src, cooldown):
+                    return
+                result = try_execute_trail_exit(
+                    symbol=sym,
+                    timeframe=tf,
+                    price=price,
+                    action="COVER",
+                    exit_source=src,
+                    rationale=str(hit.get("rationale") or ""),
+                )
+                if result.get("executed"):
+                    self._stats["executed"] += 1
+                    with self._pos_lock:
+                        self._book.pop(sym, None)
+                    self._broadcast_gui(
+                        {
+                            "type": "would_exit",
+                            "stage": "short_cover",
+                            "symbol": sym,
+                            "msg": f"COVER {sym} {src} @ {price}",
+                            "executed": True,
+                        }
+                    )
+                return
+        except Exception as exc:
+            log(f"exit_realtime short cover skip {sym}: {exc}", "DEBUG")
+
         events = evaluate_would_sells(
             symbol=sym,
             timeframe=tf,

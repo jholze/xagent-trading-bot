@@ -27,7 +27,12 @@ Our 60d sell tape: `bb_upper` is a coin-flip; `rsi_sell` only 4h edge. Auto allo
 
 ## P0 this round
 
-Math SSOT, config, lot `side`/`leverage`, `SHORT`/`COVER` on paper/dry-run, risk gates, Telegram `/short` `/cover`. Radar PnL side-aware. **No auto yet.**
+Math SSOT, config, lot `side`/`leverage`, `SHORT`/`COVER` on paper/dry-run, risk gates, Telegram `/short` `/cover`. Radar PnL side-aware.
+
+## P0.5 (this commit)
+
+WS tick: stop / liquidation / time-cap → `COVER` on the same `spot.tickers` hub.  
+Auto-short after a **full** sell whose `exit_source` is in the RSI/climax allowlist (not `bb_upper`).
 
 ## Kill / rollback
 

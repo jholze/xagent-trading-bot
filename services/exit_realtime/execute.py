@@ -86,6 +86,54 @@ def _remote_execute_trail_exit(
         }
 
 
+def _execute_short_cover(
+    *,
+    symbol: str,
+    timeframe: str,
+    price: float,
+    amount: float,
+    exit_source: str,
+    rationale: str,
+    trading: Any | None,
+) -> dict[str, Any]:
+    from core.models import TradeOrder
+    from services.trading_service import TradingService
+
+    order = TradeOrder(
+        type="COVER",
+        symbol=symbol,
+        price=price,
+        amount=amount,
+        signal="COVER",
+        source="exit_ws",
+        exit_source=str(exit_source or "short_cover"),
+        exit_rationale=str(rationale or "")[:240],
+    )
+    if trading is None:
+        trading = TradingService()
+    result = trading.execute_order(order, timeframe, source="exit_ws", confidence=80.0)
+    executed = bool(getattr(result, "executed", False))
+    msg = str(getattr(result, "message", "") or "")
+    if executed:
+        _last_exit_at[symbol] = time.monotonic()
+        log(
+            f"exit_ws COVER {symbol} {timeframe} src={exit_source} "
+            f"px={price:.6g} amt={amount:.6g} :: {msg[:80]}",
+            "INFO",
+        )
+    return {
+        "ok": True,
+        "executed": executed,
+        "message": msg,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "exit_source": exit_source,
+        "price": price,
+        "amount": amount,
+        "cover": True,
+    }
+
+
 def try_execute_trail_exit(
     *,
     symbol: str,
@@ -175,6 +223,22 @@ def try_execute_trail_exit(
         amount = float(pos.get("amount") or 0)
         if amount <= 0:
             return {"ok": False, "executed": False, "message": "amount_zero"}
+
+        try:
+            from strategies.short_math import is_short as _is_short
+
+            if _is_short(pos):
+                return _execute_short_cover(
+                    symbol=sym,
+                    timeframe=tf,
+                    price=px,
+                    amount=amount,
+                    exit_source=exit_source,
+                    rationale=rationale,
+                    trading=trading,
+                )
+        except Exception:
+            pass
 
         try:
             from strategies.position_lock import (
