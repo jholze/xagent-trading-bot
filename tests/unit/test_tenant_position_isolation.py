@@ -18,6 +18,9 @@ from strategies.positions import (
     _serialize_positions,
     activate_tenant_positions,
     clear_positions_memory,
+    count_open_full_slots,
+    count_open_positions,
+    count_open_tail_slots,
     flush_positions,
     get_key,
     list_active_positions,
@@ -30,11 +33,13 @@ class TestTenantPositionIsolation(unittest.TestCase):
     def setUp(self):
         clear_positions_memory()
         clear_positions_memory(tenant_id="henry")
+        clear_positions_memory(tenant_id="ctexp")
         _position_stores.clear()
 
     def tearDown(self):
         clear_positions_memory()
         clear_positions_memory(tenant_id="henry")
+        clear_positions_memory(tenant_id="ctexp")
         _position_stores.clear()
 
     def _seed_default_open_lot(self, symbol: str = "SPCX/USDT", tf: str = "1h") -> None:
@@ -76,6 +81,30 @@ class TestTenantPositionIsolation(unittest.TestCase):
             "last_trail_tp_at": None,
             "profit_max_lifetime_done": False,
         }
+
+    def test_count_open_full_slots_uses_active_tenant_store(self):
+        """Risk max_open must not see default lots while cycling ctexp/henry."""
+        self._seed_default_open_lot("AAA/USDT")
+        self._seed_default_open_lot("BBB/USDT")
+        _activate(_resolve_store_key("demo", DEFAULT_TENANT))
+        self.assertEqual(count_open_full_slots({}), 2)
+
+        with tenant_context("ctexp", scope="demo"):
+            with patch(
+                "services.ledger_sync._build_positions_snapshot_from_orders",
+                return_value={},
+            ), patch(
+                "strategies.positions.load_positions_document",
+                return_value={"positions": {}},
+            ):
+                activate_tenant_positions(scope="demo", tenant_id="ctexp")
+            self.assertEqual(list_active_positions(), [])
+            self.assertEqual(count_open_full_slots({}), 0)
+            self.assertEqual(count_open_tail_slots({}), 0)
+            self.assertEqual(count_open_positions(), 0)
+
+        _activate(_resolve_store_key("demo", DEFAULT_TENANT))
+        self.assertEqual(count_open_full_slots({}), 2)
 
     def test_list_active_positions_uses_current_tenant_store(self):
         self._seed_default_open_lot()

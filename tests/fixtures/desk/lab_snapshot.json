@@ -1,0 +1,17 @@
+{
+  "symbol": "LAB/USDT",
+  "rsi": 37.7,
+  "at_lower_bb": false,
+  "dca_rounds": 1,
+  "dca_max_rounds": 2,
+  "partial_stop_paused": true,
+  "fusion_regime": "NEUTRAL",
+  "cmc_confidence": 83.0,
+  "cmc_trust": 72.0,
+  "cmc_quotes_fallback": true,
+  "lc_action": null,
+  "relvol_open": 8,
+  "relvol_max": 8,
+  "memory_bias": "neutral",
+  "memory_flag": null
+}

@@ -1,3 +1,11 @@
+# Desk SPA (Vite) — bake dist into the Python image. Do not commit dist/ or node_modules.
+FROM node:22-slim AS desk
+WORKDIR /desk
+COPY tools/desk/package.json tools/desk/package-lock.json ./
+RUN npm ci
+COPY tools/desk ./
+RUN npm run build
+
 # Fast Railway image: TA-Lib comes as a manylinux wheel (0.6+) — no Sourceforge
 # C compile (was make -j1 + wget to prdownloads.sourceforge.net every cold build).
 FROM python:3.13-slim-bookworm
@@ -15,6 +23,7 @@ RUN pip install --no-cache-dir -U pip \
     && python -c "import talib; print('talib', getattr(talib, '__version__', 'ok'))"
 
 COPY . .
+COPY --from=desk /desk/dist /app/tools/desk/dist
 
 # Bake commit/branch when Railway (or CI) injects git env at build time.
 # runtime railway_start will not overwrite a real commit with "unknown".

@@ -31,6 +31,7 @@ from strategies.exit_ladder import current_ladder_step, ladder_config, ladder_en
 from strategies.positions import is_open_position, position_notional_usdt
 from strategies.sell_sources import (
     STRUCTURE_SOURCES,
+    TRAIL_ALLOW_RSI_SOURCES,
     TRAIL_EXCLUSIVE_BLOCK_SOURCES,
     TRAIL_ROTATION_SOURCES,
 )
@@ -56,6 +57,14 @@ POLICY_DEFAULTS = {
     "grid_profit_full_close": False,
     # Master: profit partials + grid → full close on green (user preference: no partials)
     "prefer_full_close": False,
+    "stagnant_rotation_enabled": False,
+    "stagnant_gain_pct": 8.0,
+    "stagnant_idle_hours": 24.0,
+    "stagnant_slack_slots": 2,
+    # Tier overrides (mirrors arm_gain_pct_stable) — start equal to the
+    # global default; tune once the staging experiment has real data.
+    "stagnant_gain_pct_stable": 8.0,
+    "stagnant_idle_hours_stable": 24.0,
 }
 
 
@@ -79,12 +88,24 @@ def rotation_config(config_raw: dict | None, strategy_params: dict | None = None
     root = sell_policy_root(config_raw)
     rotation = dict(root.get("rotation") or {})
     cfg = {**POLICY_DEFAULTS, **rotation}
+    try:
+        from strategies.indicator_regime import trail_allow_rsi
+
+        cfg["trail_allow_rsi"] = trail_allow_rsi(config_raw)
+    except Exception:
+        cfg["trail_allow_rsi"] = False
     if strategy_params:
         sp = dict(strategy_params.get("sell_policy") or {})
         cfg.update(sp.get("rotation") or {})
         tier = str(strategy_params.get("volatility_tier") or "volatile").lower()
         if tier == "stable":
             cfg["arm_gain_pct"] = float(cfg.get("arm_gain_pct_stable", 15.0))
+            cfg["stagnant_gain_pct"] = float(
+                cfg.get("stagnant_gain_pct_stable", cfg.get("stagnant_gain_pct", 8.0))
+            )
+            cfg["stagnant_idle_hours"] = float(
+                cfg.get("stagnant_idle_hours_stable", cfg.get("stagnant_idle_hours", 24.0))
+            )
     return cfg
 
 
@@ -222,6 +243,55 @@ def evaluate_tail_idle_close(
     )
 
 
+def evaluate_stagnant_rotation_close(
+    market,
+    position,
+    cfg,
+    *,
+    open_full_slots,
+    eff_cap,
+    now=None,
+) -> RotationSellCandidate | None:
+    if not cfg.get("stagnant_rotation_enabled"):
+        return None
+    if open_full_slots < eff_cap - int(cfg.get("stagnant_slack_slots", 2)):
+        return None
+    gain = rotation_gain_pct(market)
+    gain_need = float(cfg.get("stagnant_gain_pct", 8.0))
+    idle_need = float(cfg.get("stagnant_idle_hours", 24.0))
+    try:
+        from services.correlated_tier.api import correlated_tier_selloff_active
+
+        if correlated_tier_selloff_active(getattr(market, "symbol", "") or ""):
+            gain_need *= 0.5
+            idle_need *= 0.5
+    except Exception:
+        pass
+    if gain < gain_need:
+        return None
+    # peak_at = time of last genuine progress (new high, or reset after a
+    # partial exit/fresh entry) — unlike last_trade_at, it isn't reset by
+    # every partial-sell/DCA fill, so a position that's been quietly sitting
+    # at its current gain can actually accumulate idle time. Fall back to
+    # last_trade_at for positions opened before this field existed.
+    elapsed = _hours_since(
+        position.get("peak_at") or position.get("last_trade_at"), now
+    )
+    if elapsed is None or elapsed < idle_need:
+        return None
+    if not can_rotation_evict(market, position, cfg):
+        return None
+    return RotationSellCandidate(
+        action=SELL_FULL,
+        priority=4,
+        source="stagnant_rotation",
+        rationale=(
+            f"Stagnant rotation gain={gain:.1f}% idle={elapsed:.0f}h "
+            f"slots={open_full_slots}/{eff_cap}"
+        ),
+    )
+
+
 def _trail_tp_config(strategy_params: dict | None) -> dict:
     return dict((strategy_params or {}).get("trailing_take_profit") or {})
 
@@ -275,8 +345,12 @@ def filter_trail_exclusive(
     blocked_labels: list[str] = []
     kept: list[tuple] = []
 
+    allow_rsi = bool(cfg.get("trail_allow_rsi"))
     for action, priority, source in candidates:
         src = (source or "").lower()
+        if allow_rsi and src in TRAIL_ALLOW_RSI_SOURCES:
+            kept.append((action, priority, source))
+            continue
         if gain < arm and src in BLOCKED_BELOW_ARM:
             blocked_labels.append(source)
             continue
@@ -361,6 +435,9 @@ def apply_rotation_sell_filters(
     *,
     strategy_profile: str | None = None,
     sell_sources: list[str] | None = None,
+    open_full_slots: int | None = None,
+    eff_cap: int | None = None,
+    now=None,
 ) -> tuple[list[tuple], SellPolicyAudit]:
     cfg = rotation_config(config_raw, strategy_params)
     audit = SellPolicyAudit()
@@ -379,9 +456,25 @@ def apply_rotation_sell_filters(
         sell_sources=sell_sources,
     )
 
+    if open_full_slots is None:
+        open_full_slots = count_open_full_slots(config_raw)
+    if eff_cap is None:
+        try:
+            eff_cap = int((config_raw or {}).get("max_open_positions") or 0)
+        except (TypeError, ValueError):
+            eff_cap = 0
+
     for extra in (
         evaluate_ladder_terminal(market, position, strategy_params, cfg),
-        evaluate_tail_idle_close(market, position, cfg),
+        evaluate_tail_idle_close(market, position, cfg, now=now),
+        evaluate_stagnant_rotation_close(
+            market,
+            position,
+            cfg,
+            open_full_slots=open_full_slots,
+            eff_cap=eff_cap,
+            now=now,
+        ),
     ):
         if extra:
             if extra.source == "ladder_terminal":

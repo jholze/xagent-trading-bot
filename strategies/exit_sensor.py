@@ -97,6 +97,7 @@ def evaluate_exit_sensor_sells(
     metrics_15m: dict | None,
     metrics_1h: dict | None,
     btc_rs_delta: float | None,
+    config_raw: dict | None = None,
 ) -> list[ExitSensorCandidate]:
     if not cfg.get("enabled", True):
         return []
@@ -176,8 +177,24 @@ def evaluate_exit_sensor_sells(
 
     rcfg = cfg.get("rsi_rollover_1h") or {}
     if rcfg.get("enabled", True) and metrics_1h:
+        try:
+            from strategies.indicator_regime import apply_rollover_overlay
+
+            rcfg = apply_rollover_overlay(rcfg, config_raw)
+        except Exception:
+            pass
         min_gain = float(rcfg.get("min_gain_pct", cfg.get("min_gain_pct", 7)))
-        if gain >= min_gain and metrics_1h.get("rsi_rollover"):
+        peak_min = float(rcfg.get("peak_rsi_min", 70))
+        current_max = float(rcfg.get("current_rsi_max", 60))
+        rsi_cur = metrics_1h.get("rsi")
+        rsi_peak = metrics_1h.get("rsi_peak_5")
+        rollover = bool(metrics_1h.get("rsi_rollover"))
+        try:
+            if rsi_cur is not None and rsi_peak is not None:
+                rollover = float(rsi_peak) >= peak_min and float(rsi_cur) < current_max
+        except (TypeError, ValueError):
+            pass
+        if gain >= min_gain and rollover:
             candidates.append(
                 _candidate(
                     "exit_1h_rsi_rollover",

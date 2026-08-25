@@ -45,6 +45,7 @@ from intelligence.volatility_classifier import volatility_tier
 from intelligence.regime_detector import RegimeDetector
 from intelligence.strategy_allocator import StrategyAllocator
 from strategies.positions import (
+    count_open_full_slots,
     count_open_positions,
     flush_positions,
     get_position,
@@ -124,6 +125,21 @@ class DecisionEngine:
         if self._tenant_regime_detector is not None:
             for timeframe, limit in (("4h", 300), ("1h", 300), ("15m", 50)):
                 self.market.prefetch_btc_ohlcv(timeframe, limit)
+        try:
+            from strategies.oracle_climax import begin_cycle
+
+            begin_cycle(raw)
+        except Exception as exc:
+            log(f"oracle_climax begin_cycle: {exc}", "DEBUG")
+
+    def _oracle_climax_state(self):
+        from strategies.oracle_climax import ClimaxDecision, MODE_IDLE, current_climax, oracle_climax_config
+
+        try:
+            return current_climax(self.config.raw)
+        except Exception as exc:
+            log(f"oracle_climax resolve: {exc}", "DEBUG")
+            return ClimaxDecision(MODE_IDLE, ("error",), {}), oracle_climax_config({})
 
     def _entry_sensor_cfg(self) -> dict:
         return self.config.entry_sensor_15m_config
@@ -391,6 +407,11 @@ class DecisionEngine:
                         # map conf to soft x_sentiment when no explicit field
                         if "x_sentiment" not in ctx:
                             ctx["x_sentiment"] = (float(getattr(s, "confidence", 50)) - 50) / 50.0
+                if key == "cmc":
+                    ctx["cmc_action"] = getattr(s, "action", "")
+                    ctx["cmc_quotes_fallback"] = bool(getattr(s, "quotes_fallback", False))
+                if key == "lc":
+                    ctx["lc_action"] = getattr(s, "action", "")
         # P1/P3: global Santiment sidecar → soft sentiment for RegimeDetector
         try:
             from services.market_policy_fusion import get_global_market_bias, inject_global_sentiment
@@ -399,6 +420,15 @@ class DecisionEngine:
             if santiment_risk_config(self.config.raw).get("inject_regime_sentiment", True):
                 bias = get_global_market_bias(self.config.raw)
                 ctx = inject_global_sentiment(ctx, bias)
+                if isinstance(bias, dict) and bias.get("regime"):
+                    ctx["fusion_regime"] = bias.get("regime")
+        except Exception:
+            pass
+        try:
+            from strategies.oracle_climax import current_climax
+
+            dec, _oc = current_climax(self.config.raw)
+            ctx["climax_mode"] = getattr(dec, "mode", "")
         except Exception:
             pass
         return ctx
@@ -622,11 +652,43 @@ class DecisionEngine:
             return bool(self.config.dry_run_defaults.get("cmc_sell_requires_ta", True))
         return bool(self.config.cmc_config.get("sell_requires_ta", True))
 
-    def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None) -> float:
+    def _cmc_trust_score(self, cmc_signal, strategy_params: dict = None, lc_signal=None) -> float:
         params = strategy_params or {}
         if params.get("cmc_trust_score") is not None:
             return float(params["cmc_trust_score"])
-        return float(getattr(cmc_signal, "trust_score", 65.0))
+        base = float(getattr(cmc_signal, "trust_score", 65.0))
+        try:
+            from intelligence.social_dynamic_weight import (
+                dynamic_social_config,
+                evaluate_social_chorus,
+            )
+
+            ctx = {
+                "cmc_action": getattr(cmc_signal, "action", ""),
+                "cmc_confidence": getattr(cmc_signal, "confidence", 0),
+                "cmc_quotes_fallback": bool(getattr(cmc_signal, "quotes_fallback", False)),
+            }
+            if lc_signal is not None:
+                ctx["lc_action"] = getattr(lc_signal, "action", "")
+                if getattr(lc_signal, "sentiment", None) is not None:
+                    ctx["lunarcrush_sentiment"] = getattr(lc_signal, "sentiment")
+            try:
+                from services.market_policy_fusion import get_global_market_bias
+
+                bias = get_global_market_bias(self.config.raw) or {}
+                ctx["fusion_regime"] = bias.get("regime")
+                if bias.get("sentiment") is not None:
+                    ctx["santiment_sentiment"] = bias.get("sentiment")
+            except Exception:
+                pass
+            chorus = evaluate_social_chorus(
+                ctx, cfg=dynamic_social_config(self.config.raw)
+            )
+            if chorus.boost_buys and chorus.cmc_trust_mult > 1.0:
+                return min(95.0, base * float(chorus.cmc_trust_mult))
+        except Exception:
+            pass
+        return base
 
     def _lc_buy_threshold(self, strategy_params: dict = None) -> float:
         params = strategy_params or {}
@@ -707,7 +769,7 @@ class DecisionEngine:
 
         strategy_params = market.strategy_params or {}
         if cmc_signal and cmc_signal.action == "BUY":
-            trust = self._cmc_trust_score(cmc_signal, strategy_params)
+            trust = self._cmc_trust_score(cmc_signal, strategy_params, lc_signal=lc_signal)
             cmc_eff = float(cmc_signal.confidence) * (trust / 100.0)
             cmc_eff *= consensus
             if cmc_eff >= self._cmc_buy_threshold(strategy_params, cmc_signal):
@@ -813,7 +875,35 @@ class DecisionEngine:
                     tech_src = "partial_stop"
                 else:
                     tech_src = "stop_loss"
-            candidates.append((tech_norm, pri, tech_src))
+            skip_partial = False
+            if tech_src == "partial_stop":
+                try:
+                    from strategies.dca import should_pause_partial_stop
+
+                    skip_partial = should_pause_partial_stop(
+                        position,
+                        getattr(market, "strategy_params", None) if market else None,
+                    )
+                except Exception:
+                    skip_partial = False
+            if not skip_partial:
+                if tech_src == "technical":
+                    try:
+                        from strategies.indicator_regime import relabel_technical_as_rsi_sell
+
+                        tech_norm, tech_src = relabel_technical_as_rsi_sell(
+                            action=tech_norm,
+                            source=tech_src,
+                            technical_sources=technical.sources,
+                            config_raw=self.config.raw,
+                        )
+                    except Exception:
+                        pass
+                candidates.append((tech_norm, pri, tech_src))
+            elif position:
+                structure_rationales.append(
+                    "partial_stop paused (DCA rounds still open)"
+                )
 
         if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):
             candidates.append((SELL_FULL, 6, "x_stop_loss"))
@@ -838,7 +928,7 @@ class DecisionEngine:
             if getattr(cmc_signal, "quotes_fallback", False) and not quotes_as_signal:
                 pass
             else:
-                trust = self._cmc_trust_score(cmc_signal, strategy_params)
+                trust = self._cmc_trust_score(cmc_signal, strategy_params, lc_signal=lc_signal)
                 eff = float(cmc_signal.confidence) * (trust / 100.0) * consensus
                 requires_ta = self._cmc_sell_requires_ta(strategy_params)
                 ta_bearish = is_sell(technical.action)
@@ -869,7 +959,10 @@ class DecisionEngine:
                     candidates.append((SELL_PARTIAL_10, 1, "lc"))
                     sources.append("lc")
 
+        climax_dec = None
+        climax_cfg = None
         if market and position:
+            climax_dec, climax_cfg = self._oracle_climax_state()
             ta_bearish = is_sell(technical.action)
             for cand in evaluate_market_structure_sells(
                 market, strategy_params, position, ta_bearish=ta_bearish,
@@ -898,6 +991,7 @@ class DecisionEngine:
                         metrics_15m=metrics_15m,
                         metrics_1h=metrics_1h,
                         btc_rs_delta=btc_delta,
+                        config_raw=self.config.raw,
                     ):
                         candidates.append((cand.action, cand.priority, cand.source))
                         sources.append(cand.source)
@@ -910,7 +1004,13 @@ class DecisionEngine:
             if sync_profit_armed_at(market, position, strategy_params):
                 flush_positions()
 
-            trail_tp = evaluate_trailing_take_profit(market, position, strategy_params)
+            trail_tp = evaluate_trailing_take_profit(
+                market,
+                position,
+                strategy_params,
+                climax_decision=climax_dec,
+                config_raw=self.config.raw,
+            )
             if trail_tp:
                 candidates.append((trail_tp.action, trail_tp.priority, trail_tp.source))
                 sources.append(trail_tp.source)
@@ -926,7 +1026,13 @@ class DecisionEngine:
                 if life.shadow_only:
                     sources.append("profit_max_lifetime_shadow")
 
-            trail = evaluate_trailing_stop(market, position, strategy_params)
+            trail = evaluate_trailing_stop(
+                market,
+                position,
+                strategy_params,
+                climax_decision=climax_dec,
+                config_raw=self.config.raw,
+            )
             if trail:
                 candidates.append((trail.action, trail.priority, trail.source))
                 sources.append(trail.source)
@@ -943,6 +1049,67 @@ class DecisionEngine:
                     sources.append("time_profit_shadow")
 
         if market and position and candidates:
+            try:
+                from strategies.indicator_regime import normalize_rsi_candidates
+
+                candidates = normalize_rsi_candidates(candidates, self.config.raw)
+            except Exception:
+                pass
+
+        if market and position and climax_dec is not None:
+            try:
+                from strategies.oracle_climax import (
+                    HARVEST_SOURCE,
+                    MODE_GRIND,
+                    MODE_HARVEST,
+                    filter_grind_candidates,
+                    harvest_candidate,
+                    position_blocked_from_harvest,
+                )
+
+                if climax_dec.mode == MODE_GRIND and candidates:
+                    candidates, blocked = filter_grind_candidates(candidates, climax_dec)
+                    if blocked:
+                        structure_rationales.append(
+                            "oracle_climax grind blocked: "
+                            + ", ".join(sorted(set(blocked)))
+                        )
+                if climax_dec.mode == MODE_HARVEST:
+                    gain_pct = (
+                        (market.current_price / market.average_entry - 1) * 100
+                        if market.average_entry > 0
+                        else 0.0
+                    )
+                    locked = position_blocked_from_harvest(position, self.config.raw)
+                    extra = harvest_candidate(
+                        gain_pct=gain_pct,
+                        decision=climax_dec,
+                        cfg=climax_cfg or {},
+                        locked=locked,
+                    )
+                    if extra:
+                        candidates.append(extra)
+                        sources.append(HARVEST_SOURCE)
+                        structure_rationales.append(
+                            f"oracle_climax harvest gain={gain_pct:.1f}%"
+                        )
+            except Exception as exc:
+                log(f"oracle_climax overlay failed: {exc}", "DEBUG")
+
+        if market and position:
+            try:
+                open_full_slots = count_open_full_slots(self.config.raw)
+            except Exception:
+                open_full_slots = 0
+            try:
+                eff_cap = int(self.config.max_open_positions)
+            except Exception:
+                eff_cap = 0
+        else:
+            open_full_slots = 0
+            eff_cap = 0
+
+        if market and position and candidates:
             candidates, policy_audit = apply_rotation_sell_filters(
                 candidates,
                 market,
@@ -951,12 +1118,38 @@ class DecisionEngine:
                 self.config.raw,
                 strategy_profile=getattr(technical, "strategy_profile", None),
                 sell_sources=sources,
+                open_full_slots=open_full_slots,
+                eff_cap=eff_cap,
             )
             sell_policy_audit = audit_to_dict(policy_audit)
             if policy_audit.trail_exclusive_blocked:
                 structure_rationales.append(
                     "Trail-exclusive blocked: " + ", ".join(policy_audit.trail_exclusive_blocked)
                 )
+        elif market and position:
+            # Stagnant must be able to originate a sell with no other candidates.
+            # Do not run the full extras loop here — that would also let
+            # already-on tail_idle/ladder_terminal fire standalone.
+            try:
+                from strategies.sell_rotation_policy import (
+                    evaluate_stagnant_rotation_close,
+                    rotation_config,
+                )
+
+                rot_cfg = rotation_config(self.config.raw, strategy_params)
+                extra = evaluate_stagnant_rotation_close(
+                    market,
+                    position,
+                    rot_cfg,
+                    open_full_slots=open_full_slots,
+                    eff_cap=eff_cap,
+                )
+                if extra:
+                    candidates.append((extra.action, extra.priority, extra.source))
+                    sources.append(extra.source)
+                    structure_rationales.append(extra.rationale)
+            except Exception:
+                pass
 
         # Recovery hold (#223): drop trail/TTP/partial/BB/social while focus recovering
         if market and position and candidates:
@@ -973,8 +1166,6 @@ class DecisionEngine:
                     config_raw=self.config.raw,
                 ):
                     try:
-                        from strategies.positions import flush_positions
-
                         flush_positions()
                     except Exception:
                         pass
@@ -1305,15 +1496,10 @@ class DecisionEngine:
                 # Epic #222: sniper owns heavy DCA when enabled
                 _sniper_blocks_cycle_dca = False
                 try:
-                    from services.dca_sniper.config import (
-                        dca_sniper_config,
-                        dca_sniper_enabled,
-                    )
+                    from services.dca_sniper.config import sniper_owns_cycle_dca
 
-                    _sc = dca_sniper_config(self.config.raw)
-                    _sniper_blocks_cycle_dca = bool(
-                        dca_sniper_enabled(self.config.raw)
-                        and _sc.get("disable_cycle_dca_when_enabled", True)
+                    _sniper_blocks_cycle_dca = sniper_owns_cycle_dca(
+                        self.config.raw, position
                     )
                 except Exception:
                     _sniper_blocks_cycle_dca = False
@@ -1367,10 +1553,18 @@ class DecisionEngine:
                 if dca:
                     from strategies.dca_portfolio import should_defer_per_coin_dca
 
+                    sniper_ate_portfolio = False
+                    try:
+                        from services.dca_sniper.config import sniper_skips_portfolio_dca
+
+                        sniper_ate_portfolio = sniper_skips_portfolio_dca(self.config.raw)
+                    except Exception:
+                        sniper_ate_portfolio = False
                     defer = (
                         not dca.shadow_only
                         and should_defer_per_coin_dca(market.strategy_params, self.config.raw)
                         and str(dca.source or "") != "dca_scheduled"
+                        and not sniper_ate_portfolio
                     )
                     if defer:
                         sources.append(dca.source)

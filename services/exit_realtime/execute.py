@@ -177,8 +177,13 @@ def try_execute_trail_exit(
             return {"ok": False, "executed": False, "message": "amount_zero"}
 
         try:
-            from strategies.position_lock import auto_sell_blocked, log_lock_block
+            from strategies.position_lock import (
+                attach_lock_from_ledger,
+                auto_sell_blocked,
+                log_lock_block,
+            )
 
+            pos = attach_lock_from_ledger(pos, sym, tf) or pos
             locked, lock_msg = auto_sell_blocked(pos, "exit_ws")
             if locked:
                 log_lock_block(sym, lock_msg, source="exit_ws")
@@ -188,8 +193,20 @@ def try_execute_trail_exit(
                     "message": lock_msg,
                     "code": "position_locked",
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            # Fail-closed: do not trail-sell if lock check is broken
+            try:
+                from logger import log
+
+                log(f"exit_ws position_lock check error {sym}: {exc}", "ERROR")
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "executed": False,
+                "message": f"position_lock_check_error: {exc}"[:200],
+                "code": "position_lock_check_error",
+            }
 
         signal = str(action or SELL_FULL).strip() or SELL_FULL
         # Prefer full close for trail sources

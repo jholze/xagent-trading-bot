@@ -771,6 +771,147 @@ class TestRealBuyPathCaps(unittest.TestCase):
         )
 
 
+class TestRelVolConsume(unittest.TestCase):
+    """RelVol trade path: config None must not force-disabled; rejects logged."""
+
+    def test_relvol_disabled_when_mode_shadow(self):
+        exec_fn = MagicMock()
+        body, status = process_gainer_signal(
+            {
+                "symbol": "IGN/USDT",
+                "last": 1.0,
+                "quote_vol": 50_000,
+                "qvol_1h": 80_000,
+                "pct_24h": 12,
+                "source": "gainer_relvol",
+                "trigger": "relvol_ws",
+                "factor": 11.0,
+            },
+            config={
+                "gainer_relvol_shadow": {"enabled": True, "mode": "shadow"},
+                "max_usdt_per_trade": 500,
+            },
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=exec_fn,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "relvol_disabled")
+        exec_fn.assert_not_called()
+
+    def test_relvol_trade_happy_path(self):
+        result = MagicMock(executed=True, message="ok", order_id="rv1")
+        exec_fn = MagicMock(return_value=result)
+        body, status = process_gainer_signal(
+            {
+                "symbol": "IGN/USDT",
+                "last": 1.0,
+                "quote_vol": 200_000,
+                "qvol_1h": 100_000,
+                "pct_24h": 12,
+                "source": "gainer_relvol",
+                "trigger": "relvol_ws",
+                "factor": 12.5,
+            },
+            config={
+                "gainer_relvol_shadow": {
+                    "enabled": True,
+                    "mode": "trade",
+                    "max_open": 4,
+                    "max_buys_per_day": 8,
+                    "max_ticket_usdt": 500,
+                    "min_ticket_usdt": 50,
+                    "participation": 0.02,
+                    "require_de_confirm": False,
+                    "max_pct_24h": 40,
+                },
+                "gainer_entry": {"enabled": False},  # RelVol independent
+                "max_usdt_per_trade": 500,
+            },
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=exec_fn,
+        )
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body.get("executed"))
+        exec_fn.assert_called_once()
+        kw = exec_fn.call_args.kwargs
+        self.assertEqual(kw.get("source"), "gainer_relvol")
+        self.assertGreaterEqual(float(kw.get("usdt") or 0), 50)
+
+    def test_relvol_config_none_loads_bot_trade(self):
+        """HTTP path: config=None must use get_bot_config (trade), not hard defaults."""
+        result = MagicMock(executed=True, message="ok", order_id="rv2")
+        exec_fn = MagicMock(return_value=result)
+        bot_raw = {
+            "gainer_relvol_shadow": {
+                "enabled": True,
+                "mode": "trade",
+                "max_open": 4,
+                "max_buys_per_day": 8,
+                "max_ticket_usdt": 500,
+                "min_ticket_usdt": 50,
+                "participation": 0.02,
+                "require_de_confirm": False,
+            },
+            "max_usdt_per_trade": 500,
+        }
+        with patch(
+            "services.gainer_signal.bot_http._resolve_bot_raw",
+            return_value=bot_raw,
+        ):
+            body, status = process_gainer_signal(
+                {
+                    "symbol": "IGN2/USDT",
+                    "last": 2.0,
+                    "quote_vol": 300_000,
+                    "qvol_1h": 120_000,
+                    "pct_24h": 8,
+                    "source": "gainer_relvol",
+                    "trigger": "relvol_ws",
+                    "factor": 15.0,
+                },
+                config=None,
+                positions=[],
+                gainer_buys_today=0,
+                execute_buy=exec_fn,
+            )
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body.get("executed"))
+        exec_fn.assert_called_once()
+
+    def test_relvol_extension_cap(self):
+        exec_fn = MagicMock()
+        body, status = process_gainer_signal(
+            {
+                "symbol": "HOT/USDT",
+                "last": 1.0,
+                "quote_vol": 500_000,
+                "qvol_1h": 200_000,
+                "pct_24h": 55,
+                "source": "gainer_relvol",
+                "trigger": "relvol_ws",
+            },
+            config={
+                "gainer_relvol_shadow": {
+                    "enabled": True,
+                    "mode": "trade",
+                    "max_pct_24h": 40,
+                    "participation": 0.02,
+                    "min_ticket_usdt": 50,
+                    "max_ticket_usdt": 500,
+                },
+                "max_usdt_per_trade": 500,
+            },
+            positions=[],
+            gainer_buys_today=0,
+            execute_buy=exec_fn,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["message"], "extension_cap")
+        exec_fn.assert_not_called()
+
+
 class TestServiceAppHealth(unittest.TestCase):
     def test_health_and_leaders_with_seed(self):
         from services.gainer_signal.board import reset_board

@@ -7,8 +7,17 @@ from __future__ import annotations
 
 from typing import Any
 
-# Canonical list lives in recovery_hold (live decision path uses it directly).
-from strategies.recovery_hold import _BLOCKED_SOURCES as HOLD_BLOCKABLE_SOURCES
+# Live decision path SSOT + extras the board/WS still emit.
+from strategies.recovery_hold import _BLOCKED_SOURCES as _HOLD_CORE
+
+HOLD_BLOCKABLE_SOURCES = frozenset(_HOLD_CORE) | frozenset(
+    {
+        "safety_tp",
+        "exit_ws",
+        "auto",
+        "dca_sniper_fund",
+    }
+)
 
 _MANUAL = frozenset(
     {"manual", "telegram", "user", "operator", "confirm", "manual_order", "manual_sell"}

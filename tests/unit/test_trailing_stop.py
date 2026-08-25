@@ -170,6 +170,49 @@ class TestTrailingStop(unittest.TestCase):
         self.assertIsNotNone(cand)
         self.assertGreater(price, entry)
 
+    def test_floor_at_entry_does_not_sell_crash_through(self):
+        """Henry HANA 2026-08-20: stop at entry, price already -32% — trail must not dump.
+
+        Paper fills at market, so a late eval below the floor realises a fat loser.
+        Hard SL / DCA own that zone. Tiny BE wiggle (IDOL ~-0.1%) still fires.
+        """
+        entry = 0.031303
+        market = MarketContext(
+            symbol="HANA/USDT",
+            timeframe="1h",
+            current_price=0.021243,
+            has_position=True,
+            average_entry=entry,
+            atr_pct=6.0,
+        )
+        pos = {"recent_high": entry * 1.124}  # peak +12.4% as in the live rationale
+        cand = evaluate_trailing_stop(
+            market,
+            pos,
+            self._params(activation_gain_pct=4, min_trail_pct=8, max_trail_pct=25),
+        )
+        self.assertIsNone(cand)
+
+    def test_floor_at_entry_still_fires_green_giveback(self):
+        """Peak +20%, price still +8% vs entry and below stop → trail sells (winner)."""
+        entry = 1.0
+        peak = 1.20
+        market = MarketContext(
+            symbol="WIN/USDT",
+            timeframe="1h",
+            current_price=1.08,
+            has_position=True,
+            average_entry=entry,
+            atr_pct=4.0,
+        )
+        cand = evaluate_trailing_stop(
+            market,
+            {"recent_high": peak},
+            self._params(activation_gain_pct=5, min_trail_pct=8),
+        )
+        self.assertIsNotNone(cand)
+        self.assertGreater(market.current_price, entry)
+
     def test_no_fire_above_stop(self):
         entry = 100.0
         peak = 120.0  # +20%
@@ -189,6 +232,31 @@ class TestTrailingStop(unittest.TestCase):
                 self._params(activation_gain_pct=5, min_trail_pct=8),
             )
         )
+
+    def test_grind_skips_be_trail_like_h_usdt(self):
+        from strategies.oracle_climax import ClimaxDecision, MODE_GRIND
+
+        market = MarketContext(
+            symbol="H/USDT",
+            timeframe="4h",
+            current_price=0.95,
+            has_position=True,
+            average_entry=0.85,
+            atr_pct=10.0,
+        )
+        pos = {"recent_high": 1.2}
+        raw = {"sell_policy": {"oracle_climax": {"enabled": True}}}
+        self.assertIsNone(
+            evaluate_trailing_stop(
+                market,
+                pos,
+                self._params(),
+                climax_decision=ClimaxDecision(MODE_GRIND, ("grind",), {}),
+                config_raw=raw,
+            )
+        )
+        live = evaluate_trailing_stop(market, pos, self._params())
+        self.assertIsNotNone(live)
 
 
 if __name__ == "__main__":

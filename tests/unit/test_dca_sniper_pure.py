@@ -278,6 +278,20 @@ class TestDcaSniperConfig(unittest.TestCase):
         self.assertFalse(dca_sniper_enabled({"dca_sniper": {"enabled": False}}))
         self.assertTrue(dca_sniper_enabled({"dca_sniper": {"enabled": True}}))
 
+    def test_cycle_dca_only_blocked_on_sniper_owned_bags(self):
+        from services.dca_sniper.config import (
+            sniper_owns_cycle_dca,
+            sniper_skips_portfolio_dca,
+        )
+
+        cfg = {"dca_sniper": {"enabled": True, "disable_cycle_dca_when_enabled": True}}
+        self.assertTrue(sniper_skips_portfolio_dca(cfg))
+        self.assertFalse(sniper_owns_cycle_dca(cfg, {"dca_rounds": 1}))
+        self.assertTrue(sniper_owns_cycle_dca(cfg, {"sniper_focus": True}))
+        self.assertTrue(sniper_owns_cycle_dca(cfg, {"recovery_hold": True}))
+        off = {"dca_sniper": {"enabled": True, "disable_cycle_dca_when_enabled": False}}
+        self.assertFalse(sniper_owns_cycle_dca(off, {"sniper_focus": True}))
+
 
 if __name__ == "__main__":
     unittest.main()

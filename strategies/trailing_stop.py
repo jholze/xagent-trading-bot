@@ -64,12 +64,18 @@ def evaluate_trailing_stop(
     strategy_params: dict | None,
     *,
     now=None,
+    climax_decision=None,
+    config_raw: dict | None = None,
 ) -> TrailingStopCandidate | None:
     """Full SELL when price hits stop after arm.
 
     Arm uses **peak gain** (default) so dumps do not disarm the stop.
     Stop = max(entry floor, peak × (1 − trail%)) so after a real peak the
     stop sits **above entry** — not a free ride back to −5% (LAB).
+
+    If price has already crashed *through* the floor (``floor_breach_pct``,
+    default 1%), skip: paper would fill at the crashed print (HANA −32%).
+    Hard SL and DCA own that zone.
 
     After DCA, trail exits are paused for a grace window (see strategies.dca).
     """
@@ -78,6 +84,17 @@ def evaluate_trailing_stop(
         return None
     if not market.has_position or market.average_entry <= 0:
         return None
+
+    try:
+        from strategies.oracle_climax import climax_ttp_adjust
+
+        _cfg, skip = climax_ttp_adjust(
+            {}, config_raw=config_raw, climax_decision=climax_decision
+        )
+        if skip:
+            return None
+    except Exception:
+        pass
 
     try:
         from strategies.dca import trail_exits_paused_after_dca
@@ -158,6 +175,14 @@ def evaluate_trailing_stop(
 
     if price > stop_px:
         return None
+
+    # floor_at_entry: do not market-dump a crash through the floor.
+    # Henry HANA 2026-08-20: stop sat at entry (~+0%) but px was already -32%;
+    # paper filled at the crashed print. Tiny BE wiggle stays a trail fire.
+    if floor_at_entry:
+        breach_pct = float(cfg.get("floor_breach_pct") or 1.0)
+        if gain_pct < -abs(breach_pct):
+            return None
 
     mode = str(cfg.get("mode", "live")).strip().lower()
     shadow = mode == "shadow"

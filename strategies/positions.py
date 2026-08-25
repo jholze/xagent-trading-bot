@@ -416,6 +416,29 @@ def _cancel_flush_timer() -> None:
             _flush_timer = None
 
 
+def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
+    """Keep active locks from Mongo when in-memory serialize lost them.
+
+    Ops can set lock out-of-process; a stale bot flush must not wipe it.
+    """
+    if not isinstance(payload, dict) or not isinstance(existing, dict):
+        return payload
+    pos_out = payload.get("positions")
+    pos_old = existing.get("positions")
+    if not isinstance(pos_out, dict) or not isinstance(pos_old, dict):
+        return payload
+    for key, row in pos_out.items():
+        if not isinstance(row, dict):
+            continue
+        cur = row.get("lock")
+        if isinstance(cur, dict) and cur.get("enabled", True):
+            continue
+        old_lock = (pos_old.get(key) or {}).get("lock") if isinstance(pos_old.get(key), dict) else None
+        if isinstance(old_lock, dict) and old_lock.get("enabled", True):
+            row["lock"] = dict(old_lock)
+    return payload
+
+
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
     from core.tenant_context import resolve_tenant_id
 
@@ -428,6 +451,11 @@ def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
         try:
             payload = _serialize_positions()
             payload["ledger_scope"] = target
+            try:
+                existing = load_positions_document(target, tenant_id=tid)
+                payload = _preserve_locks_from_existing_doc(payload, existing)
+            except Exception as e:
+                log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
             if not save_positions_document(payload, target, tenant_id=tid):
                 log(f"Failed to save positions ({target})", "ERROR")
         except Exception as e:
@@ -480,6 +508,9 @@ def update_market_snapshot(
         new_high = max(old_high, candidate)
         if new_high > old_high:
             pos["recent_high"] = new_high
+            # Stagnant-rotation idle clock: time since last genuine progress,
+            # not time since last fill (which partial-sells/DCA reset).
+            pos["peak_at"] = datetime.now().isoformat()
             changed = True
     if changed:
         flush_positions()
@@ -716,6 +747,7 @@ def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: f
         pos = _ensure_key(_active_store(), key)
         pos["last_trail_tp_at"] = datetime.now().isoformat()
         pos["recent_high"] = float(current_price)
+        pos["peak_at"] = datetime.now().isoformat()
     flush_positions()
 
 
@@ -869,6 +901,7 @@ def update_position(
                 pos["last_action"] = "BUY"
                 pos["rsi_sell_tiers_done"] = {}
                 pos["recent_high"] = current_price
+                pos["peak_at"] = datetime.now().isoformat()
                 pos["exit_ladder_step"] = 0
                 pos["last_trade_type"] = "BUY"
                 pos["dca_rounds"] = 0
@@ -975,9 +1008,10 @@ def count_open_full_slots(config_raw: dict | None = None) -> int:
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
+    store = _active_store()
     with _positions_lock:
         return sum(
-            1 for p in positions.values()
+            1 for p in store.values()
             if is_open_position(p) and not _is_tail(p, cfg)
         )
 
@@ -990,9 +1024,10 @@ def count_open_tail_slots(config_raw: dict | None = None) -> int:
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
+    store = _active_store()
     with _positions_lock:
         return sum(
-            1 for p in positions.values()
+            1 for p in store.values()
             if is_open_position(p) and _is_tail(p, cfg)
         )
 

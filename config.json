@@ -102,14 +102,16 @@
   "x_weight": 0.0,
   "technical_weight": 0.45,
   "onchain_weight": 0.25,
-  "lc_weight": 0.0,
+  "lc_weight": 0.18,
   "lunarcrush": {
-    "enabled": false,
+    "enabled": true,
     "use_mock": false,
     "use_list_endpoint": false,
     "api_key_env": "LUNARCRUSH_API_KEY",
     "cache_ttl_sec": 1800,
     "fetch_interval_sec": 1800,
+    "max_fetch_coins": 40,
+    "_doc": "Third social source for DE + dynamic chorus. Individual plan: per-coin, not list API. Kill: enabled=false and lc_weight 0.",
     "signal_ttl_hours": 4,
     "trust_score": 72,
     "min_confidence": 45,
@@ -136,7 +138,8 @@
     "sell_requires_ta": true,
     "signal_ttl_hours": 4,
     "quotes_fallback_as_signal": true,
-    "quotes_fallback_trust_score": 55,
+    "quotes_fallback_trust_score": 72,
+    "_quotes_fallback_trust_score_doc": "2026-08-22: 55→72 so quotes BUY ~83% clears min_confidence 55 without RISK_ON chorus (83×0.72=60). Kill: 55.",
     "quotes_include_trending_movers": true,
     "quotes_max_bullish_pct": 35,
     "listings_include_losers": false,
@@ -293,6 +296,9 @@
     "santiment_risk_enabled": true,
     "santiment_risk_fail_open": true,
     "santiment_apply_size_mult": true,
+    "fusion_oracle_risk_on_keep_size": true,
+    "fusion_oracle_risk_on_keep_size_tenants": ["default", "henry"],
+    "_fusion_oracle_risk_on_keep_size_doc": "Oracle RISK_ON: do not min() Santiment size (NEUTRAL/RISK_ON lag). Santiment RISK_OFF/CRASH still min. Tenants default+henry. Kill: false.",
     "santiment_apply_sensor_policy": true,
     "santiment_block_buys_on_crash": true,
     "santiment_apply_mode_bias": true,
@@ -380,7 +386,8 @@
       "dca_floor_haircut": 0,
       "harvest_dca_buffer_mult": 0.5,
       "link_fusion_size_mult": true,
-      "size_mult_deploy": 1.0,
+      "size_mult_deploy": 0.80,
+      "_size_mult_deploy_doc": "2026-08-22: 1.0→0.80 so Fusion 0.85 (Santiment NEUTRAL / oracle warmup cap) is DEPLOY. Kill: 1.0.",
       "size_mult_harvest": 0.7,
       "regime_deploy_delta": -4,
       "regime_harvest_delta": 6,
@@ -610,8 +617,81 @@
       "tail_exempt_notional_usdt": 500,
       "trail_exit_full_close": true,
       "profit_exit_full_close": true,
-      "grid_profit_full_close": true,
-      "prefer_full_close": true
+      "grid_profit_full_close": false,
+      "prefer_full_close": false,
+      "_experiment_grid_share_v1": "2026-08-10: disable grid full-close upgrades so level harvests can leave tails; trail/profit non-grid full-close stays. Kill: both true.",
+      "stagnant_rotation_enabled": false,
+      "stagnant_gain_pct": 8.0,
+      "stagnant_idle_hours": 24.0,
+      "stagnant_slack_slots": 2,
+      "stagnant_gain_pct_stable": 8.0,
+      "stagnant_idle_hours_stable": 24.0,
+      "_doc_stagnant_tier": "stable-tier override, mirrors arm_gain_pct_stable. Starts equal to global default; tune with staging data."
+    },
+    "correlated_tier": {
+      "enabled": false,
+      "tenants": ["default", "henry"],
+      "groups": {
+        "us_stock": {
+          "proxy_symbols": ["CRWVG/USDT", "NBISG/USDT", "SOXLG/USDT", "MVLLG/USDT"],
+          "member_symbols": ["CRWVG/USDT", "NBISG/USDT", "SOXLG/USDT", "MVLLG/USDT"],
+          "drawdown_pct": 5.0,
+          "window_sec": 600,
+          "min_confirming": 2,
+          "trailing_take_profit": {
+            "trail_pct": 3.5,
+            "arm_gain_pct": 10,
+            "min_gain_pct": 8
+          },
+          "trailing_stop": {
+            "activation_gain_pct": 8,
+            "min_trail_pct": 6,
+            "max_trail_pct": 15
+          },
+          "full_close_gain_pct": 12
+        },
+        "crypto_market": {
+          "proxy_symbols": ["BTC/USDT", "ETH/USDT"],
+          "member_symbols": "*",
+          "drawdown_pct": 4.0,
+          "window_sec": 900,
+          "min_confirming": 1
+        }
+      },
+      "eval_interval_sec": 5,
+      "flag_ttl_sec": 30,
+      "regime_amplify_enabled": false,
+      "regime_amplify_regimes": ["RISK_OFF", "CRASH"],
+      "news_pulse_enabled": false,
+      "news_pulse_poll_interval_sec": 900,
+      "news_pulse_since_minutes": 30,
+      "news_pulse_bearish_threshold": 0.55,
+      "news_pulse_min_confidence": 0.34,
+      "news_pulse_max_combined_delta": 1,
+      "_doc": "Generic correlated-drawdown detector + per-group trail overlay. Kill: enabled=false (or remove a groups.<name> entry). Amplifiers default off."
+    },
+    "oracle_climax": {
+      "enabled": true,
+      "min_btc_24h_pct": 6.0,
+      "min_eth_24h_pct": 10.0,
+      "min_breadth_green": 0.70,
+      "min_btc_4h_pct": 1.0,
+      "min_trend_4h": 0.0,
+      "stall_1h_max_pct": 0.40,
+      "stall_1h_min_pct": -0.80,
+      "harvest_1h_max_pct": -1.0,
+      "dump_15m_max_pct": -0.80,
+      "harvest_min_gain_pct": 12.0,
+      "tighten_trail_pct": 1.5,
+      "_doc": "Two-stage overlay: Oracle RISK_ON grind holds BB/TTP/TS. Harvest on BTC 1h ≤ −1.0% (not −0.3% melt-up noise) or 15m ≤ −0.8%, lots ≥12%. Fusion RISK_OFF/CRASH idle. Kill: enabled=false."
+    },
+    "indicator_regime": {
+      "enabled": true,
+      "trail_allow_rsi": true,
+      "rsi_full_close": true,
+      "tenants": ["default", "henry"],
+      "_doc": "ONE overlay: RSI through trail_exclusive as SELL_FULL; thresholds follow climax mode (grind +8). Does not unblock BB/TS or rewrite grind. Kill: enabled=false or trail_allow_rsi=false.",
+      "_rollback": "sell_policy.indicator_regime.enabled=false"
     }
   },
   "update_interval": 120,
@@ -1371,6 +1451,7 @@
         "stale_winner_max_gain_pct": 8
       },
       "loss_pct_min": -25,
+      "_loss_pct_min_doc": "Configured floor only. evaluate extends to -stop_loss_pct; sl_proximity still blocks the last band. Kill: set loss_pct_min more negative than SL.",
       "loss_pct_max": -3,
       "max_sold_percent": 0.85,
       "min_remainder_usdt": 150,
@@ -1382,6 +1463,8 @@
       "pause_partial_stop_during_dca": true,
       "pause_trail_exits_after_dca": true,
       "trail_grace_hours_after_dca": 12,
+      "remaining_round_oversold_rsi": 40,
+      "_remaining_round_oversold_rsi_doc": "If a DCA round was used and RSI < 40, allow another add even if scoring cores miss. LAB −40%/RSI 38 hole. Kill: 0.",
       "reanchor_peak_on_dca": true,
       "stop_loss_widen_pct_per_round": 6,
       "scoring": {
@@ -1394,7 +1477,7 @@
           "atr_mult_high": 1.8,
           "atr_mult_low": 1.2,
           "funding_max_pct": -0.035,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 1.5,
           "btc_underperf_low": 1.2,
@@ -1405,7 +1488,7 @@
           "atr_mult_high": 2.5,
           "atr_mult_low": 1.8,
           "funding_max_pct": -0.06,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 2.0,
           "btc_underperf_low": 1.5,
@@ -1491,6 +1574,7 @@
       "pause_partial_stop_during_dca": true,
       "pause_trail_exits_after_dca": true,
       "trail_grace_hours_after_dca": 24,
+      "remaining_round_oversold_rsi": 40,
       "reanchor_peak_on_dca": true,
       "stop_loss_widen_pct_per_round": 5,
       "scoring": {
@@ -1503,7 +1587,7 @@
           "atr_mult_high": 3.5,
           "atr_mult_low": 1.8,
           "funding_max_pct": -0.06,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 2.0,
           "btc_underperf_low": 1.5,
@@ -1514,7 +1598,7 @@
           "atr_mult_high": 2.5,
           "atr_mult_low": 1.8,
           "funding_max_pct": -0.06,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 2.0,
           "btc_underperf_low": 1.5,
@@ -1557,6 +1641,7 @@
       "loss_pct_max": -2.5,
       "sl_proximity_pct": 12,
       "max_rounds": 2,
+      "remaining_round_oversold_rsi": 40,
       "scoring": {
         "enabled": true,
         "min_score": 6,
@@ -1567,7 +1652,7 @@
           "atr_mult_high": 1.8,
           "atr_mult_low": 1.2,
           "funding_max_pct": -0.035,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 1.5,
           "btc_underperf_low": 1.2,
@@ -1578,7 +1663,7 @@
           "atr_mult_high": 2.5,
           "atr_mult_low": 1.8,
           "funding_max_pct": -0.06,
-          "rsi_soft": 35,
+          "rsi_soft": 40,
           "rsi_hard": 30,
           "btc_underperf_high": 2.0,
           "btc_underperf_low": 1.5,
@@ -1723,15 +1808,27 @@
       "santiment",
       "x",
       "fear_greed"
-    ]
+    ],
+    "dynamic_social": {
+      "enabled": true,
+      "min_sources": 2,
+      "bull_sentiment_weight": 0.55,
+      "bear_sentiment_weight": 0.48,
+      "cmc_chorus_trust_mult": 1.25,
+      "quotes_bull_min_conf": 80,
+      "block_on_fusion_risk_off": true,
+      "block_on_climax_harvest": true,
+      "_doc": "Raise CMC/Santiment/Lunar weight only when ≥2 agree (not always). Quotes-BUY 88% + RISK_ON is a chorus. Lunar joins if enabled. Kill: enabled=false."
+    }
   },
   "strategy_allocator": {
     "enabled": true,
     "neutral_sentiment_threshold": 0.35,
     "confirm_sentiment_threshold": 0.45,
     "defensive_sentiment_threshold": -0.55,
-    "default_grid_weight": 0.6,
-    "default_momentum_weight": 0.4
+    "default_grid_weight": 0.4,
+    "default_momentum_weight": 0.6,
+    "_experiment_grid_share_v1": "2026-08-10: weight 0.6→0.4 so RANGING stable tends HYBRID not pure GRID. Kill: 0.6/0.4."
   },
   "grid": {
     "enabled": true,
@@ -1852,12 +1949,12 @@
     "streak_min_days_in_top20": 2,
     "streak_lookback_days": 3,
     "continuation_max_chase_pct_today": 15,
-    "expand_inject_max": 12,
-    "trade_max_with_expand": 50,
+    "expand_inject_max": 25,
+    "trade_max_with_expand": 60,
     "scan_workers": 8,
     "live_heat_trade": true,
     "live_heat_min_pct": 12,
-    "live_heat_max_pct": 40,
+    "live_heat_max_pct": 45,
     "live_heat_ttl_hours": 8,
     "scan_prefer_gainer": true,
     "chase_guard_enabled": true,
@@ -1875,18 +1972,50 @@
       "_doc": "GIS-14+: REST seeds watch set; Gate WS ticks rank top gainers → logs/gainer_ws_board.jsonl. No auto-buy. Kill: enabled=false.",
       "_experiment": "GIS-14 identify via WS"
     },
-    "_experiment": "GIS-14 Gate Identify & Sell (virtual); rollback: expand_inject_max 55, live_top_n 50, heat 8-35, ws_board.enabled false"
+    "_experiment_gainer_catch_v1": "2026-08-10: inject 12→25, trade_max_with_expand 50→60, heat_max 40→45. Klasse A bandwidth only. Kill: 12/50/40.",
+    "_experiment": "GIS-14 Gate Identify & Sell (virtual); rollback: expand_inject_max 12, live_top_n 50, heat 12-40, ws_board.enabled false"
   },
   "gainer_entry": {
     "enabled": true,
     "require_de_confirm": true,
-    "max_open": 3,
-    "max_buys_per_day": 6,
+    "max_open": 6,
+    "max_buys_per_day": 10,
     "require_eligible": true,
     "timeframe": "1h",
     "max_notional_pct_of_vol": 2.0,
+    "_experiment_gainer_catch_v1": "2026-08-10: max_open 3→6, max_buys_per_day 6→10. Kill: 3/6.",
     "_doc": "Gainer nominates only. require_de_confirm=true → DecisionEngine (TA + personal recipes) must BUY; memory/risk still apply. Kill: enabled=false or GAINER_ENTRY_ENABLED=0. require_de_confirm=false restores raw rank-buy (not recommended).",
     "_rollback": "gainer_entry.enabled=false or GAINER_ENTRY_ENABLED=0"
+  },
+  "gainer_relvol_shadow": {
+    "enabled": true,
+    "mode": "trade",
+    "poll_sec": 3600,
+    "max_symbols": 150,
+    "ohlcv_limit": 30,
+    "mult": 10.0,
+    "win": 12,
+    "cooldown_hours": 8,
+    "min_ign_qvol": 5000,
+    "baseline_floor": 100,
+    "min_nonzero": 0.25,
+    "require_green": true,
+    "min_volume_discover": 0,
+    "prod_min_vol_compare": 500000,
+    "fetch_workers": 6,
+    "bot_ohlcv_scan": false,
+    "require_de_confirm": false,
+    "max_open": 8,
+    "max_buys_per_day": 8,
+    "max_ticket_usdt": 500,
+    "min_ticket_usdt": 50,
+    "participation": 0.02,
+    "max_pct_of_vol_24h": 0.02,
+    "max_pct_24h": 40,
+    "timeframe": "1h",
+    "tenants": ["default", "henry"],
+    "_doc": "RelVol via gainer-signal REST+WS. Bot enforces mode=trade, separate caps, already_open, extension max_pct_24h, fail-closed size. Kill bot: mode=shadow|off. Kill signal svc: GAINER_RELVOL_ENABLED=0 or GAINER_RELVOL_MODE=shadow.",
+    "_experiment": "fix/relvol-review-hard-fixes"
   },
   "gainer_signal": {
     "entry_policy": "fixed_v0",
@@ -1909,7 +2038,8 @@
     "owner": "bot",
     "sources": [
       "trailing_take_profit",
-      "trailing_stop"
+      "trailing_stop",
+      "rsi_sell"
     ],
     "live_cooldown_sec": 15,
     "book_refresh_sec": 30,
@@ -1919,6 +2049,19 @@
     "_doc": "Gate WS trail TP/stop → TradingService SELL. owner=bot (in-process) | sidecar (xagent-exit-radar). Kill: enabled=false. Epic #178 / #190.",
     "_rollback": "owner=bot + enabled=false on sidecar; or enabled=false → cycle-only exits",
     "_sidecar": "Set owner=sidecar + EXIT_EXECUTE_URL + EXIT_WS_INTERNAL_TOKEN on both services"
+  },
+  "desk": {
+    "enabled": true,
+    "tenants": ["default", "henry"],
+    "_doc": "Read-only React desk at /desk. Kill: enabled=false."
+  },
+  "mcp": {
+    "enabled": true,
+    "allow_writes": true,
+    "allow_live": false,
+    "write_rate_per_min": 20,
+    "tenants": ["default", "henry", "ctexp"],
+    "_doc": "Grok MCP sidecar xagent-mcp. Kill: enabled=false (deaf) or allow_writes=false (reads only). allow_live=false blocks real Gate fills even if this image is on main."
   },
   "grid_states": {
     "AAA/USDT_1h": {

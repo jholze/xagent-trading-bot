@@ -44,7 +44,11 @@ def test_allocator_ranging_neutral():
         sentiment_score=0.1,
     )
     decision = allocator.allocate(regime, {"symbol": "TEST/USDT"})
-    assert decision.strategy_weights.get("grid", 0) > 0.5
+    # grid-share experiment v1: default_grid_weight 0.4 → after norm grid≈0.4, mom≈0.6
+    g = float(decision.strategy_weights.get("grid", 0) or 0)
+    m = float(decision.strategy_weights.get("momentum", 0) or 0)
+    assert 0.35 <= g <= 0.45
+    assert m >= g
     assert not decision.defensive_mode
 
 

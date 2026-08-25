@@ -123,9 +123,15 @@ class TechnicalRSIStrategy(BaseStrategy):
         rsi_buy_high = params.get("rsi_buy_high", 48)
         volume_multiplier_min = params.get("volume_multiplier", 1.2)
         stop_loss_pct = params.get("stop_loss_pct", config.stop_loss_pct)
+        rsi_sell_mode = params.get("rsi_sell_mode", "cross")
+        try:
+            from strategies.indicator_regime import apply_rsi_sell_overlay
+
+            params = apply_rsi_sell_overlay(params, config.raw)
+        except Exception:
+            pass
         rsi_sell_30 = params.get("rsi_sell_30", 70)
         rsi_sell_20 = params.get("rsi_sell_20", 80)
-        rsi_sell_mode = params.get("rsi_sell_mode", "cross")
         rsi_sell_min_gain = float(params.get("rsi_sell_min_gain_pct", 0))
         take_profit_pct = params.get("take_profit_pct")
         take_profit_tiers = params.get("take_profit_tiers") or []
@@ -168,6 +174,10 @@ class TechnicalRSIStrategy(BaseStrategy):
                     sources.append("reversal")
         elif market.has_position:
             pos = _position_state(market, symbol, tf)
+            if not int(pos.get("dca_rounds") or 0) and not pos.get("last_dca_at"):
+                live = get_position(symbol, tf)
+                if live:
+                    pos = {**live, **pos}
             last_rsi = float(pos.get("last_rsi", 45.0))
             _reset_tiers_if_cooled(market, symbol, tf, market.rsi, rsi_sell_30, rsi_sell_20)
 

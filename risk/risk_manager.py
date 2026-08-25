@@ -146,11 +146,18 @@ class RiskManager:
             blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
-            # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell
+            # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell.
+            # Fail-closed: never approve auto-sell if the lock check itself breaks
+            # (matches DCA lock policy; avoids trail re-selling after ops revert+lock).
             try:
-                from strategies.position_lock import auto_sell_blocked, log_lock_block
+                from strategies.position_lock import (
+                    attach_lock_from_ledger,
+                    auto_sell_blocked,
+                    log_lock_block,
+                )
 
                 pos = get_position(order.symbol, timeframe)
+                pos = attach_lock_from_ledger(pos, order.symbol, timeframe) or pos
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
                 sell_src = source or getattr(order, "source", None) or ""
                 locked, lock_msg = auto_sell_blocked(pos, sell_src, config=raw_cfg)
@@ -161,8 +168,21 @@ class RiskManager:
                         message=lock_msg,
                         code="position_locked",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    from logger import log
+
+                    log(
+                        f"position_lock sell check error {order.symbol}: {exc}",
+                        "ERROR",
+                    )
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message=f"position_lock_check_error: {exc}"[:200],
+                    code="position_lock_check_error",
+                )
             order = self._resolve_sell_order(order, timeframe, source)
             if order.amount <= 0:
                 order = self._fill_sell_amount_from_open_lot(order, timeframe)
@@ -247,12 +267,30 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
-            # Universe split: new BUYs only on trade-eligible set (observe is broader)
+            try:
+                from services.correlated_tier.api import correlated_tier_selloff_active
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                if correlated_tier_selloff_active(order.symbol, raw_cfg):
+                    return RiskDecision(
+                        approved=False,
+                        message=f"Correlated-tier selloff active for {order.symbol}",
+                        code="correlated_tier_selloff",
+                        size_multiplier=0.0,
+                    )
+            except Exception:
+                pass
+            # Universe split: new BUYs only on trade-eligible set (observe is broader).
+            # RelVol ignition deliberately discovers thin/off-universe names — exempt.
             try:
                 from services.universe.split import is_trade_eligible, universe_split_enabled
 
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                if universe_split_enabled(raw_cfg) and not self._is_dca_buy(source, order):
+                if (
+                    universe_split_enabled(raw_cfg)
+                    and not self._is_dca_buy(source, order)
+                    and not self._is_relvol_buy(source, order)
+                ):
                     if not is_trade_eligible(
                         order.symbol,
                         config=raw_cfg,
@@ -921,6 +959,15 @@ class RiskManager:
         if src in ("dca", "dca_recovery", "dca_sniper", "dca_scheduled"):
             return True
         return str(getattr(order, "signal", "") or "").upper() == "BUY_DCA"
+
+    @staticmethod
+    def _is_relvol_buy(source: str, order: TradeOrder) -> bool:
+        """RelVol discovery path — allowed outside the 500k trade universe."""
+        src = str(source or "").strip().lower()
+        if src == "gainer_relvol" or src.startswith("relvol"):
+            return True
+        sig = str(getattr(order, "signal", "") or "").upper()
+        return sig == "GAINER_RELVOL"
 
     @staticmethod
     def _order_is_dca(order: dict) -> bool:

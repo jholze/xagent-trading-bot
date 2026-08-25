@@ -157,6 +157,20 @@ except Exception as _exit_radar_exc:
     log(f"exit_radar routes not registered: {_exit_radar_exc}", "WARNING")
 
 try:
+    from services.desk_http import register_desk_routes
+
+    register_desk_routes(app)
+except Exception as _desk_exc:
+    log(f"desk routes not registered: {_desk_exc}", "WARNING")
+
+try:
+    from services.mcp_bot_http import register_mcp_bot_routes
+
+    register_mcp_bot_routes(app)
+except Exception as _mcp_exc:
+    log(f"mcp execute route not registered: {_mcp_exc}", "WARNING")
+
+try:
     from services.exit_realtime.fire_http import register_exit_ws_fire_routes
     from services.exit_realtime.watch_http import register_exit_ws_watch_routes
 

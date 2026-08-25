@@ -1,8 +1,10 @@
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
-from core.actions import SELL_FULL
-from core.models import MarketContext
+from core.actions import HOLD, SELL_FULL
+from core.models import MarketContext, SignalAnalysis
+from strategies.decision_engine import DecisionEngine
 from strategies.profit_max_lifetime import evaluate_profit_max_lifetime
 
 
@@ -65,6 +67,59 @@ class TestProfitMaxLifetime(unittest.TestCase):
         self.assertIsNone(
             evaluate_profit_max_lifetime(self._market(current_price=0.99), pos, self._params(), now=now)
         )
+
+
+class TestMergeSellFlushAfterProfitArm(unittest.TestCase):
+    """eval_worker ACU crash: local import unbound flush_positions in _merge_sell."""
+
+    def test_profit_arm_flush_does_not_raise_unbound_local(self):
+        engine = DecisionEngine(market_service=MagicMock())
+        engine.config = MagicMock()
+        engine.config.raw = {}
+        engine.config.exit_sensor_config = {"enabled": False}
+        engine.config.max_open_positions = 20
+
+        technical = SignalAnalysis(
+            action="HOLD",
+            symbol="ACU/USDT",
+            timeframe="4h",
+            rsi=45.0,
+            lower_bb=0.9,
+            vol_multiplier=1.0,
+            ampel_emoji="🟡",
+            ampel_text="neutral",
+            sources=[],
+            confidence=50.0,
+        )
+        market = MarketContext(
+            symbol="ACU/USDT",
+            timeframe="4h",
+            current_price=1.46,
+            has_position=True,
+            average_entry=1.0,
+            atr_pct=8.0,
+            strategy_params={
+                "profit_max_lifetime": {
+                    "enabled": True,
+                    "mode": "live",
+                    "arm_gain_pct": 3.0,
+                    "max_hours": 96,
+                    "min_gain_pct": 1.0,
+                    "skip_if_peak_above_pct": 40.0,
+                },
+            },
+        )
+        pos = {"amount": 10.0, "average_entry": 1.0}
+
+        with patch("strategies.decision_engine.flush_positions") as flush:
+            action, *_rest = engine._merge_sell(
+                technical, None, None, [], market=market, position=pos
+            )
+
+        self.assertEqual(action, HOLD)
+        flush.assert_called()
+        self.assertTrue(pos.get("profit_armed_at"))
+        self.assertNotIn("flush_positions", DecisionEngine._merge_sell.__code__.co_varnames)
 
 
 if __name__ == "__main__":

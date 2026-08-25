@@ -25,8 +25,16 @@ Service name: **`xagent-dca-sniper`** (same image as bot; `scripts/railway_start
 | `DCA_SNIPER_TOKEN` | same as bot internal token (`EXIT_WS_INTERNAL_TOKEN` ok) |
 | `DCA_SNIPER_BOT_URL` | `https://xagent-test-test.up.railway.app` (or private URL) |
 | `REDIS_URL` | shared Redis (auto on Railway if linked) |
+| `MONGO_URL` | **required for deep path** — same Mongo as bot (`${{Mongo.MONGO_URL}}`) |
+| `MONGODB_DB` | default `xagent_test` |
+| `DEMO_ALLOW_REMOTE_MONGO=1` | allow Railway Mongo (not localhost) |
+| `DEMO_LEDGER_BACKEND=mongo` | cash_policy / facts read path |
 | `DCA_SNIPER_POLL_SEC` | default 180 |
 | `PORT` | health (Railway) |
+
+Sniper does **not** write orders; execute still goes through bot HTTP. Mongo is for
+read-only deep context (cash mode, memory lessons, facts). Without `MONGO_URL` the
+process falls back to `127.0.0.1:27017` and spams `Mongo orders load failed`.
 
 **Bot** (`xagent-test`):
 

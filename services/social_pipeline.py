@@ -16,6 +16,38 @@ from telegram_notifier import send_x_recommendation_message
 from x_data_provider import RawPost, get_x_provider
 
 
+def _cap_lc_watchlist(watchlist: list, lc_cfg: dict) -> list:
+    """Keep open lots first, then cap Individual-plan per-coin fetches."""
+    coins = [c for c in (watchlist or []) if isinstance(c, dict) and c.get("symbol")]
+    try:
+        max_n = int(lc_cfg.get("max_fetch_coins") or 0)
+    except (TypeError, ValueError):
+        max_n = 0
+    if max_n <= 0 or len(coins) <= max_n:
+        return coins
+    open_syms = set()
+    try:
+        from strategies.positions import list_active_positions
+
+        open_syms = {
+            str(p.get("symbol") or "").strip()
+            for p in (list_active_positions() or [])
+            if p.get("symbol")
+        }
+    except Exception:
+        open_syms = set()
+    forced, rest, seen = [], [], set()
+    for c in coins:
+        sym = str(c.get("symbol") or "").strip()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        (forced if sym in open_syms else rest).append(c)
+    if len(forced) >= max_n:
+        return forced
+    return forced + rest[: max_n - len(forced)]
+
+
 class SocialPipeline:
     """Fetches X posts, tracks recommendations, and updates accuracy/trust."""
 
@@ -217,7 +249,7 @@ class SocialPipeline:
                 signal.quotes_fallback = post.author == "CMC Market"
             signal.signal_tier = getattr(post, "signal_tier", "community")
             signal.trending_rank = int(getattr(post, "trending_rank", 0) or 0)
-            quote_trust = float(cmc_cfg.get("quotes_fallback_trust_score", 55))
+            quote_trust = float(cmc_cfg.get("quotes_fallback_trust_score", 72))
             tier_trust = {
                 "trending": quote_trust if signal.quotes_fallback else 72.0,
                 "community": 68.0,
@@ -312,6 +344,7 @@ class SocialPipeline:
 
         self._last_lc_fetch_at = time.time()
         watchlist = watchlist or load_effective_watchlist()
+        watchlist = _cap_lc_watchlist(watchlist, lc_cfg)
         raw_metrics = self.lc_provider.fetch_for_watchlist(watchlist)
         self._last_lc_metrics_count = len(raw_metrics)
         self._cycle_lc_signals = []

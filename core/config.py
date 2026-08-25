@@ -511,6 +511,16 @@ class BotConfig:
             "cooldown_bars": 6,
             "hysteresis": 0.15,
             "sentiment_sources": ["lunarcrush", "santiment", "x", "fear_greed"],
+            "dynamic_social": {
+                "enabled": False,
+                "min_sources": 2,
+                "bull_sentiment_weight": 0.55,
+                "bear_sentiment_weight": 0.48,
+                "cmc_chorus_trust_mult": 1.25,
+                "quotes_bull_min_conf": 80.0,
+                "block_on_fusion_risk_off": True,
+                "block_on_climax_harvest": True,
+            },
             "regimes": {
                 "RANGING": {"tech_score_range": [-0.4, 0.4]},
                 "STRONG_UPTREND": {"tech_score_min": 0.55},
@@ -529,8 +539,9 @@ class BotConfig:
             "neutral_sentiment_threshold": 0.35,
             "confirm_sentiment_threshold": 0.45,
             "defensive_sentiment_threshold": -0.55,
-            "default_grid_weight": 0.6,
-            "default_momentum_weight": 0.4
+            # Experiment grid-share v1 (2026-08-10): was 0.6/0.4
+            "default_grid_weight": 0.4,
+            "default_momentum_weight": 0.6
         }
         raw = self._raw.get("strategy_allocator", {})
         return {**defaults, **raw}

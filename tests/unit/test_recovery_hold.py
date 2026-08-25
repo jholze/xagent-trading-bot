@@ -45,6 +45,7 @@ class TestRecoveryHoldCore(unittest.TestCase):
         self.assertFalse(rh.source_allowed_under_recovery_hold("technical"))
         self.assertFalse(rh.source_allowed_under_recovery_hold("partial_stop"))
         self.assertFalse(rh.source_allowed_under_recovery_hold("unknown_xyz"))
+        self.assertFalse(rh.source_allowed_under_recovery_hold("oracle_climax_harvest"))
         self.assertTrue(rh.source_allowed_under_recovery_hold("stop_loss"))
         self.assertTrue(rh.source_allowed_under_recovery_hold("hard_stop"))
         self.assertTrue(rh.source_allowed_under_recovery_hold("manual"))

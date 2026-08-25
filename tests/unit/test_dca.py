@@ -13,7 +13,12 @@ from core.actions import BUY_DCA
 from core.models import MarketContext, TradeOrder
 from risk.risk_manager import RiskManager
 from services.market_service import MarketService
-from strategies.dca import dca_enabled, evaluate_dca_addon, should_dca
+from strategies.dca import (
+    _check_hard_gates,
+    dca_enabled,
+    evaluate_dca_addon,
+    should_dca,
+)
 from strategies.decision_engine import DecisionEngine
 from strategies.positions import get_key, get_position, positions, update_position
 
@@ -110,6 +115,48 @@ class TestDCAModule(unittest.TestCase):
         self.assertTrue(dca_enabled(self.params))
         self.assertFalse(dca_enabled({"dca": {"enabled": False}}))
 
+    def test_dca_window_extends_toward_stop_loss(self):
+        """Henry BLESS hole: loss_pct_min -25 while SL is 50 → DCA dead, then SL dumps.
+
+        Window must reach SL*(1-proximity), still blocked in the last proximity band.
+        """
+        from strategies.dca import dca_config
+
+        params = {
+            "stop_loss_pct": 50.0,
+            "dca": {
+                "enabled": True,
+                "loss_pct_min": -25,
+                "loss_pct_max": -3,
+                "sl_proximity_pct": 15,
+                "max_rounds": 4,
+                "interval_hours": 0,
+                "min_remainder_usdt": 50,
+            },
+        }
+        cfg = dca_config(params)
+        pos = {"amount": 100, "average_entry": 1.0, "dca_rounds": 2}
+
+        # -35% is past the old -25 floor, still 15%+ away from -50 SL
+        ok, reason, loss = _check_hard_gates(
+            self._market(1.0, 0.65), pos, params, cfg
+        )
+        self.assertTrue(ok, msg=reason)
+        self.assertAlmostEqual(loss, -35.0, places=1)
+
+        # inside proximity of 50% SL (buffer 7.5pp → blocked from ~-42.5 to -50)
+        ok_near, reason_near, _ = _check_hard_gates(
+            self._market(1.0, 0.54), pos, params, cfg
+        )
+        self.assertFalse(ok_near)
+        self.assertEqual(reason_near, "near_stop_loss")
+
+        # still too green for DCA
+        ok_mild, reason_mild, _ = _check_hard_gates(
+            self._market(1.0, 0.99), pos, params, cfg
+        )
+        self.assertFalse(ok_mild)
+
     def test_dca_triggers_with_scoring(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)
         pos = get_position(self.symbol, self.tf)
@@ -139,6 +186,58 @@ class TestDCAModule(unittest.TestCase):
         decision = should_dca(weak, pos, self.params)
         self.assertFalse(decision.should_dca)
         self.assertIn("score", decision.blocked_reason or "")
+
+    def test_oversold_remaining_round_allows_lab_style_dip(self):
+        """LAB hole: −8% (or deeper), RSI 37.7, rounds 1/2, scoring cores miss."""
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["average_entry"] = 1.0
+        pos["dca_rounds"] = 1
+        pos["dca_max_rounds"] = 2
+        pos["amount"] = 100
+        params = dict(self.params)
+        params["dca"] = _scoring_dca_cfg()
+        params["dca"]["remaining_round_oversold_rsi"] = 40
+        params["dca"]["interval_hours"] = 0
+        params["stop_loss_pct"] = 50
+        weak = self._market(
+            1.0,
+            0.60,
+            rsi=37.7,
+            atr_pct=8.0,
+            funding_rate_pct=0.01,
+            btc_underperf_ratio=None,
+            lower_bb=0.4,
+        )
+        without = should_dca(weak, pos, {**params, "dca": {**params["dca"], "remaining_round_oversold_rsi": 0}})
+        self.assertFalse(without.should_dca, msg=without.blocked_reason)
+        with_flag = should_dca(weak, pos, params)
+        self.assertTrue(with_flag.should_dca, msg=with_flag.blocked_reason)
+        self.assertEqual(with_flag.breakdown.get("oversold_remaining_round"), 1)
+        cand = evaluate_dca_addon(weak, pos, params)
+        self.assertIsNotNone(cand)
+        self.assertIn("oversold", cand.rationale.lower())
+
+    def test_oversold_remaining_round_skips_first_round(self):
+        update_position(self.symbol, self.tf, "BUY", 1.0, 100)
+        pos = get_position(self.symbol, self.tf)
+        pos["average_entry"] = 1.0
+        pos["dca_rounds"] = 0
+        params = dict(self.params)
+        params["dca"] = _scoring_dca_cfg()
+        params["dca"]["remaining_round_oversold_rsi"] = 40
+        params["dca"]["interval_hours"] = 0
+        weak = self._market(
+            1.0,
+            0.90,
+            rsi=37.7,
+            atr_pct=8.0,
+            funding_rate_pct=0.01,
+            btc_underperf_ratio=None,
+            lower_bb=0.4,
+        )
+        decision = should_dca(weak, pos, params)
+        self.assertFalse(decision.should_dca)
 
     def test_scoring_disabled_uses_legacy_dip(self):
         update_position(self.symbol, self.tf, "BUY", 1.0, 100)

@@ -42,15 +42,23 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gainer-signal" || "${RUN_GAINER_SIG
   export GAINER_SIGNAL_PUSH="${GAINER_SIGNAL_PUSH:-1}"
   exec python3 -m services.gainer_signal
 fi
-# DCA Sniper standalone — Redis + bot internal APIs; no ledger writes in this process.
+# DCA Sniper standalone — Redis + bot HTTP execute; deep path reads memory/cash via Mongo.
+# No order *writes* here (fills go through bot internal APIs), but DEMO cash_policy /
+# coin_facts / path-stats touch the shared ledger DB — must not fall back to 127.0.0.1.
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-dca-sniper" || "${RUN_DCA_SNIPER:-}" == "1" ]]; then
-  echo "=== DCA Sniper service (standalone, Redis + bot HTTP) ==="
+  echo "=== DCA Sniper service (standalone, Redis + bot HTTP + Mongo read) ==="
   export PYTHONUNBUFFERED=1
   export RUN_DCA_SNIPER=1
   export DCA_SNIPER_ENABLED="${DCA_SNIPER_ENABLED:-1}"
   export DCA_SNIPER_IN_PROCESS=0
   export DEMO_MODE="${DEMO_MODE:-1}"
-  # Prefer shared Redis; do not require Mongo for the sniper process itself
+  export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
+  export RAILWAY_DEPLOY="${RAILWAY_DEPLOY:-1}"
+  if [[ -z "${MONGO_URL:-}${MONGODB_URI:-}" ]]; then
+    echo "WARN: MONGO_URL/MONGODB_URI unset — deep cash/facts will fail-open against localhost"
+  fi
   exec python3 -m services.dca_sniper
 fi
 # GIS daily monitor — one-shot (Railway Cron). Reads orders_v2, writes report to Mongo + files.
@@ -66,6 +74,19 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gis-monitor" || "${RUN_GIS_MONITOR:
   # Serves /health during run so Railway healthcheck can pass; exits after report.
   exec python3 scripts/gis_monitor_railway_entry.py
 fi
+# Grok MCP sidecar — FastMCP + /health, no price loop / aria_bot. Same image as bot.
+if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-mcp" || "${RUN_MCP_SIDECAR:-}" == "1" ]]; then
+  echo "=== xagent MCP sidecar (Grok team, no price loop) ==="
+  export PYTHONUNBUFFERED=1
+  export DEMO_MODE="${DEMO_MODE:-1}"
+  export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
+  export MONGODB_DB="${MONGODB_DB:-xagent_test}"
+  export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
+  exec python3 -m services.mcp_sidecar
+fi
+
+# Desk v0 is in-process Flask on aria_bot at /desk — no extra Railway process
+# and no xagent-desk service. Kill: desk.enabled=false in config.json.
 
 echo "=== X-Agent Railway start ==="
 python3 scripts/write_build_meta.py 2>/dev/null || true

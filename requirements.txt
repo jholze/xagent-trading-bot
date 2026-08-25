@@ -1,6 +1,8 @@
 # Core dependencies for the X-Agent Trading Bot
 python-dotenv>=1.0.0
 Flask>=2.3.0
+# MCP sidecar FastMCP (streamable HTTP). Pin <2: v2 renamed FastMCP → MCPServer.
+mcp>=1.21.0,<2
 requests>=2.28.0
 ccxt>=4.0.0
 pandas>=2.0.0

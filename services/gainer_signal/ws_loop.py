@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import threading
 import time
@@ -92,6 +93,34 @@ class GainerWsRuntime:
         self._last_signal_at: dict[str, float] = {}
         self._tickers_live: dict[str, dict[str, Any]] = {}
         self._tick_lock = threading.Lock()
+        # RelVol on ticker stream (REST seed + WS) — not bot OHLCV mass-scan.
+        # Kill: GAINER_RELVOL_ENABLED=0 OR (when bot rejects) mode!=trade in config.
+        env_off = str(os.environ.get("GAINER_RELVOL_ENABLED") or "1").strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        self._relvol_enabled = not env_off
+        self._relvol = None
+        self._relvol_mode = (
+            str(os.environ.get("GAINER_RELVOL_MODE") or "trade").strip().lower()
+        )
+        if self._relvol_enabled:
+            try:
+                from services.gainer_signal.relvol_tracker import RelvolTracker
+
+                self._relvol = RelvolTracker(
+                    mult=float(os.environ.get("GAINER_RELVOL_MULT") or 10),
+                    baseline_hours=float(os.environ.get("GAINER_RELVOL_BASELINE_H") or 12),
+                    min_ign_qvol=float(os.environ.get("GAINER_RELVOL_MIN_QVOL") or 5000),
+                    cooldown_sec=float(
+                        os.environ.get("GAINER_RELVOL_COOLDOWN_SEC") or 8 * 3600
+                    ),
+                )
+            except Exception as e:
+                log(f"gainer_signal relvol init skip: {e}", "WARNING")
+                self._relvol = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -126,6 +155,7 @@ class GainerWsRuntime:
             max_rank_track=self.signal_max_rank,
         )
         self._maybe_emit_signals()
+        self._maybe_emit_relvol(merged)
         return leaders
 
     def _fetch_atr_pct(self, symbol: str) -> float | None:
@@ -219,6 +249,89 @@ class GainerWsRuntime:
                     f"gainer_signal push skip {sym}: {result.get('message')}",
                     "DEBUG",
                 )
+
+    def _maybe_emit_relvol(self, tickers: dict[str, Any]) -> None:
+        """Sample ticker book; only push when mode=trade (real kill switch)."""
+        if not self._relvol or not self.push_enabled:
+            return
+        # mode: env GAINER_RELVOL_MODE overrides; trade|shadow|off
+        mode = self._relvol_mode
+        if mode in ("off", "disabled"):
+            return
+        # Always sample so baselines warm up even in shadow
+        try:
+            n = self._relvol.sample_tickers(tickers)
+            fires = self._relvol.evaluate()
+            if mode == "shadow":
+                if fires:
+                    log(
+                        f"gainer_signal relvol SHADOW fires={len(fires)} sampled={n} "
+                        f"(no push; mode=shadow)",
+                        "INFO",
+                    )
+                return
+            if mode != "trade":
+                return
+            if fires:
+                log(
+                    f"gainer_signal relvol fires={len(fires)} sampled={n}",
+                    "INFO",
+                )
+            # tenants: env CSV or default single bot (bot fans out via body tenant_id)
+            tenants_env = (os.environ.get("GAINER_RELVOL_TENANTS") or "default,henry").strip()
+            tenants = [t.strip() for t in tenants_env.split(",") if t.strip()] or [
+                "default"
+            ]
+            for sig in fires:
+                sym = sig.get("symbol") or ""
+                with self._tick_lock:
+                    t = self._tickers_live.get(sym) or tickers.get(sym) or {}
+                try:
+                    from services.gainer_signal.pure import parse_pct_24h
+
+                    sig["pct_24h"] = parse_pct_24h(t) if isinstance(t, dict) else 0.0
+                except Exception:
+                    pass
+                # Extension pre-filter on signal service (bot also enforces)
+                max_ext = float(os.environ.get("GAINER_RELVOL_MAX_PCT_24H") or 40)
+                try:
+                    if float(sig.get("pct_24h") or 0) > max_ext:
+                        log(
+                            f"gainer_signal RELVOL skip {sym}: extension "
+                            f"pct={sig.get('pct_24h')}>{max_ext}",
+                            "INFO",
+                        )
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                for tid in tenants:
+                    payload = dict(sig)
+                    payload["tenant_id"] = tid
+                    result = push_signal_to_bot(payload)
+                    self.board.record_push(bool(result.get("ok")))
+                    if result.get("ok") and result.get("executed"):
+                        log(
+                            f"gainer_signal RELVOL BUY tenant={tid} {sym} "
+                            f"factor={sig.get('factor')} qvol_1h={sig.get('qvol_1h')}",
+                            "INFO",
+                        )
+                    elif result.get("ok"):
+                        log(
+                            f"gainer_signal RELVOL push ok no-fill tenant={tid} {sym}: "
+                            f"{result.get('message')}",
+                            "INFO",
+                        )
+                    else:
+                        why = str(result.get("message") or "skip")
+                        # push.py already flattens bot body into message/reject_reason
+                        if result.get("reject_reason") and result.get("reject_reason") not in why:
+                            why = f"{why} ({result.get('reject_reason')})"
+                        log(
+                            f"gainer_signal RELVOL push skip tenant={tid} {sym}: {why}",
+                            "INFO",
+                        )
+        except Exception as e:
+            log(f"gainer_signal relvol emit: {e}", "WARNING")
 
     def _ws_loop(self) -> None:
         try:

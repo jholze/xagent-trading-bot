@@ -103,6 +103,8 @@ def evaluate_trailing_take_profit(
     strategy_params: dict | None,
     *,
     now: datetime | None = None,
+    climax_decision=None,
+    config_raw: dict | None = None,
 ) -> TrailingTakeProfitCandidate | None:
     cfg = trailing_take_profit_config(strategy_params)
     if not cfg.get("enabled", False):
@@ -112,6 +114,17 @@ def evaluate_trailing_take_profit(
         return None
     if not market.has_position or market.average_entry <= 0:
         return None
+
+    try:
+        from strategies.oracle_climax import climax_ttp_adjust
+
+        cfg, skip = climax_ttp_adjust(
+            cfg, config_raw=config_raw, climax_decision=climax_decision
+        )
+        if skip:
+            return None
+    except Exception:
+        pass
 
     try:
         from strategies.dca import trail_exits_paused_after_dca
@@ -169,6 +182,27 @@ def evaluate_trailing_take_profit(
     allow_soft = bool(cfg.get("trail_above_zero_after_arm", True))
     if gain < min_gain and not (allow_soft and peak_gain >= arm_gain and gain > 0):
         return None
+
+    # Group overlay: once armed past full_close_gain_pct, close fully instead of trailing.
+    full_close_raw = cfg.get("full_close_gain_pct")
+    if full_close_raw is not None:
+        try:
+            full_close_gain = float(full_close_raw)
+        except (TypeError, ValueError):
+            full_close_gain = None
+        if full_close_gain is not None and gain >= full_close_gain:
+            shadow = mode == "shadow"
+            priority = int(cfg.get("priority", 7))
+            return TrailingTakeProfitCandidate(
+                action=SELL_FULL,
+                source="trailing_take_profit",
+                priority=priority,
+                rationale=(
+                    f"TrailTP->SELL_FULL full_close {gain:.1f}%>= {full_close_gain:.1f}% "
+                    f"(armed peak={peak_gain:.1f}%)"
+                ),
+                shadow_only=shadow,
+            )
 
     recent_high = float(position.get("recent_high") or 0) or market.current_price
     if recent_high <= 0:

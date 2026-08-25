@@ -19,6 +19,7 @@ from services.gainer_signal.pure import (
     is_gainer_source,
     is_leverage_symbol,
     normalize_symbol,
+    position_has_symbol_open,
 )
 
 # process-local day counter (fail-open; ledger is source of truth when available)
@@ -144,15 +145,89 @@ def count_gainer_buys_today_from_fills(
     return n
 
 
-def load_gainer_buys_today_from_ledger() -> int | None:
+def load_gainer_buys_today_from_ledger(
+    *,
+    source_exact: str | None = None,
+) -> int | None:
     """Best-effort day count from orders ledger. None if ledger unavailable."""
     try:
         from services.order_service import OrderService
 
         fills = OrderService().list_day_filled_all()
+        if source_exact:
+            want = source_exact.strip().lower()
+            fills = [
+                f
+                for f in (fills or [])
+                if str(f.get("source") or f.get("entry_source") or "").lower() == want
+                or str(f.get("source") or "").lower().endswith(want)
+            ]
+            # count buys only
+            n = 0
+            for f in fills:
+                side = str(f.get("side") or "").lower()
+                if side in ("buy", "b"):
+                    n += 1
+            return n
         return count_gainer_buys_today_from_fills(fills, day_scoped=True)
     except Exception:
         return None
+
+
+def _relvol_cfg(config: dict | None = None) -> dict[str, Any]:
+    """Bot-side RelVol trade config (SSOT: config.json gainer_relvol_shadow)."""
+    try:
+        from services.gainer_universe.relvol_shadow import relvol_shadow_config
+
+        return relvol_shadow_config(config)
+    except Exception:
+        raw = config
+        if raw is None:
+            try:
+                from core.config import get_bot_config
+
+                raw = get_bot_config().raw
+            except Exception:
+                raw = {}
+        block = (raw or {}).get("gainer_relvol_shadow") if isinstance(raw, dict) else {}
+        return dict(block) if isinstance(block, dict) else {}
+
+
+def _resolve_bot_raw(config: dict | None = None) -> dict[str, Any]:
+    """Prefer explicit config (including empty {}); only load bot when config is None."""
+    if config is not None:
+        return config if isinstance(config, dict) else {}
+    try:
+        from core.config import get_bot_config
+
+        raw = get_bot_config().raw
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _relvol_reject(
+    sym: str,
+    message: str,
+    *,
+    reject_reason: str = "",
+    **extra: Any,
+) -> tuple[dict[str, Any], int]:
+    """Structured RelVol 409 + INFO log (ops can count reasons)."""
+    why = reject_reason or message
+    log(f"gainer_relvol reject {sym or '?'}: {message} {why}".strip(), "INFO")
+    body: dict[str, Any] = {
+        "ok": False,
+        "executed": False,
+        "message": message,
+        "symbol": sym or None,
+    }
+    if reject_reason:
+        body["reject_reason"] = reject_reason
+    for k, v in extra.items():
+        if v is not None:
+            body[k] = v
+    return body, 409
 
 
 def _default_de_allows_buy(symbol: str, price: float, timeframe: str, data: dict) -> tuple[bool, str, list]:
@@ -195,8 +270,25 @@ def process_gainer_signal(
 
     With require_de_confirm (default True), board/heat only nominates; DE must BUY.
     """
+    # Always resolve config under tenant_context when caller omitted it (HTTP route).
+    config = _resolve_bot_raw(config)
     cfg = gainer_entry_config(config)
-    if not cfg["enabled"]:
+    source_early = str(data.get("source") or data.get("entry_source") or "")
+    is_relvol = source_early == "gainer_relvol" or str(
+        data.get("trigger") or ""
+    ).startswith("relvol")
+
+    # RelVol has its own kill switch (mode must be trade) — independent of gainer_entry.enabled
+    rcfg: dict[str, Any] = {}
+    if is_relvol:
+        rcfg = _relvol_cfg(config)
+        if not bool(rcfg.get("enabled", False)) or str(rcfg.get("mode") or "").lower() != "trade":
+            return _relvol_reject(
+                normalize_symbol(data.get("symbol") or "") or "?",
+                "relvol_disabled",
+                reject_reason=f"mode={rcfg.get('mode')} enabled={rcfg.get('enabled')}",
+            )
+    elif not cfg["enabled"]:
         return {"ok": False, "executed": False, "message": "gainer_entry_disabled"}, 503
 
     sym = normalize_symbol(data.get("symbol") or "")
@@ -216,7 +308,8 @@ def process_gainer_signal(
         quote_vol = 0.0
     lev = bool(data.get("leverage")) or is_leverage_symbol(sym)
     eligible_flag = data.get("eligible")
-    if cfg["require_eligible"]:
+    # RelVol discovery: intentionally below 500k abs vol — do not apply min_vol cut
+    if cfg["require_eligible"] and not is_relvol:
         if eligible_flag is False:
             return {
                 "ok": False,
@@ -232,6 +325,8 @@ def process_gainer_signal(
                 "message": "not_eligible",
                 "reject_reason": reason,
             }, 409
+    elif is_relvol and lev:
+        return _relvol_reject(sym, "not_eligible", reject_reason="leverage")
 
     # positions
     if positions is None:
@@ -241,23 +336,49 @@ def process_gainer_signal(
             positions = list_active_positions()
         except Exception:
             positions = []
-    open_n = count_open_gainer_positions(positions)
 
-    if gainer_buys_today is not None:
-        buys_today = int(gainer_buys_today)
+    # RelVol: independent cap pool + no duplicate open symbol
+    if is_relvol:
+        if position_has_symbol_open(positions, sym):
+            return _relvol_reject(sym, "already_open")
+        open_n = count_open_gainer_positions(positions, source_exact="gainer_relvol")
+        max_open = int(rcfg.get("max_open") or 4)
+        max_day = int(rcfg.get("max_buys_per_day") or 8)
+        if gainer_buys_today is not None:
+            buys_today = int(gainer_buys_today)
+        else:
+            ledger_n = load_gainer_buys_today_from_ledger(source_exact="gainer_relvol")
+            local_n = _get_day_buys()  # process total; floor with ledger when available
+            buys_today = int(ledger_n) if ledger_n is not None else local_n
+        ok_cap, cap_reason = check_gainer_entry_caps(
+            open_gainer_count=open_n,
+            gainer_buys_today=buys_today,
+            max_open=max_open,
+            max_buys_per_day=max_day,
+        )
     else:
-        # Prefer ledger day book (survives restart/multi-worker); floor with process-local.
-        ledger_n = load_gainer_buys_today_from_ledger()
-        local_n = _get_day_buys()
-        buys_today = max(local_n, int(ledger_n) if ledger_n is not None else 0)
-
-    ok_cap, cap_reason = check_gainer_entry_caps(
-        open_gainer_count=open_n,
-        gainer_buys_today=buys_today,
-        max_open=cfg["max_open"],
-        max_buys_per_day=cfg["max_buys_per_day"],
-    )
+        open_n = count_open_gainer_positions(positions)
+        if gainer_buys_today is not None:
+            buys_today = int(gainer_buys_today)
+        else:
+            ledger_n = load_gainer_buys_today_from_ledger()
+            local_n = _get_day_buys()
+            buys_today = max(local_n, int(ledger_n) if ledger_n is not None else 0)
+        ok_cap, cap_reason = check_gainer_entry_caps(
+            open_gainer_count=open_n,
+            gainer_buys_today=buys_today,
+            max_open=cfg["max_open"],
+            max_buys_per_day=cfg["max_buys_per_day"],
+        )
     if not ok_cap:
+        if is_relvol:
+            return _relvol_reject(
+                sym,
+                cap_reason,
+                reject_reason=cap_reason,
+                open_gainer_count=open_n,
+                gainer_buys_today=buys_today,
+            )
         return {
             "ok": False,
             "executed": False,
@@ -297,6 +418,12 @@ def process_gainer_signal(
             flags=flags, entry_bias=entry_bias, cfg=mem_cfg
         )
         if not verdict.allow:
+            if is_relvol:
+                return _relvol_reject(
+                    sym,
+                    "blocked_coin_facts",
+                    reject_reason=verdict.reason or "coin_facts",
+                )
             return {
                 "ok": False,
                 "executed": False,
@@ -309,10 +436,34 @@ def process_gainer_signal(
         log(f"gainer_entry memory gate skip {sym}: {e}", "DEBUG")
 
     usdt = float(max_usdt) * max(0.0, min(1.0, memory_size_mult))
-    usdt = clamp_usdt_to_vol(
-        usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
-    )
+    if is_relvol:
+        # Size from 1h RelVol liquidity — fail-closed on errors (never ignore liq caps)
+        try:
+            from services.gainer_universe.relvol_shadow import size_usdt_for_signal
+
+            q1 = float(data.get("qvol_1h") or data.get("qvol") or 0)
+            usdt = size_usdt_for_signal(
+                qvol_1h=q1,
+                abs_vol_24h=float(quote_vol or 0),
+                cfg=rcfg,
+                max_usdt_per_trade=float(max_usdt),
+            )
+            usdt = float(usdt) * max(0.0, min(1.0, memory_size_mult))
+        except Exception as e:
+            log(f"gainer_relvol size fail-closed {sym}: {e}", "WARNING")
+            usdt = 0.0
+    else:
+        usdt = clamp_usdt_to_vol(
+            usdt, quote_vol, max_pct_of_vol=cfg["max_notional_pct_of_vol"]
+        )
     if usdt < 10:
+        if is_relvol:
+            return _relvol_reject(
+                sym,
+                "usdt_too_small",
+                reject_reason=f"usdt={usdt:.2f}",
+                usdt=usdt,
+            )
         return {
             "ok": False,
             "executed": False,
@@ -321,7 +472,9 @@ def process_gainer_signal(
         }, 409
 
     source = str(data.get("source") or "gainer_rank_entry")
-    if not is_gainer_source(source):
+    if is_relvol:
+        source = "gainer_relvol"
+    elif not is_gainer_source(source):
         source = "gainer_signal"
     trigger = str(data.get("trigger") or "")
     try:
@@ -333,12 +486,27 @@ def process_gainer_signal(
     except (TypeError, ValueError):
         pct = 0.0
 
+    # RelVol extension gate: do not chase already-extended day moves
+    if is_relvol:
+        max_ext = float(rcfg.get("max_pct_24h") or 40.0)
+        if pct > max_ext:
+            return _relvol_reject(
+                sym,
+                "extension_cap",
+                reject_reason=f"pct_24h={pct:.1f}>{max_ext:.0f}",
+                pct_24h=pct,
+            )
+
     timeframe = str(data.get("timeframe") or cfg["timeframe"] or "1h")
 
     # DecisionEngine gate: indicators + personal recipes (via registry) + TA merge
+    # RelVol: ignition *is* the signal — skip DE by default (config require_de_confirm)
     de_sources: list = []
     de_reason = ""
-    if cfg.get("require_de_confirm", True):
+    need_de = bool(cfg.get("require_de_confirm", True))
+    if is_relvol:
+        need_de = bool(rcfg.get("require_de_confirm", False))
+    if need_de:
         checker = de_allows_buy or _default_de_allows_buy
         try:
             ok_de, de_reason, de_sources = checker(sym, price, timeframe, data)
@@ -384,9 +552,11 @@ def process_gainer_signal(
         "hard_ceiling": data.get("hard_ceiling"),
         "memory_size_mult": memory_size_mult,
         "memory_reason": memory_reason or None,
-        "de_confirm": bool(cfg.get("require_de_confirm", True)),
+        "de_confirm": need_de,
         "de_reason": de_reason or None,
         "de_sources": de_sources or None,
+        "relvol_factor": data.get("factor") if is_relvol else None,
+        "qvol_1h": data.get("qvol_1h") or data.get("qvol") if is_relvol else None,
     }
     request_extra = {
         "gainer_meta": gainer_meta,
@@ -405,19 +575,30 @@ def process_gainer_signal(
 
             conf = get_bot_config()
             ts = TradingService(conf)
+            src = str(kwargs.get("source") or "gainer_signal")
+            sig = "GAINER_RELVOL" if src == "gainer_relvol" else "GAINER_SIGNAL"
             order = TradeOrder(
                 type="BUY",
                 symbol=kwargs["symbol"],
                 price=float(kwargs["price"]),
                 amount=0,
                 usdt_amount=float(kwargs["usdt"]),
-                source=kwargs["source"],
-                signal="GAINER_SIGNAL",
+                source=src,
+                signal=sig,
             )
+            # Reuse spike channel so slot-eviction can score RelVol demand (factor≥5 → +2)
+            if src == "gainer_relvol":
+                try:
+                    meta = (kwargs.get("request_extra") or {}).get("gainer_meta") or {}
+                    factor = float(meta.get("relvol_factor") or meta.get("factor") or 0)
+                    if factor > 0:
+                        order.entry_15m_vol_ratio = factor
+                except Exception:
+                    pass
             return ts.execute_order(
                 order,
                 kwargs.get("timeframe") or "1h",
-                source=kwargs["source"],
+                source=src,
                 request_extra=kwargs.get("request_extra"),
             )
 
@@ -432,6 +613,8 @@ def process_gainer_signal(
         )
     except Exception as e:
         log(f"gainer_entry execute error {sym}: {e}", "WARNING")
+        if is_relvol:
+            log(f"gainer_relvol reject {sym}: execute_error {e}", "WARNING")
         return {"ok": False, "executed": False, "message": f"execute_error:{e}"}, 500
 
     executed = bool(getattr(result, "executed", False) or (isinstance(result, dict) and result.get("executed")))
@@ -443,9 +626,24 @@ def process_gainer_signal(
     )
     if executed:
         _bump_day_buy()
+        try:
+            from strategies.positions import flush_positions, get_position
+
+            pos = get_position(sym, timeframe)
+            if isinstance(pos, dict):
+                pos["entry_source"] = source
+                flush_positions(force=True)
+        except Exception:
+            pass
+        tag = "gainer_relvol BUY" if is_relvol else "gainer_entry BUY"
         log(
-            f"gainer_entry BUY {sym} usdt={usdt:.0f} rank={rank} trigger={trigger} "
-            f"src={source}",
+            f"{tag} {sym} usdt={usdt:.0f} rank={rank} trigger={trigger} "
+            f"src={source} factor={data.get('factor')}",
+            "INFO",
+        )
+    elif is_relvol:
+        log(
+            f"gainer_relvol no-fill {sym}: {message or 'not_executed'} usdt={usdt:.0f}",
             "INFO",
         )
     return {
@@ -490,7 +688,27 @@ def register_gainer_signal_routes(app: Flask) -> None:
             return jsonify({"ok": False, "executed": False, "message": "unauthorized"}), 401
 
         data = request.get_json(silent=True) or {}
-        body, status = process_gainer_signal(data)
+        tid = str(
+            data.get("tenant_id")
+            or request.headers.get("X-Tenant-Id")
+            or "default"
+        ).strip().lower() or "default"
+        try:
+            from core.config import get_bot_config
+            from core.tenant_routing import tenant_cycle_context
+
+            with tenant_cycle_context(tid):
+                try:
+                    raw = get_bot_config().raw
+                    cfg = raw if isinstance(raw, dict) else None
+                except Exception:
+                    cfg = None
+                body, status = process_gainer_signal(data, config=cfg)
+        except Exception as e:
+            log(f"gainer_signal route tenant_cycle_context fail tid={tid}: {e}", "WARNING")
+            body, status = process_gainer_signal(data)
+        if isinstance(body, dict):
+            body.setdefault("tenant_id", tid)
         return jsonify(body), status
 
     log("gainer_signal consume route registered (/internal/gainer-signal)", "INFO")

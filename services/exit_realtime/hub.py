@@ -80,6 +80,13 @@ class ExitRealtimeHub:
         # Identify watch (non-position); unioned into subscribe set
         self._watch_symbols: set[str] = set()
         self._watch_gate: dict[str, str] = {}
+        # Permanent correlated-tier proxy watch (independent of gainer-board set)
+        self._ct_watch_symbols: set[str] = set()
+        self._ct_watch_gate: dict[str, str] = {}
+        self._ct_trackers: dict[str, Any] = {}
+        self._ct_last_eval: float = 0.0
+        self._ct_eval_interval: float = 5.0
+        self._ct_flag_ttl: float = 30.0
         self._last_fire: dict[str, float] = {}
         self._last_prices: dict[str, float] = {}
         self._connected = False
@@ -97,8 +104,10 @@ class ExitRealtimeHub:
             "last_tick_at": 0.0,
             "symbols": 0,
             "watch": 0,
+            "ct_watch": 0,
             "connected": False,
         }
+        self.sync_correlated_tier_watch()
 
     def stats(self) -> dict[str, Any]:
         out = dict(self._stats)
@@ -201,9 +210,92 @@ class ExitRealtimeHub:
         self._request_subscribe_sync()
         return sorted(wset)
 
+    def sync_correlated_tier_watch(self, raw: dict | None = None) -> list[str]:
+        """Permanent proxy-symbol watch, kept separate from gainer-board update_watch_set."""
+        if raw is not None:
+            self._raw = raw
+        try:
+            from services.correlated_tier.config import (
+                correlated_tier_config,
+                correlated_tier_groups,
+            )
+            from services.correlated_tier.drawdown_tracker import GroupDrawdownTracker
+
+            cfg_raw = self._raw if isinstance(self._raw, dict) else None
+            ct = correlated_tier_config(cfg_raw)
+            if not ct.get("enabled"):
+                with self._pos_lock:
+                    self._ct_watch_symbols = set()
+                    self._ct_watch_gate = {}
+                    self._ct_trackers = {}
+                    self._stats["ct_watch"] = 0
+                return []
+
+            groups = correlated_tier_groups(cfg_raw)
+            trackers: dict[str, Any] = {}
+            wset: set[str] = set()
+            wgate: dict[str, str] = {}
+            with self._pos_lock:
+                existing = dict(self._ct_trackers)
+            for name, g in groups.items():
+                if not isinstance(g, dict) or g.get("enabled") is False:
+                    continue
+                proxies = [str(s) for s in (g.get("proxy_symbols") or []) if s]
+                if not proxies:
+                    continue
+                old = existing.get(name)
+                if old is not None:
+                    trackers[name] = old
+                else:
+                    try:
+                        dd = float(g.get("drawdown_pct") or 5.0)
+                    except (TypeError, ValueError):
+                        dd = 5.0
+                    try:
+                        win = float(g.get("window_sec") or 600.0)
+                    except (TypeError, ValueError):
+                        win = 600.0
+                    try:
+                        mc = int(g.get("min_confirming") or 1)
+                    except (TypeError, ValueError):
+                        mc = 1
+                    trackers[name] = GroupDrawdownTracker(
+                        name,
+                        proxies,
+                        drawdown_pct=dd,
+                        window_sec=win,
+                        min_confirming=mc,
+                    )
+                for raw_sym in proxies:
+                    sym = str(raw_sym or "").strip().upper().replace("-", "/")
+                    if "_" in sym and "/" not in sym:
+                        a, b = sym.rsplit("_", 1)
+                        sym = f"{a}/{b}"
+                    if not sym:
+                        continue
+                    wset.add(sym)
+                    wgate[to_gate_pair(sym)] = sym
+
+            with self._pos_lock:
+                self._ct_trackers = trackers
+                self._ct_watch_symbols = wset
+                self._ct_watch_gate = wgate
+                self._ct_eval_interval = float(ct.get("eval_interval_sec") or 5)
+                self._ct_flag_ttl = float(ct.get("flag_ttl_sec") or 30)
+                self._stats["ct_watch"] = len(wset)
+            self._request_subscribe_sync()
+            return sorted(wset)
+        except Exception as exc:
+            log(f"exit_realtime correlated_tier watch: {exc}", "DEBUG")
+            return []
+
     def _desired_gate_pairs(self) -> list[str]:
         with self._pos_lock:
-            pairs = set(self._gate_to_symbol.keys()) | set(self._watch_gate.keys())
+            pairs = (
+                set(self._gate_to_symbol.keys())
+                | set(self._watch_gate.keys())
+                | set(self._ct_watch_gate.keys())
+            )
         return sorted(pairs)
 
     def _request_subscribe_sync(self) -> None:
@@ -272,10 +364,12 @@ class ExitRealtimeHub:
             sym = (
                 self._gate_to_symbol.get(gate_pair)
                 or self._watch_gate.get(gate_pair)
+                or self._ct_watch_gate.get(gate_pair)
                 or from_gate_pair(gate_pair)
             )
             self._last_prices[sym] = float(price)
             in_watch = sym in self._watch_symbols or gate_pair in self._watch_gate
+            in_ct = sym in self._ct_watch_symbols or gate_pair in self._ct_watch_gate
             row = self._book.get(sym)
             snapshot = None
             if row:
@@ -322,6 +416,13 @@ class ExitRealtimeHub:
             except Exception:
                 pass
 
+        # Correlated-tier drawdown: feed proxy ticks (parallel to gainer watch)
+        if in_ct:
+            try:
+                self._on_correlated_tier_tick(sym, price)
+            except Exception:
+                pass
+
         # No open position → identify-only path done
         if snapshot is None:
             return
@@ -353,15 +454,17 @@ class ExitRealtimeHub:
 
         # Position lock: skip trail eval noise for locked lots (execute/risk still hard-block)
         try:
-            from strategies.position_lock import auto_sell_blocked
+            from strategies.position_lock import attach_lock_from_ledger, auto_sell_blocked
             from strategies.positions import get_position
 
             live_pos = get_position(sym, tf) or pos
+            live_pos = attach_lock_from_ledger(live_pos, sym, tf) or live_pos
             locked, _ = auto_sell_blocked(live_pos, "exit_ws")
             if locked:
                 return
         except Exception:
-            pass
+            # Fail-closed on lock-check errors: do not evaluate trail sells
+            return
 
         events = evaluate_would_sells(
             symbol=sym,
@@ -423,6 +526,52 @@ class ExitRealtimeHub:
                 self._stats["blocked"] += 1
             _log_event(ev, live=True)
             self._broadcast_gui({**ev, "type": "hub", "msg": f"{src} executed={ev.get('executed')}"})
+
+    def _on_correlated_tier_tick(self, symbol: str, price: float) -> None:
+        now = time.time()
+        with self._pos_lock:
+            trackers = list(self._ct_trackers.items())
+            interval = float(self._ct_eval_interval or 5)
+            last = float(self._ct_last_eval or 0)
+        for _name, tr in trackers:
+            try:
+                tr.on_tick(symbol, price, now=now)
+            except Exception:
+                continue
+        if now - last < interval:
+            return
+        with self._pos_lock:
+            self._ct_last_eval = now
+        self._eval_correlated_tier(now=now)
+
+    def _eval_correlated_tier(self, *, now: float | None = None) -> None:
+        try:
+            from bus.correlated_tier_flag import set_correlated_tier_flag
+        except Exception:
+            return
+        now = float(now if now is not None else time.time())
+        with self._pos_lock:
+            items = list(self._ct_trackers.items())
+            ttl = float(self._ct_flag_ttl or 30)
+        raw = self._raw if isinstance(self._raw, dict) else None
+        for name, tr in items:
+            try:
+                payload = tr.evaluate(now=now)
+                try:
+                    from services.correlated_tier.amplifiers import apply_amplifiers
+                    from services.correlated_tier.config import correlated_tier_config
+
+                    ct_cfg = correlated_tier_config(raw)
+                    groups = ct_cfg.get("groups") or {}
+                    group_cfg = groups.get(name) if isinstance(groups, dict) else {}
+                    if not isinstance(group_cfg, dict):
+                        group_cfg = {}
+                    payload = apply_amplifiers(payload, group_cfg, ct_cfg)
+                except Exception:
+                    pass
+                set_correlated_tier_flag(name, payload, config_raw=raw, ttl_sec=ttl)
+            except Exception:
+                continue
 
     def _run_loop(self) -> None:
         try:
@@ -651,6 +800,10 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
                 _sync_positions_from_ledger()
             rows = _load_open_book(raw)
             hub.update_book(rows)
+            try:
+                hub.sync_correlated_tier_watch(raw)
+            except Exception:
+                pass
         except Exception as exc:
             log(f"exit_realtime book refresh: {exc}", "WARNING")
         cfg = exit_realtime_config(raw_getter())

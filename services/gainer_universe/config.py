@@ -27,13 +27,14 @@ _DEFAULTS: dict[str, Any] = {
     "streak_min_days_in_top20": 2,
     "streak_lookback_days": 3,
     "continuation_max_chase_pct_today": 15.0,
-    "expand_inject_max": 40,
-    "trade_max_with_expand": 80,
+    # Staging experiment gainer-catch-v1 (config.json overrides): inject 25, expand 60
+    "expand_inject_max": 25,
+    "trade_max_with_expand": 60,
     "scan_workers": 8,
     # Issue #162 — live heat into trade + DE priority + prev-day chase guard
     "live_heat_trade": True,
     "live_heat_min_pct": 8.0,
-    "live_heat_max_pct": 35.0,
+    "live_heat_max_pct": 45.0,
     "live_heat_ttl_hours": 10.0,
     "scan_prefer_gainer": True,
     "chase_guard_enabled": True,

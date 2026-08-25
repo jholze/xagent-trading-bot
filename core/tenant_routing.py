@@ -129,8 +129,9 @@ def iter_price_cycle_tenants(*, test: bool = False) -> list[str]:
             continue
         if doc.get("status", "active") != "active":
             continue
-        owner = str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
-        if not owner:
+        tg = doc.get("telegram") or {}
+        owner = str(tg.get("owner_chat_id") or "").strip()
+        if not owner and not tg.get("headless"):
             continue
         if tid not in ids:
             ids.append(tid)
@@ -143,9 +144,14 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
 
     doc = get_tenant(tenant_id, test=test) or {}
     tg = doc.get("telegram") or {}
-    owner = str(tg.get("owner_chat_id") or _operator_chat_id() or "")
+    headless = bool(tg.get("headless"))
+    owner = str(tg.get("owner_chat_id") or "").strip()
+    # Headless paper tenants share the operator inbox (tagged). Bound tenants
+    # must never fall back — that leaked Henry fills into the operator chat.
+    if not owner and (headless or tenant_id == DEFAULT_TENANT):
+        owner = _operator_chat_id()
     scope = _effective_ledger_scope(doc if tenant_id != DEFAULT_TENANT else None)
-    with tenant_context(tenant_id, scope=scope, owner_chat_id=owner):
+    with tenant_context(tenant_id, scope=scope, owner_chat_id=owner, headless=headless):
         from strategies.positions import activate_tenant_positions
 
         activate_tenant_positions(scope=scope, tenant_id=tenant_id)
