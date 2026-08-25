@@ -2,7 +2,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id, resolve_tenant_scope
@@ -417,9 +417,11 @@ def _cancel_flush_timer() -> None:
 
 
 def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
-    """Keep active locks from Mongo when in-memory serialize lost them.
+    """Keep active locks from Mongo when in-memory serialize omitted them.
 
     Ops can set lock out-of-process; a stale bot flush must not wipe it.
+    An explicit unlock (lock key present, including enabled=false) is SoT and
+    must not be restored from the previous Mongo doc.
     """
     if not isinstance(payload, dict) or not isinstance(existing, dict):
         return payload
@@ -430,8 +432,7 @@ def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> d
     for key, row in pos_out.items():
         if not isinstance(row, dict):
             continue
-        cur = row.get("lock")
-        if isinstance(cur, dict) and cur.get("enabled", True):
+        if "lock" in row:
             continue
         old_lock = (pos_old.get(key) or {}).get("lock") if isinstance(pos_old.get(key), dict) else None
         if isinstance(old_lock, dict) and old_lock.get("enabled", True):
@@ -682,7 +683,11 @@ def set_position_lock(symbol: str, timeframe: str, lock: dict | None, *, persist
     with _positions_lock:
         pos = _ensure_key(_active_store(), key)
         if lock is None:
-            pos.pop("lock", None)
+            pos["lock"] = {
+                "enabled": False,
+                "cleared_at": datetime.now(timezone.utc).isoformat(),
+                "cleared_by": "unlock",
+            }
         else:
             pos["lock"] = dict(lock)
         out = dict(pos.get("lock") or {}) if lock else {}
