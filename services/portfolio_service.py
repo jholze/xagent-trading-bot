@@ -3,7 +3,12 @@ from datetime import datetime
 from core.config import get_bot_config
 from core.models import TradeResult, TradeOrder
 from data_manager import load_trade_history, record_trade
-from strategies.positions import get_position, sell_fraction_for_signal, update_position
+from strategies.positions import (
+    bind_buy_timeframe,
+    get_position,
+    sell_fraction_for_signal,
+    update_position,
+)
 
 
 def _default_entry_source(source: str | None) -> str | None:
@@ -50,6 +55,7 @@ class PortfolioService:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
         from strategies.short_math import is_short
 
+        timeframe = bind_buy_timeframe(symbol, timeframe)
         existing = get_position(symbol, timeframe)
         if is_short(existing) and float(existing.get("amount") or 0) > 1e-12:
             return TradeResult(

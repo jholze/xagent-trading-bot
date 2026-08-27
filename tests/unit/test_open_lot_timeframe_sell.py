@@ -39,6 +39,48 @@ def _analysis(**kwargs) -> SignalAnalysis:
     return SignalAnalysis(**base)
 
 
+class TestBindBuyTimeframe(unittest.TestCase):
+    def test_hops_4h_buy_onto_open_1h_long(self):
+        from strategies.positions import bind_buy_timeframe
+
+        store = {
+            "LAB_USDT_1h": {
+                "amount": Decimal("100"),
+                "average_entry": 0.02,
+                "side": "long",
+                "sold_percent": 0.0,
+            },
+        }
+        with patch("strategies.positions._active_store", return_value=store), \
+             patch("strategies.positions._activate"), \
+             patch("strategies.positions._positions_lock"):
+            self.assertEqual(bind_buy_timeframe("LAB/USDT", "4h"), "1h")
+
+    def test_leaves_timeframe_when_no_lot(self):
+        from strategies.positions import bind_buy_timeframe
+
+        with patch("strategies.positions._active_store", return_value={}), \
+             patch("strategies.positions._activate"), \
+             patch("strategies.positions._positions_lock"):
+            self.assertEqual(bind_buy_timeframe("LAB/USDT", "4h"), "4h")
+
+    def test_does_not_hop_onto_short(self):
+        from strategies.positions import bind_buy_timeframe
+
+        store = {
+            "LAB_USDT_1h": {
+                "amount": Decimal("100"),
+                "average_entry": 0.02,
+                "side": "short",
+                "sold_percent": 0.0,
+            },
+        }
+        with patch("strategies.positions._active_store", return_value=store), \
+             patch("strategies.positions._activate"), \
+             patch("strategies.positions._positions_lock"):
+            self.assertEqual(bind_buy_timeframe("LAB/USDT", "4h"), "4h")
+
+
 class TestParsePositionKey(unittest.TestCase):
     def test_parse_common_keys(self):
         self.assertEqual(parse_position_key("BEAT_USDT_1h"), ("BEAT/USDT", "1h"))
