@@ -118,6 +118,10 @@ class TradingService:
         from bus.trade_intents import make_idempotency_key
         from core.tenant_context import resolve_tenant_scope
         from services.trading_engine_runtime import should_queue_intent, submit_trade_intent
+        from strategies.positions import bind_buy_timeframe
+
+        if order.type == "BUY":
+            timeframe = bind_buy_timeframe(order.symbol, timeframe)
 
         scope = resolve_tenant_scope()
         idem = idempotency_key or order.idempotency_key or ""
@@ -191,6 +195,10 @@ class TradingService:
         _lock_held: bool = False,
     ) -> TradeResult:
         self.refresh()
+        if order.type == "BUY":
+            from strategies.positions import bind_buy_timeframe
+
+            timeframe = bind_buy_timeframe(order.symbol, timeframe)
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
         idem = idempotency_key or order.idempotency_key or ""

@@ -272,6 +272,22 @@ class RiskManager:
 
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
+        if order.type == "BUY" and not has_position:
+            found = find_open_position_for_symbol(
+                order.symbol, preferred_timeframe=timeframe
+            )
+            if found:
+                hop_tf, hop = found
+                try:
+                    from strategies.short_math import is_short as _is_short_hop
+
+                    hop_short = _is_short_hop(hop) and float(hop.get("amount") or 0) > 1e-12
+                except Exception:
+                    hop_short = False
+                if not hop_short and float(hop.get("amount") or 0) > 1e-12:
+                    timeframe = hop_tf
+                    pos = hop
+                    has_position = True
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:

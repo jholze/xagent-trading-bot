@@ -669,6 +669,35 @@ def find_open_position_for_symbol(
     return matches[0]
 
 
+def bind_buy_timeframe(symbol: str, timeframe: str) -> str:
+    """If a long lot is already open on another TF, add there (no second lot).
+
+    Sells already hop TFs (#117). Gainer heat defaults to 1h while watchlist
+    lots sit on 4h — a BUY then opened a duplicate instead of DCA.
+    Short lots are left on *timeframe* so one-way risk can refuse the buy.
+    """
+    pref = str(timeframe or "4h").strip() or "4h"
+    found = find_open_position_for_symbol(symbol, preferred_timeframe=pref)
+    if not found:
+        return pref
+    lot_tf, pos = found
+    try:
+        from strategies.short_math import is_short
+
+        if is_short(pos) and float(pos.get("amount") or 0) > 1e-12:
+            return pref
+    except Exception:
+        pass
+    if float(pos.get("amount") or 0) <= 1e-12:
+        return pref
+    hop = str(lot_tf or pref).strip() or pref
+    if hop != pref:
+        from logger import log
+
+        log(f"buy TF hop {symbol} {pref}→{hop} (existing long)", "INFO")
+    return hop
+
+
 def init_position(symbol, timeframe):
     """Ensure position key exists on the active tenant store (never KeyError)."""
     _activate(_resolve_store_key())
