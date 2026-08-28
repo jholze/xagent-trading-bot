@@ -118,21 +118,20 @@ def handle(text: str) -> bool:
 
     if text.startswith("/sell"):
         parts = [p.strip() for p in text.split() if p.strip()]
+        all_lots = list_active_positions()
+        active = long_lots_for_sell(all_lots)
         if len(parts) == 1:
-            active = long_lots_for_sell(list_active_positions())
-            if not active:
+            if not all_lots:
                 send_telegram_message(t("no_positions_sell"))
                 return True
-            symbols = [position_symbol(p) for p in active]
+            symbols = [position_symbol(p) for p in all_lots]
             prices = get_prices_batch(symbols)
             activate_command("sell")
-            for chunk in chunk_positions_message(format_sell_list_message(active, prices)):
+            for chunk in chunk_positions_message(format_sell_list_message(all_lots, prices)):
                 send_telegram_message(chunk)
             return True
 
-        all_lots = list_active_positions()
-        active = long_lots_for_sell(all_lots)
-        if not active:
+        if not all_lots:
             send_telegram_message(t("no_positions_sell"))
             return True
 

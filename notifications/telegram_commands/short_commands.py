@@ -69,7 +69,7 @@ def _handle_short(text: str) -> bool:
         pos = get_position(sym, tf)
         snap = snapshot(pos, px)
         send_telegram_message(
-            f"🔴 <b>SHORT</b> <code>{sym}</code> {tf}\n"
+            f"🔻 <b>SHORT</b> <code>{sym}</code> {tf}\n"
             f"qty={result.amount:.6g} @ {px:g}  lev={snap.get('leverage')}×\n"
             f"margin≈{float(snap.get('margin') or 0):.0f}  liq≈{float(snap.get('liq_price') or 0):g}\n"
             f"{result.message or 'ok'}"
@@ -111,7 +111,7 @@ def _handle_cover(text: str) -> bool:
     result = _trading.refresh().execute_cover(sym, tf, px, amount=qty, source="manual")
     if result.executed:
         send_telegram_message(
-            f"⚪ <b>COVER</b> <code>{sym}</code>\n"
+            f"🔺 <b>COVER</b> <code>{sym}</code>\n"
             f"qty={result.amount:.6g} @ {px:g}  pnl={result.pnl:+.2f}\n"
             f"{result.message or 'ok'}"
         )

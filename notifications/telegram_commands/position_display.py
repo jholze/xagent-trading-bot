@@ -15,6 +15,9 @@ from data_manager import (
 from services.gate_balance import fetch_spot_holdings, fetch_usdt_balance, format_holdings_lines
 from services.order_service import source_label
 
+SHORT_GLYPH = "🔻"
+COVER_GLYPH = "🔺"
+
 
 def position_symbol(p: dict) -> str:
     sym = p["symbol"]
@@ -192,6 +195,7 @@ def _position_metrics(p: dict, price: float) -> dict:
                 "side": side,
                 "leverage": snap.get("leverage"),
                 "liq_price": snap.get("liq_price"),
+                "margin": margin,
             }
     except Exception:
         pass
@@ -316,7 +320,8 @@ def format_position_card(
 
     ticker_html = format_ticker_html(ticker, symbol_suffix="")
     pnl_icon = _pnl_emoji(m["unreal"])
-    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
+    is_short_side = m.get("side") == "short"
+    side_prefix = f"{SHORT_GLYPH} " if is_short_side else ""
     lock_badge = ""
     try:
         from strategies.position_lock import lock_summary
@@ -328,10 +333,10 @@ def format_position_card(
         pass
 
     value_part = ""
-    if m["value_usdt"] > 0:
+    if not is_short_side and m["value_usdt"] > 0:
         value_part = f" · Wert <b>${m['value_usdt']:,.0f}</b>"
     header = (
-        f"{prefix}<b>{ticker_html}</b>{side_badge}{lock_badge} {pnl_icon} "
+        f"{prefix}{side_prefix}<b>{ticker_html}</b>{lock_badge} {pnl_icon} "
         f"<code>{_fmt_pct(m['unreal_pct'])}</code>{value_part}"
     )
 
@@ -354,12 +359,16 @@ def format_position_card(
         sold_val = f"{m['sold_pct']:.0f}%" if not m["sold_warn"] else f"⚠️ {sold_raw_pct:.0f}%"
         sold_line = f"\n   └ Bereits verkauft: <b>{sold_val}</b>"
     lev_line = ""
-    if m.get("side") == "short":
+    short_meta = ""
+    if is_short_side:
         lev = m.get("leverage")
         liq = m.get("liq_price")
-        lev_part = f" · {float(lev):g}×" if lev else ""
-        liq_part = f" · liq {format_usdt_price(float(liq))}" if liq else ""
-        lev_line = f"{lev_part}{liq_part}"
+        margin = m.get("margin")
+        lev_s = f"{float(lev):g}×" if lev else ""
+        liq_s = f" · Liq {format_usdt_price(float(liq))}" if liq else ""
+        short_meta = (
+            f"   └ <b>SHORT {lev_s}</b> · Margin <b>${float(margin or 0):.0f}</b>{liq_s}\n"
+        )
 
     lock_line = ""
     try:
@@ -384,9 +393,10 @@ def format_position_card(
     if price_source == "missing" and m["value_usdt"] <= 0:
         missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
-    value_label = "Wert"
+    value_label = "Equity" if is_short_side else "Wert"
     return (
         f"{header}\n"
+        f"{short_meta}"
         f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}{lev_line}\n"
         f"   └ {value_label} <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
         f"{sold_line}{lock_line}{last_line}{missing_line}"
@@ -406,7 +416,8 @@ def format_position_compact_line(
     ticker_html = format_ticker_html(sym.split("/")[0], symbol_suffix="")
     m = _position_metrics(p, price)
     icon = _pnl_emoji(m["unreal"])
-    side_badge = " <b>S</b>" if m.get("side") == "short" else ""
+    is_short_side = m.get("side") == "short"
+    side_prefix = f"{SHORT_GLYPH} " if is_short_side else ""
     lock_badge = ""
     try:
         from strategies.position_lock import is_position_locked
@@ -417,9 +428,13 @@ def format_position_compact_line(
         pass
     missing = " · <i>kein Kurs</i>" if price_source == "missing" and m["value_usdt"] <= 0 else ""
     tf = p.get("timeframe", "4h")
+    if is_short_side:
+        value_part = f"· Margin <b>${float(m.get('margin') or 0):.0f}</b>"
+    else:
+        value_part = f"· <b>${m['value_usdt']:.0f}</b>"
     return (
-        f"<b>{index}.</b> {ticker_html}{side_badge}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
-        f"· <b>${m['value_usdt']:.0f}</b> · PnL <b>${m['unreal']:+.0f}</b>{missing}"
+        f"<b>{index}.</b> {side_prefix}{ticker_html}{lock_badge} <i>{tf}</i> {icon} <code>{_fmt_pct(m['unreal_pct'])}</code> "
+        f"{value_part} · PnL <b>${m['unreal']:+.0f}</b>{missing}"
     )
 
 
@@ -568,6 +583,7 @@ def format_portfolio_summary(
     trade_realized: float = None,
     positions_cost_basis: float = None,
     day_stats: dict = None,
+    short_count: int = 0,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     cfg = get_bot_config()
@@ -776,7 +792,25 @@ def format_portfolio_summary(
         + daily_line
     )
     if include_position_header and position_count > 0:
-        if pos_mv > 0:
+        short_n = max(0, int(short_count or 0))
+        long_n = max(0, int(position_count) - short_n)
+        if short_n > 0:
+            if pos_mv > 0:
+                body += t(
+                    "portfolio_positions_header_sides",
+                    count=position_count,
+                    longs=long_n,
+                    shorts=short_n,
+                    mark=money(pos_mv),
+                )
+            else:
+                body += t(
+                    "portfolio_positions_header_sides_na",
+                    count=position_count,
+                    longs=long_n,
+                    shorts=short_n,
+                )
+        elif pos_mv > 0:
             body += t(
                 "portfolio_positions_header",
                 count=position_count,
@@ -787,6 +821,67 @@ def format_portfolio_summary(
     elif include_position_header:
         body += t("portfolio_positions_empty_header")
     return body.rstrip() + ("\n" if body else "")
+
+
+def _render_listed_positions(
+    rows: list,
+    *,
+    numbered: bool,
+    sources: dict,
+    level: str,
+    show_tree: bool,
+    orders_grouped: dict,
+    max_events: int,
+) -> str:
+    from notifications.telegram_i18n import t
+
+    longs = [(p, px) for p, px in rows if _is_long_lot(p)]
+    shorts = [(p, px) for p, px in rows if not _is_long_lot(p)]
+    mixed = bool(longs) and bool(shorts)
+    compact = (level or "full").strip().lower() == "compact"
+
+    def fmt(index, p, price):
+        if compact:
+            return format_position_compact_line(
+                index, p, price, price_source=sources.get(position_symbol(p)),
+            )
+        sym = position_symbol(p)
+        tf = p.get("timeframe", "4h")
+        return format_position_card(
+            index,
+            p,
+            price,
+            numbered=numbered,
+            price_source=sources.get(sym),
+            show_trade_tree=show_tree,
+            position_orders=orders_grouped.get(f"{sym}|{tf}", []),
+            max_events=max_events,
+        )
+
+    n = 1
+    long_cards = []
+    for p, price in longs:
+        long_cards.append(fmt(n, p, price))
+        n += 1
+    short_cards = []
+    for p, price in shorts:
+        short_cards.append(fmt(n, p, price))
+        n += 1
+
+    def join(header: str, cards: list) -> str:
+        if not cards:
+            return ""
+        if compact:
+            lines = ([header] if header else []) + cards
+            return "\n".join(lines)
+        if header:
+            return header + "\n" + "\n\n".join(cards)
+        return "\n\n".join(cards)
+
+    long_h = t("portfolio_longs_header") if mixed else ""
+    short_h = t("portfolio_shorts_header") if (mixed or (short_cards and not long_cards)) else ""
+    parts = [join(long_h, long_cards), join(short_h, short_cards)]
+    return "\n\n".join(p for p in parts if p)
 
 
 def format_positions_message(
@@ -857,6 +952,7 @@ def format_positions_message(
         (p, float(prices.get(position_symbol(p), 0) or 0))
         for p in sorted_active
     ]
+    short_n = sum(1 for p in active if not _is_long_lot(p))
 
     if title:
         msg = f"<b>{title}</b>\n\n"
@@ -871,6 +967,7 @@ def format_positions_message(
             include_position_header=level != "summary",
             trade_realized=trade_realized,
             day_stats=day_stats,
+            short_count=short_n,
         ) + "\n"
 
     if gate_holdings:
@@ -881,41 +978,29 @@ def format_positions_message(
         return msg.rstrip()
 
     sources = price_sources or {}
-    if level == "compact":
-        compact_lines = [
-            format_position_compact_line(
-                i, p, price, price_source=sources.get(position_symbol(p)),
-            )
-            for i, (p, price) in enumerate(rows, 1)
-        ]
-        if compact_lines:
-            msg += "\n".join(compact_lines)
-        return msg.rstrip()
-
-    show_tree, max_events = _positions_display_config()
+    show_tree, max_events = False, 6
     orders_grouped = {}
-    if show_tree:
-        from data_manager import resolve_ledger_scope
-        from notifications.telegram_commands.position_ledger import orders_by_position_key
+    if level != "compact":
+        show_tree, max_events = _positions_display_config()
+        if show_tree:
+            from data_manager import resolve_ledger_scope
+            from notifications.telegram_commands.position_ledger import orders_by_position_key
 
-        orders_grouped = orders_by_position_key(resolve_ledger_scope())
+            orders_grouped = orders_by_position_key(resolve_ledger_scope())
 
-    cards = []
-    for i, (p, price) in enumerate(rows, 1):
-        sym = position_symbol(p)
-        tf = p.get("timeframe", "4h")
-        order_key = f"{sym}|{tf}"
-        cards.append(format_position_card(
-            i,
-            p,
-            price,
-            numbered=numbered,
-            price_source=sources.get(sym),
-            show_trade_tree=show_tree,
-            position_orders=orders_grouped.get(order_key, []),
-            max_events=max_events,
-        ))
-    msg += "\n\n".join(cards)
+    listed = _render_listed_positions(
+        rows,
+        numbered=numbered,
+        sources=sources,
+        level=level,
+        show_tree=show_tree,
+        orders_grouped=orders_grouped,
+        max_events=max_events,
+    )
+    if listed:
+        msg += listed
+    if level == "compact":
+        return msg.rstrip()
 
     if include_trades and not show_tree:
         msg += "\n\n<b>Letzte Trades</b>\n"
@@ -938,23 +1023,56 @@ def _is_long_lot(p: dict) -> bool:
         return str(p.get("side") or "long").strip().lower() != "short"
 
 
+def _is_short_lot(p: dict) -> bool:
+    return not _is_long_lot(p)
+
+
 def long_lots_for_sell(active: list) -> list:
     """ /sell only lists longs. Shorts are covered via /cover. """
     return [p for p in (active or []) if _is_long_lot(p)]
 
 
+def format_open_shorts_footer(active: list, prices: dict) -> str:
+    shorts = [p for p in (active or []) if _is_short_lot(p)]
+    if not shorts:
+        return ""
+    from notifications.telegram_i18n import t
+
+    bits = []
+    for p in shorts:
+        ticker = position_symbol(p).split("/")[0]
+        tf = p.get("timeframe") or "4h"
+        px = float((prices or {}).get(position_symbol(p), 0) or 0)
+        m = _position_metrics(p, px)
+        margin = m.get("margin")
+        if margin is None:
+            margin = max(0.0, float(m.get("value_usdt") or 0) - float(m.get("unreal") or 0))
+        bits.append(
+            f"{SHORT_GLYPH} <b>{ticker}</b> {tf} · Margin ${float(margin):.0f}"
+        )
+    joined = " · ".join(bits)
+    if len(shorts) == 1:
+        return "\n\n" + t("sell_shorts_footer_one", bits=joined)
+    return "\n\n" + t("sell_shorts_footer_many", n=len(shorts), bits=joined)
+
+
 def format_sell_list_message(active: list, prices: dict) -> str:
-    longs = long_lots_for_sell(active)
-    msg = format_positions_message(
-        longs,
-        prices,
-        load_trade_history_safe(),
-        include_trades=False,
-        numbered=True,
-        title="📍 Positionen verkaufen",
-    )
+    from notifications.telegram_i18n import t
     from notifications.telegram_commands.menu_i18n import context_footer, current_language
 
+    longs = long_lots_for_sell(active)
+    if longs:
+        msg = format_positions_message(
+            longs,
+            prices,
+            load_trade_history_safe(),
+            include_trades=False,
+            numbered=True,
+            title=t("sell_list_title"),
+        )
+    else:
+        msg = f"<b>{t('sell_list_title')}</b>\n\n{t('no_longs_to_sell')}"
+    msg += format_open_shorts_footer(active, prices)
     return msg + "\n\n" + context_footer("sell", current_language(), example="RAVE 30")
 
 
@@ -1188,6 +1306,65 @@ def resolve_portfolio_context(
     }
 
 
+def _lookup_open_lot(symbol: str):
+    try:
+        from strategies.positions import find_open_position_for_symbol
+
+        found = find_open_position_for_symbol(symbol)
+        if found:
+            return found[1]
+    except Exception:
+        pass
+    return None
+
+
+def _short_banner_details(result, amount_str: str, price_str: str, usdt: float) -> str:
+    from price_fetcher import format_usdt_price
+
+    lev = None
+    margin = None
+    liq = None
+    pos = _lookup_open_lot(result.symbol)
+    if pos:
+        try:
+            from strategies.short_math import snapshot
+
+            snap = snapshot(pos, float(result.price or 0))
+            lev = snap.get("leverage")
+            margin = snap.get("margin")
+            liq = snap.get("liq_price")
+        except Exception:
+            pass
+    if lev is None:
+        try:
+            lev = float(getattr(result, "leverage", 0) or 0) or 2.0
+        except (TypeError, ValueError):
+            lev = 2.0
+    if margin is None and usdt > 0:
+        margin = usdt / float(lev or 2)
+    liq_part = f" · Liq {format_usdt_price(float(liq))}" if liq else ""
+    return (
+        f"   └ <b>{float(lev):g}×</b> · Notional <b>${usdt:.0f}</b> · "
+        f"Margin <b>${float(margin or 0):.0f}</b>\n"
+        f"   └ <code>{amount_str}</code> @ {price_str}{liq_part}"
+    )
+
+
+def _cover_closed_line(result) -> str:
+    from notifications.telegram_i18n import t
+
+    remaining = None
+    pos = _lookup_open_lot(result.symbol)
+    if pos is not None:
+        try:
+            remaining = float(pos.get("amount") or 0)
+        except (TypeError, ValueError):
+            remaining = None
+    if remaining is not None and remaining > 1e-12:
+        return ""
+    return f"\n   └ {t('cover_closed_note')}"
+
+
 def format_trade_banner(result) -> str:
     from price_fetcher import format_token_amount, format_usdt_price
 
@@ -1205,19 +1382,18 @@ def format_trade_banner(result) -> str:
             f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
         )
     if result.order_type == "SHORT":
-        return (
-            f"{t('short_done', sym=sym)}\n"
-            f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>"
-        )
+        return f"{t('short_done', sym=sym)}\n{_short_banner_details(result, amount_str, price_str, usdt)}"
     pnl_part = (
         t("sell_done_pnl", pnl=f"{float(result.pnl):+.1f}")
         if result.pnl is not None
         else ""
     )
     if result.order_type == "COVER":
+        closed = _cover_closed_line(result)
         return (
             f"{t('cover_done', sym=sym)}\n"
             f"   └ <code>{amount_str}</code> @ {price_str} · <b>${usdt:.0f}</b>{pnl_part}"
+            f"{closed}"
         )
     return (
         f"{t('sell_done', sym=sym)}\n"

@@ -227,6 +227,21 @@ def estimate_nav_at_day_start(
     return nav
 
 
+def _today_short_cover_bit(day_stats: dict | None) -> str:
+    if not day_stats:
+        return ""
+    shorts = int(day_stats.get("shorts") or 0)
+    covers = int(day_stats.get("covers") or 0)
+    if not shorts and not covers:
+        return ""
+    bits = []
+    if shorts:
+        bits.append(f"{shorts} Shorts")
+    if covers:
+        bits.append(f"{covers} Cover")
+    return " / " + " / ".join(bits)
+
+
 def format_daily_nav_line(
     trading_mode: str = None,
     total_value: float = None,
@@ -255,8 +270,9 @@ def format_daily_nav_line(
 
     # Interactive portfolio always prefers the cheap path unless caller forces full.
     if lightweight or day_stats is not None:
+        extra = _today_short_cover_bit(day_stats)
         return (
-            f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
+            f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe{extra} · "
             f"Heute Verk. <b>{_signed_usd(realized_today)}</b>"
         )
 
@@ -267,8 +283,9 @@ def format_daily_nav_line(
         total_value = float(_portfolio_snapshot(mode).get("total_value", 0) or 0)
     nav_delta = total_value - nav_start
 
+    extra = _today_short_cover_bit(day_stats)
     return (
-        f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe · "
+        f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe{extra} · "
         f"Heute Verk. <b>{_signed_usd(realized_today)}</b> · "
         f"NAV <b>${total_value:,.0f}</b> ({_signed_usd(nav_delta)} vs. Tagesstart ${nav_start:,.0f})"
     )

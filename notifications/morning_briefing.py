@@ -150,6 +150,10 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
     total_value = float(portfolio.get("total_value", 0) or 0)
     balance = float(portfolio.get("balance", stats["cash"]) or 0)
     open_pos = int(portfolio.get("open_positions", stats["open_count"]) or 0)
+    short_n = int(stats.get("shorts") or 0)
+    cover_n = int(stats.get("covers") or 0)
+    short_bit = f" / {short_n} SHORT / {cover_n} COVER" if (short_n or cover_n) else ""
+    dca_bit = f", {stats['dca_buys']} DCA" if stats["dca_buys"] else ""
 
     msg = (
         f"<b>☀️ Morning Briefing</b>\n"
@@ -166,7 +170,7 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         f"sells {risk.get('daily_sells', 0)}/{risk.get('max_daily_sells', 0) or '∞'}\n\n"
         f"<b>Aktivität 24h</b>\n"
         f"Trades {len(stats['trades'])} ({stats['buys']} BUY / {stats['sells']} SELL"
-        f"{f', {stats['dca_buys']} DCA' if stats['dca_buys'] else ''})\n"
+        f"{short_bit}{dca_bit})\n"
         f"Sell-PnL {stats['sell_pnl']:+.1f} USDT · "
         f"Orders {len(stats['orders'])} ({stats['filled_orders']} filled / "
         f"{stats['rejected_orders']} rejected)\n"

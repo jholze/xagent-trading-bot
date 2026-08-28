@@ -11,6 +11,7 @@ from services.order_service import (
     calendar_month_bounds,
     format_order_line,
     ledger_label,
+    order_side_glyph,
 )
 from notifications.telegram_commands.order_detail_view import format_order_detail_rich
 from notifications.telegram_commands.usage_hints import hint
@@ -59,12 +60,26 @@ def _perf_lines(stats: dict, *, period_label: str) -> list[str]:
     buy_usdt = float(stats.get("buy_usdt") or 0)
     sell_usdt = float(stats.get("sell_usdt") or 0)
     pnl = float(stats.get("realized_pnl") or 0)
-    wins = int(stats.get("sell_wins") or 0)
-    losses = int(stats.get("sell_losses") or 0)
+    if "wins" in stats:
+        wins = int(stats.get("wins") or 0)
+        losses = int(stats.get("losses") or 0)
+    else:
+        wins = int(stats.get("sell_wins") or 0)
+        losses = int(stats.get("sell_losses") or 0)
+    extra = ""
+    shorts = int(stats.get("shorts") or 0)
+    covers = int(stats.get("covers") or 0)
+    if shorts or covers:
+        bits = []
+        if shorts:
+            bits.append(f"🔻 {shorts} Shorts")
+        if covers:
+            bits.append(f"🔺 {covers} Cover")
+        extra = " · " + " · ".join(bits)
     return [
         (
             f"🟢 {buys} Käufe ({_fmt_usdt(buy_usdt)}) · "
-            f"🔴 {sells} Verkäufe ({_fmt_usdt(sell_usdt)})"
+            f"🔴 {sells} Verkäufe ({_fmt_usdt(sell_usdt)}){extra}"
         ),
         f"{period_label}: <b>{_fmt_pnl(pnl)}</b>  ({wins}W / {losses}L)",
     ]
@@ -141,9 +156,9 @@ def _order_number_buttons(
         seq = order.get("display_seq")
         if not seq:
             continue
-        side = (order.get("side") or "?")[0].upper()
+        mark = order_side_glyph(order.get("side")) or (order.get("side") or "?")[:1].upper()
         row.append({
-            "text": f"#{seq} {side}",
+            "text": f"#{seq} {mark}",
             "callback_data": f"order_detail:{scope}:{seq}:{page}:{view}",
         })
         if len(row) >= _BUTTONS_PER_ROW:
@@ -235,10 +250,14 @@ def _chunk_lines(header: str, body_lines: list[str], *, limit: int = _TELEGRAM_C
     return chunks or [header]
 
 
-def _split_orders_by_side(orders: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
-    """Partition into (buys, sells, other) preserving relative order."""
+def _split_orders_by_side(
+    orders: list[dict],
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
+    """Partition into (buys, sells, shorts, covers, other) preserving relative order."""
     buys: list[dict] = []
     sells: list[dict] = []
+    shorts: list[dict] = []
+    covers: list[dict] = []
     other: list[dict] = []
     for o in orders:
         side = (o.get("side") or "").lower()
@@ -246,9 +265,13 @@ def _split_orders_by_side(orders: list[dict]) -> tuple[list[dict], list[dict], l
             buys.append(o)
         elif side == "sell":
             sells.append(o)
+        elif side == "short":
+            shorts.append(o)
+        elif side == "cover":
+            covers.append(o)
         else:
             other.append(o)
-    return buys, sells, other
+    return buys, sells, shorts, covers, other
 
 
 def _body_lines_by_side(
@@ -256,8 +279,8 @@ def _body_lines_by_side(
     *,
     show_block_reason: bool = False,
 ) -> list[str]:
-    """Build list lines split into Käufe / Verkäufe sections."""
-    buys, sells, other = _split_orders_by_side(orders)
+    """Build list lines split into Käufe / Verkäufe / Shorts / Cover sections."""
+    buys, sells, shorts, covers, other = _split_orders_by_side(orders)
     lines: list[str] = []
 
     def _section(title: str, items: list[dict]) -> None:
@@ -269,10 +292,11 @@ def _body_lines_by_side(
         for o in items:
             lines.append(format_order_line(o, show_block_reason=show_block_reason))
 
-    # Header order: 🟢 Käufe · 🔴 Verkäufe — same in the list
     _section("🟢 Käufe", buys)
     _section("🔴 Verkäufe", sells)
-    _section("· Sonstige", other)
+    _section(t("orders_section_shorts"), shorts)
+    _section(t("orders_section_covers"), covers)
+    _section(t("orders_section_other"), other)
     return lines
 
 
@@ -322,9 +346,9 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     body.extend(footer_bits)
 
     chunks = _chunk_lines(header, body, limit=_TELEGRAM_CHUNK_LIMIT)
-    # Buttons: buys then sells (matches list sections)
-    buys, sells, other = _split_orders_by_side(orders)
-    button_orders = buys + sells + other
+    # Buttons: same order as list sections
+    buys, sells, shorts, covers, other = _split_orders_by_side(orders)
+    button_orders = buys + sells + shorts + covers + other
     buttons = _order_number_buttons(view, ledger.scope, button_orders, page=1)
 
     t_tg0 = time.perf_counter()

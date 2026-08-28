@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import os
 import sys
 import tempfile
@@ -36,6 +37,75 @@ class TestOrderLedgerV2Pure(unittest.TestCase):
         self.assertAlmostEqual(s["realized_pnl"], 10.0)
         self.assertEqual(s["sell_wins"], 1)
         self.assertEqual(s["sell_losses"], 1)
+        self.assertEqual(s["wins"], 1)
+        self.assertEqual(s["losses"], 1)
+        self.assertEqual(s["unknown_side"], 0)
+        self.assertEqual(
+            s["filled"],
+            s["buys"] + s["sells"] + s["shorts"] + s["covers"] + s["unknown_side"],
+        )
+
+    def test_missing_status_counts_as_filled_empty_and_zero_do_not(self):
+        s = stats_from_filled_orders([
+            {"side": "buy", "execution": {"usdt": 10}},
+            {"status": None, "side": "buy", "execution": {"usdt": 10}},
+            {"status": "", "side": "buy", "execution": {"usdt": 10}},
+            {"status": 0, "side": "buy", "execution": {"usdt": 10}},
+            {"status": "FILLED", "side": "buy", "execution": {"usdt": 10}},
+        ])
+        self.assertEqual(s["filled"], 3)
+        self.assertEqual(s["buys"], 3)
+
+    def test_enum_status_and_side_do_not_crash(self):
+        class Status(enum.Enum):
+            FILLED = "filled"
+
+        class Side(enum.Enum):
+            SELL = "sell"
+
+        s = stats_from_filled_orders([
+            {"status": Status.FILLED, "side": Side.SELL, "pnl": 4, "execution": {"usdt": 8}},
+        ])
+        self.assertEqual(s["filled"], 1)
+        self.assertEqual(s["sells"], 1)
+        self.assertEqual(s["sell_wins"], 1)
+
+    def test_unknown_side_counted_logged_and_keeps_filled_identity(self):
+        with self.assertLogs("storage.order_ledger_v2", level="WARNING") as cm:
+            s = stats_from_filled_orders([
+                {"status": "filled", "side": "hedge", "id": "x1", "execution": {"usdt": 9}},
+                {"status": "filled", "side": "buy", "execution": {"usdt": 1}},
+            ])
+        self.assertEqual(s["filled"], 2)
+        self.assertEqual(s["buys"], 1)
+        self.assertEqual(s["unknown_side"], 1)
+        self.assertEqual(
+            s["filled"],
+            s["buys"] + s["sells"] + s["shorts"] + s["covers"] + s["unknown_side"],
+        )
+        self.assertTrue(any("x1" in rec and "hedge" in rec for rec in cm.output))
+
+    def test_bad_pnl_logged_counts_zero(self):
+        with self.assertLogs("storage.order_ledger_v2", level="WARNING") as cm:
+            s = stats_from_filled_orders([
+                {"status": "filled", "side": "sell", "id": "p1", "pnl": "nope", "execution": {"usdt": 5}},
+            ])
+        self.assertEqual(s["realized_pnl"], 0.0)
+        self.assertEqual(s["sells"], 1)
+        self.assertTrue(any("p1" in rec and "nope" in rec for rec in cm.output))
+
+    def test_cover_pnl_in_wins_not_sell_wins(self):
+        s = stats_from_filled_orders([
+            {"status": "filled", "side": "cover", "pnl": 5, "execution": {"usdt": 10}},
+            {"status": "filled", "side": "cover", "pnl": -2, "execution": {"usdt": 10}},
+            {"status": "filled", "side": "sell", "pnl": 1, "execution": {"usdt": 3}},
+        ])
+        self.assertAlmostEqual(s["realized_pnl"], 4.0)
+        self.assertEqual(s["wins"], 2)
+        self.assertEqual(s["losses"], 1)
+        self.assertEqual(s["sell_wins"], 1)
+        self.assertEqual(s["sell_losses"], 0)
+        self.assertEqual(s["covers"], 2)
 
 
 class TestMemoryOrderLedgerV2(unittest.TestCase):

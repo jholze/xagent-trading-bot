@@ -53,6 +53,9 @@ class TestOrderServiceReadPath(unittest.TestCase):
         self.assertAlmostEqual(stats["realized_pnl"], 7.5)
         self.assertEqual(stats["sell_wins"], 1)
         self.assertEqual(stats["sell_losses"], 1)
+        self.assertEqual(stats["wins"], 1)
+        self.assertEqual(stats["losses"], 1)
+        self.assertEqual(stats["unknown_side"], 0)
 
     def test_window_early_stop_skips_old_tail(self):
         now = datetime(2026, 7, 24, 15, 0, 0)

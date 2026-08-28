@@ -214,11 +214,25 @@ def _format_ts_short(value: str) -> str:
 
 
 def _trade_date_label(side: str) -> str:
-    if (side or "").lower() == "buy":
+    raw = (side or "").lower()
+    if raw == "buy":
         return "Kaufdatum"
-    if (side or "").lower() == "sell":
+    if raw == "sell":
         return "Verkaufdatum"
+    if raw == "short":
+        return "Short-Datum"
+    if raw == "cover":
+        return "Cover-Datum"
     return "Datum"
+
+
+def order_side_glyph(side: str) -> str:
+    return {
+        "buy": "🟢",
+        "sell": "🔴",
+        "short": "🔻",
+        "cover": "🔺",
+    }.get((side or "").strip().lower(), "")
 
 
 def _order_trade_ts(order: dict) -> str:
@@ -818,40 +832,14 @@ class OrderService:
 
     @classmethod
     def stats_from_filled_orders(cls, orders: list) -> dict:
-        """Pure stats from an already-filtered filled order list (no I/O)."""
-        counts = {
-            "filled": 0,
-            "buys": 0,
-            "sells": 0,
-            "buy_usdt": 0.0,
-            "sell_usdt": 0.0,
-            "realized_pnl": 0.0,
-            "sell_wins": 0,
-            "sell_losses": 0,
-        }
-        for o in orders:
-            st = (o.get("status") or "filled").lower()
-            if st != "filled":
-                continue
-            counts["filled"] += 1
-            side = (o.get("side") or "").lower()
-            notional = cls._order_notional_usdt(o)
-            if side == "buy":
-                counts["buys"] += 1
-                counts["buy_usdt"] += notional
-            elif side == "sell":
-                counts["sells"] += 1
-                counts["sell_usdt"] += notional
-                try:
-                    pnl = float(o["pnl"]) if o.get("pnl") is not None else 0.0
-                except (TypeError, ValueError):
-                    pnl = 0.0
-                counts["realized_pnl"] += pnl
-                if pnl > 0:
-                    counts["sell_wins"] += 1
-                elif pnl < 0:
-                    counts["sell_losses"] += 1
-        return counts
+        """Pure stats from an already-filtered filled order list (no I/O).
+
+        Implementation lives in ``storage.order_ledger_v2.stats_from_filled_orders``
+        so blob and v2 day-stats stay on one code path.
+        """
+        from storage.order_ledger_v2 import stats_from_filled_orders as _stats
+
+        return _stats(orders)
 
     @staticmethod
     def stats_blocked_from_orders(orders: list) -> dict:
@@ -910,11 +898,18 @@ class OrderService:
                         "filled": int(stats.get("filled") or 0),
                         "buys": int(stats.get("buys") or 0),
                         "sells": int(stats.get("sells") or 0),
+                        "shorts": int(stats.get("shorts") or 0),
+                        "covers": int(stats.get("covers") or 0),
                         "buy_usdt": float(stats.get("buy_usdt") or 0),
                         "sell_usdt": float(stats.get("sell_usdt") or 0),
+                        "short_usdt": float(stats.get("short_usdt") or 0),
+                        "cover_usdt": float(stats.get("cover_usdt") or 0),
                         "realized_pnl": float(stats.get("realized_pnl") or 0),
                         "sell_wins": int(stats.get("sell_wins") or 0),
                         "sell_losses": int(stats.get("sell_losses") or 0),
+                        "wins": int(stats.get("wins") or 0),
+                        "losses": int(stats.get("losses") or 0),
+                        "unknown_side": int(stats.get("unknown_side") or 0),
                     }
                 # Partial dual-write: parity with unioned day list
                 return self.stats_from_filled_orders(self.list_day_filled_all(now=now))
@@ -968,7 +963,7 @@ class OrderService:
         self.expire_stale_pending()
         data = self._load()
         cutoff = datetime.now() - timedelta(hours=24)
-        counts = {"filled": 0, "buys": 0, "sells": 0}
+        counts = {"filled": 0, "buys": 0, "sells": 0, "shorts": 0, "covers": 0}
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
@@ -983,6 +978,10 @@ class OrderService:
                 counts["buys"] += 1
             elif side == "sell":
                 counts["sells"] += 1
+            elif side == "short":
+                counts["shorts"] += 1
+            elif side == "cover":
+                counts["covers"] += 1
         return counts
 
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:
@@ -1117,8 +1116,15 @@ def format_order_line(order: dict, *, show_block_reason: bool = False) -> str:
         side = t("order_side_buy")
     elif side_raw == "sell":
         side = t("order_side_sell")
+    elif side_raw == "short":
+        side = t("order_side_short")
+    elif side_raw == "cover":
+        side = t("order_side_cover")
     else:
         side = (order.get("side") or "?").upper()
+    glyph = order_side_glyph(side_raw)
+    if glyph:
+        side = f"{glyph} {side}"
     seq = order.get("display_seq", "?")
     src = source_label(order.get("source", "auto"))
     usdt = _order_usdt_display(order)
@@ -1151,9 +1157,12 @@ def format_order_detail(order: dict) -> str:
     risk = order.get("risk", {})
     exe = order.get("execution", {})
     ts = order.get("timestamps", {})
+    side_raw = order.get("side", "")
+    side_glyph = order_side_glyph(side_raw)
+    side_txt = f"{side_glyph} {str(side_raw).upper()}" if side_glyph else str(side_raw).upper()
     lines = [
         f"<b>Order #{order.get('display_seq')} — {order.get('status', '').upper()}</b>",
-        f"{order.get('side', '').upper()} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
+        f"{side_txt} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · {ledger_label(order.get('ledger_scope'))}",
     ]
     if order.get("exit_source"):
         lines.append(f"<b>Exit</b>  <code>{order.get('exit_source')}</code>")
