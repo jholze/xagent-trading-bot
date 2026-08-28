@@ -218,7 +218,7 @@ def format_recent_trade_line(trade: dict) -> str:
 
     sym = (trade.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
-    typ = trade.get("type", "?")
+    typ = str(trade.get("type", "?") or "?")
     src = _trade_source_label(trade.get("source", "auto"))
     if typ == "BUY":
         usdt = float(trade.get("usdt_amount", 0) or 0)
@@ -226,25 +226,45 @@ def format_recent_trade_line(trade: dict) -> str:
         usdt = float(trade.get("usdt_received", 0) or trade.get("usdt_amount", 0) or 0)
     pnl = trade.get("pnl")
     pnl_part = f" · PnL <b>${float(pnl):+.1f}</b>" if pnl is not None else ""
-    return f"  · {typ} <b>{sym_html}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
+    glyph = {"SHORT": "🔻 ", "COVER": "🔺 "}.get(typ.upper(), "")
+    return f"  · {glyph}{typ} <b>{sym_html}</b> · ${usdt:.0f}{pnl_part} · <i>{src}</i>"
 
 
 def format_executed_cycle_line(result: dict) -> str:
-    """One line for a cycle-executed trade (BUY/SELL) including notional + PnL."""
+    """One line for a cycle-executed trade including notional + PnL."""
     from notifications.coin_links import format_ticker_html
 
     sym = (result.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
     order_type = result.get("order_type") or result.get("normalized_action") or "?"
+    ot = str(order_type).upper()
     usdt = result.get("usdt_amount")
     if usdt is None:
         usdt = result.get("usdt")
-    parts = [f"• {sym_html} {order_type}"]
+    if ot == "SHORT":
+        parts = [f"• 🔻 {sym_html} SHORT"]
+    elif ot == "COVER":
+        parts = [f"• 🔺 {sym_html} COVER"]
+    else:
+        parts = [f"• {sym_html} {order_type}"]
     try:
         if usdt is not None and float(usdt) > 0:
             parts.append(f"${float(usdt):.0f}")
     except (TypeError, ValueError):
         pass
+    if ot == "SHORT":
+        try:
+            lev = result.get("leverage")
+            if lev:
+                parts.append(f"{float(lev):g}×")
+        except (TypeError, ValueError):
+            pass
+        try:
+            margin = result.get("margin")
+            if margin:
+                parts.append(f"Margin ${float(margin):.0f}")
+        except (TypeError, ValueError):
+            pass
     if result.get("pnl") is not None:
         try:
             parts.append(f"PnL <b>${float(result['pnl']):+.1f}</b>")
@@ -274,6 +294,17 @@ def recent_orders_lines(hours: float = 24, limit: int = 5) -> list[str]:
     if not orders:
         return [f"  <i>Keine Orders in den letzten {int(hours)}h ({ledger_label()}).</i>"]
     return [f"  {format_order_line(o)}" for o in orders]
+
+
+def _cycle_side_suffix(day_stats: dict) -> str:
+    shorts = int((day_stats or {}).get("shorts") or 0)
+    covers = int((day_stats or {}).get("covers") or 0)
+    extra = ""
+    if shorts:
+        extra += f" · 🔻{shorts}"
+    if covers:
+        extra += f" · 🔺{covers}"
+    return extra
 
 
 def _cycle_summary_style() -> str:
@@ -416,6 +447,7 @@ def build_cycle_summary(
                     sells=day_stats["sells"],
                     rejected=attempts["rejected"],
                 )
+                + _cycle_side_suffix(day_stats)
             )
         else:
             lines.append(
@@ -424,6 +456,7 @@ def build_cycle_summary(
                     buys=day_stats["buys"],
                     sells=day_stats["sells"],
                 )
+                + _cycle_side_suffix(day_stats)
             )
 
         if executed_trades:
@@ -496,6 +529,7 @@ def build_cycle_summary(
             buys=day_stats["buys"],
             sells=day_stats["sells"],
         )
+        + _cycle_side_suffix(day_stats)
     )
     blocked = attempts["rejected"] + attempts["cancelled"] + attempts["pending_confirmation"]
     if blocked:

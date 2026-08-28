@@ -194,6 +194,10 @@ class TestPositionDisplay(unittest.TestCase):
         msg = format_sell_list_message(active, {"ARIA/USDT": 0.05, "H/USDT": 0.04})
         self.assertIn("ARIA", msg)
         self.assertNotIn("H/USDT", msg)
+        self.assertIn("Short offen", msg)
+        self.assertIn("/cover", msg)
+        self.assertIn("🔻", msg)
+        self.assertIn("H", msg)
 
     def test_positions_sorted_by_value(self):
         active = [
@@ -250,9 +254,15 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("PnL", format_trade_banner(sell))
         short = TradeResult(True, "SHORT", "H/USDT", amount=10, price=0.04, usdt_amount=20)
         cover = TradeResult(True, "COVER", "H/USDT", amount=10, price=0.03, usdt_amount=15, pnl=5)
-        self.assertIn("Short", format_trade_banner(short))
-        self.assertNotIn("Verkauf ausgeführt", format_trade_banner(short))
-        self.assertIn("Cover", format_trade_banner(cover))
+        short_msg = format_trade_banner(short)
+        cover_msg = format_trade_banner(cover)
+        self.assertIn("Short", short_msg)
+        self.assertIn("🔻", short_msg)
+        self.assertIn("Notional", short_msg)
+        self.assertIn("Margin", short_msg)
+        self.assertNotIn("Verkauf ausgeführt", short_msg)
+        self.assertIn("Cover", cover_msg)
+        self.assertIn("🔺", cover_msg)
 
     def test_trade_line_shows_manual_source(self):
         line = _trade_line({

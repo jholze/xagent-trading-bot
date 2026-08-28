@@ -104,8 +104,10 @@ def _buy_label(signal: str, dca_index: int, *, new_cycle: bool = False) -> str:
 def _event_icon(kind: str, label: str, realized_usd: float | None = None) -> str:
     """Sell dots follow realized PnL: green profit, red loss, yellow flat."""
     if kind == "short" or label == "Short":
-        return "🔴"
-    if kind in ("sell", "cover") or label == "Cover":
+        return "🔻"
+    if kind == "cover" or label == "Cover":
+        return "🔺"
+    if kind == "sell":
         if realized_usd is None:
             return "⚪"
         if realized_usd > 0.05:

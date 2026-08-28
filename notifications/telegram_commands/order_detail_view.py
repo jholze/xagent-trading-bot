@@ -18,6 +18,7 @@ from services.order_service import (
     _format_ts_short,
     _trade_date_label,
     ledger_label,
+    order_side_glyph,
     source_label,
 )
 
@@ -48,7 +49,10 @@ def _selected_order_block(order: dict) -> list[str]:
 
     sym = (order.get("symbol") or "").replace("/USDT", "")
     sym_html = format_ticker_html(sym, symbol_suffix="")
-    side = (order.get("side") or "?").upper()
+    side_raw = order.get("side") or "?"
+    side = str(side_raw).upper()
+    glyph = order_side_glyph(side_raw)
+    side_txt = f"{glyph} {side}" if glyph else side
     status = (order.get("status") or "").upper()
     seq = order.get("display_seq", "?")
     tf = order.get("timeframe") or "4h"
@@ -60,7 +64,7 @@ def _selected_order_block(order: dict) -> list[str]:
 
     lines = [
         f"<b>📋 Order #{seq}</b>  {_status_icon(order.get('status'))} {status}",
-        f"{side} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · "
+        f"{side_txt} <b>{sym_html}</b> · {source_label(order.get('source', 'auto'))} · "
         f"{ledger_label(order.get('ledger_scope'))} · <code>{tf}</code>",
     ]
     if signal:

@@ -8,12 +8,15 @@ dual-write remains in OrderService until full cutover.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Protocol
+
+logger = logging.getLogger(__name__)
 
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
@@ -226,49 +229,131 @@ def empty_day_stats(
         "filled": 0,
         "buys": 0,
         "sells": 0,
+        "shorts": 0,
+        "covers": 0,
         "buy_usdt": 0.0,
         "sell_usdt": 0.0,
+        "short_usdt": 0.0,
+        "cover_usdt": 0.0,
         "realized_pnl": 0.0,
         "sell_wins": 0,
         "sell_losses": 0,
+        "wins": 0,
+        "losses": 0,
+        "unknown_side": 0,
         "blocked": 0,
         "blocked_by_status": {},
     }
 
 
+# side -> (count_key, usdt_key, contributes_realized_pnl)
+_SIDE_STATS: dict[str, tuple[str, str, bool]] = {
+    "buy": ("buys", "buy_usdt", False),
+    "sell": ("sells", "sell_usdt", True),
+    "short": ("shorts", "short_usdt", False),
+    "cover": ("covers", "cover_usdt", True),
+}
+
+
+def _token(value: object | None) -> str:
+    """Lowercase status/side token. Safe for str, Enum, int. None → empty."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().lower()
+    inner = getattr(value, "value", None)
+    if inner is not None and inner is not value:
+        return _token(inner)
+    try:
+        return str(value).strip().lower()
+    except Exception:
+        return ""
+
+
+def _order_ref(order: dict) -> object:
+    return order.get("id") or order.get("display_seq") or "?"
+
+
+def _parse_order_pnl(order: dict) -> float:
+    """Sell/cover realized pnl. Invalid values log and count as 0.0."""
+    raw = order.get("pnl")
+    if raw is None:
+        return 0.0
+    if isinstance(raw, dict):
+        raw = raw.get("usdt", raw.get("realized", raw.get("pnl")))
+        if raw is None:
+            return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("order pnl parse failed id=%s raw=%r", _order_ref(order), raw)
+        return 0.0
+
+
 def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
-    """Pure filled-trade aggregates (same shape as OrderService.stats_from_filled_orders)."""
-    counts = {
+    """Aggregate filled-trade counts, notionals, and realized PnL.
+
+    Included: status ``filled``, or a *missing* status (``None`` / absent key).
+    ``""``, ``0``, and any other present value are not filled.
+
+    Per filled order:
+      buys / sells / shorts / covers — known-side counts
+      *_usdt — notional from execution/request
+      realized_pnl — sum of sell + cover pnl
+      sell_wins / sell_losses — sell pnl sign only (legacy)
+      wins / losses — sell + cover pnl sign
+      unknown_side — filled orders whose side is not in the mapping
+        (so filled == buys+sells+shorts+covers+unknown_side)
+    """
+    counts: dict[str, int | float] = {
         "filled": 0,
         "buys": 0,
         "sells": 0,
+        "shorts": 0,
+        "covers": 0,
         "buy_usdt": 0.0,
         "sell_usdt": 0.0,
+        "short_usdt": 0.0,
+        "cover_usdt": 0.0,
         "realized_pnl": 0.0,
         "sell_wins": 0,
         "sell_losses": 0,
+        "wins": 0,
+        "losses": 0,
+        "unknown_side": 0,
     }
     for o in orders:
-        st = (o.get("status") or "filled").lower()
-        if st != "filled":
+        if not isinstance(o, dict):
+            continue
+        raw_status = o.get("status")
+        if raw_status is not None and _token(raw_status) != "filled":
             continue
         counts["filled"] += 1
-        side = (o.get("side") or "").lower()
+        side = _token(o.get("side"))
+        spec = _SIDE_STATS.get(side)
         notional = order_notional_usdt(o)
-        if side == "buy":
-            counts["buys"] += 1
-            counts["buy_usdt"] += notional
-        elif side == "sell":
-            counts["sells"] += 1
-            counts["sell_usdt"] += notional
-            try:
-                pnl = float(o["pnl"]) if o.get("pnl") is not None else 0.0
-            except (TypeError, ValueError):
-                pnl = 0.0
-            counts["realized_pnl"] += pnl
-            if pnl > 0:
+        if spec is None:
+            counts["unknown_side"] += 1
+            logger.warning(
+                "order unknown side id=%s side=%r",
+                _order_ref(o),
+                o.get("side"),
+            )
+            continue
+        count_key, usdt_key, has_pnl = spec
+        counts[count_key] += 1
+        counts[usdt_key] += notional
+        if not has_pnl:
+            continue
+        pnl = _parse_order_pnl(o)
+        counts["realized_pnl"] += pnl
+        if pnl > 0:
+            counts["wins"] += 1
+            if side == "sell":
                 counts["sell_wins"] += 1
-            elif pnl < 0:
+        elif pnl < 0:
+            counts["losses"] += 1
+            if side == "sell":
                 counts["sell_losses"] += 1
     return counts
 

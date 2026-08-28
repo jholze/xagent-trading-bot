@@ -106,7 +106,7 @@ def filled_order_to_trade(order: dict) -> dict | None:
     if str(order.get("status") or "").lower() != "filled":
         return None
     side = str(order.get("side") or "").upper()
-    if side not in ("BUY", "SELL"):
+    if side not in ("BUY", "SELL", "SHORT", "COVER"):
         return None
     ts = _order_window_ts(order)
     if ts is None:
@@ -129,7 +129,7 @@ def filled_order_to_trade(order: dict) -> dict | None:
         "symbol": order.get("symbol") or "?",
         "timestamp": ts_raw or ts.isoformat(),
         "usdt_amount": usdt_f,
-        "usdt_received": usdt_f if side == "SELL" else None,
+        "usdt_received": usdt_f if side in ("SELL", "COVER") else None,
         "source": order.get("source") or "order",
         "pnl": pnl,
         "_from_order": True,
@@ -460,11 +460,13 @@ def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
     th = load_trade_history_doc()
     buys = sum(1 for t in window_trades if t["type"] == "BUY")
     sells = sum(1 for t in window_trades if t["type"] == "SELL")
+    shorts = sum(1 for t in window_trades if t["type"] == "SHORT")
+    covers = sum(1 for t in window_trades if t["type"] == "COVER")
     dca_buys = sum(
         1 for t in window_trades
         if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
     )
-    sell_pnl = sum((t.get("pnl") or 0) for t in window_trades if t["type"] == "SELL")
+    sell_pnl = sum((t.get("pnl") or 0) for t in window_trades if t["type"] in ("SELL", "COVER"))
     filled_orders = sum(1 for o in window_orders if o["status"] == "filled")
     rejected_orders = sum(1 for o in window_orders if o["status"] == "rejected")
     open_count, pos_value = open_positions_summary(bot_dir)
@@ -475,6 +477,8 @@ def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
         "orders": window_orders,
         "buys": buys,
         "sells": sells,
+        "shorts": shorts,
+        "covers": covers,
         "dca_buys": dca_buys,
         "sell_pnl": sell_pnl,
         "filled_orders": filled_orders,
