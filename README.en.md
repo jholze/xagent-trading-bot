@@ -159,8 +159,8 @@ notifications/           # Telegram commands + user_explain.py
 hermes/                  # Self-improvement agent
 config.json              # Strategies, limits, modes
 DOCUMENTATION.en.md      # Full docs (incl. §17 feature-branch workflow, §19 Grok MCP)
-HERMES_DOCUMENTATION.md  # Hermes for beginners (EN)
-HERMES_DOKUMENTATION.md  # Hermes für Einsteiger (DE)
+docs/hermes/HERMES_DOCUMENTATION.md  # Hermes for beginners (EN)
+docs/hermes/HERMES_DOKUMENTATION.md  # Hermes für Einsteiger (DE)
 plans/mcp-xagent.md      # Grok MCP sidecar (paper, Railway test)
 ```
 

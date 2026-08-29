@@ -308,4 +308,4 @@ Then V2 wire Mongo. Do **not** wait for a separate inventory ticket.
 - RAG bus: #72 (closed)  
 - Golem (UX only): https://github.com/CyberMagician/Project_Golem  
 - Memory ops: `intelligence/memory/OPS.md`  
-- Hermes RAG: `HERMES_DOKUMENTATION.md`  
+- Hermes RAG: `docs/hermes/HERMES_DOKUMENTATION.md`  

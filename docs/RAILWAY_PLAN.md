@@ -1,7 +1,7 @@
 # Railway Deployment Plan — X-Agent Trading Bot
 
 **Status:** Staging deploy live on Railway (`xagent-test`, branch `staging`)  
-**Last updated:** 2026-07-09
+**Last updated:** 2026-08-29
 **Branch baseline:** `staging` → Railway test instance; `main` → production (later)
 
 ---
@@ -17,6 +17,26 @@
 Deploy staging: `bash scripts/deploy_staging.sh` (push branch `staging`).
 
 Flow: `feature/*` → PR → **`staging`** → Railway test → PR → **`main`**.
+
+### Per-service watch patterns (env `test`)
+
+A push to `staging` used to rebuild **every** sidecar (santiment, hermes, mcp, …) because they all watch the same repo with empty `watchPatterns`.
+
+Source of truth: [`deploy/railway/watch-patterns.json`](../deploy/railway/watch-patterns.json)
+
+| Service | Rebuilds when |
+|---------|----------------|
+| **`xagent-test`** | **any** staging commit (no filter — paper bot) |
+| Sidecars | only their package paths **plus** `Dockerfile` / `requirements*.txt` / `scripts/railway_start.sh` |
+
+After **moving sidecar folders**, update the JSON in the same PR, merge to `staging`, then:
+
+```bash
+python3 scripts/deploy/sync_railway_watch.py           # dry-run
+python3 scripts/deploy/sync_railway_watch.py --apply --verify
+```
+
+Never run this against production. The script refuses `environment != test` and never writes `xagent-test`.
 
 ---
 

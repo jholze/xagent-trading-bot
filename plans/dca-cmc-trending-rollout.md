@@ -230,7 +230,7 @@ Nur nach KPIs aus Phase 0:
 | **CMC API Upgrade** | `trending/latest`, `community/trending` freischalten | Mittel (Plan-abhängig) |
 | **DexScan → Gate** | Listing-Check: DEX-Pump nur alerten wenn Gate-Spot existiert | Mittel |
 | **API-Budget soft** | Tier-Priorität statt hartem `max_api_calls_per_cycle` | Niedrig (bewusst gestoppt) |
-| **Hermes Live-Evidence** | Siehe `HERMES_LIVE_EVIDENCE_PLAN.md` | Parallel |
+| **Hermes Live-Evidence** | Siehe `docs/hermes/HERMES_LIVE_EVIDENCE_PLAN.md` | Parallel |
 
 ---
 

@@ -1,0 +1,75 @@
+{
+  "project": "trading-bot",
+  "environment": "test",
+  "do_not_touch": [
+    "xagent-test",
+    "xagent-bot",
+    "xagent-memory-cortex",
+    "MongoDB",
+    "MongoDB-AeF7",
+    "Redis",
+    "xagent-weaviate"
+  ],
+  "shared": [
+    "scripts/railway_start.sh",
+    "Dockerfile",
+    "railway.toml",
+    "requirements.txt",
+    "requirements-rag.txt"
+  ],
+  "services": {
+    "xagent-santiment": {
+      "id": "d7b60368-d4f4-45d0-a060-d540f0a94a45",
+      "patterns": ["services/santiment_sidecar/**"]
+    },
+    "xagent-market-oracle": {
+      "id": "21aa6f40-6b4c-45bb-948a-398b50072ee8",
+      "patterns": [
+        "services/market_oracle/**",
+        "services/market_oracle_ingest.py",
+        "services/market_oracle_policy.py",
+        "services/market_oracle_store.py"
+      ]
+    },
+    "xagent-hermes": {
+      "id": "3de1df99-7afd-4eb9-a122-a76499c904fe",
+      "patterns": ["intelligence/memory/**", "hermes/**"]
+    },
+    "xagent-exit-radar": {
+      "id": "ada2d9cd-0295-4f17-8910-5b420c9a2da3",
+      "patterns": [
+        "services/exit_radar/**",
+        "services/exit_radar_http.py",
+        "services/exit_radar_sidecar/**",
+        "services/exit_realtime/**"
+      ]
+    },
+    "xagent-gainer-signal": {
+      "id": "2f2e7695-3208-4ed7-b332-353bb81c21d3",
+      "patterns": ["services/gainer_signal/**"]
+    },
+    "xagent-dca-sniper": {
+      "id": "1fe06bef-ebe6-403e-8fec-fa3586285f7f",
+      "patterns": ["services/dca_sniper/**"]
+    },
+    "xagent-gis-monitor": {
+      "id": "1b5f1a57-413f-4036-b73a-6785e2607fa2",
+      "patterns": [
+        "scripts/gis_daily_monitor.py",
+        "scripts/gis_monitor_railway_entry.py"
+      ]
+    },
+    "xagent-mcp": {
+      "id": "1a1acc61-0777-46e8-964a-d0d6aaa02efe",
+      "patterns": [
+        "services/mcp_sidecar/**",
+        "services/mcp_authz.py",
+        "services/mcp_bot_http.py",
+        "services/mcp_client.py",
+        "services/mcp_explain.py",
+        "services/mcp_tokens.py",
+        "services/mcp_tools.py"
+      ]
+    }
+  }
+}
