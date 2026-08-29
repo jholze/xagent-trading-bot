@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-santiment" || "${RUN_SANTIMENT_SIDECAR:-}" == "1" ]]; then
   echo "=== Santiment sidecar start ==="
   export PYTHONUNBUFFERED=1
-  exec python3 -m services.santiment_sidecar
+  exec python3 -m services.santiment.sidecar
 fi
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-market-oracle" || "${RUN_MARKET_ORACLE:-}" == "1" ]]; then
   echo "=== Market oracle start ==="
@@ -31,7 +31,7 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-exit-radar" || "${RAILWAY_SERVICE_N
   export MONGODB_DB="${MONGODB_DB:-xagent_test}"
   export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
   export EXIT_REALTIME_OWNER="${EXIT_REALTIME_OWNER:-sidecar}"
-  exec python3 -m services.exit_radar_sidecar
+  exec python3 -m services.exit_radar.sidecar
 fi
 # Gainer signal board only — NO Mongo/ledger touch; optional push to bot.
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-gainer-signal" || "${RUN_GAINER_SIGNAL:-}" == "1" ]]; then

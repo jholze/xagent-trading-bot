@@ -20,16 +20,11 @@
   "services": {
     "xagent-santiment": {
       "id": "d7b60368-d4f4-45d0-a060-d540f0a94a45",
-      "patterns": ["services/santiment_sidecar/**"]
+      "patterns": ["services/santiment/**"]
     },
     "xagent-market-oracle": {
       "id": "21aa6f40-6b4c-45bb-948a-398b50072ee8",
-      "patterns": [
-        "services/market_oracle/**",
-        "services/market_oracle_ingest.py",
-        "services/market_oracle_policy.py",
-        "services/market_oracle_store.py"
-      ]
+      "patterns": ["services/market_oracle/**"]
     },
     "xagent-hermes": {
       "id": "3de1df99-7afd-4eb9-a122-a76499c904fe",
@@ -39,8 +34,6 @@
       "id": "ada2d9cd-0295-4f17-8910-5b420c9a2da3",
       "patterns": [
         "services/exit_radar/**",
-        "services/exit_radar_http.py",
-        "services/exit_radar_sidecar/**",
         "services/exit_realtime/**"
       ]
     },
