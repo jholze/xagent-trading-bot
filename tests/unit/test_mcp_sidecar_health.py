@@ -11,14 +11,14 @@ _DISABLED = {"mcp": {"enabled": False, "allow_writes": True}}
 
 
 def test_health_payload_shape():
-    from services.mcp_sidecar.app import health_payload
+    from services.mcp.sidecar.app import health_payload
 
     assert health_payload() == {"ok": True, "service": "xagent-mcp"}
 
 
 def test_health_http_200(monkeypatch):
     monkeypatch.delenv("MCP_OWNER_TOKEN", raising=False)
-    from services.mcp_sidecar.app import create_app
+    from services.mcp.sidecar.app import create_app
 
     with TestClient(create_app()) as client:
         rv = client.get("/health")
@@ -31,7 +31,7 @@ def test_health_ok_when_mcp_disabled(monkeypatch):
         "data_manager.get_config",
         lambda **_k: {"mcp": {"enabled": False, "allow_writes": False}},
     )
-    from services.mcp_sidecar.app import create_app, health_payload
+    from services.mcp.sidecar.app import create_app, health_payload
 
     assert health_payload() == {"ok": True, "service": "xagent-mcp"}
     with TestClient(create_app()) as client:
@@ -42,7 +42,7 @@ def test_health_ok_when_mcp_disabled(monkeypatch):
 
 
 def test_mcp_path_and_health_routes_registered():
-    from services.mcp_sidecar.app import MCP_PATH, create_app
+    from services.mcp.sidecar.app import MCP_PATH, create_app
 
     assert MCP_PATH == "/mcp"
     app = create_app()
@@ -53,7 +53,7 @@ def test_mcp_path_and_health_routes_registered():
 
 def test_listen_port_defaults_to_8080(monkeypatch):
     monkeypatch.delenv("PORT", raising=False)
-    from services.mcp_sidecar.app import listen_port
+    from services.mcp.sidecar.app import listen_port
 
     assert listen_port() == 8080
     monkeypatch.setenv("PORT", "9099")
@@ -63,7 +63,7 @@ def test_listen_port_defaults_to_8080(monkeypatch):
 def test_missing_token_is_unauthorized(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
     monkeypatch.delenv("MCP_ACTORS_JSON", raising=False)
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool("xagent_whoami", authorization="", config_raw=_ENABLED)
     assert out["ok"] is False
@@ -73,7 +73,7 @@ def test_missing_token_is_unauthorized(monkeypatch):
 def test_missing_bearer_header_is_unauthorized(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
     monkeypatch.delenv("MCP_ACTORS_JSON", raising=False)
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool("xagent_whoami", authorization=None, config_raw=_ENABLED)
     assert out["ok"] is False
@@ -83,7 +83,7 @@ def test_missing_bearer_header_is_unauthorized(monkeypatch):
 def test_owner_bearer_whoami(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
     monkeypatch.delenv("MCP_ACTORS_JSON", raising=False)
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool(
         "xagent_whoami",
@@ -97,7 +97,7 @@ def test_owner_bearer_whoami(monkeypatch):
 
 def test_tools_deaf_when_mcp_disabled(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool(
         "xagent_whoami",
@@ -110,7 +110,7 @@ def test_tools_deaf_when_mcp_disabled(monkeypatch):
 
 def test_sidecar_does_not_import_aria_bot():
     sys.modules.pop("aria_bot", None)
-    from services.mcp_sidecar import app as sidecar_app  # noqa: F401
+    from services.mcp.sidecar import app as sidecar_app  # noqa: F401
 
     assert "aria_bot" not in sys.modules
     sidecar_app.create_app()
@@ -120,7 +120,7 @@ def test_sidecar_does_not_import_aria_bot():
 def test_why_missing_symbol_after_auth(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
     monkeypatch.delenv("MCP_ACTORS_JSON", raising=False)
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool(
         "xagent_why",
@@ -134,7 +134,7 @@ def test_why_missing_symbol_after_auth(monkeypatch):
 
 def test_orders_unauthorized(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool("xagent_orders", authorization="", config_raw=_ENABLED)
     assert out["ok"] is False
@@ -143,7 +143,7 @@ def test_orders_unauthorized(monkeypatch):
 
 def test_memory_unauthorized(monkeypatch):
     monkeypatch.setenv("MCP_OWNER_TOKEN", "owner-secret")
-    from services.mcp_sidecar.app import invoke_tool
+    from services.mcp.sidecar.app import invoke_tool
 
     out = invoke_tool("xagent_memory", authorization=None, config_raw=_ENABLED)
     assert out["ok"] is False

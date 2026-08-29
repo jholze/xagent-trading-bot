@@ -10,17 +10,17 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from services.santiment_ingest import process_santiment_ingest, santiment_token_ok
+from services.santiment.ingest import process_santiment_ingest, santiment_token_ok
 from services.market_policy_fusion import (
     apply_global_mode_bias,
     get_global_market_bias,
     inject_global_sentiment,
 )
-from services.santiment_policy import get_santiment_policy
-from services.santiment_sidecar.client import is_series_fresh, series_lag_days
-from services.santiment_sidecar.regime import RISK_ON_SIZE_CAP, decide_regime, should_push
-from services.santiment_sidecar.snapshot import build_snapshot
-from services.santiment_store import (
+from services.santiment.policy import get_santiment_policy
+from services.santiment.sidecar.client import is_series_fresh, series_lag_days
+from services.santiment.sidecar.regime import RISK_ON_SIZE_CAP, decide_regime, should_push
+from services.santiment.sidecar.snapshot import build_snapshot
+from services.santiment.store import (
     get_latest_snapshot,
     reset_for_tests,
     snapshot_is_fresh,
@@ -145,7 +145,7 @@ class TestSantimentClientHelpers(unittest.TestCase):
 
     def test_lean_fetch_stops_on_rate_limit(self):
         """Thrifty: abort remaining metrics after first 429 (don't burn quota)."""
-        from services.santiment_sidecar.client import RateLimitError, SantimentClient
+        from services.santiment.sidecar.client import RateLimitError, SantimentClient
 
         client = SantimentClient(
             "test-key",
@@ -187,7 +187,7 @@ class TestSantimentClientHelpers(unittest.TestCase):
         self.assertIn("btc_daa", result.meta.get("metrics_ok") or [])
 
     def test_config_lean_defaults(self):
-        from services.santiment_sidecar.config import load_config
+        from services.santiment.sidecar.config import load_config
 
         with patch.dict(os.environ, {}, clear=False):
             # clear thrifty overrides if any
@@ -224,7 +224,7 @@ class TestSantimentLeanAndAsset(unittest.TestCase):
         ]
 
     def test_lean_fetch_four_core_no_social(self):
-        from services.santiment_sidecar.client import SantimentClient
+        from services.santiment.sidecar.client import SantimentClient
 
         client = SantimentClient(
             "fake-key",
@@ -249,7 +249,7 @@ class TestSantimentLeanAndAsset(unittest.TestCase):
         self.assertNotIn("social", res.meta.get("policy_inputs") or [])
 
     def test_lean_no_leverage_research_double_fetch(self):
-        from services.santiment_sidecar.client import SantimentClient
+        from services.santiment.sidecar.client import SantimentClient
 
         client = SantimentClient(
             "fake-key",
@@ -275,7 +275,7 @@ class TestSantimentLeanAndAsset(unittest.TestCase):
         self.assertFalse(res.meta.get("leverage_fresh"))
 
     def test_asset_micro_one_call(self):
-        from services.santiment_sidecar.client import SantimentClient
+        from services.santiment.sidecar.client import SantimentClient
 
         client = SantimentClient("fake-key", inter_request_delay_sec=0)
         calls = {"n": 0}

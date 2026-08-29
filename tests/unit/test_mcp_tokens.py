@@ -1,4 +1,4 @@
-from services.mcp_tokens import (
+from services.mcp.tokens import (
     actor_from_bearer,
     actor_from_extra,
     bootstrap_from_env,

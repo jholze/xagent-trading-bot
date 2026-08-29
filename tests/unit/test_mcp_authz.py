@@ -1,4 +1,4 @@
-from services.mcp_authz import (
+from services.mcp.authz import (
     Actor,
     authorize,
     check_write_rate,

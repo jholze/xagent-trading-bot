@@ -34,7 +34,7 @@ def _client(monkeypatch, *, patch_trading=True, config=None):
     monkeypatch.setattr("data_manager.get_config", lambda **_k: cfg)
     if patch_trading:
         _install_trading_stubs(monkeypatch)
-    from services.mcp_bot_http import register_mcp_bot_routes
+    from services.mcp.bot_http import register_mcp_bot_routes
 
     app = Flask(__name__)
     register_mcp_bot_routes(app)
