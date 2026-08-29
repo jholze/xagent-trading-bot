@@ -24,6 +24,7 @@ ENV/
 .DS_Store
 Thumbs.db
 *.swp
+=
 
 # Test artifacts
 .coverage

@@ -1,9 +1,5 @@
-"""xagent-mcp FastMCP sidecar (paper reads/writes, no price loop)."""
+"""Compat shim — implementation: ``services.mcp.sidecar``."""
 
-__all__ = ["main"]
+from services.mcp.sidecar import app, main
 
-
-def main() -> None:
-    from services.mcp_sidecar.__main__ import main as _main
-
-    _main()
+__all__ = ["app", "main"]

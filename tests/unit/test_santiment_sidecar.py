@@ -409,7 +409,7 @@ class TestSantimentPolicy(unittest.TestCase):
         reset_for_tests()
 
     def test_fail_open_without_snapshot(self):
-        with patch("services.santiment_policy.get_latest_snapshot", return_value=None):
+        with patch("services.santiment.policy.get_latest_snapshot", return_value=None):
             pol = get_santiment_policy({"architecture": {"santiment_risk_enabled": True}})
         self.assertFalse(pol["active"])
         self.assertEqual(pol["size_mult"], 1.0)
@@ -544,7 +544,7 @@ class TestSantimentRoute(unittest.TestCase):
             meta={"social_fresh": False, "metrics_ok": ["btc_daa"]},
         )
         with patch.dict(os.environ, {"SANTIMENT_INGEST_TOKEN": "t1"}, clear=False), \
-             patch("services.santiment_ingest.santiment_ingest_enabled", return_value=True):
+             patch("services.santiment.ingest.santiment_ingest_enabled", return_value=True):
             resp = self.client.post(
                 "/api/santiment/ingest",
                 json=snap,

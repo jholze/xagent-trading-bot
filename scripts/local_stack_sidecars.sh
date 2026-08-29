@@ -37,7 +37,7 @@ local_stack_stop_pidfile santiment
 local_stack_stop_pidfile market-oracle
 
 echo "Starting santiment on :${SANTIMENT_PORT}..."
-PORT="${SANTIMENT_PORT}" nohup python3 -m services.santiment_sidecar \
+PORT="${SANTIMENT_PORT}" nohup python3 -m services.santiment.sidecar \
   >"${run_dir}/santiment.log" 2>&1 &
 local_stack_write_pid santiment $!
 echo "  pid $(local_stack_read_pid santiment) log ${run_dir}/santiment.log"

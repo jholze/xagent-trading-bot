@@ -762,7 +762,7 @@ Bot: 💬 Antwort zu #a3f2…
 
 Config: `observability.ask_bridge` (`response_mode: cursor_only`, `headless_dispatch_enabled: true`). Watcher starten: `bash scripts/start_ask_cursor_watcher.sh`.
 
-Details zu Hermes: [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [English](HERMES_DOCUMENTATION.md)
+Details zu Hermes: [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [English](docs/hermes/HERMES_DOCUMENTATION.md)
 
 ### 🧪 Sandbox
 
@@ -1302,11 +1302,11 @@ flowchart TD
 | `exit_ladder_step: 3` | Dritte Ladder-Stufe wurde ausgeführt / als nächstes dran | §6.7 |
 | `Trail->ATR stop` | Trailing Stop hat Vollverkauf ausgelöst | §6.8 |
 | `shadow->SELL_30` | Nur Anzeige — `volatile_altcoin.mode: shadow` | §6.5 |
-| `hermes_baseline+volatile` | Hermes-Parameter + volatile Overlay aktiv | [HERMES_DOKUMENTATION.md §1b](HERMES_DOKUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profil--drei-rollen) |
+| `hermes_baseline+volatile` | Hermes-Parameter + volatile Overlay aktiv | [HERMES_DOKUMENTATION.md §1b](docs/hermes/HERMES_DOKUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profil--drei-rollen) |
 | `timeframe: 1h` | Coin wird auf 1h-Kerzen analysiert | §6.9 |
 | `TA→HOLD` trotz CMC SELL | CMC-Churn-Schutz — Technik nicht bearish genug | §10 |
-| Hermes `rejected` | Backtest hat Parameter **nicht** übernommen — Memory bleibt | [HERMES_DOKUMENTATION.md §10](HERMES_DOKUMENTATION.md#10-konkrete-beispiele-30-tage-praxis-h-aria-wld) |
+| Hermes `rejected` | Backtest hat Parameter **nicht** übernommen — Memory bleibt | [HERMES_DOKUMENTATION.md §10](docs/hermes/HERMES_DOKUMENTATION.md#10-konkrete-beispiele-30-tage-praxis-h-aria-wld) |
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub Issues im Repo
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub Issues im Repo

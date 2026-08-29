@@ -86,7 +86,7 @@ flowchart TB
 | Ask bridge | `services/telegram_ask_bridge.py` | `/ask` → Cursor/Grok queue (decoupled from webhook) |
 | Notification bus | `services/notification_bus.py` | Async Telegram with rate limit (Phase 3) |
 | Background runtime | `services/background_runtime.py` | Social/backtest parallel to trading cycle |
-| Grok MCP sidecar | `services/mcp_sidecar/`, `services/mcp_tools.py` | Paper reads + buys/sells for a Grok team ([§19](#19-grok-mcp-xagent-mcp)) |
+| Grok MCP sidecar | `services/mcp/` | Paper reads + buys/sells for a Grok team ([§19](#19-grok-mcp-xagent-mcp)) |
 
 ### Internal Runtime (Architecture Phases 0–5, Monolith)
 
@@ -763,7 +763,7 @@ Bot: 💬 Answer to #a3f2…
 
 Config: `observability.ask_bridge` (`response_mode: cursor_only`, `headless_dispatch_enabled: true`). Start watcher: `bash scripts/start_ask_cursor_watcher.sh`.
 
-Details on Hermes: [HERMES_DOCUMENTATION.md](HERMES_DOCUMENTATION.md)
+Details on Hermes: [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md)
 
 ### 🧪 Sandbox
 
@@ -1310,10 +1310,10 @@ flowchart TD
 | `exit_ladder_step: 3` | Third ladder tier executed / next | §6.7 |
 | `Trail->ATR stop` | Trailing stop triggered full close | §6.8 |
 | `shadow->SELL_30` | Display only — `volatile_altcoin.mode: shadow` | §6.5 |
-| `hermes_baseline+volatile` | Hermes params + volatile overlay | [HERMES_DOCUMENTATION.md §1b](HERMES_DOCUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profile--three-roles) |
+| `hermes_baseline+volatile` | Hermes params + volatile overlay | [HERMES_DOCUMENTATION.md §1b](docs/hermes/HERMES_DOCUMENTATION.md#1b-hermes-vs-live-bot-vs-volatile-profile--three-roles) |
 | `timeframe: 1h` | Coin analyzed on 1h candles | §6.9 |
 | `TA→HOLD` despite CMC SELL | CMC churn guard — TA not bearish enough | §10 |
-| Hermes `rejected` | Backtest did **not** adopt params — memory unchanged | [HERMES_DOCUMENTATION.md §10](HERMES_DOCUMENTATION.md#10-concrete-examples-30-days-practice-h-aria-wld) |
+| Hermes `rejected` | Backtest did **not** adopt params — memory unchanged | [HERMES_DOCUMENTATION.md §10](docs/hermes/HERMES_DOCUMENTATION.md#10-concrete-examples-30-days-practice-h-aria-wld) |
 
 ---
 
@@ -1335,4 +1335,4 @@ Grok TUI: remote URL + Bearer. Reconnect after deploys that add tools. Writes ar
 
 ---
 
-**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo
+**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo

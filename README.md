@@ -179,8 +179,8 @@ hermes/                  # Self-Improvement Agent
 config.json              # Strategien, Limits, Modi
 DOCUMENTATION.md         # ← Vollständige Doku (DE)
 DOCUMENTATION.en.md      # ← Full documentation (EN)
-HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger (DE)
-HERMES_DOCUMENTATION.md  # ← Hermes for beginners (EN)
+docs/hermes/HERMES_DOKUMENTATION.md  # ← Hermes für Einsteiger (DE)
+docs/hermes/HERMES_DOCUMENTATION.md  # ← Hermes for beginners (EN)
 ```
 
 ---
