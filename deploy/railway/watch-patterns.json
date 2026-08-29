@@ -62,13 +62,7 @@
     "xagent-mcp": {
       "id": "1a1acc61-0777-46e8-964a-d0d6aaa02efe",
       "patterns": [
-        "services/mcp_sidecar/**",
-        "services/mcp_authz.py",
-        "services/mcp_bot_http.py",
-        "services/mcp_client.py",
-        "services/mcp_explain.py",
-        "services/mcp_tokens.py",
-        "services/mcp_tools.py"
+        "services/mcp/**"
       ]
     }
   }

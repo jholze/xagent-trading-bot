@@ -82,7 +82,7 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-mcp" || "${RUN_MCP_SIDECAR:-}" == "
   export DEMO_LEDGER_BACKEND="${DEMO_LEDGER_BACKEND:-mongo}"
   export MONGODB_DB="${MONGODB_DB:-xagent_test}"
   export DEMO_ALLOW_REMOTE_MONGO="${DEMO_ALLOW_REMOTE_MONGO:-1}"
-  exec python3 -m services.mcp_sidecar
+  exec python3 -m services.mcp.sidecar
 fi
 
 # Desk v0 is in-process Flask on aria_bot at /desk — no extra Railway process

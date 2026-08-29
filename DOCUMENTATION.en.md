@@ -86,7 +86,7 @@ flowchart TB
 | Ask bridge | `services/telegram_ask_bridge.py` | `/ask` → Cursor/Grok queue (decoupled from webhook) |
 | Notification bus | `services/notification_bus.py` | Async Telegram with rate limit (Phase 3) |
 | Background runtime | `services/background_runtime.py` | Social/backtest parallel to trading cycle |
-| Grok MCP sidecar | `services/mcp_sidecar/`, `services/mcp_tools.py` | Paper reads + buys/sells for a Grok team ([§19](#19-grok-mcp-xagent-mcp)) |
+| Grok MCP sidecar | `services/mcp/` | Paper reads + buys/sells for a Grok team ([§19](#19-grok-mcp-xagent-mcp)) |
 
 ### Internal Runtime (Architecture Phases 0–5, Monolith)
 

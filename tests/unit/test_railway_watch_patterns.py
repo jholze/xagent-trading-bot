@@ -18,6 +18,9 @@ class TestRailwayWatchPatterns:
         assert "xagent-test" in skip
         assert "xagent-bot" in skip
         assert "xagent-test" not in spec["services"]
+        mcp = spec["services"]["xagent-mcp"]["patterns"]
+        assert "services/mcp/**" in mcp
+        assert all("mcp_tools.py" not in p for p in mcp)
         assert "xagent-bot" not in spec["services"]
 
     def test_every_sidecar_includes_shared_build_files(self):
