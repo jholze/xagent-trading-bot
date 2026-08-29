@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.mcp_authz import Actor
-from services.mcp_explain import (
+from services.mcp.authz import Actor
+from services.mcp.explain import (
     list_orders_public,
     memory_pack,
     sanitize_event,
@@ -14,7 +14,7 @@ from services.mcp_explain import (
     sanitize_profile,
     why_pack,
 )
-from services.mcp_tools import tool_memory, tool_orders, tool_why
+from services.mcp.tools import tool_memory, tool_orders, tool_why
 
 OWNER = Actor("jens", "owner", ("*",), ("read", "trade", "lock", "config_read", "kill"))
 HENRY = Actor("henry-op", "operator", ("henry",), ("read", "trade", "lock"))

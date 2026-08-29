@@ -1,5 +1,5 @@
-from services.mcp_authz import Actor, authorize, reset_write_rate
-from services.mcp_tools import (
+from services.mcp.authz import Actor, authorize, reset_write_rate
+from services.mcp.tools import (
     tool_snapshot,
     tool_lots,
     tool_whoami,
@@ -246,7 +246,7 @@ def test_execute_network_error_is_bot_unreachable(monkeypatch):
         raise urllib.error.URLError("down")
 
     monkeypatch.setattr("urllib.request.urlopen", boom)
-    from services.mcp_client import execute
+    from services.mcp.client import execute
 
     out = execute(action="buy", tenant_id="henry", symbol="LAB/USDT", usdt=10)
     assert out == {"ok": False, "error": "bot_unreachable"}
@@ -277,7 +277,7 @@ def test_execute_posts_json_with_token(monkeypatch):
     monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
     monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    from services.mcp_client import execute
+    from services.mcp.client import execute
 
     out = execute(action="buy", tenant_id="henry", symbol="LAB/USDT", usdt=25, actor_id="jens")
     assert out.get("ok") is True
@@ -367,7 +367,7 @@ def test_execute_timeout_env_override(monkeypatch):
     monkeypatch.setenv("MCP_BOT_TIMEOUT_SEC", "60")
     monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    from services.mcp_client import execute
+    from services.mcp.client import execute
 
     execute(action="buy", tenant_id="default", symbol="BLESS/USDT", usdt=2500)
     assert captured["timeout"] == 60

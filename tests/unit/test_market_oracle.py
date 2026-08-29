@@ -12,12 +12,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from core.tenant_context import tenant_context
 from services.market_oracle.regime import StateHysteresis, decide, raw_state_from_features
 from services.market_oracle.snapshot import build_snapshot
-from services.market_oracle_ingest import process_market_oracle_ingest
-from services.market_oracle_policy import get_market_oracle_policy
-from services.market_oracle_store import reset_for_tests, store_snapshot
+from services.market_oracle.ingest import process_market_oracle_ingest
+from services.market_oracle.policy import get_market_oracle_policy
+from services.market_oracle.store import reset_for_tests, store_snapshot
 from services.market_policy_fusion import get_global_market_bias
-from services.santiment_store import reset_for_tests as reset_san
-from services.santiment_store import store_snapshot as store_san
+from services.santiment.store import reset_for_tests as reset_san
+from services.santiment.store import store_snapshot as store_san
 
 
 class TestOracleRegime(unittest.TestCase):
