@@ -1145,16 +1145,17 @@ def _sim_order_ledger_bundle(
     if prefer_memory:
         active = list_active_positions(tenant_id=tenant_id, scope=scope)
 
-    # Warm path: open lots in memory + cash/realized already on trade_history.
+    # Fast path: cash/realized from trade_history. Lots from memory, else
+    # orders+cache derive (ghost-safe). Never load the unbounded orders blob.
     hist_cash = history.get("virtual_balance")
     hist_realized = history.get("realized_pnl", history.get("total_pnl"))
-    if (
-        prefer_memory
-        and active
-        and hist_cash is not None
-        and hist_realized is not None
-    ):
-        # Day stats without the legacy orders blob (v2 day query or cache).
+    if prefer_memory and hist_cash is not None and hist_realized is not None:
+        if not active:
+            from strategies.positions import list_active_positions_from_ledger
+
+            active = list_active_positions_from_ledger(
+                scope=scope, tenant_id=tenant_id
+            )
         day_stats = OrderService(ledger_scope).stats_day_filled_fast()
         return {
             "history": history,
