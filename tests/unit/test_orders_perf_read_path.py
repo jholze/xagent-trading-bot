@@ -154,6 +154,45 @@ class TestPortfolioWarmPath(unittest.TestCase):
             self.assertEqual(out["cash_balance"], 90000.0)
             self.assertEqual(out["day_stats"]["sells"], 1)
 
+    def test_warm_bundle_empty_memory_uses_ledger_not_blob(self):
+        from notifications.telegram_commands.position_display import _sim_order_ledger_bundle
+
+        cfg = MagicMock()
+        cfg.trading_mode = "live"
+        cfg.raw = {"demo_mode": True}
+        history = {"virtual_balance": 90000.0, "realized_pnl": 500.0}
+        ledger_lots = [{"symbol": "ETH/USDT", "amount": 1.0, "average_entry": 2000}]
+
+        with patch(
+            "strategies.positions.list_active_positions", return_value=[],
+        ), patch(
+            "strategies.positions.list_active_positions_from_ledger",
+            return_value=ledger_lots,
+        ) as from_ledger, patch(
+            "core.simulated_trading.simulated_ledger_scope", return_value="demo",
+        ), patch(
+            "services.order_service.OrderService",
+        ) as mock_os, patch(
+            "data_manager.load_orders",
+        ) as load_orders, patch(
+            "core.sim_ledger_replay.replay_simulated_ledger",
+        ) as replay:
+            mock_svc = MagicMock()
+            mock_svc.stats_day_filled_fast.return_value = {"filled": 0, "buys": 0, "sells": 0}
+            mock_os.return_value = mock_svc
+            out = _sim_order_ledger_bundle(
+                tenant_id="default",
+                scope="demo",
+                history=history,
+                cfg=cfg,
+                prefer_memory=True,
+            )
+            from_ledger.assert_called_once_with(scope="demo", tenant_id="default")
+            load_orders.assert_not_called()
+            replay.assert_not_called()
+            self.assertEqual(out["active"], ledger_lots)
+            self.assertEqual(out["cash_balance"], 90000.0)
+
     def test_stats_day_filled_fast_skips_blob(self):
         from services.order_service import OrderService
 
