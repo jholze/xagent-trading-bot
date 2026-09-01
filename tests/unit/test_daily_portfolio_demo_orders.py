@@ -19,7 +19,7 @@ class TestDailyPortfolioDemoOrders(unittest.TestCase):
     @patch("services.order_service.OrderService")
     def test_today_activity_stats_from_orders(self, mock_svc_cls, _sim, _scope, _demo):
         mock_svc = MagicMock()
-        mock_svc.stats_day_filled.return_value = {
+        mock_svc.stats_day_filled_fast.return_value = {
             "filled": 3,
             "buys": 2,
             "sells": 1,
@@ -35,7 +35,8 @@ class TestDailyPortfolioDemoOrders(unittest.TestCase):
         self.assertEqual(buys, 2)
         self.assertEqual(sells, 1)
         self.assertAlmostEqual(realized, 42.0)
-        mock_svc.stats_day_filled.assert_called_once()
+        mock_svc.stats_day_filled_fast.assert_called_once()
+        mock_svc.stats_day_filled.assert_not_called()
 
     @patch("data_manager.is_demo_mode", return_value=True)
     @patch("notifications.daily_portfolio.is_simulated_trading", return_value=True)
@@ -43,7 +44,7 @@ class TestDailyPortfolioDemoOrders(unittest.TestCase):
     def test_today_activity_shares_order_service_window(self, mock_svc_cls, _sim, _demo):
         """Portfolio day counts must come from OrderService (same as /orders)."""
         mock_svc = MagicMock()
-        mock_svc.stats_day_filled.return_value = {
+        mock_svc.stats_day_filled_fast.return_value = {
             "filled": 26,
             "buys": 16,
             "sells": 10,

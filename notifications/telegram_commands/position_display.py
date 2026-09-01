@@ -568,6 +568,119 @@ def _trade_line(t: dict) -> str:
     )
 
 
+def _count_full_open_lots(active: list, config_raw: dict | None = None) -> int:
+    """Full (non-tail) open lots from the already-loaded snapshot — no blob."""
+    if not active:
+        return 0
+    try:
+        from strategies.sell_rotation_policy import is_tail_position, rotation_config
+
+        cfg = rotation_config(config_raw)
+        n = 0
+        for p in active:
+            try:
+                if not is_tail_position(p, cfg):
+                    n += 1
+            except Exception:
+                n += 1
+        return n
+    except Exception:
+        return len(active)
+
+
+def _fast_capacity_status(
+    *,
+    cfg,
+    initial: float,
+    cash: float,
+    equity: float,
+    full_n: int,
+    lots_n: int,
+    history: dict | None = None,
+) -> dict:
+    """Kaufplätze / cash-floor from RAM + fusion. Never load_orders / replay."""
+    risk = cfg.risk_config if hasattr(cfg, "risk_config") else {}
+    risk = risk or {}
+    max_open = int(getattr(cfg, "max_open_positions", 0) or 0)
+    out = {
+        "open_full_slots": int(full_n),
+        "open_positions": int(lots_n),
+        "max_open_positions": max_open,
+        "max_open_eff": max_open,
+        "position_capacity_enabled": False,
+        "cash_mode": "",
+        "capacity_regime": "",
+        "position_capacity_factors": {},
+        "spendable_new": None,
+        "spendable_usdt": None,
+        "cash_floor_abs": None,
+    }
+    from risk.cash_policy import evaluate_cash_policy
+    from risk.position_capacity import resolve_max_open_eff
+
+    bias: dict = {}
+    try:
+        from services.market_policy_fusion import get_global_market_bias
+
+        bias = dict(get_global_market_bias(getattr(cfg, "raw", None)) or {})
+    except Exception:
+        pass
+    try:
+        size_mult = float(bias.get("size_mult") or 1.0)
+    except (TypeError, ValueError):
+        size_mult = 1.0
+    block_buys = bool(bias.get("block_buys"))
+    peak = float((history or {}).get("peak_equity") or initial or 0)
+    peak = max(peak, float(equity or 0), float(initial or 0))
+    dd = 0.0
+    if peak > 0:
+        dd = max(0.0, (peak - float(equity or 0)) / peak * 100.0)
+    throttle_at = float(risk.get("drawdown_throttle_pct", 10.0) or 10.0)
+    drawdown_active = dd >= throttle_at
+    pol = evaluate_cash_policy(
+        cash_total=float(cash),
+        basis_for_floor=float(initial),
+        equity=float(equity),
+        size_mult=size_mult,
+        block_buys=block_buys,
+        drawdown_active=drawdown_active,
+        risk_config=risk,
+    )
+    uptime = None
+    try:
+        from services.market_oracle_store import process_uptime_sec
+
+        uptime = float(process_uptime_sec())
+    except Exception:
+        pass
+    cap = resolve_max_open_eff(
+        base=max(1, max_open),
+        risk_config=risk,
+        regime=bias.get("regime"),
+        size_mult=float(pol.size_mult if pol.enabled else size_mult),
+        block_buys=bool(pol.block_buys if pol.enabled else block_buys),
+        cash_mode=pol.mode,
+        spendable_new=float(pol.spendable_new),
+        process_uptime_sec=uptime,
+        full_slots=int(full_n),
+        drawdown_active=drawdown_active,
+    )
+    out.update(
+        {
+            "max_open_eff": cap.max_open_eff,
+            "max_open_positions": cap.max_open_eff if cap.enabled else max_open,
+            "position_capacity_enabled": cap.enabled,
+            "cash_mode": pol.mode,
+            "capacity_regime": cap.regime,
+            "position_capacity_factors": dict(cap.factors or {}),
+            "spendable_new": float(pol.spendable_new),
+            "spendable_usdt": float(pol.spendable_new),
+            "cash_floor_abs": float(pol.floor_abs),
+        }
+    )
+    return out
+
+
 def format_portfolio_summary(
     history: dict,
     total_unreal: float,
@@ -584,6 +697,7 @@ def format_portfolio_summary(
     positions_cost_basis: float = None,
     day_stats: dict = None,
     short_count: int = 0,
+    open_full_slots: int | None = None,
 ) -> str:
     balance = float(cash_balance if cash_balance is not None else history.get("virtual_balance", 0))
     cfg = get_bot_config()
@@ -665,9 +779,20 @@ def format_portfolio_summary(
         floor_abs = max(0.0, float(initial) * (floor_pct / 100.0)) if floor_pct > 0 else 0.0
         spendable = max(0.0, float(balance) - floor_abs) if floor_pct > 0 else max(0.0, float(balance))
         try:
-            from risk.risk_manager import RiskManager
+            if fast_daily_nav:
+                st = _fast_capacity_status(
+                    cfg=cfg,
+                    initial=float(initial),
+                    cash=float(balance),
+                    equity=float(total_value),
+                    full_n=int(open_full_slots if open_full_slots is not None else full_n),
+                    lots_n=int(lots_n),
+                    history=history,
+                )
+            else:
+                from risk.risk_manager import RiskManager
 
-            st = RiskManager(cfg).status_summary()
+                st = RiskManager(cfg).status_summary()
             full_n = int(st.get("open_full_slots", full_n) or full_n)
             lots_n = int(st.get("open_positions", lots_n) or lots_n)
             if st.get("position_capacity_enabled"):
@@ -953,6 +1078,12 @@ def format_positions_message(
         for p in sorted_active
     ]
     short_n = sum(1 for p in active if not _is_long_lot(p))
+    open_full = None
+    if fast_daily_nav or level in ("compact", "summary"):
+        try:
+            open_full = _count_full_open_lots(active, get_bot_config().raw)
+        except Exception:
+            open_full = None
 
     if title:
         msg = f"<b>{title}</b>\n\n"
@@ -968,6 +1099,7 @@ def format_positions_message(
             trade_realized=trade_realized,
             day_stats=day_stats,
             short_count=short_n,
+            open_full_slots=open_full,
         ) + "\n"
 
     if gate_holdings:

@@ -143,7 +143,8 @@ def today_activity_stats(
 
         stats = day_stats
         if stats is None:
-            stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled()
+            # Fast path: v2 day query or empty — never the unbounded orders blob.
+            stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled_fast()
         if int(stats.get("filled") or 0) <= 0:
             return 0, 0, 0.0, False
         return (

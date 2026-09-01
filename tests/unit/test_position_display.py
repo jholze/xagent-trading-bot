@@ -109,6 +109,49 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("eff=12", msg)
         self.assertIn("warmup-6", msg)
 
+    def test_fast_summary_skips_orders_blob_and_risk_manager(self):
+        cfg = type("Cfg", (), {
+            "raw": {
+                "risk": {"cash_floor_pct": 18, "position_capacity": {"enabled": False}},
+                "max_open_positions": 32,
+            },
+            "trading_mode": "live",
+            "risk_config": {
+                "cash_floor_pct": 18,
+                "position_capacity": {"enabled": False},
+            },
+            "max_open_positions": 32,
+        })()
+        with patch(
+            "notifications.telegram_commands.position_display.get_bot_config",
+            return_value=cfg,
+        ), patch(
+            "notifications.telegram_commands.position_display.initial_capital",
+            return_value=100_000.0,
+        ), patch(
+            "risk.risk_manager.RiskManager",
+            side_effect=AssertionError("compact /positions must not use RiskManager"),
+        ), patch(
+            "data_manager.load_orders",
+            side_effect=AssertionError("compact /positions must not load orders blob"),
+        ), patch(
+            "core.sim_ledger_replay.replay_simulated_ledger",
+            side_effect=AssertionError("compact /positions must not replay ledger"),
+        ):
+            msg = format_portfolio_summary(
+                {"virtual_balance": 1465.0, "realized_pnl": 0},
+                total_unreal=100.0,
+                position_count=25,
+                cash_balance=1465.0,
+                positions_market_value=80_000.0,
+                fast_daily_nav=True,
+                open_full_slots=23,
+            )
+        self.assertIn("Cash-Floor", msg)
+        self.assertIn("Kaufplätze", msg)
+        self.assertIn("Portfolio: <b>25</b>", msg)
+        self.assertIn("<b>23</b> von <b>32</b>", msg)
+
     def test_portfolio_summary_floor_line_fallback_without_risk_manager(self):
         cfg = type("Cfg", (), {
             "raw": {"risk": {"cash_floor_pct": 18}, "max_open_positions": 24},

@@ -193,6 +193,50 @@ class TestPortfolioWarmPath(unittest.TestCase):
             self.assertEqual(out["active"], ledger_lots)
             self.assertEqual(out["cash_balance"], 90000.0)
 
+    def test_compact_positions_message_skips_blob(self):
+        from notifications.telegram_commands.position_display import format_positions_message
+
+        cfg = MagicMock()
+        cfg.trading_mode = "live"
+        cfg.raw = {"risk": {"cash_floor_pct": 10}, "max_open_positions": 24}
+        cfg.risk_config = {"cash_floor_pct": 10, "position_capacity": {"enabled": False}}
+        cfg.max_open_positions = 24
+        active = [
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "4h",
+                "amount": 0.05,
+                "peak_amount": 0.05,
+                "average_entry": 80000,
+                "sold_percent": 0,
+                "side": "long",
+            }
+        ]
+        with patch(
+            "notifications.telegram_commands.position_display.get_bot_config",
+            return_value=cfg,
+        ), patch(
+            "notifications.telegram_commands.position_display.initial_capital",
+            return_value=100_000.0,
+        ), patch(
+            "data_manager.load_orders",
+        ) as load_orders, patch(
+            "risk.risk_manager.RiskManager",
+            side_effect=AssertionError("blob path"),
+        ):
+            msg = format_positions_message(
+                active,
+                {"BTC/USDT": 81000.0},
+                {"virtual_balance": 1000.0, "realized_pnl": 0},
+                cash_balance=1000.0,
+                fast_daily_nav=True,
+                detail_level="compact",
+                include_trades=False,
+            )
+        load_orders.assert_not_called()
+        self.assertIn("BTC", msg)
+        self.assertIn("Kaufplätze", msg)
+
     def test_stats_day_filled_fast_skips_blob(self):
         from services.order_service import OrderService
 

@@ -239,6 +239,12 @@ def _worker_loop(orchestrator) -> None:
                 if _stop_event.is_set():
                     break
                 try:
+                    from core.interactive_priority import yield_to_interactive
+
+                    yield_to_interactive()
+                except Exception:
+                    pass
+                try:
                     result = process_eval_job(orchestrator, job)
                     mark_eval_processed(
                         job.symbol,
