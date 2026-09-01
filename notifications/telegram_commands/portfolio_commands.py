@@ -1,5 +1,6 @@
 import threading
 
+from core.interactive_priority import interactive_priority
 from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id
 from notifications.telegram_commands.menu_i18n import current_language, set_user_language
@@ -79,17 +80,30 @@ def handle(text: str) -> bool:
     tenant_id, scope, owner_chat_id = tenant_snapshot()
     lang = current_language()
     send_telegram_message(loading, chat_id=chat_id or None)
-    threading.Thread(
-        target=_build_positions,
-        args=(chat_id,),
-        kwargs={
-            "detail_level": detail_level,
-            "tenant_id": tenant_id,
-            "scope": scope,
-            "owner_chat_id": owner_chat_id,
-            "lang": lang,
-        },
-        daemon=True,
-        name="positions-cmd",
-    ).start()
+    # Raise the flag before the worker starts so eval/cycle yield immediately.
+    token = interactive_priority()
+    token.__enter__()
+
+    def _run():
+        try:
+            _build_positions(
+                chat_id,
+                detail_level=detail_level,
+                tenant_id=tenant_id,
+                scope=scope,
+                owner_chat_id=owner_chat_id,
+                lang=lang,
+            )
+        finally:
+            token.__exit__(None, None, None)
+
+    try:
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name="positions-cmd",
+        ).start()
+    except Exception:
+        token.__exit__(None, None, None)
+        raise
     return True

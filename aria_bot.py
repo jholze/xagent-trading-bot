@@ -716,6 +716,12 @@ def _run_tenant_price_cycle(
         open_positions = list_active_positions_from_ledger()
     else:
         open_positions = list_active_positions()
+    try:
+        from core.interactive_priority import yield_to_interactive
+
+        yield_to_interactive()
+    except Exception:
+        pass
 
     trade_watchlist = load_trade_watchlist(
         observe_coins=observe_watchlist,
@@ -970,6 +976,12 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
             )
 
             for _cycle_tenant in iter_price_cycle_tenants():
+                try:
+                    from core.interactive_priority import yield_to_interactive
+
+                    yield_to_interactive()
+                except Exception:
+                    pass
                 with tenant_cycle_context(_cycle_tenant):
                     _run_tenant_price_cycle(
                         cycle_started,
