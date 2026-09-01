@@ -1154,8 +1154,8 @@ def _sim_order_ledger_bundle(
         and hist_cash is not None
         and hist_realized is not None
     ):
-        # Day stats only (read-only OrderService, shared cache with /orders).
-        day_stats = OrderService(ledger_scope).stats_day_filled()
+        # Day stats without the legacy orders blob (v2 day query or cache).
+        day_stats = OrderService(ledger_scope).stats_day_filled_fast()
         return {
             "history": history,
             "cash_balance": float(hist_cash),
@@ -1429,30 +1429,38 @@ def send_positions_snapshot(
     scope: str | None = None,
 ) -> bool:
     """Send portfolio overview to Telegram; optional trade banner after buy/sell."""
+    import time
+
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
     from telegram_notifier import send_telegram_message
 
+    t0 = time.perf_counter()
     tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
+    t_ctx0 = time.perf_counter()
     ctx = resolve_portfolio_context(fast=fast, tenant_id=tid, scope=sc)
     # Prefer lots already derived in the single order-ledger pass (no 2nd Mongo load).
     active = ctx.get("active")
     if active is None:
         active = _refresh_positions_for_snapshot(fast=fast, tenant_id=tid, scope=sc)
+    ctx_ms = (time.perf_counter() - t_ctx0) * 1000.0
 
     symbols = [position_symbol(p) for p in active]
     if ctx.get("gate_holdings"):
         symbols.extend(h["symbol"] for h in ctx["gate_holdings"])
     unique_symbols = list(dict.fromkeys(symbols))
     fallbacks = build_price_fallbacks(active)
+    t_px0 = time.perf_counter()
     if unique_symbols:
         prices, price_sources = get_prices_batch(
             unique_symbols, fallbacks=fallbacks, return_sources=True,
         )
     else:
         prices, price_sources = {}, {}
+    px_ms = (time.perf_counter() - t_px0) * 1000.0
     mode = mode_label or TradingService().mode_label()
     level = _resolve_snapshot_detail_level(trade_result, detail_level)
+    t_fmt0 = time.perf_counter()
     msg = format_positions_message(
         active,
         prices,
@@ -1478,8 +1486,23 @@ def send_positions_snapshot(
         msg = f"{header}{msg}"
 
     chunks = chunk_positions_message(msg, annotate_pages=(level == "full"))
+    fmt_ms = (time.perf_counter() - t_fmt0) * 1000.0
+    t_tg0 = time.perf_counter()
     ok = True
     for chunk in chunks:
         if not send_telegram_message(chunk, chat_id=chat_id):
             ok = False
+    tg_ms = (time.perf_counter() - t_tg0) * 1000.0
+    try:
+        from logger import log
+
+        log(
+            f"positions_snapshot tenant={tid} n={len(active)} chunks={len(chunks)} "
+            f"level={level} ctx_ms={ctx_ms:.0f} px_ms={px_ms:.0f} "
+            f"fmt_ms={fmt_ms:.0f} tg_ms={tg_ms:.0f} "
+            f"total_ms={(time.perf_counter() - t0) * 1000:.0f}",
+            "INFO",
+        )
+    except Exception:
+        pass
     return ok

@@ -918,6 +918,53 @@ class OrderService:
         start, end = calendar_day_bounds(now)
         return self._stats_filled_window(start, end)
 
+    def stats_day_filled_fast(self, now: datetime | None = None) -> dict:
+        """Day stats for interactive /positions — never load the legacy blob.
+
+        Prefers v2 ``query_day(filled_only)`` (indexed). If the blob is already
+        in the 90s read cache, use that. Otherwise return empty stats so the
+        Heute-line is omitted instead of blocking Telegram on a multi-MB Mongo
+        document (gainer_relvol rejects inflate the blob).
+        """
+        empty = {
+            "filled": 0,
+            "buys": 0,
+            "sells": 0,
+            "shorts": 0,
+            "covers": 0,
+            "buy_usdt": 0.0,
+            "sell_usdt": 0.0,
+            "short_usdt": 0.0,
+            "cover_usdt": 0.0,
+            "realized_pnl": 0.0,
+            "sell_wins": 0,
+            "sell_losses": 0,
+            "wins": 0,
+            "losses": 0,
+            "unknown_side": 0,
+        }
+        try:
+            from storage.order_ledger_v2 import get_order_ledger_v2
+
+            store = get_order_ledger_v2()
+            if store is not None:
+                tid = resolve_tenant_id()
+                filled = store.query_day(
+                    tid,
+                    self.scope,
+                    self._v2_day_key(now),
+                    filled_only=True,
+                    limit=ORDERS_LIST_HARD_CAP,
+                )
+                return self.stats_from_filled_orders(filled)
+        except Exception:
+            pass
+        cached = _ORDERS_READ_CACHE.get(self._cache_key())
+        if cached and (time.time() - cached[0]) < _ORDERS_READ_CACHE_TTL:
+            start, end = calendar_day_bounds(now)
+            return self._stats_filled_window(start, end)
+        return empty
+
     def stats_month_filled(self, now: datetime | None = None) -> dict:
         """Buy/sell counts + volume + realized PnL for filled trades this month."""
         start, end = calendar_month_bounds(now)

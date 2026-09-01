@@ -135,7 +135,7 @@ class TestPortfolioWarmPath(unittest.TestCase):
             "core.sim_ledger_replay.replay_simulated_ledger",
         ) as replay:
             mock_svc = MagicMock()
-            mock_svc.stats_day_filled.return_value = {
+            mock_svc.stats_day_filled_fast.return_value = {
                 "filled": 2, "buys": 1, "sells": 1, "realized_pnl": 10.0,
                 "buy_usdt": 1, "sell_usdt": 1, "sell_wins": 1, "sell_losses": 0,
             }
@@ -149,8 +149,27 @@ class TestPortfolioWarmPath(unittest.TestCase):
             )
             load_orders.assert_not_called()
             replay.assert_not_called()
+            mock_svc.stats_day_filled.assert_not_called()
+            mock_svc.stats_day_filled_fast.assert_called_once()
             self.assertEqual(out["cash_balance"], 90000.0)
             self.assertEqual(out["day_stats"]["sells"], 1)
+
+    def test_stats_day_filled_fast_skips_blob(self):
+        from services.order_service import OrderService
+
+        svc = OrderService("demo")
+        fake_store = MagicMock()
+        fake_store.query_day.return_value = [
+            {"status": "filled", "side": "sell", "pnl": 3.0, "execution": {"usdt": 10}},
+        ]
+        with patch("storage.order_ledger_v2.get_order_ledger_v2", return_value=fake_store), \
+             patch.object(svc, "_v2_day_key", return_value="2026-09-01"), \
+             patch("data_manager.load_orders") as load_orders:
+            stats = svc.stats_day_filled_fast()
+        load_orders.assert_not_called()
+        fake_store.query_day.assert_called_once()
+        self.assertEqual(stats["sells"], 1)
+        self.assertAlmostEqual(stats["realized_pnl"], 3.0)
 
 
 if __name__ == "__main__":

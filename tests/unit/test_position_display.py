@@ -421,6 +421,27 @@ class TestPositionDisplay(unittest.TestCase):
                 fast=True, tenant_id="henry", scope="demo"
             )
 
+    def test_send_positions_snapshot_logs_timing(self):
+        with patch("telegram_notifier.send_telegram_message", return_value=True), \
+             patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
+             patch(
+                 "notifications.telegram_commands.position_display.resolve_portfolio_context",
+                 return_value={
+                     "history": {"virtual_balance": 5000, "trades": []},
+                     "cash_balance": 5000.0,
+                     "cash_label": "Sim USDT",
+                     "gate_holdings": None,
+                     "active": [],
+                 },
+             ), patch("services.trading_service.TradingService") as mock_svc, \
+             patch("logger.log") as mock_log:
+            mock_svc.return_value.mode_label.return_value = "demo"
+            send_positions_snapshot(
+                fast=True, detail_level="compact", tenant_id="default", scope="demo"
+            )
+            texts = [str(c[0][0]) for c in mock_log.call_args_list]
+            self.assertTrue(any("positions_snapshot" in t and "total_ms=" in t for t in texts))
+
     def test_send_positions_snapshot_reuses_active_from_context(self):
         with patch("telegram_notifier.send_telegram_message"), \
              patch("price_fetcher.get_prices_batch", return_value=({}, {})), \
