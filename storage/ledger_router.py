@@ -87,6 +87,11 @@ class JsonLedgerStore:
 
         return get_data_file(base)
 
+    def _resolve_scope_file(self, path: str) -> str:
+        from data_manager import resolve_data_path
+
+        return resolve_data_path(path)
+
     def _atomic_write(self, path: str, data: dict) -> bool:
         from data_manager import atomic_write_json
 
@@ -103,13 +108,13 @@ class JsonLedgerStore:
 
     def _orders_path(self, scope: str) -> str:
         orders_files, _ = self._scope_files()
-        return orders_files[scope]
+        return self._resolve_scope_file(orders_files[scope])
 
     def _positions_path(self, scope: str) -> str:
         _, positions_files = self._scope_files()
         if scope == "demo":
             return self._get_data_file("positions.json")
-        return positions_files[scope]
+        return self._resolve_scope_file(positions_files[scope])
 
     def _trade_history_path(self, scope: str) -> str:
         from data_manager import TRADE_HISTORY_FILE, LIVE_TRADE_HISTORY_FILE

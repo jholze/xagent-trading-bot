@@ -90,9 +90,9 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
     history_path = str(tmp_path / "live_trade_history.demo.json")
 
     for src, dst in (
-        (data_manager.ORDERS_SCOPE_FILES.get("demo"), orders_path),
-        (data_manager.POSITIONS_SCOPE_FILES.get("demo"), positions_path),
-        (data_manager.get_data_file(data_manager.LIVE_TRADE_HISTORY_FILE), history_path),
+        (data_manager.resolve_data_path("orders.demo.json"), orders_path),
+        (data_manager.resolve_data_path("positions.demo.json"), positions_path),
+        (data_manager.resolve_data_path("live_trade_history.demo.json"), history_path),
     ):
         if src and os.path.exists(src):
             shutil.copy2(src, dst)

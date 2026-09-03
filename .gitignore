@@ -54,7 +54,8 @@ core/build_meta.json
 # Demo / test data files (created by --demo mode)
 *.demo.json
 
-# Runtime bot state (local paper/live ledger, feeds, sandbox)
+# Runtime bot state (local paper/live ledger, feeds, sandbox).
+# Files live in data/; these basenames also match leftover copies at repo root.
 positions.json
 positions.live.json
 positions.paper.json

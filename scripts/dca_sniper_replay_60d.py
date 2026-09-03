@@ -130,6 +130,9 @@ def load_raster_symbols(max_coins: int = 80) -> list[str]:
         pass
 
     for path in (
+        ROOT / "data" / "watchlist.demo.json",
+        ROOT / "data" / "watchlist.json",
+        ROOT / "data" / "watchlist.dry_run_expansion.demo.json",
         ROOT / "watchlist.demo.json",
         ROOT / "watchlist.json",
         ROOT / "watchlist.dry_run_expansion.demo.json",

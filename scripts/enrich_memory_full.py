@@ -212,7 +212,14 @@ def main() -> int:
     ap.add_argument(
         "--positions-file",
         type=Path,
-        default=_ROOT / "positions.paper.json",
+        default=next(
+            (
+                p
+                for p in (_ROOT / "data" / "positions.paper.json", _ROOT / "positions.paper.json")
+                if p.is_file()
+            ),
+            _ROOT / "data" / "positions.paper.json",
+        ),
     )
     ap.add_argument("--verify", default="ALLO/USDT,WLD/USDT,ZBT/USDT")
     args = ap.parse_args()

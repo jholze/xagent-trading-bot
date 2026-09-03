@@ -8,33 +8,109 @@ from datetime import datetime
 from logger import log
 from storage.mongo_client import get_database
 
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.path.join(_ROOT_DIR, "data")
+
+
 def is_demo_mode() -> bool:
     """Returns True if the bot is running in demo mode (--demo flag or pytest)."""
     return os.environ.get("DEMO_MODE", "0") == "1"
 
 
-def get_data_file(base_name: str) -> str:
+def project_root() -> str:
+    return _ROOT_DIR
+
+
+def data_dir() -> str:
+    return _DATA_DIR
+
+
+def _is_explicit_path(base_name: str) -> bool:
+    return os.path.isabs(base_name) or bool(os.path.dirname(base_name))
+
+
+def resolve_data_path(base_name: str) -> str:
+    """Map a JSON basename to ``data/<name>``, with repo-root fallback.
+
+    Absolute paths and paths that already include a directory (tests, tmp)
+    are returned unchanged. Missing files still resolve to ``data/`` so new
+    writes land there.
     """
-    Returns the correct filename depending on demo mode.
-    If in demo mode and the .demo.json does not exist yet, it copies the real file as starting point.
+    if _is_explicit_path(base_name):
+        return base_name
+    name = os.path.basename(base_name)
+    preferred = os.path.join(_DATA_DIR, name)
+    if os.path.exists(preferred):
+        return preferred
+    legacy = os.path.join(_ROOT_DIR, name)
+    if os.path.exists(legacy):
+        return legacy
+    return preferred
+
+
+def iter_data_paths(base_name: str):
+    """Yield canonical then legacy locations for a basename."""
+    if _is_explicit_path(base_name):
+        yield base_name
+        return
+    name = os.path.basename(base_name)
+    yield os.path.join(_DATA_DIR, name)
+    yield os.path.join(_ROOT_DIR, name)
+
+
+def find_existing_data_file(*names: str) -> str | None:
+    for name in names:
+        for path in iter_data_paths(name):
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _demo_variant(path: str) -> str:
+    if path.endswith(".demo.json"):
+        return path
+    if path.endswith(".json"):
+        return path[:-5] + ".demo.json"
+    return path + ".demo.json"
+
+
+def get_data_file(base_name: str) -> str:
+    """Return the JSON path for this process (demo suffix + ``data/`` folder).
+
+    If in demo mode and the ``.demo.json`` does not exist yet, copy the real
+    file as a starting point.
     """
     if not is_demo_mode():
-        return base_name
+        return resolve_data_path(base_name)
 
-    if base_name.endswith(".demo.json"):
-        demo_path = base_name
-    else:
-        demo_path = base_name.replace(".json", ".demo.json") if base_name.endswith(".json") else base_name + ".demo.json"
+    if _is_explicit_path(base_name):
+        demo_path = _demo_variant(base_name)
+        if not os.path.exists(demo_path) and os.path.exists(base_name):
+            try:
+                shutil.copy2(base_name, demo_path)
+                log(f"Created demo file from existing data: {demo_path}", "INFO")
+            except Exception as e:
+                log(f"Could not copy {base_name} to {demo_path}: {e}", "WARNING")
+        return demo_path
 
-    # If demo file doesn't exist, copy the real one as template (very convenient for testing)
-    if not os.path.exists(demo_path) and os.path.exists(base_name):
-        try:
-            shutil.copy2(base_name, demo_path)
-            log(f"Created demo file from existing data: {demo_path}", "INFO")
-        except Exception as e:
-            log(f"Could not copy {base_name} to {demo_path}: {e}", "WARNING")
-
-    return demo_path
+    raw_name = os.path.basename(base_name)
+    demo_name = os.path.basename(_demo_variant(raw_name))
+    real_name = (
+        demo_name.replace(".demo.json", ".json")
+        if demo_name.endswith(".demo.json")
+        else raw_name
+    )
+    demo_path = resolve_data_path(demo_name)
+    if not os.path.exists(demo_path):
+        src = resolve_data_path(real_name)
+        if os.path.exists(src) and os.path.abspath(src) != os.path.abspath(demo_path):
+            try:
+                os.makedirs(os.path.dirname(demo_path) or ".", exist_ok=True)
+                shutil.copy2(src, demo_path)
+                log(f"Created demo file from existing data: {demo_path}", "INFO")
+            except Exception as e:
+                log(f"Could not copy {src} to {demo_path}: {e}", "WARNING")
+    return demo_path if os.path.exists(demo_path) else os.path.join(_DATA_DIR, demo_name)
 
 
 def _mongo_test_mode(config: dict | None = None) -> bool:
@@ -1407,7 +1483,10 @@ def _mongo_ledger_store(config: dict = None):
 def resolve_orders_file(scope: str) -> str:
     if scope not in ORDERS_SCOPE_FILES:
         raise ValueError(f"Invalid ledger scope: {scope}")
-    return ORDERS_SCOPE_FILES[scope]
+    # Scope is already in the filename (orders.demo.json / .paper / .live).
+    # Do not run get_data_file() here — in DEMO_MODE it would rewrite
+    # paper/live paths to *.demo.json.
+    return resolve_data_path(ORDERS_SCOPE_FILES[scope])
 
 
 def resolve_positions_file(scope: str) -> str:
@@ -1415,7 +1494,7 @@ def resolve_positions_file(scope: str) -> str:
         raise ValueError(f"Invalid ledger scope: {scope}")
     if scope == "demo":
         return get_data_file("positions.json")
-    return POSITIONS_SCOPE_FILES[scope]
+    return resolve_data_path(POSITIONS_SCOPE_FILES[scope])
 
 
 def resolve_ledger_scope(trading_mode: str = None) -> str:

@@ -18,7 +18,10 @@ def bot_dir(tmp_path):
         "config.json",
         "cmc_posts.json",
     ):
-        src = Path(__file__).resolve().parents[2] / name
+        root = Path(__file__).resolve().parents[2]
+        src = root / "data" / name
+        if not src.exists():
+            src = root / name
         if src.exists():
             (tmp_path / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "live_trade_history.json").write_text(
