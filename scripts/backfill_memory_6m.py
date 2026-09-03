@@ -83,7 +83,9 @@ def collect_universe(
 
     # Local paper positions file fallback
     try:
-        p = _ROOT / "positions.paper.json"
+        p = _ROOT / "data" / "positions.paper.json"
+        if not p.is_file():
+            p = _ROOT / "positions.paper.json"
         if p.is_file():
             import importlib.util
 

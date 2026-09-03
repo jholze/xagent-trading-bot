@@ -26,6 +26,13 @@ from notifications.daily_stats import (  # noqa: E402
 normalize_action = normalize_social_action
 
 
+def _bot_json(bot_dir: Path, name: str) -> Path:
+    for path in (bot_dir / "data" / name, bot_dir / name):
+        if path.exists():
+            return path
+    return bot_dir / "data" / name
+
+
 def fmt_trade_row(trade: dict) -> str:
     ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
     pnl = trade.get("pnl") or 0
@@ -160,7 +167,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     day_end = day_start + timedelta(days=1)
     date_str = day_start.strftime("%Y-%m-%d")
 
-    th = load_json(bot_dir / "live_trade_history.json")
+    th = load_json(_bot_json(bot_dir, "live_trade_history.json"))
     trades = th.get("trades", [])
     day_trades = [t for t in trades if day_start <= parse_ts(t["timestamp"]) < day_end]
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
@@ -173,11 +180,11 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     cash = th.get("virtual_balance", 0)
     realized_total = th.get("realized_pnl", 0)
 
-    positions = load_json(bot_dir / "positions.live.json").get("positions", {})
+    positions = load_json(_bot_json(bot_dir, "positions.live.json")).get("positions", {})
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
     _, pos_value = open_positions_table(positions)
 
-    orders_raw = load_json(bot_dir / "orders.live.json")
+    orders_raw = load_json(_bot_json(bot_dir, "orders.live.json"))
     day_orders = [
         o for o in orders_raw.get("orders", [])
         if day_start <= parse_ts(o["timestamps"]["created"]) < day_end
@@ -252,11 +259,11 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     day_start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
 
-    th = load_json(bot_dir / "live_trade_history.json")
+    th = load_json(_bot_json(bot_dir, "live_trade_history.json"))
     trades = th.get("trades", [])
     day_trades = [t for t in trades if day_start <= parse_ts(t["timestamp"]) < day_end]
 
-    orders_raw = load_json(bot_dir / "orders.live.json")
+    orders_raw = load_json(_bot_json(bot_dir, "orders.live.json"))
     day_orders = [
         o for o in orders_raw.get("orders", [])
         if day_start <= parse_ts(o["timestamps"]["created"]) < day_end
@@ -265,12 +272,12 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     rejected_orders = sum(1 for o in day_orders if o["status"] == "rejected")
     reject_coins = Counter(o["symbol"] for o in day_orders if o["status"] == "rejected")
 
-    positions = load_json(bot_dir / "positions.live.json").get("positions", {})
+    positions = load_json(_bot_json(bot_dir, "positions.live.json")).get("positions", {})
     pos_table, pos_value = open_positions_table(positions)
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
 
     config = load_json(bot_dir / "config.json")
-    cmc_raw = load_json(bot_dir / "cmc_posts.json")
+    cmc_raw = load_json(_bot_json(bot_dir, "cmc_posts.json"))
     posts = cmc_posts(cmc_raw)
     day_posts = [p for p in posts if (ts := post_timestamp(p)) and day_start <= ts < day_end]
     cmc_actions = Counter(normalize_action(p) for p in day_posts)

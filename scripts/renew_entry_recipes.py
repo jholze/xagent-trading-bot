@@ -84,7 +84,9 @@ def _load_universe_from_local(args: argparse.Namespace) -> list[str]:
 
     # Primary: data_manager-style watchlist.json
     for name in ("watchlist.json", "watchlist.dry_run_expansion.json"):
-        p = ROOT / name
+        p = ROOT / "data" / name
+        if not p.exists():
+            p = ROOT / name
         if not p.exists():
             continue
         try:
@@ -119,13 +121,16 @@ def _load_universe_from_local(args: argparse.Namespace) -> list[str]:
 
     # Local ledger files + demo_ledger backups (orders/positions)
     ledger_paths = [
+        ROOT / "data" / "orders.demo.json",
+        ROOT / "data" / "orders.json",
+        ROOT / "data" / "orders.paper.json",
+        ROOT / "data" / "positions.demo.json",
+        ROOT / "data" / "positions.json",
         ROOT / "orders.demo.json",
         ROOT / "orders.json",
         ROOT / "orders.paper.json",
         ROOT / "positions.demo.json",
         ROOT / "positions.json",
-        ROOT / "data" / "orders.demo.json",
-        ROOT / "data" / "positions.demo.json",
     ]
     ledger_paths.extend(sorted((ROOT / "data").glob("demo_ledger*.json")))
     for p in ledger_paths:

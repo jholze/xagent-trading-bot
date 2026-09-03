@@ -37,8 +37,12 @@ sys.path.insert(0, str(ROOT))
 TENANT_ID = "ctexp"
 SOURCE_TENANT = "default"
 CONFIG_PATH = ROOT / "config.json"
-WATCHLIST_PATH = ROOT / "watchlist.json"
-EXPANSION_PATH = ROOT / "watchlist.dry_run_expansion.json"
+WATCHLIST_PATH = ROOT / "data" / "watchlist.json"
+EXPANSION_PATH = ROOT / "data" / "watchlist.dry_run_expansion.json"
+if not WATCHLIST_PATH.exists():
+    WATCHLIST_PATH = ROOT / "watchlist.json"
+if not EXPANSION_PATH.exists():
+    EXPANSION_PATH = ROOT / "watchlist.dry_run_expansion.json"
 
 # Last-resort coins used by notifications/telegram_commands/onboarding_commands.py
 _ONBOARD_DEFAULT_WATCHLIST = [

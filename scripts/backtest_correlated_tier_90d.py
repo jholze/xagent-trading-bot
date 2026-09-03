@@ -294,8 +294,12 @@ def assemble_universe(
             sources[s].append(f"ledger:{p.name}")
         traded |= got
 
-    watch = symbols_from_watchlist_file(ROOT / "watchlist.json")
-    expand = symbols_from_watchlist_file(ROOT / "watchlist.dry_run_expansion.json")
+    def _wl(name: str):
+        p = ROOT / "data" / name
+        return p if p.exists() else ROOT / name
+
+    watch = symbols_from_watchlist_file(_wl("watchlist.json"))
+    expand = symbols_from_watchlist_file(_wl("watchlist.dry_run_expansion.json"))
     watchlisted = watch | expand
     for s in watch:
         sources[s].append("watchlist")

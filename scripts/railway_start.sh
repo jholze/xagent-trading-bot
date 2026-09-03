@@ -122,9 +122,16 @@ export RAILWAY_DEPLOY=1
 export BOT_TIMEZONE="${BOT_TIMEZONE:-Europe/Berlin}"
 export TZ="${TZ:-$BOT_TIMEZONE}"
 
-if [[ ! -f watchlist.demo.json && -f watchlist.json ]]; then
-  echo "Seeding watchlist.demo.json from watchlist.json"
-  cp watchlist.json watchlist.demo.json
+mkdir -p data
+WL_SRC=""
+if [[ -f data/watchlist.json ]]; then
+  WL_SRC=data/watchlist.json
+elif [[ -f watchlist.json ]]; then
+  WL_SRC=watchlist.json
+fi
+if [[ -n "$WL_SRC" && ! -f data/watchlist.demo.json ]]; then
+  echo "Seeding data/watchlist.demo.json from $WL_SRC"
+  cp "$WL_SRC" data/watchlist.demo.json
 fi
 
 echo "Mongo DB: ${MONGODB_DB} | Demo ledger backend: ${DEMO_LEDGER_BACKEND}"

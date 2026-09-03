@@ -104,11 +104,11 @@ _CACHE_FIELDS = (
 def resolve_positions_file(scope):
     if scope not in POSITIONS_SCOPE_FILES:
         raise ValueError(f"Invalid ledger scope: {scope}")
-    if scope == "demo":
-        from data_manager import get_data_file
+    from data_manager import get_data_file, resolve_data_path
 
+    if scope == "demo":
         return get_data_file("positions.json")
-    return POSITIONS_SCOPE_FILES[scope]
+    return resolve_data_path(POSITIONS_SCOPE_FILES[scope])
 
 
 def position_notional_usdt(pos: dict) -> float:

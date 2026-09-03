@@ -277,7 +277,7 @@ Send `/gate` or `/mode` in Telegram.
 | Mongo DB | `xagent_test` | `xagent_test` (recommended) |
 | Ledger | `demo_hybrid` (JSON+Mongo) | `mongo` via `DEMO_LEDGER_BACKEND` |
 | Webhook | ngrok | `WEBHOOK_BASE_URL` |
-| Watchlist | `watchlist.demo.json` | seeded from `watchlist.json` on first boot |
+| Watchlist | `data/watchlist.demo.json` | seeded from `data/watchlist.json` on first boot |
 
 ---
 

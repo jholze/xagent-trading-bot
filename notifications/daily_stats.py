@@ -79,13 +79,13 @@ def load_orders_doc() -> dict:
         "live": ("orders.live.json",),
     }.get(scope, ("orders.live.json", "orders.paper.json", "orders.demo.json"))
     for name in candidates:
-        path = BOT_ROOT / name
-        if not path.exists():
-            continue
-        try:
-            return load_json(path)
-        except Exception:
-            continue
+        for path in (BOT_ROOT / "data" / name, BOT_ROOT / name):
+            if not path.exists():
+                continue
+            try:
+                return load_json(path)
+            except Exception:
+                continue
     return {"orders": []}
 
 
@@ -178,8 +178,12 @@ def open_positions_summary(bot_dir: Path | None = None) -> tuple[int, float]:
         pass
     root = bot_dir or BOT_ROOT
     for name in ("positions.live.json", "positions.demo.json", "positions.json"):
-        path = root / name
-        if not path.exists():
+        path = None
+        for candidate in (root / "data" / name, root / name):
+            if candidate.exists():
+                path = candidate
+                break
+        if path is None:
             continue
         try:
             positions = load_json(path).get("positions", {})

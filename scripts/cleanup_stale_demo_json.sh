@@ -26,11 +26,13 @@ ARCHIVE="$ROOT/data/archived_demo_json_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$ARCHIVE"
 MOVED=0
 for f in orders.demo.json positions.demo.json live_trade_history.demo.json trade_history.demo.json; do
-  if [[ -f "$ROOT/$f" ]]; then
-    mv "$ROOT/$f" "$ARCHIVE/"
-    echo "archived $f"
-    MOVED=$((MOVED + 1))
-  fi
+  for src in "$ROOT/data/$f" "$ROOT/$f"; do
+    if [[ -f "$src" ]]; then
+      mv "$src" "$ARCHIVE/"
+      echo "archived $src"
+      MOVED=$((MOVED + 1))
+    fi
+  done
 done
 
 echo "Mongo SOT confirmed ($ORDER_COUNT orders). Archived $MOVED file(s) to:"
