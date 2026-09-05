@@ -32,11 +32,28 @@ def test_rolling_folds_produces_multiple_windows():
     assert len(folds) >= 8
 
 
+class _IndicatorCachedBacktester(Backtester):
+    """Test-side: reuse per-fold talib columns across baseline/variant runs."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hermes = {**self.hermes, "backtest_mode": "ta_only"}
+        self._ind_cache: dict = {}
+
+    def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        key = (int(df["ts"].iloc[0]), int(df["ts"].iloc[-1]), len(df))
+        hit = self._ind_cache.get(key)
+        if hit is not None:
+            return hit.copy()
+        out = super()._add_indicators(df)
+        self._ind_cache[key] = out
+        return out.copy()
+
+
 @patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
 @patch("price_fetcher.get_ticker_price", return_value=1.0)
 def test_walk_forward_folds_won(_ticker, _gate):
-    bt = Backtester()
-    bt.hermes = {**bt.hermes, "backtest_mode": "ta_only"}
+    bt = _IndicatorCachedBacktester()
     hermes = {
         "validation": {
             "fold_days": 7,

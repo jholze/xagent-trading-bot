@@ -261,6 +261,7 @@ class TestDryRunPortfolioMath(unittest.TestCase):
 @pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping tests, frictionless
 class TestDryRunPortfolioFlows(unittest.TestCase):
     def setUp(self):
+        # Must wrap pytest isolate_demo_ledger_files, so the harness is per-test.
         self.harness = DryRunPortfolioHarness(initial=5000.0)
 
     def tearDown(self):

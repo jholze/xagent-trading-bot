@@ -73,29 +73,67 @@ from x_analyzer import XAnalyzer, XSignal
 
 
 class TestVirtualTrading(unittest.TestCase):
-    def setUp(self):
-        import json
+    @classmethod
+    def setUpClass(cls):
         import tempfile
         import logger as logger_mod
 
-        self.config = load_config()
-        self.symbol = "XRVM/USDT"
-        self.tf = "4h"
-        self.test_price = 0.5
+        cls.config = load_config()
+        cls.symbol = "XRVM/USDT"
+        cls.tf = "4h"
+        cls.test_price = 0.5
+        cls._trade_history_path = None
+        cls._trade_history_original = None
+        cls._log_dir_backup = logger_mod.LOG_DIR
+        cls._log_file_backup = logger_mod.LOG_FILE
+        cls._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
+        logger_mod.LOG_DIR = cls._log_tmp
+        logger_mod.LOG_FILE = os.path.join(cls._log_tmp, "aria_log.txt")
+        from services.market_service import MarketService
+        from tests.support.offline import gate_prices_listed
+
+        cls._ohlcv_p = patch.object(MarketService, "_fetch_ohlcv", return_value=None)
+        cls._ohlcv_p.start()
+        cls._gate_p = patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
+        cls._gate_p.start()
+        cls._ticker_p = patch("price_fetcher.get_ticker_price", return_value=1.0)
+        cls._ticker_p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        import logger as logger_mod
+        import shutil
+
+        logger_mod.LOG_DIR = cls._log_dir_backup
+        logger_mod.LOG_FILE = cls._log_file_backup
+        shutil.rmtree(cls._log_tmp, ignore_errors=True)
+        cls._ticker_p.stop()
+        cls._gate_p.stop()
+        cls._ohlcv_p.stop()
+        if cls._trade_history_original is not None:
+            try:
+                from data_manager import save_trade_history
+
+                save_trade_history(cls._trade_history_original)
+            except Exception:
+                pass
+
+    def setUp(self):
+        import json
+        import logger as logger_mod
         from decimal import Decimal
         from strategies.positions import positions, get_key
+
+        logger_mod.LOG_DIR = self._log_tmp
+        logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
+        if type(self)._trade_history_path is None:
+            scope = resolve_ledger_scope()
+            history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
+            type(self)._trade_history_path = get_data_file(history_base)
+            type(self)._trade_history_original = load_trade_history()
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
-        scope = resolve_ledger_scope()
-        history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
-        self._trade_history_path = get_data_file(history_base)
-        self._trade_history_backup = load_trade_history()
-        self._log_dir_backup = logger_mod.LOG_DIR
-        self._log_file_backup = logger_mod.LOG_FILE
-        self._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
-        logger_mod.LOG_DIR = self._log_tmp
-        logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
         key = get_key(self.symbol, self.tf)
         if key in positions:
             del positions[key]
@@ -222,8 +260,10 @@ class TestVirtualTrading(unittest.TestCase):
         from strategies.decision_engine import DecisionEngine
 
         engine = DecisionEngine()
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
-             patch.object(engine.market, "fetch_ohlcv", return_value=pd.DataFrame({"close": [1.0], "high": [1.1], "low": [0.9]})):
+        indicators = {"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv", return_value=pd.DataFrame({"close": [1.0], "high": [1.1], "low": [0.9]})), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)):
             analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
             self.assertIsNotNone(analysis)
             self.assertIn(analysis.normalized_action, ("HOLD", "BUY", "BUY_STRONG"))
@@ -443,7 +483,10 @@ class TestVirtualTrading(unittest.TestCase):
     def test_signal_orchestrator_analyze_only(self):
         from services.signal_orchestrator import SignalOrchestrator
         orch = SignalOrchestrator()
-        with patch.object(orch.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}):
+        indicators = {"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}
+        with patch.object(orch.market, "fetch_indicators", return_value=indicators), \
+             patch.object(orch.decision_engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(orch.decision_engine.market, "fetch_indicators", return_value=indicators):
             analysis = orch.analyze({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
             self.assertIsNotNone(analysis)
             self.assertIn(analysis.action, ("HOLD", "BUY", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"))
@@ -1690,22 +1733,11 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertTrue(len(error_logs) > 0)
 
     def tearDown(self):
-        import logger as logger_mod
-        import shutil
         from strategies.positions import positions, save_positions
 
         positions.clear()
         positions.update(self._positions_backup)
         save_positions()
-        try:
-            from data_manager import save_trade_history
-            save_trade_history(self._trade_history_backup)
-        except Exception:
-            pass
-        if hasattr(self, "_log_file_backup"):
-            logger_mod.LOG_DIR = self._log_dir_backup
-            logger_mod.LOG_FILE = self._log_file_backup
-            shutil.rmtree(self._log_tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
