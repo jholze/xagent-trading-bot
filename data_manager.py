@@ -269,13 +269,11 @@ def load_watchlist(tenant_id: str | None = None):
         except Exception:
             use_mongo = False
         if use_mongo:
-            try:
-                from storage import tenant_meta_store as _tms
-                coins = _tms.load_tenant_watchlist(tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
-                if coins:
-                    return coins
-            except Exception as e:
-                log(f"Failed tenant_meta_store load_tenant_watchlist for {tid}: {e}", "WARNING")
+            from storage import tenant_meta_store as _tms
+            # Empty list is legitimate (no watchlist). Never fall back to operator coins.
+            return _tms.load_tenant_watchlist(
+                tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg)
+            )
     # default or fallback
     path = get_data_file(WATCHLIST_FILE)
     if not os.path.exists(path):
@@ -723,22 +721,7 @@ def _load_default_config_from_disk():
         with open("config.json", "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        log(f"Failed to load config.json for default, using hardcoded defaults: {e}", "WARNING")
-        return {
-            "virtual_trading": True,
-            "initial_capital_usdt": 5000,
-            "max_usdt_per_trade": 150,
-            "stop_loss_pct": 12.0,
-            "max_open_positions": 5,
-            "debug": False,
-            "x_accounts": ["CryptoCapo_", "Pentosh1"],
-            "min_x_confidence": 65,
-            "x_weight": 0.45,
-            "technical_weight": 0.35,
-            "onchain_weight": 0.2,
-            "max_daily_trades": 5,
-            "strategies": []
-        }
+        _raise_ledger_unavailable("load_default_config_from_disk", e)
 
 
 def _apply_trading_profile_merge(default_cfg: dict, tenant_body: dict | None) -> dict:
@@ -776,6 +759,12 @@ def load_config(tenant_id: str | None = None):
             use_mongo = False
         if use_mongo:
             tenant_body = _load_tenant_config_body(tid, default_cfg)
+            if tenant_body is None:
+                _raise_ledger_unavailable(
+                    "load_config",
+                    tenant_id=tid,
+                    message="tenant has no config",
+                )
         return _apply_trading_profile_merge(default_cfg, tenant_body)
     # default
     global _config_cache
