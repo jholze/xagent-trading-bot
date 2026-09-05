@@ -19,16 +19,27 @@ class GateExecutionAdapter(ExecutionAdapter):
         self,
         config: BotConfig = None,
         portfolio: PortfolioService = None,
+        mode: str | None = None,
     ):
         self.config = config or get_bot_config()
         self.portfolio = portfolio or PortfolioService(self.config)
         self.live_cfg = self.config.live_config
+        if mode is None:
+            from core.execution_mode import resolve_execution_mode
+
+            mode = resolve_execution_mode(self.config.raw).adapter_mode
+        mode_n = str(mode).strip().lower()
+        if mode_n not in ("shadow", "testnet", "real"):
+            raise RuntimeError(
+                f"Unknown GateExecutionAdapter mode={mode!r}; expected shadow|testnet|real"
+            )
+        self._adapter_mode = mode_n
         self._exchange = None
         self._last_api_error = ""
 
     @property
     def mode(self) -> str:
-        return "live"
+        return self._adapter_mode
 
     def _get_exchange(self):
         if self._exchange:
