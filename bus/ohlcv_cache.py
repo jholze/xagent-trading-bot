@@ -271,6 +271,28 @@ def ohlcv_cache_enabled(config_raw: dict | None = None) -> bool:
     return bool(arch.get("ohlcv_cache_enabled", True))
 
 
+def _delete_redis_ohlcv_keys(key_prefix: str, redis_url: str | None = None) -> None:
+    """SCAN + DEL `{key_prefix}ohlcv:*`. Swallows all errors (tests without Redis)."""
+    try:
+        client = get_redis(redis_url, key_prefix=key_prefix)
+        if not client:
+            return
+        pattern = f"{key_prefix}ohlcv:*"
+        keys = list(client.scan_iter(match=pattern, count=200))
+        for i in range(0, len(keys), 200):
+            batch = keys[i : i + 200]
+            if batch:
+                client.delete(*batch)
+    except Exception:
+        return
+
+
 def reset_ohlcv_cache_for_tests() -> None:
     global _default_cache
+    prefix = "aria:"
+    redis_url = None
+    if _default_cache is not None:
+        prefix = _default_cache.key_prefix
+        redis_url = _default_cache.redis_url
+    _delete_redis_ohlcv_keys(prefix, redis_url)
     _default_cache = None
