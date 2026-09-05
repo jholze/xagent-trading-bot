@@ -10,6 +10,7 @@ import pytest
 
 from core.config import BotConfig
 from core.models import TradeOrder
+from core.models import RiskDecision
 from risk.risk_manager import RiskManager
 
 NOW = datetime(2026, 9, 5, 12, 0, 0)
@@ -372,12 +373,14 @@ def test_nested_evaluate_does_not_reuse_outer_orders_document():
     orig = rm._evaluate_impl
 
     def wrap(*args, **kwargs):
-        doc = getattr(rm, "_eval_orders_doc", None) or {}
+        # The scoped document is loaded lazily on first use; read it the way
+        # the guards do so the load is attributed to this evaluate() call.
+        doc = rm._load_orders_document() or {}
         seen_tags.append(doc.get("tag"))
         if len(seen_tags) == 1:
             nested = rm.evaluate(_sell_order(), "4h", source="manual")
             assert nested.approved, nested.message
-            assert (getattr(rm, "_eval_orders_doc", None) or {}).get("tag") == "outer"
+            assert (rm._load_orders_document() or {}).get("tag") == "outer"
         return orig(*args, **kwargs)
 
     rm._evaluate_impl = wrap
@@ -389,3 +392,51 @@ def test_nested_evaluate_does_not_reuse_outer_orders_document():
     assert seen_tags == ["outer", "inner"]
     assert len(calls) == 2
     assert getattr(rm, "_eval_orders_doc", None) is None
+
+
+def test_early_reject_loads_no_orders_document():
+    """SELL without amount is rejected before any daily guard: zero loads (#304 slice 3)."""
+    rm = RiskManager(_cfg(max_daily_sells=10))
+    order = TradeOrder(type="SELL", symbol="SL/USDT", price=1.0, amount=0.0, signal="SELL_FULL")
+    with patch("risk.risk_manager.datetime", _FrozenDateTime), _patch_load_orders(
+        _synthetic_doc()
+    ) as calls, patch("risk.risk_manager.get_position", return_value={"amount": 0.0}):
+        decision = rm.evaluate(order, "4h", source="manual")
+    assert decision.approved is False
+    assert len(calls) == 0
+    assert rm._eval_orders_doc is None
+
+
+def test_concurrent_evaluate_scopes_are_thread_local():
+    """Two threads on one RiskManager each see their own scoped document."""
+    import threading as _th
+
+    rm = RiskManager(_cfg(max_daily_sells=10))
+    seen = {}
+    gate = _th.Barrier(2)
+
+    def wrap(*args, **kwargs):
+        gate.wait(timeout=5)
+        doc = rm._load_orders_document() or {}
+        seen[_th.current_thread().name] = doc.get("tag")
+        gate.wait(timeout=5)
+        return RiskDecision(approved=True, message="ok", code="ok")
+
+    rm._evaluate_impl = wrap
+    docs = {"t-a": {"orders": [], "tag": "a"}, "t-b": {"orders": [], "tag": "b"}}
+
+    def fake_load(*_a, **_k):
+        return docs[_th.current_thread().name]
+
+    with patch("data_manager.load_orders", side_effect=fake_load):
+        threads = [
+            _th.Thread(target=rm.evaluate, args=(_sell_order(), "4h"), kwargs={"source": "manual"}, name=n)
+            for n in ("t-a", "t-b")
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+    assert seen == {"t-a": "a", "t-b": "b"}
+    assert rm._eval_orders_doc is None
+
