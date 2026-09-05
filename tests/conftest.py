@@ -8,7 +8,46 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+
+def _sanitize_pytest_db_suffix(raw: str | None = None) -> str:
+    if raw is None:
+        raw = os.environ.get("PYTEST_DB_SUFFIX") or ""
+    return "".join(
+        ch for ch in raw.strip() if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+    )
+
+
+def _effective_pytest_db_suffix() -> str:
+    """Sanitized PYTEST_DB_SUFFIX, with ``_<worker>`` appended under xdist.
+
+    Sequential (no ``PYTEST_XDIST_WORKER``): unchanged sanitized value, possibly
+    empty so Mongo stays ``xagent_pytest``. xdist worker: ``{sanitized or
+    'default'}_{gwN}`` so Mongo is ``xagent_pytest_par_gw3`` and Redis is
+    ``pytest:par_gw3:``. Idempotent if the suffix already ends with ``_<worker>``.
+    """
+    sanitized = _sanitize_pytest_db_suffix()
+    worker = (os.environ.get("PYTEST_XDIST_WORKER") or "").strip()
+    if not worker:
+        return sanitized
+    if sanitized.endswith(f"_{worker}"):
+        return sanitized
+    return f"{sanitized or 'default'}_{worker}"
+
+
+def _apply_xdist_worker_db_suffix() -> None:
+    """Mutate PYTEST_DB_SUFFIX so resolve_test_db_name() sees the worker.
+
+    Must run before ``storage.mongo_client`` is imported: TEST_DB_NAME is
+    computed at import time. Sequential runs leave the env var alone.
+    """
+    worker = (os.environ.get("PYTEST_XDIST_WORKER") or "").strip()
+    if not worker:
+        return
+    os.environ["PYTEST_DB_SUFFIX"] = _effective_pytest_db_suffix()
+
+
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
+_apply_xdist_worker_db_suffix()
 from storage.mongo_client import (
     DEV_DB_NAME,
     close_client,
@@ -23,6 +62,7 @@ os.environ["MONGODB_DB"] = resolve_test_db_name()
 
 def pytest_configure(config):
     os.environ["PYTEST_RUNNING"] = "1"
+    _apply_xdist_worker_db_suffix()
     force_local_test_mongo(dev=False)
     os.environ["MONGODB_DB"] = resolve_test_db_name()
     close_client()
@@ -49,10 +89,9 @@ def isolate_test_mongo(monkeypatch):
 def isolate_ohlcv_cache_key_prefix(monkeypatch):
     """Keep pytest OHLCV Redis keys off the production aria: prefix (#319)."""
     # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
-    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
-    suffix = "".join(
-        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
-    ) or "default"
+    # Under xdist the process suffix already includes _gwN; compute it here too
+    # so a late worker env still isolates Redis from other workers.
+    suffix = _effective_pytest_db_suffix() or "default"
     monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", f"pytest:{suffix}:")
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
 
