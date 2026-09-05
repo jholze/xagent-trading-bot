@@ -133,3 +133,26 @@ def test_blank_env_values_are_unset(monkeypatch):
     monkeypatch.setenv("PYTEST_DB_SUFFIX", "rk326")
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     assert redis_key_prefix() == "pytest:rk326:"
+
+
+def test_ohlcv_cache_and_stores_use_central_prefix(monkeypatch):
+    monkeypatch.setenv("REDIS_KEY_PREFIX", "central:")
+    monkeypatch.delenv("OHLCV_CACHE_KEY_PREFIX", raising=False)
+    from bus.ohlcv_cache import OhlcvCache
+    from services.market_oracle.store import _redis_key as ora_key
+    from services.santiment.store import _redis_key as san_key
+
+    cache = OhlcvCache(config_raw={"architecture": {}})
+    assert cache.key_prefix == "central:"
+    assert ora_key() == "central:market_oracle:latest"
+    assert san_key() == "central:santiment:latest"
+
+
+def test_stores_keep_ohlcv_alias(monkeypatch):
+    monkeypatch.delenv("REDIS_KEY_PREFIX", raising=False)
+    monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", "legacy:")
+    from services.market_oracle.store import _key_prefix as ora_prefix
+    from services.santiment.store import _key_prefix as san_prefix
+
+    assert ora_prefix() == "legacy:"
+    assert san_prefix() == "legacy:"
