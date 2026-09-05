@@ -20,8 +20,13 @@ class GateExecutionAdapter(ExecutionAdapter):
 
     ``mode`` is ``shadow`` | ``testnet`` | ``real``. Shadow runs precision,
     limits and balance checks then synthesises a fill — it never calls
-    ``create_*_order``.
+    ``create_*_order``. Market metadata in shadow is best-effort and
+    process-cached; missing markets never fail a shadow order.
     """
+
+    _shadow_markets_cache: dict | None = None
+    _shadow_markets_failed: bool = False
+    _shadow_markets_warned: bool = False
 
     def __init__(
         self,
@@ -44,6 +49,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         self._adapter_mode = mode_n
         self._exchange = None
         self._last_api_error = ""
+        self._precision_unverified = False
 
     @property
     def mode(self) -> str:
@@ -60,6 +66,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             if api_key and api_secret:
                 params["apiKey"] = api_key
                 params["secret"] = api_secret
+            params["timeout"] = 4000
             self._exchange = ccxt.gate(params)
             return self._exchange
         if not api_key or not api_secret:
@@ -115,9 +122,83 @@ class GateExecutionAdapter(ExecutionAdapter):
             log(f"Shadow USDT balance from ledger failed: {e}", "WARNING")
             return 0.0
 
+    def _warn_shadow_markets_unavailable(self) -> None:
+        cls = type(self)
+        if cls._shadow_markets_warned:
+            return
+        cls._shadow_markets_warned = True
+        log("shadow: gate markets unavailable — precision/limits unverified", "WARNING")
+
+    def _ensure_shadow_markets(self, exchange) -> bool:
+        """Load Gate markets once per process. False → skip precision/limits."""
+        cls = type(self)
+        if cls._shadow_markets_failed:
+            return False
+        existing = getattr(exchange, "markets", None) if exchange is not None else None
+        if isinstance(existing, dict) and existing:
+            cls._shadow_markets_cache = existing
+            return True
+        if cls._shadow_markets_cache is not None:
+            if exchange is not None:
+                try:
+                    setter = getattr(exchange, "set_markets", None)
+                    if callable(setter):
+                        setter(cls._shadow_markets_cache)
+                    elif not isinstance(getattr(exchange, "markets", None), dict):
+                        exchange.markets = cls._shadow_markets_cache
+                except Exception:
+                    pass
+            return True
+        if exchange is None:
+            cls._shadow_markets_failed = True
+            self._warn_shadow_markets_unavailable()
+            return False
+        try:
+            loaded = exchange.load_markets()
+            if not loaded:
+                raise RuntimeError("empty markets")
+            cls._shadow_markets_cache = loaded
+            return True
+        except Exception:
+            cls._shadow_markets_failed = True
+            self._warn_shadow_markets_unavailable()
+            return False
+
+    def _shadow_adjust_amount(self, exchange, symbol: str, amount: float) -> tuple[float, bool]:
+        if not self._ensure_shadow_markets(exchange):
+            return float(amount), False
+        try:
+            return float(exchange.amount_to_precision(symbol, amount)), True
+        except Exception:
+            return float(amount), False
+
+    def _shadow_cap_sell(self, exchange, order: TradeOrder, amount: float) -> float:
+        balance = self._fetch_base_balance(exchange, order.symbol)
+        if balance > 0 and amount > balance:
+            log(
+                f"Sell amount capped: ledger {amount:.6f} > exchange {balance:.6f} "
+                f"for {order.symbol}",
+                "WARNING",
+            )
+            return balance
+        return amount
+
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
-        exchange = self._get_exchange()
-        if not exchange:
+        self._precision_unverified = False
+        exchange = None
+        try:
+            exchange = self._get_exchange()
+        except Exception as e:
+            if self._adapter_mode != "shadow":
+                log(f"Gate execution failed for {order.symbol}: {e}", "ERROR")
+                return TradeResult(
+                    executed=False,
+                    order_type=order.type,
+                    symbol=order.symbol,
+                    message=str(e)[:120],
+                )
+            log(f"Shadow exchange init failed: {e}", "WARNING")
+        if not exchange and self._adapter_mode != "shadow":
             key_env = self.live_cfg.get("api_key_env", "GATE_API_KEY")
             secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
             return TradeResult(
@@ -166,7 +247,11 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
 
         amount = usdt / order.price if order.price > 0 else order.amount
-        amount = float(exchange.amount_to_precision(order.symbol, amount))
+        if self._adapter_mode == "shadow":
+            amount, verified = self._shadow_adjust_amount(exchange, order.symbol, amount)
+            self._precision_unverified = not verified
+        else:
+            amount = float(exchange.amount_to_precision(order.symbol, amount))
 
         if self._adapter_mode == "shadow":
             raw = self._synthesize_shadow_raw(order, side="buy", amount=amount, usdt=usdt)
@@ -187,11 +272,15 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange_order_id=str(raw.get("id", "")),
             fill=fill,
         )
-        from price_fetcher import format_usdt_price
-
-        result.message = f"Gate BUY filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
         result.fee = fill.fee_usdt if fill is not None else 0.0
+        if self._adapter_mode == "shadow":
+            result.message = f"shadow {order.type} filled {filled:.6f} @ {fill_price}"
+            result.precision_unverified = self._precision_unverified
+        else:
+            from price_fetcher import format_usdt_price
+
+            result.message = f"Gate BUY filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
@@ -262,9 +351,23 @@ class GateExecutionAdapter(ExecutionAdapter):
         if amount <= 0:
             return TradeResult(False, "SELL", order.symbol, message="No amount to sell")
 
-        amount, error = self._validate_sell_amount(exchange, order, amount)
-        if error:
-            return TradeResult(False, "SELL", order.symbol, message=error)
+        if self._adapter_mode == "shadow":
+            if self._ensure_shadow_markets(exchange):
+                try:
+                    amount, error = self._validate_sell_amount(exchange, order, amount)
+                    if error:
+                        return TradeResult(False, "SELL", order.symbol, message=error)
+                    self._precision_unverified = False
+                except Exception:
+                    amount = self._shadow_cap_sell(exchange, order, amount)
+                    self._precision_unverified = True
+            else:
+                amount = self._shadow_cap_sell(exchange, order, amount)
+                self._precision_unverified = True
+        else:
+            amount, error = self._validate_sell_amount(exchange, order, amount)
+            if error:
+                return TradeResult(False, "SELL", order.symbol, message=error)
 
         if self._adapter_mode == "shadow":
             raw = self._synthesize_shadow_raw(order, side="sell", amount=amount)
@@ -286,11 +389,15 @@ class GateExecutionAdapter(ExecutionAdapter):
             usdt_received=received,
             fill=fill,
         )
-        from price_fetcher import format_usdt_price
-
-        result.message = f"Gate SELL filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
         result.fee = fill.fee_usdt if fill is not None else 0.0
+        if self._adapter_mode == "shadow":
+            result.message = f"shadow {order.type} filled {filled:.6f} @ {fill_price}"
+            result.precision_unverified = self._precision_unverified
+        else:
+            from price_fetcher import format_usdt_price
+
+            result.message = f"Gate SELL filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         return result
 
     def _synthesize_shadow_raw(
@@ -417,6 +524,9 @@ class GateExecutionAdapter(ExecutionAdapter):
         }
         if fill is not None:
             rec.update(trade_cost_fields(fill))
+        if self._adapter_mode == "shadow":
+            rec["precision_unverified"] = bool(self._precision_unverified)
+            local.precision_unverified = bool(self._precision_unverified)
         record_live_trade(rec)
         local.message = local.message or f"{self.mode} {order.type} synced"
         local.exchange_order_id = exchange_order_id

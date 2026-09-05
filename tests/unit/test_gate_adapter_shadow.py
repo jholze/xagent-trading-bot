@@ -16,6 +16,17 @@ from services.portfolio_service import PortfolioService
 from strategies.positions import clear_positions_memory, get_position
 
 
+@pytest.fixture(autouse=True)
+def _reset_shadow_market_cache():
+    GateExecutionAdapter._shadow_markets_cache = None
+    GateExecutionAdapter._shadow_markets_failed = False
+    GateExecutionAdapter._shadow_markets_warned = False
+    yield
+    GateExecutionAdapter._shadow_markets_cache = None
+    GateExecutionAdapter._shadow_markets_failed = False
+    GateExecutionAdapter._shadow_markets_warned = False
+
+
 def test_paper_execution_adapter_module_gone():
     with pytest.raises(ImportError):
         from execution.paper_adapter import PaperExecutionAdapter  # noqa: F401
@@ -124,10 +135,13 @@ def test_shadow_buy_calls_precision_never_create_order(monkeypatch):
     rec = captured[-1]
     assert rec["exchange_order_id"].startswith("shadow-")
     assert rec["cost_model"] == COST_MODEL_VERSION
+    assert rec["precision_unverified"] is False
     assert "fee_base" in rec
     assert "fee_quote" in rec
     assert "fee_usdt" in rec
     assert result.exchange_order_id.startswith("shadow-")
+    assert result.precision_unverified is False
+    assert result.message.startswith("shadow ")
 
 
 def test_shadow_sell_calls_validate_and_precision_never_create_order(monkeypatch):
@@ -233,3 +247,49 @@ def test_testnet_sets_sandbox_mode(monkeypatch):
     exchange = adapter._get_exchange()
     exchange.set_sandbox_mode.assert_called_once_with(True)
     assert created["params"]["apiKey"] == "k"
+
+
+def test_shadow_fills_when_load_markets_raises(monkeypatch):
+    adapter, captured = _shadow_adapter(monkeypatch)
+    adapter._exchange.load_markets.side_effect = RuntimeError("network down")
+    adapter._exchange.load_markets.return_value = None
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "execution.gate_adapter.log",
+        lambda msg, level="INFO": logged.append((str(msg), str(level))),
+    )
+    GateExecutionAdapter._shadow_markets_cache = None
+    GateExecutionAdapter._shadow_markets_failed = False
+    GateExecutionAdapter._shadow_markets_warned = False
+
+    result = adapter.execute(TradeOrder("BUY", SYMBOL, 100.0, 0, usdt_amount=1000.0), "4h")
+    assert result.executed, result.message
+    assert result.precision_unverified is True
+    assert captured[-1]["precision_unverified"] is True
+    assert result.message.startswith("shadow ")
+    adapter._exchange.amount_to_precision.assert_not_called()
+    adapter._exchange.create_market_buy_order.assert_not_called()
+    adapter._exchange.create_order.assert_not_called()
+    unavailable = [
+        msg for msg, lvl in logged
+        if lvl == "WARNING" and "gate markets unavailable" in msg
+    ]
+    assert len(unavailable) == 1
+
+    adapter.execute(TradeOrder("BUY", SYMBOL, 100.0, 0, usdt_amount=100.0), "4h")
+    unavailable = [
+        msg for msg, lvl in logged
+        if lvl == "WARNING" and "gate markets unavailable" in msg
+    ]
+    assert len(unavailable) == 1
+
+
+def test_shadow_precision_verified_when_markets_available(monkeypatch):
+    adapter, captured = _shadow_adapter(monkeypatch)
+    result = adapter.execute(TradeOrder("BUY", SYMBOL, 100.0, 0, usdt_amount=1000.0), "4h")
+    assert result.executed, result.message
+    assert result.precision_unverified is False
+    assert captured[-1]["precision_unverified"] is False
+    adapter._exchange.amount_to_precision.assert_called()
+    adapter._exchange.load_markets.assert_called()
+    adapter._exchange.create_market_buy_order.assert_not_called()
