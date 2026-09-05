@@ -46,6 +46,25 @@ def _apply_xdist_worker_db_suffix() -> None:
     os.environ["PYTEST_DB_SUFFIX"] = _effective_pytest_db_suffix()
 
 
+def _cleanup_xdist_worker_stores() -> None:
+    """Drop this xdist worker's Mongo DB and OHLCV Redis keys.
+
+    Sequential runs (no PYTEST_XDIST_WORKER) keep today's behaviour: tests
+    drop their own DB in fixtures; no session-end drop of xagent_pytest.
+    """
+    if not (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+        return
+    from storage.mongo_client import close_client, drop_database
+
+    drop_database(test=True)
+    close_client()
+    suffix = _sanitize_pytest_db_suffix() or "default"
+    os.environ["OHLCV_CACHE_KEY_PREFIX"] = f"pytest:{suffix}:"
+    from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
+
+    reset_ohlcv_cache_for_tests()
+
+
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
 _apply_xdist_worker_db_suffix()
 from storage.mongo_client import (
@@ -449,20 +468,23 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
-        return
-    elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
-    print(
-        f"\n{'='*60}\n"
-        f"  LOCAL suite done  exit={exitstatus}  "
-        f"{elapsed:.1f}s\n"
-        f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
-        f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
-        f"total={_PROGRESS['total']}\n"
-        f"  db={resolve_test_db_name()} (local only)\n"
-        f"{'='*60}\n",
-        flush=True,
-    )
+    try:
+        _cleanup_xdist_worker_stores()
+    finally:
+        if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
+            return
+        elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
+        print(
+            f"\n{'='*60}\n"
+            f"  LOCAL suite done  exit={exitstatus}  "
+            f"{elapsed:.1f}s\n"
+            f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
+            f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
+            f"total={_PROGRESS['total']}\n"
+            f"  db={resolve_test_db_name()} (local only)\n"
+            f"{'='*60}\n",
+            flush=True,
+        )
 
 
 @pytest.fixture(autouse=True)
