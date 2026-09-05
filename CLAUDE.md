@@ -44,8 +44,10 @@ touch live trading. For any Grok-delegated change that lands in those areas:
    change yourself, or make sure Grok is working on a dedicated branch — never on `main` or the running config.
 2. One topic per branch (`fix/…`, `feat/…`, `perf/…`, `chore/…`). Keeps each change reviewable and revertable on its own.
 3. Review the diff yourself before it lands.
-4. Run the test suite before accepting: `./scripts/run_unit_tests.sh` (preferred — pins Mongo to local, isolates demo
-   ledgers) or `pytest` with the config in `pytest.ini`.
+4. Run the test suite before accepting: `./scripts/run_unit_tests.sh --parallel` (preferred — pins Mongo to local,
+   isolates the ledgers per test, ~10 s on 18 cores; without `--parallel` ~40 s) or `pytest` with the config in
+   `pytest.ini`. Unit tests cannot reach the network (#324): a test that needs Gate/CMC/Grok data mocks the fetcher it
+   imports (`tests/support/offline.py` has stubs), it never calls out.
 5. Prefer running new/changed logic against `*.demo.json` or paper/backtest paths first, not the live files.
 6. If a change affects order sizing, risk limits, or execution logic, treat Grok's output as a draft to audit line by
    line, not as ready-to-merge.
@@ -60,9 +62,12 @@ Lower-stakes areas (backtesting, data fetching, notifications, docs, tests, tool
    is the cautionary example: the DCA stop-loss grace period looked like a bug and is tested intended behaviour.
 8. Test diffs are reviewed with the same rigour as code diffs. A changed assertion is a changed contract.
 9. Two suites may run concurrently **only** with distinct `PYTEST_DB_SUFFIX` values — it isolates both the Mongo
-   test DB (#298) and the OHLCV Redis key prefix (#319). Without a suffix both sessions share `xagent_pytest` and
-   `pytest:default:ohlcv:*`, and results become order-dependent. Never run a suite from two worktrees with the same
-   suffix.
+   test DB (#298) and the Redis key prefix (#319/#323); xdist workers add `_gwN` themselves (#321). Without a suffix
+   both sessions share `xagent_pytest` and `pytest:default:*`, and results become order-dependent. Never run a suite
+   from two worktrees with the same suffix.
+10. Tests must not write into `data/` (#325, #327). Ledger files (orders, positions, trade history) are redirected per
+   test by `isolate_demo_ledger_files`; a new test that touches another data file patches its path to `tmp_path`.
+   Check with `touch marker; ./scripts/run_unit_tests.sh --parallel; find data -newer marker -type f`.
 
 ### Deploy branches are PR-only — never push to `staging` or `main`
 
