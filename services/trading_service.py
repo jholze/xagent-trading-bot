@@ -154,7 +154,7 @@ class TradingService:
 
         with ledger_lock(scope, cfg=self.config):
             try:
-                return self._execute_order_locked(
+                result = self._execute_order_locked(
                     order,
                     timeframe,
                     source=source,
@@ -168,6 +168,8 @@ class TradingService:
                 )
             except LedgerUnavailable as exc:
                 return self._deny_ledger_unavailable(order, exc)
+        self._send_recorded_positions_snapshots(result)
+        return result
 
     def _deny_ledger_unavailable(self, order: TradeOrder, exc: LedgerUnavailable) -> TradeResult:
         """Fail closed for every order type; notify the operator once per episode."""
@@ -342,29 +344,74 @@ class TradingService:
                 "INFO",
             )
             if approved_order.type in ("BUY", "SELL", "SHORT", "COVER"):
-                try:
-                    from core.tenant_context import tenant_snapshot
-                    from notifications.telegram_commands.position_display import send_positions_snapshot
-
-                    tid, sc, _ = tenant_snapshot()
-                    send_positions_snapshot(
-                        trade_result=result,
-                        mode_label=self.mode_label(),
-                        tenant_id=tid,
-                        scope=sc,
-                    )
-                except Exception as e:
-                    log(f"Positions snapshot failed: {e}", "WARNING")
+                self._record_positions_snapshot(result)
             if approved_order.type == "SELL" and result.executed:
                 try:
-                    self._maybe_auto_short_after_sell(
+                    nested = self._maybe_auto_short_after_sell(
                         approved_order, timeframe, result
                     )
+                    self._merge_positions_snapshot_jobs(result, nested)
                 except Exception as e:
                     log(f"auto-short after sell skip: {e}", "DEBUG")
         elif decision.size_multiplier != 1.0 and not result.message:
             result.message = f"Size multiplier: {decision.size_multiplier:.2f}x"
         return result
+
+    def _record_positions_snapshot(self, result: TradeResult) -> None:
+        """Capture snapshot args while the lock is held; send happens after release."""
+        try:
+            from core.tenant_context import tenant_snapshot
+
+            tid, sc, _ = tenant_snapshot()
+            jobs = getattr(result, "_positions_snapshot_jobs", None)
+            if jobs is None:
+                jobs = []
+                result._positions_snapshot_jobs = jobs
+            jobs.append(
+                {
+                    "trade_result": result,
+                    "mode_label": self.mode_label(),
+                    "tenant_id": tid,
+                    "scope": sc,
+                }
+            )
+        except Exception as e:
+            log(f"Positions snapshot failed: {e}", "WARNING")
+
+    @staticmethod
+    def _merge_positions_snapshot_jobs(into: TradeResult, source: TradeResult | None) -> None:
+        if source is None:
+            return
+        extra = getattr(source, "_positions_snapshot_jobs", None)
+        if not extra:
+            return
+        jobs = getattr(into, "_positions_snapshot_jobs", None)
+        if jobs is None:
+            into._positions_snapshot_jobs = list(extra)
+        else:
+            jobs.extend(extra)
+        source._positions_snapshot_jobs = []
+
+    @staticmethod
+    def _send_recorded_positions_snapshots(result: TradeResult | None) -> None:
+        if result is None:
+            return
+        jobs = getattr(result, "_positions_snapshot_jobs", None)
+        if not jobs:
+            return
+        result._positions_snapshot_jobs = []
+        for job in jobs:
+            try:
+                from notifications.telegram_commands.position_display import send_positions_snapshot
+
+                send_positions_snapshot(
+                    trade_result=job["trade_result"],
+                    mode_label=job["mode_label"],
+                    tenant_id=job["tenant_id"],
+                    scope=job["scope"],
+                )
+            except Exception as e:
+                log(f"Positions snapshot failed: {e}", "WARNING")
 
     def execute_buy(
         self,
@@ -470,7 +517,7 @@ class TradingService:
             order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
         )
 
-    def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> None:
+    def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> TradeResult | None:
         """Open a paper short after a qualifying bearish full exit (allowlist).
 
         Must not call ``execute_order`` / ``execute_short`` — those re-acquire
@@ -516,7 +563,7 @@ class TradingService:
             exit_source=src,
             idempotency_key=idem,
         )
-        self._execute_order_locked(
+        return self._execute_order_locked(
             order,
             timeframe,
             source="auto",

@@ -9,7 +9,19 @@ import uuid
 from bus.redis_client import get_redis
 from logger import log
 
-_thread_lock = threading.Lock()
+_meta_lock = threading.Lock()
+_thread_locks: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _thread_lock_for(tenant_id: str, scope: str) -> threading.Lock:
+    """Process-local mutex for one (tenant, scope). Created once; never deleted."""
+    key = (tenant_id, scope)
+    with _meta_lock:
+        lock = _thread_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _thread_locks[key] = lock
+        return lock
 
 
 class LedgerLock:
@@ -39,7 +51,8 @@ class LedgerLock:
         self._held_redis = False
 
     def __enter__(self):
-        _thread_lock.acquire()
+        self._thread_lock = _thread_lock_for(self.tenant_id, self.scope)
+        self._thread_lock.acquire()
         if not self.enabled:
             return self
         self._redis = get_redis(self.redis_url, key_prefix=self.key_prefix)
@@ -66,7 +79,7 @@ class LedgerLock:
                     self._redis.delete(self._redis_key)
             except Exception:
                 pass
-        _thread_lock.release()
+        self._thread_lock.release()
         return False
 
 

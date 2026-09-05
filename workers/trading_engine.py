@@ -83,6 +83,7 @@ def _consume_redis_once():
                             idempotency_key=intent.idempotency_key,
                             _lock_held=True,
                         )
+                    svc._send_recorded_positions_snapshots(result)
                 log(f"External engine filled {result.order_type} {result.symbol}: {result.executed}", "INFO")
                 client.xack(stream, group, msg_id)
             except Exception as e:
