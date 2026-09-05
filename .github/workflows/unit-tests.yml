@@ -6,7 +6,7 @@ on:
   pull_request:
   push:
     branches:
-      - "umbau/**"
+      - "rebuild/**"
       - "chore/**"
       - "fix/**"
       - "feat/**"
