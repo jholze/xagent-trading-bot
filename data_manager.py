@@ -1321,7 +1321,9 @@ def _reconcile_live_trade_sources(history: dict) -> tuple:
 
 
 def _load_live_trade_history_json() -> dict:
-    path = get_data_file(LIVE_TRADE_HISTORY_FILE)
+    # Same scope table as _load_trade_history_json (#325); "live" maps to
+    # live_trade_history.json exactly as the constant did.
+    path = get_data_file(TRADE_HISTORY_SCOPE_FILES.get("live", LIVE_TRADE_HISTORY_FILE))
     if not os.path.exists(path):
         return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
     try:
