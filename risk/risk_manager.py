@@ -175,7 +175,7 @@ class RiskManager:
 
         # Hard rail: new exposure only. SELL/COVER always pass this check.
         if order.type in ("BUY", "SHORT"):
-            halt = self._daily_loss_limit_blocked()
+            halt = self._daily_loss_limit_blocked(order)
             if halt:
                 return halt
 
@@ -1218,7 +1218,7 @@ class RiskManager:
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
         return float((stats or {}).get("realized_pnl") or 0)
 
-    def _daily_loss_limit_blocked(self) -> RiskDecision | None:
+    def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:
         """Kill switch: block BUY/SHORT when trailing-24h realized PnL ≤ -pct of NAV."""
         try:
             pct = float(self.config.risk_config.get("max_daily_loss_pct", 0) or 0)
@@ -1240,8 +1240,10 @@ class RiskManager:
             )
         try:
             realized = float(self._trailing_24h_realized_pnl())
-        except Exception:
-            return None
+        except Exception as e:
+            # Same rollout switch as every other guard: 'log' -> ERROR + allow (old
+            # behaviour, visible), 'deny' -> block new exposure (#302 audit).
+            return self._guard_failed("daily_loss_limit", e, order)
         nav = self._portfolio_equity()
         if nav is None or float(nav) <= 0:
             nav = float(self._initial_capital() or 0)
