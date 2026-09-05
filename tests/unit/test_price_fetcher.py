@@ -81,7 +81,8 @@ class TestPriceFetcher(unittest.TestCase):
         self.assertIn("330,250,990", format_token_amount(330250990.75))
 
     def test_get_gate_prices_batch_ignores_coingecko_fallback(self):
-        with patch("price_fetcher._fetch_gate_bulk", return_value={"PEPE/USDT": 0.00001}):
+        with patch("price_fetcher._fetch_gate_bulk", return_value={"PEPE/USDT": 0.00001}), \
+             patch("price_fetcher._fetch_gate_single", return_value=None):
             prices = get_gate_prices_batch(["PEPE/USDT", "FAKE/USDT"])
         self.assertAlmostEqual(prices["PEPE/USDT"], 0.00001)
         self.assertEqual(prices["FAKE/USDT"], 0.0)

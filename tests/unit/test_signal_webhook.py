@@ -52,7 +52,12 @@ class TestSignalWebhookService(unittest.TestCase):
                 "watch_ttl_hours": 24,
             },
         }
-        with patch("webhooks.store.publish_redis", return_value=True):
+        with patch("webhooks.store.publish_redis", return_value=True), \
+             patch(
+                 "data_manager.load_effective_watchlist",
+                 return_value=[{"symbol": "RAVE/USDT", "timeframe": "4h", "active": True}],
+             ), \
+             patch("intelligence.memory.store.memory_enabled", return_value=False):
             result = process_signal_webhook(
                 {"symbol": "RAVE/USDT", "event_type": "volume_spike", "source": "tradingview"},
                 source="tradingview",

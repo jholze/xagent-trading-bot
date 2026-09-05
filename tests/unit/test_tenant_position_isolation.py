@@ -170,7 +170,6 @@ class TestTenantPositionIsolation(unittest.TestCase):
             self.assertEqual(data.get("positions") or {}, {})
 
     def test_flush_debounce_pins_tenant_at_schedule_time(self):
-        import time
         from strategies.positions import _ensure_store
 
         self._seed_default_open_lot()
@@ -187,12 +186,20 @@ class TestTenantPositionIsolation(unittest.TestCase):
             lot_key = get_key("BAS/USDT", "1h")
             store[lot_key] = dict(positions[get_key("SPCX/USDT", "1h")])
             store[lot_key]["amount"] = Decimal("5")
-            with patch("strategies.positions._FLUSH_DEBOUNCE_SEC", 0.02), patch(
+            with patch("strategies.positions._FLUSH_DEBOUNCE_SEC", 60.0), patch(
                 "strategies.positions.save_positions_document", side_effect=_capture
             ):
+                import strategies.positions as pos_mod
+
                 flush_positions(force=False)
                 _activate(_resolve_store_key("demo", DEFAULT_TENANT))
-                time.sleep(0.05)
+                # Fire the debounced callback by hand instead of sleeping. The
+                # 60 s debounce guarantees the real Timer cannot race this call,
+                # so no production clock hook is needed (#324 review).
+                timer = pos_mod._flush_timer
+                self.assertIsNotNone(timer)
+                timer.cancel()
+                timer.function()
 
         henry_saves = [s for s in saved if s[0] == "henry"]
         self.assertEqual(len(henry_saves), 1)
