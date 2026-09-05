@@ -18,19 +18,24 @@ from typing import Any, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
+from core.models import OrderStatus, is_executed_status
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
 ORDERS_V2_COLLECTION = "orders_v2"
 DAY_STATS_COLLECTION = "order_day_stats"
 
 # Blocked statuses mirrored from order_service (avoid circular import).
+# Enum values plus legacy tokens still present in the live Mongo ledger.
 BLOCKED_STATUSES = frozenset({
-    "rejected",
+    OrderStatus.REJECTED.value,
+    OrderStatus.CANCELED.value,
+    OrderStatus.ACTIVE.value,
+    OrderStatus.QUEUED.value,
+    OrderStatus.PARTIALLY_FILLED.value,
     "cancelled",
     "failed",
     "expired",
     "pending_confirmation",
-    "executing",
 })
 
 _STORE_LOCK = threading.RLock()
@@ -179,8 +184,7 @@ def _parse_to_display_naive(value: str | None) -> datetime | None:
 
 def order_event_ts_naive(order: dict) -> datetime | None:
     ts = order.get("timestamps") or {}
-    status = (order.get("status") or "").lower()
-    if status == "filled":
+    if is_executed_status(order.get("status")):
         return _parse_to_display_naive(ts.get("filled") or ts.get("created") or ts.get("updated"))
     return _parse_to_display_naive(ts.get("created") or ts.get("updated") or ts.get("filled"))
 
@@ -344,7 +348,7 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         if not isinstance(o, dict):
             continue
         raw_status = o.get("status")
-        if raw_status is not None and _token(raw_status) != "filled":
+        if raw_status is not None and not is_executed_status(raw_status):
             continue
         counts["filled"] += 1
         side = _token(o.get("side"))
@@ -515,7 +519,7 @@ class MemoryOrderLedgerV2:
             if not doc:
                 continue
             st = (doc.get("status") or "").lower()
-            if filled_only and st != "filled":
+            if filled_only and not is_executed_status(st):
                 continue
             if blocked_only and st not in BLOCKED_STATUSES:
                 continue
@@ -668,7 +672,7 @@ class MongoOrderLedgerV2:
             "day_key": day_key,
         }
         if filled_only:
-            filt["status"] = "filled"
+            filt["status"] = OrderStatus.EXECUTED.value
         elif blocked_only:
             filt["status"] = {"$in": sorted(BLOCKED_STATUSES)}
         elif status_filter is not None:

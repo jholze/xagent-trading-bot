@@ -1,5 +1,5 @@
 from core.config import BotConfig, get_bot_config
-from core.models import RiskDecision, TradeOrder, TradeResult
+from core.models import OrderStatus, RiskDecision, TradeOrder, TradeResult
 from execution.factory import get_execution_adapter
 from logger import log
 from risk.risk_manager import RiskManager
@@ -127,12 +127,14 @@ class TradingService:
             timeframe = bind_buy_timeframe(order.symbol, timeframe)
 
         scope = resolve_tenant_scope()
-        idem = idempotency_key or order.idempotency_key or ""
+        idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
         if not idem and source != "manual":
             idem = make_idempotency_key(
                 order.symbol, timeframe, order.signal or order.type, source, scope
             )
+        if idem:
             order.idempotency_key = idem
+            order.client_order_id = idem
 
         if should_queue_intent(source, self.config):
             return submit_trade_intent(
@@ -198,7 +200,8 @@ class TradingService:
         side = (record.get("side") or "").upper()
         symbol = record.get("symbol", "")
         execution = record.get("execution") or {}
-        if status == "filled":
+        st = OrderStatus.try_legacy(status)
+        if st is OrderStatus.EXECUTED:
             return TradeResult(
                 True,
                 side or "BUY",
@@ -209,9 +212,43 @@ class TradingService:
                 pnl=float(record.get("pnl") or 0),
                 message="Idempotent replay",
                 order_id=record.get("id", ""),
+                order_status=st,
             )
         msg = record.get("error") or f"Prior order status: {status}"
-        return TradeResult(False, side or "BUY", symbol, message=msg, order_id=record.get("id", ""))
+        return TradeResult(
+            False,
+            side or "BUY",
+            symbol,
+            message=msg,
+            order_id=record.get("id", ""),
+            order_status=st,
+        )
+
+    def _replay_or_reconcile(self, prior: dict) -> TradeResult | None:
+        """Idempotency: EXECUTED/REJECTED/CANCELED replay; ACTIVE means reconcile (#314)."""
+        raw = prior.get("status")
+        if raw == "pending_confirmation":
+            return None
+        st = OrderStatus.try_legacy(raw)
+        if st in (OrderStatus.EXECUTED, OrderStatus.REJECTED, OrderStatus.CANCELED):
+            return self._result_from_ledger(prior)
+        if st in (
+            OrderStatus.ACTIVE,
+            OrderStatus.QUEUED,
+            OrderStatus.PARTIALLY_FILLED,
+        ):
+            side = (prior.get("side") or "").upper()
+            return TradeResult(
+                False,
+                side or "BUY",
+                prior.get("symbol", ""),
+                message="Prior order is ACTIVE — reconcile (#314)",
+                order_id=prior.get("id", ""),
+                pending=True,
+                needs_reconcile=True,
+                order_status=st or OrderStatus.ACTIVE,
+            )
+        return None
 
     def _execute_order_locked(
         self,
@@ -233,13 +270,18 @@ class TradingService:
             timeframe = bind_buy_timeframe(order.symbol, timeframe)
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
-        idem = idempotency_key or order.idempotency_key or ""
+        idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
+        if idem:
+            order.idempotency_key = idem
+            order.client_order_id = idem
 
         try:
             if idem and not ledger_id:
                 prior = ledger.find_by_idempotency_key(idem)
-                if prior and prior.get("status") in ("filled", "rejected", "executing", "failed"):
-                    return self._result_from_ledger(prior)
+                if prior:
+                    replay = self._replay_or_reconcile(prior)
+                    if replay is not None:
+                        return replay
 
             ok, reason = self.can_execute(source=source, trust_score=trust_score)
             if not ok:
@@ -266,18 +308,21 @@ class TradingService:
                 if not ledger_id:
                     ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
                 else:
-                    ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
+                    ledger.update_status(ledger_id, OrderStatus.REJECTED, error=decision.message, risk=ledger._risk_snapshot(decision))
                 return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
 
             approved_order = decision.order
+            if idem:
+                approved_order.idempotency_key = idem
+                approved_order.client_order_id = idem
             if ledger_id:
-                ledger.update_status(ledger_id, "executing", risk=ledger._risk_snapshot(decision))
+                ledger.update_status(ledger_id, OrderStatus.ACTIVE, risk=ledger._risk_snapshot(decision))
                 approved_order.order_id = ledger_id
             else:
                 created = ledger.create_from_request(
                     approved_order,
                     timeframe=timeframe,
-                    status="executing",
+                    status=OrderStatus.ACTIVE,
                     risk=decision,
                     request_extra=request_extra,
                     idempotency_key=idem,

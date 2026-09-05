@@ -22,6 +22,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 import migrate_trades_to_orders as _migrate_mod
 
+from core.models import OrderStatus
 from data_manager import (
     LIVE_TRADE_HISTORY_FILE,
     ORDERS_SCOPE_FILES,
@@ -70,7 +71,7 @@ def _prepare_payload(data: dict, scope: str) -> dict:
 
 
 def _filled_order_count(orders_doc: dict) -> int:
-    return sum(1 for o in orders_doc.get("orders", []) if o.get("status") == "filled")
+    return sum(1 for o in orders_doc.get("orders", []) if o.get("status") == OrderStatus.EXECUTED.value)
 
 
 def _orders_doc_equal(left: dict | None, right: dict | None) -> bool:
@@ -83,7 +84,7 @@ def _manual_test_coin_orders(orders_doc: dict) -> list[str]:
     found = []
     for order in orders_doc.get("orders", []):
         symbol = order.get("symbol", "")
-        if symbol in DEMO_TEST_SYMBOLS and order.get("status") == "filled":
+        if symbol in DEMO_TEST_SYMBOLS and order.get("status") == OrderStatus.EXECUTED.value:
             found.append(symbol)
     return found
 

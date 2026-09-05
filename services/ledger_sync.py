@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 
+from core.models import OrderStatus
 from logger import log
 
 LEGACY_POSITIONS_FILE = "positions.json"
@@ -105,7 +106,7 @@ def _build_positions_snapshot_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
-        if o.get("status") == "filled"
+        if o.get("status") == OrderStatus.EXECUTED.value
     ]
     initial = initial_capital(scope=scope, config=cfg)
     snapshot = dict(replay_simulated_ledger(orders, initial)["positions"])
@@ -197,7 +198,7 @@ def rebuild_positions_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == "filled"
+        if o.get("status") == OrderStatus.EXECUTED.value
     ]
 
     with tenant_context(tid, scope=scope):
