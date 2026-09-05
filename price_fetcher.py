@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,6 +15,15 @@ _last_good_cache = {}
 _stale_warned: set[str] = set()
 _CACHE_TTL_SECONDS = 30
 _STALE_PRICE_MAX_AGE_DEFAULT = 300.0
+_GATE_TICKERS_URL = "https://api.gateio.ws/api/v4/spot/tickers"
+_GATE_SNAPSHOT_TTL_DEFAULT = 25.0
+_GATE_SNAPSHOT_STALE_MULT = 5.0
+
+# Process-wide Gate /spot/tickers snapshot. Injectable clock for tests.
+_now = time.monotonic
+_gate_snapshot_lock = threading.Lock()
+_gate_snapshot: dict[str, float] | None = None
+_gate_snapshot_ts: float | None = None
 
 
 def clear_price_cache() -> int:
@@ -23,6 +33,14 @@ def clear_price_cache() -> int:
     # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer.
     # Expiry is still applied on read.
     return n
+
+
+def reset_gate_ticker_snapshot_for_tests() -> None:
+    """Drop the process-wide Gate ticker snapshot (tests)."""
+    global _gate_snapshot, _gate_snapshot_ts
+    with _gate_snapshot_lock:
+        _gate_snapshot = None
+        _gate_snapshot_ts = None
 
 
 def _stale_price_max_age_sec() -> float:
@@ -214,30 +232,102 @@ def _fetch_coingecko_single(cg_id: str):
     return None
 
 
+def _gate_ticker_snapshot_ttl_sec() -> float:
+    try:
+        return float(get_bot_config().gate_ticker_snapshot_ttl_sec)
+    except Exception:
+        return _GATE_SNAPSHOT_TTL_DEFAULT
+
+
+def _slash_pair(symbol: str) -> str:
+    return str(symbol or "").replace("/", "_").upper().replace("_", "/")
+
+
+def _download_gate_ticker_snapshot() -> dict[str, float]:
+    """HTTP GET /spot/tickers → {SYM/USDT: last}. Logs one INFO line per download."""
+    t0 = _now()
+    response = requests.get(_GATE_TICKERS_URL, timeout=12)
+    elapsed_ms = (_now() - t0) * 1000.0
+    try:
+        size = len(response.content or b"")
+    except TypeError:
+        size = 0
+    log(f"Gate ticker snapshot: {size} bytes in {elapsed_ms:.0f}ms", "INFO")
+    if getattr(response, "status_code", None) != 200:
+        raise RuntimeError(
+            f"gate tickers HTTP {getattr(response, 'status_code', None)}"
+        )
+    found: dict[str, float] = {}
+    for item in response.json():
+        pair = item.get("currency_pair", "")
+        if not pair:
+            continue
+        try:
+            price = float(item.get("last", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            found[_slash_pair(pair)] = price
+    return found
+
+
+def _gate_ticker_snapshot() -> dict[str, float]:
+    """Whole-market last prices, refreshed at most every gate_ticker_snapshot_ttl_sec.
+
+    Concurrent callers share one in-flight download (module lock). A failed
+    download returns the previous snapshot if it is younger than 5× TTL;
+    otherwise the previous error result (empty dict).
+    """
+    global _gate_snapshot, _gate_snapshot_ts
+    ttl = _gate_ticker_snapshot_ttl_sec()
+    now = _now()
+    snap = _gate_snapshot
+    ts = _gate_snapshot_ts
+    if snap is not None and ts is not None and (now - ts) < ttl:
+        return snap
+    with _gate_snapshot_lock:
+        now = _now()
+        snap = _gate_snapshot
+        ts = _gate_snapshot_ts
+        if snap is not None and ts is not None and (now - ts) < ttl:
+            return snap
+        try:
+            downloaded = _download_gate_ticker_snapshot()
+        except Exception as e:
+            print(f"   [Price] Gate bulk failed: {e}")
+            if (
+                snap is not None
+                and ts is not None
+                and (now - ts) < (ttl * _GATE_SNAPSHOT_STALE_MULT)
+            ):
+                return snap
+            return {}
+        _gate_snapshot = downloaded
+        _gate_snapshot_ts = _now()
+        return downloaded
+
+
 def _fetch_gate_bulk(symbols: list[str]) -> dict[str, float]:
-    """One Gate request for many pairs (faster than N sequential calls)."""
+    """Requested pairs from the process-wide Gate ticker snapshot.
+
+    Signature and return contract are unchanged: {SYM/USDT: price} for hits
+    with price > 0; empty dict on no symbols / failed download without stale.
+    """
     if not symbols:
         return {}
-    pairs_needed = {sym.replace("/", "_").upper() for sym in symbols}
-    try:
-        response = requests.get(
-            "https://api.gateio.ws/api/v4/spot/tickers",
-            timeout=12,
-        )
-        if response.status_code != 200:
-            return {}
-        found = {}
-        for item in response.json():
-            pair = item.get("currency_pair", "")
-            if pair not in pairs_needed:
-                continue
-            price = float(item.get("last", 0) or 0)
-            if price > 0:
-                found[pair.replace("_", "/")] = price
-        return found
-    except Exception as e:
-        print(f"   [Price] Gate bulk failed: {e}")
+    snapshot = _gate_ticker_snapshot()
+    if not snapshot:
         return {}
+    found = {}
+    for sym in symbols:
+        key = _slash_pair(sym)
+        try:
+            price = float(snapshot.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            found[key] = price
+    return found
 
 
 def _fetch_coingecko_bulk(symbols: list[str]) -> dict[str, float]:

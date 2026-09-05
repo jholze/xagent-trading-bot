@@ -390,6 +390,7 @@ class BotConfig:
             "price_cache_enabled": True,
             "price_cache_ttl_sec": 120,
             "stale_price_max_age_sec": 300,
+            "gate_ticker_snapshot_ttl_sec": 25,
             "ohlcv_cache_enabled": True,
             "ohlcv_cache_ttl_sec": {"15m": 60, "1h": 90, "4h": 120},
             "ohlcv_serve_from_larger": True,
@@ -442,6 +443,15 @@ class BotConfig:
             return float(self.architecture_config.get("stale_price_max_age_sec", 300) or 300)
         except (TypeError, ValueError):
             return 300.0
+
+    @property
+    def gate_ticker_snapshot_ttl_sec(self) -> float:
+        try:
+            return float(
+                self.architecture_config.get("gate_ticker_snapshot_ttl_sec", 25) or 25
+            )
+        except (TypeError, ValueError):
+            return 25.0
 
     @property
     def min_hours_after_sell_before_rebuy(self) -> float:

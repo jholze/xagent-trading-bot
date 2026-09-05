@@ -330,6 +330,16 @@ def reset_oracle_climax_cycle():
     reset_stale_episode_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def reset_gate_ticker_snapshot():
+    """Process-wide Gate /spot/tickers snapshot must not leak across tests (#304)."""
+    from price_fetcher import reset_gate_ticker_snapshot_for_tests
+
+    reset_gate_ticker_snapshot_for_tests()
+    yield
+    reset_gate_ticker_snapshot_for_tests()
+
+
 def _scan_del_redis_keys(*patterns: str) -> None:
     """SCAN + DEL. Swallows errors so tests without Redis still run."""
     try:

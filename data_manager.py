@@ -747,27 +747,32 @@ def load_config(tenant_id: str | None = None):
     - default path: use pure disk loader + cache
     - tenant: resolve tid, get default_cfg via pure loader, delegate to tenant_meta_store if mongo backend
     Never calls get_config from inside tenant decision paths.
+
+    Default-tenant cache is the merged dict in ``_config_cache``. It is filled on
+    first miss and dropped by ``reload_config()`` (no mtime key). Tenant path is
+    uncached — Mongo bodies can change without a reload, so caching would stale.
     """
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
-    default_cfg = _load_default_config_from_disk()
     tid = resolve_tenant_id(tenant_id)
-    if tid != DEFAULT_TENANT:
-        tenant_body = None
-        try:
-            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
-        except Exception:
-            use_mongo = False
-        if use_mongo:
-            # Mongo failure raises LedgerUnavailable inside _load_tenant_config_body.
-            # A tenant without a stored body is *legitimately* base-only (profile
-            # layering: config.json → preset → tenant overrides) — not an error (#318 audit).
-            tenant_body = _load_tenant_config_body(tid, default_cfg)
-        return _apply_trading_profile_merge(default_cfg, tenant_body)
-    # default
-    global _config_cache
-    if _config_cache is None:
+    if tid == DEFAULT_TENANT:
+        global _config_cache
+        if _config_cache is not None:
+            return _config_cache
+        default_cfg = _load_default_config_from_disk()
         _config_cache = _apply_trading_profile_merge(default_cfg, None)
-    return _config_cache
+        return _config_cache
+    default_cfg = _load_default_config_from_disk()
+    tenant_body = None
+    try:
+        use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+    except Exception:
+        use_mongo = False
+    if use_mongo:
+        # Mongo failure raises LedgerUnavailable inside _load_tenant_config_body.
+        # A tenant without a stored body is *legitimately* base-only (profile
+        # layering: config.json → preset → tenant overrides) — not an error (#318 audit).
+        tenant_body = _load_tenant_config_body(tid, default_cfg)
+    return _apply_trading_profile_merge(default_cfg, tenant_body)
 
 
 # Simple module-level cache to avoid repeated disk reads
