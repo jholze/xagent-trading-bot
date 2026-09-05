@@ -2,6 +2,7 @@ import math
 from datetime import datetime, timedelta
 
 from core.config import get_bot_config
+from core.costs import CostModel, trade_cost_fields
 from core.models import MarketContext, SandboxMetrics
 from data_manager import (
     load_paper_sandbox_history,
@@ -54,23 +55,29 @@ class PaperSandbox:
     def _execute_buy(self, portfolio: dict, symbol: str, price: float, usdt: float) -> bool:
         if price <= 0 or usdt <= 0 or portfolio["virtual_balance"] < usdt:
             return False
-        amount = usdt / price
+        cm = CostModel.from_config(self.config, symbol=symbol)
+        fill = cm.simulate_buy(price, usdt=usdt)
+        if fill.qty_net <= 0 or portfolio["virtual_balance"] < fill.quote_net:
+            return False
+        amount = fill.qty_net
+        net_entry = fill.quote_net / fill.qty_net
         pos = self._get_position(portfolio, symbol)
         old_amount = pos["amount"]
         new_amount = old_amount + amount
         if old_amount > 0:
-            pos["average_entry"] = (pos["average_entry"] * old_amount + price * amount) / new_amount
+            pos["average_entry"] = (pos["average_entry"] * old_amount + net_entry * amount) / new_amount
         else:
-            pos["average_entry"] = price
+            pos["average_entry"] = net_entry
         pos["amount"] = new_amount
-        portfolio["virtual_balance"] -= usdt
+        portfolio["virtual_balance"] -= fill.quote_net
         portfolio["trades"].append({
             "type": "BUY",
             "symbol": symbol,
-            "price": price,
+            "price": fill.fill_price,
             "amount": amount,
-            "usdt_amount": usdt,
+            "usdt_amount": fill.quote_net,
             "timestamp": datetime.now().isoformat(),
+            **trade_cost_fields(fill),
         })
         return True
 
@@ -80,8 +87,10 @@ class PaperSandbox:
             return False
         amount = pos["amount"] * fraction
         entry = pos["average_entry"] or price
-        received = price * amount * (1 - self.config.slippage_percent / 100)
-        pnl = (price - entry) * amount
+        cm = CostModel.from_config(self.config, symbol=symbol)
+        fill = cm.simulate_sell(price, amount)
+        received = fill.quote_net
+        pnl = CostModel.realized_pnl(qty_sold=amount, avg_entry_net=entry, sell=fill)
         pos["amount"] -= amount
         if pos["amount"] < 1e-8:
             pos["amount"] = 0.0
@@ -91,11 +100,12 @@ class PaperSandbox:
         portfolio["trades"].append({
             "type": "SELL",
             "symbol": symbol,
-            "price": price,
+            "price": fill.fill_price,
             "amount": amount,
             "usdt_received": received,
             "pnl": pnl,
             "timestamp": datetime.now().isoformat(),
+            **trade_cost_fields(fill),
         })
         return True
 
