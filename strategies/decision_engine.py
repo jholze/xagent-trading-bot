@@ -1643,31 +1643,41 @@ class DecisionEngine:
 
         # Position lock: suppress auto sells (manual still via TradingService + risk)
         if market.has_position and is_sell(normalized):
-            try:
-                from strategies.position_lock import auto_sell_blocked
+            from strategies.position_lock import auto_sell_blocked
+            from risk.risk_manager import guard_failed
 
+            try:
                 locked, lock_msg = auto_sell_blocked(
                     position, "auto", config=self.config.raw
                 )
-                if locked:
-                    structure_rationales.append(f"[Lock] {lock_msg}")
-                    sources.append("position_locked")
-                    normalized = HOLD
-            except Exception:
-                pass
+            except Exception as e:
+                dec = guard_failed("position_lock", e, None, config=self.config)
+                if dec:
+                    locked, lock_msg = True, f"position_lock_error: {e}"
+                else:
+                    locked, lock_msg = False, ""
+            if locked:
+                structure_rationales.append(f"[Lock] {lock_msg}")
+                sources.append("position_locked")
+                normalized = HOLD
 
         # Position lock: suppress DCA add-ons
         if market.has_position and normalized == BUY_DCA:
-            try:
-                from strategies.position_lock import dca_blocked
+            from strategies.position_lock import dca_blocked
+            from risk.risk_manager import guard_failed
 
+            try:
                 locked, lock_msg = dca_blocked(position, config=self.config.raw)
-                if locked:
-                    structure_rationales.append(f"[Lock] {lock_msg}")
-                    sources.append("position_locked")
-                    normalized = HOLD
-            except Exception:
-                pass
+            except Exception as e:
+                dec = guard_failed("position_lock_dca", e, None, config=self.config)
+                if dec:
+                    locked, lock_msg = True, f"position_lock_dca_error: {e}"
+                else:
+                    locked, lock_msg = False, ""
+            if locked:
+                structure_rationales.append(f"[Lock] {lock_msg}")
+                sources.append("position_locked")
+                normalized = HOLD
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}

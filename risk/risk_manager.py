@@ -304,23 +304,29 @@ class RiskManager:
                 )
 
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
-        try:
-            from core.stablecoins import (
-                is_stablecoin_symbol,
-                stablecoin_block_reason,
-                stablecoin_buys_blocked,
-            )
+        from core.stablecoins import (
+            is_stablecoin_symbol,
+            stablecoin_block_reason,
+            stablecoin_buys_blocked,
+        )
 
-            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-            if stablecoin_buys_blocked(raw_cfg) and is_stablecoin_symbol(order.symbol):
-                return RiskDecision(
-                    approved=False,
-                    message=stablecoin_block_reason(order.symbol),
-                    code="stablecoin_blocked",
-                    size_multiplier=0.0,
-                )
-        except Exception:
-            pass
+        raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+        try:
+            stablecoin_hit = stablecoin_buys_blocked(raw_cfg) and is_stablecoin_symbol(
+                order.symbol
+            )
+        except Exception as e:
+            dec = self._guard_failed("stablecoin_blocked", e, order)
+            if dec:
+                return dec
+            stablecoin_hit = False
+        if stablecoin_hit:
+            return RiskDecision(
+                approved=False,
+                message=stablecoin_block_reason(order.symbol),
+                code="stablecoin_blocked",
+                size_multiplier=0.0,
+            )
 
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
@@ -343,101 +349,119 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
-            try:
-                from services.correlated_tier.api import correlated_tier_selloff_active
+            from services.correlated_tier.api import correlated_tier_selloff_active
 
-                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                if correlated_tier_selloff_active(order.symbol, raw_cfg):
-                    return RiskDecision(
-                        approved=False,
-                        message=f"Correlated-tier selloff active for {order.symbol}",
-                        code="correlated_tier_selloff",
-                        size_multiplier=0.0,
-                    )
-            except Exception:
-                pass
+            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            try:
+                correlated_hit = correlated_tier_selloff_active(order.symbol, raw_cfg)
+            except Exception as e:
+                dec = self._guard_failed("correlated_tier_selloff", e, order)
+                if dec:
+                    return dec
+                correlated_hit = False
+            if correlated_hit:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Correlated-tier selloff active for {order.symbol}",
+                    code="correlated_tier_selloff",
+                    size_multiplier=0.0,
+                )
             # Universe split: new BUYs only on trade-eligible set (observe is broader).
             # RelVol ignition deliberately discovers thin/off-universe names — exempt.
-            try:
-                from services.universe.split import is_trade_eligible, universe_split_enabled
+            from services.universe.split import is_trade_eligible, universe_split_enabled
 
-                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                if (
+            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            try:
+                universe_hit = (
                     universe_split_enabled(raw_cfg)
                     and not self._is_dca_buy(source, order)
                     and not self._is_relvol_buy(source, order)
-                ):
-                    if not is_trade_eligible(
+                    and not is_trade_eligible(
                         order.symbol,
                         config=raw_cfg,
-                    ):
-                        return RiskDecision(
-                            approved=False,
-                            message=(
-                                f"Outside trade universe (observe-only): {order.symbol}"
-                            ),
-                            code="universe_trade_cap",
-                            size_multiplier=0.0,
-                        )
-            except Exception:
-                pass
+                    )
+                )
+            except Exception as e:
+                dec = self._guard_failed("universe_trade_cap", e, order)
+                if dec:
+                    return dec
+                universe_hit = False
+            if universe_hit:
+                return RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Outside trade universe (observe-only): {order.symbol}"
+                    ),
+                    code="universe_trade_cap",
+                    size_multiplier=0.0,
+                )
 
             # Issue #162: prev-day gainer chase guard (new entries only, not DCA add)
             if not self._is_dca_buy(source, order):
-                try:
-                    from services.gainer_universe.chase_guard import check_gainer_chase_guard
+                from services.gainer_universe.chase_guard import check_gainer_chase_guard
 
-                    raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                    px = float(getattr(order, "price", 0) or 0)
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                px = float(getattr(order, "price", 0) or 0)
+                try:
                     blocked, gmsg = check_gainer_chase_guard(
                         order.symbol, px, config=raw_cfg
                     )
-                    if blocked:
-                        return RiskDecision(
-                            approved=False,
-                            message=gmsg,
-                            code="gainer_chase_guard",
-                            size_multiplier=0.0,
-                        )
-                except Exception:
-                    pass
+                except Exception as e:
+                    dec = self._guard_failed("gainer_chase_guard", e, order)
+                    if dec:
+                        return dec
+                    blocked, gmsg = False, ""
+                if blocked:
+                    return RiskDecision(
+                        approved=False,
+                        message=gmsg,
+                        code="gainer_chase_guard",
+                        size_multiplier=0.0,
+                    )
 
+            from services.market_policy_fusion import get_global_market_bias
+
+            bias = {}
             try:
-                from services.market_policy_fusion import get_global_market_bias
-
                 bias = get_global_market_bias(
                     self.config.raw if hasattr(self.config, "raw") else None
                 )
-                if bias.get("block_buys"):
-                    try:
-                        from services.market_context_observability import note_buy_blocked
+                market_hit = bool(bias.get("block_buys"))
+            except Exception as e:
+                dec = self._guard_failed("market_block", e, order)
+                if dec:
+                    return dec
+                market_hit = False
+            if market_hit:
+                try:
+                    from services.market_context_observability import note_buy_blocked
 
-                        note_buy_blocked(
-                            regime=bias.get("regime"),
-                            source=bias.get("source"),
-                            rationale=str(bias.get("rationale") or ""),
-                        )
-                    except Exception:
-                        pass
-                    return RiskDecision(
-                        approved=False,
-                        message=(
-                            f"Market {bias.get('regime') or 'block'} "
-                            f"[{bias.get('source') or 'global'}]: "
-                            f"no new entries ({bias.get('rationale') or 'policy'})"
-                        ),
-                        code="market_block",
-                        size_multiplier=float(bias.get("size_mult") or 0.0),
+                    note_buy_blocked(
+                        regime=bias.get("regime"),
+                        source=bias.get("source"),
+                        rationale=str(bias.get("rationale") or ""),
                     )
-            except Exception:
-                pass
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Market {bias.get('regime') or 'block'} "
+                        f"[{bias.get('source') or 'global'}]: "
+                        f"no new entries ({bias.get('rationale') or 'policy'})"
+                    ),
+                    code="market_block",
+                    size_multiplier=float(bias.get("size_mult") or 0.0),
+                )
 
             # Coin memory soft_block: skip *new* entries only (DCA / existing pos allowed)
             if not has_position and not self._is_dca_buy(source, order):
-                try:
-                    from intelligence.memory.cache import get_entry_bias, get_coin_profile
-                    from strategies.sensor_entry_policy import is_sensor_source
+                from intelligence.memory.cache import get_entry_bias, get_coin_profile
+                from strategies.sensor_entry_policy import is_sensor_source
 
+                memory_hit = False
+                memory_msg = ""
+                try:
                     if get_entry_bias(order.symbol) == "soft_block":
                         prof = get_coin_profile(order.symbol)
                         feats = (prof.features if prof else None) or {}
@@ -463,25 +487,34 @@ class RiskManager:
                                 except Exception:
                                     pass
                         if block_this:
-                            return RiskDecision(
-                                approved=False,
-                                message=(
-                                    f"Coin memory soft_block {order.symbol}: "
-                                    f"{(prof.rationale if prof else 'weak history')}"
-                                ),
-                                code="coin_memory_soft_block",
-                                size_multiplier=0.0,
+                            memory_hit = True
+                            memory_msg = (
+                                f"Coin memory soft_block {order.symbol}: "
+                                f"{(prof.rationale if prof else 'weak history')}"
                             )
-                except Exception:
-                    pass
+                except Exception as e:
+                    dec = self._guard_failed("coin_memory_soft_block", e, order)
+                    if dec:
+                        return dec
+                    memory_hit = False
+                if memory_hit:
+                    return RiskDecision(
+                        approved=False,
+                        message=memory_msg,
+                        code="coin_memory_soft_block",
+                        size_multiplier=0.0,
+                    )
                 # WQE-R1: quality gate for all new entries (soft/enforce); DCA/open exempt
                 if not has_position and not self._is_dca_buy(source, order):
-                    try:
-                        from services.watchlist_quality.config import wqe_mode
-                        from services.watchlist_quality.enforce import buy_allowed
-                        from services.watchlist_quality.store import load_quality_scores
+                    from services.watchlist_quality.config import wqe_mode
+                    from services.watchlist_quality.enforce import buy_allowed
+                    from services.watchlist_quality.store import load_quality_scores
 
-                        raw = self.config.raw if hasattr(self.config, "raw") else None
+                    raw = self.config.raw if hasattr(self.config, "raw") else None
+                    wqe_hit = False
+                    wqe_reason = ""
+                    scored = None
+                    try:
                         if wqe_mode(raw) in ("soft", "enforce"):
                             try:
                                 from core.tenant_context import current_tenant_id
@@ -504,45 +537,60 @@ class RiskManager:
                                 has_open_position=False,
                             )
                             if not ok:
-                                try:
-                                    from services.watchlist_quality.metrics import note_buy_blocked
-                                    from services.watchlist_quality.event_log import log_buy_block
+                                wqe_hit = True
+                                wqe_reason = reason
+                    except Exception as e:
+                        dec = self._guard_failed("watchlist_quality", e, order)
+                        if dec:
+                            return dec
+                        wqe_hit = False
+                    if wqe_hit:
+                        try:
+                            from services.watchlist_quality.metrics import note_buy_blocked
+                            from services.watchlist_quality.event_log import log_buy_block
 
-                                    note_buy_blocked(reason)
-                                    q = None
-                                    if scored:
-                                        q = scored.get("quality_shadow_ai")
-                                        if q is None:
-                                            q = scored.get("quality_score")
-                                    log_buy_block(
-                                        order.symbol,
-                                        reason,
-                                        source=str(source or ""),
-                                        mode=mode,
-                                        quality_score=q,
-                                        config=raw,
-                                    )
-                                except Exception:
-                                    pass
-                                return RiskDecision(
-                                    approved=False,
-                                    message=f"WQE block {order.symbol}: {reason}",
-                                    code="watchlist_quality",
-                                    size_multiplier=0.0,
-                                )
-                    except Exception:
-                        pass
+                            note_buy_blocked(wqe_reason)
+                            q = None
+                            if scored:
+                                q = scored.get("quality_shadow_ai")
+                                if q is None:
+                                    q = scored.get("quality_score")
+                            log_buy_block(
+                                order.symbol,
+                                wqe_reason,
+                                source=str(source or ""),
+                                mode=mode,
+                                quality_score=q,
+                                config=raw,
+                            )
+                        except Exception:
+                            pass
+                        return RiskDecision(
+                            approved=False,
+                            message=f"WQE block {order.symbol}: {wqe_reason}",
+                            code="watchlist_quality",
+                            size_multiplier=0.0,
+                        )
                 # Re-entry cooloff after gross loss (sensor-entry-guard)
                 try:
                     cool = self._sensor_reentry_cooloff_blocked(order, source)
-                    if cool:
-                        return cool
-                except Exception:
-                    pass
+                except Exception as e:
+                    dec = self._guard_failed("sensor_reentry_cooloff", e, order)
+                    if dec:
+                        return dec
+                    cool = None
+                if cool:
+                    return cool
                 # Venue quality hard gate (buys only; sells never use this)
-                try:
-                    from services.venue_quality import check_venue_for_buy, source_applies_venue, venue_quality_config
+                from services.venue_quality import (
+                    check_venue_for_buy,
+                    source_applies_venue,
+                    venue_quality_config,
+                )
 
+                venue_hit = False
+                venue_msg = ""
+                try:
                     vcfg = venue_quality_config(
                         self.config.raw if hasattr(self.config, "raw") else None
                     )
@@ -557,36 +605,47 @@ class RiskManager:
                             config_raw=self.config.raw if hasattr(self.config, "raw") else None,
                         )
                         if not vres.ok:
-                            return RiskDecision(
-                                approved=False,
-                                message=(
-                                    f"Venue quality block {order.symbol}: "
-                                    + ("; ".join(vres.reasons) or "thin market")
-                                ),
-                                code="venue_liquidity_block",
-                                size_multiplier=0.0,
+                            venue_hit = True
+                            venue_msg = (
+                                f"Venue quality block {order.symbol}: "
+                                + ("; ".join(vres.reasons) or "thin market")
                             )
-                except Exception:
-                    pass
+                except Exception as e:
+                    dec = self._guard_failed("venue_liquidity_block", e, order)
+                    if dec:
+                        return dec
+                    venue_hit = False
+                if venue_hit:
+                    return RiskDecision(
+                        approved=False,
+                        message=venue_msg,
+                        code="venue_liquidity_block",
+                        size_multiplier=0.0,
+                    )
                 # Optional macro calendar hard block (default off — prefer size mult)
-                try:
-                    from intelligence.macro.snapshot import get_risk_multipliers
+                from intelligence.macro.snapshot import get_risk_multipliers
 
+                mm = {}
+                try:
                     mm = get_risk_multipliers(
                         self.config.raw if hasattr(self.config, "raw") else None
                     )
-                    if mm.get("block_new_entries"):
-                        return RiskDecision(
-                            approved=False,
-                            message=(
-                                f"Macro calendar pre-window block: "
-                                f"{mm.get('calendar_risk') or mm.get('next_event') or 'high impact'}"
-                            ),
-                            code="macro_calendar_block",
-                            size_multiplier=0.0,
-                        )
-                except Exception:
-                    pass
+                    macro_hit = bool(mm.get("block_new_entries"))
+                except Exception as e:
+                    dec = self._guard_failed("macro_calendar_block", e, order)
+                    if dec:
+                        return dec
+                    macro_hit = False
+                if macro_hit:
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Macro calendar pre-window block: "
+                            f"{mm.get('calendar_risk') or mm.get('next_event') or 'high impact'}"
+                        ),
+                        code="macro_calendar_block",
+                        size_multiplier=0.0,
+                    )
 
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position:
