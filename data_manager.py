@@ -758,13 +758,10 @@ def load_config(tenant_id: str | None = None):
         except Exception:
             use_mongo = False
         if use_mongo:
+            # Mongo failure raises LedgerUnavailable inside _load_tenant_config_body.
+            # A tenant without a stored body is *legitimately* base-only (profile
+            # layering: config.json → preset → tenant overrides) — not an error (#318 audit).
             tenant_body = _load_tenant_config_body(tid, default_cfg)
-            if tenant_body is None:
-                _raise_ledger_unavailable(
-                    "load_config",
-                    tenant_id=tid,
-                    message="tenant has no config",
-                )
         return _apply_trading_profile_merge(default_cfg, tenant_body)
     # default
     global _config_cache

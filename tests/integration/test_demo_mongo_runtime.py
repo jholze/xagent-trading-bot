@@ -5,6 +5,7 @@ import os
 import pytest
 
 
+from storage.errors import LedgerUnavailable
 @pytest.fixture
 def demo_mongo_env(monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "1")
@@ -21,7 +22,8 @@ def test_load_orders_refuses_json_fallback_on_mongo_error(demo_mongo_env, monkey
             raise ConnectionError("mongo down")
 
     monkeypatch.setattr("data_manager._mongo_ledger_store", lambda *a, **k: BrokenStore())
-    with pytest.raises(ConnectionError, match="mongo down"):
+    # #318: refusal is wrapped as LedgerUnavailable; the ConnectionError stays as __cause__
+    with pytest.raises(LedgerUnavailable, match="mongo down"):
         load_orders("demo")
 
 

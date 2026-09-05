@@ -239,23 +239,37 @@ def test_unreadable_config_raises_no_fallback(monkeypatch):
         _load_default_config_from_disk()
 
 
-def test_tenant_without_config_does_not_use_operator(monkeypatch):
+def _operator_cfg():
+    return {"max_usdt_per_trade": 999, "max_open_positions": 99, "stop_loss_pct": 1.0}
+
+
+def test_tenant_without_stored_body_is_base_only(monkeypatch):
+    """No stored tenant document is the normal case: profile layering applies the
+    base config with empty overrides. Not an error (#318 audit)."""
     from data_manager import load_config
 
-    operator = {
-        "max_usdt_per_trade": 999,
-        "max_open_positions": 99,
-        "stop_loss_pct": 1.0,
-    }
-    monkeypatch.setattr(
-        "data_manager._load_default_config_from_disk", lambda: dict(operator)
-    )
-    monkeypatch.setattr(
-        "data_manager._should_use_mongo_for_tenant_config", lambda cfg=None: True
-    )
+    monkeypatch.setattr("data_manager._load_default_config_from_disk", lambda: _operator_cfg())
+    monkeypatch.setattr("data_manager._should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr("data_manager._load_tenant_config_body", lambda *a, **k: None)
 
-    with pytest.raises(LedgerUnavailable):
+    cfg = load_config(tenant_id="henry")
+    assert cfg.get("max_open_positions") == 99
+
+
+def test_tenant_config_mongo_failure_is_ledger_unavailable(monkeypatch):
+    """A Mongo failure while reading the tenant body must surface — never fall
+    back to the operator config."""
+    from data_manager import load_config
+
+    monkeypatch.setattr("data_manager._load_default_config_from_disk", lambda: _operator_cfg())
+    monkeypatch.setattr("data_manager._should_use_mongo_for_tenant_config", lambda cfg=None: True)
+
+    def _boom(*a, **k):
+        raise LedgerUnavailable(op="load_tenant_config_body", tenant_id="henry", cause=ConnectionError("mongo down"))
+
+    monkeypatch.setattr("data_manager._load_tenant_config_body", _boom)
+
+    with pytest.raises(LedgerUnavailable, match="mongo down"):
         load_config(tenant_id="henry")
 
 
