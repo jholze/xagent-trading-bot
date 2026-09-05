@@ -42,7 +42,7 @@ def ensure_started():
             owner_chat_id=intent.owner_chat_id,
         ):
             with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
-                return svc._execute_order_locked(
+                result = svc._execute_order_locked(
                     intent.order,
                     intent.timeframe,
                     source=intent.source,
@@ -54,6 +54,8 @@ def ensure_started():
                     idempotency_key=intent.idempotency_key,
                     _lock_held=True,
                 )
+            svc._send_recorded_positions_snapshots(result)
+            return result
 
     trade_intent_queue.start(_execute_intent)
     _started = True
