@@ -322,9 +322,16 @@ def isolate_test_mongo(monkeypatch):
     monkeypatch.setenv("MONGODB_DB", test_db)
     monkeypatch.setenv("MONGODB_TEST_DB", test_db)
     close_client()
-    _purge_pytest_mongo()
+    # #328 review: purge only after tests that actually touched Mongo. The
+    # session start drops the worker DB and every touching test purges on
+    # teardown, so the DB is already empty when a test begins. A test that
+    # never constructs a client (the vast majority) costs nothing here.
+    from storage import mongo_client as _mc
+
+    gen0 = _mc._client_generation
     yield
-    _purge_pytest_mongo()
+    if _mc._client is not None or _mc._client_generation != gen0:
+        _purge_pytest_mongo()
     close_client()
 
 
