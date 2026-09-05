@@ -721,7 +721,8 @@ class TestVirtualTrading(unittest.TestCase):
             )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
-            self._assert_demo_prefix_in_message(mock_post, "legends-of-aria")
+            # Intended: no CMC slug for ARIA → search URL, not currencies/legends-of-aria.
+            self._assert_demo_prefix_in_message(mock_post, "coinmarketcap.com/search/?q=ARIA")
 
     def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch
