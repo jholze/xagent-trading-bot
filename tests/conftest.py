@@ -412,39 +412,50 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
     import data_manager
     import storage.ledger_router as ledger_router
 
-    orders_path = str(tmp_path / "orders.demo.json")
-    positions_path = str(tmp_path / "positions.demo.json")
-    history_path = str(tmp_path / "live_trade_history.demo.json")
-
-    for src, dst in (
-        (data_manager.resolve_data_path("orders.demo.json"), orders_path),
-        (data_manager.resolve_data_path("positions.demo.json"), positions_path),
-        (data_manager.resolve_data_path("live_trade_history.demo.json"), history_path),
-    ):
+    # #325: every scope of every ledger table gets its own per-test copy. A
+    # single suite run used to write orders.live.json, orders.paper.json,
+    # positions.paper.json, trade_history.json and live_trade_history(.demo).json
+    # into data/ — and xdist workers clobbered each other in those files.
+    # get_data_file()/resolve_data_path() return explicit paths unchanged, so
+    # the tmp copies are used as-is by both data_manager and the JSON store.
+    def _tmp_scope_file(name: str, default: dict) -> str:
+        dst = str(tmp_path / name)
+        src = data_manager.resolve_data_path(name)
         if src and os.path.exists(src):
             shutil.copy2(src, dst)
-        elif "orders" in dst:
-            Path(dst).write_text(
-                json.dumps({"ledger_scope": "demo", "orders": [], "migrated_from_trades": False}),
-                encoding="utf-8",
-            )
-        elif "positions" in dst:
-            Path(dst).write_text(
-                json.dumps({"ledger_scope": "demo", "positions": {}}),
-                encoding="utf-8",
-            )
         else:
-            Path(dst).write_text(json.dumps({"trades": []}), encoding="utf-8")
+            Path(dst).write_text(json.dumps(default), encoding="utf-8")
+        return dst
 
-    orders_files = dict(data_manager.ORDERS_SCOPE_FILES)
-    orders_files["demo"] = orders_path
-    positions_files = dict(data_manager.POSITIONS_SCOPE_FILES)
-    positions_files["demo"] = positions_path
+    orders_files = {
+        scope: _tmp_scope_file(
+            name, {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
+        )
+        for scope, name in data_manager.ORDERS_SCOPE_FILES.items()
+    }
+    positions_files = {
+        scope: _tmp_scope_file(name, {"ledger_scope": scope, "positions": {}})
+        for scope, name in data_manager.POSITIONS_SCOPE_FILES.items()
+    }
+    # demo and live share one physical file in production; keep that here.
+    history_files = {}
+    for scope, name in data_manager.TRADE_HISTORY_SCOPE_FILES.items():
+        key = data_manager._demo_variant(name) if scope == "demo" else name
+        history_files[scope] = history_files.get(key) or _tmp_scope_file(key, {"trades": []})
+        history_files[key] = history_files[scope]
+    history_files = {k: v for k, v in history_files.items() if k in data_manager.TRADE_HISTORY_SCOPE_FILES}
 
     monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", positions_files)
+    monkeypatch.setattr(data_manager, "TRADE_HISTORY_SCOPE_FILES", history_files)
     monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(ledger_router, "POSITIONS_SCOPE_FILES", positions_files)
+    # strategies.positions binds both tables at import time (from storage.ledger_router
+    # import ...), so its resolve_positions_file() needs the patched copy as well.
+    import strategies.positions as positions_mod
+
+    monkeypatch.setattr(positions_mod, "ORDERS_SCOPE_FILES", orders_files)
+    monkeypatch.setattr(positions_mod, "POSITIONS_SCOPE_FILES", positions_files)
     yield
 
 
@@ -452,7 +463,7 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
 def reset_positions_memory(isolate_demo_ledger_files):
     """Prevent in-memory positions dict from leaking across unit tests."""
     from data_manager import resolve_ledger_scope
-    from strategies.positions import clear_positions_memory, load_positions
+    from strategies.positions import _cancel_flush_timer, clear_positions_memory, load_positions
 
     clear_positions_memory()
     try:
@@ -460,6 +471,9 @@ def reset_positions_memory(isolate_demo_ledger_files):
     except Exception:
         pass
     yield
+    # A debounced flush_positions() timer left by the test would fire after the
+    # monkeypatches are gone and write the real data/positions.*.json (#325).
+    _cancel_flush_timer()
     clear_positions_memory()
 
 
@@ -721,6 +735,19 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
+    # #325: importing aria_bot registers atexit(_flush_positions_on_exit). At
+    # interpreter exit no fixture is active any more (DEMO_MODE unset -> scope
+    # "paper"), so that hook wrote data/positions.paper.json and positions.json
+    # after every run. Unregister it before the process exits.
+    try:
+        import atexit
+        import sys as _sys
+
+        _aria = _sys.modules.get("aria_bot")
+        if _aria is not None and hasattr(_aria, "_flush_positions_on_exit"):
+            atexit.unregister(_aria._flush_positions_on_exit)
+    except Exception:
+        pass
     try:
         prefix = _pytest_redis_key_prefix()
         _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
