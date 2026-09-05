@@ -21,11 +21,23 @@ force_local_test_mongo(dev=False)
 os.environ["MONGODB_DB"] = resolve_test_db_name()
 
 
+def _pytest_redis_key_prefix() -> str:
+    # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
+    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
+    suffix = "".join(
+        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+    ) or "default"
+    return f"pytest:{suffix}:"
+
+
 def pytest_configure(config):
     os.environ["PYTEST_RUNNING"] = "1"
     force_local_test_mongo(dev=False)
     os.environ["MONGODB_DB"] = resolve_test_db_name()
     close_client()
+    # Pin before collection so import-time / post-teardown store writes never
+    # fall back to the production aria: prefix (#323).
+    os.environ["OHLCV_CACHE_KEY_PREFIX"] = _pytest_redis_key_prefix()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
@@ -82,12 +94,7 @@ def isolate_ohlcv_cache_key_prefix(monkeypatch):
 
     Also SCAN+DEL `{prefix}market_oracle:*` and `{prefix}santiment:*` (#323).
     """
-    # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
-    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
-    suffix = "".join(
-        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
-    ) or "default"
-    prefix = f"pytest:{suffix}:"
+    prefix = _pytest_redis_key_prefix()
     monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", prefix)
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
     from services.market_oracle.store import reset_for_tests as reset_ora_store
@@ -453,6 +460,8 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
+    prefix = _pytest_redis_key_prefix()
+    _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
     if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
         return
     elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())

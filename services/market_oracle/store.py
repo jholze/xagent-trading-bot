@@ -23,7 +23,17 @@ _ENV_KEY_PREFIX = "OHLCV_CACHE_KEY_PREFIX"
 
 
 def _key_prefix() -> str:
-    return (os.environ.get(_ENV_KEY_PREFIX) or "").strip() or _DEFAULT_KEY_PREFIX
+    raw = (os.environ.get(_ENV_KEY_PREFIX) or "").strip()
+    if raw:
+        return raw
+    # Pytest must never fall back to aria: if a test cleared the env (#323).
+    if (os.environ.get("PYTEST_RUNNING") or "").strip():
+        suf = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
+        suffix = "".join(
+            ch for ch in suf if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+        ) or "default"
+        return f"pytest:{suffix}:"
+    return _DEFAULT_KEY_PREFIX
 
 
 def _redis_key() -> str:
