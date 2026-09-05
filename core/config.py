@@ -52,6 +52,17 @@ class BotConfig:
         return self._raw.get("live", {})
 
     @property
+    def live_execution(self) -> str:
+        """Raw ``live.execution`` key (``shadow`` | ``testnet`` | ``real``), default shadow.
+
+        Does not apply credential / DEMO_MODE / live_confirmed guards — those
+        live in ``core.execution_mode.resolve_execution_mode``.
+        """
+        raw = self.live_config.get("execution", "shadow")
+        value = str(raw or "shadow").strip().lower()
+        return value or "shadow"
+
+    @property
     def exchange(self) -> str:
         """Primary exchange for live trading (e.g. 'gate', 'binance')."""
         return self.live_config.get("exchange", "gate")
