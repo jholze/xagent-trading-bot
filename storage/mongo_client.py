@@ -14,7 +14,25 @@ DEFAULT_URI = "mongodb://127.0.0.1:27017"
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 PROD_DB_NAME = "xagent"
 DEV_DB_NAME = "xagent_test"
-TEST_DB_NAME = "xagent_pytest"
+_TEST_DB_BASE = "xagent_pytest"
+
+
+def resolve_test_db_name() -> str:
+    """Isolated pytest DB: ``xagent_pytest`` or ``xagent_pytest_<suffix>``.
+
+    When ``PYTEST_DB_SUFFIX`` is unset or empty after sanitizing to
+    ``[A-Za-z0-9_]``, the name is ``xagent_pytest`` (same as before).
+    """
+    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
+    suffix = "".join(
+        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+    )
+    if suffix:
+        return f"{_TEST_DB_BASE}_{suffix}"
+    return _TEST_DB_BASE
+
+
+TEST_DB_NAME = resolve_test_db_name()
 
 _client: Optional[MongoClient] = None
 _client_uri: Optional[str] = None
@@ -58,7 +76,7 @@ def use_isolated_pytest_database(config: dict | None = None) -> bool:
     if mongo_url and not is_local_mongo_uri(mongo_url, config=config):
         return False
     explicit_db = os.environ.get("MONGODB_DB")
-    if explicit_db and explicit_db not in (TEST_DB_NAME, ""):
+    if explicit_db and explicit_db not in (resolve_test_db_name(), ""):
         return False
     return True
 
@@ -116,7 +134,7 @@ def force_local_test_mongo(*, dev: bool = True) -> None:
     """Force localhost Mongo — dev bot uses xagent_test; pytest uses xagent_pytest."""
     os.environ["MONGODB_URI"] = DEFAULT_URI
     os.environ.pop("MONGO_URL", None)
-    os.environ["MONGODB_TEST_DB"] = TEST_DB_NAME
+    os.environ["MONGODB_TEST_DB"] = resolve_test_db_name()
     if dev and os.environ.get("PYTEST_RUNNING") != "1":
         os.environ.setdefault("MONGODB_DB", DEV_DB_NAME)
     close_client()
@@ -162,7 +180,7 @@ def resolve_mongo_uri(config: dict | None = None) -> str:
 
 def resolve_database_name(*, test: bool = False, config: dict | None = None) -> str:
     if test:
-        return os.environ.get("MONGODB_TEST_DB", TEST_DB_NAME)
+        return os.environ.get("MONGODB_TEST_DB", resolve_test_db_name())
     env_db = os.environ.get("MONGODB_DB")
     if env_db:
         return env_db

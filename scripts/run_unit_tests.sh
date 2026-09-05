@@ -7,10 +7,13 @@
 #   ./scripts/run_unit_tests.sh tests/unit/test_trailing_stop.py
 #   UNIT_TEST_PROGRESS=0 ./scripts/run_unit_tests.sh -q   # silence progress
 #   UNIT_TEST_PROGRESS_EVERY=25 ./scripts/run_unit_tests.sh -q
+#   PYTEST_DB_SUFFIX=ci ./scripts/run_unit_tests.sh       # Mongo DB xagent_pytest_ci
 #
 # Guarantees (via tests/conftest.py):
 #   - PYTEST_RUNNING=1
 #   - Mongo → local 127.0.0.1 / xagent_pytest (never Railway)
+#     PYTEST_DB_SUFFIX=<id> (sanitized [A-Za-z0-9_]) → xagent_pytest_<id>
+#     so two concurrent runs do not share a database. Unset = xagent_pytest.
 #   - demo ledger files isolated under tmp_path
 
 set -euo pipefail

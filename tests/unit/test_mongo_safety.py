@@ -14,9 +14,24 @@ from storage.mongo_client import (
     force_local_test_mongo,
     is_local_mongo_uri,
     resolve_database_name,
+    resolve_test_db_name,
     use_isolated_pytest_database,
 )
 from storage.mongo_ledger import MongoLedgerStore
+
+
+def test_resolve_test_db_name_unset_is_base(monkeypatch):
+    monkeypatch.delenv("PYTEST_DB_SUFFIX", raising=False)
+    assert resolve_test_db_name() == "xagent_pytest"
+
+
+def test_resolve_test_db_name_suffix_sanitized(monkeypatch):
+    monkeypatch.setenv("PYTEST_DB_SUFFIX", "ci-run.1")
+    assert resolve_test_db_name() == "xagent_pytest_cirun1"
+    monkeypatch.setenv("PYTEST_DB_SUFFIX", "grok")
+    assert resolve_test_db_name() == "xagent_pytest_grok"
+    monkeypatch.setenv("PYTEST_DB_SUFFIX", "  ")
+    assert resolve_test_db_name() == "xagent_pytest"
 
 
 def test_force_local_test_mongo_clears_railway_url(monkeypatch):
