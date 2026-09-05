@@ -35,6 +35,13 @@ BLOCKED_STATUSES = frozenset({
 
 _STORE_LOCK = threading.RLock()
 _STORE: "OrderLedgerV2 | None" = None
+# Index/connect failure must not pin a process-lifetime empty Memory store (#318).
+_V2_DEGRADED = False
+
+
+def order_ledger_v2_is_degraded() -> bool:
+    """True when mongo v2 failed to initialise; stats_day_filled_fast must fail-closed."""
+    return _V2_DEGRADED
 
 
 def order_ledger_v2_enabled() -> bool:
@@ -68,9 +75,10 @@ def order_ledger_v2_backfill_complete() -> bool:
 
 def reset_order_ledger_v2_for_tests() -> None:
     """Drop process singleton (tests)."""
-    global _STORE
+    global _STORE, _V2_DEGRADED
     with _STORE_LOCK:
         _STORE = None
+        _V2_DEGRADED = False
 
 
 def get_order_ledger_v2() -> "OrderLedgerV2 | None":
@@ -85,11 +93,7 @@ def get_order_ledger_v2() -> "OrderLedgerV2 | None":
         if backend == "memory":
             _STORE = MemoryOrderLedgerV2()
         elif backend == "mongo":
-            _STORE = MongoOrderLedgerV2()
-            try:
-                _STORE.ensure_indexes()
-            except Exception:
-                pass
+            _STORE = _mongo_v2_or_unavailable()
         else:
             # auto: memory under pytest; mongo when demo ledger is mongo (Railway)
             under_pytest = bool(
@@ -104,14 +108,28 @@ def get_order_ledger_v2() -> "OrderLedgerV2 | None":
                 )
             )
             if use_mongo:
-                try:
-                    _STORE = MongoOrderLedgerV2()
-                    _STORE.ensure_indexes()
-                except Exception:
-                    _STORE = MemoryOrderLedgerV2()
+                _STORE = _mongo_v2_or_unavailable()
             else:
                 _STORE = MemoryOrderLedgerV2()
         return _STORE
+
+
+def _mongo_v2_or_unavailable() -> "MongoOrderLedgerV2":
+    """Build mongo v2 store; index failure is degraded, not a silent memory pin."""
+    global _V2_DEGRADED
+    from storage.errors import LedgerUnavailable
+
+    store = MongoOrderLedgerV2()
+    try:
+        store.ensure_indexes()
+    except Exception as e:
+        _V2_DEGRADED = True
+        logger.warning(
+            "order ledger v2 mongo indexes failed; not pinning memory store: %s", e
+        )
+        raise LedgerUnavailable(op="get_order_ledger_v2", cause=e) from e
+    _V2_DEGRADED = False
+    return store
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime
 
 from logger import log
+from storage.errors import LedgerUnavailable, LedgerWriteFailed
 from storage.mongo_client import get_database
 
 _ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -121,6 +122,40 @@ def _mongo_test_mode(config: dict | None = None) -> bool:
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _raise_ledger_unavailable(
+    op: str,
+    cause: BaseException | None = None,
+    *,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+    message: str = "",
+) -> None:
+    if isinstance(cause, LedgerUnavailable):
+        raise cause
+    detail = message or (str(cause) if cause is not None else "unavailable")
+    log(f"{op} failed (scope={scope}, tenant={tenant_id}): {detail}", "ERROR")
+    raise LedgerUnavailable(
+        detail, scope=scope, tenant_id=tenant_id, op=op, cause=cause
+    ) from cause
+
+
+def _raise_ledger_write_failed(
+    op: str,
+    cause: BaseException | None = None,
+    *,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+    message: str = "",
+) -> None:
+    if isinstance(cause, LedgerWriteFailed):
+        raise cause
+    detail = message or (str(cause) if cause is not None else "write failed")
+    log(f"{op} failed (scope={scope}, tenant={tenant_id}): {detail}", "ERROR")
+    raise LedgerWriteFailed(
+        detail, scope=scope, tenant_id=tenant_id, op=op, cause=cause
+    ) from cause
 
 
 def _should_use_mongo_for_tenant_config(config: dict = None) -> bool:
@@ -712,14 +747,16 @@ def _apply_trading_profile_merge(default_cfg: dict, tenant_body: dict | None) ->
 
 
 def _load_tenant_config_body(tid: str, default_cfg: dict) -> dict | None:
+    from storage import tenant_meta_store as _tms
+
     try:
-        from storage import tenant_meta_store as _tms
         return _tms.load_tenant_config_body(
             tid, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg)
         )
+    except LedgerUnavailable:
+        raise
     except Exception as e:
-        log(f"Failed tenant_meta_store load_tenant_config_body for {tid}: {e}", "WARNING")
-        return None
+        _raise_ledger_unavailable("load_tenant_config_body", e, tenant_id=tid)
 
 
 def load_config(tenant_id: str | None = None):
@@ -947,8 +984,7 @@ def _load_trade_history_json(scope: str = "paper", config: dict = None) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
-        return _default_trade_history(scope, config)
+        _raise_ledger_unavailable("load_trade_history_json", e, scope=scope)
 
 
 def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
@@ -973,12 +1009,10 @@ def load_trade_history_document(
         try:
             history = _mongo_ledger_store(cfg).load_trade_history(scope, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(scope, cfg) or multi_tenant_enabled():
-                log(
-                    f"Mongo trade_history load failed ({scope}, tenant={tid}), refusing JSON fallback: {e}",
-                    "ERROR",
+            if _should_refuse_json_fallback(scope, cfg) or multi_tenant_enabled():
+                _raise_ledger_unavailable(
+                    "load_trade_history_document", e, scope=scope, tenant_id=tid
                 )
-                raise
             log(f"Mongo trade_history load failed ({scope}), falling back to JSON: {e}", "WARNING")
             history = _load_trade_history_json(scope, cfg)
     elif multi_tenant_enabled():
@@ -1311,8 +1345,7 @@ def _load_live_trade_history_json() -> dict:
                 history["realized_pnl"] = history["total_pnl"]
             return history
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
-        return {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+        _raise_ledger_unavailable("load_live_trade_history_json", e, scope="live")
 
 
 def load_live_trade_history():
@@ -1330,8 +1363,10 @@ def load_live_trade_history():
                 "live", tenant_id=resolve_tenant_id()
             )
         except Exception as e:
+            if _should_refuse_json_fallback("live", cfg):
+                _raise_ledger_unavailable("load_live_trade_history", e, scope="live")
             log(f"Mongo live trade_history load failed: {e}", "WARNING")
-            history = {"trades": [], "total_pnl": 0.0, "realized_pnl": 0.0}
+            history = _load_live_trade_history_json()
     else:
         history = _load_live_trade_history_json()
     stored_cash = history.get("virtual_balance")
@@ -1427,11 +1462,7 @@ def _demo_json_fallback_enabled() -> bool:
 
 
 def _should_refuse_demo_json_fallback(scope: str, cfg: dict) -> bool:
-    return (
-        scope == "demo"
-        and _demo_ledger_backend_is_mongo(cfg)
-        and not _demo_json_fallback_enabled()
-    )
+    return _should_refuse_json_fallback(scope, cfg)
 
 
 def _ledger_reads_mongo(scope: str, config: dict = None) -> bool:
@@ -1464,6 +1495,16 @@ def _ledger_writes_json(scope: str, config: dict = None) -> bool:
         return not _demo_ledger_backend_is_mongo(config)
     backend = resolve_ledger_backend(scope, config)
     return backend == "local" or ledger_dual_write_enabled(config)
+
+
+def _should_refuse_json_fallback(scope: str, cfg: dict) -> bool:
+    """Refuse JSON fallback when Mongo is the writer for this scope (JSON is a dead book).
+
+    ``DEMO_LEDGER_JSON_FALLBACK`` remains an explicit emergency exit for demo.
+    """
+    if scope == "demo" and _demo_json_fallback_enabled():
+        return False
+    return not _ledger_writes_json(scope, cfg)
 
 
 def _ledger_writes_mongo(scope: str, config: dict = None) -> bool:
@@ -1526,8 +1567,7 @@ def _load_orders_json(scope: str) -> dict:
             data["ledger_scope"] = scope
         return data
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
-        return _empty_orders(scope)
+        _raise_ledger_unavailable("load_orders_json", e, scope=scope)
 
 
 def _save_orders_json(data: dict, scope: str) -> bool:
@@ -1550,12 +1590,8 @@ def load_orders(scope: str, tenant_id: str | None = None):
         try:
             return _mongo_ledger_store(cfg).load_orders(scope, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(scope, cfg) or multi_tenant_enabled():
-                log(
-                    f"Mongo orders load failed ({scope}, tenant={tid}), refusing JSON fallback: {e}",
-                    "ERROR",
-                )
-                raise
+            if _should_refuse_json_fallback(scope, cfg) or multi_tenant_enabled():
+                _raise_ledger_unavailable("load_orders", e, scope=scope, tenant_id=tid)
             log(f"Mongo orders load failed ({scope}), falling back to JSON: {e}", "WARNING")
     if multi_tenant_enabled():
         return {
@@ -1620,8 +1656,7 @@ def _load_positions_json(scope: str) -> dict:
         data["ledger_scope"] = scope
         return data
     except Exception as e:
-        log(f"Failed to load {path}: {e}", "WARNING")
-        return _empty_positions(scope)
+        _raise_ledger_unavailable("load_positions_json", e, scope=scope)
 
 
 def _save_positions_json(data: dict, scope: str) -> bool:
@@ -1649,12 +1684,10 @@ def load_positions_document(
         try:
             return _mongo_ledger_store(cfg).load_positions(target, tenant_id=tid)
         except Exception as e:
-            if _should_refuse_demo_json_fallback(target, cfg) or multi_tenant_enabled():
-                log(
-                    f"Mongo positions load failed ({target}, tenant={tid}), refusing JSON fallback: {e}",
-                    "ERROR",
+            if _should_refuse_json_fallback(target, cfg) or multi_tenant_enabled():
+                _raise_ledger_unavailable(
+                    "load_positions_document", e, scope=target, tenant_id=tid
                 )
-                raise
             log(f"Mongo positions load failed ({target}), falling back to JSON: {e}", "WARNING")
     if multi_tenant_enabled():
         return {"tenant_id": tid, "ledger_scope": target, "positions": {}}
