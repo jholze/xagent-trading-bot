@@ -15,7 +15,18 @@ _LATEST: dict[str, Any] | None = None
 _HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = 50
 
-REDIS_KEY = "aria:santiment:latest"
+# Naming debt: tests isolate via OHLCV_CACHE_KEY_PREFIX (#319/#323). A shared
+# REDIS_KEY_PREFIX would be cleaner; not renamed here to avoid an ohlcv_cache sweep.
+_DEFAULT_KEY_PREFIX = "aria:"
+_ENV_KEY_PREFIX = "OHLCV_CACHE_KEY_PREFIX"
+
+
+def _key_prefix() -> str:
+    return (os.environ.get(_ENV_KEY_PREFIX) or "").strip() or _DEFAULT_KEY_PREFIX
+
+
+def _redis_key() -> str:
+    return f"{_key_prefix()}santiment:latest"
 
 
 def reset_for_tests() -> None:
@@ -32,7 +43,7 @@ def _redis_set(snapshot: dict[str, Any]) -> bool:
         r = get_redis()
         if not r:
             return False
-        r.set(REDIS_KEY, json.dumps(snapshot), ex=max(300, int(snapshot.get("ttl_sec") or 1800) * 2))
+        r.set(_redis_key(), json.dumps(snapshot), ex=max(300, int(snapshot.get("ttl_sec") or 1800) * 2))
         return True
     except Exception as e:
         log(f"santiment redis set failed: {e}", "WARNING")
@@ -46,7 +57,7 @@ def _redis_get() -> dict[str, Any] | None:
         r = get_redis()
         if not r:
             return None
-        raw = r.get(REDIS_KEY)
+        raw = r.get(_redis_key())
         if not raw:
             return None
         if isinstance(raw, bytes):
