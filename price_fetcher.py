@@ -5,19 +5,68 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from core.config import get_bot_config
+from logger import log
 
 # In-memory price cache (TTL reduces API spam during Telegram commands)
 _price_cache = {}
+# Last successful quote: {symbol: (price, monotonic_ts)}. Bare floats = age 0.
 _last_good_cache = {}
+_stale_warned: set[str] = set()
 _CACHE_TTL_SECONDS = 30
+_STALE_PRICE_MAX_AGE_DEFAULT = 300.0
 
 
 def clear_price_cache() -> int:
     """Drop in-memory price TTL cache (soft hot-reload / tests). Returns entries cleared."""
     n = len(_price_cache)
     _price_cache.clear()
-    # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer
+    # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer.
+    # Expiry is still applied on read.
     return n
+
+
+def _stale_price_max_age_sec() -> float:
+    try:
+        return float(get_bot_config().stale_price_max_age_sec)
+    except Exception:
+        return _STALE_PRICE_MAX_AGE_DEFAULT
+
+
+def _parse_last_good(entry, *, now_mono: float) -> tuple[float, float] | None:
+    """Return (price, monotonic_ts) or None. Untimestamped floats count as age 0."""
+    if entry is None:
+        return None
+    if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+        try:
+            price = float(entry[0] or 0)
+            ts = float(entry[1])
+        except (TypeError, ValueError):
+            return None
+        if price > 0:
+            return price, ts
+        return None
+    try:
+        price = float(entry or 0)
+    except (TypeError, ValueError):
+        return None
+    if price > 0:
+        return price, now_mono
+    return None
+
+
+def stale_expired_symbols() -> set[str]:
+    """Symbols whose last-good quote is older than architecture.stale_price_max_age_sec."""
+    now_mono = time.monotonic()
+    max_age = _stale_price_max_age_sec()
+    expired: set[str] = set()
+    for sym, entry in _last_good_cache.items():
+        parsed = _parse_last_good(entry, now_mono=now_mono)
+        if parsed is None:
+            continue
+        _price, ts = parsed
+        if (now_mono - ts) > max_age:
+            expired.add(sym)
+    return expired
 
 _CG_MAP = {"ARIA": "aria-ai", "RAVE": "ravedao", "HIGH": "highstreet"}
 
@@ -79,7 +128,8 @@ def _cache_set(symbol: str, price: float, now: float = None):
     now = now or time.time()
     _price_cache[symbol] = (price, now)
     if price > 0:
-        _last_good_cache[symbol] = price
+        _last_good_cache[symbol] = (price, time.monotonic())
+        _stale_warned.discard(symbol)
 
 
 def _position_fallbacks(symbols: list[str], fallbacks: dict[str, float] = None) -> dict[str, float]:
@@ -95,22 +145,43 @@ def _apply_price_fallbacks(
     symbols: list[str],
     result: dict[str, float],
     fallbacks: dict[str, float] = None,
+    *,
+    allow_entry_price_fallback: bool = False,
 ) -> dict[str, str]:
-    """Fill zero quotes from last good cache, then optional entry-price fallbacks."""
+    """Fill zero quotes from last-good cache (TTL), then optional entry-price fallbacks.
+
+    Entry-price substitution is display-only: trading callers must leave
+    ``allow_entry_price_fallback`` at its default False.
+    """
     sources = {}
-    fb_map = _position_fallbacks(symbols, fallbacks)
+    fb_map = _position_fallbacks(symbols, fallbacks) if allow_entry_price_fallback else {}
+    now_mono = time.monotonic()
+    max_age = _stale_price_max_age_sec()
     for sym in symbols:
         price = float(result.get(sym, 0) or 0)
         if price > 0:
             sources[sym] = "live"
             continue
-        stale = _last_good_cache.get(sym)
-        if stale and stale > 0:
-            result[sym] = float(stale)
-            sources[sym] = "stale"
+        parsed = _parse_last_good(_last_good_cache.get(sym), now_mono=now_mono)
+        if parsed is not None:
+            stale_price, ts = parsed
+            age = now_mono - ts
+            if age <= max_age:
+                result[sym] = stale_price
+                sources[sym] = "stale"
+                continue
+            result[sym] = 0.0
+            sources[sym] = "stale_expired"
+            if sym not in _stale_warned:
+                log(
+                    f"Stale price expired for {sym}: age {age:.0f}s > {max_age:.0f}s "
+                    "— serving 0.0 (stale_expired)",
+                    "WARNING",
+                )
+                _stale_warned.add(sym)
             continue
         entry = fb_map.get(sym, 0)
-        if entry > 0:
+        if allow_entry_price_fallback and entry > 0:
             result[sym] = entry
             sources[sym] = "entry"
             continue
@@ -224,11 +295,13 @@ def get_prices_batch(
     fallbacks: dict[str, float] = None,
     *,
     return_sources: bool = False,
+    allow_entry_price_fallback: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], dict[str, str]]:
     """
     Fetch prices for multiple symbols efficiently.
     Uses cache, then Gate bulk + CoinGecko bulk, then parallel singles.
-    Zero quotes fall back to last good cache, then optional entry prices.
+    Zero quotes fall back to last-good cache (capped by stale_price_max_age_sec).
+    Entry-price fallback is opt-in and must not be used for trading decisions.
     """
     if not symbols:
         return ({}, {}) if return_sources else {}
@@ -264,7 +337,10 @@ def get_prices_batch(
     if not missing:
         for sym in unique:
             result.setdefault(sym, 0.0)
-        sources = _apply_price_fallbacks(unique, result, fallbacks)
+        sources = _apply_price_fallbacks(
+            unique, result, fallbacks,
+            allow_entry_price_fallback=allow_entry_price_fallback,
+        )
         sources.update(redis_sources)
         if return_sources:
             return result, sources
@@ -319,7 +395,10 @@ def get_prices_batch(
     except Exception:
         pass
 
-    sources = _apply_price_fallbacks(unique, result, fallbacks)
+    sources = _apply_price_fallbacks(
+        unique, result, fallbacks,
+        allow_entry_price_fallback=allow_entry_price_fallback,
+    )
     sources.update(redis_sources)
     if return_sources:
         return result, sources

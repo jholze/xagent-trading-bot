@@ -1586,7 +1586,10 @@ def send_positions_snapshot(
     t_px0 = time.perf_counter()
     if unique_symbols:
         prices, price_sources = get_prices_batch(
-            unique_symbols, fallbacks=fallbacks, return_sources=True,
+            unique_symbols,
+            fallbacks=fallbacks,
+            return_sources=True,
+            allow_entry_price_fallback=True,
         )
     else:
         prices, price_sources = {}, {}
