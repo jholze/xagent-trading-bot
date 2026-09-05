@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED · 2026-09-05** — ersetzt durch [`docs/umbau/README.md`](../../docs/umbau/README.md) (Umbau-Konzept v4, 7 Phasen). Beschrieb den Redis-3+1-Prozess-Split vom Juni 2026; zu 23 % veraltet (15 Subsysteme / 28k Zeilen nicht erfasst, `_execute_lock` existiert nicht mehr). Historisch, nicht mehr pflegen.
+
 # Trading Bot: Prozess-Architektur mit Redis
 
 Stand: 22. Juni 2026 (überarbeitet nach Parallel-Cycles, Ask-Bridge, Order-Ledger, Volatility-Tiers, LC-Integration)
