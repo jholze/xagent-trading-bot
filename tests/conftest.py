@@ -1,14 +1,21 @@
+import atexit
 import json
 import os
 import shutil
 import socket as _socket
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# data/*.py are importable packages; do not leave .pyc next to them (#327).
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+sys.dont_write_bytecode = True
 
 
 def _sanitize_pytest_db_suffix(raw: str | None = None) -> str:
@@ -140,6 +147,7 @@ def pytest_configure(config):
     os.environ["OHLCV_CACHE_KEY_PREFIX"] = _pytest_redis_key_prefix()
     # xdist workers may skip pytest_collection_finish; honor UNIT_TEST_PROGRESS here.
     _PROGRESS["enabled"] = _progress_enabled(config)
+    _install_process_data_isolation()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
@@ -406,8 +414,231 @@ def isolate_operator_production_flags(monkeypatch, request):
         monkeypatch.setenv("WATCHLIST_QUALITY_MODE", "off")
 
 
+# ---------------------------------------------------------------------------
+# #327: checkout data/ must stay read-only during the unit suite.
+# Process-wide: pytest_configure points _DATA_DIR at a session tmp so
+# collection / setUpClass / between-test teardowns cannot hit the checkout.
+# Per test: isolate_data_dir overlays tmp_path/data on top of that.
+# Tracked seed files (git ls-files data, minus backup dumps and .py) only.
+# ---------------------------------------------------------------------------
+_DATA_SEED_BYTES: dict[str, bytes] | None = None
+_CHECKOUT_ROOT_DIR: str | None = None
+_CHECKOUT_DATA_DIR: str | None = None
+_SIDECAR_FUNCS_WRAPPED = False
+
+
+def _is_excluded_data_seed(rel: str) -> bool:
+    name = Path(rel).name
+    if name.endswith((".py", ".pyc")):
+        return True
+    if "demo_ledger" in name and "backup" in name:
+        return True
+    return False
+
+
+def _tracked_data_relpaths(orig_root: str) -> list[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-files", "data"],
+            cwd=orig_root,
+            text=True,
+        )
+        return [ln.strip() for ln in out.splitlines() if ln.strip()]
+    except Exception:
+        root = Path(orig_root) / "data"
+        if not root.is_dir():
+            return []
+        return [
+            str(p.relative_to(orig_root))
+            for p in root.rglob("*")
+            if p.is_file()
+        ]
+
+
+def _data_seed_bytes(orig_root: str) -> dict[str, bytes]:
+    global _DATA_SEED_BYTES
+    if _DATA_SEED_BYTES is not None:
+        return _DATA_SEED_BYTES
+    payload: dict[str, bytes] = {}
+    for rel in _tracked_data_relpaths(orig_root):
+        if _is_excluded_data_seed(rel):
+            continue
+        src = Path(orig_root) / rel
+        if src.is_file():
+            payload[rel] = src.read_bytes()
+    _DATA_SEED_BYTES = payload
+    return payload
+
+
+def _seed_tmp_data(orig_root: str, test_root: Path) -> None:
+    payload = _data_seed_bytes(orig_root)
+    for rel, blob in payload.items():
+        dest = test_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(blob)
+        # Pre-materialize the demo sibling so get_data_file() does not
+        # copy-on-first-use (that path logs via get_bot_config).
+        if rel.endswith(".json") and not rel.endswith(".demo.json"):
+            demo_rel = rel[:-5] + ".demo.json"
+            if demo_rel not in payload:
+                demo_dest = test_root / demo_rel
+                demo_dest.write_bytes(blob)
+
+
+def _redirect_rel_data_path(path, data_dir: Path) -> Path:
+    """Map CWD-relative ``data/<name>`` onto ``data_dir``."""
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    if parts and parts[0] == "data":
+        return data_dir.joinpath(*parts[1:])
+    return p
+
+
+def _live_data_dir() -> Path:
+    import data_manager
+
+    return Path(data_manager._DATA_DIR)
+
+
+def _wrap_sidecar_path_functions() -> None:
+    """Once per process: CWD-relative data/ builders follow data_manager._DATA_DIR."""
+    global _SIDECAR_FUNCS_WRAPPED
+    if _SIDECAR_FUNCS_WRAPPED:
+        return
+    import services.dca_sniper.state as dca_sniper_state
+    import services.gainer_universe.store as gainer_store
+    import services.telegram_ask_bridge as ask_bridge
+
+    def _sniper_state_path():
+        env = (os.environ.get("DCA_SNIPER_STATE_PATH") or "").strip()
+        if env:
+            return Path(env)
+        return _live_data_dir() / "dca_sniper_state.json"
+
+    dca_sniper_state.state_path = _sniper_state_path
+
+    def _gainer_state_path():
+        env = (os.environ.get("GAINER_UNIVERSE_STATE_PATH") or "").strip()
+        if env:
+            return Path(env)
+        return _live_data_dir() / "gainer_universe_state.json"
+
+    gainer_store._state_path = _gainer_state_path
+
+    for name in ("queue_path", "pending_notify_path", "notify_log_path", "agent_inbox_path"):
+        orig = getattr(ask_bridge, name)
+
+        def _make(fn):
+            def _wrapped(*args, **kwargs):
+                return _redirect_rel_data_path(fn(*args, **kwargs), _live_data_dir())
+
+            _wrapped.__name__ = getattr(fn, "__name__", "wrapped")
+            return _wrapped
+
+        setattr(ask_bridge, name, _make(orig))
+
+    _SIDECAR_FUNCS_WRAPPED = True
+
+
+def _set_sidecar_path_constants(tmp_root: Path, tmp_data: Path, monkeypatch=None) -> None:
+    """Rebind import-time Path constants that do not go through _DATA_DIR."""
+    import notifications.coin_links as coin_links
+    import notifications.morning_briefing as morning_briefing
+    import notifications.telegram_commands.command_context as command_context
+    import services.exit_radar.sniper_status as sniper_status
+    import services.portfolio_nav_history as portfolio_nav
+    import services.telegram_ask_bridge as ask_bridge
+
+    pairs = (
+        (command_context, "_CONTEXT_FILE", tmp_data / "telegram_command_context.json"),
+        (morning_briefing, "_STATE_FILE", tmp_data / "morning_briefing.json"),
+        (coin_links, "_CACHE_PATH", tmp_data / "cmc_slug_cache.json"),
+        (portfolio_nav, "_BOT_ROOT", tmp_root),
+        (sniper_status, "_REPO_ROOT", tmp_root),
+        (ask_bridge, "_DEFAULT_QUEUE", tmp_data / "telegram_ask_queue.json"),
+    )
+    for mod, attr, value in pairs:
+        if monkeypatch is not None:
+            monkeypatch.setattr(mod, attr, value)
+        else:
+            setattr(mod, attr, value)
+
+
+def _install_process_data_isolation() -> None:
+    """Point data_manager at a session tmp before collection (#327)."""
+    global _CHECKOUT_ROOT_DIR, _CHECKOUT_DATA_DIR
+    import data_manager
+
+    if _CHECKOUT_ROOT_DIR is None:
+        _CHECKOUT_ROOT_DIR = data_manager._ROOT_DIR
+        _CHECKOUT_DATA_DIR = data_manager._DATA_DIR
+    session_root = Path(tempfile.mkdtemp(prefix="xagent_pytest_data_"))
+    session_data = session_root / "data"
+    session_data.mkdir()
+    _seed_tmp_data(_CHECKOUT_ROOT_DIR, session_root)
+    data_manager._ROOT_DIR = str(session_root)
+    data_manager._DATA_DIR = str(session_data)
+    _wrap_sidecar_path_functions()
+    _set_sidecar_path_constants(session_root, session_data)
+    atexit.register(shutil.rmtree, str(session_root), True)
+
+
+def _patch_module_data_constants(monkeypatch, tmp_root: Path, tmp_data: Path, request) -> None:
+    _wrap_sidecar_path_functions()
+    _set_sidecar_path_constants(tmp_root, tmp_data, monkeypatch=monkeypatch)
+    # Tests that `from module import _STATE_FILE` keep the original Path object.
+    mod = getattr(request, "module", None)
+    imported = getattr(mod, "_STATE_FILE", None) if mod is not None else None
+    if isinstance(imported, Path) and imported.name == "morning_briefing.json":
+        monkeypatch.setattr(mod, "_STATE_FILE", tmp_data / "morning_briefing.json", raising=False)
+
+
 @pytest.fixture(autouse=True)
-def isolate_demo_ledger_files(tmp_path, monkeypatch):
+def isolate_data_dir(tmp_path, monkeypatch, request):
+    """Redirect data_manager._DATA_DIR (and _ROOT_DIR fallback) to tmp_path/data.
+
+    Production copy-on-first-use of resolve_positions_file's demo branch is
+    unchanged: get_data_file("positions.json") still copies into _DATA_DIR,
+    which is now the per-test tmp dir. Sidecar modules that hard-code data/
+    are rebound in the same fixture (#327).
+    """
+    import data_manager
+
+    checkout_root = _CHECKOUT_ROOT_DIR or data_manager._ROOT_DIR
+    checkout_data = _CHECKOUT_DATA_DIR or data_manager._DATA_DIR
+    test_root = tmp_path
+    test_data = tmp_path / "data"
+    test_data.mkdir(exist_ok=True)
+    _seed_tmp_data(checkout_root, test_root)
+    monkeypatch.setattr(data_manager, "_ROOT_DIR", str(test_root))
+    monkeypatch.setattr(data_manager, "_DATA_DIR", str(test_data))
+    _patch_module_data_constants(monkeypatch, test_root, test_data, request)
+    try:
+        yield {
+            "orig_root": checkout_root,
+            "orig_data": checkout_data,
+            "test_root": test_root,
+            "test_data": test_data,
+        }
+    finally:
+        try:
+            from strategies.positions import _cancel_flush_timer
+
+            _cancel_flush_timer()
+        except Exception:
+            pass
+        try:
+            from strategies.watch_15m_state import reset_cache_for_tests
+
+            reset_cache_for_tests()
+        except Exception:
+            pass
+
+
+@pytest.fixture(autouse=True)
+def isolate_demo_ledger_files(tmp_path, monkeypatch, isolate_data_dir):
     """Keep unit tests from mutating operator orders.demo.json (XRVM etc.)."""
     import data_manager
     import storage.ledger_router as ledger_router
@@ -418,14 +649,33 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
     # into data/ — and xdist workers clobbered each other in those files.
     # get_data_file()/resolve_data_path() return explicit paths unchanged, so
     # the tmp copies are used as-is by both data_manager and the JSON store.
+    orig_data = isolate_data_dir["orig_data"]
+    orig_root = isolate_data_dir["orig_root"]
+    test_data = isolate_data_dir["test_data"]
+
+    def _src_for(name: str) -> str | None:
+        for base in (orig_data, orig_root):
+            cand = os.path.join(base, name)
+            if os.path.exists(cand):
+                return cand
+        return None
+
     def _tmp_scope_file(name: str, default: dict) -> str:
         dst = str(tmp_path / name)
-        src = data_manager.resolve_data_path(name)
-        if src and os.path.exists(src):
+        src = _src_for(name)
+        if src:
             shutil.copy2(src, dst)
         else:
             Path(dst).write_text(json.dumps(default), encoding="utf-8")
         return dst
+
+    # resolve_positions_file("demo") ignores the scope table and calls
+    # get_data_file("positions.json") (copy-on-first-use). Seed the tmp data
+    # dir so that copy still happens, just not in the checkout.
+    for name in ("positions.json", "positions.demo.json"):
+        src = _src_for(name)
+        if src:
+            shutil.copy2(src, test_data / name)
 
     orders_files = {
         scope: _tmp_scope_file(
