@@ -57,20 +57,51 @@ def reset_oracle_climax_cycle():
     reset_stale_episode_for_tests()
 
 
+def _scan_del_redis_keys(*patterns: str) -> None:
+    """SCAN + DEL. Swallows errors so tests without Redis still run."""
+    try:
+        from bus.redis_client import get_redis
+
+        client = get_redis()
+        if not client:
+            return
+        keys: list = []
+        for pattern in patterns:
+            keys.extend(client.scan_iter(match=pattern, count=200))
+        for i in range(0, len(keys), 200):
+            batch = keys[i : i + 200]
+            if batch:
+                client.delete(*batch)
+    except Exception:
+        return
+
+
 @pytest.fixture(autouse=True)
 def isolate_ohlcv_cache_key_prefix(monkeypatch):
-    """Keep pytest OHLCV Redis keys off the production aria: prefix (#319)."""
+    """Keep pytest OHLCV Redis keys off the production aria: prefix (#319).
+
+    Also SCAN+DEL `{prefix}market_oracle:*` and `{prefix}santiment:*` (#323).
+    """
     # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
     raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
     suffix = "".join(
         ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
     ) or "default"
-    monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", f"pytest:{suffix}:")
+    prefix = f"pytest:{suffix}:"
+    monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", prefix)
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
+    from services.market_oracle.store import reset_for_tests as reset_ora_store
+    from services.santiment.store import reset_for_tests as reset_san_store
 
-    reset_ohlcv_cache_for_tests()
+    def _purge():
+        reset_ohlcv_cache_for_tests()
+        reset_ora_store()
+        reset_san_store()
+        _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
+
+    _purge()
     yield
-    reset_ohlcv_cache_for_tests()
+    _purge()
 
 
 @pytest.fixture(autouse=True)
