@@ -614,6 +614,12 @@ class TestSameCycleEvaluate(unittest.TestCase):
             patch("risk.risk_manager.get_position", return_value={"amount": 0}),
             patch("risk.risk_manager.find_open_position_for_symbol", return_value=None),
             patch.object(rm, "_trade_cooldown_blocked", return_value=(False, "")),
+            # Same equity stubs as test_same_cycle_approve: without them, isolated
+            # data/ has no NAV snapshot and spendable vetoes before no_price (#327).
+            patch.object(rm, "_portfolio_equity", return_value=100_000.0),
+            patch.object(rm, "_spendable_usdt", return_value=50_000.0),
+            patch.object(rm, "_available_usdt", return_value=50_000.0),
+            patch.object(rm, "_equity_drawdown_pct", return_value=0.0),
             patch(
                 "services.market_policy_fusion.get_global_market_bias",
                 return_value={"block_buys": False, "size_mult": 1.0, "regime": "RISK_ON"},
