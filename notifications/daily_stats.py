@@ -7,6 +7,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from logger import log
+
 BOT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -28,9 +30,13 @@ def utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def load_json(path: Path) -> dict | list:
-    with path.open(encoding="utf-8") as f:
-        return json.load(f)
+def load_json(path: Path, default=None) -> dict | list:
+    try:
+        with path.open(encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        log(f"JSON file not found, using default: {path}", "WARNING")
+        return default if default is not None else {}
 
 
 def _stats_ledger_scope() -> str:
