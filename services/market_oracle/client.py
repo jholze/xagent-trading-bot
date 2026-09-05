@@ -165,14 +165,14 @@ class MarketDataClient:
     ) -> dict[str, float]:
         """Universe = top N USDT pairs by quote volume (ex BTC/ETH by default).
 
-        Fail-open: empty dict if API fails or too few samples.
+        Fail-open: empty dict if API fails or too few samples (unmeasured).
         """
         exclude = exclude_pairs or frozenset({"BTC_USDT", "ETH_USDT"})
         try:
             rows = self.fetch_all_tickers()
         except Exception as e:
             log.warning("breadth tickers failed: %s", e)
-            return {}
+            return {}  # unmeasured — regime marks measured=False
 
         candidates: list[tuple[float, float]] = []  # (quote_vol, ret_24h)
         for row in rows:
@@ -196,7 +196,7 @@ class MarketDataClient:
 
         if len(candidates) < 8:
             log.warning("breadth: only %s liquid USDT pairs", len(candidates))
-            return {}
+            return {}  # unmeasured — too few samples
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         sample = candidates[: max(8, int(top_n))]
@@ -220,7 +220,7 @@ class MarketDataClient:
     def fetch_btc_funding_rate_pct(self) -> tuple[float | None, str]:
         """BTC perpetual funding in percent (e.g. 0.01 = 0.01% per interval).
 
-        Gate first, Binance fallback. Fail-open: (None, \"\").
+        Gate first, Binance fallback. Fail-open: (None, \"\") — unmeasured.
         """
         # Gate USDT-M futures contract
         try:
@@ -251,7 +251,7 @@ class MarketDataClient:
         except Exception as e:
             log.warning("binance funding failed: %s", e)
 
-        return None, ""
+        return None, ""  # unmeasured — both venues failed
 
     def fetch_features(self, *, breadth_top_n: int = 40) -> dict[str, float]:
         """BTC/ETH multi-TF + structure + breadth + optional funding."""
