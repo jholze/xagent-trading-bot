@@ -21,12 +21,6 @@ POSITIONS_SCOPE_FILES = {
     "live": "positions.live.json",
 }
 
-TRADE_HISTORY_SCOPE_FILES = {
-    "paper": "trade_history.json",
-    "live": "live_trade_history.json",
-}
-
-
 class LedgerStore(Protocol):
     def load_orders(self, scope: str) -> dict: ...
     def save_orders(self, data: dict, scope: str) -> bool: ...
@@ -118,12 +112,12 @@ class JsonLedgerStore:
         return self._resolve_scope_file(positions_files[scope])
 
     def _trade_history_path(self, scope: str) -> str:
-        from data_manager import TRADE_HISTORY_FILE, LIVE_TRADE_HISTORY_FILE
+        # One scope table (data_manager.TRADE_HISTORY_SCOPE_FILES): demo and
+        # live both map to live_trade_history.json, exactly as before, and the
+        # per-test isolation in tests/conftest.py (#325) applies here too.
+        from data_manager import TRADE_HISTORY_FILE, TRADE_HISTORY_SCOPE_FILES
 
-        if scope == "demo":
-            return self._get_data_file(LIVE_TRADE_HISTORY_FILE)
-        scope_files = {"paper": TRADE_HISTORY_FILE, "live": LIVE_TRADE_HISTORY_FILE}
-        return self._get_data_file(scope_files.get(scope, TRADE_HISTORY_FILE))
+        return self._get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
 
     def load_orders(self, scope: str) -> dict:
         path = self._orders_path(scope)

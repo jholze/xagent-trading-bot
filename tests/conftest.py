@@ -440,9 +440,16 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch):
     orders_files["demo"] = orders_path
     positions_files = dict(data_manager.POSITIONS_SCOPE_FILES)
     positions_files["demo"] = positions_path
+    # #325: the demo trade history was copied to tmp above but never redirected,
+    # so every test wrote data/live_trade_history.demo.json and xdist workers
+    # clobbered each other. get_data_file() returns explicit .demo.json paths
+    # unchanged, so the tmp copy is used as-is.
+    history_files = dict(data_manager.TRADE_HISTORY_SCOPE_FILES)
+    history_files["demo"] = history_path
 
     monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", positions_files)
+    monkeypatch.setattr(data_manager, "TRADE_HISTORY_SCOPE_FILES", history_files)
     monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", orders_files)
     monkeypatch.setattr(ledger_router, "POSITIONS_SCOPE_FILES", positions_files)
     yield

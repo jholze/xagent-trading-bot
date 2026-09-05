@@ -121,7 +121,11 @@ class TestVirtualTrading(unittest.TestCase):
         # per-test fixtures (DEMO_MODE=1), otherwise a class-level restore would
         # resolve to the live ledger scope (#324 review).
         scope = resolve_ledger_scope()
-        history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
+        # Resolve through the same scope table the code under test uses, so the
+        # per-test isolation in conftest (#325) applies to this raw write too.
+        import data_manager as _dm
+
+        history_base = _dm.TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE)
         self._trade_history_path = get_data_file(history_base)
         self._trade_history_backup = load_trade_history()
         self._positions_backup = {
