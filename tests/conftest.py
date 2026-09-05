@@ -74,8 +74,11 @@ def _cleanup_xdist_worker_stores() -> None:
         drop_database(test=True)
     finally:
         close_client()
-    suffix = _sanitize_pytest_db_suffix() or "default"
-    os.environ["OHLCV_CACHE_KEY_PREFIX"] = f"pytest:{suffix}:"
+    from bus.redis_keys import pytest_redis_key_prefix
+
+    prefix = pytest_redis_key_prefix()
+    os.environ["REDIS_KEY_PREFIX"] = prefix
+    os.environ["OHLCV_CACHE_KEY_PREFIX"] = prefix
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
 
     reset_ohlcv_cache_for_tests()
@@ -109,7 +112,7 @@ def _cleanup_xdist_controller_leftovers() -> None:
         reset_redis_client()
         redis_client = get_redis()
         if redis_client:
-            keys = list(redis_client.scan_iter(match=f"pytest:{suffix}_gw*:ohlcv:*", count=200))
+            keys = list(redis_client.scan_iter(match=f"pytest:{suffix}_gw*", count=200))
             if keys:
                 redis_client.delete(*keys)
     except Exception:
@@ -131,9 +134,21 @@ os.environ["MONGODB_DB"] = resolve_test_db_name()
 
 
 def _pytest_redis_key_prefix() -> str:
-    """One Redis prefix for OHLCV, oracle and santiment under pytest (#319/#323),
-    worker-aware under xdist (#321): pytest:<suffix>[_gwN]:"""
-    return f"pytest:{_effective_pytest_db_suffix() or 'default'}:"
+    """One Redis prefix under pytest (#319/#323/#326), worker-aware (#321)."""
+    from bus.redis_keys import pytest_redis_key_prefix
+
+    return pytest_redis_key_prefix()
+
+
+def _pin_pytest_redis_key_prefix() -> str:
+    """Pin REDIS_KEY_PREFIX (OHLCV_CACHE_KEY_PREFIX kept as alias)."""
+    prefix = _pytest_redis_key_prefix()
+    os.environ["REDIS_KEY_PREFIX"] = prefix
+    os.environ["OHLCV_CACHE_KEY_PREFIX"] = prefix
+    return prefix
+
+
+_pin_pytest_redis_key_prefix()
 
 
 def pytest_configure(config):
@@ -144,7 +159,7 @@ def pytest_configure(config):
     close_client()
     # Pin before collection so import-time / post-teardown store writes never
     # fall back to the production aria: prefix (#323).
-    os.environ["OHLCV_CACHE_KEY_PREFIX"] = _pytest_redis_key_prefix()
+    _pin_pytest_redis_key_prefix()
     # xdist workers may skip pytest_collection_finish; honor UNIT_TEST_PROGRESS here.
     _PROGRESS["enabled"] = _progress_enabled(config)
     _install_process_data_isolation()
@@ -374,6 +389,7 @@ def isolate_ohlcv_cache_key_prefix(monkeypatch):
     Also SCAN+DEL `{prefix}market_oracle:*` and `{prefix}santiment:*` (#323).
     """
     prefix = _pytest_redis_key_prefix()
+    monkeypatch.setenv("REDIS_KEY_PREFIX", prefix)
     monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", prefix)
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
     from services.market_oracle.store import reset_for_tests as reset_ora_store
@@ -1010,7 +1026,7 @@ def pytest_sessionfinish(session, exitstatus):
         pass
     try:
         prefix = _pytest_redis_key_prefix()
-        _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
+        _scan_del_redis_keys(f"{prefix}*")
         if (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
             _cleanup_xdist_worker_stores()
         elif _is_xdist_controller(session):
