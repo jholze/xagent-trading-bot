@@ -99,7 +99,7 @@ Der Bot läuft weiterhin als **ein Prozess** (`aria_bot.py`), ist intern aber f�
 | Rebuy-Cooldown | `min_hours_after_sell_before_rebuy: 4` | Kein Re-Entry kurz nach Sell (Anti-Churn) |
 | Ask-Bridge | `observability.ask_bridge` | `/ask` in eigener Queue, Poller alle 3 s |
 
-**Start (Produktion):** `bash scripts/start_stack.sh` — stoppt alte Prozesse, startet Bot + ngrok + Webhook. Rollback-Hinweise: [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
+**Start (Produktion):** `bash scripts/start_stack.sh` — stoppt alte Prozesse, startet Bot + ngrok + Webhook. Rollback-Hinweise: [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md).
 
 ---
 
@@ -1309,4 +1309,4 @@ flowchart TD
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub Issues im Repo
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md) · GitHub Issues im Repo

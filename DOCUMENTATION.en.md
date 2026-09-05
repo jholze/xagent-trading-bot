@@ -100,7 +100,7 @@ The bot still runs as **one process** (`aria_bot.py`), but is internally decoupl
 | Rebuy cooldown | `min_hours_after_sell_before_rebuy: 4` | No re-entry shortly after sell (anti-churn) |
 | Ask bridge | `observability.ask_bridge` | `/ask` in its own queue, poller every 3 s |
 
-**Production start:** `bash scripts/start_stack.sh` — stops old processes, starts bot + ngrok + webhook. Rollback notes: [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
+**Production start:** `bash scripts/start_stack.sh` — stops old processes, starts bot + ngrok + webhook. Rollback notes: [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md).
 
 ---
 
@@ -1335,4 +1335,4 @@ Grok TUI: remote URL + Bearer. Reconnect after deploys that add tools. Writes ar
 
 ---
 
-**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo
+**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo

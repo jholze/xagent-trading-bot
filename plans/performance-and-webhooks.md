@@ -4,7 +4,7 @@
 > **Kontext:** Bot fühlt sich langsam an; Preis-/OHLCV-Fetches dominieren; externe Alerts fehlen  
 > **Branch:** `staging` (live) · Historie: `feature/entry-guard-15m` / perf-webhooks  
 > **Erstellt:** 2026-07-08 · **Audit-Update:** 2026-07-18  
-> **Verwandt:** [`plans/entry-queue-fsm.md`](entry-queue-fsm.md) · [`ARCHITECTURE_PLAN.md`](../ARCHITECTURE_PLAN.md) § Monolith-Härtung  
+> **Verwandt:** [`plans/entry-queue-fsm.md`](entry-queue-fsm.md) · [`ARCHITECTURE_PLAN.md`](../archive/superseded/ARCHITECTURE_PLAN.md) § Monolith-Härtung  
 > **Nicht in diesem Plan:** Epic #65 Decision Agents · Social P1 (#7/#8)
 
 ---
