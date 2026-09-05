@@ -88,7 +88,7 @@ def resolve_short_params(
     config_raw: dict | None = None,
 ) -> dict[str, Any]:
     cfg = shorts_config(config_raw)
-    cap = float(cfg.get("leverage_cap") or 5)
+    cap = float(cfg.get("leverage_cap") or 2)
     vol = dict(cfg.get("volatile") or {})
     st = dict(cfg.get("stable") or {})
     base = {
