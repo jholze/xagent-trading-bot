@@ -13,7 +13,7 @@ SIDE_LONG = "long"
 SIDE_SHORT = "short"
 
 
-def clamp_leverage(leverage: float, *, cap: float = 5.0) -> float:
+def clamp_leverage(leverage: float, *, cap: float = 2.0) -> float:
     try:
         lev = float(leverage)
     except (TypeError, ValueError):
@@ -149,7 +149,7 @@ def should_stop_or_liquidate(
     return None
 
 
-def snapshot(pos: dict[str, Any] | None, mark: float, *, cap: float = 5.0) -> dict[str, float | str]:
+def snapshot(pos: dict[str, Any] | None, mark: float, *, cap: float = 2.0) -> dict[str, float | str]:
     side = position_side(pos)
     qty = float((pos or {}).get("amount") or 0)
     entry = float((pos or {}).get("average_entry") or 0)

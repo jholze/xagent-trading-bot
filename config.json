@@ -71,7 +71,7 @@
     "enabled": true,
     "allow_live": false,
     "leverage_default": 2,
-    "leverage_cap": 5,
+    "leverage_cap": 2,
     "max_open": 6,
     "max_margin_pct": 20,
     "auto_notional_pct": 0.35,
