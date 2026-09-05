@@ -656,10 +656,11 @@ class RiskManager:
 
                 msg = format_capacity_reject_message(cap, open_slots)
                 free = max(0, int(cap.max_open_eff) - int(open_slots))
+                evicted_ok = False
                 try:
                     from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
 
-                    _plan, suffix = try_slot_eviction_on_max_open(
+                    plan, suffix = try_slot_eviction_on_max_open(
                         order=order,
                         source=source,
                         free_full_slots=free,
@@ -673,13 +674,29 @@ class RiskManager:
                     )
                     if suffix:
                         msg = f"{msg}{suffix}"
+                    veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
+                    if veto == "no_positive_price":
+                        return RiskDecision(
+                            approved=False,
+                            message=msg or "slot eviction aborted: no positive price",
+                            code="slot_eviction_no_price",
+                        )
+                    # Structured flag set by the runtime after the eviction sell filled —
+                    # never infer execution from the human-readable suffix (#300 audit).
+                    sell_executed = bool(getattr(plan, "sell_executed", False))
+                    if sell_executed:
+                        open_slots = count_open_full_slots(self.config.raw)
+                        if open_slots < cap.max_open_eff:
+                            evicted_ok = True
                 except Exception:
                     pass
-                return RiskDecision(
-                    approved=False,
-                    message=msg,
-                    code="max_open_positions",
-                )
+                if not evicted_ok:
+                    return RiskDecision(
+                        approved=False,
+                        message=msg,
+                        code="max_open_positions",
+                    )
+                # Slot freed in this evaluate() call — continue _evaluate_impl.
 
         is_dca = self._is_dca_buy(source, order)
         floor_block = self._cash_floor_blocked(is_dca=is_dca)
