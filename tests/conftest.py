@@ -46,6 +46,18 @@ def isolate_test_mongo(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def reset_oracle_climax_cycle():
+    """oracle_climax._cycle is a process-wide cache; do not leak grind across tests (#323)."""
+    from strategies.oracle_climax import reset_cycle, reset_stale_episode_for_tests
+
+    reset_cycle()
+    reset_stale_episode_for_tests()
+    yield
+    reset_cycle()
+    reset_stale_episode_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def isolate_ohlcv_cache_key_prefix(monkeypatch):
     """Keep pytest OHLCV Redis keys off the production aria: prefix (#319)."""
     # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
