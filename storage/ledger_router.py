@@ -94,12 +94,13 @@ class JsonLedgerStore:
 
     def _atomic_write(self, path: str, data: dict) -> bool:
         from data_manager import atomic_write_json
+        from storage.errors import LedgerWriteFailed
 
         try:
             atomic_write_json(path, data)
             return True
-        except Exception:
-            return False
+        except Exception as e:
+            raise LedgerWriteFailed(op="_atomic_write", cause=e) from e
 
     def _scope_files(self):
         from data_manager import ORDERS_SCOPE_FILES, POSITIONS_SCOPE_FILES

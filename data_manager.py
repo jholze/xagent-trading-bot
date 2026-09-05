@@ -992,8 +992,8 @@ def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
     try:
         atomic_write_json(path, data)
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        _raise_ledger_write_failed("save_trade_history_json", e, scope=scope)
 
 
 def load_trade_history_document(
@@ -1070,16 +1070,16 @@ def save_trade_history_document(
 
     cfg = config or get_config()
     tid = resolve_tenant_id(tenant_id)
-    ok = True
     if _ledger_writes_json(scope, cfg):
-        ok = _save_trade_history_json(data, scope) and ok
+        _save_trade_history_json(data, scope)
     if _ledger_writes_mongo(scope, cfg):
         try:
             _mongo_ledger_store(cfg).save_trade_history(data, scope, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo trade_history save failed ({scope}): {e}", "ERROR")
-            ok = False
-    return ok
+            _raise_ledger_write_failed(
+                "save_trade_history_document", e, scope=scope, tenant_id=tid
+            )
+    return True
 
 
 def load_trade_history():
@@ -1577,8 +1577,8 @@ def _save_orders_json(data: dict, scope: str) -> bool:
         payload["ledger_scope"] = scope
         atomic_write_json(path, payload)
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        _raise_ledger_write_failed("save_orders_json", e, scope=scope)
 
 
 def load_orders(scope: str, tenant_id: str | None = None):
@@ -1628,17 +1628,20 @@ def save_orders(data: dict, scope: str, tenant_id: str | None = None) -> bool:
     cfg = get_config()
     tid = resolve_tenant_id(tenant_id)
     if _reject_demo_mongo_orders_downgrade(data, scope, cfg):
-        return False
-    ok = True
+        _raise_ledger_write_failed(
+            "save_orders",
+            message="blocked demo mongo orders downgrade",
+            scope=scope,
+            tenant_id=tid,
+        )
     if _ledger_writes_json(scope, cfg):
-        ok = _save_orders_json(data, scope) and ok
+        _save_orders_json(data, scope)
     if _ledger_writes_mongo(scope, cfg):
         try:
             _mongo_ledger_store(cfg).save_orders(data, scope, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo orders save failed ({scope}): {e}", "ERROR")
-            ok = False
-    return ok
+            _raise_ledger_write_failed("save_orders", e, scope=scope, tenant_id=tid)
+    return True
 
 
 def _empty_positions(scope: str) -> dict:
@@ -1666,8 +1669,8 @@ def _save_positions_json(data: dict, scope: str) -> bool:
         payload["ledger_scope"] = scope
         atomic_write_json(path, payload)
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        _raise_ledger_write_failed("save_positions_json", e, scope=scope)
 
 
 def load_positions_document(
@@ -1702,16 +1705,16 @@ def save_positions_document(
     target = scope or resolve_ledger_scope()
     cfg = config or get_config()
     tid = resolve_tenant_id(tenant_id)
-    ok = True
     if _ledger_writes_json(target, cfg):
-        ok = _save_positions_json(data, target) and ok
+        _save_positions_json(data, target)
     if _ledger_writes_mongo(target, cfg):
         try:
             _mongo_ledger_store(cfg).save_positions(data, target, tenant_id=tid)
         except Exception as e:
-            log(f"Mongo positions save failed ({target}): {e}", "ERROR")
-            ok = False
-    return ok
+            _raise_ledger_write_failed(
+                "save_positions_document", e, scope=target, tenant_id=tid
+            )
+    return True
 
 
 STRATEGY_BACKTEST_FILE = "strategy_backtest.json"

@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 
 from logger import log
-from storage.errors import LedgerUnavailable
+from storage.errors import LedgerUnavailable, LedgerWriteFailed
 from storage.mongo_client import get_database
 
 # Do not import anything from data_manager or that can pull get_config.
@@ -108,5 +108,5 @@ def save_tenant_watchlist(tid: str, coins: list[dict], *, default_cfg: dict, tes
         )
         return True
     except Exception as e:
-        log(f"tenant_meta_store: failed save_tenant_watchlist for {tid}: {e}", "WARNING")
-        return False
+        log(f"tenant_meta_store: failed save_tenant_watchlist for {tid}: {e}", "ERROR")
+        raise LedgerWriteFailed(op="save_tenant_watchlist", tenant_id=tid, cause=e) from e
