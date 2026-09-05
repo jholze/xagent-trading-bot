@@ -59,8 +59,15 @@ class TestDailyPortfolio(unittest.TestCase):
         self.assertAlmostEqual(realized_pnl_for(trades), -37.5, places=2)
 
     def test_format_daily_nav_line_empty_without_trades_today(self):
-        today = date.today().isoformat()
-        with patch(
+        # Pin the 22:00–24:00 UTC window where host date.today() and the
+        # display-TZ calendar day diverge (#328). Assertion stays "".
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+
+        frozen_utc = datetime(2026, 9, 5, 22, 30, 0, tzinfo=timezone.utc)
+        berlin_now = frozen_utc.astimezone(ZoneInfo("Europe/Berlin"))
+        today = berlin_now.date().isoformat()
+        with patch("core.time_utils.now_display", return_value=berlin_now), patch(
             "notifications.daily_portfolio._history_and_trades",
             return_value=({"trades": []}, [{"timestamp": f"{today}T00:00:00", "type": "BUY"}]),
         ), patch("notifications.daily_portfolio.trades_today", return_value=[]):
