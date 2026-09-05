@@ -8,7 +8,107 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+
+def _sanitize_pytest_db_suffix(raw: str | None = None) -> str:
+    if raw is None:
+        raw = os.environ.get("PYTEST_DB_SUFFIX") or ""
+    return "".join(
+        ch for ch in raw.strip() if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+    )
+
+
+def _effective_pytest_db_suffix() -> str:
+    """Sanitized PYTEST_DB_SUFFIX, with ``_<worker>`` appended under xdist.
+
+    Sequential (no ``PYTEST_XDIST_WORKER``): unchanged sanitized value, possibly
+    empty so Mongo stays ``xagent_pytest``. xdist worker: ``{sanitized or
+    'default'}_{gwN}`` so Mongo is ``xagent_pytest_par_gw3`` and Redis is
+    ``pytest:par_gw3:``. Idempotent if the suffix already ends with ``_<worker>``.
+    """
+    sanitized = _sanitize_pytest_db_suffix()
+    worker = (os.environ.get("PYTEST_XDIST_WORKER") or "").strip()
+    if not worker:
+        return sanitized
+    if sanitized.endswith(f"_{worker}"):
+        return sanitized
+    return f"{sanitized or 'default'}_{worker}"
+
+
+def _apply_xdist_worker_db_suffix() -> None:
+    """Mutate PYTEST_DB_SUFFIX so resolve_test_db_name() sees the worker.
+
+    Must run before ``storage.mongo_client`` is imported: TEST_DB_NAME is
+    computed at import time. Sequential runs leave the env var alone.
+    """
+    worker = (os.environ.get("PYTEST_XDIST_WORKER") or "").strip()
+    if not worker:
+        return
+    os.environ["PYTEST_DB_SUFFIX"] = _effective_pytest_db_suffix()
+
+
+def _cleanup_xdist_worker_stores() -> None:
+    """Drop this xdist worker's Mongo DB and OHLCV Redis keys.
+
+    Sequential runs (no PYTEST_XDIST_WORKER) keep today's behaviour: tests
+    drop their own DB in fixtures; no session-end drop of xagent_pytest.
+    """
+    if not (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+        return
+    from storage.mongo_client import close_client, drop_database, resolve_test_db_name
+
+    # Re-pin in case a test left MONGODB_TEST_DB pointing at a different name.
+    test_db = resolve_test_db_name()
+    os.environ["MONGODB_TEST_DB"] = test_db
+    os.environ["MONGODB_DB"] = test_db
+    close_client()
+    try:
+        drop_database(test=True)
+    finally:
+        close_client()
+    suffix = _sanitize_pytest_db_suffix() or "default"
+    os.environ["OHLCV_CACHE_KEY_PREFIX"] = f"pytest:{suffix}:"
+    from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
+
+    reset_ohlcv_cache_for_tests()
+
+
+def _is_xdist_controller(session) -> bool:
+    if (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+        return False
+    n = getattr(getattr(session, "config", None), "option", None)
+    n = getattr(n, "numprocesses", None) if n is not None else None
+    return bool(n)
+
+
+def _cleanup_xdist_controller_leftovers() -> None:
+    """Drop any xagent_pytest_<suffix>_gw* DBs a worker failed to remove."""
+    suffix = _sanitize_pytest_db_suffix() or "default"
+    db_prefix = f"xagent_pytest_{suffix}_gw"
+    from storage.mongo_client import close_client, get_client
+
+    close_client()
+    client = get_client()
+    try:
+        for name in client.list_database_names():
+            if name.startswith(db_prefix):
+                client.drop_database(name)
+    finally:
+        close_client()
+    try:
+        from bus.redis_client import get_redis, reset_redis_client
+
+        reset_redis_client()
+        redis_client = get_redis()
+        if redis_client:
+            keys = list(redis_client.scan_iter(match=f"pytest:{suffix}_gw*:ohlcv:*", count=200))
+            if keys:
+                redis_client.delete(*keys)
+    except Exception:
+        pass
+
+
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
+_apply_xdist_worker_db_suffix()
 from storage.mongo_client import (
     DEV_DB_NAME,
     close_client,
@@ -22,22 +122,22 @@ os.environ["MONGODB_DB"] = resolve_test_db_name()
 
 
 def _pytest_redis_key_prefix() -> str:
-    # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
-    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
-    suffix = "".join(
-        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
-    ) or "default"
-    return f"pytest:{suffix}:"
+    """One Redis prefix for OHLCV, oracle and santiment under pytest (#319/#323),
+    worker-aware under xdist (#321): pytest:<suffix>[_gwN]:"""
+    return f"pytest:{_effective_pytest_db_suffix() or 'default'}:"
 
 
 def pytest_configure(config):
     os.environ["PYTEST_RUNNING"] = "1"
+    _apply_xdist_worker_db_suffix()
     force_local_test_mongo(dev=False)
     os.environ["MONGODB_DB"] = resolve_test_db_name()
     close_client()
     # Pin before collection so import-time / post-teardown store writes never
     # fall back to the production aria: prefix (#323).
     os.environ["OHLCV_CACHE_KEY_PREFIX"] = _pytest_redis_key_prefix()
+    # xdist workers may skip pytest_collection_finish; honor UNIT_TEST_PROGRESS here.
+    _PROGRESS["enabled"] = _progress_enabled(config)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
@@ -460,22 +560,28 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    prefix = _pytest_redis_key_prefix()
-    _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
-    if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
-        return
-    elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
-    print(
-        f"\n{'='*60}\n"
-        f"  LOCAL suite done  exit={exitstatus}  "
-        f"{elapsed:.1f}s\n"
-        f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
-        f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
-        f"total={_PROGRESS['total']}\n"
-        f"  db={resolve_test_db_name()} (local only)\n"
-        f"{'='*60}\n",
-        flush=True,
-    )
+    try:
+        prefix = _pytest_redis_key_prefix()
+        _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
+        if (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+            _cleanup_xdist_worker_stores()
+        elif _is_xdist_controller(session):
+            _cleanup_xdist_controller_leftovers()
+    finally:
+        if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
+            return
+        elapsed = _time.time() - (_PROGRESS["t0"] or _time.time())
+        print(
+            f"\n{'='*60}\n"
+            f"  LOCAL suite done  exit={exitstatus}  "
+            f"{elapsed:.1f}s\n"
+            f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
+            f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
+            f"total={_PROGRESS['total']}\n"
+            f"  db={resolve_test_db_name()} (local only)\n"
+            f"{'='*60}\n",
+            flush=True,
+        )
 
 
 @pytest.fixture(autouse=True)
