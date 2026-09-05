@@ -1187,6 +1187,64 @@ class TestVirtualTrading(unittest.TestCase):
             mock_snapshot.assert_called_once()
             self.assertIs(mock_snapshot.call_args.kwargs.get("trade_result"), result)
 
+    def test_positions_snapshot_sent_after_ledger_lock_exit(self):
+        from bus.locks import LedgerLock
+        from services.trading_service import TradingService
+        from core.models import TradeResult
+
+        svc = TradingService()
+        ok_result = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=1.0, usdt_amount=10)
+        call_order = []
+        orig_exit = LedgerLock.__exit__
+
+        def tracking_exit(self, *args, **kwargs):
+            try:
+                return orig_exit(self, *args, **kwargs)
+            finally:
+                call_order.append("lock_exit")
+
+        def tracking_snapshot(*_a, **_k):
+            call_order.append("snapshot")
+
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute", return_value=ok_result), \
+             patch.object(LedgerLock, "__exit__", tracking_exit), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot", tracking_snapshot):
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=True,
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            from core.models import TradeOrder as TO
+            result = svc.execute_order(TO("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h")
+            self.assertTrue(result.executed)
+        self.assertIn("snapshot", call_order)
+        self.assertIn("lock_exit", call_order)
+        self.assertGreater(call_order.index("snapshot"), call_order.index("lock_exit"))
+
+    def test_positions_snapshot_not_sent_when_order_rejected(self):
+        from services.trading_service import TradingService
+
+        svc = TradingService()
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute") as mock_exec, \
+             patch("services.order_service.OrderService.record_rejected"), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot") as mock_snapshot:
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=False,
+                message="risk rejected",
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            result = svc.execute_order(
+                TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h"
+            )
+        self.assertFalse(result.executed)
+        mock_snapshot.assert_not_called()
+        mock_exec.assert_not_called()
+
     def test_trading_service_blocks_via_risk_manager(self):
         from core.config import BotConfig
         from data_manager import get_config
