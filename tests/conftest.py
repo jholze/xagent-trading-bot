@@ -422,6 +422,27 @@ def isolate_bot_logs(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def zero_cost_model(monkeypatch):
+    """Frictionless CostModel for legacy bookkeeping tests (#301).
+
+    These tests assert cash flow, weighted entry and position quantity. Since
+    #301 every buy/sell carries fees + slippage; the arithmetic of those costs
+    is covered by tests/unit/test_costs.py and test_portfolio_service_costs.py.
+    Pinning zero costs here keeps the legacy assertions meaningful without
+    coupling them to config.json fee tiers. Opt-in — never autouse.
+    """
+    from core.costs import CostModel, CostParams
+
+    zero = CostParams(fee_maker_pct=0.0, fee_taker_pct=0.0, slippage_pct=0.0)
+
+    def _zero(cls, config=None, *, exchange="gate", market="spot", symbol=None):
+        return cls(zero, exchange=exchange, market=market)
+
+    monkeypatch.setattr(CostModel, "from_config", classmethod(_zero))
+    yield zero
+
+
+@pytest.fixture
 def hermes_memory_tmp(tmp_path, monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "1")
     from hermes.memory import store
