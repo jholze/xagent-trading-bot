@@ -9,26 +9,25 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
-from storage.mongo_client import DEV_DB_NAME, TEST_DB_NAME, close_client, force_local_test_mongo
+from storage.mongo_client import (
+    DEV_DB_NAME,
+    close_client,
+    force_local_test_mongo,
+    resolve_test_db_name,
+)
 
 os.environ["PYTEST_RUNNING"] = "1"
 force_local_test_mongo(dev=False)
-os.environ["MONGODB_DB"] = TEST_DB_NAME
+os.environ["MONGODB_DB"] = resolve_test_db_name()
 
 
 def pytest_configure(config):
     os.environ["PYTEST_RUNNING"] = "1"
     force_local_test_mongo(dev=False)
-    os.environ["MONGODB_DB"] = TEST_DB_NAME
+    os.environ["MONGODB_DB"] = resolve_test_db_name()
     close_client()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
-
-# Operator WIP tests on disk but outside 15m feature scope (gitignored).
-collect_ignore = [
-    "unit/test_dca_stop_loss.py",
-    "unit/test_order_detail_view.py",
-]
 
 
 @pytest.fixture(autouse=True)
@@ -38,8 +37,9 @@ def isolate_test_mongo(monkeypatch):
     monkeypatch.delenv("DEMO_LEDGER_BACKEND", raising=False)
     monkeypatch.setenv("PYTEST_RUNNING", "1")
     monkeypatch.setenv("MONGODB_URI", "mongodb://127.0.0.1:27017")
-    monkeypatch.setenv("MONGODB_DB", TEST_DB_NAME)
-    monkeypatch.setenv("MONGODB_TEST_DB", TEST_DB_NAME)
+    test_db = resolve_test_db_name()
+    monkeypatch.setenv("MONGODB_DB", test_db)
+    monkeypatch.setenv("MONGODB_TEST_DB", test_db)
     close_client()
     yield
     close_client()
@@ -327,7 +327,7 @@ def pytest_collection_finish(session):
     print(
         f"\n{'='*60}\n"
         f"  LOCAL tests  |  collected={_PROGRESS['total']}  (unit≈{unit_n})\n"
-        f"  mongo={TEST_DB_NAME} @ 127.0.0.1  |  never Railway/remote\n"
+        f"  mongo={resolve_test_db_name()} @ 127.0.0.1  |  never Railway/remote\n"
         f"  progress every {_PROGRESS['every']} test(s)"
         f"  (UNIT_TEST_PROGRESS=0 to silence)\n"
         f"{'='*60}\n",
@@ -404,7 +404,7 @@ def pytest_sessionfinish(session, exitstatus):
         f"  ok={_PROGRESS['passed']}  fail={_PROGRESS['failed']}  "
         f"err={_PROGRESS['errors']}  skip={_PROGRESS['skipped']}  "
         f"total={_PROGRESS['total']}\n"
-        f"  db={TEST_DB_NAME} (local only)\n"
+        f"  db={resolve_test_db_name()} (local only)\n"
         f"{'='*60}\n",
         flush=True,
     )

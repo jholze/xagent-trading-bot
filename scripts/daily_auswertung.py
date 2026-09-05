@@ -277,7 +277,7 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
 
     config = load_json(bot_dir / "config.json")
-    cmc_raw = load_json(_bot_json(bot_dir, "cmc_posts.json"))
+    cmc_raw = load_json(_bot_json(bot_dir, "cmc_posts.json"), default=[])
     posts = cmc_posts(cmc_raw)
     day_posts = [p for p in posts if (ts := post_timestamp(p)) and day_start <= ts < day_end]
     cmc_actions = Counter(normalize_action(p) for p in day_posts)
