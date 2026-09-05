@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime
 
 import ccxt
@@ -11,9 +12,16 @@ from execution.base import ExecutionAdapter
 from logger import log
 from services.portfolio_service import PortfolioService
 
+_GATE_TESTNET_HOST = "https://fx-api-testnet.gateio.ws"
+
 
 class GateExecutionAdapter(ExecutionAdapter):
-    """Gate.io Spot execution via ccxt (mainnet)."""
+    """Gate.io Spot execution via ccxt.
+
+    ``mode`` is ``shadow`` | ``testnet`` | ``real``. Shadow runs precision,
+    limits and balance checks then synthesises a fill — it never calls
+    ``create_*_order``.
+    """
 
     def __init__(
         self,
@@ -47,15 +55,31 @@ class GateExecutionAdapter(ExecutionAdapter):
         api_key = os.getenv(self.live_cfg.get("api_key_env", "GATE_API_KEY"), "")
         secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
         api_secret = os.getenv(secret_env, "")
+        params = {"enableRateLimit": True, "timeout": 20000}
+        if self._adapter_mode == "shadow":
+            if api_key and api_secret:
+                params["apiKey"] = api_key
+                params["secret"] = api_secret
+            self._exchange = ccxt.gate(params)
+            return self._exchange
         if not api_key or not api_secret:
             return None
-        self._exchange = ccxt.gate({
-            "apiKey": api_key,
-            "secret": api_secret,
-            "enableRateLimit": True,
-            "timeout": 20000,
-        })
+        params["apiKey"] = api_key
+        params["secret"] = api_secret
+        self._exchange = ccxt.gate(params)
+        if self._adapter_mode == "testnet":
+            self._apply_testnet(self._exchange)
         return self._exchange
+
+    @staticmethod
+    def _apply_testnet(exchange) -> None:
+        setter = getattr(exchange, "set_sandbox_mode", None)
+        if callable(setter):
+            setter(True)
+            return
+        urls = getattr(exchange, "urls", None)
+        if isinstance(urls, dict):
+            urls["api"] = _GATE_TESTNET_HOST
 
     def _max_usdt(self) -> float:
         return float(
@@ -63,11 +87,14 @@ class GateExecutionAdapter(ExecutionAdapter):
         )
 
     def _fetch_usdt_balance(self) -> float:
+        if self._adapter_mode == "shadow":
+            return self._simulated_usdt_balance()
         exchange = self._get_exchange()
         if not exchange:
             return 0.0
         try:
             balance = exchange.fetch_balance()
+            self._last_api_error = ""
             return float(
                 balance.get("USDT", {}).get("free", 0)
                 or balance.get("free", {}).get("USDT", 0)
@@ -77,24 +104,18 @@ class GateExecutionAdapter(ExecutionAdapter):
             self._last_api_error = str(e)
             log(f"Gate balance fetch failed: {e}", "WARNING")
             return 0.0
-        self._last_api_error = ""
+
+    def _simulated_usdt_balance(self) -> float:
+        try:
+            from data_manager import resolve_sim_cash_balance
+
+            return float(resolve_sim_cash_balance(config=self.config.raw))
+        except Exception as e:
+            self._last_api_error = str(e)
+            log(f"Shadow USDT balance from ledger failed: {e}", "WARNING")
+            return 0.0
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
-        if self.live_cfg.get("dry_run", True):
-            if order.type == "BUY" and order.price > 0:
-                usdt = order.usdt_amount or self._max_usdt()
-                log_amount = usdt / order.price
-            else:
-                log_amount = order.amount
-            log(
-                f"[DRY RUN] Live {order.type} {order.symbol} "
-                f"amount={log_amount} @ {order.price}",
-                "INFO",
-            )
-            result = self._sync_local_ledger(order, timeframe, exchange_order_id="dry_run")
-            result.message = "Dry run — order logged locally, not sent to Gate.io"
-            return result
-
         exchange = self._get_exchange()
         if not exchange:
             key_env = self.live_cfg.get("api_key_env", "GATE_API_KEY")
@@ -147,7 +168,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         amount = usdt / order.price if order.price > 0 else order.amount
         amount = float(exchange.amount_to_precision(order.symbol, amount))
 
-        raw = exchange.create_market_buy_order(order.symbol, amount)
+        if self._adapter_mode == "shadow":
+            raw = self._synthesize_shadow_raw(order, side="buy", amount=amount, usdt=usdt)
+        else:
+            raw = exchange.create_market_buy_order(order.symbol, amount)
         fill_price = float(raw.get("average") or raw.get("price") or order.price)
         filled = float(raw.get("filled") or amount)
         cost = float(raw.get("cost") or fill_price * filled)
@@ -171,6 +195,8 @@ class GateExecutionAdapter(ExecutionAdapter):
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
+        if self._adapter_mode == "shadow":
+            return self._simulated_base_balance(symbol)
         base = symbol.split("/")[0]
         try:
             balance = exchange.fetch_balance()
@@ -181,6 +207,21 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
         except Exception as e:
             log(f"Gate {base} balance fetch failed: {e}", "WARNING")
+            return 0.0
+
+    def _simulated_base_balance(self, symbol: str) -> float:
+        try:
+            from strategies.positions import list_active_positions
+
+            total = 0.0
+            base = symbol.split("/")[0]
+            for pos in list_active_positions():
+                psym = str(pos.get("symbol") or "")
+                if psym == symbol or psym == base:
+                    total += float(pos.get("amount") or 0)
+            return total
+        except Exception as e:
+            log(f"Shadow base balance from ledger failed for {symbol}: {e}", "WARNING")
             return 0.0
 
     def _validate_sell_amount(self, exchange, order: TradeOrder, amount: float) -> tuple:
@@ -225,7 +266,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         if error:
             return TradeResult(False, "SELL", order.symbol, message=error)
 
-        raw = exchange.create_market_sell_order(order.symbol, amount)
+        if self._adapter_mode == "shadow":
+            raw = self._synthesize_shadow_raw(order, side="sell", amount=amount)
+        else:
+            raw = exchange.create_market_sell_order(order.symbol, amount)
         fill_price = float(raw.get("average") or raw.get("price") or order.price)
         filled = float(raw.get("filled") or amount)
         received = float(raw.get("cost") or fill_price * filled)
@@ -248,6 +292,38 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.exchange_order_id = str(raw.get("id", ""))
         result.fee = fill.fee_usdt if fill is not None else 0.0
         return result
+
+    def _synthesize_shadow_raw(
+        self,
+        order: TradeOrder,
+        *,
+        side: str,
+        amount: float,
+        usdt: float | None = None,
+    ) -> dict:
+        """CostModel fill → ccxt-shaped dict. No create_*_order."""
+        cm = CostModel.from_config(self.config, symbol=order.symbol)
+        if side == "buy":
+            if usdt and usdt > 0:
+                fill = cm.simulate_buy(float(order.price), usdt=float(usdt))
+            else:
+                fill = cm.simulate_buy(float(order.price), qty=float(amount))
+        else:
+            fill = cm.simulate_sell(float(order.price), float(amount))
+        base, _, quote = str(order.symbol).partition("/")
+        quote = quote or "USDT"
+        if fill.fee_base:
+            fee_cost, fee_ccy = fill.fee_base, base
+        else:
+            fee_cost, fee_ccy = fill.fee_quote, quote
+        return {
+            "id": f"shadow-{uuid.uuid4()}",
+            "status": "closed",
+            "average": fill.fill_price,
+            "filled": fill.qty_gross,
+            "cost": fill.quote_gross,
+            "fee": {"cost": fee_cost, "currency": fee_ccy},
+        }
 
     def _fill_from_raw(self, raw: dict, order: TradeOrder, *, side: str) -> Fill:
         """ccxt raw → Fill. Raises ValueError on unknown fee currency (never guess)."""
