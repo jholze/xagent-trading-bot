@@ -150,6 +150,15 @@ class SignalOrchestrator:
             if sensor_metrics and source == "entry_sensor_15m":
                 raw_ratio = float(sensor_metrics.get("volume_spike_ratio", 0) or 0)
                 vol_ratio = raw_ratio if raw_ratio > 0 else None
+            em = getattr(analysis, "exposure_multiplier", None)
+            if em is None:
+                alloc = getattr(analysis, "allocation", None)
+                if isinstance(alloc, dict):
+                    em = alloc.get("exposure_multiplier")
+            try:
+                em = float(em) if em is not None else None
+            except (TypeError, ValueError):
+                em = None
             order = TradeOrder(
                 type="BUY",
                 symbol=symbol,
@@ -159,6 +168,7 @@ class SignalOrchestrator:
                 signal=analysis.normalized_action or analysis.action,
                 source=source,
                 entry_15m_vol_ratio=vol_ratio,
+                exposure_multiplier=em,
             )
         else:
             # Size and execute against the open lot TF (may differ from analysis TF
