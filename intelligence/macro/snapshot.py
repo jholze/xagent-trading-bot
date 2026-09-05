@@ -78,6 +78,7 @@ def get_risk_multipliers(config: dict | None = None) -> dict[str, Any]:
             "session_risk": "",
             "pm_risk": "",
             "block_new_entries": False,
+            "measured": False,
         }
     regime = snap.get("regime") or {}
     cal = snap.get("calendar") or {}
@@ -104,4 +105,5 @@ def get_risk_multipliers(config: dict | None = None) -> dict[str, Any]:
         "block_new_entries": block,
         "next_event": cal.get("next_event"),
         "hours_to_event": cal.get("hours_to_event"),
+        "measured": True if "measured" not in snap else bool(snap.get("measured")),
     }

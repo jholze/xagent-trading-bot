@@ -11,6 +11,15 @@ from services.market_oracle.store import (
 )
 
 
+def _snap_measured(snap: dict | None) -> bool:
+    """Legacy snapshots without `measured` are treated as measured (no false alarm)."""
+    if not isinstance(snap, dict):
+        return False
+    if "measured" not in snap:
+        return True
+    return bool(snap.get("measured"))
+
+
 def _arch(config_raw: dict | None) -> dict:
     if config_raw is None:
         try:
@@ -56,6 +65,8 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
         "apply_sensor_policy": False,
         "warmup_active": False,
         "rationale": "",
+        "measured": True,
+        "as_of": None,
     }
     if not cfg["enabled"]:
         return neutral
@@ -66,6 +77,8 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
 
     snap = get_latest_snapshot()
     fresh = snapshot_is_fresh(snap)
+    measured = _snap_measured(snap)
+    as_of = (snap or {}).get("as_of") if isinstance(snap, dict) else None
     if not snap or not fresh:
         if warmup_active:
             return {
@@ -79,10 +92,17 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
                 "apply_size_mult": True,
                 "apply_sensor_policy": True,
                 "warmup_active": True,
+                "measured": measured,
+                "as_of": as_of,
                 "rationale": f"process warm-up {uptime:.0f}/{cfg['warmup_sec']}s",
             }
         if cfg["fail_open"]:
-            return {**neutral, "rationale": "oracle missing/stale fail-open"}
+            return {
+                **neutral,
+                "measured": measured,
+                "as_of": as_of,
+                "rationale": "oracle missing/stale fail-open",
+            }
         return {
             **neutral,
             "active": True,
@@ -92,6 +112,8 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
             "sensor_policy": "shadow",
             "apply_size_mult": cfg["apply_size_mult"],
             "apply_sensor_policy": cfg["apply_sensor_policy"],
+            "measured": measured,
+            "as_of": as_of,
             "rationale": "oracle missing/stale fail-closed",
         }
 
@@ -140,4 +162,5 @@ def get_market_oracle_policy(config_raw: dict | None = None) -> dict[str, Any]:
         "rationale": str(snap.get("rationale") or ""),
         "as_of": snap.get("as_of"),
         "features": snap.get("features") or {},
+        "measured": measured,
     }

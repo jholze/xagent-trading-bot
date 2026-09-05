@@ -263,9 +263,18 @@ def resolve_climax_decision(
     snap = None
     fusion = None
     try:
-        from services.market_oracle_store import get_latest_snapshot
+        from services.market_oracle_store import get_latest_snapshot, snapshot_is_fresh
 
         snap = get_latest_snapshot()
+        deny = False
+        try:
+            from risk.risk_manager import _fail_closed_guards_mode
+
+            deny = _fail_closed_guards_mode(raw) == "deny"
+        except Exception:
+            deny = False
+        if snap is not None and not snapshot_is_fresh(snap) and deny:
+            snap = None
     except Exception:
         snap = None
     try:

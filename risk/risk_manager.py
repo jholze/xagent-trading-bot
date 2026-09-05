@@ -462,6 +462,27 @@ class RiskManager:
                     code="market_block",
                     size_multiplier=float(bias.get("size_mult") or 0.0),
                 )
+            if (
+                _fail_closed_guards_mode(self.config) == "deny"
+                and bool(bias.get("degraded"))
+                and not self._is_dca_buy(source, order)
+            ):
+                try:
+                    from services.market_context_observability import note_buy_blocked
+
+                    note_buy_blocked(
+                        regime="UNKNOWN",
+                        source=bias.get("source"),
+                        rationale="market_bias_degraded",
+                    )
+                except Exception:
+                    pass
+                return RiskDecision(
+                    approved=False,
+                    message="Market bias degraded: no new entries",
+                    code="market_bias_degraded",
+                    size_multiplier=0.0,
+                )
 
             # Coin memory soft_block: skip *new* entries only (DCA / existing pos allowed)
             if not has_position and not self._is_dca_buy(source, order):
@@ -1356,7 +1377,12 @@ class RiskManager:
         from services.market_policy_fusion import get_global_market_bias
 
         try:
-            return dict(get_global_market_bias(self.config.raw) or {})
+            out = dict(get_global_market_bias(self.config.raw) or {})
+            if _fail_closed_guards_mode(self.config) == "deny" and out.get("degraded"):
+                r = str(out.get("regime") or "").upper()
+                if r in ("", "RISK_ON", "UNKNOWN"):
+                    out["regime"] = "NEUTRAL"
+            return out
         except Exception as e:
             dec = self._guard_failed("market_bias_for_cash", e, None)
             if dec is not None:
@@ -1420,6 +1446,11 @@ class RiskManager:
         throttle_at = float(risk.get("drawdown_throttle_pct", 10.0) or 10.0)
         drawdown_active = float(self._equity_drawdown_pct()) >= throttle_at
         soft_n, toxic_n, prefer_n = self._open_book_memory_counts()
+        if _fail_closed_guards_mode(self.config) == "deny" and bias.get("degraded"):
+            prefer_n = 0
+            r = str(regime or "").upper()
+            if r in ("", "RISK_ON", "UNKNOWN"):
+                regime = "NEUTRAL"
 
         # Inject avg_entry into capacity section from bot trade size (no hardcode)
         risk_for_cap = dict(risk) if isinstance(risk, dict) else {}
@@ -1729,6 +1760,10 @@ class RiskManager:
                         note_size_cut(mult=global_mult, regime=global_regime)
                     except Exception:
                         pass
+            if _fail_closed_guards_mode(self.config) == "deny" and bias.get("degraded"):
+                global_mult = min(1.0, float(global_mult))
+                global_regime = "UNKNOWN"
+                global_source = bias.get("source") or global_source
         except Exception as e:
             dec = self._guard_failed("global_market_bias", e, order)
             if dec is not None:
