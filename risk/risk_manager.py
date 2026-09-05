@@ -44,6 +44,53 @@ def _is_partial_sell(signal: str) -> bool:
     return "PARTIAL" in signal or signal in ("SELL", "SELL_10", "SELL_20", "SELL_30", "SELL_TP")
 
 
+def _fail_closed_guards_mode(config) -> str:
+    """Rollout switch: 'log' (default, old behaviour + ERROR) | 'deny'."""
+    try:
+        risk = None
+        if config is None:
+            return "log"
+        if isinstance(config, dict):
+            nested = config.get("risk")
+            if isinstance(nested, dict):
+                risk = nested
+            elif "fail_closed_guards" in config:
+                risk = config
+        else:
+            rc = getattr(config, "risk_config", None)
+            if isinstance(rc, dict):
+                risk = rc
+            else:
+                raw = getattr(config, "raw", None)
+                if isinstance(raw, dict) and isinstance(raw.get("risk"), dict):
+                    risk = raw.get("risk")
+        if not isinstance(risk, dict):
+            return "log"
+        mode = str(risk.get("fail_closed_guards") or "log").strip().lower()
+        return "deny" if mode == "deny" else "log"
+    except Exception:
+        return "log"
+
+
+def guard_failed(guard: str, exc: BaseException, order, *, config=None) -> RiskDecision | None:
+    """A guard raised. 'log' → ERROR + None. 'deny' → ERROR + RiskDecision deny."""
+    try:
+        from logger import log
+
+        symbol = getattr(order, "symbol", "") or ""
+        log(f"risk guard {guard} failed {symbol}: {exc}", "ERROR")
+    except Exception:
+        pass
+    if _fail_closed_guards_mode(config) != "deny":
+        return None
+    return RiskDecision(
+        approved=False,
+        message=f"{guard}_error: {exc}"[:200],
+        code=f"{guard}_error",
+        size_multiplier=0.0,
+    )
+
+
 class RiskManager:
     """Central gate for trade sizing and portfolio limits."""
 
@@ -56,6 +103,11 @@ class RiskManager:
         self.config = config or get_bot_config()
         self.portfolio = portfolio or PortfolioService(self.config)
         self.market = market_service or MarketService()
+
+    def _guard_failed(self, guard: str, exc: BaseException, order) -> "RiskDecision | None":
+        """A guard raised. 'log' → ERROR + return None (caller continues, old behaviour, but visible).
+        'deny' → ERROR + RiskDecision(approved=False, code=f"{guard}_error", size_multiplier=0.0)."""
+        return guard_failed(guard, exc, order, config=self.config)
 
     def evaluate(
         self,
