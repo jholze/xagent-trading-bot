@@ -157,8 +157,9 @@ class BotConfig:
         return int(self._raw.get("max_open_positions", 5))
 
     @property
-    def slippage_percent(self) -> float:
-        return float(self._raw.get("slippage_percent", 1.5))
+    def costs(self) -> dict:
+        block = self._raw.get("costs")
+        return dict(block) if isinstance(block, dict) else {}
 
     @property
     def update_interval(self) -> int:
@@ -562,7 +563,6 @@ class BotConfig:
             "meme_spacing_atr_mult": 1.25,
             "volatile_re_center_atr_mult": 3.2,
             "fee_aware": True,
-            "assumed_fee_pct": 0.1,
             "max_levels": 12,
             # Staging: market slices feel live; real multi-limits later
             "use_limit_orders": False,
