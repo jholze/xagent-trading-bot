@@ -59,8 +59,10 @@ Lower-stakes areas (backtesting, data fetching, notifications, docs, tests, tool
    (which test, what it asserted, what it got) — never "fixed" to match new behaviour. `tests/unit/test_dca_stop_loss.py`
    is the cautionary example: the DCA stop-loss grace period looked like a bug and is tested intended behaviour.
 8. Test diffs are reviewed with the same rigour as code diffs. A changed assertion is a changed contract.
-9. Do not run two test suites concurrently until the test-DB suffix from #298 has landed — both sessions share
-   `xagent_pytest`.
+9. Two suites may run concurrently **only** with distinct `PYTEST_DB_SUFFIX` values — it isolates both the Mongo
+   test DB (#298) and the OHLCV Redis key prefix (#319). Without a suffix both sessions share `xagent_pytest` and
+   `pytest:default:ohlcv:*`, and results become order-dependent. Never run a suite from two worktrees with the same
+   suffix.
 
 ### How to delegate a task
 
