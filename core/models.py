@@ -74,6 +74,7 @@ class TradeResult:
     order_id: str = ""
     exchange_order_id: str = ""
     fee: float = 0.0
+    precision_unverified: bool = False
 
 
 @dataclass
