@@ -515,7 +515,8 @@ class RiskManager:
                     wqe_reason = ""
                     scored = None
                     try:
-                        if wqe_mode(raw) in ("soft", "enforce"):
+                        mode = wqe_mode(raw)
+                        if mode in ("soft", "enforce"):
                             try:
                                 from core.tenant_context import current_tenant_id
 
