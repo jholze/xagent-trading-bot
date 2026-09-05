@@ -457,6 +457,21 @@ def clear_positions_memory(tenant_id: str | None = None, scope: str | None = Non
         _flush_unknown_logged.discard(key)
 
 
+def reset_all_position_stores_for_tests() -> None:
+    """Drop every tenant/scope in-memory book (pytest workers)."""
+    global _open_positions_count, _active_key
+    _cancel_flush_timer()
+    with _positions_lock:
+        positions.clear()
+        _position_stores.clear()
+        _open_counts.clear()
+        _positions_state.clear()
+        _positions_unknown_logged.clear()
+        _flush_unknown_logged.clear()
+        _active_key = (DEFAULT_TENANT, "paper")
+        _open_positions_count = 0
+
+
 def _cancel_flush_timer() -> None:
     global _flush_timer
     with _flush_timer_lock:

@@ -76,9 +76,16 @@ def _sort_watched_for_poll(watched: list[dict]) -> list[dict]:
 
 
 def reset_poll_state_for_tests() -> None:
-    global _last_watch_seed_at
+    """Drop poll timestamps and stop a leftover loop thread (pytest workers)."""
+    global _last_watch_seed_at, _loop_thread
+    _stop_event.set()
+    thread = _loop_thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    _loop_thread = None
     _last_poll_at.clear()
     _last_watch_seed_at = 0.0
+    _stop_event.clear()
 
 
 def _maybe_seed_watches(cfg: dict, *, force: bool = False) -> int:
