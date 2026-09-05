@@ -64,6 +64,18 @@ Lower-stakes areas (backtesting, data fetching, notifications, docs, tests, tool
    `pytest:default:ohlcv:*`, and results become order-dependent. Never run a suite from two worktrees with the same
    suffix.
 
+### Deploy branches are PR-only — never push to `staging` or `main`
+
+`staging` auto-deploys to Railway on every push; `main` is the release branch. Neither ever receives a direct push
+from any session, worktree, or Grok run:
+
+- **Local guard:** `.git/hooks/pre-push` (shared by every worktree) rejects pushes to `staging`/`main`. Override only
+  deliberately with `ALLOW_DEPLOY_PUSH=1` — and only for a reviewed, agreed deploy.
+- **Remote guard:** GitHub branch protection on both branches — PR required, no force-push, no deletion, enforced for
+  admins too.
+- **Integration target is `rebuild/*`.** Topic branches merge there; the reviewed integration branch goes to `staging`
+  as one PR when the phase is complete, at a moment the operator chooses.
+
 ### How to delegate a task
 
 1. In Claude Code, describe the task normally — plan it out, confirm scope.
