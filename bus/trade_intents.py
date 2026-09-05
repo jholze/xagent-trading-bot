@@ -131,13 +131,10 @@ def make_idempotency_key(
     bucket: str | None = None,
     tenant_id: str | None = None,
 ) -> str:
-    from datetime import datetime
+    """Mint a UUID4 client/idempotency key.
 
-    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
-
-    hour = bucket or datetime.now().strftime("%Y%m%d%H")
-    sig = (signal or "MARKET").upper()
-    if multi_tenant_enabled():
-        tid = resolve_tenant_id(tenant_id)
-        return f"{tid}:{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
-    return f"{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
+    ``bucket`` (wall-clock hour) is ignored — the key is minted once at
+    intent creation and persisted on the request record before any
+    exchange call. Callers must reuse the stored key on retry.
+    """
+    return str(uuid.uuid4())
