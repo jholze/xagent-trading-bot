@@ -4,6 +4,7 @@ from datetime import datetime
 import ccxt
 
 from core.config import BotConfig, get_bot_config
+from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
 from core.models import TradeOrder, TradeResult
 from data_manager import record_live_trade, uses_exchange_ledger
 from execution.base import ExecutionAdapter
@@ -140,7 +141,8 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         cost = float(raw.get("cost") or fill_price * filled)
 
-        fee = _extract_fee(raw)
+        # Cost path (#301): parse fee currency via Fill. Fill-status / partials are #313.
+        fill = self._fill_from_raw(raw, order, side="buy")
         result = self._sync_local_ledger(
             TradeOrder(
                 "BUY", order.symbol, fill_price, filled, usdt_amount=cost,
@@ -148,13 +150,13 @@ class GateExecutionAdapter(ExecutionAdapter):
             ),
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
-            fee=fee,
+            fill=fill,
         )
         from price_fetcher import format_usdt_price
 
         result.message = f"Gate BUY filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
-        result.fee = fee
+        result.fee = fill.fee_usdt if fill is not None else 0.0
         return result
 
     def _fetch_base_balance(self, exchange, symbol: str) -> float:
@@ -217,7 +219,8 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(raw.get("filled") or amount)
         received = float(raw.get("cost") or fill_price * filled)
 
-        fee = _extract_fee(raw)
+        # Cost path (#301): parse fee currency via Fill. Fill-status / partials are #313.
+        fill = self._fill_from_raw(raw, order, side="sell")
         result = self._sync_local_ledger(
             TradeOrder(
                 "SELL", order.symbol, fill_price, filled, signal=order.signal,
@@ -226,14 +229,27 @@ class GateExecutionAdapter(ExecutionAdapter):
             timeframe,
             exchange_order_id=str(raw.get("id", "")),
             usdt_received=received,
-            fee=fee,
+            fill=fill,
         )
         from price_fetcher import format_usdt_price
 
         result.message = f"Gate SELL filled {filled:.6f} @ {format_usdt_price(fill_price)}"
         result.exchange_order_id = str(raw.get("id", ""))
-        result.fee = fee
+        result.fee = fill.fee_usdt if fill is not None else 0.0
         return result
+
+    def _fill_from_raw(self, raw: dict, order: TradeOrder, *, side: str) -> Fill:
+        """ccxt raw → Fill. Raises ValueError on unknown fee currency (never guess)."""
+        base, _, quote = str(order.symbol).partition("/")
+        cm = CostModel.from_config(self.config, symbol=order.symbol)
+        return cm.fill_from_exchange(
+            raw,
+            side=side,  # type: ignore[arg-type]
+            base=base,
+            quote=quote or "USDT",
+            request_price=float(order.price or 0),
+            order_type="market",
+        )
 
     def _sync_local_ledger(
         self,
@@ -241,10 +257,19 @@ class GateExecutionAdapter(ExecutionAdapter):
         timeframe: str,
         exchange_order_id: str = "",
         usdt_received: float = 0,
-        fee: float = 0,
+        fill: Fill | None = None,
     ) -> TradeResult:
         oid = order.order_id or None
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
+        # Dry-run / no exchange raw: simulate so ledger and P&L share one Fill.
+        if fill is None and order.type in ("BUY", "SELL") and order.price > 0:
+            cm = CostModel.from_config(self.config, symbol=order.symbol)
+            if order.type == "BUY":
+                usdt = order.usdt_amount or self._max_usdt()
+                if usdt > 0:
+                    fill = cm.simulate_buy(order.price, usdt=usdt)
+            elif order.amount and order.amount > 0:
+                fill = cm.simulate_sell(order.price, order.amount)
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
                 order.symbol,
@@ -255,6 +280,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 order_id=oid,
                 sync_virtual_ledger=sync_virtual,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
+                fill=fill,
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(
@@ -281,11 +307,12 @@ class GateExecutionAdapter(ExecutionAdapter):
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
+                fill=fill,
             )
         else:
             return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")
 
-        record_live_trade({
+        rec = {
             "type": order.type,
             "symbol": order.symbol,
             "price": order.price,
@@ -295,18 +322,15 @@ class GateExecutionAdapter(ExecutionAdapter):
             "pnl": local.pnl,
             "exchange_order_id": exchange_order_id,
             "order_id": oid,
-            "fee": fee,
+            "fee": fill.fee_usdt if fill is not None else 0.0,
             "source": order.source,
             "timestamp": datetime.now().isoformat(),
             "mode": self.mode,
-        })
+            "cost_model": COST_MODEL_VERSION,
+        }
+        if fill is not None:
+            rec.update(trade_cost_fields(fill))
+        record_live_trade(rec)
         local.message = local.message or f"{self.mode} {order.type} synced"
         local.exchange_order_id = exchange_order_id
         return local
-
-
-def _extract_fee(raw: dict) -> float:
-    fee = raw.get("fee") or {}
-    if isinstance(fee, dict):
-        return float(fee.get("cost", 0) or 0)
-    return float(fee or 0)
