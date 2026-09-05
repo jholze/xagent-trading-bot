@@ -126,34 +126,42 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
-        decision = self._evaluate_impl(
-            order,
-            timeframe=timeframe,
-            source=source,
-            trust_score=trust_score,
-            confidence=confidence,
-            indicators=indicators,
-        )
-        # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
+        # One orders-document snapshot per evaluate() call. Nested evaluate()
+        # (auto-short) must not reuse the outer snapshot — load fresh, restore.
+        previous = getattr(self, "_eval_orders_doc", None)
+        self._eval_orders_doc = None
         try:
-            if (
-                str(getattr(order, "type", "") or "").upper() == "BUY"
-                and not getattr(decision, "approved", True)
-            ):
-                from services.watchlist_quality.soak_log import log_risk_reject
+            self._eval_orders_doc = self._load_orders_document()
+            decision = self._evaluate_impl(
+                order,
+                timeframe=timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
+            )
+            # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
+            try:
+                if (
+                    str(getattr(order, "type", "") or "").upper() == "BUY"
+                    and not getattr(decision, "approved", True)
+                ):
+                    from services.watchlist_quality.soak_log import log_risk_reject
 
-                raw = self.config.raw if hasattr(self.config, "raw") else None
-                log_risk_reject(
-                    symbol=getattr(order, "symbol", "") or "",
-                    side="BUY",
-                    source=str(source or ""),
-                    code=getattr(decision, "code", "") or "",
-                    message=getattr(decision, "message", "") or "",
-                    config=raw,
-                )
-        except Exception:
-            pass
-        return decision
+                    raw = self.config.raw if hasattr(self.config, "raw") else None
+                    log_risk_reject(
+                        symbol=getattr(order, "symbol", "") or "",
+                        side="BUY",
+                        source=str(source or ""),
+                        code=getattr(decision, "code", "") or "",
+                        message=getattr(decision, "message", "") or "",
+                        config=raw,
+                    )
+            except Exception:
+                pass
+            return decision
+        finally:
+            self._eval_orders_doc = previous
 
     def _evaluate_impl(
         self,
@@ -2565,6 +2573,9 @@ class RiskManager:
         return ""
 
     def _load_orders_document(self) -> dict:
+        scoped = getattr(self, "_eval_orders_doc", None)
+        if scoped is not None:
+            return scoped
         from data_manager import load_orders, resolve_ledger_scope
 
         return load_orders(resolve_ledger_scope(self.config.trading_mode)) or {}
