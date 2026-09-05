@@ -11,10 +11,17 @@ _lock = threading.Lock()
 _started = False
 _last_mode: str | None = None
 _last_stale_warn_at = 0.0
+_recovery_lock = threading.Lock()
+_recovered: set[tuple[str, str]] = set()
 
 
 def ensure_started(force_refresh: bool = False):
-    """Start notification worker + heartbeats on first call (safe from price_loop)."""
+    """Start notification worker + heartbeats on first call (safe from price_loop).
+
+    Exchange recovery (#314) runs once per tenant per process after the
+    architecture services are up. ``RecoveryFailed`` is not swallowed here
+    so the tenant's cycle does not run without a reconcile.
+    """
     global _started, _last_mode
     from core.config import get_bot_config
 
@@ -26,38 +33,90 @@ def ensure_started(force_refresh: bool = False):
         if _started and not force_refresh and mode == _last_mode:
             _heartbeat_tick(cfg)
             _maybe_warn_stale(cfg)
+        else:
+            from bus.jobs import heavy_job_queue
+            from services.background_runtime import ensure_started as ensure_background
+            from services.trading_engine_runtime import ensure_started as ensure_trading_engine
+
+            if not heavy_job_queue.running:
+                heavy_job_queue.start()
+            ensure_background()
+            ensure_trading_engine()
+            _ensure_eval_worker()
+            _ensure_exit_realtime()
+
+            if mode == "direct":
+                _started = True
+                _last_mode = mode
+                log("Architecture runtime: notification_mode=direct (sync)", "INFO")
+                _heartbeat_tick(cfg)
+            else:
+                from bus.notifications import notification_publisher
+                from telegram_notifier import _send_telegram_direct
+
+                rate = float(arch.get("notification_rate_limit_sec", 1.0))
+                notification_publisher._rate_limit_sec = rate
+                if not notification_publisher.running:
+                    notification_publisher.start(_send_telegram_direct)
+
+                _started = True
+                _last_mode = mode
+                _heartbeat_tick(cfg)
+                log("Architecture runtime: async notification worker active", "INFO")
+
+    _ensure_tenant_exchange_recovery()
+
+
+def reset_recovery_state_for_tests() -> None:
+    """Drop the per-tenant recovery set (unit tests only)."""
+    with _recovery_lock:
+        _recovered.clear()
+
+
+def _ensure_tenant_exchange_recovery() -> None:
+    """Once per tenant/scope per process. Lets RecoveryFailed propagate."""
+    from core.config import get_bot_config
+    from core.execution_mode import resolve_execution_mode
+    from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+    from execution.recovery import RecoveryFailed, reconcile_with_exchange
+
+    tid = resolve_tenant_id()
+    scope = resolve_tenant_scope()
+    key = (tid, scope)
+    with _recovery_lock:
+        if key in _recovered:
             return
-
-        from bus.jobs import heavy_job_queue
-        from services.background_runtime import ensure_started as ensure_background
-        from services.trading_engine_runtime import ensure_started as ensure_trading_engine
-
-        if not heavy_job_queue.running:
-            heavy_job_queue.start()
-        ensure_background()
-        ensure_trading_engine()
-        _ensure_eval_worker()
-        _ensure_exit_realtime()
-
-        if mode == "direct":
-            _started = True
-            _last_mode = mode
-            log("Architecture runtime: notification_mode=direct (sync)", "INFO")
-            _heartbeat_tick(cfg)
+        cfg = get_bot_config(tenant_id=tid)
+        try:
+            resolved = resolve_execution_mode(cfg.raw)
+        except RuntimeError as e:
+            log(f"exchange recovery skipped (mode: {e})", "WARNING")
+            _recovered.add(key)
             return
+        if resolved.adapter_mode == "shadow":
+            adapter = _ShadowAdapter()
+        else:
+            from execution.factory import get_execution_adapter
 
-        from bus.notifications import notification_publisher
-        from telegram_notifier import _send_telegram_direct
+            try:
+                adapter = get_execution_adapter(cfg)
+            except Exception as e:
+                log(f"exchange recovery skipped (adapter: {e})", "WARNING")
+                _recovered.add(key)
+                return
+        try:
+            reconcile_with_exchange(
+                tenant_id=tid, scope=scope, adapter=adapter, config=cfg
+            )
+        except RecoveryFailed:
+            raise
+        _recovered.add(key)
 
-        rate = float(arch.get("notification_rate_limit_sec", 1.0))
-        notification_publisher._rate_limit_sec = rate
-        if not notification_publisher.running:
-            notification_publisher.start(_send_telegram_direct)
 
-        _started = True
-        _last_mode = mode
-        _heartbeat_tick(cfg)
-        log("Architecture runtime: async notification worker active", "INFO")
+class _ShadowAdapter:
+    """Paper/demo: no Gate client. reconcile_with_exchange returns skipped."""
+
+    mode = "shadow"
 
 
 def _ensure_eval_worker():
