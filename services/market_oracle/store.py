@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from bus.redis_keys import redis_key_prefix
 from logger import log
 
 _LOCK = threading.Lock()
@@ -16,24 +16,9 @@ _HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = 50
 _PROCESS_START = datetime.now(timezone.utc)
 
-# Naming debt: tests isolate via OHLCV_CACHE_KEY_PREFIX (#319/#323). A shared
-# REDIS_KEY_PREFIX would be cleaner; not renamed here to avoid an ohlcv_cache sweep.
-_DEFAULT_KEY_PREFIX = "aria:"
-_ENV_KEY_PREFIX = "OHLCV_CACHE_KEY_PREFIX"
-
 
 def _key_prefix() -> str:
-    raw = (os.environ.get(_ENV_KEY_PREFIX) or "").strip()
-    if raw:
-        return raw
-    # Pytest must never fall back to aria: if a test cleared the env (#323).
-    if (os.environ.get("PYTEST_RUNNING") or "").strip():
-        suf = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
-        suffix = "".join(
-            ch for ch in suf if (ch.isalnum() and ord(ch) < 128) or ch == "_"
-        ) or "default"
-        return f"pytest:{suffix}:"
-    return _DEFAULT_KEY_PREFIX
+    return redis_key_prefix()
 
 
 def _redis_key() -> str:
