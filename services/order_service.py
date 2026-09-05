@@ -17,6 +17,12 @@ from core.models import (
     stored_status,
 )
 from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+from core.time_utils import (
+    format_operator_time,
+    ledger_datetime_utc,
+    process_local_tz,
+    utc_now,
+)
 from data_manager import (
     get_config,
     load_orders,
@@ -123,10 +129,17 @@ def _orders_header_label(scope: str | None = None) -> str:
 
 
 def _now() -> str:
+    # Writer unchanged (#320): naive process-local wall clock.
     return datetime.now().isoformat()
 
 
 def _parse_ts(value: str):
+    """Parse a ledger stamp to naive *display* clock (calendar windows).
+
+    Naive values are process-local (``_now()`` / ``datetime.now()``), then
+    converted to the operator/display zone. Duration logic must not use
+    this — see ``ledger_datetime_utc``.
+    """
     if not value:
         return None
     try:
@@ -141,7 +154,7 @@ def _parse_ts(value: str):
 
 def _process_local_tz():
     """Timezone of naive datetime.now() stamps (UTC on Railway, local on Mac)."""
-    return datetime.now().astimezone().tzinfo
+    return process_local_tz()
 
 
 def _as_display_naive(dt: datetime) -> datetime:
@@ -150,6 +163,8 @@ def _as_display_naive(dt: datetime) -> datetime:
     Naive ledger timestamps come from ``datetime.now()`` (process-local wall
     clock — typically UTC on Railway). They are NOT already Europe/Berlin;
     attach process-local tzinfo first, then convert to display_tz.
+    Telegram rendering (``_format_ts_short``) goes through
+    ``format_operator_time``, which applies the same rule.
     """
     try:
         from core.time_utils import display_tz
@@ -205,12 +220,21 @@ def calendar_month_bounds(now: datetime | None = None) -> tuple[datetime, dateti
     return start, end
 
 
-def order_event_ts(order: dict) -> datetime | None:
-    """Prefer fill time for executed trades, else created/updated."""
+def _order_event_raw(order: dict) -> str | None:
     ts = order.get("timestamps") or {}
     if is_executed_status(order.get("status")):
-        return _parse_ts(ts.get("filled") or ts.get("created") or ts.get("updated"))
-    return _parse_ts(ts.get("created") or ts.get("updated") or ts.get("filled"))
+        return ts.get("filled") or ts.get("created") or ts.get("updated")
+    return ts.get("created") or ts.get("updated") or ts.get("filled")
+
+
+def order_event_ts(order: dict) -> datetime | None:
+    """Prefer fill time for executed trades, else created/updated (display naive)."""
+    return _parse_ts(_order_event_raw(order) or "")
+
+
+def order_event_ts_utc(order: dict) -> datetime | None:
+    """Same stamp as ``order_event_ts``, interpreted as aware UTC for durations."""
+    return ledger_datetime_utc(_order_event_raw(order))
 
 
 def order_in_window(order: dict, start: datetime, end: datetime) -> bool:
@@ -221,10 +245,7 @@ def order_in_window(order: dict, start: datetime, end: datetime) -> bool:
 
 
 def _format_ts_short(value: str) -> str:
-    dt = _parse_ts(value)
-    if not dt:
-        return ""
-    return dt.strftime("%d.%m.%Y %H:%M")
+    return format_operator_time(value, "%d.%m.%Y %H:%M")
 
 
 def _trade_date_label(side: str) -> str:
@@ -503,13 +524,13 @@ class OrderService:
 
     def expire_stale_pending(self) -> int:
         data = self._load()
-        cutoff = datetime.now() - timedelta(minutes=PENDING_TTL_MINUTES)
+        cutoff = utc_now() - timedelta(minutes=PENDING_TTL_MINUTES)
         count = 0
         touched: list[dict] = []
         for o in data.get("orders", []):
             if o.get("status") != "pending_confirmation":
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(o.get("timestamps", {}).get("created"))
             if ts and ts < cutoff:
                 o["status"] = "expired"
                 o["timestamps"]["updated"] = _now()
@@ -542,14 +563,14 @@ class OrderService:
     def list_recent_rejected(self, *, hours: float = 24, limit: int = 5) -> list:
         """Recent rejected orders (legacy helper; prefer list_blocked_orders)."""
         data = self._load()
-        cutoff = _display_now_naive() - timedelta(hours=hours)
+        cutoff = utc_now() - timedelta(hours=hours)
         rejected = []
         for order in reversed(data.get("orders", [])):
             if order.get("ledger_scope") != self.scope:
                 continue
             if OrderStatus.try_legacy(order.get("status")) is not OrderStatus.REJECTED:
                 continue
-            ts = order_event_ts(order)
+            ts = order_event_ts_utc(order)
             if not ts or ts < cutoff:
                 continue
             rejected.append(order)
@@ -620,10 +641,10 @@ class OrderService:
         if status_filter:
             orders = [o for o in orders if o.get("status") in status_filter]
         if hours is not None:
-            cutoff = _display_now_naive() - timedelta(hours=hours)
+            cutoff = utc_now() - timedelta(hours=hours)
             orders = [
                 o for o in orders
-                if (order_event_ts(o) or datetime.min) >= cutoff
+                if (ts := order_event_ts_utc(o)) is not None and ts >= cutoff
             ]
         if since is not None or until is not None:
             start = since or datetime.min
@@ -1018,7 +1039,7 @@ class OrderService:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = utc_now() - timedelta(hours=24)
         counts = {
             "filled": 0,
             "rejected": 0,
@@ -1031,7 +1052,7 @@ class OrderService:
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(o.get("timestamps", {}).get("created"))
             if not ts or ts < cutoff:
                 continue
             st = o.get("status", "")
@@ -1043,14 +1064,16 @@ class OrderService:
         """Filled buy/sell counts for the classic order book view."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = utc_now() - timedelta(hours=24)
         counts = {"filled": 0, "buys": 0, "sells": 0, "shorts": 0, "covers": 0}
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
             if not is_executed_status(o.get("status")):
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("filled") or o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(
+                o.get("timestamps", {}).get("filled") or o.get("timestamps", {}).get("created")
+            )
             if not ts or ts < cutoff:
                 continue
             counts["filled"] += 1
