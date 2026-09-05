@@ -735,6 +735,19 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
+    # #325: importing aria_bot registers atexit(_flush_positions_on_exit). At
+    # interpreter exit no fixture is active any more (DEMO_MODE unset -> scope
+    # "paper"), so that hook wrote data/positions.paper.json and positions.json
+    # after every run. Unregister it before the process exits.
+    try:
+        import atexit
+        import sys as _sys
+
+        _aria = _sys.modules.get("aria_bot")
+        if _aria is not None and hasattr(_aria, "_flush_positions_on_exit"):
+            atexit.unregister(_aria._flush_positions_on_exit)
+    except Exception:
+        pass
     try:
         prefix = _pytest_redis_key_prefix()
         _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
