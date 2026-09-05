@@ -85,6 +85,8 @@ def pytest_configure(config):
     force_local_test_mongo(dev=False)
     os.environ["MONGODB_DB"] = resolve_test_db_name()
     close_client()
+    # xdist workers may skip pytest_collection_finish; honor UNIT_TEST_PROGRESS here.
+    _PROGRESS["enabled"] = _progress_enabled(config)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
 
