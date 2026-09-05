@@ -28,10 +28,12 @@ class CachedOhlcvBars:
     bars: list
     exchange: str
     updated_at: float
+    fetched_at: float | None = None
 
     @property
     def age_sec(self) -> float:
-        return max(0.0, time.time() - self.updated_at)
+        stamp = self.fetched_at if self.fetched_at is not None else self.updated_at
+        return max(0.0, time.time() - stamp)
 
 
 def _ohlcv_key(key_prefix: str, symbol: str, timeframe: str, limit: int) -> str:
@@ -78,6 +80,8 @@ class OhlcvCache:
         return (symbol, timeframe, int(limit))
 
     def _is_fresh(self, entry: CachedOhlcvBars, timeframe: str) -> bool:
+        if entry.fetched_at is None:
+            return False
         return entry.age_sec <= ttl_for_timeframe(timeframe, self.config_raw)
 
     def _serve_from_larger_enabled(self) -> bool:
@@ -98,6 +102,7 @@ class OhlcvCache:
             bars=bars,
             exchange=entry.exchange,
             updated_at=entry.updated_at,
+            fetched_at=entry.fetched_at,
         )
 
     def _load_redis_entry(
@@ -111,13 +116,16 @@ class OhlcvCache:
             if not raw:
                 return None
             data = json.loads(raw)
+            fetched_raw = data.get("fetched_at")
+            fetched_at = float(fetched_raw) if fetched_raw is not None else None
             entry = CachedOhlcvBars(
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=int(data.get("limit") or limit),
                 bars=data.get("bars") or [],
                 exchange=str(data.get("exchange") or "redis"),
-                updated_at=float(data.get("updated_at") or 0),
+                updated_at=float(data.get("updated_at") or fetched_at or 0),
+                fetched_at=fetched_at,
             )
             if entry.bars and self._is_fresh(entry, timeframe):
                 return entry
@@ -199,6 +207,7 @@ class OhlcvCache:
             bars=bars,
             exchange=exchange,
             updated_at=now,
+            fetched_at=now,
         )
         key = self._cache_key(symbol, timeframe, limit)
         with self._lock:
@@ -215,6 +224,7 @@ class OhlcvCache:
             "bars": bars,
             "exchange": exchange,
             "updated_at": now,
+            "fetched_at": now,
         }
         try:
             client.setex(
