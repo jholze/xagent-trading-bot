@@ -4,17 +4,12 @@ name: Unit tests
 
 on:
   pull_request:
-  push:
-    branches:
-      - "rebuild/**"
-      - "chore/**"
-      - "fix/**"
-      - "feat/**"
-      - "perf/**"
 
 jobs:
   unit:
     runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Berlin  # operator display tests assume the operator's timezone; runner default is UTC
     timeout-minutes: 25
     services:
       mongo:
