@@ -1222,12 +1222,15 @@ class RiskManager:
         return float(self._initial_capital())
 
     def _market_bias_for_cash(self) -> dict:
-        """Fusion/global bias for cash policy; fail-open to neutral."""
-        try:
-            from services.market_policy_fusion import get_global_market_bias
+        """Fusion/global bias for cash policy; fail-open to neutral unless deny."""
+        from services.market_policy_fusion import get_global_market_bias
 
+        try:
             return dict(get_global_market_bias(self.config.raw) or {})
-        except Exception:
+        except Exception as e:
+            dec = self._guard_failed("market_bias_for_cash", e, None)
+            if dec is not None:
+                return {"size_mult": 0.0, "block_buys": True, "regime": None}
             return {"size_mult": 1.0, "block_buys": False, "regime": None}
 
     def _process_uptime_sec(self) -> float | None:
@@ -1438,6 +1441,18 @@ class RiskManager:
             return 0.0
         return max(0.0, (peak - equity) / peak * 100.0)
 
+    def _most_restrictive_coin_size_bias(self) -> float:
+        """Min of the configured size-bias range; 0.5 if not derivable."""
+        try:
+            raw = self.config.raw if hasattr(self.config, "raw") else {}
+            gl = ((raw or {}).get("memory") or {}).get("gross_loss") or {}
+            cap = gl.get("size_bias_cap")
+            if cap is not None:
+                return float(cap)
+        except Exception:
+            pass
+        return 0.5
+
     def _dynamic_size(
         self,
         base_usdt: float,
@@ -1472,9 +1487,9 @@ class RiskManager:
         global_mult = 1.0
         global_regime = None
         global_source = None
-        try:
-            from services.market_policy_fusion import get_global_market_bias
+        from services.market_policy_fusion import get_global_market_bias
 
+        try:
             bias = get_global_market_bias(
                 self.config.raw if hasattr(self.config, "raw") else None
             )
@@ -1489,16 +1504,19 @@ class RiskManager:
                         note_size_cut(mult=global_mult, regime=global_regime)
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            dec = self._guard_failed("global_market_bias", e, order)
+            if dec is not None:
+                global_mult = 0.0
+                global_regime = "UNKNOWN"
 
         coin_bias = 1.0
         coin_entry = "neutral"
         coin_rationale = ""
         social_summary = ""
-        try:
-            from intelligence.memory.cache import get_coin_profile, get_size_bias
+        from intelligence.memory.cache import get_coin_profile, get_size_bias
 
+        try:
             coin_bias = float(
                 get_size_bias(
                     order.symbol,
@@ -1514,8 +1532,12 @@ class RiskManager:
                 coin_rationale = (prof.rationale or "")[:120]
                 feats = prof.features or {}
                 social_summary = str((feats.get("social_summary") or ""))[:80]
-        except Exception:
-            coin_bias = 1.0
+        except Exception as e:
+            dec = self._guard_failed("coin_memory_size_bias", e, order)
+            if dec is not None:
+                coin_bias = self._most_restrictive_coin_size_bias()
+            else:
+                coin_bias = 1.0
             social_summary = ""
 
         calendar_mult = 1.0
@@ -1677,8 +1699,10 @@ class RiskManager:
                 float(order.price or 0),
                 None,
             )
-        except Exception:
-            fraction = 1.0
+        except Exception as e:
+            # Never full-sell on a sizing error — skip the partial instead.
+            self._guard_failed("sell_fraction", e, order)
+            fraction = 0.0
         amount = held * float(fraction or 0)
         if amount <= 0:
             return order
@@ -2027,7 +2051,10 @@ class RiskManager:
 
         try:
             last_ts = datetime.fromisoformat(str(last_at).replace("Z", ""))
-        except Exception:
+        except Exception as e:
+            dec = self._guard_failed("trade_cooldown", e, order)
+            if dec is not None:
+                return True, "cooldown_timestamp_unparsable"
             return False, ""
 
         pos_amount = float(pos.get("amount", 0) or 0)

@@ -105,6 +105,11 @@ def size_boost_for_regime(
         if is_dca and not cfg.get("apply_to_dca", True):
             return 1.0
 
+        # Explicit UNKNOWN (oracle fail-closed) is not a tradable regime — no default boost.
+        # Missing/None still maps via _normalize_regime to size_boost_default (old behaviour).
+        if str(regime or "").strip().upper() == "UNKNOWN":
+            return 1.0
+
         reg = _normalize_regime(regime)
         key = {
             "RISK_ON": "size_boost_risk_on",
