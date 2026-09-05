@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Optional
 
 
@@ -61,6 +62,94 @@ class SignalAnalysis:
     allocation: Optional[dict] = None
 
 
+class OrderStatus(str, Enum):
+    """Ledger order lifecycle. Values reuse legacy strings where they exist
+    so the live Mongo ledger needs no data migration:
+
+    * ``ACTIVE = "executing"``
+    * ``EXECUTED = "filled"``
+    * ``REJECTED = "rejected"``
+
+    New values: ``queued``, ``partially_filled``, ``canceled``.
+
+    ``pending_confirmation`` is a pre-submission Telegram confirm state
+    **outside this enum** — do not pass it to ``from_legacy``. Ledger
+    ``expired`` (pending TTL) is likewise housekeeping, not an exchange
+    state. Legacy ``failed`` maps to ``REJECTED`` on read; ``cancelled``
+    (British) maps to ``CANCELED``.
+    """
+
+    QUEUED = "queued"
+    ACTIVE = "executing"
+    PARTIALLY_FILLED = "partially_filled"
+    EXECUTED = "filled"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+
+    @classmethod
+    def from_legacy(cls, value: object) -> "OrderStatus":
+        """Map a stored ledger string (or Enum) to ``OrderStatus``.
+
+        This is the only allowed place that mentions the legacy tokens
+        ``filled`` / ``executing`` / ``failed`` as input.
+        """
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            raise ValueError("OrderStatus.from_legacy(None)")
+        token = str(getattr(value, "value", value)).strip().lower()
+        mapped = _LEGACY_STATUS.get(token)
+        if mapped is not None:
+            return mapped
+        raise ValueError(f"unknown order status {value!r}")
+
+    @classmethod
+    def try_legacy(cls, value: object) -> Optional["OrderStatus"]:
+        """``from_legacy`` that returns ``None`` for blank / outside-enum / unknown."""
+        if value is None:
+            return None
+        if isinstance(value, cls):
+            return value
+        token = str(getattr(value, "value", value)).strip().lower()
+        if not token or token in _OUTSIDE_ENUM:
+            return None
+        try:
+            return cls.from_legacy(value)
+        except ValueError:
+            return None
+
+
+# from_legacy input table — keep in this helper, not at comparison sites.
+_LEGACY_STATUS: dict[str, OrderStatus] = {
+    "queued": OrderStatus.QUEUED,
+    "executing": OrderStatus.ACTIVE,
+    "active": OrderStatus.ACTIVE,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "filled": OrderStatus.EXECUTED,
+    "executed": OrderStatus.EXECUTED,
+    "canceled": OrderStatus.CANCELED,
+    "cancelled": OrderStatus.CANCELED,
+    "rejected": OrderStatus.REJECTED,
+    "failed": OrderStatus.REJECTED,
+}
+_OUTSIDE_ENUM = frozenset({"pending_confirmation", "expired"})
+
+
+def stored_status(value: object) -> str:
+    """Canonical ledger string for an enum or already-stored token."""
+    if isinstance(value, OrderStatus):
+        return value.value
+    if value is None:
+        return ""
+    token = str(getattr(value, "value", value)).strip()
+    return token
+
+
+def is_executed_status(value: object) -> bool:
+    """True when a stored ledger status is EXECUTED (legacy ``filled``)."""
+    return OrderStatus.try_legacy(value) is OrderStatus.EXECUTED
+
+
 @dataclass
 class TradeResult:
     executed: bool
@@ -75,6 +164,12 @@ class TradeResult:
     exchange_order_id: str = ""
     fee: float = 0.0
     precision_unverified: bool = False
+    pending: bool = False
+    needs_reconcile: bool = False
+    fee_unknown: bool = False
+    order_status: OrderStatus | None = None
+    order_exist_in_exchange: bool = False
+    filled_qty: float = 0.0
 
 
 @dataclass
@@ -116,7 +211,7 @@ class TradeOrder:
     type: str
     symbol: str
     price: float
-    amount: float
+    qty: float = 0.0
     usdt_amount: float = 0.0
     signal: str = ""
     source: str = "auto"
@@ -130,6 +225,44 @@ class TradeOrder:
     # Allocator de-risking factor (0–1). Applied in RiskManager._dynamic_size.
     exposure_multiplier: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    filled_qty: float = 0.0
+    status: OrderStatus = OrderStatus.QUEUED
+    reduce_only: bool = False
+    client_order_id: str = ""
+    exchange_order_id: str = ""
+    order_exist_in_exchange: bool = False
+
+    def __post_init__(self) -> None:
+        if self.client_order_id and not self.idempotency_key:
+            self.idempotency_key = self.client_order_id
+        elif self.idempotency_key and not self.client_order_id:
+            self.client_order_id = self.idempotency_key
+
+    @property
+    def amount(self) -> float:
+        """Alias of ``qty`` for one release; new code uses ``qty`` / ``filled_qty``."""
+        return self.qty
+
+    @amount.setter
+    def amount(self, value: float) -> None:
+        self.qty = float(value)
+
+    @property
+    def remaining_qty(self) -> float:
+        return max(0.0, float(self.qty or 0) - float(self.filled_qty or 0))
+
+
+_TRADE_ORDER_INIT = TradeOrder.__init__
+
+
+def _trade_order_init(self, *args, amount=None, **kwargs):
+    """Accept legacy ``amount=`` as an alias of ``qty`` at construction."""
+    if amount is not None and "qty" not in kwargs and len(args) < 4:
+        kwargs["qty"] = amount
+    _TRADE_ORDER_INIT(self, *args, **kwargs)
+
+
+TradeOrder.__init__ = _trade_order_init  # type: ignore[method-assign]
 
 
 @dataclass
