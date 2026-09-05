@@ -56,6 +56,9 @@ _DEFAULTS: dict[str, Any] = {
 # Per-tenant-cycle cache so DE + TTP + WS eval share one resolve.
 _cycle: tuple["ClimaxDecision", dict] | None = None
 
+# One WARNING per stale-snapshot episode under fail_closed_guards=log (#323).
+_STALE_EPISODE = False
+
 
 @dataclass(frozen=True)
 class ClimaxDecision:
@@ -115,11 +118,39 @@ def climax_armed(features: dict, cfg: dict) -> tuple[bool, list[str]]:
     return (not why), why
 
 
+def reset_stale_episode_for_tests() -> None:
+    global _STALE_EPISODE
+    _STALE_EPISODE = False
+
+
+def _guards_log_mode(raw: dict | None) -> bool:
+    risk = raw.get("risk") if isinstance(raw, dict) else None
+    if not isinstance(risk, dict):
+        return True
+    return str(risk.get("fail_closed_guards") or "log").strip().lower() != "deny"
+
+
+def _note_stale_episode(stale: bool, *, warn: bool) -> None:
+    global _STALE_EPISODE
+    if not stale:
+        _STALE_EPISODE = False
+        return
+    if _STALE_EPISODE:
+        return
+    _STALE_EPISODE = True
+    if not warn:
+        return
+    from logger import log
+
+    log("oracle_climax: stale oracle snapshot discarded, overlay idle", "WARNING")
+
+
 def evaluate_climax_mode(
     *,
     oracle_snap: dict | None,
     fusion_regime: str | None,
     cfg: dict | None = None,
+    oracle_stale: bool = False,
 ) -> ClimaxDecision:
     cfg = {**_DEFAULTS, **(cfg or {})}
     feats = dict((oracle_snap or {}).get("features") or {})
@@ -127,6 +158,8 @@ def evaluate_climax_mode(
         return ClimaxDecision(MODE_IDLE, ("disabled",), feats)
     if _fusion_blocked(fusion_regime):
         return ClimaxDecision(MODE_IDLE, ("fusion_risk_off",), feats)
+    if oracle_stale:
+        return ClimaxDecision(MODE_IDLE, ("oracle_stale",), feats)
     ora = _oracle_state(oracle_snap)
     if ora == "WARMUP":
         return ClimaxDecision(MODE_IDLE, ("oracle_warmup",), feats)
@@ -262,28 +295,27 @@ def resolve_climax_decision(
         return ClimaxDecision(MODE_IDLE, ("disabled",), {})
     snap = None
     fusion = None
+    stale = False
     try:
         from services.market_oracle_store import get_latest_snapshot, snapshot_is_fresh
 
         snap = get_latest_snapshot()
-        deny = False
-        try:
-            from risk.risk_manager import _fail_closed_guards_mode
-
-            deny = _fail_closed_guards_mode(raw) == "deny"
-        except Exception:
-            deny = False
-        if snap is not None and not snapshot_is_fresh(snap) and deny:
+        # Freshness is a data invariant, not a fail-closed choice (#323).
+        if snap is not None and not snapshot_is_fresh(snap):
+            stale = True
             snap = None
     except Exception:
         snap = None
+    _note_stale_episode(stale, warn=_guards_log_mode(raw))
     try:
         from services.market_policy_fusion import get_global_market_bias
 
         fusion = (get_global_market_bias(raw) or {}).get("regime")
     except Exception:
         fusion = None
-    return evaluate_climax_mode(oracle_snap=snap, fusion_regime=fusion, cfg=cfg)
+    return evaluate_climax_mode(
+        oracle_snap=snap, fusion_regime=fusion, cfg=cfg, oracle_stale=stale
+    )
 
 
 def begin_cycle(config_raw: dict | None) -> ClimaxDecision:
