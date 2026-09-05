@@ -52,6 +52,16 @@ touch live trading. For any Grok-delegated change that lands in those areas:
 
 Lower-stakes areas (backtesting, data fetching, notifications, docs, tests, tooling) can be delegated more freely.
 
+### Tests are the spec
+
+7. **Existing test assertions are frozen.** A delegated change may add tests freely, but may change an existing
+   assertion only when the ticket explicitly names the behaviour that changes and why. A red test is *reported*
+   (which test, what it asserted, what it got) — never "fixed" to match new behaviour. `tests/unit/test_dca_stop_loss.py`
+   is the cautionary example: the DCA stop-loss grace period looked like a bug and is tested intended behaviour.
+8. Test diffs are reviewed with the same rigour as code diffs. A changed assertion is a changed contract.
+9. Do not run two test suites concurrently until the test-DB suffix from #298 has landed — both sessions share
+   `xagent_pytest`.
+
 ### How to delegate a task
 
 1. In Claude Code, describe the task normally — plan it out, confirm scope.
