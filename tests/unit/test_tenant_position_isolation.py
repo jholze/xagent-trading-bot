@@ -170,7 +170,6 @@ class TestTenantPositionIsolation(unittest.TestCase):
             self.assertEqual(data.get("positions") or {}, {})
 
     def test_flush_debounce_pins_tenant_at_schedule_time(self):
-        import time
         from strategies.positions import _ensure_store
 
         self._seed_default_open_lot()
@@ -190,9 +189,21 @@ class TestTenantPositionIsolation(unittest.TestCase):
             with patch("strategies.positions._FLUSH_DEBOUNCE_SEC", 0.02), patch(
                 "strategies.positions.save_positions_document", side_effect=_capture
             ):
-                flush_positions(force=False)
-                _activate(_resolve_store_key("demo", DEFAULT_TENANT))
-                time.sleep(0.05)
+                import strategies.positions as pos_mod
+
+                orig_now = pos_mod._now
+                t = [1_000.0]
+                pos_mod._now = lambda: t[0]
+                try:
+                    flush_positions(force=False)
+                    _activate(_resolve_store_key("demo", DEFAULT_TENANT))
+                    t[0] += 0.05
+                    timer = pos_mod._flush_timer
+                    if timer is not None:
+                        timer.cancel()
+                        timer.function()
+                finally:
+                    pos_mod._now = orig_now
 
         henry_saves = [s for s in saved if s[0] == "henry"]
         self.assertEqual(len(henry_saves), 1)

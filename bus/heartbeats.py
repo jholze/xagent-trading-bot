@@ -10,6 +10,7 @@ from bus.redis_client import get_redis
 
 _lock = threading.Lock()
 _local: dict[str, dict] = {}
+_now = time.time
 
 
 class HeartbeatRegistry:
@@ -17,7 +18,7 @@ class HeartbeatRegistry:
         now = datetime.now(timezone.utc).isoformat()
         payload = {"worker": worker, "at": now, "meta": meta or {}}
         with _lock:
-            _local[worker] = {**payload, "expires_at": time.time() + ttl_sec}
+            _local[worker] = {**payload, "expires_at": _now() + ttl_sec}
         client = get_redis(key_prefix=key_prefix)
         if client:
             try:
@@ -31,7 +32,7 @@ class HeartbeatRegistry:
             _local.pop(worker, None)
 
     def stale_workers(self, *, ttl_sec: int = 120) -> list[str]:
-        cutoff = time.time()
+        cutoff = _now()
         with _lock:
             return [w for w, p in _local.items() if p.get("expires_at", 0) < cutoff]
 

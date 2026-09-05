@@ -24,6 +24,8 @@ _positions_lock = threading.RLock()
 _FLUSH_DEBOUNCE_SEC = 5.0
 _flush_timer: threading.Timer | None = None
 _flush_timer_lock = threading.RLock()
+_flush_deadline: float | None = None
+_now = time.time
 _position_stores: dict[tuple[str, str], dict] = {}
 _open_counts: dict[tuple[str, str], int] = {}
 _active_key: tuple[str, str] = (DEFAULT_TENANT, "paper")
@@ -458,11 +460,12 @@ def clear_positions_memory(tenant_id: str | None = None, scope: str | None = Non
 
 
 def _cancel_flush_timer() -> None:
-    global _flush_timer
+    global _flush_timer, _flush_deadline
     with _flush_timer_lock:
         if _flush_timer is not None:
             _flush_timer.cancel()
             _flush_timer = None
+        _flush_deadline = None
 
 
 def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
@@ -535,7 +538,7 @@ def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
     """Persist positions; debounced unless force=True (trade/shutdown)."""
-    global _flush_timer
+    global _flush_timer, _flush_deadline
     target = scope or _active_key[1]
     pinned_tenant = _active_key[0]
     if _flush_refused_unknown((pinned_tenant, target)):
@@ -546,11 +549,17 @@ def flush_positions(scope: str = None, *, force: bool = False) -> None:
         return
 
     def _delayed():
+        global _flush_deadline
+        if _flush_deadline is not None and _now() < _flush_deadline:
+            return
+        _flush_deadline = None
         _do_save_positions(target, tenant_id=pinned_tenant)
 
     with _flush_timer_lock:
         _cancel_flush_timer()
-        _flush_timer = threading.Timer(_FLUSH_DEBOUNCE_SEC, _delayed)
+        _flush_deadline = _now() + _FLUSH_DEBOUNCE_SEC
+        delay = max(0.0, _flush_deadline - _now())
+        _flush_timer = threading.Timer(delay, _delayed)
         _flush_timer.daemon = True
         _flush_timer.start()
 

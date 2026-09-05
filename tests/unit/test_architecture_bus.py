@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from bus import heartbeats as heartbeats_mod
 from bus.heartbeats import HeartbeatRegistry
 from bus.notifications import NotificationPublisher
 from bus.schemas import PRIORITY_CYCLE, PRIORITY_URGENT
@@ -49,19 +50,28 @@ class TestNotificationPublisher(unittest.TestCase):
 
 
 class TestHeartbeats(unittest.TestCase):
+    def setUp(self):
+        self._orig_now = heartbeats_mod._now
+        self._t = 1_000_000.0
+        heartbeats_mod._now = lambda: self._t
+
+    def tearDown(self):
+        heartbeats_mod._now = self._orig_now
+        HeartbeatRegistry().clear()
+
     def test_beat_and_stale(self):
         reg = HeartbeatRegistry()
         reg.clear()
         reg.beat("test_worker", ttl_sec=1)
         self.assertIn("test_worker", reg.all_workers())
-        time.sleep(1.2)
+        self._t += 1.2
         self.assertIn("test_worker", reg.stale_workers(ttl_sec=1))
 
     def test_drop_removes_zombie(self):
         reg = HeartbeatRegistry()
         reg.clear()
         reg.beat("hermes", ttl_sec=1)
-        time.sleep(1.2)
+        self._t += 1.2
         self.assertIn("hermes", reg.stale_workers(ttl_sec=1))
         reg.drop("hermes")
         self.assertNotIn("hermes", reg.stale_workers(ttl_sec=1))
