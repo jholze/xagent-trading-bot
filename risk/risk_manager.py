@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 
 from core.config import BotConfig, get_bot_config
@@ -26,6 +27,12 @@ from strategies.positions import (
 
 
 _EQUITY_MTM_UNAVAILABLE_LOGGED = False
+
+# #304 slice 3: one orders-document load per evaluate() call. The scope lives
+# in a per-instance threading.local so concurrent evaluate() calls on a shared
+# RiskManager never see each other's snapshot. _EVAL_DOC_PENDING marks "load on
+# first use" so early rejects (cooldown, no amount, ...) cost no load at all.
+_EVAL_DOC_PENDING = object()
 
 
 def reset_risk_manager_globals_for_tests() -> None:
@@ -126,34 +133,55 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
-        decision = self._evaluate_impl(
-            order,
-            timeframe=timeframe,
-            source=source,
-            trust_score=trust_score,
-            confidence=confidence,
-            indicators=indicators,
-        )
-        # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
+        # One orders-document snapshot per evaluate() call, loaded lazily on the
+        # first counter read. Nested evaluate() (auto-short) must not reuse the
+        # outer snapshot — it starts pending again and the outer is restored.
+        scope = self._eval_scope()
+        previous = getattr(scope, "doc", None)
+        scope.doc = _EVAL_DOC_PENDING
         try:
-            if (
-                str(getattr(order, "type", "") or "").upper() == "BUY"
-                and not getattr(decision, "approved", True)
-            ):
-                from services.watchlist_quality.soak_log import log_risk_reject
+            decision = self._evaluate_impl(
+                order,
+                timeframe=timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
+            )
+            # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
+            try:
+                if (
+                    str(getattr(order, "type", "") or "").upper() == "BUY"
+                    and not getattr(decision, "approved", True)
+                ):
+                    from services.watchlist_quality.soak_log import log_risk_reject
 
-                raw = self.config.raw if hasattr(self.config, "raw") else None
-                log_risk_reject(
-                    symbol=getattr(order, "symbol", "") or "",
-                    side="BUY",
-                    source=str(source or ""),
-                    code=getattr(decision, "code", "") or "",
-                    message=getattr(decision, "message", "") or "",
-                    config=raw,
-                )
-        except Exception:
-            pass
-        return decision
+                    raw = self.config.raw if hasattr(self.config, "raw") else None
+                    log_risk_reject(
+                        symbol=getattr(order, "symbol", "") or "",
+                        side="BUY",
+                        source=str(source or ""),
+                        code=getattr(decision, "code", "") or "",
+                        message=getattr(decision, "message", "") or "",
+                        config=raw,
+                    )
+            except Exception:
+                pass
+            return decision
+        finally:
+            scope.doc = previous
+
+    def _eval_scope(self) -> threading.local:
+        tls = self.__dict__.get("_eval_tls")
+        if tls is None:
+            tls = threading.local()
+            self.__dict__["_eval_tls"] = tls
+        return tls
+
+    @property
+    def _eval_orders_doc(self):
+        """Scoped orders document of the running evaluate() on this thread (tests)."""
+        return getattr(self._eval_scope(), "doc", None)
 
     def _evaluate_impl(
         self,
@@ -2565,9 +2593,16 @@ class RiskManager:
         return ""
 
     def _load_orders_document(self) -> dict:
+        scope = self._eval_scope()
+        scoped = getattr(scope, "doc", None)
+        if scoped is not None and scoped is not _EVAL_DOC_PENDING:
+            return scoped
         from data_manager import load_orders, resolve_ledger_scope
 
-        return load_orders(resolve_ledger_scope(self.config.trading_mode)) or {}
+        doc = load_orders(resolve_ledger_scope(self.config.trading_mode)) or {}
+        if scoped is _EVAL_DOC_PENDING:
+            scope.doc = doc
+        return doc
 
     def _daily_trades_count(
         self,
