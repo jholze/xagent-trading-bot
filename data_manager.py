@@ -1618,7 +1618,8 @@ def _reject_demo_mongo_orders_downgrade(data: dict, scope: str, cfg: dict) -> bo
             )
             return True
     except Exception as e:
-        log(f"Demo orders downgrade guard failed: {e}", "WARNING")
+        log(f"Demo orders downgrade guard failed: {e}", "ERROR")
+        return True
     return False
 
 
