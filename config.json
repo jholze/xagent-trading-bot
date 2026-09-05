@@ -431,7 +431,7 @@
     },
     "slot_eviction": {
       "enabled": true,
-      "mode": "live",
+      "mode": "shadow",
       "min_entry_score": 4,
       "min_entry_score_shadow": 3,
       "min_victim_score": 0.15,
