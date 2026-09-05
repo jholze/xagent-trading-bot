@@ -781,6 +781,7 @@
       "summary_style": "compact",
       "social_digest_min_interval_sec": 1800
     },
+    "operator_timezone": "Europe/Berlin",
     "display_timezone": "Europe/Berlin",
     "telegram_startup_notify": true,
     "market_context_state_notify": true,
