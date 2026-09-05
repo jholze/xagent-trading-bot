@@ -156,20 +156,39 @@ def rebuild_positions_from_orders(
 
     from core.tenant_context import resolve_tenant_id, tenant_context
 
+    from storage.errors import LedgerUnavailable
+
     tid = resolve_tenant_id(tenant_id)
-    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
-    cache_doc = load_positions_document(scope, tenant_id=tid)
+    try:
+        orders_doc = load_orders(scope, tenant_id=tid)
+        order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
+        cache_doc = load_positions_document(scope, tenant_id=tid)
+    except LedgerUnavailable as e:
+        log(
+            f"prune_orphan_position_cache skipped (orders/positions load failed) "
+            f"tenant={tid} scope={scope}: {e}",
+            "WARNING",
+        )
+        raise
     from strategies.positions import prune_orphan_position_cache
 
-    cache_doc, orphans = prune_orphan_position_cache(order_snap, cache_doc)
-    if orphans:
-        from data_manager import save_positions_document
-
-        save_positions_document(cache_doc, scope, tenant_id=tid)
+    if not (orders_doc.get("orders") or []):
         log(
-            f"Pruned {len(orphans)} orphan position cache key(s) for tenant={tid} scope={scope}",
-            "INFO",
+            f"prune_orphan_position_cache skipped (orders empty) "
+            f"tenant={tid} scope={scope}",
+            "WARNING",
         )
+        orphans = []
+    else:
+        cache_doc, orphans = prune_orphan_position_cache(order_snap, cache_doc)
+        if orphans:
+            from data_manager import save_positions_document
+
+            save_positions_document(cache_doc, scope, tenant_id=tid)
+            log(
+                f"Pruned {len(orphans)} orphan position cache key(s) for tenant={tid} scope={scope}",
+                "INFO",
+            )
     snapshot = derive_positions_from_orders_and_cache(
         order_snap, cache_doc, tenant_id=tid
     )

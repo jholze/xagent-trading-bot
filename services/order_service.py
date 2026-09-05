@@ -16,6 +16,7 @@ from data_manager import (
     resolve_orders_file,
     save_orders,
 )
+from logger import log
 
 ORDERS_PER_PAGE = 5
 # Hard cap for full-list views (/orders, /orders_blocked, /orders_month) — no pager.
@@ -430,9 +431,9 @@ class OrderService:
             if store is None:
                 return
             store.upsert_order(record)
-        except Exception:
-            # Fail-open: legacy blob remains source of truth during migration.
-            pass
+        except Exception as e:
+            # Fail-open: v2 is still a shadow; legacy blob remains source of truth.
+            log(f"order ledger v2 dual-write failed: {e}", "WARNING")
 
     def _v2_day_key(self, now: datetime | None = None) -> str:
         """Display-calendar day key YYYY-MM-DD for v2 day queries."""
@@ -944,9 +945,15 @@ class OrderService:
             "unknown_side": 0,
         }
         try:
-            from storage.order_ledger_v2 import get_order_ledger_v2
+            from storage.order_ledger_v2 import (
+                get_order_ledger_v2,
+                order_ledger_v2_is_degraded,
+            )
 
-            store = get_order_ledger_v2()
+            if order_ledger_v2_is_degraded():
+                store = None
+            else:
+                store = get_order_ledger_v2()
             if store is not None:
                 tid = resolve_tenant_id()
                 filled = store.query_day(

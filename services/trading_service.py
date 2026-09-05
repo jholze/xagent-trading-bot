@@ -6,6 +6,9 @@ from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
+from storage.errors import LedgerUnavailable
+
+_ledger_unavailable_notified: set[tuple[str, str]] = set()
 
 
 class TradingService:
@@ -148,18 +151,47 @@ class TradingService:
         from bus.locks import ledger_lock
 
         with ledger_lock(scope, cfg=self.config):
-            return self._execute_order_locked(
-                order,
-                timeframe,
-                source=source,
-                trust_score=trust_score,
-                confidence=confidence,
-                indicators=indicators,
-                order_id=order_id,
-                request_extra=request_extra,
-                idempotency_key=idem,
-                _lock_held=True,
+            try:
+                return self._execute_order_locked(
+                    order,
+                    timeframe,
+                    source=source,
+                    trust_score=trust_score,
+                    confidence=confidence,
+                    indicators=indicators,
+                    order_id=order_id,
+                    request_extra=request_extra,
+                    idempotency_key=idem,
+                    _lock_held=True,
+                )
+            except LedgerUnavailable as exc:
+                return self._deny_ledger_unavailable(order, exc)
+
+    def _deny_ledger_unavailable(self, order: TradeOrder, exc: LedgerUnavailable) -> TradeResult:
+        """Fail closed for every order type; notify the operator once per episode."""
+        from core.operator_notify import notify_operator
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        decision = RiskDecision(
+            approved=False,
+            code="ledger_unavailable",
+            message=f"Ledger unavailable: {exc}",
+            order=order,
+        )
+        key = (resolve_tenant_id(), resolve_tenant_scope())
+        if key not in _ledger_unavailable_notified:
+            _ledger_unavailable_notified.add(key)
+            log(f"Ledger unavailable — denying {order.type} {order.symbol}: {exc}", "ERROR")
+            notify_operator(
+                f"Ledger unavailable — {order.type} {order.symbol} denied "
+                f"({key[0]}/{key[1]}): {exc}"
             )
+        result = TradeResult(
+            False, order.type, order.symbol, message=decision.message
+        )
+        result.code = decision.code
+        result.approved = False
+        return result
 
     def _result_from_ledger(self, record: dict) -> TradeResult:
         status = record.get("status", "")
@@ -203,54 +235,57 @@ class TradingService:
         ledger_id = order_id or order.order_id or None
         idem = idempotency_key or order.idempotency_key or ""
 
-        if idem and not ledger_id:
-            prior = ledger.find_by_idempotency_key(idem)
-            if prior and prior.get("status") in ("filled", "rejected", "executing", "failed"):
-                return self._result_from_ledger(prior)
+        try:
+            if idem and not ledger_id:
+                prior = ledger.find_by_idempotency_key(idem)
+                if prior and prior.get("status") in ("filled", "rejected", "executing", "failed"):
+                    return self._result_from_ledger(prior)
 
-        ok, reason = self.can_execute(source=source, trust_score=trust_score)
-        if not ok:
-            log(f"Trade blocked: {reason}", "WARNING")
-            if not ledger_id:
-                ledger.record_rejected(
-                    order,
-                    RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
-                    timeframe=timeframe,
-                    request_extra=request_extra,
-                )
-            return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
+            ok, reason = self.can_execute(source=source, trust_score=trust_score)
+            if not ok:
+                log(f"Trade blocked: {reason}", "WARNING")
+                if not ledger_id:
+                    ledger.record_rejected(
+                        order,
+                        RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
+                        timeframe=timeframe,
+                        request_extra=request_extra,
+                    )
+                return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
 
-        decision = self.risk.evaluate(
-            order,
-            timeframe,
-            source=source,
-            trust_score=trust_score,
-            confidence=confidence,
-            indicators=indicators,
-        )
-        if not decision.approved:
-            log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
-            if not ledger_id:
-                ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
-            else:
-                ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
-            return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
-
-        approved_order = decision.order
-        if ledger_id:
-            ledger.update_status(ledger_id, "executing", risk=ledger._risk_snapshot(decision))
-            approved_order.order_id = ledger_id
-        else:
-            created = ledger.create_from_request(
-                approved_order,
-                timeframe=timeframe,
-                status="executing",
-                risk=decision,
-                request_extra=request_extra,
-                idempotency_key=idem,
+            decision = self.risk.evaluate(
+                order,
+                timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
             )
-            ledger_id = created["id"]
-            approved_order.order_id = ledger_id
+            if not decision.approved:
+                log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
+                if not ledger_id:
+                    ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
+                else:
+                    ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
+                return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
+
+            approved_order = decision.order
+            if ledger_id:
+                ledger.update_status(ledger_id, "executing", risk=ledger._risk_snapshot(decision))
+                approved_order.order_id = ledger_id
+            else:
+                created = ledger.create_from_request(
+                    approved_order,
+                    timeframe=timeframe,
+                    status="executing",
+                    risk=decision,
+                    request_extra=request_extra,
+                    idempotency_key=idem,
+                )
+                ledger_id = created["id"]
+                approved_order.order_id = ledger_id
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
 
         result = self.adapter.execute(approved_order, timeframe)
         result.order_id = ledger_id

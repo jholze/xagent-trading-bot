@@ -582,6 +582,17 @@ def _run_tenant_price_cycle(
 ):
     bot_config = get_bot_config()
     bot_config.refresh()
+    # Guardrail (#318): unknown positions ledger → skip trading this tenant this cycle.
+    # Telegram read commands are handled outside this function and stay available.
+    from strategies.positions import is_positions_state_unknown
+    if is_positions_state_unknown():
+        from core.operator_notify import notify_operator
+        tid = resolve_tenant_id()
+        log(f"[{tid}] skip price cycle: positions state unknown", "ERROR")
+        notify_operator(
+            f"Positions ledger unknown for tenant <code>{tid}</code> — trading skipped this cycle."
+        )
+        return
     try:
         from services.architecture_runtime import ensure_started
         ensure_started()
