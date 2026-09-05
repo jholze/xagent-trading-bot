@@ -166,6 +166,7 @@ class EvictionPlan:
     candidates: tuple[dict, ...] = field(default_factory=tuple)
     ab: dict[str, Any] = field(default_factory=dict)
     victim_price: float = 0.0
+    sell_executed: bool = False  # set by runtime after a live eviction sell filled (#300 audit)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

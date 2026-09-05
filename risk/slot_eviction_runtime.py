@@ -5,6 +5,7 @@ Called from RiskManager max_open path. Missing data must not look like good data
 
 from __future__ import annotations
 
+from dataclasses import replace
 import threading
 import time
 from datetime import datetime, timezone
@@ -668,6 +669,7 @@ def try_slot_eviction_on_max_open(
             pass
         exec_res = execute_eviction_sell(plan, config=config)
         if exec_res.get("ok"):
+            plan = replace(plan, sell_executed=True)  # structured signal for RiskManager (#300 audit)
             suffix = (
                 f" · eviction LIVE {plan.victim_symbol}→{plan.entry_symbol} "
                 f"({plan.action})"

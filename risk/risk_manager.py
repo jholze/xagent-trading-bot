@@ -569,13 +569,9 @@ class RiskManager:
                             message=msg or "slot eviction aborted: no positive price",
                             code="slot_eviction_no_price",
                         )
-                    sell_executed = bool(
-                        plan is not None
-                        and getattr(plan, "ok", False)
-                        and str(getattr(plan, "mode", "") or "") == "live"
-                        and "eviction LIVE" in (suffix or "")
-                        and "sell_failed" not in (suffix or "")
-                    )
+                    # Structured flag set by the runtime after the eviction sell filled —
+                    # never infer execution from the human-readable suffix (#300 audit).
+                    sell_executed = bool(getattr(plan, "sell_executed", False))
                     if sell_executed:
                         open_slots = count_open_full_slots(self.config.raw)
                         if open_slots < cap.max_open_eff:
