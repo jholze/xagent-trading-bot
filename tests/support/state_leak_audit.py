@@ -27,6 +27,8 @@ import os
 import sys
 from typing import Any
 
+import pytest
+
 # (module, attribute) — only snapshotted when the module is already imported.
 _GLOBALS: tuple[tuple[str, str], ...] = (
     ("services.entry_sensor_loop", "_last_poll_at"),
