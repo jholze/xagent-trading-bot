@@ -1802,6 +1802,18 @@ class DecisionEngine:
         if getattr(technical, "allocation", None):
             analysis.allocation = technical.allocation
 
+        # Thread allocator de-risking onto the analysis so the TradeOrder can
+        # carry it into RiskManager._dynamic_size (write-only until #302).
+        em = (market.strategy_params or {}).get("exposure_multiplier")
+        if em is None:
+            alloc = getattr(analysis, "allocation", None)
+            if isinstance(alloc, dict):
+                em = alloc.get("exposure_multiplier")
+        try:
+            analysis.exposure_multiplier = float(em) if em is not None else None
+        except (TypeError, ValueError):
+            analysis.exposure_multiplier = None
+
         return analysis
 
     def to_recommendation(self, x_signal, analysis: SignalAnalysis, account: str, tweet_text: str, price: float) -> dict:

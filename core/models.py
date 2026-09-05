@@ -126,6 +126,8 @@ class TradeOrder:
     idempotency_key: str = ""
     entry_15m_vol_ratio: float | None = None
     leverage: float | None = None
+    # Allocator de-risking factor (0–1). Applied in RiskManager._dynamic_size.
+    exposure_multiplier: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

@@ -24,6 +24,7 @@ def handle(text: str) -> bool:
 <b>Portfolio</b>
 Equity: <b>${status['portfolio_equity']:.0f}</b> | Balance: ${status['virtual_balance']:.0f}
 Drawdown: <b>{status['drawdown_pct']:.1f}%</b> | Throttle: {throttle}
+Daily loss halt: {status.get('risk_halt_until') or 'off'}
 
 <b>Limits</b>
 Open positions: {full_slots}/{status['max_open_positions']} full slots
