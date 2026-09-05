@@ -82,8 +82,6 @@ class TestVirtualTrading(unittest.TestCase):
         cls.symbol = "XRVM/USDT"
         cls.tf = "4h"
         cls.test_price = 0.5
-        cls._trade_history_path = None
-        cls._trade_history_original = None
         cls._log_dir_backup = logger_mod.LOG_DIR
         cls._log_file_backup = logger_mod.LOG_FILE
         cls._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
@@ -110,13 +108,6 @@ class TestVirtualTrading(unittest.TestCase):
         cls._ticker_p.stop()
         cls._gate_p.stop()
         cls._ohlcv_p.stop()
-        if cls._trade_history_original is not None:
-            try:
-                from data_manager import save_trade_history
-
-                save_trade_history(cls._trade_history_original)
-            except Exception:
-                pass
 
     def setUp(self):
         import json
@@ -126,11 +117,13 @@ class TestVirtualTrading(unittest.TestCase):
 
         logger_mod.LOG_DIR = self._log_tmp
         logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
-        if type(self)._trade_history_path is None:
-            scope = resolve_ledger_scope()
-            history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
-            type(self)._trade_history_path = get_data_file(history_base)
-            type(self)._trade_history_original = load_trade_history()
+        # Trade history backup/restore stays per-test: it must run inside the
+        # per-test fixtures (DEMO_MODE=1), otherwise a class-level restore would
+        # resolve to the live ledger scope (#324 review).
+        scope = resolve_ledger_scope()
+        history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
+        self._trade_history_path = get_data_file(history_base)
+        self._trade_history_backup = load_trade_history()
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
@@ -1738,6 +1731,11 @@ class TestVirtualTrading(unittest.TestCase):
         positions.clear()
         positions.update(self._positions_backup)
         save_positions()
+        try:
+            from data_manager import save_trade_history
+            save_trade_history(self._trade_history_backup)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
