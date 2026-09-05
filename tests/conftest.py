@@ -337,7 +337,16 @@ def isolate_test_mongo(monkeypatch):
     monkeypatch.setenv("MONGODB_DB", test_db)
     monkeypatch.setenv("MONGODB_TEST_DB", test_db)
     close_client()
+    # #328 review: purge only after tests that actually touched Mongo. The
+    # session start drops the worker DB and every touching test purges on
+    # teardown, so the DB is already empty when a test begins. A test that
+    # never constructs a client (the vast majority) costs nothing here.
+    from storage import mongo_client as _mc
+
+    gen0 = _mc._client_generation
     yield
+    if _mc._client is not None or _mc._client_generation != gen0:
+        _purge_pytest_mongo()
     close_client()
 
 
@@ -382,11 +391,107 @@ def _scan_del_redis_keys(*patterns: str) -> None:
         return
 
 
+def _purge_pytest_mongo() -> None:
+    """Drop collections in this worker's xagent_pytest* DB (not operator DBs)."""
+    try:
+        from storage.mongo_client import get_client, resolve_test_db_name
+
+        name = (
+            os.environ.get("MONGODB_TEST_DB")
+            or os.environ.get("MONGODB_DB")
+            or resolve_test_db_name()
+        )
+        if not str(name).startswith("xagent_pytest"):
+            return
+        db = get_client()[name]
+        for coll in db.list_collection_names():
+            db.drop_collection(coll)
+    except Exception:
+        return
+
+
+def _reset_leaky_module_globals() -> None:
+    """Process-wide caches that isolation fixtures did not already cover (#328)."""
+    try:
+        from storage.order_ledger_v2 import reset_order_ledger_v2_for_tests
+
+        reset_order_ledger_v2_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.entry_sensor_loop import reset_poll_state_for_tests
+
+        reset_poll_state_for_tests()
+    except Exception:
+        pass
+    try:
+        from strategies.entry_sensor_15m import clear_pending_for_tests
+
+        clear_pending_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.market_policy_fusion import reset_degraded_episode_for_tests
+
+        reset_degraded_episode_for_tests()
+    except Exception:
+        pass
+    try:
+        from risk.slot_eviction_runtime import reset_rate_limits_for_tests
+
+        reset_rate_limits_for_tests()
+    except Exception:
+        pass
+    try:
+        from risk.risk_manager import reset_risk_manager_globals_for_tests
+
+        reset_risk_manager_globals_for_tests()
+    except Exception:
+        pass
+    try:
+        from intelligence.memory.cache import invalidate_cache
+
+        invalidate_cache()
+    except Exception:
+        pass
+    try:
+        from notifications.daily_portfolio import reset_nav_start_cache_for_tests
+
+        reset_nav_start_cache_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.gate_balance import reset_balance_cache_for_tests
+
+        reset_balance_cache_for_tests()
+    except Exception:
+        pass
+    try:
+        from data.cmc_market_cap import reset_market_cap_cache_for_tests
+
+        reset_market_cap_cache_for_tests()
+    except Exception:
+        pass
+    try:
+        from price_fetcher import clear_price_cache
+
+        clear_price_cache()
+    except Exception:
+        pass
+    try:
+        from strategies.watch_15m_state import reset_cache_for_tests
+
+        reset_cache_for_tests()
+    except Exception:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def isolate_ohlcv_cache_key_prefix(monkeypatch):
-    """Keep pytest OHLCV Redis keys off the production aria: prefix (#319).
+    """Keep pytest Redis keys off the production aria: prefix (#319/#328).
 
-    Also SCAN+DEL `{prefix}market_oracle:*` and `{prefix}santiment:*` (#323).
+    SCAN+DEL the whole worker prefix (OHLCV, oracle, santiment, and anything
+    else tests wrote under ``pytest:<suffix>[_gwN]:``).
     """
     prefix = _pytest_redis_key_prefix()
     monkeypatch.setenv("REDIS_KEY_PREFIX", prefix)
@@ -399,7 +504,8 @@ def isolate_ohlcv_cache_key_prefix(monkeypatch):
         reset_ohlcv_cache_for_tests()
         reset_ora_store()
         reset_san_store()
-        _scan_del_redis_keys(f"{prefix}market_oracle:*", f"{prefix}santiment:*")
+        # Whole worker prefix: SCAN of a few hundred keys is cheap (#328).
+        _scan_del_redis_keys(f"{prefix}*")
 
     _purge()
     yield
@@ -739,9 +845,14 @@ def isolate_demo_ledger_files(tmp_path, monkeypatch, isolate_data_dir):
 def reset_positions_memory(isolate_demo_ledger_files):
     """Prevent in-memory positions dict from leaking across unit tests."""
     from data_manager import resolve_ledger_scope
-    from strategies.positions import _cancel_flush_timer, clear_positions_memory, load_positions
+    from strategies.positions import (
+        _cancel_flush_timer,
+        clear_positions_memory,
+        load_positions,
+        reset_all_position_stores_for_tests,
+    )
 
-    clear_positions_memory()
+    reset_all_position_stores_for_tests()
     try:
         load_positions(resolve_ledger_scope())
     except Exception:
@@ -750,7 +861,15 @@ def reset_positions_memory(isolate_demo_ledger_files):
     # A debounced flush_positions() timer left by the test would fire after the
     # monkeypatches are gone and write the real data/positions.*.json (#325).
     _cancel_flush_timer()
-    clear_positions_memory()
+    reset_all_position_stores_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def reset_cross_test_process_state(isolate_demo_ledger_files):
+    """Reset per-worker Redis/v2/module leftovers that survive JSON isolation (#328)."""
+    _reset_leaky_module_globals()
+    yield
+    _reset_leaky_module_globals()
 
 
 @pytest.fixture(autouse=True)
@@ -774,6 +893,9 @@ def normalize_unit_test_config(monkeypatch, request):
     import data_manager
     from data_manager import load_config
 
+    # Reload from disk so a previous test's nested mutation of _config_cache
+    # cannot leak max_daily_dca_usdt (and friends) into this test (#328).
+    data_manager._config_cache = None
     cfg = copy.deepcopy(load_config())
     cfg["trading_mode"] = "paper"
     cfg["virtual_trading"] = True

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import date, datetime
 
 from core.config import get_bot_config
 from core.portfolio_baseline import initial_capital
@@ -109,10 +108,29 @@ def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
     return snapshot
 
 
+def _display_day_bounds():
+    """Same [start, end) as OrderService /orders (display timezone)."""
+    from services.order_service import calendar_day_bounds
+
+    return calendar_day_bounds()
+
+
+def _display_day_key() -> str:
+    start, _ = _display_day_bounds()
+    return start.strftime("%Y-%m-%d")
+
+
+def _trade_in_display_day(trade: dict, start, end) -> bool:
+    from services.order_service import order_event_ts
+
+    ts = order_event_ts({"timestamps": {"filled": trade.get("timestamp") or ""}})
+    return ts is not None and start <= ts < end
+
+
 def trades_today(trades: list = None) -> list:
     trades = trades if trades is not None else _history_and_trades()[1]
-    today = date.today().isoformat()
-    return [t for t in trades if str(t.get("timestamp", "")).startswith(today)]
+    start, end = _display_day_bounds()
+    return [t for t in trades if _trade_in_display_day(t, start, end)]
 
 
 def filled_orders_today(scope: str | None = None) -> list:
@@ -172,6 +190,10 @@ _nav_start_cache: dict[str, tuple[float, float]] = {}
 _NAV_CACHE_TTL = 120.0
 
 
+def reset_nav_start_cache_for_tests() -> None:
+    _nav_start_cache.clear()
+
+
 def estimate_nav_at_day_start(
     trading_mode: str = None,
     *,
@@ -182,7 +204,8 @@ def estimate_nav_at_day_start(
     cfg = get_bot_config()
     mode = trading_mode or cfg.trading_mode
     scope = resolve_ledger_scope(mode)
-    cache_key = f"{date.today().isoformat()}:{scope}"
+    day_key = _display_day_key()
+    cache_key = f"{day_key}:{scope}"
     now = time.time()
     cached = _nav_start_cache.get(cache_key)
     if cached and now - cached[0] < max(5.0, float(cache_ttl_sec)):
@@ -196,13 +219,13 @@ def estimate_nav_at_day_start(
                 for o in today_orders
             )
         else:
-            cutoff = f"{date.today().isoformat()}T23:59:59"
+            cutoff = f"{day_key}T23:59:59"
     else:
         today_trades = trades_today()
         if today_trades:
             cutoff = min(t.get("timestamp", "") for t in today_trades)
         else:
-            cutoff = f"{date.today().isoformat()}T23:59:59"
+            cutoff = f"{day_key}T23:59:59"
     history, all_trades = _history_and_trades(mode)
     initial = initial_capital(
         scope=scope,

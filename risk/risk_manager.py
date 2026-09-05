@@ -28,6 +28,11 @@ from strategies.positions import (
 _EQUITY_MTM_UNAVAILABLE_LOGGED = False
 
 
+def reset_risk_manager_globals_for_tests() -> None:
+    global _EQUITY_MTM_UNAVAILABLE_LOGGED
+    _EQUITY_MTM_UNAVAILABLE_LOGGED = False
+
+
 def _is_emergency_sell(signal: str) -> bool:
     signal = signal or ""
     return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal

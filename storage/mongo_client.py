@@ -37,6 +37,9 @@ TEST_DB_NAME = resolve_test_db_name()
 _client: Optional[MongoClient] = None
 _client_uri: Optional[str] = None
 _client_lock = threading.RLock()
+# Incremented whenever a MongoClient is constructed. Tests use it to tell
+# whether a test touched Mongo at all (#328) — no behaviour attached.
+_client_generation = 0
 
 
 def mongo_uri_host(uri: str) -> str:
@@ -211,7 +214,7 @@ def get_client(config: dict | None = None) -> MongoClient:
     at return time. Do **not** call close_client() from request hot-paths — that
     races portfolio / exit-radar threads with ``Cannot use MongoClient after close``.
     """
-    global _client, _client_uri
+    global _client, _client_uri, _client_generation
     uri = resolve_mongo_uri(config)
     with _client_lock:
         if _client is not None and (not _client_is_closed(_client)) and _client_uri == uri:
@@ -227,6 +230,7 @@ def get_client(config: dict | None = None) -> MongoClient:
             _client_uri = None
         _client = MongoClient(uri, serverSelectionTimeoutMS=5000)
         _client_uri = uri
+        _client_generation += 1
         return _client
 
 

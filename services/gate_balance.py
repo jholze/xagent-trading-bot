@@ -23,6 +23,10 @@ _balance_cache: dict[str, tuple[float, float, list]] = {}
 _BALANCE_CACHE_TTL = 20.0
 
 
+def reset_balance_cache_for_tests() -> None:
+    _balance_cache.clear()
+
+
 def get_gate_adapter(config: BotConfig = None):
     from execution.gate_adapter import GateExecutionAdapter
 

@@ -13,6 +13,8 @@
 #   #327 checkout data/ must stay untouched (prints nothing if isolation holds):
 #   touch marker; PYTEST_DB_SUFFIX=dd327 ./scripts/run_unit_tests.sh --parallel; find data -newer marker -type f
 #   PYTHONPATH=tests/support DATA_WRITE_AUDIT_OUT=/tmp/audit ./scripts/run_unit_tests.sh -p data_write_audit --parallel
+#   #328 per-worker Redis/globals/Mongo leftover (one JSON per xdist worker):
+#   PYTHONPATH=tests/support STATE_LEAK_AUDIT_OUT=/tmp/leak ./scripts/run_unit_tests.sh -p state_leak_audit --parallel
 #
 # Guarantees (via tests/conftest.py):
 #   - PYTEST_RUNNING=1
