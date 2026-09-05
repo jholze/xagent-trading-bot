@@ -15,6 +15,7 @@
     "api_secret_env": "GATE_API_SECRET",
     "max_usdt_per_trade": 4500,
     "require_min_trust_score": 70,
+    "execution": "shadow",
     "dry_run": true,
     "dry_run_enhanced": true,
     "simulated_balance_usdt": 100000,
