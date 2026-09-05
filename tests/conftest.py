@@ -46,6 +46,22 @@ def isolate_test_mongo(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_ohlcv_cache_key_prefix(monkeypatch):
+    """Keep pytest OHLCV Redis keys off the production aria: prefix (#319)."""
+    # Same sanitizing as storage.mongo_client.resolve_test_db_name: [A-Za-z0-9_].
+    raw = (os.environ.get("PYTEST_DB_SUFFIX") or "").strip()
+    suffix = "".join(
+        ch for ch in raw if (ch.isalnum() and ord(ch) < 128) or ch == "_"
+    ) or "default"
+    monkeypatch.setenv("OHLCV_CACHE_KEY_PREFIX", f"pytest:{suffix}:")
+    from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
+
+    reset_ohlcv_cache_for_tests()
+    yield
+    reset_ohlcv_cache_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def demo_mode_env(monkeypatch, request):
     """Unit tests run with isolated demo JSON paths when touching data files."""
     nodeid = getattr(request.node, "nodeid", "") or ""

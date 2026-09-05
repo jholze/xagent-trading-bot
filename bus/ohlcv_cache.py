@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from bus.redis_client import get_redis, resolve_redis_url
+
+_DEFAULT_KEY_PREFIX = "aria:"
+_ENV_KEY_PREFIX = "OHLCV_CACHE_KEY_PREFIX"
+
+
+def _env_key_prefix() -> str | None:
+    raw = (os.environ.get(_ENV_KEY_PREFIX) or "").strip()
+    return raw or None
 
 
 @dataclass(frozen=True)
@@ -19,10 +28,12 @@ class CachedOhlcvBars:
     bars: list
     exchange: str
     updated_at: float
+    fetched_at: float | None = None
 
     @property
     def age_sec(self) -> float:
-        return max(0.0, time.time() - self.updated_at)
+        stamp = self.fetched_at if self.fetched_at is not None else self.updated_at
+        return max(0.0, time.time() - stamp)
 
 
 def _ohlcv_key(key_prefix: str, symbol: str, timeframe: str, limit: int) -> str:
@@ -51,11 +62,11 @@ class OhlcvCache:
         self,
         *,
         redis_url: str | None = None,
-        key_prefix: str = "aria:",
+        key_prefix: str | None = None,
         config_raw: dict | None = None,
     ):
         self.redis_url = redis_url
-        self.key_prefix = key_prefix
+        self.key_prefix = key_prefix or _env_key_prefix() or _DEFAULT_KEY_PREFIX
         self.config_raw = config_raw
         self._ram: dict[tuple[str, str, int], CachedOhlcvBars] = {}
         self._lock = threading.RLock()
@@ -69,6 +80,8 @@ class OhlcvCache:
         return (symbol, timeframe, int(limit))
 
     def _is_fresh(self, entry: CachedOhlcvBars, timeframe: str) -> bool:
+        if entry.fetched_at is None:
+            return False
         return entry.age_sec <= ttl_for_timeframe(timeframe, self.config_raw)
 
     def _serve_from_larger_enabled(self) -> bool:
@@ -89,6 +102,7 @@ class OhlcvCache:
             bars=bars,
             exchange=entry.exchange,
             updated_at=entry.updated_at,
+            fetched_at=entry.fetched_at,
         )
 
     def _load_redis_entry(
@@ -102,13 +116,16 @@ class OhlcvCache:
             if not raw:
                 return None
             data = json.loads(raw)
+            fetched_raw = data.get("fetched_at")
+            fetched_at = float(fetched_raw) if fetched_raw is not None else None
             entry = CachedOhlcvBars(
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=int(data.get("limit") or limit),
                 bars=data.get("bars") or [],
                 exchange=str(data.get("exchange") or "redis"),
-                updated_at=float(data.get("updated_at") or 0),
+                updated_at=float(data.get("updated_at") or fetched_at or 0),
+                fetched_at=fetched_at,
             )
             if entry.bars and self._is_fresh(entry, timeframe):
                 return entry
@@ -190,6 +207,7 @@ class OhlcvCache:
             bars=bars,
             exchange=exchange,
             updated_at=now,
+            fetched_at=now,
         )
         key = self._cache_key(symbol, timeframe, limit)
         with self._lock:
@@ -206,6 +224,7 @@ class OhlcvCache:
             "bars": bars,
             "exchange": exchange,
             "updated_at": now,
+            "fetched_at": now,
         }
         try:
             client.setex(
@@ -254,7 +273,7 @@ def ohlcv_cache_from_config(config_raw: dict | None = None) -> OhlcvCache:
     arch = (config_raw or {}).get("architecture") or {}
     cache = OhlcvCache(
         redis_url=resolve_redis_url(arch.get("redis_url")),
-        key_prefix=str(arch.get("key_prefix", "aria:")),
+        key_prefix=_env_key_prefix() or str(arch.get("key_prefix", _DEFAULT_KEY_PREFIX)),
         config_raw=config_raw,
     )
     if _default_cache is None:
@@ -271,6 +290,30 @@ def ohlcv_cache_enabled(config_raw: dict | None = None) -> bool:
     return bool(arch.get("ohlcv_cache_enabled", True))
 
 
+def _delete_redis_ohlcv_keys(key_prefix: str, redis_url: str | None = None) -> None:
+    """SCAN + DEL `{key_prefix}ohlcv:*`. Swallows all errors (tests without Redis)."""
+    try:
+        client = get_redis(redis_url, key_prefix=key_prefix)
+        if not client:
+            return
+        pattern = f"{key_prefix}ohlcv:*"
+        keys = list(client.scan_iter(match=pattern, count=200))
+        for i in range(0, len(keys), 200):
+            batch = keys[i : i + 200]
+            if batch:
+                client.delete(*batch)
+    except Exception:
+        return
+
+
 def reset_ohlcv_cache_for_tests() -> None:
     global _default_cache
+    prefix = _DEFAULT_KEY_PREFIX
+    redis_url = None
+    if _default_cache is not None:
+        prefix = _default_cache.key_prefix
+        redis_url = _default_cache.redis_url
+    else:
+        prefix = _env_key_prefix() or _DEFAULT_KEY_PREFIX
+    _delete_redis_ohlcv_keys(prefix, redis_url)
     _default_cache = None
