@@ -179,8 +179,80 @@ def record_nav_snapshot(
     return point
 
 
+def _trade_history_io():
+    """Same store `_equity_drawdown_pct` reads: live dry-run vs active scope."""
+    from data_manager import (
+        get_config,
+        is_live_dry_run,
+        load_live_trade_history,
+        load_trade_history,
+        save_live_trade_history,
+        save_trade_history,
+    )
+
+    cfg = get_config()
+    if is_live_dry_run(cfg):
+        return load_live_trade_history, save_live_trade_history
+    return load_trade_history, save_trade_history
+
+
+def persist_peak_equity(nav: float) -> dict:
+    """High-water mark in the active-scope trade-history document."""
+    load_fn, save_fn = _trade_history_io()
+    history = load_fn() or {}
+    if not isinstance(history, dict):
+        history = {}
+    try:
+        nav_f = float(nav)
+    except (TypeError, ValueError):
+        nav_f = 0.0
+    try:
+        existing = float(history.get("peak_equity") or 0)
+    except (TypeError, ValueError):
+        existing = 0.0
+    peak = max(existing, nav_f)
+    history["peak_equity"] = peak
+    if peak > existing + 1e-9 or not history.get("peak_equity_at"):
+        history["peak_equity_at"] = datetime.now(timezone.utc).isoformat()
+    save_fn(history)
+    return history
+
+
+def latest_fresh_nav(*, max_age_sec: float) -> float | None:
+    """Most recent snapshot NAV if `as_of` is younger than max_age_sec."""
+    try:
+        age_limit = float(max_age_sec)
+    except (TypeError, ValueError):
+        return None
+    if age_limit <= 0:
+        return None
+    points = load_nav_history(limit=1)
+    if not points:
+        return None
+    point = points[-1]
+    try:
+        nav = float(point.get("nav") or 0)
+    except (TypeError, ValueError):
+        return None
+    if nav <= 0:
+        return None
+    raw_ts = point.get("as_of")
+    if not raw_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+    except Exception:
+        return None
+    if age < 0 or age > age_limit:
+        return None
+    return nav
+
+
 def capture_current_nav_snapshot() -> dict | None:
-    """Compute live NAV and persist daily point. Returns point or None."""
+    """Compute live NAV, persist daily point + peak_equity. Returns point or None."""
     try:
         from core.portfolio_baseline import initial_capital
         from notifications.terminal_dashboard import _portfolio_snapshot
@@ -194,12 +266,17 @@ def capture_current_nav_snapshot() -> dict | None:
             or initial_capital()
             or 0
         )
-        return record_nav_snapshot(
+        point = record_nav_snapshot(
             nav=total,
             cash=cash,
             positions_mtm=pos_mv,
             initial_capital=init,
         )
+        try:
+            persist_peak_equity(total)
+        except Exception as e:
+            log(f"persist_peak_equity failed: {e}", "WARNING")
+        return point
     except Exception as e:
         log(f"capture_current_nav_snapshot failed: {e}", "WARNING")
         return None

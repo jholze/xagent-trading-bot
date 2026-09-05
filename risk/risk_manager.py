@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
@@ -23,6 +23,9 @@ from strategies.positions import (
     list_active_positions,
     sell_fraction_for_signal,
 )
+
+
+_EQUITY_MTM_UNAVAILABLE_LOGGED = False
 
 
 def _is_emergency_sell(signal: str) -> bool:
@@ -169,6 +172,12 @@ class RiskManager:
                 message=f"Phantom test symbol blocked: {order.symbol}",
                 code="phantom_symbol",
             )
+
+        # Hard rail: new exposure only. SELL/COVER always pass this check.
+        if order.type in ("BUY", "SHORT"):
+            halt = self._daily_loss_limit_blocked()
+            if halt:
+                return halt
 
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
@@ -826,7 +835,7 @@ class RiskManager:
             factors["ticket_capped"] = True
             factors["ticket_cap_usdt"] = ticket_cap
 
-        equity = self._portfolio_equity(order.price, order.symbol)
+        equity = self._equity_for_sizing(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
         max_position_value = equity * (self.config.max_position_percent / 100.0)
         room = max_position_value - pos_value
@@ -892,6 +901,7 @@ class RiskManager:
             source=resolved_source,
             order_id=order.order_id,
             timestamp=order.timestamp,
+            exposure_multiplier=getattr(order, "exposure_multiplier", None),
         )
         return RiskDecision(
             approved=True,
@@ -905,7 +915,8 @@ class RiskManager:
 
     def status_summary(self, current_price: float = None) -> dict:
         history = self._primary_history()
-        equity = self._portfolio_equity(current_price or 0)
+        mtm = self._portfolio_equity(current_price or 0)
+        equity = float(mtm) if mtm is not None else 0.0
         initial = self._initial_capital()
         drawdown_pct = self._equity_drawdown_pct()
         throttle_at = float(self.config.risk_config.get("drawdown_throttle_pct", 10.0))
@@ -938,6 +949,10 @@ class RiskManager:
             "cash_floor_pct": float(self.config.risk_config.get("cash_floor_pct", 0) or 0),
             "spendable_usdt": round(spendable, 2),
             "ledger_source": self._ledger_source_label(),
+            "risk_halt_until": str((history or {}).get("risk_halt_until") or ""),
+            "max_daily_loss_pct": float(
+                self.config.risk_config.get("max_daily_loss_pct", 0) or 0
+            ),
         }
         pol = self._evaluate_cash_policy(equity)
         if pol is not None and pol.enabled:
@@ -1168,6 +1183,99 @@ class RiskManager:
             )
         return None
 
+    @staticmethod
+    def _parse_iso_dt(raw) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _risk_history_load(self) -> dict:
+        if is_live_dry_run(self.config.raw):
+            return load_live_trade_history() or {}
+        return load_trade_history() or {}
+
+    def _risk_history_save(self, history: dict) -> None:
+        from data_manager import save_live_trade_history, save_trade_history
+
+        if is_live_dry_run(self.config.raw):
+            save_live_trade_history(history)
+        else:
+            save_trade_history(history)
+
+    def _trailing_24h_realized_pnl(self) -> float:
+        """Filled-order realized PnL over the trailing 24h (order-service window)."""
+        from data_manager import resolve_ledger_scope
+        from services.order_service import OrderService
+
+        now = datetime.now()
+        start = now - timedelta(hours=24)
+        stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
+        return float((stats or {}).get("realized_pnl") or 0)
+
+    def _daily_loss_limit_blocked(self) -> RiskDecision | None:
+        """Kill switch: block BUY/SHORT when trailing-24h realized PnL ≤ -pct of NAV."""
+        try:
+            pct = float(self.config.risk_config.get("max_daily_loss_pct", 0) or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if pct <= 0:
+            return None
+        history = self._risk_history_load()
+        if not isinstance(history, dict):
+            history = {}
+        until = self._parse_iso_dt(history.get("risk_halt_until"))
+        now = datetime.now(timezone.utc)
+        if until is not None and until > now:
+            return RiskDecision(
+                approved=False,
+                message=f"Daily loss limit: halted until {history.get('risk_halt_until')}",
+                code="daily_loss_limit",
+                size_multiplier=0.0,
+            )
+        try:
+            realized = float(self._trailing_24h_realized_pnl())
+        except Exception:
+            return None
+        nav = self._portfolio_equity()
+        if nav is None or float(nav) <= 0:
+            nav = float(self._initial_capital() or 0)
+        if nav <= 0:
+            return None
+        threshold = -(pct / 100.0) * float(nav)
+        if realized > threshold:
+            return None
+        halt_iso = (now + timedelta(hours=24)).isoformat()
+        history["risk_halt_until"] = halt_iso
+        try:
+            self._risk_history_save(history)
+        except Exception:
+            pass
+        try:
+            from core.operator_notify import notify_operator
+
+            notify_operator(
+                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
+                f"New buys/shorts halted until {halt_iso}."
+            )
+        except Exception:
+            pass
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
+            ),
+            code="daily_loss_limit",
+            size_multiplier=0.0,
+        )
+
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
             return float(
@@ -1219,7 +1327,9 @@ class RiskManager:
             basis = str(risk.get("cash_floor_basis", "initial") or "initial")
         basis = basis.lower()
         if basis == "nav":
-            return float(equity if equity is not None else self._portfolio_equity())
+            if equity is not None:
+                return float(equity)
+            return self._equity_for_sizing()
         return float(self._initial_capital())
 
     def _market_bias_for_cash(self) -> dict:
@@ -1325,7 +1435,7 @@ class RiskManager:
         risk = self.config.risk_config
         if not is_cash_policy_enabled(risk):
             return None
-        eq = float(equity if equity is not None else self._portfolio_equity())
+        eq = float(equity) if equity is not None else self._equity_for_sizing()
         cash = float(self._available_usdt(eq))
         bias = self._market_bias_for_cash()
         try:
@@ -1421,13 +1531,102 @@ class RiskManager:
             ref_prices[symbol] = reference_price
         return ref_prices
 
-    def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float:
-        return fetch_portfolio_equity(
-            self.config,
-            reference_prices=self._dry_run_reference_prices(reference_price, symbol),
-        )
+    def _log_equity_mtm_unavailable_once(self, reason: str) -> None:
+        global _EQUITY_MTM_UNAVAILABLE_LOGGED
+        if _EQUITY_MTM_UNAVAILABLE_LOGGED:
+            return
+        _EQUITY_MTM_UNAVAILABLE_LOGGED = True
+        try:
+            from logger import log
+
+            log(
+                f"portfolio MTM equity unavailable ({reason}); "
+                "drawdown treated as unknown → size throttle",
+                "WARNING",
+            )
+        except Exception:
+            pass
+
+    def _mark_to_market_equity(
+        self, reference_price: float = 0, symbol: str = None
+    ) -> float | None:
+        """Cash + positions at live prices. None if any open lot lacks a quote."""
+        try:
+            from price_fetcher import get_prices_batch
+            from strategies.positions import list_active_positions
+
+            cash = float(self._available_usdt() or 0)
+            active = list_active_positions()
+            if not active:
+                return cash
+            symbols: list[str] = []
+            for pos in active:
+                raw_sym = pos.get("symbol") or ""
+                symbols.append(raw_sym if "/" in raw_sym else f"{raw_sym}/USDT")
+            live: dict[str, float] = {}
+            if symbol and float(reference_price or 0) > 0:
+                ref_sym = symbol if "/" in symbol else f"{symbol}/USDT"
+                live[ref_sym] = float(reference_price)
+            need = [s for s in dict.fromkeys(symbols) if s not in live]
+            if need:
+                batch = get_prices_batch(need) or {}
+                for s, px in batch.items():
+                    try:
+                        val = float(px or 0)
+                    except (TypeError, ValueError):
+                        val = 0.0
+                    if val > 0:
+                        live[s] = val
+            total = cash
+            for pos in active:
+                raw_sym = pos.get("symbol") or ""
+                sym = raw_sym if "/" in raw_sym else f"{raw_sym}/USDT"
+                px = float(live.get(sym) or 0)
+                amount = float(pos.get("amount") or 0)
+                if amount <= 1e-12:
+                    continue
+                if px <= 0:
+                    return None
+                try:
+                    from strategies.short_math import is_short, snapshot
+
+                    if is_short(pos):
+                        snap = snapshot(pos, px)
+                        total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
+                        continue
+                except Exception:
+                    pass
+                total += amount * px
+            return total
+        except Exception:
+            return None
+
+    def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float | None:
+        """Mark-to-market NAV. None when live prices and a fresh snapshot are missing."""
+        try:
+            from services.portfolio_nav_history import latest_fresh_nav
+
+            interval = float(getattr(self.config, "update_interval", 600) or 600)
+            snap = latest_fresh_nav(max_age_sec=2.0 * interval)
+            if snap is not None:
+                return float(snap)
+        except Exception:
+            pass
+        mtm = self._mark_to_market_equity(reference_price, symbol)
+        if mtm is None:
+            self._log_equity_mtm_unavailable_once("live prices/NAV missing")
+        return mtm
+
+    def _equity_for_sizing(self, reference_price: float = 0, symbol: str = None) -> float:
+        """Sizing/concentration fallback — never pretends cost-basis is MTM."""
+        mtm = self._portfolio_equity(reference_price, symbol)
+        if mtm is not None:
+            return float(mtm)
+        return float(self._initial_capital() or 0)
 
     def _equity_drawdown_pct(self, reference_price: float = 0, symbol: str = None) -> float:
+        risk = self.config.risk_config if hasattr(self.config, "risk_config") else {}
+        throttle_at = float((risk or {}).get("drawdown_throttle_pct", 10.0) or 10.0)
         if is_live_dry_run(self.config.raw):
             history = load_live_trade_history()
             initial = simulated_balance_usdt(self.config.raw)
@@ -1436,7 +1635,13 @@ class RiskManager:
             history = load_trade_history()
             initial = self._initial_capital()
             equity = self._portfolio_equity(reference_price, symbol)
-        peak = float(history.get("peak_equity", initial))
+        if equity is None:
+            # Unknown drawdown → arm the size throttle, never report 1.0.
+            return float(throttle_at)
+        try:
+            peak = float(history.get("peak_equity", initial))
+        except (TypeError, ValueError):
+            peak = float(initial or 0)
         peak = max(peak, equity, initial)
         if peak <= 0:
             return 0.0
@@ -1611,6 +1816,26 @@ class RiskManager:
         else:
             total = max(min_mult, min(max_mult, total))
 
+        # Allocator de-risking: never a boost, applied once after other multipliers.
+        raw_exp = getattr(order, "exposure_multiplier", None)
+        try:
+            exp_mult = 1.0 if raw_exp is None else float(raw_exp)
+        except (TypeError, ValueError):
+            exp_mult = 1.0
+        exp_mult = max(0.0, min(1.0, exp_mult))
+        if exp_mult < 1.0:
+            total *= exp_mult
+            try:
+                from logger import log
+
+                log(
+                    f"exposure_multiplier={exp_mult:.2f} applied {order.symbol} "
+                    f"total={total:.3f}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+
         factors = {
             "trust_factor": round(trust_factor, 3),
             "conf_factor": round(conf_factor, 3),
@@ -1631,6 +1856,7 @@ class RiskManager:
             "session_risk": session_risk,
             "pm_risk": pm_risk,
             "moderate_deploy_mult": round(md_boost, 3),
+            "exposure_multiplier": round(exp_mult, 3),
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors
