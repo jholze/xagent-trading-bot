@@ -385,6 +385,7 @@
     }
   },
   "risk": {
+    "max_daily_loss_pct": 5.0,
     "fail_closed_guards": "log",
     "block_stablecoin_buys": true,
     "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
