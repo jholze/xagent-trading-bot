@@ -1,6 +1,8 @@
 import os
 import sys
 import unittest
+
+import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -418,6 +420,7 @@ class TestVirtualTrading(unittest.TestCase):
         sell_notifications = [n for n in notifications if "SELL" in str(n)]
         self.assertEqual(len(sell_notifications), 0)
 
+    @pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping test, frictionless
     def test_portfolio_service_buy(self):
         from services.portfolio_service import PortfolioService
         portfolio = PortfolioService()

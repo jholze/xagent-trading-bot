@@ -75,18 +75,19 @@ def liquidation_price_isolated(
     leverage: float,
     *,
     mm_rate: float = 0.005,
-    fee_rate: float = 0.001,
+    fee_frac: float = 0.001,
 ) -> float:
     """Mark at which isolated margin is gone (before buffer).
 
     Short: price *rises*. Long: price *falls*.
+    ``fee_frac`` is a fraction of notional (CostModel.fee_pct / 100).
     """
     e = float(entry or 0)
     if e <= 0:
         return 0.0
     lev = clamp_leverage(leverage)
     mm = min(0.2, max(0.0, float(mm_rate or 0)))
-    fee = min(0.05, max(0.0, float(fee_rate or 0)))
+    fee = min(0.05, max(0.0, float(fee_frac or 0)))
     # Lose (1 - mm) of margin at liq; remaining mm is maintenance.
     move = (1.0 - mm) / lev
     if str(side).lower() == SIDE_SHORT:

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from core.config import get_bot_config
+from core.costs import COST_MODEL_VERSION, CostModel, trade_cost_fields
 from core.models import MarketContext, SandboxMetrics
 from hermes.cmc_replay import load_posts_for_coin, signals_at_timestamp
 from hermes.metrics import enrich_sandbox_metrics, sharpe_from_trades
@@ -71,7 +72,7 @@ class PipelineBacktester:
 
         capital = float(self.hermes.get("initial_capital_usdt", 1000))
         usdt_per_trade = float(self.hermes.get("usdt_per_trade", 50))
-        slippage = self.config.slippage_percent / 100
+        cm = CostModel.from_config(self.config, symbol=symbol)
 
         balance = capital
         position = {"amount": 0.0, "average_entry": 0.0}
@@ -85,7 +86,7 @@ class PipelineBacktester:
         if initial_position and float(initial_position.get("amount") or 0) > 0:
             position["amount"] = float(initial_position["amount"])
             position["average_entry"] = float(initial_position.get("average_entry") or 0)
-            entry_cost = position["amount"] * position["average_entry"] * (1 + slippage)
+            entry_cost = position["amount"] * position["average_entry"]
             balance = max(0.0, capital - entry_cost)
             if initial_sim_state:
                 sim_state.update(dict(initial_sim_state))
@@ -139,22 +140,23 @@ class PipelineBacktester:
                 and position["amount"] <= 0
                 and balance >= usdt_per_trade
             ):
-                cost = usdt_per_trade * (1 + slippage)
-                if balance >= cost:
-                    amount = usdt_per_trade / price
-                    position["amount"] = amount
-                    position["average_entry"] = price
-                    balance -= cost
+                buy_fill = cm.simulate_buy(price, usdt=usdt_per_trade)
+                if balance >= buy_fill.quote_net and buy_fill.qty_net > 0:
+                    position["amount"] = buy_fill.qty_net
+                    position["average_entry"] = buy_fill.quote_net / buy_fill.qty_net
+                    balance -= buy_fill.quote_net
                     sim_state["rsi_sell_tiers_done"] = {}
                     decision_buys += 1
                     trade = {
                         "type": "BUY",
-                        "price": price,
-                        "amount": amount,
-                        "usdt": usdt_per_trade,
+                        "price": buy_fill.fill_price,
+                        "amount": buy_fill.qty_net,
+                        "usdt": buy_fill.quote_net,
                         "bar": i,
                         "ts": bar_ts,
                         "sources": list(analysis.sources or []),
+                        "cost_model": COST_MODEL_VERSION,
+                        **trade_cost_fields(buy_fill),
                     }
                     if in_window or not window_metrics_only:
                         trades.append(trade)
@@ -164,9 +166,11 @@ class PipelineBacktester:
                 if sell_fraction > 0:
                     entry = position["average_entry"]
                     sell_amount = position["amount"] * sell_fraction
-                    received = price * sell_amount * (1 - slippage)
-                    pnl = (price - entry) * sell_amount
-                    balance += received
+                    sell_fill = cm.simulate_sell(price, sell_amount)
+                    pnl = CostModel.realized_pnl(
+                        qty_sold=sell_amount, avg_entry_net=entry, sell=sell_fill,
+                    )
+                    balance += sell_fill.quote_net
                     position["amount"] -= sell_amount
                     if position["amount"] < 1e-10:
                         position["amount"] = 0.0
@@ -181,13 +185,15 @@ class PipelineBacktester:
                     sim_state["rsi_sell_tiers_done"] = tiers
                     trade = {
                         "type": "SELL",
-                        "price": price,
+                        "price": sell_fill.fill_price,
                         "amount": sell_amount,
                         "pnl": pnl,
-                        "usdt_received": received,
+                        "usdt_received": sell_fill.quote_net,
                         "bar": i,
                         "ts": bar_ts,
                         "action": action,
+                        "cost_model": COST_MODEL_VERSION,
+                        **trade_cost_fields(sell_fill),
                     }
                     trades.append(trade)
                     if in_window:

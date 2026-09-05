@@ -144,10 +144,9 @@ def build_operator_like_tenant_config(base_cfg: dict | None = None) -> dict:
         "max_position_percent": cfg.get("max_position_percent", 30),
         "stop_loss_pct": cfg.get("stop_loss_pct", 50.0),
         "trade_cooldown_hours": cfg.get("trade_cooldown_hours", 1.0),
-        "slippage_percent": cfg.get("slippage_percent", 1.5),
         "trading_profile": cfg.get("trading_profile") or DEFAULT_PROFILE,
     }
-    for key in ("dry_run_defaults", "coin_filters", "paper", "demo"):
+    for key in ("dry_run_defaults", "coin_filters", "paper", "demo", "costs"):
         if key in cfg:
             body[key] = copy.deepcopy(cfg[key])
     return body

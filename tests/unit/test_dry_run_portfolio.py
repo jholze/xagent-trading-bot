@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -256,6 +258,7 @@ class TestDryRunPortfolioMath(unittest.TestCase):
             self.assertAlmostEqual(history["virtual_balance"], 4500.0)
 
 
+@pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping tests, frictionless
 class TestDryRunPortfolioFlows(unittest.TestCase):
     def setUp(self):
         self.harness = DryRunPortfolioHarness(initial=5000.0)
