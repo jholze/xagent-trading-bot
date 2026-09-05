@@ -238,7 +238,12 @@ class TestVirtualTrading(unittest.TestCase):
         x_sig.trust_score = 90
         x_sig.effective_confidence = 80
 
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.5, "vol_multiplier": 0.8}):
+        indicators = {"rsi": 50.0, "lower_bb": 0.5, "vol_multiplier": 0.8}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(engine.market, "fetch_funding_rate", return_value=None), \
+             patch("price_fetcher.get_gate_prices_batch", side_effect=lambda s: {x: 1.0 for x in s}), \
+             patch("price_fetcher.get_ticker_price", return_value=1.0):
             analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0, x_signals=[x_sig])
             self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
             self.assertIn("x", analysis.sources)
@@ -1409,9 +1414,14 @@ class TestVirtualTrading(unittest.TestCase):
         lc.effective_confidence = 45.4
 
         empty_pos = {"amount": 0, "average_entry": 0}
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 54.6, "lower_bb": 0.9, "vol_multiplier": 0.86}), \
+        indicators = {"rsi": 54.6, "lower_bb": 0.9, "vol_multiplier": 0.86}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(engine.market, "fetch_funding_rate", return_value=None), \
              patch("strategies.decision_engine.count_open_positions", return_value=0), \
-             patch("strategies.decision_engine.get_position", return_value=empty_pos):
+             patch("strategies.decision_engine.get_position", return_value=empty_pos), \
+             patch("price_fetcher.get_gate_prices_batch", side_effect=lambda s: {x: 1.0 for x in s}), \
+             patch("price_fetcher.get_ticker_price", return_value=1.0):
             analysis = engine.evaluate({"symbol": "BNB/USDT", "timeframe": "4h"}, 615.0, lc_signals=[lc])
         self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
         self.assertIn("lc", analysis.sources)
@@ -1591,7 +1601,8 @@ class TestVirtualTrading(unittest.TestCase):
         from notifications.terminal_dashboard import build_dashboard_data
 
         with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
-             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]):
+             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("notifications.terminal_dashboard.load_effective_watchlist", return_value=[]):
             data = build_dashboard_data(
                 cycle_signals=["🟢 @Trader BUY BTC | 80%"],
                 coin_results=[{"symbol": "BTC/USDT", "action": "HOLD", "normalized_action": "HOLD", "rsi": 50, "ampel_emoji": "🟡", "rationale": ""}],
@@ -1615,6 +1626,7 @@ class TestVirtualTrading(unittest.TestCase):
         mock_cfg.simulated_balance_usdt = 5000
         with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
              patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("notifications.terminal_dashboard.load_effective_watchlist", return_value=[]), \
              patch("notifications.terminal_dashboard._portfolio_snapshot", return_value={
                  "history": live_hist,
                  "balance": 3952.19,

@@ -15,9 +15,18 @@ from services.reload_registry import (
     normalize_scopes,
     run_reload,
 )
+from tests.support.offline import gate_prices_listed
 
 
 class TestReloadRegistry(unittest.TestCase):
+    def setUp(self):
+        p = patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
+        p.start()
+        self.addCleanup(p.stop)
+        ticker_p = patch("price_fetcher.get_ticker_price", return_value=1.0)
+        ticker_p.start()
+        self.addCleanup(ticker_p.stop)
+
     def test_normalize_scopes_all(self):
         self.assertEqual(
             normalize_scopes("all"),

@@ -1,8 +1,10 @@
 import json
 import os
 import shutil
+import socket as _socket
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -28,6 +30,165 @@ def pytest_configure(config):
     close_client()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hermes"
+
+# ---------------------------------------------------------------------------
+# Unit tests must not reach the public internet (#324).
+# Local Mongo / Redis / in-process HTTP (127.0.0.1, localhost, ::1) stay open.
+# ---------------------------------------------------------------------------
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+
+def _is_local_host(host) -> bool:
+    if host is None or host == "":
+        return True  # AF_UNIX / missing host
+    if isinstance(host, bytes):
+        try:
+            host = host.decode("utf-8", "replace")
+        except Exception:
+            return False
+    h = str(host).strip().lower().strip("[]")
+    if "%" in h:  # IPv6 zone index, e.g. ::1%lo0
+        h = h.split("%", 1)[0]
+    if h in _LOCAL_HOSTS:
+        return True
+    if h.startswith("127."):
+        return True
+    return False
+
+
+def _host_from_connect_address(address):
+    if isinstance(address, (bytes, bytearray, str)):
+        return None  # AF_UNIX
+    if isinstance(address, tuple) and address:
+        return address[0]
+    return None
+
+
+def _host_from_url(url) -> str:
+    if url is None:
+        return ""
+    if hasattr(url, "get_full_url"):
+        url = url.get_full_url()
+    raw = str(url)
+    parsed = urlparse(raw)
+    return parsed.hostname or raw
+
+
+def _raise_network_blocked(target) -> None:
+    raise RuntimeError(f"network blocked in unit tests: {target}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def block_outbound_network():
+    """Fail immediately on non-loopback sockets / HTTP. No opt-out marker.
+
+    Also wraps ssl.SSLSocket.connect and requests.Session.send: ccxt calls
+    session.send() (not Session.request) and TLS sockets skip the plain
+    socket.socket.connect wrapper.
+    """
+    orig_create_connection = _socket.create_connection
+    orig_connect = _socket.socket.connect
+    orig_connect_ex = _socket.socket.connect_ex
+
+    import ssl as _ssl
+    import urllib.request as _ureq
+
+    orig_ssl_connect = _ssl.SSLSocket.connect
+    orig_ssl_connect_ex = getattr(_ssl.SSLSocket, "connect_ex", None)
+    orig_urlopen = _ureq.urlopen
+
+    import requests as _requests
+
+    orig_session_request = _requests.Session.request
+    orig_session_send = _requests.Session.send
+    orig_requests_get = _requests.get
+    orig_requests_post = _requests.post
+
+    def _guarded_create_connection(address, *args, **kwargs):
+        host = _host_from_connect_address(address)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_create_connection(address, *args, **kwargs)
+
+    def _guarded_connect(self, address):
+        host = _host_from_connect_address(address)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_connect(self, address)
+
+    def _guarded_connect_ex(self, address):
+        host = _host_from_connect_address(address)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_connect_ex(self, address)
+
+    def _guarded_ssl_connect(self, address):
+        host = _host_from_connect_address(address)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_ssl_connect(self, address)
+
+    def _guarded_ssl_connect_ex(self, address):
+        host = _host_from_connect_address(address)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_ssl_connect_ex(self, address)
+
+    def _guarded_urlopen(url, *args, **kwargs):
+        host = _host_from_url(url)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_urlopen(url, *args, **kwargs)
+
+    def _guarded_session_request(self, method, url, *args, **kwargs):
+        host = _host_from_url(url)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_session_request(self, method, url, *args, **kwargs)
+
+    def _guarded_session_send(self, request, **kwargs):
+        host = _host_from_url(getattr(request, "url", None))
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_session_send(self, request, **kwargs)
+
+    def _guarded_requests_get(url, *args, **kwargs):
+        host = _host_from_url(url)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_requests_get(url, *args, **kwargs)
+
+    def _guarded_requests_post(url, *args, **kwargs):
+        host = _host_from_url(url)
+        if not _is_local_host(host):
+            _raise_network_blocked(host)
+        return orig_requests_post(url, *args, **kwargs)
+
+    _socket.create_connection = _guarded_create_connection
+    _socket.socket.connect = _guarded_connect
+    _socket.socket.connect_ex = _guarded_connect_ex
+    _ssl.SSLSocket.connect = _guarded_ssl_connect
+    if orig_ssl_connect_ex is not None:
+        _ssl.SSLSocket.connect_ex = _guarded_ssl_connect_ex
+    _ureq.urlopen = _guarded_urlopen
+    _requests.Session.request = _guarded_session_request
+    _requests.Session.send = _guarded_session_send
+    _requests.get = _guarded_requests_get
+    _requests.post = _guarded_requests_post
+    try:
+        yield
+    finally:
+        _socket.create_connection = orig_create_connection
+        _socket.socket.connect = orig_connect
+        _socket.socket.connect_ex = orig_connect_ex
+        _ssl.SSLSocket.connect = orig_ssl_connect
+        if orig_ssl_connect_ex is not None:
+            _ssl.SSLSocket.connect_ex = orig_ssl_connect_ex
+        _ureq.urlopen = orig_urlopen
+        _requests.Session.request = orig_session_request
+        _requests.Session.send = orig_session_send
+        _requests.get = orig_requests_get
+        _requests.post = orig_requests_post
 
 
 @pytest.fixture(autouse=True)

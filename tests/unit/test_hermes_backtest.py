@@ -1,9 +1,11 @@
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 from hermes.backtester import Backtester
 from hermes.goals import GoalEngine
+from tests.support.offline import gate_prices_listed
 
 
 def _synthetic_ohlcv(rows: int = 120) -> pd.DataFrame:
@@ -26,8 +28,12 @@ def _synthetic_ohlcv(rows: int = 120) -> pd.DataFrame:
     })
 
 
-def test_backtester_runs_on_synthetic_data():
+@patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
+@patch("price_fetcher.get_ticker_price", return_value=1.0)
+def test_backtester_runs_on_synthetic_data(_ticker, _gate):
     bt = Backtester()
+    # Isolate from production hermes.backtest_mode=pipeline (full DE + ccxt).
+    bt.hermes = {**bt.hermes, "backtest_mode": "ta_only"}
     params = {
         "rsi_buy_low": 20,
         "rsi_buy_high": 55,
@@ -62,6 +68,9 @@ def test_goal_engine_rejects_improvement_below_success_criteria():
 def test_backtest_uses_sim_state_not_global_positions(monkeypatch):
     import strategies.positions as positions_mod
 
+    monkeypatch.setattr("price_fetcher.get_gate_prices_batch", gate_prices_listed)
+    monkeypatch.setattr("price_fetcher.get_ticker_price", lambda symbol, exchange=None: 1.0)
+
     called = {"save": False}
 
     def fake_save():
@@ -69,6 +78,7 @@ def test_backtest_uses_sim_state_not_global_positions(monkeypatch):
 
     monkeypatch.setattr(positions_mod, "save_positions", fake_save)
     bt = Backtester()
+    bt.hermes = {**bt.hermes, "backtest_mode": "ta_only"}
     params = {
         "rsi_buy_low": 20,
         "rsi_buy_high": 55,
