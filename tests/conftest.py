@@ -54,15 +54,57 @@ def _cleanup_xdist_worker_stores() -> None:
     """
     if not (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
         return
-    from storage.mongo_client import close_client, drop_database
+    from storage.mongo_client import close_client, drop_database, resolve_test_db_name
 
-    drop_database(test=True)
+    # Re-pin in case a test left MONGODB_TEST_DB pointing at a different name.
+    test_db = resolve_test_db_name()
+    os.environ["MONGODB_TEST_DB"] = test_db
+    os.environ["MONGODB_DB"] = test_db
     close_client()
+    try:
+        drop_database(test=True)
+    finally:
+        close_client()
     suffix = _sanitize_pytest_db_suffix() or "default"
     os.environ["OHLCV_CACHE_KEY_PREFIX"] = f"pytest:{suffix}:"
     from bus.ohlcv_cache import reset_ohlcv_cache_for_tests
 
     reset_ohlcv_cache_for_tests()
+
+
+def _is_xdist_controller(session) -> bool:
+    if (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+        return False
+    n = getattr(getattr(session, "config", None), "option", None)
+    n = getattr(n, "numprocesses", None) if n is not None else None
+    return bool(n)
+
+
+def _cleanup_xdist_controller_leftovers() -> None:
+    """Drop any xagent_pytest_<suffix>_gw* DBs a worker failed to remove."""
+    suffix = _sanitize_pytest_db_suffix() or "default"
+    db_prefix = f"xagent_pytest_{suffix}_gw"
+    from storage.mongo_client import close_client, get_client
+
+    close_client()
+    client = get_client()
+    try:
+        for name in client.list_database_names():
+            if name.startswith(db_prefix):
+                client.drop_database(name)
+    finally:
+        close_client()
+    try:
+        from bus.redis_client import get_redis, reset_redis_client
+
+        reset_redis_client()
+        redis_client = get_redis()
+        if redis_client:
+            keys = list(redis_client.scan_iter(match=f"pytest:{suffix}_gw*:ohlcv:*", count=200))
+            if keys:
+                redis_client.delete(*keys)
+    except Exception:
+        pass
 
 
 # Never let pytest touch Railway/remote Mongo — must run before any test imports mongo_client.
@@ -471,7 +513,10 @@ def pytest_runtest_logreport(report):
 
 def pytest_sessionfinish(session, exitstatus):
     try:
-        _cleanup_xdist_worker_stores()
+        if (os.environ.get("PYTEST_XDIST_WORKER") or "").strip():
+            _cleanup_xdist_worker_stores()
+        elif _is_xdist_controller(session):
+            _cleanup_xdist_controller_leftovers()
     finally:
         if not _PROGRESS.get("enabled") or not _PROGRESS.get("total"):
             return
