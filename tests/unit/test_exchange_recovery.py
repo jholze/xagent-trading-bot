@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unittest
+
 from unittest.mock import MagicMock
 
 import ccxt
@@ -372,3 +374,44 @@ def test_sync_ledger_files_aliases_wrap_old_names():
     assert ledger_sync.reconcile_peak_amounts is not ledger_sync.sync_ledger_files_peak_amounts
     assert callable(ledger_sync.sync_ledger_files_recent_highs)
     assert callable(ledger_sync.sync_ledger_files_peak_amounts)
+
+
+class TestCycleSkipsOnRecoveryFailed(unittest.TestCase):
+    """#314 §5.5: RecoveryFailed from ensure_started must skip the tenant's price
+    cycle (ERROR), not be downgraded to the generic runtime WARNING."""
+
+    def test_recovery_failed_skips_cycle_before_any_trading_step(self):
+        import aria_bot
+        from execution.recovery import RecoveryFailed
+        from unittest.mock import patch
+
+        calls = []
+        with patch("services.architecture_runtime.ensure_started", side_effect=RecoveryFailed("gate down")), \
+             patch.object(aria_bot, "load_effective_watchlist", side_effect=lambda *a, **k: calls.append("watchlist") or []), \
+             patch.object(aria_bot, "log") as mock_log:
+            aria_bot._run_tenant_price_cycle(
+                cycle_started=0.0, use_dashboard=False,
+                analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None,
+            )
+        self.assertEqual(calls, [], "cycle must return before loading the watchlist")
+        levels = [c.args[1] for c in mock_log.call_args_list if len(c.args) > 1]
+        self.assertIn("ERROR", levels)
+
+    def test_other_runtime_errors_stay_best_effort(self):
+        import aria_bot
+        from unittest.mock import patch
+
+        calls = []
+        with patch("services.architecture_runtime.ensure_started", side_effect=RuntimeError("redis hiccup")), \
+             patch.object(aria_bot, "load_effective_watchlist", side_effect=lambda *a, **k: calls.append("watchlist") or []), \
+             patch.object(aria_bot, "load_trade_watchlist", return_value=[]), \
+             patch.object(aria_bot, "get_prices_batch", return_value={}), \
+             patch.object(aria_bot, "log"):
+            try:
+                aria_bot._run_tenant_price_cycle(
+                    cycle_started=0.0, use_dashboard=False,
+                    analyzer=None, orchestrator=None, social_pipeline=None, sandbox=None, trend_engine=None,
+                )
+            except Exception:
+                pass  # downstream steps may need more mocks; we only assert the cycle continued
+        self.assertEqual(calls, ["watchlist"], "generic runtime errors must not abort the cycle")

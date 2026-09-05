@@ -597,6 +597,12 @@ def _run_tenant_price_cycle(
         from services.architecture_runtime import ensure_started
         ensure_started()
     except Exception as e:
+        # #314: a failed exchange reconcile must not be downgraded to a warning —
+        # "no cycle without reconcile". Every other runtime hiccup stays best-effort.
+        from execution.recovery import RecoveryFailed
+        if isinstance(e, RecoveryFailed):
+            log(f"skip price cycle: exchange recovery failed: {e}", "ERROR")
+            return
         log(f"Architecture runtime tick failed: {e}", "WARNING")
     use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
 
