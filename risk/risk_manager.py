@@ -962,15 +962,16 @@ class RiskManager:
         floor_abs = self._cash_floor_abs()
         spendable = self._spendable_usdt(equity, is_dca=False)
         full_slots = count_open_full_slots(self.config.raw)
+        daily = self._daily_counters_from_orders(self._load_orders_document())
         out = {
             "open_positions": count_open_positions(),
             "open_full_slots": full_slots,
             "max_open_positions": self.config.max_open_positions,
-            "daily_trades": self._daily_trades_count(),
-            "daily_buys": self._daily_buys_count(dca_only=False if self._dca_limits_enabled() else None),
-            "daily_dca_buys": self._daily_dca_buys_count(),
-            "daily_dca_usdt": round(self._daily_dca_usdt_sum(), 2),
-            "daily_sells": self._daily_sells_count(),
+            "daily_trades": daily["daily_trades"],
+            "daily_buys": daily["daily_buys"],
+            "daily_dca_buys": daily["daily_dca_buys"],
+            "daily_dca_usdt": round(daily["daily_dca_usdt"], 2),
+            "daily_sells": daily["daily_sells"],
             "max_daily_trades": self._effective_max_daily_buys(),
             "max_daily_buys": self._effective_max_daily_buys(),
             "max_daily_dca_buys": self._effective_max_daily_dca_buys(),
@@ -2558,6 +2559,11 @@ class RiskManager:
             return side
         return ""
 
+    def _load_orders_document(self) -> dict:
+        from data_manager import load_orders, resolve_ledger_scope
+
+        return load_orders(resolve_ledger_scope(self.config.trading_mode)) or {}
+
     def _daily_trades_count(
         self,
         side: str | None = None,
@@ -2572,13 +2578,16 @@ class RiskManager:
         *,
         side: str | None = None,
         dca_only: bool | None = None,
+        orders_doc: dict | None = None,
+        cutoff: datetime | None = None,
     ):
-        from data_manager import load_orders, resolve_ledger_scope
-
-        cutoff = datetime.now() - timedelta(hours=24)
-        scope = resolve_ledger_scope(self.config.trading_mode)
+        if cutoff is None:
+            cutoff = datetime.now() - timedelta(hours=24)
+        if orders_doc is None:
+            orders_doc = self._load_orders_document()
+        orders = orders_doc.get("orders", []) if isinstance(orders_doc, dict) else []
         want = (side or "").lower() or None
-        for order in load_orders(scope).get("orders", []):
+        for order in orders:
             if order.get("status") != "filled":
                 continue
             order_side = self._order_side(order)
@@ -2600,6 +2609,35 @@ class RiskManager:
                 continue
             if ts >= cutoff:
                 yield order
+
+    def _daily_counters_from_orders(
+        self,
+        orders_doc: dict | None,
+        *,
+        cutoff: datetime | None = None,
+        dca_limits: bool | None = None,
+    ) -> dict:
+        """Derive the five daily counters from one already-loaded orders document."""
+        if cutoff is None:
+            cutoff = datetime.now() - timedelta(hours=24)
+        if dca_limits is None:
+            dca_limits = self._dca_limits_enabled()
+        filled = list(
+            self._iter_daily_filled_orders(orders_doc=orders_doc or {}, cutoff=cutoff)
+        )
+        buys = [o for o in filled if self._order_side(o) == "buy"]
+        dca_buys = [o for o in buys if self._order_is_dca(o)]
+        if dca_limits:
+            daily_buys = sum(1 for o in buys if not self._order_is_dca(o))
+        else:
+            daily_buys = len(buys)
+        return {
+            "daily_trades": len(filled),
+            "daily_buys": daily_buys,
+            "daily_dca_buys": len(dca_buys),
+            "daily_dca_usdt": sum(self._filled_order_usdt(o) for o in dca_buys),
+            "daily_sells": sum(1 for o in filled if self._order_side(o) == "sell"),
+        }
 
     def _daily_buys_count(self, *, dca_only: bool | None = None) -> int:
         return self._daily_trades_count("buy", dca_only=dca_only)
