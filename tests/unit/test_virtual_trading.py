@@ -282,50 +282,57 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("live_confirm", reason)
 
     def test_gate_adapter_dry_run(self):
+        # #312: live.dry_run=true is a deprecated alias for live.execution=shadow.
+        # The order is filled locally through the one execution path; nothing is
+        # sent to Gate. Message starts with "shadow" (was "Dry run").
         from execution.gate_adapter import GateExecutionAdapter
         from core.config import BotConfig
         from core.models import TradeOrder
         from data_manager import get_config
-
         raw = dict(get_config())
+        raw["trading_mode"] = "live"
         raw.setdefault("live", {})["dry_run"] = True
         cfg = BotConfig()
         cfg._raw = raw
         adapter = GateExecutionAdapter(cfg)
+        self.assertEqual(adapter.mode, "shadow")
         with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
             from core.models import TradeResult
             mock_buy.return_value = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=0.5, usdt_amount=5)
             with patch("execution.gate_adapter.record_live_trade"):
                 result = adapter.execute(TradeOrder("BUY", "XRVM/USDT", 0.5, 10, usdt_amount=5), "4h")
         self.assertTrue(result.executed)
-        self.assertIn("Dry run", result.message)
-
+        self.assertTrue(result.message.startswith("shadow"), result.message)
+        self.assertNotIn("Dry run", result.message)
     def test_execution_factory_paper(self):
+        # #312: one execution path. paper -> GateExecutionAdapter in shadow mode
+        # (precision/limits run, no create_*_order). PaperExecutionAdapter is gone.
         from core.config import BotConfig
         from data_manager import get_config
         from execution.factory import get_execution_adapter
-        from execution.paper_adapter import PaperExecutionAdapter
-
+        from execution.gate_adapter import GateExecutionAdapter
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
         cfg = BotConfig()
         cfg._raw = raw
         adapter = get_execution_adapter(cfg)
-        self.assertIsInstance(adapter, PaperExecutionAdapter)
-
+        self.assertIsInstance(adapter, GateExecutionAdapter)
+        self.assertEqual(adapter.mode, "shadow")
+        with self.assertRaises(ModuleNotFoundError):
+            import execution.paper_adapter  # noqa: F401
     def test_execution_factory_gate_testnet_uses_paper(self):
+        # #312: legacy trading_mode "gate_testnet" resolves to shadow (never real orders).
         from core.config import BotConfig
         from data_manager import get_config
         from execution.factory import get_execution_adapter
-        from execution.paper_adapter import PaperExecutionAdapter
-
+        from execution.gate_adapter import GateExecutionAdapter
         raw = dict(get_config())
         raw["trading_mode"] = "gate_testnet"
         cfg = BotConfig()
         cfg._raw = raw
         adapter = get_execution_adapter(cfg)
-        self.assertIsInstance(adapter, PaperExecutionAdapter)
-
+        self.assertIsInstance(adapter, GateExecutionAdapter)
+        self.assertEqual(adapter.mode, "shadow")
     def test_trading_mode_gate_testnet_migrates_to_paper(self):
         from core.config import BotConfig
         from data_manager import get_config
