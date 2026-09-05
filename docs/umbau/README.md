@@ -1,6 +1,6 @@
 # Umbau-Konzept — Kasse, Kassenbuch, Wetterdienst, Gegenrichtung, Kontext, Muster, Autonomie
 
-**Stand:** 5. September 2026 · **Basis:** `staging` @ `1b40c69` (PR #297) · **Tracking:** Epic #309
+**Stand:** 5. September 2026 · **Basis:** `staging` @ `1b40c69` (PR #297) · **Integrationsbranch:** `rebuild/phase1` · **Tracking:** Epic #309 · Phase 1: #317
 
 Dieses Verzeichnis ist die Quelle der Wahrheit für den Umbau. Es ersetzt `ARCHITECTURE_PLAN.md` (Juni 2026, Redis-3+1-Split) — der liegt archiviert unter `archive/superseded/`.
 
@@ -12,6 +12,11 @@ Dieses Verzeichnis ist die Quelle der Wahrheit für den Umbau. Es ersetzt `ARCHI
 | [`konzept-regime-strategie-v4.md`](konzept-regime-strategie-v4.md) | Abgleich gegen die Codebasis, Erweiterung auf 7 Phasen, Code-Kritik (Teil F) | **aktiv — Leitdokument** |
 | [`phase1-kasse.md`](phase1-kasse.md) | Aufgabenliste Phase 1 mit C/G-Delegation und Abnahmekriterien | aktiv |
 | [`audit-exceptions-phase1.md`](audit-exceptions-phase1.md) | 204 Exception-Stellen in geldrelevanten Dateien, heuristisch vorklassifiziert — Arbeitsgrundlage für Phase 1 §1a | aktiv |
+| [`costmodel-design.md`](costmodel-design.md) | Design `core/costs.py` — Schnittstelle, Fee-Side-Semantik, Migration, Tests (#301) | umgesetzt |
+| [`degraded-design.md`](degraded-design.md) | `measured`/`degraded` durch den Fusion-Pfad — fehlende Daten dürfen nicht wie gute aussehen (#299 Tier 1b) | Design |
+| [`ledger-io-design.md`](ledger-io-design.md) | Ledger-I/O: Fehler propagieren statt leerem Zustand, `positions_unknown` (#318) | Design |
+| [`../audit/exceptions-phase1.md`](../audit/exceptions-phase1.md) | Exception-Inventar §1a — 204 Stellen klassifiziert A/B/C (#311) | fertig |
+| [`../audit/fail-open-phase1.md`](../audit/fail-open-phase1.md) | Fail-Open-Inventar §1b — Kontext vs. Geld, 56 Geld-Stellen (#311) | fertig |
 | [`archive/konzept-regime-strategie-v2.md`](archive/konzept-regime-strategie-v2.md) | Vorversion | superseded |
 
 v4 legt sich über v3, ersetzt es nicht. Wer den Umbau versteht, hat v4 gelesen und v3 als Nachschlagewerk daneben.
