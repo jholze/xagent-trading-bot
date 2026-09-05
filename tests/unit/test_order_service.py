@@ -23,6 +23,19 @@ from services.order_service import (
 
 _HOST_TZS = ("UTC", "Europe/Berlin")
 
+# Display fixtures (#320 review): the naive literals were written on a
+# Europe/Berlin host and mean "19:16 Berlin" only with that host clock — the
+# code reads naive stamps as the writer's process clock (UTC on Railway). The
+# aware variant proves the same digits on a UTC host. Assertions unchanged.
+_DISPLAY_CASES_BUY = (
+    ("Europe/Berlin", "2026-06-07T19:16:08"),
+    ("UTC", "2026-06-07T19:16:08+02:00"),
+)
+_DISPLAY_CASES_SELL = (
+    ("Europe/Berlin", "2026-06-08T10:30:00"),
+    ("UTC", "2026-06-08T10:30:00+02:00"),
+)
+
 
 @contextmanager
 def host_tz_ctx(tz_name: str):
@@ -183,13 +196,13 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(l_orders[0]["symbol"], "B/USDT")
 
     def test_format_order_line_includes_trade_date(self):
-        for tz in _HOST_TZS:
+        for tz, stamp in _DISPLAY_CASES_BUY:
             with self.subTest(tz=tz), host_tz_ctx(tz):
                 line = format_order_line({
                     "status": "filled", "display_seq": 3, "side": "buy",
                     "symbol": "ARIA/USDT", "source": "manual",
                     "request": {"usdt": 200}, "execution": {"usdt": 200},
-                    "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
+                    "timestamps": {"created": stamp, "filled": stamp},
                 })
                 self.assertIn("#3", line)
                 self.assertIn("ARIA", line)
@@ -220,20 +233,20 @@ class TestOrderService(unittest.TestCase):
         self.assertIn("$+0.0", line)
 
     def test_format_order_detail_shows_buy_date_label(self):
-        for tz in _HOST_TZS:
+        for tz, stamp in _DISPLAY_CASES_BUY:
             with self.subTest(tz=tz), host_tz_ctx(tz):
                 detail = format_order_detail({
                     "display_seq": 1, "status": "filled", "side": "buy",
                     "symbol": "ARIA/USDT", "source": "manual", "ledger_scope": "paper",
                     "request": {"price": 0.05, "usdt": 200},
                     "risk": {}, "execution": {"usdt": 200, "price": 0.05, "amount": 4000},
-                    "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
+                    "timestamps": {"created": stamp, "filled": stamp},
                 })
                 self.assertIn("Kaufdatum", detail)
                 self.assertIn("07.06.2026 19:16", detail)
 
     def test_format_order_detail_shows_sell_date_label(self):
-        for tz in _HOST_TZS:
+        for tz, stamp in _DISPLAY_CASES_SELL:
             with self.subTest(tz=tz), host_tz_ctx(tz):
                 detail = format_order_detail({
                     "display_seq": 2, "status": "filled", "side": "sell",
@@ -241,7 +254,7 @@ class TestOrderService(unittest.TestCase):
                     "request": {"price": 70, "amount": 2},
                     "risk": {}, "execution": {"usdt": 140, "price": 70, "amount": 2},
                     "pnl": 3.5,
-                    "timestamps": {"created": "2026-06-08T10:30:00", "filled": "2026-06-08T10:30:00"},
+                    "timestamps": {"created": stamp, "filled": stamp},
                 })
                 self.assertIn("Verkaufdatum", detail)
                 self.assertIn("08.06.2026 10:30", detail)

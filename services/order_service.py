@@ -163,8 +163,8 @@ def _as_display_naive(dt: datetime) -> datetime:
     Naive ledger timestamps come from ``datetime.now()`` (process-local wall
     clock — typically UTC on Railway). They are NOT already Europe/Berlin;
     attach process-local tzinfo first, then convert to display_tz.
-    Telegram rendering uses ``format_operator_time`` instead (naive wall
-    clock treated as operator TZ so host TZ does not shift the digits).
+    Telegram rendering (``_format_ts_short``) goes through
+    ``format_operator_time``, which applies the same rule.
     """
     try:
         from core.time_utils import display_tz

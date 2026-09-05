@@ -42,13 +42,32 @@ class TestTimeUtils(unittest.TestCase):
         self.assertEqual(operator_timezone_name(), "Europe/Berlin")
         self.assertEqual(str(operator_tz()), "Europe/Berlin")
 
-    def test_format_operator_time_naive_is_operator_wallclock(self):
-        dt = datetime(2026, 6, 7, 19, 16, 8)
-        self.assertEqual(format_operator_time(dt, "%d.%m.%Y %H:%M"), "07.06.2026 19:16")
-        self.assertEqual(
-            format_operator_time("2026-06-07T19:16:08", "%d.%m.%Y %H:%M"),
-            "07.06.2026 19:16",
-        )
+    def test_format_operator_time_naive_is_process_local(self):
+        """Naive stamps are the writer's process clock (#320 review).
+
+        Railway writes naive UTC: 17:16 must render as 19:16 Berlin. A Berlin
+        host writes naive Berlin: 19:16 stays 19:16.
+        """
+        cases = (("UTC", "2026-06-07T17:16:08"), ("Europe/Berlin", "2026-06-07T19:16:08"))
+        old = os.environ.get("TZ")
+        try:
+            for tz_name, stamp in cases:
+                os.environ["TZ"] = tz_name
+                time.tzset()
+                self.assertEqual(
+                    format_operator_time(stamp, "%d.%m.%Y %H:%M"), "07.06.2026 19:16", tz_name
+                )
+                self.assertEqual(
+                    format_operator_time(datetime.fromisoformat(stamp), "%d.%m.%Y %H:%M"),
+                    "07.06.2026 19:16",
+                    tz_name,
+                )
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
 
     def test_format_operator_time_converts_aware_utc(self):
         dt = datetime(2026, 6, 7, 17, 16, 8, tzinfo=timezone.utc)
@@ -58,20 +77,23 @@ class TestTimeUtils(unittest.TestCase):
             "07.06.2026 19:16",
         )
 
-    def test_to_operator_time_naive_stays_berlin_on_any_host_tz(self):
-        naive = datetime(2026, 6, 7, 19, 16, 8)
+    def test_to_operator_time_aware_is_host_independent(self):
+        """Aware stamps render identically on every host TZ; naive ones follow the host clock."""
+        aware = datetime(2026, 6, 7, 17, 16, 8, tzinfo=timezone.utc)
+        naive_utc_written = datetime(2026, 6, 7, 17, 16, 8)
         old = os.environ.get("TZ")
         try:
             for tz_name in ("UTC", "Europe/Berlin", "Asia/Tokyo"):
                 os.environ["TZ"] = tz_name
                 time.tzset()
-                got = to_operator_time(naive)
+                got = to_operator_time(aware)
                 self.assertEqual(got.tzinfo, ZoneInfo("Europe/Berlin"))
-                self.assertEqual(got.replace(tzinfo=None), naive)
-                self.assertEqual(
-                    format_operator_time(naive, "%d.%m.%Y %H:%M"),
-                    "07.06.2026 19:16",
+                self.assertEqual(format_operator_time(aware, "%d.%m.%Y %H:%M"), "07.06.2026 19:16")
+                # naive → tagged with the host zone, then converted
+                expect = naive_utc_written.replace(tzinfo=ZoneInfo(tz_name)).astimezone(
+                    ZoneInfo("Europe/Berlin")
                 )
+                self.assertEqual(to_operator_time(naive_utc_written), expect, tz_name)
         finally:
             if old is None:
                 os.environ.pop("TZ", None)

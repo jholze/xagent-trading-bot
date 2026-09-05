@@ -123,13 +123,18 @@ def parse_iso_datetime(value: str | datetime | None) -> datetime | None:
 def to_operator_time(dt: datetime) -> datetime:
     """Return *dt* as an aware datetime in the operator timezone.
 
-    Naive values are treated as already in OPERATOR_TZ (the wall-clock
-    numbers in ledger fixtures and Berlin-host ``datetime.now()`` writes).
-    Aware values are converted.
+    Naive values are the process-local wall clock that ``datetime.now()`` /
+    ``OrderService._now()`` writes (UTC on Railway, Europe/Berlin on the
+    operator Mac) — the same rule ``to_utc`` and the calendar windows in
+    ``services.order_service`` follow (frozen contract:
+    ``test_naive_utc_fill_near_midnight_on_berlin_day``). They are tagged
+    with ``process_local_tz()`` and converted; aware values are converted.
+    Treating naive stamps as operator time would render Railway-written
+    times two hours early (#320 review).
     """
     tz = operator_tz()
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=tz)
+        dt = dt.replace(tzinfo=process_local_tz())
     return dt.astimezone(tz)
 
 
