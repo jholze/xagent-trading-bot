@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from bus.redis_client import get_redis, resolve_redis_url
+
+_DEFAULT_KEY_PREFIX = "aria:"
+_ENV_KEY_PREFIX = "OHLCV_CACHE_KEY_PREFIX"
+
+
+def _env_key_prefix() -> str | None:
+    raw = (os.environ.get(_ENV_KEY_PREFIX) or "").strip()
+    return raw or None
 
 
 @dataclass(frozen=True)
@@ -51,11 +60,11 @@ class OhlcvCache:
         self,
         *,
         redis_url: str | None = None,
-        key_prefix: str = "aria:",
+        key_prefix: str | None = None,
         config_raw: dict | None = None,
     ):
         self.redis_url = redis_url
-        self.key_prefix = key_prefix
+        self.key_prefix = key_prefix or _env_key_prefix() or _DEFAULT_KEY_PREFIX
         self.config_raw = config_raw
         self._ram: dict[tuple[str, str, int], CachedOhlcvBars] = {}
         self._lock = threading.RLock()
@@ -254,7 +263,7 @@ def ohlcv_cache_from_config(config_raw: dict | None = None) -> OhlcvCache:
     arch = (config_raw or {}).get("architecture") or {}
     cache = OhlcvCache(
         redis_url=resolve_redis_url(arch.get("redis_url")),
-        key_prefix=str(arch.get("key_prefix", "aria:")),
+        key_prefix=_env_key_prefix() or str(arch.get("key_prefix", _DEFAULT_KEY_PREFIX)),
         config_raw=config_raw,
     )
     if _default_cache is None:
@@ -289,10 +298,12 @@ def _delete_redis_ohlcv_keys(key_prefix: str, redis_url: str | None = None) -> N
 
 def reset_ohlcv_cache_for_tests() -> None:
     global _default_cache
-    prefix = "aria:"
+    prefix = _DEFAULT_KEY_PREFIX
     redis_url = None
     if _default_cache is not None:
         prefix = _default_cache.key_prefix
         redis_url = _default_cache.redis_url
+    else:
+        prefix = _env_key_prefix() or _DEFAULT_KEY_PREFIX
     _delete_redis_ohlcv_keys(prefix, redis_url)
     _default_cache = None
