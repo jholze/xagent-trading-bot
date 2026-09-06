@@ -143,6 +143,14 @@ def build_plan_payload() -> tuple[str, str | None, object]:
             html = f"{html}\n\n{block}"
     except Exception:
         pass
+    try:
+        from services.reporting.benchmark import format_btc_benchmark_line
+
+        bench = format_btc_benchmark_line(history)
+        if bench:
+            html = f"{html}\n{bench}"
+    except Exception:
+        pass
     chart_path = render_plan_chart_for_current(
         start_capital=init,
         plan_start=plan_start,
