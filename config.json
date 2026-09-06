@@ -790,6 +790,7 @@
     "market_context_notify_min_sec": 120,
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
     "decisions_audit": true,
     "decisions_log_max_bytes": 52428800,
     "decisions_log_rotate_keep": 3,

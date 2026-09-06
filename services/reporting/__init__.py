@@ -1,4 +1,4 @@
-"""Read-side reporting helpers (slippage, attribution, live metrics)."""
+"""Read-side reporting helpers (slippage, attribution, live metrics, BTC benchmark)."""
 
 from __future__ import annotations
 

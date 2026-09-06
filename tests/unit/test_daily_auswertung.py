@@ -67,3 +67,89 @@ def test_build_telegram_daily_summary(bot_dir):
     assert "Tages-Auswertung 2026-06-14" in summary
     assert "Portfolio" in summary
     assert "DCA" in summary
+
+
+def test_generate_report_reads_isolated_ledger_not_legacy_files(bot_dir):
+    """#307: trades/orders come from data_manager, not live_trade_history.json."""
+    from datetime import datetime
+
+    from data_manager import (
+        resolve_ledger_scope,
+        save_orders,
+        save_trade_history_document,
+    )
+
+    ts = "2026-06-14T10:15:00"
+    scope = resolve_ledger_scope()
+    save_trade_history_document(
+        {
+            "trades": [
+                {
+                    "type": "SELL",
+                    "symbol": "AAA/USDT",
+                    "pnl": 12.5,
+                    "source": "grid",
+                    "timestamp": ts,
+                    "usdt_amount": 100,
+                    "usdt_received": 100,
+                }
+            ],
+            "virtual_balance": 4242,
+            "realized_pnl": 12.5,
+        },
+        scope,
+    )
+    save_orders(
+        {
+            "ledger_scope": scope,
+            "orders": [
+                {
+                    "symbol": "AAA/USDT",
+                    "status": "filled",
+                    "timestamps": {"created": ts},
+                }
+            ],
+        },
+        scope,
+    )
+    (bot_dir / "live_trade_history.json").write_text(
+        json.dumps(
+            {
+                "trades": [
+                    {
+                        "type": "SELL",
+                        "symbol": "LEGACY/USDT",
+                        "pnl": 999,
+                        "source": "x",
+                        "timestamp": ts,
+                        "usdt_amount": 1,
+                    }
+                ],
+                "virtual_balance": 1,
+                "realized_pnl": 999,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bot_dir / "orders.live.json").write_text(
+        json.dumps(
+            {
+                "orders": [
+                    {
+                        "symbol": "LEGACY/USDT",
+                        "status": "filled",
+                        "timestamps": {"created": ts},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = generate_report(bot_dir, datetime(2026, 6, 14, 12, 0, 0))
+    summary = build_telegram_daily_summary(bot_dir, datetime(2026, 6, 14, 12, 0, 0))
+    assert "AAA/USDT" in report
+    assert "LEGACY/USDT" not in report
+    assert "grid" in report
+    assert "AAA/USDT" in summary
+    assert "LEGACY/USDT" not in summary

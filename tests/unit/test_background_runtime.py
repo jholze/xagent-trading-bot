@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -166,6 +167,86 @@ class TestDedup(unittest.TestCase):
         with patch("bus.dedup.get_redis", return_value=None):  # force memory fallback, avoid any redis side effects in batch
             self.assertTrue(try_claim_id("test", "post1", ttl_sec=60))
             self.assertFalse(try_claim_id("test", "post1", ttl_sec=60))
+
+
+class TestDailyReportTick(unittest.TestCase):
+    def setUp(self):
+        bg._last_daily_tick_day = None
+
+    def tearDown(self):
+        bg._last_daily_tick_day = None
+
+    def _obs(self, **overrides):
+        cfg = {
+            "morning_briefing_enabled": True,
+            "morning_briefing_hour": 8,
+            "daily_report_telegram": False,
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def _now(self, hour, minute=0, day=6):
+        from zoneinfo import ZoneInfo
+
+        return datetime(2026, 9, day, hour, minute, tzinfo=ZoneInfo("Europe/Berlin"))
+
+    def test_does_not_fire_before_hour(self):
+        with patch("notifications.morning_briefing.send_morning_briefing") as send, \
+             patch.object(bg, "_operator_chat_id", return_value="chat-1"):
+            result = bg._maybe_tick_daily_reports(self._now(7, 59), cfg=self._obs())
+        self.assertFalse(result["fired"])
+        self.assertEqual(result["reason"], "before_hour")
+        send.assert_not_called()
+
+    def test_fires_at_hour_once_not_twice(self):
+        with patch("notifications.morning_briefing.send_morning_briefing") as send, \
+             patch.object(bg, "_operator_chat_id", return_value="chat-1"):
+            first = bg._maybe_tick_daily_reports(self._now(8, 0), cfg=self._obs())
+            second = bg._maybe_tick_daily_reports(self._now(9, 15), cfg=self._obs())
+        self.assertTrue(first["fired"])
+        self.assertTrue(first["morning"])
+        self.assertFalse(second["fired"])
+        self.assertEqual(second["reason"], "already_ticked")
+        self.assertEqual(send.call_count, 1)
+
+    def test_respects_morning_marker(self):
+        from notifications.morning_briefing import mark_morning_sent
+
+        now = self._now(8, 5)
+        mark_morning_sent("chat-1", now=now)
+        with patch("notifications.morning_briefing.send_morning_briefing") as send, \
+             patch.object(bg, "_operator_chat_id", return_value="chat-1"):
+            result = bg._maybe_tick_daily_reports(now, cfg=self._obs())
+        self.assertTrue(result["fired"])
+        self.assertTrue(result["morning_skipped_marker"])
+        self.assertFalse(result["morning"])
+        send.assert_not_called()
+
+    def test_disabled_flag_does_not_send(self):
+        with patch("notifications.morning_briefing.send_morning_briefing") as send, \
+             patch("scripts.daily_auswertung.send_daily_telegram_summary") as daily, \
+             patch.object(bg, "_operator_chat_id", return_value="chat-1"):
+            result = bg._maybe_tick_daily_reports(
+                self._now(8, 0),
+                cfg=self._obs(morning_briefing_enabled=False, daily_report_telegram=False),
+            )
+        self.assertTrue(result["fired"])
+        self.assertFalse(result["morning_enabled"])
+        send.assert_not_called()
+        daily.assert_not_called()
+
+    def test_daily_report_after_briefing_when_flag_set(self):
+        with patch("notifications.morning_briefing.send_morning_briefing") as send, \
+             patch("scripts.daily_auswertung.send_daily_telegram_summary", return_value=True) as daily, \
+             patch.object(bg, "_operator_chat_id", return_value="chat-1"):
+            result = bg._maybe_tick_daily_reports(
+                self._now(8, 0),
+                cfg=self._obs(daily_report_telegram=True),
+            )
+        self.assertTrue(result["fired"])
+        send.assert_called_once()
+        daily.assert_called_once()
+        self.assertTrue(result["daily"])
 
 
 if __name__ == "__main__":

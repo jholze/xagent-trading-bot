@@ -1019,6 +1019,9 @@ New BUY signal → BLOCKED (except manual /ask)
     "notify_on_cycle": true,
     "terminal_dashboard": true,
     "decisions_audit": true,
+    "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
+    "daily_report_telegram": true,
     "telegram_explanations": {
       "enabled": true,
       "verbosity": "verbose",
@@ -1081,6 +1084,14 @@ New BUY signal → BLOCKED (except manual /ask)
 ```
 
 `volatile_altcoin` — sections 6.5–6.9. `architecture` — section 2. `ask_bridge` — section 7. `telegram_command_menu` — see section 7 (menu button, section keyboard, DE/EN). Optional: `"button_text": "Menü"` for a fixed button title. `mcp` — [§19](#19-grok-mcp-xagent-mcp).
+
+**Daily tick** (`services/background_runtime._loop`, display timezone via `calendar_day_bounds`, never `date.today()`):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `morning_briefing_enabled` | `true` | Once per calendar day at/after `morning_briefing_hour`, send the morning briefing (same `data/morning_briefing.json` marker as `/morning` — command and scheduler never double-send) |
+| `morning_briefing_hour` | `8` | Hour in the operator/display timezone (`operator_timezone` / `display_timezone`) |
+| `daily_report_telegram` | `true` | After the briefing, send the compact daily summary (`scripts/daily_auswertung.py`, ledger via `resolve_ledger_scope()`) |
 
 ### `.env` (do not commit)
 
