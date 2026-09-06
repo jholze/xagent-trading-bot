@@ -1283,9 +1283,14 @@ class RiskManager:
     def _trailing_24h_realized_pnl(self) -> float:
         """Filled-order realized PnL over the trailing 24h (order-service window)."""
         from data_manager import resolve_ledger_scope
-        from services.order_service import OrderService
+        from services.order_service import OrderService, _display_now_naive
 
-        now = datetime.now()
+        # _stats_filled_window filters through order_event_ts, which is naive in
+        # the DISPLAY timezone. A naive datetime.now() is the process clock (UTC
+        # on Railway), so the window was shifted by the UTC offset: the last two
+        # hours of fills were missing and fills from 24-26 h ago counted instead
+        # -- exactly the wrong window for a kill switch (review of PR #322).
+        now = _display_now_naive()
         start = now - timedelta(hours=24)
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
         return float((stats or {}).get("realized_pnl") or 0)

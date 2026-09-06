@@ -212,6 +212,25 @@ class TradingService:
         self._send_recorded_positions_snapshots(result)
         return result
 
+    def _notify_ledger_write_after_fill(self, order: TradeOrder, result: TradeResult, exc) -> None:
+        """Alert once per episode: the fill is real but the ledger row is stale."""
+        from core.operator_notify import notify_operator
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        key = (resolve_tenant_id(), resolve_tenant_scope())
+        if key in _ledger_unavailable_notified:
+            return
+        _ledger_unavailable_notified.add(key)
+        try:
+            notify_operator(
+                f"\u26a0\ufe0f <b>Ledger-Schreibfehler nach Ausf\u00fchrung</b>\n"
+                f"{order.type} {order.symbol} wurde ausgef\u00fchrt, die Ledger-Zeile ist nicht "
+                f"aktualisiert.\nGrund: {exc}\nBitte /orders und die Position pr\u00fcfen; "
+                f"der Abgleich beim n\u00e4chsten Start korrigiert die Zeile."
+            )
+        except Exception as e:
+            log(f"operator notify failed after ledger write error: {e}", "WARNING")
+
     def _deny_ledger_unavailable(self, order: TradeOrder, exc: LedgerUnavailable) -> TradeResult:
         """Fail closed for every order type; notify the operator once per episode."""
         from core.operator_notify import notify_operator
@@ -405,7 +424,23 @@ class TradingService:
 
         result = self.adapter.execute(approved_order, timeframe)
         result.order_id = ledger_id
-        ledger.link_execution_result(ledger_id, result, approved_order)
+        try:
+            ledger.link_execution_result(ledger_id, result, approved_order)
+        except LedgerUnavailable as exc:
+            # The exchange call already happened. A failing ledger write must not
+            # be reported as a denial -- that would tell the operator "nothing
+            # happened" while a real position exists. Keep the true result, flag
+            # it for reconcile and alert once (review of PR #322).
+            log(
+                f"Ledger write failed AFTER execution "
+                f"({approved_order.type} {approved_order.symbol}, executed={result.executed}): {exc}",
+                "ERROR",
+            )
+            if result.executed:
+                result.needs_reconcile = True
+                self._notify_ledger_write_after_fill(approved_order, result, exc)
+            else:
+                return self._deny_ledger_unavailable(order, exc)
         if result.executed:
             log(
                 f"{self.adapter.mode.upper()} {approved_order.type} {approved_order.symbol} "

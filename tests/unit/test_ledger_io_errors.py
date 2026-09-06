@@ -288,3 +288,35 @@ def test_should_refuse_json_fallback_mongo_vs_local(monkeypatch):
     }
     assert _should_refuse_json_fallback("live", mongo_cfg) is True
     assert _should_refuse_json_fallback("paper", local_cfg) is False
+
+
+def test_filled_order_with_failing_ledger_write_is_not_reported_as_denial():
+    """Review PR #322: the exchange call happened -- never report "denied"."""
+    from unittest.mock import patch
+
+    from core.models import TradeOrder, TradeResult
+    from services import trading_service as ts
+    from services.trading_service import TradingService
+    from storage.errors import LedgerWriteFailed
+
+    ts._ledger_unavailable_notified.clear()
+    svc = TradingService()
+    svc.config._raw.setdefault("architecture", {})["ledger_lock_fail_closed"] = False
+    svc.config._raw["architecture"]["single_writer_lease_enabled"] = False
+    order = TradeOrder(type="BUY", symbol="BTC/USDT", price=100.0, amount=0, usdt_amount=50)
+    filled = TradeResult(True, "BUY", "BTC/USDT", amount=0.5, price=100.0, usdt_amount=50)
+
+    with patch.object(svc.adapter, "execute", return_value=filled), patch.object(
+        svc.risk, "evaluate", return_value=__import__("core.models", fromlist=["RiskDecision"]).RiskDecision(
+            approved=True, message="", order=order
+        )
+    ), patch(
+        "services.order_service.OrderService.link_execution_result",
+        side_effect=LedgerWriteFailed("disk full", op="save_orders"),
+    ), patch("core.operator_notify.notify_operator") as notify:
+        result = svc.execute_order(order, "4h", source="manual")
+
+    assert result.executed is True, "a real fill must not be reported as denied"
+    assert result.needs_reconcile is True
+    assert getattr(result, "code", "") != "ledger_unavailable"
+    assert notify.call_count == 1
