@@ -115,7 +115,7 @@ def health_payload(update_interval: float | None = None) -> tuple[dict[str, Any]
         lease_status = writer_lease_status()
         fence = writer_lease_fence()
     except Exception:
-        lease_status = "readonly"
+        lease_status = "lost"
         fence = None
     body: dict[str, Any] = {
         "status": "OK",
@@ -123,7 +123,17 @@ def health_payload(update_interval: float | None = None) -> tuple[dict[str, Any]
         "writer_lease": lease_status,
         "fence": fence,
     }
-    if lease_status != "disabled":
+    if lease_status == "standby":
+        # Never held in this process: Railway deploy overlap (the old container
+        # still holds the lease) or Redis down at start. Must be 200, otherwise
+        # the new container never passes the healthcheck and the old one is
+        # never stopped -- every deploy would fail (review #306).
+        body["status"] = "standby"
+        return body, 200
+    if lease_status == "lost":
+        body["status"] = "not_ready"
+        return body, 503
+    if lease_status == "held":
         recovered = False
         try:
             from services.architecture_runtime import tenant_recovery_completed
@@ -131,7 +141,7 @@ def health_payload(update_interval: float | None = None) -> tuple[dict[str, Any]
             recovered = bool(tenant_recovery_completed())
         except Exception:
             recovered = False
-        if lease_status != "held" or not recovered:
+        if not recovered:
             body["status"] = "not_ready"
             return body, 503
     if age is None:

@@ -57,6 +57,7 @@ _active_leases: list = []
 _readonly_notified: set[tuple[str, str]] = set()
 _recovered_notified: set[tuple[str, str]] = set()
 _on_acquired: Callable[[], None] | None = None
+_callback_threads: list[threading.Thread] = []
 
 
 def lease_redis_key(tenant_id: str, scope: str) -> str:
@@ -337,7 +338,12 @@ class WriterLease:
         self._thread.start()
 
     def _renewer_loop(self) -> None:
-        while not self._stop.wait(self.renew_sec):
+        while True:
+            # Held: renew every renew_sec. Not held: retry quickly so a new
+            # container takes over within ~2 s once the old one releases.
+            interval = float(self.renew_sec) if self.held() else min(2.0, float(self.renew_sec))
+            if self._stop.wait(interval):
+                return
             try:
                 if self._acquired and not self._lost:
                     if self.renew():
@@ -349,7 +355,7 @@ class WriterLease:
                         _notify_reacquired(self)
                     else:
                         _notify_first_hold(self)
-                    _fire_on_acquired()
+                    _fire_on_acquired_async()
             except Exception as e:
                 log(
                     f"writer lease renewer error ({self.tenant_id}/{self.scope}): {e}",
@@ -364,11 +370,21 @@ def writer_lease_held() -> bool:
 
 
 def writer_lease_status() -> str:
+    """disabled | held | lost | standby.
+
+    ``standby``: never held in this process (another holder during a Railway
+    deploy overlap, or Redis unavailable at start). ``lost``: held before,
+    renew failed. /health treats standby as 200 so a new container can pass
+    the deploy healthcheck while the old one still holds the lease; lost is 503.
+    """
     if not lease_enabled():
         return "disabled"
     if writer_lease_held():
         return "held"
-    return "readonly"
+    lease = _process_lease
+    if lease is not None and lease._ever_held:
+        return "lost"
+    return "standby"
 
 
 def writer_lease_fence() -> int | None:
@@ -398,6 +414,15 @@ def require_lease_for_order() -> None:
         return
     lease = _process_lease
     if lease is not None and lease.held():
+        # Review (#306): holding the lease is not enough right after a
+        # takeover -- the exchange reconcile registered as on_acquired must
+        # have completed first ("kein Zyklus ohne Abgleich", #314).
+        if _on_acquired is not None and not _recovery_completed(lease):
+            raise WriterLeaseLost(
+                reason="recovery_pending",
+                tenant_id=lease.tenant_id,
+                scope=lease.scope,
+            )
         return
     tid = lease.tenant_id if lease is not None else None
     scope = lease.scope if lease is not None else None
@@ -520,6 +545,15 @@ def _notify_reacquired(lease: WriterLease) -> None:
     _recovered_notified.discard(key)
 
 
+def _recovery_completed(lease: "WriterLease") -> bool:
+    try:
+        from services.architecture_runtime import tenant_recovery_completed
+
+        return bool(tenant_recovery_completed(lease.tenant_id, lease.scope))
+    except Exception:
+        return False
+
+
 def _fire_on_acquired() -> None:
     cb = _on_acquired
     if cb is None:
@@ -528,6 +562,34 @@ def _fire_on_acquired() -> None:
         cb()
     except Exception as e:
         log(f"writer lease on_acquired callback failed: {e}", "WARNING")
+
+
+def _fire_on_acquired_async() -> None:
+    """Run the on_acquired callback next to the renewer, not inside it.
+
+    The callback is the exchange reconcile, which can take longer than the
+    lease TTL; running it inline would starve renewals and lose the lease
+    while reconciling. Orders stay denied until it completes
+    (require_lease_for_order -> recovery_pending).
+    """
+    if _on_acquired is None:
+        return
+    thread = threading.Thread(
+        target=_fire_on_acquired, name="writer-lease-on-acquired", daemon=True
+    )
+    with _hold_lock:
+        _callback_threads[:] = [t for t in _callback_threads if t.is_alive()]
+        _callback_threads.append(thread)
+    thread.start()
+
+
+def _join_callback_threads(timeout: float = 5.0) -> None:
+    with _hold_lock:
+        threads = list(_callback_threads)
+        _callback_threads.clear()
+    for thread in threads:
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
 
 def _make_process_lease(redis=None) -> WriterLease:
@@ -578,6 +640,7 @@ def shutdown_writer_lease() -> None:
         lease.release()
     finally:
         lease.stop()
+        _join_callback_threads()
 
 
 def reset_writer_lease_for_tests() -> None:
@@ -600,3 +663,4 @@ def reset_writer_lease_for_tests() -> None:
             lease.stop()
         except Exception:
             pass
+    _join_callback_threads()

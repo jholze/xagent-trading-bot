@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from bus.writer_lease import (
+    require_lease_for_order,
     WriterLease,
     fence_redis_key,
     lease_redis_key,
@@ -399,9 +400,12 @@ def test_health_503_until_lease_held_and_recovery_done():
     lease = _lease(redis, clock, tenant="default", scope="demo")
     set_process_lease_for_tests(lease)
 
+    # Review (#306): never held in this process -> standby -> 200, so a new
+    # Railway container passes the deploy healthcheck while the old holder lives.
     body, status = health_payload(update_interval=60)
-    assert status == 503
-    assert body["writer_lease"] == "readonly"
+    assert status == 200
+    assert body["writer_lease"] == "standby"
+    assert body["status"] == "standby"
     assert body["fence"] is None
 
     assert lease.acquire(start_renewer=False) is True
@@ -488,7 +492,7 @@ def test_ensure_writer_lease_readonly_when_held_elsewhere(monkeypatch):
     with patch("core.operator_notify.notify_operator") as notify:
         ok = ensure_writer_lease()
         assert ok is False
-        assert writer_lease_status() == "readonly"
+        assert writer_lease_status() == "standby"
         assert writer_lease_held() is False
         assert notify.call_count == 1
         text = str(notify.call_args[0][0])
@@ -509,7 +513,7 @@ def test_ensure_writer_lease_redis_unavailable_is_readonly(monkeypatch):
     with patch("core.operator_notify.notify_operator") as notify:
         ok = ensure_writer_lease()
     assert ok is False
-    assert writer_lease_status() == "readonly"
+    assert writer_lease_status() == "standby"
     assert notify.call_count == 1
 
 
@@ -548,3 +552,70 @@ def test_shutdown_writer_lease_is_noop_when_disabled():
     shutdown_writer_lease()
     assert writer_lease_status() == "disabled"
     assert writer_lease_fence() is None
+
+
+def test_health_503_when_lease_lost_after_being_held():
+    from core.cycle_health import health_payload, reset_cycle_health_for_tests
+    import services.architecture_runtime as rt
+
+    _enable_lease()
+    reset_cycle_health_for_tests()
+    rt.reset_recovery_state_for_tests()
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    lease = _lease(redis, clock, tenant="default", scope="demo")
+    set_process_lease_for_tests(lease)
+    assert lease.acquire(start_renewer=False) is True
+    with rt._recovery_lock:
+        rt._recovered.add(("default", "demo"))
+    assert health_payload(update_interval=60)[1] == 200
+    lease._mark_lost()
+    body, status = health_payload(update_interval=60)
+    assert status == 503
+    assert body["writer_lease"] == "lost"
+    assert body["status"] == "not_ready"
+
+
+def test_require_lease_waits_for_recovery_callback_after_takeover():
+    """Review (#306): held lease + registered on_acquired -> orders wait for the reconcile."""
+    import bus.writer_lease as wl
+    import services.architecture_runtime as rt
+
+    _enable_lease()
+    rt.reset_recovery_state_for_tests()
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    lease = _lease(redis, clock, tenant="default", scope="demo")
+    set_process_lease_for_tests(lease)
+    assert lease.acquire(start_renewer=False) is True
+    wl._on_acquired = lambda: None  # a recovery callback is registered
+    with pytest.raises(WriterLeaseLost) as ei:
+        require_lease_for_order()
+    assert ei.value.reason == "recovery_pending"
+    with rt._recovery_lock:
+        rt._recovered.add(("default", "demo"))
+    require_lease_for_order()  # passes once recovery is recorded
+    wl._on_acquired = None
+    require_lease_for_order()  # no callback registered -> lease alone suffices
+
+
+def test_on_acquired_runs_in_side_thread_and_reset_joins_it():
+    import bus.writer_lease as wl
+
+    seen: dict = {}
+    started = threading.Event()
+    release = threading.Event()
+
+    def cb():
+        seen["thread"] = threading.current_thread().name
+        started.set()
+        release.wait(timeout=5)
+
+    wl._on_acquired = cb
+    wl._fire_on_acquired_async()
+    assert started.wait(timeout=5)
+    assert seen["thread"] == "writer-lease-on-acquired"
+    release.set()
+    wl.reset_writer_lease_for_tests()
+    assert not any(t.name == "writer-lease-on-acquired" and t.is_alive() for t in threading.enumerate())
+
