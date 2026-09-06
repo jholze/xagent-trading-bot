@@ -309,7 +309,7 @@ def verdict_counts(limit: int | None = None) -> dict[str, int]:
     exps = load_experiments().get("experiments", [])
     if limit is not None:
         exps = exps[-max(0, int(limit)) :]
-    counts: dict[str, int] = {"promoted": 0, "rejected": 0, "inconclusive": 0}
+    counts: dict[str, int] = {"promoted": 0, "rejected": 0, "inconclusive": 0, "suppressed": 0}
     counts.update(Counter((e.get("verdict") or "unknown") for e in exps))
     return counts
 

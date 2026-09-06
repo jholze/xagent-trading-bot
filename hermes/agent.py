@@ -153,6 +153,14 @@ class HermesAgent:
         ohlcv_df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
 
         validation_mode = vcfg.get("mode", "walk_forward")
+        # observe: evaluate and report, never apply. The record must say so —
+        # a "promoted" verdict that was never applied would poison the
+        # post-apply analysis (#308 slice 2).
+        observe = self._is_observe_mode()
+
+        def _record_verdict(v) -> str:
+            return "suppressed" if (v.promoted and observe) else v.label
+
         if validation_mode == "walk_forward" and ohlcv_df is not None and not ohlcv_df.empty:
             wf_base = run_walk_forward(self.backtester, symbol, timeframe, params, ohlcv_df, self.hermes)
             wf_var = run_walk_forward(
@@ -169,7 +177,7 @@ class HermesAgent:
                 proposal=proposal,
                 baseline_metrics=base_m,
                 variant_metrics=var_m,
-                verdict_promoted=verdict.promoted,
+                verdict_promoted=verdict.promoted and not observe,
                 verdict_reason=verdict.reason,
                 symbol=symbol,
                 timeframe=timeframe,
@@ -181,7 +189,7 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
-                verdict=verdict.label,
+                verdict=_record_verdict(verdict),
                 folds_excluded=int(getattr(wf_var, "folds_excluded", 0) or 0),
             )
         else:
@@ -197,7 +205,7 @@ class HermesAgent:
                 proposal=proposal,
                 baseline_metrics=base_m,
                 variant_metrics=var_m,
-                verdict_promoted=verdict.promoted,
+                verdict_promoted=verdict.promoted and not observe,
                 verdict_reason=verdict.reason,
                 symbol=symbol,
                 timeframe=timeframe,
@@ -205,15 +213,16 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
-                verdict=verdict.label,
+                verdict=_record_verdict(verdict),
             )
 
         if verdict.live_veto and le_cfg.get("notify_on_live_veto", True):
             self._notify_live_veto(record, proposal, live_metrics, symbol)
 
         if verdict.promoted:
-            if self._is_observe_mode():
+            if observe:
                 log("hermes observe: promotion suppressed", "INFO")
+                self._notify_cycle_result(record, promoted=False)
             else:
                 baseline["params"] = proposal.params
                 baseline["metrics"] = var_m
@@ -225,7 +234,9 @@ class HermesAgent:
             self._notify_cycle_result(record, promoted=False)
 
         if not verdict.inconclusive:
-            self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
+            self.improver.extract_skill(
+                proposal, base_m, var_m, verdict.promoted and not observe, symbol, timeframe
+            )
         hermes_health.update_inconclusive_health(self.hermes, last_verdict=record.get("verdict"))
         summary = self.improver.analyze_and_suggest(record)
         summary = f"{summary} {hermes_health.format_inconclusive_summary(self.hermes)}"
@@ -234,7 +245,7 @@ class HermesAgent:
             experiment_id=record.get("id", ""),
             variable=proposal.variable,
             verdict=record.get("verdict", "rejected"),
-            promoted=verdict.promoted,
+            promoted=verdict.promoted and not observe,
             baseline_sharpe=base_m.get("sharpe", 0),
             variant_sharpe=var_m.get("sharpe", 0),
             summary=summary,

@@ -351,10 +351,14 @@ def test_observe_mode_skips_config_writer(monkeypatch, hermes_memory_tmp):
 
     sync.assert_not_called()
     save.assert_not_called()
-    assert result.promoted is True
+    # Review (#308): nothing was applied, so neither the cycle result nor the
+    # stored record may claim a promotion -- the post-apply analysis of slice 2
+    # must not count it. The verdict is "suppressed".
+    assert result.promoted is False
     log_fn.assert_any_call("hermes observe: promotion suppressed", "INFO")
     last = store.load_experiments()["experiments"][-1]
-    assert last["verdict"] == "promoted"
+    assert last["verdict"] == "suppressed"
+    assert store.verdict_counts()["suppressed"] >= 1
 
 
 def test_min_trades_per_fold_excludes_thin_folds():
