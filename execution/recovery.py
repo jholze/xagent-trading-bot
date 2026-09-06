@@ -784,7 +784,7 @@ def _apply_raw_without_adapter(
         True,
         order.type,
         order.symbol,
-        amount=filled_f,
+        amount=fill.qty_net,
         price=fill.fill_price,
         usdt_amount=fill.quote_net,
         order_id=order.order_id,
