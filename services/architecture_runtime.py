@@ -51,13 +51,14 @@ def ensure_started(force_refresh: bool = False):
                 log("Architecture runtime: notification_mode=direct (sync)", "INFO")
                 _heartbeat_tick(cfg)
             else:
-                from bus.notifications import notification_publisher
-                from telegram_notifier import _send_telegram_direct
+                from bus.notifications import URGENT_RATE_LIMIT_SEC, notification_publisher
+                from telegram_notifier import _send_telegram_for_publisher
 
                 rate = float(arch.get("notification_rate_limit_sec", 1.0))
                 notification_publisher._rate_limit_sec = rate
+                notification_publisher._urgent_rate_limit_sec = URGENT_RATE_LIMIT_SEC
                 if not notification_publisher.running:
-                    notification_publisher.start(_send_telegram_direct)
+                    notification_publisher.start(_send_telegram_for_publisher)
 
                 _started = True
                 _last_mode = mode
@@ -65,6 +66,24 @@ def ensure_started(force_refresh: bool = False):
                 log("Architecture runtime: async notification worker active", "INFO")
 
     _ensure_tenant_exchange_recovery()
+
+
+def ensure_stopped():
+    """Stop the notification publisher on process shutdown (#305).
+
+    Pending alerts are persisted to the retry buffer by ``NotificationPublisher.stop``.
+    """
+    try:
+        from bus.notifications import notification_publisher
+
+        if notification_publisher.running:
+            notification_publisher.stop(persist=True)
+        thread = notification_publisher._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        notification_publisher._thread = None
+    except Exception as e:
+        log(f"notification publisher stop failed: {e}", "WARNING")
 
 
 def reset_recovery_state_for_tests() -> None:

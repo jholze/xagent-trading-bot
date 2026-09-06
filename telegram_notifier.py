@@ -1,3 +1,18 @@
+"""Telegram outbound helpers.
+
+Delivery: when ``bus.notifications.notification_publisher`` is running (started
+with the other bot workers by ``services.architecture_runtime.ensure_started``),
+every ``send_telegram_message`` is enqueued on one of two lanes — urgent
+(fills, stops, operator alerts; at most 1 msg/s) or normal. HTTP 429 honours
+``parameters.retry_after`` with exponential backoff (cap 60s) and a bounded
+retry buffer persisted via ``data_manager.resolve_data_path("telegram_retry_buffer.json")``.
+
+Fallback: if the publisher is not running (CLI scripts, tests that call
+``send_telegram_message`` directly, process shutdown), send synchronously via
+``_send_telegram_direct`` so nothing is silently dropped. That path has no
+429 retry — the existing direct send is used as-is.
+"""
+
 import os
 import re
 from html import escape as html_escape, unescape as html_unescape
@@ -570,13 +585,46 @@ def resolve_notification_chat_id(chat_id: str | int | None = None) -> str:
     return str(_chat_id() or "").strip()
 
 
-def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
-    """Synchronous Telegram HTTP send (used by notification worker)."""
+def _telegram_retry_after(response, body: dict | None = None) -> float:
+    """Seconds from Telegram ``parameters.retry_after`` or the Retry-After header."""
+    retry = None
+    if body is None:
+        try:
+            parsed = response.json()
+            body = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            body = None
+    if isinstance(body, dict):
+        params = body.get("parameters") or {}
+        if isinstance(params, dict) and params.get("retry_after") is not None:
+            try:
+                retry = float(params["retry_after"])
+            except (TypeError, ValueError):
+                retry = None
+    if retry is None:
+        headers = getattr(response, "headers", None) or {}
+        raw = None
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+        except Exception:
+            raw = None
+        if raw is not None:
+            try:
+                retry = float(raw)
+            except (TypeError, ValueError):
+                retry = None
+    if retry is None or retry < 0:
+        return 1.0
+    return retry
+
+
+def _send_telegram_http(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """POST sendMessage. Returns ``(ok, retry_after_or_None)`` — never raises on 429."""
     bot_token = _bot_token()
     target_chat = resolve_notification_chat_id(chat_id)
     if not bot_token or not target_chat:
         print("⚠️ Telegram not configured")
-        return False
+        return False, None
 
     prefix = message_prefix() + _headless_tenant_tag()
     if prefix:
@@ -591,12 +639,25 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
 
     try:
         response = requests.post(url, json=payload, timeout=10)
+        body = None
+        try:
+            parsed = response.json()
+            body = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            body = None
+        error_code = body.get("error_code") if isinstance(body, dict) else None
+        if response.status_code == 429 or error_code == 429:
+            retry_after = _telegram_retry_after(response, body)
+            log(f"Telegram 429 retry_after={retry_after}s", "WARNING")
+            return False, retry_after
         if response.status_code == 200:
-            body = response.json()
+            if body is None:
+                log("Telegram send failed: invalid JSON", "WARNING")
+                return False, None
             if not body.get("ok"):
                 log(f"Telegram send failed: {body.get('description', body)}", "WARNING")
-                return False
-            return True
+                return False, None
+            return True, None
         if (
             parse_mode
             and response.status_code == 400
@@ -615,17 +676,37 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
                     f"Telegram plain retry HTTP {response2.status_code}: {response2.text[:200]}",
                     "WARNING",
                 )
-                return False
+                return False, None
             body2 = response2.json()
             if not body2.get("ok"):
                 log(f"Telegram plain retry failed: {body2.get('description', body2)}", "WARNING")
-                return False
-            return True
+                return False, None
+            return True, None
         log(f"Telegram send HTTP {response.status_code}: {response.text[:200]}", "WARNING")
-        return False
+        return False, None
     except Exception as e:
         log(f"Error sending Telegram message: {e}", "WARNING")
-        return False
+        return False, None
+
+
+def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """Synchronous Telegram HTTP send (CLI / tests / publisher-down fallback)."""
+    ok, _retry_after = _send_telegram_http(
+        text, reply_markup=reply_markup, chat_id=chat_id, parse_mode=parse_mode
+    )
+    return ok
+
+
+def _send_telegram_for_publisher(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """Worker send: raise ``TelegramRateLimited`` on HTTP 429 so the publisher retries."""
+    from bus.notifications import TelegramRateLimited
+
+    ok, retry_after = _send_telegram_http(
+        text, reply_markup=reply_markup, chat_id=chat_id, parse_mode=parse_mode
+    )
+    if retry_after is not None:
+        raise TelegramRateLimited(retry_after)
+    return ok
 
 
 def send_telegram_message(
@@ -643,12 +724,14 @@ def send_telegram_message(
     cfg = get_bot_config()
     mode = cfg.architecture_config.get("notification_mode", "async")
 
-    if mode == "async" and prio >= PRIORITY_CYCLE:
+    if mode == "async":
         try:
             from bus.notifications import notification_publisher
-            from services.architecture_runtime import ensure_started
 
-            ensure_started()
+            # Do not start the publisher from here: tests and CLI scripts that
+            # call send_telegram_message directly must keep the synchronous
+            # _send_telegram_direct path. architecture_runtime.ensure_started
+            # owns the worker lifecycle.
             if notification_publisher.running:
                 notification_publisher.enqueue(
                     text,
@@ -656,7 +739,7 @@ def send_telegram_message(
                     chat_id=chat_id if chat_id is not None else resolve_notification_chat_id(),
                     reply_markup=reply_markup,
                     parse_mode=parse_mode,
-                    kind="cycle" if prio >= PRIORITY_CYCLE else "message",
+                    kind="cycle" if prio >= PRIORITY_CYCLE else "urgent",
                 )
                 return True
         except Exception as e:

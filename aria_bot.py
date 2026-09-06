@@ -111,11 +111,22 @@ def _flush_positions_on_exit(*_args) -> None:
         log(f"Position flush on exit failed: {e}", "WARNING")
 
 
+def _stop_architecture_on_exit(*_args) -> None:
+    try:
+        from services.architecture_runtime import ensure_stopped
+
+        ensure_stopped()
+    except Exception as e:
+        log(f"Architecture stop on exit failed: {e}", "WARNING")
+
+
 atexit.register(_flush_positions_on_exit)
+atexit.register(_stop_architecture_on_exit)
 
 
 def _handle_shutdown(_signum, _frame) -> None:
     _flush_positions_on_exit()
+    _stop_architecture_on_exit()
     raise SystemExit(0)
 
 
