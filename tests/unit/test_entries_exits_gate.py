@@ -16,6 +16,9 @@ from services.trading_service import (
 def _cfg(*, mode: str = "paper", entries: bool = True, exits: bool = True) -> BotConfig:
     bot = BotConfig()
     bot._raw = {
+        # Direct raw config bypasses the conftest normalizer: keep these tests
+        # Redis-independent (fail-closed lock / lease have their own tests).
+        "architecture": {"ledger_lock_fail_closed": False, "single_writer_lease_enabled": False},
         "trading_mode": mode,
         "virtual_trading": True,
         "live_confirmed": True,
