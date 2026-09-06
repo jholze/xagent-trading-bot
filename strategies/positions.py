@@ -517,6 +517,7 @@ def _flush_refused_unknown(key: tuple[str, str]) -> bool:
 
 
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
+    from bus.locks import ledger_lock
     from core.tenant_context import resolve_tenant_id
     from storage.errors import LedgerUnavailable
 
@@ -525,27 +526,31 @@ def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
     store_key = (tid, target)
     if _flush_refused_unknown(store_key):
         return
-    with _positions_lock:
-        prev_key = _active_key
-        _activate(store_key)
-        try:
-            payload = _serialize_positions()
-            payload["ledger_scope"] = target
-            try:
-                existing = load_positions_document(target, tenant_id=tid)
-                payload = _preserve_locks_from_existing_doc(payload, existing)
-            except LedgerUnavailable as e:
-                log(f"flush aborted, positions unread ({target}): {e}", "ERROR")
-                _mark_positions_unknown(store_key, e)
-                return
-            except Exception as e:
-                log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
-            if not save_positions_document(payload, target, tenant_id=tid):
-                log(f"Failed to save positions ({target})", "ERROR")
-        except Exception as e:
-            log(f"Failed to save positions ({target}): {e}", "ERROR")
-        finally:
-            _activate(prev_key)
+    try:
+        with ledger_lock(target, tenant_id=tid):
+            with _positions_lock:
+                prev_key = _active_key
+                _activate(store_key)
+                try:
+                    payload = _serialize_positions()
+                    payload["ledger_scope"] = target
+                    try:
+                        existing = load_positions_document(target, tenant_id=tid)
+                        payload = _preserve_locks_from_existing_doc(payload, existing)
+                    except LedgerUnavailable as e:
+                        log(f"flush aborted, positions unread ({target}): {e}", "ERROR")
+                        _mark_positions_unknown(store_key, e)
+                        return
+                    except Exception as e:
+                        log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
+                    if not save_positions_document(payload, target, tenant_id=tid):
+                        log(f"Failed to save positions ({target})", "ERROR")
+                except Exception as e:
+                    log(f"Failed to save positions ({target}): {e}", "ERROR")
+                finally:
+                    _activate(prev_key)
+    except LedgerUnavailable as e:
+        log(f"flush aborted, ledger unavailable ({target}): {e}", "ERROR")
 
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:

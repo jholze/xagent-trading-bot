@@ -979,9 +979,12 @@ def _load_trade_history_json(scope: str = "paper", config: dict = None) -> dict:
 
 
 def _save_trade_history_json(data: dict, scope: str = "paper") -> bool:
+    from bus.writer_lease import prepare_json_ledger_write
+
     path = get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
     try:
-        atomic_write_json(path, data)
+        payload = prepare_json_ledger_write(data, path)
+        atomic_write_json(path, payload)
         return True
     except Exception as e:
         _raise_ledger_write_failed("save_trade_history_json", e, scope=scope)
@@ -1564,9 +1567,11 @@ def _load_orders_json(scope: str) -> dict:
 
 
 def _save_orders_json(data: dict, scope: str) -> bool:
+    from bus.writer_lease import prepare_json_ledger_write
+
     path = resolve_orders_file(scope)
     try:
-        payload = dict(data)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
         atomic_write_json(path, payload)
         return True
@@ -1657,9 +1662,11 @@ def _load_positions_json(scope: str) -> dict:
 
 
 def _save_positions_json(data: dict, scope: str) -> bool:
+    from bus.writer_lease import prepare_json_ledger_write
+
     path = resolve_positions_file(scope)
     try:
-        payload = dict(data)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
         atomic_write_json(path, payload)
         return True

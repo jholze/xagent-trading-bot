@@ -98,6 +98,8 @@ Der Bot läuft weiterhin als **ein Prozess** (`aria_bot.py`), ist intern aber f�
 | Ledger-Lock | `ledger_lock_enabled: true` | Keine Race-Conditions bei Position/Order-Updates |
 | Ledger-Lock fail-closed | `ledger_lock_fail_closed: true` | Timeout, Redis-Fehler oder fehlender Client → Order abgelehnt (`LedgerLockUnavailable`); `false` = altes Fail-Open plus WARNING |
 | Ledger-Lock TTL | `ledger_lock_ttl_sec: 60` | Überdeckt `fetch_balance` + `create_market_buy` (je 20 s ccxt) innerhalb des Locks |
+| Single-Writer-Lease | `single_writer_lease_enabled: true` | Redis-Lease `lease:writer:{tenant}:{scope}` (TTL 30 s, Erneuerung 10 s) plus Fencing-Token; ohne Lease: Lesemodus, keine Orders, Ledger-Writes fail-closed |
+| Lease-TTL | `lease_ttl_sec: 30` / `lease_renew_sec: 10` | Harter Kill akzeptiert ≤ 30 s Handelsstopp; SIGTERM gibt den Lease sofort frei |
 | Rebuy-Cooldown | `min_hours_after_sell_before_rebuy: 4` | Kein Re-Entry kurz nach Sell (Anti-Churn) |
 | Ask-Bridge | `observability.ask_bridge` | `/ask` in eigener Queue, Poller alle 3 s |
 
@@ -1049,6 +1051,9 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
     "ledger_lock_enabled": true,
     "ledger_lock_fail_closed": true,
     "ledger_lock_ttl_sec": 60,
+    "single_writer_lease_enabled": true,
+    "lease_ttl_sec": 30,
+    "lease_renew_sec": 10,
     "background_social_enabled": true
   },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ],

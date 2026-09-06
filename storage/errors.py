@@ -65,3 +65,31 @@ class LedgerLockUnavailable(LedgerUnavailable):
             op="ledger_lock",
             cause=cause,
         )
+
+
+class WriterLeaseLost(LedgerUnavailable):
+    """Process does not hold the single-writer lease; fail closed (#306).
+
+    ``reason`` is one of ``not_held``, ``lost``, ``redis_unavailable``.
+    Subclassing ``LedgerUnavailable`` is deliberate: ``TradingService.execute_order``
+    already denies every order type and notifies the operator once per episode.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        reason: str = "lost",
+        cause: BaseException | None = None,
+    ):
+        self.reason = reason
+        detail = message or f"writer lease {reason}"
+        super().__init__(
+            detail,
+            scope=scope,
+            tenant_id=tenant_id,
+            op="writer_lease",
+            cause=cause,
+        )
