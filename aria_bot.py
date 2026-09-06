@@ -196,7 +196,10 @@ except Exception as _dca_sniper_exc:
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "OK", 200
+    from core.cycle_health import health_payload
+
+    body, status = health_payload()
+    return jsonify(body), status
 
 
 @app.route("/health/detail", methods=["GET"])
@@ -1013,6 +1016,9 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
+            from core.cycle_health import mark_cycle_success
+
+            mark_cycle_success()
 
             if not bot_config.architecture_config.get("background_backtest_enabled", True):
                 try:
@@ -1035,6 +1041,12 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
         except Exception as e:
             log(f"Error in price loop: {e}", "ERROR")
+            try:
+                from core.cycle_health import mark_cycle_failure
+
+                mark_cycle_failure(e)
+            except Exception:
+                pass
             time.sleep(get_config().get("update_interval", 600))
 
 

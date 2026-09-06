@@ -525,6 +525,12 @@ def _reset_leaky_module_globals() -> None:
         reset_interactive_priority_for_tests()
     except Exception:
         pass
+    try:
+        from core.cycle_health import reset_cycle_health_for_tests
+
+        reset_cycle_health_for_tests()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

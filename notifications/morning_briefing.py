@@ -159,7 +159,7 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         f"<b>☀️ Morning Briefing</b>\n"
         f"<i>{now.strftime('%Y-%m-%d %H:%M')} · letzte 24h</i>\n"
         f"{build_line}\n"
-        f"Modus: <code>{cfg.trading_mode}</code> · dry_run=<code>{live.get('dry_run')}</code>\n\n"
+        f"Modus: <code>{_esc(cfg.trading_mode)}</code> · dry_run=<code>{_esc(live.get('dry_run'))}</code>\n\n"
         f"<b>Portfolio jetzt</b>\n"
         f"NAV <b>${total_value:,.0f}</b> · Cash ${balance:,.0f} · {open_pos} Positionen\n"
         f"Realized gesamt {stats['realized_total']:+.1f} USDT\n\n"
