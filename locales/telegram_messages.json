@@ -196,7 +196,20 @@
     "cf_error": "❌ Counterfactual: {error}",
     "gate_set": "✅ gesetzt",
     "gate_missing": "❌ fehlt",
-    "morning_already_sent": "☀️ <b>Morning Briefing</b> für heute bereits gesendet (um {time} Uhr).\nNächstes Briefing: morgen mit <code>/morning</code>."
+    "morning_already_sent": "☀️ <b>Morning Briefing</b> für heute bereits gesendet (um {time} Uhr).\nNächstes Briefing: morgen mit <code>/morning</code>.",
+    "fills_title": "📊 <b>Fills</b> — {days} Tage",
+    "fills_no_data": "📊 <b>Fills</b>\n\nKeine Daten.",
+    "fills_side_row": "{side}  n={n}  Median {median} bps  p90 {p90} bps",
+    "fills_venue_header": "<b>Venue</b>",
+    "fills_fee_drag": "Gebühren-Drag <b>{pct}</b> des realisierten PnL ({fees} Fees / {pnl} PnL)",
+    "fills_fee_drag_na": "Gebühren-Drag — (kein realisierter PnL)",
+    "attribution_title": "📊 <b>Attribution</b> — {days} Tage",
+    "attribution_no_data": "📊 <b>Attribution</b>\n\nKeine Daten.",
+    "attribution_source_header": "<b>Nach source</b>",
+    "attribution_exit_header": "<b>Nach exit_source</b>",
+    "attribution_row": "{name}  {pnl}  {n}T  WR {wr}",
+    "live_metrics_title": "<b>Kennzahlen {days}d</b>",
+    "live_metrics_line": "Hit {hit} · PF {pf} · E ${exp} · Max-DD {dd}"
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -395,6 +408,19 @@
     "cf_error": "❌ Counterfactual: {error}",
     "gate_set": "✅ set",
     "gate_missing": "❌ missing",
-    "morning_already_sent": "☀️ <b>Morning briefing</b> already sent today (at {time}).\nNext briefing: tomorrow via <code>/morning</code>."
+    "morning_already_sent": "☀️ <b>Morning briefing</b> already sent today (at {time}).\nNext briefing: tomorrow via <code>/morning</code>.",
+    "fills_title": "📊 <b>Fills</b> — {days} days",
+    "fills_no_data": "📊 <b>Fills</b>\n\nNo data.",
+    "fills_side_row": "{side}  n={n}  median {median} bps  p90 {p90} bps",
+    "fills_venue_header": "<b>Venue</b>",
+    "fills_fee_drag": "Fee drag <b>{pct}</b> of realized P&L ({fees} fees / {pnl} PnL)",
+    "fills_fee_drag_na": "Fee drag — (no realized P&L)",
+    "attribution_title": "📊 <b>Attribution</b> — {days} days",
+    "attribution_no_data": "📊 <b>Attribution</b>\n\nNo data.",
+    "attribution_source_header": "<b>By source</b>",
+    "attribution_exit_header": "<b>By exit_source</b>",
+    "attribution_row": "{name}  {pnl}  {n}T  WR {wr}",
+    "live_metrics_title": "<b>Metrics {days}d</b>",
+    "live_metrics_line": "Hit {hit} · PF {pf} · E ${exp} · Max-DD {dd}"
   }
 }
