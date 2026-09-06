@@ -1,11 +1,13 @@
+import os
 import time
 from dataclasses import dataclass
 
 from core.config import get_bot_config
-from hermes.backtester import Backtester
+from hermes.backtester import BACKTESTER_MIN_BARS, Backtester
 from hermes.cmc_replay import recent_signal_activity
 from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
+import hermes.health as hermes_health
 from hermes.live_evidence import (
     compute_counterfactual_delta,
     compute_live_metrics,
@@ -16,6 +18,9 @@ from hermes.self_improver import SelfImprover
 from hermes.symbol_pool import format_active_pool_line, resolve_active_symbols
 from hermes.validation import run_walk_forward
 from logger import log
+
+_OBSERVE_MODES = frozenset({"observe"})
+_LIVE_EVIDENCE_MODES = frozenset({"observe", "soft", "dual"})
 
 
 @dataclass
@@ -40,12 +45,27 @@ class HermesAgent:
         self.goals = GoalEngine(self.config)
         self.experiments = ExperimentRunner(self.config)
         self.improver = SelfImprover(self.config)
+        hermes_health.check_fold_geometry(self.hermes)
+
+    def _live_evidence_mode(self) -> str:
+        """Same env-then-config lookup as intelligence/memory/service.py."""
+        mode = (os.environ.get("HERMES_LIVE_EVIDENCE_MODE") or "").strip().lower()
+        if mode in _LIVE_EVIDENCE_MODES:
+            return mode
+        le = self.hermes.get("live_evidence") or {}
+        m = str(le.get("mode") or "").strip().lower()
+        if m in _LIVE_EVIDENCE_MODES:
+            return m
+        return "dual"
+
+    def _is_observe_mode(self) -> bool:
+        return self._live_evidence_mode() in _OBSERVE_MODES
 
     def _symbols(self) -> list[str]:
         def _ohlcv_ok(symbol: str, timeframe: str) -> bool:
             days = int(self.hermes.get("backtest_days", 14))
             df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
-            return df is not None and not df.empty and len(df) >= 30
+            return df is not None and not df.empty and len(df) >= BACKTESTER_MIN_BARS
 
         tf = (self.hermes.get("timeframes") or ["4h"])[0]
         return resolve_active_symbols(
@@ -80,6 +100,17 @@ class HermesAgent:
     def run_cycle(self) -> CycleResult:
         self.config.refresh()
         self.hermes = self.config.hermes_config
+        if not hermes_health.check_fold_geometry(self.hermes):
+            return CycleResult(
+                experiment_id="",
+                variable="",
+                verdict="invalid_geometry",
+                promoted=False,
+                baseline_sharpe=0.0,
+                variant_sharpe=0.0,
+                summary=hermes_health.geometry_detail or "Hermes fold geometry invalid — cycle skipped",
+                symbol="",
+            )
         symbol, timeframe = self._pick_symbol_timeframe()
         baseline = store.init_baseline_from_config(self.config, symbol, timeframe)
         params = baseline.get("params", {})
@@ -150,6 +181,8 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
+                verdict=verdict.label,
+                folds_excluded=int(getattr(wf_var, "folds_excluded", 0) or 0),
             )
         else:
             bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
@@ -172,23 +205,30 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
+                verdict=verdict.label,
             )
 
         if verdict.live_veto and le_cfg.get("notify_on_live_veto", True):
             self._notify_live_veto(record, proposal, live_metrics, symbol)
 
         if verdict.promoted:
-            baseline["params"] = proposal.params
-            baseline["metrics"] = var_m
-            store.save_baseline(baseline)
-            log(f"Hermes baseline updated [{symbol}]: {proposal.variable}={proposal.new_value}", "INFO")
-            self._sync_to_config(baseline, record.get("id", ""))
-            self._notify_promotion(record, proposal, var_m, symbol)
+            if self._is_observe_mode():
+                log("hermes observe: promotion suppressed", "INFO")
+            else:
+                baseline["params"] = proposal.params
+                baseline["metrics"] = var_m
+                store.save_baseline(baseline)
+                log(f"Hermes baseline updated [{symbol}]: {proposal.variable}={proposal.new_value}", "INFO")
+                self._sync_to_config(baseline, record.get("id", ""))
+                self._notify_promotion(record, proposal, var_m, symbol)
         else:
             self._notify_cycle_result(record, promoted=False)
 
-        self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
+        if not verdict.inconclusive:
+            self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
+        hermes_health.update_inconclusive_health(self.hermes, last_verdict=record.get("verdict"))
         summary = self.improver.analyze_and_suggest(record)
+        summary = f"{summary} {hermes_health.format_inconclusive_summary(self.hermes)}"
 
         return CycleResult(
             experiment_id=record.get("id", ""),
@@ -202,6 +242,9 @@ class HermesAgent:
         )
 
     def _sync_to_config(self, baseline: dict, experiment_id: str):
+        if self._is_observe_mode():
+            log("hermes observe: promotion suppressed", "INFO")
+            return
         if not self.hermes.get("sync_to_config", True):
             return
         try:
@@ -295,8 +338,10 @@ class HermesAgent:
         le_cfg = self.hermes.get("live_evidence", {})
         lines = [
             "=== Hermes 2.0 Status ===",
-            f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}",
+            f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}"
+            f"{' | observe' if self._is_observe_mode() else ''}",
             format_active_pool_line(self.config),
+            *hermes_health.format_status_lines(self.hermes),
             f"Active: {baseline.get('symbol')} {baseline.get('timeframe')}",
             f"Params: {baseline.get('params', {})}",
             f"Metrics: {baseline.get('metrics', {})}",
