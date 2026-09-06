@@ -53,7 +53,7 @@ class FakeClock:
 
 
 class FakeRedis:
-    """Dict-backed Redis: SET NX / GET / DEL / INCR / EXPIRE + injectable clock."""
+    """Dict-backed Redis: SET NX / GET / DEL / INCR / EXPIRE / EVAL + injectable clock."""
 
     def __init__(self, clock=None):
         self.clock = clock or FakeClock()
@@ -110,6 +110,39 @@ class FakeRedis:
             return False
         self._store[key] = (item[0], self.clock() + float(ttl))
         return True
+
+    def _token_of(self, raw: str) -> str:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get("token"):
+                return str(data["token"])
+        except Exception:
+            pass
+        return raw
+
+    def eval(self, script, numkeys, *keys_and_args):
+        """Mimic the lease Lua: compare token, then PEXPIRE or DEL."""
+        n = int(numkeys)
+        keys = keys_and_args[:n]
+        args = keys_and_args[n:]
+        key = keys[0]
+        expected = str(args[0])
+        self._purge(key)
+        item = self._store.get(key)
+        if item is None:
+            return 0
+        raw = item[0]
+        if self._token_of(raw) != expected:
+            return 0
+        upper = script.upper()
+        if "PEXPIRE" in upper:
+            ttl_ms = int(args[1])
+            self._store[key] = (raw, self.clock() + (ttl_ms / 1000.0))
+            return 1
+        if "DEL" in upper:
+            del self._store[key]
+            return 1
+        raise NotImplementedError("unsupported eval script")
 
 
 class FakeCollection:

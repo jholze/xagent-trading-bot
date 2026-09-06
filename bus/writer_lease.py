@@ -49,6 +49,47 @@ from storage.errors import LedgerWriteFailed, WriterLeaseLost
 DEFAULT_TTL_SEC = 30
 DEFAULT_RENEW_SEC = 10
 
+# GET + compare + EXPIRE is three round trips. If the key expires between
+# GET and EXPIRE another process can SET NX, and our EXPIRE would extend
+# the foreign holder's key: both processes then believe they may write
+# (`held()` stays True after `_last_confirmed_at` is refreshed). Ledger
+# writes are still fenced; exchange orders are not. This script must be
+# atomic (EVAL): compare the stored token and only then PEXPIRE.
+_RENEW_IF_OWNED_SCRIPT = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+local token = raw
+local ok, data = pcall(cjson.decode, raw)
+if ok and type(data) == 'table' and data['token'] then
+  token = tostring(data['token'])
+end
+if token ~= ARGV[1] then
+  return 0
+end
+return redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
+"""
+
+# GET then DELETE is a check-and-delete race: if another process SET NXes
+# the key after our GET, DELETE would drop their lease. Compare the stored
+# token and only then DEL, in one EVAL.
+_RELEASE_IF_OWNED_SCRIPT = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+local token = raw
+local ok, data = pcall(cjson.decode, raw)
+if ok and type(data) == 'table' and data['token'] then
+  token = tostring(data['token'])
+end
+if token ~= ARGV[1] then
+  return 0
+end
+return redis.call('DEL', KEYS[1])
+"""
+
 _UNSET = object()
 _hold_lock = threading.RLock()
 _process_lease = None
@@ -58,6 +99,7 @@ _readonly_notified: set[tuple[str, str]] = set()
 _recovered_notified: set[tuple[str, str]] = set()
 _on_acquired: Callable[[], None] | None = None
 _callback_threads: list[threading.Thread] = []
+_non_atomic_renew_logged = False
 
 
 def lease_redis_key(tenant_id: str, scope: str) -> str:
@@ -139,6 +181,46 @@ def _host_name() -> str:
         return socket.gethostname() or "?"
     except Exception:
         return "?"
+
+
+def _eval_fn(client):
+    fn = getattr(client, "eval", None)
+    return fn if callable(fn) else None
+
+
+def _scripting_unavailable(exc: BaseException) -> bool:
+    if isinstance(exc, (AttributeError, NotImplementedError)):
+        return True
+    text = str(exc).lower()
+    return (
+        "unknown command" in text
+        or "noscript" in text
+        or "scripting is disabled" in text
+        or "eval is not supported" in text
+        or "command 'eval'" in text
+        or "command `eval`" in text
+    )
+
+
+def _lua_ok(result: Any) -> bool:
+    if result is True:
+        return True
+    try:
+        return int(result) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _log_non_atomic_renew_once() -> None:
+    global _non_atomic_renew_logged
+    if _non_atomic_renew_logged:
+        return
+    _non_atomic_renew_logged = True
+    log(
+        "writer lease renew is non-atomic: Redis EVAL unavailable; "
+        "falling back to GET/EXPIRE (best-effort)",
+        "WARNING",
+    )
 
 
 class WriterLease:
@@ -274,22 +356,18 @@ class WriterLease:
             return False
 
     def renew(self) -> bool:
-        """EXPIRE the key only if the stored token is ours."""
+        """PEXPIRE the key only if the stored token is ours (atomic EVAL)."""
         client = self._client()
         if client is None:
             self._mark_lost()
             return False
         try:
-            current = _parse_lease_value(client.get(self.lease_key))
-            if not current or current.get("token") != self.token:
+            owned = self._renew_via_eval(client)
+            if owned is None:
+                return self._renew_best_effort(client)
+            if not owned:
                 self._mark_lost()
                 return False
-            if not client.expire(self.lease_key, self.ttl_sec):
-                self._mark_lost()
-                return False
-            fence = current.get("fence")
-            if fence is not None:
-                self.fence = int(fence)
             self._last_confirmed_at = self.clock()
             self._lost = False
             self._acquired = True
@@ -299,21 +377,75 @@ class WriterLease:
             self._mark_lost()
             return False
 
+    def _renew_via_eval(self, client) -> bool | None:
+        """True/False from EVAL, or None when scripting is unavailable."""
+        eval_fn = _eval_fn(client)
+        if eval_fn is None:
+            return None
+        try:
+            result = eval_fn(
+                _RENEW_IF_OWNED_SCRIPT,
+                1,
+                self.lease_key,
+                self.token,
+                int(self.ttl_sec) * 1000,
+            )
+        except Exception as e:
+            if _scripting_unavailable(e):
+                return None
+            raise
+        return _lua_ok(result)
+
+    def _renew_best_effort(self, client) -> bool:
+        """GET/EXPIRE fallback when EVAL is missing; not atomic."""
+        _log_non_atomic_renew_once()
+        current = _parse_lease_value(client.get(self.lease_key))
+        if not current or current.get("token") != self.token:
+            self._mark_lost()
+            return False
+        if not client.expire(self.lease_key, self.ttl_sec):
+            self._mark_lost()
+            return False
+        fence = current.get("fence")
+        if fence is not None:
+            self.fence = int(fence)
+        self._last_confirmed_at = self.clock()
+        self._lost = False
+        self._acquired = True
+        return True
+
     def release(self) -> bool:
-        """DELETE the key only if the stored token is ours."""
+        """DELETE the key only if the stored token is ours (atomic EVAL)."""
         client = self._client()
         deleted = False
         try:
             if client is not None:
-                current = _parse_lease_value(client.get(self.lease_key))
-                if current and current.get("token") == self.token:
-                    client.delete(self.lease_key)
-                    deleted = True
+                deleted = self._release_if_owned(client)
         except Exception as e:
             log(f"writer lease release error ({self.tenant_id}/{self.scope}): {e}", "WARNING")
         self._acquired = False
         self._lost = True
         return deleted
+
+    def _release_if_owned(self, client) -> bool:
+        eval_fn = _eval_fn(client)
+        if eval_fn is not None:
+            try:
+                result = eval_fn(
+                    _RELEASE_IF_OWNED_SCRIPT,
+                    1,
+                    self.lease_key,
+                    self.token,
+                )
+                return _lua_ok(result)
+            except Exception as e:
+                if not _scripting_unavailable(e):
+                    raise
+        current = _parse_lease_value(client.get(self.lease_key))
+        if current and current.get("token") == self.token:
+            client.delete(self.lease_key)
+            return True
+        return False
 
     def stop(self) -> None:
         self._stop.set()
@@ -645,13 +777,14 @@ def shutdown_writer_lease() -> None:
 
 def reset_writer_lease_for_tests() -> None:
     """Stop every renewer thread and drop process state (#329)."""
-    global _process_lease, _injected_redis, _on_acquired
+    global _process_lease, _injected_redis, _on_acquired, _non_atomic_renew_logged
     with _hold_lock:
         leases = list(_active_leases)
         _active_leases.clear()
         _process_lease = None
         _injected_redis = _UNSET
         _on_acquired = None
+        _non_atomic_renew_logged = False
         _readonly_notified.clear()
         _recovered_notified.clear()
     for lease in leases:
