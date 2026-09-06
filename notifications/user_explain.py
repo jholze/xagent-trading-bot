@@ -8,6 +8,8 @@ from typing import Any
 
 _RATIONALE_PARTS = {
     "TA→BUY": "Technische Analyse sieht eine Kaufchance (RSI und Volumen passen).",
+    "TA→HOLD": "Technische Analyse gibt kein klares Kauf- oder Verkaufssignal — abwarten.",
+    "TA→SELL": "Technische Analyse sieht Verkaufsdruck.",
     "TA→SELL_20": "RSI ist überkauft — wir verkaufen 20 % der Position, der Rest bleibt investiert.",
     "TA→SELL_30": "RSI ist stark überkauft — wir verkaufen weitere 30 % (gestaffelter Exit).",
     "TA→SELL_STOP_FULL": "Verlustgrenze erreicht — Position wird vollständig geschlossen zum Schutz.",
@@ -20,6 +22,12 @@ _RATIONALE_PARTS = {
     "strong consensus": "Mehrere Quellen (Technik + Social) stimmen überein — stärkeres Signal.",
     "multi_source": "Mehrere Signalquellen liefern dasselbe Bild.",
     "DCA->accumulation": "Nachkauf (DCA) in der Akkumulationsphase — Position wird bei Dip vergrößert, Exit-Leiter bleibt unverändert.",
+    "DCA→accumulation": "Nachkauf (DCA) in der Akkumulationsphase — Position wird bei Dip vergrößert, Exit-Leiter bleibt unverändert.",
+    "Trail→ATR stop": "Trailing-Stop (ATR) ausgelöst — Position wird geschlossen, um Gewinn oder Schutz zu sichern.",
+    "Trail→take profit": "Trailing-Take-Profit erreicht — Gewinn wird mitgenommen.",
+    "Life→max profit": "Maximale Haltedauer im Gewinn erreicht — Position wird geschlossen.",
+    "Time→profit exit": "Zeitbasiertes Gewinnziel erreicht — Verkauf.",
+    "15m→vol entry": "15-Minuten-Volumen-Sensor sieht einen Einstieg.",
 }
 
 _RISK_MESSAGES = {
@@ -39,6 +47,47 @@ _RISK_MESSAGES = {
     "min trade": "Betrag unter dem Mindest-Trade — zu klein für die Börse.",
     "cash floor": "Cash-Floor erreicht — Mindest-Bargeld bleibt frei (keine Auto-Käufe).",
     "size_too_small": "Betrag nach Limits unter dem Mindest-Trade.",
+}
+
+_RISK_CODES = {
+    "phantom_symbol": "Symbol ist nicht handelbar (Phantom/Test-Coin) — kein Orderversand.",
+    "one_way": "Gegenläufige Position blockiert — Long und Short gleichzeitig sind nicht erlaubt.",
+    "side_check_error": "Seiten-Prüfung ist fehlgeschlagen — Trade vorsichtshalber blockiert.",
+    "trade_cooldown": "Kürzlich schon gehandelt — kurze Pause gegen zu häufiges Hin und Her.",
+    "position_locked": "Position ist gesperrt — kein automatischer Verkauf oder Nachkauf.",
+    "position_lock_check_error": "Sperr-Prüfung ist fehlgeschlagen — Trade vorsichtshalber blockiert.",
+    "no_amount": "Verkaufsmenge ist null — nichts zu verkaufen.",
+    "partial_sell_guard": "Teilverkauf nicht erlaubt — Guard hat den Schnitt blockiert.",
+    "max_daily_sells": "Tageslimit für Verkäufe erreicht.",
+    "stablecoin_blocked": "Stablecoin-Käufe sind gesperrt.",
+    "correlated_tier_selloff": "Korrelierte Coins verkaufen bereits — neuer Kauf in dieser Gruppe blockiert.",
+    "universe_trade_cap": "Tageslimit für neue Coins aus dem Universum erreicht.",
+    "gainer_chase_guard": "Gainer-Chase-Guard — Coin ist schon zu stark gelaufen, Kauf blockiert.",
+    "market_block": "Markt-Filter blockiert neue Käufe (zu riskantes Umfeld).",
+    "market_bias_degraded": "Markt-Bias ist unsicher/degradiert — keine neuen Auto-Käufe.",
+    "coin_memory_soft_block": "Coin-Memory rät von diesem Trade ab (historisch schlechte Pfade).",
+    "watchlist_quality": "Watchlist-Qualität zu niedrig — Coin darf nicht als neuer Kauf rein.",
+    "venue_liquidity_block": "Zu wenig Liquidität an der Börse — Trade blockiert.",
+    "macro_calendar_block": "Makro-Kalender (Event) — neue Käufe in diesem Fenster gesperrt.",
+    "slot_eviction_no_price": "Slot-Freimachung nicht möglich — kein Preis für den Eviction-Kandidaten.",
+    "max_open_positions": "Maximale Anzahl offener Positionen erreicht — kein neuer Kauf möglich.",
+    "max_position_percent": "Dieser Coin wäre zu groß im Portfolio — Kauf wurde begrenzt oder blockiert.",
+    "cash_floor": "Cash-Floor erreicht — Mindest-Bargeld bleibt frei (keine Auto-Käufe).",
+    "size_too_small": "Betrag nach Limits unter dem Mindest-Trade.",
+    "sensor_reentry_cooloff": "Nach dem 15m-Sensor-Trade gilt eine Pause — kein sofortiger Re-Entry.",
+    "max_daily_dca_buys": "Tageslimit für DCA-Nachkäufe erreicht.",
+    "max_daily_trades": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",
+    "max_daily_dca_usdt": "Tages-Volumenlimit für DCA-Nachkäufe erreicht.",
+    "daily_loss_limit": "Tagesverlust-Limit erreicht — Handel für heute gestoppt.",
+    "shorts_live_blocked": "Live-Shorts sind nicht freigeschaltet.",
+    "no_short": "Kein offener Short zum Cover.",
+    "shorts_disabled": "Shorts sind in der Config ausgeschaltet.",
+    "shorts_slots": "Short-Slots voll — kein weiterer Short.",
+    "short_mcap": "Marktkapitalisierung zu klein für einen Short.",
+    "bad_price": "Kein gültiger Preis — Trade abgebrochen.",
+    "short_margin": "Nicht genug Margin für den Short.",
+    "short_margin_pct": "Short würde den Margin-Anteil am Portfolio überschreiten.",
+    "mode_blocked": "Handel ist in diesem Modus blockiert.",
 }
 
 _PARAM_LABELS = {
@@ -93,12 +142,30 @@ def explanations_enabled(config=None) -> bool:
     return bool(explanations_config(config).get("enabled", True))
 
 
+_PCT_SUFFIX = re.compile(r"\(\d+%\)$")
+
+
+def _normalize_rationale_key(part: str) -> str:
+    """Map engine ASCII arrows / percent suffixes onto lookup keys.
+
+    Emitters in decision_engine stay unchanged (existing tests freeze those
+    strings). Lookup accepts ``TA->BUY``, ``CMC->SELL(70%)`` and
+    ``multi-source consensus``.
+    """
+    key = part.strip().replace("->", "→")
+    if key == "multi-source consensus":
+        return "multi_source"
+    return _PCT_SUFFIX.sub("", key).strip()
+
+
 def _match_rationale_part(part: str) -> str:
-    part = part.strip()
-    if part in _RATIONALE_PARTS:
-        return _RATIONALE_PARTS[part]
-    if part.startswith("X→") and "@" in part:
-        m = re.match(r"X→(\w+)@([^(]+)\((\d+)%\)", part)
+    raw = part.strip()
+    arrowed = raw.replace("->", "→")
+    lookup = _normalize_rationale_key(raw)
+
+    # Keep confidence figures from the original token (regex before dict).
+    if arrowed.startswith("X→") and "@" in arrowed:
+        m = re.match(r"X→(\w+)@([^(]+)\((\d+)%\)", arrowed)
         if m:
             action, account, conf = m.groups()
             act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else action
@@ -106,15 +173,35 @@ def _match_rationale_part(part: str) -> str:
                 f"X-Account @{account} empfiehlt {act_de} "
                 f"(Confidence {conf}%, Trust-Score fließt ein)."
             )
-    if part.startswith("CMC→"):
-        m = re.match(r"CMC→(\w+)\((\d+)%\)", part)
+    if arrowed.startswith("CMC→"):
+        m = re.match(r"CMC→(\w+)\((\d+)%\)", arrowed)
         if m:
             action, conf = m.groups()
             act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else action
             return f"CMC-Signal tendiert zu {act_de} (Score {conf}%)."
-    if part.startswith("TA→"):
-        return _RATIONALE_PARTS.get(part, f"Technische Analyse: {part[3:]}")
-    return part
+    if arrowed.startswith("LC→"):
+        m = re.match(r"LC→(\w+)\((\d+)%\)", arrowed)
+        if m:
+            action, conf = m.groups()
+            act_de = "Kauf" if action == "BUY" else "Verkauf" if action == "SELL" else action
+            return f"LunarCrush tendiert zu {act_de} (Score {conf}%)."
+
+    if arrowed in _RATIONALE_PARTS:
+        return _RATIONALE_PARTS[arrowed]
+    if lookup in _RATIONALE_PARTS:
+        return _RATIONALE_PARTS[lookup]
+    if lookup == "multi_source":
+        return _RATIONALE_PARTS["multi_source"]
+    if arrowed.endswith(" consensus") and "+" in arrowed:
+        return _RATIONALE_PARTS["multi_source"]
+    if arrowed.startswith("shadow→"):
+        action = arrowed.split("→", 1)[1] or "?"
+        return (
+            f"Shadow-Signal {action} — nur Beobachtung, kein Live-Trade."
+        )
+    if arrowed.startswith("TA→"):
+        return _RATIONALE_PARTS.get(arrowed, f"Technische Analyse: {arrowed[3:]}")
+    return raw
 
 
 def explain_rationale(rationale: str) -> str:
@@ -126,12 +213,10 @@ def explain_rationale(rationale: str) -> str:
 
 
 def explain_risk(message: str, code: str = "") -> str:
-    if not message:
+    code = (code or "").strip()
+    if not message and not code:
         return "Trade wurde vom Risiko-Manager blockiert."
-    lower = message.lower()
-    for key, de in _RISK_MESSAGES.items():
-        if key in lower:
-            return de
+    lower = (message or "").lower()
     if code == "trade_cooldown":
         if message and "Stop-loss rebuy cooldown" in message:
             return "Nach Stop-Loss-Verkauf gilt eine längere Pause — kein automatischer Re-Entry (verhindert Churn)."
@@ -139,18 +224,21 @@ def explain_risk(message: str, code: str = "") -> str:
             return "Kürzlich verkauft — Re-Kauf erst nach der konfigurierten Pause (verhindert sinnloses Hin-und-Her)."
         if message and "DCA interval" in message:
             return "DCA-Nachkauf zu früh — Mindestabstand zwischen Nachkäufen noch nicht erreicht."
-        return _RISK_MESSAGES["trade cooldown"]
-    if code == "max_open_positions":
-        return _RISK_MESSAGES["max open positions"]
-    if code == "cash_floor":
-        return _RISK_MESSAGES["cash floor"]
-    if code == "size_too_small":
-        return _RISK_MESSAGES.get("size_too_small") or _RISK_MESSAGES["min trade"]
+        return _RISK_CODES.get("trade_cooldown") or _RISK_MESSAGES["trade cooldown"]
     if code == "mode_blocked":
         if "off" in lower:
             return _RISK_MESSAGES["trading disabled"]
         if "live_confirm" in lower:
             return _RISK_MESSAGES["live_confirm"]
+        return _RISK_CODES["mode_blocked"]
+    if code in _RISK_CODES:
+        return _RISK_CODES[code]
+    if message:
+        for key, de in _RISK_MESSAGES.items():
+            if key in lower:
+                return de
+    if not message:
+        return "Trade wurde vom Risiko-Manager blockiert."
     return message
 
 
@@ -281,7 +369,10 @@ def explain_trade(
 
     blocks = {}
     if trade_result and not trade_result.executed and trade_result.message:
-        blocks["risk_de"] = explain_risk(trade_result.message)
+        blocks["risk_de"] = explain_risk(
+            trade_result.message,
+            code=getattr(trade_result, "code", "") or "",
+        )
 
     source_de = []
     if any(str(s).lower().startswith("grid") or str(s).lower() == "grid" for s in sources) or (
@@ -618,10 +709,14 @@ def format_decision_entry(entry: dict, show_technical: bool = True) -> str:
     executed = entry.get("executed")
     status = "✅" if executed else "🚫" if entry.get("trade_message") else "👀"
     why = explain_rationale(entry.get("rationale", ""))
-    line = f"{status} <b>{sym_html}</b> {action} — {why[:100]}"
+    line = f"{status} <b>{sym_html}</b> {action} — {escape(why[:100], quote=False)}"
     if show_technical and entry.get("rationale"):
-        line += f"\n  <code>{entry['rationale']}</code>"
+        line += f"\n  <code>{escape(str(entry['rationale']), quote=False)}</code>"
     if entry.get("trade_message") and not executed:
-        line += f"\n  <i>{explain_risk(entry['trade_message'])}</i>"
+        risk_txt = explain_risk(
+            entry["trade_message"],
+            code=str(entry.get("code") or entry.get("risk_code") or ""),
+        )
+        line += f"\n  <i>{escape(risk_txt, quote=False)}</i>"
     line += f"\n  <i>{ts}</i>"
     return line
