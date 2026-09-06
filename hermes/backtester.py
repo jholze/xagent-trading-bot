@@ -14,6 +14,10 @@ from logger import log
 from strategies.positions import sell_fraction_for_signal
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
 
+# Minimum bars Backtester.run / PipelineBacktester.run need before they
+# compute indicators. Walk-forward folds below this yield trades=0 (#308).
+BACKTESTER_MIN_BARS = 30
+
 
 @dataclass
 class BacktestResult:
@@ -63,7 +67,7 @@ class Backtester:
 
         days = days or int(self.hermes.get("backtest_days", 60))
         df = ohlcv_df if ohlcv_df is not None else self._fetch_ohlcv(symbol, timeframe, days)
-        if df is None or df.empty or len(df) < 30:
+        if df is None or df.empty or len(df) < BACKTESTER_MIN_BARS:
             log(f"Backtest insufficient data for {symbol} {timeframe}", "WARNING")
             return BacktestResult(
                 symbol=symbol,

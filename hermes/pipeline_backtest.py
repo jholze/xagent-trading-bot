@@ -9,6 +9,7 @@ import pandas as pd
 from core.config import get_bot_config
 from core.costs import COST_MODEL_VERSION, CostModel, trade_cost_fields
 from core.models import MarketContext, SandboxMetrics
+from hermes.backtester import BACKTESTER_MIN_BARS
 from hermes.cmc_replay import load_posts_for_coin, signals_at_timestamp
 from hermes.metrics import enrich_sandbox_metrics, sharpe_from_trades
 from strategies.decision_engine import DecisionEngine
@@ -54,7 +55,7 @@ class PipelineBacktester:
         allow_buys: bool = True,
     ) -> PipelineBacktestResult:
         df = ohlcv_df.copy()
-        if df is None or df.empty or len(df) < 30:
+        if df is None or df.empty or len(df) < BACKTESTER_MIN_BARS:
             return PipelineBacktestResult(
                 symbol=symbol,
                 timeframe=timeframe,

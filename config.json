@@ -1186,13 +1186,17 @@
     "validation": {
       "mode": "walk_forward",
       "backtest_days": 14,
-      "fold_days": 3,
+      "fold_days": 5,
       "step_days": 3,
       "min_folds_won_ratio": 0.55,
-      "min_bars_per_fold": 12,
+      "min_bars_per_fold": 30,
       "min_trades_per_fold": 1,
       "min_trades_aggregate": 3,
       "min_opportunity_delta": 0.05
+    },
+    "health": {
+      "inconclusive_window": 20,
+      "inconclusive_alert_pct": 50
     },
     "skills": {
       "max_per_variable": 5,

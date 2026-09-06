@@ -121,7 +121,7 @@ Maximum **8 coins** at once (`symbols_max: 8`). Rotation: `signal_activity` — 
 
 1. **Load baseline** — current parameters for symbol/timeframe (e.g. `ARIA/USDT` on `4h`).
 2. **Proposal** — Grok (if `XAI_API_KEY` is set) or heuristic picks **one** parameter and new value.
-3. **Backtest** — walk-forward over ~35 days, split into 7-day windows with 3-day step.
+3. **Backtest** — walk-forward over ~35 days, split into 5-day windows with 3-day step (4h: 5 × 6 = 30 bars per fold).
 4. **Evaluation** — variant must win in **≥ 60% of folds** and meet minimum metrics.
 5. **Adoption** — better parameters → `hermes/memory/baseline.json` (always); optionally → `config.strategies[]` on promotion.
 6. **Learning** — experiment + skill saved in `hermes/memory/`.
@@ -136,13 +136,13 @@ Maximum **8 coins** at once (`symbols_max: 8`). Rotation: `signal_activity` — 
 **Solution:** Hermes splits 35 days into **overlapping week windows**:
 
 ```
-|-- Fold 0: day 1–7 --|
-      |-- Fold 1: day 4–10 --|
-            |-- Fold 2: day 7–13 --|
+|-- Fold 0: day 1–5 --|
+      |-- Fold 1: day 4–8 --|
+            |-- Fold 2: day 7–11 --|
                   ... etc.
 ```
 
-- Each window = **7 days** (`fold_days`)
+- Each window = **5 days** (`fold_days`) — 4h has 6 bars/day, so 5 days = 30 bars (`BACKTESTER_MIN_BARS`). Old config default was 3 days = 18 bars.
 - Step = **3 days** (`step_days`)
 - Typically **~10 folds** with 35-day lookback
 
@@ -309,12 +309,18 @@ If `notify_hermes_every_cycle: false`, you only get promotion and live-veto — 
 "validation": {
   "mode": "walk_forward",
   "backtest_days": 35,
-  "fold_days": 7,
+  "fold_days": 5,
   "step_days": 3,
   "min_folds_won_ratio": 0.6,
+  "min_bars_per_fold": 30,
+  "min_trades_per_fold": 1,
   "min_trades_aggregate": 5
 }
 ```
+
+`fold_days` default is **5** so a 4h fold has 5 × 6 = **30 bars** (`BACKTESTER_MIN_BARS` in `hermes/backtester.py`). Config previously used `fold_days: 3` (18 bars on 4h) with `min_bars_per_fold: 12`, which the backtester discarded as too short — every fold then had `trades = 0` (#308).
+
+`health.inconclusive_window` (default 20) / `health.inconclusive_alert_pct` (default 50): share of `inconclusive` verdicts (0-trade baseline **and** variant) in `/hermes` status; above the threshold the operator is notified once per episode.
 
 ### Skills
 
