@@ -57,6 +57,33 @@ def handle(text: str) -> bool:
         send_telegram_message(t("hermes_started", job_id=job_id))
         return True
 
+    if text.startswith("/hermes_veto"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            send_telegram_message(t("hermes_veto_usage"))
+            return True
+        from hermes.promotion import veto
+
+        result = veto(parts[1].strip())
+        if result.get("status") == "not_found":
+            send_telegram_message(t("hermes_veto_missing", id=parts[1].strip()))
+        else:
+            send_telegram_message(t("hermes_veto_ok", id=parts[1].strip()))
+        return True
+
+    if text.startswith("/hermes_rollback"):
+        parts = text.split(maxsplit=1)
+        exp_id = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+        from hermes.agent import HermesAgent
+        from hermes.promotion import rollback
+
+        result = rollback(exp_id, agent=HermesAgent())
+        if result.get("verdict") == "not_found":
+            send_telegram_message(t("hermes_rollback_missing"))
+        else:
+            send_telegram_message(t("hermes_rollback_ok", id=result.get("experiment_id") or exp_id or ""))
+        return True
+
     if text.startswith("/hermes"):
         send_telegram_message(hint("hermes"))
         return True

@@ -331,6 +331,12 @@ def _loop():
                 _maybe_tick_daily_reports(cfg=cfg)
             except Exception as e:
                 log(f"Background daily report tick failed: {e}", "WARNING")
+            try:
+                from hermes.promotion import tick_hermes_promotions
+
+                tick_hermes_promotions()
+            except Exception as e:
+                log(f"Background Hermes promotion tick failed: {e}", "WARNING")
             arch = cfg.architecture_config
             if not arch.get("background_social_enabled", True):
                 _stop.wait(5)

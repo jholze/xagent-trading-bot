@@ -507,6 +507,32 @@ def explain_hermes_cycle(record: dict, proposal=None) -> str:
         detail = (
             "Der Bot hat die Einstellung im Backtest verbessert und übernimmt sie ins Live-Trading."
         )
+    elif verdict == "pending":
+        headline = (
+            f"⏳ Hermes will '{param_label}' anpassen ({old_v} -> {new_v}) für {symbol}."
+        )
+        wp = record.get("win_probability")
+        ntr = record.get("total_trades")
+        if wp is not None and ntr is not None:
+            from hermes.significance import format_win_probability
+
+            detail = (
+                f"{format_win_probability(float(wp), int(ntr))}, Hold-out ok. "
+                f"Veto mit /hermes_veto {record.get('id', '')}."
+            )
+        else:
+            detail = "Qualifiziert — Veto-Fenster läuft, noch nicht live."
+    elif verdict == "vetoed":
+        headline = f"🛑 Hermes-Promotion für {symbol} per Veto storniert."
+        detail = f"'{param_label}' bleibt bei {old_v}."
+    elif verdict == "rolled_back":
+        headline = f"↩️ Hermes hat '{param_label}' für {symbol} zurückgesetzt."
+        detail = "Snapshot vor der Promotion wiederhergestellt."
+    elif verdict == "suppressed":
+        headline = (
+            f"👁️ Hermes-Test (observe) für {symbol}: {param_label} {old_v}->{new_v}."
+        )
+        detail = "Qualifiziert, aber observe-Modus schreibt keine Config."
     elif verdict == "inconclusive":
         headline = (
             f"⚪ Hermes-Test unentschieden für {symbol}: {param_label} {old_v}->{new_v}."
