@@ -12,6 +12,7 @@ from storage.errors import LedgerLockUnavailable
 
 _meta_lock = threading.Lock()
 _thread_locks: dict[tuple[str, str], threading.Lock] = {}
+_hold_depth = threading.local()
 
 
 def _thread_lock_for(tenant_id: str, scope: str) -> threading.Lock:
@@ -23,6 +24,14 @@ def _thread_lock_for(tenant_id: str, scope: str) -> threading.Lock:
             lock = threading.Lock()
             _thread_locks[key] = lock
         return lock
+
+
+def _depth_map() -> dict[tuple[str, str], int]:
+    depths = getattr(_hold_depth, "map", None)
+    if depths is None:
+        depths = {}
+        _hold_depth.map = depths
+    return depths
 
 
 class LedgerLock:
@@ -53,6 +62,7 @@ class LedgerLock:
         self._redis = None
         self._held_redis = False
         self._held_at: float | None = None
+        self._nested = False
 
     def _abort_acquire(
         self,
@@ -62,6 +72,7 @@ class LedgerLock:
         cause: BaseException | None = None,
     ):
         if self.fail_closed:
+            _depth_map()[(self.tenant_id, self.scope)] = 0
             self._thread_lock.release()
             raise LedgerLockUnavailable(
                 scope=self.scope,
@@ -74,8 +85,16 @@ class LedgerLock:
         return self
 
     def __enter__(self):
+        key = (self.tenant_id, self.scope)
+        depths = _depth_map()
+        if depths.get(key, 0) > 0:
+            depths[key] += 1
+            self._nested = True
+            return self
+        self._nested = False
         self._thread_lock = _thread_lock_for(self.tenant_id, self.scope)
         self._thread_lock.acquire()
+        depths[key] = 1
         if not self.enabled:
             return self
         self._redis = get_redis(self.redis_url, key_prefix=self.key_prefix)
@@ -105,6 +124,11 @@ class LedgerLock:
         )
 
     def __exit__(self, exc_type, exc, tb):
+        key = (self.tenant_id, self.scope)
+        depths = _depth_map()
+        if self._nested:
+            depths[key] = max(0, depths.get(key, 1) - 1)
+            return False
         if self._held_redis and self._redis:
             try:
                 current = self._redis.get(self._redis_key)
@@ -120,6 +144,7 @@ class LedgerLock:
                     )
             except Exception:
                 pass
+        depths[key] = 0
         self._thread_lock.release()
         return False
 
