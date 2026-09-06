@@ -184,6 +184,14 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         + "\n".join(social_lines)
         + f"\n\n<b>{_esc(stats['hermes'])}</b>"
     )
+    try:
+        from services.reporting.metrics import format_live_metrics_block
+
+        block = format_live_metrics_block(days=7)
+        if block:
+            msg = f"{msg}\n\n{block}"
+    except Exception:
+        pass
     return _split_telegram(msg)
 
 
