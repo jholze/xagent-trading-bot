@@ -43,6 +43,50 @@ def reset_gate_ticker_snapshot_for_tests() -> None:
         _gate_snapshot_ts = None
 
 
+def peek_cached_price(symbol: str) -> float | None:
+    """Last known price from TTL cache, last-good, or the in-memory Gate snapshot.
+
+    Does not start a network fetch. Missing / invalid → None.
+    """
+    try:
+        key = _slash_pair(symbol)
+        now = time.time()
+        for cand in (key, str(symbol or "")):
+            if not cand:
+                continue
+            cached = _cache_get(cand, now)
+            if cached is not None:
+                try:
+                    price = float(cached)
+                except (TypeError, ValueError):
+                    price = 0.0
+                if price > 0:
+                    return price
+        snap = _gate_snapshot
+        if snap:
+            raw = snap.get(key)
+            if raw is None and key != symbol:
+                raw = snap.get(symbol)
+            try:
+                price = float(raw or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price > 0:
+                return price
+        now_mono = time.monotonic()
+        parsed = _parse_last_good(
+            _last_good_cache.get(key) or _last_good_cache.get(symbol),
+            now_mono=now_mono,
+        )
+        if parsed is not None:
+            price, ts = parsed
+            if price > 0 and (now_mono - ts) <= _stale_price_max_age_sec():
+                return float(price)
+    except Exception:
+        return None
+    return None
+
+
 def _stale_price_max_age_sec() -> float:
     try:
         return float(get_bot_config().stale_price_max_age_sec)
