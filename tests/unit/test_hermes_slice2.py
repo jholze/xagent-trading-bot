@@ -663,3 +663,32 @@ def test_veto_message_uses_operator_facing_number():
     assert "/hermes_veto" in msg
     assert "exp_slice2" in msg
     assert "p-value" not in msg.lower()
+
+
+def test_post_apply_ledger_reads_active_scope_not_hardcoded_live(monkeypatch):
+    """Review #308: the unit suite runs in the demo scope; post-apply must follow it."""
+    from data_manager import resolve_ledger_scope
+    from hermes import post_apply
+
+    seen: dict = {}
+
+    def fake_load_orders(scope="live"):
+        seen["scope"] = scope
+        return [
+            {
+                "id": "o1",
+                "side": "sell",
+                "symbol": "ARIA/USDT",
+                "pnl": -1.0,
+                "timestamps": {"created": "2026-09-06T10:00:00"},
+                "request": {"hermes_experiment_id": "exp-scope"},
+            }
+        ]
+
+    monkeypatch.setattr("hermes.live_evidence._load_orders", fake_load_orders)
+    monkeypatch.setattr("data_manager.load_trade_history_document", lambda scope, *a, **k: {"trades": []})
+    rows = post_apply.load_ledger_trades("ARIA/USDT")
+    assert seen["scope"] == resolve_ledger_scope()
+    assert seen["scope"] == "demo"
+    assert any(r.get("hermes_experiment_id") == "exp-scope" for r in rows)
+

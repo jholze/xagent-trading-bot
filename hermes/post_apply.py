@@ -150,17 +150,26 @@ def evaluate(
 def load_ledger_trades(symbol: str | None = None) -> list[dict]:
     """Load live trade history plus orders that carry hermes_experiment_id."""
     trades: list[dict] = []
+    # Review (#308): read the ACTIVE ledger scope, not a hard-coded "live".
+    # On Railway the bot runs in the demo scope; a fixed "live" would never
+    # see the fills and the post-apply revert would stay silent forever.
     try:
-        from data_manager import load_live_trade_history
+        from data_manager import resolve_ledger_scope
 
-        history = load_live_trade_history() or {}
+        scope = resolve_ledger_scope()
+    except Exception:
+        scope = "live"
+    try:
+        from data_manager import load_trade_history_document
+
+        history = load_trade_history_document(scope) or {}
         trades.extend(history.get("trades") or [])
     except Exception:
         pass
     try:
         from hermes.live_evidence import _load_orders
 
-        for order in _load_orders("live"):
+        for order in _load_orders(scope):
             req = order.get("request") or {}
             row = dict(order)
             row.setdefault("type", str(order.get("side") or "").upper())
