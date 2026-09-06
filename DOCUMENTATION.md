@@ -1018,6 +1018,9 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
     "notify_on_cycle": true,
     "terminal_dashboard": true,
     "decisions_audit": true,
+    "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
+    "daily_report_telegram": true,
     "telegram_explanations": {
       "enabled": true,
       "verbosity": "verbose",
@@ -1073,6 +1076,14 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
 ```
 
 `volatile_altcoin` — Abschnitte 6.5–6.9. `architecture` — Abschnitt 2. `ask_bridge` — Abschnitt 7. `telegram_command_menu` — Menü-Button, Bereichs-Tastatur, DE/EN.
+
+**Täglicher Tick** (`services/background_runtime._loop`, Anzeige-Zeitzone via `calendar_day_bounds`, nie `date.today()`):
+
+| Schlüssel | Standard | Bedeutung |
+|-----------|----------|-----------|
+| `morning_briefing_enabled` | `true` | Einmal pro Kalendertag ab `morning_briefing_hour` das Morning Briefing senden (gleiche Idempotenz-Marke `data/morning_briefing.json` wie `/morning` — Command und Scheduler senden nicht doppelt) |
+| `morning_briefing_hour` | `8` | Stunde in Operator-/Anzeige-Zeitzone (`operator_timezone` / `display_timezone`) |
+| `daily_report_telegram` | `true` | Nach dem Briefing die kompakte Tages-Auswertung (`scripts/daily_auswertung.py`, Ledger über `resolve_ledger_scope()`) senden |
 
 ### `.env` (nicht committen)
 
