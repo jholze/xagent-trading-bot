@@ -1143,6 +1143,9 @@ class OrderService:
                 "fee": float(getattr(result, "fee", 0) or 0) or None,
                 "fee_unknown": extra_fields["fee_unknown"],
             }
+            filled_gross = float(getattr(result, "filled_qty", 0) or 0)
+            if filled_gross > 0:
+                execution["filled_qty_gross"] = filled_gross
             lev_pay = _leverage_payload(approved_order)
             if lev_pay:
                 execution.update(lev_pay)

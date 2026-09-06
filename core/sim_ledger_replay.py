@@ -202,6 +202,8 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
         execution = order.get("execution") or {}
         request = order.get("request") or {}
         price = float(execution.get("price") or request.get("price") or 0)
+        # execution.amount is NET qty owned (#333). Old rows without
+        # filled_qty_gross still store GROSS here — do not infer a fee.
         amount = float(execution.get("amount") or request.get("amount") or 0)
         trade_ts = (
             order.get("timestamps", {}).get("filled")

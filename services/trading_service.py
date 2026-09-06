@@ -1,5 +1,11 @@
 from core.config import BotConfig, get_bot_config
-from core.models import OrderStatus, RiskDecision, TradeOrder, TradeResult
+from core.models import (
+    OrderStatus,
+    RiskDecision,
+    TradeOrder,
+    TradeResult,
+    execution_filled_qty_gross,
+)
 from execution.factory import get_execution_adapter
 from logger import log
 from risk.risk_manager import RiskManager
@@ -269,17 +275,19 @@ class TradingService:
         execution = record.get("execution") or {}
         st = OrderStatus.try_legacy(status)
         if st is OrderStatus.EXECUTED:
+            req = record.get("request") or {}
             return TradeResult(
                 True,
                 side or "BUY",
                 symbol,
-                amount=float(execution.get("amount") or record.get("request", {}).get("amount") or 0),
-                price=float(execution.get("price") or record.get("request", {}).get("price") or 0),
-                usdt_amount=float(execution.get("usdt") or record.get("request", {}).get("usdt") or 0),
+                amount=float(execution.get("amount") or req.get("amount") or 0),
+                price=float(execution.get("price") or req.get("price") or 0),
+                usdt_amount=float(execution.get("usdt") or req.get("usdt") or 0),
                 pnl=float(record.get("pnl") or 0),
                 message="Idempotent replay",
                 order_id=record.get("id", ""),
                 order_status=st,
+                filled_qty=execution_filled_qty_gross(execution, req),
             )
         msg = record.get("error") or f"Prior order status: {status}"
         return TradeResult(
