@@ -430,7 +430,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         if hard and isinstance(exc, hard):
             return self._rejected_result(order, str(exc)[:200] or exc.__class__.__name__)
         if create_attempted and uncertain and isinstance(exc, uncertain):
-            found = self._recover_after_uncertain_create(exchange, order)
+            found, looked = self._recover_after_uncertain_create(exchange, order)
             if found is not None:
                 return self._finalize_exchange_order(
                     exchange,
@@ -441,7 +441,14 @@ class GateExecutionAdapter(ExecutionAdapter):
                     timeframe=timeframe,
                     usdt=usdt or order.usdt_amount,
                 )
-            return self._rejected_result(order, "not placed")
+            if looked:
+                return self._rejected_result(order, "not placed")
+            # Lookups never returned: do not claim "not placed", do not resend.
+            return self._active_reconcile_result(
+                order,
+                "create uncertain, exchange unreachable — needs reconcile",
+                exist=False,
+            )
         raise exc
 
     def _order_matches_client_id(self, raw: dict, key: str) -> bool:
@@ -467,20 +474,29 @@ class GateExecutionAdapter(ExecutionAdapter):
                 return True
         return False
 
-    def _recover_after_uncertain_create(self, exchange, order: TradeOrder) -> dict | None:
-        """fetch_open_orders then fetch_order by client_order_id. Never resend."""
+    def _recover_after_uncertain_create(
+        self, exchange, order: TradeOrder
+    ) -> tuple[dict | None, bool]:
+        """fetch_open_orders then fetch_order by client_order_id. Never resend.
+
+        Returns ``(raw, looked)``. ``looked`` is True iff at least one lookup
+        returned without raising (including empty/None). False when
+        ``exchange is None`` or every call raised.
+        """
         key = order.client_order_id or order.idempotency_key
         if exchange is None:
-            return None
+            return None, False
+        looked = False
         try:
             opens = exchange.fetch_open_orders(order.symbol) or []
+            looked = True
         except Exception as e:
             log(f"fetch_open_orders after uncertain create failed: {e}", "WARNING")
             opens = []
         if isinstance(opens, list):
             for raw in opens:
                 if isinstance(raw, dict) and self._order_matches_client_id(raw, key):
-                    return raw
+                    return raw, True
         text = f"t-{key}" if key else ""
         for ident, params in (
             (key, {}),
@@ -491,7 +507,11 @@ class GateExecutionAdapter(ExecutionAdapter):
             if not ident:
                 continue
             try:
-                fetched = exchange.fetch_order(ident, order.symbol, params) if params else exchange.fetch_order(ident, order.symbol)
+                fetched = (
+                    exchange.fetch_order(ident, order.symbol, params)
+                    if params
+                    else exchange.fetch_order(ident, order.symbol)
+                )
             except TypeError:
                 try:
                     fetched = exchange.fetch_order(ident, order.symbol)
@@ -499,9 +519,10 @@ class GateExecutionAdapter(ExecutionAdapter):
                     continue
             except Exception:
                 continue
+            looked = True
             if isinstance(fetched, dict) and fetched:
-                return fetched
-        return None
+                return fetched, True
+        return None, looked
 
     def _ensure_filled(self, exchange, raw: dict, order: TradeOrder) -> dict:
         """One fetch_order if ``filled`` is missing. Never invent filled=qty."""
@@ -752,8 +773,8 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.exchange_order_id = order.exchange_order_id
         result.fee = fill.fee_usdt if fill is not None else 0.0
         result.order_status = status
-        result.filled_qty = filled
-        result.amount = filled
+        result.filled_qty = filled  # GROSS: ccxt filled (exchange reconciliation)
+        result.amount = fill.qty_net  # NET: qty owned; matches the position book
         result.fee_unknown = fee_unknown
         result.needs_reconcile = fee_unknown
         result.pending = status is OrderStatus.PARTIALLY_FILLED

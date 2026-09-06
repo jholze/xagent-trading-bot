@@ -11,7 +11,10 @@ import pytest
 from bus.trade_intents import make_idempotency_key
 from core.config import BotConfig
 from core.models import OrderStatus, TradeOrder, TradeResult
+from core.tenant_context import tenant_context
 from execution.gate_adapter import GateExecutionAdapter
+from execution.recovery import _needs_order_reconcile
+from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
 
 SYMBOL = "SOL/USDT"
@@ -277,3 +280,114 @@ def test_idempotency_key_is_uuid_and_stable_across_retry(monkeypatch):
         params = args[2] if len(args) > 2 else kwargs.get("params") or {}
         texts.append(params.get("text"))
     assert texts == [f"t-{key}", f"t-{key}"]
+
+
+def _assert_create_not_resent(ex) -> None:
+    assert ex.create_market_buy_order_with_cost.call_count == 1
+    assert ex.create_market_buy_order.call_count == 0
+    assert ex.create_market_sell_order.call_count == 0
+    assert ex.create_order.call_count == 0
+
+
+def test_timeout_lookups_succeed_absent_rejected_no_reconcile(monkeypatch):
+    """#332 (a): every lookup returned; order is genuinely absent."""
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.return_value = []
+    ex.fetch_order.return_value = None
+    result = adapter.execute(_buy_order())
+    assert result.executed is False
+    assert result.order_status is OrderStatus.REJECTED
+    assert result.needs_reconcile is False
+    assert result.order_exist_in_exchange is False
+    assert "not placed" in (result.message or "")
+    adapter.portfolio.execute_buy.assert_not_called()
+    _assert_create_not_resent(ex)
+
+
+def test_timeout_all_lookups_raise_needs_reconcile_not_rejected(monkeypatch):
+    """#332 (b): exchange unreachable after uncertain create — do not reject."""
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.side_effect = ccxt.NetworkError("down")
+    ex.fetch_order.side_effect = ccxt.NetworkError("down")
+    result = adapter.execute(_buy_order())
+    assert result.executed is False
+    assert result.order_status is not OrderStatus.REJECTED
+    assert result.order_status is OrderStatus.ACTIVE
+    assert result.needs_reconcile is True
+    assert result.pending is True
+    assert result.order_exist_in_exchange is False
+    assert "unreachable" in (result.message or "").lower()
+    assert "reconcile" in (result.message or "").lower()
+    adapter.portfolio.execute_buy.assert_not_called()
+    _assert_create_not_resent(ex)
+
+
+def test_timeout_open_orders_raise_but_fetch_order_finds(monkeypatch):
+    """#332 (c): fetch_open_orders fails; fetch_order returns the fill."""
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    key = str(uuid.uuid4())
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.side_effect = ccxt.NetworkError("down")
+    found = _closed(filled=0.25, oid="ex-found", extra={"clientOrderId": key})
+    ex.fetch_order.return_value = found
+    result = adapter.execute(_buy_order(key=key))
+    assert result.executed
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.exchange_order_id == "ex-found"
+    adapter.portfolio.execute_buy.assert_called_once()
+    _assert_create_not_resent(ex)
+
+
+def test_timeout_exchange_none_needs_reconcile(monkeypatch):
+    """#332 (d): no exchange object is the same as every lookup failing."""
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    order = _buy_order()
+    raw, looked = adapter._recover_after_uncertain_create(None, order)
+    assert raw is None
+    assert looked is False
+    result = adapter._handle_create_exception(
+        ccxt.RequestTimeout("timeout"),
+        None,
+        order,
+        create_attempted=True,
+        timeframe="4h",
+        side="buy",
+        qty=0.25,
+        usdt=25.0,
+    )
+    assert result.executed is False
+    assert result.order_status is not OrderStatus.REJECTED
+    assert result.order_status is OrderStatus.ACTIVE
+    assert result.needs_reconcile is True
+    assert result.order_exist_in_exchange is False
+    assert "unreachable" in (result.message or "").lower()
+    adapter.portfolio.execute_buy.assert_not_called()
+    assert ex.create_market_buy_order_with_cost.call_count == 0
+    assert ex.create_order.call_count == 0
+
+
+def test_timeout_unreachable_row_needs_order_reconcile(monkeypatch):
+    """#332 (e): boot reconcile must revisit the row produced by (b)."""
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.side_effect = ccxt.NetworkError("down")
+    ex.fetch_order.side_effect = ccxt.NetworkError("down")
+    order = _buy_order()
+    result = adapter.execute(order)
+    with tenant_context("default", scope="demo"):
+        svc = OrderService("demo")
+        rec = svc.create_from_request(
+            order,
+            status=OrderStatus.QUEUED,
+            telegram_token="uc332-b",
+            timeframe="4h",
+        )
+        svc.link_execution_result(rec["id"], result, order)
+        stored = svc.get_by_id(rec["id"])
+    assert stored is not None
+    assert _needs_order_reconcile(stored) is True
+    assert stored.get("needs_reconcile") is True
+    assert OrderStatus.try_legacy(stored.get("status")) is OrderStatus.ACTIVE
+    _assert_create_not_resent(ex)

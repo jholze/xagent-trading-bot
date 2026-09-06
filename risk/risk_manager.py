@@ -711,6 +711,17 @@ class RiskManager:
                         size_multiplier=0.0,
                     )
 
+        # Cash floor / daily buy limit reject with no side effects. Do not
+        # evict (live sell) for an entry those guards would still deny (#334).
+        is_dca = self._is_dca_buy(source, order)
+        floor_block = self._cash_floor_blocked(is_dca=is_dca)
+        if floor_block:
+            return floor_block
+
+        buy_limit = self._daily_buy_limit_blocked(is_dca)
+        if buy_limit:
+            return buy_limit
+
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position:
             cap = self._resolve_position_capacity(full_slots=open_slots)
@@ -760,15 +771,6 @@ class RiskManager:
                         code="max_open_positions",
                     )
                 # Slot freed in this evaluate() call — continue _evaluate_impl.
-
-        is_dca = self._is_dca_buy(source, order)
-        floor_block = self._cash_floor_blocked(is_dca=is_dca)
-        if floor_block:
-            return floor_block
-
-        buy_limit = self._daily_buy_limit_blocked(is_dca)
-        if buy_limit:
-            return buy_limit
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
