@@ -46,33 +46,19 @@ def position_metrics(
     }
 
 
-def _parse_held_at(value: object) -> datetime | None:
-    if not value:
-        return None
-    try:
-        text = str(value).strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = datetime.fromisoformat(text)
-        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-    except Exception:
-        return None
 
 
 def _held_label(first_buy_at: object, now: datetime | None = None) -> str | None:
-    start = _parse_held_at(first_buy_at)
+    # first_buy_at is written naive in the writer's process clock (UTC on
+    # Railway). Compare in aware UTC like order_service does since #320 —
+    # a Berlin "now" against a naive UTC stamp would show 2 h too much.
+    from core.time_utils import ledger_datetime_utc, to_utc, utc_now
+
+    start = ledger_datetime_utc(first_buy_at)
     if start is None:
         return None
-    if now is None:
-        try:
-            from core.time_utils import now_display
-
-            now = now_display()
-        except Exception:
-            now = datetime.now()
-    if now.tzinfo is not None:
-        now = now.replace(tzinfo=None)
-    delta = now - start
+    now_utc = utc_now() if now is None else to_utc(now)
+    delta = now_utc - start
     if delta.total_seconds() < 0:
         return None
     days = int(delta.days)
