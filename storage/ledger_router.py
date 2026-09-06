@@ -134,9 +134,12 @@ class JsonLedgerStore:
             return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
 
     def save_orders(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._orders_path(scope)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
-        return self._atomic_write(self._orders_path(scope), payload)
+        return self._atomic_write(path, payload)
 
     def load_positions(self, scope: str) -> dict:
         path = self._positions_path(scope)
@@ -153,9 +156,12 @@ class JsonLedgerStore:
             return {"ledger_scope": scope, "positions": {}}
 
     def save_positions(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._positions_path(scope)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
-        return self._atomic_write(self._positions_path(scope), payload)
+        return self._atomic_write(path, payload)
 
     def _empty_trade_history(self, scope: str) -> dict:
         if scope == "live":
@@ -179,7 +185,11 @@ class JsonLedgerStore:
             return self._empty_trade_history(scope)
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
-        return self._atomic_write(self._trade_history_path(scope), data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._trade_history_path(scope)
+        payload = prepare_json_ledger_write(data, path)
+        return self._atomic_write(path, payload)
 
 
 class MongoLedgerStoreAdapter:
@@ -226,9 +236,13 @@ class DualWriteLedgerStore:
             return self._json.load_orders(scope)
 
     def save_orders(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_orders(data, scope)
         try:
             ok = self._mongo.save_orders(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo orders save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -242,9 +256,13 @@ class DualWriteLedgerStore:
             return self._json.load_positions(scope)
 
     def save_positions(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_positions(data, scope)
         try:
             ok = self._mongo.save_positions(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo positions save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -258,9 +276,13 @@ class DualWriteLedgerStore:
             return self._json.load_trade_history(scope)
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_trade_history(data, scope)
         try:
             ok = self._mongo.save_trade_history(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo trade_history save failed ({scope}): {e}", "ERROR")
             ok = False
