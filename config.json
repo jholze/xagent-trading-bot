@@ -1,6 +1,10 @@
 {
   "virtual_trading": true,
   "trading_mode": "live",
+  "trading": {
+    "entries_enabled": true,
+    "exits_enabled": true
+  },
   "live_confirmed": true,
   "demo": {
     "backend": "mongo"

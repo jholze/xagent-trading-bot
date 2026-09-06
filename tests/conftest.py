@@ -531,6 +531,12 @@ def _reset_leaky_module_globals() -> None:
         reset_cycle_health_for_tests()
     except Exception:
         pass
+    try:
+        from notifications.telegram_commands.pause_commands import reset_panic_for_tests
+
+        reset_panic_for_tests()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

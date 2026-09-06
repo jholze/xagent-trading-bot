@@ -88,6 +88,8 @@ _RISK_CODES = {
     "short_margin": "Nicht genug Margin für den Short.",
     "short_margin_pct": "Short würde den Margin-Anteil am Portfolio überschreiten.",
     "mode_blocked": "Handel ist in diesem Modus blockiert.",
+    "entries_paused": "Neue Käufe sind pausiert — Stops, Trails und Exit-Leiter laufen weiter.",
+    "exits_paused": "Normale Verkäufe sind pausiert — Notverkäufe (Stops) laufen weiter.",
 }
 
 _PARAM_LABELS = {

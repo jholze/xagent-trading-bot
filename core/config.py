@@ -44,6 +44,25 @@ class BotConfig:
         return "paper" if self.virtual_trading else "off"
 
     @property
+    def trading_block(self) -> dict:
+        block = self._raw.get("trading")
+        return dict(block) if isinstance(block, dict) else {}
+
+    @property
+    def entries_enabled(self) -> bool:
+        """New buys/shorts. Default true when the key is missing."""
+        if "entries_enabled" not in self.trading_block:
+            return True
+        return bool(self.trading_block.get("entries_enabled"))
+
+    @property
+    def exits_enabled(self) -> bool:
+        """Normal sells/covers. Emergency sells ignore this. Default true."""
+        if "exits_enabled" not in self.trading_block:
+            return True
+        return bool(self.trading_block.get("exits_enabled"))
+
+    @property
     def live_confirmed(self) -> bool:
         return bool(self._raw.get("live_confirmed", False))
 

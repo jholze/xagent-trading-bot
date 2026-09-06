@@ -10,6 +10,10 @@ from storage.errors import LedgerUnavailable
 
 _ledger_unavailable_notified: set[tuple[str, str]] = set()
 
+# Operator-facing German copy for the entries/exits split (#305 slice 3).
+ENTRIES_PAUSED_MSG = "Neue Käufe pausiert (/pause). Stops und Exits laufen weiter."
+EXITS_PAUSED_MSG = "Verkäufe pausiert. Notverkäufe (Stops) laufen weiter."
+
 
 class TradingService:
     """Unified trading facade — respects trading_mode, risk limits, and safety gates."""
@@ -62,12 +66,16 @@ class TradingService:
             return "off (analysis only)"
         return "paper (deprecated — use /mode live)"
 
-    def can_execute(self, source: str = "auto", trust_score: float = None) -> tuple:
+    def can_execute(self, source: str = "auto", trust_score: float = None, order=None) -> tuple:
         from core.simulated_trading import is_real_live_trading, is_simulated_trading
 
         mode = self.config.trading_mode
         if mode == "off":
             return False, "Trading disabled (mode=off). Use /mode live to enable."
+        if order is not None:
+            allowed, reason, _code = self._entries_exits_gate(order)
+            if not allowed:
+                return False, reason
         if is_simulated_trading(self.config.raw):
             return True, ""
         if mode == "paper":
@@ -82,6 +90,32 @@ class TradingService:
                 return False, f"Trust score {trust_score:.0f} below live minimum ({min_trust})."
             return True, ""
         return False, f"Unknown trading mode: {mode}"
+
+    def _entries_exits_gate(self, order) -> tuple[bool, str, str]:
+        """Split switch after mode=off. Emergency sells always pass the exits switch."""
+        from risk.risk_manager import _is_emergency_sell
+
+        otype = str(getattr(order, "type", "") or "").upper()
+        signal = str(getattr(order, "signal", "") or "")
+        if otype in ("BUY", "SHORT"):
+            if not self.config.entries_enabled:
+                return False, ENTRIES_PAUSED_MSG, "entries_paused"
+            return True, "", ""
+        if otype in ("SELL", "COVER"):
+            if _is_emergency_sell(signal):
+                return True, "", ""
+            if not self.config.exits_enabled:
+                return False, EXITS_PAUSED_MSG, "exits_paused"
+            return True, "", ""
+        return True, "", ""
+
+    def _pause_reject_code(self, order, reason: str) -> str:
+        if order is None:
+            return ""
+        _ok, pause_reason, pause_code = self._entries_exits_gate(order)
+        if pause_code and reason == pause_reason:
+            return pause_code
+        return ""
 
     def max_usdt_for_order(self) -> float:
         if self.config.trading_mode == "live":
@@ -285,17 +319,30 @@ class TradingService:
                     if replay is not None:
                         return replay
 
-            ok, reason = self.can_execute(source=source, trust_score=trust_score)
+            ok, reason = self.can_execute(source=source, trust_score=trust_score, order=order)
             if not ok:
                 log(f"Trade blocked: {reason}", "WARNING")
+                code = self._pause_reject_code(order, reason)
                 if not ledger_id:
                     ledger.record_rejected(
                         order,
-                        RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
+                        RiskDecision(
+                            approved=False,
+                            message=reason,
+                            code=code or "mode_blocked",
+                            order=order,
+                        ),
                         timeframe=timeframe,
                         request_extra=request_extra,
                     )
-                return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
+                return TradeResult(
+                    False,
+                    order.type,
+                    order.symbol,
+                    message=reason,
+                    order_id=ledger_id or "",
+                    code=code,
+                )
 
             decision = self.risk.evaluate(
                 order,

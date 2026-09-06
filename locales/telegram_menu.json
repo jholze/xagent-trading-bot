@@ -47,6 +47,9 @@
           "title": "⚙️ <b>Modus & Sicherheit</b>",
           "keys": [
             "mode",
+            "pause",
+            "resume",
+            "panic",
             "maxpositions",
             "live_confirm",
             "live_cancel",
@@ -223,6 +226,21 @@
         "description": "Handelsmodus anzeigen und wechseln",
         "help_line": "<code>/mode</code> — Handelsmodus anzeigen; <code>/mode paper|live|off</code> zum Wechseln",
         "hint": "❌ Unbekannter Modus.\n\nSende <code>/mode</code> für die aktuelle Einstellung und alle Optionen:\n• <code>/mode paper</code> — Virtuelles Geld (Standard)\n• <code>/mode live</code> — Echtes Geld auf Gate.io (braucht <code>/live_confirm</code>)\n• <code>/mode off</code> — Nur Analyse, kein Handel"
+      },
+      "pause": {
+        "description": "Neue Käufe pausieren (Stops laufen weiter)",
+        "help_line": "<code>/pause</code> — Nur Entries aus; Stops, Trails und Exit-Leiter bleiben aktiv",
+        "hint": "⏸ <b>/pause</b> — Neue Käufe stoppen\n\n<code>/pause</code> setzt <code>entries_enabled=false</code>.\nStops, Trailing und Exit-Leiter laufen weiter.\nWieder an: <code>/resume</code> · Notausstieg: <code>/panic</code>"
+      },
+      "resume": {
+        "description": "Neue Käufe wieder erlauben",
+        "help_line": "<code>/resume</code> — entries_enabled wieder an",
+        "hint": "▶️ <b>/resume</b> — Käufe wieder erlauben\n\n<code>/resume</code> setzt <code>entries_enabled=true</code>."
+      },
+      "panic": {
+        "description": "Alle Longs schließen (eine Bestätigung)",
+        "help_line": "<code>/panic</code> — Vorschau + eine Bestätigung, dann SELL_STOP_FULL je Long",
+        "hint": "🚨 <b>/panic</b> — Alle offenen Longs schließen\n\nVorschau mit Live-Preis und PnL, dann Button „Alles schließen“ (60 s).\nGesperrte Positionen werden übersprungen. Shorts nicht. Danach /pause."
       },
       "gate": {
         "description": "Gate.io API-Status und Balance",
@@ -424,6 +442,9 @@
           "title": "⚙️ <b>Mode & safety</b>",
           "keys": [
             "mode",
+            "pause",
+            "resume",
+            "panic",
             "maxpositions",
             "live_confirm",
             "live_cancel",
@@ -600,6 +621,21 @@
         "description": "Show or change trading mode",
         "help_line": "<code>/mode</code> — Show trading mode; <code>/mode paper|live|off</code> to switch",
         "hint": "❌ Unknown mode.\n\nSend <code>/mode</code> for current setting and all options:\n• <code>/mode paper</code> — Virtual money (default)\n• <code>/mode live</code> — Real money on Gate.io (needs <code>/live_confirm</code>)\n• <code>/mode off</code> — Analysis only, no trading"
+      },
+      "pause": {
+        "description": "Pause new buys (stops keep running)",
+        "help_line": "<code>/pause</code> — Entries off; stops, trails and exit ladders stay active",
+        "hint": "⏸ <b>/pause</b> — Stop new buys\n\n<code>/pause</code> sets <code>entries_enabled=false</code>.\nStops, trailing and exit ladders keep running.\nResume: <code>/resume</code> · emergency close: <code>/panic</code>"
+      },
+      "resume": {
+        "description": "Allow new buys again",
+        "help_line": "<code>/resume</code> — turn entries_enabled back on",
+        "hint": "▶️ <b>/resume</b> — Allow buys again\n\n<code>/resume</code> sets <code>entries_enabled=true</code>."
+      },
+      "panic": {
+        "description": "Close all longs (one confirmation)",
+        "help_line": "<code>/panic</code> — Preview + one confirmation, then SELL_STOP_FULL per long",
+        "hint": "🚨 <b>/panic</b> — Close every open long\n\nPreview with live price and PnL, then “Alles schließen” (60 s).\nLocked positions are skipped. Shorts are not. Then /pause."
       },
       "gate": {
         "description": "Gate.io API status and balance",
