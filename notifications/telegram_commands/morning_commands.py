@@ -30,6 +30,7 @@ def handle(text: str) -> bool:
         daemon=True,
         name="morning-cmd",
     )
+    _cmd_threads[:] = [t for t in _cmd_threads if t.is_alive()]
     _cmd_threads.append(thread)
     thread.start()
     return True

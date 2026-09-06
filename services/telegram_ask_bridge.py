@@ -943,6 +943,7 @@ def _tick_headless_dispatch(now: datetime) -> None:
                 )
 
         thread = threading.Thread(target=_run, daemon=True, name=f"ask-headless-{qid}")
+        _headless_threads[:] = [t for t in _headless_threads if t.is_alive()]
         _headless_threads.append(thread)
         thread.start()
 
