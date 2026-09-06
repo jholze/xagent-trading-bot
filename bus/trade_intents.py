@@ -154,6 +154,13 @@ def make_idempotency_key(
 
     ``bucket`` (wall-clock hour) is ignored — the key is minted once at
     intent creation and persisted on the request record before any
-    exchange call. Callers must reuse the stored key on retry.
+    exchange call. Callers must reuse the stored key on retry: every caller
+    mints only when the order carries no key yet (#331).
+
+    This is a retry guard, not a replay guard. Before #313 the key embedded
+    the wall-clock hour, so the same signal for the same coin twice within an
+    hour collided and the second one was swallowed. That side effect is gone
+    on purpose — repeat entries are governed by the explicit guards
+    (trade cooldown, daily buy limits, DCA rules), not by key collisions.
     """
     return str(uuid.uuid4())
