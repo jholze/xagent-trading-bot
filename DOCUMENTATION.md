@@ -96,6 +96,8 @@ Der Bot läuft weiterhin als **ein Prozess** (`aria_bot.py`), ist intern aber f�
 | Async-Notifications | `notification_mode: async` | Cycle-Digests blockieren Webhook/Commands weniger |
 | Background-Social | `background_social_enabled: true` | X/CMC/LC-Fetch parallel; Trading nutzt Snapshot |
 | Ledger-Lock | `ledger_lock_enabled: true` | Keine Race-Conditions bei Position/Order-Updates |
+| Ledger-Lock fail-closed | `ledger_lock_fail_closed: true` | Timeout, Redis-Fehler oder fehlender Client → Order abgelehnt (`LedgerLockUnavailable`); `false` = altes Fail-Open plus WARNING |
+| Ledger-Lock TTL | `ledger_lock_ttl_sec: 60` | Überdeckt `fetch_balance` + `create_market_buy` (je 20 s ccxt) innerhalb des Locks |
 | Rebuy-Cooldown | `min_hours_after_sell_before_rebuy: 4` | Kein Re-Entry kurz nach Sell (Anti-Churn) |
 | Ask-Bridge | `observability.ask_bridge` | `/ask` in eigener Queue, Poller alle 3 s |
 
@@ -1045,6 +1047,8 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
     "notification_mode": "async",
     "min_hours_after_sell_before_rebuy": 4.0,
     "ledger_lock_enabled": true,
+    "ledger_lock_fail_closed": true,
+    "ledger_lock_ttl_sec": 60,
     "background_social_enabled": true
   },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ],
