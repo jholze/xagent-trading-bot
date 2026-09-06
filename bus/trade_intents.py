@@ -72,6 +72,9 @@ class TradeIntentQueue:
         self._running = False
         self._queue.put(None)
 
+    def depth(self) -> int:
+        return int(self._queue.qsize())
+
     def submit(self, intent: TradeIntent) -> TradeIntent:
         self._publish_redis(intent)
         self._queue.put(intent)

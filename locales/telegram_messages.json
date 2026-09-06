@@ -196,7 +196,16 @@
     "cf_error": "❌ Counterfactual: {error}",
     "gate_set": "✅ gesetzt",
     "gate_missing": "❌ fehlt",
-    "morning_already_sent": "☀️ <b>Morning Briefing</b> für heute bereits gesendet (um {time} Uhr).\nNächstes Briefing: morgen mit <code>/morning</code>."
+    "morning_already_sent": "☀️ <b>Morning Briefing</b> für heute bereits gesendet (um {time} Uhr).\nNächstes Briefing: morgen mit <code>/morning</code>.",
+    "diag_report": "🩺 <b>Diagnose</b>\n\n⏱ {cycle_age}\n❌ Fehler in Folge: {failures}\n👷 Stale workers: {stale}\n📡 Quellen: {sources}\n📬 Queues: {queues}",
+    "diag_cycle_never": "letzter Zyklus: noch keiner (Startup)",
+    "diag_cycle_age_sec": "letzter Zyklus: {age}s",
+    "diag_stale_none": "keine",
+    "diag_yes": "ja",
+    "diag_no": "nein",
+    "diag_cmc_plan_unknown": "n/a",
+    "diag_sources_line": "X-Token {x} · CMC {cmc} ({cmc_plan}) · LunarCrush {lc} (list-tier blocked {lc_blocked})",
+    "diag_queues_line": "trade intents {intents} · eval {eval}"
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -395,6 +404,15 @@
     "cf_error": "❌ Counterfactual: {error}",
     "gate_set": "✅ set",
     "gate_missing": "❌ missing",
-    "morning_already_sent": "☀️ <b>Morning briefing</b> already sent today (at {time}).\nNext briefing: tomorrow via <code>/morning</code>."
+    "morning_already_sent": "☀️ <b>Morning briefing</b> already sent today (at {time}).\nNext briefing: tomorrow via <code>/morning</code>.",
+    "diag_report": "🩺 <b>Diagnostics</b>\n\n⏱ {cycle_age}\n❌ Consecutive failures: {failures}\n👷 Stale workers: {stale}\n📡 Sources: {sources}\n📬 Queues: {queues}",
+    "diag_cycle_never": "last cycle: none yet (startup)",
+    "diag_cycle_age_sec": "last cycle: {age}s",
+    "diag_stale_none": "none",
+    "diag_yes": "yes",
+    "diag_no": "no",
+    "diag_cmc_plan_unknown": "n/a",
+    "diag_sources_line": "X token {x} · CMC {cmc} ({cmc_plan}) · LunarCrush {lc} (list-tier blocked {lc_blocked})",
+    "diag_queues_line": "trade intents {intents} · eval {eval}"
   }
 }

@@ -784,6 +784,7 @@
     "operator_timezone": "Europe/Berlin",
     "display_timezone": "Europe/Berlin",
     "telegram_startup_notify": true,
+    "cycle_failure_alert_after": 3,
     "market_context_state_notify": true,
     "market_context_notify_on_boot": false,
     "market_context_notify_min_sec": 120,
