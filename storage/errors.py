@@ -35,3 +35,33 @@ class LedgerUnavailable(RuntimeError):
 
 class LedgerWriteFailed(LedgerUnavailable):
     """Ledger write failed. Return type of save_* stays bool (always True) or this."""
+
+
+class LedgerLockUnavailable(LedgerUnavailable):
+    """Ledger lock could not be acquired; fail closed (#306).
+
+    ``reason`` is one of ``timeout``, ``redis_error``, ``redis_unavailable``.
+    Subclassing ``LedgerUnavailable`` is deliberate: ``TradingService.execute_order``
+    already denies every order type and notifies the operator once per episode.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        reason: str = "timeout",
+        waited_sec: float = 0.0,
+        cause: BaseException | None = None,
+    ):
+        self.reason = reason
+        self.waited_sec = float(waited_sec)
+        detail = message or f"lock {reason} after {self.waited_sec:.1f}s"
+        super().__init__(
+            detail,
+            scope=scope,
+            tenant_id=tenant_id,
+            op="ledger_lock",
+            cause=cause,
+        )

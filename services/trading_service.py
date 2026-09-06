@@ -152,8 +152,8 @@ class TradingService:
 
         from bus.locks import ledger_lock
 
-        with ledger_lock(scope, cfg=self.config):
-            try:
+        try:
+            with ledger_lock(scope, cfg=self.config):
                 result = self._execute_order_locked(
                     order,
                     timeframe,
@@ -166,8 +166,8 @@ class TradingService:
                     idempotency_key=idem,
                     _lock_held=True,
                 )
-            except LedgerUnavailable as exc:
-                return self._deny_ledger_unavailable(order, exc)
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
         self._send_recorded_positions_snapshots(result)
         return result
 
