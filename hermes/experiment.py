@@ -180,6 +180,11 @@ class ExperimentRunner:
         counterfactual_metrics: dict = None,
         verdict: str | None = None,
         folds_excluded: int = 0,
+        win_probability: float | None = None,
+        total_trades: int | None = None,
+        threshold_used: float | None = None,
+        folds_holdout: int = 0,
+        params: dict | None = None,
     ) -> dict:
         if not verdict:
             verdict = "promoted" if verdict_promoted else "rejected"
@@ -201,7 +206,16 @@ class ExperimentRunner:
             "folds_won": folds_won,
             "folds_total": folds_total,
             "folds_excluded": folds_excluded,
+            "params": params if params is not None else proposal.params,
         }
+        if win_probability is not None:
+            payload["win_probability"] = win_probability
+        if total_trades is not None:
+            payload["total_trades"] = total_trades
+        if threshold_used is not None:
+            payload["threshold_used"] = threshold_used
+        if folds_holdout:
+            payload["folds_holdout"] = folds_holdout
         if live_metrics is not None:
             payload["live_metrics"] = live_metrics
         if live_veto:

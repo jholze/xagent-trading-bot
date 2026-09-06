@@ -41,6 +41,8 @@ class WalkForwardResult:
     folds_total: int = 0
     folds_won: int = 0
     folds_excluded: int = 0
+    holdout_metrics: list[dict] = field(default_factory=list)
+    folds_holdout: int = 0
 
 
 @dataclass
@@ -208,6 +210,12 @@ def run_walk_forward(
     min_bars = int(vcfg.get("min_bars_per_fold", BACKTESTER_MIN_BARS))
     # Missing key → 1 so 0-trade folds are excluded but 1-trade folds still score (#308).
     min_trades_per_fold = int(vcfg.get("min_trades_per_fold", 1))
+    # Missing key → 0 so existing tests that omit holdout_folds keep all folds
+    # as in-sample. Config default is 2 (#308 slice 2).
+    try:
+        holdout_folds = int(vcfg.get("holdout_folds", 0) or 0)
+    except (TypeError, ValueError):
+        holdout_folds = 0
 
     folds = rolling_folds(ohlcv_df, fold_days, step_days, min_bars)
     if not folds:
@@ -248,6 +256,25 @@ def run_walk_forward(
             "INFO",
         )
 
+    holdout_metrics: list[dict] = []
+    k = min(max(0, holdout_folds), max(0, len(fold_metrics) - 1))
+    if k:
+        holdout_metrics = fold_metrics[-k:]
+        for hm in holdout_metrics:
+            hm["holdout"] = True
+        fold_metrics = fold_metrics[:-k]
+        folds_won = 0
+        folds_excluded = 0
+        for metrics in fold_metrics:
+            if metrics.get("excluded"):
+                folds_excluded += 1
+                continue
+            if baseline_folds is None:
+                continue
+            base = next((f for f in baseline_folds if f.get("fold_id") == metrics.get("fold_id")), None)
+            if base is not None and metrics.get("sharpe", 0) > base.get("sharpe", 0):
+                folds_won += 1
+
     return WalkForwardResult(
         symbol=symbol,
         timeframe=timeframe,
@@ -257,4 +284,6 @@ def run_walk_forward(
         folds_total=len(fold_metrics),
         folds_won=folds_won,
         folds_excluded=folds_excluded,
+        holdout_metrics=holdout_metrics,
+        folds_holdout=len(holdout_metrics),
     )
