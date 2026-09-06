@@ -90,6 +90,32 @@ class TestArchitectureRuntime(unittest.TestCase):
             ensure_started()
         self.assertTrue(rt._started)
 
+    def test_reset_joins_worker_threads(self):
+        import threading
+
+        from services.architecture_runtime import (
+            ensure_started,
+            reset_architecture_runtime_for_tests,
+        )
+        import services.architecture_runtime as rt
+
+        rt._started = False
+        rt._last_mode = None
+        with patch("telegram_notifier._send_telegram_direct", return_value=True):
+            ensure_started()
+        reset_architecture_runtime_for_tests()
+        names = {t.name for t in threading.enumerate() if t.is_alive()}
+        for name in (
+            "background-runtime",
+            "exit-realtime-ws",
+            "exit-rt-book",
+            "heavy-job-worker",
+            "notification-worker",
+            "trading-engine",
+        ):
+            self.assertNotIn(name, names)
+        self.assertFalse(rt._started)
+
 
 class TestCommandSessions(unittest.TestCase):
     def setUp(self):
