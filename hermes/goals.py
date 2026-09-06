@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.config import get_bot_config
 from core.models import SandboxMetrics
@@ -21,6 +21,15 @@ class Verdict:
     baseline_better: bool
     meets_success_criteria: bool
     live_veto: bool = False
+    inconclusive: bool = False
+
+    @property
+    def label(self) -> str:
+        if self.promoted:
+            return "promoted"
+        if self.inconclusive:
+            return "inconclusive"
+        return "rejected"
 
 
 class GoalEngine:
@@ -97,7 +106,29 @@ class GoalEngine:
             return True, f"opportunity_score +{opp_delta:.2f}"
         return False, f"{primary} {v_primary:.2f} <= {b_primary:.2f}"
 
+    def _zero_trade_inconclusive(
+        self,
+        baseline: SandboxMetrics | dict,
+        variant: SandboxMetrics | dict,
+    ) -> Verdict | None:
+        """trades=0 on both sides is not evidence — never rejected (#308)."""
+        if int(self._metric(baseline, "trades")) != 0:
+            return None
+        if int(self._metric(variant, "trades")) != 0:
+            return None
+        return Verdict(
+            promoted=False,
+            reason="Inconclusive: baseline and variant both have 0 trades",
+            baseline_better=False,
+            meets_success_criteria=False,
+            inconclusive=True,
+        )
+
     def evaluate(self, baseline: SandboxMetrics | dict, variant: SandboxMetrics | dict) -> Verdict:
+        zero = self._zero_trade_inconclusive(baseline, variant)
+        if zero is not None:
+            return zero
+
         primary = self.primary_metric
         b_val = self._metric(baseline, primary)
         v_val = self._metric(variant, primary)
@@ -149,6 +180,11 @@ class GoalEngine:
         vcfg = self.validation
         min_ratio = float(vcfg.get("min_folds_won_ratio", 0.6))
         primary = self.primary_metric
+        min_trades_per_fold = int(vcfg.get("min_trades_per_fold", 1))
+
+        zero = self._zero_trade_inconclusive(baseline.aggregate, variant.aggregate)
+        if zero is not None:
+            return zero
 
         if variant.folds_total == 0 or baseline.folds_total == 0:
             return Verdict(
@@ -158,7 +194,22 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
-        win_ratio = variant.folds_won / variant.folds_total if variant.folds_total else 0
+        excluded = int(getattr(variant, "folds_excluded", 0) or 0)
+        scored = variant.folds_total - excluded
+        if scored <= 0:
+            return Verdict(
+                promoted=False,
+                reason=(
+                    f"Inconclusive: no folds with enough trades "
+                    f"(min_trades_per_fold={min_trades_per_fold}, "
+                    f"{excluded} excluded)"
+                ),
+                baseline_better=False,
+                meets_success_criteria=False,
+                inconclusive=True,
+            )
+
+        win_ratio = variant.folds_won / scored
         b_agg = baseline.aggregate
         v_agg = variant.aggregate
         b_val = self._metric(b_agg, primary)
@@ -166,6 +217,12 @@ class GoalEngine:
 
         for b_fold, v_fold in zip(baseline.fold_metrics, variant.fold_metrics):
             if b_fold.get("fold_id") != v_fold.get("fold_id"):
+                continue
+            if v_fold.get("excluded") or b_fold.get("excluded"):
+                continue
+            b_tr = int(b_fold.get("trades") or 0)
+            v_tr = int(v_fold.get("trades") or 0)
+            if b_tr < min_trades_per_fold or v_tr < min_trades_per_fold:
                 continue
             dd_delta = float(v_fold.get("max_drawdown_pct", 0)) - float(b_fold.get("max_drawdown_pct", 0))
             if dd_delta > self.failure.get("drawdown_delta_max", 5):
@@ -177,9 +234,13 @@ class GoalEngine:
                 )
 
         if win_ratio < min_ratio:
+            excl_note = f", {excluded} excluded" if excluded else ""
             return Verdict(
                 promoted=False,
-                reason=f"Won {variant.folds_won}/{variant.folds_total} folds ({win_ratio:.0%} < {min_ratio:.0%})",
+                reason=(
+                    f"Won {variant.folds_won}/{scored} folds "
+                    f"({win_ratio:.0%} < {min_ratio:.0%}){excl_note}"
+                ),
                 baseline_better=True,
                 meets_success_criteria=False,
             )
@@ -201,10 +262,11 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
+        excl_note = f", {excluded} excluded" if excluded else ""
         return Verdict(
             promoted=True,
             reason=(
-                f"Won {variant.folds_won}/{variant.folds_total} folds, {improve_reason}, "
+                f"Won {variant.folds_won}/{scored} folds{excl_note}, {improve_reason}, "
                 f"opp={self._metric(v_agg, 'opportunity_score'):.2f}"
             ),
             baseline_better=False,
@@ -239,17 +301,16 @@ class GoalEngine:
 
         if not has_enough:
             if live_metrics.live_trades > 0:
-                return Verdict(
-                    promoted=verdict.promoted,
+                return replace(
+                    verdict,
                     reason=verdict.reason + live_suffix + " (insufficient live sample)",
-                    baseline_better=verdict.baseline_better,
-                    meets_success_criteria=verdict.meets_success_criteria,
                     live_veto=False,
                 )
             return verdict
 
         if verdict.promoted and live_metrics.live_sell_pnl < -max_loss:
-            return Verdict(
+            return replace(
+                verdict,
                 promoted=False,
                 reason=(
                     f"Live veto: sell_pnl={live_metrics.live_sell_pnl:.2f} "
@@ -258,13 +319,12 @@ class GoalEngine:
                 baseline_better=True,
                 meets_success_criteria=False,
                 live_veto=True,
+                inconclusive=False,
             )
 
-        return Verdict(
-            promoted=verdict.promoted,
+        return replace(
+            verdict,
             reason=verdict.reason + live_suffix,
-            baseline_better=verdict.baseline_better,
-            meets_success_criteria=verdict.meets_success_criteria,
             live_veto=False,
         )
 
@@ -362,6 +422,8 @@ class GoalEngine:
         le = self.live_evidence
         if not le.get("enabled", False):
             return wf_verdict
+        if wf_verdict.inconclusive:
+            return wf_verdict
 
         verdict = self.apply_live_evidence(wf_verdict, live_metrics)
         if verdict.promoted:
@@ -371,8 +433,11 @@ class GoalEngine:
         if dual is not None:
             if dual.promoted:
                 return dual
+            if dual.inconclusive:
+                return dual
             if dual.reason.startswith("Dual blocked"):
-                return Verdict(
+                return replace(
+                    verdict,
                     promoted=False,
                     reason=verdict.reason + " | " + dual.reason,
                     baseline_better=dual.baseline_better,

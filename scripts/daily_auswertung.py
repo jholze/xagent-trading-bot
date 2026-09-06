@@ -192,6 +192,7 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
         f"| Heute neu | {len([e for e in experiments if 'created_at' in e and day_start <= parse_ts(e['created_at']) < day_end])} |",
         f"| Promoted | **{promoted}** |",
         f"| Rejected | {verdicts.get('rejected', 0)} |",
+        f"| Inconclusive | {verdicts.get('inconclusive', 0)} |",
         f"| Quellen | {', '.join(f'{k} {v}' for k, v in sources.items())} |",
         f"| Symbole | {', '.join(f'{k} {v}' for k, v in symbols.items())} |",
         f"| Skills | {skills_count} |",
