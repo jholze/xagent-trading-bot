@@ -150,9 +150,9 @@ def _coerce_btc_close(value: Any) -> float | None:
 def _lookup_btc_close() -> float | None:
     """BTC/USDT last from existing price sources. Never raises, never blocks the NAV write.
 
-    Prefers the in-memory TTL cache / Gate ticker snapshot (#304). ``get_prices_batch``
-    is a fallback outside pytest so a cold cache can still fill the row; a miss
-    or any error becomes ``None`` (JSON ``null``).
+    Prefers the in-memory TTL cache / Gate ticker snapshot (#304); ``get_prices_batch``
+    is the fallback so a cold cache can still fill the row. A miss or any error
+    becomes ``None`` (JSON ``null``).
     """
     try:
         from price_fetcher import peek_cached_price
@@ -162,13 +162,8 @@ def _lookup_btc_close() -> float | None:
             return peeked
     except Exception:
         pass
-    try:
-        import os
-
-        if os.environ.get("PYTEST_RUNNING") == "1":
-            return None
-    except Exception:
-        pass
+    # No test-environment branch here: under pytest the network guard makes
+    # get_prices_batch raise, which the except below turns into None.
     try:
         from price_fetcher import get_prices_batch
 
