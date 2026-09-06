@@ -159,3 +159,14 @@ class NotificationPublisher:
 
 
 notification_publisher = NotificationPublisher()
+
+
+def reset_notification_publisher_for_tests() -> None:
+    """Stop the singleton notification worker so it cannot outlive a pytest test (#329)."""
+    pub = notification_publisher
+    if pub.running:
+        pub.stop()
+    thread = pub._thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    pub._thread = None

@@ -9,7 +9,13 @@ Channels
 * Redis keys under the worker prefix ``pytest:<suffix>[_gwN]:`` (SCAN).
 * A configurable list of module-level globals (dicts → sorted keys; lists →
   length; scalars as-is). Missing modules/attrs are skipped.
-* Mongo collection document counts of the worker's test DB.
+* Mongo collection document counts of the worker's test DB (live client only;
+  does not call ``get_client()`` — that would spawn pymongo threads and bump
+  ``_client_generation``, poisoning the client-lifecycle channel).
+* Live threads after each test: ``threading.enumerate()`` minus the main
+  thread and pytest/xdist internals, with name, target/function, daemon flag.
+* Resolved Mongo URI (``storage.mongo_client.resolve_mongo_uri()``) and
+  ``storage.mongo_client._client_generation`` before/after each test.
 
 A test *leaves* a delta when its post-protocol snapshot has keys/globals/
 counts that were not present just before that test (setup+call+teardown).
@@ -25,6 +31,7 @@ import atexit
 import json
 import os
 import sys
+import threading
 from typing import Any
 
 import pytest
@@ -82,6 +89,23 @@ _ENV_WATCH = (
     "DEMO_LEDGER_BACKEND",
     "DEMO_MODE",
     "MULTI_TENANT_ENABLED",
+    "MONGODB_URI",
+    "MONGO_URL",
+)
+
+# Thread names / modules that belong to pytest, xdist, or execnet — not app leaks.
+_INTERNAL_THREAD_NAMES = frozenset({"MainThread"})
+_INTERNAL_THREAD_PREFIXES = (
+    "Dummy-",  # execnet
+    "execnet",
+    "pytest-",
+    "xdist-",
+)
+_INTERNAL_THREAD_MOD_PREFIXES = (
+    "_pytest.",
+    "xdist.",
+    "execnet.",
+    "pluggy.",
 )
 
 _cur: dict[str, Any] = {"nodeid": "<no test>"}
@@ -92,6 +116,8 @@ _before_protocol: dict[str, dict[str, Any]] = {}
 _after_protocol: dict[str, dict[str, Any]] = {}
 _before_call: dict[str, dict[str, Any]] = {}
 _last_after: dict[str, Any] | None = None
+_thread_left: list[dict[str, Any]] = []
+_mongo_client_changes: list[dict[str, Any]] = []
 
 
 def _worker() -> str:
@@ -167,19 +193,95 @@ def _snap_globals() -> dict[str, Any]:
     return out
 
 
-def _snap_mongo() -> dict[str, int]:
+def _thread_target_name(thread: threading.Thread) -> str:
+    target = getattr(thread, "_target", None)
+    if target is None:
+        run = getattr(thread, "run", None)
+        if run is not None and getattr(run, "__func__", None) is not threading.Thread.run:
+            target = run
+    if target is None:
+        return ""
+    mod = getattr(target, "__module__", "") or ""
+    qual = getattr(target, "__qualname__", None) or getattr(target, "__name__", None)
+    if qual:
+        return f"{mod}.{qual}" if mod else str(qual)
+    return repr(target)
+
+
+def _is_internal_thread(thread: threading.Thread) -> bool:
+    if thread is threading.main_thread():
+        return True
+    name = thread.name or ""
+    if name in _INTERNAL_THREAD_NAMES:
+        return True
+    lname = name.lower()
+    if any(name.startswith(p) or lname.startswith(p.lower()) for p in _INTERNAL_THREAD_PREFIXES):
+        return True
+    if "pytest" in lname or "xdist" in lname or "execnet" in lname:
+        return True
+    target = getattr(thread, "_target", None)
+    mod = (getattr(target, "__module__", "") or "") if target is not None else ""
+    if any(mod.startswith(p) for p in _INTERNAL_THREAD_MOD_PREFIXES):
+        return True
+    return False
+
+
+def _thread_rec(thread: threading.Thread) -> dict[str, Any]:
+    return {
+        "name": thread.name,
+        "target": _thread_target_name(thread),
+        "daemon": bool(thread.daemon),
+        "ident": thread.ident,
+        "native_id": getattr(thread, "native_id", None),
+    }
+
+
+def _snap_threads() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for thread in threading.enumerate():
+        if not thread.is_alive():
+            continue
+        if _is_internal_thread(thread):
+            continue
+        out.append(_thread_rec(thread))
+    out.sort(key=lambda r: (str(r.get("name") or ""), r.get("ident") or 0))
+    return out
+
+
+def _snap_mongo_client() -> dict[str, Any]:
+    """URI + generation only. Never calls get_client() (#329)."""
     if "storage.mongo_client" not in sys.modules:
         return {}
     try:
-        from storage.mongo_client import get_client, resolve_test_db_name
+        from storage import mongo_client as mc
 
+        return {
+            "uri": mc.resolve_mongo_uri(),
+            "generation": int(getattr(mc, "_client_generation", 0) or 0),
+        }
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+
+
+def _snap_mongo() -> dict[str, int]:
+    """Collection counts on an already-open client. Does not construct one (#329)."""
+    if "storage.mongo_client" not in sys.modules:
+        return {}
+    try:
+        from storage.mongo_client import (
+            _client,
+            _client_is_closed,
+            resolve_test_db_name,
+        )
+
+        if _client is None or _client_is_closed(_client):
+            return {}
         db_name = (
             os.environ.get("MONGODB_TEST_DB")
             or os.environ.get("MONGODB_DB")
             or resolve_test_db_name()
         )
-        client = get_client()
-        db = client[db_name]
+        db = _client[db_name]
         counts: dict[str, int] = {}
         for name in db.list_collection_names():
             try:
@@ -197,11 +299,17 @@ def _snap_env() -> dict[str, str]:
 
 
 def snapshot() -> dict[str, Any]:
+    # Threads + mongo_client first: _snap_mongo used to call get_client() and
+    # would spawn pymongo monitor threads / bump generation mid-snapshot (#329).
+    threads = _snap_threads()
+    mongo_client = _snap_mongo_client()
     return {
         "redis": _snap_redis(),
         "globals": _snap_globals(),
         "mongo": _snap_mongo(),
         "env": _snap_env(),
+        "threads": threads,
+        "mongo_client": mongo_client,
     }
 
 
@@ -224,9 +332,26 @@ def _flatten(snap: dict[str, Any]) -> dict[str, Any]:
             continue
         if name == "MULTI_TENANT_ENABLED" and val in ("", "0"):
             continue
+        if name in ("MONGODB_URI", "MONGO_URL"):
+            # Always record — a change is the leak, even back to empty.
+            flat[f"env:{name}"] = val
+            continue
         if val in ("", "0"):
             continue
         flat[f"env:{name}"] = val
+    for th in snap.get("threads") or []:
+        ident = th.get("ident")
+        key = f"thread:{th.get('name')}:{ident}"
+        flat[key] = {
+            "name": th.get("name"),
+            "target": th.get("target") or "",
+            "daemon": bool(th.get("daemon")),
+        }
+    mc = snap.get("mongo_client") or {}
+    if "uri" in mc:
+        flat["mongo_client:uri"] = mc.get("uri")
+    if "generation" in mc:
+        flat["mongo_client:generation"] = mc.get("generation")
     return flat
 
 
@@ -300,6 +425,34 @@ def pytest_runtest_protocol(item, nextitem):
         _left.append(rec)
         if _verbose():
             _log(f"LEAK-LEFT {_worker()} {nodeid} {json.dumps(added, default=str)}")
+    before_threads = {t.get("ident"): t for t in (before.get("threads") or [])}
+    after_threads = after.get("threads") or []
+    new_threads = [t for t in after_threads if t.get("ident") not in before_threads]
+    if new_threads:
+        rec = {
+            "test": nodeid,
+            "worker": _worker(),
+            "threads": new_threads,
+            "alive_after": after_threads,
+        }
+        _thread_left.append(rec)
+        if _verbose():
+            _log(f"THREAD-LEFT {_worker()} {nodeid} {json.dumps(new_threads, default=str)}")
+    bmc = before.get("mongo_client") or {}
+    amc = after.get("mongo_client") or {}
+    if bmc.get("uri") != amc.get("uri") or bmc.get("generation") != amc.get("generation"):
+        rec = {
+            "test": nodeid,
+            "worker": _worker(),
+            "before": bmc,
+            "after": amc,
+        }
+        _mongo_client_changes.append(rec)
+        if _verbose():
+            _log(
+                f"MONGO-CLIENT {_worker()} {nodeid} "
+                f"{json.dumps({'before': bmc, 'after': amc}, default=str)}"
+            )
     _cur["nodeid"] = "<between tests>"
 
 
@@ -344,6 +497,10 @@ def _dump() -> None:
         "order": _order,
         "left": _left,
         "consumed": _consumed,
+        "thread_left": _thread_left,
+        "mongo_client_changes": _mongo_client_changes,
+        "threads_at_exit": _snap_threads(),
+        "mongo_client_at_exit": _snap_mongo_client(),
     }
     if out:
         path = f"{out}.{_worker()}.json"
@@ -353,11 +510,16 @@ def _dump() -> None:
         except OSError as exc:
             _log(f"LEAK-DUMP-FAIL {path}: {exc}")
             return
-        _log(f"LEAK-DUMP {path} left={len(_left)} consumed={len(_consumed)} tests={len(_order)}")
+        _log(
+            f"LEAK-DUMP {path} left={len(_left)} consumed={len(_consumed)} "
+            f"thread_left={len(_thread_left)} mongo_client_changes="
+            f"{len(_mongo_client_changes)} tests={len(_order)}"
+        )
     else:
         _log(
             f"LEAK-SUMMARY worker={_worker()} left={len(_left)} "
-            f"consumed={len(_consumed)} tests={len(_order)}"
+            f"consumed={len(_consumed)} thread_left={len(_thread_left)} "
+            f"mongo_client_changes={len(_mongo_client_changes)} tests={len(_order)}"
         )
 
 

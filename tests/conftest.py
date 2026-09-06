@@ -6,6 +6,7 @@ import socket as _socket
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -482,6 +483,46 @@ def _reset_leaky_module_globals() -> None:
         from strategies.watch_15m_state import reset_cache_for_tests
 
         reset_cache_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.architecture_runtime import reset_architecture_runtime_for_tests
+
+        reset_architecture_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.eval_queue_runtime import reset_eval_runtime_for_tests
+
+        reset_eval_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from notifications.telegram_commands.portfolio_commands import (
+            reset_portfolio_commands_for_tests,
+        )
+
+        reset_portfolio_commands_for_tests()
+    except Exception:
+        pass
+    try:
+        from notifications.telegram_commands.morning_commands import (
+            reset_morning_commands_for_tests,
+        )
+
+        reset_morning_commands_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.telegram_ask_bridge import reset_ask_bridge_for_tests
+
+        reset_ask_bridge_for_tests()
+    except Exception:
+        pass
+    try:
+        from core.interactive_priority import reset_interactive_priority_for_tests
+
+        reset_interactive_priority_for_tests()
     except Exception:
         pass
 
@@ -1132,6 +1173,43 @@ def pytest_runtest_logreport(report):
     )
 
 
+def _sessionfinish_thread_report() -> None:
+    """Warn about leftover app threads after the last test (#329).
+
+    Skips the main thread, pytest/xdist/execnet internals, and pymongo
+    topology workers (those die after close_client(); they are not app leaks).
+    """
+    leftover = []
+    main = threading.main_thread()
+    for thread in threading.enumerate():
+        if thread is main or not thread.is_alive():
+            continue
+        name = thread.name or ""
+        lname = name.lower()
+        if name.startswith("Dummy-") or name.startswith("execnet"):
+            continue
+        if "pytest" in lname or "xdist" in lname:
+            continue
+        if name.startswith("pymongo_") or lname.startswith("pymongo"):
+            continue
+        leftover.append(thread)
+    if leftover:
+        print(
+            "WARNING: non-main threads still alive at pytest session end:",
+            flush=True,
+        )
+        for thread in leftover:
+            print(
+                f"  name={thread.name!r} daemon={thread.daemon}",
+                flush=True,
+            )
+    else:
+        print(
+            "pytest_sessionfinish: no leftover non-main threads",
+            flush=True,
+        )
+
+
 def pytest_sessionfinish(session, exitstatus):
     # #325: importing aria_bot registers atexit(_flush_positions_on_exit). At
     # interpreter exit no fixture is active any more (DEMO_MODE unset -> scope
@@ -1144,6 +1222,20 @@ def pytest_sessionfinish(session, exitstatus):
         _aria = _sys.modules.get("aria_bot")
         if _aria is not None and hasattr(_aria, "_flush_positions_on_exit"):
             atexit.unregister(_aria._flush_positions_on_exit)
+    except Exception:
+        pass
+    try:
+        from services.architecture_runtime import reset_architecture_runtime_for_tests
+
+        reset_architecture_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        close_client()
+    except Exception:
+        pass
+    try:
+        _sessionfinish_thread_report()
     except Exception:
         pass
     try:
