@@ -10,6 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       mongo:
         image: mongo:7
         ports:
@@ -30,5 +39,6 @@ jobs:
         env:
           UNIT_TEST_PROGRESS: "0"
           MONGODB_URI: mongodb://127.0.0.1:27017
+          REDIS_URL: redis://127.0.0.1:6379/0
           PYTEST_DB_SUFFIX: ci
         run: ./scripts/run_unit_tests.sh -q

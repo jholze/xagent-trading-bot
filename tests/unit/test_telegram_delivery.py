@@ -294,20 +294,27 @@ class Test429DoesNotStallUrgentLane(unittest.TestCase):
         """A 429 on a normal message pauses the publisher for retry_after only.
 
         The rate-limited message itself retries via the buffer (2s, 4s, ...),
-        but an urgent fill enqueued meanwhile must go out as soon as Telegram's
-        retry_after has passed -- not after the message's growing backoff.
+        but an urgent fill that is already queued must go out as soon as
+        Telegram's retry_after has passed -- not after the message's growing
+        backoff. The fake clock only advances inside the worker's sleeps, so
+        the fill is enqueued from the send callback (worker thread) right
+        before the first 429: it is in the urgent heap before the pause loop
+        runs, which makes the timing deterministic on any runner.
         """
         clock = _FakeClock()
         pub = NotificationPublisher(
             rate_limit_sec=0.0, urgent_rate_limit_sec=0.0, clock=clock.time, sleeper=clock.sleep
         )
         sent: list[tuple[str, float]] = []
-        state = {"normal_attempts": 0}
+        state = {"normal_attempts": 0, "first_429_at": None}
 
         def send(text, **kwargs):
             if text == "normal":
                 state["normal_attempts"] += 1
                 if state["normal_attempts"] <= 3:
+                    if state["first_429_at"] is None:
+                        state["first_429_at"] = clock.time()
+                        pub.enqueue("fill", priority=PRIORITY_URGENT)
                     raise TelegramRateLimited(retry_after=2.0)
             sent.append((text, clock.time()))
             return True
@@ -315,14 +322,10 @@ class Test429DoesNotStallUrgentLane(unittest.TestCase):
         pub.start(send)
         try:
             pub.enqueue("normal", priority=PRIORITY_CYCLE)
-            self.assertTrue(_wait_until(lambda: state["normal_attempts"] >= 1))
-            t0 = clock.time()
-            pub.enqueue("fill", priority=PRIORITY_URGENT)
             self.assertTrue(_wait_until(lambda: any(txt == "fill" for txt, _ in sent)), sent)
         finally:
             pub.stop(persist=False)
+        t0 = state["first_429_at"]
         fill_at = next(ts for txt, ts in sent if txt == "fill")
-        # sent once the 2s pause is over, well before the message's 4s/8s backoff
-        self.assertGreaterEqual(fill_at - t0, 2.0 - 1e-9)
-        self.assertLess(fill_at - t0, 4.0)
-
+        # exactly one retry_after pause (2s) -- not the message's 4s/8s backoff
+        self.assertAlmostEqual(fill_at - t0, 2.0, places=6)

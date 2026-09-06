@@ -965,6 +965,11 @@ def normalize_unit_test_config(monkeypatch, request):
     arch = cfg.setdefault("architecture", {})
     arch["ledger_backend"] = "local"
     arch["ledger_dual_write"] = False
+    # #306 made the ledger lock fail closed when Redis is unavailable. The unit
+    # suite must not depend on a Redis server being up (CI runners, laptops), so
+    # business-logic tests run fail-open here; the fail-closed contract has its
+    # own tests that set the switch explicitly (tests/unit/test_ledger_lock_fail_closed.py).
+    arch["ledger_lock_fail_closed"] = False
     cfg.setdefault("multi_tenant", {})["enabled"] = False
     cfg.setdefault("watchlist_quality", {})["mode"] = "off"
     risk.setdefault("cash_policy", {})["enabled"] = False
