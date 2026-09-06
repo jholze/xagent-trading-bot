@@ -311,7 +311,14 @@ class TradingService:
                     ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
                 else:
                     ledger.update_status(ledger_id, OrderStatus.REJECTED, error=decision.message, risk=ledger._risk_snapshot(decision))
-                return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
+                return TradeResult(
+                    False,
+                    order.type,
+                    order.symbol,
+                    message=decision.message,
+                    order_id=ledger_id or "",
+                    code=str(getattr(decision, "code", "") or ""),
+                )
 
             approved_order = decision.order
             if idem:

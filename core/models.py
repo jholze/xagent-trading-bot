@@ -170,6 +170,7 @@ class TradeResult:
     order_status: OrderStatus | None = None
     order_exist_in_exchange: bool = False
     filled_qty: float = 0.0
+    code: str = ""
 
 
 @dataclass
