@@ -652,3 +652,133 @@ def test_on_acquired_runs_in_side_thread_and_reset_joins_it():
     wl.reset_writer_lease_for_tests()
     assert not any(t.name == "writer-lease-on-acquired" and t.is_alive() for t in threading.enumerate())
 
+
+def test_renew_succeeds_while_we_hold():
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    lease = _lease(redis, clock)
+    assert lease.acquire(start_renewer=False) is True
+    exp_before = redis._store[lease.lease_key][1]
+    clock.advance(5)
+    assert lease.renew() is True
+    assert lease.held() is True
+    exp_after = redis._store[lease.lease_key][1]
+    assert exp_after == clock() + lease.ttl_sec
+    assert exp_after > exp_before
+    raw = json.loads(redis.get(lease.lease_key))
+    assert raw["token"] == "aaa"
+    clock.advance(29)
+    assert lease.held() is True
+    clock.advance(2)
+    assert lease.held() is False
+
+
+def test_renew_does_not_extend_foreign_key_or_ttl():
+    """#335: after expiry takeover, renew must not PEXPIRE the foreign holder."""
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    ours = _lease(redis, clock, token="ours")
+    assert ours.acquire(start_renewer=False) is True
+    assert ours.held() is True
+    foreign = json.dumps({"token": "foreign", "fence": 2, "host": "other", "pid": 9})
+    redis.set(ours.lease_key, foreign, ex=20)
+    val_before, exp_before = redis._store[ours.lease_key]
+    assert ours.renew() is False
+    assert ours.held() is False
+    assert redis._store[ours.lease_key][0] == val_before
+    assert redis._store[ours.lease_key][1] == exp_before
+    assert json.loads(redis.get(ours.lease_key))["token"] == "foreign"
+
+
+def test_release_deletes_only_our_token_never_foreign():
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    ours = _lease(redis, clock, token="ours")
+    assert ours.acquire(start_renewer=False) is True
+    foreign = json.dumps({"token": "foreign", "fence": 9, "host": "x", "pid": 2})
+    redis.set(ours.lease_key, foreign, ex=20)
+    val_before, exp_before = redis._store[ours.lease_key]
+    assert ours.release() is False
+    assert redis._store[ours.lease_key][0] == val_before
+    assert redis._store[ours.lease_key][1] == exp_before
+    holder = _lease(redis, clock, token="foreign")
+    holder.fence = 9
+    holder._mark_held(9)
+    assert holder.release() is True
+    assert redis.get(ours.lease_key) is None
+
+
+def test_renew_and_release_use_eval_not_get_expire():
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    lease = _lease(redis, clock)
+    assert lease.acquire(start_renewer=False) is True
+    ops: list[str] = []
+    seen: list[tuple] = []
+    real_eval, real_get, real_expire, real_delete = (
+        redis.eval,
+        redis.get,
+        redis.expire,
+        redis.delete,
+    )
+
+    def wrap_eval(script, numkeys, *rest):
+        ops.append("eval")
+        seen.append((script, numkeys, rest))
+        return real_eval(script, numkeys, *rest)
+
+    redis.eval = wrap_eval
+    redis.get = lambda *a, **k: ops.append("get") or real_get(*a, **k)
+    redis.expire = lambda *a, **k: ops.append("expire") or real_expire(*a, **k)
+    redis.delete = lambda *a, **k: ops.append("delete") or real_delete(*a, **k)
+    assert lease.renew() is True
+    assert ops == ["eval"]
+    script, numkeys, rest = seen[0]
+    assert numkeys == 1
+    assert rest == (lease.lease_key, lease.token, lease.ttl_sec * 1000)
+    assert "PEXPIRE" in script.upper()
+    ops.clear()
+    seen.clear()
+    assert lease.release() is True
+    assert ops == ["eval"]
+    script, numkeys, rest = seen[0]
+    assert numkeys == 1
+    assert rest == (lease.lease_key, lease.token)
+    assert "DEL" in script.upper()
+
+
+def test_renew_without_eval_falls_back_and_logs_once():
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+    redis.eval = None
+    lease = _lease(redis, clock)
+    assert lease.acquire(start_renewer=False) is True
+    with patch("bus.writer_lease.log") as mocked:
+        assert lease.renew() is True
+        assert lease.held() is True
+        assert lease.renew() is True
+        assert lease.held() is True
+    messages = [str(c.args[0]) for c in mocked.call_args_list if c.args]
+    non_atomic = [m for m in messages if "non-atomic" in m.lower()]
+    assert len(non_atomic) == 1
+    assert "EVAL" in non_atomic[0]
+
+
+def test_renew_eval_unknown_command_falls_back_and_logs_once():
+    clock = FakeClock()
+    redis = FakeRedis(clock)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("unknown command `EVAL`")
+
+    redis.eval = boom
+    lease = _lease(redis, clock)
+    assert lease.acquire(start_renewer=False) is True
+    with patch("bus.writer_lease.log") as mocked:
+        assert lease.renew() is True
+        assert lease.held() is True
+        assert lease.renew() is True
+    messages = [str(c.args[0]) for c in mocked.call_args_list if c.args]
+    non_atomic = [m for m in messages if "non-atomic" in m.lower()]
+    assert len(non_atomic) == 1
+
