@@ -121,8 +121,8 @@ Maximum **8 coins** at once (`symbols_max: 8`). Rotation: `signal_activity` — 
 
 1. **Load baseline** — current parameters for symbol/timeframe (e.g. `ARIA/USDT` on `4h`).
 2. **Proposal** — Grok (if `XAI_API_KEY` is set) or heuristic picks **one** parameter and new value.
-3. **Backtest** — walk-forward over ~35 days, split into 5-day windows with 3-day step (4h: 5 × 6 = 30 bars per fold).
-4. **Evaluation** — variant must win in **≥ 60% of folds** and meet minimum metrics.
+3. **Backtest** — walk-forward over ~45 days, split into 5-day windows with 3-day step (4h: 5 × 6 = 30 bars per fold). The last 2 folds are hold-out.
+4. **Evaluation** — variant must win in **≥ 60% of in-sample folds**, pass hold-out Sharpe/DD, and a block-bootstrap win probability ≥ 0.95 with ≥ 30 trades.
 5. **Adoption** — better parameters → `hermes/memory/baseline.json` (always); optionally → `config.strategies[]` on promotion.
 6. **Learning** — experiment + skill saved in `hermes/memory/`.
 7. **Live bot** — uses memory **immediately** on the next cycle (buy, sell, rebuy).
@@ -131,9 +131,9 @@ Maximum **8 coins** at once (`symbols_max: 8`). Rotation: `signal_activity` — 
 
 ## 4. Walk-forward — explained simply
 
-**Problem:** A 35-day backtest can look good by chance even if the strategy is unstable.
+**Problem:** A 45-day backtest can look good by chance even if the strategy is unstable.
 
-**Solution:** Hermes splits 35 days into **overlapping week windows**:
+**Solution:** Hermes splits 45 days into **overlapping 5-day windows** (last 2 folds held out):
 
 ```
 |-- Fold 0: day 1–5 --|
@@ -144,16 +144,20 @@ Maximum **8 coins** at once (`symbols_max: 8`). Rotation: `signal_activity` — 
 
 - Each window = **5 days** (`fold_days`) — 4h has 6 bars/day, so 5 days = 30 bars (`BACKTESTER_MIN_BARS`). Old config default was 3 days = 18 bars.
 - Step = **3 days** (`step_days`)
-- Typically **~10 folds** with 35-day lookback
+- Typically **~12 in-sample + 2 hold-out folds** with 45-day lookback
 
 **Promotion rules (simplified):**
 
 | Criterion | Default | Meaning |
 |-----------|---------|---------|
-| Folds won | ≥ 60% | Variant must beat baseline Sharpe in at least 6 of 10 folds |
-| Aggregate Sharpe | > baseline | Better on average across all folds |
+| Folds won | ≥ 60% | Variant must beat baseline Sharpe on in-sample folds |
+| Hold-out | last 2 folds | Sharpe delta ≥ 0 and max DD within +2 pp of baseline |
+| Win probability | ≥ 0.95 | Block-bootstrap of in-sample Sharpe deltas; ≥ 30 trades |
+| Aggregate Sharpe | > baseline | Better on average across in-sample folds |
 | Success criteria | e.g. Sharpe ≥ 0.8, DD ≤ 15%, WR ≥ 50%, ≥ 5 trades | Average must be “good enough” |
-| Drawdown per fold | max +5% vs. baseline | No fold may badly worsen the strategy |
+| Drawdown per fold | max +5% vs. baseline | No in-sample fold may badly worsen the strategy |
+| Veto window | 10 min | `/hermes_veto <id>` before apply; `/hermes_rollback [id]` after |
+| Post-apply | 24 h | Auto-revert if realized P&L < 0 and win rate ≥ 20 pp below backtest |
 
 ---
 
@@ -236,6 +240,8 @@ python3 hermes_agent.py --interval 3600
 | `/hermes_last` | Last learning cycle only, in plain language |
 | `/hermes_run` | Start one learning cycle now |
 | `/hermes_status` | Same as `/hermes` |
+| `/hermes_veto <id>` | Cancel a pending promotion within the 10-minute veto window |
+| `/hermes_rollback [id]` | Restore the latest (or named) pre-promotion snapshot |
 | `/why SYMBOL` | Last trade decision — incl. Hermes experiment ID if set |
 | `/decisions` | Chronological log of all bot decisions |
 | `/ask` | Plain-language question — e.g. “Why did H sell yesterday?” |
@@ -308,13 +314,17 @@ If `notify_hermes_every_cycle: false`, you only get promotion and live-veto — 
 ```json
 "validation": {
   "mode": "walk_forward",
-  "backtest_days": 35,
+  "backtest_days": 45,
   "fold_days": 5,
   "step_days": 3,
   "min_folds_won_ratio": 0.6,
   "min_bars_per_fold": 30,
   "min_trades_per_fold": 1,
-  "min_trades_aggregate": 5
+  "min_trades_aggregate": 5,
+  "holdout_folds": 2,
+  "holdout_dd_tolerance_pct": 2.0,
+  "min_win_probability": 0.95,
+  "min_total_trades": 30
 }
 ```
 
@@ -340,6 +350,8 @@ If `notify_hermes_every_cycle: false`, you only get promotion and live-veto — 
 | `hermes/memory/baseline.json` | Current best parameters + metrics |
 | `hermes/memory/experiments.json` | History of all experiments |
 | `hermes/memory/skills.json` | Learned patterns |
+| `hermes/memory/promotion_state.json` | Pending promotions, daily counters |
+| `hermes/memory/snapshots/<id>.json` | Pre-promotion baseline + strategy slice |
 
 **Demo mode** (`--demo` or `DEMO_MODE=1`): parallel `*.demo.json` files — your live memory stays untouched.
 

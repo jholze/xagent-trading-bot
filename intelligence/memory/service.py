@@ -332,6 +332,12 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
             # observe: still run cycle but agent config may not promote destructively;
             # promotion tracking always recorded for /health rates
             result = agent.run_cycle()
+            try:
+                from hermes.promotion import tick as tick_promotions
+
+                tick_promotions(agent)
+            except Exception as e:
+                log(f"hermes promotion tick skipped: {e}", "DEBUG")
             out["hermes"] = _record_hermes_outcome(result)
             if mode == "observe":
                 out["hermes"]["note"] = "observe_mode_learning_tracked"

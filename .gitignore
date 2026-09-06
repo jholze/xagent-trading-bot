@@ -90,6 +90,9 @@ ngrok.log
 hermes/memory/baseline.json
 hermes/memory/experiments.json
 hermes/memory/skills.json
+hermes/memory/promotion_state.json
+hermes/memory/promotion_state.demo.json
+hermes/memory/snapshots/
 
 # Generated daily reports (keep README + template tracked)
 auswertungen/20*.md

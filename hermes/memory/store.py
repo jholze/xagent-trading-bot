@@ -194,6 +194,51 @@ def append_experiment(record: dict) -> dict:
     return record
 
 
+def update_experiment(experiment_id: str, **fields) -> dict | None:
+    data = load_experiments()
+    found = None
+    for exp in data.get("experiments") or []:
+        if exp.get("id") == experiment_id:
+            exp.update(fields)
+            found = exp
+            break
+    if found is None:
+        return None
+    save_experiments(data)
+    return found
+
+
+def find_experiment(experiment_id: str) -> dict | None:
+    for exp in load_experiments().get("experiments") or []:
+        if exp.get("id") == experiment_id:
+            return exp
+    return None
+
+
+def _default_promotion_state() -> dict:
+    return {
+        "pending": [],
+        "applied": [],
+        "daily": {"date": "", "variables": [], "promotions_applied": 0},
+    }
+
+
+def load_promotion_state() -> dict:
+    data = _load(_path("promotion_state"), _default_promotion_state())
+    data.setdefault("pending", [])
+    data.setdefault("applied", [])
+    data.setdefault("daily", {"date": "", "variables": [], "promotions_applied": 0})
+    return data
+
+
+def save_promotion_state(data: dict):
+    _save(_path("promotion_state"), data)
+
+
+def snapshot_file(experiment_id: str) -> Path:
+    return MEMORY_DIR / "snapshots" / f"{experiment_id}.json"
+
+
 def load_skills() -> dict:
     return _load(_path("skills"), {"skills": []})
 

@@ -1131,7 +1131,7 @@
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
-    "backtest_days": 14,
+    "backtest_days": 45,
     "symbols_mode": "hybrid",
     "symbols_pin": [
       "ARIA/USDT"
@@ -1188,16 +1188,27 @@
     "usdt_per_trade": 1000,
     "sync_to_config": true,
     "notify_on_promotion": true,
+    "promotion": {
+      "veto_window_min": 10,
+      "max_promotions_per_day": 1,
+      "post_apply_validation_hours": 24,
+      "post_apply_min_trades": 5,
+      "post_apply_win_rate_gap_pp": 20
+    },
     "validation": {
       "mode": "walk_forward",
-      "backtest_days": 14,
+      "backtest_days": 45,
       "fold_days": 5,
       "step_days": 3,
       "min_folds_won_ratio": 0.55,
       "min_bars_per_fold": 30,
       "min_trades_per_fold": 1,
       "min_trades_aggregate": 3,
-      "min_opportunity_delta": 0.05
+      "min_opportunity_delta": 0.05,
+      "holdout_folds": 2,
+      "holdout_dd_tolerance_pct": 2.0,
+      "min_win_probability": 0.95,
+      "min_total_trades": 30
     },
     "health": {
       "inconclusive_window": 20,
