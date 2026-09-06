@@ -23,14 +23,21 @@ def resolve_operator_chat_id() -> str:
 
 
 def notify_operator(text: str, *, parse_mode: str = "HTML") -> bool:
-    """Send directly to operator — never via tenant owner routing."""
-    from telegram_notifier import _send_telegram_direct
+    """Send to operator — never via tenant owner routing.
+
+    Goes through ``send_telegram_message`` (urgent lane) when the publisher is
+    running; falls back to ``_send_telegram_direct`` otherwise.
+    """
+    from bus.schemas import PRIORITY_URGENT
+    from telegram_notifier import send_telegram_message
 
     op_chat = resolve_operator_chat_id()
     if not op_chat:
         log("Operator notify skipped: TELEGRAM_CHAT_ID not configured", "WARNING")
         return False
-    ok = _send_telegram_direct(text, chat_id=op_chat, parse_mode=parse_mode)
+    ok = send_telegram_message(
+        text, chat_id=op_chat, parse_mode=parse_mode, priority=PRIORITY_URGENT
+    )
     if not ok:
         log(f"Operator notify failed for chat {op_chat}", "WARNING")
     return ok

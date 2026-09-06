@@ -1228,6 +1228,8 @@ def pytest_sessionfinish(session, exitstatus):
         _aria = _sys.modules.get("aria_bot")
         if _aria is not None and hasattr(_aria, "_flush_positions_on_exit"):
             atexit.unregister(_aria._flush_positions_on_exit)
+        if _aria is not None and hasattr(_aria, "_stop_architecture_on_exit"):
+            atexit.unregister(_aria._stop_architecture_on_exit)
     except Exception:
         pass
     try:
