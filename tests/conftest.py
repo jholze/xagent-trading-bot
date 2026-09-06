@@ -531,6 +531,12 @@ def _reset_leaky_module_globals() -> None:
         reset_cycle_health_for_tests()
     except Exception:
         pass
+    try:
+        from bus.writer_lease import reset_writer_lease_for_tests
+
+        reset_writer_lease_for_tests()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -970,6 +976,10 @@ def normalize_unit_test_config(monkeypatch, request):
     # business-logic tests run fail-open here; the fail-closed contract has its
     # own tests that set the switch explicitly (tests/unit/test_ledger_lock_fail_closed.py).
     arch["ledger_lock_fail_closed"] = False
+    # #306 slice 2: the single-writer lease is fail-closed when Redis is down.
+    # The general suite must stay Redis-independent; lease tests enable the
+    # switch explicitly (tests/unit/test_writer_lease.py).
+    arch["single_writer_lease_enabled"] = False
     cfg.setdefault("multi_tenant", {})["enabled"] = False
     cfg.setdefault("watchlist_quality", {})["mode"] = "off"
     risk.setdefault("cash_policy", {})["enabled"] = False
