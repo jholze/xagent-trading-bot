@@ -246,6 +246,10 @@ class BotConfig:
 
     @property
     def observability_config(self) -> dict:
+        """Ops/Telegram flags including morning_briefing_enabled,
+        morning_briefing_hour (display/operator TZ, default 8) and
+        daily_report_telegram — both drive the background_runtime daily tick.
+        """
         return self._raw.get("observability", {})
 
     @property
