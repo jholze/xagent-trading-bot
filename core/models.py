@@ -152,6 +152,13 @@ def is_executed_status(value: object) -> bool:
 
 @dataclass
 class TradeResult:
+    """Outcome of one execution attempt.
+
+    ``amount`` is NET base qty the operator owns (``Fill.qty_net``) — the same
+    number the position book uses. ``filled_qty`` is GROSS exchange filled qty
+    (ccxt ``filled``). They differ when the buy fee is taken in the base asset.
+    """
+
     executed: bool
     order_type: str
     symbol: str
@@ -171,6 +178,29 @@ class TradeResult:
     order_exist_in_exchange: bool = False
     filled_qty: float = 0.0
     code: str = ""
+
+
+def execution_filled_qty_gross(execution: dict | None, request: dict | None = None) -> float:
+    """Exchange filled qty (gross) from an order row.
+
+    New rows (#333) store this as ``execution.filled_qty_gross``. Rows written
+    before that change have no such key and a gross ``amount`` — fall back to
+    ``amount`` without inferring a fee.
+    """
+    exe = execution if isinstance(execution, dict) else {}
+    req = request if isinstance(request, dict) else {}
+    raw = exe.get("filled_qty_gross")
+    if raw is not None:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(exe.get("amount") or req.get("amount") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @dataclass

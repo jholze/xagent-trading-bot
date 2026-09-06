@@ -42,6 +42,7 @@ _EXEC_KEYS = (
     "price",
     "amount",
     "usdt",
+    "filled_qty_gross",
 )
 _PROFILE_KEYS = (
     "symbol",

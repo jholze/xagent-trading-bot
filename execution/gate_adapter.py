@@ -773,8 +773,8 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.exchange_order_id = order.exchange_order_id
         result.fee = fill.fee_usdt if fill is not None else 0.0
         result.order_status = status
-        result.filled_qty = filled
-        result.amount = filled
+        result.filled_qty = filled  # GROSS: ccxt filled (exchange reconciliation)
+        result.amount = fill.qty_net  # NET: qty owned; matches the position book
         result.fee_unknown = fee_unknown
         result.needs_reconcile = fee_unknown
         result.pending = status is OrderStatus.PARTIALLY_FILLED
