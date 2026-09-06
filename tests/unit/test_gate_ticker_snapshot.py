@@ -40,6 +40,14 @@ def _ttl_and_log(monkeypatch):
     return logged
 
 
+def test_peek_cached_price_reads_snapshot_without_network(monkeypatch):
+    pf._gate_snapshot = {"BTC/USDT": 65123.0}
+    pf._gate_snapshot_ts = 1.0
+    monkeypatch.setattr(pf.requests, "get", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("network")))
+    assert pf.peek_cached_price("BTC/USDT") == 65123.0
+    assert pf.peek_cached_price("ETH/USDT") is None
+
+
 def test_ttl_with_fake_clock_single_download(monkeypatch, _ttl_and_log):
     clock = _Clock()
     monkeypatch.setattr(pf, "_now", clock)
