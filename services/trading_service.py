@@ -6,7 +6,7 @@ from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
-from storage.errors import LedgerUnavailable
+from storage.errors import LedgerUnavailable, WriterLeaseLost
 
 _ledger_unavailable_notified: set[tuple[str, str]] = set()
 
@@ -136,6 +136,13 @@ class TradingService:
             order.idempotency_key = idem
             order.client_order_id = idem
 
+        from bus.writer_lease import require_lease_for_order
+
+        try:
+            require_lease_for_order()
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
+
         if should_queue_intent(source, self.config):
             return submit_trade_intent(
                 order,
@@ -176,9 +183,14 @@ class TradingService:
         from core.operator_notify import notify_operator
         from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
 
+        code = (
+            "no_writer_lease"
+            if isinstance(exc, WriterLeaseLost)
+            else "ledger_unavailable"
+        )
         decision = RiskDecision(
             approved=False,
-            code="ledger_unavailable",
+            code=code,
             message=f"Ledger unavailable: {exc}",
             order=order,
         )
@@ -265,6 +277,8 @@ class TradingService:
         idempotency_key: str = None,
         _lock_held: bool = False,
     ) -> TradeResult:
+        from bus.writer_lease import require_lease_for_order
+
         self.refresh()
         if order.type == "BUY":
             from strategies.positions import bind_buy_timeframe
@@ -278,6 +292,7 @@ class TradingService:
             order.client_order_id = idem
 
         try:
+            require_lease_for_order()
             if idem and not ledger_id:
                 prior = ledger.find_by_idempotency_key(idem)
                 if prior:

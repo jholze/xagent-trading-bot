@@ -29,6 +29,10 @@ def ensure_started(force_refresh: bool = False):
     arch = cfg.architecture_config
     mode = arch.get("notification_mode", "async")
 
+    from bus.writer_lease import ensure_writer_lease, lease_enabled, writer_lease_held
+
+    ensure_writer_lease(on_acquired=_ensure_tenant_exchange_recovery)
+
     with _lock:
         if _started and not force_refresh and mode == _last_mode:
             _heartbeat_tick(cfg)
@@ -65,7 +69,8 @@ def ensure_started(force_refresh: bool = False):
                 _heartbeat_tick(cfg)
                 log("Architecture runtime: async notification worker active", "INFO")
 
-    _ensure_tenant_exchange_recovery()
+    if not lease_enabled() or writer_lease_held():
+        _ensure_tenant_exchange_recovery()
 
 
 def ensure_stopped():
@@ -73,6 +78,12 @@ def ensure_stopped():
 
     Pending alerts are persisted to the retry buffer by ``NotificationPublisher.stop``.
     """
+    try:
+        from bus.writer_lease import shutdown_writer_lease
+
+        shutdown_writer_lease()
+    except Exception as e:
+        log(f"writer lease shutdown failed: {e}", "WARNING")
     try:
         from bus.notifications import notification_publisher
 
@@ -131,10 +142,27 @@ def reset_architecture_runtime_for_tests() -> None:
         reset_exit_realtime_for_tests()
     except Exception:
         pass
+    try:
+        from bus.writer_lease import reset_writer_lease_for_tests
+
+        reset_writer_lease_for_tests()
+    except Exception:
+        pass
     with _lock:
         _started = False
         _last_mode = None
     reset_recovery_state_for_tests()
+
+
+def tenant_recovery_completed(
+    tenant_id: str | None = None, scope: str | None = None
+) -> bool:
+    """True after ``_ensure_tenant_exchange_recovery`` has finished for this tenant."""
+    from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+    key = (resolve_tenant_id(tenant_id), resolve_tenant_scope(scope))
+    with _recovery_lock:
+        return key in _recovered
 
 
 def _ensure_tenant_exchange_recovery() -> None:

@@ -104,9 +104,16 @@ except Exception as e:
 
 def _flush_positions_on_exit(*_args) -> None:
     try:
+        from bus.writer_lease import (
+            lease_enabled,
+            shutdown_writer_lease,
+            writer_lease_held,
+        )
         from strategies.positions import flush_positions, get_active_scope
 
-        flush_positions(scope=get_active_scope(), force=True)
+        if not lease_enabled() or writer_lease_held():
+            flush_positions(scope=get_active_scope(), force=True)
+        shutdown_writer_lease()
     except Exception as e:
         log(f"Position flush on exit failed: {e}", "WARNING")
 
