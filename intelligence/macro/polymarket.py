@@ -138,4 +138,4 @@ def fetch_polymarket_live(market_ids: list[str]) -> list[PmMarket]:
             )
         return out
     except Exception:
-        return []
+        return []  # unmeasured — caller keeps fixture fallback and must mark it

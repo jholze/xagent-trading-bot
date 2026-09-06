@@ -7,11 +7,24 @@
 #   ./scripts/run_unit_tests.sh tests/unit/test_trailing_stop.py
 #   UNIT_TEST_PROGRESS=0 ./scripts/run_unit_tests.sh -q   # silence progress
 #   UNIT_TEST_PROGRESS_EVERY=25 ./scripts/run_unit_tests.sh -q
+#   PYTEST_DB_SUFFIX=ci ./scripts/run_unit_tests.sh       # Mongo DB xagent_pytest_ci
+#   ./scripts/run_unit_tests.sh --parallel                # xdist -n auto --dist loadfile
+#
+#   #327 checkout data/ must stay untouched (prints nothing if isolation holds):
+#   touch marker; PYTEST_DB_SUFFIX=dd327 ./scripts/run_unit_tests.sh --parallel; find data -newer marker -type f
+#   PYTHONPATH=tests/support DATA_WRITE_AUDIT_OUT=/tmp/audit ./scripts/run_unit_tests.sh -p data_write_audit --parallel
+#   #328 per-worker Redis/globals/Mongo leftover (one JSON per xdist worker):
+#   PYTHONPATH=tests/support STATE_LEAK_AUDIT_OUT=/tmp/leak ./scripts/run_unit_tests.sh -p state_leak_audit --parallel
 #
 # Guarantees (via tests/conftest.py):
 #   - PYTEST_RUNNING=1
 #   - Mongo → local 127.0.0.1 / xagent_pytest (never Railway)
+#     PYTEST_DB_SUFFIX=<id> (sanitized [A-Za-z0-9_]) → xagent_pytest_<id>
+#     so two concurrent runs do not share a database. Unset = xagent_pytest.
 #   - demo ledger files isolated under tmp_path
+#   - data/ of the checkout is not written (#327); _DATA_DIR is tmp_path/data
+#   - --parallel is opt-in (not in pytest.ini addopts). Each xdist worker
+#     appends PYTEST_XDIST_WORKER to the suffix so Mongo/Redis stay isolated.
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,20 +42,40 @@ fi
 
 export PYTEST_RUNNING=1
 export UNIT_TEST_PROGRESS="${UNIT_TEST_PROGRESS:-1}"
+# data/ holds importable Python (cmc_*, lunarcrush_*); tests must not drop .pyc there (#327).
+export PYTHONDONTWRITEBYTECODE=1
 # Keep network accidents from hitting remote by default
 export MONGODB_URI="${MONGODB_URI:-mongodb://127.0.0.1:27017}"
+
+PARALLEL=0
+ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--parallel" ]]; then
+    PARALLEL=1
+  else
+    ARGS+=("$arg")
+  fi
+done
+
+# Default target: unit only (not integration / e2e)
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  ARGS=(tests/unit)
+fi
 
 echo "────────────────────────────────────────────"
 echo "  run_unit_tests.sh  (LOCAL ONLY)"
 echo "  python: $PY"
 echo "  cwd:    $ROOT"
-echo "  args:   ${*:-tests/unit}"
+echo "  args:   ${ARGS[*]}"
+if [[ "$PARALLEL" -eq 1 ]]; then
+  echo "  parallel: -n auto --dist loadfile"
+fi
 echo "────────────────────────────────────────────"
 
-# Default target: unit only (not integration / e2e)
-if [[ $# -eq 0 ]]; then
-  set -- tests/unit
+# Default flags: line tb, show extras. --parallel is stripped and never
+# forwarded to pytest; -n stays out of pytest.ini until #321 is proven.
+if [[ "$PARALLEL" -eq 1 ]]; then
+  exec "$PY" -m pytest --tb=line -ra -n auto --dist loadfile "${ARGS[@]}"
+else
+  exec "$PY" -m pytest --tb=line -ra "${ARGS[@]}"
 fi
-
-# Default flags: line tb, show extras; user can override with more args after --
-exec "$PY" -m pytest --tb=line -ra "$@"

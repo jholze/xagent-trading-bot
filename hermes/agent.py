@@ -1,21 +1,28 @@
+import os
 import time
 from dataclasses import dataclass
 
 from core.config import get_bot_config
-from hermes.backtester import Backtester
+from hermes.backtester import BACKTESTER_MIN_BARS, Backtester
 from hermes.cmc_replay import recent_signal_activity
 from hermes.experiment import ExperimentRunner
 from hermes.goals import GoalEngine
+import hermes.health as hermes_health
 from hermes.live_evidence import (
     compute_counterfactual_delta,
     compute_live_metrics,
     format_live_metrics_line,
 )
 from hermes.memory import store
+from hermes.promotion import note_variable_tested, queue_or_suppress, tick as tick_promotions
 from hermes.self_improver import SelfImprover
+from hermes.significance import format_win_probability
 from hermes.symbol_pool import format_active_pool_line, resolve_active_symbols
 from hermes.validation import run_walk_forward
 from logger import log
+
+_OBSERVE_MODES = frozenset({"observe"})
+_LIVE_EVIDENCE_MODES = frozenset({"observe", "soft", "dual"})
 
 
 @dataclass
@@ -40,12 +47,27 @@ class HermesAgent:
         self.goals = GoalEngine(self.config)
         self.experiments = ExperimentRunner(self.config)
         self.improver = SelfImprover(self.config)
+        hermes_health.check_fold_geometry(self.hermes)
+
+    def _live_evidence_mode(self) -> str:
+        """Same env-then-config lookup as intelligence/memory/service.py."""
+        mode = (os.environ.get("HERMES_LIVE_EVIDENCE_MODE") or "").strip().lower()
+        if mode in _LIVE_EVIDENCE_MODES:
+            return mode
+        le = self.hermes.get("live_evidence") or {}
+        m = str(le.get("mode") or "").strip().lower()
+        if m in _LIVE_EVIDENCE_MODES:
+            return m
+        return "dual"
+
+    def _is_observe_mode(self) -> bool:
+        return self._live_evidence_mode() in _OBSERVE_MODES
 
     def _symbols(self) -> list[str]:
         def _ohlcv_ok(symbol: str, timeframe: str) -> bool:
             days = int(self.hermes.get("backtest_days", 14))
             df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
-            return df is not None and not df.empty and len(df) >= 30
+            return df is not None and not df.empty and len(df) >= BACKTESTER_MIN_BARS
 
         tf = (self.hermes.get("timeframes") or ["4h"])[0]
         return resolve_active_symbols(
@@ -80,6 +102,18 @@ class HermesAgent:
     def run_cycle(self) -> CycleResult:
         self.config.refresh()
         self.hermes = self.config.hermes_config
+        tick_promotions(self)
+        if not hermes_health.check_fold_geometry(self.hermes):
+            return CycleResult(
+                experiment_id="",
+                variable="",
+                verdict="invalid_geometry",
+                promoted=False,
+                baseline_sharpe=0.0,
+                variant_sharpe=0.0,
+                summary=hermes_health.geometry_detail or "Hermes fold geometry invalid — cycle skipped",
+                symbol="",
+            )
         symbol, timeframe = self._pick_symbol_timeframe()
         baseline = store.init_baseline_from_config(self.config, symbol, timeframe)
         params = baseline.get("params", {})
@@ -95,6 +129,7 @@ class HermesAgent:
 
         grok_proposal = self.improver.propose_experiment(baseline)
         proposal = self.experiments.propose(params, grok_proposal, symbol, timeframe)
+        n_today = note_variable_tested(proposal.variable)
 
         cf_result = None
         if (
@@ -122,6 +157,18 @@ class HermesAgent:
         ohlcv_df = self.backtester._fetch_ohlcv(symbol, timeframe, days)
 
         validation_mode = vcfg.get("mode", "walk_forward")
+        # observe: evaluate and report, never apply. The record must say so —
+        # a "promoted" verdict that was never applied would poison the
+        # post-apply analysis (#308 slice 2).
+        observe = self._is_observe_mode()
+
+        def _record_verdict(v) -> str:
+            if v.promoted and observe:
+                return "suppressed"
+            if v.promoted:
+                return "pending"
+            return v.label
+
         if validation_mode == "walk_forward" and ohlcv_df is not None and not ohlcv_df.empty:
             wf_base = run_walk_forward(self.backtester, symbol, timeframe, params, ohlcv_df, self.hermes)
             wf_var = run_walk_forward(
@@ -130,7 +177,9 @@ class HermesAgent:
             )
             base_m = wf_base.aggregate.__dict__
             var_m = wf_var.aggregate.__dict__
-            verdict = self.goals.evaluate_walk_forward(wf_base, wf_var)
+            verdict = self.goals.evaluate_walk_forward(
+                wf_base, wf_var, n_variables_today=n_today,
+            )
             verdict = self.goals.evaluate_with_live_and_counterfactual(
                 verdict, live_metrics, cf_result, proposal.variable, var_m,
             )
@@ -138,7 +187,7 @@ class HermesAgent:
                 proposal=proposal,
                 baseline_metrics=base_m,
                 variant_metrics=var_m,
-                verdict_promoted=verdict.promoted,
+                verdict_promoted=verdict.promoted and not observe,
                 verdict_reason=verdict.reason,
                 symbol=symbol,
                 timeframe=timeframe,
@@ -150,6 +199,13 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
+                verdict=_record_verdict(verdict),
+                folds_excluded=int(getattr(wf_var, "folds_excluded", 0) or 0),
+                win_probability=verdict.win_probability,
+                total_trades=verdict.total_trades,
+                threshold_used=verdict.threshold_used,
+                folds_holdout=int(getattr(wf_var, "folds_holdout", 0) or 0),
+                params=proposal.params,
             )
         else:
             bt_base = self.backtester.run(symbol, timeframe, params, ohlcv_df=ohlcv_df)
@@ -164,7 +220,7 @@ class HermesAgent:
                 proposal=proposal,
                 baseline_metrics=base_m,
                 variant_metrics=var_m,
-                verdict_promoted=verdict.promoted,
+                verdict_promoted=verdict.promoted and not observe,
                 verdict_reason=verdict.reason,
                 symbol=symbol,
                 timeframe=timeframe,
@@ -172,29 +228,42 @@ class HermesAgent:
                 live_metrics=live_metrics.to_dict() if live_metrics else None,
                 live_veto=verdict.live_veto,
                 counterfactual_metrics=cf_result.to_dict() if cf_result else None,
+                verdict=_record_verdict(verdict),
             )
 
         if verdict.live_veto and le_cfg.get("notify_on_live_veto", True):
             self._notify_live_veto(record, proposal, live_metrics, symbol)
 
         if verdict.promoted:
-            baseline["params"] = proposal.params
-            baseline["metrics"] = var_m
-            store.save_baseline(baseline)
-            log(f"Hermes baseline updated [{symbol}]: {proposal.variable}={proposal.new_value}", "INFO")
-            self._sync_to_config(baseline, record.get("id", ""))
-            self._notify_promotion(record, proposal, var_m, symbol)
+            record["params"] = proposal.params
+            record["baseline_params"] = params
+            if observe:
+                log("hermes observe: promotion suppressed", "INFO")
+                queue_or_suppress(self, record, observe=True)
+                self._notify_cycle_result(record, promoted=False)
+            else:
+                queued = queue_or_suppress(self, record, observe=False)
+                if queued.get("status") == "rejected":
+                    record["verdict"] = "rejected"
+                    record["verdict_reason"] = queued.get("reason") or record.get("verdict_reason")
+                    self._notify_cycle_result(record, promoted=False)
         else:
             self._notify_cycle_result(record, promoted=False)
 
-        self.improver.extract_skill(proposal, base_m, var_m, verdict.promoted, symbol, timeframe)
+        if not verdict.inconclusive:
+            self.improver.extract_skill(
+                proposal, base_m, var_m, verdict.promoted and not observe, symbol, timeframe
+            )
+        hermes_health.update_inconclusive_health(self.hermes, last_verdict=record.get("verdict"))
         summary = self.improver.analyze_and_suggest(record)
+        summary = f"{summary} {hermes_health.format_inconclusive_summary(self.hermes)}"
 
+        applied = record.get("verdict") == "promoted" and not observe
         return CycleResult(
             experiment_id=record.get("id", ""),
             variable=proposal.variable,
             verdict=record.get("verdict", "rejected"),
-            promoted=verdict.promoted,
+            promoted=applied,
             baseline_sharpe=base_m.get("sharpe", 0),
             variant_sharpe=var_m.get("sharpe", 0),
             summary=summary,
@@ -202,6 +271,9 @@ class HermesAgent:
         )
 
     def _sync_to_config(self, baseline: dict, experiment_id: str):
+        if self._is_observe_mode():
+            log("hermes observe: promotion suppressed", "INFO")
+            return
         if not self.hermes.get("sync_to_config", True):
             return
         try:
@@ -295,8 +367,10 @@ class HermesAgent:
         le_cfg = self.hermes.get("live_evidence", {})
         lines = [
             "=== Hermes 2.0 Status ===",
-            f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}",
+            f"Mode: {mode} | Rotation: {self.hermes.get('rotation', 'round_robin')}"
+            f"{' | observe' if self._is_observe_mode() else ''}",
             format_active_pool_line(self.config),
+            *hermes_health.format_status_lines(self.hermes),
             f"Active: {baseline.get('symbol')} {baseline.get('timeframe')}",
             f"Params: {baseline.get('params', {})}",
             f"Metrics: {baseline.get('metrics', {})}",
@@ -318,6 +392,17 @@ class HermesAgent:
             )
         lines.append("")
         lines.append(f"Recent experiments ({len(recent)}):")
+        for exp in reversed(recent):
+            if exp.get("win_probability") is None:
+                continue
+            sig = format_win_probability(
+                float(exp.get("win_probability") or 0),
+                int(exp.get("total_trades") or 0),
+            )
+            thr = exp.get("threshold_used")
+            extra = f" (threshold {float(thr):.2f})" if thr is not None else ""
+            lines.append(f"Last significance: {sig}{extra}")
+            break
         for exp in recent:
             fold_info = ""
             if exp.get("folds_total"):

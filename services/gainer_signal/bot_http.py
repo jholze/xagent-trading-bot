@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, request
 
+from core.models import OrderStatus
 from logger import log
 from services.gainer_signal.pure import (
     DEFAULT_ELIGIBLE_MIN_VOL,
@@ -127,7 +128,10 @@ def count_gainer_buys_today_from_fills(
     for o in fills or []:
         if str(o.get("side") or "").lower() != "buy":
             continue
-        if str(o.get("status") or "filled").lower() not in ("filled", "closed"):
+        if str(o.get("status") or OrderStatus.EXECUTED.value).lower() not in (
+            OrderStatus.EXECUTED.value,
+            "closed",
+        ):
             continue
         if not is_gainer_source(o.get("source")):
             continue

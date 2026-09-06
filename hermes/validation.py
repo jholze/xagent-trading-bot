@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from core.models import SandboxMetrics
-from hermes.backtester import Backtester
+from hermes.backtester import BACKTESTER_MIN_BARS, Backtester
 from logger import log
+
+_TF_MINUTES = {
+    "1m": 1,
+    "3m": 3,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "2h": 120,
+    "4h": 240,
+    "6h": 360,
+    "8h": 480,
+    "12h": 720,
+    "1d": 1440,
+    "3d": 4320,
+    "1w": 10080,
+}
+_TF_RE = re.compile(r"^(\d+)(m|h|d|w)$")
 
 
 @dataclass
@@ -20,6 +40,98 @@ class WalkForwardResult:
     aggregate: SandboxMetrics = field(default_factory=SandboxMetrics)
     folds_total: int = 0
     folds_won: int = 0
+    folds_excluded: int = 0
+    holdout_metrics: list[dict] = field(default_factory=list)
+    folds_holdout: int = 0
+
+
+@dataclass
+class FoldGeometry:
+    """Walk-forward window vs BACKTESTER_MIN_BARS (#308)."""
+
+    ok: bool
+    min_bars_per_fold: int
+    fold_days: int
+    timeframes: list[str]
+    issues: list[str] = field(default_factory=list)
+    details: list[str] = field(default_factory=list)
+
+    @property
+    def message(self) -> str:
+        if self.ok:
+            return "; ".join(self.details) or "fold geometry ok"
+        return (
+            "Hermes fold geometry invalid — cycles paused. " + " ".join(self.issues)
+        )
+
+
+def timeframe_bars_per_day(timeframe: str) -> float:
+    """Bars per calendar day for a ccxt-style timeframe (4h → 6)."""
+    tf = str(timeframe or "4h").strip().lower()
+    minutes = _TF_MINUTES.get(tf)
+    if minutes is None:
+        m = _TF_RE.fullmatch(tf)
+        if not m:
+            return 6.0
+        n, unit = int(m.group(1)), m.group(2)
+        minutes = {"m": n, "h": n * 60, "d": n * 1440, "w": n * 10080}[unit]
+    if minutes <= 0:
+        return 6.0
+    return 1440 / minutes
+
+
+def expected_fold_bars(fold_days: int, timeframe: str) -> int:
+    return int(fold_days * timeframe_bars_per_day(timeframe))
+
+
+def min_fold_days_for_timeframe(timeframe: str, min_bars: int = BACKTESTER_MIN_BARS) -> int:
+    bpd = timeframe_bars_per_day(timeframe)
+    if bpd <= 0:
+        return int(min_bars)
+    return int(math.ceil(min_bars / bpd))
+
+
+def inspect_fold_geometry(hermes_cfg: dict | None) -> FoldGeometry:
+    """Check min_bars_per_fold and fold_days against BACKTESTER_MIN_BARS (#308)."""
+    cfg = hermes_cfg or {}
+    vcfg = cfg.get("validation") or {}
+    try:
+        min_bars = int(vcfg.get("min_bars_per_fold", BACKTESTER_MIN_BARS))
+    except (TypeError, ValueError):
+        min_bars = BACKTESTER_MIN_BARS
+    try:
+        fold_days = int(vcfg.get("fold_days", 7))
+    except (TypeError, ValueError):
+        fold_days = 7
+    timeframes = list(cfg.get("timeframes") or ["4h"])
+    if not timeframes:
+        timeframes = ["4h"]
+
+    issues: list[str] = []
+    details: list[str] = []
+    if min_bars < BACKTESTER_MIN_BARS:
+        issues.append(
+            f"min_bars_per_fold={min_bars} < BACKTESTER_MIN_BARS={BACKTESTER_MIN_BARS}."
+        )
+    for tf in timeframes:
+        bars = expected_fold_bars(fold_days, tf)
+        bpd = timeframe_bars_per_day(tf)
+        need_days = min_fold_days_for_timeframe(tf, BACKTESTER_MIN_BARS)
+        details.append(f"fold_days={fold_days} on {tf} → {bars} bars ({bpd:g}/day)")
+        if bars < BACKTESTER_MIN_BARS:
+            issues.append(
+                f"fold_days={fold_days} on {tf} yields {bars} bars "
+                f"({bpd:g} bars/day); need fold_days >= {need_days} "
+                f"for {BACKTESTER_MIN_BARS} bars."
+            )
+    return FoldGeometry(
+        ok=not issues,
+        min_bars_per_fold=min_bars,
+        fold_days=fold_days,
+        timeframes=timeframes,
+        issues=issues,
+        details=details,
+    )
 
 
 def _validation_cfg(hermes: dict) -> dict:
@@ -30,7 +142,7 @@ def rolling_folds(
     df: pd.DataFrame,
     fold_days: int = 7,
     step_days: int = 3,
-    min_bars: int = 12,
+    min_bars: int = BACKTESTER_MIN_BARS,
 ) -> list[tuple[int, pd.DataFrame]]:
     if df is None or df.empty:
         return []
@@ -95,7 +207,15 @@ def run_walk_forward(
     vcfg = _validation_cfg(hermes_cfg)
     fold_days = int(vcfg.get("fold_days", 7))
     step_days = int(vcfg.get("step_days", 3))
-    min_bars = int(vcfg.get("min_bars_per_fold", 12))
+    min_bars = int(vcfg.get("min_bars_per_fold", BACKTESTER_MIN_BARS))
+    # Missing key → 1 so 0-trade folds are excluded but 1-trade folds still score (#308).
+    min_trades_per_fold = int(vcfg.get("min_trades_per_fold", 1))
+    # Missing key → 0 so existing tests that omit holdout_folds keep all folds
+    # as in-sample. Config default is 2 (#308 slice 2).
+    try:
+        holdout_folds = int(vcfg.get("holdout_folds", 0) or 0)
+    except (TypeError, ValueError):
+        holdout_folds = 0
 
     folds = rolling_folds(ohlcv_df, fold_days, step_days, min_bars)
     if not folds:
@@ -104,16 +224,55 @@ def run_walk_forward(
 
     fold_metrics = []
     folds_won = 0
+    folds_excluded = 0
     for fold_id, slice_df in folds:
         result = backtester.run(symbol, timeframe, params, ohlcv_df=slice_df)
         metrics = result.metrics.__dict__
         metrics["fold_id"] = fold_id
         metrics["bars"] = len(slice_df)
-        fold_metrics.append(metrics)
+        metrics["excluded"] = False
 
         if baseline_folds is not None:
             base = next((f for f in baseline_folds if f.get("fold_id") == fold_id), None)
-            if base and metrics.get("sharpe", 0) > base.get("sharpe", 0):
+            if base is not None:
+                b_tr = int(base.get("trades") or 0)
+                v_tr = int(metrics.get("trades") or 0)
+                if b_tr < min_trades_per_fold or v_tr < min_trades_per_fold:
+                    metrics["excluded"] = True
+                    metrics["exclude_reason"] = (
+                        f"trades base={b_tr} var={v_tr} "
+                        f"< min_trades_per_fold={min_trades_per_fold}"
+                    )
+                    folds_excluded += 1
+                elif metrics.get("sharpe", 0) > base.get("sharpe", 0):
+                    folds_won += 1
+        fold_metrics.append(metrics)
+
+    if folds_excluded:
+        log(
+            f"Hermes walk-forward {symbol} {timeframe}: "
+            f"{folds_excluded}/{len(fold_metrics)} folds excluded "
+            f"(min_trades_per_fold={min_trades_per_fold})",
+            "INFO",
+        )
+
+    holdout_metrics: list[dict] = []
+    k = min(max(0, holdout_folds), max(0, len(fold_metrics) - 1))
+    if k:
+        holdout_metrics = fold_metrics[-k:]
+        for hm in holdout_metrics:
+            hm["holdout"] = True
+        fold_metrics = fold_metrics[:-k]
+        folds_won = 0
+        folds_excluded = 0
+        for metrics in fold_metrics:
+            if metrics.get("excluded"):
+                folds_excluded += 1
+                continue
+            if baseline_folds is None:
+                continue
+            base = next((f for f in baseline_folds if f.get("fold_id") == metrics.get("fold_id")), None)
+            if base is not None and metrics.get("sharpe", 0) > base.get("sharpe", 0):
                 folds_won += 1
 
     return WalkForwardResult(
@@ -124,4 +283,7 @@ def run_walk_forward(
         aggregate=_aggregate_metrics(fold_metrics),
         folds_total=len(fold_metrics),
         folds_won=folds_won,
+        folds_excluded=folds_excluded,
+        holdout_metrics=holdout_metrics,
+        folds_holdout=len(holdout_metrics),
     )

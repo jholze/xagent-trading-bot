@@ -21,6 +21,9 @@ EVENTS_LOG = os.path.join(LOG_DIR, "market_policy_events.jsonl")
 _LOCK = threading.Lock()
 _last_notified: dict[str, Any] | None = None
 _last_notify_ts: float = 0.0
+_last_degraded: bool | None = None
+_last_degraded_notify_ts: float = 0.0
+_DEGRADED_NOTIFY_COOLDOWN_SEC = 1800.0
 _cycle: dict[str, int] = {
     "buy_blocks": 0,
     "size_cuts": 0,
@@ -50,6 +53,17 @@ def min_notify_interval_sec() -> float:
         return float(_obs_cfg().get("market_context_notify_min_sec", 120))
     except Exception:
         return 120.0
+
+
+def min_degraded_notify_interval_sec() -> float:
+    try:
+        return float(
+            _obs_cfg().get(
+                "market_bias_degraded_notify_min_sec", _DEGRADED_NOTIFY_COOLDOWN_SEC
+            )
+        )
+    except Exception:
+        return float(_DEGRADED_NOTIFY_COOLDOWN_SEC)
 
 
 def notify_on_boot() -> bool:
@@ -116,6 +130,8 @@ def format_fusion_line(bias: dict[str, Any] | None = None) -> str:
         except Exception:
             return "Fusion: —"
     if not bias or not bias.get("active"):
+        if bias and bias.get("degraded"):
+            return "Fusion: off degraded"
         return "Fusion: off"
     reg = bias.get("regime") or "?"
     try:
@@ -126,12 +142,13 @@ def format_fusion_line(bias: dict[str, Any] | None = None) -> str:
     src = bias.get("source") or ",".join(bias.get("sources") or []) or "?"
     warm = " warmup" if bias.get("warmup_active") else ""
     block = " block" if bias.get("block_buys") else ""
+    deg = " degraded" if bias.get("degraded") else ""
     ctr = cycle_counters()
     extra = ""
     if ctr.get("buy_blocks") or ctr.get("size_cuts"):
         extra = f" · blocks={ctr.get('buy_blocks', 0)} cuts={ctr.get('size_cuts', 0)}"
     return (
-        f"Fusion: {reg} ×{sm:.2f} sensor={sensor} [{src}]{warm}{block}{extra}"
+        f"Fusion: {reg} ×{sm:.2f} sensor={sensor} [{src}]{warm}{block}{deg}{extra}"
     )
 
 
@@ -262,6 +279,66 @@ def maybe_notify_state_change(bias: dict[str, Any] | None = None) -> bool:
         return False
 
 
+def fusion_health_fields(bias: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fields `/health/detail` can surface without editing aria_bot.py."""
+    if bias is None:
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+
+            bias = get_global_market_bias()
+        except Exception:
+            bias = {}
+    layers = bias.get("layers") if isinstance((bias or {}).get("layers"), dict) else {}
+    return {
+        "market_bias_degraded": bool((bias or {}).get("degraded")),
+        "layers": dict(layers),
+    }
+
+
+def maybe_notify_degraded(bias: dict[str, Any] | None = None) -> bool:
+    """notify_operator once per degraded False↔True transition (30 min cooldown)."""
+    if bias is None:
+        try:
+            from services.market_policy_fusion import get_global_market_bias
+
+            bias = get_global_market_bias()
+        except Exception:
+            return False
+    degraded = bool((bias or {}).get("degraded"))
+    global _last_degraded, _last_degraded_notify_ts
+    with _LOCK:
+        prev = _last_degraded
+        if prev is None:
+            _last_degraded = degraded
+            return False
+        if prev is degraded:
+            return False
+        now = time.time()
+        if (now - _last_degraded_notify_ts) < min_degraded_notify_interval_sec():
+            _last_degraded = degraded
+            return False
+        _last_degraded = degraded
+        _last_degraded_notify_ts = now
+
+    direction = "degraded" if degraded else "recovered"
+    layers = (bias or {}).get("layers") or {}
+    msg = (
+        f"<b>Market bias {direction}</b>\n"
+        f"degraded={degraded}\n"
+        f"layers={layers}"
+    )
+    try:
+        from core.operator_notify import notify_operator
+
+        ok = bool(notify_operator(msg))
+        if ok:
+            log(f"market bias {direction} notify", "WARNING" if degraded else "INFO")
+        return ok
+    except Exception as e:
+        log(f"market bias degraded notify failed: {e}", "WARNING")
+        return False
+
+
 def observe_cycle_start(config_raw: dict | None = None) -> str:
     """Reset counters, sample bias, maybe notify; return fusion line."""
     reset_cycle_counters()
@@ -272,4 +349,5 @@ def observe_cycle_start(config_raw: dict | None = None) -> str:
     except Exception:
         bias = {}
     maybe_notify_state_change(bias)
+    maybe_notify_degraded(bias)
     return format_fusion_line(bias)

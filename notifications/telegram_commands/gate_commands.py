@@ -126,7 +126,10 @@ def handle(text: str) -> bool:
     if cfg.trading_mode == "live":
         holdings = fetch_spot_holdings(cfg)
         if holdings:
-            prices = get_prices_batch([h["symbol"] for h in holdings])
+            prices = get_prices_batch(
+                [h["symbol"] for h in holdings],
+                allow_entry_price_fallback=True,
+            )
             msg += "<b>Spot-Bestände</b>\n"
             msg += "\n".join(format_holdings_lines(holdings, prices))
             msg += "\n\n"

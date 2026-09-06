@@ -135,6 +135,22 @@ def build_plan_payload() -> tuple[str, str | None, object]:
         mode = str(cfg.trading_mode or "")
 
     html = format_plan_report_html(gap=gap, plan_start=plan_start, mode=mode)
+    try:
+        from services.reporting.metrics import format_live_metrics_block
+
+        block = format_live_metrics_block(days=7)
+        if block:
+            html = f"{html}\n\n{block}"
+    except Exception:
+        pass
+    try:
+        from services.reporting.benchmark import format_btc_benchmark_line
+
+        bench = format_btc_benchmark_line(history)
+        if bench:
+            html = f"{html}\n{bench}"
+    except Exception:
+        pass
     chart_path = render_plan_chart_for_current(
         start_capital=init,
         plan_start=plan_start,

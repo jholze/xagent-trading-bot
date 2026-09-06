@@ -84,7 +84,11 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
             bootstrap_positions(scope, tenant_id=tid)
             active = list_active_positions(tenant_id=tid, scope=scope)
     symbols = [position_symbol(p) for p in active]
-    prices = get_prices_batch(symbols, fallbacks=build_price_fallbacks(active)) if symbols else {}
+    prices = get_prices_batch(
+        symbols,
+        fallbacks=build_price_fallbacks(active),
+        allow_entry_price_fallback=True,
+    ) if symbols else {}
 
     open_lots_mtm = 0.0
     positions_market_value = 0.0

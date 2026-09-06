@@ -74,6 +74,7 @@ class ExitRealtimeHub:
         self._raw = raw_config
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._app: Any = None
         self._pos_lock = threading.Lock()
         self._book: dict[str, dict[str, Any]] = {}
         self._gate_to_symbol: dict[str, str] = {}
@@ -338,6 +339,22 @@ class ExitRealtimeHub:
 
     def stop(self) -> None:
         self._stop.set()
+        app = self._app
+        if app is not None:
+            try:
+                app.keep_running = False
+            except Exception:
+                pass
+            try:
+                app.close()
+            except Exception:
+                pass
+        ws = self._ws
+        if ws is not None and ws is not app:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def _debounce_ok(self, symbol: str, source: str, cooldown_sec: float) -> bool:
         key = f"{symbol}|{source}"
@@ -654,7 +671,8 @@ class ExitRealtimeHub:
         while not self._stop.is_set():
             pairs = self._desired_gate_pairs()
             if not pairs:
-                time.sleep(5)
+                if self._stop.wait(5):
+                    break
                 continue
 
             def on_message(_ws, message: str) -> None:
@@ -749,6 +767,7 @@ class ExitRealtimeHub:
                     on_error=on_error,
                     on_close=on_close,
                 )
+                self._app = ws
                 self._stats["reconnects"] += 1
                 ws.run_forever(sslopt={"context": _ssl_context()}, ping_interval=20)
             except Exception as exc:
@@ -757,11 +776,13 @@ class ExitRealtimeHub:
                 self._connected = False
                 self._stats["connected"] = False
                 self._ws = None
+                self._app = None
                 self._subscribed = set()
 
             if self._stop.is_set():
                 break
-            time.sleep(backoff)
+            if self._stop.wait(backoff):
+                break
             backoff = min(max_backoff, backoff * 1.5)
 
 
@@ -857,7 +878,8 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
         try:
             raw = raw_getter()
             if not exit_realtime_enabled(raw) or exit_realtime_mode(raw) == "off":
-                time.sleep(10)
+                if _refresh_stop.wait(10):
+                    break
                 continue
             if is_exit_radar_sidecar_process():
                 _sync_positions_from_ledger()
@@ -870,7 +892,8 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
         except Exception as exc:
             log(f"exit_realtime book refresh: {exc}", "WARNING")
         cfg = exit_realtime_config(raw_getter())
-        time.sleep(float(cfg.get("book_refresh_sec", 30) or 30))
+        if _refresh_stop.wait(float(cfg.get("book_refresh_sec", 30) or 30)):
+            break
 
 
 def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
@@ -916,3 +939,27 @@ def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
             )
             _refresh_thread.start()
         return _hub
+
+
+def reset_exit_realtime_for_tests() -> None:
+    """Stop hub + book-refresh daemons so they cannot outlive a pytest test (#329)."""
+    global _hub, _refresh_thread
+    _refresh_stop.set()
+    hub = None
+    with _hub_lock:
+        hub = _hub
+        _hub = None
+        thread = _refresh_thread
+        _refresh_thread = None
+    if hub is not None:
+        hub.stop()
+        ws_thread = hub._thread
+        if (
+            ws_thread is not None
+            and ws_thread.is_alive()
+            and ws_thread is not threading.current_thread()
+        ):
+            ws_thread.join(timeout=2.0)
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    _refresh_stop.clear()

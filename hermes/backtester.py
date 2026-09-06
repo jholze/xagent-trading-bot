@@ -7,11 +7,16 @@ import pandas as pd
 import talib
 
 from core.config import get_bot_config
+from core.costs import COST_MODEL_VERSION, CostModel, trade_cost_fields
 from core.models import MarketContext, SandboxMetrics
 from hermes.metrics import enrich_sandbox_metrics, sharpe_from_trades
 from logger import log
 from strategies.positions import sell_fraction_for_signal
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+# Minimum bars Backtester.run / PipelineBacktester.run need before they
+# compute indicators. Walk-forward folds below this yield trades=0 (#308).
+BACKTESTER_MIN_BARS = 30
 
 
 @dataclass
@@ -62,7 +67,7 @@ class Backtester:
 
         days = days or int(self.hermes.get("backtest_days", 60))
         df = ohlcv_df if ohlcv_df is not None else self._fetch_ohlcv(symbol, timeframe, days)
-        if df is None or df.empty or len(df) < 30:
+        if df is None or df.empty or len(df) < BACKTESTER_MIN_BARS:
             log(f"Backtest insufficient data for {symbol} {timeframe}", "WARNING")
             return BacktestResult(
                 symbol=symbol,
@@ -98,8 +103,8 @@ class Backtester:
     def _simulate(self, symbol: str, timeframe: str, params: dict, df: pd.DataFrame) -> BacktestResult:
         capital = float(self.hermes.get("initial_capital_usdt", 1000))
         usdt_per_trade = float(self.hermes.get("usdt_per_trade", 50))
-        slippage = self.config.slippage_percent / 100
         stop_loss_pct = params.get("stop_loss_pct", self.config.stop_loss_pct)
+        cm = CostModel.from_config(self.config, symbol=symbol)
 
         balance = capital
         position = {"amount": 0.0, "average_entry": 0.0}
@@ -141,19 +146,20 @@ class Backtester:
             action = analysis.action
 
             if action == "BUY" and position["amount"] <= 0 and balance >= usdt_per_trade:
-                cost = usdt_per_trade * (1 + slippage)
-                if balance >= cost:
-                    amount = usdt_per_trade / price
-                    position["amount"] = amount
-                    position["average_entry"] = price
-                    balance -= cost
+                buy_fill = cm.simulate_buy(price, usdt=usdt_per_trade)
+                if balance >= buy_fill.quote_net and buy_fill.qty_net > 0:
+                    position["amount"] = buy_fill.qty_net
+                    position["average_entry"] = buy_fill.quote_net / buy_fill.qty_net
+                    balance -= buy_fill.quote_net
                     sim_state["rsi_sell_tiers_done"] = {}
                     trades.append({
                         "type": "BUY",
-                        "price": price,
-                        "amount": amount,
-                        "usdt": usdt_per_trade,
+                        "price": buy_fill.fill_price,
+                        "amount": buy_fill.qty_net,
+                        "usdt": buy_fill.quote_net,
                         "bar": i,
+                        "cost_model": COST_MODEL_VERSION,
+                        **trade_cost_fields(buy_fill),
                     })
 
             elif position["amount"] > 0 and action != "HOLD" and "SELL" in action:
@@ -161,9 +167,11 @@ class Backtester:
                 if sell_fraction > 0:
                     entry = position["average_entry"]
                     sell_amount = position["amount"] * sell_fraction
-                    received = price * sell_amount * (1 - slippage)
-                    pnl = (price - entry) * sell_amount
-                    balance += received
+                    sell_fill = cm.simulate_sell(price, sell_amount)
+                    pnl = CostModel.realized_pnl(
+                        qty_sold=sell_amount, avg_entry_net=entry, sell=sell_fill,
+                    )
+                    balance += sell_fill.quote_net
                     position["amount"] -= sell_amount
                     if position["amount"] < 1e-10:
                         position["amount"] = 0.0
@@ -178,12 +186,14 @@ class Backtester:
                     sim_state["rsi_sell_tiers_done"] = tiers
                     trades.append({
                         "type": "SELL",
-                        "price": price,
+                        "price": sell_fill.fill_price,
                         "amount": sell_amount,
                         "pnl": pnl,
-                        "usdt_received": received,
+                        "usdt_received": sell_fill.quote_net,
                         "bar": i,
                         "action": action,
+                        "cost_model": COST_MODEL_VERSION,
+                        **trade_cost_fields(sell_fill),
                     })
 
             sim_state["last_rsi"] = float(row["rsi"])

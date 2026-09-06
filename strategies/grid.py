@@ -115,10 +115,11 @@ class GridStrategy(BaseStrategy):
         )
         if gcfg.get("fee_aware", True):
             try:
+                from core.costs import CostModel
                 from strategies.grid_limits import enforce_fee_spacing
 
-                fee = float(gcfg.get("assumed_fee_pct", 0.1))
-                plan = enforce_fee_spacing(plan, fee_pct=fee)
+                cm = CostModel.from_config(get_bot_config().raw, symbol=symbol)
+                plan = enforce_fee_spacing(plan, round_trip_pct=cm.round_trip_pct("limit"))
             except Exception:
                 pass
         self._plans[key] = plan

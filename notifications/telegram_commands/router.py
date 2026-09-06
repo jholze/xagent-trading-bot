@@ -1,5 +1,5 @@
 from logger import log
-from notifications.telegram_commands import ask_commands, backtest_commands, cmc_commands, decisions_commands, gate_commands, grid_commands, help_commands, hermes_commands, lc_commands, lock_commands, menu_commands, mode_commands, morning_commands, onboarding_commands, order_commands, plan_commands, portfolio_commands, reload_commands, replay_commands, risk_commands, sandbox_commands, short_commands, stack_commands, tenant_link_commands, trading_commands, watchlist_commands, x_commands
+from notifications.telegram_commands import ask_commands, backtest_commands, cmc_commands, decisions_commands, diag_commands, gate_commands, grid_commands, help_commands, hermes_commands, lc_commands, lock_commands, menu_commands, mode_commands, morning_commands, onboarding_commands, order_commands, pause_commands, plan_commands, portfolio_commands, reload_commands, replay_commands, reporting_commands, risk_commands, sandbox_commands, short_commands, stack_commands, tenant_link_commands, trading_commands, watchlist_commands, x_commands
 from notifications.telegram_commands.usage_hints import hint
 from telegram_notifier import send_telegram_message
 
@@ -7,8 +7,10 @@ _HANDLERS = [
     tenant_link_commands.handle,
     onboarding_commands.handle,
     mode_commands.handle,
+    pause_commands.handle,
     reload_commands.handle,
     plan_commands.handle,
+    reporting_commands.handle,
     gate_commands.handle,
     risk_commands.handle,
     lock_commands.handle,
@@ -26,6 +28,7 @@ _HANDLERS = [
     trading_commands.handle,
     order_commands.handle,
     x_commands.handle,
+    diag_commands.handle,
     portfolio_commands.handle,
     morning_commands.handle,
     stack_commands.handle,
@@ -72,6 +75,8 @@ def dispatch_command(text: str) -> bool:
 def dispatch_callback(callback_query: dict) -> bool:
     try:
         if menu_commands.handle_callback(callback_query):
+            return True
+        if pause_commands.handle_callback(callback_query):
             return True
         if trading_commands.handle_callback(callback_query):
             return True

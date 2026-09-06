@@ -10,6 +10,15 @@ from typing import Any
 from services.santiment.store import get_latest_snapshot, snapshot_is_fresh
 
 
+def _snap_measured(snap: dict | None) -> bool:
+    """Legacy snapshots without `measured` are treated as measured (no false alarm)."""
+    if not isinstance(snap, dict):
+        return False
+    if "measured" not in snap:
+        return True
+    return bool(snap.get("measured"))
+
+
 def _arch(config_raw: dict | None) -> dict:
     if config_raw is None:
         try:
@@ -52,19 +61,30 @@ def get_santiment_policy(config_raw: dict | None = None) -> dict[str, Any]:
         "apply_size_mult": False,
         "apply_sensor_policy": False,
         "block_buys": False,
+        "measured": True,
+        "as_of": None,
     }
     if not cfg["enabled"]:
         return neutral
 
     snap = get_latest_snapshot()
     fresh = snapshot_is_fresh(snap)
+    measured = _snap_measured(snap)
+    as_of = (snap or {}).get("as_of") if isinstance(snap, dict) else None
     if not snap or not fresh:
         if cfg["fail_open"]:
-            return {**neutral, "fresh": False, "rationale": "santiment missing/stale fail-open"}
+            return {
+                **neutral,
+                "fresh": False,
+                "measured": measured,
+                "as_of": as_of,
+                "rationale": "santiment missing/stale fail-open",
+            }
         # fail closed: treat as risk-off
         return {
             "active": True,
             "fresh": False,
+            "measured": measured,
             "regime": "RISK_OFF",
             "size_mult": 0.35,
             "sensor_policy": "shadow",
@@ -73,6 +93,7 @@ def get_santiment_policy(config_raw: dict | None = None) -> dict[str, Any]:
             "apply_size_mult": cfg["apply_size_mult"],
             "apply_sensor_policy": cfg["apply_sensor_policy"],
             "block_buys": False,
+            "as_of": as_of,
         }
 
     regime = str(snap.get("regime") or "NEUTRAL").upper()
@@ -105,4 +126,5 @@ def get_santiment_policy(config_raw: dict | None = None) -> dict[str, Any]:
         "apply_grid_spacing": cfg["apply_grid_spacing"],
         "inject_regime_sentiment": cfg["inject_regime_sentiment"],
         "block_buys": block_buys,
+        "measured": measured,
     }

@@ -11,10 +11,17 @@ _lock = threading.Lock()
 _started = False
 _last_mode: str | None = None
 _last_stale_warn_at = 0.0
+_recovery_lock = threading.Lock()
+_recovered: set[tuple[str, str]] = set()
 
 
 def ensure_started(force_refresh: bool = False):
-    """Start notification worker + heartbeats on first call (safe from price_loop)."""
+    """Start notification worker + heartbeats on first call (safe from price_loop).
+
+    Exchange recovery (#314) runs once per tenant per process after the
+    architecture services are up. ``RecoveryFailed`` is not swallowed here
+    so the tenant's cycle does not run without a reconcile.
+    """
     global _started, _last_mode
     from core.config import get_bot_config
 
@@ -22,42 +29,186 @@ def ensure_started(force_refresh: bool = False):
     arch = cfg.architecture_config
     mode = arch.get("notification_mode", "async")
 
+    from bus.writer_lease import ensure_writer_lease, lease_enabled, writer_lease_held
+
+    ensure_writer_lease(on_acquired=_ensure_tenant_exchange_recovery)
+
     with _lock:
         if _started and not force_refresh and mode == _last_mode:
             _heartbeat_tick(cfg)
             _maybe_warn_stale(cfg)
-            return
+        else:
+            from bus.jobs import heavy_job_queue
+            from services.background_runtime import ensure_started as ensure_background
+            from services.trading_engine_runtime import ensure_started as ensure_trading_engine
 
-        from bus.jobs import heavy_job_queue
-        from services.background_runtime import ensure_started as ensure_background
-        from services.trading_engine_runtime import ensure_started as ensure_trading_engine
+            if not heavy_job_queue.running:
+                heavy_job_queue.start()
+            ensure_background()
+            ensure_trading_engine()
+            _ensure_eval_worker()
+            _ensure_exit_realtime()
 
-        if not heavy_job_queue.running:
-            heavy_job_queue.start()
-        ensure_background()
-        ensure_trading_engine()
-        _ensure_eval_worker()
-        _ensure_exit_realtime()
+            if mode == "direct":
+                _started = True
+                _last_mode = mode
+                log("Architecture runtime: notification_mode=direct (sync)", "INFO")
+                _heartbeat_tick(cfg)
+            else:
+                from bus.notifications import URGENT_RATE_LIMIT_SEC, notification_publisher
+                from telegram_notifier import _send_telegram_for_publisher
 
-        if mode == "direct":
-            _started = True
-            _last_mode = mode
-            log("Architecture runtime: notification_mode=direct (sync)", "INFO")
-            _heartbeat_tick(cfg)
-            return
+                rate = float(arch.get("notification_rate_limit_sec", 1.0))
+                notification_publisher._rate_limit_sec = rate
+                notification_publisher._urgent_rate_limit_sec = URGENT_RATE_LIMIT_SEC
+                if not notification_publisher.running:
+                    notification_publisher.start(_send_telegram_for_publisher)
 
+                _started = True
+                _last_mode = mode
+                _heartbeat_tick(cfg)
+                log("Architecture runtime: async notification worker active", "INFO")
+
+    if not lease_enabled() or writer_lease_held():
+        _ensure_tenant_exchange_recovery()
+
+
+def ensure_stopped():
+    """Stop the notification publisher on process shutdown (#305).
+
+    Pending alerts are persisted to the retry buffer by ``NotificationPublisher.stop``.
+    """
+    try:
+        from bus.writer_lease import shutdown_writer_lease
+
+        shutdown_writer_lease()
+    except Exception as e:
+        log(f"writer lease shutdown failed: {e}", "WARNING")
+    try:
         from bus.notifications import notification_publisher
-        from telegram_notifier import _send_telegram_direct
 
-        rate = float(arch.get("notification_rate_limit_sec", 1.0))
-        notification_publisher._rate_limit_sec = rate
-        if not notification_publisher.running:
-            notification_publisher.start(_send_telegram_direct)
+        if notification_publisher.running:
+            notification_publisher.stop(persist=True)
+        thread = notification_publisher._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        notification_publisher._thread = None
+    except Exception as e:
+        log(f"notification publisher stop failed: {e}", "WARNING")
 
-        _started = True
-        _last_mode = mode
-        _heartbeat_tick(cfg)
-        log("Architecture runtime: async notification worker active", "INFO")
+
+def reset_recovery_state_for_tests() -> None:
+    """Drop the per-tenant recovery set (unit tests only)."""
+    with _recovery_lock:
+        _recovered.clear()
+
+
+def reset_architecture_runtime_for_tests() -> None:
+    """Stop workers started by ensure_started() so they cannot outlive a pytest test (#329)."""
+    global _started, _last_mode
+    try:
+        from services.background_runtime import reset_background_runtime_for_tests
+
+        reset_background_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from bus.jobs import reset_heavy_job_queue_for_tests
+
+        reset_heavy_job_queue_for_tests()
+    except Exception:
+        pass
+    try:
+        from bus.notifications import reset_notification_publisher_for_tests
+
+        reset_notification_publisher_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.trading_engine_runtime import reset_trading_engine_for_tests
+
+        reset_trading_engine_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.eval_queue_runtime import reset_eval_runtime_for_tests
+
+        reset_eval_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.exit_realtime.hub import reset_exit_realtime_for_tests
+
+        reset_exit_realtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from bus.writer_lease import reset_writer_lease_for_tests
+
+        reset_writer_lease_for_tests()
+    except Exception:
+        pass
+    with _lock:
+        _started = False
+        _last_mode = None
+    reset_recovery_state_for_tests()
+
+
+def tenant_recovery_completed(
+    tenant_id: str | None = None, scope: str | None = None
+) -> bool:
+    """True after ``_ensure_tenant_exchange_recovery`` has finished for this tenant."""
+    from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+    key = (resolve_tenant_id(tenant_id), resolve_tenant_scope(scope))
+    with _recovery_lock:
+        return key in _recovered
+
+
+def _ensure_tenant_exchange_recovery() -> None:
+    """Once per tenant/scope per process. Lets RecoveryFailed propagate."""
+    from core.config import get_bot_config
+    from core.execution_mode import resolve_execution_mode
+    from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+    from execution.recovery import RecoveryFailed, reconcile_with_exchange
+
+    tid = resolve_tenant_id()
+    scope = resolve_tenant_scope()
+    key = (tid, scope)
+    with _recovery_lock:
+        if key in _recovered:
+            return
+        cfg = get_bot_config(tenant_id=tid)
+        try:
+            resolved = resolve_execution_mode(cfg.raw)
+        except RuntimeError as e:
+            log(f"exchange recovery skipped (mode: {e})", "WARNING")
+            _recovered.add(key)
+            return
+        if resolved.adapter_mode == "shadow":
+            adapter = _ShadowAdapter()
+        else:
+            from execution.factory import get_execution_adapter
+
+            try:
+                adapter = get_execution_adapter(cfg)
+            except Exception as e:
+                log(f"exchange recovery skipped (adapter: {e})", "WARNING")
+                _recovered.add(key)
+                return
+        try:
+            reconcile_with_exchange(
+                tenant_id=tid, scope=scope, adapter=adapter, config=cfg
+            )
+        except RecoveryFailed:
+            raise
+        _recovered.add(key)
+
+
+class _ShadowAdapter:
+    """Paper/demo: no Gate client. reconcile_with_exchange returns skipped."""
+
+    mode = "shadow"
 
 
 def _ensure_eval_worker():

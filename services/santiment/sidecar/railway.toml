@@ -5,5 +5,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "services/santiment_sidecar/Dockerfile"
 
 [deploy]
+numReplicas = 1
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10

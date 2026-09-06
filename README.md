@@ -33,7 +33,7 @@ In Telegram: Menü-Button neben der Eingabezeile (alle Befehle) oder `/help` sen
 - **ATR-Trailing-Stop** — Gewinn-Schutz ab +10 %; Vollverkauf bei Drop vom `recent_high` ([Doku §6.8](DOCUMENTATION.md#68-atr-trailing-stop--gewinn-schutz-volatile))
 - **Volatile 1h-Timeframe** — neue volatile Coins auf 1h-Kerzen; Legacy-Positionen behalten ihr TF ([Doku §6.9](DOCUMENTATION.md#69-volatile-1h-timeframe))
 - **Rebuy-Cooldown 4 h** — kein Kauf kurz nach Sell (`architecture.min_hours_after_sell_before_rebuy`) — Anti-Churn nach H/USDT-Stop
-- **Runtime-Architektur** — Async-Notifications, Background-Social, Ledger-Lock, `/ask`-Bridge ([Doku §2](DOCUMENTATION.md#2-architektur-überblick), [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md))
+- **Runtime-Architektur** — Async-Notifications, Background-Social, Ledger-Lock, `/ask`-Bridge ([Doku §2](DOCUMENTATION.md#2-architektur-überblick), [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md))
 - **`/ask` in Telegram** — Fragen an Cursor/Grok, asynchrone Antwort mit Referenz-ID
 - **466+ Unit-Tests** — inkl. `test_exit_ladder`, `test_trailing_stop`, Rebuy-Cooldown
 

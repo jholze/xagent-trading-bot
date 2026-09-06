@@ -41,6 +41,7 @@ _STATE: dict = {
         "mode": "dual",
         "promotions": 0,
         "rejections": 0,
+        "inconclusives": 0,
         "live_vetoes": 0,
         "cycles": 0,
     },
@@ -75,7 +76,9 @@ def _record_hermes_outcome(result) -> dict:
     live_veto = bool(getattr(result, "live_veto", False))
     if promoted:
         le["promotions"] = int(le.get("promotions") or 0) + 1
-    else:
+    elif verdict.lower() == "inconclusive":
+        le["inconclusives"] = int(le.get("inconclusives") or 0) + 1
+    elif verdict.lower() != "invalid_geometry":
         le["rejections"] = int(le.get("rejections") or 0) + 1
     if live_veto or "live_veto" in verdict.lower() or "live veto" in verdict.lower():
         le["live_vetoes"] = int(le.get("live_vetoes") or 0) + 1
@@ -83,6 +86,7 @@ def _record_hermes_outcome(result) -> dict:
     le["promotion_rate"] = round(int(le.get("promotions") or 0) / cycles, 4)
     le["veto_rate"] = round(int(le.get("live_vetoes") or 0) / cycles, 4)
     le["reject_rate"] = round(int(le.get("rejections") or 0) / cycles, 4)
+    le["inconclusive_rate"] = round(int(le.get("inconclusives") or 0) / cycles, 4)
     return {
         "symbol": getattr(result, "symbol", None),
         "verdict": verdict,
@@ -328,6 +332,12 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
             # observe: still run cycle but agent config may not promote destructively;
             # promotion tracking always recorded for /health rates
             result = agent.run_cycle()
+            try:
+                from hermes.promotion import tick as tick_promotions
+
+                tick_promotions(agent)
+            except Exception as e:
+                log(f"hermes promotion tick skipped: {e}", "DEBUG")
             out["hermes"] = _record_hermes_outcome(result)
             if mode == "observe":
                 out["hermes"]["note"] = "observe_mode_learning_tracked"

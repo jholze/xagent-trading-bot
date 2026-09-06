@@ -33,6 +33,67 @@ def _bot_json(bot_dir: Path, name: str) -> Path:
     return bot_dir / "data" / name
 
 
+def _ledger_bundle() -> tuple[dict, dict, dict]:
+    """Trade history, orders, positions from the active ledger scope (not live_*.json)."""
+    empty = (
+        {"trades": [], "virtual_balance": 0, "realized_pnl": 0},
+        {"orders": []},
+        {},
+    )
+    try:
+        from data_manager import (
+            load_orders,
+            load_positions_document,
+            load_trade_history_document,
+            resolve_ledger_scope,
+        )
+
+        scope = resolve_ledger_scope()
+        th = load_trade_history_document(scope) or {}
+        orders = load_orders(scope) or {"orders": []}
+        positions_doc = load_positions_document(scope) or {}
+    except Exception:
+        return empty
+    if not isinstance(th, dict):
+        th = empty[0]
+    if not isinstance(orders, dict):
+        orders = empty[1]
+    positions = positions_doc.get("positions") if isinstance(positions_doc, dict) else {}
+    if not isinstance(positions, dict):
+        positions = {}
+    return th, orders, positions
+
+
+def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> list[dict]:
+    out: list[dict] = []
+    for order in orders_raw.get("orders", []) or []:
+        ts = (order.get("timestamps") or {}).get("created")
+        if not ts:
+            continue
+        try:
+            created = parse_ts(str(ts))
+        except Exception:
+            continue
+        if day_start <= created < day_end:
+            out.append(order)
+    return out
+
+
+def _trades_in_day(trades: list, day_start: datetime, day_end: datetime) -> list[dict]:
+    out: list[dict] = []
+    for trade in trades or []:
+        ts = trade.get("timestamp")
+        if not ts:
+            continue
+        try:
+            when = parse_ts(str(ts))
+        except Exception:
+            continue
+        if day_start <= when < day_end:
+            out.append(trade)
+    return out
+
+
 def fmt_trade_row(trade: dict) -> str:
     ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
     pnl = trade.get("pnl") or 0
@@ -131,6 +192,7 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
         f"| Heute neu | {len([e for e in experiments if 'created_at' in e and day_start <= parse_ts(e['created_at']) < day_end])} |",
         f"| Promoted | **{promoted}** |",
         f"| Rejected | {verdicts.get('rejected', 0)} |",
+        f"| Inconclusive | {verdicts.get('inconclusive', 0)} |",
         f"| Quellen | {', '.join(f'{k} {v}' for k, v in sources.items())} |",
         f"| Symbole | {', '.join(f'{k} {v}' for k, v in symbols.items())} |",
         f"| Skills | {skills_count} |",
@@ -167,9 +229,9 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     day_end = day_start + timedelta(days=1)
     date_str = day_start.strftime("%Y-%m-%d")
 
-    th = load_json(_bot_json(bot_dir, "live_trade_history.json"))
-    trades = th.get("trades", [])
-    day_trades = [t for t in trades if day_start <= parse_ts(t["timestamp"]) < day_end]
+    th, orders_raw, positions = _ledger_bundle()
+    trades = th.get("trades", []) or []
+    day_trades = _trades_in_day(trades, day_start, day_end)
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
     sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
     dca_buys = sum(
@@ -180,15 +242,10 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     cash = th.get("virtual_balance", 0)
     realized_total = th.get("realized_pnl", 0)
 
-    positions = load_json(_bot_json(bot_dir, "positions.live.json")).get("positions", {})
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
     _, pos_value = open_positions_table(positions)
 
-    orders_raw = load_json(_bot_json(bot_dir, "orders.live.json"))
-    day_orders = [
-        o for o in orders_raw.get("orders", [])
-        if day_start <= parse_ts(o["timestamps"]["created"]) < day_end
-    ]
+    day_orders = _orders_in_day(orders_raw, day_start, day_end)
     filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
     rejected_orders = sum(1 for o in day_orders if o["status"] == "rejected")
 
@@ -259,25 +316,20 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     day_start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
 
-    th = load_json(_bot_json(bot_dir, "live_trade_history.json"))
-    trades = th.get("trades", [])
-    day_trades = [t for t in trades if day_start <= parse_ts(t["timestamp"]) < day_end]
+    th, orders_raw, positions = _ledger_bundle()
+    trades = th.get("trades", []) or []
+    day_trades = _trades_in_day(trades, day_start, day_end)
 
-    orders_raw = load_json(_bot_json(bot_dir, "orders.live.json"))
-    day_orders = [
-        o for o in orders_raw.get("orders", [])
-        if day_start <= parse_ts(o["timestamps"]["created"]) < day_end
-    ]
+    day_orders = _orders_in_day(orders_raw, day_start, day_end)
     filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
     rejected_orders = sum(1 for o in day_orders if o["status"] == "rejected")
     reject_coins = Counter(o["symbol"] for o in day_orders if o["status"] == "rejected")
 
-    positions = load_json(_bot_json(bot_dir, "positions.live.json")).get("positions", {})
     pos_table, pos_value = open_positions_table(positions)
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
 
     config = load_json(bot_dir / "config.json")
-    cmc_raw = load_json(_bot_json(bot_dir, "cmc_posts.json"))
+    cmc_raw = load_json(_bot_json(bot_dir, "cmc_posts.json"), default=[])
     posts = cmc_posts(cmc_raw)
     day_posts = [p for p in posts if (ts := post_timestamp(p)) and day_start <= ts < day_end]
     cmc_actions = Counter(normalize_action(p) for p in day_posts)
@@ -391,9 +443,7 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
 
 ## Referenz-Dateien
 
-- `live_trade_history.json`
-- `orders.live.json`
-- `positions.live.json`
+- Ledger (`data_manager.load_trade_history_document` / `load_orders` / `load_positions_document`, `resolve_ledger_scope()`)
 - `cmc_posts.json`
 - `config.json`
 - `hermes/memory/experiments.json`

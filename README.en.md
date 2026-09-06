@@ -33,7 +33,7 @@ In Telegram: use the menu button next to the input field (all commands) or send 
 - **ATR Trailing Stop** — gain protection from +10 %; full close on drop from `recent_high` ([docs §6.8](DOCUMENTATION.en.md#68-atr-trailing-stop--gain-protection-volatile))
 - **Volatile 1h timeframe** — new volatile coins on 1h candles; legacy positions keep their TF ([docs §6.9](DOCUMENTATION.en.md#69-volatile-1h-timeframe))
 - **4 h rebuy cooldown** — no buy shortly after sell (`architecture.min_hours_after_sell_before_rebuy`)
-- **Runtime architecture** — async notifications, background social, ledger lock, `/ask` bridge ([docs §2](DOCUMENTATION.en.md#2-architecture-overview), [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md))
+- **Runtime architecture** — async notifications, background social, ledger lock, `/ask` bridge ([docs §2](DOCUMENTATION.en.md#2-architecture-overview), [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md))
 - **`/ask` in Telegram** — questions to Cursor/Grok, async answer with reference ID
 - **466+ unit tests** — including `test_exit_ladder`, `test_trailing_stop`, rebuy cooldown
 

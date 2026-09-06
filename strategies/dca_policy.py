@@ -27,6 +27,10 @@ class DcaContext:
     extreme_funding: bool = False
     rag_hit_count: int = 0
     fusion_missing: bool = False
+    fusion_fresh: bool = True
+    fusion_measured: bool = True
+    fusion_degraded: bool = False
+    fail_closed_guards: str = "log"
     # #103 coin-fact layer (fail-open defaults)
     fact_hard_negative: bool = False
     fact_unlock: bool = False
@@ -228,6 +232,14 @@ def evaluate_dca_policy(
     if ctx.fusion_missing:
         reasons.append("fail_open_fusion")
 
+    deny = str(getattr(ctx, "fail_closed_guards", "log") or "log").strip().lower() == "deny"
+    measured = bool(getattr(ctx, "fusion_measured", True))
+    fresh = bool(getattr(ctx, "fusion_fresh", True))
+    degraded = bool(getattr(ctx, "fusion_degraded", False))
+    allow_deploy = True
+    if deny:
+        allow_deploy = bool(measured and fresh) and not degraded
+
     # 1) HARVEST / risk-off
     harvest = (
         mode == "HARVEST"
@@ -247,11 +259,11 @@ def evaluate_dca_policy(
         if sm < harvest_thr and mode != "HARVEST":
             reasons.append("low_size_mult")
 
-    # 2) DEPLOY boost
-    if not skip and (mode == "DEPLOY" or sm >= deploy_thr):
+    # 2) DEPLOY boost — under deny only when fusion is measured and fresh
+    if not skip and allow_deploy and (mode == "DEPLOY" or sm >= deploy_thr):
         mult *= _f(cfg, "deploy_mult", 1.35)
         reasons.append("deploy_boost")
-    elif not skip and (mode == "STEADY" or not mode):
+    elif not skip and (mode == "STEADY" or not mode or not allow_deploy):
         reasons.append("steady")
 
     # 3) Calendar

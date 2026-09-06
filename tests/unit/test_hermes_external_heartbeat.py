@@ -39,10 +39,16 @@ class TestExternalHermesHeartbeat(unittest.TestCase):
 
         heartbeat_registry.clear()
         # Zombie: expired local hermes (the old bug)
-        heartbeat_registry.beat("hermes", ttl_sec=1)
-        import time
+        from bus import heartbeats as heartbeats_mod
 
-        time.sleep(1.15)
+        orig_now = heartbeats_mod._now
+        t = [1_000_000.0]
+        heartbeats_mod._now = lambda: t[0]
+        try:
+            heartbeat_registry.beat("hermes", ttl_sec=1)
+            t[0] += 1.15
+        finally:
+            heartbeats_mod._now = orig_now
 
         cfg = MagicMock()
         cfg.architecture_config = {

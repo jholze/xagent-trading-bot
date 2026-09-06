@@ -141,6 +141,39 @@ class TestNavHistory(unittest.TestCase):
         self.assertEqual(m[0], 100000)
         self.assertEqual(m[2], 101000)
 
+    def test_btc_close_null_when_price_missing_does_not_raise(self):
+        with patch.object(nav_hist, "_tenant_scope", return_value=("default", "demo")), \
+             patch("price_fetcher.peek_cached_price", return_value=None), \
+             patch("price_fetcher.get_prices_batch", side_effect=RuntimeError("no net")):
+            point = nav_hist.record_nav_snapshot(
+                nav=100_000,
+                cash=100_000,
+                on_date=date(2026, 7, 1),
+            )
+        self.assertIsNone(point["btc_close"])
+        hist = nav_hist.load_nav_history()
+        self.assertEqual(hist[0]["btc_close"], None)
+
+    def test_btc_close_stored_from_cached_price(self):
+        with patch.object(nav_hist, "_tenant_scope", return_value=("default", "demo")), \
+             patch("price_fetcher.peek_cached_price", return_value=65_432.5):
+            point = nav_hist.record_nav_snapshot(
+                nav=100_000,
+                cash=100_000,
+                on_date=date(2026, 7, 2),
+            )
+        self.assertEqual(point["btc_close"], 65_432.5)
+
+    def test_explicit_none_btc_close_never_raises(self):
+        with patch.object(nav_hist, "_tenant_scope", return_value=("default", "demo")), \
+             patch("price_fetcher.peek_cached_price", side_effect=RuntimeError("boom")):
+            point = nav_hist.record_nav_snapshot(
+                nav=50_000,
+                on_date=date(2026, 7, 3),
+                btc_close=None,
+            )
+        self.assertIsNone(point["btc_close"])
+
 
 class TestPlanCommand(unittest.TestCase):
     def test_handle_routes(self):

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from core.config import get_bot_config
+from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
 from core.models import TradeResult, TradeOrder
 from data_manager import load_trade_history, record_trade
 from strategies.positions import (
@@ -50,6 +51,7 @@ class PortfolioService:
         sync_virtual_ledger: bool = True,
         entry_source: str | None = None,
         entry_15m_vol_ratio: float | None = None,
+        fill: Fill | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
@@ -62,14 +64,19 @@ class PortfolioService:
                 False, "BUY", symbol, message="one-way: cover short before buy",
             )
         usdt = usdt_amount or self.config.max_usdt_per_trade
-        amount = usdt / price
+        cm = CostModel.from_config(self.config, symbol=symbol)
+        f = fill if fill is not None else cm.simulate_buy(price, usdt=usdt)
+        if f.qty_net <= 0:
+            return TradeResult(False, "BUY", symbol, message="Fill qty_net is 0")
+        net_entry = f.quote_net / f.qty_net
+        amount = f.qty_net
         signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
         effective_entry_source = entry_source or _default_entry_source(source)
         update_position(
             symbol,
             timeframe,
             signal,
-            price,
+            net_entry,
             amount,
             entry_source=effective_entry_source,
             entry_15m_vol_ratio=entry_15m_vol_ratio,
@@ -78,14 +85,18 @@ class PortfolioService:
             record_trade({
                 "type": "BUY",
                 "symbol": symbol,
-                "price": price,
+                "price": f.fill_price,
                 "amount": amount,
-                "usdt_amount": usdt,
+                "usdt_amount": f.quote_net,
                 "source": source,
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
+                **trade_cost_fields(f),
             })
-        return TradeResult(True, "BUY", symbol, amount=amount, price=price, usdt_amount=usdt, order_id=order_id or "")
+        return TradeResult(
+            True, "BUY", symbol, amount=amount, price=f.fill_price,
+            usdt_amount=f.quote_net, order_id=order_id or "", fee=f.fee_usdt,
+        )
 
     def execute_sell(
         self,
@@ -97,6 +108,7 @@ class PortfolioService:
         source: str = "auto",
         order_id: str = None,
         sync_virtual_ledger: bool = True,
+        fill: Fill | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
@@ -112,10 +124,13 @@ class PortfolioService:
             amount = float(pos["amount"]) * fraction
         if amount <= 0:
             return TradeResult(False, "SELL", symbol, message="No position to sell")
-        received = price * amount * (1 - self.config.slippage_percent / 100)
+        cm = CostModel.from_config(self.config, symbol=symbol)
+        f = fill if fill is not None else cm.simulate_sell(price, amount)
+        qty_sold = f.qty_net if f.qty_net > 0 else amount
+        received = f.quote_net
         entry = pos.get("average_entry", price)
-        pnl = (price - entry) * amount
-        update_position(symbol, timeframe, signal, price, amount)
+        pnl = CostModel.realized_pnl(qty_sold=qty_sold, avg_entry_net=entry, sell=f)
+        update_position(symbol, timeframe, signal, f.fill_price, qty_sold)
         if source == "cmc":
             from strategies.positions import save_positions, set_position_field
 
@@ -125,16 +140,18 @@ class PortfolioService:
             record_trade({
                 "type": "SELL",
                 "symbol": symbol,
-                "price": price,
-                "amount": amount,
+                "price": f.fill_price,
+                "amount": qty_sold,
                 "usdt_received": received,
                 "pnl": pnl,
                 "source": source,
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
+                **trade_cost_fields(f),
             })
         return TradeResult(
-            True, "SELL", symbol, amount=amount, price=price, usdt_amount=received, pnl=pnl, order_id=order_id or "",
+            True, "SELL", symbol, amount=qty_sold, price=f.fill_price,
+            usdt_amount=received, pnl=pnl, order_id=order_id or "", fee=f.fee_usdt,
         )
 
     def execute_short(
@@ -186,6 +203,7 @@ class PortfolioService:
                 "source": source,
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
+                "cost_model": COST_MODEL_VERSION,
             })
         return TradeResult(
             True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional, order_id=order_id or "",
@@ -249,6 +267,7 @@ class PortfolioService:
                 "source": source,
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
+                "cost_model": COST_MODEL_VERSION,
             })
         return TradeResult(
             True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl, order_id=order_id or "",
