@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -235,8 +236,27 @@ def save_promotion_state(data: dict):
     _save(_path("promotion_state"), data)
 
 
+_SNAPSHOT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def snapshot_file(experiment_id: str) -> Path:
-    return MEMORY_DIR / "snapshots" / f"{experiment_id}.json"
+    """Path of a promotion snapshot. The id is a path segment, so validate it.
+
+    ``experiment_id`` reaches this via ``/hermes_rollback <id>`` from a Telegram
+    message. Without the whitelist, ``../..`` escapes the folder and an
+    absolute path replaces it entirely (pathlib: ``Path("a") / "/etc/x"`` is
+    ``/etc/x``) -- and rollback() writes the file it reads into the live
+    strategy config. Only ``[A-Za-z0-9_-]`` (max 64) is accepted; the result is
+    checked to stay under the snapshots folder.
+    """
+    raw = str(experiment_id or "")
+    if not _SNAPSHOT_ID_RE.fullmatch(raw):
+        raise ValueError(f"invalid experiment id: {raw[:64]!r}")
+    folder = (MEMORY_DIR / "snapshots").resolve()
+    path = (folder / f"{raw}.json").resolve()
+    if path.parent != folder:
+        raise ValueError(f"snapshot path escapes the folder: {raw[:64]!r}")
+    return path
 
 
 def load_skills() -> dict:

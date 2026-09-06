@@ -692,3 +692,51 @@ def test_post_apply_ledger_reads_active_scope_not_hardcoded_live(monkeypatch):
     assert seen["scope"] == "demo"
     assert any(r.get("hermes_experiment_id") == "exp-scope" for r in rows)
 
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "a/b",
+        "exp id",
+        "exp.id",
+        "",
+        "x" * 65,
+    ],
+)
+def test_snapshot_file_rejects_path_segments(bad_id):
+    """Security review: /hermes_rollback <id> must not read arbitrary files."""
+    from hermes.memory import store
+
+    with pytest.raises(ValueError):
+        store.snapshot_file(bad_id)
+
+
+def test_snapshot_file_accepts_real_ids_and_stays_in_folder(hermes_memory_tmp):
+    from hermes.memory import store
+
+    folder = (store.MEMORY_DIR / "snapshots").resolve()
+    for good in ("exp-1", "abc123", "a_b-C9", "x" * 64):
+        path = store.snapshot_file(good)
+        assert path.parent == folder
+        assert path.name == f"{good}.json"
+
+
+def test_rollback_with_traversal_id_is_not_found_and_writes_nothing(promo_env, monkeypatch):
+    """An invalid id must not read a file, not restore params, not touch config."""
+    from hermes import promotion
+    from hermes.memory import store
+
+    calls = {"baseline": 0, "sync": 0}
+    monkeypatch.setattr(store, "save_baseline", lambda *a, **k: calls.__setitem__("baseline", calls["baseline"] + 1))
+
+    class _Agent:
+        def _sync_to_config(self, *a, **k):
+            calls["sync"] += 1
+
+    result = promotion.rollback("../../../config", agent=_Agent())
+    assert result.get("verdict") == "not_found"
+    assert calls == {"baseline": 0, "sync": 0}
+

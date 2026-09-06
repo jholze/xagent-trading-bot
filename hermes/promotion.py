@@ -136,7 +136,11 @@ def write_snapshot(
 
 
 def load_snapshot(experiment_id: str) -> dict | None:
-    path = store.snapshot_file(experiment_id)
+    try:
+        path = store.snapshot_file(experiment_id)
+    except ValueError as e:
+        log(f"Hermes snapshot id rejected: {e}", "WARNING")
+        return None
     if not path.exists():
         return None
     try:
@@ -383,7 +387,11 @@ def rollback(experiment_id: str | None = None, *, agent=None, now: datetime | No
         )
     except Exception:
         pass
-    return {"verdict": "rolled_back", "experiment_id": exp_id, "snapshot_path": str(store.snapshot_file(exp_id))}
+    try:
+        snap_path = str(store.snapshot_file(exp_id))
+    except ValueError:
+        snap_path = ""
+    return {"verdict": "rolled_back", "experiment_id": exp_id, "snapshot_path": snap_path}
 
 
 def _notify_auto_revert(item: dict, decision) -> None:
