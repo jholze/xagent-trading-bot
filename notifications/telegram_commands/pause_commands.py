@@ -8,13 +8,17 @@ Position locks (no_auto_sell) are listed and skipped.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from html import escape as _esc
 from typing import Any, Callable
 
 from core.config import get_bot_config
+from core.interactive_priority import interactive_priority
 from core.models import TradeOrder, TradeResult
+from core.tenant_context import tenant_context, tenant_snapshot
+from logger import log
 from notifications.telegram_commands.mode_commands import save_trading_flags
 from notifications.telegram_commands.position_display import position_symbol
 from notifications.telegram_i18n import money, signed_money, t
@@ -35,13 +39,67 @@ PANIC_SIGNAL = "SELL_STOP_FULL"
 
 _clock: Callable[[], float] = time.monotonic
 _pending_panic: dict[str, dict[str, Any]] = {}
+_cmd_threads: list[threading.Thread] = []
+_panic_guard = threading.Lock()
 
 
 def reset_panic_for_tests(*, clock: Callable[[], float] | None = None) -> None:
-    """Drop in-memory panic tokens; optionally pin the clock (monotonic seconds)."""
+    """Drop panic tokens, join leftover panic workers, optionally pin the clock."""
     global _clock
+    threads = list(_cmd_threads)
+    _cmd_threads.clear()
+    for thread in threads:
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
     _pending_panic.clear()
     _clock = clock or time.monotonic
+
+
+def panic_running() -> bool:
+    return any(t.is_alive() for t in _cmd_threads)
+
+
+def _start_panic_thread(lots: list[dict[str, Any]]) -> bool:
+    """Run the close-out off the webhook request thread (review #305 slice 3).
+
+    The Telegram callback arrives inside a Flask request. Selling dozens of
+    positions sequentially would block that worker for minutes and Telegram
+    would redeliver the update. Same pattern as /positions (#329): tenant
+    context is thread-local and re-entered in the worker; interactive_priority
+    makes the price/eval loops yield while the panic runs.
+    """
+    with _panic_guard:
+        if panic_running():
+            send_telegram_message(t("panic_running"))
+            return False
+        tenant_id, scope, owner_chat_id = tenant_snapshot()
+        sellable = sum(1 for row in lots if not row.get("locked"))
+        token = interactive_priority()
+        token.__enter__()
+
+        def _run():
+            try:
+                with tenant_context(tenant_id, scope=scope, owner_chat_id=owner_chat_id):
+                    _execute_panic(lots)
+            except Exception as e:  # never die silently inside a panic
+                log(f"panic execution failed: {e}", "ERROR")
+                try:
+                    send_telegram_message(t("panic_failed_unexpected", error=_esc(str(e))))
+                except Exception:
+                    pass
+            finally:
+                token.__exit__(None, None, None)
+
+        thread = threading.Thread(target=_run, daemon=True, name="panic-cmd")
+        _cmd_threads[:] = [th for th in _cmd_threads if th.is_alive()]
+        _cmd_threads.append(thread)
+        try:
+            thread.start()
+        except Exception:
+            token.__exit__(None, None, None)
+            raise
+        send_telegram_message(t("panic_started", n=sellable))
+        return True
 
 
 def _now() -> float:
@@ -343,6 +401,6 @@ def handle_callback(callback_query: dict) -> bool:
         if lots is None:
             send_telegram_message(t("panic_expired"))
             return True
-        _execute_panic(lots)
+        _start_panic_thread(lots)
         return True
     return True

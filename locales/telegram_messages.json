@@ -242,7 +242,10 @@
     "diag_no": "nein",
     "diag_cmc_plan_unknown": "n/a",
     "diag_sources_line": "X-Token {x} · CMC {cmc} ({cmc_plan}) · LunarCrush {lc} (list-tier blocked {lc_blocked})",
-    "diag_queues_line": "trade intents {intents} · eval {eval}"
+    "diag_queues_line": "trade intents {intents} · eval {eval}",
+    "panic_running": "⚠️ <b>Panic läuft bereits.</b> Bitte warten, bis die Zusammenfassung kommt.",
+    "panic_started": "🚨 <b>Panic gestartet:</b> {n} Positionen werden nacheinander geschlossen. Zusammenfassung folgt.",
+    "panic_failed_unexpected": "❌ <b>Panic abgebrochen:</b> {error}\nBitte /positions prüfen."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -487,6 +490,9 @@
     "diag_no": "no",
     "diag_cmc_plan_unknown": "n/a",
     "diag_sources_line": "X token {x} · CMC {cmc} ({cmc_plan}) · LunarCrush {lc} (list-tier blocked {lc_blocked})",
-    "diag_queues_line": "trade intents {intents} · eval {eval}"
+    "diag_queues_line": "trade intents {intents} · eval {eval}",
+    "panic_running": "⚠️ <b>Panic already running.</b> Please wait for the summary.",
+    "panic_started": "🚨 <b>Panic started:</b> closing {n} positions one by one. Summary follows.",
+    "panic_failed_unexpected": "❌ <b>Panic aborted:</b> {error}\nPlease check /positions."
   }
 }

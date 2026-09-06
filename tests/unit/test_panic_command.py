@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from unittest.mock import patch
 
 from core.models import TradeOrder, TradeResult
@@ -250,3 +252,41 @@ def test_panic_progress_every_five_positions():
     progress = [m for m in messages if "5/6" in m or "5/6" in m.replace(" ", "")]
     assert any("5" in m and "6" in m and ("bearbeitet" in m or "processed" in m) for m in messages)
     assert progress or any("panic_progress" in m.lower() or "⏳" in m for m in messages)
+
+
+def test_panic_ok_runs_in_worker_thread_reset_joins_and_second_panic_refused():
+    """Review #305 slice 3: the webhook request returns at once; one panic at a time."""
+    from notifications.telegram_commands import pause_commands as pc
+
+    pc.reset_panic_for_tests()
+    started = threading.Event()
+    release = threading.Event()
+    seen: dict = {}
+
+    def fake_exec(lots):
+        seen["thread"] = threading.current_thread().name
+        seen["n"] = len(lots)
+        started.set()
+        release.wait(timeout=5)
+
+    lot = {"symbol": "BTC/USDT", "timeframe": "4h", "amount": 1.0, "locked": False, "notional": 1.0}
+    token = pc._create_panic_token([lot])
+    token2 = pc._create_panic_token([lot])
+    with patch("notifications.telegram_commands.pause_commands._execute_panic", side_effect=fake_exec), \
+         patch("notifications.telegram_commands.pause_commands.send_telegram_message") as send, \
+         patch("notifications.telegram_commands.pause_commands.answer_callback_query"):
+        assert pc.handle_callback({"id": "cb", "data": f"panic_ok:{token}"}) is True
+        assert started.wait(timeout=5), "panic worker did not start"
+        assert seen["thread"] == "panic-cmd"
+        assert pc.panic_running() is True
+        # a second confirmed panic while one runs is refused, not executed twice
+        assert pc.handle_callback({"id": "cb2", "data": f"panic_ok:{token2}"}) is True
+        texts = [str(c.args[0]) for c in send.call_args_list if c.args]
+        assert any("läuft bereits" in x or "already running" in x for x in texts), texts
+        assert any("gestartet" in x or "started" in x for x in texts), texts
+        release.set()
+        pc.reset_panic_for_tests()
+    assert seen["n"] == 1
+    assert not any(t.name == "panic-cmd" and t.is_alive() for t in threading.enumerate())
+    assert pc.panic_running() is False
+
