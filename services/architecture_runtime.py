@@ -73,6 +73,51 @@ def reset_recovery_state_for_tests() -> None:
         _recovered.clear()
 
 
+def reset_architecture_runtime_for_tests() -> None:
+    """Stop workers started by ensure_started() so they cannot outlive a pytest test (#329)."""
+    global _started, _last_mode
+    try:
+        from services.background_runtime import reset_background_runtime_for_tests
+
+        reset_background_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from bus.jobs import reset_heavy_job_queue_for_tests
+
+        reset_heavy_job_queue_for_tests()
+    except Exception:
+        pass
+    try:
+        from bus.notifications import reset_notification_publisher_for_tests
+
+        reset_notification_publisher_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.trading_engine_runtime import reset_trading_engine_for_tests
+
+        reset_trading_engine_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.eval_queue_runtime import reset_eval_runtime_for_tests
+
+        reset_eval_runtime_for_tests()
+    except Exception:
+        pass
+    try:
+        from services.exit_realtime.hub import reset_exit_realtime_for_tests
+
+        reset_exit_realtime_for_tests()
+    except Exception:
+        pass
+    with _lock:
+        _started = False
+        _last_mode = None
+    reset_recovery_state_for_tests()
+
+
 def _ensure_tenant_exchange_recovery() -> None:
     """Once per tenant/scope per process. Lets RecoveryFailed propagate."""
     from core.config import get_bot_config

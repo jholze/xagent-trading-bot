@@ -121,6 +121,22 @@ class TradeIntentQueue:
 trade_intent_queue = TradeIntentQueue()
 
 
+def reset_trade_intent_queue_for_tests() -> None:
+    """Stop the singleton trading-engine worker so it cannot outlive a pytest test (#329)."""
+    q = trade_intent_queue
+    if q.running:
+        q.stop()
+    thread = q._thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    q._thread = None
+    try:
+        while True:
+            q._queue.get_nowait()
+    except queue.Empty:
+        pass
+
+
 def make_idempotency_key(
     symbol: str,
     timeframe: str,

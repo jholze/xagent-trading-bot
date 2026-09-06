@@ -4,6 +4,8 @@ from notifications.telegram_commands.menu_i18n import current_language, set_user
 from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
+_cmd_threads: list[threading.Thread] = []
+
 
 def _run_morning(lang: str):
     from notifications.morning_briefing import send_morning_briefing
@@ -22,10 +24,21 @@ def handle(text: str) -> bool:
 
     lang = current_language()
     send_telegram_message(t("loading_morning"))
-    threading.Thread(
+    thread = threading.Thread(
         target=_run_morning,
         args=(lang,),
         daemon=True,
         name="morning-cmd",
-    ).start()
+    )
+    _cmd_threads.append(thread)
+    thread.start()
     return True
+
+
+def reset_morning_commands_for_tests() -> None:
+    """Join leftover /morning worker threads (pytest workers, #329)."""
+    threads = list(_cmd_threads)
+    _cmd_threads.clear()
+    for thread in threads:
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)

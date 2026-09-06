@@ -12,6 +12,15 @@ from logger import log
 _started = False
 
 
+def reset_trading_engine_for_tests() -> None:
+    """Stop the in-process trading-engine worker (pytest workers, #329)."""
+    global _started
+    from bus.trade_intents import reset_trade_intent_queue_for_tests
+
+    reset_trade_intent_queue_for_tests()
+    _started = False
+
+
 def should_queue_intent(source: str, cfg=None) -> bool:
     from core.config import get_bot_config
 

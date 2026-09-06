@@ -12,6 +12,7 @@ _lock = threading.Lock()
 _pipeline = None
 _running = False
 _thread: threading.Thread | None = None
+_stop = threading.Event()
 _last_fetch_at = 0.0
 _last_accuracy: dict = {}
 _fetch_in_progress = False
@@ -164,9 +165,21 @@ def _maybe_tick_news_pulse(cfg=None) -> None:
         log(f"Background news pulse failed: {e}", "WARNING")
 
 
+def reset_background_runtime_for_tests() -> None:
+    """Stop the background-runtime daemon so it cannot outlive a pytest test (#329)."""
+    global _running, _thread
+    _stop.set()
+    _running = False
+    thread = _thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    _thread = None
+    _stop.clear()
+
+
 def _loop():
     global _last_fetch_at, _last_accuracy
-    while _running:
+    while _running and not _stop.is_set():
         try:
             from core.config import get_bot_config
 
@@ -178,10 +191,10 @@ def _loop():
                 log(f"Background news pulse failed: {e}", "WARNING")
             arch = cfg.architecture_config
             if not arch.get("background_social_enabled", True):
-                time.sleep(5)
+                _stop.wait(5)
                 continue
             if _pipeline is None:
-                time.sleep(2)
+                _stop.wait(2)
                 continue
 
             interval = int(
@@ -248,10 +261,10 @@ def _loop():
             except Exception as e:
                 log(f"Background WQE rescore skipped: {e}", "DEBUG")
 
-            time.sleep(max(30, interval))
+            _stop.wait(max(30, interval))
         except Exception as e:
             log(f"Background runtime loop error: {e}", "ERROR")
-            time.sleep(10)
+            _stop.wait(10)
 
 
 def ensure_started():
@@ -259,6 +272,7 @@ def ensure_started():
     with _lock:
         if _running:
             return
+        _stop.clear()
         _running = True
         _thread = threading.Thread(target=_loop, daemon=True, name="background-runtime")
         _thread.start()

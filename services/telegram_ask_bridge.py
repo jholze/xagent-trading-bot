@@ -17,6 +17,9 @@ from logger import log
 
 _QUEUE_LOCK = threading.Lock()
 _HEADLESS_DISPATCHED: set[str] = set()
+_headless_threads: list[threading.Thread] = []
+_poller_thread: threading.Thread | None = None
+_poller_stop = threading.Event()
 _DEFAULT_QUEUE = Path("data/telegram_ask_queue.json")
 _ROOT = Path(__file__).resolve().parent.parent
 CURSOR_NOTIFY_MARKER = "@@CURSOR_ASK_NOTIFY@@"
@@ -939,7 +942,9 @@ def _tick_headless_dispatch(now: datetime) -> None:
                     timeout=300,
                 )
 
-        threading.Thread(target=_run, daemon=True, name=f"ask-headless-{qid}").start()
+        thread = threading.Thread(target=_run, daemon=True, name=f"ask-headless-{qid}")
+        _headless_threads.append(thread)
+        thread.start()
 
 
 def _split_telegram(text: str, limit: int = 4000) -> list[str]:
@@ -1020,14 +1025,34 @@ def start_ask_bridge_poller(interval_sec: float | None = None):
     interval = float(interval_sec or cfg.get("poll_interval_sec", 3))
 
     def _loop():
-        while True:
+        while not _poller_stop.is_set():
             try:
                 _tick_once()
             except Exception as e:
                 log(f"Ask bridge poller error: {e}", "WARNING")
-            time.sleep(interval)
+            _poller_stop.wait(interval)
 
+    global _poller_thread
+    _poller_stop.clear()
     thread = threading.Thread(target=_loop, daemon=True, name="ask-bridge")
+    _poller_thread = thread
     thread.start()
     log(f"Ask bridge poller started (interval={interval}s)", "INFO")
     return thread
+
+
+def reset_ask_bridge_for_tests() -> None:
+    """Join leftover ask-bridge / headless dispatch threads (pytest workers, #329)."""
+    global _poller_thread
+    _poller_stop.set()
+    poller = _poller_thread
+    if poller is not None and poller.is_alive() and poller is not threading.current_thread():
+        poller.join(timeout=2.0)
+    _poller_thread = None
+    threads = list(_headless_threads)
+    _headless_threads.clear()
+    for thread in threads:
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+    _HEADLESS_DISPATCHED.clear()
+    _poller_stop.clear()

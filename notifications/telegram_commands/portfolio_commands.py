@@ -8,6 +8,7 @@ from notifications.telegram_commands.position_display import send_positions_snap
 from notifications.telegram_i18n import t
 from telegram_notifier import send_telegram_message
 
+_cmd_threads: list[threading.Thread] = []
 _COMPACT_COMMANDS = {"/positions", "/portfolio", "/status", "/balance"}
 _FULL_COMMANDS = {
     "/positions full",
@@ -98,12 +99,23 @@ def handle(text: str) -> bool:
             token.__exit__(None, None, None)
 
     try:
-        threading.Thread(
+        thread = threading.Thread(
             target=_run,
             daemon=True,
             name="positions-cmd",
-        ).start()
+        )
+        _cmd_threads.append(thread)
+        thread.start()
     except Exception:
         token.__exit__(None, None, None)
         raise
     return True
+
+
+def reset_portfolio_commands_for_tests() -> None:
+    """Join leftover /positions worker threads (pytest workers, #329)."""
+    threads = list(_cmd_threads)
+    _cmd_threads.clear()
+    for thread in threads:
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
