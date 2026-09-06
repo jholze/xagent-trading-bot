@@ -302,6 +302,18 @@ def recent_experiments(limit: int = 5) -> list:
     return exps[-limit:]
 
 
+def verdict_counts(limit: int | None = None) -> dict[str, int]:
+    """Tally experiment verdicts; ``inconclusive`` is a first-class key (#308)."""
+    from collections import Counter
+
+    exps = load_experiments().get("experiments", [])
+    if limit is not None:
+        exps = exps[-max(0, int(limit)) :]
+    counts: dict[str, int] = {"promoted": 0, "rejected": 0, "inconclusive": 0, "suppressed": 0}
+    counts.update(Counter((e.get("verdict") or "unknown") for e in exps))
+    return counts
+
+
 def relevant_skills(symbol: str, timeframe: str, min_confidence: float = 0.0, limit: int = 10) -> list:
     skills = load_skills().get("skills", [])
     matched = []

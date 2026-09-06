@@ -470,6 +470,7 @@ def hermes_brief_line(bot_dir: Path) -> str:
     return (
         f"Hermes: {len(experiments)} Experimente, "
         f"{verdicts.get('promoted', 0)} promoted · "
+        f"{verdicts.get('inconclusive', 0)} inconclusive · "
         f"letztes {sym} → {verdict}"
         f"{f' ({reason})' if reason else ''}"
     )

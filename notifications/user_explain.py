@@ -507,6 +507,14 @@ def explain_hermes_cycle(record: dict, proposal=None) -> str:
         detail = (
             "Der Bot hat die Einstellung im Backtest verbessert und übernimmt sie ins Live-Trading."
         )
+    elif verdict == "inconclusive":
+        headline = (
+            f"⚪ Hermes-Test unentschieden für {symbol}: {param_label} {old_v}->{new_v}."
+        )
+        detail = (
+            "Baseline und Variante hatten 0 Trades im Fenster — "
+            "kein Urteil über die Strategie (#308)."
+        )
     elif record.get("live_veto"):
         headline = f"🛡️ Hermes hat eine Änderung an {symbol} blockiert (Live-Schutz)."
         pnl = live.get("live_sell_pnl", 0)

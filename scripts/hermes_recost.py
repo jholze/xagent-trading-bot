@@ -430,7 +430,9 @@ def recost_one(
     row.new_variant = metric_slice(wf_var.aggregate.__dict__)
     row.folds_won = int(wf_var.folds_won)
     row.folds_total = int(wf_var.folds_total)
-    row.new_verdict = "promoted" if verdict.promoted else "rejected"
+    row.new_verdict = getattr(verdict, "label", None) or (
+        "promoted" if verdict.promoted else "rejected"
+    )
     row.new_verdict_reason = verdict.reason
     row.unresolvable = False
     row.pnl_delta = float(row.new_variant.get("realized_pnl", 0) or 0) - float(
