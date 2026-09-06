@@ -137,6 +137,10 @@ class NotificationPublisher:
         self._last_send_at = 0.0
         self._last_urgent_send_at = 0.0
         self._last_normal_send_at = 0.0
+        # Publisher-wide pause after a 429: Telegram's retry_after applies to the
+        # bot token, so no lane sends before it; the exponential backoff applies
+        # only to the rate-limited message itself (retry buffer, ready_at).
+        self._paused_until = 0.0
         self._clock = clock or time.time
         self._sleep = sleeper or time.sleep
 
@@ -262,15 +266,27 @@ class NotificationPublisher:
     def _loop(self):
         while self._running:
             item: tuple[NotificationMessage, int] | None = None
+            sleep_for: float | None = None
             with self._not_empty:
                 while self._running:
-                    ready = self._pop_ready_retry_locked()
-                    if ready is not None:
-                        item = ready
+                    pause = self._paused_until - self._now()
+                    if pause > 0:
+                        # 429 pause: nothing sends, whatever the lane. Sleep via
+                        # the injectable sleeper (outside the lock) so tests with a
+                        # fake clock advance and enqueuers are not blocked.
+                        sleep_for = min(pause, 1.0)
                         break
+                    # Order: fresh urgent messages (fills, stops, alerts) first, then
+                    # retries whose ready_at has passed, then the normal lane. A
+                    # rate-limited normal message must not be re-offered ahead of
+                    # an urgent one the moment a 429 pause ends.
                     if self._urgent:
                         _prio, _seq, msg = heapq.heappop(self._urgent)
                         item = (msg, 0)
+                        break
+                    ready = self._pop_ready_retry_locked()
+                    if ready is not None:
+                        item = ready
                         break
                     if self._heap:
                         _prio, _seq, msg = heapq.heappop(self._heap)
@@ -278,12 +294,16 @@ class NotificationPublisher:
                         break
                     timeout = self._retry_wait_locked()
                     if timeout is None:
-                        timeout = 1.0
-                    else:
-                        timeout = min(max(timeout, 0.0), 1.0)
-                    self._not_empty.wait(timeout=timeout)
+                        # Idle: block on the condition so an enqueue wakes us at once.
+                        self._not_empty.wait(timeout=1.0)
+                        continue
+                    sleep_for = min(max(timeout, 0.0), 1.0)
+                    break
                 if not self._running:
                     break
+            if sleep_for is not None:
+                self._sleep(sleep_for)
+                continue
             if item is not None:
                 msg, attempts = item
                 self._dispatch(msg, attempts=attempts)
@@ -345,10 +365,15 @@ class NotificationPublisher:
                     wait = compute_retry_wait(attempts, e.retry_after)
                     self._buffer_retry(msg, attempts, wait)
                     self._mark_sent(msg)
-                    if not self._running:
-                        return
-                    self._sleep(wait)
-                    continue
+                    # Respect Telegram's hint for the whole publisher, but do not
+                    # block the worker with the message's own (growing) backoff:
+                    # the retry buffer re-offers it at ready_at while other
+                    # messages -- urgent first -- keep flowing.
+                    with self._lock:
+                        self._paused_until = max(
+                            self._paused_until, self._now() + max(0.0, float(e.retry_after))
+                        )
+                    return
                 self._mark_sent(msg)
                 if ok:
                     self._drop_retry(msg.id)

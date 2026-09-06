@@ -287,3 +287,42 @@ class TestTelegramRateLimitedRaised(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Test429DoesNotStallUrgentLane(unittest.TestCase):
+    def test_urgent_sent_after_retry_after_not_after_backoff(self):
+        """A 429 on a normal message pauses the publisher for retry_after only.
+
+        The rate-limited message itself retries via the buffer (2s, 4s, ...),
+        but an urgent fill enqueued meanwhile must go out as soon as Telegram's
+        retry_after has passed -- not after the message's growing backoff.
+        """
+        clock = _FakeClock()
+        pub = NotificationPublisher(
+            rate_limit_sec=0.0, urgent_rate_limit_sec=0.0, clock=clock.time, sleeper=clock.sleep
+        )
+        sent: list[tuple[str, float]] = []
+        state = {"normal_attempts": 0}
+
+        def send(text, **kwargs):
+            if text == "normal":
+                state["normal_attempts"] += 1
+                if state["normal_attempts"] <= 3:
+                    raise TelegramRateLimited(retry_after=2.0)
+            sent.append((text, clock.time()))
+            return True
+
+        pub.start(send)
+        try:
+            pub.enqueue("normal", priority=PRIORITY_CYCLE)
+            self.assertTrue(_wait_until(lambda: state["normal_attempts"] >= 1))
+            t0 = clock.time()
+            pub.enqueue("fill", priority=PRIORITY_URGENT)
+            self.assertTrue(_wait_until(lambda: any(txt == "fill" for txt, _ in sent)), sent)
+        finally:
+            pub.stop(persist=False)
+        fill_at = next(ts for txt, ts in sent if txt == "fill")
+        # sent once the 2s pause is over, well before the message's 4s/8s backoff
+        self.assertGreaterEqual(fill_at - t0, 2.0 - 1e-9)
+        self.assertLess(fill_at - t0, 4.0)
+
