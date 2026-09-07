@@ -37,10 +37,9 @@ class TestCoinLinks(unittest.TestCase):
     @patch("notifications.coin_links.coin_links_config")
     def test_format_ticker_html_contains_link(self, mock_cfg):
         mock_cfg.return_value = {"enabled": True}
-        with patch("notifications.coin_links._load_cache", return_value={}):
+        with patch("notifications.coin_links.cmc_coin_url", return_value="https://coinmarketcap.com/currencies/bitcoin/"):
             html = format_ticker_html("BTC", symbol_suffix="/USDT")
-        # Intended: Gate is the primary ticker link (CMC only when a slug is cached).
-        self.assertIn('<a href="https://www.gate.io/trade/BTC_USDT">BTC</a>/USDT', html)
+        self.assertIn('<a href="https://coinmarketcap.com/currencies/bitcoin/">BTC</a>/USDT', html)
 
     @patch("notifications.coin_links.coin_links_config")
     def test_format_links_line(self, mock_cfg):

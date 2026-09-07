@@ -18,11 +18,10 @@ _depth = 0
 _pending = threading.Event()
 _expires_at = 0.0
 _DEFAULT_TTL_SEC = 45.0
-_now = time.monotonic
 
 
 def _expired() -> bool:
-    return _expires_at > 0.0 and _now() >= _expires_at
+    return _expires_at > 0.0 and time.monotonic() >= _expires_at
 
 
 def _clear_if_idle_or_expired() -> None:
@@ -41,7 +40,7 @@ class interactive_priority:
         global _depth, _expires_at
         with _lock:
             _depth += 1
-            _expires_at = _now() + max(0.05, self.ttl_sec)
+            _expires_at = time.monotonic() + max(0.05, self.ttl_sec)
             _pending.set()
         return self
 
@@ -67,8 +66,8 @@ def yield_to_interactive(*, poll: float = 0.02, max_wait: float = 5.0) -> None:
     """Block the caller (releasing GIL) while an interactive command runs."""
     if not interactive_pending():
         return
-    deadline = _now() + max(0.0, float(max_wait))
-    while interactive_pending() and _now() < deadline:
+    deadline = time.monotonic() + max(0.0, float(max_wait))
+    while interactive_pending() and time.monotonic() < deadline:
         time.sleep(poll)
 
 

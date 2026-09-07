@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from logger import log
-from storage.errors import LedgerUnavailable
 
 GRID_PLANS_COLLECTION = "grid_plans"
 
@@ -65,13 +64,9 @@ def load_grid_plans_document(
             "plans": dict(plans),
             "updated_at": doc.get("updated_at"),
         }
-    except LedgerUnavailable:
-        raise
     except Exception as e:
-        log(f"grid_plan_store load failed ({tid}/{sc}): {e}", "ERROR")
-        raise LedgerUnavailable(
-            op="load_grid_plans_document", tenant_id=tid, scope=sc, cause=e
-        ) from e
+        log(f"grid_plan_store load failed ({tid}/{sc}): {e}", "DEBUG")
+        return empty
 
 
 def save_grid_plans_document(

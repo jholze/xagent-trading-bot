@@ -27,7 +27,6 @@ class RegimeDecision:
     max_new_entries_per_hour: int
     rationale: str
     scores: dict[str, Any] = field(default_factory=dict)
-    measured: bool = True
 
 
 def _f(features: dict, key: str, default: float | None = None) -> float | None:
@@ -186,7 +185,6 @@ def decide_regime(
             max_new_entries_per_hour=20,
             rationale="no Santiment features — neutral fail-open",
             scores=empty_scores,
-            measured=False,
         )
 
     social_fresh = bool(meta.get("social_fresh"))
@@ -230,7 +228,6 @@ def decide_regime(
                 f"(keys={len(feat)})"
             ),
             scores=scores,
-            measured=False,
         )
 
     conf = confidence_from_coverage(

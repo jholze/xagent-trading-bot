@@ -25,13 +25,10 @@ def fraction_to_free_full_slot(
     notional_usdt: float,
     tail_sold_pct: float = 0.55,
     tail_notional_usdt: float = 800.0,
-    allow_full: bool = True,
 ) -> tuple[float, str, bool]:
     """Compute sell fraction so remaining bag is a *tail* (frees a full slot).
 
     Matches ``is_tail_position`` rules: sold >= tail_sold_pct OR remaining notional < cap.
-    Uses the *minimum* of the sold-pct path and the notional path (either condition
-    frees a full slot).
 
     Returns (fraction, action_label, already_tail).
     """
@@ -53,16 +50,10 @@ def fraction_to_free_full_slot(
         # remaining = notional*(1-f) < tail_cap  → f > 1 - tail_cap/notional
         frac_notional = 1.0 - (tail_cap / notional) + 1e-6
 
-    # Either condition frees the slot; take the cheaper (minimum) sell.
-    candidates = [f for f in (frac_sold, frac_notional) if f > 0]
-    frac = min(candidates) if candidates else 0.0
+    frac = max(frac_sold, frac_notional)
     frac = max(0.0, min(1.0, frac))
-    # Small bags: full close cleaner than dust partial (unless caller forbids full dump)
-    if (
-        allow_full
-        and notional > 0
-        and notional * (1.0 - frac) < max(50.0, tail_cap * 0.15)
-    ):
+    # Small bags: full close cleaner than dust partial
+    if notional > 0 and notional * (1.0 - frac) < max(50.0, tail_cap * 0.15):
         frac = 1.0
     if frac >= 0.99:
         return 1.0, ACTION_FULL, False
@@ -165,8 +156,6 @@ class EvictionPlan:
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
     candidates: tuple[dict, ...] = field(default_factory=tuple)
     ab: dict[str, Any] = field(default_factory=dict)
-    victim_price: float = 0.0
-    sell_executed: bool = False  # set by runtime after a live eviction sell filled (#300 audit)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -484,7 +473,6 @@ def plan_slot_eviction(
     rate_limit_blocked: bool = False,
     rate_limit_reason: str = "",
     warmup_active: bool = False,
-    config_raw: dict | None = None,
 ) -> EvictionPlan:
     """Pick victim among pre-built candidates (hard vetos already partially applied)."""
     mode = eviction_mode(risk_config)
@@ -553,19 +541,18 @@ def plan_slot_eviction(
     for c in candidates:
         if c.symbol == demand.symbol:
             continue
-        # Position lock: never evict locked lots. Ledger locks + fail-closed on error.
+        # Position lock: never evict locked lots
         try:
-            from strategies.position_lock import attach_lock_from_ledger, eviction_blocked
+            from strategies.position_lock import eviction_blocked
             from strategies.positions import get_position
 
-            tf = getattr(c, "timeframe", None) or "4h"
+            tf = getattr(c, "timeframe", None) or "1h"
             pos = get_position(c.symbol, tf)
-            pos = attach_lock_from_ledger(pos, c.symbol, tf) or pos
-            locked, _msg = eviction_blocked(pos, config=config_raw or risk_config)
+            locked, _msg = eviction_blocked(pos)
             if locked:
                 continue
         except Exception:
-            continue
+            pass
         veto = c.veto
         if c.trail_armed:
             veto = veto or "trail_armed"
@@ -584,6 +571,15 @@ def plan_slot_eviction(
                 )
             )
             continue
+        # Class A needs rotation eligibility (no full loss dump by default)
+        if c.gain_pct < 0 and not c.rotation_eligible:
+            if not cfg.get("prefer_reduce_to_tail", True):
+                ranked.append(
+                    VictimCandidate(
+                        **{**c.to_dict(), "veto": "underwater_no_reduce", "free_score": -1.0}
+                    )
+                )
+                continue
         fs = free_score_for_candidate(c, risk_config=risk_config)
         ranked.append(VictimCandidate(**{**c.to_dict(), "free_score": fs, "veto": ""}))
 
@@ -632,15 +628,6 @@ def plan_slot_eviction(
     }
 
     if applied is None:
-        ranked_vetoes = [c.veto for c in ranked if c.veto]
-        if ranked_vetoes and all(v == "no_positive_price" for v in ranked_vetoes):
-            no_pick = "no_positive_price"
-        elif not ranked and any(
-            str(getattr(c, "veto", "") or "") == "no_positive_price" for c in candidates
-        ):
-            no_pick = "no_positive_price"
-        else:
-            no_pick = "no_candidate"
         return EvictionPlan(
             ok=False,
             mode=mode,
@@ -651,8 +638,8 @@ def plan_slot_eviction(
             applied_victim="",
             apply_to_plan=apply_to_plan,
             rag_mode=rag_mode,
-            veto_reason=no_pick,
-            reason_codes=(no_pick,),
+            veto_reason="no_candidate",
+            reason_codes=("no_candidate",),
             candidates=cand_dicts,
             ab=ab,
         )
@@ -696,29 +683,26 @@ def plan_slot_eviction(
     # Action: always size so remaining is tail (frees full slot) — not a fixed 40%.
     tail_sold = _f(cfg, "tail_target_sold_pct", 0.55)
     tail_notional = _f(cfg, "tail_target_max_notional_usdt", 800.0)
-    # sell_policy is a top-level config key (same source is_tail_position uses).
-    if config_raw is not None:
-        try:
-            from strategies.sell_rotation_policy import rotation_config as _rotation_config
+    # Align with sell_policy.rotation defaults when present on parent risk
+    if isinstance(risk_config, dict):
+        sp = risk_config.get("sell_policy") if isinstance(risk_config.get("sell_policy"), dict) else {}
+        rot = sp.get("rotation") if isinstance(sp.get("rotation"), dict) else {}
+        if rot.get("tail_exempt_sold_pct") is not None:
+            try:
+                tail_sold = max(tail_sold, float(rot["tail_exempt_sold_pct"]))
+            except (TypeError, ValueError):
+                pass
+        if rot.get("tail_exempt_notional_usdt") is not None:
+            try:
+                tail_notional = min(tail_notional, float(rot["tail_exempt_notional_usdt"]))
+            except (TypeError, ValueError):
+                pass
 
-            rot = _rotation_config(config_raw)
-            if rot.get("tail_exempt_sold_pct") is not None:
-                tail_sold = float(rot["tail_exempt_sold_pct"])
-            if rot.get("tail_exempt_notional_usdt") is not None:
-                tail_notional = float(rot["tail_exempt_notional_usdt"])
-        except (TypeError, ValueError):
-            pass
-        except Exception:
-            pass
-
-    allow_loss_full = bool(cfg.get("allow_loss_full_evict", False))
-    allow_full = allow_loss_full or float(applied.gain_pct) >= 0
     frac, action, already_tail = fraction_to_free_full_slot(
         sold_percent=applied.sold_percent,
         notional_usdt=applied.notional_usdt,
         tail_sold_pct=tail_sold,
         tail_notional_usdt=tail_notional,
-        allow_full=allow_full,
     )
     if already_tail:
         # Should not be a full-slot candidate; fail closed
@@ -734,9 +718,7 @@ def plan_slot_eviction(
             candidates=cand_dicts,
             ab=ab,
         )
-    if applied.gain_pct < 0 and (
-        cfg.get("prefer_reduce_to_tail", True) or not allow_loss_full
-    ):
+    if applied.gain_pct < 0 and cfg.get("prefer_reduce_to_tail", True):
         action = ACTION_REDUCE_TAIL
     if not would_be_tail_after_sell(
         sold_percent=applied.sold_percent,
@@ -745,13 +727,8 @@ def plan_slot_eviction(
         tail_sold_pct=tail_sold,
         tail_notional_usdt=tail_notional,
     ):
-        if applied.gain_pct < 0 and not allow_loss_full:
-            action = ACTION_REDUCE_TAIL
-        else:
-            # Safety: force full if math edge-case left a full bag
-            frac, action = 1.0, ACTION_FULL
-    if applied.gain_pct < 0 and not allow_loss_full and action == ACTION_FULL:
-        action = ACTION_REDUCE_TAIL
+        # Safety: force full if math edge-case left a full bag
+        frac, action = 1.0, ACTION_FULL
 
     rationale = (
         f"for={demand.symbol} demand={demand.score:.0f} "
@@ -781,7 +758,6 @@ def plan_slot_eviction(
         reason_codes=("plan_ok",),
         candidates=cand_dicts,
         ab=ab,
-        victim_price=float(applied.price or 0),
     )
 
 

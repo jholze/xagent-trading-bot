@@ -180,10 +180,9 @@ def load_fixture_events(path: str | None = None) -> list[MacroEvent]:
 
 
 def fetch_fred_calendar_stub() -> list[MacroEvent]:
-    """Optional live FRED — fail-open empty without key / network (unmeasured).
+    """Optional live FRED — fail-open empty without key / network.
 
     Full FRED release calendar is limited; v1 uses fixtures + optional AV.
-    An empty return is not a measured calendar — callers should set measured=False.
     """
     import os
 
