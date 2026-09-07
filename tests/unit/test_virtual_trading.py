@@ -1,6 +1,8 @@
 import os
 import sys
 import unittest
+
+import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -71,29 +73,64 @@ from x_analyzer import XAnalyzer, XSignal
 
 
 class TestVirtualTrading(unittest.TestCase):
-    def setUp(self):
-        import json
+    @classmethod
+    def setUpClass(cls):
         import tempfile
         import logger as logger_mod
 
-        self.config = load_config()
-        self.symbol = "XRVM/USDT"
-        self.tf = "4h"
-        self.test_price = 0.5
+        cls.config = load_config()
+        cls.symbol = "XRVM/USDT"
+        cls.tf = "4h"
+        cls.test_price = 0.5
+        cls._log_dir_backup = logger_mod.LOG_DIR
+        cls._log_file_backup = logger_mod.LOG_FILE
+        cls._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
+        logger_mod.LOG_DIR = cls._log_tmp
+        logger_mod.LOG_FILE = os.path.join(cls._log_tmp, "aria_log.txt")
+        from services.market_service import MarketService
+        from tests.support.offline import gate_prices_listed
+
+        cls._ohlcv_p = patch.object(MarketService, "_fetch_ohlcv", return_value=None)
+        cls._ohlcv_p.start()
+        cls._gate_p = patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
+        cls._gate_p.start()
+        cls._ticker_p = patch("price_fetcher.get_ticker_price", return_value=1.0)
+        cls._ticker_p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        import logger as logger_mod
+        import shutil
+
+        logger_mod.LOG_DIR = cls._log_dir_backup
+        logger_mod.LOG_FILE = cls._log_file_backup
+        shutil.rmtree(cls._log_tmp, ignore_errors=True)
+        cls._ticker_p.stop()
+        cls._gate_p.stop()
+        cls._ohlcv_p.stop()
+
+    def setUp(self):
+        import json
+        import logger as logger_mod
         from decimal import Decimal
         from strategies.positions import positions, get_key
+
+        logger_mod.LOG_DIR = self._log_tmp
+        logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
+        # Trade history backup/restore stays per-test: it must run inside the
+        # per-test fixtures (DEMO_MODE=1), otherwise a class-level restore would
+        # resolve to the live ledger scope (#324 review).
+        scope = resolve_ledger_scope()
+        # Resolve through the same scope table the code under test uses, so the
+        # per-test isolation in conftest (#325) applies to this raw write too.
+        import data_manager as _dm
+
+        history_base = _dm.TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE)
+        self._trade_history_path = get_data_file(history_base)
+        self._trade_history_backup = load_trade_history()
         self._positions_backup = {
             k: {**v, "amount": Decimal(str(v["amount"]))} for k, v in positions.items()
         }
-        scope = resolve_ledger_scope()
-        history_base = LIVE_TRADE_HISTORY_FILE if scope == "demo" else TRADE_HISTORY_FILE
-        self._trade_history_path = get_data_file(history_base)
-        self._trade_history_backup = load_trade_history()
-        self._log_dir_backup = logger_mod.LOG_DIR
-        self._log_file_backup = logger_mod.LOG_FILE
-        self._log_tmp = tempfile.mkdtemp(prefix="aria_test_logs_")
-        logger_mod.LOG_DIR = self._log_tmp
-        logger_mod.LOG_FILE = os.path.join(self._log_tmp, "aria_log.txt")
         key = get_key(self.symbol, self.tf)
         if key in positions:
             del positions[key]
@@ -220,8 +257,10 @@ class TestVirtualTrading(unittest.TestCase):
         from strategies.decision_engine import DecisionEngine
 
         engine = DecisionEngine()
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}), \
-             patch.object(engine.market, "fetch_ohlcv", return_value=pd.DataFrame({"close": [1.0], "high": [1.1], "low": [0.9]})):
+        indicators = {"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv", return_value=pd.DataFrame({"close": [1.0], "high": [1.1], "low": [0.9]})), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)):
             analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
             self.assertIsNotNone(analysis)
             self.assertIn(analysis.normalized_action, ("HOLD", "BUY", "BUY_STRONG"))
@@ -236,7 +275,12 @@ class TestVirtualTrading(unittest.TestCase):
         x_sig.trust_score = 90
         x_sig.effective_confidence = 80
 
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.5, "vol_multiplier": 0.8}):
+        indicators = {"rsi": 50.0, "lower_bb": 0.5, "vol_multiplier": 0.8}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(engine.market, "fetch_funding_rate", return_value=None), \
+             patch("price_fetcher.get_gate_prices_batch", side_effect=lambda s: {x: 1.0 for x in s}), \
+             patch("price_fetcher.get_ticker_price", return_value=1.0):
             analysis = engine.evaluate({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0, x_signals=[x_sig])
             self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
             self.assertIn("x", analysis.sources)
@@ -280,50 +324,57 @@ class TestVirtualTrading(unittest.TestCase):
         self.assertIn("live_confirm", reason)
 
     def test_gate_adapter_dry_run(self):
+        # #312: live.dry_run=true is a deprecated alias for live.execution=shadow.
+        # The order is filled locally through the one execution path; nothing is
+        # sent to Gate. Message starts with "shadow" (was "Dry run").
         from execution.gate_adapter import GateExecutionAdapter
         from core.config import BotConfig
         from core.models import TradeOrder
         from data_manager import get_config
-
         raw = dict(get_config())
+        raw["trading_mode"] = "live"
         raw.setdefault("live", {})["dry_run"] = True
         cfg = BotConfig()
         cfg._raw = raw
         adapter = GateExecutionAdapter(cfg)
+        self.assertEqual(adapter.mode, "shadow")
         with patch.object(adapter.portfolio, "execute_buy") as mock_buy:
             from core.models import TradeResult
             mock_buy.return_value = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=0.5, usdt_amount=5)
             with patch("execution.gate_adapter.record_live_trade"):
                 result = adapter.execute(TradeOrder("BUY", "XRVM/USDT", 0.5, 10, usdt_amount=5), "4h")
         self.assertTrue(result.executed)
-        self.assertIn("Dry run", result.message)
-
+        self.assertTrue(result.message.startswith("shadow"), result.message)
+        self.assertNotIn("Dry run", result.message)
     def test_execution_factory_paper(self):
+        # #312: one execution path. paper -> GateExecutionAdapter in shadow mode
+        # (precision/limits run, no create_*_order). PaperExecutionAdapter is gone.
         from core.config import BotConfig
         from data_manager import get_config
         from execution.factory import get_execution_adapter
-        from execution.paper_adapter import PaperExecutionAdapter
-
+        from execution.gate_adapter import GateExecutionAdapter
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
         cfg = BotConfig()
         cfg._raw = raw
         adapter = get_execution_adapter(cfg)
-        self.assertIsInstance(adapter, PaperExecutionAdapter)
-
+        self.assertIsInstance(adapter, GateExecutionAdapter)
+        self.assertEqual(adapter.mode, "shadow")
+        with self.assertRaises(ModuleNotFoundError):
+            import execution.paper_adapter  # noqa: F401
     def test_execution_factory_gate_testnet_uses_paper(self):
+        # #312: legacy trading_mode "gate_testnet" resolves to shadow (never real orders).
         from core.config import BotConfig
         from data_manager import get_config
         from execution.factory import get_execution_adapter
-        from execution.paper_adapter import PaperExecutionAdapter
-
+        from execution.gate_adapter import GateExecutionAdapter
         raw = dict(get_config())
         raw["trading_mode"] = "gate_testnet"
         cfg = BotConfig()
         cfg._raw = raw
         adapter = get_execution_adapter(cfg)
-        self.assertIsInstance(adapter, PaperExecutionAdapter)
-
+        self.assertIsInstance(adapter, GateExecutionAdapter)
+        self.assertEqual(adapter.mode, "shadow")
     def test_trading_mode_gate_testnet_migrates_to_paper(self):
         from core.config import BotConfig
         from data_manager import get_config
@@ -418,6 +469,7 @@ class TestVirtualTrading(unittest.TestCase):
         sell_notifications = [n for n in notifications if "SELL" in str(n)]
         self.assertEqual(len(sell_notifications), 0)
 
+    @pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping test, frictionless
     def test_portfolio_service_buy(self):
         from services.portfolio_service import PortfolioService
         portfolio = PortfolioService()
@@ -428,7 +480,10 @@ class TestVirtualTrading(unittest.TestCase):
     def test_signal_orchestrator_analyze_only(self):
         from services.signal_orchestrator import SignalOrchestrator
         orch = SignalOrchestrator()
-        with patch.object(orch.market, "fetch_indicators", return_value={"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}):
+        indicators = {"rsi": 50.0, "lower_bb": 0.9, "vol_multiplier": 1.0}
+        with patch.object(orch.market, "fetch_indicators", return_value=indicators), \
+             patch.object(orch.decision_engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(orch.decision_engine.market, "fetch_indicators", return_value=indicators):
             analysis = orch.analyze({"symbol": "XRVM/USDT", "timeframe": "4h"}, 1.0)
             self.assertIsNotNone(analysis)
             self.assertIn(analysis.action, ("HOLD", "BUY", "SELL_20", "SELL_30", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"))
@@ -721,7 +776,8 @@ class TestVirtualTrading(unittest.TestCase):
             )
 
             self._assert_demo_prefix_in_message(mock_post, "BUY EXECUTED")
-            self._assert_demo_prefix_in_message(mock_post, "legends-of-aria")
+            # Intended: no CMC slug for ARIA → search URL, not currencies/legends-of-aria.
+            self._assert_demo_prefix_in_message(mock_post, "coinmarketcap.com/search/?q=ARIA")
 
     def test_send_signal_message_sell_20_executed_with_demo_prefix(self):
         from unittest.mock import patch
@@ -1131,6 +1187,64 @@ class TestVirtualTrading(unittest.TestCase):
             mock_snapshot.assert_called_once()
             self.assertIs(mock_snapshot.call_args.kwargs.get("trade_result"), result)
 
+    def test_positions_snapshot_sent_after_ledger_lock_exit(self):
+        from bus.locks import LedgerLock
+        from services.trading_service import TradingService
+        from core.models import TradeResult
+
+        svc = TradingService()
+        ok_result = TradeResult(True, "BUY", "XRVM/USDT", amount=10, price=1.0, usdt_amount=10)
+        call_order = []
+        orig_exit = LedgerLock.__exit__
+
+        def tracking_exit(self, *args, **kwargs):
+            try:
+                return orig_exit(self, *args, **kwargs)
+            finally:
+                call_order.append("lock_exit")
+
+        def tracking_snapshot(*_a, **_k):
+            call_order.append("snapshot")
+
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute", return_value=ok_result), \
+             patch.object(LedgerLock, "__exit__", tracking_exit), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot", tracking_snapshot):
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=True,
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            from core.models import TradeOrder as TO
+            result = svc.execute_order(TO("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h")
+            self.assertTrue(result.executed)
+        self.assertIn("snapshot", call_order)
+        self.assertIn("lock_exit", call_order)
+        self.assertGreater(call_order.index("snapshot"), call_order.index("lock_exit"))
+
+    def test_positions_snapshot_not_sent_when_order_rejected(self):
+        from services.trading_service import TradingService
+
+        svc = TradingService()
+        with patch.object(svc, "can_execute", return_value=(True, "")), \
+             patch.object(svc.risk, "evaluate") as mock_risk, \
+             patch.object(svc.adapter, "execute") as mock_exec, \
+             patch("services.order_service.OrderService.record_rejected"), \
+             patch("notifications.telegram_commands.position_display.send_positions_snapshot") as mock_snapshot:
+            from core.models import RiskDecision, TradeOrder
+            mock_risk.return_value = RiskDecision(
+                approved=False,
+                message="risk rejected",
+                order=TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10),
+            )
+            result = svc.execute_order(
+                TradeOrder("BUY", "XRVM/USDT", 1.0, 10, usdt_amount=10), "4h"
+            )
+        self.assertFalse(result.executed)
+        mock_snapshot.assert_not_called()
+        mock_exec.assert_not_called()
+
     def test_trading_service_blocks_via_risk_manager(self):
         from core.config import BotConfig
         from data_manager import get_config
@@ -1398,9 +1512,14 @@ class TestVirtualTrading(unittest.TestCase):
         lc.effective_confidence = 45.4
 
         empty_pos = {"amount": 0, "average_entry": 0}
-        with patch.object(engine.market, "fetch_indicators", return_value={"rsi": 54.6, "lower_bb": 0.9, "vol_multiplier": 0.86}), \
+        indicators = {"rsi": 54.6, "lower_bb": 0.9, "vol_multiplier": 0.86}
+        with patch.object(engine.market, "fetch_indicators", return_value=indicators), \
+             patch.object(engine.market, "fetch_ohlcv_and_indicators", return_value=(None, indicators)), \
+             patch.object(engine.market, "fetch_funding_rate", return_value=None), \
              patch("strategies.decision_engine.count_open_positions", return_value=0), \
-             patch("strategies.decision_engine.get_position", return_value=empty_pos):
+             patch("strategies.decision_engine.get_position", return_value=empty_pos), \
+             patch("price_fetcher.get_gate_prices_batch", side_effect=lambda s: {x: 1.0 for x in s}), \
+             patch("price_fetcher.get_ticker_price", return_value=1.0):
             analysis = engine.evaluate({"symbol": "BNB/USDT", "timeframe": "4h"}, 615.0, lc_signals=[lc])
         self.assertIn(analysis.normalized_action, ("BUY", "BUY_STRONG"))
         self.assertIn("lc", analysis.sources)
@@ -1580,7 +1699,8 @@ class TestVirtualTrading(unittest.TestCase):
         from notifications.terminal_dashboard import build_dashboard_data
 
         with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
-             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]):
+             patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("notifications.terminal_dashboard.load_effective_watchlist", return_value=[]):
             data = build_dashboard_data(
                 cycle_signals=["🟢 @Trader BUY BTC | 80%"],
                 coin_results=[{"symbol": "BTC/USDT", "action": "HOLD", "normalized_action": "HOLD", "rsi": 50, "ampel_emoji": "🟡", "rationale": ""}],
@@ -1604,6 +1724,7 @@ class TestVirtualTrading(unittest.TestCase):
         mock_cfg.simulated_balance_usdt = 5000
         with patch("notifications.terminal_dashboard.get_prices", return_value=(1.0, 1.0, None)), \
              patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("notifications.terminal_dashboard.load_effective_watchlist", return_value=[]), \
              patch("notifications.terminal_dashboard._portfolio_snapshot", return_value={
                  "history": live_hist,
                  "balance": 3952.19,
@@ -1667,8 +1788,6 @@ class TestVirtualTrading(unittest.TestCase):
             self.assertTrue(len(error_logs) > 0)
 
     def tearDown(self):
-        import logger as logger_mod
-        import shutil
         from strategies.positions import positions, save_positions
 
         positions.clear()
@@ -1679,10 +1798,6 @@ class TestVirtualTrading(unittest.TestCase):
             save_trade_history(self._trade_history_backup)
         except Exception:
             pass
-        if hasattr(self, "_log_file_backup"):
-            logger_mod.LOG_DIR = self._log_dir_backup
-            logger_mod.LOG_FILE = self._log_file_backup
-            shutil.rmtree(self._log_tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

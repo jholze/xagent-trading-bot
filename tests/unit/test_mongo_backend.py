@@ -277,7 +277,7 @@ def _run_buy_sell_cycle(monkeypatch, cfg: dict, paths: dict):
 
 
 @pytest.mark.parametrize("backend", ["local", "mongo"])
-def test_buy_sell_cycle_equivalent_results(tmp_path, monkeypatch, mongo_test_env, backend):
+def test_buy_sell_cycle_equivalent_results(tmp_path, monkeypatch, mongo_test_env, backend, zero_cost_model):  # #301
     from data_manager import get_config
 
     base = get_config()

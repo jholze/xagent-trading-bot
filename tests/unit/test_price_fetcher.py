@@ -38,10 +38,13 @@ class TestPriceFetcher(unittest.TestCase):
              patch("price_fetcher._fetch_coingecko_bulk", return_value={}), \
              patch("price_fetcher._fetch_single_symbol", return_value=("CAT/USDT", 0.0)), \
              patch("bus.price_cache.price_cache_enabled", return_value=False):
+            # #303: entry-price substitution is opt-in (display only); this test
+            # verifies the fallback path still works when explicitly allowed.
             prices, sources = get_prices_batch(
                 ["CAT/USDT"],
                 fallbacks={"CAT/USDT": 1.514e-06},
                 return_sources=True,
+                allow_entry_price_fallback=True,
             )
         self.assertAlmostEqual(prices["CAT/USDT"], 1.514e-06)
         self.assertEqual(sources["CAT/USDT"], "entry")
@@ -78,7 +81,8 @@ class TestPriceFetcher(unittest.TestCase):
         self.assertIn("330,250,990", format_token_amount(330250990.75))
 
     def test_get_gate_prices_batch_ignores_coingecko_fallback(self):
-        with patch("price_fetcher._fetch_gate_bulk", return_value={"PEPE/USDT": 0.00001}):
+        with patch("price_fetcher._fetch_gate_bulk", return_value={"PEPE/USDT": 0.00001}), \
+             patch("price_fetcher._fetch_gate_single", return_value=None):
             prices = get_gate_prices_batch(["PEPE/USDT", "FAKE/USDT"])
         self.assertAlmostEqual(prices["PEPE/USDT"], 0.00001)
         self.assertEqual(prices["FAKE/USDT"], 0.0)

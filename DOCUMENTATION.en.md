@@ -97,10 +97,14 @@ The bot still runs as **one process** (`aria_bot.py`), but is internally decoupl
 | Async notifications | `notification_mode: async` | Cycle digests block webhook/commands less |
 | Background social | `background_social_enabled: true` | X/CMC/LC fetch in parallel; trading uses snapshot |
 | Ledger lock | `ledger_lock_enabled: true` | No race conditions on position/order updates |
+| Ledger lock fail-closed | `ledger_lock_fail_closed: true` | Timeout, Redis error, or missing client → order rejected (`LedgerLockUnavailable`); `false` = legacy fail-open plus WARNING |
+| Ledger lock TTL | `ledger_lock_ttl_sec: 60` | Covers `fetch_balance` + `create_market_buy` (20 s ccxt each) while the lock is held |
+| Single-writer lease | `single_writer_lease_enabled: true` | Redis lease `lease:writer:{tenant}:{scope}` (TTL 30 s, renew every 10 s) plus fencing token; without the lease: read-only, no orders, ledger writes fail closed |
+| Lease TTL | `lease_ttl_sec: 30` / `lease_renew_sec: 10` | Hard kill accepts ≤ 30 s trading pause; SIGTERM releases the lease immediately |
 | Rebuy cooldown | `min_hours_after_sell_before_rebuy: 4` | No re-entry shortly after sell (anti-churn) |
 | Ask bridge | `observability.ask_bridge` | `/ask` in its own queue, poller every 3 s |
 
-**Production start:** `bash scripts/start_stack.sh` — stops old processes, starts bot + ngrok + webhook. Rollback notes: [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
+**Production start:** `bash scripts/start_stack.sh` — stops old processes, starts bot + ngrok + webhook. Rollback notes: [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md).
 
 ---
 
@@ -1019,6 +1023,9 @@ New BUY signal → BLOCKED (except manual /ask)
     "notify_on_cycle": true,
     "terminal_dashboard": true,
     "decisions_audit": true,
+    "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
+    "daily_report_telegram": true,
     "telegram_explanations": {
       "enabled": true,
       "verbosity": "verbose",
@@ -1043,6 +1050,11 @@ New BUY signal → BLOCKED (except manual /ask)
     "notification_mode": "async",
     "min_hours_after_sell_before_rebuy": 4.0,
     "ledger_lock_enabled": true,
+    "ledger_lock_fail_closed": true,
+    "ledger_lock_ttl_sec": 60,
+    "single_writer_lease_enabled": true,
+    "lease_ttl_sec": 30,
+    "lease_renew_sec": 10,
     "background_social_enabled": true
   },
   "strategies": [ /* per coin, see section 6.3 */ ],
@@ -1081,6 +1093,14 @@ New BUY signal → BLOCKED (except manual /ask)
 ```
 
 `volatile_altcoin` — sections 6.5–6.9. `architecture` — section 2. `ask_bridge` — section 7. `telegram_command_menu` — see section 7 (menu button, section keyboard, DE/EN). Optional: `"button_text": "Menü"` for a fixed button title. `mcp` — [§19](#19-grok-mcp-xagent-mcp).
+
+**Daily tick** (`services/background_runtime._loop`, display timezone via `calendar_day_bounds`, never `date.today()`):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `morning_briefing_enabled` | `true` | Once per calendar day at/after `morning_briefing_hour`, send the morning briefing (same `data/morning_briefing.json` marker as `/morning` — command and scheduler never double-send) |
+| `morning_briefing_hour` | `8` | Hour in the operator/display timezone (`operator_timezone` / `display_timezone`) |
+| `daily_report_telegram` | `true` | After the briefing, send the compact daily summary (`scripts/daily_auswertung.py`, ledger via `resolve_ledger_scope()`) |
 
 ### `.env` (do not commit)
 
@@ -1335,4 +1355,4 @@ Grok TUI: remote URL + Bearer. Reconnect after deploys that add tools. Writes ar
 
 ---
 
-**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo
+**More help:** `/help` in Telegram · [HERMES_DOCUMENTATION.md](docs/hermes/HERMES_DOCUMENTATION.md) · [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md) · [plans/mcp-xagent.md](plans/mcp-xagent.md) · GitHub issues in the repo

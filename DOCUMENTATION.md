@@ -96,10 +96,14 @@ Der Bot läuft weiterhin als **ein Prozess** (`aria_bot.py`), ist intern aber f�
 | Async-Notifications | `notification_mode: async` | Cycle-Digests blockieren Webhook/Commands weniger |
 | Background-Social | `background_social_enabled: true` | X/CMC/LC-Fetch parallel; Trading nutzt Snapshot |
 | Ledger-Lock | `ledger_lock_enabled: true` | Keine Race-Conditions bei Position/Order-Updates |
+| Ledger-Lock fail-closed | `ledger_lock_fail_closed: true` | Timeout, Redis-Fehler oder fehlender Client → Order abgelehnt (`LedgerLockUnavailable`); `false` = altes Fail-Open plus WARNING |
+| Ledger-Lock TTL | `ledger_lock_ttl_sec: 60` | Überdeckt `fetch_balance` + `create_market_buy` (je 20 s ccxt) innerhalb des Locks |
+| Single-Writer-Lease | `single_writer_lease_enabled: true` | Redis-Lease `lease:writer:{tenant}:{scope}` (TTL 30 s, Erneuerung 10 s) plus Fencing-Token; ohne Lease: Lesemodus, keine Orders, Ledger-Writes fail-closed |
+| Lease-TTL | `lease_ttl_sec: 30` / `lease_renew_sec: 10` | Harter Kill akzeptiert ≤ 30 s Handelsstopp; SIGTERM gibt den Lease sofort frei |
 | Rebuy-Cooldown | `min_hours_after_sell_before_rebuy: 4` | Kein Re-Entry kurz nach Sell (Anti-Churn) |
 | Ask-Bridge | `observability.ask_bridge` | `/ask` in eigener Queue, Poller alle 3 s |
 
-**Start (Produktion):** `bash scripts/start_stack.sh` — stoppt alte Prozesse, startet Bot + ngrok + Webhook. Rollback-Hinweise: [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
+**Start (Produktion):** `bash scripts/start_stack.sh` — stoppt alte Prozesse, startet Bot + ngrok + Webhook. Rollback-Hinweise: [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md).
 
 ---
 
@@ -1018,6 +1022,9 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
     "notify_on_cycle": true,
     "terminal_dashboard": true,
     "decisions_audit": true,
+    "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
+    "daily_report_telegram": true,
     "telegram_explanations": {
       "enabled": true,
       "verbosity": "verbose",
@@ -1042,6 +1049,11 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
     "notification_mode": "async",
     "min_hours_after_sell_before_rebuy": 4.0,
     "ledger_lock_enabled": true,
+    "ledger_lock_fail_closed": true,
+    "ledger_lock_ttl_sec": 60,
+    "single_writer_lease_enabled": true,
+    "lease_ttl_sec": 30,
+    "lease_renew_sec": 10,
     "background_social_enabled": true
   },
   "strategies": [ /* pro Coin, siehe Abschnitt 6.3 */ ],
@@ -1073,6 +1085,14 @@ Neues BUY-Signal → BLOCKED (außer manuell /ask)
 ```
 
 `volatile_altcoin` — Abschnitte 6.5–6.9. `architecture` — Abschnitt 2. `ask_bridge` — Abschnitt 7. `telegram_command_menu` — Menü-Button, Bereichs-Tastatur, DE/EN.
+
+**Täglicher Tick** (`services/background_runtime._loop`, Anzeige-Zeitzone via `calendar_day_bounds`, nie `date.today()`):
+
+| Schlüssel | Standard | Bedeutung |
+|-----------|----------|-----------|
+| `morning_briefing_enabled` | `true` | Einmal pro Kalendertag ab `morning_briefing_hour` das Morning Briefing senden (gleiche Idempotenz-Marke `data/morning_briefing.json` wie `/morning` — Command und Scheduler senden nicht doppelt) |
+| `morning_briefing_hour` | `8` | Stunde in Operator-/Anzeige-Zeitzone (`operator_timezone` / `display_timezone`) |
+| `daily_report_telegram` | `true` | Nach dem Briefing die kompakte Tages-Auswertung (`scripts/daily_auswertung.py`, Ledger über `resolve_ledger_scope()`) senden |
 
 ### `.env` (nicht committen)
 
@@ -1309,4 +1329,4 @@ flowchart TD
 
 ---
 
-**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) · GitHub Issues im Repo
+**Weitere Hilfe:** `/help` in Telegram · [HERMES_DOKUMENTATION.md](docs/hermes/HERMES_DOKUMENTATION.md) · [ARCHITECTURE_PLAN.md](archive/superseded/ARCHITECTURE_PLAN.md) · GitHub Issues im Repo

@@ -13,6 +13,8 @@ from logger import log
 _LOCK = threading.RLock()
 _BOT_ROOT = Path(__file__).resolve().parents[1]
 _COLLECTION = "portfolio_nav_daily"
+_UNSET = object()
+_BTC_USDT = "BTC/USDT"
 
 
 def _display_today() -> date:
@@ -133,6 +135,44 @@ def load_nav_history(
     return points
 
 
+def _coerce_btc_close(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0 or price != price:  # NaN
+        return None
+    return price
+
+
+def _lookup_btc_close() -> float | None:
+    """BTC/USDT last from existing price sources. Never raises, never blocks the NAV write.
+
+    Prefers the in-memory TTL cache / Gate ticker snapshot (#304); ``get_prices_batch``
+    is the fallback so a cold cache can still fill the row. A miss or any error
+    becomes ``None`` (JSON ``null``).
+    """
+    try:
+        from price_fetcher import peek_cached_price
+
+        peeked = _coerce_btc_close(peek_cached_price(_BTC_USDT))
+        if peeked is not None:
+            return peeked
+    except Exception:
+        pass
+    # No test-environment branch here: under pytest the network guard makes
+    # get_prices_batch raise, which the except below turns into None.
+    try:
+        from price_fetcher import get_prices_batch
+
+        prices = get_prices_batch([_BTC_USDT]) or {}
+        return _coerce_btc_close(prices.get(_BTC_USDT) or prices.get("BTC_USDT"))
+    except Exception:
+        return None
+
+
 def record_nav_snapshot(
     *,
     nav: float,
@@ -142,12 +182,25 @@ def record_nav_snapshot(
     on_date: date | None = None,
     tenant_id: str | None = None,
     scope: str | None = None,
+    btc_close: Any = _UNSET,
 ) -> dict:
-    """Upsert today's (or given day's) NAV point for the active tenant/scope."""
+    """Upsert today's (or given day's) NAV point for the active tenant/scope.
+
+    ``btc_close`` is stored when a BTC/USDT price is available; otherwise ``null``.
+    A missing price never raises and never skips the NAV write.
+    """
     tid, sc = _tenant_scope()
     tenant_id = tenant_id or tid
     scope = scope or sc
     d = on_date or _display_today()
+    explicit_btc = btc_close is not _UNSET
+    if explicit_btc:
+        btc_value = _coerce_btc_close(btc_close)
+    else:
+        try:
+            btc_value = _lookup_btc_close()
+        except Exception:
+            btc_value = None
     point = {
         "tenant_id": tenant_id,
         "ledger_scope": scope,
@@ -156,11 +209,19 @@ def record_nav_snapshot(
         "cash": float(cash),
         "positions_mtm": float(positions_mtm),
         "initial_capital": float(initial_capital),
+        "btc_close": btc_value,
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
     with _LOCK:
         path = _json_path(tenant_id, scope)
         points = _load_json(path)
+        if not explicit_btc and point.get("btc_close") is None:
+            for p in points:
+                if p.get("date") == point["date"]:
+                    kept = _coerce_btc_close(p.get("btc_close"))
+                    if kept is not None:
+                        point["btc_close"] = kept
+                    break
         replaced = False
         for i, p in enumerate(points):
             if p.get("date") == point["date"]:
@@ -179,8 +240,80 @@ def record_nav_snapshot(
     return point
 
 
+def _trade_history_io():
+    """Same store `_equity_drawdown_pct` reads: live dry-run vs active scope."""
+    from data_manager import (
+        get_config,
+        is_live_dry_run,
+        load_live_trade_history,
+        load_trade_history,
+        save_live_trade_history,
+        save_trade_history,
+    )
+
+    cfg = get_config()
+    if is_live_dry_run(cfg):
+        return load_live_trade_history, save_live_trade_history
+    return load_trade_history, save_trade_history
+
+
+def persist_peak_equity(nav: float) -> dict:
+    """High-water mark in the active-scope trade-history document."""
+    load_fn, save_fn = _trade_history_io()
+    history = load_fn() or {}
+    if not isinstance(history, dict):
+        history = {}
+    try:
+        nav_f = float(nav)
+    except (TypeError, ValueError):
+        nav_f = 0.0
+    try:
+        existing = float(history.get("peak_equity") or 0)
+    except (TypeError, ValueError):
+        existing = 0.0
+    peak = max(existing, nav_f)
+    history["peak_equity"] = peak
+    if peak > existing + 1e-9 or not history.get("peak_equity_at"):
+        history["peak_equity_at"] = datetime.now(timezone.utc).isoformat()
+    save_fn(history)
+    return history
+
+
+def latest_fresh_nav(*, max_age_sec: float) -> float | None:
+    """Most recent snapshot NAV if `as_of` is younger than max_age_sec."""
+    try:
+        age_limit = float(max_age_sec)
+    except (TypeError, ValueError):
+        return None
+    if age_limit <= 0:
+        return None
+    points = load_nav_history(limit=1)
+    if not points:
+        return None
+    point = points[-1]
+    try:
+        nav = float(point.get("nav") or 0)
+    except (TypeError, ValueError):
+        return None
+    if nav <= 0:
+        return None
+    raw_ts = point.get("as_of")
+    if not raw_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+    except Exception:
+        return None
+    if age < 0 or age > age_limit:
+        return None
+    return nav
+
+
 def capture_current_nav_snapshot() -> dict | None:
-    """Compute live NAV and persist daily point. Returns point or None."""
+    """Compute live NAV, persist daily point + peak_equity. Returns point or None."""
     try:
         from core.portfolio_baseline import initial_capital
         from notifications.terminal_dashboard import _portfolio_snapshot
@@ -194,12 +327,17 @@ def capture_current_nav_snapshot() -> dict | None:
             or initial_capital()
             or 0
         )
-        return record_nav_snapshot(
+        point = record_nav_snapshot(
             nav=total,
             cash=cash,
             positions_mtm=pos_mv,
             initial_capital=init,
         )
+        try:
+            persist_peak_equity(total)
+        except Exception as e:
+            log(f"persist_peak_equity failed: {e}", "WARNING")
+        return point
     except Exception as e:
         log(f"capture_current_nav_snapshot failed: {e}", "WARNING")
         return None

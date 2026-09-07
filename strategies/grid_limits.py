@@ -44,21 +44,39 @@ def limit_orders_enabled(config_raw: dict | None) -> bool:
 def fee_aware_min_spacing(
     price: float,
     *,
-    fee_pct: float = 0.1,
+    fee_pct: float | None = None,
     safety_mult: float = 3.0,
+    round_trip_pct: float | None = None,
 ) -> float:
-    """Minimum level distance so a round-trip can clear fees."""
+    """Minimum level distance so a round-trip can clear fees.
+
+    Prefer ``round_trip_pct`` from CostModel.round_trip_pct("limit"). When only
+    ``fee_pct`` is given (legacy tests), gap = 2 · fee.
+    """
     px = max(float(price), 1e-12)
-    # buy+sell fees ≈ 2 * fee; require safety_mult × that as price gap fraction
-    gap_frac = (2.0 * float(fee_pct) / 100.0) * float(safety_mult)
+    if round_trip_pct is None:
+        if fee_pct is None:
+            from core.costs import CostModel
+
+            round_trip_pct = CostModel.from_config(None).round_trip_pct("limit")
+        else:
+            round_trip_pct = 2.0 * float(fee_pct)
+    gap_frac = (float(round_trip_pct) / 100.0) * float(safety_mult)
     return px * max(gap_frac, 1e-6)
 
 
-def enforce_fee_spacing(plan: GridPlan, *, fee_pct: float = 0.1) -> GridPlan:
+def enforce_fee_spacing(
+    plan: GridPlan,
+    *,
+    fee_pct: float | None = None,
+    round_trip_pct: float | None = None,
+) -> GridPlan:
     """Widen plan.spacing if levels would be too tight vs fees; rebuild levels."""
     from strategies.grid_plan import build_grid_plan
 
-    min_sp = fee_aware_min_spacing(plan.center, fee_pct=fee_pct)
+    min_sp = fee_aware_min_spacing(
+        plan.center, fee_pct=fee_pct, round_trip_pct=round_trip_pct,
+    )
     if plan.spacing >= min_sp:
         return plan
     # Derive atr_pct equivalent: spacing = center * (atr/100) * mult → reverse not needed
@@ -202,12 +220,13 @@ def simulate_limit_grid_path(
     timeframe: str = "4h",
     atr_pct: float = 3.0,
     spacing_atr_mult: float = 0.8,
-    fee_pct: float = 0.1,
+    fee_pct: float | None = None,
     initial_cash: float = 10_000.0,
     base_buy_usdt: float = 500.0,
     re_center_atr_mult: float = 2.5,
 ) -> dict[str, Any]:
     """Bar walk with shadow limit book (Phase C local)."""
+    from core.costs import CostModel, CostParams
     from strategies.grid_plan import (
         build_grid_plan,
         recenter_plan,
@@ -216,15 +235,22 @@ def simulate_limit_grid_path(
 
     if not prices:
         return {"error": "no prices"}
+    if fee_pct is None:
+        cm = CostModel.from_config(None)
+    else:
+        cm = CostModel(CostParams(
+            fee_maker_pct=float(fee_pct),
+            fee_taker_pct=float(fee_pct),
+            slippage_pct=0.0,
+        ))
     plan = build_grid_plan(
         symbol, timeframe, prices[0],
         atr_pct=atr_pct, spacing_atr_mult=spacing_atr_mult,
     )
-    plan = enforce_fee_spacing(plan, fee_pct=fee_pct)
+    plan = enforce_fee_spacing(plan, round_trip_pct=cm.round_trip_pct("limit"))
     book = GridLimitShadowBook()
     cash = float(initial_cash)
     amount = 0.0
-    fee_m = fee_pct / 100.0
     trades = 0
 
     def _resync():
@@ -243,20 +269,20 @@ def simulate_limit_grid_path(
         if should_recenter(plan, px, atr_pct=atr_pct, re_center_atr_mult=re_center_atr_mult):
             book.cancel_all()
             plan = recenter_plan(plan, px, atr_pct=atr_pct, spacing_atr_mult=spacing_atr_mult)
-            plan = enforce_fee_spacing(plan, fee_pct=fee_pct)
+            plan = enforce_fee_spacing(plan, round_trip_pct=cm.round_trip_pct("limit"))
             recenters += 1
             _resync()
         for fill in book.match_bar(px, bar_index=i):
             mark_plan_level_filled(plan, fill.client_id)
             if fill.side == "buy" and cash >= fill.usdt:
-                fee = fill.usdt * fee_m
-                got = (fill.usdt - fee) / max(fill.price, 1e-12)
-                amount += got
-                cash -= fill.usdt
+                buy_f = cm.simulate_buy(fill.price, usdt=fill.usdt, order_type="limit")
+                amount += buy_f.qty_net
+                cash -= buy_f.quote_net
                 trades += 1
             elif fill.side == "sell" and amount > 0:
                 sell_amt = min(amount, fill.amount)
-                cash += sell_amt * fill.price * (1.0 - fee_m)
+                sell_f = cm.simulate_sell(fill.price, sell_amt, order_type="limit")
+                cash += sell_f.quote_net
                 amount -= sell_amt
                 trades += 1
             _resync()

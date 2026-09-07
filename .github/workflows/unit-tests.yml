@@ -1,0 +1,44 @@
+# Unit suite. No Redis service: bus.redis_client.get_redis() returns None when
+# Redis is unreachable, and tests mock Redis or take that in-process fallback.
+name: Unit tests
+
+on:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run unit tests
+        env:
+          UNIT_TEST_PROGRESS: "0"
+          MONGODB_URI: mongodb://127.0.0.1:27017
+          REDIS_URL: redis://127.0.0.1:6379/0
+          PYTEST_DB_SUFFIX: ci
+        run: ./scripts/run_unit_tests.sh -q

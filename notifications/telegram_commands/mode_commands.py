@@ -22,6 +22,20 @@ def _save_mode_updates(updates: dict) -> bool:
     return save_config(config)
 
 
+def save_trading_flags(*, entries_enabled=None, exits_enabled=None) -> bool:
+    """Persist trading.entries_enabled / exits_enabled via the /mode save path."""
+    config = get_config()
+    trading = dict(config.get("trading") or {})
+    if entries_enabled is not None:
+        trading["entries_enabled"] = bool(entries_enabled)
+    if exits_enabled is not None:
+        trading["exits_enabled"] = bool(exits_enabled)
+    if not _save_mode_updates({"trading": trading}):
+        return False
+    reload_config()
+    return True
+
+
 def _apply_mode_switch(updates: dict) -> tuple[bool, str]:
     old_mode = get_config().get("trading_mode", "paper")
     if not _save_mode_updates(updates):

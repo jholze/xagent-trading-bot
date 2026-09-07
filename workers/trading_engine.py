@@ -69,20 +69,26 @@ def _consume_redis_once():
                 )
                 from bus.locks import ledger_lock
                 from core.tenant_context import tenant_context
+                from storage.errors import LedgerUnavailable
 
                 with tenant_context(
                     intent.tenant_id,
                     scope=intent.scope,
                     owner_chat_id=intent.owner_chat_id,
                 ):
-                    with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
-                        result = svc._execute_order_locked(
-                            intent.order,
-                            intent.timeframe,
-                            source=intent.source,
-                            idempotency_key=intent.idempotency_key,
-                            _lock_held=True,
-                        )
+                    try:
+                        with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
+                            result = svc._execute_order_locked(
+                                intent.order,
+                                intent.timeframe,
+                                source=intent.source,
+                                idempotency_key=intent.idempotency_key,
+                                _lock_held=True,
+                            )
+                    except LedgerUnavailable as exc:
+                        result = svc._deny_ledger_unavailable(intent.order, exc)
+                    else:
+                        svc._send_recorded_positions_snapshots(result)
                 log(f"External engine filled {result.order_type} {result.symbol}: {result.executed}", "INFO")
                 client.xack(stream, group, msg_id)
             except Exception as e:

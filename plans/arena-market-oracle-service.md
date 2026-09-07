@@ -3,7 +3,7 @@
 > **Modus:** Full-Arena (3 Kandidaten + Domain-Tiefgang)  
 > **Ziel:** Wie man Crypto-Märkte **systematisch** einschätzt und den Bot **umgebungsbewusst** steuert — inkl. separatem Railway-Service, der den Bot nur bei Änderungen informiert  
 > **Branch:** `staging`  
-> **Verwandt:** [`market-context-entry-throttle.md`](market-context-entry-throttle.md) · [`arena-signal-optimizations.md`](arena-signal-optimizations.md) · [`ARCHITECTURE_PLAN.md`](../ARCHITECTURE_PLAN.md)  
+> **Verwandt:** [`market-context-entry-throttle.md`](market-context-entry-throttle.md) · [`arena-signal-optimizations.md`](arena-signal-optimizations.md) · [`ARCHITECTURE_PLAN.md`](../archive/superseded/ARCHITECTURE_PLAN.md)  
 > **Erstellt:** 2026-07-17  
 > **Status:** Analyse / Architektur-Ticket (noch nicht implementiert)
 

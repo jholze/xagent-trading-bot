@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -6,7 +7,12 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from bus.ohlcv_cache import OhlcvCache, reset_ohlcv_cache_for_tests, ttl_for_timeframe
+from bus.ohlcv_cache import (
+    OhlcvCache,
+    _ohlcv_key,
+    reset_ohlcv_cache_for_tests,
+    ttl_for_timeframe,
+)
 from services.market_service import MarketService
 
 
@@ -61,6 +67,55 @@ class TestOhlcvCache(unittest.TestCase):
         cache.set("SOL/USDT", "4h", 300, _bars(120), exchange="gate")
         self.assertIsNone(cache.get("SOL/USDT", "4h", 100))
 
+    def test_reset_deletes_redis_ohlcv_keys(self):
+        cache = OhlcvCache(config_raw={"architecture": {}})
+        client = cache._client()
+        if client is None:
+            self.skipTest("Redis unreachable")
+        symbol, timeframe, limit = "RESETISO/USDT", "4h", 300
+        cache.set(symbol, timeframe, limit, _bars(30), exchange="gate")
+        key = _ohlcv_key(cache.key_prefix, symbol, timeframe, limit)
+        self.assertTrue(client.exists(key))
+        reset_ohlcv_cache_for_tests()
+        self.assertFalse(client.exists(key))
+
+    def test_redis_old_fetched_at_stale_despite_ttl(self):
+        cache = OhlcvCache(config_raw={"architecture": {"ohlcv_serve_from_larger": False}})
+        client = cache._client()
+        if client is None:
+            self.skipTest("Redis unreachable")
+        symbol, timeframe, limit = "STALEFA/USDT", "4h", 100
+        key = _ohlcv_key(cache.key_prefix, symbol, timeframe, limit)
+        now = time.time()
+        payload = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "limit": limit,
+            "bars": _bars(30),
+            "exchange": "gate",
+            "updated_at": now,
+            "fetched_at": now - 10_000,
+        }
+        client.setex(key, 300, json.dumps(payload, separators=(",", ":")))
+        self.assertIsNone(cache.get(symbol, timeframe, limit))
+
+    def test_redis_legacy_entry_without_fetched_at_is_stale(self):
+        cache = OhlcvCache(config_raw={"architecture": {"ohlcv_serve_from_larger": False}})
+        client = cache._client()
+        if client is None:
+            self.skipTest("Redis unreachable")
+        symbol, timeframe, limit = "LEGACYFA/USDT", "4h", 100
+        key = _ohlcv_key(cache.key_prefix, symbol, timeframe, limit)
+        payload = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "limit": limit,
+            "bars": _bars(30),
+            "exchange": "gate",
+            "updated_at": time.time(),
+        }
+        client.setex(key, 300, json.dumps(payload, separators=(",", ":")))
+        self.assertIsNone(cache.get(symbol, timeframe, limit))
 
 
 class TestMarketServiceOhlcvCache(unittest.TestCase):

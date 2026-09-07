@@ -44,12 +44,42 @@ class BotConfig:
         return "paper" if self.virtual_trading else "off"
 
     @property
+    def trading_block(self) -> dict:
+        block = self._raw.get("trading")
+        return dict(block) if isinstance(block, dict) else {}
+
+    @property
+    def entries_enabled(self) -> bool:
+        """New buys/shorts. Default true when the key is missing."""
+        if "entries_enabled" not in self.trading_block:
+            return True
+        return bool(self.trading_block.get("entries_enabled"))
+
+    @property
+    def exits_enabled(self) -> bool:
+        """Normal sells/covers. Emergency sells ignore this. Default true."""
+        if "exits_enabled" not in self.trading_block:
+            return True
+        return bool(self.trading_block.get("exits_enabled"))
+
+    @property
     def live_confirmed(self) -> bool:
         return bool(self._raw.get("live_confirmed", False))
 
     @property
     def live_config(self) -> dict:
         return self._raw.get("live", {})
+
+    @property
+    def live_execution(self) -> str:
+        """Raw ``live.execution`` key (``shadow`` | ``testnet`` | ``real``), default shadow.
+
+        Does not apply credential / DEMO_MODE / live_confirmed guards — those
+        live in ``core.execution_mode.resolve_execution_mode``.
+        """
+        raw = self.live_config.get("execution", "shadow")
+        value = str(raw or "shadow").strip().lower()
+        return value or "shadow"
 
     @property
     def exchange(self) -> str:
@@ -157,8 +187,9 @@ class BotConfig:
         return int(self._raw.get("max_open_positions", 5))
 
     @property
-    def slippage_percent(self) -> float:
-        return float(self._raw.get("slippage_percent", 1.5))
+    def costs(self) -> dict:
+        block = self._raw.get("costs")
+        return dict(block) if isinstance(block, dict) else {}
 
     @property
     def update_interval(self) -> int:
@@ -234,6 +265,10 @@ class BotConfig:
 
     @property
     def observability_config(self) -> dict:
+        """Ops/Telegram flags including morning_briefing_enabled,
+        morning_briefing_hour (display/operator TZ, default 8) and
+        daily_report_telegram — both drive the background_runtime daily tick.
+        """
         return self._raw.get("observability", {})
 
     @property
@@ -377,6 +412,8 @@ class BotConfig:
             "use_signal_snapshot": False,
             "price_cache_enabled": True,
             "price_cache_ttl_sec": 120,
+            "stale_price_max_age_sec": 300,
+            "gate_ticker_snapshot_ttl_sec": 25,
             "ohlcv_cache_enabled": True,
             "ohlcv_cache_ttl_sec": {"15m": 60, "1h": 90, "4h": 120},
             "ohlcv_serve_from_larger": True,
@@ -393,8 +430,12 @@ class BotConfig:
             "dedup_ttl_sec": 86400,
             "trading_engine_mode": "in_process",
             "ledger_lock_enabled": True,
-            "ledger_lock_ttl_sec": 30,
+            "ledger_lock_fail_closed": True,
+            "ledger_lock_ttl_sec": 60,
             "ledger_lock_wait_sec": 15,
+            "single_writer_lease_enabled": True,
+            "lease_ttl_sec": 30,
+            "lease_renew_sec": 10,
             "trade_intent_queue_enabled": False,
             "trade_intent_async_auto_only": True,
             "eval_queue_enabled": False,
@@ -422,6 +463,22 @@ class BotConfig:
     @property
     def architecture_mode(self) -> str:
         return str(self.architecture_config.get("mode", "monolith"))
+
+    @property
+    def stale_price_max_age_sec(self) -> float:
+        try:
+            return float(self.architecture_config.get("stale_price_max_age_sec", 300) or 300)
+        except (TypeError, ValueError):
+            return 300.0
+
+    @property
+    def gate_ticker_snapshot_ttl_sec(self) -> float:
+        try:
+            return float(
+                self.architecture_config.get("gate_ticker_snapshot_ttl_sec", 25) or 25
+            )
+        except (TypeError, ValueError):
+            return 25.0
 
     @property
     def min_hours_after_sell_before_rebuy(self) -> float:
@@ -562,7 +619,6 @@ class BotConfig:
             "meme_spacing_atr_mult": 1.25,
             "volatile_re_center_atr_mult": 3.2,
             "fee_aware": True,
-            "assumed_fee_pct": 0.1,
             "max_levels": 12,
             # Staging: market slices feel live; real multi-limits later
             "use_limit_orders": False,

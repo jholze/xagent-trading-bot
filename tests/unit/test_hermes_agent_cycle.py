@@ -6,6 +6,7 @@ import pytest
 from core.models import SandboxMetrics
 from hermes.agent import HermesAgent
 from hermes.validation import WalkForwardResult
+from intelligence.grok_json import GrokError
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def agent_with_mocks(monkeypatch, hermes_memory_tmp, sample_live_trade_history):
     monkeypatch.setattr("core.config.get_bot_config", lambda *a, **k: cfg)
     monkeypatch.setattr("data_manager.get_config", lambda *a, **k: raw)
     monkeypatch.setattr("data_manager.reload_config", lambda *a, **k: raw)
+    monkeypatch.setattr("core.config.reload_config", lambda *a, **k: raw)
 
     store.init_baseline_from_config(cfg, "ARIA/USDT", "4h")
 
@@ -39,7 +41,20 @@ def agent_with_mocks(monkeypatch, hermes_memory_tmp, sample_live_trade_history):
     )
 
     monkeypatch.setattr(agent.backtester, "_fetch_ohlcv", lambda *a, **k: df)
-    monkeypatch.setattr("hermes.validation.run_walk_forward", lambda *a, **k: wf)
+    monkeypatch.setattr(
+        "price_fetcher.get_gate_prices_batch",
+        lambda symbols: {s: 1.0 for s in symbols},
+    )
+    monkeypatch.setattr("price_fetcher.get_ticker_price", lambda symbol, exchange=None: 1.0)
+    monkeypatch.setattr(
+        "services.market_service.MarketService._fetch_ohlcv",
+        lambda *a, **k: df,
+    )
+    monkeypatch.setattr(
+        "hermes.symbol_pool.load_effective_watchlist",
+        lambda *a, **k: [{"symbol": "ARIA/USDT", "timeframe": "4h", "active": True}],
+    )
+    monkeypatch.setattr("hermes.agent.run_walk_forward", lambda *a, **k: wf)
     monkeypatch.setattr(
         "hermes.agent.compute_counterfactual_delta",
         lambda *a, **k: None,
@@ -59,6 +74,10 @@ def agent_with_mocks(monkeypatch, hermes_memory_tmp, sample_live_trade_history):
         "propose_experiment",
         lambda baseline: None,
     )
+    def _no_grok(*_a, **_k):
+        raise GrokError("blocked")
+
+    monkeypatch.setattr("hermes.self_improver.ask_grok_json", _no_grok)
     return agent
 
 

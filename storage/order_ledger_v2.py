@@ -18,23 +18,35 @@ from typing import Any, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
+from core.models import OrderStatus, is_executed_status
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
 ORDERS_V2_COLLECTION = "orders_v2"
 DAY_STATS_COLLECTION = "order_day_stats"
 
 # Blocked statuses mirrored from order_service (avoid circular import).
+# Enum values plus legacy tokens still present in the live Mongo ledger.
 BLOCKED_STATUSES = frozenset({
-    "rejected",
+    OrderStatus.REJECTED.value,
+    OrderStatus.CANCELED.value,
+    OrderStatus.ACTIVE.value,
+    OrderStatus.QUEUED.value,
+    OrderStatus.PARTIALLY_FILLED.value,
     "cancelled",
     "failed",
     "expired",
     "pending_confirmation",
-    "executing",
 })
 
 _STORE_LOCK = threading.RLock()
 _STORE: "OrderLedgerV2 | None" = None
+# Index/connect failure must not pin a process-lifetime empty Memory store (#318).
+_V2_DEGRADED = False
+
+
+def order_ledger_v2_is_degraded() -> bool:
+    """True when mongo v2 failed to initialise; stats_day_filled_fast must fail-closed."""
+    return _V2_DEGRADED
 
 
 def order_ledger_v2_enabled() -> bool:
@@ -68,9 +80,10 @@ def order_ledger_v2_backfill_complete() -> bool:
 
 def reset_order_ledger_v2_for_tests() -> None:
     """Drop process singleton (tests)."""
-    global _STORE
+    global _STORE, _V2_DEGRADED
     with _STORE_LOCK:
         _STORE = None
+        _V2_DEGRADED = False
 
 
 def get_order_ledger_v2() -> "OrderLedgerV2 | None":
@@ -85,11 +98,7 @@ def get_order_ledger_v2() -> "OrderLedgerV2 | None":
         if backend == "memory":
             _STORE = MemoryOrderLedgerV2()
         elif backend == "mongo":
-            _STORE = MongoOrderLedgerV2()
-            try:
-                _STORE.ensure_indexes()
-            except Exception:
-                pass
+            _STORE = _mongo_v2_or_unavailable()
         else:
             # auto: memory under pytest; mongo when demo ledger is mongo (Railway)
             under_pytest = bool(
@@ -104,14 +113,28 @@ def get_order_ledger_v2() -> "OrderLedgerV2 | None":
                 )
             )
             if use_mongo:
-                try:
-                    _STORE = MongoOrderLedgerV2()
-                    _STORE.ensure_indexes()
-                except Exception:
-                    _STORE = MemoryOrderLedgerV2()
+                _STORE = _mongo_v2_or_unavailable()
             else:
                 _STORE = MemoryOrderLedgerV2()
         return _STORE
+
+
+def _mongo_v2_or_unavailable() -> "MongoOrderLedgerV2":
+    """Build mongo v2 store; index failure is degraded, not a silent memory pin."""
+    global _V2_DEGRADED
+    from storage.errors import LedgerUnavailable
+
+    store = MongoOrderLedgerV2()
+    try:
+        store.ensure_indexes()
+    except Exception as e:
+        _V2_DEGRADED = True
+        logger.warning(
+            "order ledger v2 mongo indexes failed; not pinning memory store: %s", e
+        )
+        raise LedgerUnavailable(op="get_order_ledger_v2", cause=e) from e
+    _V2_DEGRADED = False
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +184,7 @@ def _parse_to_display_naive(value: str | None) -> datetime | None:
 
 def order_event_ts_naive(order: dict) -> datetime | None:
     ts = order.get("timestamps") or {}
-    status = (order.get("status") or "").lower()
-    if status == "filled":
+    if is_executed_status(order.get("status")):
         return _parse_to_display_naive(ts.get("filled") or ts.get("created") or ts.get("updated"))
     return _parse_to_display_naive(ts.get("created") or ts.get("updated") or ts.get("filled"))
 
@@ -326,7 +348,7 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         if not isinstance(o, dict):
             continue
         raw_status = o.get("status")
-        if raw_status is not None and _token(raw_status) != "filled":
+        if raw_status is not None and not is_executed_status(raw_status):
             continue
         counts["filled"] += 1
         side = _token(o.get("side"))
@@ -497,7 +519,7 @@ class MemoryOrderLedgerV2:
             if not doc:
                 continue
             st = (doc.get("status") or "").lower()
-            if filled_only and st != "filled":
+            if filled_only and not is_executed_status(st):
                 continue
             if blocked_only and st not in BLOCKED_STATUSES:
                 continue
@@ -650,7 +672,7 @@ class MongoOrderLedgerV2:
             "day_key": day_key,
         }
         if filled_only:
-            filt["status"] = "filled"
+            filt["status"] = OrderStatus.EXECUTED.value
         elif blocked_only:
             filt["status"] = {"$in": sorted(BLOCKED_STATUSES)}
         elif status_filter is not None:

@@ -159,7 +159,9 @@ class TestSnapshotCliIntegration(unittest.TestCase):
         out = buf.getvalue()
         self.assertEqual(rc, 0, out)
         self.assertIn("[invariants-ok]", out)
-        self.assertIn("[migrate]", out)
+        # e89f5d4 made Mongo the demo SOT; dry-run no longer calls migrate_scope,
+        # so format_report_lines omits [migrate]. [dry-run] is the stable token.
+        self.assertIn("[dry-run]", out)
         self.assertIn(f"open_positions={EXPECTED_OPEN_POSITIONS}", out)
         self.assertIn(f"load_positions_keys={EXPECTED_OPEN_POSITIONS}", out)
 
