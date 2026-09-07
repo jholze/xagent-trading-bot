@@ -1327,7 +1327,7 @@ Full operator handbook (tools, ACL, env, kill switches, idempotency): **[plans/m
 |---|---|
 | MCP | `https://xagent-mcp-test.up.railway.app/mcp` |
 | Health | `GET /health` → `{ok:true, service:xagent-mcp}` |
-| Auth | Bearer `MCP_OWNER_TOKEN` (owner = all tenants). Operator = one tenant |
+| Auth | Bearer `MCP_OWNER_TOKEN` (header or `?token=`). Handshake is 401 without it. Owner = all tenants; operator = one tenant |
 | Kill | `mcp.enabled=false` or stop the service; `mcp.allow_writes=false` → reads only |
 | Live Gate | `mcp.allow_live=false` blocks real fills even if this image is on `main` |
 

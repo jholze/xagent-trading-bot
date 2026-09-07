@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -48,13 +49,27 @@ def bootstrap_env() -> None:
 
 
 def parse_bearer(authorization: str | None) -> str:
+    """Token from ``Authorization: Bearer …`` or a bare token (query-string)."""
     raw = (authorization or "").strip()
     if not raw:
         return ""
-    scheme, _, rest = raw.partition(" ")
-    if scheme.lower() != "bearer":
+    scheme, sep, rest = raw.partition(" ")
+    if sep and scheme.lower() == "bearer":
+        return rest.strip()
+    if not sep:
+        return scheme
+    return ""
+
+
+def access_token_from_request(request: Request | None) -> str:
+    """Header wins; Grok Web/iOS can only put the token on the connector URL."""
+    if request is None:
         return ""
-    return rest.strip()
+    header = parse_bearer(request.headers.get("authorization"))
+    if header:
+        return header
+    q = request.query_params
+    return (q.get("token") or q.get("access_token") or "").strip()
 
 
 def load_actors():
@@ -82,15 +97,8 @@ def current_authorization(ctx: Any = None) -> str:
         req = ctx.request_context.request
     except Exception:
         return ""
-    if req is None:
-        return ""
-    headers = getattr(req, "headers", None)
-    if headers is None:
-        return ""
-    try:
-        return str(headers.get("authorization") or "")
-    except Exception:
-        return ""
+    token = access_token_from_request(req)
+    return f"Bearer {token}" if token else ""
 
 
 def _load_config_raw() -> dict:
@@ -423,6 +431,26 @@ async def _health(_request: Request) -> JSONResponse:
     return JSONResponse(health_payload())
 
 
+class McpBearerAuthMiddleware(BaseHTTPMiddleware):
+    """Fail closed on /mcp. Health stays public. Query ``token=`` for Grok Connectors."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path.rstrip("/") or "/"
+        if path == "/health" or not path.startswith("/mcp"):
+            return await call_next(request)
+        token = access_token_from_request(request)
+        actor = actor_from_bearer(token, load_actors())
+        if actor is None:
+            return JSONResponse(
+                {"ok": False, "error": "unauthorized"},
+                status_code=401,
+                headers={
+                    "WWW-Authenticate": 'Bearer realm="xagent-mcp", error="invalid_token"',
+                },
+            )
+        return await call_next(request)
+
+
 def build_mcp(*, host: str = "0.0.0.0", port: int | None = None) -> FastMCP:
     mcp = FastMCP(
         SERVICE_NAME,
@@ -438,4 +466,6 @@ def build_mcp(*, host: str = "0.0.0.0", port: int | None = None) -> FastMCP:
 
 def create_app(*, host: str = "0.0.0.0", port: int | None = None):
     bootstrap_env()
-    return build_mcp(host=host, port=port).streamable_http_app()
+    app = build_mcp(host=host, port=port).streamable_http_app()
+    app.add_middleware(McpBearerAuthMiddleware)
+    return app
