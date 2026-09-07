@@ -33,6 +33,15 @@ Live URLs (test):
 | Health | `GET https://xagent-mcp-test.up.railway.app/health` → `{ok:true, service:xagent-mcp}` |
 | Paper bot | `https://xagent-test-test.up.railway.app` |
 
+`/mcp` is **fail-closed**: handshake and tools need a valid token (HTTP 401 otherwise). `/health` stays public.
+
+| Client | How to authenticate |
+|---|---|
+| Grok TUI / Claude Code | `Authorization: Bearer <MCP_OWNER_TOKEN>` header |
+| **Grok Web / iOS** (Connectors → Custom) | URL with query token — the UI has no header field: `https://xagent-mcp-test.up.railway.app/mcp?token=<MCP_OWNER_TOKEN>` |
+
+Bare `…/mcp` without token used to “connect” and then every tool returned `unauthorized`. That handshake is rejected now.
+
 Grok TUI: remote MCP URL + `Authorization: Bearer <token>`. Reconnect after tool or token changes.
 
 ## Roles
