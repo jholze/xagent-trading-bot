@@ -703,11 +703,14 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         need_average = False
         status: OrderStatus | None = None
-        if 0 < filled < requested:
-            status = OrderStatus.PARTIALLY_FILLED
-            need_average = True
-        elif filled >= requested and requested > 0 and ex_status in ("closed", "filled"):
+        closed = ex_status in ("closed", "filled")
+        if closed and filled > 0:
+            # USDT market buys estimate qty from the request price; the
+            # actual fill is smaller after spread/slippage. Closed is final.
             status = OrderStatus.EXECUTED
+            need_average = True
+        elif 0 < filled < requested:
+            status = OrderStatus.PARTIALLY_FILLED
             need_average = True
         elif filled >= requested and requested > 0 and not ex_status:
             # Spec: full fill requires status == "closed" (shadow synthesises it).
@@ -734,6 +737,16 @@ class GateExecutionAdapter(ExecutionAdapter):
         if fill_price <= 0:
             return self._active_reconcile_result(
                 order, "average missing", exist=exist, raw=raw
+            )
+        if (
+            status is OrderStatus.EXECUTED
+            and requested > 0
+            and filled < requested * 0.95
+        ):
+            log(
+                f"closed short-fill {order.symbol}: requested={requested:.6f} "
+                f"filled={filled:.6f} fill_price={fill_price}",
+                "INFO",
             )
 
         fill, fee_unknown = self._fill_or_unknown_fee(
