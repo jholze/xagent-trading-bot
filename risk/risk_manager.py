@@ -1,5 +1,4 @@
-import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from core.config import BotConfig, get_bot_config
 from core.models import RiskDecision, TradeOrder
@@ -26,20 +25,6 @@ from strategies.positions import (
 )
 
 
-_EQUITY_MTM_UNAVAILABLE_LOGGED = False
-
-# #304 slice 3: one orders-document load per evaluate() call. The scope lives
-# in a per-instance threading.local so concurrent evaluate() calls on a shared
-# RiskManager never see each other's snapshot. _EVAL_DOC_PENDING marks "load on
-# first use" so early rejects (cooldown, no amount, ...) cost no load at all.
-_EVAL_DOC_PENDING = object()
-
-
-def reset_risk_manager_globals_for_tests() -> None:
-    global _EQUITY_MTM_UNAVAILABLE_LOGGED
-    _EQUITY_MTM_UNAVAILABLE_LOGGED = False
-
-
 def _is_emergency_sell(signal: str) -> bool:
     signal = signal or ""
     return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal
@@ -59,53 +44,6 @@ def _is_partial_sell(signal: str) -> bool:
     return "PARTIAL" in signal or signal in ("SELL", "SELL_10", "SELL_20", "SELL_30", "SELL_TP")
 
 
-def _fail_closed_guards_mode(config) -> str:
-    """Rollout switch: 'log' (default, old behaviour + ERROR) | 'deny'."""
-    try:
-        risk = None
-        if config is None:
-            return "log"
-        if isinstance(config, dict):
-            nested = config.get("risk")
-            if isinstance(nested, dict):
-                risk = nested
-            elif "fail_closed_guards" in config:
-                risk = config
-        else:
-            rc = getattr(config, "risk_config", None)
-            if isinstance(rc, dict):
-                risk = rc
-            else:
-                raw = getattr(config, "raw", None)
-                if isinstance(raw, dict) and isinstance(raw.get("risk"), dict):
-                    risk = raw.get("risk")
-        if not isinstance(risk, dict):
-            return "log"
-        mode = str(risk.get("fail_closed_guards") or "log").strip().lower()
-        return "deny" if mode == "deny" else "log"
-    except Exception:
-        return "log"
-
-
-def guard_failed(guard: str, exc: BaseException, order, *, config=None) -> RiskDecision | None:
-    """A guard raised. 'log' → ERROR + None. 'deny' → ERROR + RiskDecision deny."""
-    try:
-        from logger import log
-
-        symbol = getattr(order, "symbol", "") or ""
-        log(f"risk guard {guard} failed {symbol}: {exc}", "ERROR")
-    except Exception:
-        pass
-    if _fail_closed_guards_mode(config) != "deny":
-        return None
-    return RiskDecision(
-        approved=False,
-        message=f"{guard}_error: {exc}"[:200],
-        code=f"{guard}_error",
-        size_multiplier=0.0,
-    )
-
-
 class RiskManager:
     """Central gate for trade sizing and portfolio limits."""
 
@@ -119,11 +57,6 @@ class RiskManager:
         self.portfolio = portfolio or PortfolioService(self.config)
         self.market = market_service or MarketService()
 
-    def _guard_failed(self, guard: str, exc: BaseException, order) -> "RiskDecision | None":
-        """A guard raised. 'log' → ERROR + return None (caller continues, old behaviour, but visible).
-        'deny' → ERROR + RiskDecision(approved=False, code=f"{guard}_error", size_multiplier=0.0)."""
-        return guard_failed(guard, exc, order, config=self.config)
-
     def evaluate(
         self,
         order: TradeOrder,
@@ -133,55 +66,34 @@ class RiskManager:
         confidence: float = None,
         indicators: dict = None,
     ) -> RiskDecision:
-        # One orders-document snapshot per evaluate() call, loaded lazily on the
-        # first counter read. Nested evaluate() (auto-short) must not reuse the
-        # outer snapshot — it starts pending again and the outer is restored.
-        scope = self._eval_scope()
-        previous = getattr(scope, "doc", None)
-        scope.doc = _EVAL_DOC_PENDING
+        decision = self._evaluate_impl(
+            order,
+            timeframe=timeframe,
+            source=source,
+            trust_score=trust_score,
+            confidence=confidence,
+            indicators=indicators,
+        )
+        # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
         try:
-            decision = self._evaluate_impl(
-                order,
-                timeframe=timeframe,
-                source=source,
-                trust_score=trust_score,
-                confidence=confidence,
-                indicators=indicators,
-            )
-            # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
-            try:
-                if (
-                    str(getattr(order, "type", "") or "").upper() == "BUY"
-                    and not getattr(decision, "approved", True)
-                ):
-                    from services.watchlist_quality.soak_log import log_risk_reject
+            if (
+                str(getattr(order, "type", "") or "").upper() == "BUY"
+                and not getattr(decision, "approved", True)
+            ):
+                from services.watchlist_quality.soak_log import log_risk_reject
 
-                    raw = self.config.raw if hasattr(self.config, "raw") else None
-                    log_risk_reject(
-                        symbol=getattr(order, "symbol", "") or "",
-                        side="BUY",
-                        source=str(source or ""),
-                        code=getattr(decision, "code", "") or "",
-                        message=getattr(decision, "message", "") or "",
-                        config=raw,
-                    )
-            except Exception:
-                pass
-            return decision
-        finally:
-            scope.doc = previous
-
-    def _eval_scope(self) -> threading.local:
-        tls = self.__dict__.get("_eval_tls")
-        if tls is None:
-            tls = threading.local()
-            self.__dict__["_eval_tls"] = tls
-        return tls
-
-    @property
-    def _eval_orders_doc(self):
-        """Scoped orders document of the running evaluate() on this thread (tests)."""
-        return getattr(self._eval_scope(), "doc", None)
+                raw = self.config.raw if hasattr(self.config, "raw") else None
+                log_risk_reject(
+                    symbol=getattr(order, "symbol", "") or "",
+                    side="BUY",
+                    source=str(source or ""),
+                    code=getattr(decision, "code", "") or "",
+                    message=getattr(decision, "message", "") or "",
+                    config=raw,
+                )
+        except Exception:
+            pass
+        return decision
 
     def _evaluate_impl(
         self,
@@ -205,12 +117,6 @@ class RiskManager:
                 message=f"Phantom test symbol blocked: {order.symbol}",
                 code="phantom_symbol",
             )
-
-        # Hard rail: new exposure only. SELL/COVER always pass this check.
-        if order.type in ("BUY", "SHORT"):
-            halt = self._daily_loss_limit_blocked(order)
-            if halt:
-                return halt
 
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
@@ -346,29 +252,23 @@ class RiskManager:
                 )
 
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
-        from core.stablecoins import (
-            is_stablecoin_symbol,
-            stablecoin_block_reason,
-            stablecoin_buys_blocked,
-        )
-
-        raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
         try:
-            stablecoin_hit = stablecoin_buys_blocked(raw_cfg) and is_stablecoin_symbol(
-                order.symbol
+            from core.stablecoins import (
+                is_stablecoin_symbol,
+                stablecoin_block_reason,
+                stablecoin_buys_blocked,
             )
-        except Exception as e:
-            dec = self._guard_failed("stablecoin_blocked", e, order)
-            if dec:
-                return dec
-            stablecoin_hit = False
-        if stablecoin_hit:
-            return RiskDecision(
-                approved=False,
-                message=stablecoin_block_reason(order.symbol),
-                code="stablecoin_blocked",
-                size_multiplier=0.0,
-            )
+
+            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+            if stablecoin_buys_blocked(raw_cfg) and is_stablecoin_symbol(order.symbol):
+                return RiskDecision(
+                    approved=False,
+                    message=stablecoin_block_reason(order.symbol),
+                    code="stablecoin_blocked",
+                    size_multiplier=0.0,
+                )
+        except Exception:
+            pass
 
         pos = get_position(order.symbol, timeframe)
         has_position = float(pos.get("amount", 0)) > 0
@@ -391,140 +291,101 @@ class RiskManager:
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
-            from services.correlated_tier.api import correlated_tier_selloff_active
-
-            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
             try:
-                correlated_hit = correlated_tier_selloff_active(order.symbol, raw_cfg)
-            except Exception as e:
-                dec = self._guard_failed("correlated_tier_selloff", e, order)
-                if dec:
-                    return dec
-                correlated_hit = False
-            if correlated_hit:
-                return RiskDecision(
-                    approved=False,
-                    message=f"Correlated-tier selloff active for {order.symbol}",
-                    code="correlated_tier_selloff",
-                    size_multiplier=0.0,
-                )
+                from services.correlated_tier.api import correlated_tier_selloff_active
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                if correlated_tier_selloff_active(order.symbol, raw_cfg):
+                    return RiskDecision(
+                        approved=False,
+                        message=f"Correlated-tier selloff active for {order.symbol}",
+                        code="correlated_tier_selloff",
+                        size_multiplier=0.0,
+                    )
+            except Exception:
+                pass
             # Universe split: new BUYs only on trade-eligible set (observe is broader).
             # RelVol ignition deliberately discovers thin/off-universe names — exempt.
-            from services.universe.split import is_trade_eligible, universe_split_enabled
-
-            raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
             try:
-                universe_hit = (
+                from services.universe.split import is_trade_eligible, universe_split_enabled
+
+                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                if (
                     universe_split_enabled(raw_cfg)
                     and not self._is_dca_buy(source, order)
                     and not self._is_relvol_buy(source, order)
-                    and not is_trade_eligible(
+                ):
+                    if not is_trade_eligible(
                         order.symbol,
                         config=raw_cfg,
-                    )
-                )
-            except Exception as e:
-                dec = self._guard_failed("universe_trade_cap", e, order)
-                if dec:
-                    return dec
-                universe_hit = False
-            if universe_hit:
-                return RiskDecision(
-                    approved=False,
-                    message=(
-                        f"Outside trade universe (observe-only): {order.symbol}"
-                    ),
-                    code="universe_trade_cap",
-                    size_multiplier=0.0,
-                )
+                    ):
+                        return RiskDecision(
+                            approved=False,
+                            message=(
+                                f"Outside trade universe (observe-only): {order.symbol}"
+                            ),
+                            code="universe_trade_cap",
+                            size_multiplier=0.0,
+                        )
+            except Exception:
+                pass
 
             # Issue #162: prev-day gainer chase guard (new entries only, not DCA add)
             if not self._is_dca_buy(source, order):
-                from services.gainer_universe.chase_guard import check_gainer_chase_guard
-
-                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                px = float(getattr(order, "price", 0) or 0)
                 try:
+                    from services.gainer_universe.chase_guard import check_gainer_chase_guard
+
+                    raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
+                    px = float(getattr(order, "price", 0) or 0)
                     blocked, gmsg = check_gainer_chase_guard(
                         order.symbol, px, config=raw_cfg
                     )
-                except Exception as e:
-                    dec = self._guard_failed("gainer_chase_guard", e, order)
-                    if dec:
-                        return dec
-                    blocked, gmsg = False, ""
-                if blocked:
-                    return RiskDecision(
-                        approved=False,
-                        message=gmsg,
-                        code="gainer_chase_guard",
-                        size_multiplier=0.0,
-                    )
+                    if blocked:
+                        return RiskDecision(
+                            approved=False,
+                            message=gmsg,
+                            code="gainer_chase_guard",
+                            size_multiplier=0.0,
+                        )
+                except Exception:
+                    pass
 
-            from services.market_policy_fusion import get_global_market_bias
-
-            bias = {}
             try:
+                from services.market_policy_fusion import get_global_market_bias
+
                 bias = get_global_market_bias(
                     self.config.raw if hasattr(self.config, "raw") else None
                 )
-                market_hit = bool(bias.get("block_buys"))
-            except Exception as e:
-                dec = self._guard_failed("market_block", e, order)
-                if dec:
-                    return dec
-                market_hit = False
-            if market_hit:
-                try:
-                    from services.market_context_observability import note_buy_blocked
+                if bias.get("block_buys"):
+                    try:
+                        from services.market_context_observability import note_buy_blocked
 
-                    note_buy_blocked(
-                        regime=bias.get("regime"),
-                        source=bias.get("source"),
-                        rationale=str(bias.get("rationale") or ""),
+                        note_buy_blocked(
+                            regime=bias.get("regime"),
+                            source=bias.get("source"),
+                            rationale=str(bias.get("rationale") or ""),
+                        )
+                    except Exception:
+                        pass
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Market {bias.get('regime') or 'block'} "
+                            f"[{bias.get('source') or 'global'}]: "
+                            f"no new entries ({bias.get('rationale') or 'policy'})"
+                        ),
+                        code="market_block",
+                        size_multiplier=float(bias.get("size_mult") or 0.0),
                     )
-                except Exception:
-                    pass
-                return RiskDecision(
-                    approved=False,
-                    message=(
-                        f"Market {bias.get('regime') or 'block'} "
-                        f"[{bias.get('source') or 'global'}]: "
-                        f"no new entries ({bias.get('rationale') or 'policy'})"
-                    ),
-                    code="market_block",
-                    size_multiplier=float(bias.get("size_mult") or 0.0),
-                )
-            if (
-                _fail_closed_guards_mode(self.config) == "deny"
-                and bool(bias.get("degraded"))
-                and not self._is_dca_buy(source, order)
-            ):
-                try:
-                    from services.market_context_observability import note_buy_blocked
-
-                    note_buy_blocked(
-                        regime="UNKNOWN",
-                        source=bias.get("source"),
-                        rationale="market_bias_degraded",
-                    )
-                except Exception:
-                    pass
-                return RiskDecision(
-                    approved=False,
-                    message="Market bias degraded: no new entries",
-                    code="market_bias_degraded",
-                    size_multiplier=0.0,
-                )
+            except Exception:
+                pass
 
             # Coin memory soft_block: skip *new* entries only (DCA / existing pos allowed)
             if not has_position and not self._is_dca_buy(source, order):
-                from intelligence.memory.cache import get_entry_bias, get_coin_profile
-                from strategies.sensor_entry_policy import is_sensor_source
-
-                memory_hit = False
-                memory_msg = ""
                 try:
+                    from intelligence.memory.cache import get_entry_bias, get_coin_profile
+                    from strategies.sensor_entry_policy import is_sensor_source
+
                     if get_entry_bias(order.symbol) == "soft_block":
                         prof = get_coin_profile(order.symbol)
                         feats = (prof.features if prof else None) or {}
@@ -550,36 +411,26 @@ class RiskManager:
                                 except Exception:
                                     pass
                         if block_this:
-                            memory_hit = True
-                            memory_msg = (
-                                f"Coin memory soft_block {order.symbol}: "
-                                f"{(prof.rationale if prof else 'weak history')}"
+                            return RiskDecision(
+                                approved=False,
+                                message=(
+                                    f"Coin memory soft_block {order.symbol}: "
+                                    f"{(prof.rationale if prof else 'weak history')}"
+                                ),
+                                code="coin_memory_soft_block",
+                                size_multiplier=0.0,
                             )
-                except Exception as e:
-                    dec = self._guard_failed("coin_memory_soft_block", e, order)
-                    if dec:
-                        return dec
-                    memory_hit = False
-                if memory_hit:
-                    return RiskDecision(
-                        approved=False,
-                        message=memory_msg,
-                        code="coin_memory_soft_block",
-                        size_multiplier=0.0,
-                    )
+                except Exception:
+                    pass
                 # WQE-R1: quality gate for all new entries (soft/enforce); DCA/open exempt
                 if not has_position and not self._is_dca_buy(source, order):
-                    from services.watchlist_quality.config import wqe_mode
-                    from services.watchlist_quality.enforce import buy_allowed
-                    from services.watchlist_quality.store import load_quality_scores
-
-                    raw = self.config.raw if hasattr(self.config, "raw") else None
-                    wqe_hit = False
-                    wqe_reason = ""
-                    scored = None
                     try:
-                        mode = wqe_mode(raw)
-                        if mode in ("soft", "enforce"):
+                        from services.watchlist_quality.config import wqe_mode
+                        from services.watchlist_quality.enforce import buy_allowed
+                        from services.watchlist_quality.store import load_quality_scores
+
+                        raw = self.config.raw if hasattr(self.config, "raw") else None
+                        if wqe_mode(raw) in ("soft", "enforce"):
                             try:
                                 from core.tenant_context import current_tenant_id
 
@@ -601,60 +452,45 @@ class RiskManager:
                                 has_open_position=False,
                             )
                             if not ok:
-                                wqe_hit = True
-                                wqe_reason = reason
-                    except Exception as e:
-                        dec = self._guard_failed("watchlist_quality", e, order)
-                        if dec:
-                            return dec
-                        wqe_hit = False
-                    if wqe_hit:
-                        try:
-                            from services.watchlist_quality.metrics import note_buy_blocked
-                            from services.watchlist_quality.event_log import log_buy_block
+                                try:
+                                    from services.watchlist_quality.metrics import note_buy_blocked
+                                    from services.watchlist_quality.event_log import log_buy_block
 
-                            note_buy_blocked(wqe_reason)
-                            q = None
-                            if scored:
-                                q = scored.get("quality_shadow_ai")
-                                if q is None:
-                                    q = scored.get("quality_score")
-                            log_buy_block(
-                                order.symbol,
-                                wqe_reason,
-                                source=str(source or ""),
-                                mode=mode,
-                                quality_score=q,
-                                config=raw,
-                            )
-                        except Exception:
-                            pass
-                        return RiskDecision(
-                            approved=False,
-                            message=f"WQE block {order.symbol}: {wqe_reason}",
-                            code="watchlist_quality",
-                            size_multiplier=0.0,
-                        )
+                                    note_buy_blocked(reason)
+                                    q = None
+                                    if scored:
+                                        q = scored.get("quality_shadow_ai")
+                                        if q is None:
+                                            q = scored.get("quality_score")
+                                    log_buy_block(
+                                        order.symbol,
+                                        reason,
+                                        source=str(source or ""),
+                                        mode=mode,
+                                        quality_score=q,
+                                        config=raw,
+                                    )
+                                except Exception:
+                                    pass
+                                return RiskDecision(
+                                    approved=False,
+                                    message=f"WQE block {order.symbol}: {reason}",
+                                    code="watchlist_quality",
+                                    size_multiplier=0.0,
+                                )
+                    except Exception:
+                        pass
                 # Re-entry cooloff after gross loss (sensor-entry-guard)
                 try:
                     cool = self._sensor_reentry_cooloff_blocked(order, source)
-                except Exception as e:
-                    dec = self._guard_failed("sensor_reentry_cooloff", e, order)
-                    if dec:
-                        return dec
-                    cool = None
-                if cool:
-                    return cool
+                    if cool:
+                        return cool
+                except Exception:
+                    pass
                 # Venue quality hard gate (buys only; sells never use this)
-                from services.venue_quality import (
-                    check_venue_for_buy,
-                    source_applies_venue,
-                    venue_quality_config,
-                )
-
-                venue_hit = False
-                venue_msg = ""
                 try:
+                    from services.venue_quality import check_venue_for_buy, source_applies_venue, venue_quality_config
+
                     vcfg = venue_quality_config(
                         self.config.raw if hasattr(self.config, "raw") else None
                     )
@@ -669,58 +505,36 @@ class RiskManager:
                             config_raw=self.config.raw if hasattr(self.config, "raw") else None,
                         )
                         if not vres.ok:
-                            venue_hit = True
-                            venue_msg = (
-                                f"Venue quality block {order.symbol}: "
-                                + ("; ".join(vres.reasons) or "thin market")
+                            return RiskDecision(
+                                approved=False,
+                                message=(
+                                    f"Venue quality block {order.symbol}: "
+                                    + ("; ".join(vres.reasons) or "thin market")
+                                ),
+                                code="venue_liquidity_block",
+                                size_multiplier=0.0,
                             )
-                except Exception as e:
-                    dec = self._guard_failed("venue_liquidity_block", e, order)
-                    if dec:
-                        return dec
-                    venue_hit = False
-                if venue_hit:
-                    return RiskDecision(
-                        approved=False,
-                        message=venue_msg,
-                        code="venue_liquidity_block",
-                        size_multiplier=0.0,
-                    )
+                except Exception:
+                    pass
                 # Optional macro calendar hard block (default off — prefer size mult)
-                from intelligence.macro.snapshot import get_risk_multipliers
-
-                mm = {}
                 try:
+                    from intelligence.macro.snapshot import get_risk_multipliers
+
                     mm = get_risk_multipliers(
                         self.config.raw if hasattr(self.config, "raw") else None
                     )
-                    macro_hit = bool(mm.get("block_new_entries"))
-                except Exception as e:
-                    dec = self._guard_failed("macro_calendar_block", e, order)
-                    if dec:
-                        return dec
-                    macro_hit = False
-                if macro_hit:
-                    return RiskDecision(
-                        approved=False,
-                        message=(
-                            f"Macro calendar pre-window block: "
-                            f"{mm.get('calendar_risk') or mm.get('next_event') or 'high impact'}"
-                        ),
-                        code="macro_calendar_block",
-                        size_multiplier=0.0,
-                    )
-
-        # Cash floor / daily buy limit reject with no side effects. Do not
-        # evict (live sell) for an entry those guards would still deny (#334).
-        is_dca = self._is_dca_buy(source, order)
-        floor_block = self._cash_floor_blocked(is_dca=is_dca)
-        if floor_block:
-            return floor_block
-
-        buy_limit = self._daily_buy_limit_blocked(is_dca)
-        if buy_limit:
-            return buy_limit
+                    if mm.get("block_new_entries"):
+                        return RiskDecision(
+                            approved=False,
+                            message=(
+                                f"Macro calendar pre-window block: "
+                                f"{mm.get('calendar_risk') or mm.get('next_event') or 'high impact'}"
+                            ),
+                            code="macro_calendar_block",
+                            size_multiplier=0.0,
+                        )
+                except Exception:
+                    pass
 
         open_slots = count_open_full_slots(self.config.raw)
         if not has_position:
@@ -730,11 +544,10 @@ class RiskManager:
 
                 msg = format_capacity_reject_message(cap, open_slots)
                 free = max(0, int(cap.max_open_eff) - int(open_slots))
-                evicted_ok = False
                 try:
                     from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
 
-                    plan, suffix = try_slot_eviction_on_max_open(
+                    _plan, suffix = try_slot_eviction_on_max_open(
                         order=order,
                         source=source,
                         free_full_slots=free,
@@ -748,29 +561,22 @@ class RiskManager:
                     )
                     if suffix:
                         msg = f"{msg}{suffix}"
-                    veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
-                    if veto == "no_positive_price":
-                        return RiskDecision(
-                            approved=False,
-                            message=msg or "slot eviction aborted: no positive price",
-                            code="slot_eviction_no_price",
-                        )
-                    # Structured flag set by the runtime after the eviction sell filled —
-                    # never infer execution from the human-readable suffix (#300 audit).
-                    sell_executed = bool(getattr(plan, "sell_executed", False))
-                    if sell_executed:
-                        open_slots = count_open_full_slots(self.config.raw)
-                        if open_slots < cap.max_open_eff:
-                            evicted_ok = True
                 except Exception:
                     pass
-                if not evicted_ok:
-                    return RiskDecision(
-                        approved=False,
-                        message=msg,
-                        code="max_open_positions",
-                    )
-                # Slot freed in this evaluate() call — continue _evaluate_impl.
+                return RiskDecision(
+                    approved=False,
+                    message=msg,
+                    code="max_open_positions",
+                )
+
+        is_dca = self._is_dca_buy(source, order)
+        floor_block = self._cash_floor_blocked(is_dca=is_dca)
+        if floor_block:
+            return floor_block
+
+        buy_limit = self._daily_buy_limit_blocked(is_dca)
+        if buy_limit:
+            return buy_limit
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
@@ -908,7 +714,7 @@ class RiskManager:
             factors["ticket_capped"] = True
             factors["ticket_cap_usdt"] = ticket_cap
 
-        equity = self._equity_for_sizing(order.price, order.symbol)
+        equity = self._portfolio_equity(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
         max_position_value = equity * (self.config.max_position_percent / 100.0)
         room = max_position_value - pos_value
@@ -974,7 +780,6 @@ class RiskManager:
             source=resolved_source,
             order_id=order.order_id,
             timestamp=order.timestamp,
-            exposure_multiplier=getattr(order, "exposure_multiplier", None),
         )
         return RiskDecision(
             approved=True,
@@ -988,8 +793,7 @@ class RiskManager:
 
     def status_summary(self, current_price: float = None) -> dict:
         history = self._primary_history()
-        mtm = self._portfolio_equity(current_price or 0)
-        equity = float(mtm) if mtm is not None else 0.0
+        equity = self._portfolio_equity(current_price or 0)
         initial = self._initial_capital()
         drawdown_pct = self._equity_drawdown_pct()
         throttle_at = float(self.config.risk_config.get("drawdown_throttle_pct", 10.0))
@@ -997,16 +801,15 @@ class RiskManager:
         floor_abs = self._cash_floor_abs()
         spendable = self._spendable_usdt(equity, is_dca=False)
         full_slots = count_open_full_slots(self.config.raw)
-        daily = self._daily_counters_from_orders(self._load_orders_document())
         out = {
             "open_positions": count_open_positions(),
             "open_full_slots": full_slots,
             "max_open_positions": self.config.max_open_positions,
-            "daily_trades": daily["daily_trades"],
-            "daily_buys": daily["daily_buys"],
-            "daily_dca_buys": daily["daily_dca_buys"],
-            "daily_dca_usdt": round(daily["daily_dca_usdt"], 2),
-            "daily_sells": daily["daily_sells"],
+            "daily_trades": self._daily_trades_count(),
+            "daily_buys": self._daily_buys_count(dca_only=False if self._dca_limits_enabled() else None),
+            "daily_dca_buys": self._daily_dca_buys_count(),
+            "daily_dca_usdt": round(self._daily_dca_usdt_sum(), 2),
+            "daily_sells": self._daily_sells_count(),
             "max_daily_trades": self._effective_max_daily_buys(),
             "max_daily_buys": self._effective_max_daily_buys(),
             "max_daily_dca_buys": self._effective_max_daily_dca_buys(),
@@ -1023,10 +826,6 @@ class RiskManager:
             "cash_floor_pct": float(self.config.risk_config.get("cash_floor_pct", 0) or 0),
             "spendable_usdt": round(spendable, 2),
             "ledger_source": self._ledger_source_label(),
-            "risk_halt_until": str((history or {}).get("risk_halt_until") or ""),
-            "max_daily_loss_pct": float(
-                self.config.risk_config.get("max_daily_loss_pct", 0) or 0
-            ),
         }
         pol = self._evaluate_cash_policy(equity)
         if pol is not None and pol.enabled:
@@ -1257,106 +1056,6 @@ class RiskManager:
             )
         return None
 
-    @staticmethod
-    def _parse_iso_dt(raw) -> datetime | None:
-        if not raw:
-            return None
-        try:
-            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            return ts.astimezone(timezone.utc)
-        except Exception:
-            return None
-
-    def _risk_history_load(self) -> dict:
-        if is_live_dry_run(self.config.raw):
-            return load_live_trade_history() or {}
-        return load_trade_history() or {}
-
-    def _risk_history_save(self, history: dict) -> None:
-        from data_manager import save_live_trade_history, save_trade_history
-
-        if is_live_dry_run(self.config.raw):
-            save_live_trade_history(history)
-        else:
-            save_trade_history(history)
-
-    def _trailing_24h_realized_pnl(self) -> float:
-        """Filled-order realized PnL over the trailing 24h (order-service window)."""
-        from data_manager import resolve_ledger_scope
-        from services.order_service import OrderService, _display_now_naive
-
-        # _stats_filled_window filters through order_event_ts, which is naive in
-        # the DISPLAY timezone. A naive datetime.now() is the process clock (UTC
-        # on Railway), so the window was shifted by the UTC offset: the last two
-        # hours of fills were missing and fills from 24-26 h ago counted instead
-        # -- exactly the wrong window for a kill switch (review of PR #322).
-        now = _display_now_naive()
-        start = now - timedelta(hours=24)
-        stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
-        return float((stats or {}).get("realized_pnl") or 0)
-
-    def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:
-        """Kill switch: block BUY/SHORT when trailing-24h realized PnL ≤ -pct of NAV."""
-        try:
-            pct = float(self.config.risk_config.get("max_daily_loss_pct", 0) or 0)
-        except (TypeError, ValueError):
-            pct = 0.0
-        if pct <= 0:
-            return None
-        history = self._risk_history_load()
-        if not isinstance(history, dict):
-            history = {}
-        until = self._parse_iso_dt(history.get("risk_halt_until"))
-        now = datetime.now(timezone.utc)
-        if until is not None and until > now:
-            return RiskDecision(
-                approved=False,
-                message=f"Daily loss limit: halted until {history.get('risk_halt_until')}",
-                code="daily_loss_limit",
-                size_multiplier=0.0,
-            )
-        try:
-            realized = float(self._trailing_24h_realized_pnl())
-        except Exception as e:
-            # Same rollout switch as every other guard: 'log' -> ERROR + allow (old
-            # behaviour, visible), 'deny' -> block new exposure (#302 audit).
-            return self._guard_failed("daily_loss_limit", e, order)
-        nav = self._portfolio_equity()
-        if nav is None or float(nav) <= 0:
-            nav = float(self._initial_capital() or 0)
-        if nav <= 0:
-            return None
-        threshold = -(pct / 100.0) * float(nav)
-        if realized > threshold:
-            return None
-        halt_iso = (now + timedelta(hours=24)).isoformat()
-        history["risk_halt_until"] = halt_iso
-        try:
-            self._risk_history_save(history)
-        except Exception:
-            pass
-        try:
-            from core.operator_notify import notify_operator
-
-            notify_operator(
-                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
-                f"New buys/shorts halted until {halt_iso}."
-            )
-        except Exception:
-            pass
-        return RiskDecision(
-            approved=False,
-            message=(
-                f"Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
-            ),
-            code="daily_loss_limit",
-            size_multiplier=0.0,
-        )
-
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
             return float(
@@ -1408,26 +1107,16 @@ class RiskManager:
             basis = str(risk.get("cash_floor_basis", "initial") or "initial")
         basis = basis.lower()
         if basis == "nav":
-            if equity is not None:
-                return float(equity)
-            return self._equity_for_sizing()
+            return float(equity if equity is not None else self._portfolio_equity())
         return float(self._initial_capital())
 
     def _market_bias_for_cash(self) -> dict:
-        """Fusion/global bias for cash policy; fail-open to neutral unless deny."""
-        from services.market_policy_fusion import get_global_market_bias
-
+        """Fusion/global bias for cash policy; fail-open to neutral."""
         try:
-            out = dict(get_global_market_bias(self.config.raw) or {})
-            if _fail_closed_guards_mode(self.config) == "deny" and out.get("degraded"):
-                r = str(out.get("regime") or "").upper()
-                if r in ("", "RISK_ON", "UNKNOWN"):
-                    out["regime"] = "NEUTRAL"
-            return out
-        except Exception as e:
-            dec = self._guard_failed("market_bias_for_cash", e, None)
-            if dec is not None:
-                return {"size_mult": 0.0, "block_buys": True, "regime": None}
+            from services.market_policy_fusion import get_global_market_bias
+
+            return dict(get_global_market_bias(self.config.raw) or {})
+        except Exception:
             return {"size_mult": 1.0, "block_buys": False, "regime": None}
 
     def _process_uptime_sec(self) -> float | None:
@@ -1487,11 +1176,6 @@ class RiskManager:
         throttle_at = float(risk.get("drawdown_throttle_pct", 10.0) or 10.0)
         drawdown_active = float(self._equity_drawdown_pct()) >= throttle_at
         soft_n, toxic_n, prefer_n = self._open_book_memory_counts()
-        if _fail_closed_guards_mode(self.config) == "deny" and bias.get("degraded"):
-            prefer_n = 0
-            r = str(regime or "").upper()
-            if r in ("", "RISK_ON", "UNKNOWN"):
-                regime = "NEUTRAL"
 
         # Inject avg_entry into capacity section from bot trade size (no hardcode)
         risk_for_cap = dict(risk) if isinstance(risk, dict) else {}
@@ -1526,7 +1210,7 @@ class RiskManager:
         risk = self.config.risk_config
         if not is_cash_policy_enabled(risk):
             return None
-        eq = float(equity) if equity is not None else self._equity_for_sizing()
+        eq = float(equity if equity is not None else self._portfolio_equity())
         cash = float(self._available_usdt(eq))
         bias = self._market_bias_for_cash()
         try:
@@ -1622,102 +1306,13 @@ class RiskManager:
             ref_prices[symbol] = reference_price
         return ref_prices
 
-    def _log_equity_mtm_unavailable_once(self, reason: str) -> None:
-        global _EQUITY_MTM_UNAVAILABLE_LOGGED
-        if _EQUITY_MTM_UNAVAILABLE_LOGGED:
-            return
-        _EQUITY_MTM_UNAVAILABLE_LOGGED = True
-        try:
-            from logger import log
-
-            log(
-                f"portfolio MTM equity unavailable ({reason}); "
-                "drawdown treated as unknown → size throttle",
-                "WARNING",
-            )
-        except Exception:
-            pass
-
-    def _mark_to_market_equity(
-        self, reference_price: float = 0, symbol: str = None
-    ) -> float | None:
-        """Cash + positions at live prices. None if any open lot lacks a quote."""
-        try:
-            from price_fetcher import get_prices_batch
-            from strategies.positions import list_active_positions
-
-            cash = float(self._available_usdt() or 0)
-            active = list_active_positions()
-            if not active:
-                return cash
-            symbols: list[str] = []
-            for pos in active:
-                raw_sym = pos.get("symbol") or ""
-                symbols.append(raw_sym if "/" in raw_sym else f"{raw_sym}/USDT")
-            live: dict[str, float] = {}
-            if symbol and float(reference_price or 0) > 0:
-                ref_sym = symbol if "/" in symbol else f"{symbol}/USDT"
-                live[ref_sym] = float(reference_price)
-            need = [s for s in dict.fromkeys(symbols) if s not in live]
-            if need:
-                batch = get_prices_batch(need) or {}
-                for s, px in batch.items():
-                    try:
-                        val = float(px or 0)
-                    except (TypeError, ValueError):
-                        val = 0.0
-                    if val > 0:
-                        live[s] = val
-            total = cash
-            for pos in active:
-                raw_sym = pos.get("symbol") or ""
-                sym = raw_sym if "/" in raw_sym else f"{raw_sym}/USDT"
-                px = float(live.get(sym) or 0)
-                amount = float(pos.get("amount") or 0)
-                if amount <= 1e-12:
-                    continue
-                if px <= 0:
-                    return None
-                try:
-                    from strategies.short_math import is_short, snapshot
-
-                    if is_short(pos):
-                        snap = snapshot(pos, px)
-                        total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
-                        continue
-                except Exception:
-                    pass
-                total += amount * px
-            return total
-        except Exception:
-            return None
-
-    def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float | None:
-        """Mark-to-market NAV. None when live prices and a fresh snapshot are missing."""
-        try:
-            from services.portfolio_nav_history import latest_fresh_nav
-
-            interval = float(getattr(self.config, "update_interval", 600) or 600)
-            snap = latest_fresh_nav(max_age_sec=2.0 * interval)
-            if snap is not None:
-                return float(snap)
-        except Exception:
-            pass
-        mtm = self._mark_to_market_equity(reference_price, symbol)
-        if mtm is None:
-            self._log_equity_mtm_unavailable_once("live prices/NAV missing")
-        return mtm
-
-    def _equity_for_sizing(self, reference_price: float = 0, symbol: str = None) -> float:
-        """Sizing/concentration fallback — never pretends cost-basis is MTM."""
-        mtm = self._portfolio_equity(reference_price, symbol)
-        if mtm is not None:
-            return float(mtm)
-        return float(self._initial_capital() or 0)
+    def _portfolio_equity(self, reference_price: float = 0, symbol: str = None) -> float:
+        return fetch_portfolio_equity(
+            self.config,
+            reference_prices=self._dry_run_reference_prices(reference_price, symbol),
+        )
 
     def _equity_drawdown_pct(self, reference_price: float = 0, symbol: str = None) -> float:
-        risk = self.config.risk_config if hasattr(self.config, "risk_config") else {}
-        throttle_at = float((risk or {}).get("drawdown_throttle_pct", 10.0) or 10.0)
         if is_live_dry_run(self.config.raw):
             history = load_live_trade_history()
             initial = simulated_balance_usdt(self.config.raw)
@@ -1726,29 +1321,11 @@ class RiskManager:
             history = load_trade_history()
             initial = self._initial_capital()
             equity = self._portfolio_equity(reference_price, symbol)
-        if equity is None:
-            # Unknown drawdown → arm the size throttle, never report 1.0.
-            return float(throttle_at)
-        try:
-            peak = float(history.get("peak_equity", initial))
-        except (TypeError, ValueError):
-            peak = float(initial or 0)
+        peak = float(history.get("peak_equity", initial))
         peak = max(peak, equity, initial)
         if peak <= 0:
             return 0.0
         return max(0.0, (peak - equity) / peak * 100.0)
-
-    def _most_restrictive_coin_size_bias(self) -> float:
-        """Min of the configured size-bias range; 0.5 if not derivable."""
-        try:
-            raw = self.config.raw if hasattr(self.config, "raw") else {}
-            gl = ((raw or {}).get("memory") or {}).get("gross_loss") or {}
-            cap = gl.get("size_bias_cap")
-            if cap is not None:
-                return float(cap)
-        except Exception:
-            pass
-        return 0.5
 
     def _dynamic_size(
         self,
@@ -1784,9 +1361,9 @@ class RiskManager:
         global_mult = 1.0
         global_regime = None
         global_source = None
-        from services.market_policy_fusion import get_global_market_bias
-
         try:
+            from services.market_policy_fusion import get_global_market_bias
+
             bias = get_global_market_bias(
                 self.config.raw if hasattr(self.config, "raw") else None
             )
@@ -1801,23 +1378,16 @@ class RiskManager:
                         note_size_cut(mult=global_mult, regime=global_regime)
                     except Exception:
                         pass
-            if _fail_closed_guards_mode(self.config) == "deny" and bias.get("degraded"):
-                global_mult = min(1.0, float(global_mult))
-                global_regime = "UNKNOWN"
-                global_source = bias.get("source") or global_source
-        except Exception as e:
-            dec = self._guard_failed("global_market_bias", e, order)
-            if dec is not None:
-                global_mult = 0.0
-                global_regime = "UNKNOWN"
+        except Exception:
+            pass
 
         coin_bias = 1.0
         coin_entry = "neutral"
         coin_rationale = ""
         social_summary = ""
-        from intelligence.memory.cache import get_coin_profile, get_size_bias
-
         try:
+            from intelligence.memory.cache import get_coin_profile, get_size_bias
+
             coin_bias = float(
                 get_size_bias(
                     order.symbol,
@@ -1833,12 +1403,8 @@ class RiskManager:
                 coin_rationale = (prof.rationale or "")[:120]
                 feats = prof.features or {}
                 social_summary = str((feats.get("social_summary") or ""))[:80]
-        except Exception as e:
-            dec = self._guard_failed("coin_memory_size_bias", e, order)
-            if dec is not None:
-                coin_bias = self._most_restrictive_coin_size_bias()
-            else:
-                coin_bias = 1.0
+        except Exception:
+            coin_bias = 1.0
             social_summary = ""
 
         calendar_mult = 1.0
@@ -1911,26 +1477,6 @@ class RiskManager:
         else:
             total = max(min_mult, min(max_mult, total))
 
-        # Allocator de-risking: never a boost, applied once after other multipliers.
-        raw_exp = getattr(order, "exposure_multiplier", None)
-        try:
-            exp_mult = 1.0 if raw_exp is None else float(raw_exp)
-        except (TypeError, ValueError):
-            exp_mult = 1.0
-        exp_mult = max(0.0, min(1.0, exp_mult))
-        if exp_mult < 1.0:
-            total *= exp_mult
-            try:
-                from logger import log
-
-                log(
-                    f"exposure_multiplier={exp_mult:.2f} applied {order.symbol} "
-                    f"total={total:.3f}",
-                    "INFO",
-                )
-            except Exception:
-                pass
-
         factors = {
             "trust_factor": round(trust_factor, 3),
             "conf_factor": round(conf_factor, 3),
@@ -1951,7 +1497,6 @@ class RiskManager:
             "session_risk": session_risk,
             "pm_risk": pm_risk,
             "moderate_deploy_mult": round(md_boost, 3),
-            "exposure_multiplier": round(exp_mult, 3),
             "total_multiplier": round(total, 3),
         }
         return base_usdt * total, factors
@@ -2021,10 +1566,8 @@ class RiskManager:
                 float(order.price or 0),
                 None,
             )
-        except Exception as e:
-            # Never full-sell on a sizing error — skip the partial instead.
-            self._guard_failed("sell_fraction", e, order)
-            fraction = 0.0
+        except Exception:
+            fraction = 1.0
         amount = held * float(fraction or 0)
         if amount <= 0:
             return order
@@ -2373,10 +1916,7 @@ class RiskManager:
 
         try:
             last_ts = datetime.fromisoformat(str(last_at).replace("Z", ""))
-        except Exception as e:
-            dec = self._guard_failed("trade_cooldown", e, order)
-            if dec is not None:
-                return True, "cooldown_timestamp_unparsable"
+        except Exception:
             return False, ""
 
         pos_amount = float(pos.get("amount", 0) or 0)
@@ -2599,18 +2139,6 @@ class RiskManager:
             return side
         return ""
 
-    def _load_orders_document(self) -> dict:
-        scope = self._eval_scope()
-        scoped = getattr(scope, "doc", None)
-        if scoped is not None and scoped is not _EVAL_DOC_PENDING:
-            return scoped
-        from data_manager import load_orders, resolve_ledger_scope
-
-        doc = load_orders(resolve_ledger_scope(self.config.trading_mode)) or {}
-        if scoped is _EVAL_DOC_PENDING:
-            scope.doc = doc
-        return doc
-
     def _daily_trades_count(
         self,
         side: str | None = None,
@@ -2625,16 +2153,13 @@ class RiskManager:
         *,
         side: str | None = None,
         dca_only: bool | None = None,
-        orders_doc: dict | None = None,
-        cutoff: datetime | None = None,
     ):
-        if cutoff is None:
-            cutoff = datetime.now() - timedelta(hours=24)
-        if orders_doc is None:
-            orders_doc = self._load_orders_document()
-        orders = orders_doc.get("orders", []) if isinstance(orders_doc, dict) else []
+        from data_manager import load_orders, resolve_ledger_scope
+
+        cutoff = datetime.now() - timedelta(hours=24)
+        scope = resolve_ledger_scope(self.config.trading_mode)
         want = (side or "").lower() or None
-        for order in orders:
+        for order in load_orders(scope).get("orders", []):
             if order.get("status") != "filled":
                 continue
             order_side = self._order_side(order)
@@ -2656,35 +2181,6 @@ class RiskManager:
                 continue
             if ts >= cutoff:
                 yield order
-
-    def _daily_counters_from_orders(
-        self,
-        orders_doc: dict | None,
-        *,
-        cutoff: datetime | None = None,
-        dca_limits: bool | None = None,
-    ) -> dict:
-        """Derive the five daily counters from one already-loaded orders document."""
-        if cutoff is None:
-            cutoff = datetime.now() - timedelta(hours=24)
-        if dca_limits is None:
-            dca_limits = self._dca_limits_enabled()
-        filled = list(
-            self._iter_daily_filled_orders(orders_doc=orders_doc or {}, cutoff=cutoff)
-        )
-        buys = [o for o in filled if self._order_side(o) == "buy"]
-        dca_buys = [o for o in buys if self._order_is_dca(o)]
-        if dca_limits:
-            daily_buys = sum(1 for o in buys if not self._order_is_dca(o))
-        else:
-            daily_buys = len(buys)
-        return {
-            "daily_trades": len(filled),
-            "daily_buys": daily_buys,
-            "daily_dca_buys": len(dca_buys),
-            "daily_dca_usdt": sum(self._filled_order_usdt(o) for o in dca_buys),
-            "daily_sells": sum(1 for o in filled if self._order_side(o) == "sell"),
-        }
 
     def _daily_buys_count(self, *, dca_only: bool | None = None) -> int:
         return self._daily_trades_count("buy", dca_only=dca_only)

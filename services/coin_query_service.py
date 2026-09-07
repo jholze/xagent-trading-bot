@@ -92,12 +92,7 @@ def query_coin_prices(
     fetched_prices: dict[str, float] = {}
     fetched_sources: dict[str, str] = {}
     if missing:
-        batch = get_prices_batch(
-            missing,
-            fallbacks=fallbacks,
-            return_sources=True,
-            allow_entry_price_fallback=True,
-        )
+        batch = get_prices_batch(missing, fallbacks=fallbacks, return_sources=True)
         if isinstance(batch, tuple):
             fetched_prices, fetched_sources = batch
         else:

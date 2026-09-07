@@ -1,4 +1,3 @@
-import copy
 import os
 import sys
 import unittest
@@ -528,7 +527,7 @@ class TestDCARisk(unittest.TestCase):
         from core.config import BotConfig
         from data_manager import get_config
 
-        raw = copy.deepcopy(get_config())
+        raw = dict(get_config())
         raw.setdefault("architecture", {})["min_hours_after_sell_before_rebuy"] = 4.0
         cfg = BotConfig()
         cfg._raw = raw
@@ -559,7 +558,7 @@ class TestDCARisk(unittest.TestCase):
         from core.config import BotConfig
         from data_manager import get_config
 
-        raw = copy.deepcopy(get_config())
+        raw = dict(get_config())
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -585,7 +584,7 @@ class TestDCARisk(unittest.TestCase):
         from core.config import BotConfig
         from data_manager import get_config
 
-        raw = copy.deepcopy(get_config())
+        raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_buys"] = 1
         raw["risk"]["max_daily_dca_buys"] = 5
         raw.setdefault("live", {})["dry_run_enhanced"] = False
@@ -614,7 +613,7 @@ class TestDCARisk(unittest.TestCase):
         from core.config import BotConfig
         from data_manager import get_config
 
-        raw = copy.deepcopy(get_config())
+        raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_buys"] = 1
         raw["risk"]["max_daily_dca_buys"] = 10
         raw.setdefault("live", {})["dry_run_enhanced"] = False
@@ -644,7 +643,7 @@ class TestDCARisk(unittest.TestCase):
         from core.config import BotConfig
         from data_manager import get_config
 
-        raw = copy.deepcopy(get_config())
+        raw = dict(get_config())
         raw.setdefault("risk", {})["max_daily_dca_buys"] = 50
         raw["risk"]["max_daily_dca_usdt"] = 100
         raw.setdefault("live", {})["dry_run_enhanced"] = False

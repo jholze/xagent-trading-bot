@@ -288,14 +288,12 @@ def sync_macro_context(
                 next_event = e.event_code
 
     # --- regime rules ---
-    calendar_injected = calendar_events is not None
     regime = apply_regime_rules(
         sess,
         in_macro_pre_window=in_pre,
         macro_event_code=next_event,
         high_impact=high_impact,
         config={**scfg, **crcfg},
-        data_complete=calendar_injected,
     )
     # merge calendar mult from windows into regime
     regime["calendar_mult"] = min(
@@ -319,7 +317,6 @@ def sync_macro_context(
     pm_payload: dict[str, Any] = {"markets": [], "mispricing_score": 0.0}
     if pcfg.get("enabled", True):
         markets = pm_markets
-        pm_measured = pm_markets is not None
         if markets is None:
             markets = load_fixture_markets()
             ids = list(pcfg.get("market_ids") or [])
@@ -327,11 +324,6 @@ def sync_macro_context(
                 live = fetch_polymarket_live(ids)
                 if live:
                     markets = live
-                    pm_measured = True
-                else:
-                    pm_measured = False
-            else:
-                pm_measured = False
         thr = float(pcfg.get("mispricing_delta_pp", 10))
         max_score = 0.0
         for m in markets or []:
@@ -383,7 +375,6 @@ def sync_macro_context(
         pm_payload["mispricing_score"] = max_score
         pm_payload["summary"] = pm_summary
         pm_payload["as_of"] = utc_now_iso()
-        pm_payload["measured"] = pm_measured
 
     cal_mult_f = float(regime.get("calendar_mult", calendar_mult) or 1.0)
     sess_mult_f = float(regime.get("session_mult", 1.0) or 1.0)
@@ -467,8 +458,6 @@ def sync_macro_context(
         "fakeout_risk": regime.get("fakeout_risk", sess.fakeout_risk),
         "counts": counts,
         "as_of": utc_now_iso(),
-        "measured": bool(regime.get("measured", calendar_injected))
-        and bool((pm_payload or {}).get("measured", True)),
     }
     publish_macro_snapshot(snap)
     log(

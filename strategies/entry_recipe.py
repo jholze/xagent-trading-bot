@@ -15,8 +15,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from core.models import OrderStatus
-
 import numpy as np
 import pandas as pd
 
@@ -88,7 +86,7 @@ def build_symbol_universe(
         if isinstance(item, dict):
             st = str(item.get("status") or "").lower()
             # missing status → include (legacy); skip explicit non-fills
-            if st and st not in (OrderStatus.EXECUTED.value, "closed"):
+            if st and st not in ("filled", "closed"):
                 continue
         _add(item)
     return out

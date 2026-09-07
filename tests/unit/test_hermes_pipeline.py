@@ -5,12 +5,9 @@ from unittest.mock import patch
 from strategies.decision_engine import DecisionEngine
 from core.models import MarketContext
 from data.cmc_community_provider import CMCCommunitySignal
-from tests.support.offline import gate_prices_listed
 
 
-@patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
-@patch("price_fetcher.get_ticker_price", return_value=1.0)
-def test_cmc_threshold_override_via_strategy_params(_ticker, _gate):
+def test_cmc_threshold_override_via_strategy_params():
     engine = DecisionEngine()
     market = MarketContext(
         symbol="ARIA/USDT",
@@ -39,11 +36,7 @@ def test_cmc_threshold_override_via_strategy_params(_ticker, _gate):
     assert "cmc" in analysis.sources
 
 
-@patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
-@patch("price_fetcher.get_ticker_price", return_value=1.0)
-@patch("services.market_service.MarketService._fetch_ohlcv", return_value=None)
-@patch("services.market_service.MarketService.fetch_15m_sensor_metrics", return_value=None)
-def test_pipeline_backtester_runs_on_synthetic_data(_sensor, _ohlcv, _ticker, _gate):
+def test_pipeline_backtester_runs_on_synthetic_data():
     from hermes.pipeline_backtest import PipelineBacktester
 
     n = 80

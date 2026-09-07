@@ -14,13 +14,8 @@ def apply_regime_rules(
     macro_event_code: str | None = None,
     high_impact: bool = False,
     config: dict | None = None,
-    data_complete: bool = True,
 ) -> dict[str, Any]:
-    """Return regime flags + suggested size mults (fail-open defaults).
-
-    ``data_complete=False`` marks the result unmeasured without changing the
-    1.0 multipliers (consumers that care read ``measured``).
-    """
+    """Return regime flags + suggested size mults (fail-open defaults)."""
     cfg = config or {}
     fakeout_mult = float(cfg.get("fakeout_size_mult", 0.5))
     pre_mult = float(cfg.get("size_mult_pre_high_impact", 0.5))
@@ -52,5 +47,4 @@ def apply_regime_rules(
         "fakeout_risk": round(fakeout_risk, 3),
         "tags": tags,
         "regime": tags[0] if tags else "neutral",
-        "measured": bool(data_complete),
     }

@@ -26,16 +26,8 @@ def _current_chat_id() -> str:
     return current_chat_id()
 
 
-def _today_key(now: datetime | None = None) -> str:
-    """Display-TZ calendar day (#328) — same clock as /orders and the daily tick."""
-    try:
-        from services.order_service import calendar_day_bounds
-
-        start, _ = calendar_day_bounds(now)
-        return start.strftime("%Y-%m-%d")
-    except Exception:
-        clock = now or datetime.now()
-        return clock.strftime("%Y-%m-%d")
+def _today_key() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def _load_state() -> dict:
@@ -52,7 +44,7 @@ def _save_state(data: dict) -> None:
     atomic_write_json(str(_STATE_FILE), data)
 
 
-def can_send_morning(chat_id: str | None = None, *, now: datetime | None = None) -> tuple[bool, str | None]:
+def can_send_morning(chat_id: str | None = None) -> tuple[bool, str | None]:
     cid = str(chat_id or _current_chat_id() or "").strip()
     if not cid:
         return True, None
@@ -60,7 +52,7 @@ def can_send_morning(chat_id: str | None = None, *, now: datetime | None = None)
     entry = (state.get("by_chat") or {}).get(cid)
     if not entry:
         return True, None
-    if entry.get("date") != _today_key(now):
+    if entry.get("date") != _today_key():
         return True, None
     sent_at = entry.get("sent_at", "")
     try:
@@ -71,18 +63,17 @@ def can_send_morning(chat_id: str | None = None, *, now: datetime | None = None)
     return False, time_label
 
 
-def mark_morning_sent(chat_id: str | None = None, *, now: datetime | None = None) -> None:
+def mark_morning_sent(chat_id: str | None = None) -> None:
     cid = str(chat_id or _current_chat_id() or "").strip()
     if not cid:
         return
     state = _load_state()
     by_chat = dict(state.get("by_chat") or {})
     by_chat[cid] = {
-        "date": _today_key(now),
+        "date": _today_key(),
         "sent_at": datetime.now().isoformat(timespec="seconds"),
     }
-    state["by_chat"] = by_chat
-    _save_state(state)
+    _save_state({"by_chat": by_chat})
 
 
 def _split_telegram(text: str, limit: int = _CHUNK_LIMIT) -> list[str]:
@@ -168,7 +159,7 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         f"<b>☀️ Morning Briefing</b>\n"
         f"<i>{now.strftime('%Y-%m-%d %H:%M')} · letzte 24h</i>\n"
         f"{build_line}\n"
-        f"Modus: <code>{_esc(cfg.trading_mode)}</code> · dry_run=<code>{_esc(live.get('dry_run'))}</code>\n\n"
+        f"Modus: <code>{cfg.trading_mode}</code> · dry_run=<code>{live.get('dry_run')}</code>\n\n"
         f"<b>Portfolio jetzt</b>\n"
         f"NAV <b>${total_value:,.0f}</b> · Cash ${balance:,.0f} · {open_pos} Positionen\n"
         f"Realized gesamt {stats['realized_total']:+.1f} USDT\n\n"
@@ -193,14 +184,6 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         + "\n".join(social_lines)
         + f"\n\n<b>{_esc(stats['hermes'])}</b>"
     )
-    try:
-        from services.reporting.metrics import format_live_metrics_block
-
-        block = format_live_metrics_block(days=7)
-        if block:
-            msg = f"{msg}\n\n{block}"
-    except Exception:
-        pass
     return _split_telegram(msg)
 
 
@@ -215,13 +198,13 @@ def _send_chunk(chat_id: str | None, chunk: str) -> bool:
     return bool(_send_telegram_direct(plain, chat_id=chat_id, parse_mode=None))
 
 
-def send_morning_briefing(chat_id: str | None = None, *, now: datetime | None = None) -> bool:
+def send_morning_briefing(chat_id: str | None = None) -> bool:
     from telegram_notifier import send_telegram_message
 
     from notifications.telegram_i18n import t
 
     cid = chat_id or _current_chat_id()
-    allowed, sent_time = can_send_morning(cid, now=now)
+    allowed, sent_time = can_send_morning(cid)
     if not allowed:
         send_telegram_message(
             t("morning_already_sent", time=sent_time)
@@ -234,7 +217,7 @@ def send_morning_briefing(chat_id: str | None = None, *, now: datetime | None = 
         if not _send_chunk(cid, chunk):
             ok = False
     if ok:
-        mark_morning_sent(cid, now=now)
+        mark_morning_sent(cid)
     else:
         send_telegram_message(t("morning_send_failed"))
     return ok

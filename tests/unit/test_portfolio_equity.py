@@ -2,8 +2,6 @@ import json
 import os
 import sys
 import unittest
-
-import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -21,7 +19,6 @@ from strategies.positions import (
 )
 
 
-@pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping tests, frictionless
 class TestPortfolioEquity(unittest.TestCase):
     SYMBOL = "EQTY/USDT"
     TF = "4h"
@@ -110,7 +107,7 @@ class TestPortfolioEquity(unittest.TestCase):
 
     def test_multiple_partial_sells_realized_pnl_and_balance(self):
         svc = self._service()
-        slippage = 0.0  # #301: slippage_percent removed; zero_cost_model fixture pins frictionless fills
+        slippage = get_bot_config().slippage_percent / 100
         svc.execute_buy(self.SYMBOL, self.TF, 1.0, 200.0)
 
         svc.execute_sell(self.SYMBOL, self.TF, 1.5, "SELL_20")

@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import talib
 
-from core.costs import CostModel
 from logger import log
 
 _OHLCV_CACHE: dict[tuple, tuple[float, list]] = {}
@@ -101,12 +100,13 @@ class StrategyBacktester:
         cfg = config or get_bot_config().raw
         self.cfg = cfg
         self.bt_cfg = cfg.get("strategy_backtest", {})
+        self.slippage = float(cfg.get("slippage_percent", 1.5)) / 100.0
         self._fetch = ohlcv_fetcher or self._default_fetch_ohlcv
 
     def run(self, symbol: str, timeframe: str, params: dict, days: int = None) -> BacktestRunResult:
         days = days or int(self.bt_cfg.get("days", 30))
         df = self._prepare_df(symbol, timeframe, days)
-        metrics = self._simulate(df, params, symbol=symbol)
+        metrics = self._simulate(df, params)
         return BacktestRunResult(symbol=symbol, timeframe=timeframe, days=days, params=dict(params), metrics=metrics)
 
     def compare_variants(
@@ -118,7 +118,7 @@ class StrategyBacktester:
     ) -> BacktestRunResult:
         days = days or int(self.bt_cfg.get("days", 30))
         df = self._prepare_df(symbol, timeframe, days)
-        current = self._simulate(df, base_params, symbol=symbol)
+        current = self._simulate(df, base_params)
         best_params = dict(base_params)
         best_metrics = current
         variants = self._variant_grid(base_params)
@@ -126,7 +126,7 @@ class StrategyBacktester:
         for variant in variants:
             if variant == base_params:
                 continue
-            trial = self._simulate(df, variant, symbol=symbol)
+            trial = self._simulate(df, variant)
             if self._score(trial) > self._score(best_metrics):
                 best_params = variant
                 best_metrics = trial
@@ -205,7 +205,7 @@ class StrategyBacktester:
             log(f"Strategy backtest OHLCV fetch failed for {symbol}: {e}", "WARNING")
             return []
 
-    def _simulate(self, df: pd.DataFrame, params: dict, symbol: str | None = None) -> SimulationMetrics:
+    def _simulate(self, df: pd.DataFrame, params: dict) -> SimulationMetrics:
         if len(df) < 25:
             return SimulationMetrics()
 
@@ -227,12 +227,10 @@ class StrategyBacktester:
 
         buys = sells = 0
         in_position = False
-        entry_net = 0.0
-        qty_net = 0.0
+        entry_price = 0.0
         wins = trades = 0
         pnl = 0.0
         usdt_per_trade = 100.0
-        cm = CostModel.from_config(self.cfg, symbol=symbol)
 
         for i in range(20, len(df)):
             price = float(close.iloc[i])
@@ -245,24 +243,19 @@ class StrategyBacktester:
                 if price <= lo * 1.01 and rsi_buy_low <= r <= rsi_buy_high and vol_m >= vol_mult_min:
                     buys += 1
                     in_position = True
-                    buy_fill = cm.simulate_buy(price, usdt=usdt_per_trade)
-                    qty_net = buy_fill.qty_net
-                    entry_net = buy_fill.quote_net / buy_fill.qty_net if buy_fill.qty_net else buy_fill.fill_price
+                    entry_price = price * (1 + self.slippage)
             else:
-                loss_pct = (price / entry_net - 1) * -100 if entry_net > 0 else 0
+                loss_pct = (price / entry_price - 1) * -100 if entry_price > 0 else 0
                 if loss_pct > stop_loss_pct or r >= rsi_sell_30:
                     sells += 1
-                    sell_fill = cm.simulate_sell(price, qty_net)
-                    trade_pnl = CostModel.realized_pnl(
-                        qty_sold=qty_net, avg_entry_net=entry_net, sell=sell_fill,
-                    )
+                    exit_price = price * (1 - self.slippage)
+                    trade_pnl = (exit_price - entry_price) / entry_price * usdt_per_trade
                     pnl += trade_pnl
                     trades += 1
                     if trade_pnl > 0:
                         wins += 1
                     in_position = False
-                    entry_net = 0.0
-                    qty_net = 0.0
+                    entry_price = 0.0
 
         atr_val = float(atr[-1]) if len(atr) and not np.isnan(atr[-1]) else 0
         last_price = float(close.iloc[-1]) or 1.0

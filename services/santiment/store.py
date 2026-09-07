@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from bus.redis_keys import redis_key_prefix
 from logger import log
 
 _LOCK = threading.Lock()
@@ -15,13 +15,7 @@ _LATEST: dict[str, Any] | None = None
 _HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = 50
 
-
-def _key_prefix() -> str:
-    return redis_key_prefix()
-
-
-def _redis_key() -> str:
-    return f"{_key_prefix()}santiment:latest"
+REDIS_KEY = "aria:santiment:latest"
 
 
 def reset_for_tests() -> None:
@@ -38,7 +32,7 @@ def _redis_set(snapshot: dict[str, Any]) -> bool:
         r = get_redis()
         if not r:
             return False
-        r.set(_redis_key(), json.dumps(snapshot), ex=max(300, int(snapshot.get("ttl_sec") or 1800) * 2))
+        r.set(REDIS_KEY, json.dumps(snapshot), ex=max(300, int(snapshot.get("ttl_sec") or 1800) * 2))
         return True
     except Exception as e:
         log(f"santiment redis set failed: {e}", "WARNING")
@@ -52,7 +46,7 @@ def _redis_get() -> dict[str, Any] | None:
         r = get_redis()
         if not r:
             return None
-        raw = r.get(_redis_key())
+        raw = r.get(REDIS_KEY)
         if not raw:
             return None
         if isinstance(raw, bytes):

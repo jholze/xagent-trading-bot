@@ -7,7 +7,6 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from bus.redis_keys import redis_key_prefix
 from logger import log
 
 _LOCK = threading.Lock()
@@ -16,13 +15,7 @@ _HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = 50
 _PROCESS_START = datetime.now(timezone.utc)
 
-
-def _key_prefix() -> str:
-    return redis_key_prefix()
-
-
-def _redis_key() -> str:
-    return f"{_key_prefix()}market_oracle:latest"
+REDIS_KEY = "aria:market_oracle:latest"
 
 
 def reset_for_tests() -> None:
@@ -45,7 +38,7 @@ def _redis_set(snapshot: dict[str, Any]) -> bool:
         if not r:
             return False
         r.set(
-            _redis_key(),
+            REDIS_KEY,
             json.dumps(snapshot),
             ex=max(300, int(snapshot.get("ttl_sec") or 900) * 2),
         )
@@ -62,7 +55,7 @@ def _redis_get() -> dict[str, Any] | None:
         r = get_redis()
         if not r:
             return None
-        raw = r.get(_redis_key())
+        raw = r.get(REDIS_KEY)
         if not raw:
             return None
         if isinstance(raw, bytes):
