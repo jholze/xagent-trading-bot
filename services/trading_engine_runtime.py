@@ -8,8 +8,18 @@ from bus.locks import ledger_lock
 from bus.trade_intents import TradeIntent, TradeIntentQueue, make_idempotency_key, trade_intent_queue
 from core.models import TradeOrder, TradeResult
 from logger import log
+from storage.errors import LedgerUnavailable
 
 _started = False
+
+
+def reset_trading_engine_for_tests() -> None:
+    """Stop the in-process trading-engine worker (pytest workers, #329)."""
+    global _started
+    from bus.trade_intents import reset_trade_intent_queue_for_tests
+
+    reset_trade_intent_queue_for_tests()
+    _started = False
 
 
 def should_queue_intent(source: str, cfg=None) -> bool:
@@ -41,19 +51,24 @@ def ensure_started():
             scope=intent.scope,
             owner_chat_id=intent.owner_chat_id,
         ):
-            with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
-                return svc._execute_order_locked(
-                    intent.order,
-                    intent.timeframe,
-                    source=intent.source,
-                    trust_score=intent.trust_score,
-                    confidence=intent.confidence,
-                    indicators=intent.indicators,
-                    order_id=intent.order_id,
-                    request_extra=intent.request_extra,
-                    idempotency_key=intent.idempotency_key,
-                    _lock_held=True,
-                )
+            try:
+                with ledger_lock(intent.scope, tenant_id=intent.tenant_id):
+                    result = svc._execute_order_locked(
+                        intent.order,
+                        intent.timeframe,
+                        source=intent.source,
+                        trust_score=intent.trust_score,
+                        confidence=intent.confidence,
+                        indicators=intent.indicators,
+                        order_id=intent.order_id,
+                        request_extra=intent.request_extra,
+                        idempotency_key=intent.idempotency_key,
+                        _lock_held=True,
+                    )
+            except LedgerUnavailable as exc:
+                return svc._deny_ledger_unavailable(intent.order, exc)
+            svc._send_recorded_positions_snapshots(result)
+            return result
 
     trade_intent_queue.start(_execute_intent)
     _started = True

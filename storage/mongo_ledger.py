@@ -155,9 +155,7 @@ class MongoLedgerStore:
     ) -> bool:
         self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
-        self._collection(ORDERS_COLLECTION).replace_one(
-            {"_id": payload["_id"]}, payload, upsert=True
-        )
+        self._replace_with_fence(ORDERS_COLLECTION, payload)
         return True
 
     def load_positions(self, scope: str, tenant_id: str | None = None) -> dict:
@@ -176,9 +174,7 @@ class MongoLedgerStore:
     ) -> bool:
         self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
-        self._collection(POSITIONS_COLLECTION).replace_one(
-            {"_id": payload["_id"]}, payload, upsert=True
-        )
+        self._replace_with_fence(POSITIONS_COLLECTION, payload)
         return True
 
     def load_trade_history(self, scope: str, tenant_id: str | None = None) -> dict:
@@ -197,10 +193,45 @@ class MongoLedgerStore:
     ) -> bool:
         self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
-        self._collection(TRADE_HISTORY_COLLECTION).replace_one(
-            {"_id": payload["_id"]}, payload, upsert=True
-        )
+        self._replace_with_fence(TRADE_HISTORY_COLLECTION, payload)
         return True
+
+    def _replace_with_fence(self, collection: str, payload: dict) -> None:
+        from bus.writer_lease import mongo_fence_filter, write_fence
+        from storage.errors import LedgerWriteFailed
+
+        fence = write_fence()
+        if fence is None:
+            self._collection(collection).replace_one(
+                {"_id": payload["_id"]}, payload, upsert=True
+            )
+            return
+        payload["fence"] = int(fence)
+        filt = mongo_fence_filter(payload["_id"], fence)
+        try:
+            result = self._collection(collection).replace_one(
+                filt, payload, upsert=True
+            )
+        except Exception as e:
+            if type(e).__name__ == "DuplicateKeyError" or "duplicate key" in str(
+                e
+            ).lower():
+                raise LedgerWriteFailed(
+                    "stale fence",
+                    op=f"save_{collection}",
+                    scope=payload.get("ledger_scope"),
+                    tenant_id=payload.get("tenant_id"),
+                    cause=e,
+                ) from e
+            raise
+        upserted = getattr(result, "upserted_id", None)
+        if int(getattr(result, "matched_count", 0) or 0) == 0 and upserted is None:
+            raise LedgerWriteFailed(
+                "stale fence",
+                op=f"save_{collection}",
+                scope=payload.get("ledger_scope"),
+                tenant_id=payload.get("tenant_id"),
+            )
 
     def count_documents(self, tenant_id: str | None = None) -> dict[str, int]:
         tid = self._resolve_tenant(tenant_id)

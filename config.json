@@ -1,6 +1,10 @@
 {
   "virtual_trading": true,
   "trading_mode": "live",
+  "trading": {
+    "entries_enabled": true,
+    "exits_enabled": true
+  },
   "live_confirmed": true,
   "demo": {
     "backend": "mongo"
@@ -15,6 +19,7 @@
     "api_secret_env": "GATE_API_SECRET",
     "max_usdt_per_trade": 4500,
     "require_min_trust_score": 70,
+    "execution": "shadow",
     "dry_run": true,
     "dry_run_enhanced": true,
     "simulated_balance_usdt": 100000,
@@ -64,19 +69,42 @@
   "initial_capital_usdt": 100000,
   "max_usdt_per_trade": 4500,
   "max_position_percent": 30,
-  "slippage_percent": 1.5,
+  "costs": {
+    "fee_source": "auto",
+    "gate": {
+      "spot": {
+        "fee_maker_pct": 0.2,
+        "fee_taker_pct": 0.2,
+        "slippage_pct": 0.15,
+        "fee_side_buy": "base",
+        "fee_side_sell": "quote"
+      },
+      "swap": {
+        "fee_maker_pct": 0.02,
+        "fee_taker_pct": 0.05,
+        "slippage_pct": 0.10,
+        "fee_side_buy": "quote",
+        "fee_side_sell": "quote",
+        "funding_source": "exchange_history"
+      }
+    },
+    "slippage_by_tier": {
+      "volatile": 0.35,
+      "mid": 0.20,
+      "stable": 0.10
+    }
+  },
   "stop_loss_pct": 50.0,
   "max_open_positions": 36,
   "shorts": {
     "enabled": true,
     "allow_live": false,
     "leverage_default": 2,
-    "leverage_cap": 5,
+    "leverage_cap": 2,
     "max_open": 6,
     "max_margin_pct": 20,
     "auto_notional_pct": 0.35,
     "liquidation_buffer": 0.05,
-    "fee_rate": 0.001,
     "funding_rate_8h": 0.0001,
     "auto_sources": [
       "rsi_sell",
@@ -365,8 +393,12 @@
     "dedup_ttl_sec": 86400,
     "trading_engine_mode": "in_process",
     "ledger_lock_enabled": true,
-    "ledger_lock_ttl_sec": 30,
+    "ledger_lock_fail_closed": true,
+    "ledger_lock_ttl_sec": 60,
     "ledger_lock_wait_sec": 15,
+    "single_writer_lease_enabled": true,
+    "lease_ttl_sec": 30,
+    "lease_renew_sec": 10,
     "trade_intent_queue_enabled": false,
     "trade_intent_async_auto_only": true,
     "eval_queue_enabled": true,
@@ -385,6 +417,8 @@
     }
   },
   "risk": {
+    "max_daily_loss_pct": 5.0,
+    "fail_closed_guards": "log",
     "block_stablecoin_buys": true,
     "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
     "position_locks": {
@@ -431,7 +465,7 @@
     },
     "slot_eviction": {
       "enabled": true,
-      "mode": "live",
+      "mode": "shadow",
       "min_entry_score": 4,
       "min_entry_score_shadow": 3,
       "min_victim_score": 0.15,
@@ -442,14 +476,12 @@
       "max_evictions_per_day": 8,
       "symbol_cooldown_hours": 24,
       "pending_entry_ttl_min": 30,
-      "same_cycle_if_filled": false,
       "prefer_reduce_to_tail": true,
       "tail_target_sold_pct": 0.55,
       "tail_target_max_notional_usdt": 800,
       "allow_loss_full_evict": false,
       "require_sensor_source": true,
       "require_spendable_for_entry": true,
-      "require_capacity_full": true,
       "skip_if_warmup": true,
       "skip_if_block_buys": true,
       "skip_if_crash": true,
@@ -757,13 +789,16 @@
       "summary_style": "compact",
       "social_digest_min_interval_sec": 1800
     },
+    "operator_timezone": "Europe/Berlin",
     "display_timezone": "Europe/Berlin",
     "telegram_startup_notify": true,
+    "cycle_failure_alert_after": 3,
     "market_context_state_notify": true,
     "market_context_notify_on_boot": false,
     "market_context_notify_min_sec": 120,
     "daily_report_telegram": true,
     "morning_briefing_enabled": true,
+    "morning_briefing_hour": 8,
     "decisions_audit": true,
     "decisions_log_max_bytes": 52428800,
     "decisions_log_rotate_keep": 3,
@@ -1084,7 +1119,7 @@
     }
   },
   "hermes": {
-    "enabled": true,
+    "enabled": false,
     "backtest_mode": "pipeline",
     "cmc_replay_ttl_hours": 4,
     "primary_metric": "sharpe",
@@ -1099,7 +1134,7 @@
       "sharpe_delta_max": -0.2,
       "drawdown_delta_max": 5
     },
-    "backtest_days": 14,
+    "backtest_days": 45,
     "symbols_mode": "hybrid",
     "symbols_pin": [
       "ARIA/USDT"
@@ -1156,16 +1191,31 @@
     "usdt_per_trade": 1000,
     "sync_to_config": true,
     "notify_on_promotion": true,
+    "promotion": {
+      "veto_window_min": 10,
+      "max_promotions_per_day": 1,
+      "post_apply_validation_hours": 24,
+      "post_apply_min_trades": 5,
+      "post_apply_win_rate_gap_pp": 20
+    },
     "validation": {
       "mode": "walk_forward",
-      "backtest_days": 14,
-      "fold_days": 3,
+      "backtest_days": 45,
+      "fold_days": 5,
       "step_days": 3,
       "min_folds_won_ratio": 0.55,
-      "min_bars_per_fold": 12,
+      "min_bars_per_fold": 30,
       "min_trades_per_fold": 1,
       "min_trades_aggregate": 3,
-      "min_opportunity_delta": 0.05
+      "min_opportunity_delta": 0.05,
+      "holdout_folds": 2,
+      "holdout_dd_tolerance_pct": 2.0,
+      "min_win_probability": 0.95,
+      "min_total_trades": 30
+    },
+    "health": {
+      "inconclusive_window": 20,
+      "inconclusive_alert_pct": 50
     },
     "skills": {
       "max_per_variable": 5,
@@ -1877,7 +1927,6 @@
     "meme_spacing_atr_mult": 1.25,
     "volatile_re_center_atr_mult": 3.2,
     "fee_aware": true,
-    "assumed_fee_pct": 0.1,
     "max_levels": 12,
     "use_limit_orders": false,
     "pure_grid_tiers": [

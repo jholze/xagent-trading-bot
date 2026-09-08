@@ -176,6 +176,11 @@ def probe_capabilities(api_key: str | None = None, *, force: bool = False) -> di
     return _CACHE
 
 
+def cached_capabilities() -> dict | None:
+    """Last probe result, or None if never probed. Does not hit the network."""
+    return _CACHE
+
+
 def reset_capabilities_cache() -> None:
     global _CACHE, _CACHE_AT
     _CACHE = None

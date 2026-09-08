@@ -32,6 +32,62 @@ _STATE_RANK = {"RISK_ON": 0, "NEUTRAL": 1, "WARMUP": 2, "RISK_OFF": 3, "CRASH": 
 _SAN_SIZE_DRAG_BLOCKS = frozenset({"RISK_OFF", "CRASH"})
 _KEEP_ORACLE_SIZE_TENANTS = ("default", "henry")
 
+_DEGRADED_EPISODE = False
+
+
+def reset_degraded_episode_for_tests() -> None:
+    global _DEGRADED_EPISODE
+    _DEGRADED_EPISODE = False
+
+
+def _fail_closed_deny(config_raw: dict | None) -> bool:
+    raw = config_raw
+    if raw is None:
+        try:
+            from core.config import get_bot_config
+
+            raw = get_bot_config().raw
+        except Exception:
+            return False
+    if not isinstance(raw, dict):
+        return False
+    risk = raw.get("risk")
+    if not isinstance(risk, dict):
+        return False
+    return str(risk.get("fail_closed_guards") or "log").strip().lower() == "deny"
+
+
+def _layer_diag(pol: dict | None) -> dict[str, Any]:
+    p = pol or {}
+    measured = True if "measured" not in p else bool(p.get("measured"))
+    as_of = p.get("as_of")
+    return {
+        "active": bool(p.get("active")),
+        "fresh": bool(p.get("fresh")),
+        "measured": measured,
+        "as_of": str(as_of) if as_of else None,
+    }
+
+
+def _fusion_degraded(san_d: dict, ora_d: dict) -> bool:
+    active = [d for d in (san_d, ora_d) if d.get("active")]
+    if not active:
+        return True
+    return any(not (bool(d.get("fresh")) and bool(d.get("measured"))) for d in active)
+
+
+def _note_degraded_episode(degraded: bool) -> None:
+    global _DEGRADED_EPISODE
+    if not degraded:
+        _DEGRADED_EPISODE = False
+        return
+    if _DEGRADED_EPISODE:
+        return
+    _DEGRADED_EPISODE = True
+    from logger import log
+
+    log("market bias degraded: no fresh measured layer", "WARNING")
+
 
 def _worse_regime(a: str | None, b: str | None) -> str | None:
     if not a:
@@ -100,6 +156,11 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
     san = get_santiment_policy(config_raw)
     ora = get_market_oracle_policy(config_raw)
     san_cfg = santiment_risk_config(config_raw)
+    san_d = _layer_diag(san)
+    ora_d = _layer_diag(ora)
+    layers_out = {"santiment": san_d, "oracle": ora_d}
+    degraded = _fusion_degraded(san_d, ora_d)
+    _note_degraded_episode(degraded)
 
     layers = []
     if san.get("active"):
@@ -126,6 +187,8 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
             "as_of": None,
             "fresh": False,
             "warmup_active": False,
+            "degraded": True,
+            "layers": layers_out,
         }
 
     regime = None
@@ -174,6 +237,8 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
 
     inject = bool(san_cfg.get("inject_regime_sentiment", True))
     sentiment = float(_REGIME_SENTIMENT.get(str(regime or "NEUTRAL").upper(), 0.0)) if inject else None
+    if degraded and _fail_closed_deny(config_raw):
+        sentiment = None
 
     return {
         "active": True,
@@ -193,6 +258,8 @@ def get_global_market_bias(config_raw: dict | None = None) -> dict[str, Any]:
         "as_of": max(as_ofs) if as_ofs else None,
         "fresh": True,
         "warmup_active": bool(ora.get("warmup_active")),
+        "degraded": degraded,
+        "layers": layers_out,
     }
 
 
@@ -219,6 +286,8 @@ def apply_global_mode_bias(
 def inject_global_sentiment(social_context: dict | None, bias: dict[str, Any] | None = None) -> dict:
     ctx = dict(social_context or {})
     bias = bias if bias is not None else get_global_market_bias()
+    if bias.get("degraded") and _fail_closed_deny(None):
+        return ctx
     if bias.get("active") and bias.get("sentiment") is not None:
         ctx.setdefault("santiment_sentiment", float(bias["sentiment"]))
         # also expose as market bias for future detectors

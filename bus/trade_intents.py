@@ -72,6 +72,9 @@ class TradeIntentQueue:
         self._running = False
         self._queue.put(None)
 
+    def depth(self) -> int:
+        return int(self._queue.qsize())
+
     def submit(self, intent: TradeIntent) -> TradeIntent:
         self._publish_redis(intent)
         self._queue.put(intent)
@@ -121,6 +124,22 @@ class TradeIntentQueue:
 trade_intent_queue = TradeIntentQueue()
 
 
+def reset_trade_intent_queue_for_tests() -> None:
+    """Stop the singleton trading-engine worker so it cannot outlive a pytest test (#329)."""
+    q = trade_intent_queue
+    if q.running:
+        q.stop()
+    thread = q._thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    q._thread = None
+    try:
+        while True:
+            q._queue.get_nowait()
+    except queue.Empty:
+        pass
+
+
 def make_idempotency_key(
     symbol: str,
     timeframe: str,
@@ -131,13 +150,17 @@ def make_idempotency_key(
     bucket: str | None = None,
     tenant_id: str | None = None,
 ) -> str:
-    from datetime import datetime
+    """Mint a UUID4 client/idempotency key.
 
-    from core.tenant_context import multi_tenant_enabled, resolve_tenant_id
+    ``bucket`` (wall-clock hour) is ignored — the key is minted once at
+    intent creation and persisted on the request record before any
+    exchange call. Callers must reuse the stored key on retry: every caller
+    mints only when the order carries no key yet (#331).
 
-    hour = bucket or datetime.now().strftime("%Y%m%d%H")
-    sig = (signal or "MARKET").upper()
-    if multi_tenant_enabled():
-        tid = resolve_tenant_id(tenant_id)
-        return f"{tid}:{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
-    return f"{scope}:{symbol}:{timeframe}:{sig}:{source}:{hour}"
+    This is a retry guard, not a replay guard. Before #313 the key embedded
+    the wall-clock hour, so the same signal for the same coin twice within an
+    hour collided and the second one was swallowed. That side effect is gone
+    on purpose — repeat entries are governed by the explicit guards
+    (trade cooldown, daily buy limits, DCA rules), not by key collisions.
+    """
+    return str(uuid.uuid4())

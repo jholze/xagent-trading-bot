@@ -1,11 +1,24 @@
 from core.config import BotConfig, get_bot_config
-from core.models import RiskDecision, TradeOrder, TradeResult
+from core.models import (
+    OrderStatus,
+    RiskDecision,
+    TradeOrder,
+    TradeResult,
+    execution_filled_qty_gross,
+)
 from execution.factory import get_execution_adapter
 from logger import log
 from risk.risk_manager import RiskManager
 from services.market_service import MarketService
 from services.order_service import OrderService
 from services.portfolio_service import PortfolioService
+from storage.errors import LedgerUnavailable, WriterLeaseLost
+
+_ledger_unavailable_notified: set[tuple[str, str]] = set()
+
+# Operator-facing German copy for the entries/exits split (#305 slice 3).
+ENTRIES_PAUSED_MSG = "Neue Käufe pausiert (/pause). Stops und Exits laufen weiter."
+EXITS_PAUSED_MSG = "Verkäufe pausiert. Notverkäufe (Stops) laufen weiter."
 
 
 class TradingService:
@@ -59,12 +72,16 @@ class TradingService:
             return "off (analysis only)"
         return "paper (deprecated — use /mode live)"
 
-    def can_execute(self, source: str = "auto", trust_score: float = None) -> tuple:
+    def can_execute(self, source: str = "auto", trust_score: float = None, order=None) -> tuple:
         from core.simulated_trading import is_real_live_trading, is_simulated_trading
 
         mode = self.config.trading_mode
         if mode == "off":
             return False, "Trading disabled (mode=off). Use /mode live to enable."
+        if order is not None:
+            allowed, reason, _code = self._entries_exits_gate(order)
+            if not allowed:
+                return False, reason
         if is_simulated_trading(self.config.raw):
             return True, ""
         if mode == "paper":
@@ -79,6 +96,32 @@ class TradingService:
                 return False, f"Trust score {trust_score:.0f} below live minimum ({min_trust})."
             return True, ""
         return False, f"Unknown trading mode: {mode}"
+
+    def _entries_exits_gate(self, order) -> tuple[bool, str, str]:
+        """Split switch after mode=off. Emergency sells always pass the exits switch."""
+        from risk.risk_manager import _is_emergency_sell
+
+        otype = str(getattr(order, "type", "") or "").upper()
+        signal = str(getattr(order, "signal", "") or "")
+        if otype in ("BUY", "SHORT"):
+            if not self.config.entries_enabled:
+                return False, ENTRIES_PAUSED_MSG, "entries_paused"
+            return True, "", ""
+        if otype in ("SELL", "COVER"):
+            if _is_emergency_sell(signal):
+                return True, "", ""
+            if not self.config.exits_enabled:
+                return False, EXITS_PAUSED_MSG, "exits_paused"
+            return True, "", ""
+        return True, "", ""
+
+    def _pause_reject_code(self, order, reason: str) -> str:
+        if order is None:
+            return ""
+        _ok, pause_reason, pause_code = self._entries_exits_gate(order)
+        if pause_code and reason == pause_reason:
+            return pause_code
+        return ""
 
     def max_usdt_for_order(self) -> float:
         if self.config.trading_mode == "live":
@@ -124,12 +167,21 @@ class TradingService:
             timeframe = bind_buy_timeframe(order.symbol, timeframe)
 
         scope = resolve_tenant_scope()
-        idem = idempotency_key or order.idempotency_key or ""
+        idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
         if not idem and source != "manual":
             idem = make_idempotency_key(
                 order.symbol, timeframe, order.signal or order.type, source, scope
             )
+        if idem:
             order.idempotency_key = idem
+            order.client_order_id = idem
+
+        from bus.writer_lease import require_lease_for_order
+
+        try:
+            require_lease_for_order()
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
 
         if should_queue_intent(source, self.config):
             return submit_trade_intent(
@@ -147,39 +199,131 @@ class TradingService:
 
         from bus.locks import ledger_lock
 
-        with ledger_lock(scope, cfg=self.config):
-            return self._execute_order_locked(
-                order,
-                timeframe,
-                source=source,
-                trust_score=trust_score,
-                confidence=confidence,
-                indicators=indicators,
-                order_id=order_id,
-                request_extra=request_extra,
-                idempotency_key=idem,
-                _lock_held=True,
+        try:
+            with ledger_lock(scope, cfg=self.config):
+                result = self._execute_order_locked(
+                    order,
+                    timeframe,
+                    source=source,
+                    trust_score=trust_score,
+                    confidence=confidence,
+                    indicators=indicators,
+                    order_id=order_id,
+                    request_extra=request_extra,
+                    idempotency_key=idem,
+                    _lock_held=True,
+                )
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
+        self._send_recorded_positions_snapshots(result)
+        return result
+
+    def _notify_ledger_write_after_fill(self, order: TradeOrder, result: TradeResult, exc) -> None:
+        """Alert once per episode: the fill is real but the ledger row is stale."""
+        from core.operator_notify import notify_operator
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        key = (resolve_tenant_id(), resolve_tenant_scope())
+        if key in _ledger_unavailable_notified:
+            return
+        _ledger_unavailable_notified.add(key)
+        try:
+            notify_operator(
+                f"\u26a0\ufe0f <b>Ledger-Schreibfehler nach Ausf\u00fchrung</b>\n"
+                f"{order.type} {order.symbol} wurde ausgef\u00fchrt, die Ledger-Zeile ist nicht "
+                f"aktualisiert.\nGrund: {exc}\nBitte /orders und die Position pr\u00fcfen; "
+                f"der Abgleich beim n\u00e4chsten Start korrigiert die Zeile."
             )
+        except Exception as e:
+            log(f"operator notify failed after ledger write error: {e}", "WARNING")
+
+    def _deny_ledger_unavailable(self, order: TradeOrder, exc: LedgerUnavailable) -> TradeResult:
+        """Fail closed for every order type; notify the operator once per episode."""
+        from core.operator_notify import notify_operator
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        code = (
+            "no_writer_lease"
+            if isinstance(exc, WriterLeaseLost)
+            else "ledger_unavailable"
+        )
+        decision = RiskDecision(
+            approved=False,
+            code=code,
+            message=f"Ledger unavailable: {exc}",
+            order=order,
+        )
+        key = (resolve_tenant_id(), resolve_tenant_scope())
+        if key not in _ledger_unavailable_notified:
+            _ledger_unavailable_notified.add(key)
+            log(f"Ledger unavailable — denying {order.type} {order.symbol}: {exc}", "ERROR")
+            notify_operator(
+                f"Ledger unavailable — {order.type} {order.symbol} denied "
+                f"({key[0]}/{key[1]}): {exc}"
+            )
+        result = TradeResult(
+            False, order.type, order.symbol, message=decision.message
+        )
+        result.code = decision.code
+        result.approved = False
+        return result
 
     def _result_from_ledger(self, record: dict) -> TradeResult:
         status = record.get("status", "")
         side = (record.get("side") or "").upper()
         symbol = record.get("symbol", "")
         execution = record.get("execution") or {}
-        if status == "filled":
+        st = OrderStatus.try_legacy(status)
+        if st is OrderStatus.EXECUTED:
+            req = record.get("request") or {}
             return TradeResult(
                 True,
                 side or "BUY",
                 symbol,
-                amount=float(execution.get("amount") or record.get("request", {}).get("amount") or 0),
-                price=float(execution.get("price") or record.get("request", {}).get("price") or 0),
-                usdt_amount=float(execution.get("usdt") or record.get("request", {}).get("usdt") or 0),
+                amount=float(execution.get("amount") or req.get("amount") or 0),
+                price=float(execution.get("price") or req.get("price") or 0),
+                usdt_amount=float(execution.get("usdt") or req.get("usdt") or 0),
                 pnl=float(record.get("pnl") or 0),
                 message="Idempotent replay",
                 order_id=record.get("id", ""),
+                order_status=st,
+                filled_qty=execution_filled_qty_gross(execution, req),
             )
         msg = record.get("error") or f"Prior order status: {status}"
-        return TradeResult(False, side or "BUY", symbol, message=msg, order_id=record.get("id", ""))
+        return TradeResult(
+            False,
+            side or "BUY",
+            symbol,
+            message=msg,
+            order_id=record.get("id", ""),
+            order_status=st,
+        )
+
+    def _replay_or_reconcile(self, prior: dict) -> TradeResult | None:
+        """Idempotency: EXECUTED/REJECTED/CANCELED replay; ACTIVE means reconcile (#314)."""
+        raw = prior.get("status")
+        if raw == "pending_confirmation":
+            return None
+        st = OrderStatus.try_legacy(raw)
+        if st in (OrderStatus.EXECUTED, OrderStatus.REJECTED, OrderStatus.CANCELED):
+            return self._result_from_ledger(prior)
+        if st in (
+            OrderStatus.ACTIVE,
+            OrderStatus.QUEUED,
+            OrderStatus.PARTIALLY_FILLED,
+        ):
+            side = (prior.get("side") or "").upper()
+            return TradeResult(
+                False,
+                side or "BUY",
+                prior.get("symbol", ""),
+                message="Prior order is ACTIVE — reconcile (#314)",
+                order_id=prior.get("id", ""),
+                pending=True,
+                needs_reconcile=True,
+                order_status=st or OrderStatus.ACTIVE,
+            )
+        return None
 
     def _execute_order_locked(
         self,
@@ -194,6 +338,8 @@ class TradingService:
         idempotency_key: str = None,
         _lock_held: bool = False,
     ) -> TradeResult:
+        from bus.writer_lease import require_lease_for_order
+
         self.refresh()
         if order.type == "BUY":
             from strategies.positions import bind_buy_timeframe
@@ -201,60 +347,108 @@ class TradingService:
             timeframe = bind_buy_timeframe(order.symbol, timeframe)
         ledger = OrderService()
         ledger_id = order_id or order.order_id or None
-        idem = idempotency_key or order.idempotency_key or ""
+        idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
+        if idem:
+            order.idempotency_key = idem
+            order.client_order_id = idem
 
-        if idem and not ledger_id:
-            prior = ledger.find_by_idempotency_key(idem)
-            if prior and prior.get("status") in ("filled", "rejected", "executing", "failed"):
-                return self._result_from_ledger(prior)
+        try:
+            require_lease_for_order()
+            if idem and not ledger_id:
+                prior = ledger.find_by_idempotency_key(idem)
+                if prior:
+                    replay = self._replay_or_reconcile(prior)
+                    if replay is not None:
+                        return replay
 
-        ok, reason = self.can_execute(source=source, trust_score=trust_score)
-        if not ok:
-            log(f"Trade blocked: {reason}", "WARNING")
-            if not ledger_id:
-                ledger.record_rejected(
-                    order,
-                    RiskDecision(approved=False, message=reason, code="mode_blocked", order=order),
-                    timeframe=timeframe,
-                    request_extra=request_extra,
+            ok, reason = self.can_execute(source=source, trust_score=trust_score, order=order)
+            if not ok:
+                log(f"Trade blocked: {reason}", "WARNING")
+                code = self._pause_reject_code(order, reason)
+                if not ledger_id:
+                    ledger.record_rejected(
+                        order,
+                        RiskDecision(
+                            approved=False,
+                            message=reason,
+                            code=code or "mode_blocked",
+                            order=order,
+                        ),
+                        timeframe=timeframe,
+                        request_extra=request_extra,
+                    )
+                return TradeResult(
+                    False,
+                    order.type,
+                    order.symbol,
+                    message=reason,
+                    order_id=ledger_id or "",
+                    code=code,
                 )
-            return TradeResult(False, order.type, order.symbol, message=reason, order_id=ledger_id or "")
 
-        decision = self.risk.evaluate(
-            order,
-            timeframe,
-            source=source,
-            trust_score=trust_score,
-            confidence=confidence,
-            indicators=indicators,
-        )
-        if not decision.approved:
-            log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
-            if not ledger_id:
-                ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
-            else:
-                ledger.update_status(ledger_id, "rejected", error=decision.message, risk=ledger._risk_snapshot(decision))
-            return TradeResult(False, order.type, order.symbol, message=decision.message, order_id=ledger_id or "")
-
-        approved_order = decision.order
-        if ledger_id:
-            ledger.update_status(ledger_id, "executing", risk=ledger._risk_snapshot(decision))
-            approved_order.order_id = ledger_id
-        else:
-            created = ledger.create_from_request(
-                approved_order,
-                timeframe=timeframe,
-                status="executing",
-                risk=decision,
-                request_extra=request_extra,
-                idempotency_key=idem,
+            decision = self.risk.evaluate(
+                order,
+                timeframe,
+                source=source,
+                trust_score=trust_score,
+                confidence=confidence,
+                indicators=indicators,
             )
-            ledger_id = created["id"]
-            approved_order.order_id = ledger_id
+            if not decision.approved:
+                log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")
+                if not ledger_id:
+                    ledger.record_rejected(order, decision, timeframe=timeframe, request_extra=request_extra)
+                else:
+                    ledger.update_status(ledger_id, OrderStatus.REJECTED, error=decision.message, risk=ledger._risk_snapshot(decision))
+                return TradeResult(
+                    False,
+                    order.type,
+                    order.symbol,
+                    message=decision.message,
+                    order_id=ledger_id or "",
+                    code=str(getattr(decision, "code", "") or ""),
+                )
+
+            approved_order = decision.order
+            if idem:
+                approved_order.idempotency_key = idem
+                approved_order.client_order_id = idem
+            if ledger_id:
+                ledger.update_status(ledger_id, OrderStatus.ACTIVE, risk=ledger._risk_snapshot(decision))
+                approved_order.order_id = ledger_id
+            else:
+                created = ledger.create_from_request(
+                    approved_order,
+                    timeframe=timeframe,
+                    status=OrderStatus.ACTIVE,
+                    risk=decision,
+                    request_extra=request_extra,
+                    idempotency_key=idem,
+                )
+                ledger_id = created["id"]
+                approved_order.order_id = ledger_id
+        except LedgerUnavailable as exc:
+            return self._deny_ledger_unavailable(order, exc)
 
         result = self.adapter.execute(approved_order, timeframe)
         result.order_id = ledger_id
-        ledger.link_execution_result(ledger_id, result, approved_order)
+        try:
+            ledger.link_execution_result(ledger_id, result, approved_order)
+        except LedgerUnavailable as exc:
+            # The exchange call already happened. A failing ledger write must not
+            # be reported as a denial -- that would tell the operator "nothing
+            # happened" while a real position exists. Keep the true result, flag
+            # it for reconcile and alert once (review of PR #322).
+            log(
+                f"Ledger write failed AFTER execution "
+                f"({approved_order.type} {approved_order.symbol}, executed={result.executed}): {exc}",
+                "ERROR",
+            )
+            if result.executed:
+                result.needs_reconcile = True
+                self._notify_ledger_write_after_fill(approved_order, result, exc)
+            else:
+                return self._deny_ledger_unavailable(order, exc)
         if result.executed:
             log(
                 f"{self.adapter.mode.upper()} {approved_order.type} {approved_order.symbol} "
@@ -262,29 +456,74 @@ class TradingService:
                 "INFO",
             )
             if approved_order.type in ("BUY", "SELL", "SHORT", "COVER"):
-                try:
-                    from core.tenant_context import tenant_snapshot
-                    from notifications.telegram_commands.position_display import send_positions_snapshot
-
-                    tid, sc, _ = tenant_snapshot()
-                    send_positions_snapshot(
-                        trade_result=result,
-                        mode_label=self.mode_label(),
-                        tenant_id=tid,
-                        scope=sc,
-                    )
-                except Exception as e:
-                    log(f"Positions snapshot failed: {e}", "WARNING")
+                self._record_positions_snapshot(result)
             if approved_order.type == "SELL" and result.executed:
                 try:
-                    self._maybe_auto_short_after_sell(
+                    nested = self._maybe_auto_short_after_sell(
                         approved_order, timeframe, result
                     )
+                    self._merge_positions_snapshot_jobs(result, nested)
                 except Exception as e:
                     log(f"auto-short after sell skip: {e}", "DEBUG")
         elif decision.size_multiplier != 1.0 and not result.message:
             result.message = f"Size multiplier: {decision.size_multiplier:.2f}x"
         return result
+
+    def _record_positions_snapshot(self, result: TradeResult) -> None:
+        """Capture snapshot args while the lock is held; send happens after release."""
+        try:
+            from core.tenant_context import tenant_snapshot
+
+            tid, sc, _ = tenant_snapshot()
+            jobs = getattr(result, "_positions_snapshot_jobs", None)
+            if jobs is None:
+                jobs = []
+                result._positions_snapshot_jobs = jobs
+            jobs.append(
+                {
+                    "trade_result": result,
+                    "mode_label": self.mode_label(),
+                    "tenant_id": tid,
+                    "scope": sc,
+                }
+            )
+        except Exception as e:
+            log(f"Positions snapshot failed: {e}", "WARNING")
+
+    @staticmethod
+    def _merge_positions_snapshot_jobs(into: TradeResult, source: TradeResult | None) -> None:
+        if source is None:
+            return
+        extra = getattr(source, "_positions_snapshot_jobs", None)
+        if not extra:
+            return
+        jobs = getattr(into, "_positions_snapshot_jobs", None)
+        if jobs is None:
+            into._positions_snapshot_jobs = list(extra)
+        else:
+            jobs.extend(extra)
+        source._positions_snapshot_jobs = []
+
+    @staticmethod
+    def _send_recorded_positions_snapshots(result: TradeResult | None) -> None:
+        if result is None:
+            return
+        jobs = getattr(result, "_positions_snapshot_jobs", None)
+        if not jobs:
+            return
+        result._positions_snapshot_jobs = []
+        for job in jobs:
+            try:
+                from notifications.telegram_commands.position_display import send_positions_snapshot
+
+                send_positions_snapshot(
+                    trade_result=job["trade_result"],
+                    mode_label=job["mode_label"],
+                    tenant_id=job["tenant_id"],
+                    scope=job["scope"],
+                )
+            except Exception as e:
+                log(f"Positions snapshot failed: {e}", "WARNING")
 
     def execute_buy(
         self,
@@ -390,7 +629,7 @@ class TradingService:
             order, timeframe, source=src, order_id=order_id, idempotency_key=idempotency_key
         )
 
-    def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> None:
+    def _maybe_auto_short_after_sell(self, approved_order, timeframe: str, sell_result) -> TradeResult | None:
         """Open a paper short after a qualifying bearish full exit (allowlist).
 
         Must not call ``execute_order`` / ``execute_short`` — those re-acquire
@@ -436,7 +675,7 @@ class TradingService:
             exit_source=src,
             idempotency_key=idem,
         )
-        self._execute_order_locked(
+        return self._execute_order_locked(
             order,
             timeframe,
             source="auto",

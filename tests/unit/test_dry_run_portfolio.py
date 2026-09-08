@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -256,8 +258,10 @@ class TestDryRunPortfolioMath(unittest.TestCase):
             self.assertAlmostEqual(history["virtual_balance"], 4500.0)
 
 
+@pytest.mark.usefixtures("zero_cost_model")  # #301: bookkeeping tests, frictionless
 class TestDryRunPortfolioFlows(unittest.TestCase):
     def setUp(self):
+        # Must wrap pytest isolate_demo_ledger_files, so the harness is per-test.
         self.harness = DryRunPortfolioHarness(initial=5000.0)
 
     def tearDown(self):
@@ -339,7 +343,10 @@ class TestDryRunPortfolioFlows(unittest.TestCase):
         prices = {"CAT/USDT": 1.514e-06, "ZBT/USDT": 0.12078}
 
         rm = RiskManager(self.harness.config())
-        equity = rm._portfolio_equity(reference_price=0)
+        # #302: equity is mark-to-market and returns None without live quotes
+        # (fail-closed). Provide the quotes so the consistency check still holds.
+        with patch("price_fetcher.get_prices_batch", return_value=dict(prices)):
+            equity = rm._portfolio_equity(reference_price=0)
         cash = fetch_usdt_balance(self.harness.config())
         market = _position_market_value(list_active_positions(), prices)
         self.assertAlmostEqual(equity, cash + market, places=2)

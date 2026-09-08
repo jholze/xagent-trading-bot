@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import warnings
 
+from core.models import OrderStatus
 from logger import log
+
+_RECONCILE_RECENT_HIGHS_WARNED = False
+_RECONCILE_PEAK_AMOUNTS_WARNED = False
 
 LEGACY_POSITIONS_FILE = "positions.json"
 
@@ -105,7 +110,7 @@ def _build_positions_snapshot_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
-        if o.get("status") == "filled"
+        if o.get("status") == OrderStatus.EXECUTED.value
     ]
     initial = initial_capital(scope=scope, config=cfg)
     snapshot = dict(replay_simulated_ledger(orders, initial)["positions"])
@@ -156,20 +161,39 @@ def rebuild_positions_from_orders(
 
     from core.tenant_context import resolve_tenant_id, tenant_context
 
+    from storage.errors import LedgerUnavailable
+
     tid = resolve_tenant_id(tenant_id)
-    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
-    cache_doc = load_positions_document(scope, tenant_id=tid)
+    try:
+        orders_doc = load_orders(scope, tenant_id=tid)
+        order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
+        cache_doc = load_positions_document(scope, tenant_id=tid)
+    except LedgerUnavailable as e:
+        log(
+            f"prune_orphan_position_cache skipped (orders/positions load failed) "
+            f"tenant={tid} scope={scope}: {e}",
+            "WARNING",
+        )
+        raise
     from strategies.positions import prune_orphan_position_cache
 
-    cache_doc, orphans = prune_orphan_position_cache(order_snap, cache_doc)
-    if orphans:
-        from data_manager import save_positions_document
-
-        save_positions_document(cache_doc, scope, tenant_id=tid)
+    if not (orders_doc.get("orders") or []):
         log(
-            f"Pruned {len(orphans)} orphan position cache key(s) for tenant={tid} scope={scope}",
-            "INFO",
+            f"prune_orphan_position_cache skipped (orders empty) "
+            f"tenant={tid} scope={scope}",
+            "WARNING",
         )
+        orphans = []
+    else:
+        cache_doc, orphans = prune_orphan_position_cache(order_snap, cache_doc)
+        if orphans:
+            from data_manager import save_positions_document
+
+            save_positions_document(cache_doc, scope, tenant_id=tid)
+            log(
+                f"Pruned {len(orphans)} orphan position cache key(s) for tenant={tid} scope={scope}",
+                "INFO",
+            )
     snapshot = derive_positions_from_orders_and_cache(
         order_snap, cache_doc, tenant_id=tid
     )
@@ -178,7 +202,7 @@ def rebuild_positions_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == "filled"
+        if o.get("status") == OrderStatus.EXECUTED.value
     ]
 
     with tenant_context(tid, scope=scope):
@@ -224,13 +248,16 @@ def on_trading_mode_change(old_mode: str, new_mode: str) -> str:
     )
 
 
-def reconcile_recent_highs(
+def sync_ledger_files_recent_highs(
     scope: str,
     price_map: dict | None = None,
     *,
     use_ohlcv: bool = False,
 ) -> bool:
-    """Backfill recent_high from live marks (and optional OHLCV) for open lots."""
+    """Backfill recent_high from live marks (and optional OHLCV) for open lots.
+
+    Ledger-internal — not exchange recovery (#314).
+    """
     from strategies.positions import (
         flush_positions,
         get_position,
@@ -283,8 +310,30 @@ def reconcile_recent_highs(
     return changed
 
 
-def reconcile_peak_amounts(scope: str) -> bool:
-    """Backfill peak_amount and sold_percent from filled orders for open lots."""
+def reconcile_recent_highs(
+    scope: str,
+    price_map: dict | None = None,
+    *,
+    use_ohlcv: bool = False,
+) -> bool:
+    """Deprecated alias of ``sync_ledger_files_recent_highs`` (#314)."""
+    global _RECONCILE_RECENT_HIGHS_WARNED
+    if not _RECONCILE_RECENT_HIGHS_WARNED:
+        _RECONCILE_RECENT_HIGHS_WARNED = True
+        msg = (
+            "reconcile_recent_highs is deprecated; use sync_ledger_files_recent_highs "
+            "(ledger-internal, not exchange recovery)"
+        )
+        log(msg, "WARNING")
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+    return sync_ledger_files_recent_highs(scope, price_map, use_ohlcv=use_ohlcv)
+
+
+def sync_ledger_files_peak_amounts(scope: str) -> bool:
+    """Backfill peak_amount and sold_percent from filled orders for open lots.
+
+    Ledger-internal — not exchange recovery (#314).
+    """
     from strategies.positions import _positions_lock, flush_positions, has_position_amount, positions
 
     from core.tenant_context import resolve_tenant_id
@@ -318,6 +367,20 @@ def reconcile_peak_amounts(scope: str) -> bool:
         flush_positions(scope=scope, force=True)
         log(f"Reconciled peak_amount for scope={scope}", "INFO")
     return changed
+
+
+def reconcile_peak_amounts(scope: str) -> bool:
+    """Deprecated alias of ``sync_ledger_files_peak_amounts`` (#314)."""
+    global _RECONCILE_PEAK_AMOUNTS_WARNED
+    if not _RECONCILE_PEAK_AMOUNTS_WARNED:
+        _RECONCILE_PEAK_AMOUNTS_WARNED = True
+        msg = (
+            "reconcile_peak_amounts is deprecated; use sync_ledger_files_peak_amounts "
+            "(ledger-internal, not exchange recovery)"
+        )
+        log(msg, "WARNING")
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+    return sync_ledger_files_peak_amounts(scope)
 
 
 def backfill_orders_from_trade_history(scope: str) -> int:
@@ -422,8 +485,8 @@ def sync_positions_on_startup() -> None:
     scope = resolve_ledger_scope(get_config().get("trading_mode", "paper"))
     migrate_legacy_positions()
     _preserve_legacy_cache_lots(scope)
-    reconcile_peak_amounts(scope)
+    sync_ledger_files_peak_amounts(scope)
     try:
-        reconcile_recent_highs(scope, use_ohlcv=True)
+        sync_ledger_files_recent_highs(scope, use_ohlcv=True)
     except Exception as exc:
         log(f"recent_high reconcile skipped for scope={scope}: {exc}", "WARNING")

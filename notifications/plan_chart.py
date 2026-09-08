@@ -25,6 +25,7 @@ def render_plan_vs_actual_png(
     compound: bool = False,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
     title: str | None = None,
+    btc_by_day: dict[int, float] | None = None,
 ) -> str | None:
     """Return path to temp PNG or None."""
     try:
@@ -73,6 +74,20 @@ def render_plan_vs_actual_png(
                 markersize=3,
                 label="Portfolio NAV",
             )
+        if btc_by_day:
+            btc_x = sorted(k for k in btc_by_day if 0 <= k <= t_today)
+            btc_y = [btc_by_day[k] for k in btc_x]
+            if len(btc_x) >= 2:
+                ax.plot(
+                    btc_x,
+                    btc_y,
+                    color="#f39c12",
+                    linewidth=1.6,
+                    linestyle="-.",
+                    marker="s",
+                    markersize=3,
+                    label="BTC HODL",
+                )
         ax.axhline(start_capital, color="#95a5a6", linestyle=":", linewidth=1, alpha=0.8, label="Start")
         ax.axvline(t_today, color="#e67e22", linestyle=":", linewidth=1, alpha=0.7)
         # end marker
@@ -121,6 +136,15 @@ def render_plan_chart_for_current(
     by_day = history_as_day_nav_map(list(history_points), plan_start)
     t = day_index_for(plan_start, today, horizon_days=h)
     by_day[t] = float(nav_today)
+    btc_by_day: dict[int, float] | None = None
+    try:
+        from services.reporting.benchmark import hodl_nav_by_plan_day
+
+        mapped = hodl_nav_by_plan_day(list(history_points), plan_start)
+        if len(mapped) >= 2:
+            btc_by_day = mapped
+    except Exception:
+        btc_by_day = None
     return render_plan_vs_actual_png(
         start_capital=start_capital,
         plan_start=plan_start,
@@ -129,4 +153,5 @@ def render_plan_chart_for_current(
         daily_return_pct=float(cfg["daily_return_pct"]),
         compound=bool(cfg["compound"]),
         horizon_days=h,
+        btc_by_day=btc_by_day,
     )

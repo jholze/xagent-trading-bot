@@ -88,7 +88,7 @@ def resolve_short_params(
     config_raw: dict | None = None,
 ) -> dict[str, Any]:
     cfg = shorts_config(config_raw)
-    cap = float(cfg.get("leverage_cap") or 5)
+    cap = float(cfg.get("leverage_cap") or 2)
     vol = dict(cfg.get("volatile") or {})
     st = dict(cfg.get("stable") or {})
     base = {
@@ -103,8 +103,16 @@ def resolve_short_params(
         "max_open": int(cfg.get("max_open") or 6),
         "max_margin_pct": float(cfg.get("max_margin_pct") or 20),
         "liquidation_buffer": float(cfg.get("liquidation_buffer") or 0.05),
-        "fee_rate": float(cfg.get("fee_rate") or 0.001),
     }
+    try:
+        from core.costs import CostModel
+
+        cm = CostModel.from_config(config_raw, market="swap")
+        base["swap_fee_pct"] = cm.fee_pct("market")
+        if cm.params.funding_rate_8h is not None:
+            base["funding_rate_8h"] = float(cm.params.funding_rate_8h)
+    except Exception:
+        base["swap_fee_pct"] = 0.05
     tier_key = _tier_key(tier or (lot or {}).get("strategy_tier"))
     overlay = st if tier_key == "stable" else vol
     for k, v in overlay.items():

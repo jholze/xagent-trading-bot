@@ -56,4 +56,5 @@ def build_snapshot(
         "symbols": {},
         "rationale": dec.rationale,
         "sidecar_build": build or "santiment-sidecar-0.3",
+        "measured": bool(getattr(dec, "measured", True)),
     }

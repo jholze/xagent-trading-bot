@@ -1,4 +1,22 @@
+"""Telegram outbound helpers.
+
+Delivery: when ``bus.notifications.notification_publisher`` is running (started
+with the other bot workers by ``services.architecture_runtime.ensure_started``),
+every ``send_telegram_message`` is enqueued on one of two lanes — urgent
+(fills, stops, operator alerts; at most 1 msg/s) or normal. HTTP 429 honours
+``parameters.retry_after`` with exponential backoff (cap 60s) and a bounded
+retry buffer persisted via ``data_manager.resolve_data_path("telegram_retry_buffer.json")``.
+
+Fallback: if the publisher is not running (CLI scripts, tests that call
+``send_telegram_message`` directly, process shutdown), send synchronously via
+``_send_telegram_direct`` so nothing is silently dropped. That path has no
+429 retry — the existing direct send is used as-is.
+"""
+
 import os
+import re
+from html import escape as html_escape, unescape as html_unescape
+
 import requests
 
 from core.runtime_identity import message_prefix
@@ -99,6 +117,46 @@ def _safe_float(value: str, default: float = None) -> float:
         return default
 
 
+_PARSE_ENTITIES_RE = re.compile(r"can'?t parse entities", re.I)
+_HTML_TAG_RE = re.compile(
+    r"</?(?:b|i|u|s|code|pre|a)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def _esc(text) -> str:
+    """Escape free text for Telegram HTML. Do not use on intentional tags."""
+    if text is None:
+        return ""
+    return html_escape(str(text), quote=False)
+
+
+def _html_to_plain(text: str) -> str:
+    plain = html_unescape(text or "")
+    for tag in ("<b>", "</b>", "<i>", "</i>", "<code>", "</code>", "<pre>", "</pre>", "<u>", "</u>", "<s>", "</s>"):
+        plain = plain.replace(tag, "")
+    plain = _HTML_TAG_RE.sub("", plain)
+    return plain
+
+
+def _is_entity_parse_error(response) -> bool:
+    blob = ""
+    try:
+        blob = response.text or ""
+    except Exception:
+        pass
+    if _PARSE_ENTITIES_RE.search(blob):
+        return True
+    try:
+        body = response.json() or {}
+        desc = str(body.get("description") or "")
+        if _PARSE_ENTITIES_RE.search(desc):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _sell_label(signal: str) -> str:
     if "STOP_FULL" in signal or signal.endswith("_FULL"):
         return "100%"
@@ -159,9 +217,9 @@ def send_signal_message(
     exp_cfg = explanations_config()
     source_line = ""
     if source_de:
-        source_line = f"\n<b>Quellen:</b> {source_de}"
+        source_line = f"\n<b>Quellen:</b> {_esc(source_de)}"
     elif sources:
-        source_line = f"\n<b>Sources:</b> {', '.join(sources)}"
+        source_line = f"\n<b>Sources:</b> {_esc(', '.join(sources))}"
 
     if signal == "BUY":
         emoji = "🟢"
@@ -200,9 +258,9 @@ def send_signal_message(
     else:
         emoji = "📡"
         title = "MARKET UPDATE"
-        extra = f"\n<b>Ampel:</b> {ampel_text}" if ampel_text else ""
+        extra = f"\n<b>Ampel:</b> {_esc(ampel_text)}" if ampel_text else ""
 
-    ampel_line = f"<b>Ampel:</b> {ampel_emoji} {ampel_text}\n" if ampel_emoji and ampel_emoji != "📡" else ""
+    ampel_line = f"<b>Ampel:</b> {ampel_emoji} {_esc(ampel_text)}\n" if ampel_emoji and ampel_emoji != "📡" else ""
     from price_fetcher import format_usdt_price
 
     price_str = (
@@ -212,19 +270,27 @@ def send_signal_message(
     )
     rsi_str = f"{rsi:.1f}" if isinstance(rsi, (int, float)) and rsi > 0 else "—"
 
-    why_line = f"\n<b>Warum:</b> {why_de}" if why_de and exp_cfg.get("enabled", True) else ""
+    why_line = f"\n<b>Warum:</b> {_esc(why_de)}" if why_de and exp_cfg.get("enabled", True) else ""
     conf_line = f"\n<b>Confidence:</b> {confidence:.0f}%" if isinstance(confidence, (int, float)) and confidence > 0 else ""
     social_block = ""
     if social_lines:
-        social_block = "\n" + "\n".join(f"<b>Social:</b> {line}" if i == 0 else line for i, line in enumerate(social_lines))
+        social_block = "\n" + "\n".join(
+            f"<b>Social:</b> {_esc(line)}" if i == 0 else _esc(line)
+            for i, line in enumerate(social_lines)
+        )
 
     if executed is False and trade_message:
-        risk_de = explain_risk(trade_message) if exp_cfg.get("enabled", True) else trade_message
-        blocked_line = f"\n<b>Grund:</b> {risk_de}"
+        risk_code = getattr(trade_result, "code", "") if trade_result else ""
+        risk_de = (
+            explain_risk(trade_message, code=risk_code or "")
+            if exp_cfg.get("enabled", True)
+            else trade_message
+        )
+        blocked_line = f"\n<b>Grund:</b> {_esc(risk_de)}"
     else:
         blocked_line = ""
-    exec_line = f"\n<b>Fill:</b> {trade_message}" if executed is True and trade_message else ""
-    tech_block = f"\n<code>{tech_line}</code>" if tech_line and exp_cfg.get("show_technical_codes", True) else ""
+    exec_line = f"\n<b>Fill:</b> {_esc(trade_message)}" if executed is True and trade_message else ""
+    tech_block = f"\n<code>{_esc(tech_line)}</code>" if tech_line and exp_cfg.get("show_technical_codes", True) else ""
 
     from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
 
@@ -238,7 +304,7 @@ def send_signal_message(
 <b>Mode:</b> {mode_badge}
 {links_block}
 
-<b>Name:</b> {name}
+<b>Name:</b> {_esc(name)}
 <b>Preis:</b> ${price_str}
 <b>RSI:</b> {rsi_str}
 {ampel_line}{why_line}{conf_line}{source_line}{social_block}{extra}{blocked_line}{exec_line}{tech_block}
@@ -265,7 +331,7 @@ def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = "")
     cfg = explanations_config()
     if not cfg.get("enabled") or not cfg.get("notify_social_hold_explanations"):
         return False
-    tech_block = f"\n<code>{tech_line}</code>" if tech_line and cfg.get("show_technical_codes", True) else ""
+    tech_block = f"\n<code>{_esc(tech_line)}</code>" if tech_line and cfg.get("show_technical_codes", True) else ""
     from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
 
     ticker = symbol.split("/")[0] if "/" in symbol else symbol
@@ -275,7 +341,7 @@ def send_hold_explanation_message(symbol: str, why_de: str, tech_line: str = "")
     msg = (
         f"👀 <b>Kein Trade</b> — {symbol_html}\n"
         f"{links_block}\n"
-        f"<b>Warum:</b> {why_de}{tech_block}\n"
+        f"<b>Warum:</b> {_esc(why_de)}{tech_block}\n"
         f"🕒 {format_display_hms()}"
     )
     buttons = inline_link_buttons(ticker)
@@ -357,6 +423,7 @@ def send_x_recommendation_message(recommendation):
     emoji = "🟢" if recommendation["action"] == "BUY" else "🔴" if recommendation["action"] == "SELL" else "📋" if recommendation["action"] == "ADD_TO_WATCHLIST" else "⏸️"
     title = recommendation["action"]
     raw = recommendation.get("raw_tweet", "—")[:100] + "..." if len(recommendation.get("raw_tweet", "")) > 100 else recommendation.get("raw_tweet", "—")
+    raw = _esc(raw)
     tp = recommendation.get("price_target")
     sl = recommendation.get("stop_loss")
     target_lines = ""
@@ -374,11 +441,11 @@ def send_x_recommendation_message(recommendation):
     links_block = f"{links_line}\n\n" if links_line else ""
     msg = f"""{emoji} <b>{title} EMPFEHLUNG</b> — {symbol_html}/USDT
 
-{links_block}<b>Von:</b> @{recommendation.get("account", "Unknown")}
-<b>Empfehlung:</b> {act_de}
+{links_block}<b>Von:</b> @{_esc(recommendation.get("account", "Unknown"))}
+<b>Empfehlung:</b> {_esc(act_de)}
 <b>Tweet:</b> {raw}
-<b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {recommendation.get("trust_at_signal", "—")}
-<b>Warum:</b> {recommendation.get("rationale", "—")}{target_lines}
+<b>Confidence:</b> {recommendation.get("confidence", 0)}% | Trust: {_esc(recommendation.get("trust_at_signal", "—"))}
+<b>Warum:</b> {_esc(recommendation.get("rationale", "—"))}{target_lines}
 
 🕒 {format_display_hms()}
 """
@@ -518,13 +585,46 @@ def resolve_notification_chat_id(chat_id: str | int | None = None) -> str:
     return str(_chat_id() or "").strip()
 
 
-def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
-    """Synchronous Telegram HTTP send (used by notification worker)."""
+def _telegram_retry_after(response, body: dict | None = None) -> float:
+    """Seconds from Telegram ``parameters.retry_after`` or the Retry-After header."""
+    retry = None
+    if body is None:
+        try:
+            parsed = response.json()
+            body = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            body = None
+    if isinstance(body, dict):
+        params = body.get("parameters") or {}
+        if isinstance(params, dict) and params.get("retry_after") is not None:
+            try:
+                retry = float(params["retry_after"])
+            except (TypeError, ValueError):
+                retry = None
+    if retry is None:
+        headers = getattr(response, "headers", None) or {}
+        raw = None
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+        except Exception:
+            raw = None
+        if raw is not None:
+            try:
+                retry = float(raw)
+            except (TypeError, ValueError):
+                retry = None
+    if retry is None or retry < 0:
+        return 1.0
+    return retry
+
+
+def _send_telegram_http(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """POST sendMessage. Returns ``(ok, retry_after_or_None)`` — never raises on 429."""
     bot_token = _bot_token()
     target_chat = resolve_notification_chat_id(chat_id)
     if not bot_token or not target_chat:
         print("⚠️ Telegram not configured")
-        return False
+        return False, None
 
     prefix = message_prefix() + _headless_tenant_tag()
     if prefix:
@@ -539,17 +639,74 @@ def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None 
 
     try:
         response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            log(f"Telegram send HTTP {response.status_code}: {response.text[:200]}", "WARNING")
-            return False
-        body = response.json()
-        if not body.get("ok"):
-            log(f"Telegram send failed: {body.get('description', body)}", "WARNING")
-            return False
-        return True
+        body = None
+        try:
+            parsed = response.json()
+            body = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            body = None
+        error_code = body.get("error_code") if isinstance(body, dict) else None
+        if response.status_code == 429 or error_code == 429:
+            retry_after = _telegram_retry_after(response, body)
+            log(f"Telegram 429 retry_after={retry_after}s", "WARNING")
+            return False, retry_after
+        if response.status_code == 200:
+            if body is None:
+                log("Telegram send failed: invalid JSON", "WARNING")
+                return False, None
+            if not body.get("ok"):
+                log(f"Telegram send failed: {body.get('description', body)}", "WARNING")
+                return False, None
+            return True, None
+        if (
+            parse_mode
+            and response.status_code == 400
+            and _is_entity_parse_error(response)
+        ):
+            retry_payload = {"chat_id": target_chat, "text": _html_to_plain(text)}
+            if reply_markup:
+                retry_payload["reply_markup"] = reply_markup
+            log(
+                "Telegram HTML parse error — resending as plain text",
+                "WARNING",
+            )
+            response2 = requests.post(url, json=retry_payload, timeout=10)
+            if response2.status_code != 200:
+                log(
+                    f"Telegram plain retry HTTP {response2.status_code}: {response2.text[:200]}",
+                    "WARNING",
+                )
+                return False, None
+            body2 = response2.json()
+            if not body2.get("ok"):
+                log(f"Telegram plain retry failed: {body2.get('description', body2)}", "WARNING")
+                return False, None
+            return True, None
+        log(f"Telegram send HTTP {response.status_code}: {response.text[:200]}", "WARNING")
+        return False, None
     except Exception as e:
         log(f"Error sending Telegram message: {e}", "WARNING")
-        return False
+        return False, None
+
+
+def _send_telegram_direct(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """Synchronous Telegram HTTP send (CLI / tests / publisher-down fallback)."""
+    ok, _retry_after = _send_telegram_http(
+        text, reply_markup=reply_markup, chat_id=chat_id, parse_mode=parse_mode
+    )
+    return ok
+
+
+def _send_telegram_for_publisher(text, reply_markup=None, *, chat_id: str | int | None = None, parse_mode: str = "HTML"):
+    """Worker send: raise ``TelegramRateLimited`` on HTTP 429 so the publisher retries."""
+    from bus.notifications import TelegramRateLimited
+
+    ok, retry_after = _send_telegram_http(
+        text, reply_markup=reply_markup, chat_id=chat_id, parse_mode=parse_mode
+    )
+    if retry_after is not None:
+        raise TelegramRateLimited(retry_after)
+    return ok
 
 
 def send_telegram_message(
@@ -567,12 +724,14 @@ def send_telegram_message(
     cfg = get_bot_config()
     mode = cfg.architecture_config.get("notification_mode", "async")
 
-    if mode == "async" and prio >= PRIORITY_CYCLE:
+    if mode == "async":
         try:
             from bus.notifications import notification_publisher
-            from services.architecture_runtime import ensure_started
 
-            ensure_started()
+            # Do not start the publisher from here: tests and CLI scripts that
+            # call send_telegram_message directly must keep the synchronous
+            # _send_telegram_direct path. architecture_runtime.ensure_started
+            # owns the worker lifecycle.
             if notification_publisher.running:
                 notification_publisher.enqueue(
                     text,
@@ -580,7 +739,7 @@ def send_telegram_message(
                     chat_id=chat_id if chat_id is not None else resolve_notification_chat_id(),
                     reply_markup=reply_markup,
                     parse_mode=parse_mode,
-                    kind="cycle" if prio >= PRIORITY_CYCLE else "message",
+                    kind="cycle" if prio >= PRIORITY_CYCLE else "urgent",
                 )
                 return True
         except Exception as e:
@@ -641,7 +800,15 @@ def edit_telegram_message(text, chat_id, message_id, reply_markup=None):
 
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
+        if response.status_code == 200:
+            return True
+        if response.status_code == 400 and _is_entity_parse_error(response):
+            retry = dict(payload)
+            retry.pop("parse_mode", None)
+            retry["text"] = _html_to_plain(text)
+            response2 = requests.post(url, json=retry, timeout=10)
+            return response2.status_code == 200
+        return False
     except Exception as e:
         print(f"Error editing Telegram message: {e}")
         return False
@@ -747,17 +914,24 @@ def send_message_with_bot_token(token: str, chat_id: str | int, text: str) -> bo
     import requests
     api = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        resp = requests.post(
-            api,
-            data={
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        resp = requests.post(api, data=payload, timeout=10)
+        if resp.status_code == 200 and resp.json().get("ok", False):
+            return True
+        if resp.status_code == 400 and _is_entity_parse_error(resp):
+            retry = {
                 "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
+                "text": _html_to_plain(text),
                 "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-        return resp.status_code == 200 and resp.json().get("ok", False)
+            }
+            resp2 = requests.post(api, data=retry, timeout=10)
+            return resp2.status_code == 200 and resp2.json().get("ok", False)
+        return False
     except Exception as e:
         log(f"send_message_with_bot_token failed: {e}", "WARNING")
         return False

@@ -1,8 +1,15 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.config import get_bot_config
 from core.models import SandboxMetrics
 from hermes.live_evidence import LiveMetrics
+from hermes.significance import (
+    block_bootstrap_win_probability,
+    fold_sharpe_deltas,
+    format_win_probability,
+    tightened_threshold,
+    total_in_sample_trades,
+)
 from hermes.validation import WalkForwardResult
 
 DUAL_EXIT_PARAMS = frozenset({
@@ -21,6 +28,18 @@ class Verdict:
     baseline_better: bool
     meets_success_criteria: bool
     live_veto: bool = False
+    inconclusive: bool = False
+    win_probability: float | None = None
+    total_trades: int | None = None
+    threshold_used: float | None = None
+
+    @property
+    def label(self) -> str:
+        if self.promoted:
+            return "promoted"
+        if self.inconclusive:
+            return "inconclusive"
+        return "rejected"
 
 
 class GoalEngine:
@@ -97,7 +116,29 @@ class GoalEngine:
             return True, f"opportunity_score +{opp_delta:.2f}"
         return False, f"{primary} {v_primary:.2f} <= {b_primary:.2f}"
 
+    def _zero_trade_inconclusive(
+        self,
+        baseline: SandboxMetrics | dict,
+        variant: SandboxMetrics | dict,
+    ) -> Verdict | None:
+        """trades=0 on both sides is not evidence — never rejected (#308)."""
+        if int(self._metric(baseline, "trades")) != 0:
+            return None
+        if int(self._metric(variant, "trades")) != 0:
+            return None
+        return Verdict(
+            promoted=False,
+            reason="Inconclusive: baseline and variant both have 0 trades",
+            baseline_better=False,
+            meets_success_criteria=False,
+            inconclusive=True,
+        )
+
     def evaluate(self, baseline: SandboxMetrics | dict, variant: SandboxMetrics | dict) -> Verdict:
+        zero = self._zero_trade_inconclusive(baseline, variant)
+        if zero is not None:
+            return zero
+
         primary = self.primary_metric
         b_val = self._metric(baseline, primary)
         v_val = self._metric(variant, primary)
@@ -145,10 +186,115 @@ class GoalEngine:
             meets_success_criteria=self.meets_success_criteria(baseline),
         )
 
-    def evaluate_walk_forward(self, baseline: WalkForwardResult, variant: WalkForwardResult) -> Verdict:
+    def _holdout_check(
+        self,
+        baseline: WalkForwardResult,
+        variant: WalkForwardResult,
+    ) -> Verdict | None:
+        """Reject when hold-out Sharpe/DD fails. Reason always starts with ``holdout``."""
+        holdout_b = list(getattr(baseline, "holdout_metrics", None) or [])
+        holdout_v = list(getattr(variant, "holdout_metrics", None) or [])
+        if not holdout_b and not holdout_v:
+            return None
+        if not holdout_b or not holdout_v:
+            return Verdict(
+                promoted=False,
+                reason="holdout: missing baseline or variant hold-out folds",
+                baseline_better=True,
+                meets_success_criteria=False,
+            )
+        scored_b = [f for f in holdout_b if not f.get("excluded")]
+        scored_v = [f for f in holdout_v if not f.get("excluded")]
+        if not scored_b or not scored_v:
+            return Verdict(
+                promoted=False,
+                reason="holdout: no scored hold-out folds",
+                baseline_better=True,
+                meets_success_criteria=False,
+            )
+        b_sh = sum(float(f.get("sharpe") or 0) for f in scored_b) / len(scored_b)
+        v_sh = sum(float(f.get("sharpe") or 0) for f in scored_v) / len(scored_v)
+        b_dd = max(float(f.get("max_drawdown_pct") or 0) for f in scored_b)
+        v_dd = max(float(f.get("max_drawdown_pct") or 0) for f in scored_v)
+        dd_tol = float(self.validation.get("holdout_dd_tolerance_pct", 2.0))
+        if v_sh - b_sh < 0:
+            return Verdict(
+                promoted=False,
+                reason=f"holdout Sharpe delta {v_sh - b_sh:.2f} < 0",
+                baseline_better=True,
+                meets_success_criteria=False,
+            )
+        if v_dd > b_dd + dd_tol:
+            return Verdict(
+                promoted=False,
+                reason=(
+                    f"holdout max_drawdown {v_dd:.1f} > baseline {b_dd:.1f} "
+                    f"+ {dd_tol:g}"
+                ),
+                baseline_better=True,
+                meets_success_criteria=False,
+            )
+        return None
+
+    def _significance_check(
+        self,
+        baseline: WalkForwardResult,
+        variant: WalkForwardResult,
+        *,
+        n_variables_today: int = 1,
+    ) -> tuple[float, int, float, Verdict | None]:
+        """Win-probability + min-trades gate on in-sample fold Sharpe deltas."""
+        min_p = float(self.validation.get("min_win_probability", 0.95))
+        min_trades = int(self.validation.get("min_total_trades", 30))
+        threshold = tightened_threshold(min_p, n_variables_today)
+        b_trades = total_in_sample_trades(baseline.fold_metrics)
+        v_trades = total_in_sample_trades(variant.fold_metrics)
+        total_trades = min(b_trades, v_trades)
+        deltas = fold_sharpe_deltas(baseline.fold_metrics, variant.fold_metrics)
+        win_p = block_bootstrap_win_probability(deltas)
+        if b_trades < min_trades or v_trades < min_trades:
+            return win_p, total_trades, threshold, Verdict(
+                promoted=False,
+                reason=(
+                    f"min_total_trades {total_trades} < {min_trades} "
+                    f"(baseline={b_trades} variant={v_trades})"
+                ),
+                baseline_better=True,
+                meets_success_criteria=False,
+                win_probability=win_p,
+                total_trades=total_trades,
+                threshold_used=threshold,
+            )
+        if win_p < threshold:
+            return win_p, total_trades, threshold, Verdict(
+                promoted=False,
+                reason=(
+                    f"win_probability {win_p:.2f} < threshold {threshold:.2f} "
+                    f"({format_win_probability(win_p, total_trades)})"
+                ),
+                baseline_better=True,
+                meets_success_criteria=False,
+                win_probability=win_p,
+                total_trades=total_trades,
+                threshold_used=threshold,
+            )
+        return win_p, total_trades, threshold, None
+
+    def evaluate_walk_forward(
+        self,
+        baseline: WalkForwardResult,
+        variant: WalkForwardResult,
+        *,
+        n_variables_today: int = 1,
+    ) -> Verdict:
         vcfg = self.validation
         min_ratio = float(vcfg.get("min_folds_won_ratio", 0.6))
         primary = self.primary_metric
+        min_trades_per_fold = int(vcfg.get("min_trades_per_fold", 1))
+
+        zero = self._zero_trade_inconclusive(baseline.aggregate, variant.aggregate)
+        if zero is not None:
+            return zero
 
         if variant.folds_total == 0 or baseline.folds_total == 0:
             return Verdict(
@@ -158,7 +304,22 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
-        win_ratio = variant.folds_won / variant.folds_total if variant.folds_total else 0
+        excluded = int(getattr(variant, "folds_excluded", 0) or 0)
+        scored = variant.folds_total - excluded
+        if scored <= 0:
+            return Verdict(
+                promoted=False,
+                reason=(
+                    f"Inconclusive: no folds with enough trades "
+                    f"(min_trades_per_fold={min_trades_per_fold}, "
+                    f"{excluded} excluded)"
+                ),
+                baseline_better=False,
+                meets_success_criteria=False,
+                inconclusive=True,
+            )
+
+        win_ratio = variant.folds_won / scored
         b_agg = baseline.aggregate
         v_agg = variant.aggregate
         b_val = self._metric(b_agg, primary)
@@ -166,6 +327,12 @@ class GoalEngine:
 
         for b_fold, v_fold in zip(baseline.fold_metrics, variant.fold_metrics):
             if b_fold.get("fold_id") != v_fold.get("fold_id"):
+                continue
+            if v_fold.get("excluded") or b_fold.get("excluded"):
+                continue
+            b_tr = int(b_fold.get("trades") or 0)
+            v_tr = int(v_fold.get("trades") or 0)
+            if b_tr < min_trades_per_fold or v_tr < min_trades_per_fold:
                 continue
             dd_delta = float(v_fold.get("max_drawdown_pct", 0)) - float(b_fold.get("max_drawdown_pct", 0))
             if dd_delta > self.failure.get("drawdown_delta_max", 5):
@@ -177,9 +344,13 @@ class GoalEngine:
                 )
 
         if win_ratio < min_ratio:
+            excl_note = f", {excluded} excluded" if excluded else ""
             return Verdict(
                 promoted=False,
-                reason=f"Won {variant.folds_won}/{variant.folds_total} folds ({win_ratio:.0%} < {min_ratio:.0%})",
+                reason=(
+                    f"Won {variant.folds_won}/{scored} folds "
+                    f"({win_ratio:.0%} < {min_ratio:.0%}){excl_note}"
+                ),
                 baseline_better=True,
                 meets_success_criteria=False,
             )
@@ -201,14 +372,38 @@ class GoalEngine:
                 meets_success_criteria=False,
             )
 
+        holdout_fail = self._holdout_check(baseline, variant)
+        if holdout_fail is not None:
+            return holdout_fail
+
+        win_p = None
+        total_trades = None
+        threshold = None
+        has_holdout = bool(getattr(variant, "holdout_metrics", None) or getattr(variant, "folds_holdout", 0))
+        if has_holdout:
+            win_p, total_trades, threshold, sig_fail = self._significance_check(
+                baseline, variant, n_variables_today=n_variables_today,
+            )
+            if sig_fail is not None:
+                return sig_fail
+
+        excl_note = f", {excluded} excluded" if excluded else ""
+        holdout_note = ", hold-out ok" if has_holdout else ""
+        sig_note = ""
+        if win_p is not None and total_trades is not None:
+            sig_note = f", {format_win_probability(win_p, total_trades)}"
         return Verdict(
             promoted=True,
             reason=(
-                f"Won {variant.folds_won}/{variant.folds_total} folds, {improve_reason}, "
+                f"Won {variant.folds_won}/{scored} folds{excl_note}, {improve_reason}, "
                 f"opp={self._metric(v_agg, 'opportunity_score'):.2f}"
+                f"{holdout_note}{sig_note}"
             ),
             baseline_better=False,
             meets_success_criteria=True,
+            win_probability=win_p,
+            total_trades=total_trades,
+            threshold_used=threshold,
         )
 
     def apply_live_evidence(
@@ -239,17 +434,16 @@ class GoalEngine:
 
         if not has_enough:
             if live_metrics.live_trades > 0:
-                return Verdict(
-                    promoted=verdict.promoted,
+                return replace(
+                    verdict,
                     reason=verdict.reason + live_suffix + " (insufficient live sample)",
-                    baseline_better=verdict.baseline_better,
-                    meets_success_criteria=verdict.meets_success_criteria,
                     live_veto=False,
                 )
             return verdict
 
         if verdict.promoted and live_metrics.live_sell_pnl < -max_loss:
-            return Verdict(
+            return replace(
+                verdict,
                 promoted=False,
                 reason=(
                     f"Live veto: sell_pnl={live_metrics.live_sell_pnl:.2f} "
@@ -258,13 +452,12 @@ class GoalEngine:
                 baseline_better=True,
                 meets_success_criteria=False,
                 live_veto=True,
+                inconclusive=False,
             )
 
-        return Verdict(
-            promoted=verdict.promoted,
+        return replace(
+            verdict,
             reason=verdict.reason + live_suffix,
-            baseline_better=verdict.baseline_better,
-            meets_success_criteria=verdict.meets_success_criteria,
             live_veto=False,
         )
 
@@ -362,6 +555,8 @@ class GoalEngine:
         le = self.live_evidence
         if not le.get("enabled", False):
             return wf_verdict
+        if wf_verdict.inconclusive:
+            return wf_verdict
 
         verdict = self.apply_live_evidence(wf_verdict, live_metrics)
         if verdict.promoted:
@@ -371,8 +566,11 @@ class GoalEngine:
         if dual is not None:
             if dual.promoted:
                 return dual
+            if dual.inconclusive:
+                return dual
             if dual.reason.startswith("Dual blocked"):
-                return Verdict(
+                return replace(
+                    verdict,
                     promoted=False,
                     reason=verdict.reason + " | " + dual.reason,
                     baseline_better=dual.baseline_better,

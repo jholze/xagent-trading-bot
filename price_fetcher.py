@@ -1,23 +1,134 @@
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
 from core.config import get_bot_config
+from logger import log
 
 # In-memory price cache (TTL reduces API spam during Telegram commands)
 _price_cache = {}
+# Last successful quote: {symbol: (price, monotonic_ts)}. Bare floats = age 0.
 _last_good_cache = {}
+_stale_warned: set[str] = set()
 _CACHE_TTL_SECONDS = 30
+_STALE_PRICE_MAX_AGE_DEFAULT = 300.0
+_GATE_TICKERS_URL = "https://api.gateio.ws/api/v4/spot/tickers"
+_GATE_SNAPSHOT_TTL_DEFAULT = 25.0
+_GATE_SNAPSHOT_STALE_MULT = 5.0
+
+# Process-wide Gate /spot/tickers snapshot. Injectable clock for tests.
+_now = time.monotonic
+_gate_snapshot_lock = threading.Lock()
+_gate_snapshot: dict[str, float] | None = None
+_gate_snapshot_ts: float | None = None
 
 
 def clear_price_cache() -> int:
     """Drop in-memory price TTL cache (soft hot-reload / tests). Returns entries cleared."""
     n = len(_price_cache)
     _price_cache.clear()
-    # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer
+    # Keep _last_good_cache as emergency fallback for missing API; only drop TTL layer.
+    # Expiry is still applied on read.
     return n
+
+
+def reset_gate_ticker_snapshot_for_tests() -> None:
+    """Drop the process-wide Gate ticker snapshot (tests)."""
+    global _gate_snapshot, _gate_snapshot_ts
+    with _gate_snapshot_lock:
+        _gate_snapshot = None
+        _gate_snapshot_ts = None
+
+
+def peek_cached_price(symbol: str) -> float | None:
+    """Last known price from TTL cache, last-good, or the in-memory Gate snapshot.
+
+    Does not start a network fetch. Missing / invalid → None.
+    """
+    try:
+        key = _slash_pair(symbol)
+        now = time.time()
+        for cand in (key, str(symbol or "")):
+            if not cand:
+                continue
+            cached = _cache_get(cand, now)
+            if cached is not None:
+                try:
+                    price = float(cached)
+                except (TypeError, ValueError):
+                    price = 0.0
+                if price > 0:
+                    return price
+        snap = _gate_snapshot
+        if snap:
+            raw = snap.get(key)
+            if raw is None and key != symbol:
+                raw = snap.get(symbol)
+            try:
+                price = float(raw or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price > 0:
+                return price
+        now_mono = time.monotonic()
+        parsed = _parse_last_good(
+            _last_good_cache.get(key) or _last_good_cache.get(symbol),
+            now_mono=now_mono,
+        )
+        if parsed is not None:
+            price, ts = parsed
+            if price > 0 and (now_mono - ts) <= _stale_price_max_age_sec():
+                return float(price)
+    except Exception:
+        return None
+    return None
+
+
+def _stale_price_max_age_sec() -> float:
+    try:
+        return float(get_bot_config().stale_price_max_age_sec)
+    except Exception:
+        return _STALE_PRICE_MAX_AGE_DEFAULT
+
+
+def _parse_last_good(entry, *, now_mono: float) -> tuple[float, float] | None:
+    """Return (price, monotonic_ts) or None. Untimestamped floats count as age 0."""
+    if entry is None:
+        return None
+    if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+        try:
+            price = float(entry[0] or 0)
+            ts = float(entry[1])
+        except (TypeError, ValueError):
+            return None
+        if price > 0:
+            return price, ts
+        return None
+    try:
+        price = float(entry or 0)
+    except (TypeError, ValueError):
+        return None
+    if price > 0:
+        return price, now_mono
+    return None
+
+
+def stale_expired_symbols() -> set[str]:
+    """Symbols whose last-good quote is older than architecture.stale_price_max_age_sec."""
+    now_mono = time.monotonic()
+    max_age = _stale_price_max_age_sec()
+    expired: set[str] = set()
+    for sym, entry in _last_good_cache.items():
+        parsed = _parse_last_good(entry, now_mono=now_mono)
+        if parsed is None:
+            continue
+        _price, ts = parsed
+        if (now_mono - ts) > max_age:
+            expired.add(sym)
+    return expired
 
 _CG_MAP = {"ARIA": "aria-ai", "RAVE": "ravedao", "HIGH": "highstreet"}
 
@@ -79,7 +190,8 @@ def _cache_set(symbol: str, price: float, now: float = None):
     now = now or time.time()
     _price_cache[symbol] = (price, now)
     if price > 0:
-        _last_good_cache[symbol] = price
+        _last_good_cache[symbol] = (price, time.monotonic())
+        _stale_warned.discard(symbol)
 
 
 def _position_fallbacks(symbols: list[str], fallbacks: dict[str, float] = None) -> dict[str, float]:
@@ -95,22 +207,43 @@ def _apply_price_fallbacks(
     symbols: list[str],
     result: dict[str, float],
     fallbacks: dict[str, float] = None,
+    *,
+    allow_entry_price_fallback: bool = False,
 ) -> dict[str, str]:
-    """Fill zero quotes from last good cache, then optional entry-price fallbacks."""
+    """Fill zero quotes from last-good cache (TTL), then optional entry-price fallbacks.
+
+    Entry-price substitution is display-only: trading callers must leave
+    ``allow_entry_price_fallback`` at its default False.
+    """
     sources = {}
-    fb_map = _position_fallbacks(symbols, fallbacks)
+    fb_map = _position_fallbacks(symbols, fallbacks) if allow_entry_price_fallback else {}
+    now_mono = time.monotonic()
+    max_age = _stale_price_max_age_sec()
     for sym in symbols:
         price = float(result.get(sym, 0) or 0)
         if price > 0:
             sources[sym] = "live"
             continue
-        stale = _last_good_cache.get(sym)
-        if stale and stale > 0:
-            result[sym] = float(stale)
-            sources[sym] = "stale"
+        parsed = _parse_last_good(_last_good_cache.get(sym), now_mono=now_mono)
+        if parsed is not None:
+            stale_price, ts = parsed
+            age = now_mono - ts
+            if age <= max_age:
+                result[sym] = stale_price
+                sources[sym] = "stale"
+                continue
+            result[sym] = 0.0
+            sources[sym] = "stale_expired"
+            if sym not in _stale_warned:
+                log(
+                    f"Stale price expired for {sym}: age {age:.0f}s > {max_age:.0f}s "
+                    "— serving 0.0 (stale_expired)",
+                    "WARNING",
+                )
+                _stale_warned.add(sym)
             continue
         entry = fb_map.get(sym, 0)
-        if entry > 0:
+        if allow_entry_price_fallback and entry > 0:
             result[sym] = entry
             sources[sym] = "entry"
             continue
@@ -143,30 +276,102 @@ def _fetch_coingecko_single(cg_id: str):
     return None
 
 
+def _gate_ticker_snapshot_ttl_sec() -> float:
+    try:
+        return float(get_bot_config().gate_ticker_snapshot_ttl_sec)
+    except Exception:
+        return _GATE_SNAPSHOT_TTL_DEFAULT
+
+
+def _slash_pair(symbol: str) -> str:
+    return str(symbol or "").replace("/", "_").upper().replace("_", "/")
+
+
+def _download_gate_ticker_snapshot() -> dict[str, float]:
+    """HTTP GET /spot/tickers → {SYM/USDT: last}. Logs one INFO line per download."""
+    t0 = _now()
+    response = requests.get(_GATE_TICKERS_URL, timeout=12)
+    elapsed_ms = (_now() - t0) * 1000.0
+    try:
+        size = len(response.content or b"")
+    except TypeError:
+        size = 0
+    log(f"Gate ticker snapshot: {size} bytes in {elapsed_ms:.0f}ms", "INFO")
+    if getattr(response, "status_code", None) != 200:
+        raise RuntimeError(
+            f"gate tickers HTTP {getattr(response, 'status_code', None)}"
+        )
+    found: dict[str, float] = {}
+    for item in response.json():
+        pair = item.get("currency_pair", "")
+        if not pair:
+            continue
+        try:
+            price = float(item.get("last", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            found[_slash_pair(pair)] = price
+    return found
+
+
+def _gate_ticker_snapshot() -> dict[str, float]:
+    """Whole-market last prices, refreshed at most every gate_ticker_snapshot_ttl_sec.
+
+    Concurrent callers share one in-flight download (module lock). A failed
+    download returns the previous snapshot if it is younger than 5× TTL;
+    otherwise the previous error result (empty dict).
+    """
+    global _gate_snapshot, _gate_snapshot_ts
+    ttl = _gate_ticker_snapshot_ttl_sec()
+    now = _now()
+    snap = _gate_snapshot
+    ts = _gate_snapshot_ts
+    if snap is not None and ts is not None and (now - ts) < ttl:
+        return snap
+    with _gate_snapshot_lock:
+        now = _now()
+        snap = _gate_snapshot
+        ts = _gate_snapshot_ts
+        if snap is not None and ts is not None and (now - ts) < ttl:
+            return snap
+        try:
+            downloaded = _download_gate_ticker_snapshot()
+        except Exception as e:
+            print(f"   [Price] Gate bulk failed: {e}")
+            if (
+                snap is not None
+                and ts is not None
+                and (now - ts) < (ttl * _GATE_SNAPSHOT_STALE_MULT)
+            ):
+                return snap
+            return {}
+        _gate_snapshot = downloaded
+        _gate_snapshot_ts = _now()
+        return downloaded
+
+
 def _fetch_gate_bulk(symbols: list[str]) -> dict[str, float]:
-    """One Gate request for many pairs (faster than N sequential calls)."""
+    """Requested pairs from the process-wide Gate ticker snapshot.
+
+    Signature and return contract are unchanged: {SYM/USDT: price} for hits
+    with price > 0; empty dict on no symbols / failed download without stale.
+    """
     if not symbols:
         return {}
-    pairs_needed = {sym.replace("/", "_").upper() for sym in symbols}
-    try:
-        response = requests.get(
-            "https://api.gateio.ws/api/v4/spot/tickers",
-            timeout=12,
-        )
-        if response.status_code != 200:
-            return {}
-        found = {}
-        for item in response.json():
-            pair = item.get("currency_pair", "")
-            if pair not in pairs_needed:
-                continue
-            price = float(item.get("last", 0) or 0)
-            if price > 0:
-                found[pair.replace("_", "/")] = price
-        return found
-    except Exception as e:
-        print(f"   [Price] Gate bulk failed: {e}")
+    snapshot = _gate_ticker_snapshot()
+    if not snapshot:
         return {}
+    found = {}
+    for sym in symbols:
+        key = _slash_pair(sym)
+        try:
+            price = float(snapshot.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            found[key] = price
+    return found
 
 
 def _fetch_coingecko_bulk(symbols: list[str]) -> dict[str, float]:
@@ -224,11 +429,13 @@ def get_prices_batch(
     fallbacks: dict[str, float] = None,
     *,
     return_sources: bool = False,
+    allow_entry_price_fallback: bool = False,
 ) -> dict[str, float] | tuple[dict[str, float], dict[str, str]]:
     """
     Fetch prices for multiple symbols efficiently.
     Uses cache, then Gate bulk + CoinGecko bulk, then parallel singles.
-    Zero quotes fall back to last good cache, then optional entry prices.
+    Zero quotes fall back to last-good cache (capped by stale_price_max_age_sec).
+    Entry-price fallback is opt-in and must not be used for trading decisions.
     """
     if not symbols:
         return ({}, {}) if return_sources else {}
@@ -264,7 +471,10 @@ def get_prices_batch(
     if not missing:
         for sym in unique:
             result.setdefault(sym, 0.0)
-        sources = _apply_price_fallbacks(unique, result, fallbacks)
+        sources = _apply_price_fallbacks(
+            unique, result, fallbacks,
+            allow_entry_price_fallback=allow_entry_price_fallback,
+        )
         sources.update(redis_sources)
         if return_sources:
             return result, sources
@@ -319,7 +529,10 @@ def get_prices_batch(
     except Exception:
         pass
 
-    sources = _apply_price_fallbacks(unique, result, fallbacks)
+    sources = _apply_price_fallbacks(
+        unique, result, fallbacks,
+        allow_entry_price_fallback=allow_entry_price_fallback,
+    )
     sources.update(redis_sources)
     if return_sources:
         return result, sources

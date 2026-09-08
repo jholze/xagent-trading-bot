@@ -1,9 +1,13 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
-from datetime import datetime, timedelta
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -16,6 +20,34 @@ from services.order_service import (
     ledger_label,
     source_label,
 )
+
+_HOST_TZS = ("UTC", "Europe/Berlin")
+
+# Display fixtures (#320 review): the naive literals were written on a
+# Europe/Berlin host and mean "19:16 Berlin" only with that host clock — the
+# code reads naive stamps as the writer's process clock (UTC on Railway). The
+# aware variant proves the same digits on a UTC host. Assertions unchanged.
+_DISPLAY_CASES_BUY = (
+    ("Europe/Berlin", "2026-06-07T19:16:08"),
+    ("UTC", "2026-06-07T19:16:08+02:00"),
+)
+_DISPLAY_CASES_SELL = (
+    ("Europe/Berlin", "2026-06-08T10:30:00"),
+    ("UTC", "2026-06-08T10:30:00+02:00"),
+)
+
+
+@contextmanager
+def host_tz_ctx(tz_name: str):
+    """monkeypatch.setenv('TZ') + time.tzset(), restored afterwards (#320)."""
+    mp = pytest.MonkeyPatch()
+    mp.setenv("TZ", tz_name)
+    time.tzset()
+    try:
+        yield tz_name
+    finally:
+        mp.undo()
+        time.tzset()
 
 
 class TestOrderService(unittest.TestCase):
@@ -118,15 +150,38 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(updated["pnl"], 0.0)
 
     def test_expire_stale_pending(self):
-        svc = OrderService("paper")
-        order = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)
-        record = svc.create_from_request(order, telegram_token="old1")
-        data = svc._load()
-        record = svc._find(data, order_id="old1")
-        record["timestamps"]["created"] = (datetime.now() - timedelta(minutes=15)).isoformat()
-        svc._save(data)
-        self.assertEqual(svc.expire_stale_pending(), 1)
-        self.assertEqual(svc.get_by_id("old1")["status"], "expired")
+        for tz in _HOST_TZS:
+            with self.subTest(tz=tz), host_tz_ctx(tz):
+                token = f"old1-{tz.replace('/', '_')}"
+                svc = OrderService("paper")
+                order = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)
+                record = svc.create_from_request(order, telegram_token=token)
+                data = svc._load()
+                record = svc._find(data, order_id=token)
+                record["timestamps"]["created"] = (datetime.now() - timedelta(minutes=15)).isoformat()
+                svc._save(data)
+                self.assertEqual(svc.expire_stale_pending(), 1)
+                self.assertEqual(svc.get_by_id(token)["status"], "expired")
+
+    def test_expire_stale_pending_across_dst_spring_forward(self):
+        """CET→CEST spring-forward: 8 min UTC must not expire (TTL 10).
+
+        Naive 2026-03-29 01:56 Europe/Berlin is 00:56 UTC.
+        03:04 CEST is 01:04 UTC. Elapsed = 8 min. A naive wall-clock
+        subtract would be 68 min and would wrongly expire.
+        """
+        with host_tz_ctx("Europe/Berlin"):
+            svc = OrderService("paper")
+            order = TradeOrder("BUY", "ARIA/USDT", 0.05, 0, usdt_amount=100)
+            svc.create_from_request(order, telegram_token="dst1")
+            data = svc._load()
+            record = svc._find(data, order_id="dst1")
+            record["timestamps"]["created"] = "2026-03-29T01:56:00"
+            svc._save(data)
+            now_utc = datetime(2026, 3, 29, 1, 4, 0, tzinfo=timezone.utc)
+            with patch("services.order_service.utc_now", return_value=now_utc):
+                self.assertEqual(svc.expire_stale_pending(), 0)
+            self.assertEqual(svc.get_by_id("dst1")["status"], "pending_confirmation")
 
     def test_scope_isolation(self):
         paper = OrderService("paper")
@@ -141,15 +196,17 @@ class TestOrderService(unittest.TestCase):
         self.assertEqual(l_orders[0]["symbol"], "B/USDT")
 
     def test_format_order_line_includes_trade_date(self):
-        line = format_order_line({
-            "status": "filled", "display_seq": 3, "side": "buy",
-            "symbol": "ARIA/USDT", "source": "manual",
-            "request": {"usdt": 200}, "execution": {"usdt": 200},
-            "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
-        })
-        self.assertIn("#3", line)
-        self.assertIn("ARIA", line)
-        self.assertIn("07.06.2026 19:16", line)
+        for tz, stamp in _DISPLAY_CASES_BUY:
+            with self.subTest(tz=tz), host_tz_ctx(tz):
+                line = format_order_line({
+                    "status": "filled", "display_seq": 3, "side": "buy",
+                    "symbol": "ARIA/USDT", "source": "manual",
+                    "request": {"usdt": 200}, "execution": {"usdt": 200},
+                    "timestamps": {"created": stamp, "filled": stamp},
+                })
+                self.assertIn("#3", line)
+                self.assertIn("ARIA", line)
+                self.assertIn("07.06.2026 19:16", line)
 
     def test_format_order_line_includes_pnl_for_sells(self):
         line = format_order_line({
@@ -176,27 +233,31 @@ class TestOrderService(unittest.TestCase):
         self.assertIn("$+0.0", line)
 
     def test_format_order_detail_shows_buy_date_label(self):
-        detail = format_order_detail({
-            "display_seq": 1, "status": "filled", "side": "buy",
-            "symbol": "ARIA/USDT", "source": "manual", "ledger_scope": "paper",
-            "request": {"price": 0.05, "usdt": 200},
-            "risk": {}, "execution": {"usdt": 200, "price": 0.05, "amount": 4000},
-            "timestamps": {"created": "2026-06-07T19:16:08", "filled": "2026-06-07T19:16:08"},
-        })
-        self.assertIn("Kaufdatum", detail)
-        self.assertIn("07.06.2026 19:16", detail)
+        for tz, stamp in _DISPLAY_CASES_BUY:
+            with self.subTest(tz=tz), host_tz_ctx(tz):
+                detail = format_order_detail({
+                    "display_seq": 1, "status": "filled", "side": "buy",
+                    "symbol": "ARIA/USDT", "source": "manual", "ledger_scope": "paper",
+                    "request": {"price": 0.05, "usdt": 200},
+                    "risk": {}, "execution": {"usdt": 200, "price": 0.05, "amount": 4000},
+                    "timestamps": {"created": stamp, "filled": stamp},
+                })
+                self.assertIn("Kaufdatum", detail)
+                self.assertIn("07.06.2026 19:16", detail)
 
     def test_format_order_detail_shows_sell_date_label(self):
-        detail = format_order_detail({
-            "display_seq": 2, "status": "filled", "side": "sell",
-            "symbol": "SOL/USDT", "source": "manual", "ledger_scope": "paper",
-            "request": {"price": 70, "amount": 2},
-            "risk": {}, "execution": {"usdt": 140, "price": 70, "amount": 2},
-            "pnl": 3.5,
-            "timestamps": {"created": "2026-06-08T10:30:00", "filled": "2026-06-08T10:30:00"},
-        })
-        self.assertIn("Verkaufdatum", detail)
-        self.assertIn("08.06.2026 10:30", detail)
+        for tz, stamp in _DISPLAY_CASES_SELL:
+            with self.subTest(tz=tz), host_tz_ctx(tz):
+                detail = format_order_detail({
+                    "display_seq": 2, "status": "filled", "side": "sell",
+                    "symbol": "SOL/USDT", "source": "manual", "ledger_scope": "paper",
+                    "request": {"price": 70, "amount": 2},
+                    "risk": {}, "execution": {"usdt": 140, "price": 70, "amount": 2},
+                    "pnl": 3.5,
+                    "timestamps": {"created": stamp, "filled": stamp},
+                })
+                self.assertIn("Verkaufdatum", detail)
+                self.assertIn("08.06.2026 10:30", detail)
 
     def test_ledger_label(self):
         self.assertEqual(ledger_label("demo"), "DEMO")

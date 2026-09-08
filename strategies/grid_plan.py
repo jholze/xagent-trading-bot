@@ -463,11 +463,21 @@ def simulate_plan_path(
     re_center_atr_mult: float = 2.5,
     initial_cash: float = 10_000.0,
     base_buy_usdt: float = 500.0,
-    fee_pct: float = 0.1,
+    fee_pct: float | None = None,
 ) -> dict[str, Any]:
     """Bar-walk plan evaluation for local backtests (no I/O)."""
+    from core.costs import CostModel, CostParams
+
     if not prices:
         return {"error": "no prices", "trades": 0}
+    if fee_pct is None:
+        cm = CostModel.from_config(None)
+    else:
+        cm = CostModel(CostParams(
+            fee_maker_pct=float(fee_pct),
+            fee_taker_pct=float(fee_pct),
+            slippage_pct=0.0,
+        ))
     plan = build_grid_plan(
         symbol,
         timeframe,
@@ -479,7 +489,6 @@ def simulate_plan_path(
     amount = 0.0
     entry_avg = 0.0
     trades: list[dict] = []
-    fee_m = fee_pct / 100.0
 
     for i, px in enumerate(prices):
         px = float(px)
@@ -493,24 +502,27 @@ def simulate_plan_path(
         if act.action == BUY and act.buy_usdt_frac > 0:
             usdt = min(cash, base_buy_usdt * act.buy_usdt_frac)
             if usdt >= 10 and px > 0:
-                fee = usdt * fee_m
-                got = (usdt - fee) / px
+                buy_f = cm.simulate_buy(px, usdt=usdt, order_type="limit")
+                got = buy_f.qty_net
                 new_amt = amount + got
-                entry_avg = ((entry_avg * amount) + px * got) / new_amt if new_amt > 0 else px
+                entry_avg = (
+                    ((entry_avg * amount) + buy_f.quote_net) / new_amt if new_amt > 0 else buy_f.fill_price
+                )
                 amount = new_amt
-                cash -= usdt
+                cash -= buy_f.quote_net
                 trades.append(
                     {
                         "i": i,
                         "price": px,
                         "action": "BUY",
-                        "usdt": round(usdt, 2),
+                        "usdt": round(buy_f.quote_net, 2),
                         "level": act.level_index,
                     }
                 )
         elif act.action != HOLD and act.sell_pos_frac > 0 and amount > 0:
             sell_amt = amount * act.sell_pos_frac
-            proceeds = sell_amt * px * (1.0 - fee_m)
+            sell_f = cm.simulate_sell(px, sell_amt, order_type="limit")
+            proceeds = sell_f.quote_net
             cash += proceeds
             amount -= sell_amt
             trades.append(

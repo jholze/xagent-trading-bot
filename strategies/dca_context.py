@@ -59,10 +59,30 @@ def build_dca_context(
             ctx.fusion_size_mult = 1.0
             fusion_missing = True
         ctx.block_buys = bool(bias.get("block_buys"))
+        ctx.fusion_degraded = bool(bias.get("degraded"))
+        ctx.fusion_fresh = bool(bias.get("fresh"))
+        layers = bias.get("layers") if isinstance(bias.get("layers"), dict) else {}
+        if layers:
+            ctx.fusion_measured = all(
+                (not (ly or {}).get("active")) or bool((ly or {}).get("measured", True))
+                for ly in layers.values()
+            )
+        else:
+            ctx.fusion_measured = not ctx.fusion_degraded
+        try:
+            from risk.risk_manager import _fail_closed_guards_mode
+
+            ctx.fail_closed_guards = _fail_closed_guards_mode(raw)
+        except Exception:
+            ctx.fail_closed_guards = "log"
     except Exception:
         ctx.fusion_size_mult = 1.0
         ctx.block_buys = False
         fusion_missing = True
+        ctx.fusion_degraded = True
+        ctx.fusion_fresh = False
+        ctx.fusion_measured = False
+        ctx.fail_closed_guards = "log"
     ctx.fusion_missing = fusion_missing
 
     # Cash mode from fusion; spendable via Risk when possible

@@ -108,6 +108,11 @@ def _hermes_memory_params(symbol: str, tf: str) -> dict | None:
         "strategy_profile": profile_name,
         "hermes_baseline_updated_at": profile.get("updated_at"),
     })
+    exp_id = profile.get("hermes_experiment_id") or params.get("hermes_experiment_id")
+    if exp_id:
+        params["hermes_experiment_id"] = exp_id
+        if profile.get("hermes_updated_at"):
+            params["hermes_updated_at"] = profile.get("hermes_updated_at")
     return params
 
 

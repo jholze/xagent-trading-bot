@@ -299,6 +299,36 @@ def chunk_positions_message(
     return tagged
 
 
+def _exit_plan_card_suffix(p: dict, price: float) -> str:
+    """Additive exit-plan line; empty when metrics are not available."""
+    try:
+        from services.position_metrics import format_exit_plan_line
+
+        params: dict = {}
+        try:
+            from strategies.registry import resolve_strategy_params
+
+            params = (
+                resolve_strategy_params(
+                    {
+                        "symbol": position_symbol(p),
+                        "timeframe": p.get("timeframe") or "4h",
+                    },
+                    has_position=True,
+                    frozen_tier=p.get("strategy_tier"),
+                )
+                or {}
+            )
+        except Exception:
+            params = {}
+        line = format_exit_plan_line(p, float(price or 0), params)
+        if not line:
+            return ""
+        return "\n   └ " + line
+    except Exception:
+        return ""
+
+
 def format_position_card(
     index: int,
     p: dict,
@@ -351,6 +381,9 @@ def format_position_card(
         )
         if price_source == "missing" and m["value_usdt"] <= 0:
             tree_lines.append("   └─ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>")
+        exit_line = _exit_plan_card_suffix(p, price)
+        if exit_line:
+            tree_lines.append(exit_line.lstrip("\n"))
         return header + "\n" + "\n".join(tree_lines)
 
     sold_line = ""
@@ -394,12 +427,13 @@ def format_position_card(
         missing_line = "\n   └ <i>⚠️ Kein Live-Kurs — Wert nicht in Gesamtwert</i>"
 
     value_label = "Equity" if is_short_side else "Wert"
+    exit_line = _exit_plan_card_suffix(p, price)
     return (
         f"{header}\n"
         f"{short_meta}"
         f"   └ <code>{_position_amount_label(m['amount'])}</code> @ {price_str}{source_note} · Entry {entry_str}{lev_line}\n"
         f"   └ {value_label} <b>${m['value_usdt']:.1f}</b> · PnL <b>${m['unreal']:+.1f}</b>"
-        f"{sold_line}{lock_line}{last_line}{missing_line}"
+        f"{sold_line}{lock_line}{last_line}{missing_line}{exit_line}"
     )
 
 
@@ -1586,7 +1620,10 @@ def send_positions_snapshot(
     t_px0 = time.perf_counter()
     if unique_symbols:
         prices, price_sources = get_prices_batch(
-            unique_symbols, fallbacks=fallbacks, return_sources=True,
+            unique_symbols,
+            fallbacks=fallbacks,
+            return_sources=True,
+            allow_entry_price_fallback=True,
         )
     else:
         prices, price_sources = {}, {}
