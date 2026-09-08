@@ -743,7 +743,11 @@ def _apply_raw_without_adapter(
                 needs_reconcile=True,
             )
     status = OrderStatus.EXECUTED
-    if requested > 0 and 0 < filled_f < requested:
+    if (
+        requested > 0
+        and 0 < filled_f < requested
+        and token not in ("closed", "filled")
+    ):
         status = OrderStatus.PARTIALLY_FILLED
     side: str = "sell" if order.type == "SELL" else "buy"
     base, _, quote = str(order.symbol).partition("/")
