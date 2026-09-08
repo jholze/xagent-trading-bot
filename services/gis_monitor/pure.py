@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from core.models import OrderStatus
+
 DEFAULT_ELIGIBLE_MIN_VOL = 500_000.0
 DEFAULT_LEVERAGE_SUFFIXES = ("3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR")
 
@@ -207,9 +209,9 @@ def join_leaders_to_fills(
     for o in fills or []:
         if not isinstance(o, dict):
             continue
-        if str(o.get("status") or "").lower() not in ("filled", "closed", ""):
+        if str(o.get("status") or "").lower() not in (OrderStatus.EXECUTED.value, "closed", ""):
             # allow missing status in synthetic tests if side present
-            if o.get("status") is not None and str(o.get("status")).lower() != "filled":
+            if o.get("status") is not None and str(o.get("status")).lower() != OrderStatus.EXECUTED.value:
                 continue
         sym = _fill_symbol(o)
         if not sym:
@@ -339,8 +341,8 @@ def compute_kpis(
         if not isinstance(o, dict):
             continue
         st = str(o.get("status") or "filled").lower()
-        if st not in ("filled", "closed"):
-            if o.get("status") is not None and st != "filled":
+        if st not in (OrderStatus.EXECUTED.value, "closed"):
+            if o.get("status") is not None and st != OrderStatus.EXECUTED.value:
                 continue
         side = str(o.get("side") or "").lower()
         src = str(o.get("source") or "unknown")

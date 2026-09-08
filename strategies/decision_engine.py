@@ -1643,31 +1643,41 @@ class DecisionEngine:
 
         # Position lock: suppress auto sells (manual still via TradingService + risk)
         if market.has_position and is_sell(normalized):
-            try:
-                from strategies.position_lock import auto_sell_blocked
+            from strategies.position_lock import auto_sell_blocked
+            from risk.risk_manager import guard_failed
 
+            try:
                 locked, lock_msg = auto_sell_blocked(
                     position, "auto", config=self.config.raw
                 )
-                if locked:
-                    structure_rationales.append(f"[Lock] {lock_msg}")
-                    sources.append("position_locked")
-                    normalized = HOLD
-            except Exception:
-                pass
+            except Exception as e:
+                dec = guard_failed("position_lock", e, None, config=self.config)
+                if dec:
+                    locked, lock_msg = True, f"position_lock_error: {e}"
+                else:
+                    locked, lock_msg = False, ""
+            if locked:
+                structure_rationales.append(f"[Lock] {lock_msg}")
+                sources.append("position_locked")
+                normalized = HOLD
 
         # Position lock: suppress DCA add-ons
         if market.has_position and normalized == BUY_DCA:
-            try:
-                from strategies.position_lock import dca_blocked
+            from strategies.position_lock import dca_blocked
+            from risk.risk_manager import guard_failed
 
+            try:
                 locked, lock_msg = dca_blocked(position, config=self.config.raw)
-                if locked:
-                    structure_rationales.append(f"[Lock] {lock_msg}")
-                    sources.append("position_locked")
-                    normalized = HOLD
-            except Exception:
-                pass
+            except Exception as e:
+                dec = guard_failed("position_lock_dca", e, None, config=self.config)
+                if dec:
+                    locked, lock_msg = True, f"position_lock_dca_error: {e}"
+                else:
+                    locked, lock_msg = False, ""
+            if locked:
+                structure_rationales.append(f"[Lock] {lock_msg}")
+                sources.append("position_locked")
+                normalized = HOLD
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
@@ -1791,6 +1801,18 @@ class DecisionEngine:
             analysis.sentiment_score = getattr(technical, "sentiment_score", 0.0)
         if getattr(technical, "allocation", None):
             analysis.allocation = technical.allocation
+
+        # Thread allocator de-risking onto the analysis so the TradeOrder can
+        # carry it into RiskManager._dynamic_size (write-only until #302).
+        em = (market.strategy_params or {}).get("exposure_multiplier")
+        if em is None:
+            alloc = getattr(analysis, "allocation", None)
+            if isinstance(alloc, dict):
+                em = alloc.get("exposure_multiplier")
+        try:
+            analysis.exposure_multiplier = float(em) if em is not None else None
+        except (TypeError, ValueError):
+            analysis.exposure_multiplier = None
 
         return analysis
 

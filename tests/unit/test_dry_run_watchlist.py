@@ -15,9 +15,16 @@ from data_manager import (
     save_dry_run_overlay,
 )
 from services.dry_run_watchlist import DryRunWatchlistSync
+from tests.support.offline import gate_prices_listed
 
 
 class TestDryRunWatchlist(unittest.TestCase):
+    def setUp(self):
+        # load_effective_watchlist prunes via get_gate_prices_batch
+        p = patch("price_fetcher.get_gate_prices_batch", side_effect=gate_prices_listed)
+        p.start()
+        self.addCleanup(p.stop)
+
     def _enhanced_config(self):
         cfg = BotConfig()
         cfg._raw = {

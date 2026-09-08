@@ -8,39 +8,60 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from core.config import get_bot_config
-from core.models import RiskDecision, TradeOrder, TradeResult
+from core.models import (
+    OrderStatus,
+    RiskDecision,
+    TradeOrder,
+    TradeResult,
+    is_executed_status,
+    stored_status,
+)
 from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+from core.time_utils import (
+    format_operator_time,
+    ledger_datetime_utc,
+    process_local_tz,
+    utc_now,
+)
 from data_manager import (
     get_config,
     load_orders,
     resolve_orders_file,
     save_orders,
 )
+from logger import log
 
 ORDERS_PER_PAGE = 5
 # Hard cap for full-list views (/orders, /orders_blocked, /orders_month) — no pager.
 ORDERS_LIST_HARD_CAP = 500
 PENDING_TTL_MINUTES = 10
-EXECUTED_STATUSES = frozenset({"filled"})
-TRADE_BOOK_STATUSES = frozenset({"filled"})
-# Non-executed attempts shown under /orders_blocked
+EXECUTED_STATUSES = frozenset({OrderStatus.EXECUTED.value})
+TRADE_BOOK_STATUSES = frozenset({OrderStatus.EXECUTED.value})
+# Non-executed attempts shown under /orders_blocked.
+# Enum values plus legacy tokens still present in the live Mongo ledger.
 BLOCKED_STATUSES = frozenset({
-    "rejected",
-    "cancelled",
-    "failed",
+    OrderStatus.REJECTED.value,
+    OrderStatus.CANCELED.value,
+    OrderStatus.ACTIVE.value,
+    OrderStatus.QUEUED.value,
+    OrderStatus.PARTIALLY_FILLED.value,
+    "cancelled",  # legacy British spelling
+    "failed",  # legacy write; from_legacy → REJECTED
     "expired",
-    "pending_confirmation",
-    "executing",
+    "pending_confirmation",  # pre-submission, outside OrderStatus
 })
 
 STATUS_ICONS = {
     "pending_confirmation": "⏳",
     "cancelled": "🚫",
+    OrderStatus.CANCELED.value: "🚫",
     "expired": "⌛",
-    "rejected": "❌",
-    "executing": "🔄",
-    "filled": "✅",
+    OrderStatus.REJECTED.value: "❌",
+    OrderStatus.ACTIVE.value: "🔄",
+    OrderStatus.EXECUTED.value: "✅",
     "failed": "⚠️",
+    OrderStatus.QUEUED.value: "📥",
+    OrderStatus.PARTIALLY_FILLED.value: "◐",
 }
 
 _ORDERS_READ_CACHE: dict[str, tuple[float, dict]] = {}
@@ -108,10 +129,17 @@ def _orders_header_label(scope: str | None = None) -> str:
 
 
 def _now() -> str:
+    # Writer unchanged (#320): naive process-local wall clock.
     return datetime.now().isoformat()
 
 
 def _parse_ts(value: str):
+    """Parse a ledger stamp to naive *display* clock (calendar windows).
+
+    Naive values are process-local (``_now()`` / ``datetime.now()``), then
+    converted to the operator/display zone. Duration logic must not use
+    this — see ``ledger_datetime_utc``.
+    """
     if not value:
         return None
     try:
@@ -126,7 +154,7 @@ def _parse_ts(value: str):
 
 def _process_local_tz():
     """Timezone of naive datetime.now() stamps (UTC on Railway, local on Mac)."""
-    return datetime.now().astimezone().tzinfo
+    return process_local_tz()
 
 
 def _as_display_naive(dt: datetime) -> datetime:
@@ -135,6 +163,8 @@ def _as_display_naive(dt: datetime) -> datetime:
     Naive ledger timestamps come from ``datetime.now()`` (process-local wall
     clock — typically UTC on Railway). They are NOT already Europe/Berlin;
     attach process-local tzinfo first, then convert to display_tz.
+    Telegram rendering (``_format_ts_short``) goes through
+    ``format_operator_time``, which applies the same rule.
     """
     try:
         from core.time_utils import display_tz
@@ -190,13 +220,21 @@ def calendar_month_bounds(now: datetime | None = None) -> tuple[datetime, dateti
     return start, end
 
 
-def order_event_ts(order: dict) -> datetime | None:
-    """Prefer fill time for executed trades, else created/updated."""
+def _order_event_raw(order: dict) -> str | None:
     ts = order.get("timestamps") or {}
-    status = (order.get("status") or "").lower()
-    if status == "filled":
-        return _parse_ts(ts.get("filled") or ts.get("created") or ts.get("updated"))
-    return _parse_ts(ts.get("created") or ts.get("updated") or ts.get("filled"))
+    if is_executed_status(order.get("status")):
+        return ts.get("filled") or ts.get("created") or ts.get("updated")
+    return ts.get("created") or ts.get("updated") or ts.get("filled")
+
+
+def order_event_ts(order: dict) -> datetime | None:
+    """Prefer fill time for executed trades, else created/updated (display naive)."""
+    return _parse_ts(_order_event_raw(order) or "")
+
+
+def order_event_ts_utc(order: dict) -> datetime | None:
+    """Same stamp as ``order_event_ts``, interpreted as aware UTC for durations."""
+    return ledger_datetime_utc(_order_event_raw(order))
 
 
 def order_in_window(order: dict, start: datetime, end: datetime) -> bool:
@@ -207,10 +245,7 @@ def order_in_window(order: dict, start: datetime, end: datetime) -> bool:
 
 
 def _format_ts_short(value: str) -> str:
-    dt = _parse_ts(value)
-    if not dt:
-        return ""
-    return dt.strftime("%d.%m.%Y %H:%M")
+    return format_operator_time(value, "%d.%m.%Y %H:%M")
 
 
 def _trade_date_label(side: str) -> str:
@@ -310,11 +345,16 @@ class OrderService:
         cfg = get_bot_config()
         from core.tenant_context import resolve_tenant_id
 
-        idem = idempotency_key or getattr(order, "idempotency_key", "") or ""
+        idem = (
+            idempotency_key
+            or getattr(order, "client_order_id", "")
+            or getattr(order, "idempotency_key", "")
+            or ""
+        )
         record = {
             "id": telegram_token or uuid.uuid4().hex[:12],
             "display_seq": self._next_seq(data),
-            "status": status,
+            "status": stored_status(status) or status,
             "side": order.type.lower(),
             "symbol": order.symbol,
             "timeframe": timeframe,
@@ -324,13 +364,21 @@ class OrderService:
             "exit_source": (getattr(order, "exit_source", None) or "") or None,
             "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
             "idempotency_key": idem or None,
+            "client_order_id": idem or None,
+            "exchange_order_id": getattr(order, "exchange_order_id", "") or None,
+            "order_exist_in_exchange": bool(
+                getattr(order, "order_exist_in_exchange", False)
+            ),
+            "qty": float(order.qty or 0) or None,
+            "filled_qty": float(getattr(order, "filled_qty", 0) or 0),
+            "reduce_only": bool(getattr(order, "reduce_only", False)),
             "tenant_id": resolve_tenant_id(),
             "trading_mode": cfg.trading_mode,
             "ledger_scope": self.scope,
             **_leverage_payload(order),
             "request": {
                 "price": float(order.price or 0),
-                "amount": float(order.amount or 0) or None,
+                "amount": float(order.qty or 0) or None,
                 "usdt": float(order.usdt_amount or 0) or None,
                 **_leverage_payload(order),
                 **(request_extra or {}),
@@ -360,7 +408,7 @@ class OrderService:
         record = {
             "id": uuid.uuid4().hex[:12],
             "display_seq": self._next_seq(data),
-            "status": "rejected",
+            "status": OrderStatus.REJECTED.value,
             "side": order.type.lower(),
             "symbol": order.symbol,
             "timeframe": timeframe,
@@ -405,9 +453,10 @@ class OrderService:
         record = self._find(data, order_id=order_id)
         if not record or record.get("ledger_scope") != self.scope:
             return None
-        record["status"] = status
+        stored = stored_status(status) or status
+        record["status"] = stored
         record["timestamps"]["updated"] = _now()
-        if status == "filled":
+        if is_executed_status(stored):
             record["timestamps"]["filled"] = _now()
         if execution:
             record["execution"] = {**record.get("execution", {}), **execution}
@@ -430,9 +479,9 @@ class OrderService:
             if store is None:
                 return
             store.upsert_order(record)
-        except Exception:
-            # Fail-open: legacy blob remains source of truth during migration.
-            pass
+        except Exception as e:
+            # Fail-open: v2 is still a shadow; legacy blob remains source of truth.
+            log(f"order ledger v2 dual-write failed: {e}", "WARNING")
 
     def _v2_day_key(self, now: datetime | None = None) -> str:
         """Display-calendar day key YYYY-MM-DD for v2 day queries."""
@@ -475,13 +524,13 @@ class OrderService:
 
     def expire_stale_pending(self) -> int:
         data = self._load()
-        cutoff = datetime.now() - timedelta(minutes=PENDING_TTL_MINUTES)
+        cutoff = utc_now() - timedelta(minutes=PENDING_TTL_MINUTES)
         count = 0
         touched: list[dict] = []
         for o in data.get("orders", []):
             if o.get("status") != "pending_confirmation":
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(o.get("timestamps", {}).get("created"))
             if ts and ts < cutoff:
                 o["status"] = "expired"
                 o["timestamps"]["updated"] = _now()
@@ -514,14 +563,14 @@ class OrderService:
     def list_recent_rejected(self, *, hours: float = 24, limit: int = 5) -> list:
         """Recent rejected orders (legacy helper; prefer list_blocked_orders)."""
         data = self._load()
-        cutoff = _display_now_naive() - timedelta(hours=hours)
+        cutoff = utc_now() - timedelta(hours=hours)
         rejected = []
         for order in reversed(data.get("orders", [])):
             if order.get("ledger_scope") != self.scope:
                 continue
-            if order.get("status") != "rejected":
+            if OrderStatus.try_legacy(order.get("status")) is not OrderStatus.REJECTED:
                 continue
-            ts = order_event_ts(order)
+            ts = order_event_ts_utc(order)
             if not ts or ts < cutoff:
                 continue
             rejected.append(order)
@@ -592,10 +641,10 @@ class OrderService:
         if status_filter:
             orders = [o for o in orders if o.get("status") in status_filter]
         if hours is not None:
-            cutoff = _display_now_naive() - timedelta(hours=hours)
+            cutoff = utc_now() - timedelta(hours=hours)
             orders = [
                 o for o in orders
-                if (order_event_ts(o) or datetime.min) >= cutoff
+                if (ts := order_event_ts_utc(o)) is not None and ts >= cutoff
             ]
         if since is not None or until is not None:
             start = since or datetime.min
@@ -867,7 +916,7 @@ class OrderService:
         orders = self._scoped_orders_newest_first(mutate=False)
         filled = [
             o for o in orders
-            if o.get("status") == "filled"
+            if is_executed_status(o.get("status"))
         ]
         in_window = self._filter_window_newest_first(filled, start, end, early_stop=True)
         return self.stats_from_filled_orders(in_window)
@@ -944,9 +993,15 @@ class OrderService:
             "unknown_side": 0,
         }
         try:
-            from storage.order_ledger_v2 import get_order_ledger_v2
+            from storage.order_ledger_v2 import (
+                get_order_ledger_v2,
+                order_ledger_v2_is_degraded,
+            )
 
-            store = get_order_ledger_v2()
+            if order_ledger_v2_is_degraded():
+                store = None
+            else:
+                store = get_order_ledger_v2()
             if store is not None:
                 tid = resolve_tenant_id()
                 filled = store.query_day(
@@ -984,7 +1039,7 @@ class OrderService:
         """Count all ledger entries in the last 24h (including blocked / pending)."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = utc_now() - timedelta(hours=24)
         counts = {
             "filled": 0,
             "rejected": 0,
@@ -997,7 +1052,7 @@ class OrderService:
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(o.get("timestamps", {}).get("created"))
             if not ts or ts < cutoff:
                 continue
             st = o.get("status", "")
@@ -1009,14 +1064,16 @@ class OrderService:
         """Filled buy/sell counts for the classic order book view."""
         self.expire_stale_pending()
         data = self._load()
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = utc_now() - timedelta(hours=24)
         counts = {"filled": 0, "buys": 0, "sells": 0, "shorts": 0, "covers": 0}
         for o in data.get("orders", []):
             if o.get("ledger_scope") != self.scope:
                 continue
-            if o.get("status") != "filled":
+            if not is_executed_status(o.get("status")):
                 continue
-            ts = _parse_ts(o.get("timestamps", {}).get("filled") or o.get("timestamps", {}).get("created"))
+            ts = ledger_datetime_utc(
+                o.get("timestamps", {}).get("filled") or o.get("timestamps", {}).get("created")
+            )
             if not ts or ts < cutoff:
                 continue
             counts["filled"] += 1
@@ -1050,14 +1107,45 @@ class OrderService:
                     dirty = True
             if dirty:
                 self._save(data)
+        st = getattr(result, "order_status", None)
+        if not isinstance(st, OrderStatus):
+            st = OrderStatus.try_legacy(st)
+
+        exist = bool(getattr(result, "order_exist_in_exchange", False))
+        if approved_order is not None:
+            exist = exist or bool(getattr(approved_order, "order_exist_in_exchange", False))
+
+        extra_fields = {
+            "order_exist_in_exchange": exist,
+            "exchange_order_id": getattr(result, "exchange_order_id", None)
+            or (getattr(approved_order, "exchange_order_id", None) if approved_order else None),
+            "filled_qty": float(
+                getattr(result, "filled_qty", 0) or getattr(result, "amount", 0) or 0
+            ),
+            "fee_unknown": bool(getattr(result, "fee_unknown", False)),
+            "needs_reconcile": bool(getattr(result, "needs_reconcile", False)),
+        }
+        if extra_fields["exchange_order_id"] in (None, ""):
+            extra_fields["exchange_order_id"] = None
+
         if result.executed:
+            if st is None:
+                st = OrderStatus.EXECUTED
+                req_qty = float(getattr(approved_order, "qty", 0) or 0) if approved_order else 0.0
+                filled = float(getattr(result, "filled_qty", 0) or result.amount or 0)
+                if req_qty > 0 and 0 < filled < req_qty:
+                    st = OrderStatus.PARTIALLY_FILLED
             execution = {
                 "price": float(result.price or 0),
                 "amount": float(result.amount or 0),
                 "usdt": float(result.usdt_amount or 0),
-                "exchange_order_id": getattr(result, "exchange_order_id", None),
+                "exchange_order_id": extra_fields["exchange_order_id"],
                 "fee": float(getattr(result, "fee", 0) or 0) or None,
+                "fee_unknown": extra_fields["fee_unknown"],
             }
+            filled_gross = float(getattr(result, "filled_qty", 0) or 0)
+            if filled_gross > 0:
+                execution["filled_qty_gross"] = filled_gross
             lev_pay = _leverage_payload(approved_order)
             if lev_pay:
                 execution.update(lev_pay)
@@ -1078,14 +1166,52 @@ class OrderService:
                     )
             except Exception:
                 execution["venue"] = {"capture": "missing"}
-            self.update_status(
+            record = self.update_status(
                 order_id,
-                "filled",
+                st,
                 execution=execution,
                 pnl=float(result.pnl) if result.pnl is not None else None,
             )
+        elif getattr(result, "pending", False) or getattr(result, "needs_reconcile", False):
+            record = self.update_status(
+                order_id,
+                st or OrderStatus.ACTIVE,
+                error=result.message or "pending reconcile",
+                execution={
+                    "exchange_order_id": extra_fields["exchange_order_id"],
+                    "fee_unknown": extra_fields["fee_unknown"],
+                },
+            )
+        elif st is OrderStatus.CANCELED:
+            record = self.update_status(
+                order_id, OrderStatus.CANCELED, error=result.message or "canceled"
+            )
+        elif st is OrderStatus.REJECTED:
+            record = self.update_status(
+                order_id, OrderStatus.REJECTED, error=result.message or "rejected"
+            )
         else:
-            self.update_status(order_id, "failed", error=result.message or "Execution failed")
+            # Last resort: never write legacy "failed". ACTIVE + reconcile (#314).
+            record = self.update_status(
+                order_id,
+                OrderStatus.ACTIVE,
+                error=result.message or "unknown execution state",
+            )
+        if record is not None:
+            dirty = False
+            for key, val in extra_fields.items():
+                if val is None and key == "exchange_order_id":
+                    continue
+                if record.get(key) != val:
+                    record[key] = val
+                    dirty = True
+            if dirty:
+                data = self._load()
+                found = self._find(data, order_id=order_id)
+                if found is not None:
+                    found.update({k: record[k] for k in extra_fields if k in record})
+                    self._save(data)
+                    self._dual_write_v2(found)
 
     @staticmethod
     def _risk_snapshot(decision: RiskDecision = None, approved: bool = True) -> dict:

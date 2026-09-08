@@ -269,6 +269,11 @@ def get_lc_provider() -> LunarCrushDataProvider:
     return _LC_PROVIDER
 
 
+def list_tier_blocked() -> bool:
+    """Read-only: list endpoint returned 402 (Individual plan)."""
+    return bool(_LC_LIST_TIER_BLOCKED)
+
+
 def _mark_lc_list_tier_blocked():
     global _LC_LIST_TIER_BLOCKED
     _LC_LIST_TIER_BLOCKED = True

@@ -56,6 +56,14 @@ class TestLedgerSync(unittest.TestCase):
         self.router_positions_patch = patch(
             "storage.ledger_router.POSITIONS_SCOPE_FILES", self.positions_files
         )
+        # strategies.positions binds both tables at import time; without these two
+        # patches resolve_positions_file() pointed at the real data/ files (#325).
+        self.positions_mod_orders_patch = patch(
+            "strategies.positions.ORDERS_SCOPE_FILES", self.orders_files
+        )
+        self.positions_mod_positions_patch = patch(
+            "strategies.positions.POSITIONS_SCOPE_FILES", self.positions_files
+        )
         from storage.ledger_router import JsonLedgerStore
 
         self.resolve_store_patch = patch(
@@ -67,6 +75,8 @@ class TestLedgerSync(unittest.TestCase):
         self.positions_patch.start()
         self.router_orders_patch.start()
         self.router_positions_patch.start()
+        self.positions_mod_orders_patch.start()
+        self.positions_mod_positions_patch.start()
         self.resolve_store_patch.start()
         self.mt_patch.start()
         from storage import ledger_router
@@ -79,6 +89,8 @@ class TestLedgerSync(unittest.TestCase):
         self.mt_patch.stop()
         self.resolve_store_patch.stop()
         self.router_positions_patch.stop()
+        self.positions_mod_positions_patch.stop()
+        self.positions_mod_orders_patch.stop()
         self.router_orders_patch.stop()
         self.positions_patch.stop()
         self.orders_patch.stop()
@@ -334,7 +346,13 @@ class TestLedgerSync(unittest.TestCase):
                 f,
             )
         with patch("data_manager.TRADE_HISTORY_FILE", "trade_history.json"), \
-             patch("data_manager.get_data_file", side_effect=lambda name: trade_path if name == "trade_history.json" else os.path.join(self.tmp.name, name)):
+             patch(
+                 "data_manager.get_data_file",
+                 # #325: the scope table now holds per-test absolute paths, so key on the basename.
+                 side_effect=lambda name: trade_path
+                 if os.path.basename(name) == "trade_history.json"
+                 else os.path.join(self.tmp.name, os.path.basename(name)),
+             ):
             added = backfill_orders_from_trade_history("paper")
         self.assertEqual(added, 1)
         orders = load_orders("paper").get("orders", [])

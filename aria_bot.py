@@ -104,18 +104,36 @@ except Exception as e:
 
 def _flush_positions_on_exit(*_args) -> None:
     try:
+        from bus.writer_lease import (
+            lease_enabled,
+            shutdown_writer_lease,
+            writer_lease_held,
+        )
         from strategies.positions import flush_positions, get_active_scope
 
-        flush_positions(scope=get_active_scope(), force=True)
+        if not lease_enabled() or writer_lease_held():
+            flush_positions(scope=get_active_scope(), force=True)
+        shutdown_writer_lease()
     except Exception as e:
         log(f"Position flush on exit failed: {e}", "WARNING")
 
 
+def _stop_architecture_on_exit(*_args) -> None:
+    try:
+        from services.architecture_runtime import ensure_stopped
+
+        ensure_stopped()
+    except Exception as e:
+        log(f"Architecture stop on exit failed: {e}", "WARNING")
+
+
 atexit.register(_flush_positions_on_exit)
+atexit.register(_stop_architecture_on_exit)
 
 
 def _handle_shutdown(_signum, _frame) -> None:
     _flush_positions_on_exit()
+    _stop_architecture_on_exit()
     raise SystemExit(0)
 
 
@@ -196,7 +214,10 @@ except Exception as _dca_sniper_exc:
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "OK", 200
+    from core.cycle_health import health_payload
+
+    body, status = health_payload()
+    return jsonify(body), status
 
 
 @app.route("/health/detail", methods=["GET"])
@@ -582,10 +603,27 @@ def _run_tenant_price_cycle(
 ):
     bot_config = get_bot_config()
     bot_config.refresh()
+    # Guardrail (#318): unknown positions ledger → skip trading this tenant this cycle.
+    # Telegram read commands are handled outside this function and stay available.
+    from strategies.positions import is_positions_state_unknown
+    if is_positions_state_unknown():
+        from core.operator_notify import notify_operator
+        tid = resolve_tenant_id()
+        log(f"[{tid}] skip price cycle: positions state unknown", "ERROR")
+        notify_operator(
+            f"Positions ledger unknown for tenant <code>{tid}</code> — trading skipped this cycle."
+        )
+        return
     try:
         from services.architecture_runtime import ensure_started
         ensure_started()
     except Exception as e:
+        # #314: a failed exchange reconcile must not be downgraded to a warning —
+        # "no cycle without reconcile". Every other runtime hiccup stays best-effort.
+        from execution.recovery import RecoveryFailed
+        if isinstance(e, RecoveryFailed):
+            log(f"skip price cycle: exchange recovery failed: {e}", "ERROR")
+            return
         log(f"Architecture runtime tick failed: {e}", "WARNING")
     use_dashboard = bot_config.terminal_dashboard_enabled and os.isatty(1)
 
@@ -996,6 +1034,9 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)
+            from core.cycle_health import mark_cycle_success
+
+            mark_cycle_success()
 
             if not bot_config.architecture_config.get("background_backtest_enabled", True):
                 try:
@@ -1018,6 +1059,12 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
 
         except Exception as e:
             log(f"Error in price loop: {e}", "ERROR")
+            try:
+                from core.cycle_health import mark_cycle_failure
+
+                mark_cycle_failure(e)
+            except Exception:
+                pass
             time.sleep(get_config().get("update_interval", 600))
 
 

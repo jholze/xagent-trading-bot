@@ -118,10 +118,24 @@ class SignalOrchestrator:
         coin_cfg = resolve_coin_config(coin)
         strategy_params = coin_cfg.get("strategy_params") or {}
         request_extra = {}
-        if strategy_params.get("hermes_experiment_id"):
+        hermes_exp = strategy_params.get("hermes_experiment_id")
+        if not hermes_exp:
+            try:
+                from hermes.memory import store as hermes_store
+
+                profile = hermes_store.load_profile(symbol, tf)
+                hermes_exp = profile.get("hermes_experiment_id")
+                if hermes_exp and not strategy_params.get("hermes_updated_at"):
+                    strategy_params = {
+                        **strategy_params,
+                        "hermes_updated_at": profile.get("hermes_updated_at"),
+                    }
+            except Exception:
+                hermes_exp = None
+        if hermes_exp:
             source = "hermes"
             request_extra = {
-                "hermes_experiment_id": strategy_params.get("hermes_experiment_id"),
+                "hermes_experiment_id": hermes_exp,
                 "hermes_updated_at": strategy_params.get("hermes_updated_at"),
             }
         elif "x" in (analysis.sources or []):
@@ -150,6 +164,15 @@ class SignalOrchestrator:
             if sensor_metrics and source == "entry_sensor_15m":
                 raw_ratio = float(sensor_metrics.get("volume_spike_ratio", 0) or 0)
                 vol_ratio = raw_ratio if raw_ratio > 0 else None
+            em = getattr(analysis, "exposure_multiplier", None)
+            if em is None:
+                alloc = getattr(analysis, "allocation", None)
+                if isinstance(alloc, dict):
+                    em = alloc.get("exposure_multiplier")
+            try:
+                em = float(em) if em is not None else None
+            except (TypeError, ValueError):
+                em = None
             order = TradeOrder(
                 type="BUY",
                 symbol=symbol,
@@ -159,6 +182,7 @@ class SignalOrchestrator:
                 signal=analysis.normalized_action or analysis.action,
                 source=source,
                 entry_15m_vol_ratio=vol_ratio,
+                exposure_multiplier=em,
             )
         else:
             # Size and execute against the open lot TF (may differ from analysis TF

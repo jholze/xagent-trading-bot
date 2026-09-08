@@ -119,3 +119,20 @@ class HeavyJobQueue:
 
 
 heavy_job_queue = HeavyJobQueue()
+
+
+def reset_heavy_job_queue_for_tests() -> None:
+    """Stop the singleton heavy-job worker so it cannot outlive a pytest test (#329)."""
+    q = heavy_job_queue
+    if q.running:
+        q.stop()
+    thread = q._thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    q._thread = None
+    # Drop the stop sentinel so the next start() does not exit immediately.
+    try:
+        while True:
+            q._queue.get_nowait()
+    except queue.Empty:
+        pass

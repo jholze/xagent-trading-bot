@@ -1,10 +1,11 @@
 """I/O adapter for slot eviction: book scan, RAG, rate limits, live sell.
 
-Called from RiskManager max_open path. Fail-open on errors.
+Called from RiskManager max_open path. Missing data must not look like good data.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 import threading
 import time
 from datetime import datetime, timezone
@@ -12,7 +13,6 @@ from typing import Any
 
 from risk.slot_eviction import (
     EXIT_SOURCE_SLOT_EVICT,
-    EntryDemand,
     EvictionPlan,
     VictimCandidate,
     eviction_mode,
@@ -27,11 +27,61 @@ from risk.slot_eviction_rag import default_retrieve_fn, enrich_keeps_with_rag
 _LOCK = threading.Lock()
 _EVICT_TS: list[float] = []
 _SYMBOL_COOLDOWN: dict[str, float] = {}
-_PENDING_ENTRY: dict[str, dict[str, Any]] = {}
 
 
 def _now() -> float:
     return time.time()
+
+
+def _warn(msg: str) -> None:
+    try:
+        from logger import log
+
+        log(msg, "WARNING")
+    except Exception:
+        pass
+
+
+def _is_slot_evict_order(order: dict | None) -> bool:
+    if not isinstance(order, dict):
+        return False
+    return str(order.get("exit_source") or "") == EXIT_SOURCE_SLOT_EVICT
+
+
+def _slot_evict_orders_from_ledger(*, hours: float | None = None) -> list[dict]:
+    """Filled slot-eviction sells from the orders ledger (survives restart)."""
+    try:
+        from services.order_service import ORDERS_LIST_HARD_CAP, OrderService, order_event_ts
+
+        svc = OrderService()
+        if hours is not None and hours <= 24:
+            orders = svc.list_day_filled_all()
+        else:
+            orders, _ = svc.list_orders(
+                trade_book_only=True,
+                hours=hours,
+                per_page=ORDERS_LIST_HARD_CAP,
+            )
+        out: list[dict] = []
+        now = datetime.now()
+        for o in orders or []:
+            if not _is_slot_evict_order(o):
+                continue
+            if hours is not None:
+                ts = order_event_ts(o)
+                if ts is None:
+                    continue
+                ts_naive = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
+                try:
+                    age_s = (now - ts_naive).total_seconds()
+                except Exception:
+                    continue
+                if age_s > float(hours) * 3600.0:
+                    continue
+            out.append(o)
+        return out
+    except Exception:
+        return []
 
 
 def check_rate_limits(risk_config: dict | None) -> tuple[bool, str]:
@@ -39,14 +89,18 @@ def check_rate_limits(risk_config: dict | None) -> tuple[bool, str]:
     max_h = int(cfg.get("max_evictions_per_hour", 2) or 2)
     max_d = int(cfg.get("max_evictions_per_day", 8) or 8)
     now = _now()
+    day_orders = _slot_evict_orders_from_ledger(hours=24)
+    hour_orders = _slot_evict_orders_from_ledger(hours=1)
     with _LOCK:
         global _EVICT_TS
         _EVICT_TS = [t for t in _EVICT_TS if now - t < 86400]
-        hour = [t for t in _EVICT_TS if now - t < 3600]
-        if max_h > 0 and len(hour) >= max_h:
-            return True, "max_evictions_per_hour"
-        if max_d > 0 and len(_EVICT_TS) >= max_d:
-            return True, "max_evictions_per_day"
+        ram_hour = [t for t in _EVICT_TS if now - t < 3600]
+        n_hour = max(len(hour_orders), len(ram_hour))
+        n_day = max(len(day_orders), len(_EVICT_TS))
+    if max_h > 0 and n_hour >= max_h:
+        return True, "max_evictions_per_hour"
+    if max_d > 0 and n_day >= max_d:
+        return True, "max_evictions_per_day"
     return False, ""
 
 
@@ -60,49 +114,32 @@ def note_eviction_executed(symbol: str, risk_config: dict | None = None) -> None
             _SYMBOL_COOLDOWN[symbol] = now + cool_h * 3600
 
 
-def symbol_on_cooldown(symbol: str) -> bool:
+def symbol_on_cooldown(symbol: str, risk_config: dict | None = None) -> bool:
+    cfg = slot_eviction_section(risk_config)
+    cool_h = float(cfg.get("symbol_cooldown_hours", 24) or 24)
+    if cool_h > 0:
+        for o in _slot_evict_orders_from_ledger(hours=cool_h):
+            if str(o.get("symbol") or "") == symbol:
+                return True
     with _LOCK:
         until = _SYMBOL_COOLDOWN.get(symbol, 0)
     return _now() < until
 
 
 def set_pending_entry(entry_symbol: str, victim: str, risk_config: dict | None = None) -> None:
-    cfg = slot_eviction_section(risk_config)
-    ttl = float(cfg.get("pending_entry_ttl_min", 30) or 30) * 60
-    with _LOCK:
-        _PENDING_ENTRY[entry_symbol] = {
-            "victim": victim,
-            "expires_at": _now() + ttl,
-            "set_at": _now(),
-        }
-
-
-def get_pending_entry(entry_symbol: str) -> dict[str, Any] | None:
-    with _LOCK:
-        p = _PENDING_ENTRY.get(entry_symbol)
-        if not p:
-            return None
-        if _now() > float(p.get("expires_at") or 0):
-            _PENDING_ENTRY.pop(entry_symbol, None)
-            return None
-        return dict(p)
-
-
-def clear_pending_entry(entry_symbol: str) -> None:
-    with _LOCK:
-        _PENDING_ENTRY.pop(entry_symbol, None)
+    """No-op. Same-cycle handoff is evaluate() re-count, not a RAM pending map."""
+    return None
 
 
 def reset_rate_limits_for_tests() -> None:
     with _LOCK:
         _EVICT_TS.clear()
         _SYMBOL_COOLDOWN.clear()
-        _PENDING_ENTRY.clear()
 
 
-def _hours_since(iso_ts: str | None) -> float:
+def _hours_since(iso_ts: str | None) -> float | None:
     if not iso_ts:
-        return 999.0
+        return None
     try:
         raw = str(iso_ts).replace("Z", "+00:00")
         dt = datetime.fromisoformat(raw)
@@ -110,7 +147,7 @@ def _hours_since(iso_ts: str | None) -> float:
             dt = dt.replace(tzinfo=timezone.utc)
         return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
     except Exception:
-        return 999.0
+        return None
 
 
 def _peak_gain_pct(entry: float, peak: float, price: float) -> float:
@@ -150,12 +187,16 @@ def build_victim_candidates(
         amount = float(pos.get("amount", 0) or 0)
         if amount <= 0:
             continue
-        if symbol_on_cooldown(sym):
+        if symbol_on_cooldown(sym, risk_config):
             continue
         entry = float(pos.get("average_entry") or pos.get("entry_price") or 0)
-        price = float((prices or {}).get(sym) or pos.get("mark_price") or entry or 0)
-        if price <= 0 and entry > 0:
-            price = entry
+        try:
+            price = float((prices or {}).get(sym) or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            # No positive live price → drop; never fall back to entry / $1.
+            continue
         gain = ((price / entry) - 1.0) * 100.0 if entry > 0 else 0.0
         peak = float(pos.get("recent_high") or 0)
         peak_g = _peak_gain_pct(entry, peak, price)
@@ -167,12 +208,10 @@ def build_victim_candidates(
             notional = amount * price
         idle = _hours_since(pos.get("last_trade_at") or pos.get("updated_at"))
         age = _hours_since(pos.get("first_buy_at") or pos.get("entry_at") or pos.get("opened_at"))
+        if idle is None or age is None:
+            continue
         tf = str(pos.get("timeframe") or "4h")
-        prof = None
-        try:
-            prof = get_profile(sym)
-        except Exception:
-            prof = None
+        prof = get_profile(sym)
         kp = memory_keep_score(prof, risk_config=risk_config)
         keep_p[sym] = kp
         prefer = str(getattr(prof, "entry_bias", "") or "").lower() == "prefer"
@@ -227,11 +266,8 @@ def build_victim_candidates(
     symbols = [m["symbol"] for m in meta]
     # include entry for swap scoring later
     if entry_symbol and entry_symbol not in keep_p:
-        try:
-            ep = get_profile(entry_symbol)
-            keep_p[entry_symbol] = memory_keep_score(ep, risk_config=risk_config)
-        except Exception:
-            keep_p[entry_symbol] = 0.55
+        ep = get_profile(entry_symbol)
+        keep_p[entry_symbol] = memory_keep_score(ep, risk_config=risk_config)
         symbols = [entry_symbol] + symbols
 
     rag_mode = str((cfg.get("rag") or {}).get("mode") or "off").lower()
@@ -339,27 +375,58 @@ def plan_for_blocked_entry(
         risk_config=risk_config,
     )
     blocked, reason = check_rate_limits(risk_config)
-    cands = []
+    cands: list[VictimCandidate] = []
     if demand.passed and eviction_mode(risk_config) != "off":
-        try:
-            cands = build_victim_candidates(
-                config_raw=config_raw,
-                risk_config=risk_config,
-                entry_symbol=order_symbol,
-                get_profile=get_profile,
-                retrieve_fn=retrieve_fn,
-                prices=prices,
-            )
-        except Exception:
-            cands = []
-    return plan_slot_eviction(
+        cands = build_victim_candidates(
+            config_raw=config_raw,
+            risk_config=risk_config,
+            entry_symbol=order_symbol,
+            get_profile=get_profile,
+            retrieve_fn=retrieve_fn,
+            prices=prices,
+        )
+    plan = plan_slot_eviction(
         demand=demand,
         candidates=cands,
         risk_config=risk_config,
         rate_limit_blocked=blocked,
         rate_limit_reason=reason,
         warmup_active=warmup_active,
+        config_raw=config_raw,
     )
+    if (
+        demand.passed
+        and eviction_mode(risk_config) != "off"
+        and not plan.ok
+        and plan.veto_reason in ("", "no_candidate")
+        and not any(c.symbol != order_symbol for c in cands)
+        and prices is not None
+        and not any(float(v or 0) > 0 for v in prices.values())
+    ):
+        return EvictionPlan(
+            ok=False,
+            mode=plan.mode,
+            entry_symbol=order_symbol,
+            demand_score=demand.score,
+            veto_reason="no_positive_price",
+            reason_codes=("no_positive_price",),
+            candidates=plan.candidates,
+            ab=plan.ab,
+        )
+    if plan.ok and float(plan.victim_price or 0) <= 0:
+        return EvictionPlan(
+            ok=False,
+            mode=plan.mode,
+            entry_symbol=order_symbol,
+            victim_symbol=plan.victim_symbol,
+            demand_score=demand.score,
+            veto_reason="no_positive_price",
+            reason_codes=("no_positive_price",),
+            candidates=plan.candidates,
+            ab=plan.ab,
+            victim_price=0.0,
+        )
+    return plan
 
 
 def execute_eviction_sell(
@@ -389,15 +456,16 @@ def execute_eviction_sell(
         if frac > 1:
             frac = 1.0
         sell_amt = amount * frac
-        price = float(pos.get("mark_price") or pos.get("average_entry") or 0) or 1.0
-        # Prefer live mark from market if available
         try:
-            if hasattr(svc, "market") and svc.market:
-                p2 = svc.market.get_price(plan.victim_symbol)
-                if p2 and float(p2) > 0:
-                    price = float(p2)
-        except Exception:
-            pass
+            price = float(plan.victim_price or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            return {
+                "ok": False,
+                "message": "no positive price",
+                "code": "slot_eviction_no_price",
+            }
         signal = "SELL_FULL" if frac >= 0.99 else "SELL_PARTIAL"
         order = TradeOrder(
             type="SELL",
@@ -415,7 +483,6 @@ def execute_eviction_sell(
         msg = str(getattr(result, "message", "") or result)
         if executed:
             note_eviction_executed(plan.victim_symbol)
-            set_pending_entry(plan.entry_symbol, plan.victim_symbol)
         return {"ok": executed, "message": msg, "result": result}
     except Exception as e:
         return {"ok": False, "message": str(e)}
@@ -453,6 +520,33 @@ def resolve_spendable_ok_for_entry(
     return False
 
 
+def _fetch_victim_prices(entry_symbol: str) -> dict[str, float]:
+    """Fetch mark prices once for open lots (never fall back to entry / $1)."""
+    try:
+        from price_fetcher import get_prices_batch
+        from strategies.positions import list_active_positions
+
+        syms: list[str] = []
+        for pos in list_active_positions() or []:
+            sym = str(pos.get("symbol") or "")
+            if sym and sym != entry_symbol:
+                syms.append(sym)
+        if not syms:
+            return {}
+        raw = get_prices_batch(syms) or {}
+        out: dict[str, float] = {}
+        for sym, val in raw.items():
+            try:
+                px = float(val or 0)
+            except (TypeError, ValueError):
+                continue
+            if px > 0:
+                out[str(sym)] = px
+        return out
+    except Exception:
+        return {}
+
+
 def try_slot_eviction_on_max_open(
     *,
     order,
@@ -474,33 +568,30 @@ def try_slot_eviction_on_max_open(
     if raw is None and config is not None and hasattr(config, "raw"):
         raw = config.raw
 
-    # Fusion / soft_block / spendable
-    block_buys = False
-    regime = "NEUTRAL"
+    # Fusion / Memory: missing data must not look like good data.
     try:
         from services.market_policy_fusion import get_global_market_bias
 
         bias = get_global_market_bias(raw) or {}
         block_buys = bool(bias.get("block_buys"))
         regime = str(bias.get("regime") or "NEUTRAL")
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn(f"slot_eviction abort: fusion lookup failed: {exc}")
+        return None, ""
 
-    soft_block = False
-    structure_risk = False
-    prefer = False
     try:
         from intelligence.memory.cache import get_coin_profile, get_entry_bias
 
         soft_block = get_entry_bias(order.symbol, config=raw) == "soft_block"
         prof = get_coin_profile(order.symbol, config=raw)
-        if prof and isinstance(prof.features, dict):
+        structure_risk = False
+        if prof and isinstance(getattr(prof, "features", None), dict):
             structure_risk = bool(
                 prof.features.get("structure_risk") or prof.features.get("hard_negative")
             )
-        prefer = bool(prof and prof.entry_bias == "prefer")
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn(f"slot_eviction abort: memory lookup failed: {exc}")
+        return None, ""
 
     spendable_ok = resolve_spendable_ok_for_entry(
         order=order,
@@ -514,23 +605,23 @@ def try_slot_eviction_on_max_open(
         from services.market_oracle_store import process_uptime_sec
 
         up = float(process_uptime_sec())
-        warm_min = float(slot_eviction_section(risk_config).get("restart_warmup_min", 0) or 0)
-        # use skip_if_warmup with capacity-style: process age from oracle
+        cap_cfg = {}
+        if isinstance(risk_config, dict) and isinstance(
+            risk_config.get("position_capacity"), dict
+        ):
+            cap_cfg = risk_config["position_capacity"]
+        # Source of truth: risk.position_capacity.restart_warmup_min (exists).
+        warm_min = float(cap_cfg.get("restart_warmup_min", 15) or 0)
         if slot_eviction_section(risk_config).get("skip_if_warmup", True):
-            # only if process very young < 2 min default unless configured
-            warm_min = warm_min or 0
             if warm_min > 0 and up < warm_min * 60:
                 warmup = True
     except Exception:
         pass
 
     def _gp(sym: str):
-        try:
-            from intelligence.memory.cache import get_coin_profile
+        from intelligence.memory.cache import get_coin_profile
 
-            return get_coin_profile(sym, config=raw)
-        except Exception:
-            return None
+        return get_coin_profile(sym, config=raw)
 
     # spike from order if present
     spike = spike_multiple
@@ -540,22 +631,29 @@ def try_slot_eviction_on_max_open(
         except Exception:
             spike = 0.0
 
-    plan = plan_for_blocked_entry(
-        order_symbol=order.symbol,
-        source=source,
-        free_full_slots=free_full_slots,
-        config_raw=raw,
-        risk_config=risk_config,
-        spike_multiple=spike,
-        venue_ok=True,  # venue already checked earlier in evaluate
-        soft_block=soft_block,
-        structure_risk=structure_risk,
-        block_buys=block_buys,
-        regime=regime,
-        spendable_ok=spendable_ok,
-        warmup_active=warmup,
-        get_profile=_gp,
-    )
+    prices = _fetch_victim_prices(getattr(order, "symbol", "") or "")
+
+    try:
+        plan = plan_for_blocked_entry(
+            order_symbol=order.symbol,
+            source=source,
+            free_full_slots=free_full_slots,
+            config_raw=raw,
+            risk_config=risk_config,
+            spike_multiple=spike,
+            venue_ok=True,  # venue already checked earlier in evaluate
+            soft_block=soft_block,
+            structure_risk=structure_risk,
+            block_buys=block_buys,
+            regime=regime,
+            spendable_ok=spendable_ok,
+            warmup_active=warmup,
+            get_profile=_gp,
+            prices=prices,
+        )
+    except Exception as exc:
+        _warn(f"slot_eviction abort: profile lookup failed: {exc}")
+        return None, ""
 
     suffix = format_eviction_reject_suffix(plan)
     if plan and plan.ok and plan.mode == "live":
@@ -571,10 +669,24 @@ def try_slot_eviction_on_max_open(
             pass
         exec_res = execute_eviction_sell(plan, config=config)
         if exec_res.get("ok"):
+            plan = replace(plan, sell_executed=True)  # structured signal for RiskManager (#300 audit)
             suffix = (
                 f" · eviction LIVE {plan.victim_symbol}→{plan.entry_symbol} "
                 f"({plan.action})"
             )
+        elif exec_res.get("code") == "slot_eviction_no_price":
+            plan = EvictionPlan(
+                ok=False,
+                mode=plan.mode,
+                entry_symbol=plan.entry_symbol,
+                victim_symbol=plan.victim_symbol,
+                demand_score=plan.demand_score,
+                veto_reason="no_positive_price",
+                reason_codes=("no_positive_price",),
+                candidates=plan.candidates,
+                ab=plan.ab,
+            )
+            suffix = format_eviction_reject_suffix(plan)
         else:
             suffix = (
                 f" · eviction plan {plan.victim_symbol} sell_failed: "

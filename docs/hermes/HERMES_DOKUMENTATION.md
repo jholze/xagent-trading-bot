@@ -121,9 +121,9 @@ Maximal **8 Coins** gleichzeitig (`symbols_max: 8`). Rotation: `signal_activity`
 
 1. **Baseline laden** — aktuelle Parameter für Symbol/Zeitrahmen (z. B. `ARIA/USDT` auf `4h`).
 2. **Vorschlag** — Grok (wenn `XAI_API_KEY` gesetzt) oder Heuristik wählt **einen** Parameter und einen neuen Wert.
-3. **Backtest** — Walk-Forward über die letzten ~35 Tage, aufgeteilt in 7-Tage-Fenster mit 3-Tage-Verschiebung.
-4. **Bewertung** — Variante muss u. a. in **≥ 60 % der Folds** besser sein und Mindest-Kennzahlen erfüllen.
-5. **Übernahme** — bessere Parameter → `hermes/memory/baseline.json` (immer); optional zusätzlich → `config.strategies[]` bei Promotion.
+3. **Backtest** — Walk-Forward über die letzten ~45 Tage, aufgeteilt in 5-Tage-Fenster mit 3-Tage-Verschiebung; die letzten 2 Folds sind Hold-out.
+4. **Bewertung** — Variante muss in **≥ 60 % der In-Sample-Folds** besser sein, Hold-out bestehen und Gewinnwahrscheinlichkeit ≥ 0,95 bei ≥ 30 Trades haben.
+5. **Übernahme** — nach 10-Minuten-Veto-Fenster → `hermes/memory/baseline.json` (immer); optional zusätzlich → `config.strategies[]` bei Promotion.
 6. **Lernen** — Experiment + Skill werden in `hermes/memory/` gespeichert.
 7. **Live-Bot** — nutzt Memory **sofort** beim nächsten Zyklus (Kauf, Verkauf, Rebuy).
 
@@ -131,9 +131,9 @@ Maximal **8 Coins** gleichzeitig (`symbols_max: 8`). Rotation: `signal_activity`
 
 ## 4. Walk-Forward — einfach erklärt
 
-**Problem:** Ein Backtest über 35 Tage kann zufällig gut aussehen, obwohl die Strategie in Wirklichkeit instabil ist.
+**Problem:** Ein Backtest über 45 Tage kann zufällig gut aussehen, obwohl die Strategie in Wirklichkeit instabil ist.
 
-**Lösung:** Hermes teilt die 35 Tage in **überlappende Wochenfenster**:
+**Lösung:** Hermes teilt die 45 Tage in **überlappende 5-Tage-Fenster** (letzte 2 Folds Hold-out):
 
 ```
 |-- Fold 0: Tag 1–7 --|
@@ -142,18 +142,22 @@ Maximal **8 Coins** gleichzeitig (`symbols_max: 8`). Rotation: `signal_activity`
                   ... usw.
 ```
 
-- Jedes Fenster = **7 Tage** (`fold_days`)
+- Jedes Fenster = **5 Tage** (`fold_days`) — 4h: 5 × 6 = 30 Bars
 - Verschiebung = **3 Tage** (`step_days`)
-- Typisch entstehen **~10 Folds** bei 35 Tagen Lookback
+- Typisch **~12 In-Sample- + 2 Hold-out-Folds** bei 45 Tagen Lookback
 
 **Promotion-Regeln (vereinfacht):**
 
 | Kriterium | Standard-Wert | Bedeutung |
 |-----------|---------------|-----------|
-| Folds gewonnen | ≥ 60 % | Variante muss in mindestens 6 von 10 Folds besseren Sharpe haben |
-| Aggregat-Sharpe | > Baseline | Im Schnitt über alle Folds besser |
+| Folds gewonnen | ≥ 60 % | Variante muss in den In-Sample-Folds besseren Sharpe haben |
+| Hold-out | letzte 2 Folds | Sharpe-Delta ≥ 0 und Max-DD höchstens +2 pp vs. Baseline |
+| Gewinnwahrscheinlichkeit | ≥ 0,95 | Block-Bootstrap der In-Sample-Sharpe-Deltas; ≥ 30 Trades |
+| Aggregat-Sharpe | > Baseline | Im Schnitt über die In-Sample-Folds besser |
 | Erfolgskriterien | z. B. Sharpe ≥ 0.8, DD ≤ 15 %, WR ≥ 50 %, ≥ 5 Trades | Auch der Durchschnitt muss „gut genug“ sein |
-| Drawdown pro Fold | max. +5 % vs. Baseline | Kein Fold darf die Strategie stark verschlechtern |
+| Drawdown pro Fold | max. +5 % vs. Baseline | Kein In-Sample-Fold darf die Strategie stark verschlechtern |
+| Veto-Fenster | 10 min | `/hermes_veto <id>` vor dem Apply; `/hermes_rollback [id]` danach |
+| Post-Apply | 24 h | Auto-Revert bei realisiertem P&L < 0 und Win-Rate ≥ 20 pp unter Backtest |
 
 ---
 
@@ -242,6 +246,8 @@ python3 hermes_agent.py --interval 3600
 | `/hermes` | Technischer Status + **Klartext** zum letzten Zyklus |
 | `/hermes_last` | Nur der letzte Lern-Zyklus in Alltagssprache |
 | `/hermes_run` | Startet sofort einen Lernzyklus (du bekommst danach eine Meldung) |
+| `/hermes_veto <id>` | Pending Promotion innerhalb von 10 min stornieren |
+| `/hermes_rollback [id]` | Letzten (oder genannten) Snapshot vor der Promotion wiederherstellen |
 | `/hermes_status` | Wie `/hermes` |
 | `/why SYMBOL` | Letzte Trade-Entscheidung — inkl. Hermes-Experiment-ID am Coin |
 | `/decisions` | Chronologisches Protokoll aller Bot-Entscheidungen |
@@ -315,11 +321,15 @@ Wenn `notify_hermes_every_cycle: false`, bekommst du nur Promotion und Live-Veto
 ```json
 "validation": {
   "mode": "walk_forward",
-  "backtest_days": 35,
-  "fold_days": 7,
+  "backtest_days": 45,
+  "fold_days": 5,
   "step_days": 3,
   "min_folds_won_ratio": 0.6,
-  "min_trades_aggregate": 5
+  "min_trades_aggregate": 5,
+  "holdout_folds": 2,
+  "holdout_dd_tolerance_pct": 2.0,
+  "min_win_probability": 0.95,
+  "min_total_trades": 30
 }
 ```
 

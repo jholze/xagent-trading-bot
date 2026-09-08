@@ -47,4 +47,5 @@ def build_snapshot(
         },
         "rationale": decision.rationale,
         "sidecar_build": "market-oracle-0.1",
+        "measured": bool(getattr(decision, "measured", True)),
     }

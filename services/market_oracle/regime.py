@@ -19,6 +19,7 @@ class OracleDecision:
     max_new_buys_per_hour: int
     rationale: str
     bars_in_state: int = 1
+    measured: bool = True
 
 
 def raw_state_from_features(
@@ -39,7 +40,7 @@ def raw_state_from_features(
 ) -> tuple[str, float, str]:
     """Map features → provisional state (no hysteresis).
 
-    Breadth/funding optional: if missing, fail-open (price rules only).
+    Breadth/funding optional: if missing, price rules only and measured=False.
     Funding unit: percent per interval (0.01 = 0.01%).
     """
     btc = float(features.get("btc_ret_24h_pct") or 0.0)
@@ -258,6 +259,10 @@ def decide(
     pol = policy_for_state(state, risk_off_size=risk_off_size, neutral_size=neutral_size)
     if state != raw:
         why = f"{why} | holding {state} (raw={raw}, flip {hyst.pending_count}/{hyst.min_bars})"
+    has_price = features.get("btc_ret_24h_pct") is not None
+    has_breadth = features.get("breadth_pct_green") is not None
+    has_funding = features.get("btc_funding_rate_pct") is not None
+    measured = bool(has_price and has_breadth and has_funding)
     return OracleDecision(
         state=state,
         confidence=conf,
@@ -268,6 +273,7 @@ def decide(
         max_new_buys_per_hour=int(pol["max_new_buys_per_hour"]),
         rationale=why,
         bars_in_state=bars,
+        measured=measured,
     )
 
 

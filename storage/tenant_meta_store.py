@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone
 
 from logger import log
+from storage.errors import LedgerUnavailable, LedgerWriteFailed
 from storage.mongo_client import get_database
 
 # Do not import anything from data_manager or that can pull get_config.
@@ -34,8 +35,13 @@ def load_tenant_config_body(tid: str, *, default_cfg: dict, test: bool = False) 
         doc = db[TENANT_CONFIGS_COLL].find_one({"tenant_id": tid})
         if doc and isinstance(doc.get("body"), dict):
             return dict(doc["body"])
+    except LedgerUnavailable:
+        raise
     except Exception as e:
-        log(f"tenant_meta_store: failed load_tenant_config_body for {tid}: {e}", "WARNING")
+        log(f"tenant_meta_store: failed load_tenant_config_body for {tid}: {e}", "ERROR")
+        raise LedgerUnavailable(
+            op="load_tenant_config_body", tenant_id=tid, cause=e
+        ) from e
     return None
 
 
@@ -80,8 +86,13 @@ def load_tenant_watchlist(tid: str, *, default_cfg: dict, test: bool = False) ->
                     seen.add(s)
                     unique.append(dict(c))
             return unique
+    except LedgerUnavailable:
+        raise
     except Exception as e:
-        log(f"tenant_meta_store: failed load_tenant_watchlist for {tid}: {e}", "WARNING")
+        log(f"tenant_meta_store: failed load_tenant_watchlist for {tid}: {e}", "ERROR")
+        raise LedgerUnavailable(
+            op="load_tenant_watchlist", tenant_id=tid, cause=e
+        ) from e
     return []
 
 
@@ -97,5 +108,5 @@ def save_tenant_watchlist(tid: str, coins: list[dict], *, default_cfg: dict, tes
         )
         return True
     except Exception as e:
-        log(f"tenant_meta_store: failed save_tenant_watchlist for {tid}: {e}", "WARNING")
-        return False
+        log(f"tenant_meta_store: failed save_tenant_watchlist for {tid}: {e}", "ERROR")
+        raise LedgerWriteFailed(op="save_tenant_watchlist", tenant_id=tid, cause=e) from e

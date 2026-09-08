@@ -21,12 +21,6 @@ POSITIONS_SCOPE_FILES = {
     "live": "positions.live.json",
 }
 
-TRADE_HISTORY_SCOPE_FILES = {
-    "paper": "trade_history.json",
-    "live": "live_trade_history.json",
-}
-
-
 class LedgerStore(Protocol):
     def load_orders(self, scope: str) -> dict: ...
     def save_orders(self, data: dict, scope: str) -> bool: ...
@@ -94,12 +88,13 @@ class JsonLedgerStore:
 
     def _atomic_write(self, path: str, data: dict) -> bool:
         from data_manager import atomic_write_json
+        from storage.errors import LedgerWriteFailed
 
         try:
             atomic_write_json(path, data)
             return True
-        except Exception:
-            return False
+        except Exception as e:
+            raise LedgerWriteFailed(op="_atomic_write", cause=e) from e
 
     def _scope_files(self):
         from data_manager import ORDERS_SCOPE_FILES, POSITIONS_SCOPE_FILES
@@ -117,12 +112,12 @@ class JsonLedgerStore:
         return self._resolve_scope_file(positions_files[scope])
 
     def _trade_history_path(self, scope: str) -> str:
-        from data_manager import TRADE_HISTORY_FILE, LIVE_TRADE_HISTORY_FILE
+        # One scope table (data_manager.TRADE_HISTORY_SCOPE_FILES): demo and
+        # live both map to live_trade_history.json, exactly as before, and the
+        # per-test isolation in tests/conftest.py (#325) applies here too.
+        from data_manager import TRADE_HISTORY_FILE, TRADE_HISTORY_SCOPE_FILES
 
-        if scope == "demo":
-            return self._get_data_file(LIVE_TRADE_HISTORY_FILE)
-        scope_files = {"paper": TRADE_HISTORY_FILE, "live": LIVE_TRADE_HISTORY_FILE}
-        return self._get_data_file(scope_files.get(scope, TRADE_HISTORY_FILE))
+        return self._get_data_file(TRADE_HISTORY_SCOPE_FILES.get(scope, TRADE_HISTORY_FILE))
 
     def load_orders(self, scope: str) -> dict:
         path = self._orders_path(scope)
@@ -139,9 +134,12 @@ class JsonLedgerStore:
             return {"ledger_scope": scope, "orders": [], "migrated_from_trades": False}
 
     def save_orders(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._orders_path(scope)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
-        return self._atomic_write(self._orders_path(scope), payload)
+        return self._atomic_write(path, payload)
 
     def load_positions(self, scope: str) -> dict:
         path = self._positions_path(scope)
@@ -158,9 +156,12 @@ class JsonLedgerStore:
             return {"ledger_scope": scope, "positions": {}}
 
     def save_positions(self, data: dict, scope: str) -> bool:
-        payload = dict(data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._positions_path(scope)
+        payload = prepare_json_ledger_write(data, path)
         payload["ledger_scope"] = scope
-        return self._atomic_write(self._positions_path(scope), payload)
+        return self._atomic_write(path, payload)
 
     def _empty_trade_history(self, scope: str) -> dict:
         if scope == "live":
@@ -184,7 +185,11 @@ class JsonLedgerStore:
             return self._empty_trade_history(scope)
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
-        return self._atomic_write(self._trade_history_path(scope), data)
+        from bus.writer_lease import prepare_json_ledger_write
+
+        path = self._trade_history_path(scope)
+        payload = prepare_json_ledger_write(data, path)
+        return self._atomic_write(path, payload)
 
 
 class MongoLedgerStoreAdapter:
@@ -231,9 +236,13 @@ class DualWriteLedgerStore:
             return self._json.load_orders(scope)
 
     def save_orders(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_orders(data, scope)
         try:
             ok = self._mongo.save_orders(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo orders save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -247,9 +256,13 @@ class DualWriteLedgerStore:
             return self._json.load_positions(scope)
 
     def save_positions(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_positions(data, scope)
         try:
             ok = self._mongo.save_positions(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo positions save failed ({scope}): {e}", "ERROR")
             ok = False
@@ -263,9 +276,13 @@ class DualWriteLedgerStore:
             return self._json.load_trade_history(scope)
 
     def save_trade_history(self, data: dict, scope: str) -> bool:
+        from storage.errors import LedgerUnavailable
+
         ok = self._json.save_trade_history(data, scope)
         try:
             ok = self._mongo.save_trade_history(data, scope) and ok
+        except LedgerUnavailable:
+            raise
         except Exception as e:
             log(f"Mongo trade_history save failed ({scope}): {e}", "ERROR")
             ok = False

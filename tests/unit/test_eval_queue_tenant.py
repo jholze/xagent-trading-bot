@@ -24,7 +24,7 @@ class TestEvalQueueTenantExecution(unittest.TestCase):
 
     @patch("storage.tenant_registry.get_tenant")
     @patch("services.eval_queue_runtime.get_prices_batch", return_value={"SUI/USDT": 1.0})
-    @patch("data_manager.load_effective_watchlist")
+    @patch("services.eval_queue_runtime.load_effective_watchlist")
     def test_process_eval_job_sets_tenant_context(self, mock_wl, _prices, mock_get_tenant):
         mock_get_tenant.return_value = {
             "tenant_id": "henry",

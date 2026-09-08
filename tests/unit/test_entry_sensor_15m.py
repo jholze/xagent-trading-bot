@@ -37,6 +37,18 @@ def reset_sensor_state(tmp_path, monkeypatch):
         "price_fetcher.is_gate_tradeable",
         lambda symbol, gate_price=None: True if gate_price is None else float(gate_price or 0) > 0,
     )
+    monkeypatch.setattr(
+        "price_fetcher.get_gate_prices_batch",
+        lambda symbols: {s: 1.0 for s in symbols},
+    )
+    monkeypatch.setattr(
+        "price_fetcher.get_ticker_price",
+        lambda symbol, exchange=None: 1.0,
+    )
+    monkeypatch.setattr(
+        "price_fetcher.is_listed_on_exchange",
+        lambda symbol, exchange=None: True,
+    )
     # Synthetic symbols are not on Gate — venue must not kill classic sensor unit tests
     monkeypatch.setattr(
         "services.venue_quality.check_venue_for_buy",

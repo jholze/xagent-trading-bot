@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
+from typing import Any
 
 from data_manager import load_effective_watchlist
 from logger import log
@@ -12,10 +14,12 @@ _lock = threading.Lock()
 _pipeline = None
 _running = False
 _thread: threading.Thread | None = None
+_stop = threading.Event()
 _last_fetch_at = 0.0
 _last_accuracy: dict = {}
 _fetch_in_progress = False
 _last_news_pulse_at = 0.0
+_last_daily_tick_day: str | None = None
 
 
 def register_pipeline(pipeline) -> None:
@@ -164,9 +168,156 @@ def _maybe_tick_news_pulse(cfg=None) -> None:
         log(f"Background news pulse failed: {e}", "WARNING")
 
 
+def reset_background_runtime_for_tests() -> None:
+    """Stop the background-runtime daemon so it cannot outlive a pytest test (#329)."""
+    global _running, _thread, _last_daily_tick_day
+    _stop.set()
+    _running = False
+    thread = _thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    _thread = None
+    _last_daily_tick_day = None
+    _stop.clear()
+
+
+def _observability_from(cfg: Any) -> dict:
+    if cfg is None:
+        try:
+            from core.config import get_bot_config
+
+            return dict(get_bot_config().observability_config or {})
+        except Exception:
+            return {}
+    if isinstance(cfg, dict):
+        if any(
+            k in cfg
+            for k in (
+                "morning_briefing_enabled",
+                "morning_briefing_hour",
+                "daily_report_telegram",
+            )
+        ):
+            return cfg
+        return dict(cfg.get("observability") or {})
+    raw = getattr(cfg, "observability_config", None)
+    if isinstance(raw, dict):
+        return dict(raw)
+    nested = getattr(cfg, "raw", None)
+    if isinstance(nested, dict):
+        return dict(nested.get("observability") or {})
+    return {}
+
+
+def _morning_briefing_hour(obs: dict) -> int:
+    try:
+        hour = int(obs.get("morning_briefing_hour", 8) or 8)
+    except (TypeError, ValueError):
+        hour = 8
+    return max(0, min(23, hour))
+
+
+def _display_wall(now: datetime | None) -> datetime:
+    """Naive display-TZ wall clock. Aware *now* converts; naive *now* is display-local."""
+    from core.time_utils import display_tz, now_display
+
+    if now is None:
+        n = now_display()
+        return n.replace(tzinfo=None) if n.tzinfo is not None else n
+    if now.tzinfo is not None:
+        try:
+            return now.astimezone(display_tz()).replace(tzinfo=None)
+        except Exception:
+            return now.replace(tzinfo=None)
+    return now
+
+
+def _operator_chat_id() -> str:
+    try:
+        from telegram_notifier import resolve_notification_chat_id
+
+        return str(resolve_notification_chat_id() or "").strip()
+    except Exception:
+        return ""
+
+
+def _maybe_tick_daily_reports(now: datetime | None = None, *, cfg: Any = None) -> dict:
+    """Once per display-TZ calendar day at/after ``morning_briefing_hour``.
+
+    Clock is ``calendar_day_bounds`` / display TZ (#328) — never ``date.today()``.
+    Morning briefing reuses ``can_send_morning`` so ``/morning`` and this tick
+    never double-send. Returns a status dict for tests.
+    """
+    global _last_daily_tick_day
+    from services.order_service import calendar_day_bounds
+
+    obs = _observability_from(cfg)
+    clock = now
+    try:
+        start, _end = calendar_day_bounds(clock)
+        day_key = start.strftime("%Y-%m-%d")
+        wall = _display_wall(clock)
+    except Exception as e:
+        log(f"Daily report tick clock failed: {e}", "WARNING")
+        return {"fired": False, "reason": "clock_error"}
+
+    hour = _morning_briefing_hour(obs)
+    if wall.hour < hour:
+        return {"fired": False, "reason": "before_hour", "day": day_key, "hour": wall.hour}
+
+    if _last_daily_tick_day == day_key:
+        return {"fired": False, "reason": "already_ticked", "day": day_key}
+
+    morning_enabled = bool(obs.get("morning_briefing_enabled", True))
+    daily_enabled = bool(obs.get("daily_report_telegram", True))
+    sent_morning = False
+    skipped_marker = False
+    sent_daily = False
+
+    if morning_enabled:
+        try:
+            from notifications.morning_briefing import can_send_morning, send_morning_briefing
+
+            cid = _operator_chat_id()
+            if cid:
+                allowed, _sent_at = can_send_morning(cid, now=clock)
+                if allowed:
+                    send_morning_briefing(cid, now=clock)
+                    sent_morning = True
+                else:
+                    skipped_marker = True
+            else:
+                log("Daily morning tick skipped: no operator chat id", "DEBUG")
+        except Exception as e:
+            log(f"Daily morning briefing failed: {e}", "WARNING")
+
+    if daily_enabled:
+        try:
+            from pathlib import Path
+
+            from scripts.daily_auswertung import send_daily_telegram_summary
+
+            bot_dir = Path(__file__).resolve().parents[1]
+            if send_daily_telegram_summary(bot_dir, wall):
+                sent_daily = True
+        except Exception as e:
+            log(f"Daily auswertung telegram failed: {e}", "WARNING")
+
+    _last_daily_tick_day = day_key
+    return {
+        "fired": True,
+        "day": day_key,
+        "morning": sent_morning,
+        "morning_skipped_marker": skipped_marker,
+        "daily": sent_daily,
+        "morning_enabled": morning_enabled,
+        "daily_enabled": daily_enabled,
+    }
+
+
 def _loop():
     global _last_fetch_at, _last_accuracy
-    while _running:
+    while _running and not _stop.is_set():
         try:
             from core.config import get_bot_config
 
@@ -176,12 +327,22 @@ def _loop():
                 _maybe_tick_news_pulse(cfg)
             except Exception as e:
                 log(f"Background news pulse failed: {e}", "WARNING")
+            try:
+                _maybe_tick_daily_reports(cfg=cfg)
+            except Exception as e:
+                log(f"Background daily report tick failed: {e}", "WARNING")
+            try:
+                from hermes.promotion import tick_hermes_promotions
+
+                tick_hermes_promotions()
+            except Exception as e:
+                log(f"Background Hermes promotion tick failed: {e}", "WARNING")
             arch = cfg.architecture_config
             if not arch.get("background_social_enabled", True):
-                time.sleep(5)
+                _stop.wait(5)
                 continue
             if _pipeline is None:
-                time.sleep(2)
+                _stop.wait(2)
                 continue
 
             interval = int(
@@ -248,10 +409,10 @@ def _loop():
             except Exception as e:
                 log(f"Background WQE rescore skipped: {e}", "DEBUG")
 
-            time.sleep(max(30, interval))
+            _stop.wait(max(30, interval))
         except Exception as e:
             log(f"Background runtime loop error: {e}", "ERROR")
-            time.sleep(10)
+            _stop.wait(10)
 
 
 def ensure_started():
@@ -259,6 +420,7 @@ def ensure_started():
     with _lock:
         if _running:
             return
+        _stop.clear()
         _running = True
         _thread = threading.Thread(target=_loop, daemon=True, name="background-runtime")
         _thread.start()

@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -9,6 +9,15 @@ from notifications.telegram_commands.lc_commands import _lc_unavailable_message
 
 
 class TestLcCommands(unittest.TestCase):
+    def setUp(self):
+        # Pin a dummy key so the metrics/threshold branches do not depend on the
+        # operator shell (CI has no LUNARCRUSH_API_KEY; a local shell might).
+        self._key_env = patch.dict(os.environ, {"LUNARCRUSH_API_KEY": "test-key"})
+        self._key_env.start()
+
+    def tearDown(self):
+        self._key_env.stop()
+
     def _cfg(self, **lc_overrides):
         cfg = MagicMock()
         cfg.lunarcrush_config = {

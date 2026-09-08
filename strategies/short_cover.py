@@ -57,11 +57,17 @@ def evaluate_short_cover(
     )
     lev = clamp_leverage((pos or {}).get("leverage") or params["leverage"], cap=params["leverage_cap"])
     stop = stop_price("short", entry, float(params.get("stop_margin_pct") or 0.12), lev)
+    try:
+        from core.costs import CostModel
+
+        fee_frac = CostModel.from_config(config_raw, market="swap").fee_pct("market") / 100.0
+    except Exception:
+        fee_frac = float(params.get("swap_fee_pct") or 0.05) / 100.0
     liq = liquidation_price_isolated(
         "short",
         entry,
         lev,
-        fee_rate=float(params.get("fee_rate") or 0.001),
+        fee_frac=fee_frac,
     )
     liq = apply_liq_buffer("short", entry, liq, float(params.get("liquidation_buffer") or 0.05))
     hit = should_stop_or_liquidate("short", px, stop=stop, liq=liq)

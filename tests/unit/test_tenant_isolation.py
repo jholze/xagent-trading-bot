@@ -117,12 +117,20 @@ class TestTenantIsolationMongo(unittest.TestCase):
 
 class TestMigrateSingleToTenant(unittest.TestCase):
     def setUp(self):
-        os.environ["MONGODB_DB"] = "xagent_test"
+        # Pin via os.environ then restore: isolate_test_mongo already monkeypatches
+        # MONGODB_DB, but this class used to write "xagent_test" (operator DB name)
+        # without restoring it (#329).
+        self._prev_mongodb_db = os.environ.get("MONGODB_DB")
+        os.environ["MONGODB_DB"] = TEST_DB_NAME
         drop_database(test=True)
         self.store = MongoLedgerStore(test=True)
 
     def tearDown(self):
         drop_database(test=True)
+        if self._prev_mongodb_db is None:
+            os.environ.pop("MONGODB_DB", None)
+        else:
+            os.environ["MONGODB_DB"] = self._prev_mongodb_db
 
     def test_migration_idempotent(self):
         from scripts.migrate_single_to_tenant import migrate
@@ -140,6 +148,11 @@ class TestMigrateSingleToTenant(unittest.TestCase):
         )
         paper_key = f"orders:{compound_ledger_id(DEFAULT_TENANT, 'paper')}"
         first = migrate(test=True, dry_run=False)
+        # Collection binds the MongoClient at construction. A leftover thread
+        # may close/replace the process client during migrate() (close_client
+        # or URI change). MongoLedgerStore._db is a property, so re-resolve
+        # before find_one — setup only, assertions unchanged (#329).
+        coll = self.store._collection("orders")
         self.assertIn(paper_key, first["scopes"])
         loaded = self.store.load_orders("paper", tenant_id=DEFAULT_TENANT)
         self.assertEqual(loaded["orders"][0]["symbol"], "MIG/USDT")
