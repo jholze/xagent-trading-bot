@@ -134,6 +134,7 @@ class TestTradingCommands(unittest.TestCase):
                 mock_confirm.assert_called_once()
                 self.assertEqual(mock_confirm.call_args.kwargs["timeframe"], "1h")
         finally:
+            ctx.set_chat_id("")
             tmp.cleanup()
 
     def test_callback_delegates_to_manual_flow(self):

@@ -1239,7 +1239,7 @@ def format_sell_list_message(active: list, prices: dict) -> str:
     else:
         msg = f"<b>{t('sell_list_title')}</b>\n\n{t('no_longs_to_sell')}"
     msg += format_open_shorts_footer(active, prices)
-    return msg + "\n\n" + context_footer("sell", current_language(), example="RAVE 30")
+    return msg + "\n\n" + context_footer("sell", current_language(), example="RAVE")
 
 
 def load_trade_history_safe(

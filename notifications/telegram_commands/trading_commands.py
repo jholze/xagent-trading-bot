@@ -22,13 +22,47 @@ from notifications.telegram_commands.watchlist_commands import (
     resolve_coin_by_display_index,
 )
 from strategies.positions import get_position, list_active_positions
-from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_commands.command_context import (
+    activate_command,
+    clear_context,
+    get_context,
+    parse_sell_percent_token,
+    set_chat_id,
+    set_context,
+)
 from notifications.telegram_i18n import t
-from telegram_notifier import send_telegram_message
+from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 # Portfolio snapshot after manual buy/sell is sent by TradingService.execute_order.
 
 _trading = TradingService()
+
+SELL_PCT_CALLBACK_PREFIX = "sellpct:"
+_SELL_PCT_PRESETS = (25, 50, 75, 100)
+
+
+def _sell_menu_text(field: str, **kwargs) -> str:
+    from notifications.telegram_commands.menu_i18n import _command_entry, _pack, current_language
+
+    template = str(_command_entry(_pack(current_language()), "sell").get(field) or "")
+    for key, value in kwargs.items():
+        template = template.replace(f"{{{key}}}", str(value))
+    return template
+
+
+def prompt_sell_percentage(position_label: str, *, invalid: bool = False) -> None:
+    """Ask for a sell percentage with 25/50/75/100% quick-reply buttons."""
+    prompt = _sell_menu_text("pct_prompt", position=position_label)
+    if invalid:
+        prompt = _sell_menu_text("pct_invalid") + "\n\n" + prompt
+    buttons = [[
+        {
+            "text": _sell_menu_text(f"pct_btn_{n}"),
+            "callback_data": f"{SELL_PCT_CALLBACK_PREFIX}{n}",
+        }
+        for n in _SELL_PCT_PRESETS
+    ]]
+    send_telegram_buttons(prompt, buttons)
 
 
 def handle(text: str) -> bool:
@@ -126,7 +160,7 @@ def handle(text: str) -> bool:
                 return True
             symbols = [position_symbol(p) for p in all_lots]
             prices = get_prices_batch(symbols)
-            activate_command("sell")
+            activate_command("sell", state="sell_awaiting_position")
             for chunk in chunk_positions_message(format_sell_list_message(all_lots, prices)):
                 send_telegram_message(chunk)
             return True
@@ -136,10 +170,7 @@ def handle(text: str) -> bool:
             return True
 
         arg = parts[1]
-        pct = safe_float(parts[2]) / 100 if len(parts) > 2 else 0.5
-        if pct is None or pct <= 0 or pct > 1:
-            send_telegram_message(t("invalid_sell_pct"))
-            return True
+        has_pct = len(parts) > 2
 
         symbols = [position_symbol(p) for p in all_lots]
         prices = get_prices_batch(symbols)
@@ -177,7 +208,29 @@ def handle(text: str) -> bool:
             return True
 
         pos = get_position(sym, tf)
-        amount_sold = float(pos.get("amount", 0)) * pct
+        total_amount = float(pos.get("amount", 0))
+        if total_amount <= 0:
+            send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
+            return True
+
+        if not has_pct:
+            ticker = sym.split("/")[0]
+            pos_token = arg if arg.replace(".", "").isdigit() else arg.upper()
+            prompt_sell_percentage(ticker)
+            activate_command(
+                "sell",
+                state="sell_awaiting_pct",
+                position=pos_token,
+                label=ticker,
+            )
+            return True
+
+        raw_pct = safe_float(parts[2])
+        if raw_pct is None or raw_pct <= 0 or raw_pct > 100:
+            send_telegram_message(t("invalid_sell_pct"))
+            return True
+        pct = raw_pct / 100
+        amount_sold = total_amount * pct
         if amount_sold <= 0:
             send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
             return True
@@ -195,7 +248,45 @@ def handle(text: str) -> bool:
     return False
 
 
+def _handle_sell_pct_callback(callback_query: dict) -> bool:
+    from logger import log
+
+    answer_callback_query(callback_query.get("id"))
+    data = str(callback_query.get("data") or "")
+    raw = data.split(":", 1)[1] if ":" in data else ""
+
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        log("sellpct callback missing chat id", "WARNING")
+        return True
+
+    set_chat_id(chat_id)
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if not entry or entry.get("command") != "sell" or str(meta.get("state") or "") != "sell_awaiting_pct":
+        send_telegram_message(_sell_menu_text("pct_expired"))
+        return True
+
+    position = str(meta.get("position") or "").strip()
+    label = str(meta.get("label") or position)
+    canonical = parse_sell_percent_token(raw)
+    if not position or canonical is None:
+        prompt_sell_percentage(label, invalid=True)
+        set_context(chat_id, "sell", **meta)
+        return True
+
+    from notifications.telegram_commands.router import dispatch_command
+
+    clear_context(chat_id)
+    return dispatch_command(f"/sell {position} {canonical}")
+
+
 def handle_callback(callback_query: dict) -> bool:
+    data = str(callback_query.get("data") or "")
+    if data.startswith(SELL_PCT_CALLBACK_PREFIX):
+        return _handle_sell_pct_callback(callback_query)
+
     from notifications.telegram_commands.manual_order_flow import handle_callback as handle_manual_callback
 
     return handle_manual_callback(callback_query)

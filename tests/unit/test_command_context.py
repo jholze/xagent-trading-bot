@@ -15,6 +15,7 @@ class TestCommandContext(unittest.TestCase):
         ctx._CONTEXT_FILE = self.path
 
     def tearDown(self):
+        ctx.set_chat_id("")
         self.tmp.cleanup()
 
     def test_set_and_get_context(self):
@@ -55,6 +56,56 @@ class TestCommandContext(unittest.TestCase):
             self.assertTrue(ctx.try_resolve("42", "/positions"))
             mock.assert_called_once_with("/positions")
         self.assertIsNone(ctx.get_context("42"))
+
+    def test_build_sell_command_position_only_no_default(self):
+        built = ctx._build_command("sell", "RAVE", {})
+        self.assertEqual(built, "/sell RAVE")
+
+    def test_build_sell_command_index_only_no_default(self):
+        built = ctx._build_command("sell", "3", {})
+        self.assertEqual(built, "/sell 3")
+
+    def test_parse_sell_percent_token_rejects_missing_and_invalid(self):
+        self.assertIsNone(ctx.parse_sell_percent_token(""))
+        self.assertIsNone(ctx.parse_sell_percent_token("abc"))
+        self.assertIsNone(ctx.parse_sell_percent_token("0"))
+        self.assertIsNone(ctx.parse_sell_percent_token("150"))
+        self.assertEqual(ctx.parse_sell_percent_token("25"), "25")
+        self.assertEqual(ctx.parse_sell_percent_token("25%"), "25")
+        self.assertEqual(ctx.parse_sell_percent_token("100"), "100")
+
+    def test_build_sell_command_awaiting_pct(self):
+        built = ctx._build_command(
+            "sell", "25", {"state": "sell_awaiting_pct", "position": "RAVE"}
+        )
+        self.assertEqual(built, "/sell RAVE 25")
+
+    def test_build_sell_command_awaiting_pct_invalid_no_default(self):
+        built = ctx._build_command(
+            "sell", "abc", {"state": "sell_awaiting_pct", "position": "RAVE"}
+        )
+        self.assertIsNone(built)
+
+    def test_try_resolve_sell_position_only_no_percent_default(self):
+        ctx.set_context("99", "sell", state="sell_awaiting_position")
+        with patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock:
+            self.assertTrue(ctx.try_resolve("99", "RAVE"))
+            mock.assert_called_once_with("/sell RAVE")
+
+    def test_try_resolve_sell_pct_invalid_keeps_context_and_reasks(self):
+        ctx.set_context("99", "sell", state="sell_awaiting_pct", position="RAVE", label="RAVE")
+        with patch(
+            "notifications.telegram_commands.trading_commands.prompt_sell_percentage"
+        ) as mock_prompt, patch(
+            "notifications.telegram_commands.router.dispatch_command"
+        ) as mock_dispatch:
+            self.assertTrue(ctx.try_resolve("99", "abc"))
+            mock_prompt.assert_called_once_with("RAVE", invalid=True)
+            mock_dispatch.assert_not_called()
+        entry = ctx.get_context("99")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["meta"]["state"], "sell_awaiting_pct")
+        self.assertEqual(entry["meta"]["position"], "RAVE")
 
 
 if __name__ == "__main__":

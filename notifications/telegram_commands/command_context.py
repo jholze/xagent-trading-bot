@@ -132,6 +132,29 @@ def _invalid(msg: str) -> bool:
     return False
 
 
+def parse_sell_percent_token(token: str) -> str | None:
+    """Return a canonical 1–100 percent token, or None if missing/invalid.
+
+    Used by the guided /sell percent step. Does not default to 50.
+    """
+    raw = (token or "").strip().rstrip("%").strip()
+    if not raw:
+        return None
+    val = safe_float(raw)
+    if val is None or val <= 0 or val > 100:
+        return None
+    if float(val).is_integer():
+        return str(int(val))
+    return raw
+
+
+def _sell_position_token(raw: str) -> str:
+    token = (raw or "").strip()
+    if token.replace(".", "").isdigit():
+        return token
+    return token.upper()
+
+
 def _build_command(command: str, text: str, meta: dict) -> str | None:
     parts = text.strip().split()
     if not parts:
@@ -151,10 +174,19 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         return f"/buy {sym} {usdt}"
 
     if command == "sell":
-        pct = parts[1] if len(parts) > 1 else "50"
-        if parts[0].replace(".", "").isdigit():
-            return f"/sell {parts[0]} {pct}"
-        return f"/sell {parts[0].upper()} {pct}"
+        if str(meta.get("state") or "") == "sell_awaiting_pct":
+            position = str(meta.get("position") or "").strip()
+            if not position:
+                return None
+            pct_token = parts[1] if len(parts) > 1 else parts[0]
+            canonical = parse_sell_percent_token(pct_token)
+            if canonical is None:
+                return None
+            return f"/sell {position} {canonical}"
+        if len(parts) > 1:
+            pct = parts[1]
+            return f"/sell {_sell_position_token(parts[0])} {pct}"
+        return f"/sell {_sell_position_token(parts[0])}"
 
     if command == "add":
         return f"/add {parts[0].upper()}"
@@ -212,6 +244,7 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
 
 def try_resolve(chat_id: str | int, text: str) -> bool:
     """Map short follow-up text to a slash command using active context."""
+    set_chat_id(chat_id)
     stripped = (text or "").strip()
     if stripped.startswith("/"):
         clear_context(chat_id)
@@ -227,6 +260,13 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
     meta = entry.get("meta") or {}
     built = _build_command(command, text, meta)
     if not built:
+        if command == "sell" and str(meta.get("state") or "") == "sell_awaiting_pct":
+            from notifications.telegram_commands.trading_commands import prompt_sell_percentage
+
+            label = str(meta.get("label") or meta.get("position") or "")
+            prompt_sell_percentage(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid
 
         _invalid(short_input_invalid(command, current_language()))

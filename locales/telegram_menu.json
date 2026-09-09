@@ -175,7 +175,14 @@
       "sell": {
         "description": "Position verkaufen",
         "help_line": "<code>/sell SYMBOL PROZENT</code> oder <code>/sell NUMMER PROZENT</code> — z.B. <code>/sell RAVE 30</code> oder <code>/sell 1 30</code>",
-        "context_footer": "Danach nur noch: <code>{example}</code> (Symbol oder Nummer + Prozent)",
+        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer oder Symbol). Prozent als nächster Schritt.\n<i>Oder beides auf einmal, z.B. <code>{example} 30</code></i>",
+        "pct_prompt": "Wie viel von <b>{position}</b> verkaufen?\nTippe einen Prozentwert (1–100) oder nutze die Buttons.",
+        "pct_invalid": "❌ Ungültiger Prozentwert. Bitte eine Zahl von 1 bis 100 senden oder einen Button tippen — es wird nichts angenommen.",
+        "pct_expired": "❌ Verkauf abgelaufen oder keine Position gewählt. Bitte <code>/sell</code> erneut senden.",
+        "pct_btn_25": "25%",
+        "pct_btn_50": "50%",
+        "pct_btn_75": "75%",
+        "pct_btn_100": "100%",
         "hint": "❌ <b>/sell</b> — Position verkaufen\n\nDirekt: <code>/sell RAVE 30</code> (30 % verkaufen)\nOder Liste: <code>/sell</code> → dann <code>1 30</code>"
       },
       "short": {
@@ -570,7 +577,14 @@
       "sell": {
         "description": "Sell position",
         "help_line": "<code>/sell SYMBOL PERCENT</code> or <code>/sell NUMBER PERCENT</code> — e.g. <code>/sell RAVE 30</code> or <code>/sell 1 30</code>",
-        "context_footer": "Then send only: <code>{example}</code> (symbol or number + percent)",
+        "context_footer": "Then send only: <code>{example}</code> (number or symbol). Percent is the next step.\n<i>Or both at once, e.g. <code>{example} 30</code></i>",
+        "pct_prompt": "How much of <b>{position}</b> to sell?\nType a percentage (1–100) or use the buttons.",
+        "pct_invalid": "❌ Invalid percentage. Send a number from 1 to 100 or tap a button — nothing is assumed.",
+        "pct_expired": "❌ Sell expired or no position chosen. Please send <code>/sell</code> again.",
+        "pct_btn_25": "25%",
+        "pct_btn_50": "50%",
+        "pct_btn_75": "75%",
+        "pct_btn_100": "100%",
         "hint": "❌ <b>/sell</b> — Sell position\n\nDirect: <code>/sell RAVE 30</code> (sell 30%)\nOr list: <code>/sell</code> → then <code>1 30</code>"
       },
       "short": {
