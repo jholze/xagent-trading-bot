@@ -75,10 +75,18 @@ class TestSignalWebhookService(unittest.TestCase):
             self.assertFalse(signal_webhook_token_ok("bad", {}))
             self.assertTrue(signal_webhook_token_ok("secret", {}))
 
-    def test_no_token_allows_by_default(self):
+    def test_no_token_denies_by_default(self):
         env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
         with patch.dict(os.environ, env, clear=True):
-            self.assertTrue(signal_webhook_token_ok("anything", {}))
+            self.assertFalse(signal_webhook_token_ok("anything", {}))
+            self.assertFalse(signal_webhook_token_ok(None, {}))
+
+    def test_allow_no_token_true_opt_in(self):
+        env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
+        cfg = {"architecture": {"signal_webhook_allow_no_token": True}}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(signal_webhook_token_ok("anything", cfg))
+            self.assertTrue(signal_webhook_token_ok(None, cfg))
 
     def test_allow_no_token_false_denies(self):
         env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
@@ -119,6 +127,28 @@ class TestSignalWebhookRoute(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data["ok"])
         self.assertTrue(data["watch_set"])
+
+    def test_post_no_token_configured_returns_401(self):
+        env = {k: v for k, v in os.environ.items() if k != "SIGNAL_WEBHOOK_TOKEN"}
+        cfg = {
+            "architecture": {
+                "signal_webhook_enabled": True,
+                "signal_webhook_token": "",
+            }
+        }
+
+        class _Cfg:
+            raw = cfg
+
+        with patch.dict(os.environ, env, clear=True), \
+             patch("core.config.get_bot_config", return_value=_Cfg()), \
+             patch("services.signal_webhook_service.signal_webhook_enabled", return_value=True):
+            resp = self.client.post(
+                "/api/signals/webhook?source=tradingview",
+                json={"symbol": "VELVET", "event_type": "volume_spike"},
+            )
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.get_json(), {"error": "unauthorized"})
 
 
 class TestEntrySensorPriorityPoll(unittest.TestCase):

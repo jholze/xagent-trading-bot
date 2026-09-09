@@ -351,6 +351,7 @@
     "coin_query_webhook_enabled": true,
     "signal_webhook_enabled": true,
     "signal_webhook_token": "",
+    "signal_webhook_allow_no_token": false,
     "signal_event_ttl_sec": 3600,
     "signal_webhook_rate_limit_per_min": 10,
     "santiment_ingest_enabled": true,
