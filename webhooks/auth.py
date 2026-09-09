@@ -19,7 +19,7 @@ def signal_webhook_token_ok(provided: str | None, config_raw: dict | None = None
     cfg_token = str(arch.get("signal_webhook_token") or "").strip()
     if cfg_token:
         return (provided or "").strip() == cfg_token
-    allow_no_token = bool(arch.get("signal_webhook_allow_no_token", True))
+    allow_no_token = bool(arch.get("signal_webhook_allow_no_token", False))
     if allow_no_token:
         log(
             "signal_webhook: no token configured — request allowed unauthenticated "
