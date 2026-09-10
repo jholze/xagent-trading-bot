@@ -79,6 +79,21 @@ def resolve_incoming_tenant(
         )
 
     if not multi_tenant_enabled():
+        # Single-owner deployment: only the configured owner chat(s) may
+        # drive commands. If TELEGRAM_CHAT_ID isn't set yet at all, stay
+        # permissive -- there'd be no way to ever configure it via chat
+        # otherwise. Once it's set, a stranger's message is silently
+        # ignored (no reply), same as an unlinked chat is in multi-tenant
+        # mode, just without that mode's tenant-registry lookup.
+        if op_chat and cid:
+            from webhooks.auth import telegram_sender_allowed
+
+            if not telegram_sender_allowed(cid):
+                return IncomingTenantRoute(
+                    tenant_id=DEFAULT_TENANT,
+                    owner_chat_id=op_chat,
+                    rejected=True,
+                )
         return IncomingTenantRoute(
             tenant_id=DEFAULT_TENANT,
             owner_chat_id=op_chat or cid,

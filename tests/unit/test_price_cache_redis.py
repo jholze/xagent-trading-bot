@@ -61,12 +61,21 @@ class TestCoinQueryService(unittest.TestCase):
         self.assertEqual(normalize_symbols("btc, eth"), ["BTC/USDT", "ETH/USDT"])
         self.assertEqual(normalize_symbols(["SOL/USDT"]), ["SOL/USDT"])
 
-    def test_webhook_token_optional_when_unset(self):
+    def test_webhook_token_denied_when_unset(self):
+        # Fail closed by default (mirrors the #336 signal-webhook fix): no
+        # token configured means no unauthenticated access, not an open API.
         with patch.dict(os.environ, {}, clear=True):
-            self.assertTrue(webhook_token_ok(None, {"architecture": {}}))
+            self.assertFalse(webhook_token_ok(None, {"architecture": {}}))
         with patch.dict(os.environ, {"COIN_WEBHOOK_TOKEN": "secret"}, clear=False):
             self.assertFalse(webhook_token_ok("wrong", {}))
             self.assertTrue(webhook_token_ok("secret", {}))
+
+    def test_webhook_allow_no_token_true_opt_in(self):
+        # The escape hatch still exists for anyone who explicitly opts in.
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = {"architecture": {"coin_query_webhook_allow_no_token": True}}
+            self.assertTrue(webhook_token_ok(None, cfg))
+            self.assertTrue(webhook_token_ok("anything", cfg))
 
     def test_query_uses_redis_hits(self):
         cfg = {"architecture": {"price_cache_enabled": True, "price_cache_ttl_sec": 120}}
