@@ -472,6 +472,13 @@ def format_position_compact_line(
     )
 
 
+def format_sell_pick_button_label(p: dict, price: float) -> str:
+    """Short inline-button caption using the compact line's ticker + PnL emoji/pct."""
+    ticker = position_symbol(p).split("/")[0]
+    m = _position_metrics(p, price)
+    return f"{ticker} {_pnl_emoji(m['unreal'])} {_fmt_pct(m['unreal_pct'])}"
+
+
 def _lookup_order_timeframe(order_id: str) -> str | None:
     if not order_id:
         return None
@@ -1235,6 +1242,7 @@ def format_sell_list_message(active: list, prices: dict) -> str:
             include_trades=False,
             numbered=True,
             title=t("sell_list_title"),
+            detail_level="compact",
         )
     else:
         msg = f"<b>{t('sell_list_title')}</b>\n\n{t('no_longs_to_sell')}"

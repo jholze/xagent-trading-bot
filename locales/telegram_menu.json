@@ -175,7 +175,7 @@
       "sell": {
         "description": "Position verkaufen",
         "help_line": "<code>/sell SYMBOL PROZENT</code> oder <code>/sell NUMMER PROZENT</code> — z.B. <code>/sell RAVE 30</code> oder <code>/sell 1 30</code>",
-        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer oder Symbol). Prozent als nächster Schritt.\n<i>Oder beides auf einmal, z.B. <code>{example} 30</code></i>",
+        "context_footer": "Danach nur noch: <code>{example}</code> (Nummer oder Symbol) oder Position antippen. Prozent als nächster Schritt.\n<i>Oder beides auf einmal, z.B. <code>{example} 30</code></i>",
         "pct_prompt": "Wie viel von <b>{position}</b> verkaufen?\nTippe einen Prozentwert (1–100) oder nutze die Buttons.",
         "pct_invalid": "❌ Ungültiger Prozentwert. Bitte eine Zahl von 1 bis 100 senden oder einen Button tippen — es wird nichts angenommen.",
         "pct_expired": "❌ Verkauf abgelaufen oder keine Position gewählt. Bitte <code>/sell</code> erneut senden.",
@@ -577,7 +577,7 @@
       "sell": {
         "description": "Sell position",
         "help_line": "<code>/sell SYMBOL PERCENT</code> or <code>/sell NUMBER PERCENT</code> — e.g. <code>/sell RAVE 30</code> or <code>/sell 1 30</code>",
-        "context_footer": "Then send only: <code>{example}</code> (number or symbol). Percent is the next step.\n<i>Or both at once, e.g. <code>{example} 30</code></i>",
+        "context_footer": "Then send only: <code>{example}</code> (number or symbol) or tap a position. Percent is the next step.\n<i>Or both at once, e.g. <code>{example} 30</code></i>",
         "pct_prompt": "How much of <b>{position}</b> to sell?\nType a percentage (1–100) or use the buttons.",
         "pct_invalid": "❌ Invalid percentage. Send a number from 1 to 100 or tap a button — nothing is assumed.",
         "pct_expired": "❌ Sell expired or no position chosen. Please send <code>/sell</code> again.",
