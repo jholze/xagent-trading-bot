@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from intelligence.llm_client import (
     LlmError,
+    LlmSettings,
     ask_llm,
     ask_llm_json,
     llm_settings,
@@ -92,6 +93,63 @@ class TestAskLlmJson(unittest.TestCase):
         self.assertIs(GrokError, LlmError)
         data = parse_grok_json('{"ok": true}')
         self.assertTrue(data["ok"])
+
+
+class TestAskLlmPerCallOverride(unittest.TestCase):
+    def setUp(self):
+        reset_llm_clients()
+        self._env = dict(os.environ)
+        os.environ["LLM_BACKEND"] = "xai"
+        os.environ["XAI_API_KEY"] = "global-xai-key"
+        os.environ.pop("LLM_BASE_URL", None)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        reset_llm_clients()
+
+    def test_ask_llm_base_url_override_constructs_openai_client(self):
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content="local-ok"))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_resp
+        with patch("intelligence.llm_client.OpenAI", return_value=mock_client) as mock_openai:
+            with patch("intelligence.llm_client.llm_settings") as mock_ls:
+                out = ask_llm(
+                    "summarize",
+                    temperature=0.2,
+                    model="qwen3.5:9b",
+                    base_url="http://localhost:11434/v1",
+                )
+        mock_ls.assert_not_called()
+        mock_openai.assert_called()
+        kwargs = mock_openai.call_args.kwargs
+        self.assertEqual(kwargs["base_url"], "http://localhost:11434/v1")
+        self.assertEqual(kwargs["api_key"], "local")
+        self.assertEqual(out, "local-ok")
+        create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(create_kwargs["model"], "qwen3.5:9b")
+
+    def test_ask_llm_without_base_url_uses_global_settings(self):
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content="global-ok"))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_resp
+        with patch("intelligence.llm_client.llm_settings") as mock_ls:
+            mock_ls.return_value = LlmSettings(
+                backend="xai",
+                base_url="https://api.x.ai/v1",
+                api_key="global-xai-key",
+                model="grok-4",
+            )
+            with patch("intelligence.llm_client._get_client", return_value=mock_client) as mock_gc:
+                out = ask_llm("hi")
+        mock_ls.assert_called()
+        mock_gc.assert_called()
+        settings = mock_gc.call_args.args[0]
+        self.assertEqual(settings.backend, "xai")
+        self.assertEqual(settings.base_url, "https://api.x.ai/v1")
+        self.assertEqual(out, "global-ok")
 
 
 if __name__ == "__main__":

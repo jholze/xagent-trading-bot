@@ -134,10 +134,20 @@ def ask_llm(
     temperature: float = 0.7,
     model: str | None = None,
     timeout_sec: int = 60,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """Free-text completion. Returns error string on failure (legacy grok_agent style)."""
     try:
-        settings = llm_settings()
+        if base_url:
+            settings = LlmSettings(
+                backend="openai_compat",
+                base_url=str(base_url).strip().rstrip("/"),
+                api_key=(api_key or "").strip(),
+                model=model or "",
+            )
+        else:
+            settings = llm_settings()
         client = _get_client(settings, timeout_sec)
         response = client.chat.completions.create(
             model=model or settings.model,
