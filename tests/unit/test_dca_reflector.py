@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from intelligence.memory.dca_reflector import (
+    _optional_grok_summary,
     derive_dca_lesson_specs,
     reflect_dca_policy,
 )
@@ -134,6 +137,89 @@ class TestReflectDcaPolicyStore(unittest.TestCase):
         self.assertGreaterEqual(out.get("events_read", 0), 6)
         lessons = store.list_lessons(limit=20)
         self.assertTrue(any("harvest" in (l.text or "").lower() for l in lessons))
+
+
+class TestOptionalGrokSummaryLocalLlm(unittest.TestCase):
+    def setUp(self):
+        self._env = dict(os.environ)
+        os.environ.pop("DCA_REFLECT_LLM_BASE_URL", None)
+        os.environ.pop("DCA_REFLECT_LLM_MODEL", None)
+        os.environ.pop("DCA_REFLECT_LLM_API_KEY", None)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def _specs(self):
+        return [{"text": "DCA policy: harvest_skip dominated recent decisions"}]
+
+    def test_optional_grok_summary_local_env_calls_ask_llm(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = "http://localhost:11434/v1"
+        os.environ["DCA_REFLECT_LLM_MODEL"] = "qwen3.5:9b"
+        with patch(
+            "intelligence.llm_client.ask_llm", return_value="lokal zusammengefasst"
+        ) as mock_ask:
+            with patch("grok_agent.ask_grok") as mock_grok:
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": True})
+        mock_ask.assert_called_once()
+        kwargs = mock_ask.call_args.kwargs
+        self.assertEqual(kwargs["base_url"], "http://localhost:11434/v1")
+        self.assertEqual(kwargs["model"], "qwen3.5:9b")
+        mock_grok.assert_not_called()
+        self.assertEqual(out, "lokal zusammengefasst")
+
+    def test_optional_grok_summary_unset_uses_grok_agent(self):
+        os.environ.pop("DCA_REFLECT_LLM_BASE_URL", None)
+        with patch("grok_agent.ask_grok", return_value="grok summary") as mock_grok:
+            with patch("intelligence.llm_client.ask_llm") as mock_ask:
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": True})
+        mock_grok.assert_called()
+        mock_ask.assert_not_called()
+        self.assertEqual(out, "grok summary")
+
+    def test_optional_grok_summary_empty_base_url_uses_grok_agent(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = ""
+        with patch("grok_agent.ask_grok", return_value="grok summary") as mock_grok:
+            with patch("intelligence.llm_client.ask_llm") as mock_ask:
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": True})
+        mock_grok.assert_called()
+        mock_ask.assert_not_called()
+        self.assertEqual(out, "grok summary")
+
+    def test_optional_grok_summary_local_exception_fail_open(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = "http://localhost:11434/v1"
+        os.environ["DCA_REFLECT_LLM_MODEL"] = "qwen3.5:9b"
+        with patch("intelligence.llm_client.ask_llm", side_effect=RuntimeError("ollama down")):
+            with patch("grok_agent.ask_grok", side_effect=RuntimeError("grok down")):
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": True})
+        self.assertIsNone(out)
+
+    def test_optional_grok_summary_local_api_fehler_returns_none(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = "http://localhost:11434/v1"
+        os.environ["DCA_REFLECT_LLM_MODEL"] = "qwen3.5:9b"
+        with patch("intelligence.llm_client.ask_llm", return_value="API-Fehler: down"):
+            with patch("grok_agent.ask_grok") as mock_grok:
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": True})
+        self.assertIsNone(out)
+        mock_grok.assert_not_called()
+
+    def test_optional_grok_summary_reflect_grok_false_skips_both_paths(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = "http://localhost:11434/v1"
+        with patch("intelligence.llm_client.ask_llm") as mock_ask:
+            with patch("grok_agent.ask_grok") as mock_grok:
+                out = _optional_grok_summary(self._specs(), {"reflect_grok": False})
+        self.assertIsNone(out)
+        mock_ask.assert_not_called()
+        mock_grok.assert_not_called()
+
+    def test_optional_grok_summary_empty_specs_skips_both_paths(self):
+        os.environ["DCA_REFLECT_LLM_BASE_URL"] = "http://localhost:11434/v1"
+        with patch("intelligence.llm_client.ask_llm") as mock_ask:
+            with patch("grok_agent.ask_grok") as mock_grok:
+                out = _optional_grok_summary([], {"reflect_grok": True})
+        self.assertIsNone(out)
+        mock_ask.assert_not_called()
+        mock_grok.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ Writes Lessons only (memory_lessons). Never touches ledger / never changes polic
 from __future__ import annotations
 
 import hashlib
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -273,6 +274,30 @@ def _optional_grok_summary(specs: list[dict[str, Any]], cfg: dict) -> str | None
         return None
     if not specs:
         return None
+    local_base = (os.environ.get("DCA_REFLECT_LLM_BASE_URL") or "").strip()
+    if local_base:
+        try:
+            from intelligence.llm_client import ask_llm
+
+            blob = "\n".join(f"- {s['text']}" for s in specs[:12])
+            prompt = (
+                "Fasse die folgenden DCA-Policy-Lessons in max 5 deutschen Stichpunkten zusammen. "
+                "Keine Order-Empfehlung, nur Erkenntnisse:\n"
+                f"{blob}"
+            )
+            local_model = (os.environ.get("DCA_REFLECT_LLM_MODEL") or "").strip() or None
+            local_key = (os.environ.get("DCA_REFLECT_LLM_API_KEY") or "").strip() or None
+            out = ask_llm(
+                prompt,
+                temperature=0.2,
+                model=local_model,
+                base_url=local_base,
+                api_key=local_key,
+            )
+            text = str(out or "").strip()
+            return text[:1500] if text and not text.startswith("API-Fehler") else None
+        except Exception as e:
+            log(f"dca reflect local llm skipped: {e}", "DEBUG")
     try:
         from intelligence.llm_client import grok_agent  # type: ignore
     except Exception:
