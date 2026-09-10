@@ -152,6 +152,107 @@ class TestReloadRegistry(unittest.TestCase):
             self.assertEqual(auto.get("reason"), "new_deploy")
 
 
+class TestReloadListsUsesRunningBot(unittest.TestCase):
+    """#339: reload_lists must not `import aria_bot` (re-executes module top-level)."""
+
+    def test_reload_lists_reads_x_analyzer_from_main_not_aria_bot_import(self):
+        import builtins
+        import inspect
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from services import reload_registry as rr
+
+        src = inspect.getsource(rr.reload_lists)
+        self.assertNotIn("import aria_bot", src)
+
+        analyzer = MagicMock()
+        stub_main = SimpleNamespace(x_analyzer=analyzer, analyzer=analyzer)
+        imported: list[str] = []
+        real_import = builtins.__import__
+
+        def spy_import(name, globals=None, locals=None, fromlist=(), level=0):
+            imported.append(name)
+            if name == "aria_bot":
+                raise AssertionError("reload_lists must not import aria_bot (#339)")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch.dict(sys.modules, {"__main__": stub_main}), patch(
+            "builtins.__import__", side_effect=spy_import
+        ), patch(
+            "data_manager.load_watchlist", return_value=[{"symbol": "BTC/USDT"}]
+        ), patch(
+            "data_manager.load_effective_watchlist",
+            return_value=[{"symbol": "BTC/USDT"}],
+        ), patch(
+            "data_manager.load_x_accounts", return_value=["@foo"]
+        ), patch(
+            "storage.mongo_client.log_ledger_startup"
+        ) as ledger_log, patch(
+            "notifications.telegram_commands.command_menu.register_bot_commands"
+        ) as menu:
+            result = rr.reload_lists()
+
+        self.assertTrue(result.ok)
+        self.assertIsInstance(result, rr.ScopeResult)
+        self.assertEqual(result.scope, "lists")
+        self.assertEqual(result.meta.get("x_analyzer"), "reloaded")
+        analyzer._reload_accounts.assert_called_once()
+        self.assertNotIn("aria_bot", imported)
+        ledger_log.assert_not_called()
+        menu.assert_not_called()
+
+    def test_reload_lists_sets_accounts_when_no_reload_method(self):
+        import sys
+        from types import SimpleNamespace
+
+        from services import reload_registry as rr
+
+        class Analyzer:
+            def __init__(self):
+                self.accounts = []
+
+        analyzer = Analyzer()
+        stub_main = SimpleNamespace(analyzer=analyzer)
+        with patch.dict(sys.modules, {"__main__": stub_main}), patch(
+            "data_manager.load_watchlist", return_value=[]
+        ), patch(
+            "data_manager.load_effective_watchlist", return_value=[]
+        ), patch(
+            "data_manager.load_x_accounts", return_value=["@bar"]
+        ):
+            result = rr.reload_lists()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.meta.get("x_analyzer"), "accounts_set")
+        self.assertEqual(analyzer.accounts, ["@bar"])
+
+    def test_reload_lists_skips_when_analyzer_lookup_raises(self):
+        import sys
+
+        from services import reload_registry as rr
+
+        class BoomMain:
+            @property
+            def x_analyzer(self):
+                raise RuntimeError("no analyzer")
+
+            analyzer = None
+
+        with patch.dict(sys.modules, {"__main__": BoomMain()}), patch(
+            "data_manager.load_watchlist", return_value=[]
+        ), patch(
+            "data_manager.load_effective_watchlist", return_value=[]
+        ), patch(
+            "data_manager.load_x_accounts", return_value=[]
+        ):
+            result = rr.reload_lists()
+
+        self.assertTrue(result.ok)
+        self.assertTrue(str(result.meta.get("x_analyzer", "")).startswith("skip:"))
+
+
 class TestReloadCommand(unittest.TestCase):
     def test_handle_help(self):
         from notifications.telegram_commands import reload_commands

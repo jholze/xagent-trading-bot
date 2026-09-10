@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Callable
 
 from logger import log
 
@@ -13,6 +14,15 @@ _last_mode: str | None = None
 _last_stale_warn_at = 0.0
 _recovery_lock = threading.Lock()
 _recovered: set[tuple[str, str]] = set()
+# Extra on_acquired work (e.g. deferred ledger startup sync, #338).
+# ``bus.writer_lease.ensure_writer_lease`` stores a single callback; this list
+# is the only supported way to compose additional work with exchange recovery.
+_on_lease_acquired_extras: list[Callable[[], None]] = []
+_extras_lock = threading.Lock()
+# Serializes extras-then-recovery so a concurrent on_acquired (price-cycle
+# thread vs lease callback) cannot mark the tenant recovered while the first
+# caller's extras (ledger rebuild) are still in flight.
+_on_acquired_run_lock = threading.Lock()
 
 
 def ensure_started(force_refresh: bool = False):
@@ -31,7 +41,7 @@ def ensure_started(force_refresh: bool = False):
 
     from bus.writer_lease import ensure_writer_lease, lease_enabled, writer_lease_held
 
-    ensure_writer_lease(on_acquired=_ensure_tenant_exchange_recovery)
+    ensure_writer_lease(on_acquired=_on_writer_lease_acquired)
 
     with _lock:
         if _started and not force_refresh and mode == _last_mode:
@@ -70,7 +80,7 @@ def ensure_started(force_refresh: bool = False):
                 log("Architecture runtime: async notification worker active", "INFO")
 
     if not lease_enabled() or writer_lease_held():
-        _ensure_tenant_exchange_recovery()
+        _on_writer_lease_acquired()
 
 
 def ensure_stopped():
@@ -101,6 +111,50 @@ def reset_recovery_state_for_tests() -> None:
     """Drop the per-tenant recovery set (unit tests only)."""
     with _recovery_lock:
         _recovered.clear()
+
+
+def register_on_lease_acquired(cb: Callable[[], None]) -> None:
+    """Compose extra work into the single writer-lease on_acquired callback.
+
+    ``ensure_writer_lease(on_acquired=...)`` overwrites a module-global slot;
+    callers must register here rather than calling ``ensure_writer_lease`` with
+    a second callback. Extras run to completion before exchange recovery
+    (late callers wait on ``_on_acquired_run_lock``; they do not skip an
+    in-flight extra and recover early). Each extra's exception is logged and
+    does not block recovery. ``RecoveryFailed`` from recovery still
+    propagates.
+    """
+    if cb is None:
+        return
+    with _extras_lock:
+        if cb not in _on_lease_acquired_extras:
+            _on_lease_acquired_extras.append(cb)
+
+
+def reset_on_lease_acquired_extras_for_tests() -> None:
+    """Drop composed on_acquired extras (unit tests only)."""
+    with _extras_lock:
+        _on_lease_acquired_extras.clear()
+
+
+def _on_writer_lease_acquired() -> None:
+    """The one on_acquired callback: extras (ledger sync) then exchange recovery.
+
+    Cycle-1 / deploy-overlap: ``require_lease_for_order`` unblocks on
+    ``tenant_recovery_completed()``. Holding ``_on_acquired_run_lock`` across
+    extras then recovery keeps that flag from flipping while a ledger
+    rebuild started by another on_acquired (or by the import-time path,
+    which registers the same extra) is still running.
+    """
+    with _on_acquired_run_lock:
+        with _extras_lock:
+            extras = list(_on_lease_acquired_extras)
+        for cb in extras:
+            try:
+                cb()
+            except Exception as e:
+                log(f"writer lease on_acquired extra failed: {e}", "WARNING")
+        _ensure_tenant_exchange_recovery()
 
 
 def reset_architecture_runtime_for_tests() -> None:
@@ -151,6 +205,7 @@ def reset_architecture_runtime_for_tests() -> None:
     with _lock:
         _started = False
         _last_mode = None
+    reset_on_lease_acquired_extras_for_tests()
     reset_recovery_state_for_tests()
 
 

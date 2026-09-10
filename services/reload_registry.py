@@ -329,6 +329,16 @@ def reload_config_scope() -> ScopeResult:
         return ScopeResult("config", False, str(e), meta)
 
 
+def _x_analyzer_from_running_bot():
+    """XAnalyzer on the live bot module (aria_bot.py runs as ``__main__``)."""
+    import sys
+
+    mod = sys.modules.get("__main__")
+    if mod is None:
+        return None
+    return getattr(mod, "x_analyzer", None) or getattr(mod, "analyzer", None)
+
+
 def reload_lists() -> ScopeResult:
     """A3 — re-read watchlist + X accounts; refresh optional consumers."""
     meta: dict[str, Any] = {}
@@ -342,11 +352,9 @@ def reload_lists() -> ScopeResult:
         meta["watchlist_effective"] = len(effective)
         meta["x_accounts"] = len(accounts)
 
-        # Best-effort: refresh XAnalyzer singleton accounts if present
+        # Best-effort: refresh XAnalyzer on the running bot process (#339).
         try:
-            import aria_bot
-
-            analyzer = getattr(aria_bot, "x_analyzer", None) or getattr(aria_bot, "analyzer", None)
+            analyzer = _x_analyzer_from_running_bot()
             if analyzer is not None and hasattr(analyzer, "_reload_accounts"):
                 analyzer._reload_accounts()
                 meta["x_analyzer"] = "reloaded"

@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 import json
@@ -13,6 +14,38 @@ import signal
 from pathlib import Path
 
 from logger import log
+
+# Set on first execution of this file. A later `import aria_bot` while the
+# process is already running as this file (__main__) must not re-run startup
+# side effects (#339).
+_ARIA_BOT_BOOTSTRAPPED = True
+
+
+def _is_duplicate_aria_bot_import() -> bool:
+    """True when this file is re-imported under another name while already running."""
+    if __name__ == "__main__":
+        return False
+    main = sys.modules.get("__main__")
+    if main is None or main is sys.modules.get(__name__):
+        return False
+    if getattr(main, "_ARIA_BOT_BOOTSTRAPPED", False):
+        return True
+    main_file = getattr(main, "__file__", None)
+    try:
+        if main_file and os.path.realpath(main_file) == os.path.realpath(__file__):
+            return True
+    except OSError:
+        pass
+    return False
+
+
+_DUPLICATE_ARIA_BOT_IMPORT = _is_duplicate_aria_bot_import()
+if _DUPLICATE_ARIA_BOT_IMPORT:
+    log(
+        "aria_bot imported a second time as %r while the bot process is already "
+        "running; skipping side-effecting startup" % (__name__,),
+        "WARNING",
+    )
 
 _ROOT = Path(__file__).resolve().parent
 load_dotenv(_ROOT / ".env")
@@ -73,33 +106,34 @@ with open("config.json", encoding="utf-8") as f:
 trading_mode = config.get("trading_mode", "paper" if config.get("virtual_trading", True) else "off")
 print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DEMO_MODE") == "1" else ""))
 
-try:
-    from storage.mongo_client import assert_safe_demo_mongo_db, log_ledger_startup
+if not _DUPLICATE_ARIA_BOT_IMPORT:
+    try:
+        from storage.mongo_client import assert_safe_demo_mongo_db, log_ledger_startup
 
-    assert_safe_demo_mongo_db()
-    log_ledger_startup()
-    from core.ledger_repair import maybe_repair_tenant_ledgers_once
+        assert_safe_demo_mongo_db()
+        log_ledger_startup()
+        from core.ledger_repair import maybe_repair_tenant_ledgers_once
 
-    maybe_repair_tenant_ledgers_once()
-except SystemExit:
-    raise
-except Exception as e:
-    log(f"Ledger startup guard failed: {e}", "WARNING")
+        maybe_repair_tenant_ledgers_once()
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Ledger startup guard failed: {e}", "WARNING")
 
-try:
-    from data.cmc_capabilities import log_cmc_boot_status
+    try:
+        from data.cmc_capabilities import log_cmc_boot_status
 
-    log_cmc_boot_status()
-except Exception as e:
-    log(f"CMC capability probe on startup failed: {e}", "WARNING")
+        log_cmc_boot_status()
+    except Exception as e:
+        log(f"CMC capability probe on startup failed: {e}", "WARNING")
 
-# R15: soak boot fingerprint (mode, volume, commit) → logs/cycle_summary.jsonl
-try:
-    from services.watchlist_quality.soak_log import log_boot_fingerprint
+    # R15: soak boot fingerprint (mode, volume, commit) → logs/cycle_summary.jsonl
+    try:
+        from services.watchlist_quality.soak_log import log_boot_fingerprint
 
-    log_boot_fingerprint()
-except Exception as e:
-    log(f"WQE boot fingerprint failed: {e}", "DEBUG")
+        log_boot_fingerprint()
+    except Exception as e:
+        log(f"WQE boot fingerprint failed: {e}", "DEBUG")
 
 
 def _flush_positions_on_exit(*_args) -> None:
@@ -127,8 +161,9 @@ def _stop_architecture_on_exit(*_args) -> None:
         log(f"Architecture stop on exit failed: {e}", "WARNING")
 
 
-atexit.register(_flush_positions_on_exit)
-atexit.register(_stop_architecture_on_exit)
+if not _DUPLICATE_ARIA_BOT_IMPORT:
+    atexit.register(_flush_positions_on_exit)
+    atexit.register(_stop_architecture_on_exit)
 
 
 def _handle_shutdown(_signum, _frame) -> None:
@@ -137,32 +172,93 @@ def _handle_shutdown(_signum, _frame) -> None:
     raise SystemExit(0)
 
 
-for _sig in (signal.SIGTERM, signal.SIGINT):
+if not _DUPLICATE_ARIA_BOT_IMPORT:
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _handle_shutdown)
+        except Exception:
+            pass
+
+
+_ledger_startup_sync_done = False
+_ledger_startup_sync_lock = threading.Lock()
+
+
+def reset_ledger_startup_sync_for_tests() -> None:
+    """Drop the once-guard so unit tests can re-exercise scheduling (#338)."""
+    global _ledger_startup_sync_done
+    with _ledger_startup_sync_lock:
+        _ledger_startup_sync_done = False
+
+
+def _run_ledger_startup_sync() -> None:
+    """Rebuild positions, reconcile demo trade history, flush. Runs at most once.
+
+    The lock is held across the whole body so a late caller (price-cycle
+    ``ensure_started``, writer-lease ``on_acquired``) waits for an in-flight
+    rebuild instead of skipping and then running exchange recovery against a
+    half-rebuilt ledger. ``_ledger_startup_sync_done`` is set only after a
+    successful run so a failed attempt can be retried by a later caller.
+    """
+    global _ledger_startup_sync_done
+    with _ledger_startup_sync_lock:
+        if _ledger_startup_sync_done:
+            return
+        try:
+            from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+            from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
+            from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
+            from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
+            from strategies.positions import flush_positions
+
+            _ledger_scope = resolve_ledger_scope()
+            rebuild_positions_from_orders(_ledger_scope, tenant_id=DEFAULT_TENANT)
+            if multi_tenant_enabled():
+                for _startup_tenant in iter_price_cycle_tenants():
+                    if _startup_tenant == DEFAULT_TENANT:
+                        continue
+                    with tenant_cycle_context(_startup_tenant):
+                        rebuild_positions_from_orders(_ledger_scope)
+            sync_positions_on_startup()
+            reconcile_demo_trade_history_on_startup()
+            flush_positions(scope=resolve_ledger_scope(), force=True)
+            _ledger_startup_sync_done = True
+        except Exception as e:
+            log(f"Ledger position sync on startup failed: {e}", "WARNING")
+
+
+def _schedule_ledger_startup_sync() -> None:
+    """Run ledger startup sync now, or defer until the writer lease is held (#338).
+
+    ``ensure_writer_lease`` keeps a single on_acquired slot; this always
+    registers via ``architecture_runtime.register_on_lease_acquired`` so a
+    later ``ensure_started`` / lease callback waits on the same once-guard
+    instead of racing recovery. If the lease is already held (or disabled)
+    the body also runs immediately.
+    """
     try:
-        signal.signal(_sig, _handle_shutdown)
-    except Exception:
-        pass
+        from services.architecture_runtime import register_on_lease_acquired
 
-try:
-    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
-    from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
-    from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
-    from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
-    from strategies.positions import flush_positions
+        register_on_lease_acquired(_run_ledger_startup_sync)
+    except Exception as e:
+        log(f"Ledger startup sync scheduling failed: {e}", "WARNING")
+    try:
+        from bus.writer_lease import lease_enabled, writer_lease_held
 
-    _ledger_scope = resolve_ledger_scope()
-    rebuild_positions_from_orders(_ledger_scope, tenant_id=DEFAULT_TENANT)
-    if multi_tenant_enabled():
-        for _startup_tenant in iter_price_cycle_tenants():
-            if _startup_tenant == DEFAULT_TENANT:
-                continue
-            with tenant_cycle_context(_startup_tenant):
-                rebuild_positions_from_orders(_ledger_scope)
-    sync_positions_on_startup()
-    reconcile_demo_trade_history_on_startup()
-    flush_positions(scope=resolve_ledger_scope(), force=True)
-except Exception as e:
-    log(f"Ledger position sync on startup failed: {e}", "WARNING")
+        if not lease_enabled() or writer_lease_held():
+            _run_ledger_startup_sync()
+            return
+        log(
+            "ledger startup sync deferred: writer lease not held "
+            "(runs once when this process acquires it)",
+            "INFO",
+        )
+    except Exception as e:
+        log(f"Ledger position sync on startup failed: {e}", "WARNING")
+
+
+if not _DUPLICATE_ARIA_BOT_IMPORT:
+    _schedule_ledger_startup_sync()
 
 # Flask für Webhook
 app = Flask(__name__)
