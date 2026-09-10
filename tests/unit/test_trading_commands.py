@@ -26,6 +26,10 @@ class TestTradingCommands(unittest.TestCase):
             mock_confirm.assert_called_once()
 
     def test_sell_list_chunks_long_message(self):
+        # (#344 follow-up) The last chunk of a long /sell list now carries the
+        # per-position inline keyboard via send_telegram_buttons instead of
+        # send_telegram_message -- both sinks must be counted and both must
+        # respect Telegram's 4096-char hard limit.
         active = [
             {
                 "symbol": f"COIN{i}/USDT",
@@ -38,11 +42,17 @@ class TestTradingCommands(unittest.TestCase):
         prices = {f"COIN{i}/USDT": 0.65 for i in range(50)}
         with patch("notifications.telegram_commands.trading_commands.list_active_positions", return_value=active), \
              patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value=prices), \
-             patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send:
+             patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send, \
+             patch("notifications.telegram_commands.trading_commands.send_telegram_buttons") as mock_btn:
             self.assertTrue(trading_commands.handle("/sell"))
-            self.assertGreater(mock_send.call_count, 1)
-            for call in mock_send.call_args_list:
-                self.assertLessEqual(len(call[0][0]), 4096)
+            # Exactly one message carries the position-picker keyboard, and it's
+            # the last one sent -- never every chunk, never the first.
+            mock_btn.assert_called_once()
+            self.assertGreater(mock_send.call_count + mock_btn.call_count, 1)
+            sent_texts = [call[0][0] for call in mock_send.call_args_list]
+            sent_texts += [call[0][0] for call in mock_btn.call_args_list]
+            for text in sent_texts:
+                self.assertLessEqual(len(text), 4096)
 
     def test_sell_by_symbol_requests_confirmation(self):
         active = [

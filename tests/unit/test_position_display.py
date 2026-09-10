@@ -229,6 +229,14 @@ class TestPositionDisplay(unittest.TestCase):
         self.assertIn("Danach nur noch", msg)
         self.assertIn("1.", msg)
 
+    def test_sell_list_renders_compact_lines(self):
+        active = [{"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "sold_percent": 0}]
+        msg = format_sell_list_message(active, {"ARIA/USDT": 0.05})
+        self.assertIn("<b>1.</b>", msg)
+        self.assertIn("<code>+25.0%</code>", msg)
+        self.assertNotIn("└ <code>", msg)
+        self.assertIn("RAVE 30", msg)
+
     def test_sell_list_skips_shorts(self):
         active = [
             {"symbol": "ARIA/USDT", "amount": 100, "average_entry": 0.04, "side": "long"},

@@ -7,10 +7,12 @@ from services.trading_service import TradingService
 from notifications.telegram_commands.position_display import (
     chunk_positions_message,
     format_sell_list_message,
+    format_sell_pick_button_label,
     long_lots_for_sell,
     position_symbol,
     resolve_position_by_display_index,
     resolve_position_by_symbol,
+    sort_positions_by_value,
 )
 from notifications.telegram_commands.manual_order_flow import (
     request_buy_confirmation,
@@ -38,6 +40,7 @@ from telegram_notifier import answer_callback_query, send_telegram_buttons, send
 _trading = TradingService()
 
 SELL_PCT_CALLBACK_PREFIX = "sellpct:"
+SELL_POS_CALLBACK_PREFIX = "sellpos:"
 _SELL_PCT_PRESETS = (25, 50, 75, 100)
 
 
@@ -48,6 +51,78 @@ def _sell_menu_text(field: str, **kwargs) -> str:
     for key, value in kwargs.items():
         template = template.replace(f"{{{key}}}", str(value))
     return template
+
+
+def _sell_position_button_rows(longs: list, prices: dict) -> list:
+    """One inline button per long, same 1-based order as the numbered compact list."""
+    rows = []
+    for index, p in enumerate(sort_positions_by_value(longs, prices), start=1):
+        px = float(prices.get(position_symbol(p), 0) or 0)
+        rows.append([{
+            "text": format_sell_pick_button_label(p, px),
+            "callback_data": f"{SELL_POS_CALLBACK_PREFIX}{index}",
+        }])
+    return rows
+
+
+def _send_chunked_sell_list(chunks: list[str], buttons: list) -> None:
+    """Attach the position keyboard only to the last chunk (never to earlier pages)."""
+    if not chunks:
+        return
+    last = len(chunks) - 1
+    for i, chunk in enumerate(chunks):
+        if i == last and buttons:
+            send_telegram_buttons(chunk, buttons)
+        else:
+            send_telegram_message(chunk)
+
+
+def _continue_sell_after_position(p: dict, prices: dict, arg: str, pct_token: str | None = None) -> bool:
+    """Shared follow-up after a position is resolved (typed number/symbol or inline button)."""
+    sym = position_symbol(p)
+    tf = p.get("timeframe") or "4h"
+    price = prices.get(sym) or get_prices(sym)[0]
+    if not price or price <= 0:
+        send_telegram_message(t("price_fetch_failed", sym=sym))
+        return True
+
+    pos = get_position(sym, tf)
+    total_amount = float(pos.get("amount", 0))
+    if total_amount <= 0:
+        send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
+        return True
+
+    if pct_token is None:
+        ticker = sym.split("/")[0]
+        pos_token = arg if arg.replace(".", "").isdigit() else arg.upper()
+        prompt_sell_percentage(ticker)
+        activate_command(
+            "sell",
+            state="sell_awaiting_pct",
+            position=pos_token,
+            label=ticker,
+        )
+        return True
+
+    raw_pct = safe_float(pct_token)
+    if raw_pct is None or raw_pct <= 0 or raw_pct > 100:
+        send_telegram_message(t("invalid_sell_pct"))
+        return True
+    pct = raw_pct / 100
+    amount_sold = total_amount * pct
+    if amount_sold <= 0:
+        send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
+        return True
+
+    request_sell_confirmation(
+        _trading,
+        symbol=sym,
+        timeframe=tf,
+        price=price,
+        amount=amount_sold,
+        pct=pct,
+    )
+    return True
 
 
 def prompt_sell_percentage(position_label: str, *, invalid: bool = False) -> None:
@@ -161,8 +236,11 @@ def handle(text: str) -> bool:
             symbols = [position_symbol(p) for p in all_lots]
             prices = get_prices_batch(symbols)
             activate_command("sell", state="sell_awaiting_position")
-            for chunk in chunk_positions_message(format_sell_list_message(all_lots, prices)):
-                send_telegram_message(chunk)
+            chunks = chunk_positions_message(
+                format_sell_list_message(all_lots, prices),
+                annotate_pages=False,
+            )
+            _send_chunked_sell_list(chunks, _sell_position_button_rows(active, prices))
             return True
 
         if not all_lots:
@@ -200,50 +278,9 @@ def handle(text: str) -> bool:
             send_telegram_message(t("no_open_position", arg=arg.upper()))
             return True
 
-        sym = position_symbol(p)
-        tf = p.get("timeframe") or "4h"
-        price = prices.get(sym) or get_prices(sym)[0]
-        if not price or price <= 0:
-            send_telegram_message(t("price_fetch_failed", sym=sym))
-            return True
-
-        pos = get_position(sym, tf)
-        total_amount = float(pos.get("amount", 0))
-        if total_amount <= 0:
-            send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
-            return True
-
         if not has_pct:
-            ticker = sym.split("/")[0]
-            pos_token = arg if arg.replace(".", "").isdigit() else arg.upper()
-            prompt_sell_percentage(ticker)
-            activate_command(
-                "sell",
-                state="sell_awaiting_pct",
-                position=pos_token,
-                label=ticker,
-            )
-            return True
-
-        raw_pct = safe_float(parts[2])
-        if raw_pct is None or raw_pct <= 0 or raw_pct > 100:
-            send_telegram_message(t("invalid_sell_pct"))
-            return True
-        pct = raw_pct / 100
-        amount_sold = total_amount * pct
-        if amount_sold <= 0:
-            send_telegram_message(t("no_sellable_amount", sym=sym, tf=tf))
-            return True
-
-        request_sell_confirmation(
-            _trading,
-            symbol=sym,
-            timeframe=tf,
-            price=price,
-            amount=amount_sold,
-            pct=pct,
-        )
-        return True
+            return _continue_sell_after_position(p, prices, arg)
+        return _continue_sell_after_position(p, prices, arg, pct_token=parts[2])
 
     return False
 
@@ -282,8 +319,51 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
     return dispatch_command(f"/sell {position} {canonical}")
 
 
+def _handle_sell_pos_callback(callback_query: dict) -> bool:
+    from logger import log
+
+    answer_callback_query(callback_query.get("id"))
+    data = str(callback_query.get("data") or "")
+    raw = data.split(":", 1)[1] if ":" in data else ""
+
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        log("sellpos callback missing chat id", "WARNING")
+        return True
+
+    set_chat_id(chat_id)
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if (
+        not entry
+        or entry.get("command") != "sell"
+        or str(meta.get("state") or "") != "sell_awaiting_position"
+    ):
+        send_telegram_message(_sell_menu_text("pct_expired"))
+        return True
+
+    idx = safe_int(raw)
+    if idx is None or idx < 1:
+        send_telegram_message(_sell_menu_text("pct_expired"))
+        return True
+
+    all_lots = list_active_positions()
+    active = long_lots_for_sell(all_lots)
+    symbols = [position_symbol(p) for p in all_lots]
+    prices = get_prices_batch(symbols)
+    p = resolve_position_by_display_index(active, prices, idx - 1)
+    if not p:
+        send_telegram_message(t("no_open_position", arg=str(idx)))
+        return True
+
+    return _continue_sell_after_position(p, prices, str(idx))
+
+
 def handle_callback(callback_query: dict) -> bool:
     data = str(callback_query.get("data") or "")
+    if data.startswith(SELL_POS_CALLBACK_PREFIX):
+        return _handle_sell_pos_callback(callback_query)
     if data.startswith(SELL_PCT_CALLBACK_PREFIX):
         return _handle_sell_pct_callback(callback_query)
 

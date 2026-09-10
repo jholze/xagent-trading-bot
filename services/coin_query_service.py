@@ -55,7 +55,10 @@ def webhook_token_ok(provided: str | None, config_raw: dict | None = None) -> bo
     cfg_token = str(arch.get("coin_query_webhook_token") or "").strip()
     if cfg_token:
         return (provided or "").strip() == cfg_token
-    allow_no_token = bool(arch.get("coin_query_webhook_allow_no_token", True))
+    # Fail closed: mirrors the #336 fix to signal_webhook_token_ok. The
+    # escape hatch (coin_query_webhook_allow_no_token: true) still exists
+    # for anyone who explicitly opts into it.
+    allow_no_token = bool(arch.get("coin_query_webhook_allow_no_token", False))
     if allow_no_token:
         from logger import log
 
