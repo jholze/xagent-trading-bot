@@ -102,6 +102,19 @@ cycle age), a ledger diff against the pre-merge snapshot, and a log scan for tra
 The moment any of that comes back dirty, open a revert PR immediately — that's not a request for permission, it's
 the same rollback path used for #322/#340/#341. Report the outcome to jholze honestly either way, clean or not.
 
+5. **Close the ticket in the same step — never a separate pass.** The moment a merge is verified clean post-deploy,
+   close every GitHub issue that PR fixes, with a comment naming the merge commit and PR. If the fix or finding is
+   real and substantive but has no existing issue yet — a vulnerability found while reviewing someone else's PR, a
+   UI change built directly at jholze's request in chat, anything a security- or money-path audit would file a
+   ticket for — file one now (title, body with Finding / Why it matters / What was done / Verification, correct
+   labels), then close it the same way. Add closed issues to the "Trading Bot Kanban" project board if they aren't
+   on it already: the board auto-sets Status=Done when an issue already on the board gets closed, but closing
+   BEFORE adding to the board does not backfill Done — add to the project first, or close then verify (and fix) the
+   Status field. A docs-only PR with no behavior change is the one exception: no ticket needed. This is jholze's
+   explicit standing rule ("Merge = Close = Done in the same step") — found violated 2026-09-10 when four merged,
+   deployed PRs in one sitting left two tickets sitting at Backlog and two more with no ticket at all until he
+   asked "tickets ordentlich gepflegt?" — don't wait to be asked again.
+
 This authority is Claude's alone in *this* workflow (Claude Code session + `grok-build`) — it does not extend to the
 separate Omnigent multi-agent team (`agents/lead/` and its domain workers), which always stops at "PR opened, human
 merges" by its own, unrelated design.
