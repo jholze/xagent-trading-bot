@@ -55,7 +55,8 @@ def webhook_token_ok(provided: str | None, config_raw: dict | None = None) -> bo
     cfg_token = str(arch.get("coin_query_webhook_token") or "").strip()
     if cfg_token:
         return (provided or "").strip() == cfg_token
-    return True
+    # Fail closed: price webhook must not be public without a token.
+    return False
 
 
 def query_coin_prices(
