@@ -81,6 +81,36 @@ from any session, worktree, or Grok run:
 - **Integration target is `rebuild/*`.** Topic branches merge there; the reviewed integration branch goes to `staging`
   as one PR when the phase is complete, at a moment the operator chooses.
 
+### Merging to `staging` — Claude's standing authority (decided 2026-09-09)
+
+For a PR that doesn't touch the currently-measured spot execution/cost/risk-decision path (security fixes,
+startup-order/config changes, UI-only changes like a Telegram command's presentation, additive fields, anything
+scoped to a currently-inactive code path — judged fresh per PR, never assumed), **Claude merges it to `staging`
+itself once ready.** jholze does not want to be asked per PR; this is a standing policy, not a one-off, and holds
+regardless of any active shadow/observation period. When genuinely unsure whether a PR touches that path (e.g. it
+shares a file with live BUY/SELL execution), check more carefully before merging rather than defaulting either way.
+
+The bar before clicking merge, every time, no exceptions:
+
+1. Reviewer PASS, or Claude's own line-by-line diff review if the task had no separate reviewer.
+2. Full unit suite green **both** `--parallel` and sequential, a unique `PYTEST_DB_SUFFIX`, `data/` untouched.
+3. CI green, no unresolved conflicts.
+4. A ledger/health reference snapshot captured immediately before merging.
+
+After the Railway redeploy: a full post-deploy check — deployment status, `/health` (build commit, writer lease,
+cycle age), a ledger diff against the pre-merge snapshot, and a log scan for tracebacks / `LedgerWriteFailed` / etc.
+The moment any of that comes back dirty, open a revert PR immediately — that's not a request for permission, it's
+the same rollback path used for #322/#340/#341. Report the outcome to jholze honestly either way, clean or not.
+
+This authority is Claude's alone in *this* workflow (Claude Code session + `grok-build`) — it does not extend to the
+separate Omnigent multi-agent team (`agents/lead/` and its domain workers), which always stops at "PR opened, human
+merges" by its own, unrelated design.
+
+Known friction: Claude Code's own auto-mode permission classifier may still block `gh pr merge` (and, notably, also
+blocks Claude from adding a settings.json rule to pre-authorize it — by design, an agent can't grant itself a bypass
+even under in-conversation authorization). If that happens, jholze adds the allow rule himself; Claude cannot do this
+step.
+
 ### How to delegate a task
 
 1. In Claude Code, describe the task normally — plan it out, confirm scope.
