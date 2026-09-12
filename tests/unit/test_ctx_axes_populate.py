@@ -12,7 +12,7 @@ from core.config import BotConfig
 from core.models import SignalAnalysis, TradeOrder, TradeResult
 from risk.risk_manager import RiskManager
 from services.signal_orchestrator import SignalOrchestrator
-from strategies.ctx_axes import compute_volume_rel, read_oracle_state
+from strategies.ctx_axes import compute_volume_rel, compute_volume_rel_window, read_oracle_state
 from strategies.positions import update_position
 
 _CTX = {
@@ -88,6 +88,56 @@ def test_compute_volume_rel_1h_vs_4h_bars_per_day():
 def test_compute_volume_rel_unknown_timeframe_none():
     df = _vol_frame(180, 6, 20.0, 10.0)
     assert compute_volume_rel(df, "5m") is None
+
+
+def test_compute_volume_rel_2h_now_supported():
+    # 2h was missing from ctx_axes._BARS_PER_DAY; _24H_BARS has 12 bars/day.
+    # 7d = 84 bars. last 12=20, rest=10 → 20 / ((72*10 + 12*20)/84) = 1.75
+    df = _vol_frame(84, 12, 20.0, 10.0)
+    assert compute_volume_rel(df, "2h") == 1.75
+    assert compute_volume_rel(df, "5m") is None
+
+
+def test_compute_volume_rel_window_4h_30d_reports_30():
+    df = _vol_frame(180, 6, 20.0, 10.0)
+    rel, days = compute_volume_rel_window(df, "4h")
+    assert rel == 1.9355
+    assert days == 30.0
+
+
+def test_compute_volume_rel_window_1h_300_bars_is_12_5d():
+    # Live 300-bar 1h frame: 300/24 = 12.5d whole-frame fallback (< 30d).
+    df = _vol_frame(300, 24, 20.0, 10.0)
+    rel, days = compute_volume_rel_window(df, "1h")
+    assert rel is not None
+    assert days == 12.5
+
+
+def test_compute_volume_rel_window_4h_42_bars_is_7d():
+    df = _vol_frame(42, 6, 20.0, 10.0)
+    rel, days = compute_volume_rel_window(df, "4h")
+    assert rel == 1.75
+    assert days == 7.0
+
+
+def test_compute_volume_rel_window_under_7_days_is_none_none():
+    df = _vol_frame(41, 6, 20.0, 10.0)
+    assert compute_volume_rel_window(df, "4h") == (None, None)
+
+
+def test_compute_volume_rel_matches_window_tuple_first_element():
+    frames = [
+        (_vol_frame(180, 6, 20.0, 10.0), "4h"),
+        (_vol_frame(720, 24, 20.0, 10.0), "1h"),
+        (_vol_frame(42, 6, 20.0, 10.0), "4h"),
+        (_vol_frame(41, 6, 20.0, 10.0), "4h"),
+        (_vol_frame(300, 24, 20.0, 10.0), "1h"),
+        (_vol_frame(84, 12, 20.0, 10.0), "2h"),
+        (pd.DataFrame(), "4h"),
+    ]
+    for df, tf in frames:
+        assert compute_volume_rel(df, tf) == compute_volume_rel_window(df, tf)[0]
+    assert compute_volume_rel(None, "4h") == compute_volume_rel_window(None, "4h")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +295,21 @@ def test_risk_evaluate_approved_buy_copies_ctx_fields():
     assert decision.order.ctx_volume_rel == pytest.approx(1.37)
 
 
+def test_risk_evaluate_approved_buy_copies_ctx_volume_window_days():
+    rm = RiskManager(_risk_cfg())
+    order = _buy_with_ctx(ctx_volume_window_days=12.5)
+    with _size_env(rm):
+        decision = rm.evaluate(
+            order, "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+        )
+    assert decision.approved, decision.message
+    assert decision.order is not order
+    assert decision.order.ctx_oracle_state == "RISK_ON"
+    assert decision.order.ctx_coin_regime == "RANGING"
+    assert decision.order.ctx_volume_rel == pytest.approx(1.37)
+    assert decision.order.ctx_volume_window_days == pytest.approx(12.5)
+
+
 def test_fill_sell_amount_from_open_lot_copies_ctx_fields():
     rm = RiskManager(_risk_cfg())
     order = TradeOrder(
@@ -321,6 +386,45 @@ def test_cover_evaluate_copies_ctx_fields():
     assert dec.order.ctx_oracle_state == "CRASH"
     assert dec.order.ctx_coin_regime == "TRANSITION"
     assert dec.order.ctx_volume_rel == pytest.approx(0.11)
+
+
+def test_short_evaluate_copies_ctx_fields():
+    rm = RiskManager(_risk_cfg())
+    enabled = {
+        "shorts": {
+            "enabled": True,
+            "allow_live": False,
+            "leverage_default": 2,
+            "leverage_cap": 5,
+            "max_open": 6,
+            "max_margin_pct": 80,
+            "volatile": {"market_cap_min_usd": 0},
+        }
+    }
+    order = TradeOrder(
+        type="SHORT",
+        symbol="SHCTX/USDT",
+        price=1.0,
+        amount=0,
+        usdt_amount=100,
+        ctx_oracle_state="RISK_ON",
+        ctx_coin_regime="RANGING",
+        ctx_volume_rel=1.37,
+        ctx_volume_window_days=12.5,
+    )
+    with patch.object(rm.config, "_raw", enabled), patch(
+        "core.simulated_trading.is_real_live_trading", return_value=False
+    ), patch.object(rm, "_available_usdt", return_value=10_000), patch.object(
+        rm, "_portfolio_equity", return_value=10_000
+    ):
+        dec = rm.evaluate(order, "4h", source="manual")
+    assert dec.approved, dec.message
+    assert dec.order is not order
+    assert dec.order.type == "SHORT"
+    assert dec.order.ctx_oracle_state == "RISK_ON"
+    assert dec.order.ctx_coin_regime == "RANGING"
+    assert dec.order.ctx_volume_rel == pytest.approx(1.37)
+    assert dec.order.ctx_volume_window_days == pytest.approx(12.5)
 
 
 # ---------------------------------------------------------------------------

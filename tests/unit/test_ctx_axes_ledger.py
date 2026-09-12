@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from core.config import BotConfig
-from core.models import RiskDecision, TradeOrder, trade_ctx_fields
+from core.models import RiskDecision, TradeOrder, ctx_float_or_none, trade_ctx_fields
 from data_manager import load_trade_history, save_trade_history
 from services.order_service import OrderService
-from services.portfolio_service import PortfolioService
+from services.portfolio_service import PortfolioService, _ctx_ledger_fields
 from strategies.positions import clear_positions_memory
 
 _CTX = {
@@ -158,3 +158,99 @@ def test_trade_order_positional_construction_ctx_defaults_none():
     assert order.ctx_volume_rel is None
     _assert_ctx(trade_ctx_fields(order), oracle=None, regime=None, volume=None)
     _assert_ctx(trade_ctx_fields(None), oracle=None, regime=None, volume=None)
+
+
+# --- #365: ctx_volume_window_days + structural float coercion (add-only) ---
+
+
+def test_ctx_float_or_none_coercion_cases():
+    assert ctx_float_or_none(None) is None
+    assert ctx_float_or_none(1.37) == pytest.approx(1.37)
+    assert ctx_float_or_none("1.5") == pytest.approx(1.5)
+    assert ctx_float_or_none("abc") is None
+    assert ctx_float_or_none(object()) is None
+    assert ctx_float_or_none(float("nan")) is None
+    assert ctx_float_or_none(float("inf")) is None
+    assert ctx_float_or_none(float("-inf")) is None
+
+
+def test_trade_ctx_fields_garbage_volume_rel_is_none_not_raise():
+    order = TradeOrder("BUY", "X/USDT", 1.0, 2.0, ctx_volume_rel="not-a-number")
+    fields = trade_ctx_fields(order)
+    assert fields["ctx_volume_rel"] is None
+    assert fields["ctx_volume_window_days"] is None
+
+
+def test_trade_ctx_fields_garbage_window_days_is_none_not_raise():
+    order = TradeOrder("BUY", "X/USDT", 1.0, 2.0, ctx_volume_window_days="not-a-number")
+    fields = trade_ctx_fields(order)
+    assert fields["ctx_volume_window_days"] is None
+
+
+def test_trade_ctx_fields_window_days_passthrough():
+    order = TradeOrder("BUY", "X/USDT", 1.0, 2.0, ctx_volume_window_days=12.5)
+    fields = trade_ctx_fields(order)
+    assert fields["ctx_volume_window_days"] == pytest.approx(12.5)
+
+
+def test_trade_ctx_fields_none_order_has_all_four_keys_none():
+    fields = trade_ctx_fields(None)
+    assert fields == {
+        "ctx_oracle_state": None,
+        "ctx_coin_regime": None,
+        "ctx_volume_rel": None,
+        "ctx_volume_window_days": None,
+    }
+
+
+def test_ctx_ledger_fields_garbage_volume_rel_is_none_not_raise():
+    fields = _ctx_ledger_fields({"ctx_volume_rel": "not-a-number"})
+    assert fields["ctx_volume_rel"] is None
+    assert "ctx_volume_window_days" in fields
+    assert fields["ctx_volume_window_days"] is None
+
+
+def test_ctx_ledger_fields_window_key_none_when_absent():
+    fields = _ctx_ledger_fields({"ctx_oracle_state": "RISK_ON"})
+    assert "ctx_volume_window_days" in fields
+    assert fields["ctx_volume_window_days"] is None
+
+
+def test_ctx_ledger_fields_window_passthrough():
+    fields = _ctx_ledger_fields({"ctx_volume_window_days": 12.5})
+    assert fields["ctx_volume_window_days"] == pytest.approx(12.5)
+
+
+def test_trade_order_positional_construction_window_days_defaults_none():
+    order = TradeOrder("BUY", "X/USDT", 1.0, 2.0)
+    assert order.ctx_volume_window_days is None
+
+
+def test_execute_order_buy_writes_ctx_volume_window_days(portfolio_svc):
+    order = TradeOrder(
+        "BUY",
+        "CTX/USDT",
+        10.0,
+        0,
+        usdt_amount=100,
+        ctx_oracle_state=_CTX["ctx_oracle_state"],
+        ctx_coin_regime=_CTX["ctx_coin_regime"],
+        ctx_volume_rel=_CTX["ctx_volume_rel"],
+        ctx_volume_window_days=12.5,
+    )
+    result = portfolio_svc.execute_order(order, "4h")
+    assert result.executed
+    trades = load_trade_history()["trades"]
+    assert trades
+    rec = trades[-1]
+    assert "ctx_volume_window_days" in rec
+    assert rec["ctx_volume_window_days"] == pytest.approx(12.5)
+    _assert_ctx(rec, oracle="RISK_ON", regime="RANGING", volume=1.37)
+
+
+def test_execute_buy_without_ctx_still_writes_window_days_key_none(portfolio_svc):
+    result = portfolio_svc.execute_buy("PLAIN/USDT", "4h", 10.0, 50.0)
+    assert result.executed
+    rec = load_trade_history()["trades"][-1]
+    assert "ctx_volume_window_days" in rec
+    assert rec["ctx_volume_window_days"] is None

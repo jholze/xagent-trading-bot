@@ -69,7 +69,7 @@ from strategies.entry_sensor_15m import (
 from strategies import watch_15m_state
 from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
 from strategies.exit_sensor import evaluate_exit_sensor_sells
-from strategies.ctx_axes import compute_volume_rel, read_oracle_state
+from strategies.ctx_axes import compute_volume_rel_window, read_oracle_state
 
 _WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
 _WATCHLIST_TTL_SEC = 60.0
@@ -1806,7 +1806,7 @@ class DecisionEngine:
         # Diagnostic ctx axes — write-only, never read by risk/registry.
         # Oracle snapshot is market-wide: one store read per evaluate().
         analysis.ctx_oracle_state = read_oracle_state()
-        analysis.ctx_volume_rel = compute_volume_rel(
+        analysis.ctx_volume_rel, analysis.ctx_volume_window_days = compute_volume_rel_window(
             getattr(market, "ohlcv_df", None), market.timeframe
         )
 

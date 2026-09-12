@@ -1495,6 +1495,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+            ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
         result = self._sync_local_ledger(
             sync_order,
