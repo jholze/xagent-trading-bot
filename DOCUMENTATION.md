@@ -695,14 +695,17 @@ Der Bot erklärt sich **selbst**. Du musst keine Charts lesen — die Nachrichte
 |--------|----------|----------|
 | `/buy SYMBOL USDT` | `/buy ARIA 25` | Kauft ARIA für 25 USDT |
 | `/buy NUMMER USDT` | `/buy 1 25` | Kauft Coin Nr. 1 aus `/list` |
-| `/sell` | `/sell` | Zeigt offene Positionen mit Entry, PnL |
+| `/sell` | `/sell` | Kompakte Liste offener Long-Positionen (1 Zeile) mit Button pro Position |
 | `/sell NUMMER PROZENT` | `/sell 1 30` | Verkauft 30 % von Position 1 |
+| `/sell SYMBOL PROZENT` | `/sell RAVE 30` | Verkauft 30 % von RAVE |
 | `/positions` | `/positions` | Portfolio-Übersicht, Kurse, letzte Trades |
 | `/orders` | `/orders` | Order-Ledger (24h-Stats, paginiert) |
 | `/orders NUMMER` | `/orders 3` | Detail zu Order Nr. 3 (Kauf-/Verkaufsdatum) |
 | `/orders page N` | `/orders page 2` | Seite 2 der Historie |
 | `/risk` | `/risk` | Limits, Drawdown, Trade-Größe |
 | `/dryrun` | `/dryrun` | Enhanced Dry Run: Sim-Cash, Trending-Overlay |
+
+Nach `/sell` Position per Button, Nummer oder Symbol wählen, dann Prozent (Buttons 25/50/75/100 % oder Zahl) und Bestätigung.
 
 Manuelle `/buy` und `/sell` erscheinen in `/orders` und letzten Trades als **Manuell**; Bot-Trades als **Auto**.
 

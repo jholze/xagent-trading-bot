@@ -696,14 +696,17 @@ The bot **explains itself**. You don't need to read charts — messages are buil
 |--------|----------|----------|
 | `/buy SYMBOL USDT` | `/buy ARIA 25` | Buys ARIA for 25 USDT |
 | `/buy NUMMER USDT` | `/buy 1 25` | Buys coin no. 1 from `/list` |
-| `/sell` | `/sell` | Shows open positions with entry, PnL |
+| `/sell` | `/sell` | Compact list of open long positions (one line each) with a button per position |
 | `/sell NUMMER PROZENT` | `/sell 1 30` | Sells 30 % of position 1 |
+| `/sell SYMBOL PROZENT` | `/sell RAVE 30` | Sells 30 % of RAVE |
 | `/positions` | `/positions` | Portfolio overview, prices, recent trades |
 | `/orders` | `/orders` | Order ledger (24h stats, paginated) |
 | `/orders NUMMER` | `/orders 3` | Detail for order no. 3 (buy/sell date) |
 | `/orders page N` | `/orders page 2` | Page 2 of history |
 | `/risk` | `/risk` | Limits, drawdown, trade size |
 | `/dryrun` | `/dryrun` | Enhanced dry run: sim cash, trending overlay |
+
+After `/sell`, pick a position by button, number, or symbol, then percent (25/50/75/100 % buttons or a typed value) and confirmation.
 
 Manual `/buy` and `/sell` appear in `/orders` and recent trades as **Manual**; bot trades as **Auto**.
 
