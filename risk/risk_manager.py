@@ -975,6 +975,9 @@ class RiskManager:
             order_id=order.order_id,
             timestamp=order.timestamp,
             exposure_multiplier=getattr(order, "exposure_multiplier", None),
+            ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+            ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+            ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
         )
         return RiskDecision(
             approved=True,
@@ -2041,6 +2044,9 @@ class RiskManager:
             exit_source=getattr(order, "exit_source", None),
             exit_rationale=getattr(order, "exit_rationale", None),
             idempotency_key=getattr(order, "idempotency_key", None),
+            ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+            ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+            ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
         )
 
     def _resolve_sell_order(self, order: TradeOrder, timeframe: str, source: str) -> TradeOrder:
@@ -2121,6 +2127,9 @@ class RiskManager:
             source=order.source,
             order_id=order.order_id,
             timestamp=order.timestamp,
+            ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+            ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+            ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
         )
 
     def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
@@ -2213,6 +2222,9 @@ class RiskManager:
                 source=source or order.source,
                 exit_source=getattr(order, "exit_source", "") or "",
                 exit_rationale=getattr(order, "exit_rationale", "") or "",
+                ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+                ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+                ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
             )
             return RiskDecision(approved=True, order=out, message="ok")
 
@@ -2330,6 +2342,9 @@ class RiskManager:
             signal=order.signal or "SHORT",
             source=source or order.source,
             leverage=lev,
+            ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+            ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+            ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
         )
         return RiskDecision(approved=True, order=out, message="ok")
 

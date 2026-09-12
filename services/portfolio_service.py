@@ -2,7 +2,7 @@ from datetime import datetime
 
 from core.config import get_bot_config
 from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
-from core.models import TradeResult, TradeOrder
+from core.models import TradeResult, TradeOrder, trade_ctx_fields
 from data_manager import load_trade_history, record_trade
 from strategies.positions import (
     bind_buy_timeframe,
@@ -34,6 +34,17 @@ def _default_entry_source(source: str | None) -> str | None:
     return None
 
 
+def _ctx_ledger_fields(ctx: dict | None) -> dict:
+    """Flat diagnostic ctx axes for trade-history rows. Always present."""
+    bag = ctx if isinstance(ctx, dict) else {}
+    vol = bag.get("ctx_volume_rel")
+    return {
+        "ctx_oracle_state": bag.get("ctx_oracle_state"),
+        "ctx_coin_regime": bag.get("ctx_coin_regime"),
+        "ctx_volume_rel": float(vol) if vol is not None else None,
+    }
+
+
 class PortfolioService:
     """Single entry point for position and trade ledger updates."""
 
@@ -52,6 +63,7 @@ class PortfolioService:
         entry_source: str | None = None,
         entry_15m_vol_ratio: float | None = None,
         fill: Fill | None = None,
+        ctx: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
@@ -92,6 +104,7 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 **trade_cost_fields(f),
+                **_ctx_ledger_fields(ctx),
             })
         return TradeResult(
             True, "BUY", symbol, amount=amount, price=f.fill_price,
@@ -109,6 +122,7 @@ class PortfolioService:
         order_id: str = None,
         sync_virtual_ledger: bool = True,
         fill: Fill | None = None,
+        ctx: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
@@ -148,6 +162,7 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 **trade_cost_fields(f),
+                **_ctx_ledger_fields(ctx),
             })
         return TradeResult(
             True, "SELL", symbol, amount=qty_sold, price=f.fill_price,
@@ -165,6 +180,7 @@ class PortfolioService:
         leverage: float | None = None,
         entry_source: str | None = None,
         sync_virtual_ledger: bool = True,
+        ctx: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
@@ -204,6 +220,7 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 "cost_model": COST_MODEL_VERSION,
+                **_ctx_ledger_fields(ctx),
             })
         return TradeResult(
             True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional, order_id=order_id or "",
@@ -218,6 +235,7 @@ class PortfolioService:
         source: str = "manual",
         order_id: str = None,
         sync_virtual_ledger: bool = True,
+        ctx: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "COVER", symbol, message="Invalid price")
@@ -268,6 +286,7 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 "cost_model": COST_MODEL_VERSION,
+                **_ctx_ledger_fields(ctx),
             })
         return TradeResult(
             True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl, order_id=order_id or "",
@@ -276,6 +295,7 @@ class PortfolioService:
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
         source = order.source or "auto"
         oid = order.order_id or None
+        ctx = trade_ctx_fields(order)
         if order.type == "BUY":
             return self.execute_buy(
                 order.symbol,
@@ -285,6 +305,7 @@ class PortfolioService:
                 source=source,
                 order_id=oid,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
+                ctx=ctx,
             )
         if order.type == "SHORT":
             return self.execute_short(
@@ -296,6 +317,7 @@ class PortfolioService:
                 order_id=oid,
                 leverage=getattr(order, "leverage", None),
                 entry_source=order.signal or source,
+                ctx=ctx,
             )
         if order.type == "COVER":
             return self.execute_cover(
@@ -305,12 +327,13 @@ class PortfolioService:
                 order.amount or None,
                 source=source,
                 order_id=oid,
+                ctx=ctx,
             )
         if order.type != "SELL":
             return TradeResult(False, order.type, order.symbol, message=f"Unknown order type {order.type}")
         return self.execute_sell(
             order.symbol, timeframe, order.price, order.signal or "SELL", order.amount or None,
-            source=source, order_id=oid,
+            source=source, order_id=oid, ctx=ctx,
         )
 
     def get_balance_summary(self) -> dict:

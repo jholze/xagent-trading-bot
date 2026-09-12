@@ -183,6 +183,9 @@ class SignalOrchestrator:
                 source=source,
                 entry_15m_vol_ratio=vol_ratio,
                 exposure_multiplier=em,
+                ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
+                ctx_coin_regime=(getattr(analysis, "regime", "") or None),
+                ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
             )
         else:
             # Size and execute against the open lot TF (may differ from analysis TF
@@ -238,6 +241,9 @@ class SignalOrchestrator:
                 source=source,
                 exit_source=exit_src,
                 exit_rationale=truncate_rationale(getattr(analysis, "rationale", "") or ""),
+                ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
+                ctx_coin_regime=(getattr(analysis, "regime", "") or None),
+                ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
             )
             tf = pos_tf
 
@@ -293,6 +299,9 @@ class SignalOrchestrator:
                 source="auto",
                 exit_source=str(hit.get("source") or "short_cover"),
                 exit_rationale=str(hit.get("rationale") or "")[:240],
+                ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
+                ctx_coin_regime=(getattr(analysis, "regime", "") or None),
+                ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
             )
             return True, self.trading.execute_order(order, lot_tf, source="auto")
         except Exception as exc:

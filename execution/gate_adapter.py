@@ -6,7 +6,7 @@ import ccxt
 
 from core.config import BotConfig, get_bot_config
 from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
-from core.models import OrderStatus, TradeOrder, TradeResult
+from core.models import OrderStatus, TradeOrder, TradeResult, trade_ctx_fields
 from data_manager import record_live_trade, uses_exchange_ledger
 from execution.base import ExecutionAdapter
 from logger import log
@@ -775,6 +775,9 @@ class GateExecutionAdapter(ExecutionAdapter):
             order_exist_in_exchange=order.order_exist_in_exchange,
             entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             leverage=order.leverage,
+            ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+            ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+            ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
         )
         result = self._sync_local_ledger(
             sync_order,
@@ -862,6 +865,7 @@ class GateExecutionAdapter(ExecutionAdapter):
     ) -> TradeResult:
         oid = order.order_id or None
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
+        ctx = trade_ctx_fields(order)
         # Dry-run / no exchange raw: simulate so ledger and P&L share one Fill.
         if fill is None and order.type in ("BUY", "SELL") and order.price > 0:
             cm = CostModel.from_config(self.config, symbol=order.symbol)
@@ -882,6 +886,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 sync_virtual_ledger=sync_virtual,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
                 fill=fill,
+                ctx=ctx,
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(
@@ -893,6 +898,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 order_id=oid,
                 leverage=getattr(order, "leverage", None),
                 sync_virtual_ledger=sync_virtual,
+                ctx=ctx,
             )
         elif order.type == "COVER":
             local = self.portfolio.execute_cover(
@@ -903,12 +909,13 @@ class GateExecutionAdapter(ExecutionAdapter):
                 source=order.source,
                 order_id=oid,
                 sync_virtual_ledger=sync_virtual,
+                ctx=ctx,
             )
         elif order.type == "SELL":
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
-                fill=fill,
+                fill=fill, ctx=ctx,
             )
         else:
             return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")
@@ -928,6 +935,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             "timestamp": datetime.now().isoformat(),
             "mode": self.mode,
             "cost_model": COST_MODEL_VERSION,
+            **ctx,
         }
         if fill is not None:
             rec.update(trade_cost_fields(fill))
