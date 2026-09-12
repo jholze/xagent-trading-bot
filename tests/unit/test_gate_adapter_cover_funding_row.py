@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.config import BotConfig
-from core.models import TradeOrder
+from core.models import TradeOrder, TradeResult
 from data_manager import save_trade_history
 from execution.gate_adapter import GateExecutionAdapter
 from services.portfolio_service import PortfolioService
@@ -241,3 +241,50 @@ def test_shadow_cover_live_row_marks_funding_unknown_when_entry_at_unparsable(mo
     assert rec["funding_unknown"] is True
     assert rec["funding_usdt"] is None
     assert rec["pnl"] == pytest.approx(raw_pnl)
+
+
+def _sync_cover_with_local(monkeypatch, local: TradeResult) -> dict:
+    """Drive `_sync_local_ledger` COVER with a stubbed `execute_cover` result."""
+    adapter, captured = _adapter(monkeypatch)
+    monkeypatch.setattr(
+        adapter.portfolio, "execute_cover", lambda *a, **k: local
+    )
+    adapter._sync_local_ledger(_cover_order(), TF)
+    assert captured, "record_live_trade was not called"
+    rec = captured[-1]
+    assert rec["type"] == "COVER"
+    return rec
+
+
+def test_sync_local_ledger_cover_non_executed_marks_funding_unknown(monkeypatch):
+    """#388: default TradeResult (executed=False, (None, False)) is not 'known zero'."""
+    rec = _sync_cover_with_local(
+        monkeypatch, TradeResult(False, "COVER", SYMBOL)
+    )
+    assert rec["funding_usdt"] is None
+    assert rec["funding_unknown"] is True
+
+
+def test_sync_local_ledger_cover_executed_known_funding_unchanged(monkeypatch):
+    """#388 regression: executed COVER with known funding still writes (1.23, False)."""
+    rec = _sync_cover_with_local(
+        monkeypatch,
+        TradeResult(
+            True, "COVER", SYMBOL, funding_usdt=1.23, funding_unknown=False
+        ),
+    )
+    assert rec["funding_usdt"] == pytest.approx(1.23)
+    assert rec["funding_unknown"] is False
+
+
+def test_sync_local_ledger_cover_executed_unknown_funding_unchanged(monkeypatch):
+    """#388 regression: executed COVER with (None, True) still writes (None, True)."""
+    rec = _sync_cover_with_local(
+        monkeypatch,
+        TradeResult(
+            True, "COVER", SYMBOL, funding_usdt=None, funding_unknown=True
+        ),
+    )
+    assert rec["funding_usdt"] is None
+    assert rec["funding_unknown"] is True
+

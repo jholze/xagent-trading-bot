@@ -1686,7 +1686,9 @@ class GateExecutionAdapter(ExecutionAdapter):
                     float(local.amount or 0), entry, lev
                 )
                 rec["funding_usdt"] = local.funding_usdt
-                rec["funding_unknown"] = local.funding_unknown
+                rec["funding_unknown"] = bool(local.funding_unknown) or not bool(
+                    local.executed
+                )
         if self._adapter_mode == "shadow":
             rec["precision_unverified"] = bool(self._precision_unverified)
             local.precision_unverified = bool(self._precision_unverified)
