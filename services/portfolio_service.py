@@ -2,7 +2,7 @@ from datetime import datetime
 
 from core.config import get_bot_config
 from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
-from core.models import TradeResult, TradeOrder, trade_ctx_fields
+from core.models import TradeResult, TradeOrder, ctx_float_or_none, trade_ctx_fields
 from data_manager import load_trade_history, record_trade
 from strategies.positions import (
     bind_buy_timeframe,
@@ -37,11 +37,11 @@ def _default_entry_source(source: str | None) -> str | None:
 def _ctx_ledger_fields(ctx: dict | None) -> dict:
     """Flat diagnostic ctx axes for trade-history rows. Always present."""
     bag = ctx if isinstance(ctx, dict) else {}
-    vol = bag.get("ctx_volume_rel")
     return {
         "ctx_oracle_state": bag.get("ctx_oracle_state"),
         "ctx_coin_regime": bag.get("ctx_coin_regime"),
-        "ctx_volume_rel": float(vol) if vol is not None else None,
+        "ctx_volume_rel": ctx_float_or_none(bag.get("ctx_volume_rel")),
+        "ctx_volume_window_days": ctx_float_or_none(bag.get("ctx_volume_window_days")),
     }
 
 

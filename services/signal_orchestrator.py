@@ -186,6 +186,7 @@ class SignalOrchestrator:
                 ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
                 ctx_coin_regime=(getattr(analysis, "regime", "") or None),
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
+                ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
             )
         else:
             # Size and execute against the open lot TF (may differ from analysis TF
@@ -244,6 +245,7 @@ class SignalOrchestrator:
                 ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
                 ctx_coin_regime=(getattr(analysis, "regime", "") or None),
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
+                ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
             )
             tf = pos_tf
 
@@ -302,6 +304,7 @@ class SignalOrchestrator:
                 ctx_oracle_state=getattr(analysis, "ctx_oracle_state", None),
                 ctx_coin_regime=(getattr(analysis, "regime", "") or None),
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
+                ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
             )
             return True, self.trading.execute_order(order, lot_tf, source="auto")
         except Exception as exc:

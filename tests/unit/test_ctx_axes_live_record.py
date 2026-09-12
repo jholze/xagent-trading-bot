@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.config import BotConfig
-from core.models import TradeOrder
+from core.models import SignalAnalysis, TradeOrder, TradeResult
 from data_manager import load_trade_history, save_trade_history
 from execution.gate_adapter import GateExecutionAdapter
 from services.portfolio_service import PortfolioService
+from services.signal_orchestrator import SignalOrchestrator
 from strategies.positions import clear_positions_memory, get_position
 
 SYMBOL = "CTXAX/USDT"
@@ -138,6 +139,14 @@ def _assert_existing_rec_keys(rec: dict) -> None:
     assert not missing, f"live-trade rec missing keys: {sorted(missing)}"
 
 
+def _assert_window(record: dict, days) -> None:
+    assert "ctx_volume_window_days" in record
+    if days is None:
+        assert record["ctx_volume_window_days"] is None
+    else:
+        assert record["ctx_volume_window_days"] == pytest.approx(days)
+
+
 def _last_history_of_type(side: str) -> dict:
     trades = [t for t in load_trade_history()["trades"] if t.get("type") == side]
     assert trades, f"no {side} row in trade history"
@@ -229,3 +238,165 @@ def test_live_record_keeps_preexisting_key_set(monkeypatch):
     rec = captured[-1]
     _assert_existing_rec_keys(rec)
     _assert_ctx(rec, oracle="NEUTRAL", regime="RANGING", volume=1.0)
+
+
+def test_buy_order_ctx_volume_window_days_reaches_both_ledgers(monkeypatch):
+    adapter, captured = _shadow_adapter(monkeypatch)
+    order = TradeOrder(
+        "BUY",
+        SYMBOL,
+        100.0,
+        0,
+        usdt_amount=1000.0,
+        ctx_oracle_state=_CTX["ctx_oracle_state"],
+        ctx_coin_regime=_CTX["ctx_coin_regime"],
+        ctx_volume_rel=_CTX["ctx_volume_rel"],
+        ctx_volume_window_days=30.0,
+    )
+    result = adapter.execute(order, "4h")
+    assert result.executed, result.message
+    assert captured
+    rec = captured[-1]
+    _assert_window(rec, 30.0)
+    _assert_existing_rec_keys(rec)
+    _assert_window(_last_history_of_type("BUY"), 30.0)
+
+
+def test_sell_order_ctx_volume_window_days_reaches_both_ledgers(monkeypatch):
+    adapter, captured = _shadow_adapter(monkeypatch)
+    buy = adapter.execute(TradeOrder("BUY", SYMBOL, 100.0, 0, usdt_amount=1000.0), "4h")
+    assert buy.executed, buy.message
+    qty = float(get_position(SYMBOL, "4h")["amount"])
+    sell = TradeOrder(
+        "SELL",
+        SYMBOL,
+        100.0,
+        qty,
+        signal="SELL_FULL",
+        ctx_oracle_state=_SELL_CTX["ctx_oracle_state"],
+        ctx_coin_regime=_SELL_CTX["ctx_coin_regime"],
+        ctx_volume_rel=_SELL_CTX["ctx_volume_rel"],
+        ctx_volume_window_days=12.5,
+    )
+    result = adapter.execute(sell, "4h")
+    assert result.executed, result.message
+    rec = captured[-1]
+    assert rec["type"] == "SELL"
+    _assert_window(rec, 12.5)
+    _assert_existing_rec_keys(rec)
+    _assert_window(_last_history_of_type("SELL"), 12.5)
+
+
+def test_order_without_ctx_volume_window_days_writes_none_on_both_ledgers(monkeypatch):
+    adapter, captured = _shadow_adapter(monkeypatch)
+    result = adapter.execute(TradeOrder("BUY", SYMBOL, 100.0, 0, usdt_amount=1000.0), "4h")
+    assert result.executed, result.message
+    assert captured
+    rec = captured[-1]
+    _assert_window(rec, None)
+    _assert_existing_rec_keys(rec)
+    _assert_window(_last_history_of_type("BUY"), None)
+
+
+def test_orchestrator_buy_order_carries_ctx_volume_window_days_from_analysis():
+    trading = MagicMock()
+    captured = {}
+
+    def _exec(order, *a, **k):
+        captured["order"] = order
+        return TradeResult(True, "BUY", order.symbol, amount=1, price=1.0)
+
+    trading.execute_order.side_effect = _exec
+    trading.refresh = MagicMock()
+    orch = SignalOrchestrator()
+    orch.trading = trading
+
+    with patch(
+        "services.signal_orchestrator.get_position",
+        return_value={"amount": 0},
+    ), patch(
+        "services.signal_orchestrator.resolve_coin_config",
+        return_value={"strategy_params": {}},
+    ):
+        orch.execute_if_needed(
+            SignalAnalysis(
+                action="BUY",
+                symbol="CTX/USDT",
+                timeframe="4h",
+                rsi=40.0,
+                lower_bb=1.0,
+                vol_multiplier=1.0,
+                ampel_emoji="",
+                ampel_text="",
+                sources=["technical"],
+                normalized_action="BUY",
+                recommended=True,
+                regime="RANGING",
+                ctx_oracle_state="RISK_ON",
+                ctx_volume_rel=1.37,
+                ctx_volume_window_days=12.5,
+            ),
+            coin={"symbol": "CTX/USDT", "timeframe": "4h"},
+            current_price=1.0,
+        )
+
+    order = captured.get("order")
+    assert order is not None
+    assert order.type == "BUY"
+    assert order.ctx_volume_window_days == pytest.approx(12.5)
+
+
+def test_orchestrator_sell_order_carries_ctx_volume_window_days_from_analysis():
+    trading = MagicMock()
+    captured = {}
+
+    def _exec(order, *a, **k):
+        captured["order"] = order
+        return TradeResult(True, "SELL", order.symbol, amount=1, price=1.0)
+
+    trading.execute_order.side_effect = _exec
+    trading.refresh = MagicMock()
+    orch = SignalOrchestrator()
+    orch.trading = trading
+    analysis = SignalAnalysis(
+        action="SELL_30",
+        symbol="LAB/USDT",
+        timeframe="4h",
+        rsi=70.0,
+        lower_bb=1.0,
+        vol_multiplier=1.0,
+        ampel_emoji="",
+        ampel_text="",
+        sources=["time_profit_exit", "technical"],
+        normalized_action="SELL_PARTIAL_50",
+        rationale="Time->profit exit",
+        sell_source="time_profit_exit",
+        recommended=True,
+        regime="RANGING",
+        ctx_oracle_state="RISK_ON",
+        ctx_volume_rel=1.37,
+        ctx_volume_window_days=12.5,
+    )
+    with patch(
+        "services.signal_orchestrator.find_open_position_for_symbol",
+        return_value=("4h", {"amount": 100.0}),
+    ), patch(
+        "services.signal_orchestrator.get_position",
+        return_value={"amount": 100.0, "side": "long"},
+    ), patch(
+        "services.signal_orchestrator.resolve_coin_config",
+        return_value={"strategy_params": {}},
+    ), patch(
+        "strategies.positions.sell_fraction_for_signal",
+        return_value=0.5,
+    ):
+        orch.execute_if_needed(
+            analysis,
+            coin={"symbol": "LAB/USDT", "timeframe": "4h"},
+            current_price=0.15,
+        )
+
+    order = captured.get("order")
+    assert order is not None
+    assert order.type == "SELL"
+    assert order.ctx_volume_window_days == pytest.approx(12.5)

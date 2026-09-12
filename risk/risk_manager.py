@@ -991,6 +991,7 @@ class RiskManager:
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+            ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
         return RiskDecision(
             approved=True,
@@ -2060,6 +2061,7 @@ class RiskManager:
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+            ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
 
     def _resolve_sell_order(self, order: TradeOrder, timeframe: str, source: str) -> TradeOrder:
@@ -2143,6 +2145,7 @@ class RiskManager:
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+            ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
 
     def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
@@ -2242,6 +2245,7 @@ class RiskManager:
                 ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
                 ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
                 ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+                ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
             )
             return RiskDecision(approved=True, order=out, message="ok")
 
@@ -2362,6 +2366,7 @@ class RiskManager:
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+            ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
         return RiskDecision(approved=True, order=out, message="ok")
 

@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -64,6 +65,7 @@ class SignalAnalysis:
     # Coin regime is `regime` above; do not duplicate it here.
     ctx_oracle_state: str | None = None
     ctx_volume_rel: float | None = None
+    ctx_volume_window_days: float | None = None
 
 
 class OrderStatus(str, Enum):
@@ -263,6 +265,7 @@ class TradeOrder:
     ctx_oracle_state: str | None = None
     ctx_coin_regime: str | None = None
     ctx_volume_rel: float | None = None
+    ctx_volume_window_days: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     filled_qty: float = 0.0
     status: OrderStatus = OrderStatus.QUEUED
@@ -304,13 +307,28 @@ def _trade_order_init(self, *args, amount=None, **kwargs):
 TradeOrder.__init__ = _trade_order_init  # type: ignore[method-assign]
 
 
+def ctx_float_or_none(value) -> float | None:
+    # v4: context fields must never block execution; producer is float|None, this makes it structural.
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(out) or math.isinf(out):
+        return None
+    return out
+
+
 def trade_ctx_fields(order) -> dict:
     """Flat diagnostic ctx axes for ledger records. ``order`` may be None."""
-    vol = getattr(order, "ctx_volume_rel", None)
     return {
         "ctx_oracle_state": getattr(order, "ctx_oracle_state", None),
         "ctx_coin_regime": getattr(order, "ctx_coin_regime", None),
-        "ctx_volume_rel": float(vol) if vol is not None else None,
+        "ctx_volume_rel": ctx_float_or_none(getattr(order, "ctx_volume_rel", None)),
+        "ctx_volume_window_days": ctx_float_or_none(
+            getattr(order, "ctx_volume_window_days", None)
+        ),
     }
 
 
