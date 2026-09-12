@@ -272,11 +272,11 @@ def test_real_mode_short_rejected_unchanged(monkeypatch):
     adapter._exchange.set_leverage.assert_not_called()
 
 
-def test_shadow_mode_short_rejected_unchanged(monkeypatch):
+def test_shadow_mode_short_now_fills(monkeypatch):
     adapter = _adapter(monkeypatch, mode="shadow")
     result = adapter.execute(_short_order(), "4h")
-    assert not result.executed
-    assert result.message == REJECT_V0
+    assert result.executed, result.message
+    assert str(result.exchange_order_id).startswith("shadow-")
     adapter._exchange.create_order.assert_not_called()
     adapter._exchange.set_leverage.assert_not_called()
 

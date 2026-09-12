@@ -246,6 +246,10 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         try:
             if order.type in ("SHORT", "COVER"):
+                if self._adapter_mode == "shadow":
+                    if order.type == "SHORT":
+                        return self._execute_short_shadow(exchange, order, timeframe)
+                    return self._execute_cover_shadow(exchange, order, timeframe)
                 if self._adapter_mode != "testnet":
                     return self._rejected_result(
                         order, "shorts.allow_live=false — no Gate futures in v0"
@@ -961,6 +965,81 @@ class GateExecutionAdapter(ExecutionAdapter):
             params=params,
         )
 
+    def _execute_short_shadow(
+        self, exchange, order: TradeOrder, timeframe: str
+    ) -> TradeResult:
+        """Synthesise a SHORT fill. Never calls create_* / set_leverage / swap APIs."""
+        from strategies.positions import get_position
+        from strategies.short_math import is_short, margin_usdt
+
+        lev, lev_err = self._clamp_short_leverage(order)
+        if lev_err:
+            return self._rejected_result(order, lev_err)
+
+        base_qty = float(order.qty or 0)
+        if base_qty <= 0 and order.price > 0 and float(order.usdt_amount or 0) > 0:
+            base_qty = float(order.usdt_amount) / float(order.price)
+        if base_qty <= 0:
+            return self._rejected_result(order, "No amount to short")
+        order.qty = base_qty
+
+        pos = get_position(order.symbol, timeframe)
+        if float(pos.get("amount") or 0) > 1e-12 and not is_short(pos):
+            return self._rejected_result(order, "one-way: close long before short")
+
+        required = margin_usdt(base_qty, float(order.price or 0), lev)
+        balance = self._fetch_usdt_balance()
+        if balance < required:
+            return self._rejected_result(
+                order,
+                f"Insufficient USDT margin ({balance:.2f} < {required:.2f})",
+            )
+
+        base_qty, verified = self._shadow_adjust_amount(
+            exchange, order.symbol, base_qty
+        )
+        self._precision_unverified = not verified
+        order.qty = base_qty
+
+        raw = self._synthesize_shadow_raw(order, side="sell", amount=base_qty)
+        return self._finalize_exchange_order(
+            exchange, order, raw, side="sell", qty=base_qty, timeframe=timeframe
+        )
+
+    def _execute_cover_shadow(
+        self, exchange, order: TradeOrder, timeframe: str
+    ) -> TradeResult:
+        """Synthesise a COVER fill. Never calls create_* / set_leverage / swap APIs."""
+        from strategies.positions import get_position
+        from strategies.short_math import is_short
+
+        base_qty = float(order.qty or 0)
+        pos = get_position(order.symbol, timeframe)
+        lot_amt = float(pos.get("amount") or 0)
+        if not is_short(pos) or lot_amt <= 0:
+            return self._rejected_result(order, "No short to cover")
+        if base_qty <= 0:
+            base_qty = lot_amt
+        elif base_qty > lot_amt:
+            log(
+                f"Cover amount capped: ledger {base_qty:.6f} > lot "
+                f"{lot_amt:.6f} for {order.symbol}",
+                "WARNING",
+            )
+            base_qty = lot_amt
+        order.qty = base_qty
+
+        base_qty, verified = self._shadow_adjust_amount(
+            exchange, order.symbol, base_qty
+        )
+        self._precision_unverified = not verified
+        order.qty = base_qty
+
+        raw = self._synthesize_shadow_raw(order, side="buy", amount=base_qty)
+        return self._finalize_exchange_order(
+            exchange, order, raw, side="buy", qty=base_qty, timeframe=timeframe
+        )
+
     def _places_on_exchange(self) -> bool:
         return self._adapter_mode in ("real", "testnet")
 
@@ -1504,6 +1583,11 @@ class GateExecutionAdapter(ExecutionAdapter):
         oid = order.order_id or None
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
         ctx = trade_ctx_fields(order)
+        pre_lot = None
+        if order.type in ("SHORT", "COVER"):
+            from strategies.positions import get_position
+
+            pre_lot = get_position(order.symbol, timeframe)
         # Dry-run / no exchange raw: simulate so ledger and P&L share one Fill.
         if fill is None and order.type in ("BUY", "SELL") and order.price > 0:
             cm = CostModel.from_config(self.config, symbol=order.symbol)
@@ -1577,6 +1661,29 @@ class GateExecutionAdapter(ExecutionAdapter):
         }
         if fill is not None:
             rec.update(trade_cost_fields(fill))
+        if order.type in ("SHORT", "COVER"):
+            from strategies.positions import get_position
+            from strategies.short_math import margin_usdt
+
+            if order.type == "SHORT":
+                lot = get_position(order.symbol, timeframe)
+                lev = float(lot.get("leverage") or 0) or float(
+                    getattr(order, "leverage", 0) or 0
+                )
+                rec["leverage"] = lev
+                rec["margin_usdt"] = margin_usdt(
+                    float(local.amount or 0), float(order.price or 0), lev
+                )
+            else:
+                lot = pre_lot if isinstance(pre_lot, dict) else {}
+                lev = float(lot.get("leverage") or 0) or 2.0
+                entry = float(lot.get("average_entry") or 0) or float(
+                    order.price or 0
+                )
+                rec["leverage"] = lev
+                rec["margin_usdt"] = margin_usdt(
+                    float(local.amount or 0), entry, lev
+                )
         if self._adapter_mode == "shadow":
             rec["precision_unverified"] = bool(self._precision_unverified)
             local.precision_unverified = bool(self._precision_unverified)
