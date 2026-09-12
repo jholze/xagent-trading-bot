@@ -1,6 +1,6 @@
 # Regime-Sizing-Map — wo Größe entsteht (#362)
 
-**Stand:** 12. September 2026 · **Tracking:** #362 · **Kein Code-Change** · **Hängt ab von:** [`konzept-regime-strategie-v4.md`](konzept-regime-strategie-v4.md) Phase 3
+**Stand:** 12. September 2026 · **Tracking:** #362, #376 · **#362 kein Code-Change** · **#376:** `md_boost == 1.0` unter RISK_OFF/WARMUP/CRASH · **Hängt ab von:** [`konzept-regime-strategie-v4.md`](konzept-regime-strategie-v4.md) Phase 3
 
 Umbau v4 hat zwei Schichten vorgesehen ([`konzept-regime-strategie-v4.md:163-168`](konzept-regime-strategie-v4.md)): **Orakel = Marktrisiko** (`Darf jetzt überhaupt gekauft werden, und wie groß?`, Zyklus in Minuten), **Detektor = Richtungs-Bias** (`Ist dieser Coin in einem Trend, und in welche Richtung?`, Kerze 1h/4h). Die Codebasis hat heute ~6–8 Sizing-Berührungspunkte über **zwei inkompatible Regime-Vokabulare** (Oracle/Fusion: `RISK_ON` / `NEUTRAL` / `RISK_OFF` / `CRASH`; Detector: `RANGING` / `STRONG_UPTREND` / `STRONG_DOWNTREND` / `CHOPPY_HIGH_VOL` / `TRANSITION` / …) plus ein **drittes Makro-Vokabular** (Session-/Kalender-/Polymarket-Tags, nicht dieselben Zustandsnamen). Dieses Dokument ist die geschlossene Karte: welcher Faktor in welcher Reihenfolge in die Ordergröße eingeht, mit welchem Clamp, und was bei eigenem Fehler passiert. Es ändert nichts.
 
@@ -69,13 +69,29 @@ Eine Zeile pro Modul bzw. Faktor im Produkt `:1865-1875` plus die zwei Nachzügl
 
 > Size applied ONCE in RiskManager — fusion takes min(size_mult)
 
-Fusion hält den `min(size_mult)`-Teil intern ein (`:209-222`, Return-Clamp `:249`). `exposure_multiplier` hält eine min/Clamp-Disziplin am Kompositionspunkt: Kommentar `:1914` („never a boost, applied once after other multipliers“), Clamp `[0.0, 1.0]` bei `:1920`, Anwendung nur nach den anderen Faktoren.
+Fusion hält den `min(size_mult)`-Teil intern ein (`:209-222`, Return-Clamp `:249`). Das ist die Fusion-Seite.
 
-`md_boost` hält sie **nicht**: `:1901-1902` multipliziert zusätzlich (zweiter Size-Eingriff desselben Oracle-Vokabulars) und hebt die Clamp-Obergrenze via `effective_max_total_multiplier` (`:1903-1905`). Dieselbe Boost-Logik existiert ein zweites Mal auf dem DCA-Pfad (`:853`), dort ohne das übrige Produkt.
+Der Vergleich `md_boost` gegen `exposure_multiplier` (min/Clamp-einmal) ist ein **Kategoriefehler**. `exposure_multiplier` ist ein per-Order-Allocator-De-Risk-Eingang (Detector-Vokabular; Kommentar `:1931` „never a boost, applied once after other multipliers“, Clamp `[0.0, 1.0]` bei `:1937`, Anwendung nur nach den anderen Faktoren `:1938-1939`). `md_boost` ist regime-abgeleitet (Oracle/Fusion-Vokabular). Die beiden teilen sich weder Vokabular noch Invariante.
 
-Die Regel ist damit von **einem** Eingang (`exposure_multiplier`) eingehalten und vom **anderen** (`md_boost`) nicht — so wie heute im Code steht, ist `Size applied ONCE` nicht wörtlich wahr.
+Der eigentliche Befund sitzt **innerhalb** des Oracle-Vokabulars: `global_mult` und `md_boost` sind zwei unabhängig geschriebene Funktionen **desselben** Regime-Labels, gelesen aus demselben Bias-Dict, und werden in `_dynamic_size` multipliziert — `f(regime) * g(regime)`, ohne gemeinsame Invariante.
 
-**Kandidat für Folgeticket.** Kein Fix in #362.
+- `global_mult` (`:1801-1830` → Produkt `:1887`) ist Fusion-`size_mult`, eine reine Funktion des Oracle-Zustands in `services/market_oracle/regime.py::policy_for_state` (`:157-189`): RISK_OFF 0.35 / NEUTRAL 0.85 / RISK_ON 1.0 / CRASH 0.0. Clamp `[0.0, 1.5]` bei `:1811`.
+- `md_boost` kommt aus `risk/moderate_deploy.py::size_boost_for_regime` (`:95-144`), keyed auf den Regimenamen (nicht auf `size_mult`), gelesen aus `bias["regime"]` (`:1912-1917`; DCA-Zweig `:862-864`).
+- Komposition `:1918-1919`: `if md_boost > 1.0 and global_mult > 0: total *= md_boost`. Gleichzeitig Anhebung der Clamp-Obergrenze via `effective_max_total_multiplier` (`:1920-1922`). Dieselbe Boost-Logik existiert ein zweites Mal auf dem DCA-Pfad (`:836-873`), dort ohne das übrige Produkt — nur `md_boost` (`:865-866`).
+
+`Size applied ONCE` ist damit nicht wörtlich wahr: dasselbe Oracle-Vokabular geht zweimal in die Größe ein.
+
+**Vertrag nach #376.** Unter `RISK_OFF`, `WARMUP`, `CRASH` gilt `md_boost == 1.0` per Vertrag:
+
+- `_DERISK_REGIMES` (`moderate_deploy.py:34`) überspringt den Cash-Rich-Extra (`cash_rich_extra_mult`) für alle drei De-Risking-Regimes (vorher nur CRASH — `size_boost_for_regime` `:134-140`).
+- `moderate_deploy_config` clampft `size_boost_risk_off` / `size_boost_warmup` / `size_boost_crash` auf `<= 1.0` (`:70-72`); Config kann keinen De-Risk-Boost mehr einführen. `size_boost_for_regime` clampft zusätzlich jeden Boost `< 1.0` auf 1.0 (`:129-130`) — unter den drei Regimes bleibt 1.0.
+- Live-Config (`config.json` `risk.moderate_deploy`): `size_boost_risk_off` und `size_boost_warmup` sind jetzt `1.0` (waren 1.25). `size_boost_crash` war und bleibt 1.0.
+
+Folge: unter diesen Regimes liefert `effective_max_total_multiplier` die Basis-Decke (`aggression.max_position_multiplier` 2.0, `config.json:146`) — `boost <= 1.001` → `base_max` (`moderate_deploy.py:155-156`). Der DCA-Zweig (`risk_manager.py:836-873`, der nur `md_boost` anwendet) vergrößert DCA-Adds unter RISK_OFF daher nicht mehr (vorher: effektiv 1.5925 cash-rich — `1.0 + (1.25 - 1.0) * dca_boost_scale 0.9 = 1.225`, danach `* cash_rich_extra_mult 1.3`).
+
+**NEUTRAL ist beabsichtigt.** Unter NEUTRAL ist der zusammengesetzte Regime-Kanal `0.85 (global_mult) × 2.5 (md_boost, cash-rich, gedeckelt durch max_boost 2.5) = 2.125`. Rechnung: Live `size_boost_neutral` 2.0 × `cash_rich_extra_mult` 1.3 = 2.6, Clamp `max_boost` 2.5 (`config.json:439,447,449`) → 2.5. Die effektive Decke steigt auf `max_total_multiplier` 2.6 gegenüber `aggression.max_position_multiplier` 2.0. `size_boost_risk_on: 2.1 > 2.0` ist absichtlich — `max_total_multiplier` 2.6 ist ein expliziter Live-Override (`config.json:438,444`). Das ist **INTENDED**, kein Defekt. Wer das ändern will, braucht ein eigenes Ticket.
+
+**Unberührt durch #376.** `size_boost_default` 1.35 bei degradiertem/fehlendem Orakel unter `fail_closed_guards: "log"` (`config.json:427,443`) ist eingefrorenes, beabsichtigtes Tier-1b-Verhalten (#299, `tests/unit/test_market_bias_degraded.py::test_log_degraded_keeps_default_boost_and_warns_once`) und wird von #376 **nicht** geändert.
 
 ---
 
