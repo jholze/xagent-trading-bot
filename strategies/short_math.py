@@ -90,11 +90,18 @@ def liquidation_price_isolated(
 
     Short: price *rises*. Long: price *falls*.
     ``fee_frac`` is a fraction of notional (CostModel.fee_pct / 100).
+    Non-finite or < 1.0 leverage is treated as 1.0; no upper cap --
+    callers that need a tenant cap clamp before calling.
     """
     e = float(entry or 0)
     if e <= 0:
         return 0.0
-    lev = clamp_leverage(leverage)
+    try:
+        lev = float(leverage)
+    except (TypeError, ValueError):
+        lev = 1.0
+    if math.isnan(lev) or math.isinf(lev) or lev < 1.0:
+        lev = 1.0
     mm = min(0.2, max(0.0, float(mm_rate or 0)))
     fee = min(0.05, max(0.0, float(fee_frac or 0)))
     # Lose (1 - mm) of margin at liq; remaining mm is maintenance.
@@ -123,11 +130,20 @@ def stop_price(
     stop_margin_pct: float,
     leverage: float,
 ) -> float:
-    """Stop as fraction of *margin* risk (Freqtrade). 0.10 @ 2x → 5% price."""
+    """Stop as fraction of *margin* risk (Freqtrade). 0.10 @ 2x → 5% price.
+
+    Non-finite or < 1.0 leverage is treated as 1.0; no upper cap --
+    callers that need a tenant cap clamp before calling.
+    """
     e = float(entry or 0)
     if e <= 0:
         return 0.0
-    lev = clamp_leverage(leverage)
+    try:
+        lev = float(leverage)
+    except (TypeError, ValueError):
+        lev = 1.0
+    if math.isnan(lev) or math.isinf(lev) or lev < 1.0:
+        lev = 1.0
     risk = min(0.95, max(0.0, float(stop_margin_pct or 0)))
     move = risk / lev
     if str(side).lower() == SIDE_SHORT:

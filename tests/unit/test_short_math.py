@@ -102,6 +102,35 @@ class TestShortMath(unittest.TestCase):
         sp = stop_price("short", 100.0, 0.10, 2.0)
         self.assertAlmostEqual(sp, 105.0)
 
+    def test_liq_price_uses_raw_leverage_above_default_cap(self):
+        # Old code called clamp_leverage(leverage) with default cap 2.0, so
+        # liquidation_price_isolated("short", 10, 3) was the 2x value (~14.99)
+        # not the 3x isolated liq (~13.33).
+        e, lev, mm, fee = 10.0, 3.0, 0.005, 0.001
+        short_3x = liquidation_price_isolated("short", e, lev)
+        long_3x = liquidation_price_isolated("long", e, lev)
+        self.assertAlmostEqual(short_3x, e * (1.0 + (1.0 - mm) / lev) * (1.0 + fee))
+        self.assertAlmostEqual(long_3x, e * (1.0 - (1.0 - mm) / lev) * (1.0 - fee))
+        short_2x = e * (1.0 + (1.0 - mm) / 2.0) * (1.0 + fee)
+        long_2x = e * (1.0 - (1.0 - mm) / 2.0) * (1.0 - fee)
+        self.assertLess(short_3x, short_2x)
+        self.assertGreater(long_3x, long_2x)
+
+    def test_stop_price_uses_raw_leverage_above_default_cap(self):
+        # Old clamp-to-2: stop_price("short", 10, 0.10, 3) was 10*(1+0.10/2)=10.5
+        # not 10*(1+0.10/3).
+        e, risk, lev = 10.0, 0.10, 3.0
+        self.assertAlmostEqual(stop_price("short", e, risk, lev), e * (1.0 + risk / lev))
+        self.assertAlmostEqual(stop_price("long", e, risk, lev), e * (1.0 - risk / lev))
+
+    def test_liq_and_stop_degenerate_leverage_is_one(self):
+        e = 10.0
+        liq_1 = liquidation_price_isolated("short", e, 1.0)
+        stop_1 = stop_price("short", e, 0.10, 1.0)
+        for bad in (float("nan"), float("inf"), "x", 0, -1):
+            self.assertAlmostEqual(liquidation_price_isolated("short", e, bad), liq_1)
+            self.assertAlmostEqual(stop_price("short", e, 0.10, bad), stop_1)
+
     def test_stop_fires_before_liq(self):
         entry = 100.0
         lev = 2.0
@@ -128,6 +157,17 @@ class TestShortMath(unittest.TestCase):
         self.assertAlmostEqual(float(snap["pnl"]), 2.0)
         self.assertAlmostEqual(float(snap["margin"]), 10.0)
         self.assertGreater(float(snap["roe_pct"]), 0)
+
+    def test_snapshot_liq_price_uses_capped_leverage_not_default_two(self):
+        # snapshot(cap=3) already clamps lev to 3, then used to re-clamp to 2
+        # inside liquidation_price_isolated. Probe: entry 10, lev 3 -> old liq
+        # was the 2x value (~14.99); true 3x isolated liq is ~13.33.
+        e, lev, mm, fee = 10.0, 3.0, 0.005, 0.001
+        pos = {"side": "short", "amount": 10, "average_entry": e, "leverage": lev}
+        snap = snapshot(pos, mark=e, cap=3)
+        expected_3x = e * (1.0 + (1.0 - mm) / lev) * (1.0 + fee)
+        self.assertAlmostEqual(float(snap["liq_price"]), expected_3x)
+        self.assertAlmostEqual(float(snap["leverage"]), 3.0)
 
     def test_roe(self):
         self.assertAlmostEqual(roe_pct(5, 10), 50.0)
