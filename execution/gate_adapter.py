@@ -12,7 +12,7 @@ from execution.base import ExecutionAdapter
 from logger import log
 from services.portfolio_service import PortfolioService
 
-_GATE_TESTNET_HOST = "https://fx-api-testnet.gateio.ws"
+_GATE_TESTNET_HOST = "https://api-testnet.gateapi.io"
 
 
 class GateExecutionAdapter(ExecutionAdapter):
@@ -79,14 +79,57 @@ class GateExecutionAdapter(ExecutionAdapter):
         return self._exchange
 
     @staticmethod
+    def _rewrite_api_leaves(node, replacement: str):
+        if isinstance(node, dict):
+            return {
+                k: GateExecutionAdapter._rewrite_api_leaves(v, replacement)
+                for k, v in node.items()
+            }
+        return replacement
+
+    @staticmethod
     def _apply_testnet(exchange) -> None:
         setter = getattr(exchange, "set_sandbox_mode", None)
         if callable(setter):
             setter(True)
             return
         urls = getattr(exchange, "urls", None)
-        if isinstance(urls, dict):
+        if not isinstance(urls, dict):
+            return
+        api = urls.get("api")
+        if isinstance(api, dict):
+            urls["api"] = GateExecutionAdapter._rewrite_api_leaves(
+                api, f"{_GATE_TESTNET_HOST}/api/v4"
+            )
+        else:
             urls["api"] = _GATE_TESTNET_HOST
+
+    def _testnet_futures_allowed(self) -> tuple[bool, str]:
+        """Fail-closed: testnet mode + enabled=true + current tenant named in the list."""
+        if self._adapter_mode != "testnet":
+            return False, f"adapter mode is {self._adapter_mode!r}, not testnet"
+        from core.tenant_context import current_tenant_context, resolve_tenant_id
+        from strategies.short_policy import shorts_config
+
+        if current_tenant_context() is None:
+            return False, "no tenant context"
+        cfg = shorts_config(self.config.raw)
+        block = cfg.get("testnet_futures")
+        if not isinstance(block, dict):
+            return False, "shorts.testnet_futures missing or not a dict"
+        if block.get("enabled") is not True:
+            return False, "shorts.testnet_futures.enabled=false"
+        tenants = block.get("tenants")
+        if not isinstance(tenants, list):
+            return False, "shorts.testnet_futures.tenants is not a list"
+        if not tenants:
+            return False, "shorts.testnet_futures.tenants is empty"
+        tenant_id = resolve_tenant_id()
+        if tenant_id not in tenants:
+            return False, (
+                f"tenant {tenant_id!r} not in shorts.testnet_futures.tenants"
+            )
+        return True, ""
 
     def _max_usdt(self) -> float:
         return float(
@@ -203,9 +246,18 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         try:
             if order.type in ("SHORT", "COVER"):
-                return self._rejected_result(
-                    order, "shorts.allow_live=false — no Gate futures in v0"
-                )
+                if self._adapter_mode != "testnet":
+                    return self._rejected_result(
+                        order, "shorts.allow_live=false — no Gate futures in v0"
+                    )
+                allowed, reason = self._testnet_futures_allowed()
+                if not allowed:
+                    return self._rejected_result(
+                        order, f"testnet futures disabled: {reason}"
+                    )
+                if order.type == "SHORT":
+                    return self._execute_short(exchange, order, timeframe)
+                return self._execute_cover(exchange, order, timeframe)
             if order.type == "BUY":
                 return self._execute_buy(exchange, order, timeframe)
             if order.type == "SELL":
@@ -393,6 +445,522 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange, order, raw, side="sell", qty=amount, timeframe=timeframe
         )
 
+    # Swap (testnet SHORT/COVER) unit invariant:
+    # ``filled`` / ``amount`` / ``remaining`` from ccxt swap orders are CONTRACTS
+    # until ``_swap_fill_to_base`` runs; only ``filled`` is normalised to base
+    # units; ``_finalize_exchange_order`` must never receive a swap raw whose
+    # ``filled`` is None (B5).
+    @staticmethod
+    def _swap_symbol(order: TradeOrder) -> str:
+        """USDT-perp unified symbol. ``order.symbol`` stays the SPOT pair."""
+        base, _, _ = str(order.symbol).partition("/")
+        return f"{base}/USDT:USDT"
+
+    def _load_swap_market(self, exchange, swap_symbol: str) -> tuple[dict, str]:
+        markets = None
+        try:
+            loaded = exchange.load_markets()
+            if isinstance(loaded, dict):
+                markets = loaded
+        except Exception as e:
+            log(f"Gate load_markets failed for {swap_symbol}: {e}", "WARNING")
+            existing = getattr(exchange, "markets", None)
+            markets = existing if isinstance(existing, dict) else None
+        market = markets.get(swap_symbol) if isinstance(markets, dict) else None
+        if not isinstance(market, dict) or not market:
+            getter = getattr(exchange, "market", None)
+            if callable(getter):
+                try:
+                    got = getter(swap_symbol)
+                    if isinstance(got, dict) and got:
+                        market = got
+                except Exception as e:
+                    log(f"Gate market({swap_symbol}) failed: {e}", "WARNING")
+        if not isinstance(market, dict) or not market:
+            return {}, f"swap market {swap_symbol} not found"
+        return market, ""
+
+    def _swap_contract_size(self, market: dict, swap_symbol: str) -> float:
+        raw = market.get("contractSize") if isinstance(market, dict) else None
+        try:
+            size = float(raw)
+        except (TypeError, ValueError):
+            size = 0.0
+        if size <= 0:
+            log(
+                f"swap {swap_symbol} contractSize missing/invalid ({raw!r}) — using 1",
+                "WARNING",
+            )
+            return 1.0
+        return size
+
+    def _base_to_contracts(
+        self, exchange, swap_symbol: str, base_qty: float, contract_size: float
+    ) -> tuple[float, str]:
+        # Gate USDT-perp ``amount`` is CONTRACTS, not base units.
+        # contracts = base_qty / contractSize (ccxt gate.parse_market sets
+        # contractSize from quanto_multiplier; linear USDT perps are often 1).
+        # Ledger / positions keep base units on the SPOT symbol.
+        try:
+            contracts = float(base_qty) / float(contract_size)
+        except (TypeError, ValueError, ZeroDivisionError) as e:
+            return 0.0, f"contract conversion failed: {e}"
+        if contracts <= 0:
+            return 0.0, "contracts <= 0 after conversion"
+        try:
+            contracts = float(exchange.amount_to_precision(swap_symbol, contracts))
+        except Exception as e:
+            log(
+                f"Gate amount_to_precision failed for {swap_symbol}: {e}",
+                "WARNING",
+            )
+            return 0.0, f"amount_to_precision failed: {e}"
+        if contracts <= 0:
+            return 0.0, "contracts <= 0 after precision"
+        return contracts, ""
+
+    def _clamp_short_leverage(self, order: TradeOrder) -> tuple[float, str]:
+        from strategies.short_math import clamp_leverage
+        from strategies.short_policy import shorts_config
+
+        cfg = shorts_config(self.config.raw)
+        try:
+            cap = min(float(cfg.get("leverage_cap") or 2), 2.0)
+        except (TypeError, ValueError):
+            cap = 2.0
+        try:
+            default = float(cfg.get("leverage_default") or 2)
+        except (TypeError, ValueError):
+            default = 2.0
+        lev = clamp_leverage(order.leverage or default, cap=cap)
+        if lev > cap:
+            return 0.0, f"leverage {lev} exceeds cap {cap}"
+        order.leverage = lev
+        return lev, ""
+
+    def _set_isolated_leverage(
+        self,
+        exchange,
+        order: TradeOrder,
+        swap_symbol: str,
+        lev: float,
+        *,
+        timeframe: str,
+        side: str,
+        qty: float,
+    ) -> TradeResult | None:
+        """ISOLATED margin via ccxt.gate.set_leverage (marginMode != cross).
+
+        Failure before create is a clean reject — never ACTIVE/needs_reconcile.
+        """
+        try:
+            exchange.set_leverage(
+                int(lev), swap_symbol, {"marginMode": "isolated"}
+            )
+        except Exception as e:
+            log(
+                f"Gate set_leverage({int(lev)}, {swap_symbol}) failed: {e}",
+                "ERROR",
+            )
+            try:
+                return self._handle_create_exception(
+                    e,
+                    exchange,
+                    order,
+                    create_attempted=False,
+                    timeframe=timeframe,
+                    side=side,
+                    qty=qty,
+                    usdt=order.usdt_amount,
+                )
+            except Exception as classified:
+                log(
+                    f"Gate set_leverage unclassified for {swap_symbol}: {classified}",
+                    "ERROR",
+                )
+                return self._rejected_result(
+                    order,
+                    str(classified)[:200] or classified.__class__.__name__,
+                )
+        return None
+
+    def _swap_usdt_free(self, exchange) -> tuple[float | None, str]:
+        try:
+            balance = exchange.fetch_balance({"type": "swap"})
+        except Exception as e:
+            log(f"Gate futures USDT balance fetch failed: {e}", "WARNING")
+            return None, f"futures USDT balance fetch failed: {e}"
+        if not isinstance(balance, dict):
+            return None, "futures USDT balance missing"
+        usdt = balance.get("USDT")
+        free_map = balance.get("free")
+        raw = None
+        if isinstance(usdt, dict):
+            raw = usdt.get("free")
+        if raw in (None, 0, 0.0, "") and isinstance(free_map, dict):
+            raw = free_map.get("USDT")
+        try:
+            return float(raw or 0), ""
+        except (TypeError, ValueError) as e:
+            log(f"Gate futures USDT balance parse failed: {e}", "WARNING")
+            return None, f"futures USDT balance parse failed: {e}"
+
+    def _swap_position_base_qty(
+        self, exchange, swap_symbol: str, contract_size: float
+    ) -> float | None:
+        """Exchange short size in BASE units, or None if unknown."""
+        fetch = getattr(exchange, "fetch_positions", None)
+        if not callable(fetch):
+            return None
+        try:
+            try:
+                positions = fetch([swap_symbol])
+            except TypeError:
+                positions = fetch()
+        except Exception as e:
+            log(
+                f"Gate fetch_positions({swap_symbol}) failed: {e}",
+                "WARNING",
+            )
+            return None
+        if not isinstance(positions, list):
+            return None
+        matched = False
+        total_base = 0.0
+        for pos in positions:
+            if not isinstance(pos, dict):
+                continue
+            psym = str(pos.get("symbol") or "")
+            if psym != swap_symbol:
+                continue
+            side = str(pos.get("side") or "").strip().lower()
+            if side != "short":
+                continue
+            matched = True
+            raw_contracts = pos.get("contracts")
+            if raw_contracts is None:
+                raw_contracts = pos.get("amount")
+            try:
+                contracts = abs(float(raw_contracts or 0))
+            except (TypeError, ValueError):
+                contracts = 0.0
+            try:
+                cs = float(pos.get("contractSize") or contract_size or 1) or 1.0
+            except (TypeError, ValueError):
+                cs = contract_size or 1.0
+            total_base += contracts * cs
+        if not matched:
+            return 0.0
+        return total_base
+
+    def _swap_fill_to_base(
+        self,
+        exchange,
+        order: TradeOrder,
+        raw: dict,
+        swap_symbol: str,
+        contract_size: float,
+    ) -> dict:
+        """Convert ccxt swap ``filled`` from CONTRACTS to base units.
+
+        If ``filled`` is missing, fetch the swap order on ``swap_symbol`` (never
+        the spot pair) and convert. Conversion happens here — not in
+        ``_ensure_filled``. Callers must not pass a still-None ``filled`` into
+        ``_finalize_exchange_order`` (B5): that would merge unconverted contracts.
+        """
+        raw = dict(raw) if isinstance(raw, dict) else {}
+        if raw.get("filled") is None:
+            oid = raw.get("id")
+            if oid and exchange is not None:
+                try:
+                    fetched = exchange.fetch_order(oid, swap_symbol)
+                except Exception as e:
+                    log(
+                        f"fetch_order({oid}) on {swap_symbol} after missing filled "
+                        f"failed: {e}",
+                        "WARNING",
+                    )
+                    fetched = None
+                if isinstance(fetched, dict):
+                    for k, v in fetched.items():
+                        if v is not None:
+                            raw[k] = v
+        filled = raw.get("filled")
+        if filled is not None:
+            try:
+                raw["filled"] = float(filled) * float(contract_size)
+            except (TypeError, ValueError) as e:
+                log(
+                    f"swap filled convert failed for {swap_symbol}: {e}",
+                    "ERROR",
+                )
+                raw.pop("filled", None)
+        return raw
+
+    def _fee_usable(self, raw: dict) -> bool:
+        fee = raw.get("fee") if isinstance(raw, dict) else None
+        if not isinstance(fee, dict):
+            return False
+        try:
+            cost = float(fee.get("cost") or 0)
+        except (TypeError, ValueError):
+            return False
+        ccy = str(fee.get("currency") or "").strip()
+        return cost != 0 and bool(ccy)
+
+    def _fees_from_my_trades(
+        self, exchange, order: TradeOrder, raw: dict, lookup_symbol: str
+    ) -> dict | None:
+        matched = self._fetch_matched_my_trades(
+            exchange, order, raw, lookup_symbol=lookup_symbol
+        )
+        if not matched:
+            return None
+        costs_by_ccy: dict[str, float] = {}
+        for t in matched:
+            fee = t.get("fee") if isinstance(t.get("fee"), dict) else None
+            if not isinstance(fee, dict):
+                continue
+            try:
+                cost = float(fee.get("cost") or 0)
+            except (TypeError, ValueError) as e:
+                log(f"swap trade fee parse failed: {e}", "WARNING")
+                continue
+            ccy = str(fee.get("currency") or "").strip().upper()
+            if not ccy:
+                continue
+            costs_by_ccy[ccy] = costs_by_ccy.get(ccy, 0.0) + cost
+        if not costs_by_ccy:
+            return None
+        if len(costs_by_ccy) != 1:
+            log(
+                f"swap fee currencies mixed {sorted(costs_by_ccy)} for {lookup_symbol}",
+                "WARNING",
+            )
+            return None
+        ccy, cost = next(iter(costs_by_ccy.items()))
+        if cost == 0:
+            return None
+        return {"cost": cost, "currency": ccy}
+
+    def _hydrate_swap_fee(
+        self, exchange, order: TradeOrder, raw: dict, swap_symbol: str
+    ) -> dict:
+        raw = dict(raw) if isinstance(raw, dict) else {}
+        if self._fee_usable(raw):
+            return raw
+        trades_fee = self._fees_from_my_trades(exchange, order, raw, swap_symbol)
+        if trades_fee is not None:
+            raw["fee"] = trades_fee
+            return raw
+        log(
+            f"swap fee missing after fetch_my_trades for {swap_symbol} — "
+            "marking fee_unknown",
+            "WARNING",
+        )
+        raw["_fee_unknown"] = True
+        return raw
+
+    def _prepare_swap_raw(
+        self,
+        exchange,
+        order: TradeOrder,
+        raw: dict,
+        swap_symbol: str,
+        contract_size: float,
+    ) -> dict:
+        raw = self._swap_fill_to_base(
+            exchange, order, raw, swap_symbol, contract_size
+        )
+        return self._hydrate_swap_fee(exchange, order, raw, swap_symbol)
+
+    def _swap_filled_or_reconcile(self, order: TradeOrder, raw: dict) -> TradeResult | None:
+        """Fail-closed: never finalize a swap raw whose ``filled`` is still None."""
+        if isinstance(raw, dict) and raw.get("filled") is not None:
+            return None
+        return self._active_reconcile_result(
+            order,
+            "swap filled unavailable — needs reconcile",
+            exist=True,
+            raw=raw if isinstance(raw, dict) else None,
+        )
+
+    def _place_swap_order(
+        self,
+        exchange,
+        order: TradeOrder,
+        *,
+        swap_symbol: str,
+        side: str,
+        contracts: float,
+        base_qty: float,
+        contract_size: float,
+        timeframe: str,
+        params: dict,
+    ) -> TradeResult:
+        create_attempted = False
+        try:
+            create_attempted = True
+            raw = exchange.create_order(
+                swap_symbol, "market", side, contracts, None, params
+            )
+        except Exception as e:
+            return self._handle_create_exception(
+                e,
+                exchange,
+                order,
+                create_attempted=create_attempted,
+                timeframe=timeframe,
+                side=side,
+                qty=base_qty,
+                usdt=order.usdt_amount,
+                lookup_symbol=swap_symbol,
+                contract_size=contract_size,
+            )
+        raw = self._prepare_swap_raw(
+            exchange, order, raw, swap_symbol, contract_size
+        )
+        missing = self._swap_filled_or_reconcile(order, raw)
+        if missing is not None:
+            return missing
+        return self._finalize_exchange_order(
+            exchange,
+            order,
+            raw,
+            side=side,
+            qty=base_qty,
+            timeframe=timeframe,
+            usdt=order.usdt_amount,
+            lookup_symbol=swap_symbol,
+        )
+
+    def _execute_short(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
+        from strategies.short_math import margin_usdt
+
+        swap_symbol = self._swap_symbol(order)
+        lev, lev_err = self._clamp_short_leverage(order)
+        if lev_err:
+            return self._rejected_result(order, lev_err)
+
+        base_qty = float(order.qty or 0)
+        if base_qty <= 0 and order.price > 0 and float(order.usdt_amount or 0) > 0:
+            base_qty = float(order.usdt_amount) / float(order.price)
+        if base_qty <= 0:
+            return self._rejected_result(order, "No amount to short")
+        if not order.qty:
+            order.qty = base_qty
+
+        market, market_err = self._load_swap_market(exchange, swap_symbol)
+        if market_err:
+            return self._rejected_result(order, market_err)
+        contract_size = self._swap_contract_size(market, swap_symbol)
+        contracts, conv_err = self._base_to_contracts(
+            exchange, swap_symbol, base_qty, contract_size
+        )
+        if conv_err:
+            return self._rejected_result(order, conv_err)
+        min_amount = float(
+            (market.get("limits") or {}).get("amount", {}).get("min", 0) or 0
+        )
+        if min_amount and contracts < min_amount:
+            return self._rejected_result(
+                order,
+                f"Amount {contracts:.6f} contracts below Gate minimum ({min_amount})",
+            )
+
+        required = margin_usdt(base_qty, float(order.price or 0), lev)
+        free, bal_err = self._swap_usdt_free(exchange)
+        if bal_err:
+            return self._rejected_result(order, bal_err)
+        if free is None or free < required:
+            shown = 0.0 if free is None else free
+            return self._rejected_result(
+                order,
+                f"Insufficient futures USDT margin ({shown:.2f} < {required:.2f})",
+            )
+
+        leverage_fail = self._set_isolated_leverage(
+            exchange,
+            order,
+            swap_symbol,
+            lev,
+            timeframe=timeframe,
+            side="sell",
+            qty=base_qty,
+        )
+        if leverage_fail is not None:
+            return leverage_fail
+
+        params = self._client_order_params(order)
+        return self._place_swap_order(
+            exchange,
+            order,
+            swap_symbol=swap_symbol,
+            side="sell",
+            contracts=contracts,
+            base_qty=base_qty,
+            contract_size=contract_size,
+            timeframe=timeframe,
+            params=params,
+        )
+
+    def _execute_cover(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
+        swap_symbol = self._swap_symbol(order)
+        base_qty = float(order.qty or 0)
+        if base_qty <= 0:
+            return self._rejected_result(order, "No amount to cover")
+
+        market, market_err = self._load_swap_market(exchange, swap_symbol)
+        if market_err:
+            return self._rejected_result(order, market_err)
+        contract_size = self._swap_contract_size(market, swap_symbol)
+
+        exchange_base = self._swap_position_base_qty(
+            exchange, swap_symbol, contract_size
+        )
+        if exchange_base is not None and exchange_base > 0 and base_qty > exchange_base:
+            log(
+                f"Cover amount capped: ledger {base_qty:.6f} > exchange "
+                f"{exchange_base:.6f} for {order.symbol}",
+                "WARNING",
+            )
+            base_qty = exchange_base
+            order.qty = base_qty
+        elif exchange_base is not None and exchange_base <= 0:
+            return self._active_reconcile_result(
+                order,
+                "no swap position to cover — ledger/exchange mismatch",
+                exist=False,
+            )
+
+        contracts, conv_err = self._base_to_contracts(
+            exchange, swap_symbol, base_qty, contract_size
+        )
+        if conv_err:
+            return self._rejected_result(order, conv_err)
+        min_amount = float(
+            (market.get("limits") or {}).get("amount", {}).get("min", 0) or 0
+        )
+        if min_amount and contracts < min_amount:
+            return self._rejected_result(
+                order,
+                f"Amount {contracts:.6f} contracts below Gate minimum ({min_amount})",
+            )
+
+        params = self._client_order_params(order)
+        params["reduceOnly"] = True
+        return self._place_swap_order(
+            exchange,
+            order,
+            swap_symbol=swap_symbol,
+            side="buy",
+            contracts=contracts,
+            base_qty=base_qty,
+            contract_size=contract_size,
+            timeframe=timeframe,
+            params=params,
+        )
+
     def _places_on_exchange(self) -> bool:
         return self._adapter_mode in ("real", "testnet")
 
@@ -424,14 +992,25 @@ class GateExecutionAdapter(ExecutionAdapter):
         side: str = "buy",
         qty: float = 0.0,
         usdt: float = 0.0,
+        lookup_symbol: str | None = None,
+        contract_size: float | None = None,
     ) -> TradeResult:
         hard = self._hard_reject_types()
         uncertain = self._uncertain_types()
         if hard and isinstance(exc, hard):
             return self._rejected_result(order, str(exc)[:200] or exc.__class__.__name__)
         if create_attempted and uncertain and isinstance(exc, uncertain):
-            found, looked = self._recover_after_uncertain_create(exchange, order)
+            found, looked = self._recover_after_uncertain_create(
+                exchange, order, lookup_symbol=lookup_symbol
+            )
             if found is not None:
+                if lookup_symbol and contract_size is not None:
+                    found = self._prepare_swap_raw(
+                        exchange, order, found, lookup_symbol, contract_size
+                    )
+                    missing = self._swap_filled_or_reconcile(order, found)
+                    if missing is not None:
+                        return missing
                 return self._finalize_exchange_order(
                     exchange,
                     order,
@@ -440,6 +1019,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                     qty=qty or float(order.qty or 0),
                     timeframe=timeframe,
                     usdt=usdt or order.usdt_amount,
+                    lookup_symbol=lookup_symbol,
                 )
             if looked:
                 return self._rejected_result(order, "not placed")
@@ -475,7 +1055,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         return False
 
     def _recover_after_uncertain_create(
-        self, exchange, order: TradeOrder
+        self, exchange, order: TradeOrder, lookup_symbol: str | None = None
     ) -> tuple[dict | None, bool]:
         """fetch_open_orders then fetch_order by client_order_id. Never resend.
 
@@ -486,9 +1066,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         key = order.client_order_id or order.idempotency_key
         if exchange is None:
             return None, False
+        symbol = lookup_symbol or order.symbol
         looked = False
         try:
-            opens = exchange.fetch_open_orders(order.symbol) or []
+            opens = exchange.fetch_open_orders(symbol) or []
             looked = True
         except Exception as e:
             log(f"fetch_open_orders after uncertain create failed: {e}", "WARNING")
@@ -508,13 +1089,13 @@ class GateExecutionAdapter(ExecutionAdapter):
                 continue
             try:
                 fetched = (
-                    exchange.fetch_order(ident, order.symbol, params)
+                    exchange.fetch_order(ident, symbol, params)
                     if params
-                    else exchange.fetch_order(ident, order.symbol)
+                    else exchange.fetch_order(ident, symbol)
                 )
             except TypeError:
                 try:
-                    fetched = exchange.fetch_order(ident, order.symbol)
+                    fetched = exchange.fetch_order(ident, symbol)
                 except Exception:
                     continue
             except Exception:
@@ -524,7 +1105,13 @@ class GateExecutionAdapter(ExecutionAdapter):
                 return fetched, True
         return None, looked
 
-    def _ensure_filled(self, exchange, raw: dict, order: TradeOrder) -> dict:
+    def _ensure_filled(
+        self,
+        exchange,
+        raw: dict,
+        order: TradeOrder,
+        lookup_symbol: str | None = None,
+    ) -> dict:
         """One fetch_order if ``filled`` is missing. Never invent filled=qty."""
         if not isinstance(raw, dict):
             return {}
@@ -533,8 +1120,9 @@ class GateExecutionAdapter(ExecutionAdapter):
         oid = raw.get("id")
         if not oid or exchange is None:
             return raw
+        symbol = lookup_symbol or order.symbol
         try:
-            fetched = exchange.fetch_order(oid, order.symbol)
+            fetched = exchange.fetch_order(oid, symbol)
         except Exception as e:
             log(f"fetch_order({oid}) after missing filled failed: {e}", "WARNING")
             return raw
@@ -546,26 +1134,35 @@ class GateExecutionAdapter(ExecutionAdapter):
                 merged[k] = v
         return merged
 
-    def _vwap_from_my_trades(self, exchange, order: TradeOrder, raw: dict) -> float | None:
+    def _fetch_matched_my_trades(
+        self,
+        exchange,
+        order: TradeOrder,
+        raw: dict,
+        lookup_symbol: str | None = None,
+    ) -> list[dict]:
         if exchange is None or not isinstance(raw, dict):
-            return None
+            return []
         oid = str(raw.get("id") or "")
         since = raw.get("timestamp")
         try:
             since_i = int(since) if since is not None else None
         except (TypeError, ValueError):
             since_i = None
+        symbol = lookup_symbol or order.symbol
         try:
-            trades = exchange.fetch_my_trades(order.symbol, since=since_i) or []
+            trades = exchange.fetch_my_trades(symbol, since=since_i) or []
         except TypeError:
             try:
-                trades = exchange.fetch_my_trades(order.symbol) or []
+                trades = exchange.fetch_my_trades(symbol) or []
             except Exception as e:
                 log(f"fetch_my_trades failed: {e}", "WARNING")
-                return None
+                return []
         except Exception as e:
             log(f"fetch_my_trades failed: {e}", "WARNING")
-            return None
+            return []
+        if not isinstance(trades, list):
+            return []
         matched = []
         for t in trades:
             if not isinstance(t, dict):
@@ -573,6 +1170,18 @@ class GateExecutionAdapter(ExecutionAdapter):
             tid = str(t.get("order") or t.get("orderId") or t.get("order_id") or "")
             if oid and tid == oid:
                 matched.append(t)
+        return matched
+
+    def _vwap_from_my_trades(
+        self,
+        exchange,
+        order: TradeOrder,
+        raw: dict,
+        lookup_symbol: str | None = None,
+    ) -> float | None:
+        matched = self._fetch_matched_my_trades(
+            exchange, order, raw, lookup_symbol=lookup_symbol
+        )
         if not matched:
             return None
         notional = 0.0
@@ -635,31 +1244,39 @@ class GateExecutionAdapter(ExecutionAdapter):
         return None
 
     def _fill_or_unknown_fee(
-        self, raw: dict, order: TradeOrder, *, side: str, fill_price: float, filled: float
+        self,
+        raw: dict,
+        order: TradeOrder,
+        *,
+        side: str,
+        fill_price: float,
+        filled: float,
+        force_unknown: bool = False,
     ) -> tuple[Fill, bool]:
-        try:
-            return self._fill_from_raw(raw, order, side=side), False
-        except ValueError as e:
-            log(
-                f"fill_from_exchange unknown fee currency for {order.symbol}: {e}",
-                "ERROR",
-            )
-            quote_gross = float(raw.get("cost") or 0) or fill_price * filled
-            fill = Fill(
-                side="sell" if str(side).lower() == "sell" else "buy",
-                order_type="market",
-                request_price=float(order.price or 0),
-                fill_price=fill_price,
-                qty_gross=filled,
-                qty_net=filled,
-                quote_gross=quote_gross,
-                quote_net=quote_gross,
-                fee_base=0.0,
-                fee_quote=0.0,
-                fee_usdt=0.0,
-                slippage_usdt=abs(fill_price - float(order.price or 0)) * filled,
-            )
-            return fill, True
+        if not force_unknown:
+            try:
+                return self._fill_from_raw(raw, order, side=side), False
+            except ValueError as e:
+                log(
+                    f"fill_from_exchange unknown fee currency for {order.symbol}: {e}",
+                    "ERROR",
+                )
+        quote_gross = float(raw.get("cost") or 0) or fill_price * filled
+        fill = Fill(
+            side="sell" if str(side).lower() == "sell" else "buy",
+            order_type="market",
+            request_price=float(order.price or 0),
+            fill_price=fill_price,
+            qty_gross=filled,
+            qty_net=filled,
+            quote_gross=quote_gross,
+            quote_net=quote_gross,
+            fee_base=0.0,
+            fee_quote=0.0,
+            fee_usdt=0.0,
+            slippage_usdt=abs(fill_price - float(order.price or 0)) * filled,
+        )
+        return fill, True
 
     def _finalize_exchange_order(
         self,
@@ -671,6 +1288,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         qty: float,
         timeframe: str,
         usdt: float = 0.0,
+        lookup_symbol: str | None = None,
     ) -> TradeResult:
         raw = raw if isinstance(raw, dict) else {}
         terminal = self._canceled_or_rejected_exchange(raw)
@@ -690,7 +1308,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 order_exist_in_exchange=order.order_exist_in_exchange,
             )
 
-        raw = self._ensure_filled(exchange, raw, order)
+        raw = self._ensure_filled(exchange, raw, order, lookup_symbol=lookup_symbol)
         filled_raw = raw.get("filled")
         if filled_raw is None:
             return self._active_reconcile_result(
@@ -725,7 +1343,9 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         average = raw.get("average")
         if average is None and need_average:
-            vwap = self._vwap_from_my_trades(exchange, order, raw)
+            vwap = self._vwap_from_my_trades(
+                exchange, order, raw, lookup_symbol=lookup_symbol
+            )
             if vwap is None:
                 return self._active_reconcile_result(
                     order, "average missing and VWAP reconstruct failed", exist=exist, raw=raw
@@ -749,8 +1369,18 @@ class GateExecutionAdapter(ExecutionAdapter):
                 "INFO",
             )
 
+        force_unknown = False
+        if isinstance(raw, dict) and raw.get("_fee_unknown"):
+            force_unknown = True
+            raw = dict(raw)
+            raw.pop("_fee_unknown", None)
         fill, fee_unknown = self._fill_or_unknown_fee(
-            raw, order, side=side, fill_price=fill_price, filled=filled
+            raw,
+            order,
+            side=side,
+            fill_price=fill_price,
+            filled=filled,
+            force_unknown=force_unknown,
         )
         cost = float(raw.get("cost") or fill.quote_gross or fill_price * filled)
         order.filled_qty = filled
@@ -758,12 +1388,20 @@ class GateExecutionAdapter(ExecutionAdapter):
         order.exchange_order_id = str(raw.get("id") or "")
         order.order_exist_in_exchange = self._places_on_exchange()
 
+        if order.type == "BUY":
+            sync_usdt = cost
+        elif order.type == "SHORT":
+            # execute_short sizes as notional/price; pass fill notional so
+            # the ledger lot equals filled base (full and partial).
+            sync_usdt = fill_price * filled
+        else:
+            sync_usdt = order.usdt_amount
         sync_order = TradeOrder(
             order.type,
             order.symbol,
             fill_price,
             filled,
-            usdt_amount=cost if order.type == "BUY" else order.usdt_amount,
+            usdt_amount=sync_usdt,
             signal=order.signal,
             source=order.source,
             order_id=order.order_id,

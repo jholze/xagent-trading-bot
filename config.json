@@ -128,7 +128,12 @@
       "trail_retrace_pct": 1.0,
       "rsi_cover_below": 35
     },
-    "coins": {}
+    "coins": {},
+    "testnet_futures": {
+      "enabled": false,
+      "tenants": [],
+      "_doc": "Fail-closed Gate futures testnet for SHORT/COVER. Both enabled=true AND the current tenant id listed in tenants (exact string match, non-empty list) are required. There is no single boolean that flips all four tenants — turning it on for everyone means naming every tenant explicitly, a visible deliberate act. Missing keys, wrong types, empty tenants, or an unnamed tenant reject the order."
+    }
   },
   "trade_cooldown_hours": 0.35,
   "debug": false,

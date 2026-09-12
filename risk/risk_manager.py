@@ -106,6 +106,19 @@ def guard_failed(guard: str, exc: BaseException, order, *, config=None) -> RiskD
     )
 
 
+def _execution_is_testnet(raw) -> bool:
+    """True only when live.execution resolves to testnet. Fail-closed on error."""
+    from core.execution_mode import resolve_execution_mode
+    from logger import log
+
+    try:
+        return resolve_execution_mode(raw).adapter_mode == "testnet"
+    except Exception as e:
+        # Fail-closed: unresolved mode must keep the live short gate in place.
+        log(f"short gate: execution mode unresolved, treating as non-testnet: {e}", "WARNING")
+        return False
+
+
 class RiskManager:
     """Central gate for trade sizing and portfolio limits."""
 
@@ -2197,7 +2210,11 @@ class RiskManager:
         from strategies.short_policy import resolve_short_params, shorts_allow_live, shorts_enabled
 
         raw = self.config.raw if hasattr(self.config, "raw") else {}
-        if is_real_live_trading(raw) and not shorts_allow_live(raw):
+        if (
+            is_real_live_trading(raw)
+            and not shorts_allow_live(raw)
+            and not _execution_is_testnet(raw)
+        ):
             return RiskDecision(
                 approved=False,
                 message="shorts.allow_live=false (no Gate futures in v0)",
