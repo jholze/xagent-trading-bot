@@ -24,6 +24,10 @@ MODE_NO_DCA = "no_dca"
 MODE_NO_EVICT = "no_evict"
 MODE_NO_MANUAL_SELL = "no_manual_sell"
 
+# Ledger-read failure episodes already logged (symbol|timeframe). Cleared on
+# the next successful read so a new outage logs again — not once per tick.
+_LEDGER_READ_FAIL_LOGGED: set[str] = set()
+
 ALL_MODES = frozenset(
     {MODE_NO_AUTO_SELL, MODE_NO_DCA, MODE_NO_EVICT, MODE_NO_MANUAL_SELL}
 )
@@ -92,6 +96,10 @@ def get_lock(pos: dict | None) -> dict[str, Any] | None:
     return raw
 
 
+def _ledger_fail_log_key(symbol: str, timeframe: str) -> str:
+    return f"{symbol}|{timeframe}"
+
+
 def attach_lock_from_ledger(
     pos: dict | None,
     symbol: str,
@@ -103,7 +111,8 @@ def attach_lock_from_ledger(
     """If *pos* is open but has no lock in RAM, pull lock from Mongo/positions doc.
 
     Fixes: ops set lock out-of-process, then bot RAM still sells via exit_ws.
-    Fail-open only when ledger read breaks (caller may still fail-closed).
+    On ledger-read failure attach a per-evaluation synthetic lock (not persisted)
+    so auto-sell / eviction fail closed while manual / telegram / DCA stay allowed.
     """
     if not isinstance(pos, dict):
         return pos
@@ -131,10 +140,42 @@ def attach_lock_from_ledger(
                 from strategies.positions import set_position_lock
 
                 set_position_lock(symbol, timeframe, pos[LOCK_KEY], persist=False)
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                try:
+                    log(
+                        f"position_lock RAM/ledger lock desync {symbol} {timeframe}: {exc}",
+                        "WARNING",
+                    )
+                except Exception as log_exc:
+                    # Must not leak into the outer handler (would replace a real
+                    # ledger lock with a synthetic one).
+                    print(
+                        f"position_lock RAM/ledger lock desync {symbol} {timeframe}: "
+                        f"{exc} (log failed: {log_exc})"
+                    )
+        _LEDGER_READ_FAIL_LOGGED.discard(_ledger_fail_log_key(symbol, timeframe))
+    except Exception as exc:
+        # Fail-closed: synthetic lock on the RETURNED copy only — never persist.
+        fail_key = _ledger_fail_log_key(symbol, timeframe)
+        if fail_key not in _LEDGER_READ_FAIL_LOGGED:
+            _LEDGER_READ_FAIL_LOGGED.add(fail_key)
+            try:
+                log(
+                    f"position_lock ledger read failed {symbol} {timeframe}: {exc}",
+                    "ERROR",
+                )
+            except Exception as log_exc:
+                print(
+                    f"position_lock ledger read failed {symbol} {timeframe}: "
+                    f"{exc} (log failed: {log_exc})"
+                )
+        out = dict(pos)
+        out[LOCK_KEY] = build_lock(
+            reason="ledger_read_failed",
+            locked_by="system",
+            modes=[MODE_NO_AUTO_SELL, MODE_NO_EVICT],
+        )
+        return out
     return pos
 
 
