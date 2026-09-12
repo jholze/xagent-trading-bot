@@ -30,6 +30,9 @@ _DEFAULTS: dict[str, Any] = {
     "cash_rich_extra_mult": 1.25,
 }
 
+# Never size-boost these; cash-rich extra is also skipped (#376).
+_DERISK_REGIMES = frozenset({"RISK_OFF", "CRASH", "WARMUP"})
+
 
 def moderate_deploy_config(config: dict | None = None) -> dict[str, Any]:
     raw: dict[str, Any] = {}
@@ -64,6 +67,9 @@ def moderate_deploy_config(config: dict | None = None) -> dict[str, Any]:
     out["max_total_multiplier"] = max(1.0, float(out["max_total_multiplier"]))
     out["cash_rich_pct"] = max(0.0, min(100.0, float(out["cash_rich_pct"])))
     out["cash_rich_extra_mult"] = max(1.0, float(out["cash_rich_extra_mult"]))
+    # Config cannot re-introduce a de-risking size boost (#376).
+    for k in ("size_boost_risk_off", "size_boost_crash", "size_boost_warmup"):
+        out[k] = min(1.0, float(out[k]))
     return out
 
 
@@ -96,7 +102,8 @@ def size_boost_for_regime(
     """Return size multiplier ≥1.0 (1.0 = no change). Fail-open → 1.0.
 
     cash_pct: cash as % of equity (0–100). When above cash_rich_pct, apply extra mult
-    so parked capital deploys faster without lowering exit rules.
+    so parked capital deploys faster without lowering exit rules. Skipped for
+    RISK_OFF / WARMUP / CRASH (#376).
     """
     try:
         cfg = moderate_deploy_config(config)
@@ -124,9 +131,9 @@ def size_boost_for_regime(
         if is_dca and boost > 1.0:
             scale = float(cfg.get("dca_boost_scale") or 0.7)
             boost = 1.0 + (boost - 1.0) * scale
-        # Cash parking antidote (skip on CRASH)
+        # Cash parking antidote (skip RISK_OFF / WARMUP / CRASH — #376)
         if (
-            reg != "CRASH"
+            reg not in _DERISK_REGIMES
             and cash_pct is not None
             and float(cash_pct) >= float(cfg.get("cash_rich_pct") or 55.0)
         ):
