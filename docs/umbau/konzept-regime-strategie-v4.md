@@ -141,12 +141,13 @@ Jeder Trade bekommt Zusatzfelder, die **keine Wirkung auf die Entscheidung** hab
 | `ctx_btc_dominance` | Prozent | CMC | Phase 2 |
 | `ctx_oracle_state` | `RISK_ON / NEUTRAL / RISK_OFF / CRASH` | **existiert schon** im Marktorakel | Phase 2 — sofort |
 | `ctx_coin_regime` | die fünf Detector-Zustände | **existiert schon** im RegimeDetector | Phase 2 — sofort |
-| `ctx_volume_rel` | Verhältnis zum 30-Tage-Mittel | eigene Kerzen | Phase 2 — sofort |
+| `ctx_volume_rel` | Verhältnis 24h-Mittel zu Mittel über das Fenster (≤ 30 Tage) | eigene Kerzen | Phase 2 — sofort |
+| `ctx_volume_window_days` | Tage (30.0 oder Frame-Länge, z. B. 12.5 bei 1h) | eigene Kerzen | Phase 2 — sofort (#365) |
 | `ctx_whale_flow` | −1 / 0 / +1 | Dune (Phase 5), vorher Santiment falls Slug verifiziert | Phase 5 |
 | `ctx_captured_at` | Zeitstempel **getrennt** vom Trade-Zeitstempel | — | Pflicht |
 | `ctx_origin` | `live` / `backfilled` | — | Pflicht |
 
-Drei Achsen (`oracle_state`, `coin_regime`, `volume_rel`) kann der Bot **heute** mitschreiben, weil die Werte im Zyklus schon berechnet werden. Damit beginnt die Datensammlung in Phase 2, nicht erst in Phase 5.
+Drei Achsen (`oracle_state`, `coin_regime`, `volume_rel`) kann der Bot **heute** mitschreiben, weil die Werte im Zyklus schon berechnet werden. Damit beginnt die Datensammlung in Phase 2, nicht erst in Phase 5. Das Fenster (`ctx_volume_window_days`) wird mitgeschrieben, damit 1h- und 4h-Zeilen vergleichbar bleiben.
 
 **In Weaviate (existiert: `intelligence/memory/vector_weaviate.py`):** Nachrichtenlage als Text mit Einbettung, `trade_id`, `captured_at`. Zweck: Ähnlichkeitssuche „wann war die Lage schon mal so“ — das umgeht das Kombinatorik-Problem, das exakte Musterabfragen haben.
 
