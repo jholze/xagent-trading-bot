@@ -10,9 +10,10 @@ from services.portfolio_service import PortfolioService
 from strategies.positions import (
     clear_positions_memory,
     get_position,
+    set_position_field,
     update_position,
 )
-from strategies.short_math import is_short, unrealized_pnl
+from strategies.short_math import clamp_leverage, is_short, unrealized_pnl
 
 
 class TestShortsFlow(unittest.TestCase):
@@ -298,3 +299,110 @@ class TestShortsFlow(unittest.TestCase):
             )
         self.assertFalse(dec.approved)
         self.assertEqual(dec.code, "short_mcap")
+
+    # --- #385: stored-lot leverage must be tenant-capped before the NAV margin sum ---
+    # Existing SHORT: qty 400 @ 1.0 → notional 400.
+    # New SHORT: 160 USDT @ 1.0, lev 2 → margin 80.
+    # NAV 1000, max_margin_pct 20 → limit 200.
+    # Counted at cap 2x: open 200 + 80 = 280 > 200 (reject).
+    # Counted at 1000x: open 0.4 + 80 = 80.4 < 200 (old bug: approve).
+
+    _MARGIN_CAP_LOT_QTY = 400.0
+    _MARGIN_CAP_LOT_ENTRY = 1.0
+    _MARGIN_CAP_NEW_USDT = 160.0
+    _MARGIN_CAP_NAV = 1000.0
+    _MARGIN_CAP_PCT = 20.0
+    _MARGIN_CAP_LEV_CAP = 2
+
+    def _open_corrupt_short(self, leverage):
+        update_position(
+            "OPEN385/USDT",
+            "4h",
+            "SHORT",
+            self._MARGIN_CAP_LOT_ENTRY,
+            self._MARGIN_CAP_LOT_QTY,
+            leverage=2,
+        )
+        set_position_field("OPEN385/USDT", "4h", "leverage", leverage)
+
+    def _eval_new_short_against_open_book(self, *, max_margin_pct, nav):
+        from risk.risk_manager import RiskManager
+
+        rm = RiskManager()
+        raw = {
+            "shorts": {
+                "enabled": True,
+                "allow_live": False,
+                "leverage_default": 2,
+                "leverage_cap": self._MARGIN_CAP_LEV_CAP,
+                "max_open": 6,
+                "max_margin_pct": max_margin_pct,
+                "volatile": {"market_cap_min_usd": 0},
+            }
+        }
+        with patch.object(rm.config, "_raw", raw), patch(
+            "core.simulated_trading.is_real_live_trading", return_value=False
+        ), patch.object(rm, "_available_usdt", return_value=10_000), patch.object(
+            rm, "_portfolio_equity", return_value=nav
+        ):
+            return rm.evaluate(
+                TradeOrder(
+                    type="SHORT",
+                    symbol="NEW385/USDT",
+                    price=1.0,
+                    amount=0,
+                    usdt_amount=self._MARGIN_CAP_NEW_USDT,
+                ),
+                "4h",
+                source="manual",
+            )
+
+    def test_clamp_leverage_nan_with_cap_two(self):
+        got = clamp_leverage(float("nan"), cap=2)
+        self.assertEqual(got, 2.0)
+
+    def test_risk_rejects_margin_pct_when_stored_leverage_exceeds_cap(self):
+        self._open_corrupt_short(1000)
+        dec = self._eval_new_short_against_open_book(
+            max_margin_pct=self._MARGIN_CAP_PCT, nav=self._MARGIN_CAP_NAV
+        )
+        self.assertFalse(dec.approved)
+        self.assertEqual(dec.code, "short_margin_pct")
+
+    def test_risk_rejects_margin_pct_when_stored_leverage_is_nan(self):
+        self._open_corrupt_short(float("nan"))
+        dec = self._eval_new_short_against_open_book(
+            max_margin_pct=self._MARGIN_CAP_PCT, nav=self._MARGIN_CAP_NAV
+        )
+        self.assertFalse(dec.approved)
+        self.assertEqual(dec.code, "short_margin_pct")
+
+    def test_risk_rejects_margin_pct_when_stored_leverage_is_inf(self):
+        self._open_corrupt_short(float("inf"))
+        dec = self._eval_new_short_against_open_book(
+            max_margin_pct=self._MARGIN_CAP_PCT, nav=self._MARGIN_CAP_NAV
+        )
+        self.assertFalse(dec.approved)
+        self.assertEqual(dec.code, "short_margin_pct")
+
+    def test_risk_treats_stored_leverage_zero_as_params_default(self):
+        self._open_corrupt_short(0)
+        dec = self._eval_new_short_against_open_book(
+            max_margin_pct=self._MARGIN_CAP_PCT, nav=self._MARGIN_CAP_NAV
+        )
+        self.assertFalse(dec.approved)
+        self.assertEqual(dec.code, "short_margin_pct")
+
+    def test_risk_rejects_non_numeric_stored_leverage_as_shorts_slots(self):
+        self._open_corrupt_short("x")
+        dec = self._eval_new_short_against_open_book(
+            max_margin_pct=self._MARGIN_CAP_PCT, nav=self._MARGIN_CAP_NAV
+        )
+        self.assertFalse(dec.approved)
+        self.assertEqual(dec.code, "shorts_slots")
+
+    def test_risk_approves_short_when_open_margin_at_cap_fits(self):
+        self._open_corrupt_short(2)
+        dec = self._eval_new_short_against_open_book(max_margin_pct=80, nav=self._MARGIN_CAP_NAV)
+        self.assertTrue(dec.approved, dec.message)
+        self.assertEqual(dec.message, "ok")

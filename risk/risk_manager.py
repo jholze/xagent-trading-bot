@@ -2208,6 +2208,8 @@ class RiskManager:
         timeframe: str,
         source: str = "auto",
     ) -> RiskDecision:
+        import math
+
         from core.simulated_trading import is_real_live_trading
         from strategies.short_math import clamp_leverage, is_short, margin_usdt
         from strategies.short_policy import resolve_short_params, shorts_allow_live, shorts_enabled
@@ -2263,22 +2265,42 @@ class RiskManager:
             )
         n_short = 0
         open_margin = 0.0
+        invalid_lots = []
         try:
-            from strategies.short_math import margin_usdt as _mgn
-
             for p in list_active_positions():
                 if is_short(p) and float(p.get("amount") or 0) > 0:
                     n_short += 1
-                    open_margin += _mgn(
+                    raw_lev = p.get("leverage") or params.get("leverage") or 2
+                    # float() first: non-numeric stored lev (e.g. "x") still fail-closed via shorts_slots.
+                    lot_lev = clamp_leverage(float(raw_lev), cap=params["leverage_cap"])
+                    contrib = margin_usdt(
                         float(p.get("amount") or 0),
                         float(p.get("average_entry") or 0),
-                        float(p.get("leverage") or params.get("leverage") or 2),
+                        lot_lev,
                     )
+                    if math.isnan(contrib) or math.isinf(contrib) or contrib < 0:
+                        invalid_lots.append(
+                            f"{p.get('symbol') or '?'} raw_leverage={raw_lev!r}"
+                        )
+                    open_margin += contrib
         except Exception as exc:
             return RiskDecision(
                 approved=False,
                 message=f"short book check failed: {exc}"[:200],
                 code="shorts_slots",
+            )
+        if math.isnan(open_margin) or math.isinf(open_margin) or open_margin < 0:
+            from logger import log
+
+            detail = ", ".join(invalid_lots) or "unknown"
+            log(
+                f"short margin cap: open margin invalid ({open_margin!r}); lots: {detail}",
+                "ERROR",
+            )
+            return RiskDecision(
+                approved=False,
+                code="short_margin_pct",
+                message="short margin cap: open margin invalid",
             )
         if n_short >= int(params.get("max_open") or 6) and not (
             is_short(pos) and float((pos or {}).get("amount") or 0) > 0
