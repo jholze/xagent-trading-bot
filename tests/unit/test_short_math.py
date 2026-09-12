@@ -31,6 +31,31 @@ class TestShortMath(unittest.TestCase):
     def test_margin_is_notional_over_leverage(self):
         self.assertAlmostEqual(margin_usdt(10, 2.0, 2.0), 10.0)
 
+    def test_margin_usdt_uses_raw_leverage_above_default_cap(self):
+        # Old code called clamp_leverage(leverage) with default cap 2.0, so
+        # margin_usdt(10, 2.0, 3.0) was 10.0 (20/2) not 20/3, and
+        # margin_usdt(10, 2.0, 5.0) was 10.0 (20/2) not 4.0.
+        q, p = 10.0, 2.0
+        self.assertAlmostEqual(margin_usdt(q, p, 3.0), q * p / 3.0)
+        self.assertAlmostEqual(margin_usdt(q, p, 5.0), q * p / 5.0)
+
+    def test_margin_usdt_degenerate_leverage_is_notional(self):
+        q, p = 10.0, 2.0
+        notion = q * p
+        self.assertAlmostEqual(margin_usdt(q, p, 0), notion)
+        self.assertAlmostEqual(margin_usdt(q, p, None), notion)
+        self.assertAlmostEqual(margin_usdt(q, p, "x"), notion)
+
+    def test_margin_usdt_sub_one_and_nonfinite_leverage_is_notional(self):
+        # Pre-fix-round returns (this round's regressions):
+        #   0.5 -> 40.0 (notional/0.5); nan -> nan; inf -> 0.0; -1 -> 20.0 (already pinned).
+        q, p = 10.0, 2.0
+        notion = 20.0
+        self.assertAlmostEqual(margin_usdt(q, p, 0.5), notion)
+        self.assertAlmostEqual(margin_usdt(q, p, float("nan")), notion)
+        self.assertAlmostEqual(margin_usdt(q, p, float("inf")), notion)
+        self.assertAlmostEqual(margin_usdt(q, p, -1), notion)
+
     def test_leverage_clamped(self):
         self.assertEqual(clamp_leverage(99, cap=5), 5.0)
         self.assertEqual(clamp_leverage(0.2, cap=5), 1.0)

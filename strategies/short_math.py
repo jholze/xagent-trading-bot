@@ -7,6 +7,7 @@ Stop must trigger before liquidation (liquidation_buffer).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 SIDE_LONG = "long"
@@ -38,10 +39,18 @@ def notional_usdt(qty: float, entry: float) -> float:
 
 
 def margin_usdt(qty: float, entry: float, leverage: float) -> float:
+    """Isolated margin = notional / leverage. Pure function of its inputs.
+
+    Non-finite or < 1.0 leverage is treated as 1.0 (returns the notional);
+    no upper cap -- callers that need a tenant cap clamp before calling.
+    """
     notion = notional_usdt(qty, entry)
-    lev = clamp_leverage(leverage)
-    if lev <= 0:
-        return notion
+    try:
+        lev = float(leverage)
+    except (TypeError, ValueError):
+        lev = 1.0
+    if math.isnan(lev) or math.isinf(lev) or lev < 1.0:
+        lev = 1.0
     return notion / lev
 
 
