@@ -69,6 +69,7 @@ from strategies.entry_sensor_15m import (
 from strategies import watch_15m_state
 from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
 from strategies.exit_sensor import evaluate_exit_sensor_sells
+from strategies.ctx_axes import compute_volume_rel, read_oracle_state
 
 _WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
 _WATCHLIST_TTL_SEC = 60.0
@@ -1801,6 +1802,13 @@ class DecisionEngine:
             analysis.sentiment_score = getattr(technical, "sentiment_score", 0.0)
         if getattr(technical, "allocation", None):
             analysis.allocation = technical.allocation
+
+        # Diagnostic ctx axes — write-only, never read by risk/registry.
+        # Oracle snapshot is market-wide: one store read per evaluate().
+        analysis.ctx_oracle_state = read_oracle_state()
+        analysis.ctx_volume_rel = compute_volume_rel(
+            getattr(market, "ohlcv_df", None), market.timeframe
+        )
 
         # Thread allocator de-risking onto the analysis so the TradeOrder can
         # carry it into RiskManager._dynamic_size (write-only until #302).

@@ -15,6 +15,7 @@ from core.models import (
     TradeResult,
     is_executed_status,
     stored_status,
+    trade_ctx_fields,
 )
 from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
 from core.time_utils import (
@@ -376,6 +377,7 @@ class OrderService:
             "trading_mode": cfg.trading_mode,
             "ledger_scope": self.scope,
             **_leverage_payload(order),
+            **trade_ctx_fields(order),
             "request": {
                 "price": float(order.price or 0),
                 "amount": float(order.qty or 0) or None,
@@ -421,6 +423,7 @@ class OrderService:
             "trading_mode": get_bot_config().trading_mode,
             "ledger_scope": self.scope,
             **_leverage_payload(order),
+            **trade_ctx_fields(order),
             "request": {
                 "price": float(order.price or 0),
                 "amount": float(order.amount or 0) or None,

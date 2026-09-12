@@ -60,6 +60,10 @@ class SignalAnalysis:
     regime_confidence: float = 0.0
     sentiment_score: float = 0.0
     allocation: Optional[dict] = None
+    # Diagnostic context axes (ledger only — never a risk/decision input).
+    # Coin regime is `regime` above; do not duplicate it here.
+    ctx_oracle_state: str | None = None
+    ctx_volume_rel: float | None = None
 
 
 class OrderStatus(str, Enum):
@@ -255,6 +259,10 @@ class TradeOrder:
     leverage: float | None = None
     # Allocator de-risking factor (0–1). Applied in RiskManager._dynamic_size.
     exposure_multiplier: float | None = None
+    # Diagnostic context axes at order time (ledger only — never a risk input).
+    ctx_oracle_state: str | None = None
+    ctx_coin_regime: str | None = None
+    ctx_volume_rel: float | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     filled_qty: float = 0.0
     status: OrderStatus = OrderStatus.QUEUED
@@ -294,6 +302,16 @@ def _trade_order_init(self, *args, amount=None, **kwargs):
 
 
 TradeOrder.__init__ = _trade_order_init  # type: ignore[method-assign]
+
+
+def trade_ctx_fields(order) -> dict:
+    """Flat diagnostic ctx axes for ledger records. ``order`` may be None."""
+    vol = getattr(order, "ctx_volume_rel", None)
+    return {
+        "ctx_oracle_state": getattr(order, "ctx_oracle_state", None),
+        "ctx_coin_regime": getattr(order, "ctx_coin_regime", None),
+        "ctx_volume_rel": float(vol) if vol is not None else None,
+    }
 
 
 @dataclass
