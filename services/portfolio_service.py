@@ -311,6 +311,7 @@ class PortfolioService:
             })
         return TradeResult(
             True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl, order_id=order_id or "",
+            funding_usdt=funding_usdt, funding_unknown=funding_unknown,
         )
 
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:

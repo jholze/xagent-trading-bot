@@ -184,6 +184,8 @@ class TradeResult:
     order_exist_in_exchange: bool = False
     filled_qty: float = 0.0
     code: str = ""
+    funding_usdt: float | None = None
+    funding_unknown: bool = False
 
 
 def execution_filled_qty_gross(execution: dict | None, request: dict | None = None) -> float:

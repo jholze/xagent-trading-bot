@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from core.config import BotConfig
+from core.models import TradeResult
 from data_manager import load_trade_history, save_trade_history
 from services.portfolio_service import PortfolioService
 from strategies.positions import (
@@ -180,3 +181,71 @@ def test_cover_marks_funding_unknown_when_funding_cost_raises(cover_svc):
     assert "treated as 0" in msg
     assert "RuntimeError" in msg
     assert "bad funding_rate_8h" in msg
+
+
+def test_cover_result_carries_funding_when_sync_virtual_ledger_false(cover_svc, monkeypatch):
+    """#373 part 2a: shadow/live path never writes a virtual row; fields live on TradeResult.
+
+    Current code (part 1) has no TradeResult.funding_usdt → AttributeError.
+    """
+    monkeypatch.setattr("services.portfolio_service.datetime", _FrozenDateTime)
+    _open_short(entry_at=OPENED)
+    expected_fund = funding_cost_usdt(notional_usdt(QTY, ENTRY), HOLD_HOURS, RATE)
+    raw_pnl = unrealized_pnl("short", QTY, ENTRY, COVER_PX)
+    expected_pnl = raw_pnl - expected_fund
+    assert expected_fund == pytest.approx(10.0)
+    assert expected_pnl == pytest.approx(90.0)
+
+    result = cover_svc.execute_cover(
+        SYMBOL, TF, COVER_PX, amount=QTY, source="manual", sync_virtual_ledger=False,
+    )
+
+    covers = [t for t in load_trade_history()["trades"] if t.get("type") == "COVER"]
+    assert covers == [], "shadow/live path must not write a virtual COVER row"
+    assert result.executed
+    assert result.funding_usdt == pytest.approx(10.0)
+    assert result.funding_unknown is False
+    assert result.pnl == pytest.approx(90)
+
+
+def test_cover_result_marks_funding_unknown_when_sync_virtual_ledger_false(cover_svc):
+    """#373 part 2a: raising funding path still surfaces markers on TradeResult.
+
+    Current code (part 1) has no TradeResult.funding_unknown → AttributeError.
+    """
+    _open_short(entry_at="not-a-timestamp")
+    expected_pnl = unrealized_pnl("short", QTY, ENTRY, COVER_PX)
+
+    with patch("services.portfolio_service.log") as mock_log:
+        result = cover_svc.execute_cover(
+            SYMBOL, TF, COVER_PX, amount=QTY, source="manual", sync_virtual_ledger=False,
+        )
+
+    covers = [t for t in load_trade_history()["trades"] if t.get("type") == "COVER"]
+    assert covers == [], "shadow/live path must not write a virtual COVER row"
+    assert result.executed
+    assert result.funding_usdt is None
+    assert result.funding_unknown is True
+    assert result.pnl == pytest.approx(expected_pnl)
+
+    warnings = _warning_messages(mock_log)
+    assert warnings, "raising funding path must still log WARNING without a virtual row"
+    msg = warnings[-1]
+    assert SYMBOL in msg
+    assert TF in msg
+    assert "treated as 0" in msg
+    assert "ValueError" in msg
+
+
+def test_trade_result_default_funding_fields_are_safe():
+    """#373 part 2a: trailing defaults keep existing TradeResult constructions valid.
+
+    Current code (part 1) has no funding_unknown field → AttributeError.
+    """
+    result = TradeResult(False, "COVER", "X/USDT", message="x")
+    assert result.funding_unknown is False
+    assert result.funding_usdt is None
+    assert result.executed is False
+    assert result.order_type == "COVER"
+    assert result.symbol == "X/USDT"
+    assert result.message == "x"
