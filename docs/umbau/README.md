@@ -10,6 +10,7 @@ Dieses Verzeichnis ist die Quelle der Wahrheit für den Umbau. Es ersetzt `ARCHI
 |---|---|---|
 | [`konzept-regime-strategie-v3.md`](konzept-regime-strategie-v3.md) | Jesse-Analyse, Order-Lebenszyklus, Kostenmodell-Design, Regime-Strategie, Shorts — **Abschnitte 1–11 werden von v4 referenziert** | aktiv |
 | [`konzept-regime-strategie-v4.md`](konzept-regime-strategie-v4.md) | Abgleich gegen die Codebasis, Erweiterung auf 7 Phasen, Code-Kritik (Teil F) | **aktiv — Leitdokument** |
+| [`regime-sizing-map.md`](regime-sizing-map.md) | Ist-Zustand der Sizing-Komposition in `_dynamic_size`: zwei Regime-Vokabulare plus Makro, Reihenfolge und Clamps (#362) | aktiv |
 | [`phase1-kasse.md`](phase1-kasse.md) | Aufgabenliste Phase 1 mit C/G-Delegation und Abnahmekriterien | aktiv |
 | [`audit-exceptions-phase1.md`](audit-exceptions-phase1.md) | 204 Exception-Stellen in geldrelevanten Dateien, heuristisch vorklassifiziert — Arbeitsgrundlage für Phase 1 §1a | aktiv |
 | [`costmodel-design.md`](costmodel-design.md) | Design `core/costs.py` — Schnittstelle, Fee-Side-Semantik, Migration, Tests (#301) | umgesetzt |
