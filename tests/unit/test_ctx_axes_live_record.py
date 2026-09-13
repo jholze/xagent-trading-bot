@@ -400,3 +400,183 @@ def test_orchestrator_sell_order_carries_ctx_volume_window_days_from_analysis():
     assert order is not None
     assert order.type == "SELL"
     assert order.ctx_volume_window_days == pytest.approx(12.5)
+
+
+# --- #375 hygiene: COVER passthrough, bars-per-day single source, OverflowError ---
+
+
+def test_orchestrator_cover_order_carries_ctx_fields_from_analysis():
+    trading = MagicMock()
+    captured = {}
+
+    def _exec(order, *a, **k):
+        captured["order"] = order
+        captured["tf"] = a[0] if a else k.get("timeframe")
+        return TradeResult(True, "COVER", order.symbol, amount=order.amount, price=order.price)
+
+    trading.execute_order.side_effect = _exec
+    orch = SignalOrchestrator()
+    orch.trading = trading
+    analysis = SignalAnalysis(
+        action="HOLD",
+        symbol="SHRT/USDT",
+        timeframe="1h",
+        rsi=50.0,
+        lower_bb=1.0,
+        vol_multiplier=1.0,
+        ampel_emoji="",
+        ampel_text="",
+        sources=["technical"],
+        normalized_action="HOLD",
+        regime="TRENDING",
+        ctx_oracle_state="RISK_OFF",
+        ctx_volume_rel=0.42,
+        ctx_volume_window_days=7.0,
+    )
+    pos = {"side": "short", "amount": 10.0, "entry_price": 2.0, "timeframe": "4h"}
+
+    with patch(
+        "strategies.short_cover.evaluate_short_cover",
+        return_value={"source": "short_stop", "rationale": "stop hit"},
+    ):
+        handled, result = orch._cycle_short_cover(pos, analysis, 2.5)
+
+    assert handled is True
+    assert result is not None and result.executed
+    order = captured.get("order")
+    assert order is not None
+    assert order.type == "COVER"
+    assert order.symbol == "SHRT/USDT"
+    assert captured["tf"] == "4h"  # lot TF wins over analysis TF
+    assert order.ctx_oracle_state == "RISK_OFF"
+    assert order.ctx_coin_regime == "TRENDING"
+    assert order.ctx_volume_rel == pytest.approx(0.42)
+    assert order.ctx_volume_window_days == pytest.approx(7.0)
+
+
+def test_orchestrator_cover_order_without_ctx_leaves_fields_none():
+    trading = MagicMock()
+    captured = {}
+
+    def _exec(order, *a, **k):
+        captured["order"] = order
+        return TradeResult(True, "COVER", order.symbol, amount=order.amount, price=order.price)
+
+    trading.execute_order.side_effect = _exec
+    orch = SignalOrchestrator()
+    orch.trading = trading
+    analysis = SignalAnalysis(
+        action="HOLD",
+        symbol="SHRT/USDT",
+        timeframe="1h",
+        rsi=50.0,
+        lower_bb=1.0,
+        vol_multiplier=1.0,
+        ampel_emoji="",
+        ampel_text="",
+        sources=["technical"],
+        normalized_action="HOLD",
+        regime="",
+    )
+    pos = {"side": "short", "amount": 10.0, "entry_price": 2.0, "timeframe": "4h"}
+
+    with patch(
+        "strategies.short_cover.evaluate_short_cover",
+        return_value={"source": "short_stop", "rationale": "stop hit"},
+    ):
+        handled, _ = orch._cycle_short_cover(pos, analysis, 2.5)
+
+    assert handled is True
+    order = captured["order"]
+    assert order.type == "COVER"
+    assert order.ctx_oracle_state is None
+    assert order.ctx_coin_regime is None  # empty regime → None, same as BUY/SELL
+    assert order.ctx_volume_rel is None
+    assert order.ctx_volume_window_days is None
+
+
+def test_ctx_axes_bars_per_day_is_market_service_single_source():
+    import services.market_service as market_service
+    from strategies import ctx_axes
+
+    shared = ctx_axes.bars_per_day_map()
+    assert shared is market_service.BARS_PER_DAY
+    assert market_service.BARS_PER_DAY is market_service._24H_BARS
+    assert ctx_axes._bars_per_day("2h") == market_service.BARS_PER_DAY["2h"] == 12
+    assert ctx_axes._bars_per_day("1d") == 1
+    assert ctx_axes._bars_per_day("bogus") is None
+    assert ctx_axes._bars_per_day(None) is None
+
+
+def test_ctx_axes_import_does_not_load_market_service():
+    """``import strategies.ctx_axes`` must not pull in market_service (ccxt/talib)."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import strategies.ctx_axes\n"
+        "assert 'services.market_service' not in sys.modules, "
+        "'ctx_axes eagerly imported market_service'\n"
+        "print('OK')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "OK"
+
+
+@pytest.mark.parametrize("value", [10**400, -(10**400)])
+def test_ctx_float_or_none_catches_overflow_error(value):
+    from core.models import ctx_float_or_none
+
+    with pytest.raises(OverflowError):
+        float(value)  # the raw conversion raises — the helper must swallow it
+    assert ctx_float_or_none(value) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["abc", object(), float("nan"), float("inf"), -float("inf"), None],
+)
+def test_ctx_float_or_none_drops_other_unrepresentable_values(value):
+    from core.models import ctx_float_or_none
+
+    assert ctx_float_or_none(value) is None
+
+
+def test_ctx_float_or_none_keeps_finite_values():
+    from core.models import ctx_float_or_none
+
+    assert ctx_float_or_none(1.37) == pytest.approx(1.37)
+    assert ctx_float_or_none("0.42") == pytest.approx(0.42)
+    assert ctx_float_or_none(7) == 7.0
+    assert ctx_float_or_none(0) == 0.0
+
+
+def test_trade_ctx_fields_survive_overflow_on_order():
+    from core.models import trade_ctx_fields
+
+    order = TradeOrder(
+        "BUY",
+        SYMBOL,
+        100.0,
+        0,
+        usdt_amount=1000.0,
+        ctx_oracle_state="RISK_ON",
+        ctx_coin_regime="RANGING",
+        ctx_volume_rel=10**400,
+        ctx_volume_window_days=10**400,
+    )
+    fields = trade_ctx_fields(order)
+    assert fields["ctx_volume_rel"] is None
+    assert fields["ctx_volume_window_days"] is None
+    assert fields["ctx_oracle_state"] == "RISK_ON"
+    assert fields["ctx_coin_regime"] == "RANGING"
