@@ -394,9 +394,10 @@ class TestBSitesPermissiveDefaults:
             }
         }
         assert size_boost_for_regime(cfg, "UNKNOWN") == 1.0
-        assert size_boost_for_regime(cfg, None) == pytest.approx(1.35)
+        # #390 / #384 Option 2: regime=None is the same lockout as explicit UNKNOWN.
+        assert size_boost_for_regime(cfg, None) == 1.0
 
-    def test_dynamic_size_oracle_failure_log_keeps_default_boost(self):
+    def test_dynamic_size_oracle_failure_log_no_boost(self):
         rm = _rm(
             "log",
             moderate_deploy={
@@ -426,7 +427,8 @@ class TestBSitesPermissiveDefaults:
             sized, factors = rm._dynamic_size(
                 1000.0, order, "4h", "grid", 70.0, 50.0, {"atr_pct": 3.0}
             )
-        assert factors["moderate_deploy_mult"] == pytest.approx(1.35)
+        # #390 / #384 Option 2: log-mode oracle failure (regime=None) must not size-boost.
+        assert factors["moderate_deploy_mult"] == pytest.approx(1.0)
         assert factors["global_size_mult"] == pytest.approx(1.0)
         assert sized > 0
         assert any("global_market_bias" in m for m in _error_messages(mock_log))
