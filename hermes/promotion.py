@@ -414,9 +414,48 @@ def _notify_auto_revert(item: dict, decision) -> None:
         log(f"Hermes auto-revert notify failed: {e}", "WARNING")
 
 
+_DISABLED_SKIP_MSG = "Hermes promotion tick skipped because hermes.enabled=false"
+_disabled_warning_emitted = False
+
+
+def _reset_disabled_warning() -> None:
+    """Test hook: allow the disabled-gate log to fire again in this process."""
+    global _disabled_warning_emitted
+    _disabled_warning_emitted = False
+
+
+def _hermes_enabled(agent=None) -> bool:
+    """Prefer agent.config.hermes_enabled when a BotConfig is present.
+
+    Same resolution order as `_promo_cfg` for the BotConfig vs get_bot_config
+    fallback. Does not consult HERMES_RUN_LEARNING.
+    """
+    try:
+        from core.config import BotConfig, get_bot_config
+
+        if agent is not None:
+            cfg = getattr(agent, "config", None)
+            if isinstance(cfg, BotConfig):
+                return bool(cfg.hermes_enabled)
+        return bool(get_bot_config().hermes_enabled)
+    except Exception as e:
+        log(f"Hermes enabled-flag lookup failed: {e}", "WARNING")
+        return False
+
+
+def _log_disabled_once() -> None:
+    global _disabled_warning_emitted
+    if not _disabled_warning_emitted:
+        log(_DISABLED_SKIP_MSG, "INFO")
+        _disabled_warning_emitted = True
+
+
 def tick(agent=None, now: datetime | None = None, trades: list[dict] | None = None) -> dict:
     """Apply due pending promotions and run due post-apply checks."""
     now = _now(now)
+    if not _hermes_enabled(agent):
+        _log_disabled_once()
+        return {"applied": [], "reverted": []}
     if agent is not None and getattr(agent, "_is_observe_mode", lambda: False)():
         return {"applied": [], "reverted": []}
 
@@ -493,6 +532,9 @@ def tick(agent=None, now: datetime | None = None, trades: list[dict] | None = No
 def tick_hermes_promotions(now: datetime | None = None) -> dict:
     """Entry point for the background runtime / Hermes cycle tick."""
     try:
+        if not _hermes_enabled():
+            _log_disabled_once()
+            return {"applied": [], "reverted": []}
         state = store.load_promotion_state()
         pending = [p for p in (state.get("pending") or []) if p.get("status") == "pending"]
         applied = [
