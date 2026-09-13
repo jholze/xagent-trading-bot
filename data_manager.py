@@ -1344,12 +1344,32 @@ def _load_live_trade_history_json() -> dict:
         _raise_ledger_unavailable("load_live_trade_history_json", e, scope="live")
 
 
+def _live_trade_history_scope(config: dict | None = None) -> str:
+    """Scope for load/save_live_trade_history (#351).
+
+    - non-demo                              -> "live"
+    - demo + trading_mode=live, dry_run on  -> "live" (Railway shadow)
+    - demo + trading_mode=live, dry_run off -> "live" (cutover: operator decision,
+      deliberately not taken here)
+    - demo + trading_mode != live (paper)   -> "demo"
+    """
+    cfg = config if config is not None else get_config()
+    if not is_demo_mode():
+        return "live"
+    if is_live_dry_run(cfg):
+        return "live"
+    if cfg.get("trading_mode") == "live":
+        return "live"
+    return "demo"
+
+
 def load_live_trade_history():
     cfg = get_config()
-    if is_demo_mode() and is_live_dry_run(cfg):
-        return load_trade_history_document("live")
-    if is_demo_mode():
+    sc = _live_trade_history_scope(cfg)
+    if sc == "demo":
         return load_trade_history_document("demo")
+    if is_demo_mode() and sc == "live":
+        return load_trade_history_document("live")
     cfg = get_config()
     if _ledger_reads_mongo("live", cfg):
         try:
@@ -1378,11 +1398,28 @@ def load_live_trade_history():
 
 
 def save_live_trade_history(data):
-    return save_trade_history_document(data, "live")
+    return save_trade_history_document(data, _live_trade_history_scope())
+
+
+def _live_trade_already_booked_by_record_trade(cfg: dict) -> bool:
+    """True when record_trade() is the writer for this fill and shares our scope (#351).
+
+    gate_adapter fires record_trade (sync_virtual) when the exchange ledger is not
+    used AND record_live_trade on every fill. Under DEMO_MODE=1 + paper both
+    resolve to "demo" -> a second row from record_live_trade would double-book.
+    Non-demo live also has equal scopes ("live") but record_trade is NOT called
+    there (uses_exchange_ledger), so record_live_trade must still write.
+    """
+    mode = cfg.get("trading_mode")
+    if uses_exchange_ledger(mode):
+        return False
+    return _live_trade_history_scope(cfg) == resolve_ledger_scope(mode)
 
 
 def record_live_trade(trade):
     cfg = get_config()
+    if _live_trade_already_booked_by_record_trade(cfg):
+        return load_live_trade_history()
     history = load_live_trade_history()
     history.setdefault("trades", []).append(trade)
     if is_live_dry_run(cfg):
