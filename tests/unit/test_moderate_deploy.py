@@ -143,6 +143,61 @@ class TestSizeBoostForRegime(unittest.TestCase):
         )
 
 
+class TestAbsentOracleNoBoost390(unittest.TestCase):
+    """#390 / #384 Option 2: regime=None must never size-boost (same as UNKNOWN)."""
+
+    def setUp(self):
+        self.md = {
+            "enabled": True,
+            "size_boost_risk_on": 1.55,
+            "size_boost_neutral": 1.5,
+            "size_boost_risk_off": 1.0,
+            "size_boost_crash": 1.0,
+            "size_boost_warmup": 1.0,
+            "size_boost_default": 1.35,
+            "dca_boost_scale": 0.7,
+            "max_boost": 3.0,
+            "cash_rich_pct": 50.0,
+            "cash_rich_extra_mult": 1.3,
+            "apply_to_dca": True,
+        }
+        self.cfg = {"risk": {"moderate_deploy": dict(self.md)}}
+
+    def test_none_cash_rich_does_not_apply_extra_mult(self):
+        # Old: size_boost_default 1.35 * cash_rich_extra 1.3 = 1.755.
+        self.assertAlmostEqual(
+            size_boost_for_regime(self.cfg, None, cash_pct=80), 1.0
+        )
+
+    def test_none_dca_does_not_boost(self):
+        # Old: 1 + (1.35-1)*0.7 = 1.245.
+        self.assertAlmostEqual(
+            size_boost_for_regime(self.cfg, None, is_dca=True), 1.0
+        )
+
+    def test_none_equals_unknown_under_log_and_deny(self):
+        # size_boost_for_regime is mode-agnostic; still prove both config paths.
+        for mode in ("log", "deny"):
+            cfg = {
+                "risk": {
+                    "fail_closed_guards": mode,
+                    "moderate_deploy": dict(self.md),
+                }
+            }
+            none_v = size_boost_for_regime(cfg, None, cash_pct=80, is_dca=True)
+            unk_v = size_boost_for_regime(cfg, "UNKNOWN", cash_pct=80, is_dca=True)
+            self.assertEqual(none_v, unk_v, msg=f"mode={mode}")
+            self.assertAlmostEqual(none_v, 1.0, msg=f"mode={mode}")
+
+    def test_named_regimes_unchanged(self):
+        # Must not regress #376: RISK_OFF / CRASH / WARMUP stay 1.0.
+        self.assertAlmostEqual(size_boost_for_regime(self.cfg, "RISK_ON"), 1.55)
+        self.assertAlmostEqual(size_boost_for_regime(self.cfg, "NEUTRAL"), 1.5)
+        self.assertAlmostEqual(size_boost_for_regime(self.cfg, "RISK_OFF"), 1.0)
+        self.assertAlmostEqual(size_boost_for_regime(self.cfg, "CRASH"), 1.0)
+        self.assertAlmostEqual(size_boost_for_regime(self.cfg, "WARMUP"), 1.0)
+
+
 class TestDynamicSizeWiresBoost(unittest.TestCase):
     def test_neutral_increases_size(self):
         from core.config import BotConfig

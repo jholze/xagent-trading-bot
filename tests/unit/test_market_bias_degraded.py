@@ -378,7 +378,7 @@ class TestDynamicSizeDenyDegraded:
         assert fac_deg["global_regime"] == "UNKNOWN"
         assert sized_deg <= sized_plain + 1e-9
 
-    def test_log_degraded_keeps_default_boost_and_warns_once(self):
+    def test_log_degraded_no_boost_and_warns_once(self):
         md = {
             "enabled": True,
             "size_boost_default": 1.35,
@@ -396,8 +396,9 @@ class TestDynamicSizeDenyDegraded:
             "regime": None,
         }
         sized, fac = self._size(rm, bias)
-        assert fac["moderate_deploy_mult"] == pytest.approx(1.35)
-        assert sized > 1000.0
+        # #390 / #384 Option 2: degraded/absent oracle (regime=None) must not size-boost.
+        assert fac["moderate_deploy_mult"] == pytest.approx(1.0)
+        assert sized == pytest.approx(1000.0)
 
         _reset_fusion_episode()
         with patch("services.santiment.policy.get_latest_snapshot", return_value=None), patch(
