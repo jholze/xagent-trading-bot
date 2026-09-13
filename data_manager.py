@@ -814,8 +814,17 @@ def reload_config(tenant_id: str | None = None):
 
 
 def save_config(config, tenant_id: str | None = None):
+    """Persist ``config`` for the resolved tenant.
+
+    Guardrail (#330): trading-critical keys are bounds-checked *before* any
+    write on both paths (default → ``config.json``, tenant → Mongo via
+    ``tenant_meta_store``). An out-of-bounds value raises
+    :class:`core.config_guardrails.ConfigValidationError` and nothing is written.
+    """
     global _config_cache
+    from core.config_guardrails import validate_config_for_save
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    validate_config_for_save(config)
     tid = resolve_tenant_id(tenant_id)
     if tid != DEFAULT_TENANT:
         default_cfg = _load_default_config_from_disk()
