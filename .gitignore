@@ -7,6 +7,10 @@ aria_bot.log
 logs/
 bot.log
 
+# xAI subscription OAuth credential (issue #397) — must never live in the tree
+xai_oauth.json
+*.oauth.json
+
 # Python cache
 __pycache__/
 *.pyc
