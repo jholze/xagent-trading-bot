@@ -48,8 +48,14 @@ def _is_slot_evict_order(order: dict | None) -> bool:
     return str(order.get("exit_source") or "") == EXIT_SOURCE_SLOT_EVICT
 
 
-def _slot_evict_orders_from_ledger(*, hours: float | None = None) -> list[dict]:
-    """Filled slot-eviction sells from the orders ledger (survives restart)."""
+def _slot_evict_orders_from_ledger(*, hours: float | None = None) -> list[dict] | None:
+    """Filled slot-eviction sells from the orders ledger (survives restart).
+
+    Returns ``[]`` when the ledger was read and holds no matching orders, and
+    ``None`` when the read itself failed (#370). Callers must treat ``None`` as
+    "unknown" and fail closed: after a restart the RAM counters are empty, so a
+    swallowed read error would otherwise make every cap silently non-binding.
+    """
     try:
         from services.order_service import ORDERS_LIST_HARD_CAP, OrderService, order_event_ts
 
@@ -80,8 +86,12 @@ def _slot_evict_orders_from_ledger(*, hours: float | None = None) -> list[dict]:
                     continue
             out.append(o)
         return out
-    except Exception:
-        return []
+    except Exception as exc:
+        _warn(
+            f"slot_eviction ledger read failed (hours={hours}): {exc!r} — "
+            "rate limits / symbol cooldown treated as unknown (fail closed)"
+        )
+        return None
 
 
 def check_rate_limits(risk_config: dict | None) -> tuple[bool, str]:
@@ -90,7 +100,13 @@ def check_rate_limits(risk_config: dict | None) -> tuple[bool, str]:
     max_d = int(cfg.get("max_evictions_per_day", 8) or 8)
     now = _now()
     day_orders = _slot_evict_orders_from_ledger(hours=24)
+    if day_orders is None:
+        # Ledger unreadable → caps cannot be verified → block (#370). Applies in
+        # every mode; RAM counters alone are empty after restart.
+        return True, "rate_limit_unknown"
     hour_orders = _slot_evict_orders_from_ledger(hours=1)
+    if hour_orders is None:
+        return True, "rate_limit_unknown"
     with _LOCK:
         global _EVICT_TS
         _EVICT_TS = [t for t in _EVICT_TS if now - t < 86400]
@@ -118,7 +134,11 @@ def symbol_on_cooldown(symbol: str, risk_config: dict | None = None) -> bool:
     cfg = slot_eviction_section(risk_config)
     cool_h = float(cfg.get("symbol_cooldown_hours", 24) or 24)
     if cool_h > 0:
-        for o in _slot_evict_orders_from_ledger(hours=cool_h):
+        orders = _slot_evict_orders_from_ledger(hours=cool_h)
+        if orders is None:
+            # Cannot verify cooldown from the ledger → treat as on cooldown (#370).
+            return True
+        for o in orders:
             if str(o.get("symbol") or "") == symbol:
                 return True
     with _LOCK:
