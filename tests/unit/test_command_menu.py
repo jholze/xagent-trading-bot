@@ -8,7 +8,11 @@ from notifications.telegram_commands.command_menu import (
     register_bot_commands,
     register_commands_for_chat,
 )
-from notifications.telegram_commands.menu_commands import MENU_SECTIONS, MENU_SECTIONS_SATELLITE
+from notifications.telegram_commands.menu_commands import (
+    MENU_SECTIONS,
+    MENU_SECTIONS_SATELLITE,
+    all_menu_command_keys,
+)
 from notifications.telegram_commands.usage_hints import USAGE, _ensure_usage_cache
 
 
@@ -16,11 +20,29 @@ class TestCommandMenu(unittest.TestCase):
     def test_menu_has_all_section_commands(self):
         expected = [k for _, keys in MENU_SECTIONS for k in keys]
         self.assertEqual(TELEGRAM_MENU_COMMAND_KEYS, expected)
-        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 51)
-        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 51)
+        # #399: +pause/+resume/+panic (51 → 54)
+        self.assertEqual(len(TELEGRAM_MENU_COMMAND_KEYS), 54)
+        self.assertEqual(len(set(TELEGRAM_MENU_COMMAND_KEYS)), 54)
         self.assertIn("onboard", TELEGRAM_MENU_COMMAND_KEYS)
         self.assertIn("short", TELEGRAM_MENU_COMMAND_KEYS)
         self.assertIn("cover", TELEGRAM_MENU_COMMAND_KEYS)
+        self.assertIn("pause", TELEGRAM_MENU_COMMAND_KEYS)
+        self.assertIn("resume", TELEGRAM_MENU_COMMAND_KEYS)
+        self.assertIn("panic", TELEGRAM_MENU_COMMAND_KEYS)
+
+    def test_menu_keys_match_help_catalog(self):
+        """#398/#399 class: every ☰ key is in /help and vice versa (both languages)."""
+        from notifications.telegram_commands.menu_i18n import _load_menu_data
+
+        data = _load_menu_data()
+        menu_keys = set(all_menu_command_keys())
+        for lang in ("de", "en"):
+            help_keys = {
+                k
+                for section in data[lang]["help"]["sections"]
+                for k in section.get("keys", [])
+            }
+            self.assertEqual(menu_keys, help_keys, f"menu/help catalog drift ({lang})")
 
     def test_all_commands_have_menu_description(self):
         _ensure_usage_cache()
@@ -31,7 +53,7 @@ class TestCommandMenu(unittest.TestCase):
     def test_all_bot_commands_have_section_prefix(self):
         for lang in ("de", "en"):
             commands = all_bot_commands(lang)
-            self.assertEqual(len(commands), 51)
+            self.assertEqual(len(commands), 54)  # #399: +pause/+resume/+panic
             for entry in commands:
                 self.assertIn("·", entry["description"])
                 self.assertLessEqual(len(entry["description"]), 256)
@@ -104,6 +126,7 @@ class TestCommandMenu(unittest.TestCase):
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["scope"], {"type": "chat", "chat_id": 999})
         self.assertEqual(len(payload["commands"]), sat_n)
+        self.assertEqual(sat_n, 42)  # #399: 39 + pause/resume/panic
         self.assertFalse(any(c["command"] == "onboard" for c in payload["commands"]))
         self.assertFalse(any(c["command"] == "live_confirm" for c in payload["commands"]))
         self.assertTrue(any(c["command"] == "short" for c in payload["commands"]))

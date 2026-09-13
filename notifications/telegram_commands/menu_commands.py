@@ -38,11 +38,13 @@ _COMMAND_DISPATCH: dict[str, str] = {
 }
 
 # Full operator navigation (onboard, live, sandbox/backtest, …).
+# #399: pause / resume / panic are menu members (they were routed but unlisted).
 MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", [
         "positions", "positions_full", "buy", "sell", "short", "cover", "lock", "unlock",
         "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "pause", "resume", "panic",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel", "reload"]),
     ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
@@ -52,11 +54,14 @@ MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
 ]
 
 # Co-tester / satellite tenants (e.g. Henry): no ops, onboard, or live-confirm.
+# panic is tenant-scoped: the webhook runs inside tenant_context (aria_bot) and
+# list_active_positions() resolves the (tenant, scope) store from that context.
 MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", [
         "positions", "positions_full", "buy", "sell", "short", "cover", "lock", "unlock",
         "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "pause", "resume", "panic",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "reload"]),
     ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),

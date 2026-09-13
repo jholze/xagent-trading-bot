@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from notifications.telegram_commands.menu_commands import (
     MENU_SECTIONS,
+    MENU_SECTIONS_OPERATOR,
     MENU_SECTIONS_SATELLITE,
     _home_keyboard,
     _section_reply_rows,
@@ -20,7 +21,7 @@ from notifications.telegram_commands.menu_i18n import back_label, help_label, se
 class TestMenuCommands(unittest.TestCase):
     def test_all_commands_in_sections(self):
         keys = all_menu_command_keys()
-        self.assertEqual(len(keys), 51)
+        self.assertEqual(len(keys), 54)  # #399: +pause/+resume/+panic (51 → 54)
         self.assertIn("stack", keys)
         self.assertIn("short", keys)
         self.assertIn("cover", keys)
@@ -44,6 +45,51 @@ class TestMenuCommands(unittest.TestCase):
         self.assertIn("positions", sat_keys)
         self.assertEqual(len(MENU_SECTIONS_SATELLITE), 6)
         self.assertFalse(any(sid == "tests" for sid, _ in MENU_SECTIONS_SATELLITE))
+
+    def test_pause_resume_panic_menu_membership(self):
+        """#399: pause/resume/panic listed in Handel for operator and satellite.
+
+        panic is on the satellite menu because the webhook dispatches inside
+        tenant_context and list_active_positions() reads the (tenant, scope)
+        store from that context — a satellite panic only touches its own book.
+        """
+        op_sections = dict(MENU_SECTIONS_OPERATOR)
+        sat_sections = dict(MENU_SECTIONS_SATELLITE)
+        for key in ("pause", "resume", "panic"):
+            self.assertIn(key, op_sections["handel"], f"/{key} missing from operator Handel")
+            self.assertIn(key, sat_sections["handel"], f"/{key} missing from satellite Handel")
+            # they belong to Handel, not Modus (Modus stays mode/gate/dryrun/…)
+            self.assertNotIn(key, op_sections["modus"])
+            self.assertNotIn(key, sat_sections["modus"])
+        self.assertEqual(
+            op_sections["handel"][-3:], ["pause", "resume", "panic"],
+            "operator Handel must end with pause/resume/panic",
+        )
+        self.assertEqual(sat_sections["handel"][-3:], ["pause", "resume", "panic"])
+        # panic remains a menu:run target for satellites (not operator-only gated)
+        from notifications.telegram_commands.menu_commands import _SATELLITE_COMMAND_KEYS
+
+        for key in ("pause", "resume", "panic"):
+            self.assertIn(key, _SATELLITE_COMMAND_KEYS)
+        # each key lives in exactly one section per role (no duplicate slash entries)
+        for sections in (MENU_SECTIONS_OPERATOR, MENU_SECTIONS_SATELLITE):
+            flat = [k for _, keys in sections for k in keys]
+            for key in ("pause", "resume", "panic"):
+                self.assertEqual(flat.count(key), 1)
+        self.assertEqual(sum(len(keys) for _, keys in MENU_SECTIONS_OPERATOR), 54)
+        self.assertEqual(sum(len(keys) for _, keys in MENU_SECTIONS_SATELLITE), 42)
+
+    def test_satellite_callback_runs_panic(self):
+        cb = {
+            "id": "cq5",
+            "data": "menu:run:panic",
+            "message": {"chat": {"id": 999}, "message_id": 2},
+        }
+        with patch("notifications.telegram_commands.menu_commands.answer_callback_query"), \
+             patch("notifications.telegram_commands.menu_commands.menu_role_for", return_value="satellite"), \
+             patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as mock_dispatch:
+            self.assertTrue(handle_callback(cb))
+            mock_dispatch.assert_called_once_with("/panic")
 
     def test_menu_role_satellite_by_tenant(self):
         with patch("core.tenant_context.multi_tenant_enabled", return_value=True), \
