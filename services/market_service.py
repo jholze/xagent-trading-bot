@@ -28,6 +28,8 @@ _24H_BARS = {
     "12h": 2,
     "1d": 1,
 }
+# Public alias — the single bars-per-day source shared with strategies.ctx_axes (#375).
+BARS_PER_DAY = _24H_BARS
 
 _exchange_lock = threading.Lock()
 _exchanges: dict[str, object] = {}

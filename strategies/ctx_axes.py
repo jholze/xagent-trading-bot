@@ -8,14 +8,23 @@ from __future__ import annotations
 
 import math
 
-from services.market_service import _24H_BARS
+
+def bars_per_day_map() -> dict:
+    """The shared bars-per-day map (``services.market_service.BARS_PER_DAY``).
+
+    Imported lazily so ``import strategies.ctx_axes`` does not pull in
+    ``market_service`` (ccxt/talib) at module import time (#375).
+    """
+    from services.market_service import BARS_PER_DAY
+
+    return BARS_PER_DAY
 
 
 def _bars_per_day(timeframe) -> int | None:
     if timeframe is None:
         return None
     key = str(timeframe).strip().lower()
-    n = _24H_BARS.get(key)
+    n = bars_per_day_map().get(key)
     return n if n and n > 0 else None
 
 

@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -315,7 +316,9 @@ def ctx_float_or_none(value) -> float | None:
         return None
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float(10**400) — an int too large for a float (#375).
+        logging.getLogger(__name__).debug("ctx_float_or_none: dropped %r", value)
         return None
     if math.isnan(out) or math.isinf(out):
         return None
