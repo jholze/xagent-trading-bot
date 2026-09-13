@@ -168,17 +168,41 @@ def callback_unknown_command(lang: str | None = None) -> str:
     return _pack(lang or current_language()).get("callback_unknown_command", "Unknown command")
 
 
-def build_help_message(lang: str | None = None) -> str:
+def _help_allowed_keys(chat_id: str | int | None) -> frozenset[str] | None:
+    """Role filter for ``/help`` (#398).
+
+    Operator: ``None`` = full catalog (unchanged). Satellite: only the keys the
+    slim ☰ menu (``menu_sections_for``) exposes, so operator-only commands
+    (``/onboard``, ``/live_confirm``, ``/hermes_run``, ``/sandbox``, …) never
+    leak into a tenant's help text.
+    """
+    from notifications.telegram_commands.menu_commands import menu_role_for, menu_sections_for
+
+    role = menu_role_for(chat_id=chat_id)
+    if role != "satellite":
+        return None
+    return frozenset(k for _, keys in menu_sections_for(role=role) for k in keys)
+
+
+def build_help_message(lang: str | None = None, *, chat_id: str | int | None = None) -> str:
+    """Render ``/help`` for ``chat_id`` (None = current webhook chat / operator).
+
+    Sections that end up empty after the role filter are dropped entirely.
+    """
     lang = lang or current_language()
     pack = _pack(lang)
     help_cfg = pack.get("help", {})
+    allowed = _help_allowed_keys(chat_id)
     lines = [help_cfg.get("title", ""), ""]
     for tip in help_cfg.get("tips", []):
         lines.append(tip)
     lines.append("")
     for section in help_cfg.get("sections", []):
+        keys = [k for k in section.get("keys", []) if allowed is None or k in allowed]
+        if not keys:
+            continue
         lines.append(section.get("title", ""))
-        for key in section.get("keys", []):
+        for key in keys:
             lines.append(command_help_line(key, lang))
         lines.append("")
     footer = help_cfg.get("footer")

@@ -306,7 +306,7 @@
       },
       "hermes": {
         "description": "Hermes Lern-Agent Status",
-        "help_line": "<code>/hermes</code> — Status | <code>/hermes_last</code> — letzte Entscheidung | <code>/hermes_run</code> — Zyklus",
+        "help_line": "<code>/hermes</code> — Hermes-Status (Baseline + letzte Experimente)",
         "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + letzte Experimente\n<code>/hermes_last</code> — Letzter Zyklus in Klartext\n<code>/hermes_run</code> — Einen Lern-Zyklus starten\n<code>/hermes_veto ID</code> — Pending Promotion stornieren\n<code>/hermes_rollback [ID]</code> — Letzten Snapshot wiederherstellen"
       },
       "hermes_last": {
@@ -708,7 +708,7 @@
       },
       "hermes": {
         "description": "Hermes learning agent status",
-        "help_line": "<code>/hermes</code> — Status | <code>/hermes_last</code> — last decision | <code>/hermes_run</code> — run cycle",
+        "help_line": "<code>/hermes</code> — Hermes status (baseline + recent experiments)",
         "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + recent experiments\n<code>/hermes_last</code> — Last cycle in plain language\n<code>/hermes_run</code> — Start a learning cycle\n<code>/hermes_veto ID</code> — Cancel a pending promotion\n<code>/hermes_rollback [ID]</code> — Restore the latest snapshot"
       },
       "hermes_last": {
