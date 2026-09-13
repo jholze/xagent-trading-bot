@@ -435,6 +435,143 @@ class TestLedgerRateLimits(unittest.TestCase):
         self.assertEqual(reason, "max_evictions_per_day")
 
 
+class TestLedgerReadFailClosed(unittest.TestCase):
+    """#370: a ledger read error must not make the caps silently non-binding.
+
+    Every test here fails under the old ``except Exception: return []``: with
+    empty RAM counters that behaviour yielded ``(False, "")`` / ``False``.
+    """
+
+    def setUp(self):
+        reset_rate_limits_for_tests()
+
+    def tearDown(self):
+        reset_rate_limits_for_tests()
+
+    @staticmethod
+    def _boom(*_a, **_k):
+        raise RuntimeError("ledger unreadable")
+
+    def test_helper_distinguishes_empty_from_failed(self):
+        from risk.slot_eviction_runtime import _slot_evict_orders_from_ledger
+
+        with patch("services.order_service.OrderService", side_effect=self._boom):
+            self.assertIsNone(_slot_evict_orders_from_ledger(hours=24))
+
+    def test_rate_limits_unknown_when_ledger_raises_after_restart(self):
+        with patch(
+            "services.order_service.OrderService", side_effect=self._boom
+        ), patch("risk.slot_eviction_runtime._warn") as warn:
+            blocked, reason = check_rate_limits(
+                _slot_cfg(max_evictions_per_hour=20, max_evictions_per_day=8)
+            )
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "rate_limit_unknown")
+        # one WARNING per failed read, none before the fix
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("ledger read failed", warn.call_args[0][0])
+
+    def test_rate_limits_unknown_when_list_orders_raises(self):
+        from services.order_service import OrderService
+
+        with patch.object(
+            OrderService, "list_day_filled_all", side_effect=self._boom
+        ), patch("risk.slot_eviction_runtime._warn") as warn:
+            blocked, reason = check_rate_limits(_slot_cfg())
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "rate_limit_unknown")
+        self.assertEqual(warn.call_count, 1)
+
+    def test_rate_limits_unknown_applies_in_shadow_mode(self):
+        with patch("services.order_service.OrderService", side_effect=self._boom):
+            blocked, reason = check_rate_limits(_slot_cfg(mode="shadow"))
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "rate_limit_unknown")
+
+    def test_symbol_on_cooldown_true_when_ledger_raises(self):
+        from risk.slot_eviction_runtime import symbol_on_cooldown
+
+        with patch(
+            "services.order_service.OrderService", side_effect=self._boom
+        ), patch("risk.slot_eviction_runtime._warn") as warn:
+            self.assertTrue(symbol_on_cooldown("AAA/USDT", _slot_cfg()))
+        self.assertEqual(warn.call_count, 1)
+
+    def test_symbol_on_cooldown_false_when_ledger_empty(self):
+        """Control: a readable but empty ledger is *not* a cooldown."""
+        from risk.slot_eviction_runtime import symbol_on_cooldown
+
+        with patch(
+            "risk.slot_eviction_runtime._slot_evict_orders_from_ledger",
+            return_value=[],
+        ):
+            self.assertFalse(symbol_on_cooldown("AAA/USDT", _slot_cfg()))
+
+    def _order(self):
+        return TradeOrder(
+            type="BUY",
+            symbol="BANK/USDT",
+            price=1.0,
+            amount=0,
+            usdt_amount=200,
+            signal="BUY",
+            entry_15m_vol_ratio=5.5,
+        )
+
+    def _try_with_broken_ledger(self, mode: str):
+        def _gp(sym, config=None):
+            if "BANK" in (sym or ""):
+                return _strong_prof()
+            return _weak_prof()
+
+        with patch(
+            "services.order_service.OrderService", side_effect=self._boom
+        ), patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"block_buys": False, "regime": "NEUTRAL"},
+        ), patch(
+            "intelligence.memory.cache.get_entry_bias", return_value="prefer"
+        ), patch(
+            "intelligence.memory.cache.get_coin_profile", side_effect=_gp
+        ), patch(
+            "strategies.positions.list_active_positions",
+            return_value=[_victim_pos()],
+        ), patch(
+            "strategies.sell_rotation_policy.is_tail_position", return_value=False
+        ), patch(
+            "price_fetcher.get_prices_batch", return_value={"VICTIM/USDT": 10.5}
+        ), patch(
+            "risk.slot_eviction_runtime.execute_eviction_sell"
+        ) as sell:
+            plan, suffix = try_slot_eviction_on_max_open(
+                order=self._order(),
+                source="entry_sensor_15m",
+                free_full_slots=0,
+                config=None,
+                risk_config=_slot_cfg(mode=mode),
+                spendable_ok=True,
+            )
+        return plan, suffix, sell
+
+    def test_try_path_yields_rate_limit_reason_code_live(self):
+        plan, suffix, sell = self._try_with_broken_ledger("live")
+        self.assertIsNotNone(plan)
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.reason_codes, ("rate_limit",))
+        self.assertEqual(plan.veto_reason, "rate_limit_unknown")
+        self.assertIn("rate_limit", suffix)
+        sell.assert_not_called()
+
+    def test_try_path_yields_rate_limit_reason_code_shadow(self):
+        plan, _suffix, sell = self._try_with_broken_ledger("shadow")
+        self.assertIsNotNone(plan)
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.mode, "shadow")
+        self.assertEqual(plan.reason_codes, ("rate_limit",))
+        self.assertEqual(plan.veto_reason, "rate_limit_unknown")
+        sell.assert_not_called()
+
+
 def _risk_manager_for_e2e(*, mode: str = "live"):
     from core.config import BotConfig
     from data_manager import get_config
