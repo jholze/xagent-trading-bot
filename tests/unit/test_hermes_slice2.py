@@ -405,6 +405,7 @@ def promo_env(hermes_memory_tmp, monkeypatch):
     from hermes.memory import store
 
     raw = copy.deepcopy(BotConfig().raw)
+    raw["hermes"]["enabled"] = True
     raw["hermes"]["live_evidence"]["enabled"] = False
     raw["hermes"]["sync_to_config"] = True
     raw["hermes"].setdefault("promotion", {})
