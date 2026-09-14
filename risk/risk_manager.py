@@ -106,6 +106,25 @@ def guard_failed(guard: str, exc: BaseException, order, *, config=None) -> RiskD
     )
 
 
+# #408: process-wide fallback for a daily-loss halt whose persist failed. The
+# trade-history document is the durable truth; this only keeps the halt alive for
+# the rest of the current process (RiskManager instances are short-lived — the
+# signal orchestrator builds one per evaluation — so an instance attribute would
+# not survive). It cannot survive a restart; that is why the persist failure is
+# logged ERROR and pushed to the operator instead of being swallowed.
+_DAILY_LOSS_HALT_UNTIL: datetime | None = None
+
+
+def _daily_loss_halt_memory() -> datetime | None:
+    return _DAILY_LOSS_HALT_UNTIL
+
+
+def _remember_daily_loss_halt(until: datetime) -> None:
+    global _DAILY_LOSS_HALT_UNTIL
+    if _DAILY_LOSS_HALT_UNTIL is None or until > _DAILY_LOSS_HALT_UNTIL:
+        _DAILY_LOSS_HALT_UNTIL = until
+
+
 def _execution_places_real_orders(raw) -> bool:
     """True only when live.execution resolves to real. Fail-closed on error."""
     from core.execution_mode import resolve_execution_mode
@@ -1334,6 +1353,20 @@ class RiskManager:
                 code="daily_loss_limit",
                 size_multiplier=0.0,
             )
+        # #408: a halt this process computed but could not persist. The reloaded
+        # history has no risk_halt_until, yet the halt is still in force — do not
+        # fail-open just because the save raised.
+        mem_until = _daily_loss_halt_memory()
+        if mem_until is not None and mem_until > now:
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Daily loss limit: halted until {mem_until.isoformat()} "
+                    "(in-memory; persist failed)"
+                ),
+                code="daily_loss_limit",
+                size_multiplier=0.0,
+            )
         try:
             realized = float(self._trailing_24h_realized_pnl())
         except Exception as e:
@@ -1348,20 +1381,43 @@ class RiskManager:
         threshold = -(pct / 100.0) * float(nav)
         if realized > threshold:
             return None
-        halt_iso = (now + timedelta(hours=24)).isoformat()
+        halt_until = now + timedelta(hours=24)
+        halt_iso = halt_until.isoformat()
         history["risk_halt_until"] = halt_iso
+        persist_error: Exception | None = None
         try:
             self._risk_history_save(history)
-        except Exception:
-            pass
+        except Exception as e:
+            # #408: never swallow this. A lost risk_halt_until fails open on the
+            # next restart. Keep the halt alive in-process and make the failure
+            # visible (ERROR + operator).
+            persist_error = e
+            _remember_daily_loss_halt(halt_until)
+            try:
+                from logger import log
+
+                log(
+                    f"daily_loss_limit: persisting risk_halt_until={halt_iso} failed "
+                    f"({type(e).__name__}: {e}); halt kept in-memory for this process "
+                    "only and will NOT survive a restart",
+                    "ERROR",
+                )
+            except Exception:
+                pass
         try:
             from core.operator_notify import notify_operator
 
-            notify_operator(
+            text = (
                 f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
                 f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
                 f"New buys/shorts halted until {halt_iso}."
             )
+            if persist_error is not None:
+                text += (
+                    f"\n⚠️ Halt NOT persisted ({type(persist_error).__name__}: "
+                    f"{persist_error}) — it is lost on restart."
+                )
+            notify_operator(text)
         except Exception:
             pass
         return RiskDecision(
