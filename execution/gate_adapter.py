@@ -801,6 +801,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         contract_size: float,
         timeframe: str,
         params: dict,
+        create_raised: list | None = None,
     ) -> TradeResult:
         create_attempted = False
         try:
@@ -809,6 +810,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                 swap_symbol, "market", side, contracts, None, params
             )
         except Exception as e:
+            if create_raised is not None:
+                create_raised.append(True)
             return self._handle_create_exception(
                 e,
                 exchange,
@@ -837,6 +840,197 @@ class GateExecutionAdapter(ExecutionAdapter):
             usdt=order.usdt_amount,
             lookup_symbol=swap_symbol,
         )
+
+    def _persist_short_stop_state(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        stop_id: str | None,
+        failed_reason: str | None = None,
+    ) -> None:
+        try:
+            from strategies.positions import flush_positions, set_position_field
+
+            set_position_field(symbol, timeframe, "exchange_stop_order_id", stop_id)
+            set_position_field(
+                symbol, timeframe, "stop_placement_failed", failed_reason
+            )
+            flush_positions(force=True)
+        except Exception as e:
+            log(
+                f"persist short stop state failed for {symbol} {timeframe}: {e}",
+                "WARNING",
+            )
+
+    def _place_reduce_only_stop(
+        self,
+        exchange,
+        order: TradeOrder,
+        result: TradeResult,
+        *,
+        swap_symbol: str,
+        contract_size: float,
+        lev: float,
+        timeframe: str,
+    ) -> None:
+        """Attach a reduce-only exchange stop after a filled testnet SHORT.
+
+        Failure never rejects the already-filled short, never places a naked
+        market close, and never writes an order row / QUEUED / needs_reconcile.
+        """
+        from strategies.positions import get_position
+        from strategies.short_math import stop_price
+        from strategies.short_policy import resolve_short_params
+
+        filled_base = float(result.amount or 0) or float(result.filled_qty or 0)
+        fill_price = float(result.price or 0)
+        if fill_price <= 0:
+            lot = get_position(order.symbol, timeframe)
+            fill_price = float(lot.get("average_entry") or 0)
+        if filled_base <= 0 or fill_price <= 0:
+            reason = "no fill price/qty for reduce-only stop"
+            log(
+                f"Gate reduce-only stop skipped for {order.symbol}: {reason}",
+                "WARNING",
+            )
+            self._persist_short_stop_state(
+                order.symbol, timeframe, stop_id=None, failed_reason=reason
+            )
+            return
+
+        lot = get_position(order.symbol, timeframe)
+        params = resolve_short_params(
+            symbol=order.symbol,
+            lot=lot if isinstance(lot, dict) else None,
+            config_raw=self.config.raw,
+        )
+        stop_margin = float(params.get("stop_margin_pct") or 0.12)
+        trigger = stop_price("short", fill_price, stop_margin, lev)
+        if trigger <= 0:
+            reason = f"stop_price computed non-positive ({trigger})"
+            log(
+                f"Gate reduce-only stop skipped for {order.symbol}: {reason}",
+                "WARNING",
+            )
+            self._persist_short_stop_state(
+                order.symbol, timeframe, stop_id=None, failed_reason=reason
+            )
+            return
+        try:
+            prec = getattr(exchange, "price_to_precision", None)
+            if callable(prec):
+                trigger = float(prec(swap_symbol, trigger))
+        except Exception as e:
+            log(
+                f"Gate price_to_precision failed for stop {swap_symbol}: {e}",
+                "WARNING",
+            )
+
+        contracts, conv_err = self._base_to_contracts(
+            exchange, swap_symbol, filled_base, contract_size
+        )
+        if conv_err:
+            reason = f"stop contract conversion failed: {conv_err}"
+            log(
+                f"Gate reduce-only stop skipped for {order.symbol}: {reason}",
+                "WARNING",
+            )
+            self._persist_short_stop_state(
+                order.symbol, timeframe, stop_id=None, failed_reason=reason
+            )
+            return
+
+        # ccxt-gate type is only 'limit'|'market'; trigger* params make it a stop.
+        # Gate client `text` is ≤28 bytes (`t-` + 16 hex).
+        stop_params = {
+            "reduceOnly": True,
+            "stopPrice": trigger,
+            "triggerPrice": trigger,
+            "stopLossPrice": trigger,
+            "text": f"t-{uuid.uuid4().hex[:16]}",
+        }
+        try:
+            raw = exchange.create_order(
+                swap_symbol,
+                "market",
+                "buy",
+                contracts,
+                None,
+                stop_params,
+            )
+        except Exception as e:
+            reason = str(e)[:200] or e.__class__.__name__
+            log(
+                f"Gate reduce-only stop rejected for {order.symbol}: {reason}",
+                "WARNING",
+            )
+            self._persist_short_stop_state(
+                order.symbol, timeframe, stop_id=None, failed_reason=reason
+            )
+            return
+
+        oid = ""
+        if isinstance(raw, dict):
+            oid = str(raw.get("id") or "")
+            info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+            if not oid:
+                oid = str(info.get("id") or info.get("order_id") or "")
+        if not oid:
+            reason = "stop create returned no id"
+            log(
+                f"Gate reduce-only stop rejected for {order.symbol}: {reason}",
+                "WARNING",
+            )
+            self._persist_short_stop_state(
+                order.symbol, timeframe, stop_id=None, failed_reason=reason
+            )
+            return
+        self._persist_short_stop_state(
+            order.symbol, timeframe, stop_id=oid, failed_reason=None
+        )
+
+    def _cancel_reduce_only_stop(
+        self,
+        exchange,
+        order: TradeOrder,
+        *,
+        swap_symbol: str,
+        stop_oid: str,
+        timeframe: str,
+    ) -> None:
+        if not stop_oid:
+            return
+        try:
+            cancel = getattr(exchange, "cancel_order", None)
+            if not callable(cancel):
+                raise RuntimeError("exchange has no cancel_order")
+            # Price-triggered orders live on the price-orders endpoint.
+            cancel(str(stop_oid), swap_symbol, {"trigger": True})
+        except Exception as e:
+            log(
+                f"Gate cancel reduce-only stop {stop_oid} for {order.symbol} failed: {e}",
+                "WARNING",
+            )
+            return
+        self._persist_short_stop_state(
+            order.symbol, timeframe, stop_id=None, failed_reason=None
+        )
+
+    def _lot_exchange_stop_id(self, symbol: str, timeframe: str) -> str:
+        try:
+            from strategies.positions import get_position
+
+            pos = get_position(symbol, timeframe)
+        except Exception as e:
+            log(
+                f"read exchange_stop_order_id failed for {symbol} {timeframe}: {e}",
+                "WARNING",
+            )
+            return ""
+        if not isinstance(pos, dict):
+            return ""
+        return str(pos.get("exchange_stop_order_id") or "").strip()
 
     def _execute_short(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         from strategies.short_math import margin_usdt
@@ -896,7 +1090,8 @@ class GateExecutionAdapter(ExecutionAdapter):
             return leverage_fail
 
         params = self._client_order_params(order)
-        return self._place_swap_order(
+        create_raised: list = []
+        result = self._place_swap_order(
             exchange,
             order,
             swap_symbol=swap_symbol,
@@ -906,10 +1101,43 @@ class GateExecutionAdapter(ExecutionAdapter):
             contract_size=contract_size,
             timeframe=timeframe,
             params=params,
+            create_raised=create_raised,
         )
+        # Recovered-uncertain (create_order raised) and ACTIVE/needs_reconcile
+        # (executed=False) never attach a stop. Full and partial fills do.
+        if create_raised:
+            return result
+        if result.executed and result.order_status in (
+            OrderStatus.EXECUTED,
+            OrderStatus.PARTIALLY_FILLED,
+        ):
+            try:
+                self._place_reduce_only_stop(
+                    exchange,
+                    order,
+                    result,
+                    swap_symbol=swap_symbol,
+                    contract_size=contract_size,
+                    lev=lev,
+                    timeframe=timeframe,
+                )
+            except Exception as e:
+                reason = str(e)[:200] or e.__class__.__name__
+                log(
+                    f"Gate reduce-only stop failed for {order.symbol}: {reason}",
+                    "WARNING",
+                )
+                self._persist_short_stop_state(
+                    order.symbol,
+                    timeframe,
+                    stop_id=None,
+                    failed_reason=reason,
+                )
+        return result
 
     def _execute_cover(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         swap_symbol = self._swap_symbol(order)
+        stop_oid = self._lot_exchange_stop_id(order.symbol, timeframe)
         base_qty = float(order.qty or 0)
         if base_qty <= 0:
             return self._rejected_result(order, "No amount to cover")
@@ -953,7 +1181,7 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         params = self._client_order_params(order)
         params["reduceOnly"] = True
-        return self._place_swap_order(
+        result = self._place_swap_order(
             exchange,
             order,
             swap_symbol=swap_symbol,
@@ -964,6 +1192,15 @@ class GateExecutionAdapter(ExecutionAdapter):
             timeframe=timeframe,
             params=params,
         )
+        if result.executed and stop_oid:
+            self._cancel_reduce_only_stop(
+                exchange,
+                order,
+                swap_symbol=swap_symbol,
+                stop_oid=stop_oid,
+                timeframe=timeframe,
+            )
+        return result
 
     def _execute_short_shadow(
         self, exchange, order: TradeOrder, timeframe: str
