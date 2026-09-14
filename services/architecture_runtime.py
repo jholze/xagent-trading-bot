@@ -221,7 +221,14 @@ def tenant_recovery_completed(
 
 
 def _ensure_tenant_exchange_recovery() -> None:
-    """Once per tenant/scope per process. Lets RecoveryFailed propagate."""
+    """Once per tenant/scope per process. Lets RecoveryFailed propagate.
+
+    Fail-closed (#409): a mode-resolution ``RuntimeError`` or an adapter
+    construction failure is raised as ``RecoveryFailed`` and the key is *not*
+    marked recovered, so the tenant's cycle is skipped and the next
+    ``ensure_started`` retries. Previously these paths logged WARNING and
+    marked the tenant reconciled for the process lifetime.
+    """
     from core.config import get_bot_config
     from core.execution_mode import resolve_execution_mode
     from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
@@ -237,9 +244,11 @@ def _ensure_tenant_exchange_recovery() -> None:
         try:
             resolved = resolve_execution_mode(cfg.raw)
         except RuntimeError as e:
-            log(f"exchange recovery skipped (mode: {e})", "WARNING")
-            _recovered.add(key)
-            return
+            log(
+                f"exchange recovery failed (mode) tenant={tid} scope={scope}: {e}",
+                "ERROR",
+            )
+            raise RecoveryFailed(f"execution mode unresolved: {e}") from e
         if resolved.adapter_mode == "shadow":
             adapter = _ShadowAdapter()
         else:
@@ -247,10 +256,14 @@ def _ensure_tenant_exchange_recovery() -> None:
 
             try:
                 adapter = get_execution_adapter(cfg)
+            except RecoveryFailed:
+                raise
             except Exception as e:
-                log(f"exchange recovery skipped (adapter: {e})", "WARNING")
-                _recovered.add(key)
-                return
+                log(
+                    f"exchange recovery failed (adapter) tenant={tid} scope={scope}: {e}",
+                    "ERROR",
+                )
+                raise RecoveryFailed(f"execution adapter unavailable: {e}") from e
         try:
             reconcile_with_exchange(
                 tenant_id=tid, scope=scope, adapter=adapter, config=cfg
