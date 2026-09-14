@@ -367,6 +367,169 @@ def test_recovery_once_per_process_per_tenant_id(_reset_recovery, monkeypatch):
     assert calls.count("default") == 1
 
 
+def _prime_runtime_for_recovery(monkeypatch):
+    """ensure_started() with services already up, so only recovery runs (#409)."""
+    import services.architecture_runtime as rt
+    from core.config import get_bot_config
+
+    rt.reset_recovery_state_for_tests()
+    rt._started = True
+    rt._last_mode = get_bot_config().architecture_config.get("notification_mode", "async")
+    return rt
+
+
+def test_adapter_construction_failure_not_marked_recovered_and_retries(
+    _reset_recovery, monkeypatch
+):
+    """#409: get_execution_adapter raising must fail closed, not mark the tenant reconciled."""
+    from core.execution_mode import ExecutionMode
+
+    monkeypatch.setattr(
+        "core.execution_mode.resolve_execution_mode",
+        lambda *a, **k: ExecutionMode(
+            adapter_mode="real", places_real_orders=True, reason="test"
+        ),
+    )
+    adapter_calls: list[int] = []
+
+    def broken_adapter(*a, **k):
+        adapter_calls.append(1)
+        raise ValueError("GATE_API_KEY missing")
+
+    monkeypatch.setattr("execution.factory.get_execution_adapter", broken_adapter)
+    reconcile_calls: list[str] = []
+    monkeypatch.setattr(
+        "execution.recovery.reconcile_with_exchange",
+        lambda **k: reconcile_calls.append(k["tenant_id"]),
+    )
+    rt = _prime_runtime_for_recovery(monkeypatch)
+
+    with tenant_context("default", scope="demo"):
+        with pytest.raises(RecoveryFailed, match="adapter"):
+            rt.ensure_started()
+        assert ("default", "demo") not in rt._recovered
+        assert rt.tenant_recovery_completed() is False
+        # Next loop retries instead of treating the tenant as reconciled.
+        with pytest.raises(RecoveryFailed, match="adapter"):
+            rt.ensure_started()
+    assert len(adapter_calls) == 2
+    assert reconcile_calls == []
+    assert ("default", "demo") not in rt._recovered
+
+
+def test_adapter_failure_recovers_once_adapter_available(_reset_recovery, monkeypatch):
+    """#409: after a failed attempt the next ensure_started reconciles normally."""
+    from core.execution_mode import ExecutionMode
+
+    monkeypatch.setattr(
+        "core.execution_mode.resolve_execution_mode",
+        lambda *a, **k: ExecutionMode(
+            adapter_mode="real", places_real_orders=True, reason="test"
+        ),
+    )
+    adapter, _ex = _adapter(monkeypatch)
+    attempts: list[int] = []
+
+    def flaky_adapter(*a, **k):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("ccxt not ready")
+        return adapter
+
+    monkeypatch.setattr("execution.factory.get_execution_adapter", flaky_adapter)
+    reconcile_calls: list[str] = []
+    monkeypatch.setattr(
+        "execution.recovery.reconcile_with_exchange",
+        lambda **k: reconcile_calls.append(k["tenant_id"]),
+    )
+    rt = _prime_runtime_for_recovery(monkeypatch)
+
+    with tenant_context("default", scope="demo"):
+        with pytest.raises(RecoveryFailed):
+            rt.ensure_started()
+        assert ("default", "demo") not in rt._recovered
+        rt.ensure_started()
+        assert ("default", "demo") in rt._recovered
+        assert rt.tenant_recovery_completed() is True
+    assert len(attempts) == 2
+    assert reconcile_calls == ["default"]
+
+
+def test_mode_resolution_runtime_error_not_marked_recovered_and_retries(
+    _reset_recovery, monkeypatch
+):
+    """#409: resolve_execution_mode RuntimeError must fail closed and retry next loop."""
+    mode_calls: list[int] = []
+
+    def broken_mode(*a, **k):
+        mode_calls.append(1)
+        raise RuntimeError("live.execution=real requires live_confirmed")
+
+    monkeypatch.setattr("core.execution_mode.resolve_execution_mode", broken_mode)
+    adapter_calls: list[int] = []
+    monkeypatch.setattr(
+        "execution.factory.get_execution_adapter",
+        lambda *a, **k: adapter_calls.append(1),
+    )
+    reconcile_calls: list[str] = []
+    monkeypatch.setattr(
+        "execution.recovery.reconcile_with_exchange",
+        lambda **k: reconcile_calls.append(k["tenant_id"]),
+    )
+    rt = _prime_runtime_for_recovery(monkeypatch)
+
+    with tenant_context("default", scope="demo"):
+        with pytest.raises(RecoveryFailed, match="mode"):
+            rt.ensure_started()
+        assert ("default", "demo") not in rt._recovered
+        assert rt.tenant_recovery_completed() is False
+        with pytest.raises(RecoveryFailed, match="mode"):
+            rt.ensure_started()
+    assert len(mode_calls) == 2
+    assert adapter_calls == []
+    assert reconcile_calls == []
+    assert ("default", "demo") not in rt._recovered
+
+
+def test_mode_resolution_error_is_recovery_failed_not_generic_runtime_error(
+    _reset_recovery, monkeypatch
+):
+    """#409: the cycle handler treats plain RuntimeError as best-effort and keeps
+    trading; the wrap must raise RecoveryFailed so the cycle is skipped."""
+    monkeypatch.setattr(
+        "core.execution_mode.resolve_execution_mode",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad mode")),
+    )
+    rt = _prime_runtime_for_recovery(monkeypatch)
+    with tenant_context("default", scope="demo"):
+        with pytest.raises(RuntimeError) as excinfo:
+            rt.ensure_started()
+    assert isinstance(excinfo.value, RecoveryFailed)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+def test_shadow_mode_still_skips_and_marks_recovered(_reset_recovery, monkeypatch):
+    """#409 regression guard: shadow skip in execution/recovery.py is unchanged."""
+    from core.execution_mode import ExecutionMode
+
+    monkeypatch.setattr(
+        "core.execution_mode.resolve_execution_mode",
+        lambda *a, **k: ExecutionMode(
+            adapter_mode="shadow", places_real_orders=False, reason="test"
+        ),
+    )
+    adapter_calls: list[int] = []
+    monkeypatch.setattr(
+        "execution.factory.get_execution_adapter",
+        lambda *a, **k: adapter_calls.append(1),
+    )
+    rt = _prime_runtime_for_recovery(monkeypatch)
+    with tenant_context("default", scope="demo"):
+        rt.ensure_started()
+        assert ("default", "demo") in rt._recovered
+    assert adapter_calls == []
+
+
 def test_sync_ledger_files_aliases_wrap_old_names():
     from services import ledger_sync
 
