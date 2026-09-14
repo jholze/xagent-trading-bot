@@ -35,6 +35,7 @@ class TestDryRunWallet(unittest.TestCase):
         risk["position_capacity"] = {"enabled": False}
         risk["cash_policy"] = {"enabled": False}
         risk["slot_eviction"] = {"enabled": False}
+        risk["fail_closed_guards"] = "log"  # #411: wallet-sizing tests, not the degraded-oracle guard
         raw["risk"] = risk
         cfg = BotConfig()
         cfg._raw = raw
