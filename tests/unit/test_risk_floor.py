@@ -311,6 +311,145 @@ class TestDailyLossLimit:
         assert not history.get("risk_halt_until")
 
 
+def _error_messages(mock_log) -> list[str]:
+    out = []
+    for args, kwargs in mock_log.call_args_list:
+        level = kwargs.get("level")
+        if level is None and len(args) >= 2:
+            level = args[1]
+        if str(level).upper() == "ERROR":
+            out.append(str(args[0] if args else ""))
+    return out
+
+
+class TestDailyLossHaltPersistFailure:
+    """#408: a failed risk_halt_until save must not drop the halt or go unnoticed."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_process_halt(self):
+        # Module-level fallback: reset around every test so nothing leaks.
+        with patch("risk.risk_manager._DAILY_LOSS_HALT_UNTIL", None):
+            yield
+
+    @staticmethod
+    def _fresh_history():
+        # Every reload sees a history WITHOUT risk_halt_until — the save failed.
+        return {"trades": [], "virtual_balance": 100_000.0}
+
+    @pytest.mark.parametrize("mode", ["log", "deny"])
+    def test_save_failure_logs_error_and_halt_still_blocks_this_process(self, mode):
+        rm = RiskManager(_cfg(max_daily_loss_pct=5.0, fail_closed_guards=mode))
+        notified: list[str] = []
+
+        def _notify(text, *_a, **_k):
+            notified.append(text)
+            return True
+
+        realized = {"value": -6_000.0}
+        extra = (
+            patch.object(rm, "_trailing_24h_realized_pnl", side_effect=lambda: realized["value"]),
+            patch("core.operator_notify.notify_operator", side_effect=_notify),
+            patch.object(rm, "_risk_history_load", side_effect=self._fresh_history),
+            patch.object(rm, "_risk_history_save", side_effect=OSError("disk full")),
+        )
+        with _size_env(rm, equity=100_000.0, patch_drawdown=0.0, extra=extra), patch(
+            "logger.log"
+        ) as mock_log:
+            first = rm.evaluate(
+                _buy(None), "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+            )
+            errors = _error_messages(mock_log)
+
+            # Realized PnL recovers and the reloaded history has no halt. Under the
+            # old `except Exception: pass` this BUY was approved (fail-open).
+            realized["value"] = 0.0
+            second = rm.evaluate(
+                _buy(None), "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+            )
+            short = rm.evaluate(
+                TradeOrder(
+                    type="SHORT", symbol="AAA/USDT", price=1.0, amount=0,
+                    usdt_amount=100.0, signal="SHORT",
+                ),
+                "4h",
+            )
+            sell = rm.evaluate(
+                TradeOrder(type="SELL", symbol="AAA/USDT", price=1.0, amount=50, signal="SELL"),
+                "4h",
+            )
+
+        assert first.approved is False
+        assert first.code == "daily_loss_limit"
+        assert second.approved is False, second.message
+        assert second.code == "daily_loss_limit"
+        assert "persist failed" in second.message
+        assert short.approved is False
+        assert short.code == "daily_loss_limit"
+        assert sell.approved is True, sell.message
+
+        assert len(errors) == 1, errors
+        assert "risk_halt_until" in errors[0]
+        assert "OSError: disk full" in errors[0]
+
+        # Operator was told once (the breach), and told that the halt is not durable.
+        assert len(notified) == 1
+        assert "NOT persisted" in notified[0]
+        assert "disk full" in notified[0]
+
+    @pytest.mark.parametrize("mode", ["log", "deny"])
+    def test_save_failure_blocks_new_manager_in_same_process(self, mode):
+        rm = RiskManager(_cfg(max_daily_loss_pct=5.0, fail_closed_guards=mode))
+        extra = (
+            patch.object(rm, "_trailing_24h_realized_pnl", return_value=-6_000.0),
+            patch("core.operator_notify.notify_operator", return_value=True),
+            patch.object(rm, "_risk_history_load", side_effect=self._fresh_history),
+            patch.object(rm, "_risk_history_save", side_effect=RuntimeError("mongo down")),
+        )
+        with _size_env(rm, equity=100_000.0, patch_drawdown=0.0, extra=extra), patch("logger.log"):
+            first = rm.evaluate(
+                _buy(None), "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+            )
+        assert first.approved is False and first.code == "daily_loss_limit"
+
+        # The orchestrator builds a RiskManager per evaluation: a fresh instance in
+        # the same process, PnL back to zero, history reload finds no halt.
+        rm2 = RiskManager(_cfg(max_daily_loss_pct=5.0, fail_closed_guards=mode))
+        extra2 = (
+            patch.object(rm2, "_trailing_24h_realized_pnl", return_value=0.0),
+            patch("core.operator_notify.notify_operator", return_value=True),
+            patch.object(rm2, "_risk_history_load", side_effect=self._fresh_history),
+            patch.object(rm2, "_risk_history_save", side_effect=RuntimeError("mongo down")),
+        )
+        with _size_env(rm2, equity=100_000.0, patch_drawdown=0.0, extra=extra2):
+            again = rm2.evaluate(
+                _buy(None), "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+            )
+        assert again.approved is False, again.message
+        assert again.code == "daily_loss_limit"
+
+    def test_successful_save_does_not_arm_memory_fallback(self):
+        import risk.risk_manager as rm_mod
+
+        history = {"trades": [], "virtual_balance": 100_000.0}
+        rm = RiskManager(_cfg(max_daily_loss_pct=5.0))
+        extra = (
+            patch.object(rm, "_trailing_24h_realized_pnl", return_value=-6_000.0),
+            patch("core.operator_notify.notify_operator", return_value=True),
+            patch.object(rm, "_risk_history_load", side_effect=lambda: history),
+            patch.object(rm, "_risk_history_save", side_effect=lambda data: history.update(data)),
+        )
+        with _size_env(rm, equity=100_000.0, history=history, patch_drawdown=0.0, extra=extra), patch(
+            "logger.log"
+        ) as mock_log:
+            buy = rm.evaluate(
+                _buy(None), "4h", trust_score=70, confidence=50, indicators={"atr_pct": 3.0}
+            )
+        assert buy.approved is False and buy.code == "daily_loss_limit"
+        assert history.get("risk_halt_until")
+        assert rm_mod._DAILY_LOSS_HALT_UNTIL is None
+        assert _error_messages(mock_log) == []
+
+
 def test_persist_peak_equity_monotonic():
     history = {"peak_equity": 50_000.0, "trades": []}
 
