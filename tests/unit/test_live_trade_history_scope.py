@@ -18,9 +18,12 @@ from data_manager import (
 
 
 def _cfg(*, trading_mode: str, dry_run: bool = True) -> dict:
+    # #410: dry_run=false alone is shadow; the "cutover"/real cases mean execution=real.
     return {
         "trading_mode": trading_mode,
+        "live_confirmed": not dry_run,
         "live": {
+            "execution": "shadow" if dry_run else "real",
             "dry_run": dry_run,
             "dry_run_enhanced": True,
             "simulated_balance_usdt": 100_000.0,

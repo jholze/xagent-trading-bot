@@ -103,7 +103,7 @@ class TestPositionsFastPath(unittest.TestCase):
         gb._balance_cache.clear()
         cfg = MagicMock()
         cfg.trading_mode = "live"
-        cfg.raw = {"live": {"dry_run": False}}
+        cfg.raw = {"live": {"execution": "real", "dry_run": False}}  # #410: real means execution=real
         cfg.simulated_balance_usdt = 5000
 
         adapter = MagicMock()
@@ -127,7 +127,7 @@ class TestPositionsFastPath(unittest.TestCase):
 
         cfg = MagicMock()
         cfg.trading_mode = "live"
-        cfg.raw = {"live": {"dry_run": False}}
+        cfg.raw = {"live": {"execution": "real", "dry_run": False}}  # #410: real means execution=real
         with patch("services.gate_balance.is_live_dry_run", return_value=False):
             with tenant_context("henry"):
                 k_h = gb._balance_cache_key(cfg)

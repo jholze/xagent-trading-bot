@@ -3,6 +3,11 @@
 ``trading_mode`` stays ``live | paper | demo`` (#312 deliberate deviation from
 phase1-kasse.md §3.1). ``live.dry_run: true`` is a deprecated alias for
 ``execution: shadow``. Asking for ``real`` never silently downgrades.
+
+Single source of truth (#410): callers must not read ``live.dry_run`` to decide
+whether fills are real money. Use ``resolve_execution_mode(cfg).places_real_orders``
+/ ``.adapter_mode`` or the accounting helper ``places_real_orders(cfg)``;
+``data_manager.is_live_dry_run`` and ``core.simulated_trading`` derive from it.
 """
 
 from __future__ import annotations
@@ -51,6 +56,44 @@ def _creds_present(live: dict, env: Mapping[str, str]) -> tuple[bool, str, str]:
     has_key = bool(str(env.get(key_env, "") or "").strip())
     has_secret = bool(str(env.get(secret_env, "") or "").strip())
     return has_key and has_secret, key_env, secret_env
+
+
+def places_real_orders(
+    config_raw: dict,
+    env: Mapping[str, str] = os.environ,
+) -> bool:
+    """Accounting truth (#410): True only when execution resolves to ``real``.
+
+    Shadow and testnet are both not-real-money — testnet fills must never be
+    booked as live PnL or valued against the real Gate spot wallet.
+
+    ``live.dry_run: true`` short-circuits to False *before* delegating to
+    ``resolve_execution_mode``: the deprecated alias forces shadow, and an
+    unknown ``live.execution`` value must not flip accounting to real-money
+    while the operator has dry_run on (resolve raises on the unknown value
+    before it reaches the dry_run alias, so this check cannot live there).
+
+    Fail-closed: when ``resolve_execution_mode`` refuses (``real`` without
+    ``live_confirmed``/creds/with DEMO_MODE, ``testnet`` without creds, unknown
+    value) and dry_run is not true, the mode is treated as real-money — nothing
+    lands in the simulated ledger and every live gate stays in place (same
+    direction as the risk manager's short gate). A WARNING is logged so the
+    operator sees the unresolvable execution; the adapter factory still refuses
+    to start there.
+    """
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
+    if live.get("dry_run") is True:
+        return False
+    try:
+        return resolve_execution_mode(config_raw, env).places_real_orders
+    except RuntimeError as exc:
+        log(
+            f"places_real_orders: execution mode unresolvable ({exc}); "
+            "fail-closed → treating as real-money",
+            "WARNING",
+        )
+        return True
 
 
 def resolve_execution_mode(

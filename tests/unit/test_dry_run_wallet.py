@@ -43,9 +43,17 @@ class TestDryRunWallet(unittest.TestCase):
 
     def test_is_dry_run_enhanced_requires_all_flags(self):
         paper_enhanced = {"trading_mode": "paper", "live": {"dry_run": True, "dry_run_enhanced": True}}
-        with patch("data_manager.is_demo_mode", return_value=False):
+        # #410: "real" is a resolved live.execution=real, not merely dry_run=false.
+        real_enhanced = {
+            "trading_mode": "live",
+            "live_confirmed": True,
+            "live": {"execution": "real", "dry_run": False, "dry_run_enhanced": True},
+        }
+        real_env = {"DEMO_MODE": "0", "GATE_API_KEY": "k", "GATE_API_SECRET": "s"}
+        with patch("data_manager.is_demo_mode", return_value=False), \
+             patch.dict(os.environ, real_env, clear=False):
             self.assertFalse(is_dry_run_enhanced(paper_enhanced))
-            self.assertFalse(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": False, "dry_run_enhanced": True}}))
+            self.assertFalse(is_dry_run_enhanced(real_enhanced))
             self.assertTrue(is_dry_run_enhanced({"trading_mode": "live", "live": {"dry_run": True, "dry_run_enhanced": True}}))
         with patch("data_manager.is_demo_mode", return_value=True):
             self.assertTrue(is_dry_run_enhanced(paper_enhanced))

@@ -15,11 +15,24 @@ from data_manager import uses_exchange_ledger
 
 
 class TestLiveGateReadiness(unittest.TestCase):
+    def setUp(self):
+        # #410: real live is live.execution=real (config.json ships shadow);
+        # creds make the real mode resolve instead of fail-closed.
+        self._env = patch.dict(
+            os.environ,
+            {"DEMO_MODE": "0", "GATE_API_KEY": "test-key", "GATE_API_SECRET": "test-secret"},
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
     def _live_config(self, enhanced: bool = False, dry_run: bool = False):
         raw = dict(get_config())
         raw["trading_mode"] = "live"
         raw["live_confirmed"] = True
-        live = raw.setdefault("live", {})
+        live = dict(raw.get("live") or {})
+        raw["live"] = live
+        live["execution"] = "real"
         live["dry_run"] = dry_run
         live["dry_run_enhanced"] = enhanced
         risk = raw.setdefault("risk", {})

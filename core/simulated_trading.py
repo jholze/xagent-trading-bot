@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from core.execution_mode import places_real_orders
 from data_manager import get_config, is_demo_mode, is_dry_run_enhanced, is_live_dry_run, resolve_ledger_scope
 
 
 def is_simulated_trading(config: dict | None = None) -> bool:
-    """True when execution uses the local order ledger, not Gate mainnet."""
+    """True when execution uses the local order ledger, not Gate mainnet.
+
+    Live follows ``core.execution_mode`` (#410): shadow and testnet are both
+    simulated for accounting; only a resolved ``real`` is not.
+    """
     cfg = config or get_config()
     if is_demo_mode():
         return True
     mode = cfg.get("trading_mode", "paper")
     if mode == "live":
-        return bool(cfg.get("live", {}).get("dry_run", True))
+        return is_live_dry_run(cfg)
     if mode == "paper":
         return bool(cfg.get("virtual_trading", True))
     return False
@@ -39,14 +44,18 @@ def uses_simulated_portfolio(config: dict | None = None) -> bool:
 
 
 def is_real_live_trading(config: dict | None = None) -> bool:
-    """True only when dry_run is off and live is confirmed — real Gate orders."""
+    """True only when live execution resolves to ``real`` — real Gate orders.
+
+    ≡ ``resolve_execution_mode(cfg).places_real_orders`` (#410): shadow and
+    testnet are False even with ``dry_run: false``. ``live_confirmed`` stays a
+    hard requirement (it is one of the real guards).
+    """
     cfg = config or get_config()
     if cfg.get("trading_mode") != "live":
         return False
-    live = cfg.get("live", {})
-    if live.get("dry_run", True):
+    if not cfg.get("live_confirmed"):
         return False
-    return bool(cfg.get("live_confirmed"))
+    return places_real_orders(cfg)
 
 
 def simulated_live_config_updates(config: dict | None = None) -> dict:

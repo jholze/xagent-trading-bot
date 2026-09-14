@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from datetime import datetime
 
+from core.execution_mode import places_real_orders
 from logger import log
 from storage.errors import LedgerUnavailable, LedgerWriteFailed
 from storage.mongo_client import get_database
@@ -218,23 +219,29 @@ DRY_RUN_EXPANSION_FILE = "watchlist.dry_run_expansion.json"
 
 
 def is_live_dry_run(config: dict = None) -> bool:
-    """True when live mode with dry_run ON — orders stay in the local ledger."""
+    """True when live mode does not place real-money orders (#410).
+
+    Follows ``core.execution_mode`` — shadow *and* testnet count as dry-run:
+    fills stay in the local ledger / live_trade_history virtual balance and
+    never touch mainnet PnL or the real Gate spot NAV. ``live.dry_run: true``
+    is honoured via the deprecated-alias override in ``resolve_execution_mode``.
+    """
     cfg = config or get_config()
     if cfg.get("trading_mode") != "live":
         return False
-    return bool(cfg.get("live", {}).get("dry_run", True))
+    return not places_real_orders(cfg)
 
 
 def is_dry_run_enhanced(config: dict = None) -> bool:
     """True when dry_run_enhanced is on and (live dry-run or demo mode).
 
-    Never true when live.dry_run is false (real live trading).
+    Never true when live execution resolves to real (real live trading).
     """
     cfg = config or get_config()
     live = cfg.get("live", {})
-    if not live.get("dry_run", True):
-        return False
     if not live.get("dry_run_enhanced", False):
+        return False
+    if cfg.get("trading_mode") == "live" and not is_live_dry_run(cfg):
         return False
     return is_live_dry_run(cfg) or is_demo_mode()
 
