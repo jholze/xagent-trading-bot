@@ -16,6 +16,8 @@ from execution.gate_adapter import GateExecutionAdapter
 from execution.recovery import (
     RecoveryFailed,
     RecoveryReport,
+    _order_is_stop,
+    _positions_without_stop,
     reconcile_with_exchange,
     reset_recovery_log_for_tests,
 )
@@ -578,3 +580,78 @@ class TestCycleSkipsOnRecoveryFailed(unittest.TestCase):
             except Exception:
                 pass  # downstream steps may need more mocks; we only assert the cycle continued
         self.assertEqual(calls, ["watchlist"], "generic runtime errors must not abort the cycle")
+
+
+def test_order_is_stop_recognises_type_and_trigger_fields():
+    """#380: detector is symbol-level, not lot-aware. Stop sized to the lot's
+    filled base at placement; recovery only matches open orders by symbol.
+    """
+    assert _order_is_stop({"symbol": "SOL/USDT", "type": "stop_market"}, "SOL/USDT")
+    assert _order_is_stop({"symbol": "SOL/USDT:USDT", "stopPrice": 106.0}, "SOL/USDT")
+    assert _order_is_stop({"symbol": "SOL/USDT", "stop_price": 106.0}, "SOL/USDT")
+    assert _order_is_stop({"symbol": "SOL/USDT", "triggerPrice": 106.0}, "SOL/USDT")
+    assert _order_is_stop(
+        {"symbol": "SOL/USDT", "info": {"triggerPrice": 106.0}}, "SOL/USDT"
+    )
+    assert _order_is_stop(
+        {"symbol": "SOL/USDT", "info": {"stop_price": 106.0}}, "SOL/USDT"
+    )
+    assert not _order_is_stop({"symbol": "SOL/USDT", "type": "limit"}, "SOL/USDT")
+    assert not _order_is_stop(
+        {"symbol": "ETH/USDT", "type": "stop_market"}, "SOL/USDT"
+    )
+
+
+def test_positions_without_stop_symbol_level_not_lot_aware():
+    """Current detector: any stop open-order for the symbol covers every lot
+    of that symbol. It does not read lot.exchange_stop_order_id.
+    """
+    lots = [
+        {
+            "symbol": "SOL/USDT",
+            "timeframe": "4h",
+            "amount": 10.0,
+            "side": "short",
+            "exchange_stop_order_id": "lot-stop-ignored",
+        },
+        {"symbol": "ETH/USDT", "timeframe": "4h", "amount": 2.0, "side": "short"},
+        {"symbol": "DUST/USDT", "timeframe": "4h", "amount": 0.0, "side": "short"},
+    ]
+    assert _positions_without_stop(lots, []) == ["SOL/USDT 4h", "ETH/USDT 4h"]
+
+    with_sol_stop = [
+        {"symbol": "SOL/USDT:USDT", "type": "stop_market", "id": "s1"},
+    ]
+    assert _positions_without_stop(lots, with_sol_stop) == ["ETH/USDT 4h"]
+
+    with_eth_trigger = [
+        {"symbol": "ETH/USDT", "triggerPrice": 2000.0, "id": "s2"},
+    ]
+    assert _positions_without_stop(lots, with_eth_trigger) == ["SOL/USDT 4h"]
+
+    both = with_sol_stop + with_eth_trigger
+    assert _positions_without_stop(lots, both) == []
+
+
+def test_reconcile_reports_positions_without_stop(_reset_recovery, monkeypatch):
+    adapter, ex = _adapter(monkeypatch)
+    ex.fetch_balance.return_value = {
+        "total": {"SOL": 10.0},
+        "SOL": {"total": 10.0, "free": 10.0, "used": 0},
+    }
+    ex.fetch_open_orders.return_value = []
+    with tenant_context("default", scope="demo"):
+        _snap_sol(10.0, entry=100.0)
+        report = reconcile_with_exchange(
+            tenant_id="default", scope="demo", adapter=adapter, config=_cfg()
+        )
+    assert any(x.startswith("SOL/USDT") for x in report.positions_without_stop)
+
+    ex.fetch_open_orders.return_value = [
+        {"symbol": "SOL/USDT", "type": "stop_market", "id": "s1"},
+    ]
+    with tenant_context("default", scope="demo"):
+        report2 = reconcile_with_exchange(
+            tenant_id="default", scope="demo", adapter=adapter, config=_cfg()
+        )
+    assert report2.positions_without_stop == []

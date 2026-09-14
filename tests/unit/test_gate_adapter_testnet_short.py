@@ -14,8 +14,13 @@ from core.tenant_context import tenant_context
 from data_manager import save_trade_history
 from execution.gate_adapter import GateExecutionAdapter, _GATE_TESTNET_HOST
 from services.portfolio_service import PortfolioService
-from strategies.positions import clear_positions_memory, get_position, update_position
-from strategies.short_math import is_short
+from strategies.positions import (
+    clear_positions_memory,
+    get_position,
+    set_position_field,
+    update_position,
+)
+from strategies.short_math import is_short, stop_price
 
 SYMBOL = "BASE/USDT"
 SWAP = "BASE/USDT:USDT"
@@ -118,6 +123,7 @@ def _mock_swap_exchange(
         "limits": {"amount": {"min": min_amount}, "cost": {"min": 0}},
     }
     ex.amount_to_precision.side_effect = lambda _s, a: a
+    ex.price_to_precision.side_effect = lambda _s, p: p
     ex.load_markets.return_value = {SWAP: market}
     ex.market.return_value = market
     ex.fetch_balance.return_value = {
@@ -205,8 +211,8 @@ def test_short_testnet_guard_satisfied_places_isolated_sell(monkeypatch):
     assert lev_args[0] == 2
     assert lev_args[1] == SWAP
     assert lev_args[2] == {"marginMode": "isolated"}
-    ex.create_order.assert_called_once()
-    args, _kwargs = ex.create_order.call_args
+    assert ex.create_order.call_count == 2
+    args, _kwargs = ex.create_order.call_args_list[0]
     assert args[0] == SWAP
     assert args[1] == "market"
     assert args[2] == "sell"
@@ -214,10 +220,26 @@ def test_short_testnet_guard_satisfied_places_isolated_sell(monkeypatch):
     assert args[4] is None
     params = args[5]
     assert str(params.get("text") or "").startswith("t-")
+    stop_args, _stop_kw = ex.create_order.call_args_list[1]
+    assert stop_args[0] == SWAP
+    assert stop_args[1] == "market"
+    assert stop_args[2] == "buy"
+    assert stop_args[3] == pytest.approx(10)
+    assert stop_args[4] is None
+    stop_params = stop_args[5]
+    assert stop_params.get("reduceOnly") is True
+    expected_stop = stop_price("short", 100.0, 0.12, 2)
+    assert stop_params.get("triggerPrice") == pytest.approx(expected_stop)
+    assert stop_params.get("stopPrice") == pytest.approx(expected_stop)
+    assert stop_params.get("stopLossPrice") == pytest.approx(expected_stop)
+    stop_text = str(stop_params.get("text") or "")
+    assert stop_text.startswith("t-")
+    assert len(stop_text.encode("utf-8")) <= 28
     pos = get_position(SYMBOL, "4h")
     assert is_short(pos)
     assert float(pos["amount"]) == pytest.approx(10)
     assert float(pos["leverage"]) == pytest.approx(2)
+    assert pos.get("exchange_stop_order_id")
 
 
 def test_short_leverage_5_clamped_to_cap_2(monkeypatch):
@@ -394,7 +416,7 @@ def test_short_contract_size_10_ledger_amount_is_100_base(monkeypatch):
     with tenant_context("default"):
         result = adapter.execute(_short_order(qty=100, usdt=10_000.0), "4h")
     assert result.executed, result.message
-    args, _ = adapter._exchange.create_order.call_args
+    args, _ = adapter._exchange.create_order.call_args_list[0]
     assert args[3] == pytest.approx(10)
     assert result.amount == pytest.approx(100)
     pos = get_position(SYMBOL, "4h")
@@ -544,3 +566,209 @@ def test_cover_no_swap_short_needs_reconcile(monkeypatch):
     pos = get_position(SYMBOL, "4h")
     assert is_short(pos)
     assert float(pos["amount"]) == pytest.approx(10)
+
+
+def _cover_order(*, qty: float = 10, price: float = 90.0) -> TradeOrder:
+    return TradeOrder(
+        "COVER",
+        SYMBOL,
+        price,
+        qty,
+        signal="COVER",
+        source="manual",
+        leverage=2,
+    )
+
+
+def _seed_short_with_stop(oid: str = "stop-99") -> None:
+    update_position(SYMBOL, "4h", "SHORT", 100.0, 10, leverage=2)
+    set_position_field(SYMBOL, "4h", "exchange_stop_order_id", oid)
+
+
+def test_stop_distance_reject_no_naked_close(monkeypatch):
+    warnings: list[tuple[str, str]] = []
+
+    def _capture(msg, level="INFO"):
+        warnings.append((level, str(msg)))
+
+    monkeypatch.setattr("execution.gate_adapter.log", _capture)
+    adapter = _adapter(
+        monkeypatch, fee={"cost": 0.02, "currency": "USDT"}
+    )
+    adapter._exchange.create_order.side_effect = [
+        _closed_raw(
+            filled=10.0,
+            average=100.0,
+            fee={"cost": 0.02, "currency": "USDT"},
+        ),
+        ccxt.InvalidOrder("INVALID_PARAM_VALUE stop price too close to last"),
+    ]
+    with tenant_context("default"):
+        result = adapter.execute(_short_order(), "4h")
+    assert result.executed, result.message
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.needs_reconcile is False
+    assert result.pending is False
+    assert adapter._exchange.create_order.call_count == 2
+    pos = get_position(SYMBOL, "4h")
+    assert is_short(pos)
+    assert float(pos["amount"]) == pytest.approx(10)
+    assert pos.get("exchange_stop_order_id") is None
+    assert "too close" in str(pos.get("stop_placement_failed") or "")
+    assert any(
+        lvl == "WARNING" and "reduce-only stop" in msg for lvl, msg in warnings
+    )
+
+
+def test_partial_fill_stop_sized_to_filled_base(monkeypatch):
+    adapter = _adapter(
+        monkeypatch, filled_contracts=4.0, average=100.0, status="open"
+    )
+    with tenant_context("default"):
+        result = adapter.execute(_short_order(), "4h")
+    assert result.executed, result.message
+    assert result.order_status is OrderStatus.PARTIALLY_FILLED
+    ex = adapter._exchange
+    assert ex.create_order.call_count == 2
+    stop_args, _ = ex.create_order.call_args_list[1]
+    assert stop_args[0] == SWAP
+    assert stop_args[1] == "market"
+    assert stop_args[2] == "buy"
+    assert stop_args[3] == pytest.approx(4.0)
+    stop_params = stop_args[5]
+    assert stop_params.get("reduceOnly") is True
+    expected_stop = stop_price("short", 100.0, 0.12, 2)
+    assert stop_params.get("triggerPrice") == pytest.approx(expected_stop)
+    assert stop_params.get("stopPrice") == pytest.approx(expected_stop)
+    assert stop_params.get("stopLossPrice") == pytest.approx(expected_stop)
+    pos = get_position(SYMBOL, "4h")
+    assert float(pos["amount"]) == pytest.approx(4.0)
+    assert pos.get("exchange_stop_order_id")
+
+
+def test_active_needs_reconcile_does_not_place_stop(monkeypatch):
+    adapter = _adapter(monkeypatch, contract_size=10.0, free_usdt=20_000.0)
+    created = {
+        "id": "tn-1",
+        "status": "closed",
+        "average": 100.0,
+        "timestamp": 1_700_000_000_000,
+        "fee": None,
+    }
+    later = _closed_raw(
+        filled=10.0, oid="tn-1", average=100.0, contract_size=10.0
+    )
+    adapter._exchange.create_order.return_value = created
+    adapter._exchange.fetch_order.side_effect = [Exception("transient"), later]
+    with tenant_context("default"):
+        result = adapter.execute(_short_order(qty=100, usdt=10_000.0), "4h")
+    assert not result.executed
+    assert result.needs_reconcile is True
+    assert result.order_status is OrderStatus.ACTIVE
+    assert adapter._exchange.create_order.call_count == 1
+    pos = get_position(SYMBOL, "4h")
+    assert not pos.get("exchange_stop_order_id")
+
+
+def test_uncertain_create_recovered_does_not_place_stop(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    order = _short_order()
+    order.client_order_id = "abc-key"
+    order.idempotency_key = "abc-key"
+    found = _closed_raw(
+        filled=10.0, oid="tn-found", extra={"clientOrderId": "abc-key"}
+    )
+    adapter._exchange.create_order.side_effect = ccxt.RequestTimeout("t")
+    adapter._exchange.fetch_open_orders.return_value = [found]
+    with tenant_context("default"):
+        result = adapter.execute(order, "4h")
+    assert result.executed, result.message
+    assert adapter._exchange.create_order.call_count == 1
+    pos = get_position(SYMBOL, "4h")
+    assert is_short(pos)
+    assert not pos.get("exchange_stop_order_id")
+    assert not pos.get("stop_placement_failed")
+
+
+def test_cover_cancels_stored_stop_id(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    _seed_short_with_stop("stop-full")
+    with tenant_context("default"):
+        result = adapter.execute(_cover_order(), "4h")
+    assert result.executed, result.message
+    ex = adapter._exchange
+    ex.create_order.assert_called_once()
+    ex.cancel_order.assert_called_once()
+    cargs, ckwargs = ex.cancel_order.call_args
+    assert cargs[0] == "stop-full"
+    assert cargs[1] == SWAP
+    cancel_params = cargs[2] if len(cargs) > 2 else (ckwargs.get("params") or {})
+    assert cancel_params.get("trigger") is True
+    pos = get_position(SYMBOL, "4h")
+    assert not pos.get("exchange_stop_order_id")
+
+
+def test_capped_cover_cancels_stored_stop_id(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    adapter._exchange.fetch_positions.return_value = [
+        {
+            "symbol": SWAP,
+            "contracts": 6,
+            "contractSize": 1.0,
+            "side": "short",
+        }
+    ]
+    adapter._exchange.create_order.return_value = _closed_raw(
+        filled=6.0, average=90.0, oid="cover-capped"
+    )
+    _seed_short_with_stop("stop-capped")
+    with tenant_context("default"):
+        result = adapter.execute(_cover_order(qty=10), "4h")
+    assert result.executed, result.message
+    ex = adapter._exchange
+    buy_args, _ = ex.create_order.call_args
+    assert buy_args[2] == "buy"
+    assert buy_args[3] == pytest.approx(6)
+    ex.cancel_order.assert_called_once()
+    cargs, ckwargs = ex.cancel_order.call_args
+    assert cargs[0] == "stop-capped"
+    assert cargs[1] == SWAP
+    cancel_params = cargs[2] if len(cargs) > 2 else (ckwargs.get("params") or {})
+    assert cancel_params.get("trigger") is True
+
+
+def test_partial_cover_cancels_stored_stop_id(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    adapter._exchange.create_order.return_value = _closed_raw(
+        filled=4.0, average=90.0, oid="cover-partial"
+    )
+    _seed_short_with_stop("stop-partial")
+    with tenant_context("default"):
+        result = adapter.execute(_cover_order(qty=4), "4h")
+    assert result.executed, result.message
+    ex = adapter._exchange
+    buy_args, _ = ex.create_order.call_args
+    assert buy_args[2] == "buy"
+    assert buy_args[3] == pytest.approx(4)
+    ex.cancel_order.assert_called_once()
+    cargs, ckwargs = ex.cancel_order.call_args
+    assert cargs[0] == "stop-partial"
+    assert cargs[1] == SWAP
+    cancel_params = cargs[2] if len(cargs) > 2 else (ckwargs.get("params") or {})
+    assert cancel_params.get("trigger") is True
+    pos = get_position(SYMBOL, "4h")
+    assert is_short(pos)
+    assert float(pos["amount"]) == pytest.approx(6)
+    assert not pos.get("exchange_stop_order_id")
+
+
+def test_stop_uses_clamped_leverage_not_requested(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    with tenant_context("default"):
+        result = adapter.execute(_short_order(leverage=5), "4h")
+    assert result.executed, result.message
+    stop_params = adapter._exchange.create_order.call_args_list[1][0][5]
+    expected = stop_price("short", 100.0, 0.12, 2)
+    not_unclamped = stop_price("short", 100.0, 0.12, 5)
+    assert stop_params.get("triggerPrice") == pytest.approx(expected)
+    assert stop_params.get("triggerPrice") != pytest.approx(not_unclamped)
