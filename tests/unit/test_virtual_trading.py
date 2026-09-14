@@ -314,10 +314,12 @@ class TestVirtualTrading(unittest.TestCase):
         raw = dict(get_config())
         raw["trading_mode"] = "live"
         raw["live_confirmed"] = False
-        raw.setdefault("live", {})["dry_run"] = False
+        # #410: mainnet is live.execution=real; dry_run=false alone stays shadow (simulated).
+        raw["live"] = {**(raw.get("live") or {}), "execution": "real", "dry_run": False}
         cfg = BotConfig()
         cfg._raw = raw
-        with patch.dict(os.environ, {"DEMO_MODE": "0"}, clear=False):
+        env = {"DEMO_MODE": "0", "GATE_API_KEY": "k", "GATE_API_SECRET": "s"}
+        with patch.dict(os.environ, env, clear=False):
             svc = TradingService(cfg)
             ok, reason = svc.can_execute()
         self.assertFalse(ok)

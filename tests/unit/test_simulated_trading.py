@@ -51,10 +51,23 @@ class TestSimulatedTrading(unittest.TestCase):
             self.assertTrue(uses_simulated_live_portfolio(cfg))
 
     def test_real_live_is_not_simulated(self):
-        cfg = {"trading_mode": "live", "live": {"dry_run": False}}
-        with patch.dict(os.environ, {"DEMO_MODE": "0"}, clear=False):
+        # #410: dry_run=false alone no longer means real — execution must resolve to real.
+        cfg = {
+            "trading_mode": "live",
+            "live_confirmed": True,
+            "live": {"execution": "real", "dry_run": False},
+        }
+        env = {"DEMO_MODE": "0", "GATE_API_KEY": "k", "GATE_API_SECRET": "s"}
+        with patch.dict(os.environ, env, clear=False):
             self.assertFalse(is_simulated_trading(cfg))
             self.assertFalse(uses_order_ledger_cash(cfg))
+
+    def test_dry_run_false_without_execution_is_simulated(self):
+        """#410: execution unset defaults to shadow; dry_run=false does not make it real."""
+        cfg = {"trading_mode": "live", "live": {"dry_run": False}}
+        with patch.dict(os.environ, {"DEMO_MODE": "0"}, clear=False):
+            self.assertTrue(is_simulated_trading(cfg))
+            self.assertTrue(uses_order_ledger_cash(cfg))
 
     def test_resolve_sim_cash_from_orders_for_demo_scope(self):
         cfg = {

@@ -77,10 +77,20 @@ def test_allow_live_default_false():
     assert mcp_allow_live({"mcp": {"allow_live": True}}) is True
 
 
-def test_live_writes_blocked_only_for_real_live():
+def test_live_writes_blocked_only_for_real_live(monkeypatch):
+    # #410: real means live.execution resolves to real, not merely dry_run=false.
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("GATE_API_KEY", "k")
+    monkeypatch.setenv("GATE_API_SECRET", "s")
     paper = {"trading_mode": "live", "live_confirmed": True, "live": {"dry_run": True}}
-    real = {"trading_mode": "live", "live_confirmed": True, "live": {"dry_run": False}}
+    real = {
+        "trading_mode": "live",
+        "live_confirmed": True,
+        "live": {"execution": "real", "dry_run": False},
+    }
+    testnet = {**real, "live": {"execution": "testnet", "dry_run": False}}
     assert mcp_live_writes_blocked(paper) is False
+    assert mcp_live_writes_blocked(testnet) is False
     assert mcp_live_writes_blocked(real) is True
     assert mcp_live_writes_blocked({**real, "mcp": {"allow_live": True}}) is False
 

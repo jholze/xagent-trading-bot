@@ -270,10 +270,14 @@ def test_execute_tenant_not_allowed(monkeypatch):
 def test_execute_real_live_forbidden(monkeypatch):
     monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
     monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+    # #410: real live is live.execution=real (resolved), not merely dry_run=false.
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("GATE_API_KEY", "k")
+    monkeypatch.setenv("GATE_API_SECRET", "s")
     cfg = {
         "trading_mode": "live",
         "live_confirmed": True,
-        "live": {"dry_run": False},
+        "live": {"execution": "real", "dry_run": False},
         "mcp": {"enabled": True, "allow_writes": True, "allow_live": False, "tenants": ["henry"]},
     }
     client = _client(monkeypatch, config=cfg)

@@ -126,14 +126,20 @@ def _remember_daily_loss_halt(until: datetime) -> None:
 
 
 def _execution_places_real_orders(raw) -> bool:
-    """True only when live.execution resolves to real. Fail-closed on error."""
-    from core.execution_mode import resolve_execution_mode
+    """True only when live.execution resolves to real (#410).
+
+    Thin wrapper over the single source of truth
+    ``core.execution_mode.places_real_orders`` — no second parser of
+    ``live.execution`` / ``live.dry_run`` lives here. Shadow and testnet are
+    both False; an unresolved mode is treated as real (fail-closed) so the
+    live short gate stays in place.
+    """
+    from core.execution_mode import places_real_orders
     from logger import log
 
     try:
-        return resolve_execution_mode(raw).adapter_mode == "real"
-    except Exception as e:
-        # Fail-closed: unresolved mode must keep the live short gate in place.
+        return places_real_orders(raw)
+    except Exception as e:  # pragma: no cover - defensive, helper already fails closed
         log(f"short gate: execution mode unresolved, treating as real: {e}", "WARNING")
         return True
 
