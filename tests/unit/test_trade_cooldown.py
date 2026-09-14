@@ -157,6 +157,7 @@ class TestTradeCooldown(unittest.TestCase):
         arch["min_hours_after_sell_before_rebuy"] = 4.0
         arch["rebuy_after_stop_loss_hours"] = 24.0
         arch["block_rebuy_if_last_sell_was_stop"] = True
+        raw["risk"] = {**dict(raw.get("risk") or {}), "fail_closed_guards": "log"}  # #411: approval path, not the degraded guard
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -184,6 +185,7 @@ class TestTradeCooldown(unittest.TestCase):
 
         raw = dict(get_config())
         raw.setdefault("architecture", {})["min_hours_after_sell_before_rebuy"] = 4.0
+        raw["risk"] = {**dict(raw.get("risk") or {}), "fail_closed_guards": "log"}  # #411: approval path, not the degraded guard
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)

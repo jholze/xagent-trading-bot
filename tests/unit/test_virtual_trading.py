@@ -973,6 +973,9 @@ class TestVirtualTrading(unittest.TestCase):
 
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
+        # #411: staging default is "deny"; this test exercises the log branch explicitly
+        # (no oracle in unit tests → market bias degraded → deny would block the buy).
+        raw["risk"] = {**dict(raw.get("risk") or {}), "fail_closed_guards": "log"}
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -995,6 +998,7 @@ class TestVirtualTrading(unittest.TestCase):
 
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
+        raw["risk"] = {**dict(raw.get("risk") or {}), "fail_closed_guards": "log"}  # #411
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -1015,6 +1019,7 @@ class TestVirtualTrading(unittest.TestCase):
 
         raw = dict(get_config())
         raw["trading_mode"] = "paper"
+        raw["risk"] = {**dict(raw.get("risk") or {}), "fail_closed_guards": "log"}  # #411
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -1043,6 +1048,7 @@ class TestVirtualTrading(unittest.TestCase):
         risk_cfg = dict(raw.get("risk") or {})
         risk_cfg["position_capacity"] = {"enabled": False}
         risk_cfg["slot_eviction"] = {"enabled": False}
+        risk_cfg["fail_closed_guards"] = "log"  # #411: test asserts the max_open_positions reason, not the degraded guard
         raw["risk"] = risk_cfg
         cfg = BotConfig()
         cfg._raw = raw
@@ -1071,6 +1077,7 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
         raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw["risk"]["fail_closed_guards"] = "log"  # #411: exercise the log branch explicitly
         raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw
@@ -1149,6 +1156,7 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
         raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw["risk"]["fail_closed_guards"] = "log"  # #411: exercise the log branch explicitly
         cfg = BotConfig()
         cfg._raw = raw
         risk = RiskManager(cfg)
@@ -1254,6 +1262,7 @@ class TestVirtualTrading(unittest.TestCase):
         raw["trading_mode"] = "paper"
         raw["max_daily_trades"] = 1
         raw.setdefault("risk", {})["max_daily_buys"] = 1
+        raw["risk"]["fail_closed_guards"] = "log"  # #411: exercise the log branch explicitly
         raw.setdefault("live", {})["dry_run_enhanced"] = False
         cfg = BotConfig()
         cfg._raw = raw

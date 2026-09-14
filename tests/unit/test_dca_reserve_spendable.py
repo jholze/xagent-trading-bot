@@ -26,6 +26,9 @@ def _railway_like_config() -> BotConfig:
     risk["cash_policy"] = {"enabled": False}
     risk["slot_eviction"] = {"enabled": False}
     risk["venue_quality"] = {"enabled": False}
+    # #411: staging default is "deny"; these tests cover reserve/spendable sizing,
+    # not the degraded-oracle guard, so exercise the log branch explicitly.
+    risk["fail_closed_guards"] = "log"
     uni = dict(raw.get("universe") or {})
     uni["split_enabled"] = False
     raw["universe"] = uni
