@@ -59,13 +59,21 @@ def is_real_live_trading(config: dict | None = None) -> bool:
 
 
 def simulated_live_config_updates(config: dict | None = None) -> dict:
-    """Config patch: executable simulated live (dry-run ledger, no Mainnet)."""
-    cfg = dict(config or get_config())
-    live = dict(cfg.get("live", {}))
-    live["dry_run"] = True
+    """Config patch: executable simulated live (dry-run ledger, no Mainnet).
+
+    Returns **only the keys that change**. ``live`` carries just ``dry_run`` —
+    the merged ``live.*`` block (operator ``execution``, ``max_usdt_per_trade``,
+    …) must not be copied in, or ``patch_config`` would freeze the operator
+    baseline into the tenant body (#456). ``deep_merge_dicts`` on both persist
+    paths keeps the untouched ``live.*`` siblings.
+
+    ``config`` is accepted for call-site compatibility; the patch does not
+    depend on the current config.
+    """
+    del config  # unused since #456 — the patch is constant
     return {
         "trading_mode": "live",
         "virtual_trading": False,
         "live_confirmed": True,
-        "live": live,
+        "live": {"dry_run": True},
     }

@@ -829,6 +829,11 @@ def save_config(config, tenant_id: str | None = None):
     write on both paths (default → ``config.json``, tenant → Mongo via
     ``tenant_meta_store``). An out-of-bounds value raises
     :class:`core.config_guardrails.ConfigValidationError` and nothing is written.
+
+    Tenant path replaces the **whole** stored body with ``config``. Callers
+    that start from ``get_config()`` (the merged operator+tenant view) must
+    use :func:`patch_config` instead — otherwise the operator baseline gets
+    frozen into the tenant body (#456).
     """
     global _config_cache
     from core.config_guardrails import validate_config_for_save
@@ -842,7 +847,10 @@ def save_config(config, tenant_id: str | None = None):
         except Exception:
             use_mongo = False
         if not use_mongo:
-            return True
+            # No tenant config store on this backend: nothing was written,
+            # so do not report success (#456).
+            log(f"save_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
+            return False
         try:
             from storage import tenant_meta_store as _tms
             ok = _tms.save_tenant_config(tid, config, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
@@ -860,6 +868,58 @@ def save_config(config, tenant_id: str | None = None):
         _config_cache = None
         return True
     except Exception:
+        return False
+
+
+def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
+    """Deep-merge ``updates`` into the resolved tenant's persisted config (#456).
+
+    - default tenant: merged into the current config and written via
+      :func:`save_config` (``config.json``).
+    - tenant: only the keys in ``updates`` are written into the stored tenant
+      body (``tenant_meta_store.patch_tenant_config``). The operator
+      ``config.json`` baseline and profile preset stay inherited, so later
+      operator edits (risk, shorts, …) keep reaching the tenant.
+
+    Guardrail (#330) runs on the *effective* config after the patch; an
+    out-of-bounds value raises ``ConfigValidationError`` and nothing is written.
+    Returns ``False`` when the write was skipped or failed — never a silent
+    ``True`` without a persisted change.
+    """
+    from core.config_guardrails import validate_config_for_save
+    from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    from core.trading_profiles import deep_merge_dicts
+
+    if not isinstance(updates, dict):
+        return False
+    tid = resolve_tenant_id(tenant_id)
+    if tid == DEFAULT_TENANT:
+        merged = deep_merge_dicts(get_config(tenant_id=tid) or {}, updates)
+        return save_config(merged, tenant_id=tid)
+    default_cfg = _load_default_config_from_disk()
+    try:
+        use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+    except Exception:
+        use_mongo = False
+    if not use_mongo:
+        log(f"patch_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
+        return False
+    try:
+        body = _load_tenant_config_body(tid, default_cfg) or {}
+    except LedgerUnavailable as e:
+        log(f"patch_config: tenant body unavailable for {tid}: {e}", "WARNING")
+        return False
+    new_body = deep_merge_dicts(body, updates)
+    validate_config_for_save(_apply_trading_profile_merge(default_cfg, new_body))
+    try:
+        from storage import tenant_meta_store as _tms
+        return bool(
+            _tms.patch_tenant_config(
+                tid, updates, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg)
+            )
+        )
+    except Exception as e:
+        log(f"Failed tenant_meta_store patch_tenant_config for {tid}: {e}", "WARNING")
         return False
 
 

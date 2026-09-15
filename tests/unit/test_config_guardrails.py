@@ -221,13 +221,17 @@ def test_tenant_save_partial_body_still_saves(tenant_mongo):
 
 
 def test_tenant_save_non_mongo_backend_still_validates(monkeypatch):
-    """Even when the tenant path is a no-op (paper backend), invalid input is rejected."""
+    """Even when the tenant path is a no-op (paper backend), invalid input is rejected.
+
+    #456: the skipped write reports ``False`` (nothing was persisted) instead of
+    the former silent ``True``.
+    """
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "t2")
     monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {})
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: False)
     with pytest.raises(ConfigValidationError):
         _REAL_SAVE_CONFIG({"risk": {"max_daily_buys": -1}}, tenant_id="t2")
-    assert _REAL_SAVE_CONFIG({"risk": {"max_daily_buys": 0}}, tenant_id="t2") is True
+    assert _REAL_SAVE_CONFIG({"risk": {"max_daily_buys": 0}}, tenant_id="t2") is False
 
 
 # --- in-repo producers: every literal actually written must survive the guard --
@@ -238,7 +242,8 @@ def test_tenant_save_non_mongo_backend_still_validates(monkeypatch):
 
 
 def _capture_mode_command(text: str, cfg: dict, env: dict | None = None) -> dict:
-    """Run ``mode_commands.handle(text)`` and return the dict handed to ``save_config``."""
+    """Run ``mode_commands.handle(text)`` and return the dict handed to the
+    persist seam (``patch_config`` since #456 — only the changed keys)."""
     from unittest.mock import patch
 
     from notifications.telegram_commands import mode_commands
@@ -251,7 +256,7 @@ def _capture_mode_command(text: str, cfg: dict, env: dict | None = None) -> dict
 
     with patch.dict(os.environ, env or {}, clear=False), \
          patch.object(mode_commands, "get_config", side_effect=lambda: dict(cfg)), \
-         patch.object(mode_commands, "save_config", side_effect=_fake_save), \
+         patch.object(mode_commands, "patch_config", side_effect=_fake_save), \
          patch.object(mode_commands, "reload_config"), \
          patch.object(mode_commands, "on_trading_mode_change", return_value=""), \
          patch.object(mode_commands, "send_telegram_message"):

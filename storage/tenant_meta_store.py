@@ -9,6 +9,7 @@ Used by the thin dispatchers in data_manager.
 
 from __future__ import annotations
 
+import copy
 import os
 from datetime import datetime, timezone
 
@@ -66,6 +67,51 @@ def save_tenant_config(tid: str, body: dict, *, default_cfg: dict, test: bool = 
         return True
     except Exception as e:
         log(f"tenant_meta_store: failed save_tenant_config for {tid}: {e}", "WARNING")
+        return False
+
+
+def _flatten_patch(prefix: str, updates: dict, out: dict) -> None:
+    """Expand a nested patch into dotted ``$set`` paths under ``prefix``.
+
+    Non-empty dicts recurse (so sibling keys in the stored body survive);
+    scalars, lists and empty dicts replace the value at that path.
+    """
+    for key, val in updates.items():
+        skey = str(key)
+        if not skey or "." in skey or skey.startswith("$"):
+            raise ValueError(f"unsupported config key for patch: {key!r}")
+        path = f"{prefix}.{skey}"
+        if isinstance(val, dict) and val:
+            _flatten_patch(path, val, out)
+        else:
+            out[path] = copy.deepcopy(val)
+
+
+def patch_tenant_config(tid: str, updates: dict, *, default_cfg: dict, test: bool = False) -> bool:
+    """Deep-merge ``updates`` into the stored tenant body (#456).
+
+    Only the given keys are written (``$set`` on dotted paths); everything
+    else in the body — and every key the tenant inherits from the operator
+    ``config.json`` / profile preset — stays untouched. Contrast with
+    :func:`save_tenant_config`, which replaces the whole body.
+    """
+    if not tid or not isinstance(updates, dict):
+        return False
+    if not updates:
+        return True
+    try:
+        set_doc: dict = {}
+        _flatten_patch("body", updates, set_doc)
+        set_doc["updated_at"] = _now_iso()
+        db = get_database(test=test, config=default_cfg)
+        db[TENANT_CONFIGS_COLL].update_one(
+            {"tenant_id": tid},
+            {"$set": set_doc},
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        log(f"tenant_meta_store: failed patch_tenant_config for {tid}: {e}", "WARNING")
         return False
 
 
