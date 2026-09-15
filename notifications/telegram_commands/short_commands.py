@@ -1,22 +1,42 @@
-"""Telegram /short and /cover — paper isolated shorts (v0)."""
+"""Telegram /short and /cover — paper isolated shorts (v0).
+
+Both commands only *request* a confirmation (#452): the typed line is parsed,
+a risk preview with the resolved size/percent is sent, and ``execute_short`` /
+``execute_cover`` run solely from the ``manual_ok`` callback in
+``manual_order_flow`` — the same two-step shape as ``/buy`` and ``/sell``.
+"""
 
 from __future__ import annotations
 
 from core.config import get_bot_config
 from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_commands.manual_order_flow import (
+    request_cover_confirmation,
+    request_short_confirmation,
+)
 from notifications.telegram_commands.position_display import (
     position_symbol,
     resolve_position_by_symbol,
 )
-from notifications.telegram_commands.usage_hints import hint
-from price_fetcher import get_prices, get_prices_batch
+from price_fetcher import get_prices_batch
 from services.trading_service import TradingService
 from strategies.positions import get_position, list_active_positions
-from strategies.short_math import is_short, snapshot
+from strategies.short_math import is_short
 from strategies.short_policy import shorts_enabled
 from telegram_notifier import send_telegram_message
 
 _trading = TradingService()
+
+_SHORT_USAGE = (
+    "Short (Paper): <code>/short H</code> · "
+    "<code>/short H 400 2</code> (USDT, Hebel)\n"
+    "Ohne Betrag/Hebel gilt die Standardgröße — sie wird vor der Ausführung angezeigt "
+    "und muss bestätigt werden."
+)
+_COVER_USAGE = (
+    "Cover: <code>/cover H</code> (100 %) · <code>/cover H 50</code> (% )\n"
+    "Der Anteil wird vor der Ausführung angezeigt und muss bestätigt werden."
+)
 
 
 def handle(text: str) -> bool:
@@ -36,10 +56,7 @@ def _handle_short(text: str) -> bool:
         return True
     parts = [p for p in text.split() if p.strip()]
     if len(parts) < 2:
-        send_telegram_message(
-            "Short (Paper): <code>/short H</code> · "
-            "<code>/short H 400 2</code> (USDT, Hebel)"
-        )
+        send_telegram_message(_SHORT_USAGE)
         return True
     sym = parts[1].upper()
     if "/" not in sym:
@@ -52,38 +69,33 @@ def _handle_short(text: str) -> bool:
         except ValueError:
             send_telegram_message("USDT muss eine Zahl sein.")
             return True
+        if usdt <= 0:
+            send_telegram_message("USDT muss größer als 0 sein.")
+            return True
     if len(parts) >= 4:
         try:
             lev = float(parts[3])
         except ValueError:
-            lev = None
-    px = float((get_prices([sym]) or {}).get(sym) or 0)
+            send_telegram_message("Hebel muss eine Zahl sein (z.B. <code>2</code>).")
+            return True
+        if lev <= 0:
+            send_telegram_message("Hebel muss größer als 0 sein.")
+            return True
+    px = float((get_prices_batch([sym]) or {}).get(sym) or 0)
     if px <= 0:
         send_telegram_message(f"Kein Preis für <code>{sym}</code>.")
         return True
     tf = "4h"
-    result = _trading.refresh().execute_short(
-        sym, tf, px, usdt=usdt, leverage=lev, source="manual"
+    return request_short_confirmation(
+        _trading, symbol=sym, timeframe=tf, price=px, usdt=usdt, leverage=lev,
     )
-    if result.executed:
-        pos = get_position(sym, tf)
-        snap = snapshot(pos, px)
-        send_telegram_message(
-            f"🔻 <b>SHORT</b> <code>{sym}</code> {tf}\n"
-            f"qty={result.amount:.6g} @ {px:g}  lev={snap.get('leverage')}×\n"
-            f"margin≈{float(snap.get('margin') or 0):.0f}  liq≈{float(snap.get('liq_price') or 0):g}\n"
-            f"{result.message or 'ok'}"
-        )
-    else:
-        send_telegram_message(f"SHORT blockiert: {result.message}")
-    return True
 
 
 def _handle_cover(text: str) -> bool:
     activate_command("cover")
     parts = [p for p in text.split() if p.strip()]
     if len(parts) < 2:
-        send_telegram_message("Cover: <code>/cover H</code> · <code>/cover H 50</code> (% )")
+        send_telegram_message(_COVER_USAGE)
         return True
     q = parts[1]
     active = list_active_positions()
@@ -98,23 +110,29 @@ def _handle_cover(text: str) -> bool:
     if not is_short(pos):
         send_telegram_message(f"<code>{sym}</code> ist kein Short — nutze /sell.")
         return True
-    pct = 100.0
+    # Fraction of the short to cover; the bare form is an explicit 100 % that
+    # the preview spells out — never a silent default.
+    pct = 1.0
     if len(parts) >= 3:
         try:
-            pct = float(parts[2])
+            pct = float(parts[2].rstrip("%")) / 100.0
         except ValueError:
-            pct = 100.0
-    qty = float(pos.get("amount") or 0) * max(0.0, min(100.0, pct)) / 100.0
+            send_telegram_message("Prozent muss eine Zahl sein (z.B. <code>/cover H 50</code>).")
+            return True
+        if pct <= 0 or pct > 1.0:
+            send_telegram_message("Prozent muss zwischen 1 und 100 liegen.")
+            return True
+    total = float(pos.get("amount") or 0)
+    qty = total * pct
+    if qty <= 0:
+        send_telegram_message(f"Keine deckbare Menge für <code>{sym}</code>.")
+        return True
     px = float((prices or {}).get(sym) or 0)
     if px <= 0:
-        px = float((get_prices([sym]) or {}).get(sym) or 0)
-    result = _trading.refresh().execute_cover(sym, tf, px, amount=qty, source="manual")
-    if result.executed:
-        send_telegram_message(
-            f"🔺 <b>COVER</b> <code>{sym}</code>\n"
-            f"qty={result.amount:.6g} @ {px:g}  pnl={result.pnl:+.2f}\n"
-            f"{result.message or 'ok'}"
-        )
-    else:
-        send_telegram_message(f"COVER blockiert: {result.message}")
-    return True
+        px = float((get_prices_batch([sym]) or {}).get(sym) or 0)
+    if px <= 0:
+        send_telegram_message(f"Kein Preis für <code>{sym}</code>.")
+        return True
+    return request_cover_confirmation(
+        _trading, symbol=sym, timeframe=tf, price=px, amount=qty, pct=pct,
+    )
