@@ -15,7 +15,10 @@ def register_exit_ws_fire_routes(app: Flask) -> None:
     @app.route("/internal/exit-ws/fire", methods=["POST"])
     def internal_exit_ws_fire():
         from services.exit_realtime.config import exit_ws_internal_token
-        from services.exit_realtime.execute import try_execute_trail_exit
+        from services.exit_realtime.execute import (
+            restoring_tenant_cycle_context,
+            try_execute_trail_exit,
+        )
 
         expected = exit_ws_internal_token()
         if not expected:
@@ -48,6 +51,8 @@ def register_exit_ws_fire_routes(app: Flask) -> None:
         action = str(data.get("action") or "SELL_FULL")
         exit_source = str(data.get("exit_source") or "")
         rationale = str(data.get("rationale") or "")[:240]
+        # Fail-closed: never silently default tenant (unlike timeframe above).
+        tid = str(data.get("tenant_id") or "").strip()
 
         if not symbol or price <= 0:
             return (
@@ -55,19 +60,58 @@ def register_exit_ws_fire_routes(app: Flask) -> None:
                 400,
             )
 
+        if not tid:
+            log(
+                f"exit_ws fire API missing tenant_id symbol={symbol} "
+                f"src={exit_source} — fail-closed",
+                "WARNING",
+            )
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "message": "missing_tenant_id",
+                    }
+                ),
+                400,
+            )
+
+        from core.tenant_routing import iter_price_cycle_tenants
+
+        known = {str(t).strip() for t in iter_price_cycle_tenants()}
+        if tid not in known:
+            log(
+                f"exit_ws fire API unknown tenant_id={tid} symbol={symbol} "
+                f"src={exit_source} — fail-closed",
+                "WARNING",
+            )
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "message": "unknown_tenant_id",
+                    }
+                ),
+                400,
+            )
+
         # Always local execute on the bot (ignore EXIT_EXECUTE_URL if set by mistake).
-        result = try_execute_trail_exit(
-            symbol=symbol,
-            timeframe=timeframe,
-            price=price,
-            action=action,
-            exit_source=exit_source,
-            rationale=rationale,
-            force_local=True,
-        )
+        # Restore _active_key after the switch — tenant_cycle_context does not.
+        with restoring_tenant_cycle_context(tid):
+            result = try_execute_trail_exit(
+                symbol=symbol,
+                timeframe=timeframe,
+                price=price,
+                action=action,
+                exit_source=exit_source,
+                rationale=rationale,
+                force_local=True,
+            )
         status = 200 if result.get("ok") else 409
         log(
-            f"exit_ws fire API {symbol} src={exit_source} "
+            f"exit_ws fire API tenant={tid} {symbol} src={exit_source} "
             f"executed={result.get('executed')} msg={str(result.get('message') or '')[:80]}",
             "INFO",
         )

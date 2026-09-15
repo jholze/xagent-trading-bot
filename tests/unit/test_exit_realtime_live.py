@@ -201,6 +201,44 @@ class TestTryExecuteTrailExit(unittest.TestCase):
         self.assertFalse(r["executed"])
         self.assertIn("partial_sell", r["message"])
 
+    def test_recovery_hold_flush_failure_is_logged(self):
+        pos = {
+            "amount": 10.0,
+            "average_entry": 1.0,
+            "recovery_hold": True,
+        }
+        with patch(
+            "strategies.positions.get_position", return_value=pos
+        ), patch(
+            "strategies.short_math.is_short", return_value=False
+        ), patch(
+            "strategies.recovery_hold.maybe_promote_recovery_hold",
+            return_value=True,
+        ), patch(
+            "strategies.positions.flush_positions",
+            side_effect=RuntimeError("disk full"),
+        ), patch(
+            "strategies.recovery_hold.auto_sells_blocked_reason",
+            return_value="recovery_hold",
+        ), patch(
+            "services.exit_realtime.execute.log"
+        ) as mock_log:
+            r = try_execute_trail_exit(
+                symbol="RH/USDT",
+                timeframe="1h",
+                price=1.05,
+                action="SELL_FULL",
+                exit_source="trailing_stop",
+                force_local=True,
+            )
+        self.assertFalse(r["executed"])
+        self.assertTrue(r.get("recovery_hold"))
+        logged = " ".join(
+            str(c.args[0]) for c in mock_log.call_args_list if c.args
+        )
+        self.assertIn("recovery_hold flush failed", logged)
+        self.assertIn("RH/USDT", logged)
+
 
 class TestHubLivePath(unittest.TestCase):
     def test_correlated_tier_watch_survives_gainer_watch_update(self):
