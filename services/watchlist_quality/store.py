@@ -53,8 +53,8 @@ def load_quality_scores(tenant_id: str | None = None) -> dict[str, Any]:
                     path = legacy
             except Exception:
                 pass
-        if not os.path.exists(path) and tenant_id and tenant_id != "default":
-            path = _scores_path(None)
+        # No cross-tenant fallback (#429): a missing tenant file means unknown
+        # scores for that tenant, never the operator/default file.
         if not os.path.exists(path):
             return {
                 "updated_at": "",

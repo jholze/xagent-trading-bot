@@ -622,12 +622,9 @@ class RiskManager:
                     try:
                         mode = wqe_mode(raw)
                         if mode in ("soft", "enforce"):
-                            try:
-                                from core.tenant_context import current_tenant_id
+                            from core.tenant_context import resolve_tenant_id
 
-                                tid = current_tenant_id() or "default"
-                            except Exception:
-                                tid = "default"
+                            tid = resolve_tenant_id()
                             data = load_quality_scores(tenant_id=tid)
                             scored = None
                             for c in data.get("coins") or []:

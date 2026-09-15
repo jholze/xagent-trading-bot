@@ -308,7 +308,9 @@ def load_trade_universe(
         for c in (load_watchlist(tenant_id=tenant_id) or [])
         if c.get("symbol")
     }
-    tid = tenant_id or "default"
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
     qlookup = (
         _quality_lookup(tid)
         if ucfg.get("trade_rank_by") == "quality_score"

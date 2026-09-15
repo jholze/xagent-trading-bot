@@ -367,12 +367,9 @@ def log_risk_reject(
 
         mode = wqe_mode_value if wqe_mode_value is not None else wqe_mode(config)
         if tenant_id is None:
-            try:
-                from core.tenant_context import current_tenant_id
+            from core.tenant_context import resolve_tenant_id
 
-                tenant_id = current_tenant_id() or "default"
-            except Exception:
-                tenant_id = "default"
+            tenant_id = resolve_tenant_id()
 
         # Enrich quality from score file when missing (WQE + others)
         if quality_score is None or quality_shadow_ai is None:
