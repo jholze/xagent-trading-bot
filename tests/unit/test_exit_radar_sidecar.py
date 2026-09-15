@@ -294,5 +294,127 @@ class TestWatchSetHttp(unittest.TestCase):
         self.assertIn("/internal/exit-ws/watch-set", req.full_url)
 
 
+class TestExitRadarHttpAuth(unittest.TestCase):
+    """#425: EXIT_RADAR_TOKEN unset must not serve snapshot/health 200."""
+
+    def setUp(self):
+        os.environ.pop("EXIT_RADAR_TOKEN", None)
+
+    def tearDown(self):
+        os.environ.pop("EXIT_RADAR_TOKEN", None)
+
+    def _client(self):
+        from flask import Flask
+
+        from services.exit_radar.http import register_exit_radar_routes
+
+        app = Flask(__name__)
+        register_exit_radar_routes(app)
+        return app.test_client()
+
+    def test_snapshot_unset_env_not_configured(self):
+        client = self._client()
+        with patch("services.exit_radar.http.build_radar_snapshot") as mock_snap:
+            r = client.get("/exit-radar/api/snapshot")
+        self.assertEqual(r.status_code, 503)
+        body = r.get_json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "not_configured")
+        mock_snap.assert_not_called()
+
+    def test_health_unset_env_not_configured(self):
+        client = self._client()
+        with patch("services.exit_realtime.hub.get_hub") as mock_hub:
+            r = client.get("/exit-radar/api/health")
+        self.assertEqual(r.status_code, 503)
+        body = r.get_json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "not_configured")
+        mock_hub.assert_not_called()
+
+    def test_snapshot_blank_env_not_configured(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "   "
+        client = self._client()
+        r = client.get("/exit-radar/api/snapshot")
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.get_json().get("error"), "not_configured")
+
+    def test_snapshot_unset_dummy_query_token_rejected(self):
+        client = self._client()
+        r = client.get("/exit-radar/api/snapshot?token=dummy")
+        self.assertEqual(r.status_code, 503)
+        self.assertNotEqual(r.status_code, 200)
+
+    def test_snapshot_wrong_query_token_unauthorized(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        r = client.get("/exit-radar/api/snapshot?token=dummy")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.get_json().get("error"), "unauthorized")
+
+    def test_snapshot_wrong_header_unauthorized(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        r = client.get(
+            "/exit-radar/api/snapshot",
+            headers={"X-Exit-Radar-Token": "nope"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_health_wrong_query_token_unauthorized(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        r = client.get("/exit-radar/api/health?token=dummy")
+        self.assertEqual(r.status_code, 401)
+
+    def test_snapshot_matching_query_token_passes(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        with patch(
+            "services.exit_radar.http.build_radar_snapshot",
+            return_value={"type": "snapshot", "exits": []},
+        ):
+            r = client.get("/exit-radar/api/snapshot?token=secret")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json().get("type"), "snapshot")
+
+    def test_snapshot_matching_header_passes(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        with patch(
+            "services.exit_radar.http.build_radar_snapshot",
+            return_value={"type": "snapshot", "exits": []},
+        ):
+            r = client.get(
+                "/exit-radar/api/snapshot",
+                headers={"X-Exit-Radar-Token": "secret"},
+            )
+        self.assertEqual(r.status_code, 200)
+
+    def test_health_matching_header_passes(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        with patch(
+            "services.exit_realtime.hub.get_hub",
+            return_value=None,
+        ):
+            r = client.get(
+                "/exit-radar/api/health",
+                headers={"X-Exit-Radar-Token": "secret"},
+            )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["ok"])
+        self.assertIsNone(body["hub"])
+
+    def test_index_gui_missing_404_after_gate(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        with patch("services.exit_radar.http.GUI_PATH") as mock_path:
+            mock_path.is_file.return_value = False
+            r = client.get("/exit-radar?token=secret")
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
