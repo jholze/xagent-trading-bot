@@ -611,8 +611,7 @@
       "block_rebuy_if_last_sell_was_stop": true,
       "quality_mult": {
         "high_conviction_entry": 0.7,
-        "default": 1.0,
-        "weak_or_unknown": 1.25
+        "default": 1.0
       },
       "vol_tier_mult": {
         "meme": 0.85,
