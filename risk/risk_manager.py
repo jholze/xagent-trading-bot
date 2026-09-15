@@ -283,7 +283,9 @@ class RiskManager:
             )
 
         if order.type == "SELL":
-            blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
+            blocked, reason = self._trade_cooldown_blocked(
+                order, timeframe, source=source, confidence=confidence
+            )
             if blocked:
                 return RiskDecision(approved=False, message=reason, code="trade_cooldown")
             # Position lock: block auto exits (exit_ws/trail/TA/grid); manual can still sell.
@@ -344,7 +346,9 @@ class RiskManager:
         if order.price <= 0:
             return RiskDecision(approved=False, message="Invalid price")
 
-        blocked, reason = self._trade_cooldown_blocked(order, timeframe, source=source)
+        blocked, reason = self._trade_cooldown_blocked(
+            order, timeframe, source=source, confidence=confidence
+        )
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
@@ -2454,7 +2458,13 @@ class RiskManager:
         )
         return RiskDecision(approved=True, order=out, message="ok")
 
-    def _trade_cooldown_blocked(self, order: TradeOrder, timeframe: str, source: str = "auto") -> tuple:
+    def _trade_cooldown_blocked(
+        self,
+        order: TradeOrder,
+        timeframe: str,
+        source: str = "auto",
+        confidence: float | None = None,
+    ) -> tuple:
         if source == "manual":
             return False, ""
         signal = order.signal or ""
@@ -2510,7 +2520,8 @@ class RiskManager:
 
         if order.type == "BUY" and last_type == "SELL" and not (is_dca and pos_amount > 0):
             blocked, reason = self._rebuy_after_sell_blocked(
-                order, timeframe, source, last_ts, pos, params, defaults
+                order, timeframe, source, last_ts, pos, params, defaults,
+                confidence=confidence,
             )
             if blocked:
                 return True, reason
@@ -2556,6 +2567,7 @@ class RiskManager:
         pos: dict,
         params: dict,
         defaults: dict,
+        confidence: float | None = None,
     ) -> tuple[bool, str]:
         if source == "manual":
             return False, ""
@@ -2618,9 +2630,8 @@ class RiskManager:
             last_exit_source=str(last_exit) if last_exit else None,
             order_signal=str(getattr(order, "signal", None) or "") or None,
             volatility_tier=str(vol_tier) if vol_tier else None,
-            signal_quality=signal_quality_from_confidence(
-                getattr(order, "confidence", None)
-            ),
+            # #414: TradeOrder has no `confidence`; use the value evaluate() received.
+            signal_quality=signal_quality_from_confidence(confidence),
             profile=profile,
             config=cfg,
             fallback_hours=fallback_hours,
