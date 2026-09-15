@@ -641,11 +641,13 @@ def build_merged_watchlist_coins(
 
             mode = wqe_mode(cfg)
             if mode in ("soft", "enforce"):
+                from core.tenant_context import resolve_tenant_id
+
                 coins = apply_wqe_to_watchlist(
                     coins,
                     config=cfg,
                     base_symbols=base_syms,
-                    tenant_id=tenant_id or "default",
+                    tenant_id=resolve_tenant_id(tenant_id),
                 )
         except Exception as e:
             log(f"WQE watchlist transform skipped: {e}", "DEBUG")
