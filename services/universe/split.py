@@ -377,5 +377,13 @@ def is_trade_eligible(
     try:
         trade = load_trade_universe(tenant_id=tenant_id, config=cfg)
         return any(_sym(c) == sym for c in trade)
-    except Exception:
-        return True  # fail-open
+    except Exception as e:
+        # Fail-closed (#422): if the trade universe cannot be loaded, do not
+        # let a new BUY through — the universe_trade_cap gate would be skipped.
+        # Open positions were already allowed above via open_symbols.
+        log(
+            f"is_trade_eligible: load_trade_universe failed for {sym}, "
+            f"treating as NOT eligible (fail-closed): {e}",
+            "WARNING",
+        )
+        return False
