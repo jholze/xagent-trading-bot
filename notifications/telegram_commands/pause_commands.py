@@ -321,7 +321,8 @@ def _execute_panic(lots: list[dict[str, Any]]) -> None:
         if i % PANIC_PROGRESS_EVERY == 0 and i < n:
             send_telegram_message(t("panic_progress", done=i, total=n))
 
-    save_trading_flags(entries_enabled=False)
+    # #456: report a skipped/failed persist instead of a green "Entries AUS".
+    entries_saved = save_trading_flags(entries_enabled=False)
     lines = [t("panic_summary")]
     if closed:
         lines.append(t("panic_closed_line", items=", ".join(closed), n=len(closed)))
@@ -342,11 +343,14 @@ def _execute_panic(lots: list[dict[str, Any]]) -> None:
             )
         )
     lines.append("")
-    lines.append(
-        t("panic_entries_off")
-        + "\n"
-        + _state_block(entries=False, exits=_current_exits_enabled())
-    )
+    if entries_saved:
+        lines.append(
+            t("panic_entries_off")
+            + "\n"
+            + _state_block(entries=False, exits=_current_exits_enabled())
+        )
+    else:
+        lines.append(t("config_save_failed"))
     send_telegram_message("\n".join(lines))
 
 

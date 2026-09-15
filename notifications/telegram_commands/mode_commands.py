@@ -2,7 +2,7 @@ import os
 
 from core.runtime_identity import format_identity_section
 from core.simulated_trading import is_simulated_trading, simulated_live_config_updates
-from data_manager import get_config, reload_config, save_config
+from data_manager import get_config, patch_config, reload_config
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from notifications.telegram_i18n import t
@@ -16,16 +16,24 @@ MAX_POSITIONS_MIN = 1
 MAX_POSITIONS_MAX = 50
 
 
+_TRADING_FLAG_KEYS = ("entries_enabled", "exits_enabled")
+
+
 def _save_mode_updates(updates: dict) -> bool:
-    config = get_config()
-    config.update(updates)
-    return save_config(config)
+    """Persist only ``updates`` (#456).
+
+    For a tenant this patches the stored body instead of snapshotting the
+    merged operator config, so later operator ``config.json`` edits still
+    reach the tenant. Returns False when nothing was written.
+    """
+    return patch_config(updates)
 
 
 def save_trading_flags(*, entries_enabled=None, exits_enabled=None) -> bool:
     """Persist trading.entries_enabled / exits_enabled via the /mode save path."""
     config = get_config()
-    trading = dict(config.get("trading") or {})
+    current = config.get("trading") or {}
+    trading = {k: current[k] for k in _TRADING_FLAG_KEYS if k in current}
     if entries_enabled is not None:
         trading["entries_enabled"] = bool(entries_enabled)
     if exits_enabled is not None:
