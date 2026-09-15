@@ -15,21 +15,22 @@ ROOT = Path(__file__).resolve().parents[1]
 GUI_PATH = ROOT / "tools" / "exit_radar" / "static" / "index.html"
 
 
-def _token_ok() -> bool:
-    """Optional gate: set EXIT_RADAR_TOKEN env; then require ?token= or header."""
+def _require_token():
+    """Fail closed: unset/blank EXIT_RADAR_TOKEN → 503; mismatch → 401.
+
+    Blank expected must not authenticate: ``got == ""`` would pass a missing token.
+    """
     expected = (os.environ.get("EXIT_RADAR_TOKEN") or "").strip()
     if not expected:
-        return True
+        return jsonify({"ok": False, "error": "not_configured"}), 503
     got = (
         request.args.get("token")
         or request.headers.get("X-Exit-Radar-Token")
         or ""
     ).strip()
-    return got == expected
-
-
-def _unauthorized():
-    return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if got != expected:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return None
 
 
 def build_radar_snapshot() -> dict[str, Any]:
@@ -295,8 +296,9 @@ def register_exit_radar_routes(app) -> None:
     @app.route("/exit-radar", methods=["GET"])
     @app.route("/exit-radar/", methods=["GET"])
     def exit_radar_index():
-        if not _token_ok():
-            return _unauthorized()
+        denied = _require_token()
+        if denied is not None:
+            return denied
         if not GUI_PATH.is_file():
             return "exit radar GUI missing", 404
         html = GUI_PATH.read_text(encoding="utf-8")
@@ -317,8 +319,9 @@ def register_exit_radar_routes(app) -> None:
             ref = request.headers.get("Referer") or ""
             if "/exit-radar" not in ref and request.args.get("radar") != "1":
                 return jsonify({"ok": False, "error": "use /exit-radar/api/snapshot"}), 404
-        if not _token_ok():
-            return _unauthorized()
+        denied = _require_token()
+        if denied is not None:
+            return denied
         try:
             return jsonify(build_radar_snapshot())
         except Exception as exc:
@@ -327,8 +330,9 @@ def register_exit_radar_routes(app) -> None:
 
     @app.route("/exit-radar/api/health", methods=["GET"])
     def exit_radar_health():
-        if not _token_ok():
-            return _unauthorized()
+        denied = _require_token()
+        if denied is not None:
+            return denied
         from services.exit_realtime.hub import get_hub
 
         h = get_hub()
@@ -347,8 +351,9 @@ def register_exit_radar_routes(app) -> None:
             ref = request.headers.get("Referer") or ""
             if "/exit-radar" not in ref and request.args.get("radar") != "1":
                 return jsonify({"ok": False, "error": "use /exit-radar/events"}), 404
-        if not _token_ok():
-            return _unauthorized()
+        denied = _require_token()
+        if denied is not None:
+            return denied
 
         from services.exit_realtime.hub import get_hub
 
