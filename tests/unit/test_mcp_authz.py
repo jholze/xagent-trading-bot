@@ -1,3 +1,5 @@
+import sys
+
 from services.mcp.authz import (
     Actor,
     authorize,
@@ -93,6 +95,94 @@ def test_live_writes_blocked_only_for_real_live(monkeypatch):
     assert mcp_live_writes_blocked(testnet) is False
     assert mcp_live_writes_blocked(real) is True
     assert mcp_live_writes_blocked({**real, "mcp": {"allow_live": True}}) is False
+
+
+def _capture_warnings(monkeypatch):
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "services.mcp.authz.log", lambda msg, level="INFO": seen.append((str(msg), level))
+    )
+    return seen
+
+
+def _real_live_cfg():
+    return {
+        "trading_mode": "live",
+        "live_confirmed": True,
+        "live": {"execution": "real", "dry_run": False},
+        "mcp": {"enabled": True, "allow_writes": True, "allow_live": False},
+    }
+
+
+def test_live_writes_blocked_when_live_section_is_none(monkeypatch):
+    # #426: cfg['live']=None is undeterminable → fail-closed, never open.
+    seen = _capture_warnings(monkeypatch)
+    cfg = {"trading_mode": "live", "live_confirmed": True, "live": None}
+    assert mcp_live_writes_blocked(cfg) is True
+    assert seen and seen[-1][1] == "WARNING"
+    assert "malformed live section" in seen[-1][0]
+
+
+def test_live_writes_blocked_when_live_section_not_dict(monkeypatch):
+    seen = _capture_warnings(monkeypatch)
+    for bad in ("real", 1, ["execution", "real"], True):
+        seen.clear()
+        cfg = {"trading_mode": "live", "live_confirmed": True, "live": bad}
+        assert mcp_live_writes_blocked(cfg) is True, bad
+        assert seen and seen[-1][1] == "WARNING", bad
+
+
+def test_live_writes_blocked_when_config_not_dict(monkeypatch):
+    seen = _capture_warnings(monkeypatch)
+    for bad in (None, "live", 42, ["live"]):
+        seen.clear()
+        assert mcp_live_writes_blocked(bad) is True, bad
+        assert seen and seen[-1][1] == "WARNING", bad
+
+
+def test_live_writes_blocked_on_import_error(monkeypatch):
+    # #426: a failing import of the live resolver must block, not silently allow.
+    seen = _capture_warnings(monkeypatch)
+    monkeypatch.setitem(sys.modules, "core.simulated_trading", None)
+    cfg = {"trading_mode": "live", "live_confirmed": True, "live": {"dry_run": True}}
+    assert mcp_live_writes_blocked(cfg) is True
+    assert seen and seen[-1][1] == "WARNING"
+    assert "cannot determine live state" in seen[-1][0]
+
+
+def test_live_writes_blocked_on_resolver_exception(monkeypatch):
+    seen = _capture_warnings(monkeypatch)
+    import core.simulated_trading as sim
+
+    def boom(_cfg=None):
+        raise ValueError("resolver broken")
+
+    monkeypatch.setattr(sim, "is_real_live_trading", boom)
+    cfg = {"trading_mode": "live", "live_confirmed": True, "live": {"dry_run": True}}
+    assert mcp_live_writes_blocked(cfg) is True
+    assert seen and seen[-1][1] == "WARNING"
+    assert "resolver broken" in seen[-1][0]
+
+
+def test_live_writes_only_allow_live_true_opens_gate(monkeypatch):
+    # #426: only a literal True on mcp.allow_live opens the gate on real live.
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("GATE_API_KEY", "k")
+    monkeypatch.setenv("GATE_API_SECRET", "s")
+    real = _real_live_cfg()
+    assert mcp_live_writes_blocked(real) is True
+    for not_true in (False, None, 0, ""):
+        cfg = {**real, "mcp": {**real["mcp"], "allow_live": not_true}}
+        assert mcp_live_writes_blocked(cfg) is True, not_true
+    assert mcp_live_writes_blocked({**real, "mcp": {**real["mcp"], "allow_live": True}}) is False
+
+
+def test_live_writes_allow_live_opens_gate_even_when_undeterminable(monkeypatch):
+    # allow_live is the operator's explicit override; it wins before any probing.
+    seen = _capture_warnings(monkeypatch)
+    cfg = {"trading_mode": "live", "live_confirmed": True, "live": None, "mcp": {"allow_live": True}}
+    assert mcp_live_writes_blocked(cfg) is False
+    assert seen == []
 
 
 def test_write_rate_per_min_default():
