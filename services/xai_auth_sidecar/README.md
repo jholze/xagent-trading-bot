@@ -19,22 +19,34 @@ the probe results are on the issue).
 
 ## Running on Railway (`xagent-xai-auth`)
 
-Same monorepo image and `scripts/railway_start.sh` selector as the other
-sidecars, but Node 22 is baked into the image **only** for this service.
+This service has **its own Docker image** — `services/xai_auth_sidecar/Dockerfile`
+(`FROM node:22-slim`, `npm ci --omit=dev` from the committed lockfile, `CMD bash
+start.sh`). It is selected via `services/xai_auth_sidecar/railway.toml`
+(`dockerfilePath`), the same pattern as `services/santiment/sidecar`. The
+shared root `Dockerfile` that builds the bot, `xagent-mcp` and every Python
+sidecar stays **Node-free** and is not involved; there is no build ARG to set.
+(The first attempt baked Node into the shared image with a BuildKit
+`RUN --mount=type=bind` — Railway's builder rejects that mount type and every
+service on the shared Dockerfile failed to build. Do not bring it back.)
 
 ### Contract (all three are required)
 
 | Piece | Setting | Why |
 |---|---|---|
-| Service | `xagent-xai-auth` from this repo, branch `staging` | selector in `scripts/railway_start.sh` matches `RAILWAY_SERVICE_NAME=xagent-xai-auth` **or** `RUN_XAI_AUTH=1` |
-| Variable | `RUN_XAI_AUTH=1` | read as a Docker **build ARG** → Dockerfile copies Node 22 + npm from the `desk` stage and runs `npm ci --omit=dev` in this directory. Every other service leaves it unset and stays Node-free. `start.sh` fails fast with a hint if Node is missing. |
+| Service | `xagent-xai-auth` from this repo, branch `staging`, **root directory = repo root** | the Dockerfile copies `services/xai_auth_sidecar/…` relative to the repo root |
+| Config file | `services/xai_auth_sidecar/railway.toml` (service → Settings → Config-as-code) | sets `dockerfilePath = "services/xai_auth_sidecar/Dockerfile"` so this service builds the Node image, not the shared Python one. Health check `GET /health`. |
 | **Volume** | mount at **`/data/grok`** | the credential is written to `$RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json` (mode `0600`, dir `0700`). Without a volume the session dies on every deploy — `start.sh` warns but still starts. |
+
+`scripts/railway_start.sh` still contains a `RAILWAY_SERVICE_NAME=xagent-xai-auth`
+/ `RUN_XAI_AUTH=1` branch. With the dedicated image it is **unused** (the
+image's `CMD` is `start.sh` directly); it only remains as a safety net — if the
+service were ever pointed at the shared Python image, `start.sh` fails fast
+with "node not found" instead of starting the bot.
 
 Variables on the `xagent-xai-auth` service:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RUN_XAI_AUTH` | — | `1`: build Node in + select this entry point (see above) |
 | `XAI_OAUTH_CREDENTIAL_PATH` | `$RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json` | where the `{type:"oauth",access,refresh,expires}` file lives; paths inside the repo (`/app/...`) are refused |
 | `GROK_HOME` | `$RAILWAY_VOLUME_MOUNT_PATH/grok-cli` | only relevant if you log in with the Grok CLI (`grok login --device-auth`) over `railway ssh` — keeps its session on the volume too |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | — | operator chat that receives the verification URL + code, "session stored, expires …", and refresh failures. Same values as the bot service. |
@@ -161,7 +173,8 @@ Files: `src/login.js` (device-code CLI), `src/server.js` (Railway service:
 `/health`, `/status`, `POST /login`, keepalive, login-on-boot), `src/telegram.js`
 (operator notifications, fail-soft), `src/credentials.js` (location rule, 0600,
 refuse-in-repo, refresh), `src/probe.js` + `src/probe_report.js` (Q1–Q3),
-`start.sh` (Railway entry called by `scripts/railway_start.sh`).
+`start.sh` (Railway entry — `CMD` of `Dockerfile`), `Dockerfile` + `railway.toml`
+(dedicated Node 22 image, see above).
 
 Dependencies: `@earendil-works/pi-ai@0.85.1` (device-code flow) and
 `openai@6.40.0` (same version pi-ai depends on; used by the probe). No build

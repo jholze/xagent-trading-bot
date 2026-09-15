@@ -86,8 +86,10 @@ if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-mcp" || "${RUN_MCP_SIDECAR:-}" == "
 fi
 
 # xAI subscription-auth sidecar (#397) — Node 22, device-code login + session on a volume.
-# No Mongo/ledger touch. Node is baked into the image only when RUN_XAI_AUTH=1 is a
-# service variable at build time (Dockerfile ARG); start.sh fails fast if it is missing.
+# Normally NOT reached: that service builds its own node:22-slim image
+# (services/xai_auth_sidecar/Dockerfile via services/xai_auth_sidecar/railway.toml) whose
+# CMD is start.sh directly. Safety net only: if the service is ever pointed at this shared
+# Python image, start.sh fails fast ("node not found") instead of booting the bot.
 if [[ "${RAILWAY_SERVICE_NAME:-}" == "xagent-xai-auth" || "${RUN_XAI_AUTH:-}" == "1" ]]; then
   echo "=== xAI auth sidecar start (SuperGrok device-code, no ledger) ==="
   unset MONGO_URL || true

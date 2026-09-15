@@ -161,7 +161,7 @@ def handle(text: str) -> bool:
     elif code == 0:
         send_telegram_message(
             f"⚠️ xai-auth sidecar unreachable at <code>{html_escape(_sidecar_url())}</code>. "
-            "Is xagent-xai-auth deployed and RUN_XAI_AUTH=1 set?"
+            "Is xagent-xai-auth deployed (own Dockerfile, see services/xai_auth_sidecar/README.md)?"
         )
     else:
         err = html_escape(str(body.get("error") or ""))
