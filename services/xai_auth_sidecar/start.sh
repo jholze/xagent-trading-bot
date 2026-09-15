@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Railway entry for the xAI subscription-auth sidecar (#397).
-# Selected by scripts/railway_start.sh when RAILWAY_SERVICE_NAME=xagent-xai-auth or RUN_XAI_AUTH=1.
+# CMD of services/xai_auth_sidecar/Dockerfile (dedicated node:22-slim image,
+# selected by services/xai_auth_sidecar/railway.toml). scripts/railway_start.sh
+# also dispatches here for RAILWAY_SERVICE_NAME=xagent-xai-auth / RUN_XAI_AUTH=1
+# as a safety net only — the shared Python image has no Node, so we fail fast.
 #
 # Contract:
-#   - Node 22 must be in the image: the Dockerfile installs it only when the
-#     service variable RUN_XAI_AUTH=1 (or RAILWAY_SERVICE_NAME=xagent-xai-auth)
-#     is present at BUILD time. The main bot image stays Node-free.
+#   - Node 22 must be in the image: services/xai_auth_sidecar/Dockerfile
+#     provides it. The main bot image (root Dockerfile) stays Node-free.
 #   - A Railway Volume must be attached (recommended mount: /data/grok). The
 #     credential goes to $XAI_OAUTH_CREDENTIAL_PATH, defaulting to
 #     $RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json. Without a volume the session
@@ -16,9 +18,9 @@ cd "$(dirname "$0")"
 echo "=== xAI auth sidecar (SuperGrok device-code login, session on volume) ==="
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "ERROR: node not found in this image." >&2
-  echo "       Set RUN_XAI_AUTH=1 as a Railway *service variable* on this service (it is read as a" >&2
-  echo "       Docker build ARG) and redeploy so the Dockerfile installs Node 22 + the sidecar deps." >&2
+  echo "ERROR: node not found in this image — this is the shared Python image, not the sidecar image." >&2
+  echo "       Point the xagent-xai-auth service at services/xai_auth_sidecar/railway.toml (config-as-code," >&2
+  echo "       dockerfilePath = services/xai_auth_sidecar/Dockerfile) and redeploy. See services/xai_auth_sidecar/README.md" >&2
   exit 1
 fi
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
