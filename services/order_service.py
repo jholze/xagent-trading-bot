@@ -352,6 +352,7 @@ class OrderService:
             or getattr(order, "idempotency_key", "")
             or ""
         )
+        client_oid = getattr(order, "client_order_id", "") or idem or ""
         record = {
             "id": telegram_token or uuid.uuid4().hex[:12],
             "display_seq": self._next_seq(data),
@@ -365,7 +366,7 @@ class OrderService:
             "exit_source": (getattr(order, "exit_source", None) or "") or None,
             "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
             "idempotency_key": idem or None,
-            "client_order_id": idem or None,
+            "client_order_id": client_oid or None,
             "exchange_order_id": getattr(order, "exchange_order_id", "") or None,
             "order_exist_in_exchange": bool(
                 getattr(order, "order_exist_in_exchange", False)

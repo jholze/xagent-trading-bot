@@ -14,6 +14,43 @@ from services.portfolio_service import PortfolioService
 
 _GATE_TESTNET_HOST = "https://api-testnet.gateapi.io"
 
+# Gate `text` / ccxt `clientOrderId`: charset [0-9A-Za-z_.-], prefixed `t-`,
+# venue max 28 bytes *without* the prefix. ccxt 4.5.48 `create_order_request`
+# checks `len(params.text) > 28` *before* prepending `t-` if missing. We send
+# an already-prefixed value (`t-{payload}`), so the payload is capped at 26
+# bytes and the raw param stays ≤28 — otherwise BadRequest fires and the
+# order is never POSTed (#439).
+_GATE_TEXT_PREFIX = "t-"
+_GATE_TEXT_PARAM_MAX_BYTES = 28
+_GATE_TEXT_PAYLOAD_MAX_BYTES = _GATE_TEXT_PARAM_MAX_BYTES - len(_GATE_TEXT_PREFIX)
+_GATE_TEXT_ALLOWED = frozenset(
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
+)
+
+
+def _clamp_gate_client_order_id(key: str) -> str:
+    """Deterministic Gate clientOrderId payload (no `t-` prefix).
+
+    Empty / all-illegal → ccxt-style uuid16 (16 hex). Over-long keys
+    drop hyphens then truncate so a retry of the same intent stays
+    stable. Already-legal short keys (``abc-key``) are a no-op.
+    """
+    raw = (key or "").strip()
+    if not raw:
+        return uuid.uuid4().hex[:16]
+    legal = "".join(ch for ch in raw if ch in _GATE_TEXT_ALLOWED)
+    if not legal:
+        return uuid.uuid4().hex[:16]
+    encoded = legal.encode("utf-8")
+    if len(encoded) > _GATE_TEXT_PAYLOAD_MAX_BYTES:
+        compact = legal.replace("-", "")
+        encoded = compact.encode("utf-8")
+        legal = compact
+    if len(encoded) > _GATE_TEXT_PAYLOAD_MAX_BYTES:
+        # Charset is ASCII, so a byte cut is a character cut.
+        legal = encoded[:_GATE_TEXT_PAYLOAD_MAX_BYTES].decode("ascii")
+    return legal
+
 
 class GateExecutionAdapter(ExecutionAdapter):
     """Gate.io Spot execution via ccxt.
@@ -1280,14 +1317,17 @@ class GateExecutionAdapter(ExecutionAdapter):
     def _places_on_exchange(self) -> bool:
         return self._adapter_mode in ("real", "testnet")
 
+    @staticmethod
+    def _clamp_gate_client_order_id(key: str) -> str:
+        return _clamp_gate_client_order_id(key)
+
     def _client_order_params(self, order: TradeOrder) -> dict:
         key = (order.client_order_id or order.idempotency_key or "").strip()
-        if not key:
-            key = str(uuid.uuid4())
+        key = _clamp_gate_client_order_id(key)
         order.client_order_id = key
         if not order.idempotency_key:
             order.idempotency_key = key
-        return {"text": f"t-{key}"}
+        return {"text": f"{_GATE_TEXT_PREFIX}{key}"}
 
     def _hard_reject_types(self) -> tuple:
         names = ("InsufficientFunds", "InvalidOrder", "BadSymbol")
