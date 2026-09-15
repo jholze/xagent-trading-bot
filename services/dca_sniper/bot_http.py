@@ -16,7 +16,47 @@ from datetime import datetime
 from typing import Any
 
 from logger import log
-from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled, internal_token
+from services.dca_sniper.config import (
+    dca_sniper_config,
+    dca_sniper_enabled,
+    internal_token,
+    sniper_owns_tenant,
+)
+
+
+def _tenant_refusal(action: str, symbol: str) -> tuple[dict[str, Any], int] | None:
+    """#431: the sniper only owns tenants in ``dca_sniper.tenants``.
+
+    Returns a (body, status) refusal for any other tenant — before a single lot
+    or cash value is read — so a foreign tenant context can never be sized/fired
+    against, and the default tenant's state is never touched on its behalf.
+    Fail-closed: if the check itself breaks, refuse.
+    """
+    from core.tenant_context import resolve_tenant_id
+
+    try:
+        tenant_id = resolve_tenant_id()
+        if sniper_owns_tenant(tenant_id=tenant_id):
+            return None
+    except Exception as e:
+        log(f"dca_sniper {action} tenant check fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "tenant_check_error",
+            "code": "tenant_check_error",
+        }, 503
+    log(
+        f"dca_sniper {action} refused {symbol}: tenant={tenant_id} not in dca_sniper.tenants",
+        "WARNING",
+    )
+    return {
+        "ok": False,
+        "executed": False,
+        "message": "tenant_not_owned_by_sniper",
+        "code": "tenant_not_allowlisted",
+        "tenant": tenant_id,
+    }, 403
 
 
 def _check_token() -> tuple[bool, Any]:
@@ -296,6 +336,11 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not symbol or usdt <= 0:
         return {"ok": False, "executed": False, "message": "bad_args"}, 400
 
+    # #431: refuse tenants the sniper does not own — before any lot/cash read.
+    refused = _tenant_refusal("execute", symbol)
+    if refused is not None:
+        return refused
+
     # Position lock no_dca (via central gates). Fail-closed: never add if check breaks.
     try:
         from strategies.position_gates import dca_add_blocked
@@ -397,6 +442,11 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     tf = str(data.get("timeframe") or "1h")
     if not symbol:
         return {"ok": False, "executed": False, "message": "bad_symbol"}, 400
+
+    # #431: fund-sell sizes a real sell — same tenant allowlist as execute.
+    refused = _tenant_refusal("fund-sell", symbol)
+    if refused is not None:
+        return refused
 
     pos = get_position(symbol, tf)
     if not is_open_position(pos):

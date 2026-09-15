@@ -564,12 +564,24 @@ class SignalOrchestrator:
         # Epic #222: when dca_sniper owns heavy/focus, skip portfolio cycle DCA.
         # Default: standalone xagent-dca-sniper service (Redis/WS). Optional
         # in_process_tick only if explicitly enabled (fallback).
+        # #431: the live sniper is one unscoped actor (default tenant). Only
+        # tenants listed in dca_sniper.tenants defer to it; every other tenant
+        # keeps running portfolio DCA here even with the sniper enabled globally
+        # (incl. DCA_SNIPER_ENABLED=1 — the tenant check is independent of the
+        # env short-circuit in dca_sniper_enabled).
         try:
-            from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled
+            from core.tenant_context import resolve_tenant_id
+            from services.dca_sniper.config import (
+                dca_sniper_config,
+                dca_sniper_enabled,
+                sniper_owns_tenant,
+            )
 
             scfg = dca_sniper_config(self.config.raw)
-            if dca_sniper_enabled(self.config.raw) and scfg.get(
-                "disable_cycle_dca_when_enabled", True
+            if (
+                dca_sniper_enabled(self.config.raw)
+                and scfg.get("disable_cycle_dca_when_enabled", True)
+                and sniper_owns_tenant(self.config.raw)
             ):
                 sniper_audit = None
                 if scfg.get("in_process_tick", False):
@@ -582,11 +594,16 @@ class SignalOrchestrator:
                 return {
                     "skipped": True,
                     "reason": "dca_sniper_authority",
+                    "tenant": resolve_tenant_id(),
                     "sniper_standalone": not bool(scfg.get("in_process_tick")),
                     "sniper": sniper_audit,
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            log(
+                f"dca_sniper authority check failed, running portfolio DCA pass: "
+                f"{type(e).__name__}: {e}",
+                "WARNING",
+            )
 
         risk = RiskManager(self.config, self.market)
         cash = risk._available_usdt()

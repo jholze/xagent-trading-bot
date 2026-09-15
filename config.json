@@ -2357,6 +2357,9 @@
   },
   "dca_sniper": {
     "enabled": true,
+    "tenants": [
+      "default"
+    ],
     "mode": "live",
     "notify_only": false,
     "max_focus_slots": 2,

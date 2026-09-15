@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+
 
 def _env_bool(name: str, default: bool | None = None) -> bool | None:
     raw = (os.environ.get(name) or "").strip().lower()
@@ -36,6 +38,50 @@ def dca_sniper_enabled(config: dict | None = None) -> bool:
     return False
 
 
+def _load_raw_config(config: dict | None) -> dict:
+    if isinstance(config, dict):
+        return config
+    try:
+        from core.config import get_bot_config
+
+        raw = get_bot_config().raw
+    except Exception:
+        raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def dca_sniper_tenants(config: dict | None = None) -> list[str]:
+    """Tenants whose portfolio/heavy DCA the sniper actor owns (#431).
+
+    The live sniper is a single unscoped actor (``standalone: true`` → no tenant
+    contextvar → DEFAULT_TENANT). It only ever reads/writes the default tenant's
+    lots and cash, so only the tenants listed here may defer their portfolio DCA
+    to it. Missing, empty or malformed ``dca_sniper.tenants`` → ``["default"]``
+    (fail-closed: nothing beyond default is owned unless explicitly listed).
+    """
+    sec = _load_raw_config(config).get("dca_sniper")
+    raw_list = sec.get("tenants") if isinstance(sec, dict) else None
+    if isinstance(raw_list, str):
+        raw_list = [raw_list]
+    out: list[str] = []
+    if isinstance(raw_list, (list, tuple, set)):
+        for item in raw_list:
+            tid = str(item or "").strip()
+            if tid and tid not in out:
+                out.append(tid)
+    return out or [DEFAULT_TENANT]
+
+
+def sniper_owns_tenant(config: dict | None = None, tenant_id: str | None = None) -> bool:
+    """Does the sniper own DCA authority for *this* tenant? (#431)
+
+    Resolves the tenant from the active context (or ``tenant_id``) and checks
+    it against ``dca_sniper.tenants``. Independent of the env kill switches in
+    :func:`dca_sniper_enabled` — ``DCA_SNIPER_ENABLED=1`` never widens ownership.
+    """
+    return resolve_tenant_id(tenant_id) in dca_sniper_tenants(config)
+
+
 def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
     raw = config
     if raw is None:
@@ -61,6 +107,7 @@ def dca_sniper_config(config: dict | None = None) -> dict[str, Any]:
         in_proc = env_ip
     return {
         "enabled": dca_sniper_enabled(raw if isinstance(raw, dict) else None),
+        "tenants": dca_sniper_tenants(raw if isinstance(raw, dict) else None),
         "mode": str(sec.get("mode") or "live"),
         "notify_only": bool(notify),
         "standalone": True,
@@ -141,10 +188,15 @@ def sniper_skips_portfolio_dca(config: dict | None = None) -> bool:
 
     Cycle DCA for *unfocused* lots must not defer into this skipped pass.
     Kill: dca_sniper.enabled=false or disable_cycle_dca_when_enabled=false.
+    #431: only for tenants the sniper actually owns (``dca_sniper.tenants``);
+    the tenant check runs after — and independently of — the env short-circuit
+    in :func:`dca_sniper_enabled`.
     """
     if not dca_sniper_enabled(config):
         return False
-    return bool(dca_sniper_config(config).get("disable_cycle_dca_when_enabled", True))
+    if not dca_sniper_config(config).get("disable_cycle_dca_when_enabled", True):
+        return False
+    return sniper_owns_tenant(config)
 
 
 def sniper_owns_cycle_dca(config: dict | None = None, position: dict | None = None) -> bool:
