@@ -1,0 +1,20 @@
+{
+  "name": "xai-auth-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1 spike for issue #397: authenticate xAI calls with the operator's SuperGrok/X Premium subscription via device-code OAuth (pi-ai flow) and probe what the token authorizes.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "login": "node src/login.js",
+    "probe": "node src/probe.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "openai": "6.40.0"
+  }
+}

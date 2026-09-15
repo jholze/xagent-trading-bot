@@ -1,0 +1,5 @@
+node_modules/
+.npm-cache/
+# Never store credentials here; see README (credential path rule).
+*.oauth.json
+xai_oauth.json
