@@ -345,6 +345,8 @@
     "key_prefix": "aria:",
     "price_cache_enabled": true,
     "price_cache_ttl_sec": 120,
+    "stale_price_max_age_sec": 300,
+    "gate_ticker_snapshot_ttl_sec": 25,
     "ohlcv_cache_enabled": true,
     "ohlcv_cache_ttl_sec": {
       "15m": 60,
