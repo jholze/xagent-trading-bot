@@ -180,3 +180,65 @@ def test_load_trade_watchlist_split_off_returns_observe(monkeypatch):
     trade = load_trade_watchlist(observe_coins=observe)
     assert len(trade) == 2
 
+
+# --- is_trade_eligible fail-closed (#422) ---------------------------------
+
+_SPLIT_ON = {"universe": {"split_enabled": True}}
+
+
+def test_is_trade_eligible_fails_closed_when_load_trade_universe_raises(monkeypatch):
+    """#422: load_trade_universe error must NOT let a new BUY through."""
+    from services.universe import split
+
+    def _boom(**_kw):
+        raise RuntimeError("universe store unavailable")
+
+    monkeypatch.setattr(split, "load_trade_universe", _boom)
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(split, "log", lambda msg, level="INFO": logged.append((msg, level)))
+
+    assert split.is_trade_eligible("NEW/USDT", config=_SPLIT_ON) is False
+    # exception is logged, not swallowed silently
+    assert any("load_trade_universe" in m and "NEW/USDT" in m for m, _ in logged)
+    assert any(lvl == "WARNING" for _, lvl in logged)
+
+
+def test_is_trade_eligible_open_symbols_bypass_does_not_load_universe(monkeypatch):
+    from services.universe import split
+
+    calls: list[int] = []
+
+    def _boom(**_kw):
+        calls.append(1)
+        raise RuntimeError("must not be called")
+
+    monkeypatch.setattr(split, "load_trade_universe", _boom)
+    assert (
+        split.is_trade_eligible("HELD/USDT", config=_SPLIT_ON, open_symbols={"HELD/USDT"})
+        is True
+    )
+    assert calls == []
+
+
+def test_is_trade_eligible_split_disabled_is_fail_open(monkeypatch):
+    from services.universe import split
+
+    def _boom(**_kw):
+        raise RuntimeError("must not be called")
+
+    monkeypatch.setattr(split, "load_trade_universe", _boom)
+    assert (
+        split.is_trade_eligible("ANY/USDT", config={"universe": {"split_enabled": False}})
+        is True
+    )
+
+
+def test_is_trade_eligible_uses_loaded_universe_when_available(monkeypatch):
+    from services.universe import split
+
+    monkeypatch.setattr(
+        split, "load_trade_universe", lambda **_kw: [_coin("IN/USDT"), _coin("ALSO/USDT")]
+    )
+    assert split.is_trade_eligible("IN/USDT", config=_SPLIT_ON) is True
+    assert split.is_trade_eligible("OUT/USDT", config=_SPLIT_ON) is False
+
