@@ -263,6 +263,44 @@ def is_help_label(text: str) -> bool:
     return text in {help_label("de"), help_label("en")}
 
 
+def more_label(lang: str | None = None) -> str:
+    """Reply-keyboard button that opens the nested groups (#445)."""
+    return _pack(lang or current_language()).get("more_label", "➕ Mehr")
+
+
+def is_more_label(text: str) -> bool:
+    text = (text or "").strip()
+    return text in {more_label("de"), more_label("en")}
+
+
+def more_intro(lang: str | None = None) -> str:
+    return _pack(lang or current_language()).get("more_intro", more_label(lang))
+
+
+def home_label(key: str, lang: str | None = None) -> str:
+    """Human label for a home-row key (#445). ``help``/``menu`` reuse the
+    shared Hilfe / Mehr labels so the same tap resolves everywhere."""
+    if key == "help":
+        return help_label(lang)
+    if key == "menu":
+        return more_label(lang)
+    lang = lang or current_language()
+    labels = _pack(lang).get("home_labels") or {}
+    return labels.get(key) or f"/{key}"
+
+
+def home_label_to_key(text: str) -> str | None:
+    """Resolve a tapped home-row label (any language) to its command key."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    for lang in SUPPORTED_LANGS:
+        for key, label in (_pack(lang).get("home_labels") or {}).items():
+            if label == text:
+                return key
+    return None
+
+
 def short_input_invalid(command: str, lang: str | None = None) -> str:
     lang = lang or current_language()
     pack = _pack(lang)
@@ -289,8 +327,16 @@ def build_section_help_message(
 
     lang = lang or current_language()
     pack = _pack(lang)
-    help_cfg = pack.get("section_help", {}).get(section_id, {})
+    all_section_help = pack.get("section_help", {})
+    help_cfg = all_section_help.get(section_id, {})
     keys = list(command_keys) if command_keys is not None else dict(MENU_SECTIONS).get(section_id, [])
+    items = dict(help_cfg.get("items", {}))
+    if not items:
+        # #445: nested "Mehr" groups regroup catalog keys; reuse the per-command
+        # usage/example text written for the original catalog sections.
+        for cfg in all_section_help.values():
+            for k, item in (cfg.get("items") or {}).items():
+                items.setdefault(k, item)
     lines = [help_cfg.get("title", section_title(section_id, lang)), ""]
     if help_cfg.get("intro"):
         lines.append(help_cfg["intro"])
@@ -298,7 +344,7 @@ def build_section_help_message(
     from notifications.telegram_commands.menu_commands import command_dispatch_text
 
     for key in keys:
-        item = help_cfg.get("items", {}).get(key, {})
+        item = items.get(key, {})
         lines.append(f"<b>{command_dispatch_text(key)}</b> — {command_description(key, lang)}")
         if item.get("usage"):
             lines.append(f"  {item['usage']}")

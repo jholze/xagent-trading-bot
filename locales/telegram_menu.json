@@ -3,11 +3,19 @@
     "button_text": "Menü",
     "unknown_hint": "❓ Unbekannter Befehl. Sende <code>/help</code> für die komplette Liste mit Beispielen.",
     "callback_unknown_command": "Unbekannter Befehl",
-    "back": "◀ Bereiche",
+    "back": "◀ Zurück",
     "help_label": "❓ Hilfe",
+    "more_label": "➕ Mehr",
+    "home_labels": {
+      "positions": "📊 Positionen",
+      "buy": "🛒 Kaufen",
+      "sell": "💸 Verkaufen",
+      "pause": "⏸ Pause"
+    },
     "short_input_invalid": "❌ Ungültige Eingabe für <code>/{cmd}</code>. Tippe <i>❓ Hilfe</i> in diesem Bereich.",
-    "home_intro": "<b>🗂️ Bereiche</b>\n\nWähle unten einen Bereich — darunter erscheinen alle Befehle dieses Bereichs.\n<i>Im Menü-Button (☰) sind dieselben Befehle nach Bereich sortiert.</i>",
-    "home_inline": "<b>🗂️ Bot-Menü</b>\n\nWähle einen <b>Bereich</b> — alle Befehle sind nach Kategorien sortiert.\n<i>Unten: Bereichs-Tastatur · Menü-Button (☰): komplette Liste mit Bereichs-Prefix.</i>",
+    "home_intro": "<b>🏠 Start</b>\n\nPositionen, Kaufen, Verkaufen, Pause — alles Weitere unter <b>➕ Mehr</b>.\n<i>❓ Hilfe zeigt alle Befehle mit Beispielen.</i>",
+    "more_intro": "<b>➕ Mehr</b>\n\nWähle eine Gruppe — darunter erscheinen ihre Befehle.",
+    "home_inline": "<b>➕ Mehr</b>\n\nWähle eine <b>Gruppe</b> — ihre Befehle erscheinen als Buttons.\n<i>Unten: Start-Tastatur (Positionen, Kaufen, Verkaufen, Pause) · Menü-Button (☰): Slash-Befehle.</i>",
     "section_pick": "Tippe einen Befehl:",
     "help": {
       "title": "<b>🛠️ Telegram-Befehle</b>",
@@ -141,6 +149,30 @@
       "hilfe": {
         "title": "❓ Hilfe",
         "short": "Hilfe"
+      },
+      "home": {
+        "title": "🏠 Start",
+        "short": "Start"
+      },
+      "orders": {
+        "title": "📑 Orders & Berichte",
+        "short": "Orders"
+      },
+      "shorts": {
+        "title": "📉 Shorts",
+        "short": "Shorts"
+      },
+      "technik": {
+        "title": "🔧 Technik",
+        "short": "Technik"
+      },
+      "einstellungen": {
+        "title": "⚙️ Einstellungen",
+        "short": "Einstellungen"
+      },
+      "ops": {
+        "title": "🧪 Ops & Tests",
+        "short": "Ops"
       }
     },
     "commands": {
@@ -405,11 +437,19 @@
     "button_text": "Menu",
     "unknown_hint": "❓ Unknown command. Send <code>/help</code> for the full list with examples.",
     "callback_unknown_command": "Unknown command",
-    "back": "◀ Sections",
+    "back": "◀ Back",
     "help_label": "❓ Help",
+    "more_label": "➕ More",
+    "home_labels": {
+      "positions": "📊 Positions",
+      "buy": "🛒 Buy",
+      "sell": "💸 Sell",
+      "pause": "⏸ Pause"
+    },
     "short_input_invalid": "❌ Invalid input for <code>/{cmd}</code>. Tap <i>❓ Help</i> in this section.",
-    "home_intro": "<b>🗂️ Sections</b>\n\nPick a section below — its commands appear as buttons.\n<i>Menu button (☰): full list sorted by section prefix.</i>",
-    "home_inline": "<b>🗂️ Bot menu</b>\n\nPick a <b>section</b> — commands are grouped by category.\n<i>Keyboard below · Menu button (☰): full list with section prefix.</i>",
+    "home_intro": "<b>🏠 Home</b>\n\nPositions, buy, sell, pause — everything else under <b>➕ More</b>.\n<i>❓ Help lists every command with examples.</i>",
+    "more_intro": "<b>➕ More</b>\n\nPick a group — its commands appear below.",
+    "home_inline": "<b>➕ More</b>\n\nPick a <b>group</b> — its commands appear as buttons.\n<i>Keyboard below: home (positions, buy, sell, pause) · Menu button (☰): slash commands.</i>",
     "section_pick": "Tap a command:",
     "help": {
       "title": "<b>🛠️ Telegram commands</b>",
@@ -543,6 +583,30 @@
       "hilfe": {
         "title": "❓ Help",
         "short": "Help"
+      },
+      "home": {
+        "title": "🏠 Home",
+        "short": "Home"
+      },
+      "orders": {
+        "title": "📑 Orders & Reports",
+        "short": "Orders"
+      },
+      "shorts": {
+        "title": "📉 Shorts",
+        "short": "Shorts"
+      },
+      "technik": {
+        "title": "🔧 Tech",
+        "short": "Tech"
+      },
+      "einstellungen": {
+        "title": "⚙️ Settings",
+        "short": "Settings"
+      },
+      "ops": {
+        "title": "🧪 Ops & Tests",
+        "short": "Ops"
       }
     },
     "commands": {

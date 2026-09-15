@@ -13,8 +13,12 @@ from notifications.telegram_commands.menu_i18n import (
     help_label,
     home_inline,
     home_intro,
+    home_label,
+    home_label_to_key,
     is_back_label,
     is_help_label,
+    is_more_label,
+    more_intro,
     section_pick,
     section_title,
     title_to_section_id,
@@ -74,6 +78,50 @@ MENU_SECTIONS: list[tuple[str, list[str]]] = MENU_SECTIONS_OPERATOR
 
 _ALL_COMMAND_KEYS = [k for _, keys in MENU_SECTIONS_OPERATOR for k in keys]
 _SATELLITE_COMMAND_KEYS = frozenset(k for _, keys in MENU_SECTIONS_SATELLITE for k in keys)
+
+# #445: two-level IA on top of the catalog above. The catalog sections stay the
+# source of truth for role membership (/help filter, menu:run gating, operator
+# ☰ list); HOME_KEYS + MORE_GROUPS_* only decide *where* a key is shown.
+#
+# Home = first reply keyboard (and the satellite ☰ list). "menu" is the ➕ Mehr
+# key, "help" the ❓ Hilfe key. Never put panic/short/cover/hermes/cmc/reload here.
+HOME_KEYS: list[str] = ["positions", "buy", "sell", "pause", "help", "menu"]
+
+# Sentinel active-section id while the ➕ Mehr group list is open.
+MORE_SECTION_ID = "more"
+
+MORE_GROUPS_SATELLITE: list[tuple[str, list[str]]] = [
+    ("watchlist", ["list", "add", "remove"]),
+    ("orders", [
+        "positions_full", "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "morning", "stack", "decisions", "why",
+    ]),
+    ("shorts", ["short", "cover"]),
+    ("technik", ["grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy"]),
+    ("einstellungen", [
+        "mode", "gate", "dryrun", "maxpositions", "lock", "unlock", "resume", "panic", "reload",
+    ]),
+]
+
+MORE_GROUPS_OPERATOR: list[tuple[str, list[str]]] = [
+    ("watchlist", ["list", "add", "remove"]),
+    ("orders", [
+        "positions_full", "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "morning", "stack", "decisions", "why",
+    ]),
+    ("shorts", ["short", "cover"]),
+    ("technik", ["grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
+    ("einstellungen", [
+        "mode", "gate", "dryrun", "maxpositions", "lock", "unlock", "resume", "panic", "reload",
+        "live_confirm", "live_cancel",
+    ]),
+    ("ops", [
+        "sandbox", "sandbox_results", "sandbox_promote",
+        "backtest", "backtest_lock", "backtest_results", "hermes_run", "onboard",
+    ]),
+]
 
 
 def _operator_chat_id() -> str:
@@ -146,13 +194,61 @@ def menu_sections_for(
     return MENU_SECTIONS_OPERATOR
 
 
+def home_keys_for(
+    *,
+    chat_id: str | int | None = None,
+    tenant_id: str | None = None,
+    role: str | None = None,
+) -> list[str]:
+    """Keys on the first reply keyboard (#445). Same slim set for both roles,
+    filtered against the role's catalog so nothing leaks."""
+    r = role or menu_role_for(chat_id=chat_id, tenant_id=tenant_id)
+    allowed = {k for _, keys in menu_sections_for(role=r) for k in keys}
+    return [k for k in HOME_KEYS if k in allowed]
+
+
+def more_groups_for(
+    *,
+    chat_id: str | int | None = None,
+    tenant_id: str | None = None,
+    role: str | None = None,
+) -> list[tuple[str, list[str]]]:
+    """Nested groups behind ➕ Mehr (#445)."""
+    r = role or menu_role_for(chat_id=chat_id, tenant_id=tenant_id)
+    if r == "satellite":
+        return MORE_GROUPS_SATELLITE
+    return MORE_GROUPS_OPERATOR
+
+
+def slash_sections_for(
+    *,
+    chat_id: str | int | None = None,
+    tenant_id: str | None = None,
+    role: str | None = None,
+) -> list[tuple[str, list[str]]]:
+    """Sections for the chat-scoped ☰ slash list (#445).
+
+    Satellite: the home set only — Telegram's list is the first thing a
+    co-tester sees. Operator: unchanged full catalog.
+    """
+    r = role or menu_role_for(chat_id=chat_id, tenant_id=tenant_id)
+    if r == "satellite":
+        return [("home", home_keys_for(role=r))]
+    return menu_sections_for(role=r)
+
+
 def section_keys_for(
     section_id: str,
     *,
     chat_id: str | int | None = None,
     tenant_id: str | None = None,
 ) -> list[str]:
-    for sid, keys in menu_sections_for(chat_id=chat_id, tenant_id=tenant_id):
+    """Keys of a catalog section *or* a ➕ Mehr group for this chat's role."""
+    role = menu_role_for(chat_id=chat_id, tenant_id=tenant_id)
+    for sid, keys in menu_sections_for(role=role):
+        if sid == section_id:
+            return list(keys)
+    for sid, keys in more_groups_for(role=role):
         if sid == section_id:
             return list(keys)
     return []
@@ -181,15 +277,35 @@ def _main_reply_rows(
     *,
     chat_id: str | int | None = None,
 ) -> list[list[str]]:
+    """Home keyboard (#445): Positionen · Kaufen · Verkaufen / Pause · Hilfe · Mehr."""
     rows: list[list[str]] = []
     row: list[str] = []
-    for section_id, _ in menu_sections_for(chat_id=chat_id):
-        row.append(section_title(section_id, lang))
+    for key in home_keys_for(chat_id=chat_id):
+        row.append(home_label(key, lang))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
+def _more_reply_rows(
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> list[list[str]]:
+    """➕ Mehr keyboard (#445): nested group titles + Hilfe / Zurück."""
+    rows: list[list[str]] = []
+    row: list[str] = []
+    for group_id, _ in more_groups_for(chat_id=chat_id):
+        row.append(section_title(group_id, lang))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+    rows.append([help_label(lang), back_label(lang)])
     return rows
 
 
@@ -240,9 +356,31 @@ def send_main_section_keyboard(
         return False
     lang = lang or current_language()
     target = _target_chat_id(chat_id)
+    if target is not None:
+        # Home has no section context; ❓ Hilfe here means the full /help.
+        clear_active_section(target)
     return send_reply_keyboard(
         text or home_intro(lang),
         _main_reply_rows(lang, chat_id=target),
+        chat_id=target,
+    )
+
+
+def send_more_keyboard(
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+) -> bool:
+    """Push the ➕ Mehr group list as reply keyboard (#445)."""
+    if not _reply_keyboard_enabled():
+        return False
+    lang = lang or current_language()
+    target = _target_chat_id(chat_id)
+    if target is not None:
+        set_active_section(target, MORE_SECTION_ID)
+    return send_reply_keyboard(
+        more_intro(lang),
+        _more_reply_rows(lang, chat_id=target),
         chat_id=target,
     )
 
@@ -296,10 +434,11 @@ def _home_keyboard(
     *,
     chat_id: str | int | None = None,
 ) -> list[list[dict]]:
+    """Inline ➕ Mehr overview (#445): one button per nested group."""
     rows: list[list[dict]] = []
     row: list[dict] = []
-    for section_id, _ in menu_sections_for(chat_id=chat_id):
-        row.append({"text": section_title(section_id, lang), "callback_data": f"menu:sec:{section_id}"})
+    for group_id, _ in more_groups_for(chat_id=chat_id):
+        row.append({"text": section_title(group_id, lang), "callback_data": f"menu:sec:{group_id}"})
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -355,35 +494,59 @@ def handle_text(text: str, chat_id=None) -> bool:
     if not _reply_keyboard_enabled():
         return False
     stripped = (text or "").strip()
+    active = None
+    if chat_id is not None:
+        from notifications.telegram_commands.command_context import get_active_section
+
+        active = get_active_section(chat_id)
     if is_back_label(stripped):
+        # #445: one level up — group → Mehr, Mehr (or nothing) → home.
         if chat_id is not None:
             clear_context(chat_id)
             clear_active_section(chat_id)
-        send_main_section_keyboard(chat_id=_target_chat_id(chat_id))
+        if active and active != MORE_SECTION_ID:
+            send_more_keyboard(chat_id=_target_chat_id(chat_id))
+        else:
+            send_main_section_keyboard(chat_id=_target_chat_id(chat_id))
         return True
     if is_help_label(stripped):
-        section_id = None
-        if chat_id is not None:
-            from notifications.telegram_commands.command_context import get_active_section
-
-            section_id = get_active_section(chat_id)
-        if section_id:
-            send_section_help(section_id, chat_id=chat_id)
+        if active and active != MORE_SECTION_ID and send_section_help(active, chat_id=chat_id):
             return True
-        send_telegram_message(
-            "<b>❓ Hilfe</b>\n\nWähle zuerst einen Bereich — dann <i>❓ Hilfe</i> für Details zu allen Befehlen dort."
-            if current_language() == "de"
-            else "<b>❓ Help</b>\n\nPick a section first — then tap <i>❓ Help</i> for details on all commands there."
-        )
+        # Home / Mehr level: the full (role-filtered, #398) catalog.
+        _dispatch_from_keyboard("/help", chat_id=chat_id)
+        return True
+    if is_more_label(stripped):
+        send_more_keyboard(chat_id=_target_chat_id(chat_id))
+        return True
+    home_key = home_label_to_key(stripped)
+    if home_key:
+        if home_key not in home_keys_for(chat_id=chat_id):
+            return False
+        _dispatch_from_keyboard(command_dispatch_text(home_key), chat_id=chat_id)
         return True
     section_id = title_to_section_id(stripped)
     if section_id:
-        allowed = {sid for sid, _ in menu_sections_for(chat_id=chat_id)}
-        if section_id not in allowed:
+        if section_id == "home":
+            send_main_section_keyboard(chat_id=_target_chat_id(chat_id))
+            return True
+        # Catalog sections stay tappable (stale keyboards on old clients) next
+        # to the ➕ Mehr groups; section_keys_for resolves both for this role.
+        if not section_keys_for(section_id, chat_id=chat_id):
             return False
         send_section_keyboard(section_id, chat_id=chat_id)
         return True
     return False
+
+
+def _dispatch_from_keyboard(cmd_text: str, *, chat_id=None) -> bool:
+    """Run a slash command tapped on the reply keyboard (#445)."""
+    from notifications.telegram_commands.command_context import set_chat_id
+    from notifications.telegram_commands.router import dispatch_command
+
+    if chat_id is not None:
+        set_chat_id(chat_id)
+        clear_context(chat_id)
+    return bool(dispatch_command(cmd_text))
 
 
 def handle(text: str) -> bool:

@@ -11,11 +11,14 @@ from logger import log
 from notifications.telegram_commands.menu_commands import (
     MENU_SECTIONS,
     all_menu_command_keys,
+    home_keys_for,
+    menu_role_for,
     menu_sections_for,
     send_main_section_keyboard,
 )
 from notifications.telegram_commands.menu_i18n import (
     SUPPORTED_LANGS,
+    command_description,
     menu_button_label,
     prefixed_command_description,
     resolve_language,
@@ -110,7 +113,11 @@ def all_bot_commands(
             seen.add(key)
             if not _COMMAND_RE.match(key):
                 raise ValueError(f"Invalid Telegram command name: {key}")
-            description = prefixed_command_description(section_id, key, lang).strip()
+            if section_id == "home":
+                # #445: slim home list needs no "Start ·" prefix.
+                description = command_description(key, lang).strip()
+            else:
+                description = prefixed_command_description(section_id, key, lang).strip()
             if not description:
                 raise ValueError(f"Empty menu description for: {key}")
             if len(description) > _MAX_DESCRIPTION_LEN:
@@ -140,7 +147,13 @@ def register_commands_for_chat(
     except Exception:
         use_lang = resolve_language(lang or "de")
 
-    sections = menu_sections_for(chat_id=chat_id)
+    role = menu_role_for(chat_id=chat_id)
+    if role == "satellite":
+        # #445: satellite ☰ = home set only (Positionen/Kaufen/Verkaufen/Pause/
+        # Hilfe/Menü); everything else is reached via ➕ Mehr or /help.
+        sections = [("home", home_keys_for(role=role))]
+    else:
+        sections = menu_sections_for(chat_id=chat_id)
     commands = all_bot_commands(use_lang, sections=sections)
     base = f"https://api.telegram.org/bot{token}"
     try:
