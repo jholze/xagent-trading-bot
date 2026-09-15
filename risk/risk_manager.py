@@ -814,13 +814,7 @@ class RiskManager:
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
             fusion = self.config.cmc_trending_fusion_config
-            from data_manager import load_cmc_trending_overlay, trending_watchlist_live_enabled
-
-            trending_syms = set()
-            if trending_watchlist_live_enabled(self.config.raw):
-                trending_syms = {
-                    c.get("symbol") for c in load_cmc_trending_overlay().get("coins", [])
-                }
+            trending_syms = self._trending_overlay_symbols()
             if order.symbol in trending_syms:
                 pct = float(fusion.get("trending_trade_size_pct", 50)) / 100.0
                 base_usdt = base_usdt * pct
@@ -2673,6 +2667,34 @@ class RiskManager:
             )
         return False, ""
 
+    def _trending_overlay_symbols(self) -> set:
+        """Symbols currently on the trending overlay the runtime actually writes.
+
+        Enhanced dry-run (#416) persists the trending coins to
+        ``watchlist.dry_run_overlay.json`` and never populates the CMC overlay
+        (``services/dry_run_watchlist.py::_save_overlay``). Mirror the branch
+        ``data_manager`` uses so the size haircut and the open-position cap see the
+        same coins as the watchlist. ``trending_watchlist_live_enabled`` stays the
+        on/off switch; ``is_dry_run_enhanced`` is False whenever live execution
+        resolves to real orders, so the real-live path keeps reading the CMC overlay.
+        """
+        from data_manager import (
+            load_cmc_trending_overlay,
+            load_dry_run_overlay,
+            trending_watchlist_live_enabled,
+        )
+
+        raw = self.config.raw
+        if not trending_watchlist_live_enabled(raw):
+            return set()
+        if is_dry_run_enhanced(raw):
+            overlay = load_dry_run_overlay()
+        else:
+            overlay = load_cmc_trending_overlay()
+        return {
+            c.get("symbol") for c in (overlay.get("coins") or []) if isinstance(c, dict)
+        }
+
     def _trending_position_cap_blocked(
         self,
         order: TradeOrder,
@@ -2682,14 +2704,11 @@ class RiskManager:
         cap = int(tw.get("max_open_from_trending", 0))
         if cap <= 0 or order.type != "BUY":
             return False, ""
-        from data_manager import load_cmc_trending_overlay, trending_watchlist_live_enabled
         from strategies.positions import list_active_positions
 
-        if not trending_watchlist_live_enabled(self.config.raw):
+        trending_syms = self._trending_overlay_symbols()
+        if not trending_syms:
             return False, ""
-        trending_syms = {
-            c.get("symbol") for c in load_cmc_trending_overlay().get("coins", [])
-        }
         trending_open = sum(
             1 for pos in list_active_positions() if pos.get("symbol") in trending_syms
         )
