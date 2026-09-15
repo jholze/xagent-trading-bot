@@ -4,6 +4,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from logger import log
+
 ROLES = ("owner", "operator", "observer")
 ACTIONS = ("read", "trade", "lock", "config_read", "kill")
 DEFAULT_TENANTS = ("default", "henry", "ctexp")
@@ -101,14 +103,40 @@ def mcp_write_rate_per_min(config_raw: dict | None = None) -> int:
 
 
 def mcp_live_writes_blocked(config_raw: dict | None) -> bool:
-    if mcp_allow_live(config_raw):
+    """Fail-closed live gate for MCP writes (#426).
+
+    Only ``mcp.allow_live: true`` may open the gate. Any inability to determine
+    the live state — non-dict config, malformed ``live`` section, import error,
+    resolver exception — blocks (True) and logs a WARNING. The gate must never
+    open because the check itself crashed.
+    """
+    if mcp_allow_live(config_raw) is True:
         return False
+    if not isinstance(config_raw, dict):
+        log(
+            "mcp_live_writes_blocked: config is not a dict "
+            f"({type(config_raw).__name__}); fail-closed → blocked",
+            "WARNING",
+        )
+        return True
+    if "live" in config_raw and not isinstance(config_raw.get("live"), dict):
+        log(
+            "mcp_live_writes_blocked: malformed live section "
+            f"({type(config_raw.get('live')).__name__}); fail-closed → blocked",
+            "WARNING",
+        )
+        return True
     try:
         from core.simulated_trading import is_real_live_trading
 
-        return bool(is_real_live_trading(config_raw or {}))
-    except Exception:
-        return False
+        return bool(is_real_live_trading(config_raw))
+    except Exception as exc:
+        log(
+            f"mcp_live_writes_blocked: cannot determine live state ({exc!r}); "
+            "fail-closed → blocked",
+            "WARNING",
+        )
+        return True
 
 
 def reset_write_rate() -> None:

@@ -286,6 +286,61 @@ def test_execute_real_live_forbidden(monkeypatch):
     assert rv.get_json().get("error") == "live_forbidden"
 
 
+def test_execute_live_section_none_is_live_forbidden(monkeypatch):
+    # #426: cfg['live']=None → live state undeterminable → fail-closed 403,
+    # and TradingService is never reached.
+    monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
+    monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+    warnings = []
+    monkeypatch.setattr(
+        "services.mcp.authz.log",
+        lambda msg, level="INFO": warnings.append((str(msg), level)),
+    )
+    calls = []
+
+    def fake_buy(self, *a, **k):
+        calls.append(1)
+        return SimpleNamespace(executed=True, message="ok")
+
+    _install_trading_stubs(monkeypatch, buy=fake_buy)
+    cfg = {
+        "trading_mode": "live",
+        "live_confirmed": True,
+        "live": None,
+        "mcp": {"enabled": True, "allow_writes": True, "allow_live": False, "tenants": ["henry"]},
+    }
+    client = _client(monkeypatch, patch_trading=False, config=cfg)
+    rv = client.post(_PATH, json=_BUY_BODY, headers={"X-Exit-Ws-Token": "secret"})
+    assert rv.status_code == 403
+    assert rv.get_json().get("error") == "live_forbidden"
+    assert calls == []
+    assert any(level == "WARNING" for _msg, level in warnings)
+
+
+def test_execute_live_resolver_error_is_live_forbidden(monkeypatch):
+    # #426: a crashing live resolver must not open the write path.
+    monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
+    monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
+    import core.simulated_trading as sim
+
+    def boom(_cfg=None):
+        raise RuntimeError("resolver down")
+
+    monkeypatch.setattr(sim, "is_real_live_trading", boom)
+    calls = []
+
+    def fake_buy(self, *a, **k):
+        calls.append(1)
+        return SimpleNamespace(executed=True, message="ok")
+
+    _install_trading_stubs(monkeypatch, buy=fake_buy)
+    client = _client(monkeypatch, patch_trading=False)
+    rv = client.post(_PATH, json=_BUY_BODY, headers={"X-Exit-Ws-Token": "secret"})
+    assert rv.status_code == 403
+    assert rv.get_json().get("error") == "live_forbidden"
+    assert calls == []
+
+
 def test_execute_buy_passes_source_and_idempotency(monkeypatch):
     monkeypatch.setenv("EXIT_WS_INTERNAL_TOKEN", "secret")
     monkeypatch.delenv("MCP_BOT_TOKEN", raising=False)
