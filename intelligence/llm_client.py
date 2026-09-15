@@ -2,6 +2,9 @@
 
 Backends:
   LLM_BACKEND=xai (default) → https://api.x.ai/v1 + XAI_API_KEY + grok-4
+      with XAI_USE_SUBSCRIPTION=1 (+ XAI_AUTH_SIDECAR_URL / XAI_AUTH_TRIGGER_TOKEN)
+      → {sidecar}/v1 + trigger token, one-shot fallback to XAI_API_KEY on
+      sidecar 401/403/503/connection error (#397 Phase 2, see intelligence/xai_auth.py)
   LLM_BACKEND=openai_compat → LLM_BASE_URL + LLM_API_KEY + LLM_MODEL
 
 ask_grok* remain as thin aliases for compatibility.
@@ -19,6 +22,7 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from intelligence.xai_auth import fallback_endpoint_after, resolve_xai_endpoint, XaiEndpoint
 from logger import log
 
 load_dotenv()
@@ -40,10 +44,15 @@ class LlmSettings:
     base_url: str
     api_key: str
     model: str
+    via_subscription: bool = False
 
     @property
     def cache_key(self) -> str:
         return f"{self.backend}|{self.base_url}|{self.model}"
+
+    @property
+    def endpoint(self) -> XaiEndpoint:
+        return XaiEndpoint(base_url=self.base_url, api_key=self.api_key, via_subscription=self.via_subscription)
 
 
 def llm_settings() -> LlmSettings:
@@ -70,15 +79,50 @@ def llm_settings() -> LlmSettings:
         )
         return LlmSettings(backend=backend, base_url=base, api_key=key, model=model)
 
-    # xai default
-    key = os.environ.get("XAI_API_KEY") or os.environ.get("LLM_API_KEY") or ""
+    # xai default — sidecar when XAI_USE_SUBSCRIPTION is on and configured, else api.x.ai
+    endpoint = resolve_xai_endpoint()
+    key = endpoint.api_key
+    if not endpoint.via_subscription:
+        key = key or os.environ.get("LLM_API_KEY") or ""
     model = os.environ.get("GROK_PARSE_MODEL") or os.environ.get("LLM_MODEL") or "grok-4"
     return LlmSettings(
         backend="xai",
-        base_url="https://api.x.ai/v1",
+        base_url=endpoint.base_url,
         api_key=key,
         model=model,
+        via_subscription=endpoint.via_subscription,
     )
+
+
+def _direct_xai_settings(settings: LlmSettings, endpoint: XaiEndpoint) -> LlmSettings:
+    """Same backend/model as ``settings`` but pointed at the metered endpoint."""
+    return LlmSettings(
+        backend=settings.backend,
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key or os.environ.get("LLM_API_KEY") or "",
+        model=settings.model,
+        via_subscription=False,
+    )
+
+
+def _chat_completion(
+    settings: LlmSettings,
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    timeout_sec: int,
+):
+    """One chat completion; via the sidecar it is repeated once on XAI_API_KEY when the sidecar fails."""
+    try:
+        client = _get_client(settings, timeout_sec)
+        return client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+    except Exception as e:
+        direct = fallback_endpoint_after(e, settings.endpoint, context="llm_client")
+        if direct is None:
+            raise
+        client = _get_client(_direct_xai_settings(settings, direct), timeout_sec)
+        return client.chat.completions.create(model=model, messages=messages, temperature=temperature)
 
 
 def _get_client(settings: LlmSettings, timeout_sec: int) -> OpenAI:
@@ -148,11 +192,12 @@ def ask_llm(
             )
         else:
             settings = llm_settings()
-        client = _get_client(settings, timeout_sec)
-        response = client.chat.completions.create(
+        response = _chat_completion(
+            settings,
             model=model or settings.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
+            timeout_sec=timeout_sec,
         )
         return response.choices[0].message.content or ""
     except Exception as e:
@@ -171,11 +216,12 @@ def ask_llm_json(
     for attempt in range(retries + 1):
         try:
             settings = llm_settings()
-            client = _get_client(settings, timeout_sec)
-            response = client.chat.completions.create(
+            response = _chat_completion(
+                settings,
                 model=model or settings.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
+                timeout_sec=timeout_sec,
             )
             content = response.choices[0].message.content or ""
             return parse_llm_json(content, required_keys=required_keys)

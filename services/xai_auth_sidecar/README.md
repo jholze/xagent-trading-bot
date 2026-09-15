@@ -13,9 +13,13 @@ that token is actually allowed to do against `https://api.x.ai/v1`.
 Phase 1b (this document's [Railway section](#running-on-railway-xagent-xai-auth))
 runs that login **on the staging Railway instance**: URL + user code go to the
 operator Telegram, the session lives on a Railway Volume and is refreshed
-before it expires, so it survives deploys. The Python bot still uses
-`XAI_API_KEY`; nothing points `base_url` at this sidecar yet (Phase 2, after
-the probe results are on the issue).
+before it expires, so it survives deploys.
+
+Phase 2 (probe on the issue, 2026-09-15: Q1 `grok-4/4.3/4.5/4.6` all 200, Q2
+`x_search` 200, Q3 no 429) adds the **`/v1` proxy** to this server and the
+**`XAI_USE_SUBSCRIPTION` flag** to the bot — see
+[Phase 2: `/v1` proxy + bot flag](#phase-2-v1-proxy--bot-flag). Default off; the
+bot keeps using `XAI_API_KEY` until the operator sets the flag.
 
 ## Running on Railway (`xagent-xai-auth`)
 
@@ -50,23 +54,25 @@ Variables on the `xagent-xai-auth` service:
 | `XAI_OAUTH_CREDENTIAL_PATH` | `$RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json` | where the `{type:"oauth",access,refresh,expires}` file lives; paths inside the repo (`/app/...`) are refused |
 | `GROK_HOME` | `$RAILWAY_VOLUME_MOUNT_PATH/grok-cli` | only relevant if you log in with the Grok CLI (`grok login --device-auth`) over `railway ssh` — keeps its session on the volume too |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | — | operator chat that receives the verification URL + code, "session stored, expires …", and refresh failures. Same values as the bot service. |
-| `XAI_AUTH_TRIGGER_TOKEN` | — (trigger disabled) | shared secret for `POST /login`; set the **same** value on the bot service to enable `/xai_login` |
+| `XAI_AUTH_TRIGGER_TOKEN` | — (trigger + proxy disabled) | shared secret for `POST /login` **and** the `/v1` proxy; set the **same** value on the bot service to enable `/xai_login` and `XAI_USE_SUBSCRIPTION` |
+| `XAI_AUTH_PROXY_TIMEOUT_MS` | `180000` | upper bound for one relayed xAI call (the bot's own client timeout is normally the tighter one) |
 | `XAI_AUTH_LOGIN_ON_BOOT` | `0` | `1`: start a device-code login automatically when the service boots without a credential (each boot without a login = one URL+code message) |
 | `XAI_AUTH_KEEPALIVE` | `1` | refresh the stored session before it expires (`0` to disable) |
 | `XAI_AUTH_KEEPALIVE_INTERVAL_MS` | `300000` | keepalive check interval |
 | `XAI_AUTH_REFRESH_MARGIN_MS` | `900000` | refresh when less than this remains; on failure it backs off (`interval·2ⁿ`, max 6 h) and notifies Telegram once |
-| `PORT` | `8787` | HTTP port (Railway sets it) |
+| `PORT` | `8787` locally | HTTP port. **On Railway it is whatever Railway injects — currently `8080`**, not 8787. The bot's `XAI_AUTH_SIDECAR_URL` must carry that port (`http://xagent-xai-auth.railway.internal:8080`); check `/health` from the bot's shell if in doubt. |
 | `XAI_API_KEY` | — | **not needed here**; stays the bot's fallback and is untouched by this service |
 
-HTTP surface (all JSON, never a token):
+HTTP surface (JSON on the sidecar's own routes, never a token):
 
-- `GET /health`, `GET /status` — `credential.{present,expiresAt,expiresInSec,expiringSoon}`, `login.{running,lastResult,lastError}`, `keepalive.*`, `triggerEnabled`, `telegram.configured`
+- `GET /health`, `GET /status` — `credential.{present,expiresAt,expiresInSec,expiringSoon}`, `login.{running,lastResult,lastError}`, `keepalive.*`, `proxy.{enabled,requests,rejected,noCredential,upstreamErrors,lastUpstreamStatus}`, `triggerEnabled`, `telegram.configured`
 - `POST /login` with `Authorization: Bearer $XAI_AUTH_TRIGGER_TOKEN` — `202 {started:true}`, `409` while a login runs, `403` when the trigger token is unset on the sidecar, `401` on mismatch
+- `GET|POST /v1/*` with the same bearer — relayed to `https://api.x.ai/v1/*` with the stored access token (Phase 2, below). `/login`, `/health`, `/status` are never proxied; `/health` stays token-free.
 
 ### How jholze logs in
 
 **A. From Telegram (operator only, `/xai_login`).** Requires `XAI_AUTH_SIDECAR_URL`
-(e.g. `http://xagent-xai-auth.railway.internal:8787`) and `XAI_AUTH_TRIGGER_TOKEN`
+(e.g. `http://xagent-xai-auth.railway.internal:8080` — the port Railway injects) and `XAI_AUTH_TRIGGER_TOKEN`
 on the **bot** service. The command uses the same gate as `/onboard`
 (`TELEGRAM_CHAT_ID` only) and is a no-op explanation until those two variables
 exist; tenants cannot fire it.
@@ -170,7 +176,7 @@ npm start         # the Railway server locally: PORT=8787 XAI_OAUTH_CREDENTIAL_P
 ```
 
 Files: `src/login.js` (device-code CLI), `src/server.js` (Railway service:
-`/health`, `/status`, `POST /login`, keepalive, login-on-boot), `src/telegram.js`
+`/health`, `/status`, `POST /login`, `/v1/*` proxy, keepalive, login-on-boot), `src/telegram.js`
 (operator notifications, fail-soft), `src/credentials.js` (location rule, 0600,
 refuse-in-repo, refresh), `src/probe.js` + `src/probe_report.js` (Q1–Q3),
 `start.sh` (Railway entry — `CMD` of `Dockerfile`), `Dockerfile` + `railway.toml`
@@ -180,12 +186,76 @@ Dependencies: `@earendil-works/pi-ai@0.85.1` (device-code flow) and
 `openai@6.40.0` (same version pi-ai depends on; used by the probe). No build
 step, no test framework, plain ESM.
 
-## What comes next (Phase 2, separate PR)
+## Phase 2: `/v1` proxy + bot flag
 
-Once the live probe (run via `railway ssh` against the volume session, output
-pasted into #397) shows what the subscription token can do, Phase 2 adds a
-private-network `/v1` proxy to this server that injects the kept-alive token,
-plus the Python fallback wiring so `grok_x_search.py` / `llm_client.py` can
-point `base_url` at it when `XAI_API_KEY` is absent or exhausted. Model
-defaults (`grok-4` today) may need to move to whatever id the probe shows the
-token accepts. `XAI_API_KEY` and `X_API_BEARER_TOKEN` stay as they are.
+The probe (issue #397, 2026-09-15) answered the open questions: the
+subscription token is accepted as a plain Bearer key on the Responses API for
+`grok-4`, `grok-4.3`, `grok-4.5`, `grok-4.6` (Q1), it authorises the
+`x_search` tool (Q2), and a small burst saw no 429 (Q3). So the default model
+stays `grok-4`, and the bot's xAI calls can move behind one flag.
+
+### Sidecar side: `GET|POST /v1/*`
+
+`src/server.js` relays `GET`/`POST /v1/*` to `https://api.x.ai/v1/*`:
+
+1. Bearer check with the **same** `XAI_AUTH_TRIGGER_TOKEN` as `POST /login`
+   (constant-time compare). Token unset on the sidecar → `403
+   {error:"trigger_disabled"}` and nothing is forwarded (fail-closed). Wrong or
+   missing token → `401`. Other methods → `405`.
+2. Loads the volume credential and runs `ensureFresh` (refreshes via pi-ai if
+   inside the refresh margin, persists the rotated token). No file / unreadable →
+   `503 {error:"no_credential"}`; refresh failed → `503 {error:"refresh_failed"}`.
+   Both make the bot fall back to `XAI_API_KEY`.
+3. Replaces the client's `Authorization` with `Bearer <access>` and forwards the
+   request (path + query + body; hop-by-hop headers, `host`, `x-auth-token`,
+   `accept-encoding` dropped). xAI's status, headers and body come back
+   unchanged (`429`, `500`, … are the bot's to handle — the proxy does not
+   retry). xAI unreachable → `502 {error:"upstream_unreachable"}`.
+
+The access token exists only inside the sidecar process and in the request to
+`api.x.ai`; the upstream origin is a constant, not configurable. Logs go
+through `redactText` with the access, refresh **and** trigger token registered,
+so a `proxy: POST /v1/responses → 200 (812 ms)` line is all you see. Requests
+counters live in `GET /status` → `proxy`. No public Railway domain is needed or
+wanted: the bot reaches the sidecar over private networking only.
+
+### Bot side: `XAI_USE_SUBSCRIPTION`
+
+One helper, `intelligence/xai_auth.py`, decides for every xAI call:
+
+| Bot variable | Default | Effect |
+|---|---|---|
+| `XAI_USE_SUBSCRIPTION` | **off** (unset / `0` / `false`) | `1` routes `intelligence/llm_client.py` (xai backend — that includes WQE `ai_critic` via `ask_grok_json`) and `grok_x_search.py` (→ `x_data_provider.GrokXSearchProvider`) through the sidecar: `base_url = $XAI_AUTH_SIDECAR_URL/v1`, `api_key = $XAI_AUTH_TRIGGER_TOKEN`. With the flag on the trigger token is enough — `XAI_API_KEY` may be absent. |
+| `XAI_AUTH_SIDECAR_URL` | — | `http://xagent-xai-auth.railway.internal:<PORT>`; trailing slash or an already-present `/v1` are tolerated. **Include the port Railway injects (currently 8080).** |
+| `XAI_AUTH_TRIGGER_TOKEN` | — | same value as on the sidecar |
+| `XAI_API_KEY` | — | metered fallback; unchanged |
+
+Flag on but URL or token missing → warning, metered path. Flag off → exactly
+today's behaviour (`https://api.x.ai/v1` + `XAI_API_KEY`). **Rollback = unset
+`XAI_USE_SUBSCRIPTION`** (or set it to `0`) and redeploy the bot; nothing else
+changes.
+
+**Fallback.** When a call *via the sidecar* fails with `401`, `403`, `503` or a
+connection error (sidecar down / no credential / refresh failed), the bot logs
+`xai subscription fallback to XAI_API_KEY [llm_client|grok_x_search]: sidecar
+HTTP 503` and repeats that one call against `https://api.x.ai/v1` with
+`XAI_API_KEY`. No metered key → fails exactly as today (`XAI_API_KEY not set` /
+empty post list). One fallback per call, never a loop. Timeouts and xAI's own
+`4xx/5xx` relayed by the proxy are *not* fallback triggers.
+
+`X_API_BEARER_TOKEN` (X API v2 provider), `LLM_BACKEND=openai_compat`,
+`risk_manager.py`, `decision_engine.py`, `dca_sizing.py` are untouched.
+
+### Operator rollout (after this PR is deployed)
+
+1. Sidecar is up with the credential on `/data/grok/xai_oauth.json` and
+   `XAI_AUTH_TRIGGER_TOKEN` set — `GET /health` shows `credential.present:true`,
+   `proxy.enabled:true`.
+2. Bot (`xagent-test` first) already has `XAI_AUTH_SIDECAR_URL` (with the
+   Railway-injected port, currently `:8080`) and the same
+   `XAI_AUTH_TRIGGER_TOKEN`. Set **`XAI_USE_SUBSCRIPTION=1`** on `xagent-test`
+   and redeploy. (The lead does this; nothing in the repo sets the flag.)
+3. Watch the bot log for `xai subscription fallback to XAI_API_KEY` and the
+   sidecar `/status` → `proxy.requests` / `lastUpstreamStatus`. Steady `200`s
+   and no fallback lines = the subscription carries the load.
+4. Anything odd → unset `XAI_USE_SUBSCRIPTION`, redeploy.
