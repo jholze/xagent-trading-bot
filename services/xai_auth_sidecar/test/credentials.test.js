@@ -34,6 +34,21 @@ test("resolveCredentialPath: env override wins and is made absolute", () => {
   );
 });
 
+test("resolveCredentialPath (#397): RAILWAY_VOLUME_MOUNT_PATH beats XDG, loses to the explicit override", () => {
+  assert.equal(
+    resolveCredentialPath({ RAILWAY_VOLUME_MOUNT_PATH: "/data/grok", XDG_CONFIG_HOME: "/xdg" }, { homedir: HOME }),
+    "/data/grok/xai_oauth.json",
+  );
+  assert.equal(
+    resolveCredentialPath({ RAILWAY_VOLUME_MOUNT_PATH: "/data/grok/", [ENV_PATH_VAR]: "/secure/xai.json" }, { homedir: HOME }),
+    "/secure/xai.json",
+  );
+  assert.equal(
+    resolveCredentialPath({ RAILWAY_VOLUME_MOUNT_PATH: "   ", XDG_CONFIG_HOME: "/xdg" }, { homedir: HOME }),
+    "/xdg/xagent-trading-bot/xai_oauth.json",
+  );
+});
+
 test("resolveCredentialPath: XDG_CONFIG_HOME then ~/.config fallback", () => {
   assert.equal(
     resolveCredentialPath({ XDG_CONFIG_HOME: "/xdg" }, { homedir: HOME }),

@@ -8,6 +8,7 @@
     "node": ">=22.19"
   },
   "scripts": {
+    "start": "node src/server.js",
     "login": "node src/login.js",
     "probe": "node src/probe.js",
     "test": "node --test \"test/*.test.js\""

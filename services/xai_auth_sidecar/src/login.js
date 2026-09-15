@@ -10,6 +10,14 @@
 import { fileURLToPath } from "node:url";
 import { resolveCredentialPath, save, isInsideRepo, detectRepoRoot, ENV_PATH_VAR } from "./credentials.js";
 import { redactText, secretsFrom } from "./redact.js";
+import {
+  createOperatorNotifier,
+  formatDeviceCodeMessage,
+  formatSessionStoredMessage,
+  telegramConfigFrom,
+  TELEGRAM_CHAT_VAR,
+  TELEGRAM_TOKEN_VAR,
+} from "./telegram.js";
 
 export const USAGE = `Usage: node src/login.js [--help]
 
@@ -17,12 +25,16 @@ Signs in to xAI with your SuperGrok / X Premium subscription using the
 device-code flow shipped in @earendil-works/pi-ai. Steps:
 
   1. This tool prints a verification URL and a short user code.
+     If ${TELEGRAM_TOKEN_VAR} + ${TELEGRAM_CHAT_VAR} are set, the same URL + code
+     are also sent to the operator Telegram chat (headless Railway login).
   2. YOU open the URL in a browser, sign in to X/xAI, enter the code.
   3. The tool polls until xAI confirms, then stores the credential at
-       \${${ENV_PATH_VAR}:-\${XDG_CONFIG_HOME:-~/.config}/xagent-trading-bot/xai_oauth.json}
+       \${${ENV_PATH_VAR}:-\${RAILWAY_VOLUME_MOUNT_PATH}/xai_oauth.json}
+       (else \${XDG_CONFIG_HOME:-~/.config}/xagent-trading-bot/xai_oauth.json)
      with mode 0600 (dir 0700). Paths inside the repository are refused.
+     Telegram (if configured) gets "session stored, expires …".
 
-No token is ever printed. Press Ctrl-C to cancel.
+No token is ever printed or sent. Press Ctrl-C to cancel.
 `;
 
 /** Human-readable notice for the pi-ai `device_code` event. */
@@ -50,11 +62,14 @@ export function formatDeviceCodeNotice(event, nowMs = Date.now()) {
  * Returns { credential, credentialPath }. Throws the pi-ai error on failure.
  *
  * `out` receives every string we print; callers wrap it with redaction.
+ * `notifyOperator(text)` (optional, async, never throws) receives the device
+ * code message and the "session stored" confirmation — the Telegram path.
  */
 export async function runLogin({
   oauth,
   credentialPath,
   out = (s) => process.stdout.write(s),
+  notifyOperator = null,
   signal = new AbortController().signal,
   persist = save,
   now = () => Date.now(),
@@ -69,12 +84,19 @@ export async function runLogin({
       dots = undefined;
     }
   };
+  const pendingNotifies = [];
+  const notify = (text) => {
+    if (typeof notifyOperator !== "function") return;
+    // pi-ai calls notify() synchronously; never block the poll loop on Telegram.
+    pendingNotifies.push(Promise.resolve().then(() => notifyOperator(text)).catch(() => false));
+  };
 
   const interaction = {
     signal,
     notify(event) {
       if (event && event.type === "device_code") {
         out(`${formatDeviceCodeNotice(event, now())}\n`);
+        notify(formatDeviceCodeMessage(event, now()));
         stopDots();
         const every = Math.max(1000, Math.min(dotIntervalMs, (event.intervalSeconds ?? 5) * 1000));
         dots = setTimer(() => out("."), every);
@@ -91,6 +113,10 @@ export async function runLogin({
   let credential;
   try {
     credential = await oauth.login(interaction);
+  } catch (err) {
+    notify(`❌ xAI SuperGrok login failed: ${String(err?.message ?? err).slice(0, 300)}`);
+    await Promise.allSettled(pendingNotifies);
+    throw err;
   } finally {
     stopDots();
   }
@@ -98,6 +124,8 @@ export async function runLogin({
   await persist(credential, credentialPath);
   out(`Credential saved to ${credentialPath}\n`);
   out(`Access token expires (with pi-ai's 5-min skew applied): ${new Date(credential.expires).toISOString()}\n`);
+  notify(formatSessionStoredMessage(credential, credentialPath));
+  await Promise.allSettled(pendingNotifies);
   return { credential, credentialPath };
 }
 
@@ -138,12 +166,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   rememberSecrets(secretsFrom(null, env));
   const out = (s) => process.stdout.write(redactText(s, knownSecrets));
+  const notifyOperator = createOperatorNotifier(env, {
+    log: (m) => process.stderr.write(`${redactText(m, knownSecrets)}\n`),
+    secrets: () => knownSecrets,
+  });
   try {
     process.stdout.write(`Credential will be stored at ${credentialPath}\n`);
+    const tg = telegramConfigFrom(env);
+    process.stdout.write(
+      tg
+        ? `Operator Telegram: URL + code will also be sent to chat ${tg.chatId}\n`
+        : `Operator Telegram: off (set ${TELEGRAM_TOKEN_VAR} + ${TELEGRAM_CHAT_VAR} to receive URL + code in Telegram)\n`,
+    );
     const { credential } = await runLogin({
       oauth,
       credentialPath,
       out,
+      notifyOperator,
       signal: controller.signal,
       persist: async (cred, p) => {
         // Register the tokens BEFORE save() can fail, so a save error message is redacted.

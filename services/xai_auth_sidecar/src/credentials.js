@@ -3,8 +3,12 @@
  *
  * Location rule (first match wins):
  *   1. $XAI_OAUTH_CREDENTIAL_PATH
- *   2. $XDG_CONFIG_HOME/xagent-trading-bot/xai_oauth.json
- *   3. ~/.config/xagent-trading-bot/xai_oauth.json
+ *   2. $RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json   (Railway: the attached volume — #397)
+ *   3. $XDG_CONFIG_HOME/xagent-trading-bot/xai_oauth.json
+ *   4. ~/.config/xagent-trading-bot/xai_oauth.json
+ *
+ * Rule 2 makes `railway ssh` + `npm run login` and the long-running server
+ * agree on the file without anyone exporting the path by hand.
  *
  * The file is written 0600 inside a 0700 directory, atomically (temp+rename),
  * and `save()` refuses any path that resolves inside the repo/worktree.
@@ -19,6 +23,7 @@ import crypto from "node:crypto";
 export const APP_DIR_NAME = "xagent-trading-bot";
 export const CREDENTIAL_FILE_NAME = "xai_oauth.json";
 export const ENV_PATH_VAR = "XAI_OAUTH_CREDENTIAL_PATH";
+export const RAILWAY_VOLUME_VAR = "RAILWAY_VOLUME_MOUNT_PATH";
 
 /** Extra margin on top of pi-ai's baked-in 5-minute skew before we refresh. */
 export const DEFAULT_REFRESH_MARGIN_MS = 60_000;
@@ -36,6 +41,10 @@ export function resolveCredentialPath(env = process.env, { homedir = os.homedir(
   const override = env[ENV_PATH_VAR];
   if (typeof override === "string" && override.trim().length > 0) {
     return path.resolve(expandHome(override.trim(), homedir));
+  }
+  const volume = env[RAILWAY_VOLUME_VAR];
+  if (typeof volume === "string" && volume.trim().length > 0) {
+    return path.join(path.resolve(expandHome(volume.trim(), homedir)), CREDENTIAL_FILE_NAME);
   }
   const xdg = env.XDG_CONFIG_HOME;
   const configHome =

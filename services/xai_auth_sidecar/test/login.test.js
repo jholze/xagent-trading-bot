@@ -150,3 +150,103 @@ test("USAGE mentions the credential location rule and no browser auto-open", () 
   assert.match(USAGE, /xagent-trading-bot\/xai_oauth\.json/);
   assert.match(USAGE, /YOU open the URL/);
 });
+
+// ---- #397 Phase 1b: operator Telegram hook -------------------------------
+
+test("runLogin: notifyOperator gets URL + code, then 'session stored' with expiry — never a token", async (t) => {
+  const dir = await tmpDir(t);
+  const credentialPath = path.join(dir, "xai_oauth.json");
+  const cred = credential({ expires: Date.UTC(2026, 8, 15, 13, 0, 0) });
+  const sent = [];
+  await runLogin({
+    oauth: {
+      login: async (i) => {
+        i.notify(DEVICE_EVENT);
+        return cred;
+      },
+    },
+    credentialPath,
+    out: () => {},
+    notifyOperator: async (text) => {
+      sent.push(text);
+      return true;
+    },
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+    now: () => Date.UTC(2026, 8, 15, 12, 0, 0),
+  });
+  assert.equal(sent.length, 2);
+  assert.match(sent[0], /https:\/\/auth\.x\.ai\/activate\?user_code=ABCD-EFGH/);
+  assert.match(sent[0], /Code: ABCD-EFGH/);
+  assert.match(sent[0], /until 2026-09-15T12:10:00\.000Z/);
+  assert.match(sent[1], /session stored/);
+  assert.match(sent[1], /expires: 2026-09-15T13:00:00\.000Z/);
+  assert.match(sent[1], new RegExp(credentialPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  for (const s of sent) assertNoSecrets(assert, s);
+});
+
+test("runLogin: a failing/throwing notifyOperator never breaks the login", async (t) => {
+  const dir = await tmpDir(t);
+  const credentialPath = path.join(dir, "c.json");
+  const { credential: got } = await runLogin({
+    oauth: {
+      login: async (i) => {
+        i.notify(DEVICE_EVENT);
+        return credential();
+      },
+    },
+    credentialPath,
+    out: () => {},
+    notifyOperator: async () => {
+      throw new Error("telegram down");
+    },
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(got.type, "oauth");
+  assert.deepEqual(await load(credentialPath), got);
+});
+
+test("runLogin: login failure is reported to the operator (message excerpt, no token) and still rethrown", async (t) => {
+  const dir = await tmpDir(t);
+  const sent = [];
+  await assert.rejects(
+    runLogin({
+      oauth: {
+        login: async (i) => {
+          i.notify(DEVICE_EVENT);
+          throw new Error("xAI device authorization was denied");
+        },
+      },
+      credentialPath: path.join(dir, "c.json"),
+      out: () => {},
+      notifyOperator: async (text) => {
+        sent.push(text);
+        return true;
+      },
+      setTimer: () => ({ unref() {} }),
+      clearTimer: () => {},
+    }),
+    /denied/,
+  );
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /login failed: xAI device authorization was denied/);
+  for (const s of sent) assertNoSecrets(assert, s);
+});
+
+test("runLogin without notifyOperator behaves exactly as before (no notifications attempted)", async (t) => {
+  const dir = await tmpDir(t);
+  const r = await runLogin({
+    oauth: { login: async () => credential() },
+    credentialPath: path.join(dir, "c.json"),
+    out: () => {},
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(r.credentialPath, path.join(dir, "c.json"));
+});
+
+test("USAGE documents the Telegram delivery of URL + code", () => {
+  assert.match(USAGE, /TELEGRAM_BOT_TOKEN \+ TELEGRAM_CHAT_ID/);
+  assert.match(USAGE, /No token is ever printed or sent/);
+});
