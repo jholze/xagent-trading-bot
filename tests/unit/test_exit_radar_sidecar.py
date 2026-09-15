@@ -184,6 +184,11 @@ class TestFireHttpAuth(unittest.TestCase):
         register_exit_ws_fire_routes(app)
         client = app.test_client()
         with patch(
+            "core.tenant_routing.iter_price_cycle_tenants",
+            return_value=["default"],
+        ), patch(
+            "core.tenant_routing.tenant_cycle_context",
+        ), patch(
             "services.exit_realtime.execute.try_execute_trail_exit",
             return_value={
                 "ok": True,
@@ -200,6 +205,7 @@ class TestFireHttpAuth(unittest.TestCase):
                     "action": "SELL_FULL",
                     "exit_source": "trailing_take_profit",
                     "rationale": "trail",
+                    "tenant_id": "default",
                 },
                 headers={"X-Exit-Ws-Token": "good"},
             )

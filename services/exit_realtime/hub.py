@@ -107,6 +107,7 @@ class ExitRealtimeHub:
             "watch": 0,
             "ct_watch": 0,
             "connected": False,
+            "book_tenant_collisions": 0,
         }
         self.sync_correlated_tier_watch()
 
@@ -127,6 +128,7 @@ class ExitRealtimeHub:
                 r = {
                     "symbol": sym,
                     "timeframe": row.get("timeframe"),
+                    "tenant_id": row.get("tenant_id"),
                     "average_entry": row.get("average_entry")
                     or (row.get("position") or {}).get("average_entry"),
                     "recent_high": row.get("recent_high")
@@ -178,16 +180,36 @@ class ExitRealtimeHub:
     def update_book(self, positions: list[dict[str, Any]]) -> list[str]:
         book: dict[str, dict[str, Any]] = {}
         gmap: dict[str, str] = {}
+        collisions = 0
         for row in positions:
             sym = str(row.get("symbol") or "")
             if not sym:
                 continue
+            existing = book.get(sym)
+            if existing is not None:
+                old_tid = str(existing.get("tenant_id") or "").strip()
+                new_tid = str(row.get("tenant_id") or "").strip()
+                if old_tid and new_tid and old_tid != new_tid:
+                    # Symbol-keyed book: keep the incumbent (default is loaded
+                    # first). Overwriting would drop the operator lot's WS trail.
+                    collisions += 1
+                    log(
+                        f"exit_realtime book collision symbol={sym} "
+                        f"incumbent_tenant={old_tid} dropped_tenant={new_tid} "
+                        f"— keeping incumbent (dropped lot has no WS trail)",
+                        "WARNING",
+                    )
+                    continue
             book[sym] = row
             gmap[to_gate_pair(sym)] = sym
         with self._pos_lock:
             self._book = book
             self._gate_to_symbol = gmap
             self._stats["symbols"] = len(book)
+            if collisions:
+                self._stats["book_tenant_collisions"] = int(
+                    self._stats.get("book_tenant_collisions") or 0
+                ) + collisions
         self._request_subscribe_sync()
         return sorted(gmap.keys())
 
@@ -400,6 +422,7 @@ class ExitRealtimeHub:
                 snapshot = {
                     "symbol": row.get("symbol"),
                     "timeframe": row.get("timeframe"),
+                    "tenant_id": row.get("tenant_id"),
                     "strategy_params": dict(row.get("strategy_params") or {}),
                     "atr_pct": row.get("atr_pct"),
                     "position": dict(row.get("position") or {}),
@@ -468,6 +491,7 @@ class ExitRealtimeHub:
         params = dict(snapshot.get("strategy_params") or {})
         tf = str(snapshot.get("timeframe") or "1h")
         pos = dict(snapshot.get("position") or {})
+        row_tenant = str(snapshot.get("tenant_id") or "").strip() or None
 
         # Position lock: skip trail eval noise for locked lots (execute/risk still hard-block)
         try:
@@ -528,6 +552,7 @@ class ExitRealtimeHub:
                     action="COVER",
                     exit_source=src,
                     rationale=str(hit.get("rationale") or ""),
+                    tenant_id=row_tenant,
                 )
                 if result.get("executed"):
                     self._stats["executed"] += 1
@@ -582,6 +607,7 @@ class ExitRealtimeHub:
                 action=str(ev.get("action") or "SELL_FULL"),
                 exit_source=src,
                 rationale=str(ev.get("rationale") or ""),
+                tenant_id=row_tenant,
             )
             ev["executed"] = bool(result.get("executed"))
             ev["message"] = result.get("message")
@@ -796,54 +822,97 @@ def get_hub() -> ExitRealtimeHub | None:
     return _hub
 
 
+def _book_row_for_position(
+    *,
+    key: str,
+    pos: dict[str, Any],
+    tenant_id: str,
+    cfg: Any,
+) -> dict[str, Any] | None:
+    from strategies.positions import is_open_position, parse_position_key
+
+    if not is_open_position(pos):
+        return None
+    sym, tf = parse_position_key(key)
+    if not sym:
+        sym = str(pos.get("symbol") or "").replace("_", "/")
+        tf = str(pos.get("timeframe") or "1h")
+    if not sym:
+        return None
+    if not tf:
+        tf = "1h"
+
+    try:
+        from strategies.registry import resolve_strategy_params
+
+        params = resolve_strategy_params(
+            {"symbol": sym, "timeframe": tf},
+            has_position=True,
+            frozen_tier=pos.get("strategy_tier"),
+        )
+    except Exception:
+        try:
+            params = cfg.strategy_params(sym, tf)
+        except Exception:
+            params = {}
+
+    return {
+        "symbol": sym,
+        "timeframe": tf,
+        "tenant_id": tenant_id,
+        "position": dict(pos),
+        "average_entry": float(pos.get("average_entry") or 0),
+        "recent_high": float(pos.get("recent_high") or 0),
+        "strategy_params": params,
+        "atr_pct": float(
+            (params or {}).get("atr_reference_pct")
+            or (cfg.risk_config or {}).get("atr_reference_pct")
+            or 3.0
+        ),
+        "strategy_tier": pos.get("strategy_tier"),
+    }
+
+
 def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
     from core.config import get_bot_config
-    from strategies.positions import is_open_position, parse_position_key, positions
+    from core.tenant_context import DEFAULT_TENANT
+    from core.tenant_routing import iter_price_cycle_tenants
+    from services.exit_realtime.config import is_exit_radar_sidecar_process
+    from services.exit_realtime.execute import restoring_tenant_cycle_context
+    from strategies.positions import load_positions
 
-    cfg = get_bot_config()
     rows: list[dict[str, Any]] = []
-    for key, pos in list(positions.items()):
-        if not is_open_position(pos):
-            continue
-        sym, tf = parse_position_key(key)
-        if not sym:
-            sym = str(pos.get("symbol") or "").replace("_", "/")
-            tf = str(pos.get("timeframe") or "1h")
-        if not sym:
-            continue
-        if not tf:
-            tf = "1h"
-
+    sidecar = is_exit_radar_sidecar_process()
+    # Daemon thread: contextvars do not inherit. Walk each tenant store
+    # explicitly; do not iterate the module `positions` dict (default-only).
+    # Build rows *inside* tenant_cycle_context so resolve_strategy_params /
+    # get_bot_config see that tenant's strategy_params and atr_pct.
+    for tid in iter_price_cycle_tenants():
         try:
-            from strategies.registry import resolve_strategy_params
+            with restoring_tenant_cycle_context(tid):
+                cfg = get_bot_config()
+                if (not sidecar) and tid == DEFAULT_TENANT:
+                    # Bot process: load_positions() store.clear()s the live
+                    # default dict. Snapshot RAM instead (same guard as
+                    # activate_tenant_positions for DEFAULT).
+                    from strategies.positions import positions as _default_store
 
-            params = resolve_strategy_params(
-                {"symbol": sym, "timeframe": tf},
-                has_position=True,
-                frozen_tier=pos.get("strategy_tier"),
-            )
-        except Exception:
-            try:
-                params = cfg.strategy_params(sym, tf)
-            except Exception:
-                params = {}
-
-        rows.append(
-            {
-                "symbol": sym,
-                "timeframe": tf,
-                "position": dict(pos),
-                "average_entry": float(pos.get("average_entry") or 0),
-                "recent_high": float(pos.get("recent_high") or 0),
-                "strategy_params": params,
-                "atr_pct": float(
-                    (params or {}).get("atr_reference_pct")
-                    or (cfg.risk_config or {}).get("atr_reference_pct")
-                    or 3.0
-                ),
-                "strategy_tier": pos.get("strategy_tier"),
-            }
-        )
+                    store = {
+                        k: dict(v) if isinstance(v, dict) else v
+                        for k, v in list(_default_store.items())
+                    }
+                else:
+                    store = load_positions(tenant_id=tid)
+                for key, pos in list((store or {}).items()):
+                    if not isinstance(pos, dict):
+                        continue
+                    row = _book_row_for_position(
+                        key=str(key), pos=pos, tenant_id=tid, cfg=cfg
+                    )
+                    if row is not None:
+                        rows.append(row)
+        except Exception as exc:
+            log(f"exit_realtime book load tenant={tid}: {exc}", "WARNING")
     return rows
 
 
@@ -855,15 +924,20 @@ def _sync_positions_from_ledger() -> None:
 
     Uses strategies.positions.load_positions (not rebuild_positions_from_orders)
     so we never write the ledger from the radar process and avoid thrashing
-    concurrent Flask IO.
+    concurrent Flask IO. Walks every price-cycle tenant — ledger scope comes
+    from tenant_cycle_context (do not assume henry/ctexp are live-scope).
     """
     try:
-        from data_manager import resolve_ledger_scope
+        from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
         from strategies.positions import load_positions
 
-        scope = str(resolve_ledger_scope() or "demo")
         with _book_io_lock:
-            load_positions(scope)
+            for tid in iter_price_cycle_tenants():
+                try:
+                    with tenant_cycle_context(tid):
+                        load_positions(tenant_id=tid)
+                except Exception as exc:
+                    log(f"exit_realtime ledger sync tenant={tid}: {exc}", "DEBUG")
     except Exception as exc:
         log(f"exit_realtime ledger sync: {exc}", "DEBUG")
 

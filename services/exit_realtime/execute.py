@@ -7,13 +7,42 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from logger import log
 
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
 _last_exit_at: dict[str, float] = {}  # symbol -> mono time
+
+
+@contextmanager
+def restoring_tenant_cycle_context(tenant_id: str) -> Iterator[None]:
+    """``tenant_cycle_context`` plus restore of the process-global positions store.
+
+    ``tenant_cycle_context`` calls ``activate_tenant_positions`` and does not
+    put ``_active_key`` back on exit (it is a module global, not a contextvar).
+    Bot-process callers (Flask fire, hub fire, book daemon) must restore so
+    the default cycle does not read/write the wrong store.
+    """
+    from core.tenant_context import resolve_tenant_id
+    from core.tenant_routing import tenant_cycle_context
+    from strategies.positions import activate_tenant_positions, get_active_scope
+
+    prev_tid = resolve_tenant_id()
+    prev_scope = get_active_scope()
+    try:
+        with tenant_cycle_context(tenant_id):
+            yield
+    finally:
+        try:
+            activate_tenant_positions(scope=prev_scope, tenant_id=prev_tid)
+        except Exception as exc:
+            log(
+                f"exit_ws restore positions tenant={prev_tid} scope={prev_scope}: {exc}",
+                "ERROR",
+            )
 
 
 def recently_exited(symbol: str, within_sec: float = 120.0) -> bool:
@@ -31,6 +60,7 @@ def _remote_execute_trail_exit(
     exit_source: str,
     rationale: str,
     token: str,
+    tenant_id: str = "",
     timeout_sec: float = 30.0,
 ) -> dict[str, Any]:
     """POST fire request to bot ``/internal/exit-ws/fire`` (sidecar path)."""
@@ -42,6 +72,7 @@ def _remote_execute_trail_exit(
         "exit_source": exit_source,
         "rationale": rationale,
         "idempotency_key": f"{symbol}|{timeframe}|{exit_source}|{price:.8g}",
+        "tenant_id": tenant_id,
     }
     body = json.dumps(payload).encode("utf-8")
     headers = {
@@ -144,6 +175,7 @@ def try_execute_trail_exit(
     rationale: str = "",
     trading: Any | None = None,
     force_local: bool = False,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Full-position SELL through RiskManager + order path.
@@ -152,13 +184,31 @@ def try_execute_trail_exit(
     fire endpoint instead of executing locally — bot remains sole write path.
     Returns {ok, executed, message, ...}.
     """
+    from core.tenant_context import resolve_tenant_id as _resolve_tid
     from services.exit_realtime.config import exit_execute_url, exit_ws_internal_token
+
+    requested_tid = str(tenant_id or "").strip()
+    if requested_tid and _resolve_tid() != requested_tid:
+        with restoring_tenant_cycle_context(requested_tid):
+            return try_execute_trail_exit(
+                symbol=symbol,
+                timeframe=timeframe,
+                price=price,
+                action=action,
+                exit_source=exit_source,
+                rationale=rationale,
+                trading=trading,
+                force_local=force_local,
+                tenant_id=None,
+            )
 
     sym = str(symbol or "")
     tf = str(timeframe or "1h")
     px = float(price or 0)
     if not sym or px <= 0:
         return {"ok": False, "executed": False, "message": "bad_args"}
+
+    active_tid = requested_tid or _resolve_tid()
 
     # recovery_hold / sniper_focus: block trail-class WS fires (hard SL not via this path)
     # Short lots skip this — cover (liq/stop/time) must still fire.
@@ -177,8 +227,11 @@ def try_execute_trail_exit(
                     from strategies.positions import flush_positions
 
                     flush_positions()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log(
+                        f"exit_ws recovery_hold flush failed {sym}: {exc}",
+                        "WARNING",
+                    )
             block = auto_sells_blocked_reason(pos, str(exit_source or "trailing_stop"))
             if block:
                 return {
@@ -201,6 +254,7 @@ def try_execute_trail_exit(
             exit_source=exit_source,
             rationale=rationale,
             token=exit_ws_internal_token(),
+            tenant_id=active_tid,
         )
 
     from core.actions import SELL_FULL
