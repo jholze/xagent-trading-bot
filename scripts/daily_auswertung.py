@@ -18,12 +18,16 @@ from notifications.daily_stats import (  # noqa: E402
     cmc_posts,
     decision_stats,
     load_json,
+    merge_trades_with_filled_orders,
     normalize_social_action,
     parse_ts,
     post_timestamp,
 )
+from storage.errors import LedgerUnavailable  # noqa: E402
 
 normalize_action = normalize_social_action
+
+LEDGER_UNAVAILABLE_BANNER = "LEDGER UNAVAILABLE — Tages-Auswertung nicht erstellt"
 
 
 def _bot_json(bot_dir: Path, name: str) -> Path:
@@ -34,12 +38,12 @@ def _bot_json(bot_dir: Path, name: str) -> Path:
 
 
 def _ledger_bundle() -> tuple[dict, dict, dict]:
-    """Trade history, orders, positions from the active ledger scope (not live_*.json)."""
-    empty = (
-        {"trades": [], "virtual_balance": 0, "realized_pnl": 0},
-        {"orders": []},
-        {},
-    )
+    """Trade history, orders, positions from the active ledger scope (not live_*.json).
+
+    Raises ``LedgerUnavailable`` when the ledger cannot be read (#350): a failed
+    read must never render as a zero-trade report.
+    """
+    scope = None
     try:
         from data_manager import (
             load_orders,
@@ -52,16 +56,35 @@ def _ledger_bundle() -> tuple[dict, dict, dict]:
         th = load_trade_history_document(scope) or {}
         orders = load_orders(scope) or {"orders": []}
         positions_doc = load_positions_document(scope) or {}
-    except Exception:
-        return empty
+    except LedgerUnavailable:
+        raise
+    except Exception as exc:
+        raise LedgerUnavailable(
+            op="daily_auswertung._ledger_bundle", scope=scope, cause=exc
+        ) from exc
     if not isinstance(th, dict):
-        th = empty[0]
+        th = {"trades": [], "virtual_balance": 0, "realized_pnl": 0}
     if not isinstance(orders, dict):
-        orders = empty[1]
+        orders = {"orders": []}
     positions = positions_doc.get("positions") if isinstance(positions_doc, dict) else {}
     if not isinstance(positions, dict):
         positions = {}
     return th, orders, positions
+
+
+def _day_trades(th: dict, orders_raw: dict, day_start: datetime, day_end: datetime) -> list[dict]:
+    """Trades of the day: trade_history.trades merged with filled orders (#350).
+
+    Same merge as the morning briefing (``trades_in_window``), so the report
+    shows fills that only exist in the order ledger, without double-counting
+    those already present in trade_history.
+    """
+    return merge_trades_with_filled_orders(
+        th.get("trades", []) or [],
+        orders_raw.get("orders", []) or [],
+        day_start,
+        day_end,
+    )
 
 
 def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> list[dict]:
@@ -76,21 +99,6 @@ def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> 
             continue
         if day_start <= created < day_end:
             out.append(order)
-    return out
-
-
-def _trades_in_day(trades: list, day_start: datetime, day_end: datetime) -> list[dict]:
-    out: list[dict] = []
-    for trade in trades or []:
-        ts = trade.get("timestamp")
-        if not ts:
-            continue
-        try:
-            when = parse_ts(str(ts))
-        except Exception:
-            continue
-        if day_start <= when < day_end:
-            out.append(trade)
     return out
 
 
@@ -230,8 +238,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     date_str = day_start.strftime("%Y-%m-%d")
 
     th, orders_raw, positions = _ledger_bundle()
-    trades = th.get("trades", []) or []
-    day_trades = _trades_in_day(trades, day_start, day_end)
+    day_trades = _day_trades(th, orders_raw, day_start, day_end)
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
     sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
     dca_buys = sum(
@@ -317,8 +324,7 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     day_end = day_start + timedelta(days=1)
 
     th, orders_raw, positions = _ledger_bundle()
-    trades = th.get("trades", []) or []
-    day_trades = _trades_in_day(trades, day_start, day_end)
+    day_trades = _day_trades(th, orders_raw, day_start, day_end)
 
     day_orders = _orders_in_day(orders_raw, day_start, day_end)
     filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
@@ -485,7 +491,13 @@ def main() -> None:
 
     bot_dir = args.bot_dir.resolve()
     report_date = datetime.strptime(args.date, "%Y-%m-%d") if args.date else datetime.now()
-    report = generate_report(bot_dir, report_date)
+    try:
+        report = generate_report(bot_dir, report_date)
+    except LedgerUnavailable as exc:
+        # #350: never write/send a zero report when the ledger could not be read.
+        banner = "!" * 72
+        print(f"{banner}\n{LEDGER_UNAVAILABLE_BANNER}\n{exc}\n{banner}", file=sys.stderr)
+        sys.exit(2)
 
     if args.stdout:
         print(report)
