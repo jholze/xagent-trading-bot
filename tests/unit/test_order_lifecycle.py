@@ -179,8 +179,9 @@ def test_filled_missing_twice_active_pending(monkeypatch):
 def test_timeout_then_found_via_fetch_open_orders(monkeypatch):
     adapter, ex, _ = _real_adapter(monkeypatch)
     key = str(uuid.uuid4())
+    clamped = GateExecutionAdapter._clamp_gate_client_order_id(key)
     ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
-    found = _closed(filled=0.25, oid="ex-found", extra={"clientOrderId": key})
+    found = _closed(filled=0.25, oid="ex-found", extra={"clientOrderId": clamped})
     ex.fetch_open_orders.return_value = [found]
     result = adapter.execute(_buy_order(key=key))
     assert result.executed
@@ -248,7 +249,8 @@ def test_buy_uses_create_market_buy_order_with_cost_and_text_uuid(monkeypatch):
     adapter, ex, _ = _real_adapter(monkeypatch)
     key = str(uuid.uuid4())
     ex.create_market_buy_order_with_cost.return_value = _closed(filled=0.25)
-    result = adapter.execute(_buy_order(key=key, usdt=25.0))
+    order = _buy_order(key=key, usdt=25.0)
+    result = adapter.execute(order)
     assert result.executed
     ex.create_market_buy_order.assert_not_called()
     ex.create_market_buy_order_with_cost.assert_called_once()
@@ -256,8 +258,12 @@ def test_buy_uses_create_market_buy_order_with_cost_and_text_uuid(monkeypatch):
     assert args[0] == SYMBOL
     assert float(args[1]) == pytest.approx(25.0)
     params = args[2] if len(args) > 2 else kwargs.get("params") or {}
-    assert params.get("text") == f"t-{key}"
-    uuid.UUID(str(params["text"])[2:])
+    text = str(params.get("text") or "")
+    payload = text[2:] if text.startswith("t-") else text
+    assert text == f"t-{payload}"
+    assert len(payload.encode("utf-8")) <= 28
+    assert len(text.encode("utf-8")) <= 28
+    assert order.client_order_id == payload
     assert "createMarketBuyOrderRequiresPrice" not in params
 
 
@@ -279,7 +285,11 @@ def test_idempotency_key_is_uuid_and_stable_across_retry(monkeypatch):
         args, kwargs = call
         params = args[2] if len(args) > 2 else kwargs.get("params") or {}
         texts.append(params.get("text"))
-    assert texts == [f"t-{key}", f"t-{key}"]
+    assert len(texts) == 2
+    assert texts[0] == texts[1]
+    payload = str(texts[0] or "")[2:]
+    assert len(payload.encode("utf-8")) <= 28
+    assert texts[0] == f"t-{order.client_order_id}"
 
 
 def _assert_create_not_resent(ex) -> None:

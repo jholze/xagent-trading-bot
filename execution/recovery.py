@@ -18,6 +18,7 @@ from core.models import OrderStatus, TradeOrder, TradeResult
 from core.operator_notify import notify_operator
 from core.stablecoins import STABLECOIN_BASES
 from core.tenant_context import tenant_context
+from execution.gate_adapter import _GATE_TEXT_ALLOWED, _clamp_gate_client_order_id
 from logger import log
 from strategies.positions import (
     DUST_AMOUNT_EPSILON,
@@ -514,6 +515,14 @@ def _needs_order_reconcile(order: dict) -> bool:
     return OrderStatus.try_legacy(order.get("status")) is OrderStatus.ACTIVE
 
 
+def _clamped_client_lookup(token: str) -> str:
+    """Gate payload for a stored client/idempotency key, or '' if we would mint."""
+    raw = str(token or "").strip()
+    if not raw or not any(ch in _GATE_TEXT_ALLOWED for ch in raw):
+        return ""
+    return _clamp_gate_client_order_id(raw)
+
+
 def _order_ids(order: dict) -> list[str]:
     execution = order.get("execution") if isinstance(order.get("execution"), dict) else {}
     ids = [
@@ -529,6 +538,12 @@ def _order_ids(order: dict) -> list[str]:
         if token and token not in seen:
             seen.add(token)
             out.append(token)
+    # Historical rows stored the unclamped uuid4; also try the Gate payload.
+    for raw in (order.get("client_order_id"), order.get("idempotency_key")):
+        clamped = _clamped_client_lookup(raw)
+        if clamped and clamped not in seen:
+            seen.add(clamped)
+            out.append(clamped)
     return out
 
 

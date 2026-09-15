@@ -340,6 +340,8 @@ class TradingService:
     ) -> TradeResult:
         from bus.writer_lease import require_lease_for_order
 
+        from execution.gate_adapter import _clamp_gate_client_order_id
+
         self.refresh()
         if order.type == "BUY":
             from strategies.positions import bind_buy_timeframe
@@ -350,7 +352,8 @@ class TradingService:
         idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
         if idem:
             order.idempotency_key = idem
-            order.client_order_id = idem
+            # Persist/send the Gate payload, not the raw uuid4 (#439 B1).
+            order.client_order_id = _clamp_gate_client_order_id(idem)
 
         try:
             require_lease_for_order()
@@ -412,7 +415,7 @@ class TradingService:
             approved_order = decision.order
             if idem:
                 approved_order.idempotency_key = idem
-                approved_order.client_order_id = idem
+                approved_order.client_order_id = _clamp_gate_client_order_id(idem)
             if ledger_id:
                 ledger.update_status(ledger_id, OrderStatus.ACTIVE, risk=ledger._risk_snapshot(decision))
                 approved_order.order_id = ledger_id
