@@ -217,6 +217,102 @@ def open_positions_summary(bot_dir: Path | None = None) -> tuple[int, float]:
     return 0, 0.0
 
 
+def trade_dedup_key(trade: dict) -> tuple:
+    """Identity of a fill across trade_history rows and filled-order rows.
+
+    History stores ``usdt_amount`` (BUY) / ``usdt_received`` (SELL) = ``Fill.quote_net``;
+    ``filled_order_to_trade`` maps ``execution.usdt`` (= ``TradeResult.usdt_amount`` =
+    the same ``quote_net``) to ``usdt_amount``. Rounded to cents so float noise
+    between the two write paths does not split one fill into two rows.
+    """
+    return (
+        str(trade.get("type") or "").upper(),
+        str(trade.get("symbol") or ""),
+        str(trade.get("timestamp") or "")[:19],
+        round(float(trade.get("usdt_amount") or trade.get("usdt_received") or 0), 2),
+    )
+
+
+def trade_order_id(trade: dict) -> str | None:
+    """Order id shared by both ledgers, or ``None``.
+
+    ``record_trade`` stores it as ``order_id``; ``filled_order_to_trade`` emits the
+    order's ``id`` as ``_order_id``. This is the exact identity of a fill — the
+    history and order stamps are two separate ``datetime.now()`` calls (before and
+    after the Mongo round-trip in ``link_execution_result``) and may land in
+    different seconds, so the fuzzy ``trade_dedup_key`` cannot be relied on when
+    an id is available.
+    """
+    oid = trade.get("order_id") or trade.get("_order_id")
+    return str(oid) if oid else None
+
+
+def merge_trades_with_filled_orders(
+    trades: list | None,
+    orders: list | None,
+    since: datetime,
+    until: datetime,
+) -> list[dict]:
+    """Trades in [since, until) from ``trades`` plus filled ``orders`` not already there.
+
+    Pure merge over already-loaded documents (no ledger I/O). Shared by the morning
+    briefing (``trades_in_window``) and the daily report (#350) so both show the
+    same fills when trade_history is empty or only partially synced.
+    """
+    out: list[dict] = []
+    for trade in trades or []:
+        ts_raw = trade.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = parse_ts(str(ts_raw))
+        except Exception:
+            continue
+        if since <= ts < until:
+            out.append(trade)
+
+    # Exact identity: order id present on both sides. Fuzzy (type/symbol/second/
+    # cents) only when one side has no id — legacy or manual history rows.
+    seen_ids: set[str] = set()
+    seen_keys_without_id: set[tuple] = set()
+    for t in out:
+        oid = trade_order_id(t)
+        if oid:
+            seen_ids.add(oid)
+        else:
+            seen_keys_without_id.add(trade_dedup_key(t))
+    seen_keys_all = {trade_dedup_key(t) for t in out}
+
+    for order in orders or []:
+        order_ts = _order_window_ts(order)
+        if order_ts is None or not (since <= order_ts < until):
+            continue
+        row = filled_order_to_trade(order)
+        if not row:
+            continue
+        try:
+            ts = parse_ts(str(row["timestamp"]))
+        except Exception:
+            continue
+        if not (since <= ts < until):
+            continue
+        key = trade_dedup_key(row)
+        oid = trade_order_id(row)
+        if oid:
+            if oid in seen_ids or key in seen_keys_without_id:
+                continue
+            seen_ids.add(oid)
+        else:
+            if key in seen_keys_all:
+                continue
+            seen_keys_without_id.add(key)
+        seen_keys_all.add(key)
+        out.append(row)
+
+    out.sort(key=lambda t: str(t.get("timestamp") or ""))
+    return out
+
+
 def trades_in_window(
     bot_dir: Path,
     since: datetime,
@@ -228,53 +324,11 @@ def trades_in_window(
     """
     th = load_trade_history_doc()
     trades = th.get("trades", []) or []
-    out: list[dict] = []
-    for trade in trades:
-        ts_raw = trade.get("timestamp")
-        if not ts_raw:
-            continue
-        try:
-            ts = parse_ts(str(ts_raw))
-        except Exception:
-            continue
-        if since <= ts < until:
-            out.append(trade)
-
     # Always merge filled orders so morning briefing works when history is empty
     # or only partially synced.
-    seen = set()
-    for t in out:
-        key = (
-            str(t.get("type") or "").upper(),
-            str(t.get("symbol") or ""),
-            str(t.get("timestamp") or "")[:19],
-            round(float(t.get("usdt_amount") or t.get("usdt_received") or 0), 2),
-        )
-        seen.add(key)
-
-    for order in orders_in_window(bot_dir, since, until):
-        row = filled_order_to_trade(order)
-        if not row:
-            continue
-        try:
-            ts = parse_ts(str(row["timestamp"]))
-        except Exception:
-            continue
-        if not (since <= ts < until):
-            continue
-        key = (
-            row["type"],
-            str(row.get("symbol") or ""),
-            str(row.get("timestamp") or "")[:19],
-            round(float(row.get("usdt_amount") or 0), 2),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(row)
-
-    out.sort(key=lambda t: str(t.get("timestamp") or ""))
-    return out
+    return merge_trades_with_filled_orders(
+        trades, orders_in_window(bot_dir, since, until), since, until
+    )
 
 
 def orders_in_window(
