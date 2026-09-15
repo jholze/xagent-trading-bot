@@ -12,6 +12,7 @@ import {
   LOGIN_ON_BOOT_VAR,
   KEEPALIVE_VAR,
   DEFAULT_REFRESH_MARGIN_MS,
+  XAI_UPSTREAM_ORIGIN,
 } from "../src/server.js";
 import { save, load } from "../src/credentials.js";
 import { credential, tmpDir, ACCESS, REFRESH, assertNoSecrets } from "./helpers.js";
@@ -70,11 +71,29 @@ async function serve(t, sidecar) {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => new Promise((r) => server.close(r)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  return async (method, p, headers = {}) => {
-    const res = await fetch(base + p, { method, headers });
+  return async (method, p, headers = {}, body = undefined) => {
+    const res = await fetch(base + p, { method, headers, body });
     const text = await res.text();
-    return { status: res.status, body: JSON.parse(text), text };
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    return { status: res.status, body: parsed, text, headers: res.headers };
   };
+}
+
+/** Recording upstream fake for the /v1 proxy. */
+function fakeUpstream(respond = () => new Response(JSON.stringify({ id: "resp_1", ok: true }), { status: 200, headers: { "content-type": "application/json" } })) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const r = respond(String(url), init);
+    if (r instanceof Error) throw r;
+    return r;
+  };
+  return { calls, fetchImpl };
 }
 
 test("flagOn: defaults and truthy spellings", () => {
@@ -316,4 +335,202 @@ test("keepalive: skipped while a login is running; startKeepalive honours XAI_AU
   assert.equal(on.startKeepalive(), false, "idempotent");
   assert.deepEqual(timers, [1234]);
   on.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2: /v1 proxy
+// ---------------------------------------------------------------------------
+
+test("proxy: 403 fail-closed when the trigger token is unset — nothing is forwarded", async (t) => {
+  const dir = await tmpDir(t);
+  await save(credential(), path.join(dir, "xai_oauth.json"));
+  const { oauth } = gatedOauth();
+  const { calls, fetchImpl } = fakeUpstream();
+  const { sidecar, logs } = makeSidecar(t, dir, { oauth, fetchImpl, env: { [TRIGGER_TOKEN_VAR]: "" } });
+  const call = await serve(t, sidecar);
+
+  const r = await call("POST", "/v1/chat/completions", { authorization: `Bearer ${TRIGGER}`, "content-type": "application/json" }, "{}");
+  assert.equal(r.status, 403);
+  assert.equal(r.body.error, "trigger_disabled");
+  assert.equal(calls.length, 0, "no upstream call without a configured trigger");
+  assert.equal((await call("GET", "/status")).body.proxy.enabled, false);
+  for (const l of logs) assertNoSecrets(assert, l);
+});
+
+test("proxy: 401 on missing/bad token; 405 on other methods; health/status/login are not proxied", async (t) => {
+  const dir = await tmpDir(t);
+  await save(credential(), path.join(dir, "xai_oauth.json"));
+  const { oauth } = gatedOauth();
+  const { calls, fetchImpl } = fakeUpstream();
+  const { sidecar } = makeSidecar(t, dir, { oauth, fetchImpl });
+  const call = await serve(t, sidecar);
+
+  assert.equal((await call("POST", "/v1/chat/completions", {}, "{}")).status, 401);
+  assert.equal((await call("GET", "/v1/models", { authorization: "Bearer wrong" })).status, 401);
+  assert.equal((await call("GET", "/v1/models", { "x-auth-token": "wrong" })).status, 401);
+  assert.equal((await call("PUT", "/v1/models", { authorization: `Bearer ${TRIGGER}` }, "{}")).status, 405);
+  assert.equal(calls.length, 0);
+
+  const health = await call("GET", "/health");
+  assert.equal(health.status, 200);
+  assert.equal(health.body.service, "xai-auth-sidecar");
+  assert.deepEqual(
+    { enabled: health.body.proxy.enabled, upstream: health.body.proxy.upstream, requests: health.body.proxy.requests, rejected: health.body.proxy.rejected },
+    { enabled: true, upstream: XAI_UPSTREAM_ORIGIN, requests: 4, rejected: 4 },
+  );
+  assert.equal((await call("GET", "/v1status")).status, 404, "prefix must match a path segment");
+  assert.equal(calls.length, 0, "health/status never reach the upstream");
+});
+
+test("proxy: 503 no_credential when the volume file is absent or unreadable", async (t) => {
+  const dir = await tmpDir(t);
+  const { oauth } = gatedOauth();
+  const { calls, fetchImpl } = fakeUpstream();
+  const { sidecar, logs } = makeSidecar(t, dir, { oauth, fetchImpl });
+  const call = await serve(t, sidecar);
+
+  const absent = await call("POST", "/v1/chat/completions", { authorization: `Bearer ${TRIGGER}` }, "{}");
+  assert.equal(absent.status, 503);
+  assert.deepEqual(absent.body, { ok: false, error: "no_credential" });
+
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path.join(dir, "xai_oauth.json"), `{"type":"oauth","access":"${ACCESS}"`, "utf8");
+  const broken = await call("GET", "/v1/models", { authorization: `Bearer ${TRIGGER}` });
+  assert.equal(broken.status, 503);
+  assert.equal(broken.body.error, "no_credential");
+
+  assert.equal(calls.length, 0, "never forwards without a credential");
+  assert.equal((await call("GET", "/status")).body.proxy.noCredential, 2);
+  for (const l of [...logs, absent.text, broken.text]) assertNoSecrets(assert, l);
+});
+
+test("proxy: happy path injects the stored access token, strips hop-by-hop + client auth, relays status/body, leaks nothing", async (t) => {
+  const dir = await tmpDir(t);
+  await save(credential({ expires: Date.now() + 3_600_000 }), path.join(dir, "xai_oauth.json"));
+  const { oauth } = gatedOauth();
+  const upstreamBody = JSON.stringify({ id: "resp_42", output: [{ type: "message", content: [{ text: "hi" }] }] });
+  const { calls, fetchImpl } = fakeUpstream(
+    () =>
+      new Response(upstreamBody, {
+        status: 201,
+        headers: {
+          "content-type": "application/json",
+          "x-ratelimit-remaining-requests": "99",
+          "content-encoding": "gzip",
+          connection: "close",
+          "transfer-encoding": "chunked",
+        },
+      }),
+  );
+  const { sidecar, logs } = makeSidecar(t, dir, { oauth, fetchImpl });
+  const call = await serve(t, sidecar);
+
+  const reqBody = JSON.stringify({ model: "grok-4", input: "ping" });
+  const r = await call(
+    "POST",
+    "/v1/responses?foo=bar",
+    {
+      authorization: `Bearer ${TRIGGER}`,
+      "x-auth-token": TRIGGER,
+      "content-type": "application/json",
+      "x-request-id": "abc-123",
+      connection: "keep-alive",
+      "accept-encoding": "gzip, br",
+    },
+    reqBody,
+  );
+
+  assert.equal(r.status, 201);
+  assert.equal(r.text, upstreamBody);
+  assert.equal(r.headers.get("content-type"), "application/json");
+  assert.equal(r.headers.get("x-ratelimit-remaining-requests"), "99");
+  assert.equal(r.headers.get("content-encoding"), null, "decoded body → no stale content-encoding");
+  assert.equal(r.headers.get("cache-control"), "no-store");
+
+  assert.equal(calls.length, 1);
+  const [{ url, init }] = calls;
+  assert.equal(url, `${XAI_UPSTREAM_ORIGIN}/v1/responses?foo=bar`);
+  assert.equal(init.method, "POST");
+  assert.equal(init.headers.authorization, `Bearer ${ACCESS}`, "stored access token injected");
+  assert.equal(init.headers["x-auth-token"], undefined, "client trigger header never forwarded");
+  assert.equal(init.headers["content-type"], "application/json");
+  assert.equal(init.headers["x-request-id"], "abc-123", "ordinary end-to-end headers pass through");
+  assert.equal(init.headers.connection, undefined, "hop-by-hop stripped");
+  assert.equal(init.headers.host, undefined);
+  assert.equal(init.headers["accept-encoding"], "identity");
+  assert.ok(!Object.values(init.headers).some((v) => String(v).includes(TRIGGER)), "trigger token never reaches xAI");
+  assert.equal(Buffer.from(init.body).toString("utf8"), reqBody);
+
+  const st = await call("GET", "/status");
+  assert.equal(st.body.proxy.requests, 1);
+  assert.equal(st.body.proxy.lastUpstreamStatus, 201);
+  assert.ok(logs.some((l) => /proxy: POST \/v1\/responses → 201/.test(l)));
+  for (const l of [...logs, st.text]) {
+    assertNoSecrets(assert, l);
+    assert.ok(!l.includes(TRIGGER), "trigger token never logged");
+  }
+});
+
+test("proxy: refreshes an expiring credential first and injects the NEW token; refresh failure → 503", async (t) => {
+  const dir = await tmpDir(t);
+  const p = path.join(dir, "xai_oauth.json");
+  const nowMs = Date.UTC(2026, 8, 15, 12, 0, 0);
+  await save(credential({ expires: nowMs + 60_000 }), p); // inside the 15-min margin
+  let failRefresh = false;
+  const oauth = {
+    refresh: async () => {
+      if (failRefresh) throw new Error(`invalid_grant ${REFRESH}`);
+      return credential({ access: "NEW_ACCESS_TOKEN_SUPER_SECRET_zzzzzzzz", refresh: "NEW_REFRESH_TOKEN_SUPER_SECRET_yyyyyyy", expires: nowMs + 3_600_000 });
+    },
+  };
+  const { calls, fetchImpl } = fakeUpstream();
+  const { sidecar, logs } = makeSidecar(t, dir, { oauth, fetchImpl, now: () => nowMs });
+  const call = await serve(t, sidecar);
+
+  const ok = await call("GET", "/v1/models", { authorization: `Bearer ${TRIGGER}` });
+  assert.equal(ok.status, 200);
+  assert.equal(calls[0].init.headers.authorization, "Bearer NEW_ACCESS_TOKEN_SUPER_SECRET_zzzzzzzz");
+  assert.equal((await load(p)).access, "NEW_ACCESS_TOKEN_SUPER_SECRET_zzzzzzzz", "refreshed credential persisted to the volume");
+
+  // Make the stored one expire again and let refresh fail.
+  await save(credential({ expires: nowMs + 60_000 }), p);
+  failRefresh = true;
+  const failed = await call("GET", "/v1/models", { authorization: `Bearer ${TRIGGER}` });
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.error, "refresh_failed");
+  assert.equal(calls.length, 1, "no upstream call with a stale token");
+
+  for (const l of logs) {
+    assertNoSecrets(assert, l);
+    assert.ok(!l.includes("NEW_ACCESS_TOKEN_SUPER_SECRET_zzzzzzzz"));
+    assert.ok(!l.includes("NEW_REFRESH_TOKEN_SUPER_SECRET_yyyyyyy"));
+  }
+});
+
+test("proxy: upstream unreachable → 502 upstream_unreachable; upstream 4xx/5xx are relayed verbatim", async (t) => {
+  const dir = await tmpDir(t);
+  await save(credential(), path.join(dir, "xai_oauth.json"));
+  const { oauth } = gatedOauth();
+  let mode = "down";
+  const { fetchImpl } = fakeUpstream(() => {
+    if (mode === "down") return new TypeError("fetch failed");
+    return new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429, headers: { "content-type": "application/json", "retry-after": "7" } });
+  });
+  const { sidecar, logs } = makeSidecar(t, dir, { oauth, fetchImpl });
+  const call = await serve(t, sidecar);
+
+  const down = await call("GET", "/v1/models", { authorization: `Bearer ${TRIGGER}` });
+  assert.equal(down.status, 502);
+  assert.deepEqual(down.body, { ok: false, error: "upstream_unreachable" });
+
+  mode = "429";
+  const limited = await call("GET", "/v1/models", { authorization: `Bearer ${TRIGGER}` });
+  assert.equal(limited.status, 429, "xAI's own status is passed through untouched");
+  assert.equal(limited.headers.get("retry-after"), "7");
+  assert.match(limited.body.error.message, /rate limited/);
+
+  const st = await call("GET", "/status");
+  assert.equal(st.body.proxy.upstreamErrors, 1);
+  assert.equal(st.body.proxy.lastUpstreamStatus, 429);
+  for (const l of [...logs, st.text]) assertNoSecrets(assert, l);
 });

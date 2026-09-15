@@ -11,13 +11,17 @@
  *   - optionally starts that login at boot when no credential exists
  *     (`XAI_AUTH_LOGIN_ON_BOOT=1`, default off),
  *   - keeps the stored session alive by refreshing it before expiry
- *     (`XAI_AUTH_KEEPALIVE`, default on) so it survives deploys on the volume.
- *
- * What it does NOT do (yet): proxy `/v1` for the Python bot. That is Phase 2,
- * after the probe results are on the issue.
+ *     (`XAI_AUTH_KEEPALIVE`, default on) so it survives deploys on the volume,
+ *   - Phase 2: proxies `GET|POST /v1/*` to `https://api.x.ai/v1/*` for the
+ *     Python bot (bearer `XAI_AUTH_TRIGGER_TOKEN`, same as `/login`). The
+ *     stored access token is refreshed if needed and injected here — it never
+ *     leaves this process. No credential → 503 `{error:"no_credential"}` so the
+ *     bot can fall back to its metered `XAI_API_KEY`.
  */
 import http from "node:http";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -40,11 +44,46 @@ export const LOGIN_ON_BOOT_VAR = "XAI_AUTH_LOGIN_ON_BOOT";
 export const KEEPALIVE_VAR = "XAI_AUTH_KEEPALIVE";
 export const KEEPALIVE_INTERVAL_VAR = "XAI_AUTH_KEEPALIVE_INTERVAL_MS";
 export const REFRESH_MARGIN_VAR = "XAI_AUTH_REFRESH_MARGIN_MS";
+export const PROXY_TIMEOUT_VAR = "XAI_AUTH_PROXY_TIMEOUT_MS";
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_KEEPALIVE_INTERVAL_MS = 5 * 60_000;
 /** Refresh once less than this remains (pi-ai's 5-min skew is already inside `expires`). */
 export const DEFAULT_REFRESH_MARGIN_MS = 15 * 60_000;
 export const MAX_BACKOFF_MS = 6 * 60 * 60_000;
+/** Upstream of the `/v1` proxy. Fixed on purpose: the access token goes to xAI and nowhere else. */
+export const XAI_UPSTREAM_ORIGIN = "https://api.x.ai";
+/** x_search calls can run long; the bot's own OpenAI client timeout is the tighter bound. */
+export const DEFAULT_PROXY_TIMEOUT_MS = 180_000;
+export const PROXY_PREFIX = "/v1";
+const PROXY_METHODS = new Set(["GET", "POST"]);
+/** RFC 7230 §6.1 hop-by-hop headers — never forwarded in either direction. */
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+/** Request headers that are replaced or recomputed by the proxy. */
+const REQUEST_HEADERS_DROPPED = new Set(["host", "authorization", "x-auth-token", "content-length", "accept-encoding"]);
+/** Response headers that no longer describe the body we relay (fetch has already decoded it). */
+const RESPONSE_HEADERS_DROPPED = new Set(["content-encoding", "content-length"]);
+
+function isProxyPath(pathname) {
+  return pathname === PROXY_PREFIX || pathname.startsWith(`${PROXY_PREFIX}/`);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
 
 export function flagOn(value, dflt = false) {
   if (value === undefined || value === null || String(value).trim() === "") return dflt;
@@ -105,20 +144,24 @@ export function createSidecar({
   setTimer = setInterval,
   clearTimer = clearInterval,
   repoRoot = undefined,
+  fetchImpl = globalThis.fetch,
 } = {}) {
   if (!credentialPath) throw new Error("createSidecar: credentialPath is required");
   if (typeof oauthFactory !== "function") throw new Error("createSidecar: oauthFactory is required");
 
   const keepaliveIntervalMs = positiveInt(env[KEEPALIVE_INTERVAL_VAR], DEFAULT_KEEPALIVE_INTERVAL_MS);
   const refreshMarginMs = positiveInt(env[REFRESH_MARGIN_VAR], DEFAULT_REFRESH_MARGIN_MS);
+  const proxyTimeoutMs = positiveInt(env[PROXY_TIMEOUT_VAR], DEFAULT_PROXY_TIMEOUT_MS);
   const keepaliveEnabled = flagOn(env[KEEPALIVE_VAR], true);
   const loginOnBoot = flagOn(env[LOGIN_ON_BOOT_VAR], false);
+  const triggerEnabled = Boolean(typeof env[TRIGGER_TOKEN_VAR] === "string" && env[TRIGGER_TOKEN_VAR].trim());
 
   let knownSecrets = [];
   const remember = (list) => {
     knownSecrets = [...new Set([...knownSecrets, ...list.filter((s) => typeof s === "string" && s.length > 0)])];
   };
   remember(secretsFrom(null, env));
+  if (triggerEnabled) remember([env[TRIGGER_TOKEN_VAR].trim()]);
   const redact = (s) => redactText(String(s ?? ""), knownSecrets);
   const safeLog = (m) => log(redact(m));
   const notify = async (text) => {
@@ -137,6 +180,7 @@ export function createSidecar({
 
   const login = { running: false, startedAt: null, finishedAt: null, lastResult: null, lastError: null };
   const keepalive = { enabled: keepaliveEnabled, failures: 0, backoffUntil: 0, lastRefreshAt: null, lastError: null, timer: undefined };
+  const proxy = { requests: 0, rejected: 0, noCredential: 0, upstreamErrors: 0, lastUpstreamStatus: null, lastAt: null };
 
   async function status() {
     const nowMs = now();
@@ -148,9 +192,10 @@ export function createSidecar({
       credential,
       login: { running: login.running, startedAt: login.startedAt, finishedAt: login.finishedAt, lastResult: login.lastResult, lastError: login.lastError },
       keepalive: { enabled: keepalive.enabled, intervalMs: keepaliveIntervalMs, refreshMarginMs, failures: keepalive.failures, lastRefreshAt: keepalive.lastRefreshAt, lastError: keepalive.lastError },
+      proxy: { enabled: triggerEnabled, upstream: XAI_UPSTREAM_ORIGIN, timeoutMs: proxyTimeoutMs, ...proxy },
       loginOnBoot,
       telegram: { configured: typeof notifyOperator === "function" },
-      triggerEnabled: Boolean(typeof env[TRIGGER_TOKEN_VAR] === "string" && env[TRIGGER_TOKEN_VAR].trim()),
+      triggerEnabled,
     };
   }
 
@@ -253,9 +298,95 @@ export function createSidecar({
     res.end(payload);
   }
 
+  /**
+   * Phase 2: relay one `/v1/*` call to xAI with the kept-alive subscription token.
+   * Fail-closed on auth (403 unset / 401 mismatch), 503 without a usable
+   * credential, 502 when xAI is unreachable. Bodies are streamed back as-is.
+   */
+  async function proxyToXai(req, res, url) {
+    proxy.requests += 1;
+    proxy.lastAt = new Date(now()).toISOString();
+    if (!PROXY_METHODS.has(req.method)) {
+      proxy.rejected += 1;
+      return sendJson(res, 405, { ok: false, error: "method_not_allowed" });
+    }
+    const auth = triggerAuthorized(req.headers, env);
+    if (!auth.ok) {
+      proxy.rejected += 1;
+      if (auth.reason === "disabled") {
+        return sendJson(res, 403, { ok: false, error: "trigger_disabled", detail: `set ${TRIGGER_TOKEN_VAR} on the sidecar service` });
+      }
+      return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    }
+
+    let cred;
+    try {
+      cred = await loadImpl(credentialPath);
+    } catch (err) {
+      proxy.noCredential += 1;
+      if (err?.code !== "ENOENT") safeLog(`proxy: credential unreadable: ${err?.message ?? err}`);
+      return sendJson(res, 503, { ok: false, error: "no_credential" });
+    }
+    remember(secretsFrom(cred));
+    try {
+      cred = await ensureFreshImpl(cred, oauthFactory(), { nowMs: now(), marginMs: refreshMarginMs, credentialPath, persist, repoRoot });
+      remember(secretsFrom(cred));
+    } catch (err) {
+      proxy.noCredential += 1;
+      safeLog(`proxy: refresh before ${req.method} ${url.pathname} failed: ${err?.message ?? err}`);
+      return sendJson(res, 503, { ok: false, error: "refresh_failed" });
+    }
+
+    const headers = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      const key = name.toLowerCase();
+      if (HOP_BY_HOP_HEADERS.has(key) || REQUEST_HEADERS_DROPPED.has(key) || value === undefined) continue;
+      headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
+    }
+    headers.authorization = `Bearer ${cred.access}`;
+    headers["accept-encoding"] = "identity";
+    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const target = `${XAI_UPSTREAM_ORIGIN}${url.pathname}${url.search}`;
+
+    const started = now();
+    let upstream;
+    try {
+      upstream = await fetchImpl(target, {
+        method: req.method,
+        headers,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(proxyTimeoutMs),
+      });
+    } catch (err) {
+      proxy.upstreamErrors += 1;
+      safeLog(`proxy: ${req.method} ${url.pathname} upstream error: ${err?.name ?? ""} ${err?.message ?? err}`);
+      return sendJson(res, 502, { ok: false, error: "upstream_unreachable" });
+    }
+
+    proxy.lastUpstreamStatus = upstream.status;
+    const outHeaders = { "cache-control": "no-store" };
+    upstream.headers.forEach((value, name) => {
+      const key = name.toLowerCase();
+      if (HOP_BY_HOP_HEADERS.has(key) || RESPONSE_HEADERS_DROPPED.has(key) || key === "cache-control") return;
+      outHeaders[key] = value;
+    });
+    safeLog(`proxy: ${req.method} ${url.pathname} → ${upstream.status} (${now() - started} ms)`);
+    res.writeHead(upstream.status, outHeaders);
+    if (!upstream.body) return res.end();
+    try {
+      await pipeline(Readable.fromWeb(upstream.body), res);
+    } catch (err) {
+      // client went away or upstream stream broke mid-body; headers are already sent
+      safeLog(`proxy: ${req.method} ${url.pathname} relay aborted: ${err?.message ?? err}`);
+      res.destroy();
+    }
+  }
+
   async function handleRequest(req, res) {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
+      if (isProxyPath(url.pathname)) return await proxyToXai(req, res, url);
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/status" || url.pathname === "/")) {
         return sendJson(res, 200, await status());
       }
@@ -333,7 +464,7 @@ export async function main(env = process.env) {
 
   const st = await sidecar.status();
   const tg = telegramConfigFrom(env);
-  log(`listening on :${port} (GET /health, GET /status, POST /login)`);
+  log(`listening on :${port} (GET /health, GET /status, POST /login, GET|POST /v1/* → ${XAI_UPSTREAM_ORIGIN})`);
   log(`credential path: ${credentialPath}`);
   log(
     st.credential.present
@@ -341,7 +472,7 @@ export async function main(env = process.env) {
       : `no credential yet${st.credential.error ? ` (${st.credential.error})` : ""} — trigger a login via POST /login, /xai_login or \`npm run login\``,
   );
   log(tg ? `operator Telegram: chat ${tg.chatId}` : "operator Telegram: off (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unset)");
-  log(`login trigger: ${st.triggerEnabled ? "enabled" : `disabled (set ${TRIGGER_TOKEN_VAR})`}; keepalive: ${st.keepalive.enabled ? `every ${st.keepalive.intervalMs} ms` : "off"}`);
+  log(`login trigger + /v1 proxy: ${st.triggerEnabled ? "enabled" : `disabled (set ${TRIGGER_TOKEN_VAR})`}; keepalive: ${st.keepalive.enabled ? `every ${st.keepalive.intervalMs} ms` : "off"}`);
 
   sidecar.startKeepalive();
   await sidecar.bootLoginIfNeeded();

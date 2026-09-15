@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from intelligence.xai_auth import XaiEndpoint, fallback_endpoint_after, resolve_xai_endpoint
 from logger import log
 
 load_dotenv()
@@ -13,11 +14,28 @@ load_dotenv()
 DEFAULT_MODEL = os.getenv("GROK_MODEL", "grok-4")
 
 
-def _client() -> OpenAI:
+def _client(endpoint: XaiEndpoint | None = None) -> OpenAI:
+    """OpenAI-compatible client for xAI: sidecar `/v1` + trigger token when
+    `XAI_USE_SUBSCRIPTION` is on and configured, else api.x.ai + `XAI_API_KEY` (#397)."""
+    ep = endpoint or resolve_xai_endpoint()
     return OpenAI(
-        api_key=os.getenv("XAI_API_KEY"),
-        base_url="https://api.x.ai/v1",
+        api_key=ep.api_key or None,
+        base_url=ep.base_url,
     )
+
+
+def _responses_create(endpoint: XaiEndpoint, **kwargs):
+    """`responses.create` on `endpoint`; via the sidecar it is repeated once on
+    `XAI_API_KEY` when the sidecar answers 401/403/503 or is unreachable."""
+    try:
+        return _client(endpoint).responses.create(**kwargs)
+    except Exception as e:
+        direct = fallback_endpoint_after(e, endpoint, context="grok_x_search")
+        if direct is None:
+            raise
+        if not direct.api_key:
+            raise
+        return _client(direct).responses.create(**kwargs)
 
 
 def _extract_response_text(response) -> str:
@@ -59,8 +77,9 @@ def fetch_posts_from_handle(
     if not handle:
         return []
 
-    api_key = os.getenv("XAI_API_KEY")
-    if not api_key:
+    endpoint = resolve_xai_endpoint()
+    if not endpoint.api_key:
+        # flag off (or sidecar not configured) and no metered key → nothing to call with
         log("XAI_API_KEY not set — cannot use Grok X Search", "WARNING")
         return []
 
@@ -79,7 +98,8 @@ def fetch_posts_from_handle(
     )
 
     try:
-        response = _client().responses.create(
+        response = _responses_create(
+            endpoint,
             model=model,
             input=[{"role": "user", "content": prompt}],
             tools=[{

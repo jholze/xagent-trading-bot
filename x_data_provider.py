@@ -162,7 +162,11 @@ class MockXProvider(XDataProvider):
 
 
 class GrokXSearchProvider(XDataProvider):
-    """Fetch X posts via xAI Grok x_search tool — uses XAI_API_KEY only."""
+    """Fetch X posts via xAI Grok x_search tool — no X API bearer token.
+
+    Auth follows ``grok_x_search.fetch_posts_from_handle``: ``XAI_API_KEY``, or the
+    SuperGrok sidecar when ``XAI_USE_SUBSCRIPTION=1`` (#397, ``intelligence/xai_auth.py``).
+    """
 
     def __init__(self, config: dict = None):
         cfg = config or get_config()
