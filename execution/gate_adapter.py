@@ -52,6 +52,42 @@ def _clamp_gate_client_order_id(key: str) -> str:
     return legal
 
 
+_CANCEL_STATUS = frozenset({"canceled", "cancelled"})
+_CANCEL_FINISH_AS = frozenset({"cancelled", "canceled"})
+
+
+def _ccxt_status_token(raw: dict) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("status") or "").strip().lower()
+
+
+def _finish_as_from_raw(raw: dict) -> str:
+    """Case-insensitive Gate ``finish_as`` from ccxt nested ``info``. Empty if absent."""
+    if not isinstance(raw, dict):
+        return ""
+    info = raw.get("info")
+    if not isinstance(info, dict):
+        return ""
+    return str(info.get("finish_as") or "").strip().lower()
+
+
+def _canceled_or_rejected_status(raw: dict) -> OrderStatus | None:
+    """Map ccxt ``status`` and optional Gate ``finish_as`` to a terminal status.
+
+    Missing ``finish_as`` is the status-only path: it is never treated as canceled.
+    """
+    token = _ccxt_status_token(raw)
+    finish_as = _finish_as_from_raw(raw)
+    if token in _CANCEL_STATUS or finish_as in _CANCEL_FINISH_AS:
+        return OrderStatus.CANCELED
+    if token == "rejected":
+        return OrderStatus.REJECTED
+    if token == "expired":
+        return OrderStatus.CANCELED
+    return None
+
+
 class GateExecutionAdapter(ExecutionAdapter):
     """Gate.io Spot execution via ccxt.
 
@@ -1552,7 +1588,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         return notional / qty
 
     def _exchange_status_token(self, raw: dict) -> str:
-        return str((raw or {}).get("status") or "").strip().lower()
+        return _ccxt_status_token(raw)
+
+    def _gate_finish_as(self, raw: dict) -> str:
+        return _finish_as_from_raw(raw)
 
     def _rejected_result(self, order: TradeOrder, message: str) -> TradeResult:
         return TradeResult(
@@ -1590,14 +1629,32 @@ class GateExecutionAdapter(ExecutionAdapter):
         )
 
     def _canceled_or_rejected_exchange(self, raw: dict) -> OrderStatus | None:
+        return _canceled_or_rejected_status(raw)
+
+    def _terminal_no_fill_result(
+        self, order: TradeOrder, raw: dict, terminal: OrderStatus
+    ) -> TradeResult:
         token = self._exchange_status_token(raw)
-        if token in ("canceled", "cancelled"):
-            return OrderStatus.CANCELED
-        if token == "rejected":
-            return OrderStatus.REJECTED
-        if token == "expired":
-            return OrderStatus.CANCELED
-        return None
+        finish_as = self._gate_finish_as(raw)
+        if finish_as:
+            message = f"exchange {token or 'unset'} finish_as={finish_as}"
+        else:
+            message = f"exchange {token}"
+        order.status = terminal
+        order.exchange_order_id = str(raw.get("id") or "")
+        order.order_exist_in_exchange = self._places_on_exchange()
+        return TradeResult(
+            False,
+            order.type,
+            order.symbol,
+            message=message,
+            order_id=order.order_id,
+            exchange_order_id=order.exchange_order_id,
+            order_status=terminal,
+            pending=False,
+            needs_reconcile=False,
+            order_exist_in_exchange=order.order_exist_in_exchange,
+        )
 
     def _fill_or_unknown_fee(
         self,
@@ -1649,24 +1706,17 @@ class GateExecutionAdapter(ExecutionAdapter):
         raw = raw if isinstance(raw, dict) else {}
         terminal = self._canceled_or_rejected_exchange(raw)
         exist = self._places_on_exchange() and bool(raw.get("id") or terminal is None and raw)
-        if terminal is OrderStatus.CANCELED or terminal is OrderStatus.REJECTED:
-            order.status = terminal
-            order.exchange_order_id = str(raw.get("id") or "")
-            order.order_exist_in_exchange = self._places_on_exchange()
-            return TradeResult(
-                False,
-                order.type,
-                order.symbol,
-                message=f"exchange {self._exchange_status_token(raw)}",
-                order_id=order.order_id,
-                exchange_order_id=order.exchange_order_id,
-                order_status=terminal,
-                order_exist_in_exchange=order.order_exist_in_exchange,
-            )
+        if terminal is OrderStatus.REJECTED:
+            return self._terminal_no_fill_result(order, raw, terminal)
 
+        # Cancel with a remainder fill must not return before _ensure_filled /
+        # portfolio. Zero-fill cancel (status or finish_as) stays CANCELED.
         raw = self._ensure_filled(exchange, raw, order, lookup_symbol=lookup_symbol)
+        terminal = self._canceled_or_rejected_exchange(raw)
         filled_raw = raw.get("filled")
         if filled_raw is None:
+            if terminal is OrderStatus.CANCELED or terminal is OrderStatus.REJECTED:
+                return self._terminal_no_fill_result(order, raw, terminal)
             return self._active_reconcile_result(
                 order, "filled missing after fetch_order", exist=exist, raw=raw
             )
@@ -1674,13 +1724,27 @@ class GateExecutionAdapter(ExecutionAdapter):
         filled = float(filled_raw)
         requested = float(qty or order.qty or 0)
         ex_status = self._exchange_status_token(raw)
+        finish_as = self._gate_finish_as(raw)
+
+        if terminal is OrderStatus.CANCELED and filled <= 0:
+            return self._terminal_no_fill_result(order, raw, terminal)
+
+        remainder_canceled = terminal is OrderStatus.CANCELED and filled > 0
 
         need_average = False
         status: OrderStatus | None = None
         closed = ex_status in ("closed", "filled")
-        if closed and filled > 0:
+        if remainder_canceled:
+            # Same portfolio path as PARTIALLY_FILLED; stamped CANCELED after book.
+            status = OrderStatus.PARTIALLY_FILLED
+            need_average = True
+        elif finish_as == "open" and filled > 0:
+            status = OrderStatus.PARTIALLY_FILLED
+            need_average = True
+        elif closed and filled > 0:
             # USDT market buys estimate qty from the request price; the
             # actual fill is smaller after spread/slippage. Closed is final.
+            # finish_as in (filled, ioc) keeps this EXECUTED path (#340).
             status = OrderStatus.EXECUTED
             need_average = True
         elif 0 < filled < requested:
@@ -1801,7 +1865,21 @@ class GateExecutionAdapter(ExecutionAdapter):
             result.message = (
                 f"Gate {order.type} {tag} {filled:.6f} @ {format_usdt_price(fill_price)}"
             )
-        if fee_unknown:
+        if remainder_canceled:
+            order.status = OrderStatus.CANCELED
+            result.order_status = OrderStatus.CANCELED
+            result.pending = False
+            if not fee_unknown:
+                result.needs_reconcile = False
+            from price_fetcher import format_usdt_price
+
+            result.message = (
+                f"Gate {order.type} canceled remainder filled {filled:.6f} "
+                f"@ {format_usdt_price(fill_price)}"
+            )
+            if fee_unknown:
+                result.message = (result.message or "") + " (fee_unknown)"
+        elif fee_unknown:
             result.message = (result.message or "") + " (fee_unknown)"
         return result
 
