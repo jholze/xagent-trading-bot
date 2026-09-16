@@ -325,3 +325,38 @@ class TestOperatorOnlySet:
 
         assert t("command_operator_only", lang="de") == "⛔ Nur Operator."
         assert t("command_operator_only", lang="en") == "⛔ Operator only."
+
+    def test_config_and_config_revert_are_gated(self):
+        assert "config" in router.OPERATOR_ONLY
+        assert "config revert" in router.OPERATOR_ONLY
+        assert router._is_operator_only_text("/config")
+        assert router._is_operator_only_text("/config diff")
+        assert router._is_operator_only_text("/config revert 1")
+        assert router._is_operator_only_callback("config_ok:tok")
+        assert router._is_operator_only_callback("config_no:tok")
+
+
+class TestConfigOperatorOnly:
+    """#330 slice 2: /config is operator-only on typed and callback paths."""
+
+    def test_typed_config_denied_for_satellite(self, tg, multi_tenant, as_chat, handler_spy):
+        as_chat(SATELLITE_CHAT)
+        for cmd in ("/config", "/config diff", "/config diff 1", "/config revert 1"):
+            handler_spy.clear()
+            tg.clear()
+            assert router.dispatch_command(cmd) is True
+            assert handler_spy == [], f"{cmd} reached a handler for a satellite chat"
+            assert DENY_TEXT in tg[0]["text"]
+
+    def test_typed_config_allowed_for_operator(self, tg, multi_tenant, as_chat, handler_spy):
+        as_chat(OPERATOR_CHAT)
+        assert router.dispatch_command("/config") is True
+        assert handler_spy == ["/config"]
+
+    def test_config_callback_denied_for_satellite(self, tg, multi_tenant):
+        cb = {"id": "cq", "data": "config_ok:tok", "message": {"chat": {"id": int(SATELLITE_CHAT)}}}
+        with patch.object(router.config_commands, "handle_callback") as cfg_cb, patch.object(
+            router, "answer_callback_query"
+        ):
+            assert router.dispatch_callback(cb) is True
+        cfg_cb.assert_not_called()
