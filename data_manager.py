@@ -822,6 +822,54 @@ def reload_config(tenant_id: str | None = None):
     return load_config()
 
 
+def _load_previous_default_config() -> dict | None:
+    """Persisted default-tenant body, or ``None`` when ``config.json`` is absent."""
+    from storage.config_history import ConfigSnapshotError
+
+    path = "config.json"
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        log(f"config snapshot: cannot read previous {path}: {e}", "ERROR")
+        raise ConfigSnapshotError(f"cannot read previous config.json: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigSnapshotError(
+            f"previous config.json is not an object: {type(data).__name__}"
+        )
+    return data
+
+
+def _load_previous_tenant_config(tid: str, default_cfg: dict) -> dict | None:
+    """Persisted tenant body from Mongo, or ``None`` if no document yet."""
+    from storage.config_history import ConfigSnapshotError
+
+    try:
+        return _load_tenant_config_body(tid, default_cfg)
+    except Exception as e:
+        log(f"config snapshot: cannot read previous tenant {tid} config: {e}", "ERROR")
+        raise ConfigSnapshotError(
+            f"cannot read previous tenant {tid} config: {e}"
+        ) from e
+
+
+def _snapshot_previous_or_raise(previous: dict | None, tenant_id: str) -> None:
+    """Take a snapshot of ``previous`` or fail closed (do not write the new config)."""
+    from storage.config_history import ConfigSnapshotError, record_snapshot
+
+    try:
+        record_snapshot(previous, tenant_id=tenant_id)
+    except ConfigSnapshotError:
+        raise
+    except Exception as e:
+        log(f"config snapshot failed for tenant {tenant_id}: {e}", "ERROR")
+        raise ConfigSnapshotError(
+            f"config snapshot failed for tenant {tenant_id}: {e}"
+        ) from e
+
+
 def save_config(config, tenant_id: str | None = None):
     """Persist ``config`` for the resolved tenant.
 
@@ -829,6 +877,10 @@ def save_config(config, tenant_id: str | None = None):
     write on both paths (default → ``config.json``, tenant → Mongo via
     ``tenant_meta_store``). An out-of-bounds value raises
     :class:`core.config_guardrails.ConfigValidationError` and nothing is written.
+
+    Versioning (#330 slice 2): the previous document is snapshotted under
+    ``data/config_history/`` before the new body is written. Snapshot failure
+    fails closed (raises, nothing written).
 
     Tenant path replaces the **whole** stored body with ``config``. Callers
     that start from ``get_config()`` (the merged operator+tenant view) must
@@ -838,37 +890,43 @@ def save_config(config, tenant_id: str | None = None):
     global _config_cache
     from core.config_guardrails import validate_config_for_save
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
+    from storage.config_history import config_write_lock
     validate_config_for_save(config)
     tid = resolve_tenant_id(tenant_id)
-    if tid != DEFAULT_TENANT:
-        default_cfg = _load_default_config_from_disk()
+    with config_write_lock():
+        if tid != DEFAULT_TENANT:
+            default_cfg = _load_default_config_from_disk()
+            try:
+                use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+            except Exception:
+                use_mongo = False
+            if not use_mongo:
+                # No tenant config store on this backend: nothing was written,
+                # so do not report success (#456).
+                log(f"save_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
+                return False
+            previous = _load_previous_tenant_config(tid, default_cfg)
+            _snapshot_previous_or_raise(previous, tid)
+            try:
+                from storage import tenant_meta_store as _tms
+                ok = _tms.save_tenant_config(tid, config, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
+                if ok:
+                    # do not touch the default cache
+                    return True
+                return False
+            except Exception as e:
+                log(f"Failed tenant_meta_store save_tenant_config for {tid}: {e}", "WARNING")
+                return False
+        # default
+        previous = _load_previous_default_config()
+        _snapshot_previous_or_raise(previous, tid)
+        path = "config.json"
         try:
-            use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
+            atomic_write_json(path, config)
+            _config_cache = None
+            return True
         except Exception:
-            use_mongo = False
-        if not use_mongo:
-            # No tenant config store on this backend: nothing was written,
-            # so do not report success (#456).
-            log(f"save_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
             return False
-        try:
-            from storage import tenant_meta_store as _tms
-            ok = _tms.save_tenant_config(tid, config, default_cfg=default_cfg, test=_mongo_test_mode(default_cfg))
-            if ok:
-                # do not touch the default cache
-                return True
-            return False
-        except Exception as e:
-            log(f"Failed tenant_meta_store save_tenant_config for {tid}: {e}", "WARNING")
-            return False
-    # default
-    path = "config.json"
-    try:
-        atomic_write_json(path, config)
-        _config_cache = None
-        return True
-    except Exception:
-        return False
 
 
 def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
