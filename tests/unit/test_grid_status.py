@@ -84,6 +84,42 @@ class TestGridStatus(unittest.TestCase):
         self.assertIn("BTC/USDT", msg)
         self.assertIn("Grid", msg)
 
+    @patch("storage.grid_plan_store.load_grid_plans_document")
+    @patch("services.grid_status_service.tail_jsonl")
+    @patch("services.grid_status_service.load_effective_watchlist")
+    @patch("services.grid_status_service.get_config")
+    @patch("services.grid_status_service.resolve_coin_config")
+    def test_build_report_sees_mongo_only_plan(
+        self, mock_resolve, mock_cfg, mock_wl, mock_tail, mock_mongo
+    ):
+        mock_wl.return_value = [
+            {"symbol": "BTC/USDT", "timeframe": "4h", "active": True},
+        ]
+        mock_cfg.return_value = {
+            "grid": {"enabled": True},
+            "strategy_allocator": {"enabled": True},
+            "regime_detector": {"enabled": True},
+        }
+        mock_mongo.return_value = {
+            "plans": {
+                "BTC/USDT_4h": {
+                    "center_price": 100000,
+                    "spacing": 500,
+                    "levels": [{}, {}],
+                }
+            }
+        }
+        mock_resolve.side_effect = lambda c: dict(c)
+        mock_tail.return_value = []
+
+        report = build_grid_status_report()
+        self.assertEqual(report["watchlist_active"], 1)
+        self.assertIn("tracking", report["by_mode"])
+        row = report["by_mode"]["tracking"][0]
+        self.assertEqual(row.symbol, "BTC/USDT")
+        self.assertEqual(row.center_price, 100000.0)
+        self.assertEqual(row.open_levels, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
