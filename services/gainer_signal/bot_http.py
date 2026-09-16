@@ -404,7 +404,9 @@ def process_gainer_signal(
     if cfg.get("default_usdt"):
         max_usdt = float(cfg["default_usdt"])
 
-    # Coin-facts memory gate (best-effort; fail-open if no flags)
+    # Coin-facts memory gate. Fail-open only when the policy itself says "no flags"
+    # (verdict.allow=True); an exception in the gate is fail-closed (#424) — otherwise
+    # the order would be placed at full max_usdt with memory_size_mult=1.0.
     memory_size_mult = 1.0
     memory_reason = ""
     try:
@@ -437,7 +439,16 @@ def process_gainer_signal(
         memory_size_mult = float(verdict.size_mult or 1.0)
         memory_reason = verdict.reason or ""
     except Exception as e:
-        log(f"gainer_entry memory gate skip {sym}: {e}", "DEBUG")
+        why = f"memory_gate_error:{type(e).__name__}"
+        log(f"gainer_entry memory gate fail-closed {sym}: {e!r}", "WARNING")
+        if is_relvol:
+            return _relvol_reject(sym, "blocked_memory_unavailable", reject_reason=why)
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "blocked_memory_unavailable",
+            "reject_reason": why,
+        }, 409
 
     usdt = float(max_usdt) * max(0.0, min(1.0, memory_size_mult))
     if is_relvol:

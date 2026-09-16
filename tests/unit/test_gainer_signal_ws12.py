@@ -242,6 +242,76 @@ class TestPureBoard(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(body["message"], "blocked_coin_facts")
 
+    def test_memory_gate_exception_fail_closed(self):
+        """#424: memory gate raises -> 409, no order (was: swallowed, size 1.0)."""
+        exec_fn = MagicMock()
+        with patch(
+            "strategies.sensor_entry_memory.apply_sensor_memory_entry_policy",
+            side_effect=RuntimeError("memory backend down"),
+        ):
+            body, status = process_gainer_signal(
+                {
+                    "symbol": "MEM/USDT",
+                    "last": 1.0,
+                    "quote_vol": 5e6,
+                    "eligible": True,
+                    "rank": 2,
+                    "pct_24h": 20,
+                },
+                config={
+                    "gainer_entry": {"enabled": True, "require_de_confirm": False},
+                    "memory": {"enabled": True},
+                },
+                positions=[],
+                gainer_buys_today=0,
+                execute_buy=exec_fn,
+            )
+        self.assertEqual(status, 409, body)
+        self.assertFalse(body["ok"])
+        self.assertFalse(body["executed"])
+        self.assertEqual(body["message"], "blocked_memory_unavailable")
+        self.assertEqual(body["reject_reason"], "memory_gate_error:RuntimeError")
+        exec_fn.assert_not_called()
+
+    def test_memory_gate_exception_fail_closed_relvol(self):
+        """#424 RelVol path: memory gate raises -> _relvol_reject 409, no order."""
+        exec_fn = MagicMock()
+        with patch(
+            "strategies.sensor_entry_memory.apply_sensor_memory_entry_policy",
+            side_effect=RuntimeError("memory backend down"),
+        ):
+            body, status = process_gainer_signal(
+                {
+                    "symbol": "MEM/USDT",
+                    "last": 1.0,
+                    "quote_vol": 200_000,
+                    "qvol_1h": 100_000,
+                    "pct_24h": 12,
+                    "source": "gainer_relvol",
+                    "trigger": "relvol_ws",
+                },
+                config={
+                    "gainer_relvol_shadow": {
+                        "enabled": True,
+                        "mode": "trade",
+                        "max_open": 4,
+                        "max_buys_per_day": 8,
+                        "require_de_confirm": False,
+                    },
+                    "gainer_entry": {"enabled": False},
+                    "max_usdt_per_trade": 500,
+                },
+                positions=[],
+                gainer_buys_today=0,
+                execute_buy=exec_fn,
+            )
+        self.assertEqual(status, 409, body)
+        self.assertFalse(body["executed"])
+        self.assertEqual(body["message"], "blocked_memory_unavailable")
+        self.assertEqual(body["symbol"], "MEM/USDT")
+        self.assertEqual(body["reject_reason"], "memory_gate_error:RuntimeError")
+        exec_fn.assert_not_called()
+
     def test_caps(self):
         ok, reason = check_gainer_entry_caps(open_gainer_count=3, gainer_buys_today=0)
         self.assertFalse(ok)
