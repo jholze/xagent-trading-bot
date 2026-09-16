@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -12,6 +13,28 @@ from urllib.request import Request, urlopen
 from intelligence.memory.event_ingest import ingest_news_item
 from intelligence.memory.store import MemoryStore
 from logger import log
+
+# #464: CryptoCompare news requires an API key (unkeyed → HTTP 401). Read from env only.
+CRYPTOCOMPARE_API_KEY_ENV = "CRYPTOCOMPARE_API_KEY"
+CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
+# Count markers surfaced in poll counts / Hermes `last_news` instead of a silent 0.
+SKIPPED_NO_KEY = "skipped_no_key"
+SKIPPED_NO_ENDPOINT = "skipped_no_endpoint"
+
+_LOGGED_ONCE: set[str] = set()
+
+
+def _log_once(key: str, msg: str, level: str = "INFO") -> None:
+    """Log a skip reason once per process — the poller runs every cycle."""
+    if key in _LOGGED_ONCE:
+        return
+    _LOGGED_ONCE.add(key)
+    log(msg, level)
+
+
+def cryptocompare_api_key() -> str:
+    return (os.environ.get(CRYPTOCOMPARE_API_KEY_ENV) or "").strip()
+
 
 DEFAULT_RSS = [
     "https://cointelegraph.com/rss",
@@ -26,7 +49,7 @@ FREE_CRYPTO_NEWS_FEEDS = [
 ]
 
 
-def _http_get(url: str, timeout: float = 15.0) -> bytes:
+def _http_get(url: str, timeout: float = 15.0, headers: dict[str, str] | None = None) -> bytes:
     import ssl
 
     req = Request(
@@ -34,6 +57,7 @@ def _http_get(url: str, timeout: float = 15.0) -> bytes:
         headers={
             "User-Agent": "xagent-memory/1.0 (+trading-bot; research)",
             "Accept": "application/json, application/rss+xml, text/xml, */*",
+            **(headers or {}),
         },
     )
     ctx = None
@@ -91,10 +115,22 @@ def fetch_rss_items(feed_url: str, limit: int = 20) -> list[dict[str, str]]:
     return items
 
 
-def fetch_cryptocompare_news(limit: int = 20) -> list[dict[str, str]]:
-    """CryptoCompare free news (no API key for basic feed). CoinGecko status_updates is 404."""
+def fetch_cryptocompare_news(limit: int = 20, api_key: str | None = None) -> list[dict[str, str]]:
+    """CryptoCompare news — keyed only (#464).
+
+    The unkeyed endpoint returns HTTP 401 ``API key required``. Without
+    ``CRYPTOCOMPARE_API_KEY`` no request is made; the poller reports
+    ``skipped_no_key`` instead of a silent 0.
+    """
+    key = (api_key if api_key is not None else cryptocompare_api_key()).strip()
+    if not key:
+        _log_once(
+            "cryptocompare_no_key",
+            f"cryptocompare news skipped: {CRYPTOCOMPARE_API_KEY_ENV} unset (unkeyed endpoint is 401)",
+        )
+        return []
     try:
-        raw = _http_get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN")
+        raw = _http_get(CRYPTOCOMPARE_NEWS_URL, headers={"authorization": f"Apikey {key}"})
         data = json.loads(raw.decode("utf-8"))
         out = []
         for row in (data.get("Data") or [])[:limit]:
@@ -116,31 +152,18 @@ def fetch_cryptocompare_news(limit: int = 20) -> list[dict[str, str]]:
 
 
 def fetch_coingecko_news(limit: int = 20) -> list[dict[str, str]]:
-    """CoinGecko public endpoints — try status_updates then fall back to CryptoCompare."""
-    try:
-        raw = _http_get("https://api.coingecko.com/api/v3/status_updates?per_page=20")
-        data = json.loads(raw.decode("utf-8"))
-        out = []
-        for row in (data.get("status_updates") or [])[:limit]:
-            desc = (row.get("description") or "").strip()
-            proj = ((row.get("project") or {}).get("name") or "").strip()
-            title = f"{proj}: {desc[:120]}" if proj else desc[:140]
-            if not title:
-                continue
-            out.append(
-                {
-                    "title": title,
-                    "url": (row.get("project") or {}).get("homepage") or "",
-                    "body": desc[:400],
-                    "published": str(row.get("created_at") or ""),
-                }
-            )
-        if out:
-            return out
-    except Exception as e:
-        log(f"coingecko status_updates unavailable: {e}", "DEBUG")
-    # Working free path used as coingecko-class news
-    return fetch_cryptocompare_news(limit=limit)
+    """CoinGecko news — no live public endpoint (#464).
+
+    ``GET /api/v3/status_updates`` is HTTP 404 (``Incorrect path``). Do not
+    call it, and do not fall back to CryptoCompare (unkeyed news is 401).
+    The poller reports ``skipped_no_endpoint`` instead of a silent 0.
+    ``limit`` is kept so callers stay source-compatible.
+    """
+    _log_once(
+        "coingecko_no_endpoint",
+        "coingecko news skipped: /api/v3/status_updates is 404; no replacement endpoint",
+    )
+    return []
 
 
 def fetch_free_crypto_news(limit: int = 15) -> list[dict[str, str]]:
@@ -254,7 +277,7 @@ def poll_and_ingest_news(
     config: dict | None = None,
     universe: list[str] | None = None,
     boost: bool = False,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     """Ingest news/events into memory_market_events.
 
     universe: open book + watchlist symbols — prefer tagging those coins.
@@ -299,13 +322,14 @@ def poll_and_ingest_news(
     else:
         max_per_source = int(news_cfg.get("max_per_source") or max_per_source)
 
-    counts = {
+    # #464: do not seed coingecko/cryptocompare with a silent 0. Skip
+    # markers are set when those hosts are disabled; omit the key when
+    # the source is not even requested.
+    counts: dict[str, int | str] = {
         "rss": 0,
-        "coingecko": 0,
         "free_crypto_news": 0,
         "scrape": 0,
         "defillama": 0,
-        "cryptocompare": 0,
         "universe_tagged": 0,
         "max_per_source": max_per_source,
     }
@@ -340,33 +364,29 @@ def poll_and_ingest_news(
                 counts["rss"] += 1
 
     if use_coingecko:
-        for item in fetch_coingecko_news(limit=max_per_source):
-            src = "coingecko" if "coingecko" in (item.get("url") or "") else "cryptocompare"
-            if _ingest(
-                item["title"],
-                item.get("url") or "",
-                src,
-                item.get("body") or "",
-                item.get("published") or None,
-            ):
-                counts["coingecko"] += 1
-                if src == "cryptocompare":
-                    counts["cryptocompare"] += 1
+        # Logs once, makes no HTTP, does not fall back to CryptoCompare.
+        fetch_coingecko_news(limit=max_per_source)
+        counts["coingecko"] = SKIPPED_NO_ENDPOINT
 
     # Explicit CryptoCompare pull (always when boost or config flag)
     if boost or bool(news_cfg.get("cryptocompare_extra", True)):
-        try:
-            for item in fetch_cryptocompare_news(limit=max_per_source):
-                if _ingest(
-                    item["title"],
-                    item.get("url") or "",
-                    "cryptocompare",
-                    item.get("body") or "",
-                    item.get("published") or None,
-                ):
-                    counts["cryptocompare"] += 1
-        except Exception as e:
-            log(f"cryptocompare extra: {e}", "DEBUG")
+        cc_items = fetch_cryptocompare_news(limit=max_per_source)
+        if not cryptocompare_api_key():
+            counts["cryptocompare"] = SKIPPED_NO_KEY
+        else:
+            counts["cryptocompare"] = 0
+            try:
+                for item in cc_items:
+                    if _ingest(
+                        item["title"],
+                        item.get("url") or "",
+                        "cryptocompare",
+                        item.get("body") or "",
+                        item.get("published") or None,
+                    ):
+                        counts["cryptocompare"] += 1
+            except Exception as e:
+                log(f"cryptocompare extra: {e}", "DEBUG")
 
     if use_free_crypto_news:
         for item in fetch_free_crypto_news(limit=max_per_source):
@@ -411,10 +431,10 @@ def poll_news_for_backfill(
     universe: list[str] | None = None,
     config: dict | None = None,
     rounds: int = 2,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     """Heavier news/event ingest for 6m backfill (multiple rounds + boost)."""
     store = store or MemoryStore()
-    totals: dict[str, int] = {}
+    totals: dict[str, int | str] = {}
     for i in range(max(1, int(rounds))):
         c = poll_and_ingest_news(
             store,
@@ -426,5 +446,7 @@ def poll_news_for_backfill(
         for k, v in (c or {}).items():
             if isinstance(v, int):
                 totals[k] = int(totals.get(k) or 0) + int(v)
+            elif k not in totals:
+                totals[k] = v
         totals["rounds"] = i + 1
     return totals
