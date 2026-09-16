@@ -9,7 +9,7 @@ a risk preview with the resolved size/percent is sent, and ``execute_short`` /
 from __future__ import annotations
 
 from core.config import get_bot_config
-from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_commands.command_context import activate_command, clear_context
 from notifications.telegram_commands.manual_order_flow import (
     request_cover_confirmation,
     request_short_confirmation,
@@ -49,15 +49,16 @@ def handle(text: str) -> bool:
 
 
 def _handle_short(text: str) -> bool:
-    activate_command("short")
     cfg = get_bot_config()
     if not shorts_enabled(cfg.raw):
         send_telegram_message("⚠️ Shorts aus (<code>shorts.enabled=false</code>).")
         return True
     parts = [p for p in text.split() if p.strip()]
     if len(parts) < 2:
+        activate_command("short")
         send_telegram_message(_SHORT_USAGE)
         return True
+    clear_context()
     sym = parts[1].upper()
     if "/" not in sym:
         sym = f"{sym}/USDT"
@@ -92,11 +93,12 @@ def _handle_short(text: str) -> bool:
 
 
 def _handle_cover(text: str) -> bool:
-    activate_command("cover")
     parts = [p for p in text.split() if p.strip()]
     if len(parts) < 2:
+        activate_command("cover")
         send_telegram_message(_COVER_USAGE)
         return True
+    clear_context()
     q = parts[1]
     active = list_active_positions()
     prices = get_prices_batch([position_symbol(p) for p in active] or [q])

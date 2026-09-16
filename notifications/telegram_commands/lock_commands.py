@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from notifications.telegram_commands.command_context import activate_command
+from notifications.telegram_commands.command_context import activate_command, clear_context
 from notifications.telegram_commands.position_display import (
     position_symbol,
     resolve_position_by_symbol,
@@ -64,7 +64,6 @@ def handle(text: str) -> bool:
 
 
 def _handle_lock(text: str) -> bool:
-    activate_command("lock")
     if not position_locks_enabled():
         send_telegram_message(
             "⚠️ Position-Locks sind deaktiviert "
@@ -79,6 +78,7 @@ def _handle_lock(text: str) -> bool:
         if not active:
             send_telegram_message("Keine offenen Positionen zum Locken.")
             return True
+        activate_command("lock")
         lines = ["<b>🔒 Position Locks</b>", ""]
         any_lock = False
         for p in active:
@@ -103,6 +103,7 @@ def _handle_lock(text: str) -> bool:
         send_telegram_message("\n".join(lines))
         return True
 
+    clear_context()
     sym_q = parts[1]
     duration_tok = None
     reason_parts: list[str] = []
@@ -154,12 +155,13 @@ def _handle_lock(text: str) -> bool:
 
 
 def _handle_unlock(text: str) -> bool:
-    activate_command("unlock")
     parts = [p for p in text.split() if p.strip()]
     if len(parts) < 2:
+        activate_command("unlock")
         send_telegram_message(hint("unlock"))
         return True
 
+    clear_context()
     p, err = _resolve_open(parts[1])
     if err:
         send_telegram_message(err)
