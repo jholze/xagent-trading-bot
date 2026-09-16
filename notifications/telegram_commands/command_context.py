@@ -60,8 +60,25 @@ def _is_expired(entry: dict) -> bool:
         return True
 
 
+# Commands that `_build_command` can turn into a slash line. Anything else
+# (orders_blocked, orders_month, …) must not be armed: follow-up text would
+# sit in "invalid input" for 15 minutes with no builder (#454).
+_RESOLVABLE_COMMANDS = frozenset({
+    "buy", "sell", "add", "remove", "why", "ask", "orders",
+    "maxpositions", "mode", "addx", "removex",
+    "sandbox_results", "sandbox_promote",
+    "backtest_lock", "backtest_results", "testaccount",
+    "lock", "unlock", "short", "cover",
+})
+
+# Stale reply-keyboard back labels still documented / on old clients.
+_STALE_BACK_LABELS = frozenset({"◀ Bereiche", "◀ Sections"})
+
+
 def activate_command(command: str, **meta) -> None:
     """Set context for the current webhook chat (or TELEGRAM_CHAT_ID)."""
+    if command not in _RESOLVABLE_COMMANDS:
+        return
     cid = current_chat_id()
     if cid:
         set_context(cid, command, **meta)
@@ -239,7 +256,38 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         days = parts[1] if len(parts) > 1 else ""
         return f"/testaccount {account} {days}".strip()
 
+    if command in ("lock", "unlock", "short", "cover"):
+        return f"/{command} {text.strip()}"
+
     return None
+
+
+def is_keyboard_navigation(text: str) -> bool:
+    """True for reply-keyboard back/help/section/home taps (#454).
+
+    These must not be consumed as pending-command input; the keyboard
+    handler in ``menu_commands.handle_text`` owns them.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if stripped in _STALE_BACK_LABELS:
+        return True
+    from notifications.telegram_commands.menu_i18n import (
+        home_label_to_key,
+        is_back_label,
+        is_help_label,
+        is_more_label,
+        title_to_section_id,
+    )
+
+    if is_back_label(stripped) or is_help_label(stripped) or is_more_label(stripped):
+        return True
+    if title_to_section_id(stripped):
+        return True
+    if home_label_to_key(stripped):
+        return True
+    return False
 
 
 def try_resolve(chat_id: str | int, text: str) -> bool:
@@ -251,6 +299,13 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
         from notifications.telegram_commands.router import dispatch_command
 
         return dispatch_command(stripped)
+
+    # Reply-keyboard labels: drop the wizard and let handle_telegram_text
+    # fall through to menu_commands.handle_text (same as menu:run:).
+    if is_keyboard_navigation(stripped):
+        if get_context(chat_id):
+            clear_context(chat_id)
+        return False
 
     entry = get_context(chat_id)
     if not entry:
