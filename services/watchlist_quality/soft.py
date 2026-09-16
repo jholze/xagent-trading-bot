@@ -55,6 +55,9 @@ def apply_soft_watchlist(
     - Non-open under vol floor dropped
     - Remaining sorted: open first, then quality desc
     - Vol unknown (None) kept but sorted last among non-open (fail-open keep)
+    - ``use_ai_score`` True sorts by ``quality_shadow_ai`` when present, False by
+      ``quality_score`` only. Runtime callers pass ``use_ai_sort_score(config)``
+      (#465) so ``watchlist_quality.ai.sort_by`` / ``ai.enabled`` can roll it back.
     """
     open_set = {str(s).strip() for s in (open_symbols or []) if s}
     floor = float(min_quote_vol_usd or 0.0)
@@ -98,34 +101,3 @@ def apply_soft_watchlist(
             clean["quality_shadow_ai"] = r.get("quality_shadow_ai")
         out.append(clean)
     return out
-
-
-def soft_scan_order(
-    scored_coins: list[dict[str, Any]],
-    *,
-    open_symbols: set[str] | list[str] | None = None,
-    config: dict | None = None,
-) -> list[dict[str, Any]]:
-    """Config-aware soft transform (reads vol floor from watchlist_quality)."""
-    from services.watchlist_quality.config import (
-        use_ai_sort_score,
-        vol_floor_t1_usd,
-        wqe_mode,
-    )
-
-    mode = wqe_mode(config)
-    if mode not in ("soft", "enforce"):
-        # no membership change — return as-is sorted by det score only for convenience
-        rows = [dict(c) for c in (scored_coins or []) if isinstance(c, dict)]
-        rows.sort(key=lambda r: -_quality(r))
-        return rows
-
-    floor = vol_floor_t1_usd(config)
-    # AI5: use_ai_score True prefers quality_shadow_ai when present on rows
-    use_ai_score = use_ai_sort_score(config) or True
-    return apply_soft_watchlist(
-        scored_coins,
-        open_symbols=open_symbols,
-        min_quote_vol_usd=floor,
-        use_ai_score=use_ai_score,
-    )

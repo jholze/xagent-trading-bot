@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from logger import log
-from services.watchlist_quality.config import vol_floor_t1_usd, wqe_mode
+from services.watchlist_quality.config import use_ai_sort_score, vol_floor_t1_usd, wqe_mode
 from services.watchlist_quality.engine import run_shadow_score
 from services.watchlist_quality.enforce import apply_enforce_tiers, filter_new_adds_memory
 from services.watchlist_quality.soft import apply_soft_watchlist
@@ -127,7 +127,8 @@ def apply_wqe_to_watchlist(
             scored_rows,
             open_symbols=open_syms,
             min_quote_vol_usd=vol_floor_t1_usd(cfg),
-            use_ai_score=True,
+            # #465: honour watchlist_quality.ai.sort_by / ai.enabled (rollback switch)
+            use_ai_score=use_ai_sort_score(config),
         )
         dropped = max(0, n_in - len(softed))
         if dropped:

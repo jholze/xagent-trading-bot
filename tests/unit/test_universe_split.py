@@ -162,7 +162,7 @@ def test_load_trade_watchlist_respects_split_flag(monkeypatch):
     )
     monkeypatch.setattr(
         "services.universe.split._quality_lookup",
-        lambda tenant_id="default": {},
+        lambda tenant_id="default", **kw: {},  # #465: accepts use_ai_score
     )
     trade = load_trade_watchlist(observe_coins=observe, open_positions=[{"symbol": "Z14/USDT"}])
     assert any(c["symbol"] == "Z14/USDT" for c in trade)

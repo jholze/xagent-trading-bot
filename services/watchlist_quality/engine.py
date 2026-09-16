@@ -1,7 +1,7 @@
 """Watchlist Quality Engine — shadow scoring + AI fuse + soft entry (Epic #124).
 
 Shadow (mode=shadow): scores + optional AI critic; never mutates membership.
-Soft (mode=soft): pure transform available via soft.apply_soft_watchlist / soft_scan_order;
+Soft (mode=soft): pure transform available via soft.apply_soft_watchlist;
 run_shadow_score still reports behavior_change=false for the *score* artifact only.
 """
 
@@ -15,6 +15,7 @@ from logger import log
 from services.watchlist_quality.config import (
     ai_config,
     ai_shadow_enabled,
+    use_ai_sort_score,
     vol_floor_t1_usd,
     wqe_mode,
     wqe_shadow_active,
@@ -276,7 +277,7 @@ def run_shadow_score(
                 coin_rows,
                 open_symbols=open_symbols,
                 min_quote_vol_usd=vol_floor_t1_usd(config),
-                use_ai_score=True,
+                use_ai_score=use_ai_sort_score(config),
             )
             summary["soft_scan"] = soft_list
             summary["soft_n"] = len(soft_list)
@@ -401,5 +402,5 @@ def apply_soft_to_effective_candidates(
         merged,
         open_symbols=open_symbols,
         min_quote_vol_usd=vol_floor_t1_usd(config),
-        use_ai_score=True,
+        use_ai_score=use_ai_sort_score(config),
     )
