@@ -1,7 +1,12 @@
-"""Block late chase buys on prev-day gainer tops (fail-open).
+"""Block late chase buys on prev-day gainer tops.
 
 Issue #162: after a huge day, buying next session into further extension
 is often poor; Decision Engine may still fire — risk layer soft-blocks.
+
+Config gates (disabled, unknown symbol, source not in ``chase_guard_sources``,
+same-day) stay fail-open. Issue #423: once a symbol *is* a chase-guard
+candidate, a missing prev-day close is fail-closed — the last cached close
+for that (symbol, day) is used if available, otherwise the buy is blocked.
 """
 
 from __future__ import annotations
@@ -14,9 +19,16 @@ from services.gainer_universe.config import gainer_universe_config
 from services.gainer_universe.filters import normalize_symbol
 from services.gainer_universe.store import load_gainer_state
 
+# (symbol, prev_day) -> last successfully fetched prev-day close (#423 fallback)
+_LAST_CLOSE: dict[tuple[str, str], float] = {}
+
 
 def _prev_day_close(symbol: str, prev_day: str) -> float | None:
-    """Close of calendar day prev_day (UTC) from 1d OHLCV."""
+    """Close of calendar day prev_day (UTC) from 1d OHLCV.
+
+    Returns None when the bar is missing or OHLCV fails; the caller decides
+    (#423: fail-closed for chase_guard_sources).
+    """
     try:
         from historical_prices import _fetch_ohlcv_range
 
@@ -28,9 +40,12 @@ def _prev_day_close(symbol: str, prev_day: str) -> float | None:
             day = datetime.fromtimestamp(int(b[0]) / 1000, tz=timezone.utc).date().isoformat()
             if day == prev_day:
                 c = float(b[4])
-                return c if c > 0 else None
+                if c > 0:
+                    _LAST_CLOSE[(symbol, prev_day)] = c
+                    return c
+                return None
     except Exception as e:
-        log(f"chase_guard ohlcv {symbol}: {e}", "DEBUG")
+        log(f"chase_guard ohlcv {symbol} {prev_day}: {e}", "WARNING")
     return None
 
 
@@ -50,7 +65,12 @@ def check_gainer_chase_guard(
     config: dict | None = None,
     state: dict | None = None,
 ) -> tuple[bool, str]:
-    """Return (blocked, reason). Fail-open → (False, "")."""
+    """Return (blocked, reason).
+
+    Config/eligibility gates are fail-open → (False, ""). For a symbol whose
+    gainer source is in ``chase_guard_sources``, a missing prev-day close is
+    fail-closed (#423): last cached close, else (True, reason).
+    """
     cfg = gainer_universe_config(config)
     if not cfg.get("enabled") or cfg.get("mode") == "off":
         return False, ""
@@ -77,9 +97,22 @@ def check_gainer_chase_guard(
     if prev_day >= today:
         return False, ""
 
-    close = _prev_day_close(normalize_symbol(symbol), prev_day)
+    sym = normalize_symbol(symbol)
+    close = _prev_day_close(sym, prev_day)
     if not close or close <= 0:
-        return False, ""
+        cached = _LAST_CLOSE.get((sym, prev_day))
+        if cached and cached > 0:
+            log(
+                f"gainer_chase_guard: {symbol} prev close ({prev_day}) unavailable, "
+                f"using cached {cached}",
+                "WARNING",
+            )
+            close = cached
+        else:
+            return True, (
+                f"gainer_chase_guard: {symbol} prev close ({prev_day}) unavailable "
+                f"and no cached close — fail-closed (source={src})"
+            )
 
     gain_from_close = (float(price) / close - 1.0) * 100.0
     max_gain = float(cfg.get("chase_max_gain_from_prev_close_pct") or 18.0)
