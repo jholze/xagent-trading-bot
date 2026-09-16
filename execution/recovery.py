@@ -18,7 +18,13 @@ from core.models import OrderStatus, TradeOrder, TradeResult
 from core.operator_notify import notify_operator
 from core.stablecoins import STABLECOIN_BASES
 from core.tenant_context import tenant_context
-from execution.gate_adapter import _GATE_TEXT_ALLOWED, _clamp_gate_client_order_id
+from execution.gate_adapter import (
+    _GATE_TEXT_ALLOWED,
+    _canceled_or_rejected_status,
+    _ccxt_status_token,
+    _clamp_gate_client_order_id,
+    _finish_as_from_raw,
+)
 from logger import log
 from strategies.positions import (
     DUST_AMOUNT_EPSILON,
@@ -707,20 +713,11 @@ def _apply_raw_without_adapter(
     config,
     timeframe: str,
 ) -> TradeResult:
-    token = str(raw.get("status") or "").strip().lower()
-    if token in ("canceled", "cancelled", "expired"):
-        return TradeResult(
-            False,
-            order.type,
-            order.symbol,
-            message=f"exchange {token}",
-            order_id=order.order_id,
-            exchange_order_id=str(raw.get("id") or ""),
-            order_status=OrderStatus.CANCELED,
-            needs_reconcile=False,
-            order_exist_in_exchange=True,
-        )
-    if token == "rejected":
+    raw = raw if isinstance(raw, dict) else {}
+    token = _ccxt_status_token(raw)
+    finish_as = _finish_as_from_raw(raw)
+    terminal = _canceled_or_rejected_status(raw)
+    if terminal is OrderStatus.REJECTED:
         return TradeResult(
             False,
             order.type,
@@ -731,8 +728,21 @@ def _apply_raw_without_adapter(
             order_status=OrderStatus.REJECTED,
             needs_reconcile=False,
         )
+
     filled = raw.get("filled")
     if filled is None:
+        if terminal is OrderStatus.CANCELED:
+            return TradeResult(
+                False,
+                order.type,
+                order.symbol,
+                message=f"exchange {token or finish_as}",
+                order_id=order.order_id,
+                exchange_order_id=str(raw.get("id") or ""),
+                order_status=OrderStatus.CANCELED,
+                needs_reconcile=False,
+                order_exist_in_exchange=True,
+            )
         return TradeResult(
             False,
             order.type,
@@ -744,7 +754,23 @@ def _apply_raw_without_adapter(
             needs_reconcile=True,
         )
     filled_f = float(filled)
+    if terminal is OrderStatus.CANCELED and filled_f <= 0:
+        msg = f"exchange {token or 'unset'}"
+        if finish_as:
+            msg += f" finish_as={finish_as}"
+        return TradeResult(
+            False,
+            order.type,
+            order.symbol,
+            message=msg,
+            order_id=order.order_id,
+            exchange_order_id=str(raw.get("id") or ""),
+            order_status=OrderStatus.CANCELED,
+            needs_reconcile=False,
+            order_exist_in_exchange=True,
+        )
     requested = float(order.qty or 0)
+    remainder_canceled = terminal is OrderStatus.CANCELED and filled_f > 0
     if token in ("open", "new") and (requested <= 0 or filled_f < requested):
         if filled_f <= 0:
             return TradeResult(
@@ -758,7 +784,9 @@ def _apply_raw_without_adapter(
                 needs_reconcile=True,
             )
     status = OrderStatus.EXECUTED
-    if (
+    if finish_as == "open" and filled_f > 0:
+        status = OrderStatus.PARTIALLY_FILLED
+    elif (
         requested > 0
         and 0 < filled_f < requested
         and token not in ("closed", "filled")
@@ -799,6 +827,8 @@ def _apply_raw_without_adapter(
             sync_virtual_ledger=False,
             fill=fill,
         )
+    if remainder_canceled:
+        status = OrderStatus.CANCELED
     return TradeResult(
         True,
         order.type,
