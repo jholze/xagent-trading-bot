@@ -59,7 +59,20 @@ def _sym(coin: dict | None) -> str:
     return str(coin.get("symbol") or "").strip()
 
 
-def rank_key_for_coin(coin: dict, rank_by: str) -> float:
+def _quality_value(coin: dict, *, use_ai_score: bool) -> Any:
+    """Raw quality for ranking: AI-fused shadow score when enabled, else deterministic.
+
+    #465: ``use_ai_score`` follows ``watchlist_quality.ai.sort_by`` / ``ai.enabled``
+    (``use_ai_sort_score(config)``) so the trade universe rolls back with the config.
+    """
+    if use_ai_score:
+        q = coin.get("quality_shadow_ai")
+        if q is not None:
+            return q
+    return coin.get("quality_score")
+
+
+def rank_key_for_coin(coin: dict, rank_by: str, *, use_ai_score: bool = True) -> float:
     """Sort key ascending = better (put first)."""
     if rank_by == "as_is":
         return 0.0
@@ -72,9 +85,7 @@ def rank_key_for_coin(coin: dict, rank_by: str) -> float:
         except (TypeError, ValueError):
             return 10_000.0
     # quality_score: higher better → negate
-    q = coin.get("quality_shadow_ai")
-    if q is None:
-        q = coin.get("quality_score")
+    q = _quality_value(coin, use_ai_score=use_ai_score)
     try:
         if q is None:
             return 0.0  # unknown mid
@@ -128,11 +139,13 @@ def select_trade_universe(
     include_base: bool = True,
     rank_by: str = "quality_score",
     quality_lookup: dict[str, float] | None = None,
+    use_ai_score: bool = True,
 ) -> list[dict]:
     """Build trade-eligible list from observe pool.
 
     Always includes open positions (and optionally base) even if over trade_max.
-    Remaining slots filled by ranked discovery coins.
+    Remaining slots filled by ranked discovery coins. ``use_ai_score`` False ranks
+    by ``quality_score`` only (ignores ``quality_shadow_ai``) — #465.
     """
     open_syms = {str(s).strip() for s in (open_symbols or set()) if s}
     base_syms = {str(s).strip() for s in (base_symbols or set()) if s}
@@ -170,7 +183,9 @@ def select_trade_universe(
 
     rest = [s for s in order if s not in forced_set]
     if rank_by != "as_is":
-        rest.sort(key=lambda s: rank_key_for_coin(by_sym[s], rank_by))
+        rest.sort(
+            key=lambda s: rank_key_for_coin(by_sym[s], rank_by, use_ai_score=use_ai_score)
+        )
 
     try:
         max_n = int(trade_max_coins)
@@ -201,7 +216,9 @@ def _open_symbols_live() -> set[str]:
         return set()
 
 
-def _quality_lookup(tenant_id: str = "default") -> dict[str, float]:
+def _quality_lookup(
+    tenant_id: str = "default", *, use_ai_score: bool = True
+) -> dict[str, float]:
     try:
         from services.watchlist_quality.store import load_quality_scores
 
@@ -213,9 +230,7 @@ def _quality_lookup(tenant_id: str = "default") -> dict[str, float]:
             s = c.get("symbol")
             if not s:
                 continue
-            q = c.get("quality_shadow_ai")
-            if q is None:
-                q = c.get("quality_score")
+            q = _quality_value(c, use_ai_score=use_ai_score)
             if q is not None:
                 try:
                     out[str(s)] = float(q)
@@ -310,9 +325,13 @@ def load_trade_universe(
     }
     from core.tenant_context import resolve_tenant_id
 
+    from services.watchlist_quality.config import use_ai_sort_score
+
     tid = resolve_tenant_id(tenant_id)
+    # #465: same rollback switch as the WQE soft sort (ai.sort_by / ai.enabled)
+    use_ai = use_ai_sort_score(cfg)
     qlookup = (
-        _quality_lookup(tid)
+        _quality_lookup(tid, use_ai_score=use_ai)
         if ucfg.get("trade_rank_by") == "quality_score"
         else None
     )
@@ -325,6 +344,7 @@ def load_trade_universe(
         include_base=bool(ucfg.get("trade_include_base", True)),
         rank_by=str(ucfg.get("trade_rank_by") or "quality_score"),
         quality_lookup=qlookup,
+        use_ai_score=use_ai,
     )
     # Gate prev-day expand into trade (mode=trade_expand only) — fail-open
     try:
