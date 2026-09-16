@@ -206,14 +206,14 @@ def format_grid_status_telegram(report: dict[str, Any], *, lang: str = "de") -> 
         title = "🔲 <b>Grid mode</b>"
         empty = "No active watchlist coins."
         footer = (
-            "<i>Active = GridStrategy in last decision · Tracking = saved grid_states · "
+            "<i>Active = GridStrategy in last decision · Tracking = saved grid plan · "
             "Off = Allocator favors momentum or grid weight ≤ 5%</i>"
         )
     else:
         title = "🔲 <b>Grid-Modus</b>"
         empty = "Keine aktiven Watchlist-Coins."
         footer = (
-            "<i>Aktiv = GridStrategy in letzter Entscheidung · Tracking = gespeichertes grid_states · "
+            "<i>Aktiv = GridStrategy in letzter Entscheidung · Tracking = gespeicherter Grid-Plan · "
             "Aus = Allocator bevorzugt Momentum oder Grid-Gewicht ≤ 5%</i>"
         )
 

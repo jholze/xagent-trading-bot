@@ -1,7 +1,8 @@
 """Per-tenant grid plan persistence (Phase B rest).
 
 Primary: Mongo collection ``grid_plans`` keyed by tenant + ledger scope.
-Fallback: ``config.grid_states`` (legacy) when Mongo unavailable.
+Read-only fallback: leftover ``config.grid_states`` until the one-shot
+startup migrate has copied those keys into Mongo and stripped the config key.
 """
 
 from __future__ import annotations
@@ -137,9 +138,14 @@ def save_grid_plan(
     tenant_id: str | None = None,
     scope: str | None = None,
     test: bool = False,
-    also_legacy_config: bool = True,
+    also_legacy_config: bool = False,
 ) -> bool:
-    """Upsert one plan; optionally mirror into config.grid_states for /grid UI."""
+    """Upsert one plan into Mongo. Does not write ``config.json``.
+
+    ``also_legacy_config`` is a deprecated opt-in to mirror into
+    ``config.grid_states``. The default is off (#330 slice 3) so grid
+    persist no longer burns config snapshot slots.
+    """
     key = _plan_key(symbol, timeframe)
     doc = load_grid_plans_document(tenant_id=tenant_id, scope=scope, test=test)
     plans = dict(doc.get("plans") or {})
@@ -171,3 +177,105 @@ def list_grid_plan_keys(
 ) -> list[str]:
     doc = load_grid_plans_document(tenant_id=tenant_id, scope=scope, test=test)
     return sorted((doc.get("plans") or {}).keys())
+
+
+def migrate_legacy_grid_states_once(
+    *,
+    tenant_id: str | None = None,
+    scope: str | None = None,
+    test: bool = False,
+) -> dict[str, Any]:
+    """Copy leftover ``config.grid_states`` into Mongo, then strip that key.
+
+    Idempotent: a second call is a no-op when the key is already gone.
+    Fail closed: if the Mongo upsert fails, ``config.grid_states`` is left intact.
+    """
+    from data_manager import get_config, save_config
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "skipped": False,
+        "stripped": False,
+        "migrated_keys": [],
+    }
+    try:
+        cfg = dict(get_config() or {})
+    except Exception as e:
+        log(f"legacy grid_states migrate: cannot read config: {e}", "ERROR")
+        result["ok"] = False
+        result["error"] = str(e)
+        return result
+
+    gs = cfg.get("grid_states")
+    if not isinstance(gs, dict) or not gs:
+        result["skipped"] = True
+        return result
+
+    try:
+        doc = load_grid_plans_document(tenant_id=tenant_id, scope=scope, test=test)
+    except Exception as e:
+        log(
+            f"legacy grid_states migrate: mongo load failed, leaving config.grid_states: {e}",
+            "ERROR",
+        )
+        result["ok"] = False
+        result["error"] = str(e)
+        return result
+
+    plans = dict(doc.get("plans") or {})
+    migrated: list[str] = []
+    for key, plan in gs.items():
+        if not isinstance(plan, dict) or not plan:
+            continue
+        if key in plans:
+            continue
+        payload = dict(plan)
+        if "_" in str(key):
+            sym, tf = str(key).rsplit("_", 1)
+            payload.setdefault("symbol", sym)
+            payload.setdefault("timeframe", tf)
+        if "center" in payload and "center_price" not in payload:
+            payload["center_price"] = payload["center"]
+        plans[key] = payload
+        migrated.append(str(key))
+
+    # Confirm Mongo is writable before stripping config, even when every key
+    # was already present in the store (Mongo wins; config is only a leftover).
+    if not save_grid_plans_document(plans, tenant_id=tenant_id, scope=scope, test=test):
+        log(
+            "legacy grid_states migrate: mongo upsert failed, leaving config.grid_states",
+            "ERROR",
+        )
+        result["ok"] = False
+        result["error"] = "mongo upsert failed"
+        return result
+
+    result["migrated_keys"] = migrated
+    new_cfg = dict(cfg)
+    new_cfg.pop("grid_states", None)
+    try:
+        saved = save_config(new_cfg)
+    except Exception as e:
+        log(
+            f"legacy grid_states migrate: Mongo ok but config strip failed: {e}",
+            "ERROR",
+        )
+        result["ok"] = False
+        result["error"] = str(e)
+        return result
+    if not saved:
+        log(
+            "legacy grid_states migrate: Mongo ok but config strip returned False",
+            "ERROR",
+        )
+        result["ok"] = False
+        result["error"] = "save_config returned False"
+        return result
+
+    result["stripped"] = True
+    log(
+        f"legacy grid_states migrate: copied {len(migrated)} new keys, "
+        "stripped config.grid_states",
+        "INFO",
+    )
+    return result

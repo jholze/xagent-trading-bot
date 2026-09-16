@@ -121,6 +121,16 @@ if not _DUPLICATE_ARIA_BOT_IMPORT:
         log(f"Ledger startup guard failed: {e}", "WARNING")
 
     try:
+        from storage.mongo_client import is_pytest_running
+
+        if not is_pytest_running():
+            from storage.grid_plan_store import migrate_legacy_grid_states_once
+
+            migrate_legacy_grid_states_once()
+    except Exception as e:
+        log(f"Legacy grid_states migrate failed: {e}", "WARNING")
+
+    try:
         from data.cmc_capabilities import log_cmc_boot_status
 
         log_cmc_boot_status()

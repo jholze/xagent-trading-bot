@@ -60,6 +60,44 @@ class TestGridPlanStore(unittest.TestCase):
         self.assertAlmostEqual(float(loaded["center"]), 50.0, places=4)
         self.assertTrue(loaded.get("levels"))
 
+    def test_save_grid_plan_does_not_call_save_config(self):
+        plan = build_grid_plan("T/USDT", "4h", 50.0, atr_pct=2.0)
+        payload = plan.to_dict()
+        payload["center_price"] = plan.center
+
+        fake_db = MagicMock()
+        store: dict = {}
+
+        def replace_one(filt, doc, upsert=False):
+            store[doc["_id"]] = doc
+            return MagicMock()
+
+        def find_one(filt):
+            return store.get(filt.get("_id"))
+
+        coll = MagicMock()
+        coll.replace_one.side_effect = replace_one
+        coll.find_one.side_effect = find_one
+        fake_db.__getitem__ = lambda self, name: coll
+        save_spy = MagicMock(return_value=True)
+
+        with patch("storage.mongo_client.get_database", return_value=fake_db), patch(
+            "storage.mongo_client.assert_safe_dev_db_mutation"
+        ), patch(
+            "storage.mongo_client.resolve_database_name", return_value="xagent_test"
+        ), patch(
+            "data_manager.get_config", return_value={}
+        ), patch(
+            "data_manager.save_config", save_spy
+        ), patch(
+            "core.tenant_context.resolve_tenant_id", return_value="henry"
+        ), patch(
+            "core.tenant_context.resolve_tenant_scope", return_value="demo"
+        ):
+            self.assertTrue(save_grid_plan("T/USDT", "4h", payload, test=True))
+
+        save_spy.assert_not_called()
+
 
 class TestGridLimits(unittest.TestCase):
     def test_fee_aware_min_spacing(self):
