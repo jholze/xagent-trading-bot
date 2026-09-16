@@ -279,3 +279,98 @@ def test_chase_guard_blocks_extended_prev_top(monkeypatch):
         "ON/USDT", 1.05, config=root, state=state
     )
     assert blocked2 is False
+
+
+def _chase_state(symbol: str, source: str = "gate_prev_top") -> dict:
+    return {
+        "eligible": [
+            {"symbol": symbol, "source": source, "day": "2026-07-28", "day_ret": 84}
+        ]
+    }
+
+
+_CHASE_ROOT = {
+    "gainer_universe": {
+        "enabled": True,
+        "mode": "trade_expand",
+        "chase_guard_enabled": True,
+        "chase_max_gain_from_prev_close_pct": 18,
+        "chase_guard_sources": ["gate_prev_top"],
+    }
+}
+
+
+def _boom(*_a, **_k):
+    raise RuntimeError("ohlcv-down")
+
+
+def test_chase_guard_ohlcv_throw_fails_closed(monkeypatch):
+    """#423: OHLCV failure with no cached close must block, not (False, "")."""
+    from services.gainer_universe import chase_guard as cg
+
+    monkeypatch.setattr(cg, "_LAST_CLOSE", {})
+    monkeypatch.setattr("historical_prices._fetch_ohlcv_range", _boom)
+    blocked, msg = cg.check_gainer_chase_guard(
+        "ON/USDT", 1.05, config=_CHASE_ROOT, state=_chase_state("ON/USDT")
+    )
+    assert blocked is True
+    assert "gainer_chase_guard" in msg
+    assert "unavailable" in msg
+
+
+def test_chase_guard_ohlcv_empty_bars_fails_closed(monkeypatch):
+    """#423: no bar for prev_day (fetch ok, close missing) also blocks."""
+    from services.gainer_universe import chase_guard as cg
+
+    monkeypatch.setattr(cg, "_LAST_CLOSE", {})
+    monkeypatch.setattr("historical_prices._fetch_ohlcv_range", lambda *a, **k: [])
+    blocked, msg = cg.check_gainer_chase_guard(
+        "ON/USDT", 1.05, config=_CHASE_ROOT, state=_chase_state("ON/USDT")
+    )
+    assert blocked is True
+    assert "unavailable" in msg
+
+
+def test_chase_guard_ohlcv_throw_uses_cached_close(monkeypatch):
+    """#423: a previously fetched close is reused when OHLCV later fails."""
+    from services.gainer_universe import chase_guard as cg
+
+    monkeypatch.setattr(cg, "_LAST_CLOSE", {})
+    day_ms = int(
+        datetime(2026, 7, 28, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    bars = [[day_ms, 1.0, 1.1, 0.9, 1.0, 1000.0]]
+    monkeypatch.setattr("historical_prices._fetch_ohlcv_range", lambda *a, **k: bars)
+    blocked, _ = cg.check_gainer_chase_guard(
+        "ON/USDT", 1.05, config=_CHASE_ROOT, state=_chase_state("ON/USDT")
+    )
+    assert blocked is False
+    assert cg._LAST_CLOSE[("ON/USDT", "2026-07-28")] == 1.0
+
+    monkeypatch.setattr("historical_prices._fetch_ohlcv_range", _boom)
+    # cached close 1.0 → +5% passes, +50% blocks on the real threshold
+    blocked_ok, _ = cg.check_gainer_chase_guard(
+        "ON/USDT", 1.05, config=_CHASE_ROOT, state=_chase_state("ON/USDT")
+    )
+    assert blocked_ok is False
+    blocked_hi, msg = cg.check_gainer_chase_guard(
+        "ON/USDT", 1.50, config=_CHASE_ROOT, state=_chase_state("ON/USDT")
+    )
+    assert blocked_hi is True
+    assert "+50.0%" in msg
+
+
+def test_chase_guard_ohlcv_throw_non_guarded_source_stays_open(monkeypatch):
+    """#423: fail-closed applies to chase_guard_sources only."""
+    from services.gainer_universe import chase_guard as cg
+
+    monkeypatch.setattr(cg, "_LAST_CLOSE", {}, raising=False)
+    monkeypatch.setattr("historical_prices._fetch_ohlcv_range", _boom)
+    blocked, msg = cg.check_gainer_chase_guard(
+        "ON/USDT",
+        1.05,
+        config=_CHASE_ROOT,
+        state=_chase_state("ON/USDT", source="cmc_trending"),
+    )
+    assert blocked is False
+    assert msg == ""
