@@ -14,7 +14,7 @@ Improve **universe / scan-set quality** so signals and buys run on coins that ar
 |------|--------|--------------------|-----------|
 | `off` | no | unchanged | no |
 | `shadow` | det + optional AI fuse | **unchanged** (`behavior_change=false`) | optional |
-| `soft` | yes | vol floor + score sort (caller applies) | optional soft-sort by `quality_shadow_ai` |
+| `soft` | yes | vol floor + score sort (caller applies; `ai.sort_by` / `ai.enabled` rollback → `quality_score`) | optional |
 | `enforce` | yes | tiers/caps/buy gates (W4+) | optional |
 
 Config root: `config.json` → `watchlist_quality`.
@@ -30,10 +30,22 @@ Config root: `config.json` → `watchlist_quality`.
     "mode": "shadow",
     "max_coins_per_cycle": 12,
     "max_adjust": 0.2,
-    "require_evidence": true
+    "require_evidence": true,
+    "sort_by": ""
   }
 }
 ```
+
+### BUY-Universe: `ai.sort_by` / `ai.enabled`
+
+WQE-Soft-Sort (`apply_soft_watchlist` / `apply_wqe_to_watchlist`) **und** der Trade-Universe-Split (`services/universe/split.py` → `load_trade_universe`) teilen denselben Rollback-Schalter (`use_ai_sort_score` in `services/watchlist_quality/config.py`):
+
+| Config | Rank-Key |
+|--------|----------|
+| `ai.sort_by` = `quality_shadow_ai` (oder `ai` / `shadow_ai`) und `ai.enabled=true` | `quality_shadow_ai` (fehlt der Wert → `quality_score`) |
+| `ai.sort_by` leer (Default) **oder** `ai.enabled=false` | nur `quality_score` |
+
+Default in `BotConfig.watchlist_quality_config`: `sort_by=""`, `enabled=true`, `mode=shadow` — Ranking bleibt auf dem deterministischen Score, bis `sort_by` explizit auf den fused Key gesetzt wird.
 
 ## Authority order (locked)
 

@@ -1,7 +1,7 @@
 # Railway Deployment Plan — X-Agent Trading Bot
 
 **Status:** Staging deploy live on Railway (`xagent-test`, branch `staging`)  
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-16
 **Branch baseline:** `staging` → Railway test instance; `main` → production (later)
 
 ---
@@ -27,6 +27,7 @@ Source of truth: [`deploy/railway/watch-patterns.json`](../deploy/railway/watch-
 | Service | Rebuilds when |
 |---------|----------------|
 | **`xagent-test`** | **any** staging commit (no filter — paper bot) |
+| **`xagent-xai-auth`** | not in `watch-patterns.json` — dedicated Node Dockerfile (see SuperGrok sidecar below) |
 | Sidecars | only their package paths **plus** `Dockerfile` / `requirements*.txt` / `scripts/railway_start.sh` |
 
 After **moving sidecar folders**, update the JSON in the same PR, merge to `staging`, then:
@@ -37,6 +38,19 @@ python3 scripts/deploy/sync_railway_watch.py --apply --verify
 ```
 
 Never run this against production. The script refuses `environment != test` and never writes `xagent-test`.
+
+### SuperGrok sidecar (`xagent-xai-auth`)
+
+Own Railway service for the operator SuperGrok / xAI session. It is **not** built from the shared root `Dockerfile` (that image stays Node-free).
+
+| Piece | Setting |
+|-------|---------|
+| Service name | `xagent-xai-auth` |
+| Image | dedicated Node 22 Dockerfile `services/xai_auth_sidecar/Dockerfile` (`dockerfilePath` in `services/xai_auth_sidecar/railway.toml`) |
+| Volume | mount at **`/data/grok`** — OAuth session lives there (`XAI_OAUTH_CREDENTIAL_PATH` defaults to `$RAILWAY_VOLUME_MOUNT_PATH/xai_oauth.json`) |
+| Bot vars | `XAI_USE_SUBSCRIPTION` (default **off**), `XAI_AUTH_SIDECAR_URL=http://xagent-xai-auth.railway.internal:8080` (Railway-injected port, currently `8080`), `XAI_AUTH_TRIGGER_TOKEN` (same value as on the sidecar) |
+
+Do **not** put OAuth access/refresh tokens in env. Login from Telegram `/xai_login` (operator chat) or `railway ssh` into this service — details in `services/xai_auth_sidecar/README.md` and `railway.env.example`.
 
 ---
 

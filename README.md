@@ -113,9 +113,11 @@ Alle Intervalle: [DOCUMENTATION.md §3](DOCUMENTATION.md#3-wann-läuft-was--alle
 | Handel | `/buy` `/sell` `/positions` `/orders` `/risk` `/dryrun` |
 | **Transparenz** | `/decisions` `/why SYMBOL` `/ask` `/hermes_last` `/hermes` `/cmc` `/lc` |
 | Backtest | `/backtest` `/backtest_results` `/backtest_lock` |
-| Modus | `/mode` `/live_confirm` `/gate` |
+| Modus | `/mode` `/live_confirm` `/gate` `/xai_login` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
 | Sandbox | `/sandbox` `/sandbox_results` `/sandbox_promote` |
+
+**Operator:** `/xai_login` (und `/xai_login status`) nur im Operator-Chat — startet den SuperGrok-Login am Sidecar `xagent-xai-auth`. Satelliten-Chats bekommen eine kurze Ablehnung. Grok, WQE-Critic und `x_search` können bei `XAI_USE_SUBSCRIPTION=1` über den Sidecar laufen (Default aus; Rollback = Flag weglassen) — [DOCUMENTATION.md §7](DOCUMENTATION.md#7-telegram--alle-befehle-mit-beispielen) und `.env` dort.
 
 **Einsteiger-Tipp:** Nach einem Trade steht unter **„Warum:“** die Erklärung in normalem Deutsch. `/why H` zeigt die letzte Entscheidung für Humanity (H).
 

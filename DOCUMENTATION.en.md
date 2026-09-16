@@ -699,6 +699,10 @@ The bot **explains itself**. You don't need to read charts — messages are buil
 | `/sell` | `/sell` | Compact list of open long positions (one line each) with a button per position |
 | `/sell NUMMER PROZENT` | `/sell 1 30` | Sells 30 % of position 1 |
 | `/sell SYMBOL PROZENT` | `/sell RAVE 30` | Sells 30 % of RAVE |
+| `/short SYMBOL` | `/short H` | Paper short; preview shows the **default size** (and default leverage); executes only after confirm |
+| `/short SYMBOL USDT HEBEL` | `/short H 400 2` | Same, with size and leverage on the preview |
+| `/cover SYMBOL` | `/cover H` | Close a short; preview shows **100 %** (default); executes only after confirm |
+| `/cover SYMBOL PROZENT` | `/cover H 50` | Cover 50 % of the short — share is on the preview, then confirm |
 | `/positions` | `/positions` | Portfolio overview, prices, recent trades |
 | `/orders` | `/orders` | Order ledger (24h stats, paginated) |
 | `/orders NUMMER` | `/orders 3` | Detail for order no. 3 (buy/sell date) |
@@ -707,6 +711,8 @@ The bot **explains itself**. You don't need to read charts — messages are buil
 | `/dryrun` | `/dryrun` | Enhanced dry run: sim cash, trending overlay |
 
 After `/sell`, pick a position by button, number, or symbol, then percent (25/50/75/100 % buttons or a typed value) and confirmation.
+
+`/short` and `/cover` use the **same two-step confirm** as `/sell`: the typed command only sends the risk preview (`/short` with no size → default size; `/cover` with no percent → 100 %). Execution runs only after `manual_ok`. Paper shorts; if `shorts.enabled=false`, `/short` warns and does not start a preview.
 
 Manual `/buy` and `/sell` appear in `/orders` and recent trades as **Manual**; bot trades as **Auto**.
 
@@ -720,6 +726,12 @@ Manual `/buy` and `/sell` appear in `/orders` and recent trades as **Manual**; b
 | `/live_confirm` | `/live_confirm` | Enable live (keys + no demo; warns on dry_run) |
 | `/live_cancel` | `/live_cancel` | Cancel live → paper |
 | `/gate` | `/gate` | API keys, USDT (Gate + sim), spot holdings, dry_run |
+| `/xai_login` | `/xai_login` | Start SuperGrok login on the `xagent-xai-auth` sidecar (operator chat only) |
+| `/xai_login status` | `/xai_login status` | Credential present? Expiry? Login running? Keepalive? |
+
+`/xai_login` uses the same operator gate as `/onboard` (`TELEGRAM_CHAT_ID`). Satellite chats get `⛔ /xai_login: operator only.` — not a setup hint. Without `XAI_AUTH_SIDECAR_URL` the operator chat only gets a how-to; without `XAI_AUTH_TRIGGER_TOKEN` no login starts. The sidecar itself sends the URL + user code to the operator chat; access/refresh tokens never appear in Telegram.
+
+**Operator-only (satellites):** Typed commands and matching inline callbacks in `OPERATOR_ONLY` (`notifications/telegram_commands/router.py`) run only in the operator chat. Satellites get a short deny (`⛔ Nur Operator.` / `⛔ Operator only.`), **not** a usage hint. Includes `/live_confirm`, `/live_cancel`, `/hermes_run` / `/hermes_veto` / `/hermes_rollback`, `/sandbox` / `/sandbox_results` / `/sandbox_promote`, `/backtest` / `/backtest_lock` / `/backtest_results`, `/reload` / `/hotreload`, `/diag`, `/wqe` / `/wqe_soak`, `/panic`, `/testaccount`, `/tracktest`. `/xai_login` and `/onboard` are **not** in that list — they self-gate.
 
 ### 🐦 X / Twitter
 
@@ -1113,7 +1125,12 @@ TELEGRAM_CHAT_ID=...
 GATE_API_KEY=...          # Gate.io live (mainnet)
 GATE_API_SECRET=...
 CMC_API_KEY=...
-XAI_API_KEY=...            # Grok
+XAI_API_KEY=...            # Grok (metered; fallback if the sidecar fails)
+# SuperGrok sidecar — default off. Rollback = unset the flag (or 0 / false).
+# XAI_USE_SUBSCRIPTION=1
+# XAI_AUTH_SIDECAR_URL=http://xagent-xai-auth.railway.internal:8080
+#   Railway PORT is currently 8080 (not the local Dockerfile default 8787).
+# XAI_AUTH_TRIGGER_TOKEN=...   # same value as on xagent-xai-auth
 ```
 
 ---

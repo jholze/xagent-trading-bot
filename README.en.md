@@ -110,9 +110,11 @@ All intervals: [DOCUMENTATION.en.md §3](DOCUMENTATION.en.md#3-schedules--all-in
 | Trading | `/buy` `/sell` `/positions` `/orders` `/risk` `/dryrun` |
 | **Transparency** | `/decisions` `/why SYMBOL` `/ask` `/hermes_last` `/hermes` `/cmc` `/lc` |
 | Backtest | `/backtest` `/backtest_results` `/backtest_lock` |
-| Mode | `/mode` `/live_confirm` `/gate` |
+| Mode | `/mode` `/live_confirm` `/gate` `/xai_login` |
 | X/Twitter | `/addx` `/xsignals` `/xposts` `/testaccount` `/tracktest` |
 | Sandbox | `/sandbox` `/sandbox_results` `/sandbox_promote` |
+
+**Operator:** `/xai_login` (and `/xai_login status`) is operator-chat only — it starts SuperGrok login on the `xagent-xai-auth` sidecar. Satellite chats get a short deny. Grok, the WQE critic, and `x_search` can use SuperGrok via that sidecar when `XAI_USE_SUBSCRIPTION=1` (default off; rollback = unset the flag) — [DOCUMENTATION.en.md §7](DOCUMENTATION.en.md#7-telegram--all-commands-with-examples) and the `.env` block there.
 
 **Beginner tip:** After a trade, read **“Why:”** in plain language. `/why H` shows the last decision for Humanity (H).
 
