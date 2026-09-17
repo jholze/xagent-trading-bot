@@ -16,6 +16,7 @@ from execution.gate_adapter import GateExecutionAdapter
 from execution.recovery import (
     RecoveryFailed,
     RecoveryReport,
+    _fetch_order_raw,
     _order_is_stop,
     _positions_without_stop,
     reconcile_with_exchange,
@@ -655,3 +656,136 @@ def test_reconcile_reports_positions_without_stop(_reset_recovery, monkeypatch):
             tenant_id="default", scope="demo", adapter=adapter, config=_cfg()
         )
     assert report2.positions_without_stop == []
+
+
+def test_fetch_order_raw_retries_order_not_found_then_returns(monkeypatch):
+    """#481: _fetch_order_raw retries OrderNotFound then returns the closed fill."""
+    assert issubclass(ccxt.OrderNotFound, ccxt.InvalidOrder)
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "execution.order_fetch.sleep", lambda s: sleeps.append(s)
+    )
+    ex = MagicMock()
+    closed = _closed(filled=0.25)
+    ex.fetch_order.side_effect = [
+        ccxt.OrderNotFound("missing"),
+        ccxt.OrderNotFound("missing"),
+        closed,
+    ]
+    raw = _fetch_order_raw(ex, {"symbol": SYMBOL, "exchange_order_id": "ex-1"})
+    assert raw == closed
+    assert ex.fetch_order.call_count == 3
+    assert sleeps == [0.25, 0.5]
+
+
+def test_fetch_order_raw_persistent_order_not_found_returns_none(monkeypatch):
+    """#481: persistent OrderNotFound / None still yields no raw (ACTIVE path)."""
+    monkeypatch.setattr("execution.order_fetch.sleep", lambda _s: None)
+    ex = MagicMock()
+    ex.fetch_order.side_effect = ccxt.OrderNotFound("missing")
+    raw = _fetch_order_raw(ex, {"symbol": SYMBOL, "exchange_order_id": "ex-1"})
+    assert raw is None
+
+    ex2 = MagicMock()
+    ex2.fetch_order.return_value = None
+    assert _fetch_order_raw(ex2, {"symbol": SYMBOL, "exchange_order_id": "ex-1"}) is None
+
+
+def test_fetch_order_raw_invalid_order_not_retried(monkeypatch):
+    """#481: InvalidOrder that is not OrderNotFound is not retried on fetch_order."""
+    invalid = ccxt.InvalidOrder("invalid")
+    assert not isinstance(invalid, ccxt.OrderNotFound)
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "execution.order_fetch.sleep", lambda s: sleeps.append(s)
+    )
+    ex = MagicMock()
+    ex.fetch_order.side_effect = invalid
+    raw = _fetch_order_raw(ex, {"symbol": SYMBOL, "exchange_order_id": "ex-1"})
+    assert raw is None
+    assert sleeps == []
+
+
+def test_inflight_order_not_found_retried_then_executed(_reset_recovery, monkeypatch):
+    """#481: twice OrderNotFound then closed fill books the in-flight row."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "execution.order_fetch.sleep", lambda s: sleeps.append(s)
+    )
+    adapter, ex = _adapter(monkeypatch)
+    ex.fetch_order.side_effect = [
+        ccxt.OrderNotFound("missing"),
+        ccxt.OrderNotFound("missing"),
+        _closed(filled=0.25),
+    ]
+    ex.fetch_balance.return_value = {
+        "total": {"SOL": 0.25},
+        "SOL": {"total": 0.25, "free": 0.25, "used": 0},
+    }
+    with tenant_context("default", scope="demo"):
+        svc = OrderService("demo")
+        rec = svc.create_from_request(
+            TradeOrder(
+                "BUY",
+                SYMBOL,
+                100.0,
+                0.25,
+                usdt_amount=25.0,
+                client_order_id="cid-481",
+                exchange_order_id="ex-1",
+            ),
+            status=OrderStatus.ACTIVE,
+            telegram_token="rec-onf-1",
+            timeframe="4h",
+        )
+        data = svc._load()
+        found = svc._find(data, order_id=rec["id"])
+        found["needs_reconcile"] = True
+        found["exchange_order_id"] = "ex-1"
+        found["qty"] = 0.25
+        found["client_order_id"] = "cid-481"
+        svc._save(data)
+        report = reconcile_with_exchange(
+            tenant_id="default", scope="demo", adapter=adapter, config=_cfg()
+        )
+        stored = svc.get_by_id(rec["id"])
+    assert report.orders_resolved
+    assert OrderStatus.try_legacy(stored.get("status")) is OrderStatus.EXECUTED
+    assert stored.get("needs_reconcile") in (False, None)
+    assert sleeps == [0.25, 0.5]
+
+
+def test_inflight_persistent_order_not_found_left_active(_reset_recovery, monkeypatch):
+    """#481: persistent OrderNotFound leaves the in-flight row ACTIVE."""
+    monkeypatch.setattr("execution.order_fetch.sleep", lambda _s: None)
+    adapter, ex = _adapter(monkeypatch)
+    ex.fetch_order.side_effect = ccxt.OrderNotFound("missing")
+    with tenant_context("default", scope="demo"):
+        svc = OrderService("demo")
+        rec = svc.create_from_request(
+            TradeOrder(
+                "BUY",
+                SYMBOL,
+                100.0,
+                0.25,
+                usdt_amount=25.0,
+                client_order_id="cid-481b",
+                exchange_order_id="ex-missing",
+            ),
+            status=OrderStatus.ACTIVE,
+            telegram_token="rec-onf-2",
+            timeframe="4h",
+        )
+        data = svc._load()
+        found = svc._find(data, order_id=rec["id"])
+        found["needs_reconcile"] = True
+        found["exchange_order_id"] = "ex-missing"
+        found["qty"] = 0.25
+        svc._save(data)
+        report = reconcile_with_exchange(
+            tenant_id="default", scope="demo", adapter=adapter, config=_cfg()
+        )
+        stored = svc.get_by_id(rec["id"])
+    assert report.orders_resolved == []
+    assert OrderStatus.try_legacy(stored.get("status")) is OrderStatus.ACTIVE
+    assert stored.get("needs_reconcile") is True

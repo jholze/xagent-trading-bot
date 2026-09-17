@@ -9,6 +9,7 @@ from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
 from core.models import OrderStatus, TradeOrder, TradeResult, trade_ctx_fields
 from data_manager import record_live_trade, uses_exchange_ledger
 from execution.base import ExecutionAdapter
+from execution.order_fetch import call_fetch_order_retrying_not_found
 from logger import log
 from services.portfolio_service import PortfolioService
 
@@ -1480,17 +1481,30 @@ class GateExecutionAdapter(ExecutionAdapter):
             if not ident:
                 continue
             try:
-                fetched = (
-                    exchange.fetch_order(ident, symbol, params)
-                    if params
-                    else exchange.fetch_order(ident, symbol)
-                )
+                if params:
+                    fetched = call_fetch_order_retrying_not_found(
+                        exchange.fetch_order, ident, symbol, params
+                    )
+                else:
+                    fetched = call_fetch_order_retrying_not_found(
+                        exchange.fetch_order, ident, symbol
+                    )
             except TypeError:
                 try:
-                    fetched = exchange.fetch_order(ident, symbol)
-                except Exception:
+                    fetched = call_fetch_order_retrying_not_found(
+                        exchange.fetch_order, ident, symbol
+                    )
+                except Exception as e:
+                    log(
+                        f"fetch_order({ident!r}) after uncertain create failed: {e}",
+                        "WARNING",
+                    )
                     continue
-            except Exception:
+            except Exception as e:
+                log(
+                    f"fetch_order({ident!r}) after uncertain create failed: {e}",
+                    "WARNING",
+                )
                 continue
             looked = True
             if isinstance(fetched, dict) and fetched:

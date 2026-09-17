@@ -25,6 +25,7 @@ from execution.gate_adapter import (
     _clamp_gate_client_order_id,
     _finish_as_from_raw,
 )
+from execution.order_fetch import call_fetch_order_retrying_not_found
 from logger import log
 from strategies.positions import (
     DUST_AMOUNT_EPSILON,
@@ -566,16 +567,20 @@ def _fetch_order_raw(exchange, order: dict):
             ((ident, symbol), {"clientOrderId": ident}),
         ):
             try:
-                raw = fn(*args, **kwargs) if kwargs else fn(*args)
+                raw = call_fetch_order_retrying_not_found(fn, *args, **kwargs)
             except TypeError:
                 try:
-                    raw = fn(ident, symbol)
+                    raw = call_fetch_order_retrying_not_found(fn, ident, symbol)
                 except Exception as e:
+                    if _is_unreachable(e):
+                        raise
+                    log(f"fetch_order({ident!r}) failed: {e}", "WARNING")
                     last_err = e
                     continue
             except Exception as e:
                 if _is_unreachable(e):
                     raise
+                log(f"fetch_order({ident!r}) failed: {e}", "WARNING")
                 last_err = e
                 continue
             if isinstance(raw, dict) and raw:
