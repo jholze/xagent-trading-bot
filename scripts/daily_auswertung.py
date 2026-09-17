@@ -266,6 +266,42 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
     return "\n".join(lines)
 
 
+def _telegram_portfolio_nav_block(
+    *,
+    cash: float,
+    open_count: int,
+    book_value: float,
+) -> str:
+    """Telegram portfolio lines: same NAV as morning, Buchwert labeled separately.
+
+    Morning briefing prints ``_portfolio_snapshot()['total_value']`` as NAV.
+    The unlabeled ``(~$pos_value)`` cost-basis figure was the #480 bug.
+    Snapshot is ledger-safe (no ``bootstrap_positions`` / ``_active_key``).
+    """
+    nav = None
+    nav_cash = float(cash or 0)
+    try:
+        from core.config import get_bot_config
+        from notifications.terminal_dashboard import _portfolio_snapshot
+
+        snap = _portfolio_snapshot(get_bot_config().trading_mode)
+        nav = float(snap.get("total_value", 0) or 0)
+        nav_cash = float(snap.get("balance", cash) or 0)
+    except Exception:
+        nav = None
+
+    book = float(book_value or 0)
+    if nav is None:
+        return (
+            f"Cash ${nav_cash:,.2f} · Positionen {open_count}\n"
+            f"Buchwert ${book:,.2f}"
+        )
+    return (
+        f"NAV ${nav:,.2f} · Cash ${nav_cash:,.2f} · Positionen {open_count}\n"
+        f"Buchwert ${book:,.2f}"
+    )
+
+
 def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = None) -> str:
     from core.tenant_context import resolve_tenant_id
 
@@ -289,6 +325,9 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
 
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
     _, pos_value = open_positions_table(positions)
+    portfolio_block = _telegram_portfolio_nav_block(
+        cash=cash, open_count=open_count, book_value=pos_value
+    )
 
     day_orders = _orders_in_day(orders_raw, day_start, day_end)
     filled_orders = sum(1 for o in day_orders if o["status"] == "filled")
@@ -315,7 +354,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         f"<b>📊 Tages-Auswertung {date_str}</b> · tenant <code>{tenant_label}</code>\n"
         f"<i>dry_run={live.get('dry_run')} · Report in auswertungen/</i>\n\n"
         f"<b>Portfolio</b>\n"
-        f"Cash ${cash:,.0f} · Positionen {open_count} (~${pos_value:,.0f})\n"
+        f"{portfolio_block}\n"
         f"Realized gesamt {realized_total:+.1f} USDT · heute {sell_pnl_day:+.1f} USDT\n\n"
         f"<b>Trades heute</b> {len(day_trades)} ({buys_day} BUY / {sells_day} SELL"
         f"{f', davon {dca_buys} DCA' if dca_buys else ''})\n"
