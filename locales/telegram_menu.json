@@ -228,9 +228,9 @@
         "hint": "❌ <b>/cover</b> — Short schließen\n\n<code>/cover H</code> (100 %)\n<code>/cover H 50</code> (50 %)"
       },
       "lock": {
-        "description": "Position gegen Auto-Sell locken",
-        "help_line": "<code>/lock SYMBOL [Dauer] [Grund]</code> — z.B. <code>/lock BLESS</code>, <code>/lock BLESS 24h hold</code>, <code>/lock BLESS permanent</code>",
-        "hint": "❌ <b>/lock</b> — Auto-Sell / DCA / Eviction blockieren\n\nListe: <code>/lock</code>\nLocken: <code>/lock BLESS</code>\nMit Dauer: <code>/lock BLESS 24h</code> · <code>/lock BLESS 7d reason</code>\nPermanent: <code>/lock BLESS permanent</code>\nUnlock: <code>/unlock BLESS</code>\n\nManueller <code>/sell</code> bleibt möglich."
+        "description": "Halt/Verkaufssperre, Stop-Loss aus",
+        "help_line": "<code>/lock SYMBOL [Dauer] [Grund]</code> — Verkaufssperre, Stop-Loss aus. z.B. <code>/lock BLESS</code> (Bestätigung)",
+        "hint": "❌ <b>/lock</b> — Verkaufssperre (Stop-Loss AUS)\n\nListe: <code>/lock</code>\nLocken (Bestätigung): <code>/lock BLESS</code>\nMit Dauer: <code>/lock BLESS 24h</code> · <code>/lock BLESS 7d reason</code>\nPermanent: <code>/lock BLESS permanent</code>\nUnlock: <code>/unlock BLESS</code>\n\nKein Auto-Sell, kein Trail, kein harter Stop bis Unlock. Manueller <code>/sell</code> bleibt möglich."
       },
       "unlock": {
         "description": "Position-Lock entfernen",
@@ -662,9 +662,9 @@
         "hint": "❌ <b>/cover</b> — Close short\n\n<code>/cover H</code> (100%)\n<code>/cover H 50</code> (50%)"
       },
       "lock": {
-        "description": "Lock position against auto-sell",
-        "help_line": "<code>/lock SYMBOL [duration] [reason]</code> — e.g. <code>/lock BLESS</code>, <code>/lock BLESS 24h hold</code>",
-        "hint": "❌ <b>/lock</b> — Block auto-sell / DCA / eviction\n\nList: <code>/lock</code>\nLock: <code>/lock BLESS</code>\nDuration: <code>/lock BLESS 24h</code> · <code>/lock BLESS 7d reason</code>\nPermanent: <code>/lock BLESS permanent</code>\nUnlock: <code>/unlock BLESS</code>\n\nManual <code>/sell</code> still allowed."
+        "description": "Halt / sell-block — stop-loss off",
+        "help_line": "<code>/lock SYMBOL [duration] [reason]</code> — sell-block, stop-loss off. e.g. <code>/lock BLESS</code> (needs confirm)",
+        "hint": "❌ <b>/lock</b> — Sell-block (stop-loss OFF)\n\nList: <code>/lock</code>\nLock (needs confirm): <code>/lock BLESS</code>\nDuration: <code>/lock BLESS 24h</code> · <code>/lock BLESS 7d reason</code>\nPermanent: <code>/lock BLESS permanent</code>\nUnlock: <code>/unlock BLESS</code>\n\nNo auto-sell, no trail, no hard stop until unlock. Manual <code>/sell</code> still allowed."
       },
       "unlock": {
         "description": "Remove position lock",

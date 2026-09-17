@@ -265,6 +265,19 @@ class TestCallbackPath:
             assert router.dispatch_callback(cb) is True
         tr_cb.assert_called_once()
 
+    def test_lock_callback_not_gated(self, tg, multi_tenant):
+        """#453 option b: /lock stays available; lock_ok/lock_no are not operator-only."""
+        cb = {
+            "id": "cq",
+            "data": "lock_ok:abc",
+            "message": {"chat": {"id": int(SATELLITE_CHAT)}},
+        }
+        with patch.object(router.lock_commands, "handle_callback", return_value=True) as lock_cb:
+            assert router.dispatch_callback(cb) is True
+        lock_cb.assert_called_once()
+        assert "lock" not in router.OPERATOR_ONLY
+        assert not any(p.startswith("lock") for p in router._OPERATOR_ONLY_CALLBACK_PREFIXES)
+
 
 # --------------------------------------------------------------------------
 # One set, both paths, trimmed against reality
