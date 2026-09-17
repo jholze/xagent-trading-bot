@@ -401,3 +401,69 @@ def test_timeout_unreachable_row_needs_order_reconcile(monkeypatch):
     assert stored.get("needs_reconcile") is True
     assert OrderStatus.try_legacy(stored.get("status")) is OrderStatus.ACTIVE
     _assert_create_not_resent(ex)
+
+
+def test_timeout_order_not_found_retried_then_executed(monkeypatch):
+    """#481: OrderNotFound on fetch_order is retried; a late fill is booked."""
+    assert issubclass(ccxt.OrderNotFound, ccxt.InvalidOrder)
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "execution.order_fetch.sleep", lambda s: sleeps.append(s)
+    )
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.return_value = []
+    ex.fetch_order.side_effect = [
+        ccxt.OrderNotFound("missing"),
+        ccxt.OrderNotFound("missing"),
+        _closed(filled=0.25, average=100, oid="ex-1"),
+    ]
+    result = adapter.execute(_buy_order())
+    assert result.executed
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.filled_qty == pytest.approx(0.25)
+    adapter.portfolio.execute_buy.assert_called_once()
+    _assert_create_not_resent(ex)
+    assert sleeps == [0.25, 0.5]
+    assert ex.fetch_order.call_count == 3
+    assert ex.create_market_buy_order_with_cost.call_count == 1
+
+
+def test_timeout_invalid_order_not_retried(monkeypatch):
+    """#481: ccxt.InvalidOrder that is not OrderNotFound is not retried."""
+    invalid = ccxt.InvalidOrder("invalid")
+    assert isinstance(invalid, ccxt.InvalidOrder)
+    assert not isinstance(invalid, ccxt.OrderNotFound)
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "execution.order_fetch.sleep", lambda s: sleeps.append(s)
+    )
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.return_value = []
+    ex.fetch_order.side_effect = invalid
+    result = adapter.execute(_buy_order())
+    assert result.executed is False
+    assert result.order_status is not OrderStatus.EXECUTED
+    assert result.order_status is OrderStatus.REJECTED
+    assert "not placed" in (result.message or "")
+    adapter.portfolio.execute_buy.assert_not_called()
+    _assert_create_not_resent(ex)
+    assert sleeps == []
+
+
+def test_timeout_persistent_order_not_found_rejected_no_reconcile(monkeypatch):
+    """#481: OrderNotFound after retries is still genuinely absent (#332(a) shape)."""
+    monkeypatch.setattr("execution.order_fetch.sleep", lambda _s: None)
+    adapter, ex, _ = _real_adapter(monkeypatch)
+    ex.create_market_buy_order_with_cost.side_effect = ccxt.RequestTimeout("timeout")
+    ex.fetch_open_orders.return_value = []
+    ex.fetch_order.side_effect = ccxt.OrderNotFound("missing")
+    result = adapter.execute(_buy_order())
+    assert result.executed is False
+    assert result.order_status is OrderStatus.REJECTED
+    assert result.needs_reconcile is False
+    assert result.order_exist_in_exchange is False
+    assert "not placed" in (result.message or "")
+    adapter.portfolio.execute_buy.assert_not_called()
+    _assert_create_not_resent(ex)
