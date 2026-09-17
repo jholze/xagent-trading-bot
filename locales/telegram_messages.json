@@ -267,7 +267,12 @@
     "diag_queues_line": "trade intents {intents} · eval {eval}",
     "panic_running": "⚠️ <b>Panic läuft bereits.</b> Bitte warten, bis die Zusammenfassung kommt.",
     "panic_started": "🚨 <b>Panic gestartet:</b> {n} Positionen werden nacheinander geschlossen. Zusammenfassung folgt.",
-    "panic_failed_unexpected": "❌ <b>Panic abgebrochen:</b> {error}\nBitte /positions prüfen."
+    "panic_failed_unexpected": "❌ <b>Panic abgebrochen:</b> {error}\nBitte /positions prüfen.",
+    "lock_confirm": "⚠️ Stop-Loss für <code>{symbol}</code> ist damit <b>AUS</b> (kein Auto-Sell, kein Trail, kein harter Stop bis Unlock). Manueller <code>/sell</code> bleibt möglich.\n\nDauer: <code>{until}</code>\nGrund: <i>{reason}</i>\nModi: <code>{modes}</code>",
+    "lock_confirm_btn_ok": "Sperren — Stop-Loss aus",
+    "lock_confirm_btn_no": "Abbrechen",
+    "lock_confirm_expired": "⏱️ Lock-Bestätigung abgelaufen. Sende <code>/lock</code> erneut.",
+    "lock_confirm_cancelled": "✅ Lock abgebrochen — nichts geändert."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -537,6 +542,11 @@
     "diag_queues_line": "trade intents {intents} · eval {eval}",
     "panic_running": "⚠️ <b>Panic already running.</b> Please wait for the summary.",
     "panic_started": "🚨 <b>Panic started:</b> closing {n} positions one by one. Summary follows.",
-    "panic_failed_unexpected": "❌ <b>Panic aborted:</b> {error}\nPlease check /positions."
+    "panic_failed_unexpected": "❌ <b>Panic aborted:</b> {error}\nPlease check /positions.",
+    "lock_confirm": "⚠️ Stop-loss for <code>{symbol}</code> will be <b>OFF</b> (no auto-sell, no trail, no hard stop until unlock). Manual <code>/sell</code> still works.\n\nUntil: <code>{until}</code>\nReason: <i>{reason}</i>\nModes: <code>{modes}</code>",
+    "lock_confirm_btn_ok": "Lock — stop-loss off",
+    "lock_confirm_btn_no": "Cancel",
+    "lock_confirm_expired": "⏱️ Lock confirmation expired. Send <code>/lock</code> again.",
+    "lock_confirm_cancelled": "✅ Lock cancelled — nothing changed."
   }
 }

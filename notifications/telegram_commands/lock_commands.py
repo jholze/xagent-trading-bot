@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import time
+import uuid
+from html import escape as _esc
+from typing import Any, Callable
+
 from notifications.telegram_commands.command_context import activate_command, clear_context
 from notifications.telegram_commands.position_display import (
     position_symbol,
     resolve_position_by_symbol,
 )
 from notifications.telegram_commands.usage_hints import hint
+from notifications.telegram_i18n import t
 from price_fetcher import get_prices_batch
 from strategies.position_lock import (
     DEFAULT_MODES,
@@ -24,7 +30,53 @@ from strategies.positions import (
     list_active_positions,
     set_position_lock,
 )
-from telegram_notifier import send_telegram_message
+from telegram_notifier import (
+    answer_callback_query,
+    send_telegram_buttons,
+    send_telegram_message,
+)
+
+LOCK_CONFIRM_TTL_SEC = 60.0
+
+_clock: Callable[[], float] = time.monotonic
+_pending_lock: dict[str, dict[str, Any]] = {}
+
+
+def reset_lock_confirm_for_tests(*, clock: Callable[[], float] | None = None) -> None:
+    """Drop pending lock tokens; optionally pin the clock."""
+    global _clock
+    _pending_lock.clear()
+    _clock = clock or time.monotonic
+
+
+def _now() -> float:
+    return float(_clock())
+
+
+def _create_lock_token(
+    *,
+    symbol: str,
+    timeframe: str,
+    lock: dict[str, Any],
+    ttl: float = LOCK_CONFIRM_TTL_SEC,
+) -> str:
+    token = uuid.uuid4().hex[:12]
+    _pending_lock[token] = {
+        "expires_at": _now() + float(ttl),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "lock": dict(lock),
+    }
+    return token
+
+
+def consume_lock_token(token: str) -> dict[str, Any] | None:
+    rec = _pending_lock.pop(token, None)
+    if rec is None:
+        return None
+    if _now() >= float(rec.get("expires_at") or 0):
+        return None
+    return rec
 
 
 def _fmt_lock(lock: dict | None) -> str:
@@ -51,6 +103,32 @@ def _resolve_open(query: str):
     return p, None
 
 
+def _locked_reply(sym: str, tf: str, lock: dict[str, Any]) -> str:
+    until_s = lock.get("until") or "permanent"
+    return (
+        f"🔒 <b>Locked</b> <code>{_esc(sym)}</code> ({_esc(tf)})\n"
+        f"modes: <code>{_esc(','.join(lock.get('modes') or []))}</code>\n"
+        f"until: <code>{_esc(str(until_s))}</code>\n"
+        f"reason: <i>{_esc(str(lock.get('reason') or ''))}</i>\n\n"
+        f"Auto-Sell / Trail / Eviction blockiert.\n"
+        f"DCA + Sniper bleiben erlaubt (Lock = nur Verkaufs-Hold).\n"
+        f"Manueller <code>/sell</code> bleibt möglich.\n"
+        f"Unlock: <code>/unlock {_esc(sym.split('/')[0])}</code>"
+    )
+
+
+def _apply_pending_lock(rec: dict[str, Any]) -> None:
+    clear_context()
+    sym = str(rec.get("symbol") or "")
+    tf = str(rec.get("timeframe") or "1h")
+    lock = rec.get("lock")
+    if not sym or not isinstance(lock, dict):
+        send_telegram_message(t("lock_confirm_expired"))
+        return
+    set_position_lock(sym, tf, lock, persist=True)
+    send_telegram_message(_locked_reply(sym, tf, lock))
+
+
 def handle(text: str) -> bool:
     lower = (text or "").strip()
     if not lower:
@@ -61,6 +139,30 @@ def handle(text: str) -> bool:
     if lower == "/unlock" or lower.startswith("/unlock "):
         return _handle_unlock(lower)
     return False
+
+
+def handle_callback(callback_query: dict) -> bool:
+    data = str((callback_query or {}).get("data") or "")
+    if not (data.startswith("lock_ok:") or data.startswith("lock_no:")):
+        return False
+    answer_callback_query(callback_query.get("id"))
+    parts = data.split(":", 1)
+    if len(parts) != 2 or not parts[1]:
+        send_telegram_message(t("lock_confirm_expired"))
+        return True
+    action, token = parts
+    if action == "lock_no":
+        _pending_lock.pop(token, None)
+        send_telegram_message(t("lock_confirm_cancelled"))
+        return True
+    if action == "lock_ok":
+        rec = consume_lock_token(token)
+        if rec is None:
+            send_telegram_message(t("lock_confirm_expired"))
+            return True
+        _apply_pending_lock(rec)
+        return True
+    return True
 
 
 def _handle_lock(text: str) -> bool:
@@ -139,17 +241,23 @@ def _handle_lock(text: str) -> bool:
         until=until,
         modes=DEFAULT_MODES,
     )
-    set_position_lock(sym, tf, lock, persist=True)
+    token = _create_lock_token(symbol=sym, timeframe=tf, lock=lock)
     until_s = lock.get("until") or "permanent"
-    send_telegram_message(
-        f"🔒 <b>Locked</b> <code>{sym}</code> ({tf})\n"
-        f"modes: <code>{','.join(lock.get('modes') or [])}</code>\n"
-        f"until: <code>{until_s}</code>\n"
-        f"reason: <i>{lock.get('reason')}</i>\n\n"
-        f"Auto-Sell / Trail / Eviction blockiert.\n"
-        f"DCA + Sniper bleiben erlaubt (Lock = nur Verkaufs-Hold).\n"
-        f"Manueller <code>/sell</code> bleibt möglich.\n"
-        f"Unlock: <code>/unlock {sym.split('/')[0]}</code>"
+    keyboard = [
+        [
+            {"text": t("lock_confirm_btn_ok"), "callback_data": f"lock_ok:{token}"},
+            {"text": t("lock_confirm_btn_no"), "callback_data": f"lock_no:{token}"},
+        ]
+    ]
+    send_telegram_buttons(
+        t(
+            "lock_confirm",
+            symbol=_esc(sym),
+            until=_esc(str(until_s)),
+            reason=_esc(str(lock.get("reason") or "")),
+            modes=_esc(",".join(lock.get("modes") or [])),
+        ),
+        keyboard,
     )
     return True
 

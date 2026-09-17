@@ -98,9 +98,11 @@ class TestCommandContextUnarmed454(unittest.TestCase):
              patch(f"{LC}.parse_duration_to_until", return_value=None), \
              patch(f"{LC}.build_lock", return_value=lock), \
              patch(f"{LC}.set_position_lock") as set_lock, \
-             patch(f"{LC}.send_telegram_message"):
+             patch(f"{LC}.send_telegram_message"), \
+             patch(f"{LC}.send_telegram_buttons"):
             self.assertTrue(lock_commands.handle("/lock BLESS"))
-            set_lock.assert_called_once()
+            # #453: /lock SYMBOL only prompts; persist happens on lock_ok.
+            set_lock.assert_not_called()
         self.assertIsNone(ctx.get_context(CHAT))
         self.assertFalse(ctx.try_resolve(CHAT, section_title("handel", "de")))
 

@@ -151,6 +151,8 @@ def dispatch_callback(callback_query: dict) -> bool:
             return True
         if config_commands.handle_callback(callback_query):
             return True
+        if lock_commands.handle_callback(callback_query):
+            return True
         if trading_commands.handle_callback(callback_query):
             return True
         if order_commands.handle_callback(callback_query):
