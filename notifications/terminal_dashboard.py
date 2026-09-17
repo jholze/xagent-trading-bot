@@ -77,12 +77,11 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         balance_label = "Balance"
 
     if active is None:
-        active = list_active_positions(tenant_id=tid, scope=scope)
-        if not active and int(history.get("open_positions", 0) or 0) > 0:
-            from strategies.positions import bootstrap_positions
+        # Ledger read — do not bootstrap / _activate; morning fan-out runs
+        # under satellite tenants and must not leave _active_key on henry (#478).
+        from strategies.positions import list_active_positions_from_ledger
 
-            bootstrap_positions(scope, tenant_id=tid)
-            active = list_active_positions(tenant_id=tid, scope=scope)
+        active = list_active_positions_from_ledger(scope=scope, tenant_id=tid)
     symbols = [position_symbol(p) for p in active]
     prices = get_prices_batch(
         symbols,

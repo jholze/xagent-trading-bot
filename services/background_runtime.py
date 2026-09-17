@@ -273,17 +273,37 @@ def _maybe_tick_daily_reports(now: datetime | None = None, *, cfg: Any = None) -
     sent_morning = False
     skipped_marker = False
     sent_daily = False
+    cid = _operator_chat_id()
+
+    from core.tenant_context import tenant_context
+    from scripts.daily_auswertung import iter_daily_report_tenants
+
+    tenants = iter_daily_report_tenants()
 
     if morning_enabled:
         try:
-            from notifications.morning_briefing import can_send_morning, send_morning_briefing
+            from notifications.morning_briefing import (
+                can_send_morning,
+                mark_morning_sent,
+                send_morning_briefing,
+            )
 
-            cid = _operator_chat_id()
             if cid:
                 allowed, _sent_at = can_send_morning(cid, now=clock)
                 if allowed:
-                    send_morning_briefing(cid, now=clock)
-                    sent_morning = True
+                    # One send window: do not call send_morning_briefing(cid)
+                    # per tenant with the once-per-day gate — that marks after
+                    # the first tenant and drops the rest (#478).
+                    any_ok = False
+                    for tid, owner in tenants:
+                        with tenant_context(tid, scope="demo", owner_chat_id=owner):
+                            if send_morning_briefing(
+                                cid, now=clock, enforce_once_per_day=False
+                            ):
+                                any_ok = True
+                    if any_ok:
+                        mark_morning_sent(cid, now=clock)
+                        sent_morning = True
                 else:
                     skipped_marker = True
             else:
@@ -298,8 +318,10 @@ def _maybe_tick_daily_reports(now: datetime | None = None, *, cfg: Any = None) -
             from scripts.daily_auswertung import send_daily_telegram_summary
 
             bot_dir = Path(__file__).resolve().parents[1]
-            if send_daily_telegram_summary(bot_dir, wall):
-                sent_daily = True
+            for tid, owner in tenants:
+                with tenant_context(tid, scope="demo", owner_chat_id=owner):
+                    if send_daily_telegram_summary(bot_dir, wall, chat_id=cid or None):
+                        sent_daily = True
         except Exception as e:
             log(f"Daily auswertung telegram failed: {e}", "WARNING")
 

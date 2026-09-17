@@ -23,6 +23,7 @@ class TestTerminalDashboardBaseline(unittest.TestCase):
              patch("notifications.telegram_commands.position_display._refresh_positions_for_snapshot"), \
              patch("core.simulated_trading.uses_order_ledger_cash", return_value=False), \
              patch("notifications.terminal_dashboard.list_active_positions", return_value=[]), \
+             patch("strategies.positions.list_active_positions_from_ledger", return_value=[]), \
              patch("notifications.terminal_dashboard.initial_capital", return_value=50000.0) as mock_baseline, \
              patch("notifications.terminal_dashboard.resolve_ledger_scope", return_value="demo") as mock_scope:
             cfg = mock_cfg.return_value

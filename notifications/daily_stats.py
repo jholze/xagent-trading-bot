@@ -57,14 +57,49 @@ def _stats_ledger_scope() -> str:
     return resolve_ledger_scope()
 
 
-def load_trade_history_doc() -> dict:
+def _on_ledger_read_error(
+    op: str,
+    *,
+    tenant_id: str,
+    scope: str | None,
+    exc: BaseException,
+) -> None:
+    """Log a ledger read failure. Raise under multi-tenant (no silent zeros).
+
+    Single-tenant callers may JSON-fallback after this returns. Satellite
+    tenants must not inherit default JSON (#478).
+    """
+    from core.tenant_context import multi_tenant_enabled
+    from storage.errors import LedgerUnavailable
+
+    log(f"{op} tenant={tenant_id}: {exc}", "WARNING")
+    if not multi_tenant_enabled():
+        return
+    if isinstance(exc, LedgerUnavailable):
+        raise exc
+    raise LedgerUnavailable(
+        op=op, tenant_id=tenant_id, scope=scope, cause=exc
+    ) from exc
+
+
+def load_trade_history_doc(tenant_id: str | None = None) -> dict:
     """Trade history from active ledger scope (Mongo or JSON)."""
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
+    scope = None
     try:
         from data_manager import load_trade_history_document
 
-        return load_trade_history_document(_stats_ledger_scope()) or {}
-    except Exception:
-        pass
+        scope = _stats_ledger_scope()
+        return load_trade_history_document(scope, tenant_id=tid) or {}
+    except Exception as exc:
+        _on_ledger_read_error(
+            "load_trade_history_document",
+            tenant_id=tid,
+            scope=scope,
+            exc=exc,
+        )
     for name in (
         "live_trade_history.json",
         "live_trade_history.demo.json",
@@ -81,15 +116,25 @@ def load_trade_history_doc() -> dict:
     return {"trades": [], "virtual_balance": 0.0, "realized_pnl": 0.0, "total_pnl": 0.0}
 
 
-def load_orders_doc() -> dict:
+def load_orders_doc(tenant_id: str | None = None) -> dict:
     """Orders from active ledger scope, with legacy JSON fallback."""
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id(tenant_id)
+    scope = None
     try:
         from data_manager import load_orders
 
-        return load_orders(_stats_ledger_scope()) or {"orders": []}
-    except Exception:
-        pass
-    scope = _stats_ledger_scope()
+        scope = _stats_ledger_scope()
+        return load_orders(scope, tenant_id=tid) or {"orders": []}
+    except Exception as exc:
+        _on_ledger_read_error(
+            "load_orders",
+            tenant_id=tid,
+            scope=scope,
+            exc=exc,
+        )
+    scope = scope or _stats_ledger_scope()
     candidates = {
         "demo": ("orders.demo.json",),
         "paper": ("orders.paper.json",),
@@ -179,20 +224,28 @@ def normalize_social_action(post: dict) -> str:
 
 
 def open_positions_summary(bot_dir: Path | None = None) -> tuple[int, float]:
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id()
+    scope = None
     try:
-        from strategies.positions import bootstrap_positions, list_active_positions
+        from strategies.positions import list_active_positions_from_ledger
 
         scope = _stats_ledger_scope()
-        bootstrap_positions(scope=scope)
-        active = list_active_positions()
+        active = list_active_positions_from_ledger(scope=scope, tenant_id=tid)
         total = sum(
             float(p.get("amount") or 0)
             * float(p.get("average_entry") or p.get("entry_price") or 0)
             for p in active
         )
         return len(active), total
-    except Exception:
-        pass
+    except Exception as exc:
+        _on_ledger_read_error(
+            "list_active_positions_from_ledger",
+            tenant_id=tid,
+            scope=scope,
+            exc=exc,
+        )
     root = bot_dir or BOT_ROOT
     for name in ("positions.live.json", "positions.demo.json", "positions.json"):
         path = None

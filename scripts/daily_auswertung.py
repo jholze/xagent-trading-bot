@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import sys
 from collections import Counter, defaultdict
@@ -37,13 +38,47 @@ def _bot_json(bot_dir: Path, name: str) -> Path:
     return bot_dir / "data" / name
 
 
-def _ledger_bundle() -> tuple[dict, dict, dict]:
+def iter_daily_report_tenants() -> list[tuple[str, str]]:
+    """Same tenant set as ``reconcile_demo_trade_history_on_startup``.
+
+    Always includes ``DEFAULT_TENANT``. Extra tenants only when multi-tenant is
+    on: active registry rows with ``telegram.owner_chat_id``, skipping empty
+    ids and the default row (already included).
+    """
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+
+    out: list[tuple[str, str]] = [(DEFAULT_TENANT, "")]
+    if not multi_tenant_enabled():
+        return out
+    try:
+        from storage.tenant_registry import list_active_tenants
+
+        for doc in list_active_tenants() or []:
+            tid = str(doc.get("tenant_id") or "").strip()
+            if not tid or tid == DEFAULT_TENANT:
+                continue
+            if doc.get("status", "active") != "active":
+                continue
+            owner = str((doc.get("telegram") or {}).get("owner_chat_id") or "").strip()
+            if not owner:
+                continue
+            out.append((tid, owner))
+    except Exception as exc:
+        print(f"Daily report extra-tenant loop skipped: {exc}")
+    return out
+
+
+def _ledger_bundle(*, tenant_id: str | None = None) -> tuple[dict, dict, dict]:
     """Trade history, orders, positions from the active ledger scope (not live_*.json).
 
-    Raises ``LedgerUnavailable`` when the ledger cannot be read (#350): a failed
-    read must never render as a zero-trade report.
+    Honors ``tenant_context`` / ``tenant_id`` so henry/ctexp are not silently
+    default (#478). Raises ``LedgerUnavailable`` when the ledger cannot be read
+    (#350): a failed read must never render as a zero-trade report.
     """
+    from core.tenant_context import resolve_tenant_id
+
     scope = None
+    tid = resolve_tenant_id(tenant_id)
     try:
         from data_manager import (
             load_orders,
@@ -53,9 +88,9 @@ def _ledger_bundle() -> tuple[dict, dict, dict]:
         )
 
         scope = resolve_ledger_scope()
-        th = load_trade_history_document(scope) or {}
-        orders = load_orders(scope) or {"orders": []}
-        positions_doc = load_positions_document(scope) or {}
+        th = load_trade_history_document(scope, tenant_id=tid) or {}
+        orders = load_orders(scope, tenant_id=tid) or {"orders": []}
+        positions_doc = load_positions_document(scope, tenant_id=tid) or {}
     except LedgerUnavailable:
         raise
     except Exception as exc:
@@ -232,10 +267,13 @@ def hermes_section(bot_dir: Path, day_start: datetime, day_end: datetime) -> str
 
 
 def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = None) -> str:
+    from core.tenant_context import resolve_tenant_id
+
     report_date = report_date or datetime.now()
     day_start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
     date_str = day_start.strftime("%Y-%m-%d")
+    tenant_label = html.escape(resolve_tenant_id(), quote=False)
 
     th, orders_raw, positions = _ledger_bundle()
     day_trades = _day_trades(th, orders_raw, day_start, day_end)
@@ -274,7 +312,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         trade_lines.append("• — keine Trades —")
 
     return (
-        f"<b>📊 Tages-Auswertung {date_str}</b>\n"
+        f"<b>📊 Tages-Auswertung {date_str}</b> · tenant <code>{tenant_label}</code>\n"
         f"<i>dry_run={live.get('dry_run')} · Report in auswertungen/</i>\n\n"
         f"<b>Portfolio</b>\n"
         f"Cash ${cash:,.0f} · Positionen {open_count} (~${pos_value:,.0f})\n"
@@ -291,20 +329,46 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     )
 
 
-def send_daily_telegram_summary(bot_dir: Path, report_date: datetime | None = None) -> bool:
+def send_daily_telegram_summary(
+    bot_dir: Path,
+    report_date: datetime | None = None,
+    *,
+    chat_id: str | None = None,
+) -> bool:
     config = load_json(bot_dir / "config.json")
     if not config.get("observability", {}).get("daily_report_telegram", True):
         return False
-    summary = build_telegram_daily_summary(bot_dir, report_date)
     try:
         from dotenv import load_dotenv
-        from telegram_notifier import _send_telegram_direct
+        from telegram_notifier import _env_chat_id, _send_telegram_direct
 
         load_dotenv(bot_dir / ".env", override=True)
-        return bool(_send_telegram_direct(summary))
     except Exception as exc:
         print(f"Telegram daily summary failed: {exc}")
         return False
+
+    # Operator inbox only — never tenant owner_chat_id from context (#478).
+    dest = str(chat_id or "").strip() or str(_env_chat_id() or "").strip() or None
+
+    def _deliver_current() -> bool:
+        summary = build_telegram_daily_summary(bot_dir, report_date)
+        try:
+            return bool(_send_telegram_direct(summary, chat_id=dest))
+        except Exception as exc:
+            print(f"Telegram daily summary failed: {exc}")
+            return False
+
+    from core.tenant_context import current_tenant_context, tenant_context
+
+    if current_tenant_context() is not None:
+        return _deliver_current()
+
+    sent_any = False
+    for tid, owner in iter_daily_report_tenants():
+        with tenant_context(tid, scope="demo", owner_chat_id=owner):
+            if _deliver_current():
+                sent_any = True
+    return sent_any
 
 
 def live_flags(config: dict) -> str:
