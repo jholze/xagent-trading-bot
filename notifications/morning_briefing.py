@@ -164,8 +164,11 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
     short_bit = f" / {short_n} SHORT / {cover_n} COVER" if (short_n or cover_n) else ""
     dca_bit = f", {stats['dca_buys']} DCA" if stats["dca_buys"] else ""
 
+    from core.tenant_context import resolve_tenant_id
+
+    tenant_label = _esc(resolve_tenant_id())
     msg = (
-        f"<b>☀️ Morning Briefing</b>\n"
+        f"<b>☀️ Morning Briefing</b> · tenant <code>{tenant_label}</code>\n"
         f"<i>{now.strftime('%Y-%m-%d %H:%M')} · letzte 24h</i>\n"
         f"{build_line}\n"
         f"Modus: <code>{_esc(cfg.trading_mode)}</code> · dry_run=<code>{_esc(live.get('dry_run'))}</code>\n\n"
@@ -215,18 +218,24 @@ def _send_chunk(chat_id: str | None, chunk: str) -> bool:
     return bool(_send_telegram_direct(plain, chat_id=chat_id, parse_mode=None))
 
 
-def send_morning_briefing(chat_id: str | None = None, *, now: datetime | None = None) -> bool:
+def send_morning_briefing(
+    chat_id: str | None = None,
+    *,
+    now: datetime | None = None,
+    enforce_once_per_day: bool = True,
+) -> bool:
     from telegram_notifier import send_telegram_message
 
     from notifications.telegram_i18n import t
 
     cid = chat_id or _current_chat_id()
-    allowed, sent_time = can_send_morning(cid, now=now)
-    if not allowed:
-        send_telegram_message(
-            t("morning_already_sent", time=sent_time)
-        )
-        return True
+    if enforce_once_per_day:
+        allowed, sent_time = can_send_morning(cid, now=now)
+        if not allowed:
+            send_telegram_message(
+                t("morning_already_sent", time=sent_time)
+            )
+            return True
 
     chunks = build_morning_briefing(cid)
     ok = True
@@ -234,7 +243,8 @@ def send_morning_briefing(chat_id: str | None = None, *, now: datetime | None = 
         if not _send_chunk(cid, chunk):
             ok = False
     if ok:
-        mark_morning_sent(cid, now=now)
+        if enforce_once_per_day:
+            mark_morning_sent(cid, now=now)
     else:
         send_telegram_message(t("morning_send_failed"))
     return ok
