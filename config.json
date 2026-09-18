@@ -44,7 +44,12 @@
         "BUSD",
         "BTC",
         "ETH",
-        "SOL"
+        "SOL",
+        "BEAT",
+        "SKYAI",
+        "H",
+        "PENGU",
+        "SPK"
       ]
     }
   },
@@ -259,7 +264,12 @@
         "BUSD",
         "BTC",
         "ETH",
-        "SOL"
+        "SOL",
+        "BEAT",
+        "SKYAI",
+        "H",
+        "PENGU",
+        "SPK"
       ]
     },
     "cmc_trending_fusion": {
@@ -2028,7 +2038,7 @@
       "BULL",
       "BEAR"
     ],
-    "blacklist_bases": [],
+    "blacklist_bases": ["BEAT", "SKYAI", "H", "PENGU", "SPK"],
     "blacklist_name_keywords": [],
     "live_top_n": 25,
     "daily_history_days": 10,
