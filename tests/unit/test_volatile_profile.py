@@ -1,3 +1,4 @@
+import copy
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -213,3 +214,65 @@ class TestVolatileProfile(unittest.TestCase):
         self.assertEqual(normalized, "HOLD")
         self.assertEqual(action, "HOLD")
         self.assertEqual(shadow, "SELL_30")
+
+    def test_identity_row_same_as_no_row_volatile(self):
+        """Acceptance 1: identity-only resolve matches no-row `_pure_volatile_profile`."""
+        from core.config import BotConfig
+        from data_manager import get_config
+        from strategies.registry import is_identity_strategy_entry
+
+        coin = {"symbol": "SLOT/USDT", "timeframe": "4h", "source": "dry_run_expansion"}
+        identity = {
+            "symbol": "SLOT/USDT",
+            "timeframe": "4h",
+            "strategy_class": "technical_rsi_bb",
+            "description": "identity slot",
+            "auto_identity": True,
+        }
+        self.assertTrue(is_identity_strategy_entry(identity))
+        raw = copy.deepcopy(get_config())
+        curated = [e for e in raw.get("strategies", []) if e.get("symbol") != "SLOT/USDT"]
+        cfg_none = BotConfig(raw={**raw, "strategies": curated})
+        cfg_id = BotConfig(raw={**raw, "strategies": curated + [identity]})
+        with patch("strategies.registry._hermes_memory_params", return_value=None), \
+             patch("strategies.registry.get_bot_config", return_value=cfg_none):
+            no_row = resolve_strategy_params(
+                coin, has_position=True, atr_pct=49.0, frozen_tier="volatile"
+            )
+        with patch("strategies.registry._hermes_memory_params", return_value=None), \
+             patch("strategies.registry.get_bot_config", return_value=cfg_id):
+            ident = resolve_strategy_params(
+                coin, has_position=True, atr_pct=49.0, frozen_tier="volatile"
+            )
+        self.assertEqual(ident.get("strategy_profile"), no_row.get("strategy_profile"))
+        self.assertEqual(ident.get("rsi_sell_30"), no_row.get("rsi_sell_30"))
+        self.assertEqual(ident.get("strategy_profile"), "volatile_altcoin")
+        self.assertEqual(ident.get("rsi_sell_30"), 62)
+
+    def test_stale_identity_marker_with_preserve_key_stays_explicit(self):
+        """Acceptance 2: preserve-key row stays explicit even if auto_identity is stale."""
+        from core.config import BotConfig
+        from data_manager import get_config
+        from strategies.registry import _explicit_strategy_entry, is_identity_strategy_entry
+
+        coin = {"symbol": "ETH/USDT", "timeframe": "4h"}
+        stale = {
+            "symbol": "ETH/USDT",
+            "timeframe": "4h",
+            "rsi_sell_30": 70,
+            "auto_identity": True,
+        }
+        self.assertFalse(is_identity_strategy_entry(stale))
+        raw = copy.deepcopy(get_config())
+        cfg = BotConfig(raw={**raw, "strategies": [stale]})
+        with patch("strategies.registry.get_bot_config", return_value=cfg):
+            entry = _explicit_strategy_entry("ETH/USDT", "4h")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry.get("rsi_sell_30"), 70)
+        with patch("strategies.registry._hermes_memory_params", return_value=None), \
+             patch("strategies.registry.get_bot_config", return_value=cfg):
+            params = resolve_strategy_params(
+                coin, has_position=True, atr_pct=1.7, frozen_tier="volatile"
+            )
+        self.assertEqual(params.get("rsi_sell_30"), 70)
+        self.assertEqual(params.get("exit_ladder", {}).get("tiers"), [0.35, 0.35, 0.3])

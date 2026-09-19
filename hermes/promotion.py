@@ -167,12 +167,15 @@ def latest_snapshot_id() -> str | None:
 def _strategy_slice(symbol: str, timeframe: str) -> dict | None:
     try:
         from data_manager import get_config
+        from strategies.registry import is_identity_strategy_entry
 
         cfg = get_config()
         if not isinstance(cfg, dict):
             cfg = getattr(cfg, "raw", None) or {}
         for entry in cfg.get("strategies") or []:
             if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == timeframe:
+                if is_identity_strategy_entry(entry):
+                    return None
                 return copy.deepcopy(entry)
     except Exception:
         return None

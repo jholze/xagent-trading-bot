@@ -43,6 +43,8 @@ class StrategyAutoTuner:
         return True, "approved"
 
     def apply(self, symbol: str, timeframe: str, new_params: dict) -> tuple[bool, dict, str]:
+        from strategies.registry import is_identity_strategy_entry
+
         cfg = deepcopy(get_config())
         strategies = cfg.setdefault("strategies", [])
         target = None
@@ -52,6 +54,8 @@ class StrategyAutoTuner:
                 break
         if not target:
             return False, {}, f"No strategy entry for {symbol} {timeframe}"
+        if is_identity_strategy_entry(target):
+            return False, {}, "identity row"
 
         applied = {}
         for key in TUNABLE_KEYS:
