@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from services.gainer_universe.filters import passes_spot_usdt_filter
 from services.gainer_universe.inject import (
@@ -10,6 +11,7 @@ from services.gainer_universe.inject import (
     merge_expand_into_trade,
     merge_gainers_into_observe,
 )
+from services.watchlist_quality.memory_bias import MemoryWqeInput
 from services.gainer_universe.scanner import (
     build_eligible,
     compute_streaks,
@@ -374,3 +376,203 @@ def test_chase_guard_ohlcv_throw_non_guarded_source_stays_open(monkeypatch):
     )
     assert blocked is False
     assert msg == ""
+
+
+def _mem_input(symbol: str, *, hard: bool, tenant_id: str = "default") -> MemoryWqeInput:
+    return MemoryWqeInput(
+        symbol=symbol,
+        entry_bias="soft_block" if hard else "neutral",
+        size_bias=1.0,
+        memory_score=0.1 if hard else 0.5,
+        hard_exclude_new_add=hard,
+        ttl_active=hard,
+        scope="sensor_only",
+        rationale="test",
+        source="profile" if hard else "default",
+    )
+
+
+def _expand_root(**extra):
+    root = {
+        "watchlist_quality": {
+            "mode": "soft",
+            "honor_memory_soft_block": True,
+            "memory": {"enabled": True, "exclude_new_adds_on_soft_block": True},
+        },
+        "gainer_universe": {
+            "enabled": True,
+            "mode": "trade_expand",
+            "expand_inject_max": 40,
+            "trade_max_with_expand": 80,
+            "blacklist_bases": [],
+        },
+    }
+    root.update(extra)
+    return root
+
+
+def test_trade_expand_skips_memory_soft_block_for_tenant():
+    trade = [{"symbol": "BTC/USDT", "active": True}]
+    fut = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    state = {
+        "eligible": [
+            {
+                "symbol": "BDX/USDT",
+                "source": "gate_prev_top",
+                "rank": 1,
+                "day_ret": 20,
+                "eligible_until": fut,
+            },
+            {
+                "symbol": "HOT/USDT",
+                "source": "gate_prev_top",
+                "rank": 2,
+                "day_ret": 18,
+                "eligible_until": fut,
+            },
+        ]
+    }
+    seen_tenants: list[str] = []
+
+    def fake_mem(sym, *, tenant_id="default", **kw):
+        seen_tenants.append(tenant_id)
+        return _mem_input(sym, hard=(tenant_id == "henry" and sym == "BDX/USDT"))
+
+    root = _expand_root()
+    with patch(
+        "services.watchlist_quality.memory_bias.get_memory_wqe_input",
+        side_effect=fake_mem,
+    ):
+        henry = merge_expand_into_trade(
+            trade, state, root_config=root, tenant_id="henry"
+        )
+        default = merge_expand_into_trade(
+            list(trade), state, root_config=root, tenant_id="default"
+        )
+    henry_syms = {c["symbol"] for c in henry}
+    default_syms = {c["symbol"] for c in default}
+    assert "BTC/USDT" in henry_syms
+    assert "HOT/USDT" in henry_syms
+    assert "BDX/USDT" not in henry_syms
+    assert "BDX/USDT" in default_syms
+    assert "henry" in seen_tenants
+    assert "default" in seen_tenants
+
+
+def test_observe_merge_skips_memory_soft_block_keeps_existing():
+    observe = [
+        {"symbol": "BTC/USDT", "active": True},
+        {"symbol": "BDX/USDT", "active": True, "source": "watchlist"},
+    ]
+    fut = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    state = {
+        "live_top": [{"symbol": "LOSER/USDT", "pct_24h": 30, "rank": 1}],
+        "eligible": [
+            {
+                "symbol": "LOSER/USDT",
+                "source": "gate_prev_top",
+                "rank": 1,
+                "day_ret": 20,
+                "eligible_until": fut,
+            }
+        ],
+    }
+
+    def fake_mem(sym, *, tenant_id="default", **kw):
+        return _mem_input(sym, hard=(sym == "LOSER/USDT" or sym == "BDX/USDT"))
+
+    with patch(
+        "services.watchlist_quality.memory_bias.get_memory_wqe_input",
+        side_effect=fake_mem,
+    ):
+        out = merge_gainers_into_observe(
+            observe,
+            state,
+            {"enabled": True, "mode": "shadow", "blacklist_bases": []},
+            tenant_id="henry",
+            root_config=_expand_root(),
+        )
+    syms = {c["symbol"] for c in out}
+    assert "BTC/USDT" in syms
+    assert "BDX/USDT" in syms  # existing membership kept
+    assert "LOSER/USDT" not in syms
+
+
+def _eligible_state(*symbols: str) -> dict:
+    fut = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    return {
+        "eligible": [
+            {
+                "symbol": s,
+                "source": "gate_prev_top",
+                "rank": i + 1,
+                "day_ret": 20,
+                "eligible_until": fut,
+            }
+            for i, s in enumerate(symbols)
+        ]
+    }
+
+
+def test_gainer_inject_fail_open_missing_profile():
+    trade = [{"symbol": "BTC/USDT", "active": True}]
+    state = _eligible_state("NEW/USDT")
+    with patch(
+        "intelligence.memory.cache.get_coin_profile", return_value=None
+    ), patch(
+        "intelligence.memory.store.memory_enabled", return_value=True
+    ):
+        out = merge_expand_into_trade(
+            trade, state, root_config=_expand_root(), tenant_id="henry"
+        )
+    assert {c["symbol"] for c in out} >= {"BTC/USDT", "NEW/USDT"}
+
+
+def test_gainer_inject_fail_open_on_memory_error():
+    trade = [{"symbol": "BTC/USDT", "active": True}]
+    state = _eligible_state("NEW/USDT")
+    with patch(
+        "services.watchlist_quality.memory_bias.get_memory_wqe_input",
+        side_effect=RuntimeError("mongo down"),
+    ):
+        out = merge_expand_into_trade(
+            trade, state, root_config=_expand_root(), tenant_id="henry"
+        )
+    assert {c["symbol"] for c in out} >= {"BTC/USDT", "NEW/USDT"}
+
+
+def test_gainer_inject_ttl_expired_eligible_again():
+    from types import SimpleNamespace
+
+    trade = [{"symbol": "BTC/USDT", "active": True}]
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    fut = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    state = {
+        "eligible": [
+            {
+                "symbol": "OLD/USDT",
+                "source": "gate_prev_top",
+                "rank": 1,
+                "day_ret": 20,
+                "eligible_until": fut,
+            }
+        ]
+    }
+    prof = SimpleNamespace(
+        symbol="OLD/USDT",
+        entry_bias="soft_block",
+        size_bias=1.0,
+        rationale="expired",
+        features={"soft_block_scope": "sensor_only", "soft_block_until": past},
+    )
+    with patch(
+        "intelligence.memory.cache.get_coin_profile", return_value=prof
+    ), patch(
+        "intelligence.memory.store.memory_enabled", return_value=True
+    ):
+        out = merge_expand_into_trade(
+            trade, state, root_config=_expand_root(), tenant_id="henry"
+        )
+    assert {c["symbol"] for c in out} >= {"BTC/USDT", "OLD/USDT"}

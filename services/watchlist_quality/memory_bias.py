@@ -220,28 +220,11 @@ def get_memory_wqe_input(
             )
 
         if entry_bias == "soft_block":
-            # sensor_only: milder penalty; exclude only when exclude_new and not sensor_only
-            # Plan: sensor_only → hard_exclude false for base keep; optional true for new adds
-            #       all_new / legacy empty → hard_exclude true when honor+exclude_new
-            if scope == "sensor_only":
-                penalty = soft_penalty_sensor
-                # Plan table: hard_exclude false for base; optional for new adds.
-                # We set hard_exclude_new_add True only when exclude_new AND honor
-                # but document that consumers should only apply it to *new* trending adds.
-                # For sensor_only, plan says false for base-keep and optional for new adds —
-                # default True for new-add flag when exclude_new so WQE can demote trending adds
-                # while POS/base keep path ignores hard_exclude. Wait re-read plan:
-                # "false für Base-Keep; true nur für *neue* CMC/Trending-Adds optional"
-                # So hard_exclude_new_add can be True meaning "exclude if this is a new add".
-                # For sensor_only it said false for base and true optional for new adds.
-                # I'll set hard_exclude_new_add = honor and exclude_new for all soft_block
-                # including sensor_only when exclude_new — consumers check is_new_add.
-                # Actually table says sensor_only hard_exclude false; all_new true.
-                hard_ex = False
-            else:
-                # all_new, empty legacy, or other
-                penalty = soft_penalty
-                hard_ex = bool(honor and exclude_new)
+            penalty = (
+                soft_penalty_sensor if scope == "sensor_only" else soft_penalty
+            )
+            # Membership drop requires honor + exclude_new + an active soft_block_until; sensor_only still uses the milder score penalty.
+            hard_ex = bool(honor and exclude_new and ttl_active)
 
             score = _DEFAULT_NEUTRAL_SCORE - penalty
             score = _apply_size_bias_to_score(score, size_bias, apply=apply_size)
@@ -251,7 +234,7 @@ def get_memory_wqe_input(
                 size_bias=size_bias,
                 memory_score=_clamp(score, 0.0, 1.0),
                 hard_exclude_new_add=hard_ex,
-                ttl_active=ttl_active if until_dt is not None else True,
+                ttl_active=ttl_active,
                 scope=scope,
                 rationale=rationale or "soft_block",
                 source="profile",

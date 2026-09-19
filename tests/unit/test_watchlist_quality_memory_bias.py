@@ -117,7 +117,7 @@ class TestGetMemoryWqeInput:
         assert m.ttl_active is False
         assert m.memory_score == pytest.approx(0.5)
 
-    def test_soft_block_sensor_only_no_hard_exclude(self):
+    def test_soft_block_sensor_only_hard_exclude_new_add_with_active_ttl(self):
         until = (NOW + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         prof = _prof(
             entry_bias="soft_block",
@@ -136,8 +136,46 @@ class TestGetMemoryWqeInput:
         m = get_memory_wqe_input("X/USDT", profile=prof, config=cfg, now=NOW)
         assert m.entry_bias == "soft_block"
         assert m.scope == "sensor_only"
-        assert m.hard_exclude_new_add is False
+        assert m.hard_exclude_new_add is True
         assert m.memory_score == pytest.approx(0.35, abs=0.01)
+
+    def test_soft_block_missing_ttl_score_penalty_only(self):
+        """R3: weak-history / no soft_block_until → no membership drop."""
+        prof = _prof(
+            entry_bias="soft_block",
+            size_bias=1.0,
+            features={"soft_block_scope": "sensor_only"},
+        )
+        cfg = {
+            "watchlist_quality": {
+                "honor_memory_soft_block": True,
+                "memory": {
+                    "soft_penalty_sensor_only": 0.15,
+                    "exclude_new_adds_on_soft_block": True,
+                    "apply_size_bias_to_score": False,
+                },
+            }
+        }
+        m = get_memory_wqe_input("WEAK/USDT", profile=prof, config=cfg, now=NOW)
+        assert m.entry_bias == "soft_block"
+        assert m.hard_exclude_new_add is False
+        assert m.ttl_active is False
+        assert m.memory_score == pytest.approx(0.35, abs=0.01)
+
+    def test_soft_block_empty_scope_missing_ttl_no_hard_exclude(self):
+        """R3: rebuild weak-history stamps soft_block with no until — score only."""
+        prof = _prof(entry_bias="soft_block", features={})
+        cfg = {
+            "watchlist_quality": {
+                "honor_memory_soft_block": True,
+                "memory": {"exclude_new_adds_on_soft_block": True},
+            }
+        }
+        m = get_memory_wqe_input("THIN/USDT", profile=prof, config=cfg, now=NOW)
+        assert m.entry_bias == "soft_block"
+        assert m.hard_exclude_new_add is False
+        assert m.ttl_active is False
+        assert m.memory_score < 0.5
 
     def test_honor_false_never_hard_exclude(self):
         until = (NOW + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")

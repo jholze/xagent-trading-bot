@@ -206,7 +206,9 @@ def test_load_effective_watchlist_persists_to_henry_file(wqe_dir, monkeypatch):
         "services.watchlist_quality.runtime.apply_soft_watchlist",
         lambda coins, **kw: list(coins),
     )
-    monkeypatch.setattr("services.watchlist_quality.runtime._open_symbols", lambda: set())
+    monkeypatch.setattr(
+        "services.watchlist_quality.runtime._open_symbols", lambda *a, **k: set()
+    )
 
     with tenant_context("henry"):
         out = data_manager.load_effective_watchlist()

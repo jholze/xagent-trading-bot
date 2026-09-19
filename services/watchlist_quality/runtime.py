@@ -17,11 +17,11 @@ _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _CACHE_TTL = 45.0
 
 
-def _open_symbols() -> set[str]:
+def _open_symbols(tenant_id: str | None = None) -> set[str]:
     try:
-        from strategies.positions import get_open_positions
+        from strategies.positions import list_active_positions
 
-        pos = get_open_positions() or []
+        pos = list_active_positions(tenant_id=tenant_id) or []
         out = set()
         for p in pos:
             if isinstance(p, dict):
@@ -33,6 +33,20 @@ def _open_symbols() -> set[str]:
         return out
     except Exception:
         return set()
+
+
+def _open_symbols_from_rows(coins: list[dict[str, Any]] | None) -> set[str]:
+    """Honor is_open / _wqe_is_open already stamped on rows (R2)."""
+    out: set[str] = set()
+    for c in coins or []:
+        if not isinstance(c, dict):
+            continue
+        if not (c.get("is_open") or c.get("_wqe_is_open")):
+            continue
+        s = str(c.get("symbol") or "").strip()
+        if s:
+            out.add(s)
+    return out
 
 
 def _cache_key(tenant_id: str, mode: str, coins: list[dict[str, Any]]) -> str:
@@ -65,7 +79,7 @@ def apply_wqe_to_watchlist(
         return list(hit[1])
 
     try:
-        open_syms = _open_symbols()
+        open_syms = _open_symbols(tenant_id=tenant_id) | _open_symbols_from_rows(coins)
         work = list(coins)
         if attach_vol:
             try:
@@ -139,10 +153,18 @@ def apply_wqe_to_watchlist(
             except Exception:
                 pass
 
-        if mode == "enforce":
-            softed = filter_new_adds_memory(
-                softed, base_symbols=base_symbols, open_symbols=open_syms
+        n_mem_in = len(softed)
+        softed = filter_new_adds_memory(
+            softed, base_symbols=base_symbols, open_symbols=open_syms
+        )
+        n_mem_drop = max(0, n_mem_in - len(softed))
+        if n_mem_drop:
+            log(
+                f"WQE memory membership drop: n={n_mem_drop} tenant={tenant_id}",
+                "INFO",
             )
+
+        if mode == "enforce":
             regime = "neutral"
             try:
                 from services.watchlist_quality.engine import _regime_hints
