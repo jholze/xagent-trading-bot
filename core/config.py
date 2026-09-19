@@ -495,8 +495,15 @@ class BotConfig:
         return self.hermes_config.get("live_evidence", {})
 
     def strategy_params(self, symbol: str, timeframe: str) -> dict:
+        from strategies.registry import is_identity_strategy_entry
+
         for entry in self._raw.get("strategies", []):
             if entry.get("symbol") == symbol and entry.get("timeframe") == timeframe:
+                # Identity must be {} like unlisted. _partial_sell_limits
+                # (risk/risk_manager.py:2034) has no resolve fallback — returning
+                # the bare identity dict would starve its defaults.
+                if is_identity_strategy_entry(entry):
+                    continue
                 return entry
         return {}
 

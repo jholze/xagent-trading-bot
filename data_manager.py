@@ -1930,6 +1930,8 @@ def save_strategy_backtest_entry(key: str, entry: dict) -> bool:
 
 def list_strategy_targets() -> list:
     """Unique strategy entries from config.strategies (no trending-only coins)."""
+    from strategies.registry import is_identity_strategy_entry
+
     cfg = get_config()
     seen = set()
     targets = []
@@ -1937,6 +1939,8 @@ def list_strategy_targets() -> list:
         symbol = entry.get("symbol")
         tf = entry.get("timeframe", "4h")
         if not symbol:
+            continue
+        if is_identity_strategy_entry(entry):
             continue
         if entry.get("live_enabled") is False and cfg.get("trading_mode") == "live":
             continue

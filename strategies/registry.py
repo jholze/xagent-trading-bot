@@ -21,14 +21,6 @@ def _load_registry():
 
 
 
-def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
-    cfg = get_bot_config()
-    for entry in cfg.raw.get("strategies", []):
-        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
-            return entry
-    return None
-
-
 _BUY_PARAM_KEYS = (
     "volume_multiplier",
     "reversal_volume_multiplier",
@@ -53,6 +45,68 @@ _EXPLICIT_PRESERVE_KEYS = (
     "min_hours_between_buys",
     "min_hours_between_sells",
 )
+
+# Identity/meta only — never strategy params. Optional token_address / live_enabled
+# may sit on an identity row without making it explicit.
+STRATEGY_IDENTITY_META_KEYS = frozenset({
+    "symbol",
+    "timeframe",
+    "strategy_class",
+    "description",
+    "auto_identity",
+    "token_address",
+    "live_enabled",
+})
+
+# Shared param-key set (Opus S2). One constant, not re-derived per call site.
+# Presence of any of these wins over a stale auto_identity marker.
+STRATEGY_PARAM_KEYS = frozenset(_EXPLICIT_PRESERVE_KEYS) | frozenset(_BUY_PARAM_KEYS) | frozenset({
+    "dca",
+    "take_profit_pct",
+    "exit_ladder",
+    "take_profit_tiers",
+    "strategy_profile",
+    "hermes_experiment_id",
+    "hermes_updated_at",
+    "sandbox_id",
+    "source_account",
+})
+
+
+def is_identity_strategy_entry(entry) -> bool:
+    """True only when ``auto_identity`` is true and no strategy param key is present.
+
+    Param keys win: a preserve-key row with a stale marker is explicit.
+    Absence of keys without the marker is not identity (do not ignore a broken ARIA row).
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("auto_identity") is not True:
+        return False
+    if any(key in entry for key in STRATEGY_PARAM_KEYS):
+        return False
+    return not (set(entry) - STRATEGY_IDENTITY_META_KEYS)
+
+
+def _patch_has_param_keys(patch: dict | None) -> bool:
+    if not patch:
+        return False
+    for key in patch:
+        if key in STRATEGY_PARAM_KEYS:
+            return True
+        if key not in STRATEGY_IDENTITY_META_KEYS:
+            return True
+    return False
+
+
+def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
+    cfg = get_bot_config()
+    for entry in cfg.raw.get("strategies", []):
+        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            if is_identity_strategy_entry(entry):
+                continue
+            return entry
+    return None
 
 
 from strategies.sell_profile import apply_position_sell_overlay
@@ -448,6 +502,10 @@ def resolve_coin_config(coin: dict) -> dict:
 
     for entry in cfg.raw.get("strategies", []):
         if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            # Identity must continue (Opus N2). Copy-then-break drops the
+            # resolved key and signal_orchestrator.py:119 sees {}.
+            if is_identity_strategy_entry(entry):
+                continue
             if entry.get("live_enabled") is False and cfg.trading_mode == "live":
                 continue
             merged["timeframe"] = entry.get("timeframe", tf)
@@ -490,9 +548,116 @@ def get_strategy(coin: dict) -> BaseStrategy:
     return cls()
 
 
+def _persisted_strategy_rows(tenant_id: str | None) -> list[dict] | None:
+    """Load the tenant's stored strategies[] list, not the merged operator view.
+
+    Arrays replace on patch_config (#456): henry must merge into *his* list,
+    never freeze operator config.json strategies into the tenant body.
+    """
+    from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+    from data_manager import (
+        _load_default_config_from_disk,
+        _load_tenant_config_body,
+        get_config,
+    )
+
+    tid = resolve_tenant_id(tenant_id)
+    if tid == DEFAULT_TENANT:
+        cfg = get_config(tenant_id=tid) or {}
+        rows = cfg.get("strategies") or []
+        return [dict(e) for e in rows if isinstance(e, dict)]
+    default_cfg = _load_default_config_from_disk()
+    try:
+        body = _load_tenant_config_body(tid, default_cfg) or {}
+    except Exception:
+        return None
+    rows = body.get("strategies") or []
+    return [dict(e) for e in rows if isinstance(e, dict)]
+
+
+def _identity_strategy_row(symbol: str, tf: str, patch: dict) -> dict:
+    row = {
+        "symbol": symbol,
+        "timeframe": tf,
+        "strategy_class": patch.get("strategy_class") or "technical_rsi_bb",
+        "description": patch.get("description") or f"Identity {symbol} {tf}",
+        "auto_identity": True,
+    }
+    if "token_address" in patch:
+        row["token_address"] = patch["token_address"]
+    if "live_enabled" in patch:
+        row["live_enabled"] = patch["live_enabled"]
+    return row
+
+
+def upsert_strategy_row(
+    symbol: str,
+    tf: str,
+    patch: dict | None = None,
+    tenant_id: str | None = None,
+) -> tuple:
+    """Append or patch one tenant ``strategies[]`` row via ``patch_config``.
+
+    Identity create: meta + ``auto_identity: true``, no overlay keys.
+    Same tenant+symbol+TF with no param change is a no-op.
+    Param patch merges keys and clears ``auto_identity``.
+    Writes the **full** tenant strategies list (arrays replace). Never
+    ``save_config(get_config())``.
+    """
+    from core.tenant_context import resolve_tenant_id
+    from data_manager import patch_config
+
+    if not symbol:
+        return False, "Missing symbol"
+    patch = dict(patch or {})
+    tf = tf or "4h"
+    rows = _persisted_strategy_rows(tenant_id)
+    if rows is None:
+        return False, "Failed to load tenant strategies"
+
+    idx = None
+    for i, entry in enumerate(rows):
+        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
+            idx = i
+            break
+
+    has_params = _patch_has_param_keys(patch)
+    if idx is None:
+        if has_params:
+            new_row = {k: v for k, v in patch.items() if k != "auto_identity"}
+            new_row["symbol"] = symbol
+            new_row["timeframe"] = tf
+            new_row.setdefault("strategy_class", "technical_rsi_bb")
+            if not new_row.get("description"):
+                new_row["description"] = f"Hermes-tuned {symbol} {tf}"
+        else:
+            new_row = _identity_strategy_row(symbol, tf, patch)
+        rows.append(new_row)
+    else:
+        existing = rows[idx]
+        if not has_params:
+            return True, "noop"
+        merged = dict(existing)
+        desc_before = merged.get("description")
+        merged.update({k: v for k, v in patch.items() if k != "auto_identity"})
+        if desc_before:
+            merged["description"] = desc_before
+        merged.pop("auto_identity", None)
+        merged["symbol"] = symbol
+        merged["timeframe"] = tf
+        if merged == existing:
+            return True, "noop"
+        rows[idx] = merged
+
+    tid = resolve_tenant_id(tenant_id)
+    if patch_config({"strategies": rows}, tenant_id=tid):
+        return True, f"upserted {symbol} {tf}"
+    return False, "Failed to save config.json"
+
+
 def sync_hermes_baseline_to_config(baseline: dict, experiment_id: str = "") -> tuple:
     """Patch config.strategies[] with Hermes baseline params for symbol/timeframe."""
-    from data_manager import get_config, reload_config, save_config
+    from data_manager import reload_config
 
     symbol = baseline.get("symbol")
     timeframe = baseline.get("timeframe", "4h")
@@ -500,64 +665,48 @@ def sync_hermes_baseline_to_config(baseline: dict, experiment_id: str = "") -> t
     if not symbol or not params:
         return False, "Baseline missing symbol or params"
 
-    cfg = get_config()
-    strategies = cfg.setdefault("strategies", [])
-    updated = False
-    for entry in strategies:
-        if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == timeframe:
-            for key, value in params.items():
-                entry[key] = value
-            entry["hermes_experiment_id"] = experiment_id
-            entry["hermes_updated_at"] = baseline.get("updated_at")
-            entry["description"] = entry.get("description") or f"Hermes-tuned {symbol} {timeframe}"
-            updated = True
-            break
-
-    if not updated:
-        new_entry = dict(params)
-        new_entry.update({
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "strategy_class": "technical_rsi_bb",
-            "description": f"Hermes-tuned {symbol} {timeframe}",
-            "hermes_experiment_id": experiment_id,
-            "hermes_updated_at": baseline.get("updated_at"),
-        })
-        strategies.append(new_entry)
-
-    if save_config(cfg):
+    patch = dict(params)
+    patch["hermes_experiment_id"] = experiment_id
+    patch["hermes_updated_at"] = baseline.get("updated_at")
+    patch.setdefault("strategy_class", "technical_rsi_bb")
+    patch.setdefault("description", f"Hermes-tuned {symbol} {timeframe}")
+    ok, msg = upsert_strategy_row(symbol, timeframe, patch)
+    if ok:
         reload_config()
         return True, f"Hermes baseline synced to config.strategies for {symbol} {timeframe}"
-    return False, "Failed to save config.json"
+    return False, msg
 
 
 def promote_hypothesis_to_config(hypothesis: dict) -> tuple:
-    """Promote a sandbox hypothesis into config.strategies[]."""
-    from data_manager import get_config, save_config
+    """Promote a sandbox hypothesis into config.strategies[].
 
+    Identity slots merge params and clear ``auto_identity`` (Opus N1) instead
+    of refusing “already exists”.
+    """
     symbol = hypothesis.get("symbol")
     if not symbol:
         return False, "Hypothesis has no symbol — assign one before promotion"
 
-    cfg = get_config()
-    strategies = cfg.setdefault("strategies", [])
     tf = hypothesis.get("timeframe", "4h")
-    for entry in strategies:
+    rows = _persisted_strategy_rows(None)
+    if rows is None:
+        return False, "Failed to load tenant strategies"
+    for entry in rows:
         if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
             if entry.get("sandbox_id") == hypothesis.get("id"):
                 return True, "Already promoted"
-            return False, f"Strategy already exists for {symbol} {tf}"
+            if not is_identity_strategy_entry(entry):
+                return False, f"Strategy already exists for {symbol} {tf}"
+            break
 
     params = dict(hypothesis.get("params") or {})
     params.update({
-        "symbol": symbol,
-        "timeframe": tf,
         "strategy_class": "technical_rsi_bb",
         "description": f"Promoted from sandbox: {hypothesis.get('name', '')}",
         "sandbox_id": hypothesis.get("id"),
         "source_account": hypothesis.get("source_account"),
     })
-    strategies.append(params)
-    if save_config(cfg):
+    ok, msg = upsert_strategy_row(symbol, tf, params)
+    if ok:
         return True, f"Added {symbol} ({tf}) to strategies"
-    return False, "Failed to save config.json"
+    return False, msg
