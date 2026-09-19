@@ -766,8 +766,32 @@ const BASE = (typeof window.EXIT_RADAR_BASE === 'string' && window.EXIT_RADAR_BA
   : (location.pathname.startsWith('/exit-radar') ? '/exit-radar' : '');
 const API = (path) => BASE + path;
 
+function radarToken() {
+  try {
+    const q = new URLSearchParams(location.search).get('token');
+    if (q && q.trim()) {
+      sessionStorage.setItem('exitRadarToken', q.trim());
+      return q.trim();
+    }
+  } catch (e) {}
+  if (typeof window.EXIT_RADAR_TOKEN === 'string' && window.EXIT_RADAR_TOKEN.trim()) {
+    return window.EXIT_RADAR_TOKEN.trim();
+  }
+  try {
+    const stored = sessionStorage.getItem('exitRadarToken');
+    if (stored && stored.trim()) return stored.trim();
+  } catch (e) {}
+  return '';
+}
+
+function withToken(path) {
+  const t = radarToken();
+  if (!t) return path;
+  return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+}
+
 function connectSSE() {
-  const es = new EventSource(API('/events'));
+  const es = new EventSource(withToken(API('/events')));
   const sseDot = document.getElementById('sseDot');
   document.getElementById('sseLabel').textContent = '…';
   es.onopen = () => {
@@ -784,11 +808,11 @@ function connectSSE() {
 }
 
 setInterval(() => {
-  fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});
+  fetch(withToken(API('/api/snapshot'))).then(r => r.json()).then(applySnapshot).catch(()=>{});
 }, 400);
 
 connectSSE();
-fetch(API('/api/snapshot')).then(r => r.json()).then(applySnapshot).catch(()=>{});
+fetch(withToken(API('/api/snapshot'))).then(r => r.json()).then(applySnapshot).catch(()=>{});
 </script>
 </body>
 </html>
