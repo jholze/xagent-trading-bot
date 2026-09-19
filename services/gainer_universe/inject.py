@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from services.gainer_universe.config import gainer_trade_expand_enabled, gainer_universe_config
+from logger import log
+from services.gainer_universe.config import gainer_universe_config
 from services.gainer_universe.filters import normalize_symbol
 from services.gainer_universe.store import load_gainer_state
 
@@ -18,6 +19,30 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _memory_blocks_new_add(
+    symbol: str,
+    *,
+    config: dict | None,
+    tenant_id: str,
+) -> bool:
+    """True when CoinProfile active soft_block forbids *new* membership. Fail-open."""
+    try:
+        from services.watchlist_quality.memory_bias import get_memory_wqe_input
+
+        m = get_memory_wqe_input(
+            symbol,
+            config=config,
+            tenant_id=tenant_id or "default",
+        )
+        return bool(m.hard_exclude_new_add)
+    except Exception as e:
+        log(
+            f"gainer memory membership fail-open: {symbol} {type(e).__name__}",
+            "DEBUG",
+        )
+        return False
 
 
 def _active_eligible(state: dict, cfg: dict, *, now: datetime | None = None) -> list[dict]:
@@ -70,10 +95,16 @@ def merge_gainers_into_observe(
     observe: list[dict],
     state: dict | None = None,
     cfg: dict | None = None,
+    *,
+    tenant_id: str = "default",
+    root_config: dict | None = None,
 ) -> list[dict]:
     """Union live_top + eligible into observe (dedupe). Never drops existing."""
-    cfg = cfg or gainer_universe_config()
+    cfg = cfg or gainer_universe_config(root_config)
     state = state if state is not None else load_gainer_state()
+    tid = tenant_id or "default"
+    mem_cfg = root_config if isinstance(root_config, dict) else None
+    n_drop = 0
     by_sym: dict[str, dict] = {}
     for c in observe or []:
         if not isinstance(c, dict):
@@ -91,6 +122,9 @@ def merge_gainers_into_observe(
         if not s:
             continue
         if s not in by_sym:
+            if _memory_blocks_new_add(s, config=mem_cfg, tenant_id=tid):
+                n_drop += 1
+                continue
             by_sym[s] = {
                 "symbol": s,
                 "ticker": s.split("/")[0],
@@ -107,6 +141,9 @@ def merge_gainers_into_observe(
     for c in expand_candidates_for_trade(state, cfg):
         s = c["symbol"]
         if s not in by_sym:
+            if _memory_blocks_new_add(s, config=mem_cfg, tenant_id=tid):
+                n_drop += 1
+                continue
             by_sym[s] = c
         else:
             by_sym[s]["source"] = c.get("source") or by_sym[s].get("source")
@@ -114,6 +151,11 @@ def merge_gainers_into_observe(
             by_sym[s]["gainer_day_ret"] = c.get("gainer_day_ret")
             by_sym[s]["eligible_until"] = c.get("eligible_until")
 
+    if n_drop:
+        log(
+            f"gainer memory membership drop: n={n_drop} tenant={tid}",
+            "INFO",
+        )
     return list(by_sym.values())
 
 
@@ -123,6 +165,7 @@ def merge_expand_into_trade(
     cfg: dict | None = None,
     *,
     root_config: dict | None = None,
+    tenant_id: str = "default",
 ) -> list[dict]:
     """Force-include expand candidates when mode=trade_expand."""
     if root_config is not None:
@@ -136,6 +179,10 @@ def merge_expand_into_trade(
     expand = expand_candidates_for_trade(state, cfg)
     if not expand:
         return list(trade or [])
+
+    tid = tenant_id or "default"
+    mem_cfg = root_config if isinstance(root_config, dict) else None
+    n_drop = 0
 
     by_sym: dict[str, dict] = {}
     order: list[str] = []
@@ -153,6 +200,9 @@ def merge_expand_into_trade(
     for c in expand:
         s = c["symbol"]
         if s not in by_sym:
+            if _memory_blocks_new_add(s, config=mem_cfg, tenant_id=tid):
+                n_drop += 1
+                continue
             order.append(s)
             by_sym[s] = c
         else:
@@ -165,6 +215,12 @@ def merge_expand_into_trade(
                 "trending",
             ):
                 by_sym[s]["source"] = c.get("source")
+
+    if n_drop:
+        log(
+            f"gainer memory membership drop: n={n_drop} tenant={tid}",
+            "INFO",
+        )
 
     max_total = int(cfg.get("trade_max_with_expand") or 80)
     # keep all original trade first, then expand extras, then cap

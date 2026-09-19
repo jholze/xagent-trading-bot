@@ -62,9 +62,13 @@ def min_buy_score(config: dict | None = None) -> float:
     return _mbs(config)
 
 
+def _row_is_open(row: dict[str, Any]) -> bool:
+    return bool(row.get("is_open") or row.get("_wqe_is_open"))
+
+
 def assign_tier(row: dict[str, Any], *, config: dict | None = None) -> str:
     """POS | T1 | T2 | T3 from score + flags (enforce)."""
-    if row.get("is_open") or row.get("_wqe_is_open"):
+    if _row_is_open(row):
         return "POS"
     tier = str(row.get("tier_hint") or row.get("tier") or "").upper()
     if tier in ("T1", "T2", "T3", "POS"):
@@ -80,7 +84,7 @@ def assign_tier(row: dict[str, Any], *, config: dict | None = None) -> str:
             tier = "T3"
     # memory hard exclude new → demote to T3 unless open
     if row.get("hard_exclude_new_add") or "memory_hard_exclude_new" in (row.get("flags") or []):
-        if not (row.get("is_open") or row.get("_wqe_is_open")):
+        if not _row_is_open(row):
             if str(row.get("source") or "").lower() in (
                 "cmc_trending",
                 "trending",
@@ -197,7 +201,12 @@ def filter_new_adds_memory(
     base_symbols: set[str] | list[str] | None = None,
     open_symbols: set[str] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Drop new trending adds with hard_exclude_new_add (enforce helper)."""
+    """Drop new overlay/trending/gainer adds with hard_exclude_new_add.
+
+    Used by WQE soft and enforce. Keeps operator ``base_symbols`` and open lots
+    (``open_symbols``, ``is_open``, ``_wqe_is_open``) even when the open-symbol
+    lookup failed.
+    """
     base = {str(s).strip() for s in (base_symbols or []) if s}
     open_set = {str(s).strip() for s in (open_symbols or []) if s}
     out = []
@@ -205,7 +214,7 @@ def filter_new_adds_memory(
         if not isinstance(c, dict):
             continue
         sym = _sym(c)
-        if sym in open_set or sym in base:
+        if sym in open_set or sym in base or _row_is_open(c):
             out.append(c)
             continue
         hard = bool(

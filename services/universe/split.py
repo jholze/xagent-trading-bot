@@ -275,7 +275,13 @@ def load_observe_universe(
         from services.gainer_universe.store import load_gainer_state
 
         if gainer_universe_enabled(cfg):
-            coins = merge_gainers_into_observe(coins, load_gainer_state(), None)
+            coins = merge_gainers_into_observe(
+                coins,
+                load_gainer_state(),
+                None,
+                tenant_id=tenant_id or "default",
+                root_config=cfg,
+            )
             # refresh forced after merge not required — cap keeps base|open
     except Exception as e:
         log(f"gainer observe inject skip: {e}", "DEBUG")
@@ -355,7 +361,7 @@ def load_trade_universe(
         if gainer_trade_expand_enabled(cfg):
             before = len(trade)
             trade = merge_expand_into_trade(
-                trade, load_gainer_state(), root_config=cfg
+                trade, load_gainer_state(), root_config=cfg, tenant_id=tid
             )
             if len(trade) != before:
                 log(
