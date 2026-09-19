@@ -50,6 +50,15 @@ class TestMenuI18n(unittest.TestCase):
         self.assertTrue(is_back_label(back_label("de")))
         self.assertTrue(is_back_label(back_label("en")))
 
+    def test_stale_back_labels_are_back(self):
+        # #496: old reply-keyboard back still walks one level up.
+        self.assertTrue(is_back_label("◀ Bereiche"))
+        self.assertTrue(is_back_label("◀ Sections"))
+        self.assertTrue(is_back_label(back_label("de")))
+        self.assertTrue(is_back_label(back_label("en")))
+        self.assertEqual(back_label("de"), "◀ Zurück")
+        self.assertEqual(back_label("en"), "◀ Back")
+
     def test_set_user_language_context(self):
         from notifications.telegram_commands.menu_i18n import current_language
 
