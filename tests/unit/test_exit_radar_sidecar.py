@@ -421,6 +421,26 @@ class TestExitRadarHttpAuth(unittest.TestCase):
             r = client.get("/exit-radar?token=secret")
         self.assertEqual(r.status_code, 404)
 
+    def test_gui_html_forwards_query_token_on_fetch_and_sse(self):
+        # #441: page must attach ?token= so snapshot/SSE are not 401 once env is set.
+        from services.exit_radar.http import GUI_PATH
+
+        self.assertTrue(GUI_PATH.is_file(), f"GUI missing at {GUI_PATH}")
+        html = GUI_PATH.read_text(encoding="utf-8")
+        self.assertIn("function radarToken()", html)
+        self.assertIn("function withToken(path)", html)
+        self.assertIn("new EventSource(withToken(API('/events')))", html)
+        self.assertIn("fetch(withToken(API('/api/snapshot')))", html)
+
+    def test_index_serves_token_forwarding_gui(self):
+        os.environ["EXIT_RADAR_TOKEN"] = "secret"
+        client = self._client()
+        r = client.get("/exit-radar?token=secret")
+        self.assertEqual(r.status_code, 200)
+        html = r.get_data(as_text=True)
+        self.assertIn("new EventSource(withToken(API('/events')))", html)
+        self.assertIn("fetch(withToken(API('/api/snapshot')))", html)
+
 
 if __name__ == "__main__":
     unittest.main()

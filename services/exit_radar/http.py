@@ -11,7 +11,8 @@ from typing import Any
 from flask import Response, jsonify, request, stream_with_context
 from logger import log
 
-ROOT = Path(__file__).resolve().parents[1]
+# services/exit_radar/http.py → repo root (same as positions.py)
+ROOT = Path(__file__).resolve().parents[2]
 GUI_PATH = ROOT / "tools" / "exit_radar" / "static" / "index.html"
 
 
