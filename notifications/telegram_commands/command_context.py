@@ -71,9 +71,6 @@ _RESOLVABLE_COMMANDS = frozenset({
     "lock", "unlock", "short", "cover",
 })
 
-# Stale reply-keyboard back labels still documented / on old clients.
-_STALE_BACK_LABELS = frozenset({"◀ Bereiche", "◀ Sections"})
-
 
 def activate_command(command: str, **meta) -> None:
     """Set context for the current webhook chat (or TELEGRAM_CHAT_ID)."""
@@ -271,8 +268,6 @@ def is_keyboard_navigation(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped:
         return False
-    if stripped in _STALE_BACK_LABELS:
-        return True
     from notifications.telegram_commands.menu_i18n import (
         home_label_to_key,
         is_back_label,

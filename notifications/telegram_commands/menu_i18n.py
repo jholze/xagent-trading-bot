@@ -249,9 +249,14 @@ def title_to_section_id(title: str) -> str | None:
     return None
 
 
+# Stale reply-keyboard back labels still on old Telegram clients (#496).
+# Current locale copy stays ◀ Zurück / ◀ Back; these aliases walk the same path.
+_STALE_BACK_LABELS = frozenset({"◀ Bereiche", "◀ Sections"})
+
+
 def is_back_label(text: str) -> bool:
     text = (text or "").strip()
-    return text in {back_label("de"), back_label("en")}
+    return text in {back_label("de"), back_label("en")} or text in _STALE_BACK_LABELS
 
 
 def help_label(lang: str | None = None) -> str:

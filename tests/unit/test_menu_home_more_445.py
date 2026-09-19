@@ -249,6 +249,43 @@ class TestHandleText(unittest.TestCase):
             self.assertIn(home_label("buy", "de"), _flat(send.call_args[0][1]))  # → home
             self.assertIsNone(get_active_section(self.CHAT))
 
+    def _back_keyboard_rows(self, label: str, *, active: str | None, lang: str):
+        set_user_language(lang)
+        if active is None:
+            clear_active_section(self.CHAT)
+        else:
+            set_active_section(self.CHAT, active)
+        with _role("satellite"), patch(f"{MENU}.send_reply_keyboard", return_value=True) as send:
+            handled = handle_text(label, chat_id=self.CHAT)
+        self.assertTrue(handled, f"{label!r} must be handled as back")
+        return send.call_args[0][1], get_active_section(self.CHAT)
+
+    def test_stale_back_matches_current_back(self):
+        # #496: stale ◀ Bereiche / ◀ Sections send the same keyboard as current back.
+        # Group → Mehr, same keyboard as ◀ Zurück.
+        current_rows, current_sec = self._back_keyboard_rows(
+            back_label("de"), active="shorts", lang="de"
+        )
+        stale_rows, stale_sec = self._back_keyboard_rows(
+            "◀ Bereiche", active="shorts", lang="de"
+        )
+        self.assertEqual(stale_rows, current_rows)
+        self.assertEqual(stale_sec, current_sec)
+        self.assertEqual(stale_sec, MORE_SECTION_ID)
+        self.assertIn(section_title("orders", "de"), _flat(stale_rows))
+
+        # Mehr / none → home, same keyboard as ◀ Back.
+        current_rows, current_sec = self._back_keyboard_rows(
+            back_label("en"), active=MORE_SECTION_ID, lang="en"
+        )
+        stale_rows, stale_sec = self._back_keyboard_rows(
+            "◀ Sections", active=MORE_SECTION_ID, lang="en"
+        )
+        self.assertEqual(stale_rows, current_rows)
+        self.assertEqual(stale_sec, current_sec)
+        self.assertIsNone(stale_sec)
+        self.assertIn(home_label("buy", "en"), _flat(stale_rows))
+
     def test_home_label_dispatches_command(self):
         with _role("satellite"), \
              patch("notifications.telegram_commands.router.dispatch_command", return_value=True) as dispatch:
