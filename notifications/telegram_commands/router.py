@@ -57,6 +57,10 @@ OPERATOR_ONLY: frozenset[str] = frozenset({
     "wqe", "wqe_soak", "wqescores", "watchlist_quality",
     "churn_replay", "counterfactual", "session_cancel",
     "panic",
+    # #447: satellite Handel/home no longer lists these; typed aliases stay
+    # operator-only so hiding them is a real gate (#451), not just a missing key.
+    "positions_full", "positions full",
+    "orders_blocked", "orders_month",
     "config", "config revert",
     "help onboarding", "help onboard", "help onb", "commands onboarding", "? onboarding",
 })
@@ -154,6 +158,8 @@ def dispatch_callback(callback_query: dict) -> bool:
         if lock_commands.handle_callback(callback_query):
             return True
         if trading_commands.handle_callback(callback_query):
+            return True
+        if portfolio_commands.handle_callback(callback_query):
             return True
         if order_commands.handle_callback(callback_query):
             return True

@@ -126,7 +126,7 @@ class TestCommandMenu(unittest.TestCase):
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["scope"], {"type": "chat", "chat_id": 999})
         self.assertEqual(len(payload["commands"]), sat_n)
-        self.assertEqual(sat_n, 42)  # #399: 39 + pause/resume/panic
+        self.assertEqual(sat_n, 39)  # #447: dropped positions_full/orders_blocked/orders_month
         self.assertFalse(any(c["command"] == "onboard" for c in payload["commands"]))
         self.assertFalse(any(c["command"] == "live_confirm" for c in payload["commands"]))
         self.assertTrue(any(c["command"] == "short" for c in payload["commands"]))

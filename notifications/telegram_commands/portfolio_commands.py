@@ -2,11 +2,11 @@ import threading
 
 from core.interactive_priority import interactive_priority
 from core.tenant_context import tenant_context, tenant_snapshot
-from notifications.telegram_commands.command_context import current_chat_id
+from notifications.telegram_commands.command_context import current_chat_id, set_chat_id
 from notifications.telegram_commands.menu_i18n import current_language, set_user_language
 from notifications.telegram_commands.position_display import send_positions_snapshot
 from notifications.telegram_i18n import t
-from telegram_notifier import send_telegram_message
+from telegram_notifier import answer_callback_query, send_telegram_message
 
 _cmd_threads: list[threading.Thread] = []
 _COMPACT_COMMANDS = {"/positions", "/portfolio", "/status", "/balance"}
@@ -17,6 +17,7 @@ _FULL_COMMANDS = {
     "/portfolio full",
     "/portfolio detail",
 }
+POS_MORE_PREFIX = "pos_more:"
 
 
 def _is_mongo_client_closed_error(exc: BaseException) -> bool:
@@ -111,6 +112,24 @@ def handle(text: str) -> bool:
         token.__exit__(None, None, None)
         raise
     return True
+
+
+def handle_callback(callback_query: dict) -> bool:
+    """Compact /positions → full body (#447). Slash aliases stay for the operator."""
+    data = str((callback_query or {}).get("data") or "").strip()
+    if not data.startswith(POS_MORE_PREFIX):
+        return False
+    callback_id = callback_query.get("id")
+    if callback_id:
+        answer_callback_query(callback_id)
+    level = data[len(POS_MORE_PREFIX):].strip().lower()
+    if level != "full":
+        return True
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if chat_id is not None:
+        set_chat_id(chat_id)
+    return handle("/positions full")
 
 
 def reset_portfolio_commands_for_tests() -> None:

@@ -63,8 +63,8 @@ MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
 MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("handel", [
-        "positions", "positions_full", "buy", "sell", "short", "cover", "lock", "unlock",
-        "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "positions", "buy", "sell", "short", "cover", "lock", "unlock",
+        "orders", "plan", "risk",
         "pause", "resume", "panic",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "reload"]),
@@ -93,7 +93,7 @@ MORE_SECTION_ID = "more"
 MORE_GROUPS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("orders", [
-        "positions_full", "orders", "orders_blocked", "orders_month", "plan", "risk",
+        "orders", "plan", "risk",
         "morning", "stack", "decisions", "why",
     ]),
     ("shorts", ["short", "cover"]),

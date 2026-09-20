@@ -220,6 +220,7 @@ class TestHandleText(unittest.TestCase):
 
     def tearDown(self):
         clear_active_section(self.CHAT)
+        set_user_language("de")  # #447: do not leave EN on the xdist worker
 
     def test_more_label_opens_group_list(self):
         with _role("satellite"), patch(f"{MENU}.send_reply_keyboard", return_value=True) as send:
