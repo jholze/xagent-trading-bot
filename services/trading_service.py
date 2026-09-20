@@ -462,6 +462,11 @@ class TradingService:
                 self._record_positions_snapshot(result)
             if approved_order.type == "SELL" and result.executed:
                 try:
+                    from strategies.positions import hard_clear_closed_lot
+
+                    # SELL_FULL / amount≈0: zero leftover dust before the flip
+                    # so Risk and portfolio one-way see the same closed lot.
+                    hard_clear_closed_lot(approved_order.symbol, timeframe)
                     nested = self._maybe_auto_short_after_sell(
                         approved_order, timeframe, result
                     )

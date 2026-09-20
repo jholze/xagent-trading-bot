@@ -163,6 +163,39 @@ def is_open_position(pos: dict) -> bool:
     return True
 
 
+def apply_hard_clear_if_closed(pos: dict) -> bool:
+    """Zero leftover dust on a lot that is no longer a material open position.
+
+    Caller must hold ``_positions_lock``. Returns True when the lot was cleared.
+    """
+    if not pos or is_open_position(pos):
+        return False
+    amount = float(pos.get("amount") or 0)
+    sold = float(pos.get("sold_percent") or 0)
+    if amount <= 0 and sold >= 1.0:
+        return False
+    pos["amount"] = Decimal("0")
+    pos["sold_percent"] = 1.0
+    return True
+
+
+def hard_clear_closed_lot(symbol: str, timeframe: str) -> bool:
+    """Hard-clear a dust remainder after SELL_FULL (amount=0, sold_percent=1).
+
+    Material longs (``is_open_position``) are left untouched.
+    """
+    _activate(_resolve_store_key())
+    key = get_key(symbol, timeframe)
+    store = _active_store()
+    cleared = False
+    with _positions_lock:
+        pos = _ensure_key(store, key)
+        cleared = apply_hard_clear_if_closed(pos)
+    if cleared:
+        flush_positions(force=True)
+    return cleared
+
+
 def get_active_scope() -> str:
     return _active_key[1]
 
@@ -1184,6 +1217,8 @@ def update_position(
                     amount_sold=float(sell_amount),
                     amount_before=original_amount,
                 )
+            if "FULL" in signal:
+                apply_hard_clear_if_closed(pos)
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
         is_open_now = is_open_position(pos)

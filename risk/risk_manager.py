@@ -21,6 +21,7 @@ from strategies.positions import (
     count_open_positions,
     find_open_position_for_symbol,
     get_position,
+    is_open_position,
     list_active_positions,
     sell_fraction_for_signal,
 )
@@ -2311,10 +2312,10 @@ class RiskManager:
         if not shorts_enabled(raw):
             return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
 
-        # SHORT open
+        # SHORT open — same material-long test as the flip gate (notional ≥ 1 USDT).
         if is_short(pos) and float((pos or {}).get("amount") or 0) > 0:
             pass  # add to existing short
-        elif float((pos or {}).get("amount") or 0) > 1e-12:
+        elif is_open_position(pos or {}):
             return RiskDecision(
                 approved=False,
                 message="one-way: close long before short",
