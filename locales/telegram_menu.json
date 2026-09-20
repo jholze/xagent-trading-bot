@@ -243,12 +243,28 @@
       "short": {
         "description": "Paper-Short eröffnen",
         "help_line": "<code>/short SYMBOL [USDT] [Hebel]</code> — z.B. <code>/short H</code> oder <code>/short H 400 2</code>",
-        "hint": "❌ <b>/short</b> — Isolated Paper-Short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, Hebel)\nCover: <code>/cover H</code>"
+        "hint": "❌ <b>/short</b> — Isolated Paper-Short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, Hebel)\nCover: <code>/cover H</code>",
+        "coin_prompt": "Short (Paper): Coin antippen — die Standardgröße wird vor der Ausführung angezeigt und muss bestätigt werden.",
+        "usdt_prompt": "Wie viel USDT Short für <b>{coin}</b>?\nTippe einen Betrag oder nutze die Buttons — es wird kein Standardbetrag angenommen.",
+        "usdt_invalid": "❌ Ungültiger USDT-Betrag. Bitte eine Zahl größer 0 senden oder einen Button tippen — es wird nichts angenommen.",
+        "usdt_expired": "❌ Short abgelaufen oder kein Coin gewählt. Bitte <code>/short</code> erneut senden.",
+        "usdt_btn": "{usdt} USDT",
+        "back_btn": "◀ Zurück"
       },
       "cover": {
         "description": "Paper-Short schließen",
         "help_line": "<code>/cover SYMBOL [PROZENT]</code> — z.B. <code>/cover H</code> oder <code>/cover H 50</code>",
-        "hint": "❌ <b>/cover</b> — Short schließen\n\n<code>/cover H</code> (100 %)\n<code>/cover H 50</code> (50 %)"
+        "hint": "❌ <b>/cover</b> — Short schließen\n\n<code>/cover H</code> (100 %)\n<code>/cover H 50</code> (50 %)",
+        "lot_prompt": "Cover: offenen Short antippen — der Anteil wird vor der Ausführung angezeigt und muss bestätigt werden.",
+        "empty": "Kein offener Short zum Cover.",
+        "pct_prompt": "Wie viel von <b>{position}</b> cover?\nTippe einen Prozentwert (1–100) oder nutze die Buttons.",
+        "pct_invalid": "❌ Ungültiger Prozentwert. Bitte eine Zahl von 1 bis 100 senden oder einen Button tippen — es wird nichts angenommen.",
+        "pct_expired": "❌ Cover abgelaufen oder kein Short gewählt. Bitte <code>/cover</code> erneut senden.",
+        "pct_btn_25": "25%",
+        "pct_btn_50": "50%",
+        "pct_btn_75": "75%",
+        "pct_btn_100": "100%",
+        "back_btn": "◀ Zurück"
       },
       "lock": {
         "description": "Halt/Verkaufssperre, Stop-Loss aus",
@@ -711,12 +727,28 @@
       "short": {
         "description": "Open paper short",
         "help_line": "<code>/short SYMBOL [USDT] [leverage]</code> — e.g. <code>/short H</code> or <code>/short H 400 2</code>",
-        "hint": "❌ <b>/short</b> — Isolated paper short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, leverage)\nCover: <code>/cover H</code>"
+        "hint": "❌ <b>/short</b> — Isolated paper short\n\n<code>/short H</code>\n<code>/short H 400 2</code> (USDT, leverage)\nCover: <code>/cover H</code>",
+        "coin_prompt": "Short (paper): tap a coin — the default size is shown before execution and must be confirmed.",
+        "usdt_prompt": "How much USDT to short <b>{coin}</b>?\nType an amount or use the buttons — nothing is assumed.",
+        "usdt_invalid": "❌ Invalid USDT amount. Send a number greater than 0 or tap a button — nothing is assumed.",
+        "usdt_expired": "❌ Short expired or no coin chosen. Please send <code>/short</code> again.",
+        "usdt_btn": "{usdt} USDT",
+        "back_btn": "◀ Back"
       },
       "cover": {
         "description": "Close paper short",
         "help_line": "<code>/cover SYMBOL [PERCENT]</code> — e.g. <code>/cover H</code> or <code>/cover H 50</code>",
-        "hint": "❌ <b>/cover</b> — Close short\n\n<code>/cover H</code> (100%)\n<code>/cover H 50</code> (50%)"
+        "hint": "❌ <b>/cover</b> — Close short\n\n<code>/cover H</code> (100%)\n<code>/cover H 50</code> (50%)",
+        "lot_prompt": "Cover: tap an open short — the share is shown before execution and must be confirmed.",
+        "empty": "No open short to cover.",
+        "pct_prompt": "How much of <b>{position}</b> to cover?\nType a percentage (1–100) or use the buttons.",
+        "pct_invalid": "❌ Invalid percentage. Send a number from 1 to 100 or tap a button — nothing is assumed.",
+        "pct_expired": "❌ Cover expired or no short chosen. Please send <code>/cover</code> again.",
+        "pct_btn_25": "25%",
+        "pct_btn_50": "50%",
+        "pct_btn_75": "75%",
+        "pct_btn_100": "100%",
+        "back_btn": "◀ Back"
       },
       "lock": {
         "description": "Halt / sell-block — stop-loss off",

@@ -302,7 +302,11 @@
     "pending_reminder_sell_pct": "Verkauf von <b>{position}</b> läuft — Prozent wählen oder Abbrechen.",
     "pending_reminder_lock": "Lock läuft — Position wählen oder Abbrechen.",
     "pending_reminder_lock_dur": "Lock von <b>{position}</b> läuft — Dauer wählen oder Abbrechen.",
-    "pending_reminder_unlock": "Unlock läuft — Position wählen oder Abbrechen."
+    "pending_reminder_unlock": "Unlock läuft — Position wählen oder Abbrechen.",
+    "pending_reminder_short": "Short läuft — Coin wählen oder Abbrechen.",
+    "pending_reminder_short_usdt": "Short von <b>{coin}</b> läuft — Betrag wählen oder Abbrechen.",
+    "pending_reminder_cover": "Cover läuft — Short wählen oder Abbrechen.",
+    "pending_reminder_cover_pct": "Cover von <b>{position}</b> läuft — Prozent wählen oder Abbrechen."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -607,6 +611,10 @@
     "pending_reminder_sell_pct": "Sell of <b>{position}</b> pending — pick a percent or Cancel.",
     "pending_reminder_lock": "Lock pending — pick a position or Cancel.",
     "pending_reminder_lock_dur": "Lock of <b>{position}</b> pending — pick a duration or Cancel.",
-    "pending_reminder_unlock": "Unlock pending — pick a position or Cancel."
+    "pending_reminder_unlock": "Unlock pending — pick a position or Cancel.",
+    "pending_reminder_short": "Short pending — pick a coin or Cancel.",
+    "pending_reminder_short_usdt": "Short of <b>{coin}</b> pending — pick an amount or Cancel.",
+    "pending_reminder_cover": "Cover pending — pick a short or Cancel.",
+    "pending_reminder_cover_pct": "Cover of <b>{position}</b> pending — pick a percent or Cancel."
   }
 }
