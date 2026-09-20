@@ -9,11 +9,16 @@ from data_manager import (
 )
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
-from notifications.telegram_commands.command_context import activate_command
-from telegram_notifier import send_telegram_message
+from notifications.telegram_commands.command_context import activate_command, clear_context, get_context, set_chat_id
+from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 # Telegram hard limit 4096; leave headroom for prefix/HTML
 _WATCHLIST_CHUNK_LIMIT = 3900
+_ADD_CANDIDATE_LIMIT = 8
+ADD_PICK_CALLBACK_PREFIX = "addpick:"
+ADD_TYPE_CALLBACK = "addtype"
+ADD_BACK_CALLBACK = "addback"
+REM_PICK_CALLBACK_PREFIX = "rempick:"
 
 
 def _coin_symbol(coin: dict) -> str:
@@ -136,6 +141,137 @@ def resolve_coin_by_display_index(coins: list, index: int):
     return None
 
 
+def _wl_menu_text(command: str, field: str, **kwargs) -> str:
+    from notifications.telegram_commands.menu_i18n import _command_entry, _pack, current_language
+
+    template = str(_command_entry(_pack(current_language()), command).get(field) or "")
+    for key, value in kwargs.items():
+        template = template.replace(f"{{{key}}}", str(value))
+    return template
+
+
+def _ticker_of(coin: dict) -> str:
+    return _coin_symbol(coin).split("/")[0].upper()
+
+
+def add_candidates_not_on_list(watchlist: list | None = None, limit: int = _ADD_CANDIDATE_LIMIT) -> list[dict]:
+    """Short tap list: overlay coins that are not already on the watchlist."""
+    coins = watchlist if watchlist is not None else list_coins()
+    on_tickers = {_ticker_of(c) for c in coins}
+    seen: set[str] = set()
+    out: list[dict] = []
+    for src in (_overlay_candidate_coins(),):
+        for c in src:
+            if not isinstance(c, dict):
+                continue
+            ticker = _ticker_of(c)
+            if not ticker or ticker in on_tickers or ticker in seen:
+                continue
+            seen.add(ticker)
+            out.append({
+                "symbol": f"{ticker}/USDT",
+                "name": c.get("name") or ticker,
+                "active": True,
+            })
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _overlay_candidate_coins() -> list:
+    coins: list = []
+    try:
+        from data_manager import load_cmc_trending_overlay, load_dry_run_overlay
+
+        coins.extend(load_cmc_trending_overlay().get("coins") or [])
+        coins.extend(load_dry_run_overlay().get("coins") or [])
+    except Exception:
+        pass
+    return coins
+
+
+def format_remove_pick_button_label(coin: dict) -> str:
+    return _ticker_of(coin)
+
+
+def _add_candidate_button_rows(candidates: list) -> list:
+    rows = []
+    for coin in candidates:
+        ticker = _ticker_of(coin)
+        rows.append([{
+            "text": ticker,
+            "callback_data": f"{ADD_PICK_CALLBACK_PREFIX}{ticker}",
+        }])
+    rows.append([{
+        "text": _wl_menu_text("add", "type_fallback_btn"),
+        "callback_data": ADD_TYPE_CALLBACK,
+    }])
+    return rows
+
+
+def _remove_button_rows(coins: list) -> list:
+    rows = []
+    for index, coin in enumerate(coins, start=1):
+        rows.append([{
+            "text": format_remove_pick_button_label(coin),
+            "callback_data": f"{REM_PICK_CALLBACK_PREFIX}{index}",
+        }])
+    return rows
+
+
+def _send_chunked_picker(chunks: list[str], buttons: list) -> None:
+    if not chunks:
+        return
+    last = len(chunks) - 1
+    for i, chunk in enumerate(chunks):
+        if i == last and buttons:
+            send_telegram_buttons(chunk, buttons)
+        else:
+            send_telegram_message(chunk)
+
+
+def prompt_add_type_ticker(*, invalid: bool = False) -> None:
+    prompt = _wl_menu_text("add", "type_prompt")
+    if invalid:
+        prompt = hint("add") + "\n\n" + prompt
+    buttons = [[{
+        "text": _wl_menu_text("add", "back_btn"),
+        "callback_data": ADD_BACK_CALLBACK,
+    }]]
+    send_telegram_buttons(prompt, buttons)
+
+
+def _show_add_picker() -> None:
+    try:
+        coins = list_coins()
+    except Exception:
+        coins = []
+    candidates = add_candidates_not_on_list(coins)
+    prompt = _wl_menu_text("add", "pick_prompt")
+    send_telegram_buttons(prompt, _add_candidate_button_rows(candidates))
+    activate_command("add", state="add_awaiting_pick")
+
+
+def _show_remove_picker() -> bool:
+    coins = list_coins()
+    if not coins:
+        from notifications.telegram_i18n import t
+
+        send_telegram_message(t("watchlist_empty"))
+        return True
+    header = _wl_menu_text("remove", "pick_prompt")
+    lines = [header, ""]
+    for i, coin in enumerate(coins, 1):
+        lines.append(_format_coin_line(i, coin))
+    text = "\n".join(lines)
+    chunks = [text] if len(text) <= _WATCHLIST_CHUNK_LIMIT else chunk_watchlist_messages(coins)
+    if chunks and chunks[0] and not chunks[0].startswith(header):
+        chunks[0] = header + "\n\n" + chunks[0]
+    _send_chunked_picker(chunks, _remove_button_rows(coins))
+    activate_command("remove", state="remove_awaiting_pick")
+    return True
+
+
 def _format_wqe_status() -> str:
     """W6: operator visibility for scores / soak / mode."""
     try:
@@ -234,14 +370,11 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/add":
-        activate_command("add")
-        send_telegram_message(hint("add"))
+        _show_add_picker()
         return True
 
     if text == "/remove":
-        activate_command("remove")
-        send_telegram_message(hint("remove"))
-        return True
+        return _show_remove_picker()
 
     if text.startswith("/add "):
         query = text[5:].strip().upper()
@@ -272,4 +405,106 @@ def handle(text: str) -> bool:
         send_watchlist_messages(list_coins())
         return True
 
+    return False
+
+
+def _wl_callback_chat_id(callback_query: dict, log_label: str):
+    from logger import log
+
+    answer_callback_query(callback_query.get("id"))
+    message = (callback_query or {}).get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        log(f"{log_label} callback missing chat id", "WARNING")
+        return None
+    set_chat_id(chat_id)
+    return chat_id
+
+
+def _handle_add_pick_callback(callback_query: dict) -> bool:
+    chat_id = _wl_callback_chat_id(callback_query, "addpick")
+    if not chat_id:
+        return True
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if (
+        not entry
+        or entry.get("command") != "add"
+        or str(meta.get("state") or "") not in ("add_awaiting_pick", "add_awaiting_ticker")
+    ):
+        send_telegram_message(_wl_menu_text("add", "expired"))
+        return True
+    data = str(callback_query.get("data") or "")
+    ticker = data.split(":", 1)[1] if ":" in data else ""
+    ticker = "".join(ch for ch in ticker.upper() if ch.isalnum())
+    if not ticker:
+        send_telegram_message(_wl_menu_text("add", "expired"))
+        return True
+    from notifications.telegram_commands.router import dispatch_command
+
+    clear_context(chat_id)
+    return dispatch_command(f"/add {ticker}")
+
+
+def _handle_add_type_callback(callback_query: dict) -> bool:
+    chat_id = _wl_callback_chat_id(callback_query, "addtype")
+    if not chat_id:
+        return True
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if not entry or entry.get("command") != "add" or str(meta.get("state") or "") != "add_awaiting_pick":
+        send_telegram_message(_wl_menu_text("add", "expired"))
+        return True
+    prompt_add_type_ticker()
+    activate_command("add", state="add_awaiting_ticker")
+    return True
+
+
+def _handle_add_back_callback(callback_query: dict) -> bool:
+    chat_id = _wl_callback_chat_id(callback_query, "addback")
+    if not chat_id:
+        return True
+    entry = get_context(chat_id)
+    if not entry or entry.get("command") != "add":
+        send_telegram_message(_wl_menu_text("add", "expired"))
+        return True
+    _show_add_picker()
+    return True
+
+
+def _handle_remove_pick_callback(callback_query: dict) -> bool:
+    chat_id = _wl_callback_chat_id(callback_query, "rempick")
+    if not chat_id:
+        return True
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if (
+        not entry
+        or entry.get("command") != "remove"
+        or str(meta.get("state") or "") != "remove_awaiting_pick"
+    ):
+        send_telegram_message(_wl_menu_text("remove", "expired"))
+        return True
+    data = str(callback_query.get("data") or "")
+    raw = data.split(":", 1)[1] if ":" in data else ""
+    idx = safe_int(raw)
+    if idx is None or idx < 1:
+        send_telegram_message(_wl_menu_text("remove", "expired"))
+        return True
+    from notifications.telegram_commands.router import dispatch_command
+
+    clear_context(chat_id)
+    return dispatch_command(f"/remove {idx}")
+
+
+def handle_callback(callback_query: dict) -> bool:
+    data = str((callback_query or {}).get("data") or "")
+    if data.startswith(ADD_PICK_CALLBACK_PREFIX):
+        return _handle_add_pick_callback(callback_query)
+    if data == ADD_TYPE_CALLBACK:
+        return _handle_add_type_callback(callback_query)
+    if data == ADD_BACK_CALLBACK:
+        return _handle_add_back_callback(callback_query)
+    if data.startswith(REM_PICK_CALLBACK_PREFIX):
+        return _handle_remove_pick_callback(callback_query)
     return False

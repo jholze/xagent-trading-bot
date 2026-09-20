@@ -183,12 +183,19 @@
       "add": {
         "description": "Coin zur Watchlist hinzufügen",
         "help_line": "<code>/add SYMBOL</code> — Coin beobachten (z.B. <code>/add RAVE</code>)",
-        "hint": "❌ <b>/add</b> — Coin zur Beobachtungsliste hinzufügen\n\nSo geht's: <code>/add SYMBOL</code>\nBeispiel: <code>/add RAVE</code> oder <code>/add SOL</code>"
+        "hint": "❌ <b>/add</b> — Coin zur Beobachtungsliste hinzufügen\n\nSo geht's: <code>/add SYMBOL</code>\nBeispiel: <code>/add RAVE</code> oder <code>/add SOL</code>",
+        "pick_prompt": "Coin zur Liste hinzufügen — tippe einen Vorschlag oder schreib den Ticker.",
+        "type_prompt": "OK — schreib den Ticker (z.B. <code>RAVE</code>).",
+        "type_fallback_btn": "so nicht, schreib den Ticker",
+        "expired": "❌ Hinzufügen abgelaufen. Bitte <code>/add</code> erneut senden.",
+        "back_btn": "◀ Zurück"
       },
       "remove": {
         "description": "Coin von der Watchlist entfernen",
         "help_line": "<code>/remove NUMMER</code> — Coin entfernen (zuerst <code>/list</code>, z.B. <code>/remove 2</code>)",
-        "hint": "❌ <b>/remove</b> — Coin von der Liste entfernen\n\nZuerst <code>/list</code> senden, dann Nummer wählen.\nBeispiel: <code>/remove 2</code>"
+        "hint": "❌ <b>/remove</b> — Coin von der Liste entfernen\n\nZuerst <code>/list</code> senden, dann Nummer wählen.\nBeispiel: <code>/remove 2</code>",
+        "pick_prompt": "Coin von der Liste entfernen — tippe einen Eintrag.",
+        "expired": "❌ Entfernen abgelaufen. Bitte <code>/remove</code> erneut senden."
       },
       "positions": {
         "description": "Portfolio-Kurzliste",
@@ -202,7 +209,12 @@
         "description": "Coin kaufen",
         "help_line": "<code>/buy NUMMER USDT</code> — Kaufen (Nummer aus <code>/buy</code> oder <code>/list</code>, z.B. <code>/buy 1 25</code>)",
         "context_footer": "Danach nur noch: <code>{example}</code> (Nummer + USDT)\n<i>Ohne USDT: Standard ${default_usdt}</i>",
-        "hint": "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\nZuerst <code>/buy</code> → nummerierte Liste.\nDann nur noch Nummer + USDT senden, z.B. <code>1 25</code>.\nRisk Manager zeigt Vorschau, Bestätigung per Button."
+        "hint": "❌ <b>/buy</b> — Coin kaufen (Paper oder Live)\n\nZuerst <code>/buy</code> → nummerierte Liste.\nDann nur noch Nummer + USDT senden, z.B. <code>1 25</code>.\nRisk Manager zeigt Vorschau, Bestätigung per Button.",
+        "usdt_prompt": "Wie viel USDT für <b>{coin}</b>?\nTippe einen Betrag oder nutze die Buttons — es wird kein Standardbetrag angenommen.",
+        "usdt_invalid": "❌ Ungültiger USDT-Betrag. Bitte eine Zahl größer 0 senden oder einen Button tippen — es wird nichts angenommen.",
+        "usdt_expired": "❌ Kauf abgelaufen oder kein Coin gewählt. Bitte <code>/buy</code> erneut senden.",
+        "usdt_btn": "{usdt} USDT",
+        "back_btn": "◀ Zurück"
       },
       "sell": {
         "description": "Position verkaufen",
@@ -617,12 +629,19 @@
       "add": {
         "description": "Add coin to watchlist",
         "help_line": "<code>/add SYMBOL</code> — Watch a coin (e.g. <code>/add RAVE</code>)",
-        "hint": "❌ <b>/add</b> — Add coin to watchlist\n\nUsage: <code>/add SYMBOL</code>\nExample: <code>/add RAVE</code> or <code>/add SOL</code>"
+        "hint": "❌ <b>/add</b> — Add coin to watchlist\n\nUsage: <code>/add SYMBOL</code>\nExample: <code>/add RAVE</code> or <code>/add SOL</code>",
+        "pick_prompt": "Add a coin to the list — tap a suggestion or type the ticker.",
+        "type_prompt": "OK — type the ticker (e.g. <code>RAVE</code>).",
+        "type_fallback_btn": "not listed — type the ticker",
+        "expired": "❌ Add expired. Please send <code>/add</code> again.",
+        "back_btn": "◀ Back"
       },
       "remove": {
         "description": "Remove coin from watchlist",
         "help_line": "<code>/remove NUMBER</code> — Remove coin (use <code>/list</code> first, e.g. <code>/remove 2</code>)",
-        "hint": "❌ <b>/remove</b> — Remove coin from list\n\nSend <code>/list</code> first, then pick a number.\nExample: <code>/remove 2</code>"
+        "hint": "❌ <b>/remove</b> — Remove coin from list\n\nSend <code>/list</code> first, then pick a number.\nExample: <code>/remove 2</code>",
+        "pick_prompt": "Remove a coin from the list — tap an entry.",
+        "expired": "❌ Remove expired. Please send <code>/remove</code> again."
       },
       "positions": {
         "description": "Portfolio compact list",
@@ -636,7 +655,12 @@
         "description": "Buy coin",
         "help_line": "<code>/buy NUMBER USDT</code> — Buy (number from <code>/buy</code> or <code>/list</code>, e.g. <code>/buy 1 25</code>)",
         "context_footer": "Then send only: <code>{example}</code> (number + USDT)\n<i>Without USDT: default ${default_usdt}</i>",
-        "hint": "❌ <b>/buy</b> — Buy coin (paper or live)\n\nFirst <code>/buy</code> → numbered list.\nThen send number + USDT only, e.g. <code>1 25</code>.\nRisk manager preview with confirm button."
+        "hint": "❌ <b>/buy</b> — Buy coin (paper or live)\n\nFirst <code>/buy</code> → numbered list.\nThen send number + USDT only, e.g. <code>1 25</code>.\nRisk manager preview with confirm button.",
+        "usdt_prompt": "How much USDT for <b>{coin}</b>?\nType an amount or use the buttons — nothing is assumed.",
+        "usdt_invalid": "❌ Invalid USDT amount. Send a number greater than 0 or tap a button — nothing is assumed.",
+        "usdt_expired": "❌ Buy expired or no coin chosen. Please send <code>/buy</code> again.",
+        "usdt_btn": "{usdt} USDT",
+        "back_btn": "◀ Back"
       },
       "sell": {
         "description": "Sell position",
