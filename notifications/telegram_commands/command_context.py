@@ -14,6 +14,7 @@ from telegram_notifier import send_telegram_message
 
 _CONTEXT_FILE = Path(__file__).resolve().parents[2] / "data" / "telegram_command_context.json"
 _TTL_MINUTES = 15
+CANCEL_CALLBACK = "cmdctx:cancel"
 
 _chat_id_var: ContextVar[str] = ContextVar("telegram_chat_id", default="")
 
@@ -72,13 +73,55 @@ _RESOLVABLE_COMMANDS = frozenset({
 })
 
 
+def cancel_keyboard() -> list:
+    """One-row inline keyboard: Abbrechen → ``CANCEL_CALLBACK``."""
+    from notifications.telegram_i18n import t
+
+    return [[{"text": t("pending_cancel_btn"), "callback_data": CANCEL_CALLBACK}]]
+
+
+def pending_reply_markup() -> dict:
+    return {"inline_keyboard": cancel_keyboard()}
+
+
+def pending_reminder_text(command: str, meta: dict | None = None) -> str:
+    from notifications.telegram_i18n import t
+
+    meta = meta or {}
+    if command == "buy":
+        return t("pending_reminder_buy")
+    if command == "sell":
+        label = str(meta.get("label") or meta.get("position") or "").strip()
+        if str(meta.get("state") or "") == "sell_awaiting_pct" and label:
+            return t("pending_reminder_sell_pct", position=label)
+        return t("pending_reminder_sell")
+    return t("pending_reminder", command=command)
+
+
+def send_pending_cancel_chrome(command: str, meta: dict | None = None) -> None:
+    """One-line pending reminder + Abbrechen. Does not place an order."""
+    send_telegram_message(
+        pending_reminder_text(command, meta),
+        reply_markup=pending_reply_markup(),
+    )
+
+
 def activate_command(command: str, **meta) -> None:
-    """Set context for the current webhook chat (or TELEGRAM_CHAT_ID)."""
+    """Set context for the current webhook chat (or TELEGRAM_CHAT_ID).
+
+    Waiting flows get an inline Abbrechen control (#450). Pass
+    ``chrome=False`` when the caller already attached ``pending_reply_markup``
+    to the prompt (so Henry does not see two Cancel buttons). ``chrome`` is
+    not stored in context meta.
+    """
     if command not in _RESOLVABLE_COMMANDS:
         return
+    chrome = bool(meta.pop("chrome", True))
     cid = current_chat_id()
     if cid:
         set_context(cid, command, **meta)
+        if chrome:
+            send_pending_cancel_chrome(command, meta)
 
 
 def set_context(chat_id: str | int, command: str, **meta) -> None:
@@ -326,3 +369,28 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
     clear_context(chat_id)
     return dispatch_command(built)
+
+
+def handle_callback(callback_query: dict) -> bool:
+    """Clear pending command_context. Never dispatches a buy/sell/lock/…."""
+    data = str((callback_query or {}).get("data") or "")
+    if data != CANCEL_CALLBACK:
+        return False
+
+    from telegram_notifier import answer_callback_query
+    from notifications.telegram_i18n import t
+
+    callback_id = (callback_query or {}).get("id")
+    if callback_id:
+        answer_callback_query(callback_id)
+    message = (callback_query or {}).get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        from logger import log
+
+        log("cmdctx cancel callback missing chat id", "WARNING")
+        return True
+    set_chat_id(chat_id)
+    clear_context(chat_id)
+    send_telegram_message(t("pending_cancel_done"))
+    return True

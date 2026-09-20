@@ -149,6 +149,10 @@ def dispatch_callback(callback_query: dict) -> bool:
                 if callback_id:
                     answer_callback_query(callback_id, _deny_text())
                 return True
+        from notifications.telegram_commands import command_context as command_context
+
+        if command_context.handle_callback(callback_query):
+            return True
         if menu_commands.handle_callback(callback_query):
             return True
         if pause_commands.handle_callback(callback_query):

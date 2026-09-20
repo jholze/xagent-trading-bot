@@ -29,6 +29,7 @@ from notifications.telegram_commands.command_context import (
     clear_context,
     get_context,
     parse_sell_percent_token,
+    pending_reply_markup,
     set_chat_id,
     set_context,
 )
@@ -149,8 +150,11 @@ def handle(text: str) -> bool:
         symbols = [_coin_symbol(c) for c in coins]
         prices = get_prices_batch(symbols)
         default_usdt = get_bot_config().max_usdt_per_trade
-        activate_command("buy", default_usdt=default_usdt)
-        send_telegram_message(format_buy_list_message(coins, prices))
+        activate_command("buy", default_usdt=default_usdt, chrome=False)
+        send_telegram_message(
+            format_buy_list_message(coins, prices),
+            reply_markup=pending_reply_markup(),
+        )
         return True
 
     if text.startswith("/buy "):
@@ -235,12 +239,12 @@ def handle(text: str) -> bool:
                 return True
             symbols = [position_symbol(p) for p in all_lots]
             prices = get_prices_batch(symbols)
-            activate_command("sell", state="sell_awaiting_position")
             chunks = chunk_positions_message(
                 format_sell_list_message(all_lots, prices),
                 annotate_pages=False,
             )
             _send_chunked_sell_list(chunks, _sell_position_button_rows(active, prices))
+            activate_command("sell", state="sell_awaiting_position")
             return True
 
         if not all_lots:
