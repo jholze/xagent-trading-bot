@@ -3,17 +3,31 @@ import os
 from core.runtime_identity import format_identity_section
 from core.simulated_trading import is_simulated_trading, simulated_live_config_updates
 from data_manager import get_config, patch_config, reload_config
+from notifications.telegram_commands.command_context import (
+    activate_command,
+    cancel_keyboard,
+    clear_context,
+    get_context,
+    set_chat_id,
+)
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_int
 from notifications.telegram_i18n import t
 from services.ledger_sync import on_trading_mode_change
 from services.trading_service import TradingService
 from strategies.positions import count_open_positions
-from notifications.telegram_commands.command_context import activate_command
-from telegram_notifier import send_telegram_message
+from telegram_notifier import answer_callback_query, send_telegram_message
 
 MAX_POSITIONS_MIN = 1
 MAX_POSITIONS_MAX = 50
+MAXPOS_PRESETS = (5, 8, 10, 15)
+
+MODE_CALLBACK_PREFIX = "modepick:"
+MAXPOS_CALLBACK_PREFIX = "maxpos:"
+_MODE_PICK_TO_COMMAND = {
+    "live": "/mode live",
+    "off": "/mode off",
+}
 
 
 _TRADING_FLAG_KEYS = ("entries_enabled", "exits_enabled")
@@ -54,6 +68,73 @@ def _apply_mode_switch(updates: dict) -> tuple[bool, str]:
     return True, ledger_msg
 
 
+def _mode_status_text() -> str:
+    service = TradingService()
+    sim = t("mode_sim_tag") if is_simulated_trading() else ""
+    return (
+        f"{t('mode_title')}\n\n"
+        f"{t('mode_current', label=service.mode_label(), sim=sim)}\n\n"
+        f"{format_identity_section()}\n\n"
+        f"{t('mode_commands')}"
+    )
+
+
+def _mode_button_rows() -> list:
+    return [
+        [
+            {
+                "text": t("mode_btn_sim_live"),
+                "callback_data": f"{MODE_CALLBACK_PREFIX}live",
+            },
+            {
+                "text": t("mode_btn_off"),
+                "callback_data": f"{MODE_CALLBACK_PREFIX}off",
+            },
+        ],
+        cancel_keyboard()[0],
+    ]
+
+
+def _maxpos_button_rows() -> list:
+    return [
+        [
+            {
+                "text": str(n),
+                "callback_data": f"{MAXPOS_CALLBACK_PREFIX}{n}",
+            }
+            for n in MAXPOS_PRESETS
+        ],
+        cancel_keyboard()[0],
+    ]
+
+
+def prompt_mode_choice() -> None:
+    """#497 copy unchanged; #514 adds Simulated Live / Aus taps."""
+    send_telegram_message(
+        _mode_status_text(),
+        reply_markup={"inline_keyboard": _mode_button_rows()},
+    )
+
+
+def prompt_maxpositions(*, invalid: bool = False) -> None:
+    cfg = get_config()
+    current = int(cfg.get("max_open_positions", 5))
+    open_count = count_open_positions()
+    msg = t(
+        "maxpos_show",
+        current=current,
+        open=open_count,
+        min=MAX_POSITIONS_MIN,
+        max=MAX_POSITIONS_MAX,
+    )
+    if invalid:
+        msg = hint("maxpositions") + "\n\n" + msg
+    send_telegram_message(
+        msg,
+        reply_markup={"inline_keyboard": _maxpos_button_rows()},
+    )
+
+
 def handle(text: str) -> bool:
     if text.strip().lower() == "/myid":
         from core.tenant_context import resolve_tenant_id
@@ -64,32 +145,18 @@ def handle(text: str) -> bool:
         send_telegram_message(t("myid", chat_id=cid, tenant_id=tid))
         return True
 
-    if text in ["/mode", "/tradingmode", "/stand", "/version", "/build"]:
-        service = TradingService()
-        sim = t("mode_sim_tag") if is_simulated_trading() else ""
-        msg = (
-            f"{t('mode_title')}\n\n"
-            f"{t('mode_current', label=service.mode_label(), sim=sim)}\n\n"
-            f"{format_identity_section()}\n\n"
-            f"{t('mode_commands')}"
-        )
-        send_telegram_message(msg)
+    if text in ["/mode", "/tradingmode"]:
+        prompt_mode_choice()
+        activate_command("mode", chrome=False, state="mode_awaiting_choice")
+        return True
+
+    if text in ["/stand", "/version", "/build"]:
+        send_telegram_message(_mode_status_text())
         return True
 
     if text in ["/maxpositions", "/maxpos"]:
-        cfg = get_config()
-        current = int(cfg.get("max_open_positions", 5))
-        open_count = count_open_positions()
-        activate_command("maxpositions")
-        send_telegram_message(
-            t(
-                "maxpos_show",
-                current=current,
-                open=open_count,
-                min=MAX_POSITIONS_MIN,
-                max=MAX_POSITIONS_MAX,
-            )
-        )
+        prompt_maxpositions()
+        activate_command("maxpositions", chrome=False, state="maxpos_awaiting_value")
         return True
 
     if text.startswith("/maxpositions ") or text.startswith("/maxpos "):
@@ -196,4 +263,70 @@ def handle(text: str) -> bool:
         send_telegram_message(hint("mode"))
         return True
 
+    return False
+
+
+def _callback_chat_id(callback_query: dict, log_label: str):
+    from logger import log
+
+    callback_id = (callback_query or {}).get("id")
+    if callback_id:
+        answer_callback_query(callback_id)
+    chat_id = ((callback_query or {}).get("message") or {}).get("chat") or {}
+    chat_id = chat_id.get("id") if isinstance(chat_id, dict) else None
+    if not chat_id:
+        log(f"{log_label} callback missing chat id", "WARNING")
+        return None
+    set_chat_id(chat_id)
+    return chat_id
+
+
+def _wizard_entry(chat_id, command: str, state: str) -> dict | None:
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if not entry or entry.get("command") != command or str(meta.get("state") or "") != state:
+        return None
+    return entry
+
+
+def _handle_mode_pick_callback(callback_query: dict) -> bool:
+    chat_id = _callback_chat_id(callback_query, "modepick")
+    if not chat_id:
+        return True
+    if _wizard_entry(chat_id, "mode", "mode_awaiting_choice") is None:
+        send_telegram_message(t("mode_pick_expired"))
+        return True
+    data = str((callback_query or {}).get("data") or "")
+    raw = data.split(":", 1)[1] if ":" in data else ""
+    cmd = _MODE_PICK_TO_COMMAND.get(raw)
+    if cmd is None:
+        send_telegram_message(t("mode_pick_expired"))
+        return True
+    clear_context(chat_id)
+    return handle(cmd)
+
+
+def _handle_maxpos_callback(callback_query: dict) -> bool:
+    chat_id = _callback_chat_id(callback_query, "maxpos")
+    if not chat_id:
+        return True
+    if _wizard_entry(chat_id, "maxpositions", "maxpos_awaiting_value") is None:
+        send_telegram_message(t("maxpos_pick_expired"))
+        return True
+    data = str((callback_query or {}).get("data") or "")
+    raw = data.split(":", 1)[1] if ":" in data else ""
+    value = safe_int(raw)
+    if value is None or value < MAX_POSITIONS_MIN or value > MAX_POSITIONS_MAX:
+        prompt_maxpositions(invalid=True)
+        return True
+    clear_context(chat_id)
+    return handle(f"/maxpositions {value}")
+
+
+def handle_callback(callback_query: dict) -> bool:
+    data = str((callback_query or {}).get("data") or "")
+    if data.startswith(MODE_CALLBACK_PREFIX):
+        return _handle_mode_pick_callback(callback_query)
+    if data.startswith(MAXPOS_CALLBACK_PREFIX):
+        return _handle_maxpos_callback(callback_query)
     return False

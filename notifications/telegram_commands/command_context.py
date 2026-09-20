@@ -115,6 +115,10 @@ def pending_reminder_text(command: str, meta: dict | None = None) -> str:
         if str(meta.get("state") or "") == "cover_awaiting_pct" and label:
             return t("pending_reminder_cover_pct", position=label)
         return t("pending_reminder_cover")
+    if command == "mode":
+        return t("pending_reminder_mode")
+    if command == "maxpositions":
+        return t("pending_reminder_maxpositions")
     return t("pending_reminder", command=command)
 
 
@@ -478,6 +482,18 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
             label = str(meta.get("label") or meta.get("position") or "")
             prompt_cover_percentage(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "mode" and str(meta.get("state") or "") == "mode_awaiting_choice":
+            from notifications.telegram_commands.mode_commands import prompt_mode_choice
+
+            prompt_mode_choice()
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "maxpositions" and str(meta.get("state") or "") == "maxpos_awaiting_value":
+            from notifications.telegram_commands.mode_commands import prompt_maxpositions
+
+            prompt_maxpositions(invalid=True)
             set_context(chat_id, command, **meta)
             return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid

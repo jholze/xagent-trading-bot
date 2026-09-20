@@ -124,6 +124,10 @@
     "mode_current": "Aktuell: <b>{label}</b>{sim}",
     "mode_sim_tag": " | <b>Simulated Live</b>",
     "mode_commands": "<b>Befehle:</b>\n/mode live — Simulated Live (dry-run Ledger)\n/mode off — Nur Analyse\n/pause — Neue Käufe stoppen (Stops laufen weiter)\n/resume — Käufe wieder erlauben\n/panic — Alle Longs schließen (eine Bestätigung)\n/live_confirm — Live bestätigen\n/live_cancel — Live widerrufen\n/gate — Gate.io Status\n/maxpositions — Max. offene Positionen",
+    "mode_btn_sim_live": "Simulated Live",
+    "mode_btn_off": "Aus",
+    "mode_pick_expired": "⏱️ Modus-Auswahl abgelaufen. Sende <code>/mode</code> erneut.",
+    "maxpos_pick_expired": "⏱️ Positions-Limit-Auswahl abgelaufen. Sende <code>/maxpositions</code> erneut.",
     "maxpos_show": "<b>Max. offene Positionen</b>\n\nAktuell: <b>{current}</b>  ·  Offen: <b>{open}</b>\n\nÄndern: nur Zahl senden, z.B. <code>10</code>\n(Bereich {min}–{max})",
     "maxpos_set": "✅ Max. offene Positionen auf <b>{value}</b> gesetzt.\nAktuell offen: <b>{open}</b>/{value}",
     "mode_paper_migrated": "✅ <b>Paper</b> ist veraltet — umgestellt auf <b>Simulated Live</b> (dry-run, Order-Ledger, keine echten Gate-Orders).",
@@ -306,7 +310,9 @@
     "pending_reminder_short": "Short läuft — Coin wählen oder Abbrechen.",
     "pending_reminder_short_usdt": "Short von <b>{coin}</b> läuft — Betrag wählen oder Abbrechen.",
     "pending_reminder_cover": "Cover läuft — Short wählen oder Abbrechen.",
-    "pending_reminder_cover_pct": "Cover von <b>{position}</b> läuft — Prozent wählen oder Abbrechen."
+    "pending_reminder_cover_pct": "Cover von <b>{position}</b> läuft — Prozent wählen oder Abbrechen.",
+    "pending_reminder_mode": "Modus läuft — Simulated Live oder Aus tippen, oder Abbrechen.",
+    "pending_reminder_maxpositions": "Max. Positionen läuft — Zahl tippen oder senden, oder Abbrechen."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -433,6 +439,10 @@
     "mode_current": "Current: <b>{label}</b>{sim}",
     "mode_sim_tag": " | <b>Simulated Live</b>",
     "mode_commands": "<b>Commands:</b>\n/mode live — Simulated live (dry-run ledger)\n/mode off — Analysis only\n/pause — Stop new buys (stops keep running)\n/resume — Allow buys again\n/panic — Close all longs (one confirmation)\n/live_confirm — Confirm live\n/live_cancel — Revoke live\n/gate — Gate.io status\n/maxpositions — Max open positions",
+    "mode_btn_sim_live": "Simulated Live",
+    "mode_btn_off": "Off",
+    "mode_pick_expired": "⏱️ Mode picker expired. Send <code>/mode</code> again.",
+    "maxpos_pick_expired": "⏱️ Max-positions picker expired. Send <code>/maxpositions</code> again.",
     "maxpos_show": "<b>Max open positions</b>\n\nCurrent: <b>{current}</b>  ·  Open: <b>{open}</b>\n\nChange: send a number, e.g. <code>10</code>\n(Range {min}–{max})",
     "maxpos_set": "✅ Max open positions set to <b>{value}</b>.\nCurrently open: <b>{open}</b>/{value}",
     "mode_paper_migrated": "✅ <b>Paper</b> is deprecated — switched to <b>Simulated Live</b> (dry-run, order ledger, no real Gate orders).",
@@ -615,6 +625,8 @@
     "pending_reminder_short": "Short pending — pick a coin or Cancel.",
     "pending_reminder_short_usdt": "Short of <b>{coin}</b> pending — pick an amount or Cancel.",
     "pending_reminder_cover": "Cover pending — pick a short or Cancel.",
-    "pending_reminder_cover_pct": "Cover of <b>{position}</b> pending — pick a percent or Cancel."
+    "pending_reminder_cover_pct": "Cover of <b>{position}</b> pending — pick a percent or Cancel.",
+    "pending_reminder_mode": "Mode pending — tap Simulated Live or Off, or Cancel.",
+    "pending_reminder_maxpositions": "Max positions pending — tap or send a number, or Cancel."
   }
 }
