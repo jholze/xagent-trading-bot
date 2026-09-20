@@ -117,8 +117,8 @@ def _locked_reply(sym: str, tf: str, lock: dict[str, Any]) -> str:
     )
 
 
-def _apply_pending_lock(rec: dict[str, Any]) -> None:
-    clear_context()
+def _apply_pending_lock(rec: dict[str, Any], chat_id: str | int | None = None) -> None:
+    clear_context(chat_id)
     sym = str(rec.get("symbol") or "")
     tf = str(rec.get("timeframe") or "1h")
     lock = rec.get("lock")
@@ -156,11 +156,17 @@ def handle_callback(callback_query: dict) -> bool:
         send_telegram_message(t("lock_confirm_cancelled"))
         return True
     if action == "lock_ok":
+        from logger import log
+
+        chat_id = ((callback_query.get("message") or {}).get("chat") or {}).get("id")
+        if not chat_id:
+            log("lock_ok callback missing chat id", "WARNING")
+            return True
         rec = consume_lock_token(token)
         if rec is None:
             send_telegram_message(t("lock_confirm_expired"))
             return True
-        _apply_pending_lock(rec)
+        _apply_pending_lock(rec, chat_id)
         return True
     return True
 

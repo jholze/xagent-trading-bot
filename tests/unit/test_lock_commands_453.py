@@ -89,6 +89,14 @@ def _token_from(tg) -> str:
     return keyboard[0][0]["callback_data"].split(":", 1)[1]
 
 
+def _lock_ok(token: str, chat_id=CHAT, cid="cb") -> dict:
+    return {
+        "id": cid,
+        "data": f"lock_ok:{token}",
+        "message": {"chat": {"id": chat_id}},
+    }
+
+
 def test_lock_without_symbol_lists_and_does_not_persist(monkeypatch):
     reset_lock_confirm_for_tests()
     tg = install_telegram_capture(monkeypatch)
@@ -155,7 +163,7 @@ def test_confirm_persists_bound_lock(monkeypatch):
         assert handle("/lock BLESS 24h hold_news") is True
         set_lock.assert_not_called()
         token = _token_from(tg)
-        assert handle_callback({"id": "cb", "data": f"lock_ok:{token}"}) is True
+        assert handle_callback(_lock_ok(token)) is True
         set_lock.assert_called_once()
         sym, tf, lock = set_lock.call_args.args[:3]
         assert sym == "BLESS/USDT"
@@ -187,7 +195,7 @@ def test_missing_token_writes_nothing(monkeypatch):
     tg = install_telegram_capture(monkeypatch)
     monkeypatch.setattr(f"{LC}.answer_callback_query", lambda *a, **k: True)
     with patch(f"{LC}.set_position_lock") as set_lock:
-        assert handle_callback({"id": "cb", "data": "lock_ok:missingtoken"}) is True
+        assert handle_callback(_lock_ok("missingtoken")) is True
         set_lock.assert_not_called()
     joined = "\n".join(texts(tg)).lower()
     assert "abgelaufen" in joined or "expired" in joined
@@ -205,7 +213,7 @@ def test_expired_token_writes_nothing(monkeypatch):
         clock.t += LOCK_CONFIRM_TTL_SEC + 0.1
         assert consume_lock_token("not-this") is None
         tg.clear()
-        assert handle_callback({"id": "cb", "data": f"lock_ok:{token}"}) is True
+        assert handle_callback(_lock_ok(token)) is True
         set_lock.assert_not_called()
     joined = "\n".join(texts(tg)).lower()
     assert "abgelaufen" in joined or "expired" in joined
@@ -247,7 +255,7 @@ def test_confirm_binds_first_symbol_not_later_lock(monkeypatch):
         token_bless = _token_from(tg)
         tg.clear()
         assert handle("/lock RAVE 7d later_reason") is True
-        assert handle_callback({"id": "cb", "data": f"lock_ok:{token_bless}"}) is True
+        assert handle_callback(_lock_ok(token_bless)) is True
         set_lock.assert_called_once()
         sym, tf, lock = set_lock.call_args.args[:3]
         assert sym == "BLESS/USDT"
@@ -284,7 +292,7 @@ def test_confirm_prompt_and_success_do_not_arm_context(monkeypatch):
         assert ctx.get_context(CHAT) is None
         token = _token_from(tg)
         ctx.set_context(CHAT, "lock")
-        assert handle_callback({"id": "cb", "data": f"lock_ok:{token}"}) is True
+        assert handle_callback(_lock_ok(token)) is True
         assert ctx.get_context(CHAT) is None
     ctx.set_chat_id("")
 
@@ -298,7 +306,7 @@ def test_router_dispatches_lock_callback(monkeypatch):
     with patch(f"{LC}.set_position_lock") as set_lock:
         assert handle("/lock BLESS") is True
         token = _token_from(tg)
-        assert dispatch_callback({"id": "cq", "data": f"lock_ok:{token}"}) is True
+        assert dispatch_callback(_lock_ok(token, cid="cq")) is True
         set_lock.assert_called_once()
 
 
