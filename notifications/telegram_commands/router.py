@@ -66,7 +66,9 @@ OPERATOR_ONLY: frozenset[str] = frozenset({
 })
 
 # Inline callbacks whose flow belongs to an OPERATOR_ONLY command.
-_OPERATOR_ONLY_CALLBACK_PREFIXES: tuple[str, ...] = ("panic_", "testaccount_", "config_")
+_OPERATOR_ONLY_CALLBACK_PREFIXES: tuple[str, ...] = (
+    "panic_", "testaccount_", "config_", "reload_",
+)
 
 
 def _is_operator_only_text(text: str) -> bool:
@@ -166,6 +168,10 @@ def dispatch_callback(callback_query: dict) -> bool:
         if short_commands.handle_callback(callback_query):
             return True
         if mode_commands.handle_callback(callback_query):
+            return True
+        if reload_commands.handle_callback(callback_query):
+            return True
+        if gate_commands.handle_callback(callback_query):
             return True
         if watchlist_commands.handle_callback(callback_query):
             return True

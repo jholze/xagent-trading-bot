@@ -312,7 +312,13 @@
     "pending_reminder_cover": "Cover läuft — Short wählen oder Abbrechen.",
     "pending_reminder_cover_pct": "Cover von <b>{position}</b> läuft — Prozent wählen oder Abbrechen.",
     "pending_reminder_mode": "Modus läuft — Simulated Live oder Aus tippen, oder Abbrechen.",
-    "pending_reminder_maxpositions": "Max. Positionen läuft — Zahl tippen oder senden, oder Abbrechen."
+    "pending_reminder_maxpositions": "Max. Positionen läuft — Zahl tippen oder senden, oder Abbrechen.",
+    "reload_confirm": "🔄 <b>Reload</b> <code>{scopes}</code> jetzt ausführen?\nKein Restart — UI/Config/Listen/Caches.",
+    "reload_confirm_btn_ok": "Ja, reload",
+    "reload_confirm_expired": "⏱️ Reload-Bestätigung abgelaufen. Sende <code>/reload</code> erneut.",
+    "dryrun_confirm": "<b>🧪 Enhanced Dry Run</b>\n\nStatus laden? (lädt die Config neu.)",
+    "dryrun_confirm_btn_ok": "Ja, laden",
+    "dryrun_confirm_expired": "⏱️ Dry-Run-Bestätigung abgelaufen. Sende <code>/dryrun</code> erneut."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -627,6 +633,12 @@
     "pending_reminder_cover": "Cover pending — pick a short or Cancel.",
     "pending_reminder_cover_pct": "Cover of <b>{position}</b> pending — pick a percent or Cancel.",
     "pending_reminder_mode": "Mode pending — tap Simulated Live or Off, or Cancel.",
-    "pending_reminder_maxpositions": "Max positions pending — tap or send a number, or Cancel."
+    "pending_reminder_maxpositions": "Max positions pending — tap or send a number, or Cancel.",
+    "reload_confirm": "🔄 <b>Reload</b> <code>{scopes}</code> now?\nNo restart — UI/config/lists/caches.",
+    "reload_confirm_btn_ok": "Yes, reload",
+    "reload_confirm_expired": "⏱️ Reload confirmation expired. Send <code>/reload</code> again.",
+    "dryrun_confirm": "<b>🧪 Enhanced Dry Run</b>\n\nLoad status now? (reloads config.)",
+    "dryrun_confirm_btn_ok": "Yes, load",
+    "dryrun_confirm_expired": "⏱️ Dry-run confirmation expired. Send <code>/dryrun</code> again."
   }
 }

@@ -7,7 +7,18 @@ from execution.gate_adapter import GateExecutionAdapter
 from price_fetcher import get_prices_batch
 from services.gate_balance import fetch_spot_holdings, format_holdings_lines
 from services.trading_service import TradingService
-from telegram_notifier import send_telegram_message
+from notifications.telegram_commands.command_context import (
+    cancel_keyboard,
+    clear_context,
+    current_chat_id,
+    get_context,
+    set_chat_id,
+    set_context,
+)
+from notifications.telegram_i18n import t
+from telegram_notifier import answer_callback_query, send_telegram_message
+
+DRYRUN_CALLBACK_PREFIX = "dryrun_ok:"
 
 
 def _gate_key_status(cfg: dict, adapter: GateExecutionAdapter) -> tuple:
@@ -82,10 +93,70 @@ def _format_dryrun_status() -> str:
     )
 
 
+def _execute_dryrun() -> None:
+    reload_config()
+    send_telegram_message(_format_dryrun_status())
+
+
+def _prompt_dryrun_confirm() -> None:
+    cid = current_chat_id()
+    if cid:
+        set_context(cid, "dryrun", state="dryrun_awaiting_confirm")
+    send_telegram_message(
+        t("dryrun_confirm"),
+        reply_markup={
+            "inline_keyboard": [
+                [
+                    {
+                        "text": t("dryrun_confirm_btn_ok"),
+                        "callback_data": DRYRUN_CALLBACK_PREFIX,
+                    }
+                ],
+                cancel_keyboard()[0],
+            ]
+        },
+    )
+
+
+def _callback_chat_id(callback_query: dict, log_label: str):
+    from logger import log
+
+    callback_id = (callback_query or {}).get("id")
+    if callback_id:
+        answer_callback_query(callback_id)
+    chat_id = ((callback_query or {}).get("message") or {}).get("chat") or {}
+    chat_id = chat_id.get("id") if isinstance(chat_id, dict) else None
+    if not chat_id:
+        log(f"{log_label} callback missing chat id", "WARNING")
+        return None
+    set_chat_id(chat_id)
+    return chat_id
+
+
+def handle_callback(callback_query: dict) -> bool:
+    data = str((callback_query or {}).get("data") or "")
+    if not data.startswith(DRYRUN_CALLBACK_PREFIX):
+        return False
+    chat_id = _callback_chat_id(callback_query, "dryrun_ok")
+    if not chat_id:
+        return True
+    entry = get_context(chat_id)
+    meta = (entry or {}).get("meta") or {}
+    if (
+        not entry
+        or entry.get("command") != "dryrun"
+        or str(meta.get("state") or "") != "dryrun_awaiting_confirm"
+    ):
+        send_telegram_message(t("dryrun_confirm_expired"))
+        return True
+    clear_context(chat_id)
+    _execute_dryrun()
+    return True
+
+
 def handle(text: str) -> bool:
     if text in ["/dryrun", "/dry_run"]:
-        reload_config()
-        send_telegram_message(_format_dryrun_status())
+        _prompt_dryrun_confirm()
         return True
 
     if text not in ["/gate", "/gatestatus", "/gate_status", "/gate mainnet"]:
