@@ -155,6 +155,8 @@ def dispatch_callback(callback_query: dict) -> bool:
             return True
         if menu_commands.handle_callback(callback_query):
             return True
+        if decisions_commands.handle_callback(callback_query):
+            return True
         if pause_commands.handle_callback(callback_query):
             return True
         if config_commands.handle_callback(callback_query):

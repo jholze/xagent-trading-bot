@@ -8,6 +8,8 @@ from notifications.telegram_commands.menu_i18n import (
     back_label,
     build_section_help_message,
     callback_unknown_command,
+    command_button_label,
+    command_button_to_key,
     command_description,
     current_language,
     help_label,
@@ -51,7 +53,10 @@ MENU_SECTIONS_OPERATOR: list[tuple[str, list[str]]] = [
         "pause", "resume", "panic",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "live_confirm", "live_cancel", "reload"]),
-    ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("transparenz", [
+        "why", "ask", "morning",
+        "decisions", "stack", "hermes", "hermes_last", "cmc", "lc", "grid",
+    ]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("tests", ["sandbox", "sandbox_results", "sandbox_promote", "backtest", "backtest_lock", "backtest_results", "hermes_run"]),
     ("hilfe", ["menu", "help", "onboard"]),
@@ -68,7 +73,10 @@ MENU_SECTIONS_SATELLITE: list[tuple[str, list[str]]] = [
         "pause", "resume", "panic",
     ]),
     ("modus", ["mode", "gate", "dryrun", "maxpositions", "reload"]),
-    ("transparenz", ["morning", "stack", "decisions", "why", "grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("transparenz", [
+        "why", "ask", "morning",
+        "decisions", "stack", "hermes", "hermes_last", "cmc", "lc", "grid",
+    ]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy"]),
     ("hilfe", ["menu", "help"]),
 ]
@@ -92,12 +100,12 @@ MORE_SECTION_ID = "more"
 
 MORE_GROUPS_SATELLITE: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
-    ("orders", [
-        "orders", "plan", "risk",
-        "morning", "stack", "decisions", "why",
-    ]),
+    ("orders", ["orders", "plan", "risk"]),
     ("shorts", ["short", "cover"]),
-    ("technik", ["grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("technik", [
+        "why", "ask", "morning",
+        "decisions", "stack", "hermes", "hermes_last", "cmc", "lc", "grid",
+    ]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy"]),
     ("einstellungen", [
         "mode", "gate", "dryrun", "maxpositions", "lock", "unlock", "resume", "panic", "reload",
@@ -108,10 +116,12 @@ MORE_GROUPS_OPERATOR: list[tuple[str, list[str]]] = [
     ("watchlist", ["list", "add", "remove"]),
     ("orders", [
         "positions_full", "orders", "orders_blocked", "orders_month", "plan", "risk",
-        "morning", "stack", "decisions", "why",
     ]),
     ("shorts", ["short", "cover"]),
-    ("technik", ["grid", "ask", "hermes", "hermes_last", "cmc", "lc"]),
+    ("technik", [
+        "why", "ask", "morning",
+        "decisions", "stack", "hermes", "hermes_last", "cmc", "lc", "grid",
+    ]),
     ("x", ["addx", "removex", "listx", "xposts", "xsignals", "xaccuracy", "tracktest", "testaccount"]),
     ("einstellungen", [
         "mode", "gate", "dryrun", "maxpositions", "lock", "unlock", "resume", "panic", "reload",
@@ -319,7 +329,7 @@ def _section_reply_rows(
     rows: list[list[str]] = []
     row: list[str] = []
     for key in keys:
-        row.append(command_dispatch_text(key))
+        row.append(command_button_label(key, lang) or command_dispatch_text(key))
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -406,6 +416,9 @@ def open_menu_for_chat(chat_id: str | int, lang: str | None = None) -> bool:
 
 
 def _command_label(key: str, lang: str | None = None) -> str:
+    btn = command_button_label(key, lang)
+    if btn:
+        return btn
     desc = command_description(key, lang)
     if len(desc) > 28:
         desc = desc[:25] + "…"
@@ -523,6 +536,13 @@ def handle_text(text: str, chat_id=None) -> bool:
         if home_key not in home_keys_for(chat_id=chat_id):
             return False
         _dispatch_from_keyboard(command_dispatch_text(home_key), chat_id=chat_id)
+        return True
+    btn_key = command_button_to_key(stripped)
+    if btn_key:
+        allowed = {k for _, keys in menu_sections_for(chat_id=chat_id) for k in keys}
+        if btn_key not in allowed:
+            return False
+        _dispatch_from_keyboard(command_dispatch_text(btn_key), chat_id=chat_id)
         return True
     section_id = title_to_section_id(stripped)
     if section_id:
