@@ -105,6 +105,16 @@ def pending_reminder_text(command: str, meta: dict | None = None) -> str:
         return t("pending_reminder_lock")
     if command == "unlock":
         return t("pending_reminder_unlock")
+    if command == "short":
+        label = str(meta.get("label") or meta.get("coin") or "").strip()
+        if str(meta.get("state") or "") == "short_awaiting_usdt" and label:
+            return t("pending_reminder_short_usdt", coin=label)
+        return t("pending_reminder_short")
+    if command == "cover":
+        label = str(meta.get("label") or meta.get("position") or "").strip()
+        if str(meta.get("state") or "") == "cover_awaiting_pct" and label:
+            return t("pending_reminder_cover_pct", position=label)
+        return t("pending_reminder_cover")
     return t("pending_reminder", command=command)
 
 
@@ -346,8 +356,37 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
     if command == "unlock":
         return f"/unlock {text.strip()}"
 
-    if command in ("short", "cover"):
-        return f"/{command} {text.strip()}"
+    if command == "short":
+        state = str(meta.get("state") or "")
+        token = parts[0]
+        coin_token = token if token.replace(".", "").isdigit() else token.upper()
+        if state == "short_awaiting_usdt":
+            coin = str(meta.get("coin") or "").strip()
+            if not coin:
+                return None
+            usdt = parts[1] if len(parts) > 1 else parts[0]
+            val = safe_float(usdt)
+            if val is None or val <= 0:
+                return None
+            return f"/short {coin} {usdt}"
+        if state == "short_awaiting_coin":
+            if len(parts) > 1:
+                return f"/short {coin_token} {parts[1]}"
+            return f"/short {coin_token}"
+        return f"/short {text.strip()}"
+
+    if command == "cover":
+        state = str(meta.get("state") or "")
+        if state == "cover_awaiting_pct":
+            position = str(meta.get("position") or "").strip()
+            if not position:
+                return None
+            pct_token = parts[1] if len(parts) > 1 else parts[0]
+            canonical = parse_sell_percent_token(pct_token)
+            if canonical is None:
+                return None
+            return f"/cover {position} {canonical}"
+        return f"/cover {text.strip()}"
 
     return None
 
@@ -425,6 +464,20 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
             label = str(meta.get("label") or meta.get("position") or "")
             prompt_lock_duration(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "short" and str(meta.get("state") or "") == "short_awaiting_usdt":
+            from notifications.telegram_commands.short_commands import prompt_short_amount
+
+            label = str(meta.get("label") or meta.get("coin") or "")
+            prompt_short_amount(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "cover" and str(meta.get("state") or "") == "cover_awaiting_pct":
+            from notifications.telegram_commands.short_commands import prompt_cover_percentage
+
+            label = str(meta.get("label") or meta.get("position") or "")
+            prompt_cover_percentage(label, invalid=True)
             set_context(chat_id, command, **meta)
             return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid

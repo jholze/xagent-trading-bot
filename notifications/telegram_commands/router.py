@@ -163,6 +163,8 @@ def dispatch_callback(callback_query: dict) -> bool:
             return True
         if lock_commands.handle_callback(callback_query):
             return True
+        if short_commands.handle_callback(callback_query):
+            return True
         if watchlist_commands.handle_callback(callback_query):
             return True
         if trading_commands.handle_callback(callback_query):
