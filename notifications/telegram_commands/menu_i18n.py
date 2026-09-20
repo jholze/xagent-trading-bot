@@ -160,6 +160,25 @@ def command_hint(key: str, lang: str | None = None) -> str:
     return pack.get("unknown_hint", "❓")
 
 
+def command_button_label(key: str, lang: str | None = None) -> str:
+    """Reply/inline label from ``commands.<key>.button`` (#449). Empty → slash."""
+    entry = _command_entry(_pack(lang or current_language()), key)
+    return str(entry.get("button") or "").strip()
+
+
+def command_button_to_key(text: str) -> str | None:
+    """Resolve a tapped German/EN command button to its catalog key."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    for lang in SUPPORTED_LANGS:
+        commands = _pack(lang).get("commands") or {}
+        for key, raw in commands.items():
+            if isinstance(raw, dict) and str(raw.get("button") or "").strip() == text:
+                return key
+    return None
+
+
 def menu_button_label(lang: str | None = None) -> str:
     return _pack(lang or current_language()).get("button_text", "Menü")
 
@@ -184,15 +203,47 @@ def _help_allowed_keys(chat_id: str | int | None) -> frozenset[str] | None:
     return frozenset(k for _, keys in menu_sections_for(role=role) for k in keys)
 
 
-def build_help_message(lang: str | None = None, *, chat_id: str | int | None = None) -> str:
+_SATELLITE_SHORT_HELP_FALLBACK = ("positions", "buy", "sell", "why", "ask", "morning")
+
+
+def _build_short_help_message(lang: str, pack: dict, allowed: frozenset[str] | None) -> str:
+    """Satellite default ``/help`` — daily actions, not the operator catalog (#449)."""
+    help_cfg = pack.get("help", {})
+    short_keys = help_cfg.get("short_keys") or list(_SATELLITE_SHORT_HELP_FALLBACK)
+    keys = [k for k in short_keys if allowed is None or k in allowed]
+    lines = [help_cfg.get("short_title") or help_cfg.get("title", ""), ""]
+    intro = help_cfg.get("short_intro")
+    if intro:
+        lines.append(intro)
+        lines.append("")
+    for key in keys:
+        lines.append(command_help_line(key, lang))
+    lines.append("")
+    footer = help_cfg.get("short_footer") or help_cfg.get("footer")
+    if footer:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
+def build_help_message(
+    lang: str | None = None,
+    *,
+    chat_id: str | int | None = None,
+    catalog: bool = False,
+) -> str:
     """Render ``/help`` for ``chat_id`` (None = current webhook chat / operator).
 
+    Satellite default is a short “was willst du tun?” list (#449). Pass
+    ``catalog=True`` (``/help all``) for the role-filtered command catalog.
+    Operator default stays the full catalog (frozen #398).
     Sections that end up empty after the role filter are dropped entirely.
     """
     lang = lang or current_language()
     pack = _pack(lang)
     help_cfg = pack.get("help", {})
     allowed = _help_allowed_keys(chat_id)
+    if allowed is not None and not catalog:
+        return _build_short_help_message(lang, pack, allowed)
     lines = [help_cfg.get("title", ""), ""]
     for tip in help_cfg.get("tips", []):
         lines.append(tip)

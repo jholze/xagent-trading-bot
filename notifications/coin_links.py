@@ -257,7 +257,7 @@ def format_links_line(ticker: str, name: str = None) -> str:
     return "<b>Links:</b> " + " · ".join(parts)
 
 
-def inline_link_buttons(ticker: str, name: str = None) -> list:
+def inline_link_buttons(ticker: str, name: str = None, *, include_gate: bool = True) -> list:
     """Return inline_keyboard rows for Telegram (url buttons)."""
     cfg = coin_links_config()
     if not cfg.get("enabled", True) or not cfg.get("inline_buttons_on_signals", True):
@@ -265,7 +265,7 @@ def inline_link_buttons(ticker: str, name: str = None) -> list:
     row = []
     if cfg.get("show_cmc", True):
         row.append({"text": "CMC", "url": cmc_coin_url(ticker, name=name)})
-    if cfg.get("show_gate", True):
+    if include_gate and cfg.get("show_gate", True):
         row.append({"text": "Gate", "url": gate_trade_url(ticker)})
     if cfg.get("show_tradingview", True):
         row.append({"text": "Chart", "url": tradingview_chart_url(ticker)})

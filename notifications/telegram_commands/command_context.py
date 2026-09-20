@@ -98,6 +98,27 @@ def pending_reminder_text(command: str, meta: dict | None = None) -> str:
         if str(meta.get("state") or "") == "sell_awaiting_pct" and label:
             return t("pending_reminder_sell_pct", position=label)
         return t("pending_reminder_sell")
+    if command == "lock":
+        label = str(meta.get("label") or meta.get("position") or "").strip()
+        if str(meta.get("state") or "") == "lock_awaiting_duration" and label:
+            return t("pending_reminder_lock_dur", position=label)
+        return t("pending_reminder_lock")
+    if command == "unlock":
+        return t("pending_reminder_unlock")
+    if command == "short":
+        label = str(meta.get("label") or meta.get("coin") or "").strip()
+        if str(meta.get("state") or "") == "short_awaiting_usdt" and label:
+            return t("pending_reminder_short_usdt", coin=label)
+        return t("pending_reminder_short")
+    if command == "cover":
+        label = str(meta.get("label") or meta.get("position") or "").strip()
+        if str(meta.get("state") or "") == "cover_awaiting_pct" and label:
+            return t("pending_reminder_cover_pct", position=label)
+        return t("pending_reminder_cover")
+    if command == "mode":
+        return t("pending_reminder_mode")
+    if command == "maxpositions":
+        return t("pending_reminder_maxpositions")
     return t("pending_reminder", command=command)
 
 
@@ -190,6 +211,15 @@ def clear_active_section(chat_id: str | int | None = None) -> None:
 def _invalid(msg: str) -> bool:
     send_telegram_message(msg)
     return False
+
+
+def parse_lock_duration_token(token: str) -> str | None:
+    """Canonical wizard duration: 24h, 7d, or permanent. Else None."""
+    from notifications.telegram_commands.lock_commands import (
+        parse_lock_duration_token as _parse_lock_duration_token,
+    )
+
+    return _parse_lock_duration_token(token)
 
 
 def parse_sell_percent_token(token: str) -> str | None:
@@ -315,8 +345,52 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         days = parts[1] if len(parts) > 1 else ""
         return f"/testaccount {account} {days}".strip()
 
-    if command in ("lock", "unlock", "short", "cover"):
-        return f"/{command} {text.strip()}"
+    if command == "lock":
+        state = str(meta.get("state") or "")
+        if state == "lock_awaiting_duration":
+            position = str(meta.get("position") or "").strip()
+            if not position:
+                return None
+            duration = parse_lock_duration_token(parts[0])
+            if duration is None:
+                return None
+            return f"/lock {position} {duration}"
+        return f"/lock {text.strip()}"
+
+    if command == "unlock":
+        return f"/unlock {text.strip()}"
+
+    if command == "short":
+        state = str(meta.get("state") or "")
+        token = parts[0]
+        coin_token = token if token.replace(".", "").isdigit() else token.upper()
+        if state == "short_awaiting_usdt":
+            coin = str(meta.get("coin") or "").strip()
+            if not coin:
+                return None
+            usdt = parts[1] if len(parts) > 1 else parts[0]
+            val = safe_float(usdt)
+            if val is None or val <= 0:
+                return None
+            return f"/short {coin} {usdt}"
+        if state == "short_awaiting_coin":
+            if len(parts) > 1:
+                return f"/short {coin_token} {parts[1]}"
+            return f"/short {coin_token}"
+        return f"/short {text.strip()}"
+
+    if command == "cover":
+        state = str(meta.get("state") or "")
+        if state == "cover_awaiting_pct":
+            position = str(meta.get("position") or "").strip()
+            if not position:
+                return None
+            pct_token = parts[1] if len(parts) > 1 else parts[0]
+            canonical = parse_sell_percent_token(pct_token)
+            if canonical is None:
+                return None
+            return f"/cover {position} {canonical}"
+        return f"/cover {text.strip()}"
 
     return None
 
@@ -331,6 +405,7 @@ def is_keyboard_navigation(text: str) -> bool:
     if not stripped:
         return False
     from notifications.telegram_commands.menu_i18n import (
+        command_button_to_key,
         home_label_to_key,
         is_back_label,
         is_help_label,
@@ -343,6 +418,8 @@ def is_keyboard_navigation(text: str) -> bool:
     if title_to_section_id(stripped):
         return True
     if home_label_to_key(stripped):
+        return True
+    if command_button_to_key(stripped):
         return True
     return False
 
@@ -384,6 +461,39 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
             label = str(meta.get("label") or meta.get("coin") or "")
             prompt_buy_amount(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "lock" and str(meta.get("state") or "") == "lock_awaiting_duration":
+            from notifications.telegram_commands.lock_commands import prompt_lock_duration
+
+            label = str(meta.get("label") or meta.get("position") or "")
+            prompt_lock_duration(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "short" and str(meta.get("state") or "") == "short_awaiting_usdt":
+            from notifications.telegram_commands.short_commands import prompt_short_amount
+
+            label = str(meta.get("label") or meta.get("coin") or "")
+            prompt_short_amount(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "cover" and str(meta.get("state") or "") == "cover_awaiting_pct":
+            from notifications.telegram_commands.short_commands import prompt_cover_percentage
+
+            label = str(meta.get("label") or meta.get("position") or "")
+            prompt_cover_percentage(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "mode" and str(meta.get("state") or "") == "mode_awaiting_choice":
+            from notifications.telegram_commands.mode_commands import prompt_mode_choice
+
+            prompt_mode_choice()
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "maxpositions" and str(meta.get("state") or "") == "maxpos_awaiting_value":
+            from notifications.telegram_commands.mode_commands import prompt_maxpositions
+
+            prompt_maxpositions(invalid=True)
             set_context(chat_id, command, **meta)
             return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid

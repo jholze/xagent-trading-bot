@@ -293,6 +293,12 @@ def send_signal_message(
     tech_block = f"\n<code>{_esc(tech_line)}</code>" if tech_line and exp_cfg.get("show_technical_codes", True) else ""
 
     from notifications.coin_links import format_links_line, format_ticker_html, inline_link_buttons
+    from notifications.telegram_commands.position_display import (
+        LOT_SELL_CALLBACK_PREFIX,
+        LOT_WHY_CALLBACK_PREFIX,
+        encode_lot_callback,
+    )
+    from notifications.telegram_i18n import t
 
     ticker = symbol.split("/")[0] if "/" in symbol else symbol
     symbol_html = format_ticker_html(ticker, name=name)
@@ -310,8 +316,28 @@ def send_signal_message(
 {ampel_line}{why_line}{conf_line}{source_line}{social_block}{extra}{blocked_line}{exec_line}{tech_block}
 🕒 {format_display_hms()}
 """
-    buttons = inline_link_buttons(ticker, name=name)
-    reply_markup = {"inline_keyboard": buttons} if buttons else None
+    action_row = [
+        {
+            "text": t("positions_btn_why"),
+            "callback_data": encode_lot_callback(LOT_WHY_CALLBACK_PREFIX, ticker, tf),
+        },
+        {
+            "text": t("positions_btn_sell"),
+            "callback_data": encode_lot_callback(LOT_SELL_CALLBACK_PREFIX, ticker, tf),
+        },
+    ]
+    include_gate = False
+    try:
+        from core.simulated_trading import is_real_live_trading
+
+        include_gate = bool(is_real_live_trading())
+    except Exception:
+        include_gate = False
+    link_rows = inline_link_buttons(ticker, name=name, include_gate=include_gate)
+    buttons = [action_row]
+    if link_rows:
+        buttons.extend(link_rows)
+    reply_markup = {"inline_keyboard": buttons}
     send_telegram_message(message.strip(), reply_markup=reply_markup)
 
     if executed is True:

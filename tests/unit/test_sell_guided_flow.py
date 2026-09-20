@@ -180,10 +180,10 @@ class TestSellGuidedFlow(unittest.TestCase):
         prices = {"SMALL/USDT": 1.0, "BIG/USDT": 1.0}
         return [small, big], prices
 
-    def _sellpos_query(self, index: int, chat_id: str = "99"):
+    def _sellpos_query(self, ticker: str, timeframe: str, chat_id: str = "99"):
         return {
-            "id": f"cb-pos-{index}",
-            "data": f"{trading_commands.SELL_POS_CALLBACK_PREFIX}{index}",
+            "id": f"cb-pos-{ticker}-{timeframe}",
+            "data": f"{trading_commands.SELL_POS_CALLBACK_PREFIX}{ticker}:{timeframe}",
             "message": {"chat": {"id": chat_id}},
         }
 
@@ -207,7 +207,7 @@ class TestSellGuidedFlow(unittest.TestCase):
             self.assertTrue(all(len(row) == 1 for row in buttons))
             self.assertEqual(
                 [row[0]["callback_data"] for row in buttons],
-                ["sellpos:1", "sellpos:2"],
+                ["sellpos:BIG:4h", "sellpos:SMALL:1h"],
             )
             self.assertIn("BIG", buttons[0][0]["text"])
             self.assertIn("SMALL", buttons[1][0]["text"])
@@ -234,7 +234,7 @@ class TestSellGuidedFlow(unittest.TestCase):
             self.assertTrue(all(len(row) == 1 for row in buttons))
             self.assertEqual(
                 [row[0]["callback_data"] for row in buttons],
-                ["sellpos:1"],
+                ["sellpos:RAVE:1h"],
             )
 
     def test_sellpos_tap_matches_typed_index(self):
@@ -282,7 +282,7 @@ class TestSellGuidedFlow(unittest.TestCase):
             ), patch(
                 "notifications.telegram_commands.trading_commands.answer_callback_query",
             ):
-                self.assertTrue(trading_commands.handle_callback(self._sellpos_query(1)))
+                self.assertTrue(trading_commands.handle_callback(self._sellpos_query("BIG", "4h")))
                 mock_confirm.assert_not_called()
                 return mock_prompt.call_args, dict(ctx.get_context("99")["meta"])
 
@@ -294,8 +294,9 @@ class TestSellGuidedFlow(unittest.TestCase):
         self.assertEqual(typed_meta["position"], "1")
         self.assertEqual(typed_meta["label"], "BIG")
         self.assertEqual(button_meta["state"], typed_meta["state"])
-        self.assertEqual(button_meta["position"], typed_meta["position"])
         self.assertEqual(button_meta["label"], typed_meta["label"])
+        self.assertEqual(button_meta["position"], "BIG")
+        self.assertEqual(button_meta["timeframe"], "4h")
 
     def test_sellpos_expired_does_not_prompt(self):
         expired = trading_commands._sell_menu_text("pct_expired")
@@ -310,7 +311,7 @@ class TestSellGuidedFlow(unittest.TestCase):
             ) as mock_send, patch(
                 "notifications.telegram_commands.trading_commands.answer_callback_query",
             ):
-                self.assertTrue(trading_commands.handle_callback(self._sellpos_query(1)))
+                self.assertTrue(trading_commands.handle_callback(self._sellpos_query("RAVE", "1h")))
                 mock_prompt.assert_not_called()
                 self.assertTrue(mock_send.called)
                 self.assertEqual(mock_send.call_args[0][0], expired)
@@ -337,7 +338,7 @@ class TestSellGuidedFlow(unittest.TestCase):
             _tap(_expire)
 
     def test_handle_callback_routes_sellpos_prefix(self):
-        query = self._sellpos_query(2)
+        query = self._sellpos_query("SMALL", "1h")
         with patch.object(
             trading_commands, "_handle_sell_pos_callback", return_value=True,
         ) as mock_pos, patch.object(

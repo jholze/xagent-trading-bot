@@ -88,7 +88,7 @@
       },
       "transparenz": {
         "title": "🔍 Transparenz — Hilfe",
-        "intro": "Entscheidungslog, Social-Signale (LC/CMC), Hermes und Assistent.",
+        "intro": "Warum?, Fragen, Morgen — darunter Technik (letzte Entscheidung, Stack, Hermes, CMC, LunarCrush, Grid).",
         "items": {
           "decisions": {
             "usage": "Letzte Bot-Entscheidungen (BUY/HOLD/SELL) mit Rationale.",
@@ -284,7 +284,7 @@
       },
       "transparenz": {
         "title": "🔍 Transparency — Help",
-        "intro": "Decision log, social signals (LC/CMC), Hermes and assistant.",
+        "intro": "Why?, Ask, Morning — then tech (last decision, stack, Hermes, CMC, LunarCrush, Grid).",
         "items": {
           "decisions": {
             "usage": "Recent bot decisions with rationale.",

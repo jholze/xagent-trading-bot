@@ -110,7 +110,11 @@ def test_lock_without_symbol_lists_and_does_not_persist(monkeypatch):
         set_lock.assert_not_called()
     joined = "\n".join(texts(tg))
     assert "Position Locks" in joined
-    assert not _buttons(tg)
+    buttons = _buttons(tg)
+    assert buttons
+    callbacks = [btn["callback_data"] for row in buttons[0]["buttons"] for btn in row]
+    assert callbacks == ["lockpos:BLESS:1h"]
+    assert all(not c.startswith("lock_ok:") and not c.startswith("lock_no:") for c in callbacks)
 
 
 def test_lock_symbol_prompts_and_does_not_persist(monkeypatch):
