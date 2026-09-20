@@ -270,17 +270,30 @@ class TestReloadCommand(unittest.TestCase):
         from notifications.telegram_commands import reload_commands
 
         sent = []
+        markups = []
+
+        def _capture(m, reply_markup=None, **_k):
+            sent.append(m)
+            markups.append(reply_markup)
+            return True
+
         with patch(
             "notifications.telegram_commands.reload_commands.send_telegram_message",
-            side_effect=lambda m: sent.append(m),
+            side_effect=_capture,
         ), patch(
             "notifications.telegram_commands.reload_commands.current_chat_id",
             return_value=42,
-        ):
+        ), patch(
+            "notifications.telegram_commands.reload_commands.run_reload",
+        ) as run:
             self.assertTrue(reload_commands.handle("/reload ui"))
+            run.assert_not_called()
         self.assertEqual(len(sent), 1)
         self.assertIn("ui", sent[0])
         self.assertIn("Reload", sent[0])
+        keyboard = (markups[0] or {}).get("inline_keyboard") or []
+        callbacks = [b.get("callback_data") for row in keyboard for b in row]
+        self.assertIn(reload_commands.RELOAD_CALLBACK_PREFIX, callbacks)
 
     def test_handle_unknown_scope(self):
         from notifications.telegram_commands import reload_commands
