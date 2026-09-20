@@ -177,7 +177,11 @@ def handle(text: str) -> bool:
         return True
 
     if text == "/live_cancel":
-        ok, ledger_msg = _apply_mode_switch(simulated_live_config_updates())
+        # #497: un-confirm; do not keep simulated_live_config_updates()'s True.
+        ok, ledger_msg = _apply_mode_switch({
+            **simulated_live_config_updates(),
+            "live_confirmed": False,
+        })
         if ok:
             msg = t("live_cancelled")
             if ledger_msg:

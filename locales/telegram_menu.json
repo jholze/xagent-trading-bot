@@ -264,7 +264,7 @@
       "mode": {
         "description": "Handelsmodus anzeigen und wechseln",
         "help_line": "<code>/mode</code> — Handelsmodus anzeigen; <code>/mode paper|live|off</code> zum Wechseln",
-        "hint": "❌ Unbekannter Modus.\n\nSende <code>/mode</code> für die aktuelle Einstellung und alle Optionen:\n• <code>/mode paper</code> — Virtuelles Geld (Standard)\n• <code>/mode live</code> — Echtes Geld auf Gate.io (braucht <code>/live_confirm</code>)\n• <code>/mode off</code> — Nur Analyse, kein Handel"
+        "hint": "❌ Unbekannter Modus.\n\nSende <code>/mode</code> für die aktuelle Einstellung und alle Optionen:\n• <code>/mode paper</code> — Paper veraltet → Simulated Live (dry-run, Order-Ledger)\n• <code>/mode live</code> — Simulated Live (dry-run, keine echten Gate-Orders)\n• <code>/mode off</code> — Nur Analyse, kein Handel"
       },
       "pause": {
         "description": "Neue Käufe pausieren (Stops laufen weiter)",
@@ -301,11 +301,11 @@
       },
       "live_confirm": {
         "description": "Live-Handel bestätigen",
-        "help_line": "<code>/live_confirm</code> — Live-Handel auf Gate.io Mainnet bestätigen"
+        "help_line": "<code>/live_confirm</code> — Simulated Live auf Staging — Order-Ausführung aktiv"
       },
       "live_cancel": {
         "description": "Live-Handel abbrechen",
-        "help_line": "<code>/live_cancel</code> — Live-Handel abbrechen, zurück zu Paper"
+        "help_line": "<code>/live_cancel</code> — Mainnet widerrufen, zurück zu Simulated Live (dry-run)"
       },
       "morning": {
         "description": "Morning Briefing (1× täglich)",
@@ -698,7 +698,7 @@
       "mode": {
         "description": "Show or change trading mode",
         "help_line": "<code>/mode</code> — Show trading mode; <code>/mode paper|live|off</code> to switch",
-        "hint": "❌ Unknown mode.\n\nSend <code>/mode</code> for current setting and all options:\n• <code>/mode paper</code> — Virtual money (default)\n• <code>/mode live</code> — Real money on Gate.io (needs <code>/live_confirm</code>)\n• <code>/mode off</code> — Analysis only, no trading"
+        "hint": "❌ Unknown mode.\n\nSend <code>/mode</code> for current setting and all options:\n• <code>/mode paper</code> — Paper deprecated → Simulated Live (dry-run, order ledger)\n• <code>/mode live</code> — Simulated Live (dry-run, no real Gate orders)\n• <code>/mode off</code> — Analysis only, no trading"
       },
       "pause": {
         "description": "Pause new buys (stops keep running)",
@@ -735,11 +735,11 @@
       },
       "live_confirm": {
         "description": "Confirm live trading",
-        "help_line": "<code>/live_confirm</code> — Confirm live trading on Gate.io mainnet"
+        "help_line": "<code>/live_confirm</code> — Simulated Live on staging — execution active"
       },
       "live_cancel": {
         "description": "Cancel live trading",
-        "help_line": "<code>/live_cancel</code> — Cancel live trading, back to paper"
+        "help_line": "<code>/live_cancel</code> — Mainnet revoked, back to Simulated Live (dry-run)"
       },
       "morning": {
         "description": "Morning briefing (once per day)",

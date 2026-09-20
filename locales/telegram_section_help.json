@@ -78,11 +78,11 @@
             "example": "<code>/maxpositions 25</code>"
           },
           "live_confirm": {
-            "usage": "Live-Handel auf Gate Mainnet freischalten (nach /mode live).",
+            "usage": "Simulated Live auf Staging — Order-Ausführung aktiv (nach /mode live).",
             "tips": "dry_run in config kann Orders weiter nur simulieren."
           },
           "live_cancel": {
-            "usage": "Live-Bestätigung widerrufen → zurück zu Paper."
+            "usage": "Mainnet widerrufen, zurück zu Simulated Live (dry-run)."
           }
         }
       },
@@ -275,10 +275,10 @@
             "usage": "Max open positions. Then number only: <code>10</code>"
           },
           "live_confirm": {
-            "usage": "Enable live trading on Gate mainnet (after /mode live)."
+            "usage": "Simulated Live on staging — execution active (after /mode live)."
           },
           "live_cancel": {
-            "usage": "Revoke live confirmation → back to paper."
+            "usage": "Mainnet revoked, back to Simulated Live (dry-run)."
           }
         }
       },
