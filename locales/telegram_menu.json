@@ -13,12 +13,23 @@
       "pause": "⏸ Pause"
     },
     "short_input_invalid": "❌ Ungültige Eingabe für <code>/{cmd}</code>. Tippe <i>❓ Hilfe</i> in diesem Bereich.",
-    "home_intro": "<b>🏠 Start</b>\n\nPositionen, Kaufen, Verkaufen, Pause — alles Weitere unter <b>➕ Mehr</b>.\n<i>❓ Hilfe zeigt alle Befehle mit Beispielen.</i>",
+    "home_intro": "<b>🏠 Start</b>\n\nPositionen, Kaufen, Verkaufen, Pause — alles Weitere unter <b>➕ Mehr</b>.\n<i>❓ Hilfe: Was willst du tun?</i>",
     "more_intro": "<b>➕ Mehr</b>\n\nWähle eine Gruppe — darunter erscheinen ihre Befehle.",
     "home_inline": "<b>➕ Mehr</b>\n\nWähle eine <b>Gruppe</b> — ihre Befehle erscheinen als Buttons.\n<i>Unten: Start-Tastatur (Positionen, Kaufen, Verkaufen, Pause) · Menü-Button (☰): Slash-Befehle.</i>",
     "section_pick": "Tippe einen Befehl:",
     "help": {
       "title": "<b>🛠️ Telegram-Befehle</b>",
+      "short_title": "<b>Was willst du tun?</b>",
+      "short_intro": "Täglich: was halte ich, warum hat er verkauft, Frage auf Deutsch. Forschung (CMC, Hermes, Grid) liegt unter <b>➕ Mehr</b> → Transparenz.",
+      "short_keys": [
+        "positions",
+        "buy",
+        "sell",
+        "why",
+        "ask",
+        "morning"
+      ],
+      "short_footer": "Mehr: <code>/menu</code> · Technik unter <b>➕ Mehr</b> → Transparenz.",
       "tips": [
         "Tipp: Menü-Button „Menü“ — Schnellbefehle + <code>/menu</code> für alle Bereiche.",
         "Bei unvollständigen Befehlen (z.B. nur <code>/buy</code>) antwortet der Bot mit einem Beispiel."
@@ -163,8 +174,8 @@
         "short": "Shorts"
       },
       "technik": {
-        "title": "🔧 Technik",
-        "short": "Technik"
+        "title": "🔍 Transparenz",
+        "short": "Transparenz"
       },
       "einstellungen": {
         "title": "⚙️ Einstellungen",
@@ -320,49 +331,60 @@
         "help_line": "<code>/live_cancel</code> — Mainnet widerrufen, zurück zu Simulated Live (dry-run)"
       },
       "morning": {
-        "description": "Morning Briefing (1× täglich)",
+        "description": "Morgenbriefing (1× täglich)",
+        "button": "☀️ Morgen",
         "help_line": "<code>/morning</code> — Tagesstart: Portfolio, 24h-Aktivität, Highlights",
         "hint": "☀️ <b>/morning</b> — Morning Briefing\n\nEinmal pro Tag: Status, Portfolio, letzte 24h Trades/DCA, Highlights.\nErneuter Aufruf am selben Tag zeigt nur einen Hinweis."
       },
       "stack": {
-        "description": "Stack Compare — Staging vs Prod",
+        "description": "Staging vs Produktion (24h)",
+        "button": "Stack-Vergleich",
         "help_line": "<code>/stack</code> — Observability-Vergleich (24h) | <code>/stack 48</code> — anderes Fenster",
         "hint": "📊 <b>/stack</b> — Staging vs Production\n\n<code>/stack</code> — KPIs, Sell-Sources, Would-Sell-Divergenzen (24h)\n<code>/stack 48</code> — Lookback in Stunden (1–168)\n\nVoller Diff braucht Daten beider Stacks (Mongo-Sync oder pull_stack_observability.sh)."
       },
       "decisions": {
-        "description": "Letzte Bot-Entscheidungen",
+        "description": "Letzte Entscheidung",
+        "button": "Letzte Entscheidung",
         "help_line": "<code>/decisions</code> — Entscheidungsprotokoll | <code>/why SYMBOL</code> — Warum für einen Coin",
         "hint": "📜 <b>/decisions</b> — Was der Bot wann entschieden hat\n\n<code>/decisions</code> — Letzte 8 Entscheidungen\n<code>/why SYMBOL</code> — Erklärung für einen Coin (z.B. <code>/why H</code>)"
       },
       "why": {
-        "description": "Warum? — Erklärung für einen Coin",
-        "help_line": "<code>/why SYMBOL</code> — Letzte Entscheidung für einen Coin erklären"
+        "description": "Warum hat der Bot das getan?",
+        "button": "❓ Warum?",
+        "help_line": "<code>/why SYMBOL</code> — Letzte Entscheidung für einen Coin erklären",
+        "pick_prompt": "❓ <b>Warum?</b>\n\nTippe einen Coin — letzte Entscheidung, oder schreib das Symbol."
       },
       "grid": {
-        "description": "Grid-Modus — welche Coins im Grid laufen",
+        "description": "Grid-Modus pro Coin",
+        "button": "Grid-Modus",
         "help_line": "<code>/grid</code> — Grid-Status aller aktiven Coins | <code>/grid BTC</code> — Detail",
         "hint": "🔲 <b>/grid</b> — Grid-Strategie pro Coin\n\n<code>/grid</code> — Welche aktiven Coins GridStrategy / Tracking nutzen\n<code>/grid BTC</code> — Detail für einen Coin (Center, Levels, Regime)\n\nGrid aktiv bei RANGING + Allocator-Gewicht; aus bei STRONG_UPTREND."
       },
       "ask": {
-        "description": "Frage an Cursor-Assistent",
+        "description": "Frage stellen (auch auf Deutsch)",
+        "button": "💬 Fragen",
         "help_line": "<code>/ask FRAGE</code> — Frage an den Bot-Assistenten (Cursor oder Grok-Fallback)",
         "hint": "💬 <b>/ask</b> — Frage an den Assistenten\n\n<code>/ask Warum wurde NEAR gekauft?</code>\n\nCursor wird sofort benachrichtigt — Antwort in Sekunden, sonst Grok-Fallback (~2 Min)."
       },
       "hermes": {
-        "description": "Hermes Lern-Agent Status",
+        "description": "Hermes-Status",
+        "button": "Hermes-Status",
         "help_line": "<code>/hermes</code> — Hermes-Status (Baseline + letzte Experimente)",
         "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + letzte Experimente\n<code>/hermes_last</code> — Letzter Zyklus in Klartext\n<code>/hermes_run</code> — Einen Lern-Zyklus starten\n<code>/hermes_veto ID</code> — Pending Promotion stornieren\n<code>/hermes_rollback [ID]</code> — Letzten Snapshot wiederherstellen"
       },
       "hermes_last": {
-        "description": "Letzte Hermes-Entscheidung",
+        "description": "Letzter Hermes-Zyklus",
+        "button": "Letzter Hermes-Zyklus",
         "help_line": "<code>/hermes_last</code> — Letzter Hermes-Zyklus erklärt"
       },
       "cmc": {
-        "description": "CMC Community-Sentiment",
+        "description": "CoinMarketCap Stimmung",
+        "button": "CoinMarketCap",
         "help_line": "<code>/cmc</code> — CoinMarketCap Community-Stimmung (Sentiment-Signale)"
       },
       "lc": {
-        "description": "LunarCrush Social-Signale",
+        "description": "LunarCrush Signale",
+        "button": "LunarCrush",
         "help_line": "<code>/lc</code> — LunarCrush Galaxy, Sentiment, BUY/SELL (Sentiment-Schwelle ~55)"
       },
       "addx": {
@@ -459,12 +481,23 @@
       "pause": "⏸ Pause"
     },
     "short_input_invalid": "❌ Invalid input for <code>/{cmd}</code>. Tap <i>❓ Help</i> in this section.",
-    "home_intro": "<b>🏠 Home</b>\n\nPositions, buy, sell, pause — everything else under <b>➕ More</b>.\n<i>❓ Help lists every command with examples.</i>",
+    "home_intro": "<b>🏠 Home</b>\n\nPositions, buy, sell, pause — everything else under <b>➕ More</b>.\n<i>❓ Help: what do you want to do?</i>",
     "more_intro": "<b>➕ More</b>\n\nPick a group — its commands appear below.",
     "home_inline": "<b>➕ More</b>\n\nPick a <b>group</b> — its commands appear as buttons.\n<i>Keyboard below: home (positions, buy, sell, pause) · Menu button (☰): slash commands.</i>",
     "section_pick": "Tap a command:",
     "help": {
       "title": "<b>🛠️ Telegram commands</b>",
+      "short_title": "<b>What do you want to do?</b>",
+      "short_intro": "Daily: what do I hold, why did it sell, ask in English. Research (CMC, Hermes, Grid) lives under <b>➕ More</b> → Transparency.",
+      "short_keys": [
+        "positions",
+        "buy",
+        "sell",
+        "why",
+        "ask",
+        "morning"
+      ],
+      "short_footer": "More: <code>/menu</code> · tech under <b>➕ More</b> → Transparency.",
       "tips": [
         "Tip: Menu button — quick commands + <code>/menu</code> for all sections.",
         "For incomplete commands (e.g. just <code>/buy</code>) the bot replies with an example."
@@ -609,8 +642,8 @@
         "short": "Shorts"
       },
       "technik": {
-        "title": "🔧 Tech",
-        "short": "Tech"
+        "title": "🔍 Transparency",
+        "short": "Transparency"
       },
       "einstellungen": {
         "title": "⚙️ Settings",
@@ -767,48 +800,59 @@
       },
       "morning": {
         "description": "Morning briefing (once per day)",
+        "button": "☀️ Morning",
         "help_line": "<code>/morning</code> — Day start: portfolio, 24h activity, highlights",
         "hint": "☀️ <b>/morning</b> — Morning briefing\n\nOnce per day: status, portfolio, last 24h trades/DCA, highlights.\nA second call the same day only shows a short notice."
       },
       "stack": {
-        "description": "Stack compare — staging vs prod",
+        "description": "Staging vs production (24h)",
+        "button": "Stack compare",
         "help_line": "<code>/stack</code> — Observability compare (24h) | <code>/stack 48</code> — custom window",
         "hint": "📊 <b>/stack</b> — Staging vs production\n\n<code>/stack</code> — KPIs, sell sources, would-sell divergences (24h)\n<code>/stack 48</code> — lookback in hours (1–168)\n\nFull diff needs data from both stacks (Mongo sync or pull_stack_observability.sh)."
       },
       "decisions": {
-        "description": "Recent bot decisions",
+        "description": "Last decision",
+        "button": "Last decision",
         "help_line": "<code>/decisions</code> — Decision log | <code>/why SYMBOL</code> — Why for a coin",
         "hint": "📜 <b>/decisions</b> — What the bot decided and when\n\n<code>/decisions</code> — Last 8 decisions\n<code>/why SYMBOL</code> — Explanation for a coin (e.g. <code>/why H</code>)"
       },
       "why": {
-        "description": "Why? — explanation for a coin",
-        "help_line": "<code>/why SYMBOL</code> — Explain last decision for a coin"
+        "description": "Why did the bot do that?",
+        "button": "❓ Why?",
+        "help_line": "<code>/why SYMBOL</code> — Explain last decision for a coin",
+        "pick_prompt": "❓ <b>Why?</b>\n\nTap a coin — last decision, or type the symbol."
       },
       "grid": {
-        "description": "Grid mode — which coins use grid",
+        "description": "Grid mode per coin",
+        "button": "Grid mode",
         "help_line": "<code>/grid</code> — Grid status for active coins | <code>/grid BTC</code> — detail",
         "hint": "🔲 <b>/grid</b> — Grid strategy per coin\n\n<code>/grid</code> — Which active coins use GridStrategy / tracking\n<code>/grid BTC</code> — Detail for one coin (center, levels, regime)\n\nGrid active in RANGING + allocator weight; off in STRONG_UPTREND."
       },
       "ask": {
-        "description": "Question for Cursor assistant",
+        "description": "Ask a question (plain language)",
+        "button": "💬 Ask",
         "help_line": "<code>/ask QUESTION</code> — Ask the bot assistant (Cursor or Grok fallback)",
         "hint": "💬 <b>/ask</b> — Question for the assistant\n\n<code>/ask Why was NEAR bought?</code>\n\nCursor is notified instantly — reply in seconds, else Grok fallback (~2 min)."
       },
       "hermes": {
-        "description": "Hermes learning agent status",
+        "description": "Hermes status",
+        "button": "Hermes status",
         "help_line": "<code>/hermes</code> — Hermes status (baseline + recent experiments)",
         "hint": "🧠 <b>Hermes Self-Improvement Agent</b>\n\n<code>/hermes</code> — Baseline + recent experiments\n<code>/hermes_last</code> — Last cycle in plain language\n<code>/hermes_run</code> — Start a learning cycle\n<code>/hermes_veto ID</code> — Cancel a pending promotion\n<code>/hermes_rollback [ID]</code> — Restore the latest snapshot"
       },
       "hermes_last": {
-        "description": "Last Hermes decision",
+        "description": "Last Hermes cycle",
+        "button": "Last Hermes cycle",
         "help_line": "<code>/hermes_last</code> — Last Hermes cycle explained"
       },
       "cmc": {
-        "description": "CMC community sentiment",
+        "description": "CoinMarketCap sentiment",
+        "button": "CoinMarketCap",
         "help_line": "<code>/cmc</code> — CoinMarketCap community sentiment"
       },
       "lc": {
-        "description": "LunarCrush social signals",
+        "description": "LunarCrush signals",
+        "button": "LunarCrush",
         "help_line": "<code>/lc</code> — LunarCrush Galaxy, sentiment, BUY/SELL (sentiment threshold ~55)"
       },
       "addx": {

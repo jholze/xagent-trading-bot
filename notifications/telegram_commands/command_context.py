@@ -331,6 +331,7 @@ def is_keyboard_navigation(text: str) -> bool:
     if not stripped:
         return False
     from notifications.telegram_commands.menu_i18n import (
+        command_button_to_key,
         home_label_to_key,
         is_back_label,
         is_help_label,
@@ -343,6 +344,8 @@ def is_keyboard_navigation(text: str) -> bool:
     if title_to_section_id(stripped):
         return True
     if home_label_to_key(stripped):
+        return True
+    if command_button_to_key(stripped):
         return True
     return False
 
