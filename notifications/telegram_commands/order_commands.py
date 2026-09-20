@@ -25,6 +25,7 @@ VIEW_DAY = "day"
 VIEW_BLOCKED = "blocked"
 VIEW_MONTH = "month"
 _VIEWS = frozenset({VIEW_DAY, VIEW_BLOCKED, VIEW_MONTH})
+ORDERS_VIEW_PREFIX = "orders_view:"
 
 _TELEGRAM_CHUNK_LIMIT = 3900
 _ORDER_BUTTON_CAP = 80
@@ -138,6 +139,20 @@ def _stats_header_month(ledger: OrderService, stats: dict | None = None) -> str:
         "<i>Heute: <code>/orders</code> · Blockiert: <code>/orders_blocked</code></i>",
     ]
     return "\n".join(lines)
+
+
+def _view_filter_buttons(active_view: str) -> list[list[dict]]:
+    """Alle / Blockiert / Dieser Monat — not orders_page (pager callbacks stay unused)."""
+    specs = (
+        (VIEW_DAY, t("orders_btn_all")),
+        (VIEW_BLOCKED, t("orders_btn_blocked")),
+        (VIEW_MONTH, t("orders_btn_month")),
+    )
+    row = []
+    for view, label in specs:
+        text = f"· {label}" if view == active_view else label
+        row.append({"text": text, "callback_data": f"{ORDERS_VIEW_PREFIX}{view}"})
+    return [row]
 
 
 def _order_number_buttons(
@@ -318,7 +333,7 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
 
     if not orders:
         msg = header + "\n\n" + _empty_message(view)
-        send_telegram_message(msg)
+        send_telegram_buttons(msg, _view_filter_buttons(view))
         try:
             from logger import log
 
@@ -349,7 +364,9 @@ def send_orders_view(view: str = VIEW_DAY, page: int = 1) -> None:
     # Buttons: same order as list sections
     buys, sells, shorts, covers, other = _split_orders_by_side(orders)
     button_orders = buys + sells + shorts + covers + other
-    buttons = _order_number_buttons(view, ledger.scope, button_orders, page=1)
+    buttons = _view_filter_buttons(view) + _order_number_buttons(
+        view, ledger.scope, button_orders, page=1
+    )
 
     t_tg0 = time.perf_counter()
     if len(chunks) == 1:
@@ -467,6 +484,14 @@ def handle(text: str) -> bool:
 
 def handle_callback(callback_query: dict) -> bool:
     data = callback_query.get("data", "")
+
+    if data.startswith(ORDERS_VIEW_PREFIX):
+        answer_callback_query(callback_query.get("id"))
+        view = data[len(ORDERS_VIEW_PREFIX):].strip().lower()
+        if view not in _VIEWS:
+            return True
+        send_orders_view(view, 1)
+        return True
 
     if data.startswith("orders_page:"):
         answer_callback_query(callback_query.get("id"))

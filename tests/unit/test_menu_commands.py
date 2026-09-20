@@ -77,7 +77,7 @@ class TestMenuCommands(unittest.TestCase):
             for key in ("pause", "resume", "panic"):
                 self.assertEqual(flat.count(key), 1)
         self.assertEqual(sum(len(keys) for _, keys in MENU_SECTIONS_OPERATOR), 54)
-        self.assertEqual(sum(len(keys) for _, keys in MENU_SECTIONS_SATELLITE), 42)
+        self.assertEqual(sum(len(keys) for _, keys in MENU_SECTIONS_SATELLITE), 39)  # #447: -3 aliases
 
     def test_satellite_callback_runs_panic(self):
         cb = {

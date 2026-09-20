@@ -1608,7 +1608,8 @@ def send_positions_snapshot(
 
     from price_fetcher import get_prices_batch
     from services.trading_service import TradingService
-    from telegram_notifier import send_telegram_message
+    from telegram_notifier import send_telegram_buttons, send_telegram_message
+    from notifications.telegram_i18n import t as _t
 
     t0 = time.perf_counter()
     tid, sc = _portfolio_tenant_ids(tenant_id=tenant_id, scope=scope)
@@ -1667,8 +1668,18 @@ def send_positions_snapshot(
     fmt_ms = (time.perf_counter() - t_fmt0) * 1000.0
     t_tg0 = time.perf_counter()
     ok = True
-    for chunk in chunks:
-        if not send_telegram_message(chunk, chat_id=chat_id):
+    more_btn = (
+        [[{"text": _t("positions_more_details"), "callback_data": "pos_more:full"}]]
+        if level == "compact"
+        else None
+    )
+    last = len(chunks) - 1
+    for i, chunk in enumerate(chunks):
+        if i == last and more_btn:
+            sent = send_telegram_buttons(chunk, more_btn, chat_id=chat_id)
+        else:
+            sent = send_telegram_message(chunk, chat_id=chat_id)
+        if not sent:
             ok = False
     tg_ms = (time.perf_counter() - t_tg0) * 1000.0
     try:
