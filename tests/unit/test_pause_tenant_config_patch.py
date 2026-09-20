@@ -361,7 +361,11 @@ def test_mode_switch_persists_only_dry_run_for_tenant(tenant_mongo, text, monkey
     assert t("config_save_failed") not in msg
 
     body = _body(db)
-    assert body == _SIM_LIVE_BODY
+    expected = dict(_SIM_LIVE_BODY)
+    if text == "/live_cancel":
+        # #497: /live_cancel un-confirms; helper still returns True.
+        expected["live_confirmed"] = False
+    assert body == expected
     assert "max_usdt_per_trade" not in body["live"]
     assert "execution" not in body["live"]
     assert "api_key_env" not in body["live"]

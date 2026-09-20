@@ -135,13 +135,14 @@ def handle(text: str) -> bool:
             msg += "\n\n"
 
     msg += """<b>Modi</b>
-/mode paper — Lokales Paper (JSON-Ledger)
-/mode live + /live_confirm — Echtes Spot-Trading auf Gate.io
+/mode paper — Paper veraltet → Simulated Live (dry-run, Order-Ledger)
+/mode live — Simulated Live (dry-run, keine echten Gate-Orders)
+/live_confirm — Simulated Live (Staging, Order-Ausführung aktiv)
+/live_cancel — Mainnet widerrufen, zurück zu Simulated Live (dry-run)
 
-<b>Live aktivieren</b>
+<b>Simulated Live</b>
 1. Keys in .env: GATE_API_KEY / GATE_API_SECRET
-2. /mode live → /live_confirm
-3. <code>live.dry_run: false</code> in config.json für echte Orders
+2. /mode live oder /live_confirm — Simulated Live, keine echten Gate-Orders
 """
     send_telegram_message(msg)
     return True
