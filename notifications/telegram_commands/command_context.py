@@ -98,6 +98,13 @@ def pending_reminder_text(command: str, meta: dict | None = None) -> str:
         if str(meta.get("state") or "") == "sell_awaiting_pct" and label:
             return t("pending_reminder_sell_pct", position=label)
         return t("pending_reminder_sell")
+    if command == "lock":
+        label = str(meta.get("label") or meta.get("position") or "").strip()
+        if str(meta.get("state") or "") == "lock_awaiting_duration" and label:
+            return t("pending_reminder_lock_dur", position=label)
+        return t("pending_reminder_lock")
+    if command == "unlock":
+        return t("pending_reminder_unlock")
     return t("pending_reminder", command=command)
 
 
@@ -190,6 +197,15 @@ def clear_active_section(chat_id: str | int | None = None) -> None:
 def _invalid(msg: str) -> bool:
     send_telegram_message(msg)
     return False
+
+
+def parse_lock_duration_token(token: str) -> str | None:
+    """Canonical wizard duration: 24h, 7d, or permanent. Else None."""
+    from notifications.telegram_commands.lock_commands import (
+        parse_lock_duration_token as _parse_lock_duration_token,
+    )
+
+    return _parse_lock_duration_token(token)
 
 
 def parse_sell_percent_token(token: str) -> str | None:
@@ -315,7 +331,22 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         days = parts[1] if len(parts) > 1 else ""
         return f"/testaccount {account} {days}".strip()
 
-    if command in ("lock", "unlock", "short", "cover"):
+    if command == "lock":
+        state = str(meta.get("state") or "")
+        if state == "lock_awaiting_duration":
+            position = str(meta.get("position") or "").strip()
+            if not position:
+                return None
+            duration = parse_lock_duration_token(parts[0])
+            if duration is None:
+                return None
+            return f"/lock {position} {duration}"
+        return f"/lock {text.strip()}"
+
+    if command == "unlock":
+        return f"/unlock {text.strip()}"
+
+    if command in ("short", "cover"):
         return f"/{command} {text.strip()}"
 
     return None
@@ -387,6 +418,13 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
             label = str(meta.get("label") or meta.get("coin") or "")
             prompt_buy_amount(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "lock" and str(meta.get("state") or "") == "lock_awaiting_duration":
+            from notifications.telegram_commands.lock_commands import prompt_lock_duration
+
+            label = str(meta.get("label") or meta.get("position") or "")
+            prompt_lock_duration(label, invalid=True)
             set_context(chat_id, command, **meta)
             return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid
