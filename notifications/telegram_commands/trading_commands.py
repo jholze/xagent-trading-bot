@@ -6,12 +6,17 @@ from price_fetcher import get_prices, get_prices_batch
 from services.trading_service import TradingService
 from notifications.telegram_commands.position_display import (
     chunk_positions_message,
+    encode_lot_callback,
     format_sell_list_message,
     format_sell_pick_button_label,
     long_lots_for_sell,
+    LOT_SELL_CALLBACK_PREFIX,
+    LOT_WHY_CALLBACK_PREFIX,
+    parse_lot_callback,
     position_symbol,
     resolve_position_by_display_index,
     resolve_position_by_symbol,
+    resolve_position_by_symbol_tf,
     sort_positions_by_value,
 )
 from notifications.telegram_commands.manual_order_flow import (
@@ -68,11 +73,15 @@ def _buy_menu_text(field: str, **kwargs) -> str:
 def _sell_position_button_rows(longs: list, prices: dict) -> list:
     """One inline button per long, same 1-based order as the numbered compact list."""
     rows = []
-    for index, p in enumerate(sort_positions_by_value(longs, prices), start=1):
+    for p in sort_positions_by_value(longs, prices):
         px = float(prices.get(position_symbol(p), 0) or 0)
         rows.append([{
             "text": format_sell_pick_button_label(p, px),
-            "callback_data": f"{SELL_POS_CALLBACK_PREFIX}{index}",
+            "callback_data": encode_lot_callback(
+                SELL_POS_CALLBACK_PREFIX,
+                position_symbol(p),
+                p.get("timeframe"),
+            ),
         }])
     return rows
 
@@ -113,6 +122,7 @@ def _continue_sell_after_position(p: dict, prices: dict, arg: str, pct_token: st
             state="sell_awaiting_pct",
             position=pos_token,
             label=ticker,
+            timeframe=str(tf),
         )
         return True
 
@@ -407,6 +417,7 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
 
     position = str(meta.get("position") or "").strip()
     label = str(meta.get("label") or position)
+    timeframe = str(meta.get("timeframe") or "").strip()
     canonical = parse_sell_percent_token(raw)
     if not position or canonical is None:
         prompt_sell_percentage(label, invalid=True)
@@ -416,6 +427,8 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
     from notifications.telegram_commands.router import dispatch_command
 
     clear_context(chat_id)
+    if timeframe and not position.replace(".", "").isdigit():
+        return _continue_sell_for_lot_identity(position, timeframe, pct_token=canonical)
     return dispatch_command(f"/sell {position} {canonical}")
 
 
@@ -424,7 +437,6 @@ def _handle_sell_pos_callback(callback_query: dict) -> bool:
 
     answer_callback_query(callback_query.get("id"))
     data = str(callback_query.get("data") or "")
-    raw = data.split(":", 1)[1] if ":" in data else ""
 
     message = callback_query.get("message") or {}
     chat_id = (message.get("chat") or {}).get("id")
@@ -443,21 +455,58 @@ def _handle_sell_pos_callback(callback_query: dict) -> bool:
         send_telegram_message(_sell_menu_text("pct_expired"))
         return True
 
-    idx = safe_int(raw)
-    if idx is None or idx < 1:
+    parsed = parse_lot_callback(data, SELL_POS_CALLBACK_PREFIX)
+    if parsed is None:
         send_telegram_message(_sell_menu_text("pct_expired"))
         return True
 
+    ticker, tf = parsed
+    return _continue_sell_for_lot_identity(ticker, tf)
+
+
+def _continue_sell_for_lot_identity(
+    ticker: str, timeframe: str, pct_token: str | None = None,
+) -> bool:
+    """Start or finish the sell wizard for a lot identified by symbol+timeframe."""
     all_lots = list_active_positions()
     active = long_lots_for_sell(all_lots)
     symbols = [position_symbol(p) for p in all_lots]
     prices = get_prices_batch(symbols)
-    p = resolve_position_by_display_index(active, prices, idx - 1)
+    p = resolve_position_by_symbol_tf(active, ticker, timeframe)
     if not p:
-        send_telegram_message(t("no_open_position", arg=str(idx)))
+        send_telegram_message(t("no_open_position", arg=ticker.upper()))
         return True
+    return _continue_sell_after_position(p, prices, ticker, pct_token=pct_token)
 
-    return _continue_sell_after_position(p, prices, str(idx))
+
+def _handle_lot_sell_callback(callback_query: dict) -> bool:
+    """Stateless Verkaufen tap from /positions or a stop/fill (#455)."""
+    chat_id = _buy_callback_chat_id(callback_query, "lotsell")
+    if not chat_id:
+        return True
+    data = str(callback_query.get("data") or "")
+    parsed = parse_lot_callback(data, LOT_SELL_CALLBACK_PREFIX)
+    if parsed is None:
+        send_telegram_message(_sell_menu_text("pct_expired"))
+        return True
+    ticker, tf = parsed
+    return _continue_sell_for_lot_identity(ticker, tf)
+
+
+def _handle_lot_why_callback(callback_query: dict) -> bool:
+    """Warum? tap — reuse /why SYMBOL (timeframe is identity only)."""
+    chat_id = _buy_callback_chat_id(callback_query, "poswhy")
+    if not chat_id:
+        return True
+    data = str(callback_query.get("data") or "")
+    parsed = parse_lot_callback(data, LOT_WHY_CALLBACK_PREFIX)
+    if parsed is None:
+        send_telegram_message(t("why_usage"))
+        return True
+    ticker, _tf = parsed
+    from notifications.telegram_commands.router import dispatch_command
+
+    return dispatch_command(f"/why {ticker}")
 
 
 def _buy_callback_chat_id(callback_query: dict, log_label: str):
@@ -553,6 +602,10 @@ def handle_callback(callback_query: dict) -> bool:
         return _handle_sell_pos_callback(callback_query)
     if data.startswith(SELL_PCT_CALLBACK_PREFIX):
         return _handle_sell_pct_callback(callback_query)
+    if data.startswith(LOT_SELL_CALLBACK_PREFIX):
+        return _handle_lot_sell_callback(callback_query)
+    if data.startswith(LOT_WHY_CALLBACK_PREFIX):
+        return _handle_lot_why_callback(callback_query)
     if data.startswith(BUY_COIN_CALLBACK_PREFIX):
         return _handle_buy_coin_callback(callback_query)
     if data.startswith(BUY_AMT_CALLBACK_PREFIX):

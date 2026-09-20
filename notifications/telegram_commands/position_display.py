@@ -92,6 +92,92 @@ def resolve_position_by_symbol(active: list, query: str, prices: dict | None = N
     return matches[0]
 
 
+LOT_SELL_CALLBACK_PREFIX = "lotsell:"
+LOT_WHY_CALLBACK_PREFIX = "poswhy:"
+_TELEGRAM_CALLBACK_MAX = 64
+
+
+def lot_ticker(symbol: str) -> str:
+    s = (symbol or "").strip().upper()
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    return s.replace(":", "")
+
+
+def lot_timeframe(tf: str | None) -> str:
+    raw = str(tf or "4h").strip() or "4h"
+    return raw.replace(":", "")
+
+
+def encode_lot_callback(prefix: str, symbol: str, timeframe: str | None) -> str:
+    """Telegram callback_data (≤64 bytes) identifying one lot: prefix + TICKER:TF."""
+    data = f"{prefix}{lot_ticker(symbol)}:{lot_timeframe(timeframe)}"
+    return data[:_TELEGRAM_CALLBACK_MAX]
+
+
+def parse_lot_callback(data: str, prefix: str) -> tuple[str, str] | None:
+    blob = str(data or "")
+    if not blob.startswith(prefix):
+        return None
+    raw = blob[len(prefix):]
+    if ":" not in raw:
+        return None
+    ticker, tf = raw.rsplit(":", 1)
+    ticker = lot_ticker(ticker)
+    tf = lot_timeframe(tf)
+    if not ticker or not tf:
+        return None
+    return ticker, tf
+
+
+def resolve_position_by_symbol_tf(active: list, query: str, timeframe: str | None):
+    """Find the open lot for ticker + timeframe (no value re-sort)."""
+    want_sym = normalize_position_symbol_query(lot_ticker(query))
+    want_tf = lot_timeframe(timeframe).lower()
+    if not want_sym:
+        return None
+    for p in active or []:
+        if position_symbol(p).upper() != want_sym:
+            continue
+        if lot_timeframe(p.get("timeframe")).lower() == want_tf:
+            return p
+    return None
+
+
+def position_card_action_rows(active: list, prices: dict) -> list:
+    """One follow-up row per open lot: Verkaufen (longs) + Warum? (#455)."""
+    from notifications.telegram_i18n import t
+
+    rows = []
+    sell_label = t("positions_btn_sell")
+    why_label = t("positions_btn_why")
+    for p in sort_positions_by_value(active or [], prices or {}):
+        ticker = lot_ticker(position_symbol(p))
+        tf = lot_timeframe(p.get("timeframe"))
+        why_btn = {
+            "text": why_label,
+            "callback_data": encode_lot_callback(LOT_WHY_CALLBACK_PREFIX, ticker, tf),
+        }
+        if _is_long_lot(p):
+            rows.append([
+                {
+                    "text": f"{ticker} · {sell_label}",
+                    "callback_data": encode_lot_callback(
+                        LOT_SELL_CALLBACK_PREFIX, ticker, tf,
+                    ),
+                },
+                why_btn,
+            ])
+        else:
+            rows.append([{
+                "text": f"{ticker} · {why_label}",
+                "callback_data": encode_lot_callback(
+                    LOT_WHY_CALLBACK_PREFIX, ticker, tf,
+                ),
+            }])
+    return rows
+
+
 def _entry_fallback_price(p: dict) -> float:
     for key in ("average_entry", "entry_price", "last_buy_price"):
         value = float(p.get(key, 0) or 0)
@@ -1668,15 +1754,16 @@ def send_positions_snapshot(
     fmt_ms = (time.perf_counter() - t_fmt0) * 1000.0
     t_tg0 = time.perf_counter()
     ok = True
-    more_btn = (
-        [[{"text": _t("positions_more_details"), "callback_data": "pos_more:full"}]]
-        if level == "compact"
-        else None
-    )
+    keyboard = []
+    if level == "compact":
+        keyboard.extend(position_card_action_rows(active, prices))
+        keyboard.append(
+            [{"text": _t("positions_more_details"), "callback_data": "pos_more:full"}]
+        )
     last = len(chunks) - 1
     for i, chunk in enumerate(chunks):
-        if i == last and more_btn:
-            sent = send_telegram_buttons(chunk, more_btn, chat_id=chat_id)
+        if i == last and keyboard:
+            sent = send_telegram_buttons(chunk, keyboard, chat_id=chat_id)
         else:
             sent = send_telegram_message(chunk, chat_id=chat_id)
         if not sent:
