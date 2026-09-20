@@ -7,6 +7,29 @@ from typing import Any
 from strategies.dca_policy import DcaContext
 
 
+def _fail_closed_guards_from_config(raw: dict | None) -> str:
+    """Read fail_closed_guards from config. Except paths must not force ``log``.
+
+    Staging default is ``deny``. An explicit config value (including ``log``) is
+    honored; only a missing/unreadable key falls back to ``deny``.
+    """
+    try:
+        risk = None
+        if isinstance(raw, dict):
+            nested = raw.get("risk")
+            if isinstance(nested, dict):
+                risk = nested
+            elif "fail_closed_guards" in raw:
+                risk = raw
+        if isinstance(risk, dict):
+            mode = str(risk.get("fail_closed_guards") or "").strip().lower()
+            if mode:
+                return mode
+    except Exception:
+        pass
+    return "deny"
+
+
 def build_dca_context(
     *,
     symbol: str,
@@ -74,7 +97,7 @@ def build_dca_context(
 
             ctx.fail_closed_guards = _fail_closed_guards_mode(raw)
         except Exception:
-            ctx.fail_closed_guards = "log"
+            ctx.fail_closed_guards = _fail_closed_guards_from_config(raw)
     except Exception:
         ctx.fusion_size_mult = 1.0
         ctx.block_buys = False
@@ -82,7 +105,7 @@ def build_dca_context(
         ctx.fusion_degraded = True
         ctx.fusion_fresh = False
         ctx.fusion_measured = False
-        ctx.fail_closed_guards = "log"
+        ctx.fail_closed_guards = _fail_closed_guards_from_config(raw)
     ctx.fusion_missing = fusion_missing
 
     # Cash mode from fusion; spendable via Risk when possible
