@@ -613,15 +613,17 @@ class TestVirtualTrading(unittest.TestCase):
             handle_telegram_command("/buy RAVE 100")
             self.assertEqual(mock_preview.call_count, 2)
 
-            # Bare /buy sends numbered buy list
+            # Bare /buy sends tap-first watchlist picker (#446)
             mock_send.reset_mock()
-            with patch("notifications.telegram_commands.trading_commands.get_prices_batch") as mock_batch:
+            with patch("notifications.telegram_commands.trading_commands.get_prices_batch") as mock_batch, \
+                 patch("notifications.telegram_commands.trading_commands.send_telegram_buttons") as mock_btn:
                 mock_batch.return_value = {"ARIA/USDT": 0.05, "RAVE/USDT": 0.12}
                 handle_telegram_command("/buy")
-            mock_send.assert_called()
-            msg = mock_send.call_args[0][0]
+            self.assertTrue(mock_btn.called)
+            msg = mock_btn.call_args[0][0]
             self.assertIn("Coins kaufen", msg)
-            self.assertIn("Danach nur noch", msg)
+            callbacks = [btn["callback_data"] for row in mock_btn.call_args[0][1] for btn in row]
+            self.assertEqual(callbacks, ["buycoin:1", "buycoin:2"])
 
     def test_demo_mode_prefixes_telegram_messages(self):
         """Ensure that when running in --demo mode, all Telegram messages get the demo prefix."""

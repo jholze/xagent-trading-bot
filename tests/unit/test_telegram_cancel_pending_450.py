@@ -80,20 +80,22 @@ class TestTelegramCancelPending450(unittest.TestCase):
              patch(f"{TC}.get_prices_batch", return_value={"ARIA/USDT": 0.05}), \
              patch(f"{TC}.get_bot_config", return_value=cfg), \
              patch(f"{TC}.request_buy_confirmation") as mock_confirm, \
-             patch(f"{TC}.send_telegram_message") as mock_send:
+             patch(f"{TC}.send_telegram_buttons"), \
+             patch(f"{TC}.send_telegram_message"), \
+             patch("notifications.telegram_commands.command_context.send_telegram_message") as chrome:
             self.assertTrue(trading_commands.handle("/buy"))
             mock_confirm.assert_not_called()
-            self.assertTrue(mock_send.called)
-            text, kwargs_markup = mock_send.call_args[0][0], mock_send.call_args.kwargs.get(
-                "reply_markup"
-            )
-            if kwargs_markup is None and len(mock_send.call_args[0]) > 1:
-                kwargs_markup = mock_send.call_args[0][1]
-            self.assertIn("Coins kaufen", text)
-            self.assertTrue(_has_cancel(kwargs_markup))
+            self.assertTrue(chrome.called)
+            reminder = chrome.call_args[0][0]
+            markup = chrome.call_args.kwargs.get("reply_markup")
+            if markup is None and len(chrome.call_args[0]) > 1:
+                markup = chrome.call_args[0][1]
+            self.assertIn("Kauf", reminder)
+            self.assertTrue(_has_cancel(markup))
         entry = ctx.get_context(CHAT)
         self.assertIsNotNone(entry)
         self.assertEqual(entry["command"], "buy")
+        self.assertEqual(entry["meta"]["state"], "buy_awaiting_coin")
         self.assertNotIn("chrome", entry.get("meta") or {})
 
     def test_sell_position_chrome_has_cancel_and_does_not_place_an_order(self):
@@ -250,6 +252,10 @@ class TestTelegramCancelPending450(unittest.TestCase):
 
     def test_add_and_ask_waiting_prompts_get_cancel_chrome(self):
         with patch("notifications.telegram_commands.watchlist_commands.send_telegram_message"), \
+             patch("notifications.telegram_commands.watchlist_commands.send_telegram_buttons"), \
+             patch("notifications.telegram_commands.watchlist_commands.list_coins", return_value=[]), \
+             patch("data_manager.load_cmc_trending_overlay", return_value={"coins": []}), \
+             patch("data_manager.load_dry_run_overlay", return_value={"coins": []}), \
              patch("notifications.telegram_commands.command_context.send_telegram_message") as chrome:
             self.assertTrue(watchlist_commands.handle("/add"))
             self.assertTrue(chrome.called)

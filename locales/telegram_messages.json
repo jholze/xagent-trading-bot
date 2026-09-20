@@ -281,6 +281,7 @@
     "pending_cancel_done": "✅ Abgebrochen — es wurde nichts ausgeführt.",
     "pending_reminder": "<b>/{command}</b> läuft — Eingabe senden oder Abbrechen.",
     "pending_reminder_buy": "Kauf läuft — Coin wählen oder Abbrechen.",
+    "pending_reminder_buy_usdt": "Kauf von <b>{coin}</b> läuft — Betrag wählen oder Abbrechen.",
     "pending_reminder_sell": "Verkauf läuft — Position wählen oder Abbrechen.",
     "pending_reminder_sell_pct": "Verkauf von <b>{position}</b> läuft — Prozent wählen oder Abbrechen."
   },
@@ -566,6 +567,7 @@
     "pending_cancel_done": "✅ Cancelled — nothing was executed.",
     "pending_reminder": "<b>/{command}</b> is pending — send input or Cancel.",
     "pending_reminder_buy": "Buy pending — pick a coin or Cancel.",
+    "pending_reminder_buy_usdt": "Buy of <b>{coin}</b> pending — pick an amount or Cancel.",
     "pending_reminder_sell": "Sell pending — pick a position or Cancel.",
     "pending_reminder_sell_pct": "Sell of <b>{position}</b> pending — pick a percent or Cancel."
   }

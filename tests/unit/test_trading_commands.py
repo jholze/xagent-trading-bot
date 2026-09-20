@@ -12,10 +12,13 @@ class TestTradingCommands(unittest.TestCase):
     def test_buy_lists_coins_without_args(self):
         with patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins, \
              patch("notifications.telegram_commands.trading_commands.get_prices_batch", return_value={"ARIA/USDT": 0.05}), \
-             patch("notifications.telegram_commands.trading_commands.send_telegram_message") as mock_send:
+             patch("notifications.telegram_commands.trading_commands.send_telegram_buttons") as mock_btn, \
+             patch("notifications.telegram_commands.trading_commands.send_telegram_message"):
             mock_coins.return_value = [{"symbol": "ARIA/USDT", "name": "Aria", "active": True}]
             self.assertTrue(trading_commands.handle("/buy"))
-            self.assertIn("Coins kaufen", mock_send.call_args[0][0])
+            self.assertIn("Coins kaufen", mock_btn.call_args[0][0])
+            buttons = mock_btn.call_args[0][1]
+            self.assertEqual(buttons[0][0]["callback_data"], "buycoin:1")
 
     def test_buy_with_args_requests_confirmation(self):
         with patch("notifications.telegram_commands.trading_commands.list_coins") as mock_coins, \

@@ -89,6 +89,9 @@ def pending_reminder_text(command: str, meta: dict | None = None) -> str:
 
     meta = meta or {}
     if command == "buy":
+        label = str(meta.get("label") or meta.get("coin") or "").strip()
+        if str(meta.get("state") or "") == "buy_awaiting_usdt" and label:
+            return t("pending_reminder_buy_usdt", coin=label)
         return t("pending_reminder_buy")
     if command == "sell":
         label = str(meta.get("label") or meta.get("position") or "").strip()
@@ -218,17 +221,33 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         return None
 
     if command == "buy":
-        if parts[0].replace(".", "").isdigit():
-            num = parts[0]
+        state = str(meta.get("state") or "")
+        token = parts[0]
+        coin_token = token if token.replace(".", "").isdigit() else token.upper()
+        if state == "buy_awaiting_usdt":
+            coin = str(meta.get("coin") or "").strip()
+            if not coin:
+                return None
+            usdt = parts[1] if len(parts) > 1 else parts[0]
+            val = safe_float(usdt)
+            if val is None or val <= 0:
+                return None
+            return f"/buy {coin} {usdt}"
+        if state == "buy_awaiting_coin":
+            # Wizard coin step: never silently fill max_usdt (#446).
+            if len(parts) > 1:
+                return f"/buy {coin_token} {parts[1]}"
+            return f"/buy {coin_token}"
+        # Legacy unstated context (frozen #450/#454/#498): keep default_usdt.
+        if token.replace(".", "").isdigit():
             usdt = parts[1] if len(parts) > 1 else str(meta.get("default_usdt", ""))
             if not usdt:
                 return None
-            return f"/buy {num} {usdt}"
-        sym = parts[0].upper()
+            return f"/buy {token} {usdt}"
         usdt = parts[1] if len(parts) > 1 else str(meta.get("default_usdt", ""))
         if not usdt:
             return None
-        return f"/buy {sym} {usdt}"
+        return f"/buy {token.upper()} {usdt}"
 
     if command == "sell":
         if str(meta.get("state") or "") == "sell_awaiting_pct":
@@ -358,6 +377,13 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
             label = str(meta.get("label") or meta.get("position") or "")
             prompt_sell_percentage(label, invalid=True)
+            set_context(chat_id, command, **meta)
+            return True
+        if command == "buy" and str(meta.get("state") or "") == "buy_awaiting_usdt":
+            from notifications.telegram_commands.trading_commands import prompt_buy_amount
+
+            label = str(meta.get("label") or meta.get("coin") or "")
+            prompt_buy_amount(label, invalid=True)
             set_context(chat_id, command, **meta)
             return True
         from notifications.telegram_commands.menu_i18n import current_language, short_input_invalid
