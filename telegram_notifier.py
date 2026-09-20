@@ -864,7 +864,16 @@ def handle_telegram_text(text, chat_id=None):
 
 
 def handle_telegram_callback(callback_query):
+    from notifications.telegram_commands.command_context import set_chat_id
     from notifications.telegram_commands.router import dispatch_callback
+
+    callback_query = callback_query or {}
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        log("callback missing chat id", "WARNING")
+        return True
+    set_chat_id(chat_id)
     return dispatch_callback(callback_query)
 
 
