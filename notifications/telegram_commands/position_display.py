@@ -145,36 +145,20 @@ def resolve_position_by_symbol_tf(active: list, query: str, timeframe: str | Non
 
 
 def position_card_action_rows(active: list, prices: dict) -> list:
-    """One follow-up row per open lot: Verkaufen (longs) + Warum? (#455)."""
+    """One Warum? row per open lot. Home Verkaufen is the sell entry (#542)."""
     from notifications.telegram_i18n import t
 
     rows = []
-    sell_label = t("positions_btn_sell")
     why_label = t("positions_btn_why")
     for p in sort_positions_by_value(active or [], prices or {}):
         ticker = lot_ticker(position_symbol(p))
         tf = lot_timeframe(p.get("timeframe"))
-        why_btn = {
-            "text": why_label,
-            "callback_data": encode_lot_callback(LOT_WHY_CALLBACK_PREFIX, ticker, tf),
-        }
-        if _is_long_lot(p):
-            rows.append([
-                {
-                    "text": f"{ticker} · {sell_label}",
-                    "callback_data": encode_lot_callback(
-                        LOT_SELL_CALLBACK_PREFIX, ticker, tf,
-                    ),
-                },
-                why_btn,
-            ])
-        else:
-            rows.append([{
-                "text": f"{ticker} · {why_label}",
-                "callback_data": encode_lot_callback(
-                    LOT_WHY_CALLBACK_PREFIX, ticker, tf,
-                ),
-            }])
+        rows.append([{
+            "text": f"{ticker} · {why_label}",
+            "callback_data": encode_lot_callback(
+                LOT_WHY_CALLBACK_PREFIX, ticker, tf,
+            ),
+        }])
     return rows
 
 

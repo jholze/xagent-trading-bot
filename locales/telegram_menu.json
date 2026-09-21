@@ -238,6 +238,7 @@
         "pct_btn_50": "50%",
         "pct_btn_75": "75%",
         "pct_btn_100": "100%",
+        "working": "⏳ Prüfe Verkauf von <b>{position}</b> ({pct}%) …",
         "hint": "❌ <b>/sell</b> — Position verkaufen\n\nDirekt: <code>/sell RAVE 30</code> (30 % verkaufen)\nOder Liste: <code>/sell</code> → dann <code>1 30</code>"
       },
       "short": {
@@ -722,6 +723,7 @@
         "pct_btn_50": "50%",
         "pct_btn_75": "75%",
         "pct_btn_100": "100%",
+        "working": "⏳ Checking sale of <b>{position}</b> ({pct}%) …",
         "hint": "❌ <b>/sell</b> — Sell position\n\nDirect: <code>/sell RAVE 30</code> (sell 30%)\nOr list: <code>/sell</code> → then <code>1 30</code>"
       },
       "short": {

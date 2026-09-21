@@ -95,7 +95,10 @@ class TestSellGuidedFlow(unittest.TestCase):
 
     def test_typed_percent_and_quick_button_produce_same_confirmation(self):
         def _run_typed():
-            ctx.set_context("99", "sell", state="sell_awaiting_pct", position="RAVE", label="RAVE")
+            ctx.set_context(
+                "99", "sell", state="sell_awaiting_pct",
+                position="RAVE", label="RAVE", timeframe="1h",
+            )
             with patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
                  patch("notifications.telegram_commands.trading_commands.send_telegram_buttons"):
                 self.assertTrue(ctx.try_resolve("99", "50"))
@@ -103,7 +106,10 @@ class TestSellGuidedFlow(unittest.TestCase):
                 return mock_confirm.call_args.kwargs
 
         def _run_button():
-            ctx.set_context("99", "sell", state="sell_awaiting_pct", position="RAVE", label="RAVE")
+            ctx.set_context(
+                "99", "sell", state="sell_awaiting_pct",
+                position="RAVE", label="RAVE", timeframe="1h",
+            )
             with patch("notifications.telegram_commands.trading_commands.request_sell_confirmation") as mock_confirm, \
                  patch("notifications.telegram_commands.trading_commands.send_telegram_buttons"), \
                  patch("notifications.telegram_commands.trading_commands.answer_callback_query"):

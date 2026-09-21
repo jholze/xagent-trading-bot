@@ -1,10 +1,13 @@
+import time
+
 from core.config import get_bot_config
 from data_manager import list_coins
 from notifications.telegram_commands.usage_hints import hint
 from notifications.telegram_commands.utils import safe_float, safe_int
-from price_fetcher import get_prices, get_prices_batch
+from price_fetcher import get_prices, get_prices_batch, peek_cached_price
 from services.trading_service import TradingService
 from notifications.telegram_commands.position_display import (
+    build_price_fallbacks,
     chunk_positions_message,
     encode_lot_callback,
     format_sell_list_message,
@@ -86,6 +89,45 @@ def _sell_position_button_rows(longs: list, prices: dict) -> list:
     return rows
 
 
+def _display_prices_for_lots(lots: list) -> dict:
+    """Last-known cache + entry fallbacks. Does not hit Gate."""
+    prices = {}
+    fallbacks = build_price_fallbacks(lots or [])
+    for p in lots or []:
+        sym = position_symbol(p)
+        cached = peek_cached_price(sym)
+        try:
+            cached_px = float(cached or 0)
+        except (TypeError, ValueError):
+            cached_px = 0.0
+        if cached_px > 0:
+            prices[sym] = cached_px
+        else:
+            fb = float(fallbacks.get(sym, 0) or 0)
+            if fb > 0:
+                prices[sym] = fb
+    return prices
+
+
+def _live_price_for_symbol(sym: str) -> float:
+    """Live-fetch at most this one symbol for the sell confirm preview."""
+    batch = get_prices_batch([sym])
+    try:
+        px = float((batch or {}).get(sym, 0) or 0)
+    except (TypeError, ValueError):
+        px = 0.0
+    if px > 0:
+        return px
+    return float(get_prices(sym)[0] or 0)
+
+
+def _log_callback_first_reply(prefix: str, t0: float) -> None:
+    from logger import log
+
+    ms = (time.perf_counter() - t0) * 1000.0
+    log(f"callback_received prefix={prefix} first_reply_ms={ms:.0f}", "INFO")
+
+
 def _send_chunked_sell_list(chunks: list[str], buttons: list) -> None:
     """Attach the position keyboard only to the last chunk (never to earlier pages)."""
     if not chunks:
@@ -102,10 +144,6 @@ def _continue_sell_after_position(p: dict, prices: dict, arg: str, pct_token: st
     """Shared follow-up after a position is resolved (typed number/symbol or inline button)."""
     sym = position_symbol(p)
     tf = p.get("timeframe") or "4h"
-    price = prices.get(sym) or get_prices(sym)[0]
-    if not price or price <= 0:
-        send_telegram_message(t("price_fetch_failed", sym=sym))
-        return True
 
     pos = get_position(sym, tf)
     total_amount = float(pos.get("amount", 0))
@@ -124,6 +162,11 @@ def _continue_sell_after_position(p: dict, prices: dict, arg: str, pct_token: st
             label=ticker,
             timeframe=str(tf),
         )
+        return True
+
+    price = _live_price_for_symbol(sym)
+    if not price or price <= 0:
+        send_telegram_message(t("price_fetch_failed", sym=sym))
         return True
 
     raw_pct = safe_float(pct_token)
@@ -343,8 +386,7 @@ def handle(text: str) -> bool:
             if not all_lots:
                 send_telegram_message(t("no_positions_sell"))
                 return True
-            symbols = [position_symbol(p) for p in all_lots]
-            prices = get_prices_batch(symbols)
+            prices = _display_prices_for_lots(all_lots)
             chunks = chunk_positions_message(
                 format_sell_list_message(all_lots, prices),
                 annotate_pages=False,
@@ -360,8 +402,7 @@ def handle(text: str) -> bool:
         arg = parts[1]
         has_pct = len(parts) > 2
 
-        symbols = [position_symbol(p) for p in all_lots]
-        prices = get_prices_batch(symbols)
+        prices = _display_prices_for_lots(all_lots)
 
         if arg.replace(".", "").isdigit():
             idx = safe_int(arg) - 1
@@ -398,6 +439,7 @@ def handle(text: str) -> bool:
 def _handle_sell_pct_callback(callback_query: dict) -> bool:
     from logger import log
 
+    t0 = time.perf_counter()
     answer_callback_query(callback_query.get("id"))
     data = str(callback_query.get("data") or "")
     raw = data.split(":", 1)[1] if ":" in data else ""
@@ -413,6 +455,7 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
     meta = (entry or {}).get("meta") or {}
     if not entry or entry.get("command") != "sell" or str(meta.get("state") or "") != "sell_awaiting_pct":
         send_telegram_message(_sell_menu_text("pct_expired"))
+        _log_callback_first_reply("sellpct", t0)
         return True
 
     position = str(meta.get("position") or "").strip()
@@ -422,19 +465,40 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
     if not position or canonical is None:
         prompt_sell_percentage(label, invalid=True)
         set_context(chat_id, "sell", **meta)
+        _log_callback_first_reply("sellpct", t0)
         return True
 
-    from notifications.telegram_commands.router import dispatch_command
-
+    send_telegram_message(_sell_menu_text("working", position=label, pct=canonical))
+    _log_callback_first_reply("sellpct", t0)
     clear_context(chat_id)
-    if timeframe and not position.replace(".", "").isdigit():
-        return _continue_sell_for_lot_identity(position, timeframe, pct_token=canonical)
-    return dispatch_command(f"/sell {position} {canonical}")
+    try:
+        return _finish_sell_pct_from_context(label, position, timeframe, canonical)
+    except Exception as e:
+        log(f"sellpct preview failed: {e}", "ERROR")
+        send_telegram_message(t("price_fetch_failed", sym=label or position))
+        return True
+
+
+def _finish_sell_pct_from_context(
+    label: str, position: str, timeframe: str, canonical: str,
+) -> bool:
+    """Resolve the lot from stored symbol+timeframe. Never re-dispatch /sell {index} {pct}."""
+    all_lots = list_active_positions()
+    active = long_lots_for_sell(all_lots)
+    query = str(label or "").strip() or str(position or "").strip()
+    p = None
+    if timeframe and query and not query.replace(".", "").isdigit():
+        p = resolve_position_by_symbol_tf(active, query, timeframe)
+    if not p:
+        send_telegram_message(t("no_open_position", arg=str(query or position).upper()))
+        return True
+    return _continue_sell_after_position(p, {}, query, pct_token=canonical)
 
 
 def _handle_sell_pos_callback(callback_query: dict) -> bool:
     from logger import log
 
+    t0 = time.perf_counter()
     answer_callback_query(callback_query.get("id"))
     data = str(callback_query.get("data") or "")
 
@@ -453,15 +517,24 @@ def _handle_sell_pos_callback(callback_query: dict) -> bool:
         or str(meta.get("state") or "") != "sell_awaiting_position"
     ):
         send_telegram_message(_sell_menu_text("pct_expired"))
+        _log_callback_first_reply("sellpos", t0)
         return True
 
     parsed = parse_lot_callback(data, SELL_POS_CALLBACK_PREFIX)
     if parsed is None:
         send_telegram_message(_sell_menu_text("pct_expired"))
+        _log_callback_first_reply("sellpos", t0)
         return True
 
     ticker, tf = parsed
-    return _continue_sell_for_lot_identity(ticker, tf)
+    try:
+        ok = _continue_sell_for_lot_identity(ticker, tf)
+    except Exception as e:
+        log(f"sellpos preview failed: {e}", "ERROR")
+        send_telegram_message(t("price_fetch_failed", sym=ticker))
+        ok = True
+    _log_callback_first_reply("sellpos", t0)
+    return ok
 
 
 def _continue_sell_for_lot_identity(
@@ -470,12 +543,11 @@ def _continue_sell_for_lot_identity(
     """Start or finish the sell wizard for a lot identified by symbol+timeframe."""
     all_lots = list_active_positions()
     active = long_lots_for_sell(all_lots)
-    symbols = [position_symbol(p) for p in all_lots]
-    prices = get_prices_batch(symbols)
     p = resolve_position_by_symbol_tf(active, ticker, timeframe)
     if not p:
         send_telegram_message(t("no_open_position", arg=ticker.upper()))
         return True
+    prices = {} if pct_token else _display_prices_for_lots([p])
     return _continue_sell_after_position(p, prices, ticker, pct_token=pct_token)
 
 
