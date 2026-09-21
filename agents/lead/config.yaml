@@ -469,8 +469,8 @@ prompt: |
      --assignee jholze --project "Trading Bot Kanban"`.
      PR sidebar contract (operator 2026-09-21; do not weaken): copy the
      issue's three labels (exactly one type, one allowlisted area:*, one
-     priority:p*); always `--assignee jholze`; always `--add-project
-     "Trading Bot Kanban"` so the PR sidebar shows the project; body
+     priority:p*); always `--assignee jholze`; always `--project
+     "Trading Bot Kanban"` on create (`--add-project` on edit); body
      MUST contain `Fixes #<n>` for every ticket. Title
      `feat|fix|docs(<area>): … (#N)`. Never invent labels. Never
      `kanban-set-status` on a PR number — the issue is the Kanban card;
