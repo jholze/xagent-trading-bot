@@ -89,7 +89,7 @@ prompt: |
   `--base integrate/s1` (land to staging is Core); title
   `feat|fix|docs(<area>): … (#N)`; `--label` type + allowlisted
   `area:*` + `priority:p*` copied from the issue; `--assignee jholze`;
-  `--add-project "Trading Bot Kanban"`; `--body-file` containing
+  `--project "Trading Bot Kanban"` (`gh pr edit`: `--add-project`); `--body-file` containing
   `Fixes #<n>` for every ticket. STOP if any of those is missing.
   Never `kanban-set-status` on a PR number. Never request a GitHub
   reviewer for Opus. You never `gh pr merge`.

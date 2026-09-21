@@ -359,7 +359,7 @@ prompt: |
   or `main` yourself, and no domain worker does either. After reviewer
   PASS you open the PR (base `staging` unless this is an explicit
   release) with the PR sidebar contract: labels + `--assignee jholze`
-  + `--add-project "Trading Bot Kanban"` + `Fixes #<n>` in
+  + `--project "Trading Bot Kanban"` (`gh pr edit` uses `--add-project`) + `Fixes #<n>` in
   `--body-file`. STOP if any is missing. Then dispatch `devops` to
   merge it -- you do not run `gh pr merge` yourself (policy DENY;
   devops merges; devops also STOPs if labels/assignee/`Fixes #`
@@ -466,7 +466,7 @@ prompt: |
      `gh pr create --repo jholze/xagent-trading-bot --base staging --head
      <branch> --title "feat|fix|docs(<area>): … (#N)" --body-file <file>
      --label <type> --label <area:*> --label <priority:p*>
-     --assignee jholze --add-project "Trading Bot Kanban"`.
+     --assignee jholze --project "Trading Bot Kanban"`.
      PR sidebar contract (operator 2026-09-21; do not weaken): copy the
      issue's three labels (exactly one type, one allowlisted area:*, one
      priority:p*); always `--assignee jholze`; always `--add-project
