@@ -24,6 +24,7 @@ from execution.gate_adapter import (
     _ccxt_status_token,
     _clamp_gate_client_order_id,
     _finish_as_from_raw,
+    _zero_fill_cancel_status,
 )
 from execution.order_fetch import call_fetch_order_retrying_not_found
 from logger import log
@@ -759,7 +760,11 @@ def _apply_raw_without_adapter(
             needs_reconcile=True,
         )
     filled_f = float(filled)
-    if terminal is OrderStatus.CANCELED and filled_f <= 0:
+    # Same zero-fill rule as GateExecutionAdapter._finalize_exchange_order.
+    # Missing finish_as stays the status-only path and is not a cancel.
+    if (terminal is OrderStatus.CANCELED and filled_f <= 0) or (
+        _zero_fill_cancel_status(raw, filled_f) is OrderStatus.CANCELED
+    ):
         msg = f"exchange {token or 'unset'}"
         if finish_as:
             msg += f" finish_as={finish_as}"

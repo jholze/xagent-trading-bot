@@ -55,6 +55,20 @@ def _clamp_gate_client_order_id(key: str) -> str:
 
 _CANCEL_STATUS = frozenset({"canceled", "cancelled"})
 _CANCEL_FINISH_AS = frozenset({"cancelled", "canceled"})
+# Zero-fill only. Not part of ``_CANCEL_FINISH_AS``: ``ioc`` with filled > 0
+# stays EXECUTED (#340 / #466). ``unified_check_failed`` is not in this set.
+_ZERO_FILL_CANCEL_FINISH_AS = frozenset(
+    {
+        "ioc",
+        "stp",
+        "poc",
+        "fok",
+        "trader_not_enough",
+        "depth_not_enough",
+        "small",
+        "liquidate_cancelled",
+    }
+)
 
 
 def _ccxt_status_token(raw: dict) -> str:
@@ -85,6 +99,20 @@ def _canceled_or_rejected_status(raw: dict) -> OrderStatus | None:
     if token == "rejected":
         return OrderStatus.REJECTED
     if token == "expired":
+        return OrderStatus.CANCELED
+    return None
+
+
+def _zero_fill_cancel_status(raw: dict, filled: float) -> OrderStatus | None:
+    """CANCELED when ``filled <= 0`` and Gate ``finish_as`` is a zero-fill cancel.
+
+    ``ioc`` cancels only at zero fill. A positive fill whose ``finish_as`` is
+    ``filled`` or ``ioc`` is not a cancel (#340 / #466). Missing ``finish_as``
+    returns None so the status-only path is unchanged.
+    """
+    if float(filled) > 0:
+        return None
+    if _finish_as_from_raw(raw) in _ZERO_FILL_CANCEL_FINISH_AS:
         return OrderStatus.CANCELED
     return None
 
@@ -1742,6 +1770,10 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         if terminal is OrderStatus.CANCELED and filled <= 0:
             return self._terminal_no_fill_result(order, raw, terminal)
+        # Shared with recovery: zero-fill finish_as the status token does not
+        # name (ioc only at filled <= 0). Do not book the fill (#549).
+        if _zero_fill_cancel_status(raw, filled) is OrderStatus.CANCELED:
+            return self._terminal_no_fill_result(order, raw, OrderStatus.CANCELED)
 
         remainder_canceled = terminal is OrderStatus.CANCELED and filled > 0
 
