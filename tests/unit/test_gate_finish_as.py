@@ -1,4 +1,9 @@
-"""#466: Gate finish_as is optional venue metadata on closed/cancelled orders."""
+"""Gate ``finish_as`` on closed/cancelled orders.
+
+#466: optional venue metadata; missing ``finish_as`` is the status-only path.
+#549: zero-fill ``finish_as`` is CANCELED on both finalize and the recovery
+fallback. ``ioc`` cancels only when filled == 0.
+"""
 
 from __future__ import annotations
 
@@ -305,3 +310,106 @@ def test_recovery_closed_finish_as_cancelled_partial_fill_is_booked_then_cancele
     assert result.needs_reconcile is False
     adapter.portfolio.execute_buy.assert_called_once()
     assert _fill_qty(adapter.portfolio.execute_buy) == pytest.approx(4.0)
+
+
+# #549: terminal zero-fill cancels ccxt reports as status=closed. ``ioc`` is
+# included here only at filled == 0; a positive ioc fill stays EXECUTED.
+_ZERO_FILL_CANCEL_FINISH_AS = (
+    "depth_not_enough",
+    "small",
+    "stp",
+    "poc",
+    "fok",
+    "trader_not_enough",
+    "liquidate_cancelled",
+    "ioc",
+)
+
+
+@pytest.mark.parametrize("finish_as", _ZERO_FILL_CANCEL_FINISH_AS)
+def test_closed_zero_fill_terminal_finish_as_is_canceled(monkeypatch, finish_as):
+    adapter, ex = _real_adapter(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=0.0, average=100.0, finish_as=finish_as)
+    result = adapter._finalize_exchange_order(
+        ex, order, raw, side="buy", qty=10.0, timeframe="4h", usdt=1000.0
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.executed is False
+    assert result.needs_reconcile is False
+    assert result.pending is False
+    assert order.status is OrderStatus.CANCELED
+    adapter.portfolio.execute_buy.assert_not_called()
+    adapter.portfolio.execute_sell.assert_not_called()
+
+
+@pytest.mark.parametrize("finish_as", _ZERO_FILL_CANCEL_FINISH_AS)
+def test_recovery_closed_zero_fill_terminal_finish_as_is_canceled(
+    monkeypatch, finish_as
+):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=0.0, average=100.0, finish_as=finish_as)
+    result = _apply_raw_without_adapter(
+        raw, order, adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.executed is False
+    assert result.needs_reconcile is False
+    assert result.pending is False
+    adapter.portfolio.execute_buy.assert_not_called()
+    adapter.portfolio.execute_sell.assert_not_called()
+
+
+def test_closed_ioc_with_fill_stays_executed(monkeypatch):
+    adapter, ex = _real_adapter(monkeypatch)
+    raw = _raw(status="closed", filled=9.0, average=100.0, finish_as="ioc")
+    result = adapter._finalize_exchange_order(
+        ex, _buy(), raw, side="buy", qty=10.0, timeframe="4h", usdt=1000.0
+    )
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.executed is True
+    assert result.pending is False
+    adapter.portfolio.execute_buy.assert_called_once()
+
+
+def test_recovery_closed_ioc_with_fill_stays_executed(monkeypatch):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    raw = _raw(status="closed", filled=9.0, average=100.0, finish_as="ioc")
+    result = _apply_raw_without_adapter(
+        raw, _buy(), adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.executed is True
+    assert result.needs_reconcile is False
+    adapter.portfolio.execute_buy.assert_called_once()
+
+
+def test_cancelled_unified_check_failed_stays_canceled_via_status(monkeypatch):
+    adapter, ex = _real_adapter(monkeypatch)
+    raw = _raw(
+        status="cancelled", filled=0.0, finish_as="unified_check_failed"
+    )
+    result = adapter._finalize_exchange_order(
+        ex, _buy(), raw, side="buy", qty=10.0, timeframe="4h", usdt=1000.0
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.executed is False
+    assert result.needs_reconcile is False
+    adapter.portfolio.execute_buy.assert_not_called()
+
+
+def test_recovery_cancelled_unified_check_failed_stays_canceled_via_status(
+    monkeypatch,
+):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    raw = _raw(
+        status="cancelled", filled=0.0, finish_as="unified_check_failed"
+    )
+    result = _apply_raw_without_adapter(
+        raw, _buy(), adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.executed is False
+    assert result.needs_reconcile is False
+    adapter.portfolio.execute_buy.assert_not_called()
