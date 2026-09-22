@@ -69,6 +69,10 @@ _ZERO_FILL_CANCEL_FINISH_AS = frozenset(
         "liquidate_cancelled",
     }
 )
+# Partial remainder only. Not part of ``_CANCEL_FINISH_AS``: a full fill
+# (filled >= requested) with these values stays EXECUTED. ``ioc`` is excluded
+# so a positive ioc fill stays EXECUTED (#340 / #466, #551).
+_PARTIAL_REMAINDER_FINISH_AS = frozenset({"stp", "poc", "fok"})
 
 
 def _ccxt_status_token(raw: dict) -> str:
@@ -115,6 +119,24 @@ def _zero_fill_cancel_status(raw: dict, filled: float) -> OrderStatus | None:
     if _finish_as_from_raw(raw) in _ZERO_FILL_CANCEL_FINISH_AS:
         return OrderStatus.CANCELED
     return None
+
+
+def _partial_remainder_cancel(
+    raw: dict, filled: float, requested: float, status_token: str
+) -> bool:
+    """True when a closed order filled part of the request and canceled the rest.
+
+    ``finish_as`` in stp/poc/fok and ``0 < filled < requested``. A full fill
+    stays on the EXECUTED path. ``ioc`` is not a remainder cancel (#340 / #466).
+    """
+    token = str(status_token or "").strip().lower()
+    if token not in ("closed", "filled"):
+        return False
+    filled_f = float(filled)
+    requested_f = float(requested)
+    if not (requested_f > 0 and 0 < filled_f < requested_f):
+        return False
+    return _finish_as_from_raw(raw) in _PARTIAL_REMAINDER_FINISH_AS
 
 
 class GateExecutionAdapter(ExecutionAdapter):
@@ -1775,11 +1797,15 @@ class GateExecutionAdapter(ExecutionAdapter):
         if _zero_fill_cancel_status(raw, filled) is OrderStatus.CANCELED:
             return self._terminal_no_fill_result(order, raw, OrderStatus.CANCELED)
 
-        remainder_canceled = terminal is OrderStatus.CANCELED and filled > 0
+        closed = ex_status in ("closed", "filled")
+        # stp/poc/fok with a real partial fill use the remainder-canceled
+        # stamp. Full fills stay EXECUTED. ioc is not included (#551).
+        remainder_canceled = (
+            terminal is OrderStatus.CANCELED and filled > 0
+        ) or _partial_remainder_cancel(raw, filled, requested, ex_status)
 
         need_average = False
         status: OrderStatus | None = None
-        closed = ex_status in ("closed", "filled")
         if remainder_canceled:
             # Same portfolio path as PARTIALLY_FILLED; stamped CANCELED after book.
             status = OrderStatus.PARTIALLY_FILLED

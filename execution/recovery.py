@@ -24,6 +24,7 @@ from execution.gate_adapter import (
     _ccxt_status_token,
     _clamp_gate_client_order_id,
     _finish_as_from_raw,
+    _partial_remainder_cancel,
     _zero_fill_cancel_status,
 )
 from execution.order_fetch import call_fetch_order_retrying_not_found
@@ -780,7 +781,6 @@ def _apply_raw_without_adapter(
             order_exist_in_exchange=True,
         )
     requested = float(order.qty or 0)
-    remainder_canceled = terminal is OrderStatus.CANCELED and filled_f > 0
     if token in ("open", "new") and (requested <= 0 or filled_f < requested):
         if filled_f <= 0:
             return TradeResult(
@@ -793,6 +793,26 @@ def _apply_raw_without_adapter(
                 pending=True,
                 needs_reconcile=True,
             )
+    if filled_f <= 0:
+        # Missing finish_as is not a cancel. Match the Gate adapter: do not
+        # book a zero qty, leave needs_reconcile (#551).
+        return TradeResult(
+            False,
+            order.type,
+            order.symbol,
+            message=(
+                f"zero fill not booked (filled={filled_f}, "
+                f"status={token or 'unset'})"
+            ),
+            order_id=order.order_id,
+            exchange_order_id=str(raw.get("id") or ""),
+            order_status=OrderStatus.ACTIVE,
+            pending=True,
+            needs_reconcile=True,
+        )
+    remainder_canceled = (
+        terminal is OrderStatus.CANCELED and filled_f > 0
+    ) or _partial_remainder_cancel(raw, filled_f, requested, token)
     status = OrderStatus.EXECUTED
     if finish_as == "open" and filled_f > 0:
         status = OrderStatus.PARTIALLY_FILLED

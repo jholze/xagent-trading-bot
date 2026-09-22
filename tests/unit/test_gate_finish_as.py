@@ -3,6 +3,9 @@
 #466: optional venue metadata; missing ``finish_as`` is the status-only path.
 #549: zero-fill ``finish_as`` is CANCELED on both finalize and the recovery
 fallback. ``ioc`` cancels only when filled == 0.
+#551: the recovery fallback does not book a closed zero-fill with no
+finish_as. stp/poc/fok with a partial fill book then stamp CANCELED; a full
+fill stays EXECUTED. A positive ioc fill stays EXECUTED.
 """
 
 from __future__ import annotations
@@ -413,3 +416,109 @@ def test_recovery_cancelled_unified_check_failed_stays_canceled_via_status(
     assert result.executed is False
     assert result.needs_reconcile is False
     adapter.portfolio.execute_buy.assert_not_called()
+
+
+# #551: closed zero-fill with no finish_as is not a cancel and is not a fill.
+# stp/poc/fok cancel only the unfilled remainder. A full fill stays EXECUTED.
+_PARTIAL_REMAINDER_FINISH_AS = ("stp", "poc", "fok")
+
+
+def test_recovery_closed_zero_fill_without_finish_as_is_not_executed(monkeypatch):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=0.0, average=100.0)
+    assert "info" not in raw
+    result = _apply_raw_without_adapter(
+        raw, order, adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is not OrderStatus.EXECUTED
+    assert result.order_status is not OrderStatus.CANCELED
+    assert result.order_status is OrderStatus.ACTIVE
+    assert result.executed is False
+    assert result.pending is True
+    assert result.needs_reconcile is True
+    adapter.portfolio.execute_buy.assert_not_called()
+    adapter.portfolio.execute_sell.assert_not_called()
+
+
+def test_recovery_closed_zero_fill_without_finish_as_sell_is_not_booked(monkeypatch):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    order = TradeOrder("SELL", SOL, 100.0, 10.0, usdt_amount=1000.0, signal="SELL")
+    raw = _raw(status="closed", filled=0.0, average=100.0)
+    result = _apply_raw_without_adapter(
+        raw, order, adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is not OrderStatus.EXECUTED
+    assert result.order_status is not OrderStatus.CANCELED
+    assert result.executed is False
+    assert result.needs_reconcile is True
+    adapter.portfolio.execute_buy.assert_not_called()
+    adapter.portfolio.execute_sell.assert_not_called()
+
+
+@pytest.mark.parametrize("finish_as", _PARTIAL_REMAINDER_FINISH_AS)
+def test_closed_partial_stp_poc_fok_is_booked_then_canceled(monkeypatch, finish_as):
+    adapter, ex = _real_adapter(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=4.0, average=100.0, finish_as=finish_as)
+    result = adapter._finalize_exchange_order(
+        ex, order, raw, side="buy", qty=10.0, timeframe="4h", usdt=1000.0
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.pending is False
+    assert result.executed is True
+    assert result.needs_reconcile is False
+    assert order.status is OrderStatus.CANCELED
+    assert result.filled_qty == pytest.approx(4.0)
+    adapter.portfolio.execute_buy.assert_called_once()
+    assert _fill_qty(adapter.portfolio.execute_buy) == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("finish_as", _PARTIAL_REMAINDER_FINISH_AS)
+def test_recovery_closed_partial_stp_poc_fok_is_booked_then_canceled(
+    monkeypatch, finish_as
+):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=4.0, average=100.0, finish_as=finish_as)
+    result = _apply_raw_without_adapter(
+        raw, order, adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is OrderStatus.CANCELED
+    assert result.pending is False
+    assert result.executed is True
+    assert result.needs_reconcile is False
+    assert result.filled_qty == pytest.approx(4.0)
+    adapter.portfolio.execute_buy.assert_called_once()
+    assert _fill_qty(adapter.portfolio.execute_buy) == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("finish_as", _PARTIAL_REMAINDER_FINISH_AS)
+def test_closed_full_fill_stp_poc_fok_stays_executed(monkeypatch, finish_as):
+    adapter, ex = _real_adapter(monkeypatch)
+    order = _buy()
+    raw = _raw(status="closed", filled=10.0, average=100.0, finish_as=finish_as)
+    result = adapter._finalize_exchange_order(
+        ex, order, raw, side="buy", qty=10.0, timeframe="4h", usdt=1000.0
+    )
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.executed is True
+    assert result.pending is False
+    assert order.status is OrderStatus.EXECUTED
+    adapter.portfolio.execute_buy.assert_called_once()
+    assert _fill_qty(adapter.portfolio.execute_buy) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("finish_as", _PARTIAL_REMAINDER_FINISH_AS)
+def test_recovery_closed_full_fill_stp_poc_fok_stays_executed(monkeypatch, finish_as):
+    adapter, cfg = _recovery_pair(monkeypatch)
+    raw = _raw(status="closed", filled=10.0, average=100.0, finish_as=finish_as)
+    result = _apply_raw_without_adapter(
+        raw, _buy(), adapter=adapter, config=cfg, timeframe="4h"
+    )
+    assert result.order_status is OrderStatus.EXECUTED
+    assert result.executed is True
+    assert result.pending is False
+    assert result.needs_reconcile is False
+    adapter.portfolio.execute_buy.assert_called_once()
+    assert _fill_qty(adapter.portfolio.execute_buy) == pytest.approx(10.0)
