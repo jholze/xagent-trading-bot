@@ -132,6 +132,73 @@ def trail_grace_hours_after_dca(strategy_params: dict | None) -> float:
     return max(0.0, g)
 
 
+def _parse_position_ts(iso_ts: str | None) -> datetime | None:
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts).replace("Z", ""))
+    except Exception:
+        return None
+    return ts
+
+
+def _align_ts(left: datetime, right: datetime) -> tuple[datetime, datetime]:
+    if left.tzinfo is not None and right.tzinfo is None:
+        right = right.replace(tzinfo=left.tzinfo)
+    elif left.tzinfo is None and right.tzinfo is not None:
+        left = left.replace(tzinfo=right.tzinfo)
+    return left, right
+
+
+def _latest_dca_fill_at(position: dict) -> datetime | None:
+    marks: list[datetime] = []
+    for key in ("last_dca_at", "last_dca_recovery_at"):
+        mark = _parse_position_ts(position.get(key))
+        if mark is not None:
+            marks.append(mark)
+    if not marks:
+        return None
+    latest = marks[0]
+    for mark in marks[1:]:
+        latest, mark = _align_ts(latest, mark)
+        if mark > latest:
+            latest = mark
+    return latest
+
+
+def recent_high_reached_after_dca(position: dict | None) -> bool:
+    """True when the current recent_high was printed after the last DCA fill.
+
+    trail_exits_paused_after_dca stays true for the whole grace window.
+    Trailing take-profit bypasses that pause only when this is true, so a
+    pre-DCA peak (BEAT) cannot arm a trail and a post-DCA peak can.
+
+    Proof, fail-closed when both are missing:
+    - peak_at is strictly after last_dca_at / last_dca_recovery_at, or
+    - recent_high is strictly above peak_epoch_high. The DCA epoch stamp
+      sets those equal; a later print (including an exit_ws tick that
+      raises recent_high without refreshing peak_at) is the only way the
+      high moves above the epoch.
+    """
+    pos = position or {}
+    dca_at = _latest_dca_fill_at(pos)
+    if dca_at is None:
+        return False
+
+    peak_at = _parse_position_ts(pos.get("peak_at"))
+    if peak_at is not None:
+        peak_at, dca_cmp = _align_ts(peak_at, dca_at)
+        if peak_at > dca_cmp:
+            return True
+
+    try:
+        high = float(pos.get("recent_high") or 0)
+        epoch = float(pos.get("peak_epoch_high") or 0)
+    except (TypeError, ValueError):
+        return False
+    return epoch > 0 and high > epoch
+
+
 def trail_exits_paused_after_dca(
     position: dict | None,
     strategy_params: dict | None = None,
@@ -143,6 +210,9 @@ def trail_exits_paused_after_dca(
     Product: after DCA, bag is in recovery — old peak-based trail must not
     immediately stop out the new average (BEAT-class failure). Mirrors intent of
     pause_partial_stop_during_dca for classic SL, extended to trail exits.
+
+    This helper stays true for the whole grace window. Trailing take-profit
+    alone may continue when recent_high_reached_after_dca is true.
     """
     pos = position or {}
     cfg = dca_config(strategy_params)
