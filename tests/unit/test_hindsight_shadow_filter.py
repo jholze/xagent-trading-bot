@@ -568,3 +568,96 @@ def test_screen_response_at_exact_limit_still_walks():
     assert judged["fail_open"] is False
     assert judged["injection"] is True
     assert judged["keep"] is False
+
+
+def test_default_timeout_is_180_and_reaches_upstream_connection(monkeypatch, tmp_path):
+    assert filt._UPSTREAM_TIMEOUT_S == 180
+
+    seen = []
+
+    class _Conn:
+        def __init__(self, host, port, timeout=None):
+            seen.append(timeout)
+
+        def request(self, method, path, body=None, headers=None):
+            return None
+
+        def getresponse(self):
+            class _Resp:
+                status = 204
+                reason = "No Content"
+
+                def read(self):
+                    return b""
+
+                def getheaders(self):
+                    return []
+
+            return _Resp()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(filt, "HTTPConnection", _Conn)
+
+    status, _reason, _headers, body = filt.forward_upstream(
+        "http://127.0.0.1:9",
+        "GET",
+        "/",
+        {},
+        b"",
+    )
+    assert status == 204
+    assert body == b""
+    assert seen[-1] == 180
+
+    filt.forward_upstream(
+        "http://127.0.0.1:9",
+        "GET",
+        "/",
+        {},
+        b"",
+        timeout=42.5,
+    )
+    assert seen[-1] == 42.5
+
+    log_path = tmp_path / "hindsight-shadow-filter.jsonl"
+    httpd, thread = filt.start_proxy("http://127.0.0.1:9", log_path, timeout=12.5)
+    try:
+        status, _headers, body = _roundtrip(httpd.server_address[1], "GET", "/health", b"")
+    finally:
+        filt.stop_proxy(httpd, thread)
+    assert status == 204
+    assert body == b""
+    assert seen[-1] == 12.5
+    assert httpd.server_address[0] == "127.0.0.1"
+    assert not log_path.exists()
+
+    captured = {}
+
+    def _capture_start(upstream, log_path, host="127.0.0.1", port=0, timeout=filt._UPSTREAM_TIMEOUT_S):
+        captured["timeout"] = timeout
+
+        class _Server:
+            server_address = ("127.0.0.1", 1)
+
+        class _Thread:
+            def join(self):
+                return None
+
+        return _Server(), _Thread()
+
+    monkeypatch.setattr(filt, "start_proxy", _capture_start)
+    monkeypatch.setattr(filt, "stop_proxy", lambda *_args, **_kwargs: None)
+    cli = [
+        "--listen",
+        "127.0.0.1:9",
+        "--upstream",
+        "http://127.0.0.1:9",
+        "--log",
+        str(tmp_path / "cli.jsonl"),
+    ]
+    filt.main(cli)
+    assert captured["timeout"] == 180
+    filt.main(cli + ["--timeout", "7.25"])
+    assert captured["timeout"] == 7.25

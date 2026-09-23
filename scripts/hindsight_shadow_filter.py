@@ -90,7 +90,7 @@ _HOP_BY_HOP = frozenset(
 )
 
 _APPEND_LOCK = threading.Lock()
-_UPSTREAM_TIMEOUT_S = 30
+_UPSTREAM_TIMEOUT_S = 180.0
 
 
 def _utc_now() -> str:
@@ -342,11 +342,12 @@ def forward_upstream(
     path: str,
     headers,
     body: bytes,
+    timeout: float = _UPSTREAM_TIMEOUT_S,
 ) -> tuple[int, str, list[tuple[str, str]], bytes]:
     """Forward one request. Raises on connection failure. Body is unread-modified."""
     scheme, hostname, port, host_header = _upstream_endpoint(upstream)
     connection_cls = HTTPSConnection if scheme == "https" else HTTPConnection
-    connection = connection_cls(hostname, port, timeout=_UPSTREAM_TIMEOUT_S)
+    connection = connection_cls(hostname, port, timeout=timeout)
     try:
         connection.request(
             method,
@@ -402,7 +403,12 @@ def _send(
         handler.wfile.write(body)
 
 
-def handle_proxied(handler: BaseHTTPRequestHandler, upstream: str, log_path: Path) -> None:
+def handle_proxied(
+    handler: BaseHTTPRequestHandler,
+    upstream: str,
+    log_path: Path,
+    timeout: float = _UPSTREAM_TIMEOUT_S,
+) -> None:
     """Proxy one request. Screening never changes the bytes sent to the client."""
     try:
         req_body = _read_request_body(handler)
@@ -434,6 +440,7 @@ def handle_proxied(handler: BaseHTTPRequestHandler, upstream: str, log_path: Pat
             handler.path,
             handler.headers,
             req_body,
+            timeout=timeout,
         )
     except (OSError, HTTPException, TimeoutError) as exc:
         logger.exception("hindsight shadow upstream connection failed")
@@ -460,12 +467,12 @@ class _ProxyServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def _handler_class(upstream: str, log_path: Path):
+def _handler_class(upstream: str, log_path: Path, timeout: float):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def _proxy(self):
-            handle_proxied(self, upstream, log_path)
+            handle_proxied(self, upstream, log_path, timeout)
 
         do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _proxy
 
@@ -480,12 +487,13 @@ def start_proxy(
     log_path: str | Path,
     host: str = "127.0.0.1",
     port: int = 0,
+    timeout: float = _UPSTREAM_TIMEOUT_S,
 ) -> tuple[_ProxyServer, threading.Thread]:
     """Bind ``127.0.0.1`` and serve until ``httpd.shutdown()``."""
     if host != "127.0.0.1":
         raise ValueError("listen address must be 127.0.0.1")
     _upstream_endpoint(upstream)
-    httpd = _ProxyServer((host, port), _handler_class(upstream, Path(log_path)))
+    httpd = _ProxyServer((host, port), _handler_class(upstream, Path(log_path), timeout))
     bound_host = httpd.server_address[0]
     if bound_host != "127.0.0.1":
         httpd.server_close()
@@ -522,11 +530,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--listen", required=True, help="127.0.0.1:port")
     parser.add_argument("--upstream", required=True, help="origin, e.g. http://127.0.0.1:8888")
     parser.add_argument("--log", default=str(DEFAULT_LOG_PATH), help="JSONL judgment path")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=_UPSTREAM_TIMEOUT_S,
+        help="upstream timeout in seconds",
+    )
     args = parser.parse_args(argv)
     host, port = parse_listen(args.listen)
     log_path = Path(args.log).expanduser()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    httpd, thread = start_proxy(args.upstream, log_path, host, port)
+    httpd, thread = start_proxy(args.upstream, log_path, host, port, timeout=args.timeout)
     logger.info(
         "listening on 127.0.0.1:%s -> %s log %s",
         httpd.server_address[1],
