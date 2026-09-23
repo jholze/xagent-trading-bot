@@ -8,7 +8,11 @@ from strategies.positions import (
     is_rsi_sell_tier_done,
     reset_rsi_sell_tiers_if_cooled,
 )
-from strategies.dca import effective_stop_loss_thresholds
+from strategies.dca import (
+    effective_stop_loss_thresholds,
+    recent_high_reached_after_dca,
+    trail_exits_paused_after_dca,
+)
 from strategies.take_profit import next_trigger_level
 
 
@@ -196,12 +200,25 @@ class TechnicalRSIStrategy(BaseStrategy):
                         sources.append("stop_loss")
 
             gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
+            # Fixed tiers stay 40/80/120. Inside the DCA grace window, a
+            # post-fill peak may lift the tier only while live gain is
+            # still above entry. RSI sells keep the live gain.
+            tp_gain_pct = gain_pct
+            if entry > 0 and gain_pct > 0:
+                try:
+                    in_dca_grace, _why = trail_exits_paused_after_dca(pos, params)
+                    if in_dca_grace and recent_high_reached_after_dca(pos):
+                        high = float(pos.get("recent_high") or 0)
+                        if high > 0:
+                            tp_gain_pct = max(gain_pct, (high / entry - 1.0) * 100.0)
+                except Exception:
+                    tp_gain_pct = gain_pct
 
             action, sources = _evaluate_take_profit(
                 action,
                 sources,
                 entry=entry,
-                gain_pct=gain_pct,
+                gain_pct=tp_gain_pct,
                 take_profit_tiers=take_profit_tiers,
                 take_profit_pct=take_profit_pct,
                 safety_tp_pct=safety_tp_pct,

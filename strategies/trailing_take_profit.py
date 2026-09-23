@@ -127,12 +127,18 @@ def evaluate_trailing_take_profit(
         pass
 
     try:
-        from strategies.dca import trail_exits_paused_after_dca
+        from strategies.dca import (
+            recent_high_reached_after_dca,
+            trail_exits_paused_after_dca,
+        )
 
         paused, _why = trail_exits_paused_after_dca(
             position, strategy_params, now=now
         )
-        if paused:
+        # Grace still pauses a trail off the pre-DCA peak. A high printed
+        # after the fill may arm take-profit; the drop check below still
+        # refuses the exact high.
+        if paused and not recent_high_reached_after_dca(position):
             return None
     except Exception:
         pass
