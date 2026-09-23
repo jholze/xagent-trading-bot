@@ -698,7 +698,11 @@ class RiskManager:
                     vcfg = venue_quality_config(
                         self.config.raw if hasattr(self.config, "raw") else None
                     )
-                    if vcfg.get("enabled", True) and source_applies_venue(source, vcfg):
+                    if (
+                        vcfg.get("enabled", True)
+                        and not self._is_dca_buy(source, order)
+                        and source_applies_venue(source, vcfg)
+                    ):
                         planned = float(order.usdt_amount or 0) or float(
                             self.config.max_usdt_per_trade or 0
                         )
@@ -726,6 +730,55 @@ class RiskManager:
                         code="venue_liquidity_block",
                         size_multiplier=0.0,
                     )
+                # Long mcap floor after venue, before size. New long BUY only.
+                # Open lots and DCA never reach this block. Sells returned above.
+                if (
+                    order.type == "BUY"
+                    and not has_position
+                    and not self._is_dca_buy(source, order)
+                    and (source or getattr(order, "source", None) or "") != "manual"
+                ):
+                    from strategies.short_policy import (
+                        _tier_key,
+                        resolve_long_market_cap_min_usd,
+                    )
+
+                    tier = _tier_key(
+                        pos.get("strategy_tier") if isinstance(pos, dict) else None
+                    )
+                    min_mcap = float(
+                        resolve_long_market_cap_min_usd(
+                            tier,
+                            self.config.raw if hasattr(self.config, "raw") else None,
+                        )
+                        or 0
+                    )
+                    if min_mcap > 0:
+                        mcap = None
+                        try:
+                            from data.cmc_market_cap import resolve_market_cap_usd
+
+                            mcap = resolve_market_cap_usd(order.symbol)
+                        except Exception:
+                            mcap = None
+                        deny_mcap = True
+                        if mcap is not None:
+                            try:
+                                mcap_num = float(mcap)
+                            except (TypeError, ValueError):
+                                mcap_num = None
+                            deny_mcap = (
+                                mcap_num is None
+                                or mcap_num <= 0
+                                or mcap_num < min_mcap
+                            )
+                        if deny_mcap:
+                            return RiskDecision(
+                                approved=False,
+                                message=f"long mcap {mcap} < min {min_mcap:.0f}",
+                                code="long_mcap",
+                                size_multiplier=0.0,
+                            )
                 # Optional macro calendar hard block (default off — prefer size mult)
                 from intelligence.macro.snapshot import get_risk_multipliers
 

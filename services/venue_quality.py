@@ -21,6 +21,7 @@ _DEFAULTS: dict[str, Any] = {
     "min_top_book_usdt_per_side": 200.0,
     "min_volume_to_order_multiple": 20.0,
     "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
+    "exempt_sources": ["manual"],
     "cache_ttl_sec": 90.0,
     "on_fetch_error": "block_sensor",  # block_sensor | allow
 }
@@ -207,17 +208,21 @@ def is_thin_venue_stamp(stamp: dict | None, cfg: dict | None = None) -> bool:
 
 
 def source_applies_venue(source: str, cfg: dict | None = None) -> bool:
-    cfg = cfg or venue_quality_config()
-    apply = cfg.get("apply_to") or _DEFAULTS["apply_to"]
-    src = (source or "").lower()
-    if src in {str(a).lower() for a in apply}:
-        return True
-    # aliases
-    if src in ("entry_sensor_15m", "vol_spike_15m", "entry_sensor") and any(
-        "sensor" in str(a).lower() or "vol_spike" in str(a).lower() for a in apply
-    ):
-        return True
-    return False
+    """True unless source is an exact ``exempt_sources`` entry.
+
+    ``apply_to`` remains in config but is not an allowlist: an unknown source
+    is evaluated. Only the exact string ``manual`` is exempt by default.
+    """
+    if cfg is None:
+        cfg = venue_quality_config()
+    exempt = cfg.get("exempt_sources")
+    if exempt is None:
+        exempt = _DEFAULTS["exempt_sources"]
+    if isinstance(exempt, str):
+        exempt = [exempt]
+    if not isinstance(exempt, (list, tuple, set)):
+        exempt = _DEFAULTS["exempt_sources"]
+    return str(source or "") not in {str(item) for item in exempt}
 
 
 def _pair(symbol: str) -> str:
@@ -326,7 +331,7 @@ def check_venue_for_buy(
     if not cfg.get("enabled", True):
         return VenueQualityResult(ok=True, reasons=["venue_quality_disabled"])
     if not source_applies_venue(source, cfg):
-        return VenueQualityResult(ok=True, reasons=["source_not_in_apply_to"])
+        return VenueQualityResult(ok=True, reasons=["source_exempt"])
 
     if metrics is None:
         metrics = get_venue_metrics(symbol, config_raw=config_raw)

@@ -80,6 +80,41 @@ def _tier_key(tier: str | None) -> str:
     return "volatile"
 
 
+# Long floors live here, not in core/config.py. Shorts stay 50M / 100M.
+LONG_MCAP_MIN_USD = {
+    "volatile": 5_000_000,
+    "stable": 20_000_000,
+}
+
+
+def resolve_long_market_cap_min_usd(
+    tier: str | None = None,
+    config_raw: dict | None = None,
+) -> float:
+    """New-long mcap floor for ``_tier_key(tier)``.
+
+    Uses ``risk.longs.{volatile,stable}.market_cap_min_usd`` when present,
+    otherwise 5_000_000 / 20_000_000.
+    """
+    key = _tier_key(tier)
+    default = float(LONG_MCAP_MIN_USD.get(key, LONG_MCAP_MIN_USD["volatile"]))
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    risk = raw.get("risk") if isinstance(raw.get("risk"), dict) else None
+    if risk is None and isinstance(raw.get("longs"), dict):
+        risk = raw
+    longs = risk.get("longs") if isinstance(risk, dict) else None
+    block = longs.get(key) if isinstance(longs, dict) else None
+    if not isinstance(block, dict) or "market_cap_min_usd" not in block:
+        return default
+    value = block.get("market_cap_min_usd")
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def resolve_short_params(
     *,
     symbol: str | None = None,
