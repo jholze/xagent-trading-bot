@@ -84,6 +84,7 @@ _RISK_CODES = {
     "shorts_disabled": "Shorts sind in der Config ausgeschaltet.",
     "shorts_slots": "Short-Slots voll — kein weiterer Short.",
     "short_mcap": "Marktkapitalisierung zu klein für einen Short.",
+    "long_mcap": "Marktkapitalisierung zu klein für einen Long.",
     "bad_price": "Kein gültiger Preis — Trade abgebrochen.",
     "short_margin": "Nicht genug Margin für den Short.",
     "short_margin_pct": "Short würde den Margin-Anteil am Portfolio überschreiten.",

@@ -1288,6 +1288,32 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def offline_mcap_and_venue_metrics():
+    """Offline CMC cap and Gate book for the #563 gates (#324 network block).
+
+    Production stays fail-closed. This only runs under pytest. A test that
+    patches the same target with ``unittest.mock.patch`` (decorator or
+    ``with``) or ``monkeypatch.setattr`` after this fixture starts replaces
+    the stub for that patch's lifetime — including ``return_value=None``.
+    """
+    from unittest.mock import patch
+
+    from tests.support.offline import (
+        OFFLINE_MARKET_CAP_USD,
+        healthy_offline_venue_metrics,
+    )
+
+    with patch(
+        "data.cmc_market_cap.resolve_market_cap_usd",
+        return_value=OFFLINE_MARKET_CAP_USD,
+    ), patch(
+        "services.venue_quality.get_venue_metrics",
+        side_effect=healthy_offline_venue_metrics,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_bot_logs(tmp_path, monkeypatch):
     """Keep test runs from appending to logs/aria_log.txt while the bot is live."""
     log_dir = tmp_path / "logs"

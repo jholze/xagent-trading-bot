@@ -107,8 +107,8 @@ class TestVenueQuality(unittest.TestCase):
             config_raw={"risk": {"venue_quality": VENUE_CFG}},
             metrics=BDX_THIN,
         )
-        self.assertTrue(r.ok)
-        self.assertIn("source_not_in_apply_to", r.reasons)
+        self.assertFalse(r.ok)
+        self.assertNotIn("source_not_in_apply_to", r.reasons)
 
     def test_stamp_missing_on_missing_metrics(self):
         stamp = stamp_venue_for_fill(
