@@ -70,10 +70,16 @@ class TestHomeKeyboard(unittest.TestCase):
         for key in NOT_ON_HOME:
             self.assertNotIn(key, keys)
             self.assertNotIn(f"/{key}", cells)
-        for key in ("positions", "buy", "sell", "pause", "help", "menu"):
-            self.assertIn(key, keys)
+        self.assertEqual(
+            tuple(keys),
+            ("positions", "orders", "sell", "buy", "pause", "menu"),
+        )
 
     def test_operator_home_is_the_same_slim_row(self):
+        self.assertEqual(
+            HOME_KEYS,
+            ["positions", "orders", "sell", "buy", "pause", "menu"],
+        )
         with _role("operator"):
             keys = home_keys_for(chat_id=111)
         self.assertLessEqual(len(keys), 7)
@@ -88,7 +94,14 @@ class TestHomeKeyboard(unittest.TestCase):
         self.assertIn(home_label("buy", "de"), de)
         self.assertIn(home_label("buy", "en"), en)
         self.assertNotEqual(home_label("buy", "de"), home_label("buy", "en"))
-        self.assertIn(help_label("de"), de)
+        self.assertNotIn(help_label("de"), de)
+        self.assertNotIn(help_label("en"), en)
+        self.assertEqual(home_label("orders", "de"), "📑 Orders")
+        self.assertEqual(home_label("orders", "en"), "📑 Orders")
+        self.assertIn(home_label("orders", "de"), de)
+        self.assertIn(home_label("orders", "en"), en)
+        self.assertNotEqual(home_label("orders", "de"), section_title("orders", "de"))
+        self.assertNotEqual(home_label("orders", "en"), section_title("orders", "en"))
         self.assertIn(more_label("de"), de)
         self.assertIn(more_label("en"), en)
         self.assertTrue(is_more_label(more_label("de")))
@@ -150,10 +163,24 @@ class TestMoreGroups(unittest.TestCase):
             (MENU_SECTIONS_OPERATOR, MORE_GROUPS_OPERATOR, "operator"),
         ):
             catalog_keys = [k for _, keys in catalog for k in keys]
-            shown = list(home_keys_for(role=role)) + [k for _, keys in more_groups_for(role=role) for k in keys]
-            self.assertEqual(len(shown), len(set(shown)), f"{role}: key shown twice")
-            self.assertEqual(set(shown), set(catalog_keys), f"{role}: home ∪ Mehr != catalog")
+            shown = list(home_keys_for(role=role)) + [
+                k for _, keys in more_groups_for(role=role) for k in keys
+            ]
+            # #560: orders stays on the home row and inside the Orders group.
+            # help left HOME_KEYS; the Mehr footer is its reachability.
+            duplicates = sorted(k for k in set(shown) if shown.count(k) != 1)
+            self.assertEqual(duplicates, ["orders"], f"{role}: only orders may appear twice")
+            self.assertEqual(shown.count("orders"), 2, f"{role}: orders shown twice")
+            self.assertNotIn("help", shown)
+            self.assertEqual(
+                set(shown) | {"help"},
+                set(catalog_keys),
+                f"{role}: home ∪ Mehr | {{help}} != catalog",
+            )
             self.assertIs(more_groups_for(role=role), groups)
+            with _role(role):
+                footer = _flat(_more_reply_rows(chat_id=999))
+            self.assertIn(help_label("de"), footer)
 
     def test_satellite_groups_have_no_operator_only_keys(self):
         sat_keys = {k for _, keys in MORE_GROUPS_SATELLITE for k in keys}

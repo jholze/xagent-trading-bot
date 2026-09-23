@@ -105,7 +105,7 @@ class TestReloadDryrunConfirm448(unittest.TestCase):
     def test_home_keys_unchanged(self):
         self.assertEqual(
             HOME_KEYS,
-            ["positions", "buy", "sell", "pause", "help", "menu"],
+            ["positions", "orders", "sell", "buy", "pause", "menu"],
         )
         self.assertNotIn("reload", HOME_KEYS)
         self.assertNotIn("dryrun", HOME_KEYS)
