@@ -92,8 +92,9 @@ _SATELLITE_COMMAND_KEYS = frozenset(k for _, keys in MENU_SECTIONS_SATELLITE for
 # ☰ list); HOME_KEYS + MORE_GROUPS_* only decide *where* a key is shown.
 #
 # Home = first reply keyboard (and the satellite ☰ list). "menu" is the ➕ Mehr
-# key, "help" the ❓ Hilfe key. Never put panic/short/cover/hermes/cmc/reload here.
-HOME_KEYS: list[str] = ["positions", "buy", "sell", "pause", "help", "menu"]
+# key. #560: "orders" opens the Orders group (not /orders). ❓ Hilfe left this
+# row and stays on the Mehr footer. Never put panic/short/cover/hermes/cmc/reload here.
+HOME_KEYS: list[str] = ["positions", "orders", "sell", "buy", "pause", "menu"]
 
 # Sentinel active-section id while the ➕ Mehr group list is open.
 MORE_SECTION_ID = "more"
@@ -287,7 +288,7 @@ def _main_reply_rows(
     *,
     chat_id: str | int | None = None,
 ) -> list[list[str]]:
-    """Home keyboard (#445): Positionen · Kaufen · Verkaufen / Pause · Hilfe · Mehr."""
+    """Home keyboard (#560): Positionen · Orders · Verkaufen / Kaufen · Pause · Mehr."""
     rows: list[list[str]] = []
     row: list[str] = []
     for key in home_keys_for(chat_id=chat_id):
@@ -535,6 +536,11 @@ def handle_text(text: str, chat_id=None) -> bool:
     if home_key:
         if home_key not in home_keys_for(chat_id=chat_id):
             return False
+        # #560: the home Orders label opens the group keyboard (Mehr → Orders).
+        # Typed /orders still reaches the orders command; this tap must not.
+        if home_key == "orders":
+            send_section_keyboard("orders", chat_id=chat_id)
+            return True
         _dispatch_from_keyboard(command_dispatch_text(home_key), chat_id=chat_id)
         return True
     btn_key = command_button_to_key(stripped)

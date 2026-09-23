@@ -8,14 +8,15 @@
     "more_label": "➕ Mehr",
     "home_labels": {
       "positions": "📊 Positionen",
+      "orders": "📑 Orders",
       "buy": "🛒 Kaufen",
       "sell": "💸 Verkaufen",
       "pause": "⏸ Pause"
     },
     "short_input_invalid": "❌ Ungültige Eingabe für <code>/{cmd}</code>. Tippe <i>❓ Hilfe</i> in diesem Bereich.",
-    "home_intro": "<b>🏠 Start</b>\n\nPositionen, Kaufen, Verkaufen, Pause — alles Weitere unter <b>➕ Mehr</b>.\n<i>❓ Hilfe: Was willst du tun?</i>",
+    "home_intro": "<b>🏠 Start</b>\n\nPositionen, Orders, Verkaufen, Kaufen, Pause — ❓ Hilfe unter <b>➕ Mehr</b>.",
     "more_intro": "<b>➕ Mehr</b>\n\nWähle eine Gruppe — darunter erscheinen ihre Befehle.",
-    "home_inline": "<b>➕ Mehr</b>\n\nWähle eine <b>Gruppe</b> — ihre Befehle erscheinen als Buttons.\n<i>Unten: Start-Tastatur (Positionen, Kaufen, Verkaufen, Pause) · Menü-Button (☰): Slash-Befehle.</i>",
+    "home_inline": "<b>➕ Mehr</b>\n\nWähle eine <b>Gruppe</b> — ihre Befehle erscheinen als Buttons.\n<i>Unten: Start-Tastatur (Positionen, Orders, Verkaufen, Kaufen, Pause) · ❓ Hilfe unter Mehr · Menü-Button (☰): Slash-Befehle.</i>",
     "section_pick": "Tippe einen Befehl:",
     "help": {
       "title": "<b>🛠️ Telegram-Befehle</b>",
@@ -493,14 +494,15 @@
     "more_label": "➕ More",
     "home_labels": {
       "positions": "📊 Positions",
+      "orders": "📑 Orders",
       "buy": "🛒 Buy",
       "sell": "💸 Sell",
       "pause": "⏸ Pause"
     },
     "short_input_invalid": "❌ Invalid input for <code>/{cmd}</code>. Tap <i>❓ Help</i> in this section.",
-    "home_intro": "<b>🏠 Home</b>\n\nPositions, buy, sell, pause — everything else under <b>➕ More</b>.\n<i>❓ Help: what do you want to do?</i>",
+    "home_intro": "<b>🏠 Home</b>\n\nPositions, Orders, Sell, Buy, Pause — ❓ Help is under <b>➕ More</b>.",
     "more_intro": "<b>➕ More</b>\n\nPick a group — its commands appear below.",
-    "home_inline": "<b>➕ More</b>\n\nPick a <b>group</b> — its commands appear as buttons.\n<i>Keyboard below: home (positions, buy, sell, pause) · Menu button (☰): slash commands.</i>",
+    "home_inline": "<b>➕ More</b>\n\nPick a <b>group</b> — its commands appear as buttons.\n<i>Keyboard below: home (Positions, Orders, Sell, Buy, Pause) · ❓ Help is under More · Menu button (☰): slash commands.</i>",
     "section_pick": "Tap a command:",
     "help": {
       "title": "<b>🛠️ Telegram commands</b>",
