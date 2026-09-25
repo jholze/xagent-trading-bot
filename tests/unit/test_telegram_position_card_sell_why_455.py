@@ -79,7 +79,9 @@ class TestPositionsCardButtons(unittest.TestCase):
         prices = {"RAVE/USDT": 1.0, "ARIA/USDT": 1.0}
         rows = position_card_action_rows(longs, prices)
         callbacks = [btn["callback_data"] for row in rows for btn in row]
-        self.assertEqual(rows, [])
+        labels = [btn["text"] for row in rows for btn in row]
+        self.assertEqual(set(callbacks), {"poslot:RAVE:1h", "poslot:ARIA:4h"})
+        self.assertEqual(set(labels), {"RAVE 1h", "ARIA 4h"})
         self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
         self.assertFalse(any("Warum?" in btn["text"] for row in rows for btn in row))
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
@@ -105,7 +107,7 @@ class TestPositionsCardButtons(unittest.TestCase):
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
         self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
         self.assertEqual(buttons[-1][0]["callback_data"], "pos_more:full")
-        self.assertEqual(buttons[0][0]["callback_data"], "pos_more:full")
+        self.assertEqual(buttons[0][0]["callback_data"], "poslot:RAVE:1h")
 
 
 class TestLotSellWhyCallbacks(unittest.TestCase):

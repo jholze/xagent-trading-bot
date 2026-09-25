@@ -151,6 +151,13 @@ def dispatch_callback(callback_query: dict) -> bool:
                 if callback_id:
                     answer_callback_query(callback_id, _deny_text())
                 return True
+        from notifications.telegram_commands.position_display import (
+            LOT_BUYS_CALLBACK_PREFIX,
+            LOT_SHEET_CALLBACK_PREFIX,
+        )
+
+        if data.startswith(LOT_SHEET_CALLBACK_PREFIX) or data.startswith(LOT_BUYS_CALLBACK_PREFIX):
+            return portfolio_commands.handle_callback(callback_query)
         from notifications.telegram_commands import command_context as command_context
 
         if command_context.handle_callback(callback_query):

@@ -1,3 +1,4 @@
+import logging
 import re
 
 from core.config import get_bot_config
@@ -94,6 +95,8 @@ def resolve_position_by_symbol(active: list, query: str, prices: dict | None = N
 
 LOT_SELL_CALLBACK_PREFIX = "lotsell:"
 LOT_WHY_CALLBACK_PREFIX = "poswhy:"
+LOT_SHEET_CALLBACK_PREFIX = "poslot:"
+LOT_BUYS_CALLBACK_PREFIX = "posbuys:"
 _TELEGRAM_CALLBACK_MAX = 64
 
 
@@ -145,8 +148,125 @@ def resolve_position_by_symbol_tf(active: list, query: str, timeframe: str | Non
 
 
 def position_card_action_rows(active: list, prices: dict) -> list:
-    """Compact /positions has no per-coin rows (#574). Stop/fill still sends poswhy:."""
-    return []
+    """One poslot:TICKER:TF button per open lot. Compact list has no poswhy:/lotsell:."""
+    rows = []
+    for p in sort_positions_by_value(active or [], prices or {}):
+        ticker = lot_ticker(position_symbol(p))
+        tf = lot_timeframe(p.get("timeframe"))
+        rows.append([{
+            "text": f"{ticker} {tf}",
+            "callback_data": encode_lot_callback(
+                LOT_SHEET_CALLBACK_PREFIX, ticker, tf,
+            ),
+        }])
+    return rows
+
+
+def live_price_for_one_symbol(sym: str) -> float:
+    """Live-fetch at most this one symbol (lot sheet). No book-wide batch."""
+    from price_fetcher import get_prices_batch
+
+    batch = get_prices_batch([sym])
+    try:
+        px = float((batch or {}).get(sym, 0) or 0)
+    except (TypeError, ValueError):
+        px = 0.0
+    return px if px > 0 else 0.0
+
+
+def one_line_why_for_symbol(symbol: str) -> str:
+    """Same rationale /why loads (explain_rationale + latest decision). Not the full /why."""
+    from notifications.telegram_i18n import t
+    from notifications.user_explain import explain_rationale
+
+    try:
+        from notifications.telegram_commands.decisions_commands import (
+            _find_latest_decision,
+            _load_decisions,
+        )
+
+        match = _find_latest_decision(symbol, _load_decisions(100))
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "one_line_why_for_symbol load failed for %s: %s", symbol, e
+        )
+        return t("why_load_failed", error=e)
+    if not match:
+        return t("why_no_decision")
+    return explain_rationale(match.get("rationale", ""))
+
+
+def format_lot_sheet_message(p: dict, price: float, why_text: str) -> str:
+    from notifications.telegram_commands.position_ledger import _fmt_ts_short
+    from notifications.telegram_i18n import t
+    from price_fetcher import format_token_amount, format_usdt_price
+
+    ticker = lot_ticker(position_symbol(p))
+    tf = lot_timeframe(p.get("timeframe"))
+    m = _position_metrics(p, float(price or 0))
+    first = p.get("first_buy_at") or p.get("entry_at") or ""
+    entry_time = _fmt_ts_short(str(first)) if first else "—"
+    if not entry_time:
+        entry_time = "—"
+    px = format_usdt_price(m["price"]) if m["price"] > 0 else "—"
+    return "\n".join([
+        t("lot_sheet_title", ticker=ticker, tf=tf),
+        t("lot_sheet_price", price=px),
+        t(
+            "lot_sheet_pnl",
+            icon=_pnl_emoji(m["unreal"]),
+            pnl=f"${m['unreal']:+.1f}",
+            pct=_fmt_pct(m["unreal_pct"]),
+        ),
+        t("lot_sheet_entry_time", time=entry_time),
+        t("lot_sheet_entry", price=format_usdt_price(m["entry"])),
+        t("lot_sheet_size", size=format_token_amount(m["amount"])),
+        t("lot_sheet_why", text=why_text),
+    ])
+
+
+def format_lot_buys_message(p: dict, price: float) -> str:
+    from notifications.telegram_commands.position_ledger import build_position_trade_tree
+    from notifications.telegram_i18n import t
+
+    ticker = lot_ticker(position_symbol(p))
+    tf = lot_timeframe(p.get("timeframe"))
+    header = t("lot_sheet_buys_title", ticker=ticker, tf=tf)
+    try:
+        lines = build_position_trade_tree(p, mark_price=float(price or 0))
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "format_lot_buys_message load failed for %s %s: %s", ticker, tf, e
+        )
+        return f"{header}\n{t('lot_sheet_buys_load_failed', error=e)}"
+    if not lines:
+        return f"{header}\n{t('lot_sheet_buys_empty')}"
+    return header + "\n" + "\n".join(lines)
+
+
+def lot_sheet_keyboard(p: dict) -> list:
+    from notifications.coin_links import gate_trade_url
+    from notifications.telegram_i18n import t
+
+    ticker = lot_ticker(position_symbol(p))
+    tf = lot_timeframe(p.get("timeframe"))
+    row = [
+        {"text": t("positions_btn_price"), "url": gate_trade_url(ticker)},
+        {
+            "text": t("positions_btn_buys"),
+            "callback_data": encode_lot_callback(
+                LOT_BUYS_CALLBACK_PREFIX, ticker, tf,
+            ),
+        },
+    ]
+    if long_lots_for_sell([p]):
+        row.append({
+            "text": t("positions_btn_sell"),
+            "callback_data": encode_lot_callback(
+                LOT_SELL_CALLBACK_PREFIX, ticker, tf,
+            ),
+        })
+    return [row]
 
 
 def _entry_fallback_price(p: dict) -> float:
@@ -1727,6 +1847,7 @@ def send_positions_snapshot(
     ok = True
     keyboard = []
     if level == "compact":
+        keyboard.extend(position_card_action_rows(active, prices))
         keyboard.append(
             [{"text": _t("positions_more_details"), "callback_data": "pos_more:full"}]
         )
