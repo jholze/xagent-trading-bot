@@ -145,21 +145,8 @@ def resolve_position_by_symbol_tf(active: list, query: str, timeframe: str | Non
 
 
 def position_card_action_rows(active: list, prices: dict) -> list:
-    """One Warum? row per open lot. Home Verkaufen is the sell entry (#542)."""
-    from notifications.telegram_i18n import t
-
-    rows = []
-    why_label = t("positions_btn_why")
-    for p in sort_positions_by_value(active or [], prices or {}):
-        ticker = lot_ticker(position_symbol(p))
-        tf = lot_timeframe(p.get("timeframe"))
-        rows.append([{
-            "text": f"{ticker} · {why_label}",
-            "callback_data": encode_lot_callback(
-                LOT_WHY_CALLBACK_PREFIX, ticker, tf,
-            ),
-        }])
-    return rows
+    """Compact /positions has no per-coin rows (#574). Stop/fill still sends poswhy:."""
+    return []
 
 
 def _entry_fallback_price(p: dict) -> float:
@@ -1740,7 +1727,6 @@ def send_positions_snapshot(
     ok = True
     keyboard = []
     if level == "compact":
-        keyboard.extend(position_card_action_rows(active, prices))
         keyboard.append(
             [{"text": _t("positions_more_details"), "callback_data": "pos_more:full"}]
         )

@@ -79,16 +79,10 @@ class TestPositionsCardButtons(unittest.TestCase):
         prices = {"RAVE/USDT": 1.0, "ARIA/USDT": 1.0}
         rows = position_card_action_rows(longs, prices)
         callbacks = [btn["callback_data"] for row in rows for btn in row]
-        self.assertEqual(
-            callbacks,
-            [
-                "poswhy:ARIA:4h",
-                "poswhy:RAVE:1h",
-            ],
-        )
-        self.assertTrue(any("Warum?" in btn["text"] for row in rows for btn in row))
+        self.assertEqual(rows, [])
+        self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
+        self.assertFalse(any("Warum?" in btn["text"] for row in rows for btn in row))
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
-        self.assertTrue(all(":" in cb and not cb.endswith(":1") for cb in callbacks))
 
     def test_compact_snapshot_keeps_mehr_details_after_lot_rows(self):
         active = [_long("RAVE/USDT", "1h", 20.0)]
@@ -109,8 +103,9 @@ class TestPositionsCardButtons(unittest.TestCase):
         buttons = mock_btn.call_args[0][1]
         callbacks = [btn["callback_data"] for row in buttons for btn in row]
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
-        self.assertEqual(buttons[0][0]["callback_data"], "poswhy:RAVE:1h")
+        self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
         self.assertEqual(buttons[-1][0]["callback_data"], "pos_more:full")
+        self.assertEqual(buttons[0][0]["callback_data"], "pos_more:full")
 
 
 class TestLotSellWhyCallbacks(unittest.TestCase):
