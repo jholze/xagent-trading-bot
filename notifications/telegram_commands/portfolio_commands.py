@@ -4,9 +4,21 @@ from core.interactive_priority import interactive_priority
 from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id, set_chat_id
 from notifications.telegram_commands.menu_i18n import current_language, set_user_language
-from notifications.telegram_commands.position_display import send_positions_snapshot
+from notifications.telegram_commands.position_display import (
+    LOT_BUYS_CALLBACK_PREFIX,
+    LOT_SHEET_CALLBACK_PREFIX,
+    format_lot_buys_message,
+    format_lot_sheet_message,
+    live_price_for_one_symbol,
+    lot_sheet_keyboard,
+    one_line_why_for_symbol,
+    parse_lot_callback,
+    position_symbol,
+    resolve_position_by_symbol_tf,
+    send_positions_snapshot,
+)
 from notifications.telegram_i18n import t
-from telegram_notifier import answer_callback_query, send_telegram_message
+from telegram_notifier import answer_callback_query, send_telegram_buttons, send_telegram_message
 
 _cmd_threads: list[threading.Thread] = []
 _COMPACT_COMMANDS = {"/positions", "/portfolio", "/status", "/balance"}
@@ -115,8 +127,12 @@ def handle(text: str) -> bool:
 
 
 def handle_callback(callback_query: dict) -> bool:
-    """Compact /positions → full body (#447). Slash aliases stay for the operator."""
+    """Compact /positions lot sheet (#561) and Mehr Details (#447)."""
     data = str((callback_query or {}).get("data") or "").strip()
+    if data.startswith(LOT_SHEET_CALLBACK_PREFIX):
+        return _handle_poslot_callback(callback_query)
+    if data.startswith(LOT_BUYS_CALLBACK_PREFIX):
+        return _handle_posbuys_callback(callback_query)
     if not data.startswith(POS_MORE_PREFIX):
         return False
     callback_id = callback_query.get("id")
@@ -130,6 +146,75 @@ def handle_callback(callback_query: dict) -> bool:
     if chat_id is not None:
         set_chat_id(chat_id)
     return handle("/positions full")
+
+
+def _lot_callback_chat_id(callback_query: dict, log_label: str):
+    """Ack first, then refuse when chat.id is absent. Never clear_context()."""
+    from logger import log
+
+    answer_callback_query(callback_query.get("id"))
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if not chat_id:
+        log(f"{log_label} callback missing chat id", "WARNING")
+        return None
+    set_chat_id(chat_id)
+    return chat_id
+
+
+def _resolve_open_lot(ticker: str, timeframe: str):
+    from strategies.positions import list_active_positions
+
+    return resolve_position_by_symbol_tf(list_active_positions(), ticker, timeframe)
+
+
+def _handle_poslot_callback(callback_query: dict) -> bool:
+    chat_id = _lot_callback_chat_id(callback_query, "poslot")
+    if not chat_id:
+        return True
+    data = str(callback_query.get("data") or "")
+    parsed = parse_lot_callback(data, LOT_SHEET_CALLBACK_PREFIX)
+    if parsed is None:
+        send_telegram_message(t("no_open_position", arg=""), chat_id=chat_id)
+        return True
+    ticker, tf = parsed
+    p = _resolve_open_lot(ticker, tf)
+    if not p:
+        send_telegram_message(t("no_open_position", arg=ticker), chat_id=chat_id)
+        return True
+    sym = position_symbol(p)
+    price = live_price_for_one_symbol(sym)
+    if price <= 0:
+        price = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
+    why = one_line_why_for_symbol(sym)
+    send_telegram_buttons(
+        format_lot_sheet_message(p, price, why),
+        lot_sheet_keyboard(p),
+        chat_id=chat_id,
+    )
+    return True
+
+
+def _handle_posbuys_callback(callback_query: dict) -> bool:
+    chat_id = _lot_callback_chat_id(callback_query, "posbuys")
+    if not chat_id:
+        return True
+    data = str(callback_query.get("data") or "")
+    parsed = parse_lot_callback(data, LOT_BUYS_CALLBACK_PREFIX)
+    if parsed is None:
+        send_telegram_message(t("no_open_position", arg=""), chat_id=chat_id)
+        return True
+    ticker, tf = parsed
+    p = _resolve_open_lot(ticker, tf)
+    if not p:
+        send_telegram_message(t("no_open_position", arg=ticker), chat_id=chat_id)
+        return True
+    sym = position_symbol(p)
+    price = live_price_for_one_symbol(sym)
+    if price <= 0:
+        price = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
+    send_telegram_message(format_lot_buys_message(p, price), chat_id=chat_id)
+    return True
 
 
 def reset_portfolio_commands_for_tests() -> None:
