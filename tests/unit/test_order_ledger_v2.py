@@ -16,8 +16,14 @@ from core.models import TradeOrder
 from core.tenant_context import tenant_context
 from services.order_service import OrderService, blob_load_count, reset_blob_load_count
 from storage.order_ledger_v2 import (
+    IDEMPOTENCY_KEY_INDEX_NAME,
+    IDEMPOTENCY_KEY_PARTIAL_FILTER,
     MemoryOrderLedgerV2,
+    MongoOrderLedgerV2,
+    ORDERS_V2_COLLECTION,
     display_day_key_now,
+    enrich_order_record,
+    omit_empty_idempotency_key,
     reset_order_ledger_v2_for_tests,
     stats_from_filled_orders,
 )
@@ -361,6 +367,267 @@ class TestOrderServiceV2DualWrite(unittest.TestCase):
             self.assertEqual(stats["buys"], from_list["buys"])
             self.assertEqual(stats["sells"], from_list["sells"])
             self.assertAlmostEqual(stats["realized_pnl"], from_list["realized_pnl"])
+
+
+# Fixture for the 2026-09-25 operator VIRTUAL sell (#577). Live staging replay
+# of today's row runs after review/deploy, not in this session.
+_OPERATOR_VIRTUAL_QTY = 8783.52
+_OPERATOR_VIRTUAL_PRICE = 0.7886
+_OPERATOR_VIRTUAL_PNL = 341.8
+_OPERATOR_VIRTUAL_USDT = 6913.0
+
+
+def _operator_virtual_sell_577(*, oid: str = "manual-virtual-577", seq: int = 577) -> dict:
+    day = display_day_key_now()
+    ts = f"{day}T14:59:47"
+    return {
+        "id": oid,
+        "display_seq": seq,
+        "status": "filled",
+        "side": "sell",
+        "symbol": "VIRTUAL/USDT",
+        "source": "manual",
+        "idempotency_key": None,
+        "qty": _OPERATOR_VIRTUAL_QTY,
+        "tenant_id": "henry",
+        "ledger_scope": "demo",
+        "day_key": day,
+        "execution": {
+            "price": _OPERATOR_VIRTUAL_PRICE,
+            "amount": _OPERATOR_VIRTUAL_QTY,
+            "usdt": _OPERATOR_VIRTUAL_USDT,
+        },
+        "pnl": _OPERATOR_VIRTUAL_PNL,
+        "timestamps": {"created": ts, "filled": ts, "updated": ts},
+    }
+
+
+class TestOmitEmptyIdempotencyKey(unittest.TestCase):
+    def test_omit_drops_null_empty_and_keeps_real_key(self):
+        self.assertNotIn("idempotency_key", omit_empty_idempotency_key(
+            {"id": "a", "idempotency_key": None}
+        ))
+        self.assertNotIn("idempotency_key", omit_empty_idempotency_key(
+            {"id": "a", "idempotency_key": ""}
+        ))
+        self.assertNotIn("idempotency_key", omit_empty_idempotency_key({"id": "a"}))
+        kept = omit_empty_idempotency_key({"id": "a", "idempotency_key": "k-1"})
+        self.assertEqual(kept["idempotency_key"], "k-1")
+
+    def test_enrich_omits_null_so_legacy_blob_row_is_not_written_as_null(self):
+        rec = enrich_order_record(_operator_virtual_sell_577())
+        self.assertNotIn("idempotency_key", rec)
+        self.assertEqual(rec["id"], "manual-virtual-577")
+
+
+class TestMemoryOrderLedgerV2Replay577(unittest.TestCase):
+    def test_idempotent_replay_of_operator_virtual_sell(self):
+        store = MemoryOrderLedgerV2()
+        row = _operator_virtual_sell_577()
+        day = row["day_key"]
+        store.upsert_order(row)
+        store.rebuild_day_stats("henry", "demo", day)
+        store.upsert_order(row)
+        store.rebuild_day_stats("henry", "demo", day)
+        day_list = store.query_day("henry", "demo", day, filled_only=True)
+        ids = [o["id"] for o in day_list if o["id"] == "manual-virtual-577"]
+        self.assertEqual(ids, ["manual-virtual-577"])
+        stats = store.get_day_stats("henry", "demo", day)
+        self.assertEqual(stats["sells"], 1)
+        self.assertAlmostEqual(stats["realized_pnl"], _OPERATOR_VIRTUAL_PNL)
+        self.assertEqual(len(store._orders), 1)
+
+
+class TestOrderServiceV2NullIdempotency(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        reset_order_ledger_v2_for_tests()
+        reset_blob_load_count()
+        os.environ["ORDER_LEDGER_V2"] = "1"
+        os.environ["ORDER_LEDGER_V2_READS"] = "1"
+        os.environ["ORDER_LEDGER_V2_BACKEND"] = "memory"
+        os.environ["ORDER_LEDGER_V2_BACKFILL_COMPLETE"] = "1"
+        self.scope_patch = patch("data_manager.ORDERS_SCOPE_FILES", {
+            "demo": os.path.join(self.tmp.name, "orders.demo.json"),
+            "paper": os.path.join(self.tmp.name, "orders.paper.json"),
+            "live": os.path.join(self.tmp.name, "orders.live.json"),
+        })
+        self.scope_patch.start()
+        self.tenant_scope = patch(
+            "services.order_service.resolve_tenant_scope", return_value="paper"
+        )
+        self.tenant_scope.start()
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+
+    def tearDown(self):
+        self.tenant_scope.stop()
+        self.scope_patch.stop()
+        reset_order_ledger_v2_for_tests()
+        reset_blob_load_count()
+        for k in (
+            "ORDER_LEDGER_V2",
+            "ORDER_LEDGER_V2_READS",
+            "ORDER_LEDGER_V2_BACKEND",
+            "ORDER_LEDGER_V2_BACKFILL_COMPLETE",
+        ):
+            os.environ.pop(k, None)
+
+    def test_create_from_request_omits_empty_idempotency_key(self):
+        with tenant_context("henry", scope="paper"):
+            svc = OrderService("paper")
+            rec = svc.create_from_request(
+                TradeOrder("SELL", "AAA/USDT", 1.0, 2.0, signal="SELL", source="manual"),
+                status="filled",
+                telegram_token="man-omit",
+            )
+            self.assertNotIn("idempotency_key", rec)
+            from storage.order_ledger_v2 import get_order_ledger_v2
+
+            stored = get_order_ledger_v2().get_by_id("henry", "paper", "man-omit")
+            self.assertIsNotNone(stored)
+            self.assertNotIn("idempotency_key", stored)
+
+    def test_two_manual_orders_without_idempotency_key_in_day_list_and_pnl(self):
+        with tenant_context("henry", scope="paper"):
+            svc = OrderService("paper")
+            svc.create_from_request(
+                TradeOrder("SELL", "AAA/USDT", 1.0, 10.0, signal="SELL", source="manual"),
+                status="filled",
+                telegram_token="man-a",
+            )
+            svc.update_status(
+                "man-a", "filled",
+                execution={"usdt": 10, "price": 1.0, "amount": 10},
+                pnl=12.0,
+            )
+            svc.create_from_request(
+                TradeOrder("SELL", "BBB/USDT", 2.0, 5.0, signal="SELL", source="manual"),
+                status="filled",
+                telegram_token="man-b",
+            )
+            svc.update_status(
+                "man-b", "filled",
+                execution={"usdt": 10, "price": 2.0, "amount": 5},
+                pnl=8.5,
+            )
+            day = svc.list_day_filled_all()
+            ids = {o["id"] for o in day}
+            self.assertIn("man-a", ids)
+            self.assertIn("man-b", ids)
+            stats = svc.stats_day_filled()
+            fast = svc.stats_day_filled_fast()
+            self.assertEqual(stats["sells"], 2)
+            self.assertAlmostEqual(stats["realized_pnl"], 20.5)
+            self.assertEqual(fast["sells"], 2)
+            self.assertAlmostEqual(fast["realized_pnl"], 20.5)
+
+    def test_legacy_null_idempotency_stripped_before_v2_upsert(self):
+        with tenant_context("henry", scope="paper"):
+            svc = OrderService("paper")
+            row = _operator_virtual_sell_577()
+            row["ledger_scope"] = "paper"
+            svc._dual_write_v2(row)
+            from storage.order_ledger_v2 import get_order_ledger_v2
+
+            store = get_order_ledger_v2()
+            stored = store.get_by_id("henry", "paper", "manual-virtual-577")
+            self.assertIsNotNone(stored)
+            self.assertNotIn("idempotency_key", stored)
+            day = svc.list_day_filled_all()
+            self.assertIn("manual-virtual-577", {o["id"] for o in day})
+            stats = svc.stats_day_filled()
+            self.assertEqual(stats["sells"], 1)
+            self.assertAlmostEqual(stats["realized_pnl"], _OPERATOR_VIRTUAL_PNL)
+
+
+class TestMongoIdempotencyIndex577(unittest.TestCase):
+    def setUp(self):
+        from storage.mongo_client import drop_database
+
+        drop_database(test=True)
+        self.store = MongoOrderLedgerV2(test=True)
+
+    def tearDown(self):
+        from storage.mongo_client import drop_database
+
+        drop_database(test=True)
+
+    def _filled(self, oid: str, seq: int, *, idem=None, include_null=False, pnl=1.0):
+        day = display_day_key_now()
+        rec = {
+            "id": oid,
+            "display_seq": seq,
+            "status": "filled",
+            "side": "sell",
+            "symbol": "AAA/USDT",
+            "source": "manual",
+            "tenant_id": "henry",
+            "ledger_scope": "demo",
+            "day_key": day,
+            "execution": {"usdt": 10, "price": 1.0, "amount": 10},
+            "pnl": pnl,
+            "timestamps": {
+                "created": f"{day}T12:00:00",
+                "filled": f"{day}T12:00:00",
+                "updated": f"{day}T12:00:00",
+            },
+        }
+        if include_null:
+            rec["idempotency_key"] = None
+        elif idem is not None:
+            rec["idempotency_key"] = idem
+        return rec
+
+    def test_ensure_indexes_replaces_sparse_unique_with_partial(self):
+        oc = self.store._db()[ORDERS_V2_COLLECTION]
+        oc.create_index(
+            [("idempotency_key", 1)],
+            name=IDEMPOTENCY_KEY_INDEX_NAME,
+            unique=True,
+            sparse=True,
+        )
+        before = oc.index_information()[IDEMPOTENCY_KEY_INDEX_NAME]
+        self.assertTrue(before.get("unique"))
+        self.assertTrue(before.get("sparse"))
+        self.store.ensure_indexes()
+        after = oc.index_information()[IDEMPOTENCY_KEY_INDEX_NAME]
+        self.assertTrue(after.get("unique"))
+        self.assertFalse(after.get("sparse", False))
+        self.assertEqual(
+            after.get("partialFilterExpression"),
+            IDEMPOTENCY_KEY_PARTIAL_FILTER,
+        )
+
+    def test_two_manual_orders_without_key_both_upsert(self):
+        self.store.ensure_indexes()
+        self.store.upsert_order(self._filled("m1", 1, include_null=True, pnl=10.0))
+        self.store.upsert_order(self._filled("m2", 2, include_null=True, pnl=5.0))
+        day = display_day_key_now()
+        listed = self.store.query_day("henry", "demo", day, filled_only=True)
+        self.assertEqual({o["id"] for o in listed}, {"m1", "m2"})
+        stats = self.store.get_day_stats("henry", "demo", day)
+        self.assertEqual(stats["sells"], 2)
+        self.assertAlmostEqual(stats["realized_pnl"], 15.0)
+        for oid in ("m1", "m2"):
+            stored = self.store.get_by_id("henry", "demo", oid)
+            self.assertNotIn("idempotency_key", stored)
+
+    def test_idempotent_mongo_replay_of_operator_row(self):
+        self.store.ensure_indexes()
+        row = _operator_virtual_sell_577()
+        self.store.upsert_order(row)
+        self.store.rebuild_day_stats("henry", "demo", row["day_key"])
+        self.store.upsert_order(row)
+        listed = self.store.query_day(
+            "henry", "demo", row["day_key"], filled_only=True,
+        )
+        self.assertEqual([o["id"] for o in listed], ["manual-virtual-577"])
+        stats = self.store.get_day_stats("henry", "demo", row["day_key"])
+        self.assertEqual(stats["sells"], 1)
+        self.assertAlmostEqual(stats["realized_pnl"], _OPERATOR_VIRTUAL_PNL)
 
 
 if __name__ == "__main__":
