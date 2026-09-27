@@ -146,6 +146,13 @@ def count_open_positions_from_orders(
     return sum(1 for p in snapshot.values() if is_open_position(p))
 
 
+def _writer_lease_blocks_position_rebuild() -> bool:
+    """True when the writer lease is enabled and this process does not hold it."""
+    from bus.writer_lease import lease_enabled, writer_lease_held
+
+    return bool(lease_enabled() and not writer_lease_held())
+
+
 def rebuild_positions_from_orders(
     scope: str,
     tenant_id: str | None = None,
@@ -162,6 +169,14 @@ def rebuild_positions_from_orders(
     from core.tenant_context import resolve_tenant_id, tenant_context
 
     from storage.errors import LedgerUnavailable
+
+    if _writer_lease_blocks_position_rebuild():
+        log(
+            f"rebuild_positions_from_orders deferred: writer lease not held "
+            f"(scope={scope})",
+            "INFO",
+        )
+        return 0
 
     tid = resolve_tenant_id(tenant_id)
     try:
