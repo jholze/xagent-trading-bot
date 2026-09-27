@@ -596,6 +596,8 @@
       "min_quote_volume_24h_usdt": 50000,
       "max_spread_pct": 1.5,
       "min_top_book_usdt_per_side": 200,
+      "depth_levels": 5,
+      "book_unavailable_policy": "volume_ok",
       "min_volume_to_order_multiple": 20,
       "apply_to": [
         "entry_sensor_15m",

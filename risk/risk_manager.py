@@ -724,10 +724,14 @@ class RiskManager:
                         return dec
                     venue_hit = False
                 if venue_hit:
+                    reject_code = "venue_liquidity_block"
+                    vcode = getattr(vres, "code", "") or ""
+                    if vcode == "book_unavailable":
+                        reject_code = "book_unavailable"
                     return RiskDecision(
                         approved=False,
                         message=venue_msg,
-                        code="venue_liquidity_block",
+                        code=reject_code,
                         size_multiplier=0.0,
                     )
                 # Long mcap floor after venue, before size. New long BUY only.
