@@ -68,6 +68,7 @@ _RISK_CODES = {
     "coin_memory_soft_block": "Coin-Memory rät von diesem Trade ab (historisch schlechte Pfade).",
     "watchlist_quality": "Watchlist-Qualität zu niedrig — Coin darf nicht als neuer Kauf rein.",
     "venue_liquidity_block": "Zu wenig Liquidität an der Börse — Trade blockiert.",
+    "book_unavailable": "Orderbuch-Daten fehlen — Trade blockiert.",
     "macro_calendar_block": "Makro-Kalender (Event) — neue Käufe in diesem Fenster gesperrt.",
     "slot_eviction_no_price": "Slot-Freimachung nicht möglich — kein Preis für den Eviction-Kandidaten.",
     "max_open_positions": "Maximale Anzahl offener Positionen erreicht — kein neuer Kauf möglich.",
