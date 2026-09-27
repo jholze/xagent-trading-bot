@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from core.time_utils import ledger_datetime_utc
 from strategies.short_math import (
     apply_liq_buffer,
     clamp_leverage,
@@ -20,15 +21,13 @@ from strategies.short_policy import resolve_short_params
 
 
 def _parse_ts(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    if isinstance(raw, datetime):
-        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
-    try:
-        t = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-    except Exception:
-        return None
+    """Parse entry stamps to aware UTC.
+
+    Aware values keep their offset and convert to UTC. A naive string is
+    process-local wall time (what ``datetime.now().isoformat()`` wrote), then
+    converted — it is not labeled UTC.
+    """
+    return ledger_datetime_utc(raw)
 
 
 def evaluate_short_cover(

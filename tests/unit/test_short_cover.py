@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from core.costs import CostModel
@@ -30,6 +33,26 @@ def _short(*, entry=100.0, mark=100.0, lev=2.0, opened=None, tier="volatile"):
         "entry_at": (opened or datetime.now(timezone.utc)).isoformat(),
         "symbol": "AAA/USDT",
     }, mark
+
+
+# Fixed CEST instant: 16:01 UTC == 18:01 Europe/Berlin. Naive Berlin 13:01 is
+# 5 wall hours old; the old parser labeled it UTC and saw only ~3h.
+_NOW_CEST = datetime(2026, 9, 27, 16, 1, 13, tzinfo=timezone.utc)
+
+
+@contextmanager
+def _host_tz(tz_name: str):
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = tz_name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
 
 
 class TestShortCover(unittest.TestCase):
@@ -93,6 +116,61 @@ class TestShortCover(unittest.TestCase):
         hit = evaluate_short_cover(pos, mark, now=datetime.now(timezone.utc), config_raw=CFG)
         self.assertIsNotNone(hit)
         self.assertEqual(hit["source"], "time_cap")
+
+    def test_time_cap_aware_utc_5h(self):
+        opened = _NOW_CEST - timedelta(hours=5)
+        pos, mark = _short(mark=100.2, opened=opened, tier="volatile")
+        hit = evaluate_short_cover(pos, mark, now=_NOW_CEST, config_raw=CFG)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "time_cap")
+
+    def test_time_cap_aware_utc_3h_near_entry_is_none(self):
+        opened = _NOW_CEST - timedelta(hours=3)
+        pos, mark = _short(mark=100.2, opened=opened, tier="volatile")
+        hit = evaluate_short_cover(pos, mark, now=_NOW_CEST, config_raw=CFG)
+        self.assertIsNone(hit)
+
+    def test_time_cap_berlin_naive_5h(self):
+        # 13:01 naive Berlin == 11:01 UTC → 5h. Old parser tagged UTC → ~3h.
+        naive = datetime(2026, 9, 27, 13, 1, 13)
+        pos, mark = _short(mark=100.2, opened=naive, tier="volatile")
+        with _host_tz("Europe/Berlin"):
+            hit = evaluate_short_cover(pos, mark, now=_NOW_CEST, config_raw=CFG)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "time_cap")
+
+    def test_time_cap_berlin_naive_3h_is_none(self):
+        naive = datetime(2026, 9, 27, 15, 1, 13)
+        pos, mark = _short(mark=100.2, opened=naive, tier="volatile")
+        with _host_tz("Europe/Berlin"):
+            hit = evaluate_short_cover(pos, mark, now=_NOW_CEST, config_raw=CFG)
+        self.assertIsNone(hit)
+
+    def test_time_cap_utc_naive_5h(self):
+        naive = datetime(2026, 9, 27, 11, 1, 13)
+        pos, mark = _short(mark=100.2, opened=naive, tier="volatile")
+        with _host_tz("UTC"):
+            hit = evaluate_short_cover(pos, mark, now=_NOW_CEST, config_raw=CFG)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "time_cap")
+
+    def test_new_short_stores_entry_at_with_utc_offset(self):
+        from strategies.positions import clear_positions_memory, get_position, update_position
+
+        clear_positions_memory()
+        try:
+            update_position("ARB/USDT", "4h", "SHORT", 0.4, 10, leverage=2)
+            pos = get_position("ARB/USDT", "4h")
+            stamp = pos["entry_at"]
+            self.assertEqual(pos["first_buy_at"], stamp)
+            parsed = datetime.fromisoformat(str(stamp))
+            self.assertIsNotNone(parsed.tzinfo)
+            self.assertEqual(parsed.utcoffset(), timedelta(0))
+            self.assertRegex(str(stamp), r"[+-]\d{2}:\d{2}$")
+            last = datetime.fromisoformat(str(pos["last_trade_at"]))
+            self.assertIsNone(last.tzinfo)
+        finally:
+            clear_positions_memory()
 
     def test_kill_switch_still_covers_open_short(self):
         pos, mark = _short(mark=130.0)
