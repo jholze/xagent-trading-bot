@@ -72,7 +72,11 @@ class TestPositionsFastPath(unittest.TestCase):
         clear_positions_memory()
         with patch("strategies.positions.save_positions_document") as mock_save:
             update_position("TRD/USDT", "4h", "BUY", 2.0, amount_traded=10)
-            mock_save.assert_called_once()
+            self.assertEqual(mock_save.call_count, 2)
+            first_lot = mock_save.call_args_list[0].args[0]["positions"]["TRD_USDT_4h"]
+            second_lot = mock_save.call_args_list[1].args[0]["positions"]["TRD_USDT_4h"]
+            self.assertNotIn("entry_snapshot", first_lot)
+            self.assertIn("entry_snapshot", second_lot)
 
     def test_flush_positions_debounces_market_snapshot(self):
         clear_positions_memory()

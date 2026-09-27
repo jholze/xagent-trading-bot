@@ -193,9 +193,16 @@ def _apply_backend_config(monkeypatch, cfg: dict, paths: dict):
 
 
 def _normalize_positions(positions: dict) -> dict:
+    def _value(k, v):
+        if k == "amount":
+            return float(v)
+        if k == "entry_snapshot" and isinstance(v, dict):
+            return {sk: sv for sk, sv in v.items() if sk != "captured_at"}
+        return v
+
     return {
         key: {
-            k: (float(v) if k == "amount" else v)
+            k: _value(k, v)
             for k, v in value.items()
             if k not in ("last_trade_at", "last_dca_at", "first_buy_at")
         }

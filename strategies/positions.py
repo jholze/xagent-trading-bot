@@ -125,6 +125,7 @@ _CACHE_FIELDS = (
     "side",
     "leverage",
     "recent_low",
+    "entry_snapshot",
 )
 
 
@@ -209,7 +210,7 @@ def _deserialize_position(raw: dict) -> dict:
             peak = float(amount) / (1.0 - sold)
         else:
             peak = float(amount)
-    return {
+    out = {
         "amount": amount,
         "peak_amount": peak,
         "sold_percent": float(raw.get("sold_percent", 0)),
@@ -250,6 +251,10 @@ def _deserialize_position(raw: dict) -> dict:
         "leverage": float(raw.get("leverage") or 0) or None,
         "recent_low": float(raw["recent_low"]) if raw.get("recent_low") not in (None, "") else None,
     }
+    if "entry_snapshot" in raw:
+        snap = raw["entry_snapshot"]
+        out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
+    return out
 
 
 def _position_persistable(p: dict) -> bool:
@@ -317,6 +322,11 @@ def _serialize_positions() -> dict:
             data["positions"][tf]["leverage"] = float(lev)
         if p.get("recent_low"):
             data["positions"][tf]["recent_low"] = float(p["recent_low"])
+        if "entry_snapshot" in p:
+            snap = p["entry_snapshot"]
+            data["positions"][tf]["entry_snapshot"] = (
+                dict(snap) if isinstance(snap, dict) else snap
+            )
     return data
 
 
@@ -985,6 +995,109 @@ def _short_open_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_ENTRY_SNAPSHOT_KEYS = (
+    "captured_at",
+    "fill_price",
+    "fee",
+    "source",
+    "timeframe",
+    "strategy_profile",
+    "strategy_tier",
+    "rationale_codes",
+    "rsi",
+    "volume_factor",
+    "atr",
+    "volatility_tier",
+    "size_before_mult",
+    "size_after_mult",
+    "cap_applied",
+)
+
+
+def _entry_snapshot_captured_at() -> str:
+    """UTC ISO-8601 with numeric offset for ``entry_snapshot.captured_at``."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _build_entry_snapshot(
+    *,
+    fill_price,
+    fee=None,
+    source=None,
+    timeframe=None,
+    strategy_profile=None,
+    strategy_tier=None,
+    rationale_codes=None,
+    rsi=None,
+    volume_factor=None,
+    atr=None,
+    volatility_tier=None,
+    size_before_mult=None,
+    size_after_mult=None,
+    cap_applied=None,
+) -> dict:
+    """Fixed-key opening snapshot. Unknown inputs are null; codes default to []."""
+    return {
+        "captured_at": _entry_snapshot_captured_at(),
+        "fill_price": fill_price,
+        "fee": fee,
+        "source": source,
+        "timeframe": timeframe,
+        "strategy_profile": strategy_profile,
+        "strategy_tier": strategy_tier,
+        "rationale_codes": list(rationale_codes) if rationale_codes is not None else [],
+        "rsi": rsi,
+        "volume_factor": volume_factor,
+        "atr": atr,
+        "volatility_tier": volatility_tier,
+        "size_before_mult": size_before_mult,
+        "size_after_mult": size_after_mult,
+        "cap_applied": cap_applied,
+    }
+
+
+def _attach_and_persist_entry_snapshot(
+    symbol,
+    timeframe,
+    *,
+    fill_price,
+    fee=None,
+    source=None,
+    strategy_profile=None,
+    strategy_tier=None,
+    rationale_codes=None,
+    rsi=None,
+    volume_factor=None,
+    atr=None,
+    volatility_tier=None,
+    size_before_mult=None,
+    size_after_mult=None,
+    cap_applied=None,
+) -> None:
+    """Attach ``entry_snapshot`` on first fill and persist. Caller is first fill only."""
+    key = get_key(symbol, timeframe)
+    store = _active_store()
+    with _positions_lock:
+        pos = _ensure_key(store, key)
+        pos["entry_snapshot"] = _build_entry_snapshot(
+            fill_price=fill_price,
+            fee=fee,
+            source=source,
+            timeframe=timeframe,
+            strategy_profile=strategy_profile,
+            strategy_tier=strategy_tier,
+            rationale_codes=rationale_codes,
+            rsi=rsi,
+            volume_factor=volume_factor,
+            atr=atr,
+            volatility_tier=volatility_tier,
+            size_before_mult=size_before_mult,
+            size_after_mult=size_after_mult,
+            cap_applied=cap_applied,
+        )
+    flush_positions(force=True)
+
+
 def update_position(
     symbol,
     timeframe,
@@ -995,12 +1108,25 @@ def update_position(
     entry_source: str | None = None,
     entry_15m_vol_ratio: float | None = None,
     leverage: float | None = None,
+    fee=None,
+    source: str | None = None,
+    strategy_profile: str | None = None,
+    strategy_tier: str | None = None,
+    rationale_codes=None,
+    rsi=None,
+    volume_factor=None,
+    atr=None,
+    volatility_tier=None,
+    size_before_mult=None,
+    size_after_mult=None,
+    cap_applied=None,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
     store = _active_store()
     was_open = False
+    attach_snapshot = False
     with _positions_lock:
         pos = _ensure_key(store, key)
         was_open = is_open_position(pos)
@@ -1114,6 +1240,8 @@ def update_position(
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
                 pos["strategy_tier"] = None
                 pos["side"] = "long"
+                pos.pop("entry_snapshot", None)
+                attach_snapshot = True
         elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
             old_amount = pos["amount"]
             old_side = str(pos.get("side") or "long").lower()
@@ -1144,6 +1272,8 @@ def update_position(
                 pos["entry_at"] = opened
                 pos["dca_rounds"] = 0
                 pos["dca_total_usdt"] = 0.0
+                pos.pop("entry_snapshot", None)
+                attach_snapshot = True
             pos["side"] = "short"
             if leverage:
                 pos["leverage"] = float(leverage)
@@ -1249,6 +1379,27 @@ def update_position(
             _open_counts[_active_key] += 1
             _open_positions_count = _open_counts[_active_key]
     flush_positions(force=True)
+    if attach_snapshot:
+        try:
+            _attach_and_persist_entry_snapshot(
+                symbol,
+                timeframe,
+                fill_price=current_price,
+                fee=fee,
+                source=source,
+                strategy_profile=strategy_profile,
+                strategy_tier=strategy_tier,
+                rationale_codes=rationale_codes,
+                rsi=rsi,
+                volume_factor=volume_factor,
+                atr=atr,
+                volatility_tier=volatility_tier,
+                size_before_mult=size_before_mult,
+                size_after_mult=size_after_mult,
+                cap_applied=cap_applied,
+            )
+        except Exception as e:
+            log(f"entry_snapshot attach failed for {symbol}: {e}", "WARNING")
 
 
 def count_open_positions():
