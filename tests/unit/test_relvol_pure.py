@@ -108,6 +108,48 @@ class TestRelvolPure(unittest.TestCase):
         )
         self.assertEqual(u2, 0.0)
 
+    def test_size_usdt_trade_mode_skips_shadow_ticket_cap(self):
+        from services.gainer_universe.relvol_shadow import size_usdt_for_signal
+
+        cfg = {
+            "mode": "trade",
+            "participation": 0.02,
+            "max_ticket_usdt": 500,
+            "min_ticket_usdt": 50,
+            "max_pct_of_vol_24h": 0.02,
+        }
+        # Same 50k 1h vol as the frozen missing-mode case: 2% = 1000, not 500.
+        u = size_usdt_for_signal(
+            qvol_1h=50_000, abs_vol_24h=1_000_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u, 1000.0)
+        self.assertGreater(u, 500.0)
+        # Still capped by max_usdt_per_trade.
+        u_ticket = size_usdt_for_signal(
+            qvol_1h=1_000_000, abs_vol_24h=50_000_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u_ticket, 4500.0)
+        # Still capped by 2% of 24h volume.
+        u_24h = size_usdt_for_signal(
+            qvol_1h=1_000_000, abs_vol_24h=10_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u_24h, 200.0)
+
+    def test_size_usdt_shadow_mode_keeps_ticket_cap(self):
+        from services.gainer_universe.relvol_shadow import size_usdt_for_signal
+
+        cfg = {
+            "mode": "shadow",
+            "participation": 0.02,
+            "max_ticket_usdt": 500,
+            "min_ticket_usdt": 50,
+            "max_pct_of_vol_24h": 0.02,
+        }
+        u = size_usdt_for_signal(
+            qvol_1h=50_000, abs_vol_24h=1_000_000, cfg=cfg, max_usdt_per_trade=4500
+        )
+        self.assertEqual(u, 500.0)
+
     def test_count_open_source_exact(self):
         from services.gainer_signal.pure import (
             count_open_gainer_positions,
