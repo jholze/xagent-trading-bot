@@ -81,7 +81,9 @@ class TestPositionsCardButtons(unittest.TestCase):
         callbacks = [btn["callback_data"] for row in rows for btn in row]
         labels = [btn["text"] for row in rows for btn in row]
         self.assertEqual(set(callbacks), {"poslot:RAVE:1h", "poslot:ARIA:4h"})
-        self.assertEqual(set(labels), {"RAVE 1h", "ARIA 4h"})
+        self.assertEqual(set(labels), {"1", "2"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 2)
         self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
         self.assertFalse(any("Warum?" in btn["text"] for row in rows for btn in row))
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
@@ -107,7 +109,9 @@ class TestPositionsCardButtons(unittest.TestCase):
         self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
         self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
         self.assertEqual(buttons[-1][0]["callback_data"], "pos_more:full")
-        self.assertEqual(buttons[0][0]["callback_data"], "poslot:RAVE:1h")
+        self.assertIn("poslot:RAVE:1h", callbacks)
+        self.assertTrue(all(str(btn.get("text") or "").isdigit() for btn in buttons[0]))
+        self.assertNotEqual(buttons[0][0]["text"], "RAVE 1h")
 
 
 class TestLotSellWhyCallbacks(unittest.TestCase):

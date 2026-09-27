@@ -97,7 +97,11 @@ LOT_SELL_CALLBACK_PREFIX = "lotsell:"
 LOT_WHY_CALLBACK_PREFIX = "poswhy:"
 LOT_SHEET_CALLBACK_PREFIX = "poslot:"
 LOT_BUYS_CALLBACK_PREFIX = "posbuys:"
+LOT_ANALYSE_CALLBACK_PREFIX = "posanly:"
 _TELEGRAM_CALLBACK_MAX = 64
+LOT_NUMBER_BUTTONS_PER_ROW = 8
+LOT_SHEET_TELEGRAM_LIMIT = 3900
+_LOT_ORDER_ID_KEYS = ("order_id", "first_order_id", "entry_order_id", "first_buy_order_id")
 
 
 def lot_ticker(symbol: str) -> str:
@@ -147,18 +151,37 @@ def resolve_position_by_symbol_tf(active: list, query: str, timeframe: str | Non
     return None
 
 
+def numbered_display_lots(active: list, prices: dict) -> list[tuple[int, dict]]:
+    """Same 1-based numbers as compact /positions text (longs, then shorts)."""
+    sorted_active = sort_positions_by_value(active or [], prices or {})
+    longs = [p for p in sorted_active if _is_long_lot(p)]
+    shorts = [p for p in sorted_active if not _is_long_lot(p)]
+    out: list[tuple[int, dict]] = []
+    n = 1
+    for p in (*longs, *shorts):
+        out.append((n, p))
+        n += 1
+    return out
+
+
 def position_card_action_rows(active: list, prices: dict) -> list:
-    """One poslot:TICKER:TF button per open lot. Compact list has no poswhy:/lotsell:."""
-    rows = []
-    for p in sort_positions_by_value(active or [], prices or {}):
+    """Compact number keyboard. Labels match list numbers; callback is poslot:TICKER:TF.
+
+    Several numbers per row. Compact list has no poswhy:/lotsell:.
+    """
+    buttons = []
+    for n, p in numbered_display_lots(active, prices):
         ticker = lot_ticker(position_symbol(p))
         tf = lot_timeframe(p.get("timeframe"))
-        rows.append([{
-            "text": f"{ticker} {tf}",
+        buttons.append({
+            "text": str(n),
             "callback_data": encode_lot_callback(
                 LOT_SHEET_CALLBACK_PREFIX, ticker, tf,
             ),
-        }])
+        })
+    rows = []
+    for i in range(0, len(buttons), LOT_NUMBER_BUTTONS_PER_ROW):
+        rows.append(buttons[i:i + LOT_NUMBER_BUTTONS_PER_ROW])
     return rows
 
 
@@ -196,32 +219,236 @@ def one_line_why_for_symbol(symbol: str) -> str:
     return explain_rationale(match.get("rationale", ""))
 
 
+def _lot_order_id(p: dict) -> str:
+    for key in _LOT_ORDER_ID_KEYS:
+        val = str((p or {}).get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _decision_order_id(entry: dict) -> str:
+    for key in ("order_id", "trade_order_id"):
+        val = str((entry or {}).get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _normalize_ts_minute(raw) -> str:
+    s = str(raw or "").strip().replace(" ", "T")
+    return s[:16]
+
+
+def _decision_symbol(entry: dict) -> str:
+    raw = str((entry or {}).get("symbol") or "").strip()
+    if not raw:
+        return ""
+    return raw.upper() if "/" in raw else f"{raw.upper()}/USDT"
+
+
+def _is_opening_action(entry: dict) -> bool:
+    act = str(
+        (entry or {}).get("normalized_action") or (entry or {}).get("action") or ""
+    ).upper()
+    return act.startswith("BUY") or act.startswith("SHORT")
+
+
+def find_opening_decision(p: dict, entries: list) -> dict | None:
+    """Match this lot's open by order id or symbol+timeframe+first_buy_at.
+
+    Never falls back to the latest decision for the symbol.
+    """
+    want_sym = position_symbol(p).upper()
+    want_tf = lot_timeframe(p.get("timeframe")).lower()
+    want_oid = _lot_order_id(p)
+    want_ts = _normalize_ts_minute(p.get("first_buy_at") or p.get("entry_at") or "")
+    by_open = None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        if _decision_symbol(entry) != want_sym:
+            continue
+        if want_oid and _decision_order_id(entry) == want_oid:
+            return entry
+        if not want_ts:
+            continue
+        if lot_timeframe(entry.get("timeframe")).lower() != want_tf:
+            continue
+        if _normalize_ts_minute(entry.get("timestamp")) != want_ts:
+            continue
+        if _is_opening_action(entry) and by_open is None:
+            by_open = entry
+    return by_open
+
+
+def opening_why_for_lot(p: dict) -> str:
+    """Why-line for this lot's opening decision, or the explicit miss string."""
+    from notifications.telegram_i18n import t
+    from notifications.user_explain import explain_rationale
+
+    try:
+        from notifications.telegram_commands.decisions_commands import _load_decisions
+
+        match = find_opening_decision(p, _load_decisions(100))
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "opening_why_for_lot load failed for %s: %s",
+            position_symbol(p),
+            e,
+        )
+        return t("why_load_failed", error=e)
+    if not match:
+        return t("lot_sheet_why_not_recorded")
+    return explain_rationale(match.get("rationale", ""))
+
+
+def _lot_age_label(p: dict) -> str:
+    from core.time_utils import ledger_datetime_utc, utc_now
+
+    start = ledger_datetime_utc(p.get("first_buy_at") or p.get("entry_at"))
+    if start is None:
+        return ""
+    delta = utc_now() - start
+    if delta.total_seconds() < 0:
+        return ""
+    days = int(delta.days)
+    hours = int(delta.seconds // 3600)
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h"
+    mins = int(delta.seconds // 60)
+    return f"{mins}m"
+
+
+def _lot_since_trail_label(p: dict) -> str:
+    from notifications.telegram_i18n import t
+
+    steps = p.get("trail_tp_steps")
+    last = p.get("last_trail_tp_at")
+    try:
+        n = int(steps or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return str(n)
+    if last:
+        from notifications.telegram_commands.position_ledger import _fmt_ts_short
+
+        shown = _fmt_ts_short(str(last)) or str(last)
+        return shown or t("lot_sheet_dash")
+    return t("lot_sheet_dash")
+
+
+def fit_lot_sheet_message(
+    text: str, limit: int = LOT_SHEET_TELEGRAM_LIMIT
+) -> tuple[str, bool]:
+    """Return (maybe-truncated text, True if Analyse is needed)."""
+    body = text or ""
+    if len(body) <= limit:
+        return body, False
+    cut = body.rfind("\n", 0, limit)
+    if cut < limit // 2:
+        cut = limit
+    return body[:cut].rstrip() + "\n…", True
+
+
 def format_lot_sheet_message(p: dict, price: float, why_text: str) -> str:
+    from notifications.coin_links import format_ticker_html
     from notifications.telegram_commands.position_ledger import _fmt_ts_short
     from notifications.telegram_i18n import t
     from price_fetcher import format_token_amount, format_usdt_price
 
     ticker = lot_ticker(position_symbol(p))
+    ticker_html = format_ticker_html(ticker, symbol_suffix="")
     tf = lot_timeframe(p.get("timeframe"))
     m = _position_metrics(p, float(price or 0))
     first = p.get("first_buy_at") or p.get("entry_at") or ""
-    entry_time = _fmt_ts_short(str(first)) if first else "—"
+    entry_time = _fmt_ts_short(str(first)) if first else t("lot_sheet_dash")
     if not entry_time:
-        entry_time = "—"
-    px = format_usdt_price(m["price"]) if m["price"] > 0 else "—"
-    return "\n".join([
-        t("lot_sheet_title", ticker=ticker, tf=tf),
-        t("lot_sheet_price", price=px),
+        entry_time = t("lot_sheet_dash")
+    px = format_usdt_price(m["price"]) if m["price"] > 0 else t("lot_sheet_dash")
+    is_short_side = m.get("side") == "short"
+    side = t("lot_sheet_side_short") if is_short_side else t("lot_sheet_side_long")
+    cost = _position_cost_basis(p)
+    age = _lot_age_label(p)
+    dash = t("lot_sheet_dash")
+
+    pos_lines = [
+        t("lot_sheet_block_position"),
+        f"{side} · {t('lot_sheet_size', size=format_token_amount(m['amount']))} · "
+        f"{t('lot_sheet_entry', price=format_usdt_price(m['entry']))} · "
+        f"{t('lot_sheet_price', price=px)}",
         t(
             "lot_sheet_pnl",
             icon=_pnl_emoji(m["unreal"]),
             pnl=f"${m['unreal']:+.1f}",
             pct=_fmt_pct(m["unreal_pct"]),
         ),
+        t("lot_sheet_cost", cost=f"{cost:.1f}"),
+    ]
+    if age:
+        pos_lines.append(t("lot_sheet_age", age=age))
+    if is_short_side:
+        lev = m.get("leverage")
+        lev_s = f"{float(lev):g}×" if lev else dash
+        liq = m.get("liq_price")
+        liq_s = format_usdt_price(float(liq)) if liq else dash
+        margin = float(m.get("margin") or 0)
+        pos_lines.append(
+            f"{t('lot_sheet_leverage', lev=lev_s)} · "
+            f"{t('lot_sheet_margin', margin=f'{margin:.0f}')} · "
+            f"{t('lot_sheet_liq', price=liq_s)}"
+        )
+
+    entry_lines = [
+        t("lot_sheet_block_entry"),
         t("lot_sheet_entry_time", time=entry_time),
-        t("lot_sheet_entry", price=format_usdt_price(m["entry"])),
-        t("lot_sheet_size", size=format_token_amount(m["amount"])),
+    ]
+    oid = _lot_order_id(p)
+    if oid:
+        entry_lines.append(t("lot_sheet_order_id", oid=oid))
+    src = p.get("entry_source")
+    if src:
+        entry_lines.append(t("lot_sheet_entry_source", source=src))
+    entry_lines.append(t("lot_sheet_timeframe", tf=tf))
+    tier = p.get("strategy_tier")
+    if tier:
+        entry_lines.append(t("lot_sheet_tier", tier=tier))
+    vol = p.get("entry_15m_vol_ratio")
+    if vol is not None and vol != "":
+        entry_lines.append(t("lot_sheet_vol_ratio", ratio=vol))
+
+    sell = p.get("last_sell_signal")
+    sell_s = str(sell) if sell else dash
+    try:
+        ladder = int(p.get("exit_ladder_step") or 0)
+    except (TypeError, ValueError):
+        ladder = 0
+    armed = bool(p.get("profit_armed_at"))
+    since_lines = [
+        t("lot_sheet_block_since"),
+        t("lot_sheet_last_sell", signal=sell_s),
+        t("lot_sheet_ladder", step=ladder),
+        t("lot_sheet_trail", trail=_lot_since_trail_label(p)),
+        t(
+            "lot_sheet_profit_armed",
+            state=t("lot_sheet_profit_armed_yes") if armed else t("lot_sheet_profit_armed_no"),
+        ),
+    ]
+
+    return "\n".join([
+        t("lot_sheet_title", ticker=ticker_html, tf=tf),
+        "",
+        *pos_lines,
+        "",
+        *entry_lines,
+        "",
+        t("lot_sheet_block_why"),
         t("lot_sheet_why", text=why_text),
+        "",
+        *since_lines,
     ])
 
 
@@ -244,7 +471,7 @@ def format_lot_buys_message(p: dict, price: float) -> str:
     return header + "\n" + "\n".join(lines)
 
 
-def lot_sheet_keyboard(p: dict) -> list:
+def lot_sheet_keyboard(p: dict, *, analyse: bool = False) -> list:
     from notifications.coin_links import gate_trade_url
     from notifications.telegram_i18n import t
 
@@ -266,7 +493,15 @@ def lot_sheet_keyboard(p: dict) -> list:
                 LOT_SELL_CALLBACK_PREFIX, ticker, tf,
             ),
         })
-    return [row]
+    rows = [row]
+    if analyse:
+        rows.append([{
+            "text": t("positions_btn_analyse"),
+            "callback_data": encode_lot_callback(
+                LOT_ANALYSE_CALLBACK_PREFIX, ticker, tf,
+            ),
+        }])
+    return rows
 
 
 def _entry_fallback_price(p: dict) -> float:

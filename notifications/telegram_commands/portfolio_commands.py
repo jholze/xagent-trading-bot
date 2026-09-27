@@ -5,13 +5,15 @@ from core.tenant_context import tenant_context, tenant_snapshot
 from notifications.telegram_commands.command_context import current_chat_id, set_chat_id
 from notifications.telegram_commands.menu_i18n import current_language, set_user_language
 from notifications.telegram_commands.position_display import (
+    LOT_ANALYSE_CALLBACK_PREFIX,
     LOT_BUYS_CALLBACK_PREFIX,
     LOT_SHEET_CALLBACK_PREFIX,
+    fit_lot_sheet_message,
     format_lot_buys_message,
     format_lot_sheet_message,
     live_price_for_one_symbol,
     lot_sheet_keyboard,
-    one_line_why_for_symbol,
+    opening_why_for_lot,
     parse_lot_callback,
     position_symbol,
     resolve_position_by_symbol_tf,
@@ -133,6 +135,8 @@ def handle_callback(callback_query: dict) -> bool:
         return _handle_poslot_callback(callback_query)
     if data.startswith(LOT_BUYS_CALLBACK_PREFIX):
         return _handle_posbuys_callback(callback_query)
+    if data.startswith(LOT_ANALYSE_CALLBACK_PREFIX):
+        return _handle_posanalyse_callback(callback_query)
     if not data.startswith(POS_MORE_PREFIX):
         return False
     callback_id = callback_query.get("id")
@@ -168,6 +172,18 @@ def _resolve_open_lot(ticker: str, timeframe: str):
     return resolve_position_by_symbol_tf(list_active_positions(), ticker, timeframe)
 
 
+def _lot_sheet_payload(p: dict):
+    """Stored-field sheet for this lot. Does not run a new decision."""
+    sym = position_symbol(p)
+    price = live_price_for_one_symbol(sym)
+    if price <= 0:
+        price = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
+    why = opening_why_for_lot(p)
+    full = format_lot_sheet_message(p, price, why)
+    shown, overflow = fit_lot_sheet_message(full)
+    return shown, lot_sheet_keyboard(p, analyse=overflow), full
+
+
 def _handle_poslot_callback(callback_query: dict) -> bool:
     chat_id = _lot_callback_chat_id(callback_query, "poslot")
     if not chat_id:
@@ -182,16 +198,33 @@ def _handle_poslot_callback(callback_query: dict) -> bool:
     if not p:
         send_telegram_message(t("no_open_position", arg=ticker), chat_id=chat_id)
         return True
-    sym = position_symbol(p)
-    price = live_price_for_one_symbol(sym)
-    if price <= 0:
-        price = float(p.get("average_entry", p.get("entry_price", 0)) or 0)
-    why = one_line_why_for_symbol(sym)
-    send_telegram_buttons(
-        format_lot_sheet_message(p, price, why),
-        lot_sheet_keyboard(p),
-        chat_id=chat_id,
+    shown, keyboard, _full = _lot_sheet_payload(p)
+    send_telegram_buttons(shown, keyboard, chat_id=chat_id)
+    return True
+
+
+def _handle_posanalyse_callback(callback_query: dict) -> bool:
+    chat_id = _lot_callback_chat_id(callback_query, "posanly")
+    if not chat_id:
+        return True
+    data = str(callback_query.get("data") or "")
+    parsed = parse_lot_callback(data, LOT_ANALYSE_CALLBACK_PREFIX)
+    if parsed is None:
+        send_telegram_message(t("no_open_position", arg=""), chat_id=chat_id)
+        return True
+    ticker, tf = parsed
+    p = _resolve_open_lot(ticker, tf)
+    if not p:
+        send_telegram_message(t("no_open_position", arg=ticker), chat_id=chat_id)
+        return True
+    _shown, _keyboard, full = _lot_sheet_payload(p)
+    from notifications.telegram_commands.position_display import (
+        LOT_SHEET_TELEGRAM_LIMIT,
+        _hard_split_telegram,
     )
+
+    for chunk in _hard_split_telegram(full, LOT_SHEET_TELEGRAM_LIMIT):
+        send_telegram_message(chunk, chat_id=chat_id)
     return True
 
 
