@@ -352,6 +352,9 @@ class OrderService:
             or getattr(order, "idempotency_key", "")
             or ""
         )
+        if not isinstance(idem, str):
+            idem = str(idem) if idem else ""
+        idem = idem.strip()
         client_oid = getattr(order, "client_order_id", "") or idem or ""
         record = {
             "id": telegram_token or uuid.uuid4().hex[:12],
@@ -365,7 +368,6 @@ class OrderService:
             "signal": order.signal or "",
             "exit_source": (getattr(order, "exit_source", None) or "") or None,
             "exit_rationale": (getattr(order, "exit_rationale", None) or "") or None,
-            "idempotency_key": idem or None,
             "client_order_id": client_oid or None,
             "exchange_order_id": getattr(order, "exchange_order_id", "") or None,
             "order_exist_in_exchange": bool(
@@ -392,6 +394,8 @@ class OrderService:
             "error": None,
             "timestamps": {"created": _now(), "updated": _now()},
         }
+        if idem:
+            record["idempotency_key"] = idem
         data.setdefault("orders", []).append(record)
         self._save(data)
         self._dual_write_v2(record)
@@ -477,12 +481,17 @@ class OrderService:
     def _dual_write_v2(self, record: dict) -> None:
         """Per-order upsert into ledger v2 (no full-history rewrite on v2 path)."""
         try:
-            from storage.order_ledger_v2 import get_order_ledger_v2
+            from storage.order_ledger_v2 import (
+                get_order_ledger_v2,
+                omit_empty_idempotency_key,
+            )
 
             store = get_order_ledger_v2()
             if store is None:
                 return
-            store.upsert_order(record)
+            # Legacy blob rows may still contain explicit null; omit before upsert
+            # so the unique index never sees a second null.
+            store.upsert_order(omit_empty_idempotency_key(record))
         except Exception as e:
             # Fail-open: v2 is still a shadow; legacy blob remains source of truth.
             log(f"order ledger v2 dual-write failed: {e}", "WARNING")

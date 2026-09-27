@@ -24,6 +24,17 @@ from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 ORDERS_V2_COLLECTION = "orders_v2"
 DAY_STATS_COLLECTION = "order_day_stats"
 
+# Unique only for real keys. Sparse unique still indexes explicit null
+# (E11000 on the second manual order). Drop+recreate; same name with new
+# options is a no-op while the old index exists.
+IDEMPOTENCY_KEY_INDEX_NAME = "idempotency_key"
+IDEMPOTENCY_KEY_PARTIAL_FILTER: dict[str, Any] = {
+    "$and": [
+        {"idempotency_key": {"$type": "string"}},
+        {"idempotency_key": {"$gt": ""}},
+    ]
+}
+
 # Blocked statuses mirrored from order_service (avoid circular import).
 # Enum values plus legacy tokens still present in the live Mongo ledger.
 BLOCKED_STATUSES = frozenset({
@@ -380,9 +391,40 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
     return counts
 
 
+def nonempty_idempotency_key(value: object) -> str | None:
+    """Return a stored idempotency key, or None when empty/null/non-string."""
+    if not isinstance(value, str):
+        return None
+    key = value.strip()
+    return key or None
+
+
+def omit_empty_idempotency_key(order: dict) -> dict:
+    """Shallow copy without a null/empty idempotency_key.
+
+    Mongo sparse unique still indexes explicit null; omit the field instead
+    of writing null so two manual orders can both land in v2.
+    """
+    out = dict(order)
+    if nonempty_idempotency_key(out.get("idempotency_key")) is None:
+        out.pop("idempotency_key", None)
+    return out
+
+
+def _idempotency_index_is_partial_nonempty(info: dict | None) -> bool:
+    """True when the named index is unique + partial (not sparse) for non-empty strings."""
+    if not info:
+        return False
+    if not info.get("unique"):
+        return False
+    if info.get("sparse"):
+        return False
+    return info.get("partialFilterExpression") == IDEMPOTENCY_KEY_PARTIAL_FILTER
+
+
 def enrich_order_record(order: dict) -> dict:
     """Copy order with denormalised day_key / ts fields for v2 storage."""
-    rec = copy.deepcopy(order)
+    rec = omit_empty_idempotency_key(copy.deepcopy(order))
     tid = str(rec.get("tenant_id") or resolve_tenant_id())
     scope = str(rec.get("ledger_scope") or "demo")
     oid = str(rec.get("id") or "")
@@ -602,12 +644,16 @@ class MongoOrderLedgerV2:
             name="tenant_scope_display_seq",
             unique=True,
         )
-        oc.create_index(
-            [("idempotency_key", 1)],
-            name="idempotency_key",
-            unique=True,
-            sparse=True,
-        )
+        existing = oc.index_information().get(IDEMPOTENCY_KEY_INDEX_NAME)
+        if not _idempotency_index_is_partial_nonempty(existing):
+            if existing is not None:
+                oc.drop_index(IDEMPOTENCY_KEY_INDEX_NAME)
+            oc.create_index(
+                [("idempotency_key", 1)],
+                name=IDEMPOTENCY_KEY_INDEX_NAME,
+                unique=True,
+                partialFilterExpression=IDEMPOTENCY_KEY_PARTIAL_FILTER,
+            )
         self._db()[DAY_STATS_COLLECTION].create_index(
             [("tenant_id", 1), ("ledger_scope", 1), ("day_key", 1)],
             name="tenant_scope_day",
