@@ -1049,6 +1049,19 @@ class RiskManager:
                 trust_factor=factors.get("trust_factor", 1.0),
             )
 
+        # RelVol trade tickets: reject under $1000 after multipliers / shrink-only
+        # caps. Do not round up. Other sources keep min_trade_usdt ($100 live).
+        if self._is_relvol_buy(source, order) and sized < 1000.0:
+            return RiskDecision(
+                approved=False,
+                message=f"Adjusted size ${sized:.2f} below minimum ($1000)",
+                code="size_too_small",
+                size_multiplier=factors.get("total_multiplier", 1.0),
+                drawdown_pct=factors.get("drawdown_pct", 0.0),
+                atr_factor=factors.get("atr_factor", 1.0),
+                trust_factor=factors.get("trust_factor", 1.0),
+            )
+
         if is_dca:
             dca_usdt_limit = self._daily_dca_usdt_limit_blocked(sized)
             if dca_usdt_limit:

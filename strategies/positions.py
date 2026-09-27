@@ -980,6 +980,11 @@ def sell_fraction_for_signal(
     return 0.2
 
 
+def _short_open_utc_iso() -> str:
+    """UTC ISO-8601 with numeric offset for a new-short ``entry_at`` / ``first_buy_at``."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def update_position(
     symbol,
     timeframe,
@@ -1134,8 +1139,9 @@ def update_position(
                 pos["average_entry"] = current_price
                 pos["peak_amount"] = float(amount_traded)
                 pos["sold_percent"] = 0.0
-                pos["first_buy_at"] = datetime.now().isoformat()
-                pos["entry_at"] = pos["first_buy_at"]
+                opened = _short_open_utc_iso()
+                pos["first_buy_at"] = opened
+                pos["entry_at"] = opened
                 pos["dca_rounds"] = 0
                 pos["dca_total_usdt"] = 0.0
             pos["side"] = "short"
