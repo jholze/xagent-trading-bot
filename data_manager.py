@@ -296,10 +296,12 @@ def load_watchlist(tenant_id: str | None = None):
                 if s and s not in seen:
                     seen.add(s)
                     unique.append(c)
-            return unique
     except Exception as e:
         log(f"Failed to load watchlist from {path}: {e}", "WARNING")
         return []
+    from services.universe.core_seed import prepare_watchlist_core_seed
+
+    return prepare_watchlist_core_seed(unique)
 
 
 def save_watchlist(coins, tenant_id: str | None = None):
@@ -604,18 +606,21 @@ def build_merged_watchlist_coins(
     *,
     config: dict | None = None,
     apply_wqe: bool = True,
+    open_symbols: set | None = None,
 ) -> list:
     """Merge base + expansion + overlays + Gate/profile filters (+ optional WQE soft/enforce).
 
     This is the raw observe candidate set *before* universe observe_max cap.
+    Open lots in universe_core_seed shadow/off keep the pre-seed overlay row.
     """
     cfg = config if config is not None else load_config(tenant_id=tenant_id)
-    coins = list(load_watchlist(tenant_id=tenant_id))
-    base_syms = {c.get("symbol") for c in coins if c.get("symbol")}
+    base_coins = list(load_watchlist(tenant_id=tenant_id))
+    base_syms = {c.get("symbol") for c in base_coins if c.get("symbol")}
+    overlays: list[list] = []
     if uses_watchlist_expansion(cfg):
-        coins = _dedupe_watchlist_coins(coins + load_dry_run_expansion().get("coins", []))
+        overlays.append(load_dry_run_expansion().get("coins", []))
     if is_dry_run_enhanced(cfg):
-        coins = _dedupe_watchlist_coins(coins + load_dry_run_overlay().get("coins", []))
+        overlays.append(load_dry_run_overlay().get("coins", []))
 
     from core.coin_eligibility import filter_watchlist_coins, should_include_trending_overlay
     from core.config import get_bot_config
@@ -625,7 +630,33 @@ def build_merged_watchlist_coins(
         and should_include_trending_overlay(cfg)
     )
     if include_trending:
-        coins = _dedupe_watchlist_coins(coins + load_cmc_trending_overlay().get("coins", []))
+        overlays.append(load_cmc_trending_overlay().get("coins", []))
+
+    open_set_unknown = False
+    open_lot_rows: dict = {}
+    if open_symbols is None:
+        try:
+            from services.universe.split import _open_symbols_and_lot_rows
+
+            open_symbols, open_lot_rows = _open_symbols_and_lot_rows()
+        except Exception as e:
+            log(
+                f"WARNING: open-position set unread; keeping pre-seed overlay rows ({e})",
+                "WARNING",
+            )
+            open_symbols = set()
+            open_set_unknown = True
+
+    from services.universe.core_seed import merge_preserving_open_lots
+
+    coins = merge_preserving_open_lots(
+        base_coins,
+        overlays,
+        open_symbols=open_symbols,
+        open_lot_rows=open_lot_rows,
+        open_set_unknown=open_set_unknown,
+        config=cfg,
+    )
 
     tw = get_bot_config(tenant_id=tenant_id).trending_watchlist_config
     if tw.get("exchange_only", tw.get("gate_only", True)):

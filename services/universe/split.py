@@ -199,21 +199,72 @@ def select_trade_universe(
     return [by_sym[s] for s in chosen if s in by_sym]
 
 
+def _lot_pre_seed_source(p) -> str:
+    from services.universe.core_seed import _PRE_SEED_SOURCES
+
+    keys = ("source", "entry_source", "watchlist_source")
+    if isinstance(p, dict):
+        for key in keys:
+            val = str(p.get(key) or "").strip()
+            if val in _PRE_SEED_SOURCES:
+                return val
+        return ""
+    for key in keys:
+        val = str(getattr(p, key, None) or "").strip()
+        if val in _PRE_SEED_SOURCES:
+            return val
+    return ""
+
+
 def _open_symbols_live() -> set[str]:
+    from strategies.positions import list_active_positions
+
+    out: set[str] = set()
+    for p in list_active_positions() or []:
+        if isinstance(p, dict):
+            s = p.get("symbol")
+        else:
+            s = getattr(p, "symbol", None)
+        if s:
+            out.add(str(s).strip())
+    return out
+
+
+def _open_symbols_and_lot_rows() -> tuple[set[str], dict[str, dict]]:
+    """Open symbols plus a watchlist-shaped row when the lot still has a pre-seed source.
+
+    Calls ``_open_symbols_live`` first so a failing read (or a test patch)
+    propagates instead of looking like an empty open set.
+    """
+    symbols = _open_symbols_live()
+    rows: dict[str, dict] = {}
     try:
+        from services.universe.core_seed import ticker_of
         from strategies.positions import list_active_positions
 
-        out: set[str] = set()
         for p in list_active_positions() or []:
             if isinstance(p, dict):
                 s = p.get("symbol")
+                tf = p.get("timeframe")
             else:
                 s = getattr(p, "symbol", None)
-            if s:
-                out.add(str(s).strip())
-        return out
+                tf = getattr(p, "timeframe", None)
+            if not s:
+                continue
+            sym = str(s).strip()
+            src = _lot_pre_seed_source(p)
+            if not src:
+                continue
+            rows[sym] = {
+                "symbol": sym,
+                "ticker": ticker_of(sym),
+                "timeframe": str(tf or "4h").strip() or "4h",
+                "active": True,
+                "source": src,
+            }
     except Exception:
-        return set()
+        pass
+    return symbols, rows
 
 
 def _quality_lookup(
@@ -266,7 +317,14 @@ def load_observe_universe(
         for c in (load_watchlist(tenant_id=tenant_id) or [])
         if c.get("symbol")
     }
-    open_syms = _open_symbols_live()
+    try:
+        open_syms = _open_symbols_live()
+    except Exception as e:
+        log(
+            f"WARNING: open-position set unread; keeping pre-seed overlay rows ({e})",
+            "WARNING",
+        )
+        open_syms = set()
     forced = base_syms | open_syms
     # Gainer movers into observe (shadow + trade_expand) — fail-open
     try:
@@ -316,11 +374,18 @@ def load_trade_universe(
     if observe_coins is None:
         observe_coins = load_observe_universe(tenant_id=tenant_id, config=cfg)
 
-    if not ucfg.get("split_enabled"):
-        return list(observe_coins)
-
+    open_set_unknown = False
+    open_lot_rows: dict[str, dict] = {}
     if open_symbols is None:
-        open_set = _open_symbols_live()
+        try:
+            open_set, open_lot_rows = _open_symbols_and_lot_rows()
+        except Exception as e:
+            log(
+                f"WARNING: open-position set unread; keeping pre-seed overlay rows ({e})",
+                "WARNING",
+            )
+            open_set = set()
+            open_set_unknown = True
     else:
         open_set = {str(s).strip() for s in open_symbols if s}
 
@@ -329,6 +394,18 @@ def load_trade_universe(
         for c in (load_watchlist(tenant_id=tenant_id) or [])
         if c.get("symbol")
     }
+
+    if not ucfg.get("split_enabled"):
+        from services.universe.core_seed import finalize_trade_members
+
+        return finalize_trade_members(
+            list(observe_coins),
+            open_symbols=open_set,
+            open_lot_rows=open_lot_rows,
+            open_set_unknown=open_set_unknown,
+            base_symbols=base_syms,
+            config=cfg,
+        )
     from core.tenant_context import resolve_tenant_id
 
     from services.watchlist_quality.config import use_ai_sort_score
@@ -376,7 +453,16 @@ def load_trade_universe(
         f"open={len(open_set)} max_trade={ucfg.get('trade_max_coins')}",
         "INFO",
     )
-    return trade
+    from services.universe.core_seed import finalize_trade_members
+
+    return finalize_trade_members(
+        trade,
+        open_symbols=open_set,
+        open_lot_rows=open_lot_rows,
+        open_set_unknown=open_set_unknown,
+        base_symbols=base_syms,
+        config=cfg,
+    )
 
 
 def is_trade_eligible(

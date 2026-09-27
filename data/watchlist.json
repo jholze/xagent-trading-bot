@@ -26,14 +26,16 @@
       "ticker": "SOL",
       "name": "Solana",
       "timeframe": "4h",
-      "active": true
+      "active": true,
+      "bucket": "quiet"
     },
     {
       "symbol": "BTC/USDT",
       "ticker": "BTC",
       "name": "Bitcoin",
       "timeframe": "4h",
-      "active": true
+      "active": true,
+      "bucket": "quiet"
     },
     {
       "symbol": "ZBT/USDT",
@@ -41,6 +43,230 @@
       "name": "ZBT",
       "timeframe": "4h",
       "active": true
+    },
+    {
+      "symbol": "TRX/USDT",
+      "ticker": "TRX",
+      "name": "TRON",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "BNB/USDT",
+      "ticker": "BNB",
+      "name": "BNB",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "OKB/USDT",
+      "ticker": "OKB",
+      "name": "OKB",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "ASTER/USDT",
+      "ticker": "ASTER",
+      "name": "Aster",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "ETH/USDT",
+      "ticker": "ETH",
+      "name": "Ethereum",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "LTC/USDT",
+      "ticker": "LTC",
+      "name": "Litecoin",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "DOGE/USDT",
+      "ticker": "DOGE",
+      "name": "Dogecoin",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "LINK/USDT",
+      "ticker": "LINK",
+      "name": "Chainlink",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "XLM/USDT",
+      "ticker": "XLM",
+      "name": "Stellar",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "XRP/USDT",
+      "ticker": "XRP",
+      "name": "Ripple",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "quiet"
+    },
+    {
+      "symbol": "HYPE/USDT",
+      "ticker": "HYPE",
+      "name": "Hyperliquid",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "AVAX/USDT",
+      "ticker": "AVAX",
+      "name": "Avalanche",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "ADA/USDT",
+      "ticker": "ADA",
+      "name": "Cardano",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "TAO/USDT",
+      "ticker": "TAO",
+      "name": "Bittensor",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "SUI/USDT",
+      "ticker": "SUI",
+      "name": "Sui",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "AAVE/USDT",
+      "ticker": "AAVE",
+      "name": "Aave",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "BCH/USDT",
+      "ticker": "BCH",
+      "name": "Bitcoin Cash",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "ONDO/USDT",
+      "ticker": "ONDO",
+      "name": "Ondo",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "INJ/USDT",
+      "ticker": "INJ",
+      "name": "Injective",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "PEPE/USDT",
+      "ticker": "PEPE",
+      "name": "Pepe",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "moving"
+    },
+    {
+      "symbol": "DOT/USDT",
+      "ticker": "DOT",
+      "name": "Polkadot",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "FIL/USDT",
+      "ticker": "FIL",
+      "name": "Filecoin",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "NEAR/USDT",
+      "ticker": "NEAR",
+      "name": "NEAR",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "UNI/USDT",
+      "ticker": "UNI",
+      "name": "Uniswap",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "WLD/USDT",
+      "ticker": "WLD",
+      "name": "Worldcoin",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "ENA/USDT",
+      "ticker": "ENA",
+      "name": "Ethena",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "ZEC/USDT",
+      "ticker": "ZEC",
+      "name": "Zcash",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
+    },
+    {
+      "symbol": "ARB/USDT",
+      "ticker": "ARB",
+      "name": "Arbitrum",
+      "timeframe": "4h",
+      "active": true,
+      "bucket": "risk"
     }
   ]
 }
