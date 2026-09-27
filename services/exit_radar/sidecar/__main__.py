@@ -33,6 +33,7 @@ def _bootstrap_env() -> None:
 
 
 def _sync_ledger() -> None:
+    from bus.writer_lease import lease_enabled, writer_lease_held
     from data_manager import resolve_ledger_scope
     from logger import log
     from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
@@ -44,6 +45,8 @@ def _sync_ledger() -> None:
     scope = resolve_ledger_scope() or "demo"
     try:
         rebuild_positions_from_orders(scope)
+        if lease_enabled() and not writer_lease_held():
+            return
         sync_positions_on_startup()
     except Exception as exc:
         log(f"exit-radar initial position sync: {exc}", "WARNING")

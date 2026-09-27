@@ -338,6 +338,17 @@ _DCA_ORDER_PRIORITY_FIELDS = (
 )
 
 
+def _cached_lot_stays_flat(cached: dict) -> bool:
+    """True when the stored cache already closed this key (#584).
+
+    Field-only overlays that omit ``amount`` still take size from the order
+    replay. A stored amount that is not an open position stays flat.
+    """
+    if not cached or "amount" not in cached:
+        return False
+    return not is_open_position(cached)
+
+
 def derive_positions_from_orders_and_cache(
     order_snap: dict,
     cache_doc: dict,
@@ -351,8 +362,11 @@ def derive_positions_from_orders_and_cache(
     merged = {}
     cache_positions = cache_doc.get("positions", {}) or {}
     for key, snap in order_snap.items():
-        pos = dict(snap)
         cached = cache_positions.get(key) or {}
+        if key in cache_positions and _cached_lot_stays_flat(cached):
+            merged[key] = dict(cached)
+            continue
+        pos = dict(snap)
         for field in _CACHE_FIELDS:
             if field in _DCA_ORDER_PRIORITY_FIELDS:
                 continue
