@@ -43,6 +43,17 @@ class TestCoinLinks(unittest.TestCase):
         self.assertIn('<a href="https://www.gate.io/trade/BTC_USDT">BTC</a>/USDT', html)
 
     @patch("notifications.coin_links.coin_links_config")
+    def test_format_ticker_html_always_gate_even_with_cached_cmc_slug(self, mock_cfg):
+        mock_cfg.return_value = {"enabled": True}
+        with patch("notifications.coin_links._load_cache", return_value={"BTC": "bitcoin"}):
+            html = format_ticker_html("BTC", symbol_suffix="/USDT")
+            html_net = format_ticker_html("BTC", name="Bitcoin", allow_network=True)
+        self.assertIn('<a href="https://www.gate.io/trade/BTC_USDT">BTC</a>/USDT', html)
+        self.assertNotIn("coinmarketcap.com", html)
+        self.assertIn("https://www.gate.io/trade/BTC_USDT", html_net)
+        self.assertNotIn("coinmarketcap.com", html_net)
+
+    @patch("notifications.coin_links.coin_links_config")
     def test_format_links_line(self, mock_cfg):
         mock_cfg.return_value = {
             "enabled": True,

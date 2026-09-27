@@ -100,10 +100,35 @@ class TrendingWatchlistSync:
 
         exclude = {s.upper() for s in tw_cfg.get("exclude_symbols", [])}
         base_symbols = {c.get("symbol", "").split("/")[0].upper() for c in load_watchlist()}
+        open_tickers: set[str] = set()
+        open_set_unknown = False
+        try:
+            from services.universe.split import _open_symbols_live
+
+            open_tickers = {
+                str(s).split("/")[0].upper()
+                for s in (_open_symbols_live() or set())
+                if s
+            }
+        except Exception as e:
+            open_set_unknown = True
+            log(
+                f"WARNING: open-position set unread; keeping pre-seed overlay rows ({e})",
+                "WARNING",
+            )
         candidates = []
         for rank, sym in enumerate(symbols, start=1):
             sym = sym.upper()
-            if sym in exclude or sym in base_symbols:
+            if sym in exclude:
+                continue
+            # Seed names are base; skip unless an open lot still needs the
+            # pre-seed cmc_trending row after this refresh. Unreadable open
+            # set means all open, not none open.
+            if (
+                sym in base_symbols
+                and not open_set_unknown
+                and sym not in open_tickers
+            ):
                 continue
             candidates.append((f"{sym}/USDT", rank))
 
@@ -132,6 +157,24 @@ class TrendingWatchlistSync:
             })
 
         new_syms = {c.get("symbol") for c in coins}
+        # Refresh rewrites the overlay; keep a seed-name row that is still an
+        # open lot even if CMC no longer lists it (or it was skipped as base).
+        for prev in overlay.get("coins") or []:
+            if not isinstance(prev, dict):
+                continue
+            psym = prev.get("symbol")
+            if not psym or psym in new_syms:
+                continue
+            tick = str(psym).split("/")[0].upper()
+            if tick not in base_symbols:
+                continue
+            if not open_set_unknown and tick not in open_tickers:
+                continue
+            if str(prev.get("source") or "").strip() != "cmc_trending":
+                continue
+            coins.append(dict(prev))
+            new_syms.add(psym)
+
         added = [c for c in coins if c.get("symbol") not in old_syms]
         removed = [s for s in old_syms if s and s not in new_syms]
 
