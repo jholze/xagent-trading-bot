@@ -214,6 +214,70 @@ class TestTrendingWatchlistSync(unittest.TestCase):
         self.assertIn("Watchlist+ CMC Trending", body)
         self.assertIn("WIF", body)
 
+    def test_unread_open_set_keeps_seed_trending_overlay_row(self):
+        cfg = _enhanced_config()
+        provider = MagicMock()
+        provider.fetch_trending_symbols.return_value = (["PEPE"], "trending/latest")
+        avax_row = {
+            "symbol": "AVAX/USDT",
+            "ticker": "AVAX",
+            "timeframe": "1h",
+            "active": True,
+            "source": "cmc_trending",
+            "trending_rank": 2,
+        }
+        logs: list[tuple[str, str]] = []
+
+        def _log(msg, level="INFO"):
+            logs.append((str(msg), str(level)))
+
+        def _boom():
+            raise RuntimeError("ledger down")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            overlay_path = self._overlay_path(tmp)
+            self._write_overlay(
+                overlay_path,
+                {
+                    "refreshed_at": "2020-01-01T00:00:00",
+                    "source": "trending/latest",
+                    "coins": [avax_row],
+                },
+            )
+            with _sync_patches(
+                overlay_path=overlay_path,
+                provider=provider,
+                gate_prices={"PEPE/USDT": 0.1},
+                base_watchlist=[
+                    {
+                        "symbol": "AVAX/USDT",
+                        "ticker": "AVAX",
+                        "timeframe": "4h",
+                        "active": True,
+                        "bucket": "moving",
+                    }
+                ],
+                telegram_mock=MagicMock(),
+            ), patch(
+                "services.universe.split._open_symbols_live", _boom
+            ), patch(
+                "services.dry_run_watchlist.log", _log
+            ):
+                out = TrendingWatchlistSync(cfg).sync_if_needed(force=True)
+            with open(overlay_path, encoding="utf-8") as f:
+                saved = json.load(f)
+
+        coins = saved.get("coins") or out.get("coins") or []
+        avax = next(c for c in coins if c.get("symbol") == "AVAX/USDT")
+        self.assertEqual(avax.get("source"), "cmc_trending")
+        self.assertTrue(
+            any(
+                level == "WARNING"
+                and "open-position set unread; keeping pre-seed overlay rows" in msg
+                for msg, level in logs
+            )
+        )
+
     def test_startup_race_global_and_background_fallback(self):
         """Mirrors bot restart: price_loop sync + background fallback in parallel."""
         from services.background_runtime import _ensure_trending_watchlist

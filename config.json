@@ -2023,6 +2023,13 @@
     "trade_include_base": true,
     "trade_rank_by": "quality_score"
   },
+  "universe_core_seed": {
+    "mode": "shadow",
+    "behavior_change": false,
+    "quiet_profile": "stable_altcoin",
+    "moving_profile": "mid_cap_defaults",
+    "risk_profile": "volatile_altcoin"
+  },
   "gainer_universe": {
     "enabled": true,
     "mode": "trade_expand",
