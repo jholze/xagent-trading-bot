@@ -215,20 +215,13 @@ def format_ticker_html(
     symbol_suffix: str = "/USDT",
     allow_network: bool = False,
 ) -> str:
-    """HTML ticker. Lists: allow_network=False (cache/search URL only, no CMC API)."""
+    """HTML ticker. Coin name always opens Gate; labeled CMC/Chart stay on format_links_line."""
     if not coin_links_enabled():
         t = normalize_ticker(ticker) or escape(str(ticker))
         return f"{t}{symbol_suffix}" if symbol_suffix else t
     t = normalize_ticker(ticker) or str(ticker)
-    # Prefer Gate trade URL for list hot path (no slug resolve). CMC only when cached/network ok.
-    if allow_network:
-        url = cmc_coin_url(t, name=name, allow_network=True, allow_watchlist=True)
-    else:
-        slug = resolve_cmc_slug(t, name=name, allow_network=False, allow_watchlist=False)
-        if slug:
-            url = f"{_CMC_BASE}/currencies/{slug}/"
-        else:
-            url = gate_trade_url(t)
+    _ = (name, allow_network)  # signature kept; coin name never uses CMC
+    url = gate_trade_url(t)
     inner = escape(t)
     if symbol_suffix:
         return f'<a href="{escape(url, quote=True)}">{inner}</a>{symbol_suffix}'

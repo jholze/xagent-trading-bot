@@ -13,9 +13,14 @@ from notifications.telegram_commands import portfolio_commands, router, trading_
 from notifications.telegram_commands.menu_i18n import set_user_language
 from notifications.telegram_commands.position_display import (
     LOT_BUYS_CALLBACK_PREFIX,
+    LOT_NUMBER_BUTTONS_PER_ROW,
     LOT_SHEET_CALLBACK_PREFIX,
+    LOT_SHEET_TELEGRAM_LIMIT,
     encode_lot_callback,
+    find_opening_decision,
+    fit_lot_sheet_message,
     format_lot_buys_message,
+    format_lot_sheet_message,
     long_lots_for_sell,
     lot_sheet_keyboard,
     one_line_why_for_symbol,
@@ -135,7 +140,8 @@ class TestTelegramLotSheet561(unittest.TestCase):
         self.assertIn("09.01 12:30", msg)
         self.assertIn("0.5000", msg)
         self.assertIn("200.0000", msg)
-        self.assertIn("hold-the-line", msg)
+        self.assertNotIn("hold-the-line", msg)
+        self.assertIn(t("lot_sheet_why_not_recorded"), msg)
         self.assertNotIn("Letzte Entscheidung", msg)
         self.assertNotIn("/why", msg)
         self.assertEqual(portfolio_commands.send_telegram_message.call_count, 0)
@@ -230,7 +236,9 @@ class TestTelegramLotSheet561(unittest.TestCase):
         callbacks = [btn["callback_data"] for row in rows for btn in row]
         labels = [btn["text"] for row in rows for btn in row]
         self.assertEqual(set(callbacks), {"poslot:RAVE:1h", "poslot:RAVE:4h"})
-        self.assertEqual(set(labels), {"RAVE 1h", "RAVE 4h"})
+        self.assertEqual(set(labels), {"1", "2"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 2)
         self.assertNotEqual(callbacks[0], callbacks[1])
 
         self._start_patches([self.rave_1h, self.rave_4h])
@@ -312,6 +320,88 @@ class TestTelegramLotSheet561(unittest.TestCase):
         self.assertTrue(
             any("RAVE" in line and "1h" in line and "tree-boom" in line for line in cm.output)
         )
+
+    def test_number_keyboard_packs_several_per_row_not_one_lot_per_row(self):
+        lots = [
+            _long(f"C{i}/USDT", "4h", float(10 + i), 1.0) for i in range(25)
+        ]
+        prices = {f"C{i}/USDT": 1.0 for i in range(25)}
+        rows = position_card_action_rows(lots, prices)
+        self.assertLess(len(rows), 25)
+        self.assertEqual(LOT_NUMBER_BUTTONS_PER_ROW, 8)
+        self.assertEqual(len(rows[0]), 8)
+        self.assertGreater(max(len(row) for row in rows), 1)
+        labels = [btn["text"] for row in rows for btn in row]
+        self.assertEqual(labels, [str(i) for i in range(1, 26)])
+        callbacks = [btn["callback_data"] for row in rows for btn in row]
+        self.assertTrue(all(cb.startswith("poslot:") for cb in callbacks))
+        self.assertEqual(len(set(callbacks)), 25)
+        self.assertFalse(any("C0 4h" in (btn["text"] or "") for row in rows for btn in row))
+        self.assertFalse(any(cb.startswith("poswhy:") for cb in callbacks))
+        self.assertFalse(any(cb.startswith("lotsell:") for cb in callbacks))
+
+    def test_en_why_miss_is_exactly_not_recorded(self):
+        _pin("en")
+        self._start_patches([self.rave_1h])
+        self.assertTrue(portfolio_commands.handle_callback(
+            _query(encode_lot_callback(LOT_SHEET_CALLBACK_PREFIX, "RAVE", "1h"))
+        ))
+        msg = portfolio_commands.send_telegram_buttons.call_args[0][0]
+        self.assertEqual(t("lot_sheet_why_not_recorded"), "not recorded")
+        self.assertIn("not recorded", msg)
+        self.assertIn(t("lot_sheet_why", text="not recorded"), msg)
+        self.assertNotIn("hold-the-line", msg)
+        self.assertNotIn(t("why_no_decision"), msg)
+
+    def test_why_matches_opening_not_later_hold(self):
+        opening = {
+            "symbol": "RAVE/USDT",
+            "timeframe": "1h",
+            "action": "BUY",
+            "normalized_action": "BUY",
+            "rationale": "15m→vol entry",
+            "timestamp": "2026-09-01T12:30:00",
+        }
+        later_hold = {
+            "symbol": "RAVE/USDT",
+            "timeframe": "1h",
+            "action": "HOLD",
+            "normalized_action": "HOLD",
+            "rationale": "hold-the-line",
+            "timestamp": "2026-09-02T08:00:00",
+        }
+        match = find_opening_decision(self.rave_1h, [opening, later_hold])
+        self.assertIs(match, opening)
+        self.assertIsNone(find_opening_decision(self.rave_1h, [later_hold]))
+        mocks = self._start_patches([self.rave_1h])
+        mocks["why"].return_value = [opening, later_hold]
+        self.assertTrue(portfolio_commands.handle_callback(
+            _query(encode_lot_callback(LOT_SHEET_CALLBACK_PREFIX, "RAVE", "1h"))
+        ))
+        msg = portfolio_commands.send_telegram_buttons.call_args[0][0]
+        self.assertNotIn("hold-the-line", msg)
+        self.assertIn("15-Minuten-Volumen-Sensor", msg)
+
+    def test_analyse_button_only_when_sheet_exceeds_one_message(self):
+        short_kb = lot_sheet_keyboard(self.rave_1h)
+        short_labels = [btn["text"] for row in short_kb for btn in row]
+        self.assertNotIn(t("positions_btn_analyse"), short_labels)
+        long_kb = lot_sheet_keyboard(self.rave_1h, analyse=True)
+        long_flat = [btn for row in long_kb for btn in row]
+        self.assertIn(t("positions_btn_analyse"), [btn["text"] for btn in long_flat])
+        analyse = next(btn for btn in long_flat if btn["text"] == t("positions_btn_analyse"))
+        self.assertEqual(analyse["callback_data"], "posanly:RAVE:1h")
+        shown, overflow = fit_lot_sheet_message("x" * (LOT_SHEET_TELEGRAM_LIMIT + 10))
+        self.assertTrue(overflow)
+        self.assertLessEqual(len(shown), LOT_SHEET_TELEGRAM_LIMIT + 2)
+        fits, no_overflow = fit_lot_sheet_message("short")
+        self.assertFalse(no_overflow)
+        self.assertEqual(fits, "short")
+        body = format_lot_sheet_message(self.rave_1h, 0.65, "not recorded")
+        self.assertIn(t("lot_sheet_block_position"), body)
+        self.assertIn(t("lot_sheet_block_entry"), body)
+        self.assertIn(t("lot_sheet_block_why"), body)
+        self.assertIn(t("lot_sheet_block_since"), body)
 
     def test_format_lot_buys_empty_tree_is_empty_not_load_failed(self):
         with patch(
