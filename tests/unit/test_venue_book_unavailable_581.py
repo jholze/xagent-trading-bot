@@ -159,7 +159,14 @@ def _buy(
 
 
 @contextmanager
-def _eval_env(rm: RiskManager, *, position: dict | None = None, mcap=2_000_000_000, extra=()):
+def _eval_env(
+    rm: RiskManager,
+    *,
+    position: dict | None = None,
+    mcap=2_000_000_000,
+    extra=(),
+    size: float = 200.0,
+):
     pos = {"amount": 0} if position is None else position
     cap = SimpleNamespace(
         max_open_eff=100,
@@ -180,7 +187,7 @@ def _eval_env(rm: RiskManager, *, position: dict | None = None, mcap=2_000_000_0
         stack.enter_context(patch.object(rm, "_cash_floor_blocked", return_value=None))
         stack.enter_context(patch.object(rm, "_daily_buy_limit_blocked", return_value=None))
         stack.enter_context(
-            patch.object(rm, "_dynamic_size", return_value=(200.0, {"total_multiplier": 1.0}))
+            patch.object(rm, "_dynamic_size", return_value=(float(size), {"total_multiplier": 1.0}))
         )
         stack.enter_context(patch.object(rm, "_portfolio_equity", return_value=100_000.0))
         stack.enter_context(patch.object(rm, "_spendable_usdt", return_value=50_000.0))
@@ -447,8 +454,9 @@ def test_frozen_empty_book_capture_ok_stays_thin():
 def test_qnt_replay_order_book_passes_gate_and_risk():
     fake, calls = _rest_router([QNT_BULK], books={"QNT_USDT": QNT_BOOK})
     rm = _cfg()
+    rm._raw["max_usdt_per_trade"] = 1000
     manager = RiskManager(rm)
-    with _http(fake), _eval_env(manager):
+    with _http(fake), _eval_env(manager, size=1000.0):
         vres = check_venue_for_buy(
             "QNT/USDT",
             source="gainer_relvol",
@@ -756,8 +764,10 @@ def test_attach_quote_volumes_fills_from_bulk_without_size_and_skips_book_http()
 
 def test_sensor_and_risk_agree_on_qnt_fixture():
     fake, _ = _rest_router([QNT_BULK], books={"QNT_USDT": QNT_BOOK})
-    rm = RiskManager(_cfg())
-    with _http(fake), _eval_env(rm):
+    cfg = _cfg()
+    cfg._raw["max_usdt_per_trade"] = 1000
+    rm = RiskManager(cfg)
+    with _http(fake), _eval_env(rm, size=1000.0):
         sensor = check_venue_for_buy(
             "QNT/USDT",
             source=ENTRY_SENSOR_SOURCE,
