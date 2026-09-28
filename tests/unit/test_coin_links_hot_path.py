@@ -23,7 +23,7 @@ class TestCoinLinksHotPath(unittest.TestCase):
         api.assert_not_called()
         wl.assert_not_called()
         self.assertIn("BTC", html)
-        self.assertIn("gate.io", html.lower())
+        self.assertIn("https://www.gate.com/en-eu/trade/btc_usdc", html.lower())
 
     def test_resolve_slug_cache_only_by_default(self):
         with patch.object(coin_links, "_load_cache", return_value={"ETH": "ethereum"}), patch.object(
