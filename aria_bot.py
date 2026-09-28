@@ -417,8 +417,10 @@ def health_detail():
             from services.market_context_observability import (
                 cycle_counters,
                 format_fusion_line,
+                fusion_health_fields,
             )
 
+            market_fusion.update(fusion_health_fields(fusion))
             market_fusion["line"] = format_fusion_line(fusion)
             ctr = cycle_counters()
             market_fusion["cycle_blocks"] = ctr.get("buy_blocks")
