@@ -398,6 +398,21 @@ def orders_in_window(
     return out
 
 
+def _decision_belongs_to_acting_tenant(rec: dict) -> bool:
+    """Keep a decisions.jsonl row only for the acting tenant (#554).
+
+    Missing or empty ``tenant_id`` still counts when the acting tenant is
+    ``default`` (legacy rows written before audit_trail stamped the field).
+    """
+    from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
+
+    acting = resolve_tenant_id()
+    row_tid = str(rec.get("tenant_id") or "").strip()
+    if not row_tid:
+        return acting == DEFAULT_TENANT
+    return row_tid == acting
+
+
 def decision_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
     path = bot_dir / "logs/decisions.jsonl"
     stats = {
@@ -420,6 +435,8 @@ def decision_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if not _decision_belongs_to_acting_tenant(rec):
                 continue
             ts_raw = rec.get("timestamp")
             if not ts_raw:
@@ -467,6 +484,8 @@ def decision_highlights(
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if not _decision_belongs_to_acting_tenant(rec):
                 continue
             ts_raw = rec.get("timestamp")
             if not ts_raw:
