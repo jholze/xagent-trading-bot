@@ -280,7 +280,7 @@ def maybe_notify_state_change(bias: dict[str, Any] | None = None) -> bool:
 
 
 def fusion_health_fields(bias: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Fields `/health/detail` can surface without editing aria_bot.py."""
+    """Fields `/health/detail` merges into `market_fusion` from the given bias."""
     if bias is None:
         try:
             from services.market_policy_fusion import get_global_market_bias
