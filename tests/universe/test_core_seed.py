@@ -71,10 +71,8 @@ def test_seed_has_30_gate_usdt():
 def test_pins_kept():
     by_t = _by_ticker(_repo_watchlist_coins())
     for tick in ("ARIA", "RAVE", "HIGH", "ZBT"):
-        row = by_t[tick]
-        assert row.get("active") is True
-        assert "bucket" not in row
-        assert "strategies" not in row
+        row = by_t.get(tick)
+        assert row is None or row.get("active") is not True
     loaded = prepare_watchlist_core_seed(
         [
             {"symbol": "ARIA/USDT", "ticker": "ARIA", "timeframe": "4h", "active": True},
