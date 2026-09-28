@@ -1270,6 +1270,7 @@
       "stop_loss_pct": 50,
       "min_hours_between_buys": 4,
       "min_hours_between_sells": 3,
+      "live_enabled": false,
       "description": "ARIA 4h Live — Meme/High-Vol"
     },
     {
@@ -1297,6 +1298,7 @@
       "stop_loss_pct": 50,
       "min_hours_between_buys": 4,
       "min_hours_between_sells": 3,
+      "live_enabled": false,
       "description": "RAVE 4h Live — Meme/High-Vol"
     },
     {
@@ -1312,6 +1314,7 @@
       "stop_loss_pct": 50,
       "min_hours_between_buys": 4,
       "min_hours_between_sells": 3,
+      "live_enabled": false,
       "description": "HIGH 4h Live — Mid-Cap Alt"
     },
     {

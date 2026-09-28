@@ -273,7 +273,12 @@ def filter_watchlist_for_mode(
     coins: list[dict],
     config: dict | None = None,
 ) -> list[dict]:
-    """mode=off keeps the old six pins; shadow/enforce keep 30 + four pins."""
+    """mode=off keeps the old six pins; shadow/enforce keep loaded rows as-is.
+
+    Missing PIN_TICKERS are not re-injected. A synthetic list that still
+    includes them is tagged source=base (tests). The repo watchlist no
+    longer carries ARIA/RAVE/HIGH/ZBT (#602).
+    """
     cfg = core_seed_config(config)
     out: list[dict] = []
     seen: set[str] = set()
@@ -356,12 +361,16 @@ def _member_log_line(row: dict) -> str:
     profile = row.get("profile") or "-"
     applied = row.get("profile_applied")
     applied_s = "true" if applied else "false"
-    return (
+    line = (
         f"universe_member symbol={row.get('symbol')} "
         f"lane={row.get('lane') or 'trade'} "
         f"source={row.get('source') or '-'} "
         f"bucket={bucket} profile={profile} profile_applied={applied_s}"
     )
+    # Append only when true so existing NEAR exact-line assertions still match.
+    if row.get("pin_removed"):
+        line += " pin_removed=true"
+    return line
 
 
 def finalize_trade_members(
@@ -465,6 +474,16 @@ def finalize_trade_members(
         else:
             row.setdefault("source", row.get("source") or "discovery")
             row["profile_applied"] = False
+
+        # Retired meme pins (#602): open lots stay lane=trade source=position.
+        # pin_removed is logged at the end so existing universe_member
+        # substring assertions (NEAR) still match.
+        tick = ticker_of(sym)
+        row["pin_removed"] = bool(
+            tick in PIN_TICKERS
+            and sym in open_syms
+            and str(row.get("source") or "").strip() != "base"
+        )
 
         out.append(row)
         if mode != "off":
