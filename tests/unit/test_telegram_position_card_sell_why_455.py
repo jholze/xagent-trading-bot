@@ -251,10 +251,10 @@ class TestSignalStopFillButtons(unittest.TestCase):
         url_buttons = [btn for row in rows[1:] for btn in row]
         self.assertTrue(any(btn.get("text") == "Chart" for btn in url_buttons))
         self.assertFalse(
-            any("gate.io" in str(btn.get("url") or "").lower() for btn in url_buttons)
+            any("gate.com/en-eu/trade/" in str(btn.get("url") or "").lower() for btn in url_buttons)
         )
         self.assertFalse(
-            any("gate.io" in str(btn.get("url") or "").lower() for btn in first)
+            any("gate.com/en-eu/trade/" in str(btn.get("url") or "").lower() for btn in first)
         )
 
     def test_live_keeps_gate_on_secondary_row(self):
@@ -263,7 +263,7 @@ class TestSignalStopFillButtons(unittest.TestCase):
         self.assertEqual(rows[0][0]["callback_data"], "poswhy:RAVE:1h")
         self.assertEqual(rows[0][1]["callback_data"], "lotsell:RAVE:1h")
         url_buttons = [btn for row in rows[1:] for btn in row]
-        self.assertTrue(any("gate.io" in str(btn.get("url") or "").lower() for btn in url_buttons))
+        self.assertTrue(any("gate.com/en-eu/trade/" in str(btn.get("url") or "").lower() for btn in url_buttons))
         self.assertTrue(any(btn.get("text") == "Chart" for btn in url_buttons))
 
 

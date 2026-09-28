@@ -14,7 +14,9 @@ from logger import log
 
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "cmc_slug_cache.json"
 _CMC_BASE = "https://coinmarketcap.com"
-_GATE_BASE = "https://www.gate.io/trade"
+# Gate EU drops an unknown USDT path onto BTC/USDC. The chart that
+# stays on the coin is /en-eu/trade/{TICKER}_USDC. The bot book stays USDT.
+_GATE_BASE = "https://www.gate.com/en-eu/trade"
 _TV_BASE = "https://www.tradingview.com/chart/"
 
 
@@ -194,7 +196,7 @@ def cmc_coin_url(
 
 def gate_trade_url(ticker: str) -> str:
     ticker = normalize_ticker(ticker)
-    return f"{_GATE_BASE}/{ticker}_USDT" if ticker else _GATE_BASE
+    return f"{_GATE_BASE}/{ticker}_USDC" if ticker else _GATE_BASE
 
 
 def tradingview_chart_url(ticker: str) -> str:

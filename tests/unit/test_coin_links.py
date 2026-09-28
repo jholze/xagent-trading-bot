@@ -19,7 +19,7 @@ class TestCoinLinks(unittest.TestCase):
         self.assertEqual(normalize_ticker("btc"), "BTC")
 
     def test_gate_and_tradingview_urls(self):
-        self.assertEqual(gate_trade_url("H"), "https://www.gate.io/trade/H_USDT")
+        self.assertEqual(gate_trade_url("H"), "https://www.gate.com/en-eu/trade/H_USDC")
         self.assertIn("GATEIO%3AHUSDT", tradingview_chart_url("H"))
 
     @patch("notifications.coin_links._load_cache")
@@ -40,7 +40,7 @@ class TestCoinLinks(unittest.TestCase):
         with patch("notifications.coin_links._load_cache", return_value={}):
             html = format_ticker_html("BTC", symbol_suffix="/USDT")
         # Intended: Gate is the primary ticker link (CMC only when a slug is cached).
-        self.assertIn('<a href="https://www.gate.io/trade/BTC_USDT">BTC</a>/USDT', html)
+        self.assertIn('<a href="https://www.gate.com/en-eu/trade/BTC_USDC">BTC</a>/USDT', html)
 
     @patch("notifications.coin_links.coin_links_config")
     def test_format_ticker_html_always_gate_even_with_cached_cmc_slug(self, mock_cfg):
@@ -48,9 +48,9 @@ class TestCoinLinks(unittest.TestCase):
         with patch("notifications.coin_links._load_cache", return_value={"BTC": "bitcoin"}):
             html = format_ticker_html("BTC", symbol_suffix="/USDT")
             html_net = format_ticker_html("BTC", name="Bitcoin", allow_network=True)
-        self.assertIn('<a href="https://www.gate.io/trade/BTC_USDT">BTC</a>/USDT', html)
+        self.assertIn('<a href="https://www.gate.com/en-eu/trade/BTC_USDC">BTC</a>/USDT', html)
         self.assertNotIn("coinmarketcap.com", html)
-        self.assertIn("https://www.gate.io/trade/BTC_USDT", html_net)
+        self.assertIn("https://www.gate.com/en-eu/trade/BTC_USDC", html_net)
         self.assertNotIn("coinmarketcap.com", html_net)
 
     @patch("notifications.coin_links.coin_links_config")
