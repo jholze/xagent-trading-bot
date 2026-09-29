@@ -984,6 +984,12 @@ def normalize_unit_test_config(monkeypatch, request):
     arch["single_writer_lease_enabled"] = False
     cfg.setdefault("multi_tenant", {})["enabled"] = False
     cfg.setdefault("watchlist_quality", {})["mode"] = "off"
+    # Operator config.json has shorts.auto_after_sell=false (#614). Frozen
+    # auto-short tests use TradingService() + loaded config and require the
+    # missing-key default (true). Strip the operator pin here only.
+    shorts = cfg.setdefault("shorts", {})
+    if isinstance(shorts, dict):
+        shorts.pop("auto_after_sell", None)
     risk.setdefault("cash_policy", {})["enabled"] = False
     risk.setdefault("position_capacity", {})["enabled"] = False
     cfg["x_weight"] = 0.40

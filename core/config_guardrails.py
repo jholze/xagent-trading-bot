@@ -164,6 +164,50 @@ GUARDED_KEYS: dict[str, Callable[[str, Any], None]] = {
 }
 
 
+# Operator-pinned shorts keys: Hermes / patch_config must not mention them (#614).
+FROZEN_SHORTS_PATCH_KEYS = frozenset(
+    ("allow_live", "leverage_cap", "auto_after_sell", "climax_fade")
+)
+
+
+def reject_frozen_shorts_patch(updates: Any) -> None:
+    """Raise if a patch body writes operator-pinned ``shorts.*`` keys."""
+    if not isinstance(updates, dict):
+        return
+    shorts = updates.get("shorts")
+    if not isinstance(shorts, dict):
+        return
+    for key in ("climax_fade", "allow_live", "leverage_cap", "auto_after_sell"):
+        if key in shorts:
+            raise ConfigValidationError(
+                f"shorts.{key}",
+                shorts[key],
+                "operator-pinned; Hermes cannot write",
+            )
+
+
+def frozen_shorts_changed(new_cfg: Any, previous: Any) -> str | None:
+    """Return the path if a frozen shorts value changed vs ``previous``."""
+    if not isinstance(new_cfg, dict):
+        return None
+    prev = previous if isinstance(previous, dict) else {}
+    for path in (
+        "shorts.allow_live",
+        "shorts.leverage_cap",
+        "shorts.auto_after_sell",
+        "shorts.climax_fade",
+    ):
+        nv = _get_path(new_cfg, path)
+        pv = _get_path(prev, path)
+        # Present-before / missing-now is a change: a /config restore of a
+        # pre-#614 snapshot must not drop shorts.auto_after_sell (default true).
+        if pv is not _MISSING and nv is _MISSING:
+            return path
+        if nv is not _MISSING and pv is not _MISSING and nv != pv:
+            return path
+    return None
+
+
 def validate_config_for_save(config: Any) -> None:
     """Raise :class:`ConfigValidationError` on the first out-of-bounds key.
 

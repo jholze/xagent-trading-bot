@@ -210,6 +210,8 @@ class PortfolioService:
         entry_source: str | None = None,
         sync_virtual_ledger: bool = True,
         ctx: dict | None = None,
+        exit_source: str | None = None,
+        short_recipe: str | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
@@ -235,6 +237,8 @@ class PortfolioService:
             amount,
             entry_source=entry_source or source,
             leverage=lev,
+            short_recipe=short_recipe,
+            exit_source=exit_source,
         )
         if sync_virtual_ledger:
             record_trade({
@@ -340,6 +344,7 @@ class PortfolioService:
                 leverage=getattr(order, "leverage", None),
                 entry_source=order.signal or source,
                 ctx=ctx,
+                exit_source=getattr(order, "exit_source", "") or None,
             )
         if order.type == "COVER":
             return self.execute_cover(

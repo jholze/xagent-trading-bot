@@ -352,6 +352,109 @@ class TestHubLivePath(unittest.TestCase):
         mock_ex.assert_not_called()
 
 
+class TestClimaxFadeWs(unittest.TestCase):
+    def test_ws_climax_lot_stop_only(self):
+        raw = {
+            "exit_realtime": {
+                "enabled": True,
+                "mode": "live",
+                "live_cooldown_sec": 0.01,
+            },
+            "shorts": {
+                "enabled": True,
+                "climax_fade": {
+                    "enabled": True,
+                    "stop_price_pct": 10.0,
+                    "cover_close_pct": 3.0,
+                    "time_cap_hours": 16,
+                },
+            },
+        }
+        hub = ExitRealtimeHub(raw)
+        pos = {
+            "amount": 10.0,
+            "average_entry": 100.0,
+            "side": "short",
+            "short_recipe": "climax_fade",
+            "leverage": 2.0,
+            "entry_at": "2026-09-29T12:00:00+00:00",
+        }
+        hub.update_book(
+            [
+                {
+                    "symbol": "AAA/USDT",
+                    "timeframe": "4h",
+                    "position": pos,
+                    "average_entry": 100.0,
+                    "strategy_params": {},
+                    "atr_pct": 3.0,
+                }
+            ]
+        )
+        with patch(
+            "strategies.positions.get_position", return_value=pos
+        ), patch(
+            "services.exit_realtime.hub.try_execute_trail_exit",
+            return_value={"ok": True, "executed": True, "message": "ok"},
+        ) as mock_ex, patch(
+            "services.exit_realtime.hub._log_event"
+        ):
+            hub.on_ticker("AAA_USDT", 110.0)
+        mock_ex.assert_called()
+        kwargs = mock_ex.call_args.kwargs
+        self.assertEqual(kwargs.get("action") or mock_ex.call_args[1].get("action"), "COVER")
+        src = kwargs.get("exit_source") or mock_ex.call_args[1].get("exit_source")
+        self.assertEqual(src, "climax_stop")
+
+    def test_ws_climax_lot_does_not_take_on_wick(self):
+        raw = {
+            "exit_realtime": {
+                "enabled": True,
+                "mode": "live",
+                "live_cooldown_sec": 0.01,
+            },
+            "shorts": {
+                "enabled": True,
+                "climax_fade": {
+                    "enabled": True,
+                    "stop_price_pct": 10.0,
+                    "cover_close_pct": 3.0,
+                    "time_cap_hours": 16,
+                },
+            },
+        }
+        hub = ExitRealtimeHub(raw)
+        pos = {
+            "amount": 10.0,
+            "average_entry": 100.0,
+            "side": "short",
+            "short_recipe": "climax_fade",
+            "leverage": 2.0,
+            "entry_at": "2026-09-29T12:00:00+00:00",
+        }
+        hub.update_book(
+            [
+                {
+                    "symbol": "AAA/USDT",
+                    "timeframe": "4h",
+                    "position": pos,
+                    "average_entry": 100.0,
+                    "strategy_params": {},
+                    "atr_pct": 3.0,
+                }
+            ]
+        )
+        with patch(
+            "strategies.positions.get_position", return_value=pos
+        ), patch(
+            "services.exit_realtime.hub.try_execute_trail_exit"
+        ) as mock_ex, patch(
+            "services.exit_realtime.hub._log_event"
+        ):
+            hub.on_ticker("AAA_USDT", 96.0)
+        mock_ex.assert_not_called()
+
+
 class TestWouldSellIntegration(unittest.TestCase):
     def test_ttp_would_fire_with_high_peak(self):
         pos = {

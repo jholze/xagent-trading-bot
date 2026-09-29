@@ -1905,6 +1905,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             order_exist_in_exchange=order.order_exist_in_exchange,
             entry_15m_vol_ratio=order.entry_15m_vol_ratio,
             leverage=order.leverage,
+            exit_source=getattr(order, "exit_source", "") or "",
             ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
@@ -2049,6 +2050,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 leverage=getattr(order, "leverage", None),
                 sync_virtual_ledger=sync_virtual,
                 ctx=ctx,
+                exit_source=getattr(order, "exit_source", "") or None,
             )
         elif order.type == "COVER":
             local = self.portfolio.execute_cover(

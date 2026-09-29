@@ -302,6 +302,87 @@ def _telegram_portfolio_nav_block(
     )
 
 
+_CLIMAX_COVER_SOURCES = frozenset({"climax_cover", "climax_stop", "climax_time"})
+
+
+def _is_climax_mark(row: dict) -> bool:
+    if str(row.get("short_recipe") or "").strip() == "climax_fade":
+        return True
+    src = str(row.get("exit_source") or row.get("source") or "").strip()
+    return src == "climax_fade" or src in _CLIMAX_COVER_SOURCES
+
+
+def climax_fade_telegram_line(
+    positions: dict | None,
+    trades: list | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Soak line: ``climax-fade paper: open=N closed_7d=N closed_30d=N PF_30d=X last=source``."""
+    n = now or datetime.now()
+    if n.tzinfo is not None:
+        n_naive = n.replace(tzinfo=None)
+    else:
+        n_naive = n
+    open_n = 0
+    for pos in (positions or {}).values():
+        if not isinstance(pos, dict):
+            continue
+        if float(pos.get("amount") or 0) <= 0:
+            continue
+        if _is_climax_mark(pos):
+            open_n += 1
+
+    def _ts(row: dict) -> datetime | None:
+        raw = row.get("timestamp") or (row.get("timestamps") or {}).get("created")
+        if not raw:
+            return None
+        try:
+            ts = parse_ts(str(raw))
+        except Exception:
+            return None
+        if ts.tzinfo is not None:
+            ts = ts.replace(tzinfo=None)
+        return ts
+
+    closed: list[dict] = []
+    last_src = "none"
+    last_ts = None
+    for t in trades or []:
+        if not isinstance(t, dict):
+            continue
+        typ = str(t.get("type") or "").upper()
+        if typ not in ("COVER", "COVER_FULL"):
+            continue
+        if not _is_climax_mark(t):
+            continue
+        ts = _ts(t)
+        if ts is None:
+            continue
+        closed.append({"ts": ts, "pnl": float(t.get("pnl") or 0), "src": str(
+            t.get("exit_source") or t.get("source") or "climax_cover"
+        )})
+        if last_ts is None or ts >= last_ts:
+            last_ts = ts
+            last_src = closed[-1]["src"]
+
+    closed_7d = sum(1 for c in closed if c["ts"] >= n_naive - timedelta(days=7))
+    closed_30 = [c for c in closed if c["ts"] >= n_naive - timedelta(days=30)]
+    closed_30d = len(closed_30)
+    wins = sum(c["pnl"] for c in closed_30 if c["pnl"] > 0)
+    losses = sum(-c["pnl"] for c in closed_30 if c["pnl"] < 0)
+    if closed_30d == 0:
+        pf_s = "n/a"
+    elif losses <= 0:
+        pf_s = "n/a" if wins <= 0 else "inf"
+    else:
+        pf_s = f"{wins / losses:.2f}"
+    return (
+        f"climax-fade paper: open={open_n} closed_7d={closed_7d} "
+        f"closed_30d={closed_30d} PF_30d={pf_s} last={last_src}"
+    )
+
+
 def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = None) -> str:
     from core.tenant_context import resolve_tenant_id
 
@@ -365,6 +446,17 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         f"Entscheidungen gesamt {dec['total']} (HOLD {dec['hold']})\n\n"
         f"<b>Letzte Trades</b>\n"
         + "\n".join(trade_lines)
+        + "\n"
+        + climax_fade_telegram_line(
+            positions,
+            merge_trades_with_filled_orders(
+                th.get("trades", []) or [],
+                orders_raw.get("orders", []) or [],
+                day_start - timedelta(days=40),
+                day_end + timedelta(days=1),
+            ),
+            now=day_end,
+        )
     )
 
 

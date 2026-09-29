@@ -714,6 +714,8 @@ After `/sell`, pick a position by button, number, or symbol, then percent (25/50
 
 `/short` and `/cover` use the **same two-step confirm** as `/sell`: the typed command only sends the risk preview (`/short` with no size → default size; `/cover` with no percent → 100 %). Execution runs only after `manual_ok`. Paper shorts; if `shorts.enabled=false`, `/short` warns and does not start a preview.
 
+**Paper climax-fade (staging, not live):** A closed Gate 4h bar with return ≥ +6% and volume 4/20 ≥ 2.0 opens a paper SHORT without a prior spot sell via `execute_order` (lock, intent queue, snapshots). Cover only on a 4h close ≤ −3% on a bar that opened and closed after entry (market, not a limit), stop +10% price on the tick, time cap 16h. `shorts.allow_live` stays false; no Gate futures. Kill/keep after 28 days on the paper book. BTC/ETH/BNB/SOL are excluded. New reactive auto-shorts after a sell are off on operator config (`shorts.auto_after_sell: false`).
+
 Manual `/buy` and `/sell` appear in `/orders` and recent trades as **Manual**; bot trades as **Auto**.
 
 ### ⚙️ Mode & Gate.io

@@ -919,7 +919,11 @@ def save_config(config, tenant_id: str | None = None):
     frozen into the tenant body (#456).
     """
     global _config_cache
-    from core.config_guardrails import validate_config_for_save
+    from core.config_guardrails import (
+        ConfigValidationError,
+        frozen_shorts_changed,
+        validate_config_for_save,
+    )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from storage.config_history import config_write_lock
     validate_config_for_save(config)
@@ -937,6 +941,13 @@ def save_config(config, tenant_id: str | None = None):
                 log(f"save_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
                 return False
             previous = _load_previous_tenant_config(tid, default_cfg)
+            frozen = frozen_shorts_changed(config, previous)
+            if frozen:
+                raise ConfigValidationError(
+                    frozen,
+                    (config.get("shorts") or {}),
+                    "operator-pinned; Hermes cannot write",
+                )
             _snapshot_previous_or_raise(previous, tid)
             try:
                 from storage import tenant_meta_store as _tms
@@ -950,6 +961,13 @@ def save_config(config, tenant_id: str | None = None):
                 return False
         # default
         previous = _load_previous_default_config()
+        frozen = frozen_shorts_changed(config, previous)
+        if frozen:
+            raise ConfigValidationError(
+                frozen,
+                (config.get("shorts") or {}),
+                "operator-pinned; Hermes cannot write",
+            )
         _snapshot_previous_or_raise(previous, tid)
         path = "config.json"
         try:
@@ -975,12 +993,13 @@ def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
     Returns ``False`` when the write was skipped or failed — never a silent
     ``True`` without a persisted change.
     """
-    from core.config_guardrails import validate_config_for_save
+    from core.config_guardrails import reject_frozen_shorts_patch, validate_config_for_save
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from core.trading_profiles import deep_merge_dicts
 
     if not isinstance(updates, dict):
         return False
+    reject_frozen_shorts_patch(updates)
     tid = resolve_tenant_id(tenant_id)
     if tid == DEFAULT_TENANT:
         merged = deep_merge_dicts(get_config(tenant_id=tid) or {}, updates)

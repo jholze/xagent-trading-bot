@@ -713,6 +713,8 @@ Nach `/sell` Position per Button, Nummer oder Symbol wählen, dann Prozent (Butt
 
 `/short` und `/cover` nutzen **denselben Zwei-Schritt** wie `/sell`: der getippte Befehl sendet nur die Risiko-Vorschau (`/short` ohne Betrag → Standardgröße; `/cover` ohne Prozent → 100 %). Ausgeführt wird erst nach `manual_ok`. Paper-Shorts; bei `shorts.enabled=false` antwortet `/short` mit einer Warnung und startet keine Vorschau.
 
+**Paper climax-fade (staging, nicht live):** Geschlossene Gate-4h-Kerze mit Return ≥ +6 % und Volumen 4/20 ≥ 2.0 öffnet einen Paper-SHORT ohne vorherigen Spot-Verkauf über `execute_order` (Lock, Intent-Queue, Snapshots). Cover nur bei 4h-Close ≤ −3 % auf einer Kerze die nach Entry eröffnet und geschlossen hat (Markt, kein Limit), Stop +10 % Preis am Tick, Zeitkappe 16h. `shorts.allow_live` bleibt false; keine Gate-Futures. Kill/Keep nach 28 Tagen Paper-Buch. BTC/ETH/BNB/SOL sind ausgeschlossen. Neue reaktive Auto-Shorts nach Verkauf sind auf Operator-Config aus (`shorts.auto_after_sell: false`).
+
 Manuelle `/buy` und `/sell` erscheinen in `/orders` und letzten Trades als **Manuell**; Bot-Trades als **Auto**.
 
 ### ⚙️ Modus & Gate.io

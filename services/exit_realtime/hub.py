@@ -521,6 +521,55 @@ class ExitRealtimeHub:
 
         if short_lot:
             try:
+                from datetime import datetime, timezone
+
+                from strategies.climax_fade import (
+                    climax_cover_decision,
+                    climax_fade_config,
+                    is_climax_lot,
+                )
+
+                if is_climax_lot(live_for_side):
+                    cfg = climax_fade_config(
+                        self._raw if isinstance(self._raw, dict) else None
+                    )
+                    hit = climax_cover_decision(
+                        live_for_side,
+                        closed_4h_close=None,
+                        mark=price,
+                        now=datetime.now(timezone.utc),
+                        cfg=cfg,
+                        ws_tick=True,
+                    )
+                    if not hit:
+                        return
+                    src = str(hit.get("source") or "climax_stop")
+                    if not self._debounce_ok(sym, src, cooldown):
+                        return
+                    result = try_execute_trail_exit(
+                        symbol=sym,
+                        timeframe=tf,
+                        price=price,
+                        action="COVER",
+                        exit_source=src,
+                        rationale=str(hit.get("rationale") or ""),
+                        tenant_id=row_tenant,
+                    )
+                    if result.get("executed"):
+                        self._stats["executed"] += 1
+                        with self._pos_lock:
+                            self._book.pop(sym, None)
+                        self._broadcast_gui(
+                            {
+                                "type": "would_exit",
+                                "stage": "short_cover",
+                                "symbol": sym,
+                                "msg": f"COVER {sym} {src} @ {price}",
+                                "executed": True,
+                            }
+                        )
+                    return
+
                 from strategies.short_cover import evaluate_short_cover
 
                 try:

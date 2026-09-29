@@ -126,6 +126,8 @@ _CACHE_FIELDS = (
     "leverage",
     "recent_low",
     "entry_snapshot",
+    "short_recipe",
+    "exit_source",
 )
 
 
@@ -251,6 +253,10 @@ def _deserialize_position(raw: dict) -> dict:
         "leverage": float(raw.get("leverage") or 0) or None,
         "recent_low": float(raw["recent_low"]) if raw.get("recent_low") not in (None, "") else None,
     }
+    if raw.get("short_recipe"):
+        out["short_recipe"] = raw.get("short_recipe")
+    if raw.get("exit_source"):
+        out["exit_source"] = raw.get("exit_source")
     if "entry_snapshot" in raw:
         snap = raw["entry_snapshot"]
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
@@ -322,6 +328,10 @@ def _serialize_positions() -> dict:
             data["positions"][tf]["leverage"] = float(lev)
         if p.get("recent_low"):
             data["positions"][tf]["recent_low"] = float(p["recent_low"])
+        if p.get("short_recipe"):
+            data["positions"][tf]["short_recipe"] = p.get("short_recipe")
+        if p.get("exit_source"):
+            data["positions"][tf]["exit_source"] = p.get("exit_source")
         if "entry_snapshot" in p:
             snap = p["entry_snapshot"]
             data["positions"][tf]["entry_snapshot"] = (
@@ -1120,6 +1130,8 @@ def update_position(
     size_before_mult=None,
     size_after_mult=None,
     cap_applied=None,
+    short_recipe: str | None = None,
+    exit_source: str | None = None,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
@@ -1241,6 +1253,8 @@ def update_position(
                 pos["strategy_tier"] = None
                 pos["side"] = "long"
                 pos.pop("entry_snapshot", None)
+                pos.pop("short_recipe", None)
+                pos.pop("exit_source", None)
                 attach_snapshot = True
         elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
             old_amount = pos["amount"]
@@ -1274,6 +1288,14 @@ def update_position(
                 pos["dca_total_usdt"] = 0.0
                 pos.pop("entry_snapshot", None)
                 attach_snapshot = True
+                recipe = str(short_recipe or "").strip()
+                src = str(exit_source or "").strip()
+                if recipe == "climax_fade" or src == "climax_fade":
+                    pos["short_recipe"] = "climax_fade"
+                    pos["exit_source"] = "climax_fade"
+                else:
+                    pos.pop("short_recipe", None)
+                    pos.pop("exit_source", None)
             pos["side"] = "short"
             if leverage:
                 pos["leverage"] = float(leverage)
@@ -1297,6 +1319,8 @@ def update_position(
                 pos["sold_percent"] = 1.0
                 pos["side"] = "long"
                 pos["leverage"] = None
+                pos.pop("short_recipe", None)
+                pos.pop("exit_source", None)
             else:
                 peak = float(pos.get("peak_amount") or 0) or float(sell_amount + pos["amount"])
                 if peak > 0:
@@ -1484,6 +1508,10 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "lock": p.get("lock"),
         "current_price": p.get("current_price") or p.get("mark") or p.get("last_price"),
     }
+    if p.get("short_recipe"):
+        lot["short_recipe"] = p.get("short_recipe")
+    if p.get("exit_source"):
+        lot["exit_source"] = p.get("exit_source")
     # Surface position lock for /positions, /sell, Telegram 🔒 badge
     lock = p.get("lock")
     if isinstance(lock, dict) and lock:
