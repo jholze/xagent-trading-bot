@@ -413,6 +413,23 @@ class TradingService:
                 )
 
             approved_order = decision.order
+            if (
+                str(getattr(approved_order, "type", "") or "") == "SHORT"
+                and str(getattr(approved_order, "exit_source", "") or "").strip() == "climax_fade"
+            ):
+                blocked = self._climax_fade_slot_blocked(approved_order.symbol)
+                if blocked:
+                    log(
+                        f"climax-fade locked re-check blocked {approved_order.symbol}: {blocked}",
+                        "WARNING",
+                    )
+                    return TradeResult(
+                        False,
+                        approved_order.type,
+                        approved_order.symbol,
+                        message=f"climax-fade blocked: {blocked}",
+                        order_id=ledger_id or "",
+                    )
             if idem:
                 approved_order.idempotency_key = idem
                 approved_order.client_order_id = _clamp_gate_client_order_id(idem)
@@ -645,12 +662,15 @@ class TradingService:
         """
         from strategies.positions import get_position, is_open_position
         from strategies.short_policy import (
+            auto_after_sell_enabled,
             auto_short_notional_usdt,
             is_auto_short_source,
             shorts_enabled,
         )
 
         raw = self.config.raw
+        if not auto_after_sell_enabled(raw):
+            return
         if not shorts_enabled(raw):
             return
         src = str(getattr(approved_order, "exit_source", None) or "")
@@ -690,3 +710,159 @@ class TradingService:
             idempotency_key=idem,
             _lock_held=True,
         )
+
+    def _climax_fade_idem_key(self, symbol: str, ts_ms) -> str:
+        from strategies.climax_fade import normalize_climax_symbol
+
+        sym = normalize_climax_symbol(symbol) or symbol
+        return f"climaxfade|{sym}|4h|{int(ts_ms)}"
+
+    def _remember_climax_idem(self, idem: str) -> None:
+        if not hasattr(self, "_climax_fade_opened_keys"):
+            self._climax_fade_opened_keys = set()
+        self._climax_fade_opened_keys.add(idem)
+
+    def _climax_idem_seen(self, idem: str) -> bool:
+        return idem in getattr(self, "_climax_fade_opened_keys", ())
+
+    def _climax_fade_slot_blocked(self, symbol: str) -> str | None:
+        """Open-short / max_open gate. Fill-time caller holds ledger_lock."""
+        from strategies.positions import (
+            find_open_position_for_symbol,
+            get_position,
+            is_open_position,
+            list_active_positions,
+        )
+        from strategies.short_math import is_short
+        from strategies.short_policy import resolve_short_params
+
+        found = find_open_position_for_symbol(symbol)
+        if found:
+            _tf, pos = found
+            if is_open_position(pos):
+                return "open_position"
+        lot_tf = get_position(symbol, "4h")
+        if is_short(lot_tf) and float(lot_tf.get("amount") or 0) > 0:
+            return "open_short"
+        if is_open_position(lot_tf):
+            return "open_position"
+        params = resolve_short_params(symbol=symbol, config_raw=self.config.raw)
+        n_short = 0
+        for p in list_active_positions():
+            if is_short(p) and float(p.get("amount") or 0) > 0:
+                n_short += 1
+        if n_short >= int(params.get("max_open") or 6):
+            return "max_open"
+        return None
+
+    def _maybe_climax_fade_short(
+        self,
+        symbol: str,
+        timeframe: str,
+        closed_bar,
+        mark,
+        now=None,
+    ) -> TradeResult | None:
+        """Paper SHORT on a closed 4h climax bar — no prior spot sell.
+
+        Goes through ``execute_order`` (lock, should_queue_intent, snapshots).
+        Fail-closed. Do not nest under a held ``ledger_lock``.
+        """
+        from datetime import datetime, timezone
+
+        from strategies.climax_fade import (
+            climax_entry_signal,
+            climax_fade_config,
+            is_closed_4h_bar,
+            is_excluded_symbol,
+        )
+        from strategies.short_policy import resolve_short_params, shorts_enabled
+
+        try:
+            raw = self.config.raw
+            cfg = climax_fade_config(raw)
+            if not cfg.get("enabled") or not shorts_enabled(raw):
+                return None
+            if str(timeframe or "") != "4h":
+                return None
+            if not isinstance(closed_bar, dict):
+                return None
+            if is_excluded_symbol(symbol, cfg):
+                return None
+            n = now or datetime.now(timezone.utc)
+            ts_ms = closed_bar.get("ts_ms")
+            if not is_closed_4h_bar(ts_ms, n):
+                return None
+            closes = closed_bar.get("closes") or []
+            volumes = closed_bar.get("volumes") or []
+            bar_index = closed_bar.get("bar_index")
+            if bar_index is None:
+                bar_index = len(closes) - 1
+            if not climax_entry_signal(
+                closes=closes, volumes=volumes, bar_index=bar_index, cfg=cfg
+            ):
+                return None
+
+            idem = self._climax_fade_idem_key(symbol, ts_ms)
+            if self._climax_idem_seen(idem):
+                return None
+
+            blocked = self._climax_fade_slot_blocked(symbol)
+            if blocked == "max_open":
+                self._remember_climax_idem(idem)
+                return None
+            if blocked:
+                return None
+
+            params = resolve_short_params(symbol=symbol, config_raw=raw)
+            min_mcap = float(params.get("market_cap_min_usd") or 0)
+            if min_mcap > 0:
+                mcap = None
+                try:
+                    from data.cmc_market_cap import resolve_market_cap_usd
+
+                    mcap = resolve_market_cap_usd(symbol)
+                except Exception:
+                    mcap = None
+                if mcap is None or float(mcap) < min_mcap:
+                    self._remember_climax_idem(idem)
+                    return None
+
+            try:
+                px = float(mark or 0)
+            except (TypeError, ValueError):
+                px = 0.0
+            if px <= 0:
+                try:
+                    px = float(closes[bar_index])
+                except Exception:
+                    px = 0.0
+            if px <= 0:
+                return None
+            try:
+                factor = float(cfg.get("size_factor") or 0.5)
+            except (TypeError, ValueError):
+                factor = 0.5
+            usdt = factor * float(self.max_usdt_for_order() or 0)
+            if usdt <= 0:
+                self._remember_climax_idem(idem)
+                return None
+
+            order = TradeOrder(
+                type="SHORT",
+                symbol=symbol,
+                price=px,
+                amount=0,
+                usdt_amount=usdt,
+                source="auto",
+                signal="SHORT",
+                exit_source="climax_fade",
+                idempotency_key=idem,
+            )
+            self._remember_climax_idem(idem)
+            return self.execute_order(order, "4h", source="auto", idempotency_key=idem)
+        except Exception as exc:
+            from logger import log
+
+            log(f"climax-fade open skip {symbol}: {exc}", "ERROR")
+            return None

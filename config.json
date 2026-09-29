@@ -104,6 +104,20 @@
   "shorts": {
     "enabled": true,
     "allow_live": false,
+    "auto_after_sell": false,
+    "climax_fade": {
+      "enabled": true,
+      "timeframe": "4h",
+      "min_return_pct": 6.0,
+      "vol_short": 4,
+      "vol_long": 20,
+      "vol_mult_min": 2.0,
+      "cover_close_pct": 3.0,
+      "stop_price_pct": 10.0,
+      "time_cap_hours": 16,
+      "size_factor": 0.5,
+      "exclude_symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
+    },
     "leverage_default": 2,
     "leverage_cap": 2,
     "max_open": 6,

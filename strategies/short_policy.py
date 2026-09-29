@@ -43,6 +43,17 @@ def shorts_cover_allowed(_raw: dict | None = None) -> bool:
     return True
 
 
+def auto_after_sell_enabled(raw: dict | None = None) -> bool:
+    """Missing ``shorts.auto_after_sell`` defaults True (frozen auto-short tests)."""
+    cfg = shorts_config(raw)
+    if "auto_after_sell" not in cfg:
+        return True
+    val = cfg.get("auto_after_sell")
+    if val is None:
+        return True
+    return bool(val)
+
+
 def is_auto_short_source(source: str | None, raw: dict | None = None) -> bool:
     allow = shorts_config(raw).get("auto_sources") or AUTO_SOURCES
     s = str(source or "").strip()

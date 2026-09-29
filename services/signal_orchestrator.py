@@ -281,14 +281,42 @@ class SignalOrchestrator:
             log(f"cycle short side check fail {getattr(analysis, 'symbol', '?')}: {exc}", "ERROR")
             return True, None
         try:
+            from datetime import datetime, timezone
+
+            from strategies.climax_fade import (
+                climax_cover_decision,
+                climax_fade_config,
+                is_climax_lot,
+                last_closed_4h_bar,
+                lot_entry_at_ms,
+            )
             from strategies.short_cover import evaluate_short_cover
 
-            hit = evaluate_short_cover(
-                pos,
-                current_price,
-                symbol=analysis.symbol,
-                config_raw=self.config.raw if hasattr(self.config, "raw") else None,
-            )
+            if is_climax_lot(pos):
+                cfg = climax_fade_config(self.config.raw if hasattr(self.config, "raw") else None)
+                bar = last_closed_4h_bar(
+                    analysis.symbol,
+                    datetime.now(timezone.utc),
+                    market=self.market,
+                    entry_at_ms=lot_entry_at_ms(pos),
+                )
+                closed_close = None if bar is None else bar[0]
+                bar_ts = None if bar is None else bar[1]
+                hit = climax_cover_decision(
+                    pos,
+                    closed_4h_close=closed_close,
+                    mark=current_price,
+                    now=datetime.now(timezone.utc),
+                    cfg=cfg,
+                    bar_open_ts_ms=bar_ts,
+                )
+            else:
+                hit = evaluate_short_cover(
+                    pos,
+                    current_price,
+                    symbol=analysis.symbol,
+                    config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                )
             if not hit:
                 return True, None
             lot_tf = str((pos or {}).get("timeframe") or analysis.timeframe)
@@ -310,6 +338,30 @@ class SignalOrchestrator:
         except Exception as exc:
             log(f"cycle short cover skip {analysis.symbol}: {exc}", "WARNING")
             return True, None
+
+    def _try_climax_fade_open(self, symbol: str, current_price: float):
+        """Once per closed 4h bar. Missing OHLCV → no open (fail-closed)."""
+        from datetime import datetime, timezone
+
+        from strategies.climax_fade import closed_bar_from_ohlcv, climax_fade_config
+        from strategies.short_policy import shorts_enabled
+
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        cfg = climax_fade_config(raw)
+        if not cfg.get("enabled") or not shorts_enabled(raw):
+            return None
+        now = datetime.now(timezone.utc)
+        try:
+            df = self.market.fetch_ohlcv(symbol, "4h", 30)
+        except Exception as exc:
+            log(f"climax-fade ohlcv skip {symbol}: {exc}", "ERROR")
+            return None
+        closed_bar = closed_bar_from_ohlcv(df, now)
+        if not closed_bar:
+            return None
+        return self.trading._maybe_climax_fade_short(
+            symbol, "4h", closed_bar, current_price, now=now
+        )
 
     def process_entry_sensor(
         self,
@@ -399,7 +451,16 @@ class SignalOrchestrator:
             pass
         handled_short, trade_result = self._cycle_short_cover(pos, analysis, current_price)
         if not handled_short:
-            trade_result = self.execute_if_needed(analysis, coin, current_price)
+            climax_res = None
+            try:
+                climax_res = self._try_climax_fade_open(symbol, current_price)
+            except Exception as exc:
+                log(f"climax-fade open skip {symbol}: {exc}", "ERROR")
+                climax_res = None
+            if climax_res is not None and getattr(climax_res, "executed", False):
+                trade_result = climax_res
+            else:
+                trade_result = self.execute_if_needed(analysis, coin, current_price)
         self.audit.record(coin, analysis, trade_result, current_price)
 
         symbol = coin["symbol"]
