@@ -134,3 +134,13 @@ step.
    the default.
 
 Run `/grok-build:check` to verify the Grok CLI is authenticated and reachable before relying on this workflow.
+
+## Kanban Status (project columns only)
+
+Board: https://github.com/users/jholze/projects/1 — Status automation is
+`.github/workflows/kanban-status.yml` + `scripts/kanban_status.py` (see
+`docs/kanban-status.md`). Move **Status columns only**. Never set
+`omnigent:ready` / `review:*` / `veto:*`. Kay sets `omnigent:ready` after
+the Ready chain. Coding starts only from **Ready to Work** + that label.
+PRs target `staging`. Never push or merge to `main`.
+
