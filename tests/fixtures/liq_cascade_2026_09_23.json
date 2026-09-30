@@ -1,0 +1,190 @@
+{
+  "_doc": "Synthetic Gate futures.public_liquidates batches shaped like 2026-09-23. Quiet 60m baseline from 13:00 UTC, then ~0.10M long BTC at 14:05 and ~52.9M long BTC at 14:10. Position size > 0 = long liquidated. No live orders.",
+  "cascade_start_ms": 1790172300000,
+  "quanto_btc": 0.0001,
+  "price": "87000",
+  "batches": [
+    {
+      "time": 1790168400,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790168400000
+        }
+      ]
+    },
+    {
+      "time": 1790168700,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790168700000
+        }
+      ]
+    },
+    {
+      "time": 1790169000,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790169000000
+        }
+      ]
+    },
+    {
+      "time": 1790169300,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790169300000
+        }
+      ]
+    },
+    {
+      "time": 1790169600,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790169600000
+        }
+      ]
+    },
+    {
+      "time": 1790169900,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790169900000
+        }
+      ]
+    },
+    {
+      "time": 1790170200,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790170200000
+        }
+      ]
+    },
+    {
+      "time": 1790170500,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790170500000
+        }
+      ]
+    },
+    {
+      "time": 1790170800,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790170800000
+        }
+      ]
+    },
+    {
+      "time": 1790171100,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790171100000
+        }
+      ]
+    },
+    {
+      "time": 1790171400,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790171400000
+        }
+      ]
+    },
+    {
+      "time": 1790171700,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "115",
+          "price": "87000",
+          "time": 1790171700000
+        }
+      ]
+    },
+    {
+      "time": 1790172300,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "11495",
+          "price": "87000",
+          "time": 1790172300000
+        }
+      ]
+    },
+    {
+      "time": 1790172600,
+      "channel": "futures.public_liquidates",
+      "event": "update",
+      "result": [
+        {
+          "contract": "BTC_USDT",
+          "size": "6080460",
+          "price": "87000",
+          "time": 1790172600000
+        }
+      ]
+    }
+  ]
+}

@@ -404,3 +404,279 @@ def try_execute_trail_exit(
     finally:
         with _inflight_lock:
             _inflight.discard(sym)
+
+
+def _gross_unrealized_pct(pos: dict[str, Any], price: float) -> float:
+    """Gross unrealized % the way exit_ws computes long gain: (px/entry - 1)*100."""
+    entry = float(pos.get("average_entry") or 0)
+    px = float(price or 0)
+    if entry <= 0 or px <= 0:
+        return 0.0
+    try:
+        from strategies.short_math import is_short as _is_short
+
+        if _is_short(pos):
+            return (entry - px) / entry * 100.0
+    except Exception:
+        pass
+    return (px / entry - 1.0) * 100.0
+
+
+def _lot_in_profit(pos: dict[str, Any], price: float, raw_config: dict | None) -> bool:
+    from core.costs import CostModel
+
+    gain = _gross_unrealized_pct(pos, price)
+    rt = float(CostModel.from_config(raw_config).round_trip_pct())
+    return (gain - rt) > 0.0
+
+
+def execute_cascade_exit(
+    *,
+    side: str,
+    lots: list[dict[str, Any]] | None = None,
+    prices: dict[str, float] | None = None,
+    trading: Any | None = None,
+    fire_enabled: bool | None = None,
+    raw_config: dict | None = None,
+    now_mono: float | None = None,
+    state: Any | None = None,
+) -> dict[str, Any]:
+    """Binary full-exit for one cascade side. Not routed through try_execute_trail_exit."""
+    from core.actions import COVER_FULL, SELL_FULL
+    from core.models import TradeOrder
+    from services.exit_realtime.config import cascade_config
+    from strategies.sell_sources import LIQ_CASCADE_SOURCE
+
+    side_key = "short" if str(side or "").strip().lower() in ("short", "pump") else "long"
+    short_side = side_key == "short"
+    action = COVER_FULL if short_side else SELL_FULL
+    rationale = (
+        "liq cascade pump full cover"
+        if short_side
+        else "liq cascade dump full exit"
+    )
+    cc = cascade_config(raw_config)
+    if fire_enabled is None:
+        fire_enabled = bool(cc.get("fire_enabled"))
+    mono = float(now_mono if now_mono is not None else time.monotonic())
+    px_map = dict(prices or {})
+
+    if not fire_enabled:
+        log(
+            f"liq_cascade fire side={side_key} fire_enabled=false — detector only, no flatten",
+            "INFO",
+        )
+        return {
+            "ok": True,
+            "executed": False,
+            "message": "fire_disabled",
+            "side": side_key,
+            "action": action,
+            "filled": 0,
+            "results": [],
+        }
+
+    from strategies.positions import get_position, is_open_position
+    from strategies.short_math import is_short as _is_short
+
+    if lots is None:
+        from strategies.positions import list_active_positions
+
+        lots = list(list_active_positions() or [])
+
+    snapshot = []
+    for lot in lots or []:
+        if not isinstance(lot, dict):
+            continue
+        try:
+            if bool(_is_short(lot)) != short_side:
+                continue
+        except Exception:
+            continue
+        snapshot.append(lot)
+
+    if trading is None:
+        from services.trading_service import TradingService
+
+        trading = TradingService()
+
+    results: list[dict[str, Any]] = []
+    filled = 0
+
+    for lot in snapshot:
+        sym = str(lot.get("symbol") or "")
+        tf = str(lot.get("timeframe") or "1h")
+        if not sym:
+            continue
+        try:
+            px = float(px_map.get(sym) or lot.get("current_price") or lot.get("last_price") or 0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px <= 0:
+            results.append(
+                {
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "executed": False,
+                    "message": "no_price",
+                }
+            )
+            continue
+
+        with _inflight_lock:
+            if sym in _inflight:
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": "inflight",
+                    }
+                )
+                continue
+            if recently_exited(sym, within_sec=60.0):
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": "recent_exit",
+                    }
+                )
+                continue
+            _inflight.add(sym)
+
+        try:
+            pos = get_position(sym, tf) or dict(lot)
+            if not is_open_position(pos):
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": "no_open_position",
+                    }
+                )
+                continue
+            amount = float(pos.get("amount") or lot.get("amount") or 0)
+            if amount <= 0:
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": "amount_zero",
+                    }
+                )
+                continue
+
+            try:
+                from strategies.position_lock import (
+                    attach_lock_from_ledger,
+                    auto_sell_blocked,
+                    log_lock_block,
+                )
+
+                pos = attach_lock_from_ledger(pos, sym, tf) or pos
+                locked, lock_msg = auto_sell_blocked(pos, LIQ_CASCADE_SOURCE)
+                if locked:
+                    log_lock_block(sym, lock_msg, source=LIQ_CASCADE_SOURCE)
+                    log(
+                        f"liq_cascade position_locked {sym} {tf} side={side_key} :: {lock_msg}",
+                        "INFO",
+                    )
+                    results.append(
+                        {
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "executed": False,
+                            "message": lock_msg,
+                            "code": "position_locked",
+                        }
+                    )
+                    continue
+            except Exception as exc:
+                log(f"liq_cascade position_lock check error {sym}: {exc}", "ERROR")
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": f"position_lock_check_error: {exc}"[:200],
+                        "code": "position_lock_check_error",
+                    }
+                )
+                continue
+
+            if not _lot_in_profit(pos, px, raw_config):
+                results.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "executed": False,
+                        "message": "not_in_profit",
+                    }
+                )
+                continue
+
+            order = TradeOrder(
+                type="COVER" if short_side else "SELL",
+                symbol=sym,
+                price=px,
+                amount=amount,
+                signal=action,
+                source=LIQ_CASCADE_SOURCE,
+                exit_source=LIQ_CASCADE_SOURCE,
+                exit_rationale=rationale,
+            )
+            result = trading.execute_order(
+                order, tf, source=LIQ_CASCADE_SOURCE, confidence=80.0
+            )
+            executed = bool(getattr(result, "executed", False))
+            msg = str(getattr(result, "message", "") or "")
+            row = {
+                "symbol": sym,
+                "timeframe": tf,
+                "executed": executed,
+                "message": msg,
+                "action": action,
+                "price": px,
+                "amount": amount,
+            }
+            if executed:
+                filled += 1
+                _last_exit_at[sym] = time.monotonic()
+                log(
+                    f"liq_cascade {action} {sym} {tf} px={px:.6g} amt={amount:.6g} :: {msg[:80]}",
+                    "INFO",
+                )
+            results.append(row)
+        except Exception as exc:
+            log(f"liq_cascade execute error {sym}: {exc}", "ERROR")
+            results.append(
+                {
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "executed": False,
+                    "message": str(exc)[:200],
+                }
+            )
+        finally:
+            with _inflight_lock:
+                _inflight.discard(sym)
+
+    if filled > 0 and state is not None:
+        try:
+            state.note_fill(side_key, mono)
+        except Exception as exc:
+            log(f"liq_cascade note_fill: {exc}", "DEBUG")
+
+    return {
+        "ok": True,
+        "executed": filled > 0,
+        "message": "ok" if filled else "no_fill",
+        "side": side_key,
+        "action": action,
+        "filled": filled,
+        "results": results,
+    }

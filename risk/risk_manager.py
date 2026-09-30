@@ -43,7 +43,12 @@ def reset_risk_manager_globals_for_tests() -> None:
 
 def _is_emergency_sell(signal: str) -> bool:
     signal = signal or ""
-    return signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL", "SELL_FULL") or "STOP" in signal
+    return signal in (
+        "SELL_STOP_FULL",
+        "SELL_STOP_PARTIAL",
+        "SELL_FULL",
+        "COVER_FULL",
+    ) or "STOP" in signal
 
 
 def _is_stop_loss_sell(signal: str) -> bool:
@@ -2363,6 +2368,42 @@ class RiskManager:
         if order.type == "COVER":
             if not is_short(pos) or float((pos or {}).get("amount") or 0) <= 0:
                 return RiskDecision(approved=False, message="no short to cover", code="no_short")
+            cover_src = str(source or getattr(order, "source", None) or "").strip().lower()
+            cover_exit = str(getattr(order, "exit_source", "") or "").strip().lower()
+            if cover_src == "liq_cascade" or cover_exit == "liq_cascade":
+                try:
+                    from strategies.position_lock import (
+                        attach_lock_from_ledger,
+                        auto_sell_blocked,
+                        log_lock_block,
+                    )
+
+                    locked_pos = attach_lock_from_ledger(pos, order.symbol, timeframe) or pos
+                    locked, lock_msg = auto_sell_blocked(
+                        locked_pos, "liq_cascade", config=raw
+                    )
+                    if locked:
+                        log_lock_block(order.symbol, lock_msg, source="liq_cascade")
+                        return RiskDecision(
+                            approved=False,
+                            message=lock_msg,
+                            code="position_locked",
+                        )
+                except Exception as exc:
+                    try:
+                        from logger import log as _log
+
+                        _log(
+                            f"position_lock cover check error {order.symbol}: {exc}",
+                            "ERROR",
+                        )
+                    except Exception:
+                        pass
+                    return RiskDecision(
+                        approved=False,
+                        message=f"position_lock_check_error: {exc}"[:200],
+                        code="position_lock_check_error",
+                    )
             out = TradeOrder(
                 type="COVER",
                 symbol=order.symbol,
