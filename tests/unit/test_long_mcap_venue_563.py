@@ -356,3 +356,102 @@ def test_long_mcap_german_line():
     text = explain_risk("long mcap 1 < min 5000000", code="long_mcap")
     assert "Long" in text
     assert text != "long mcap 1 < min 5000000"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "cmc",
+        "auto",
+        "gainer_relvol",
+        "gainer_live_top",
+        "unknown_source_563",
+    ],
+)
+def test_empty_book_new_long_buy_is_venue_liquidity_block(source):
+    rm = RiskManager(_cfg())
+    with _eval_env(rm, metrics=_EMPTY_BOOK, mcap=6_000_000):
+        dec = rm.evaluate(_buy(source=source), "4h", source=source)
+    assert dec.approved is False
+    assert dec.code == "venue_liquidity_block"
+    assert dec.order is None
+
+
+def test_replay_692a9f4bc78a_buy_cmc_empty_book_is_venue_block():
+    order_id = "692a9f4bc78a"
+    rm = RiskManager(_cfg())
+    with _eval_env(rm, metrics=_EMPTY_BOOK, mcap=5_194_841):
+        dec = rm.evaluate(_buy(source="cmc"), "4h", source="cmc")
+    assert order_id == "692a9f4bc78a"
+    assert dec.approved is False
+    assert dec.code == "venue_liquidity_block"
+    assert dec.code != "long_mcap"
+    assert dec.order is None
+
+
+def test_replay_0a48220255dd_sell_auto_rsi_sell_not_venue_or_long_mcap():
+    order_id = "0a48220255dd"
+    rm = RiskManager(_cfg())
+    open_lot = {"amount": 2.0, "average_entry": 1.0}
+    sell = TradeOrder(
+        type="SELL",
+        symbol="L3/USDT",
+        price=1.0,
+        amount=2.0,
+        signal="rsi_sell",
+        source="auto",
+    )
+    with _eval_env(rm, position=open_lot, metrics=_EMPTY_BOOK, mcap=5_194_841):
+        dec = rm.evaluate(sell, "4h", source="auto")
+    assert order_id == "0a48220255dd"
+    assert dec.code not in ("venue_liquidity_block", "long_mcap")
+
+
+def test_replay_869b2c97d2f9_short_auto_is_short_mcap():
+    order_id = "869b2c97d2f9"
+    rm = RiskManager(_cfg())
+    with patch("core.simulated_trading.is_real_live_trading", return_value=False), patch(
+        "data.cmc_market_cap.resolve_market_cap_usd", return_value=5_194_841
+    ), patch.object(rm, "_available_usdt", return_value=10_000):
+        dec = rm.evaluate(
+            TradeOrder(
+                type="SHORT",
+                symbol="L3/USDT",
+                price=1.0,
+                amount=0,
+                usdt_amount=100,
+            ),
+            "4h",
+            source="auto",
+        )
+    assert order_id == "869b2c97d2f9"
+    assert dec.approved is False
+    assert dec.code == "short_mcap"
+    assert "50000000" in dec.message
+
+
+def test_nolot_dca_sniper_empty_book_is_venue_liquidity_block():
+    rm = RiskManager(_cfg())
+    with _eval_env(rm, metrics=_EMPTY_BOOK, mcap=6_000_000):
+        dec = rm.evaluate(_buy(source="dca_sniper", signal="BUY"), "4h", source="dca_sniper")
+    assert dec.approved is False
+    assert dec.code == "venue_liquidity_block"
+    assert dec.order is None
+
+
+def test_nolot_buy_dca_auto_empty_book_is_venue_liquidity_block():
+    rm = RiskManager(_cfg())
+    with _eval_env(rm, metrics=_EMPTY_BOOK, mcap=6_000_000):
+        dec = rm.evaluate(_buy(source="auto", signal="BUY_DCA"), "4h", source="auto")
+    assert dec.approved is False
+    assert dec.code == "venue_liquidity_block"
+    assert dec.order is None
+
+
+def test_nolot_dca_sniper_below_floor_is_long_mcap():
+    rm = RiskManager(_cfg())
+    with _eval_env(rm, metrics=_HEALTHY, mcap=4_900_000):
+        dec = rm.evaluate(_buy(source="dca_sniper", signal="BUY"), "4h", source="dca_sniper")
+    assert dec.approved is False
+    assert dec.code == "long_mcap"
+    assert dec.order is None
