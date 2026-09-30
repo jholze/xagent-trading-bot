@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from core.actions import is_sell
+from core.actions import COVER_FULL, SELL_FULL, is_sell
 from strategies.sell_sources import (
     SOCIAL_SOURCES,
     STOP_SOURCES,
@@ -127,7 +127,11 @@ def _is_stop_loss_source(sell_source: str, action: str) -> bool:
     act = (action or "").upper()
     if src in STOP_SOURCES and "stop" in act:
         return True
-    if "STOP" in act or act in ("SELL_FULL", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"):
+    if "STOP" in act or act in (
+        "SELL_FULL",
+        "SELL_STOP_FULL",
+        "SELL_STOP_PARTIAL",
+    ):
         return True
     if src == "x_stop_loss":
         return True
@@ -149,6 +153,10 @@ def entry_sell_allowed(
     """Return (allowed, reason). Empty reason when allowed."""
     cfg = cfg or entry_guard_config()
     if not cfg.get("enabled", True):
+        return True, ""
+
+    act = (action or "").upper()
+    if act in (SELL_FULL, COVER_FULL):
         return True, ""
 
     guarded = is_guarded_entry(position, cfg)

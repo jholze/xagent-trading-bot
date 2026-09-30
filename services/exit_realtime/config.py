@@ -81,3 +81,48 @@ def exit_execute_url() -> str:
 
 def exit_ws_internal_token() -> str:
     return (os.environ.get("EXIT_WS_INTERNAL_TOKEN") or "").strip()
+
+
+CASCADE_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "fire_enabled": False,
+    "ws_url": "wss://fx-ws.gateio.ws/v4/ws/usdt",
+    "channel": "futures.public_liquidates",
+    "payload": "!all",
+    "window_sec": 300,
+    "baseline_sec": 3600,
+    "min_baseline_samples_sec": 1800,
+    "multiplier": 3.0,
+    "min_notional_usd": 100000,
+    "quanto_btc": 0.0001,
+    "cooldown_sec": 600,
+    "calibrated": False,
+    "log_soft_signal": True,
+}
+
+
+def cascade_config(raw: dict | None = None) -> dict[str, Any]:
+    """``exit_realtime.cascade`` with defaults. Does not mutate sibling keys."""
+    out = dict(CASCADE_DEFAULTS)
+    block = exit_realtime_config(raw).get("cascade")
+    if not isinstance(block, dict):
+        return out
+    for key, default in CASCADE_DEFAULTS.items():
+        if key not in block:
+            continue
+        val = block[key]
+        if isinstance(default, bool):
+            out[key] = bool(val)
+        elif isinstance(default, int) and not isinstance(default, bool):
+            try:
+                out[key] = int(val)
+            except (TypeError, ValueError):
+                out[key] = default
+        elif isinstance(default, float):
+            try:
+                out[key] = float(val)
+            except (TypeError, ValueError):
+                out[key] = default
+        else:
+            out[key] = val if val is not None else default
+    return out

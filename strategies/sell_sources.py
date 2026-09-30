@@ -39,6 +39,9 @@ SOCIAL_SOURCES = frozenset({"cmc", "lc", "x", "x_take_profit"})
 
 STOP_SOURCES = frozenset({"x_stop_loss", "stop_loss", "technical"})
 
+# Cascade binary full-exit (#564). Not a stop, not a manual source.
+LIQ_CASCADE_SOURCE = "liq_cascade"
+
 # Portfolio hygiene: free a full slot for high-conviction new entry (#111)
 SLOT_EVICT_SOURCES = frozenset({"slot_evict_for_entry"})
 

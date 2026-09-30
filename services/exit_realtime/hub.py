@@ -110,6 +110,10 @@ class ExitRealtimeHub:
             "book_tenant_collisions": 0,
         }
         self.sync_correlated_tier_watch()
+        self._liq_stream: Any = None
+        self._cascade_detector: Any = None
+        self._cascade_state: Any = None
+        self._init_cascade()
 
     def stats(self) -> dict[str, Any]:
         out = dict(self._stats)
@@ -348,6 +352,95 @@ class ExitRealtimeHub:
         except Exception as exc:
             log(f"exit_realtime subscribe sync: {exc}", "DEBUG")
 
+    def _init_cascade(self) -> None:
+        try:
+            from services.exit_realtime.cascade_detector import CascadeDetector
+            from services.exit_realtime.cascade_state import CascadeState
+            from services.exit_realtime.config import cascade_config
+
+            cc = cascade_config(self._raw if isinstance(self._raw, dict) else None)
+            self._cascade_detector = CascadeDetector(cc)
+            self._cascade_state = CascadeState(
+                cooldown_sec=float(cc.get("cooldown_sec") or 600)
+            )
+        except Exception as exc:
+            log(f"exit_realtime cascade init: {exc}", "DEBUG")
+            self._cascade_detector = None
+            self._cascade_state = None
+
+    def on_liq_batch(self, payload: Any, *, now_ms: int | None = None) -> dict[str, Any]:
+        """Ingest a public_liquidates batch (live WS or synthetic fixture)."""
+        from services.exit_realtime.config import cascade_config
+        from services.exit_realtime.execute import execute_cascade_exit
+        from services.exit_realtime.liq_stream import parse_liq_batch
+
+        cc = cascade_config(self._raw if isinstance(self._raw, dict) else None)
+        out: dict[str, Any] = {"ingested": 0, "fires": []}
+        if not cc.get("enabled"):
+            return out
+        if self._cascade_detector is None or self._cascade_state is None:
+            self._init_cascade()
+        if self._cascade_detector is None or self._cascade_state is None:
+            return out
+        events = parse_liq_batch(payload, quanto_btc=cc.get("quanto_btc") or 0.0001)
+        if events:
+            self._cascade_detector.ingest(events)
+            out["ingested"] = len(events)
+        ts = int(now_ms if now_ms is not None else time.time() * 1000)
+        if events and now_ms is None:
+            ts = max(ts, max(ev.ts_ms for ev in events))
+        snaps = self._cascade_detector.evaluate(ts)
+        now_mono = time.monotonic()
+        for side, snap in snaps.items():
+            want = self._cascade_state.should_execute(
+                side, is_fire=bool(snap.fire), now_mono=now_mono
+            )
+            if snap.fire:
+                out["fires"].append(
+                    {
+                        "side": side,
+                        "window_usd": str(snap.window_usd),
+                        "ratio": snap.ratio,
+                        "want_execute": want,
+                    }
+                )
+            if not want:
+                continue
+            if not cc.get("fire_enabled"):
+                log(
+                    f"liq_cascade fire side={side} fire_enabled=false "
+                    f"window_usd={snap.window_usd} ratio={snap.ratio:.3g}",
+                    "INFO",
+                )
+                continue
+            result = execute_cascade_exit(
+                side=side,
+                prices=self.last_prices(),
+                raw_config=self._raw if isinstance(self._raw, dict) else None,
+                fire_enabled=True,
+                now_mono=now_mono,
+                state=self._cascade_state,
+            )
+            out.setdefault("exits", []).append(result)
+        return out
+
+    def _start_liq_cascade(self) -> None:
+        from services.exit_realtime.config import cascade_config
+        from services.exit_realtime.liq_stream import LiqStream
+
+        cc = cascade_config(self._raw if isinstance(self._raw, dict) else None)
+        if not cc.get("enabled"):
+            return
+        if self._liq_stream is not None:
+            return
+        self._liq_stream = LiqStream(
+            stop_event=self._stop,
+            config=cc,
+            on_batch=self.on_liq_batch,
+            ssl_context_factory=_ssl_context,
+        )
+        self._liq_stream.start()
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -356,6 +449,7 @@ class ExitRealtimeHub:
             target=self._run_loop, name="exit-realtime-ws", daemon=True
         )
         self._thread.start()
+        self._start_liq_cascade()
         mode = exit_realtime_mode(self._raw)
         log(f"exit_realtime hub started mode={mode}", "INFO")
 
@@ -375,6 +469,13 @@ class ExitRealtimeHub:
         if ws is not None and ws is not app:
             try:
                 ws.close()
+            except Exception:
+                pass
+        liq = self._liq_stream
+        self._liq_stream = None
+        if liq is not None:
+            try:
+                liq.stop()
             except Exception:
                 pass
 
