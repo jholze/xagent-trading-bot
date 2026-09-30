@@ -1,0 +1,56 @@
+# Move Trading Bot Kanban Status columns only.
+# Never sets, removes, or changes labels (omnigent:ready, review:*, veto:*, …).
+# Never merges, never pushes to main, never closes issues.
+#
+# Secret: KANBAN_PROJECT_TOKEN — PAT with `project` + `repo` (user project
+# https://github.com/users/jholze/projects/1). GITHUB_TOKEN cannot write
+# user-owned Projects V2.
+name: Kanban status
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, reopened]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number to reconcile (Status only)"
+        required: true
+        type: string
+
+concurrency:
+  group: kanban-status-${{ github.event.issue.number || github.event.pull_request.number || github.event.inputs.issue }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  move-status:
+    if: github.repository == 'jholze/xagent-trading-bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Require project token
+        env:
+          KANBAN_PROJECT_TOKEN: ${{ secrets.KANBAN_PROJECT_TOKEN }}
+        run: |
+          if [ -z "$KANBAN_PROJECT_TOKEN" ]; then
+            echo "KANBAN_PROJECT_TOKEN is not set. Add a PAT with project+repo scopes."
+            exit 1
+          fi
+      - name: Apply Status policy
+        env:
+          GH_TOKEN: ${{ secrets.KANBAN_PROJECT_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python3 scripts/kanban_status.py apply --event
