@@ -86,6 +86,8 @@ def exit_ws_internal_token() -> str:
 CASCADE_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "fire_enabled": False,
+    # Spot long SELL_FULL via POST /spot/batch_orders. False keeps #564 sequential.
+    "batch_enabled": False,
     "ws_url": "wss://fx-ws.gateio.ws/v4/ws/usdt",
     "channel": "futures.public_liquidates",
     "payload": "!all",
