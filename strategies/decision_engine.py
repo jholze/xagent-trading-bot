@@ -1628,6 +1628,27 @@ class DecisionEngine:
         )
 
         if not market.has_position and is_buy(normalized):
+            # #625: log-only first-buy observe. Ignore return for control flow.
+            if normalized != BUY_DCA:
+                try:
+                    from strategies.macro_stress_observe import (
+                        format_macro_stress_observe_log,
+                        observe_macro_stress,
+                    )
+
+                    rec = observe_macro_stress(
+                        self.config.raw,
+                        has_position=False,
+                        action=normalized,
+                    )
+                    if rec is not None:
+                        log(
+                            format_macro_stress_observe_log(
+                                rec, symbol=str(coin.get("symbol") or "?")
+                            )
+                        )
+                except Exception as exc:
+                    log(f"[macro_stress_observe] {exc}", "DEBUG")
             from core.coin_eligibility import passes_coin_filters
 
             filter_ok, filter_reason = passes_coin_filters(
