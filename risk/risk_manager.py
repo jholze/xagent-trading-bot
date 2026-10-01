@@ -211,6 +211,26 @@ class RiskManager:
                     )
             except Exception:
                 pass
+            # #628: observe-only buy decision tape (fail-open; never a gate)
+            try:
+                if str(getattr(order, "type", "") or "").upper() == "BUY":
+                    from strategies.buy_decision_tape import emit_buy_decision_tape
+
+                    raw = self.config.raw if hasattr(self.config, "raw") else None
+                    emit_buy_decision_tape(
+                        order,
+                        decision,
+                        source=source,
+                        timeframe=timeframe,
+                        config=raw,
+                    )
+            except Exception as exc:
+                try:
+                    from logger import log
+
+                    log(f"buy_decision_tape emit failed: {exc}", "WARNING")
+                except Exception:
+                    pass
             return decision
         finally:
             scope.doc = previous
