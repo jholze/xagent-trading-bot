@@ -371,7 +371,10 @@ class ExitRealtimeHub:
     def on_liq_batch(self, payload: Any, *, now_ms: int | None = None) -> dict[str, Any]:
         """Ingest a public_liquidates batch (live WS or synthetic fixture)."""
         from services.exit_realtime.config import cascade_config
-        from services.exit_realtime.execute import execute_cascade_exit
+        from services.exit_realtime.execute import (
+            execute_cascade_exit,
+            execute_cascade_exit_batch,
+        )
         from services.exit_realtime.liq_stream import parse_liq_batch
 
         cc = cascade_config(self._raw if isinstance(self._raw, dict) else None)
@@ -413,14 +416,18 @@ class ExitRealtimeHub:
                     "INFO",
                 )
                 continue
-            result = execute_cascade_exit(
-                side=side,
-                prices=self.last_prices(),
-                raw_config=self._raw if isinstance(self._raw, dict) else None,
-                fire_enabled=True,
-                now_mono=now_mono,
-                state=self._cascade_state,
-            )
+            exit_kwargs = {
+                "side": side,
+                "prices": self.last_prices(),
+                "raw_config": self._raw if isinstance(self._raw, dict) else None,
+                "fire_enabled": True,
+                "now_mono": now_mono,
+                "state": self._cascade_state,
+            }
+            if cc.get("batch_enabled"):
+                result = execute_cascade_exit_batch(**exit_kwargs)
+            else:
+                result = execute_cascade_exit(**exit_kwargs)
             out.setdefault("exits", []).append(result)
         return out
 

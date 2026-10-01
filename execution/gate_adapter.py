@@ -74,6 +74,18 @@ _ZERO_FILL_CANCEL_FINISH_AS = frozenset(
 # so a positive ioc fill stays EXECUTED (#340 / #466, #551).
 _PARTIAL_REMAINDER_FINISH_AS = frozenset({"stp", "poc", "fok"})
 
+# POST /spot/batch_orders: at most 4 distinct pairs, 10 orders per pair, spot only.
+GATE_SPOT_BATCH_MAX_PAIRS = 4
+GATE_SPOT_BATCH_MAX_ORDERS_PER_PAIR = 10
+
+
+class BatchMarketSellNoAck(Exception):
+    """POST /spot/batch_orders did not return a per-order ACK list.
+
+    The batch may or may not have been accepted. Callers must not invent
+    fills and must not submit another batch for this fire.
+    """
+
 
 def _ccxt_status_token(raw: dict) -> str:
     if not isinstance(raw, dict):
@@ -2125,3 +2137,285 @@ class GateExecutionAdapter(ExecutionAdapter):
         local.message = local.message or f"{self.mode} {order.type} synced"
         local.exchange_order_id = exchange_order_id
         return local
+
+    def batch_market_sell(self, orders: list[dict] | None) -> list[dict]:
+        """Submit one spot chunk of market sells. POST /spot/batch_orders.
+
+        One call, at most 4 distinct pairs and 10 orders per pair. ``text``
+        is required on every order. Spot only — margin and COVER are rejected
+        before any HTTP. Returns one row per exchange ACK with ``succeeded``,
+        ``label``, and ``message``. Does not write the ledger and does not
+        flatten a position; the caller attributes a fill only after a
+        per-order ACK.
+
+        Shadow returns the same per-lot shape and does not call the exchange.
+        A transport, auth, or non-list response raises ``BatchMarketSellNoAck``
+        (logged). There is no invented ACK list.
+        """
+        try:
+            payload = _build_spot_batch_market_sells(list(orders or []))
+        except ValueError as exc:
+            log(f"liq_cascade batch_market_sell rejected chunk: {exc}", "ERROR")
+            raise
+        if not payload:
+            return []
+        if self._adapter_mode == "shadow":
+            # Original orders carry the caller price. The wire body does not.
+            sources = list(orders or [])
+            return [
+                _shadow_batch_ack(wire, sources[i] if i < len(sources) else None)
+                for i, wire in enumerate(payload)
+            ]
+        exchange = self._get_exchange()
+        if exchange is None:
+            log(
+                "liq_cascade batch_market_sell: no exchange client — no ack",
+                "ERROR",
+            )
+            raise BatchMarketSellNoAck("no exchange client")
+        submit = getattr(exchange, "privateSpotPostBatchOrders", None)
+        if not callable(submit):
+            log(
+                "liq_cascade batch_market_sell: privateSpotPostBatchOrders missing",
+                "ERROR",
+            )
+            raise BatchMarketSellNoAck("batch endpoint missing")
+        try:
+            raw = submit(payload)
+        except Exception as exc:
+            log(
+                "liq_cascade batch_market_sell transport/auth failure "
+                f"orders={len(payload)}: {exc.__class__.__name__}: {exc}",
+                "ERROR",
+            )
+            raise BatchMarketSellNoAck(
+                f"batch submit failed: {exc.__class__.__name__}: {exc}"
+            ) from exc
+        if not isinstance(raw, list):
+            log(
+                "liq_cascade batch_market_sell non-list response "
+                f"type={type(raw).__name__} — no per-order ack",
+                "ERROR",
+            )
+            raise BatchMarketSellNoAck(
+                f"batch response was {type(raw).__name__}, not a per-order list"
+            )
+        return [_normalize_batch_ack(row) for row in raw]
+
+
+def _spot_currency_pair(symbol: str) -> str:
+    sym = str(symbol or "").strip()
+    if not sym or ":" in sym:
+        raise ValueError(f"not a spot pair: {sym!r}")
+    if "/" in sym:
+        base, _, quote = sym.partition("/")
+        if not base or not quote or "/" in quote:
+            raise ValueError(f"not a spot pair: {sym!r}")
+        return f"{base}_{quote}"
+    if "_" not in sym:
+        raise ValueError(f"not a spot pair: {sym!r}")
+    return sym
+
+
+def _require_batch_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw.startswith(_GATE_TEXT_PREFIX):
+        raise ValueError("batch order text must start with t-")
+    payload = raw[len(_GATE_TEXT_PREFIX) :]
+    if not payload or len(payload.encode("utf-8")) > _GATE_TEXT_PARAM_MAX_BYTES:
+        raise ValueError("batch order text payload must be 1..28 bytes")
+    if any(ch not in _GATE_TEXT_ALLOWED for ch in payload):
+        raise ValueError("batch order text has illegal characters")
+    return raw
+
+
+def _gate_amount_string(amount: float) -> str:
+    from decimal import Decimal
+
+    text = format(Decimal(str(amount)), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _build_spot_batch_market_sells(orders: list) -> list[dict]:
+    """Wire body for one POST /spot/batch_orders chunk. No HTTP."""
+    if not isinstance(orders, list):
+        raise ValueError("batch market sell orders must be a list")
+    payload: list[dict] = []
+    per_pair: dict[str, int] = {}
+    for idx, order in enumerate(orders):
+        if not isinstance(order, dict):
+            raise ValueError(f"batch order {idx} is not an object")
+        account = str(order.get("account") or "spot").strip().lower()
+        if account != "spot":
+            raise ValueError(
+                f"batch order {idx} account={account!r}; spot batch cannot mix margin"
+            )
+        side = str(order.get("side") or "sell").strip().lower()
+        if side != "sell":
+            raise ValueError(
+                f"batch order {idx} side={side!r}; batch method is market sells only"
+            )
+        order_type = str(order.get("type") or "market").strip().lower()
+        if order_type != "market":
+            raise ValueError(
+                f"batch order {idx} type={order_type!r}; batch method is market sells only"
+            )
+        pair = _spot_currency_pair(
+            str(order.get("symbol") or order.get("currency_pair") or "")
+        )
+        text = _require_batch_text(str(order.get("text") or ""))
+        try:
+            amount = float(order.get("amount"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"batch order {idx} amount is invalid") from exc
+        if amount <= 0:
+            raise ValueError(f"batch order {idx} amount must be positive")
+        per_pair[pair] = per_pair.get(pair, 0) + 1
+        if per_pair[pair] > GATE_SPOT_BATCH_MAX_ORDERS_PER_PAIR:
+            raise ValueError(
+                f"batch chunk has more than {GATE_SPOT_BATCH_MAX_ORDERS_PER_PAIR} "
+                f"orders for {pair}"
+            )
+        payload.append(
+            {
+                "text": text,
+                "currency_pair": pair,
+                "type": "market",
+                "account": "spot",
+                "side": "sell",
+                "amount": _gate_amount_string(amount),
+                "time_in_force": "ioc",
+            }
+        )
+    if len(per_pair) > GATE_SPOT_BATCH_MAX_PAIRS:
+        raise ValueError(
+            f"batch chunk has {len(per_pair)} currency pairs; "
+            f"max is {GATE_SPOT_BATCH_MAX_PAIRS}"
+        )
+    return payload
+
+
+def _batch_succeeded_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("true", "1"):
+            return True
+        if token in ("false", "0"):
+            return False
+    return None
+
+
+def _batch_optional_float(row: dict, *keys):
+    """First present numeric field. ``None`` when every key is missing or blank.
+
+    ``0`` is a real value (a zero fill). It is not treated as missing.
+    """
+    for key in keys:
+        if key not in row:
+            continue
+        raw = row.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _batch_finish_as(row: dict) -> str:
+    """Gate ``finish_as`` on a flat batch row, or ccxt nested ``info``."""
+    if not isinstance(row, dict):
+        return ""
+    direct = str(row.get("finish_as") or "").strip().lower()
+    if direct:
+        return direct
+    info = row.get("info")
+    if isinstance(info, dict):
+        return str(info.get("finish_as") or "").strip().lower()
+    return ""
+
+
+def _normalize_batch_ack(row) -> dict:
+    """Per-order ACK. Keeps the fill fields the sequential adapter classifies on.
+
+    ``succeeded`` alone is not a size or a price. ``filled_amount``, ``left``,
+    ``finish_as``, ``avg_deal_price``, and ``fill_price`` stay on the row so
+    the caller can apply ``_zero_fill_cancel_status`` and
+    ``_partial_remainder_cancel`` instead of booking the snapshot.
+    """
+    if not isinstance(row, dict):
+        return {
+            "succeeded": None,
+            "label": "",
+            "message": "ack row was not an object",
+            "text": "",
+            "currency_pair": "",
+            "id": "",
+            "status": "",
+            "finish_as": "",
+            "filled_amount": None,
+            "left": None,
+            "avg_deal_price": None,
+            "fill_price": None,
+        }
+    avg = _batch_optional_float(row, "avg_deal_price", "average")
+    fill_price = _batch_optional_float(row, "fill_price")
+    if fill_price is None:
+        fill_price = avg
+    if avg is None:
+        avg = fill_price
+    return {
+        "succeeded": _batch_succeeded_flag(row.get("succeeded")),
+        "label": str(row.get("label") or ""),
+        "message": str(row.get("message") or ""),
+        "text": str(row.get("text") or ""),
+        "currency_pair": str(row.get("currency_pair") or ""),
+        "id": str(row.get("id") or row.get("order_id") or ""),
+        "status": str(row.get("status") or ""),
+        "finish_as": _batch_finish_as(row),
+        "filled_amount": _batch_optional_float(row, "filled_amount", "filled"),
+        "left": _batch_optional_float(row, "left"),
+        "avg_deal_price": avg,
+        "fill_price": fill_price,
+    }
+
+
+def _shadow_batch_ack(row: dict, requested: dict | None = None) -> dict:
+    """Paper ACK. Same keys as a Gate batch row. No create_order.
+
+    A shadow fill reports the requested amount and the caller price. It does
+    not invent a price when the caller did not pass one.
+    """
+    src = requested if isinstance(requested, dict) else {}
+    amount = row.get("amount")
+    if amount in (None, ""):
+        amount = src.get("amount")
+    price = src.get("price")
+    if price in (None, ""):
+        price = row.get("price")
+    if price in (None, ""):
+        price = None
+    return {
+        "succeeded": True,
+        "label": "",
+        "message": "",
+        "text": str(row.get("text") or ""),
+        "currency_pair": str(row.get("currency_pair") or ""),
+        "id": f"shadow-{uuid.uuid4().hex[:12]}",
+        "status": "closed",
+        "account": "spot",
+        "side": "sell",
+        "type": "market",
+        "finish_as": "filled",
+        "filled_amount": amount,
+        "left": "0",
+        "avg_deal_price": price,
+        "fill_price": price,
+    }
