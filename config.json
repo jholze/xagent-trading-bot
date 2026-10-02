@@ -2038,7 +2038,14 @@
     "trade_max_coins": 72,
     "trade_include_open_positions": true,
     "trade_include_base": true,
-    "trade_rank_by": "quality_score"
+    "trade_rank_by": "quality_score",
+    "membership_revise": {
+      "mode": "shadow",
+      "ersatz_cap_trade_max": 72,
+      "staged_trade_max_coins": 72,
+      "staged_trade_rank_by": "quality_score",
+      "_doc": "#631 Ersatz-Cap universe.membership_revise.ersatz_cap_trade_max. Flag universe.membership_revise.mode is off|shadow|enforce. Shadow does not change the live trade set. Enforce applies staged trade_max/rank clamped to the cap. Missing cap refuses config. RelVol universe exempt unchanged. Does not widen by default."
+    }
   },
   "universe_core_seed": {
     "mode": "shadow",
