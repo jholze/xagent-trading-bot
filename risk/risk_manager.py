@@ -231,6 +231,25 @@ class RiskManager:
                     log(f"buy_decision_tape emit failed: {exc}", "WARNING")
                 except Exception:
                     pass
+            # #630: observe-only daily gainer desk (fail-open; never a gate)
+            try:
+                if str(getattr(order, "type", "") or "").upper() == "BUY":
+                    from strategies.daily_gainer_desk import emit_desk_from_decision
+
+                    raw = self.config.raw if hasattr(self.config, "raw") else None
+                    emit_desk_from_decision(
+                        order,
+                        decision,
+                        source=source,
+                        config=raw,
+                    )
+            except Exception as exc:
+                try:
+                    from logger import log
+
+                    log(f"daily_gainer_desk emit failed: {exc}", "WARNING")
+                except Exception:
+                    pass
             return decision
         finally:
             scope.doc = previous

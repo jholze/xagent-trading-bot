@@ -478,6 +478,13 @@ def main(argv: list[str] | None = None) -> int:
         f"gainer_exp={k.get('gainer_sell_expectancy')}",
         flush=True,
     )
+    # #630: observe-only desk join of this #208 list. Does not edit the report.
+    try:
+        from strategies.daily_gainer_desk import observe_gis_leaders
+
+        observe_gis_leaders(report.get("leaders") or [])
+    except Exception:
+        pass
     return 0
 
 
