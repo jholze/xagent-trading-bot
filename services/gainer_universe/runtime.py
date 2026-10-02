@@ -88,6 +88,16 @@ def _refresh_sync(cfg: dict, root_config: dict | None = None) -> dict:
             )
         except Exception as e:
             log(f"relvol_shadow hook skip: {e}", "DEBUG")
+        # #630: observe-only desk join (fail-open; does not alter scan state)
+        try:
+            from strategies.daily_gainer_desk import observe_scanner_state
+
+            observe_scanner_state(
+                state,
+                config=root_config if isinstance(root_config, dict) else None,
+            )
+        except Exception as e:
+            log(f"daily_gainer_desk scan hook skip: {e}", "DEBUG")
         return state
     except Exception as e:
         log(f"gainer_universe refresh failed (fail-open): {e}", "WARNING")
