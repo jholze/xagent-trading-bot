@@ -369,6 +369,17 @@ def load_trade_universe(
     from data_manager import load_config, load_watchlist
 
     cfg = config if config is not None else load_config(tenant_id=tenant_id)
+    # #631: shadow/enforce without Ersatz-Cap refuses here (fail-closed at the
+    # gate). off / absent is a no-op. Shadow does not change the live set.
+    from services.universe.membership_revise import (
+        ERSATZ_CAP_PATH,
+        assert_membership_revise_config,
+        bind_ersatz_cap,
+        parse_membership_revise,
+    )
+
+    assert_membership_revise_config(cfg)
+    revise = parse_membership_revise(cfg)
     ucfg = universe_split_config(cfg)
 
     if observe_coins is None:
@@ -413,19 +424,26 @@ def load_trade_universe(
     tid = resolve_tenant_id(tenant_id)
     # #465: same rollback switch as the WQE soft sort (ai.sort_by / ai.enabled)
     use_ai = use_ai_sort_score(cfg)
+    ist_trade_max = int(ucfg.get("trade_max_coins") or 40)
+    ist_rank_by = str(ucfg.get("trade_rank_by") or "quality_score")
+    # #631 enforce clamps staged trade_max/rank to the Ersatz-Cap. Shadow keeps Ist.
+    trade_max = revise.live_trade_max(ist_trade_max)
+    rank_by = revise.live_rank_by(ist_rank_by)
     qlookup = (
         _quality_lookup(tid, use_ai_score=use_ai)
-        if ucfg.get("trade_rank_by") == "quality_score"
+        if rank_by == "quality_score"
         else None
     )
+    include_open = bool(ucfg.get("trade_include_open_positions", True))
+    include_base = bool(ucfg.get("trade_include_base", True))
     trade = select_trade_universe(
         list(observe_coins),
         open_symbols=open_set,
         base_symbols=base_syms,
-        trade_max_coins=int(ucfg.get("trade_max_coins") or 40),
-        include_open_positions=bool(ucfg.get("trade_include_open_positions", True)),
-        include_base=bool(ucfg.get("trade_include_base", True)),
-        rank_by=str(ucfg.get("trade_rank_by") or "quality_score"),
+        trade_max_coins=trade_max,
+        include_open_positions=include_open,
+        include_base=include_base,
+        rank_by=rank_by,
         quality_lookup=qlookup,
         use_ai_score=use_ai,
     )
@@ -450,12 +468,12 @@ def load_trade_universe(
 
     log(
         f"universe split: observe={len(observe_coins)} trade={len(trade)} "
-        f"open={len(open_set)} max_trade={ucfg.get('trade_max_coins')}",
+        f"open={len(open_set)} max_trade={trade_max}",
         "INFO",
     )
     from services.universe.core_seed import finalize_trade_members
 
-    return finalize_trade_members(
+    trade = finalize_trade_members(
         trade,
         open_symbols=open_set,
         open_lot_rows=open_lot_rows,
@@ -463,6 +481,30 @@ def load_trade_universe(
         base_symbols=base_syms,
         config=cfg,
     )
+    if revise.mode == "shadow":
+        log(
+            f"membership_revise shadow {ERSATZ_CAP_PATH}={revise.cap} "
+            f"staged_trade_max={revise.staged_trade_max} "
+            f"live_trade_max={ist_trade_max} unchanged",
+            "DEBUG",
+        )
+    elif revise.mode == "enforce":
+        forced = set(open_set)
+        if include_base:
+            forced |= base_syms
+        before = len(trade)
+        trade = bind_ersatz_cap(
+            trade,
+            cap=int(revise.cap or 0),
+            forced_symbols=forced,
+        )
+        log(
+            f"membership_revise enforce {ERSATZ_CAP_PATH}={revise.cap} "
+            f"effective_trade_max={trade_max} rank={rank_by} "
+            f"trade={before}->{len(trade)}",
+            "INFO",
+        )
+    return trade
 
 
 def is_trade_eligible(

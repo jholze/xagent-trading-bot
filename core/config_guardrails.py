@@ -223,3 +223,8 @@ def validate_config_for_save(config: Any) -> None:
         if value is _MISSING:
             continue
         check(path, value)
+    # #631: shadow/enforce membership revise requires the named Ersatz-Cap.
+    # Absent section and mode=off stay valid. Lazy import avoids a cycle.
+    from services.universe.membership_revise import assert_membership_revise_config
+
+    assert_membership_revise_config(config)
