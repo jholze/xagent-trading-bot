@@ -1843,6 +1843,29 @@ class DecisionEngine:
         except (TypeError, ValueError):
             analysis.exposure_multiplier = None
 
+        # #636 observe-only. The call's return value is not an accept, reject,
+        # or size input. Flag off returns before any read or write.
+        raw_cfg = getattr(self.config, "raw", None)
+        compare_on = False
+        try:
+            section = raw_cfg.get("indicator_compare") if isinstance(raw_cfg, dict) else None
+            compare_on = isinstance(section, dict) and section.get("enabled") is True
+        except Exception:
+            compare_on = False
+        if compare_on:
+            try:
+                from strategies.indicator_compare import maybe_log_indicator_compare
+
+                maybe_log_indicator_compare(
+                    raw_cfg,
+                    coin=coin,
+                    market=market,
+                    params=getattr(market, "strategy_params", None),
+                    strategy_name=getattr(strategy, "name", None),
+                )
+            except Exception:
+                pass
+
         return analysis
 
     def to_recommendation(self, x_signal, analysis: SignalAnalysis, account: str, tweet_text: str, price: float) -> dict:

@@ -1277,6 +1277,9 @@
       "min_trades": 3
     }
   },
+  "indicator_compare": {
+    "enabled": true
+  },
   "strategies": [
     {
       "symbol": "ARIA/USDT",
