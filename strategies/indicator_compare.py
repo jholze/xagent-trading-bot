@@ -19,6 +19,9 @@ row is not written (no ``data/default`` file). The open-slot cap is the
 ``max_open_positions`` key on the bot config raw mapping. A missing key skips
 the row. This module does not substitute a numeric default.
 
+A market with ``sim_state`` set is a backtest or replay (Hermes, Telegram
+replay). That path returns before any row is built or written.
+
 Flag: ``indicator_compare.enabled`` (bool, default false). Missing or empty
 config is a no-op. Scope is characteristic, not a name list: Gate spot, 4h,
 ``technical_rsi_bb``, and an explicit ``strategies[]`` row whose ``buy_regime``
@@ -251,6 +254,11 @@ def _max_open_positions() -> int | None:
         return None
 
 
+def _simulation_market(market) -> bool:
+    """True for Hermes backtests and Telegram replay, which set ``sim_state``."""
+    return getattr(market, "sim_state", None) is not None
+
+
 def _build_row(
     config: dict | None,
     *,
@@ -259,6 +267,8 @@ def _build_row(
     params: dict | None,
     strategy_name: str | None,
 ) -> dict[str, Any] | None:
+    if _simulation_market(market):
+        return None
     if not in_compare_scope(
         coin=coin,
         params=params,
@@ -389,11 +399,14 @@ def maybe_log_indicator_compare(
     """Append one observe row, or return None when the flag or scope is empty.
 
     Never raises. The returned row is not a trading decision. A missing
-    tenant context or a missing ``max_open_positions`` key writes nothing.
+    tenant context, a missing ``max_open_positions`` key, or a set
+    ``sim_state`` writes nothing.
     """
     if not indicator_compare_enabled(config):
         return None
     if market is None:
+        return None
+    if _simulation_market(market):
         return None
     try:
         row = _build_row(

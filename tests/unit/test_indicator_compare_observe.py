@@ -124,6 +124,21 @@ def _money_signal(analysis) -> dict:
     }
 
 
+def _live(market: MarketContext) -> MarketContext:
+    """Same bar as a live evaluate: no backtest ``sim_state``."""
+    market.sim_state = None
+    return market
+
+
+@contextmanager
+def _book_last_rsi(last_rsi: float):
+    with patch(
+        "strategies.technical_rsi_bb.get_position",
+        return_value={"last_rsi": last_rsi, "amount": 0, "average_entry": 0, "rsi_sell_tiers_done": {}},
+    ):
+        yield
+
+
 def _read_rows(tmp_path: Path) -> list[dict]:
     path = Path(compare_log_path(TENANT))
     assert path.is_relative_to(tmp_path)
@@ -271,7 +286,8 @@ def test_fixture_both_vs_dip_logs_diverge_row_no_order(tmp_path, monkeypatch):
     market = _market()
     analysis, _ = _analyze(market)
     assert analysis.action == "BUY"
-    with tenant_context(TENANT, scope="paper"), patch(
+    _live(market)
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0), patch(
         "services.order_service.OrderService", side_effect=AssertionError("order")
     ), patch(
         "services.trading_service.TradingService.execute_buy",
@@ -314,9 +330,9 @@ def test_fixture_both_vs_dip_logs_diverge_row_no_order(tmp_path, monkeypatch):
     assert on_disk == [row]
     assert analysis.action == "BUY"
 
-    dip_market = _market(price=95.0, lower=95.0, rsi=40.0, last_rsi=40.0)
+    dip_market = _live(_market(price=95.0, lower=95.0, rsi=40.0, last_rsi=40.0))
     dip_market.strategy_params = dict(PARAMS)
-    with tenant_context(TENANT, scope="paper"):
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(40.0):
         agreed = maybe_log_indicator_compare(
             _config(enabled=True),
             coin=_coin(),
@@ -360,17 +376,18 @@ def _risk_once(raw: dict):
 def test_diverge_does_not_change_accept_reject_size(tmp_path, monkeypatch):
     _enable_writes(monkeypatch, tmp_path)
     market = _market()
-    with tenant_context(TENANT, scope="paper"):
+    off_signal, _ = _analyze(market)
+    live = _live(_market())
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0):
         logged = maybe_log_indicator_compare(
             _config(enabled=True),
             coin=_coin(),
-            market=market,
-            params=market.strategy_params,
+            market=live,
+            params=live.strategy_params,
             strategy_name="technical_rsi_bb",
         )
     assert logged is not None and logged["diverge"] is True
 
-    off_signal, _ = _analyze(market)
     on_signal, _ = _analyze(market)
     assert off_signal.action == on_signal.action == "BUY"
     assert _money_signal(off_signal) == _money_signal(on_signal)
@@ -412,14 +429,15 @@ def test_logger_write_error_is_fail_open(tmp_path, monkeypatch):
     _enable_writes(monkeypatch, tmp_path)
     before, market = _analyze()
     assert before.action == "BUY"
-    with tenant_context(TENANT, scope="paper"), patch(
+    live = _live(_market())
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0), patch(
         "services.observability_store.append_jsonl", side_effect=OSError("disk full")
     ):
         row = maybe_log_indicator_compare(
             _config(enabled=True),
             coin=_coin(),
-            market=market,
-            params=market.strategy_params,
+            market=live,
+            params=live.strategy_params,
             strategy_name="technical_rsi_bb",
         )
     assert row is not None and row["diverge"] is True
@@ -486,18 +504,52 @@ def test_risk_and_buy_do_not_read_compare_results():
     assert "ist_read" not in poisoned.rationale
 
 
+def test_sim_state_writes_no_row_live_market_still_writes(tmp_path, monkeypatch):
+    data = _enable_writes(monkeypatch, tmp_path)
+    simulated = _market()
+    assert simulated.sim_state is not None
+    with tenant_context(TENANT, scope="paper"), patch(
+        "services.observability_store.append_jsonl"
+    ) as append:
+        skipped = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=simulated,
+            params=simulated.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert skipped is None
+    append.assert_not_called()
+    assert list(data.rglob("indicator_compare.jsonl")) == []
+
+    live = _live(_market())
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0):
+        row = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=live,
+            params=live.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert row is not None
+    on_disk = _read_rows(tmp_path)
+    assert on_disk == [row]
+    assert len(on_disk) == 1
+
+
 def test_missing_tenant_context_does_not_write_default(tmp_path, monkeypatch):
     data = _enable_writes(monkeypatch, tmp_path)
     assert current_tenant_context() is None
     warnings = _capture_log(monkeypatch)
-    market = _market()
-    row = maybe_log_indicator_compare(
-        _config(enabled=True),
-        coin=_coin(),
-        market=market,
-        params=market.strategy_params,
-        strategy_name="technical_rsi_bb",
-    )
+    market = _live(_market())
+    with _book_last_rsi(30.0):
+        row = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
     assert row is not None and row["diverge"] is True
     assert list(data.rglob("indicator_compare.jsonl")) == []
     assert not (data / "default" / "indicator_compare.jsonl").exists()
@@ -515,7 +567,7 @@ def test_missing_max_open_positions_skips_row(tmp_path, monkeypatch):
         raw = {"live": {"dry_run": True}}
 
     monkeypatch.setattr("core.config.get_bot_config", lambda tenant_id=None: _Missing())
-    market = _market()
+    market = _live(_market())
     with tenant_context(TENANT, scope="paper"):
         skipped = maybe_log_indicator_compare(
             _config(enabled=True),
@@ -552,7 +604,7 @@ def test_missing_max_open_positions_skips_row(tmp_path, monkeypatch):
     assert _read_rows(tmp_path) == []
 
     market.open_positions = 0
-    with tenant_context(TENANT, scope="paper"):
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0):
         opened = maybe_log_indicator_compare(
             _config(enabled=True),
             coin=_coin(),
