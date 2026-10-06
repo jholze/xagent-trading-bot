@@ -5,10 +5,10 @@ returned, in that order. Rank is the 1-based position in that list. This
 module does not score, does not pick a rank key, and does not build a new
 candidate set. It does not change accept, reject, or size.
 
-The caller passes ``context_tenant_id()`` (the contextvar value, or None).
-No context stays ``tenant_id=None``: the row and the INFO line store JSON
+The caller passes ``getattr(current_tenant_context(), "tenant_id", None)``.
+A missing or blank id stays ``None``: the row and the INFO line store JSON
 null, not the default tenant name, and nothing is written under that name.
-The cap list is the order for the id that was passed.
+The cap list is the order for the stripped id that was passed.
 
 Flag: ``universe.cap_order_observe.observe_enabled`` (default false), same
 shape as other observe/shadow flags. ``fire_enabled`` is always false and
@@ -135,16 +135,14 @@ def _now_ts() -> str:
 
 
 def _logged_tenant(tenant_id: str | None) -> str | None:
-    """Tenant stored on the row.
+    """Strip the passed tenant. Blank or missing stays None (JSON null).
 
-    ``None`` stays ``None`` (JSON null). Do not call ``resolve_tenant_id``
-    here: with no context that helper returns the default tenant name.
+    Same rule as the indicator-compare observe path: whitespace is removed,
+    and an empty result is no tenant. Do not call ``resolve_tenant_id``:
+    with no context that helper names the default tenant.
     """
-    if not isinstance(tenant_id, str):
-        return None
-    if not tenant_id.strip():
-        return None
-    return tenant_id
+    text = str(tenant_id or "").strip()
+    return text or None
 
 
 def _tenant_log_token(tenant: str | None) -> str:

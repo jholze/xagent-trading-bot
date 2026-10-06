@@ -36,17 +36,6 @@ def current_tenant_context() -> TenantContext | None:
     return _ctx.get()
 
 
-def context_tenant_id() -> str | None:
-    """Tenant id stored on the contextvar, or None when no context is set.
-
-    Does not fall back to ``DEFAULT_TENANT``. ``resolve_tenant_id`` still does.
-    """
-    ctx = _ctx.get()
-    if ctx is None:
-        return None
-    return ctx.tenant_id
-
-
 def resolve_tenant_id(tenant_id: str | None = None) -> str:
     if tenant_id:
         return tenant_id

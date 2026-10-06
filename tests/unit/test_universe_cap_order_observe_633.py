@@ -21,7 +21,12 @@ from unittest.mock import patch
 
 import pytest
 
-from core.tenant_context import DEFAULT_TENANT, context_tenant_id, resolve_tenant_id, tenant_context
+from core.tenant_context import (
+    DEFAULT_TENANT,
+    current_tenant_context,
+    resolve_tenant_id,
+    tenant_context,
+)
 from services.universe.cap_order_observe import (
     IST_CAP_NAME,
     LOG_FILENAME,
@@ -564,16 +569,21 @@ def _files_under(root: Path) -> set[str]:
     return {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
 
 
-def test_context_tenant_id_reads_contextvar_and_resolve_still_falls_back():
-    """Helper returns None with no context. resolve_tenant_id is unchanged."""
-    assert context_tenant_id() is None
+def _passed_tenant_id():
+    """Same expression as the risk_manager observe call."""
+    return getattr(current_tenant_context(), "tenant_id", None)
+
+
+def test_current_tenant_context_id_and_resolve_still_falls_back():
+    """No context yields None. resolve_tenant_id still falls back to default."""
+    assert _passed_tenant_id() is None
     assert resolve_tenant_id(None) == DEFAULT_TENANT
     with tenant_context("tenant_alpha", scope="paper"):
-        assert context_tenant_id() == "tenant_alpha"
+        assert _passed_tenant_id() == "tenant_alpha"
         assert resolve_tenant_id(None) == "tenant_alpha"
     with tenant_context(DEFAULT_TENANT, scope="paper"):
-        assert context_tenant_id() == DEFAULT_TENANT
-    assert context_tenant_id() is None
+        assert _passed_tenant_id() == DEFAULT_TENANT
+    assert _passed_tenant_id() is None
 
 
 def test_two_tenants_log_their_own_cap_order(tmp_path, monkeypatch):
@@ -676,7 +686,7 @@ def test_default_tenant_context_logs_its_own_list(tmp_path, monkeypatch):
 def test_no_tenant_context_logs_null_and_does_not_write_default(tmp_path, monkeypatch):
     """No context: JSON null, and no data/default file or default-attributed row."""
     monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
-    assert context_tenant_id() is None
+    assert _passed_tenant_id() is None
     seen = _install_cap_orders(monkeypatch)
     logged: list[str] = []
     data_root = tmp_path / "data"
@@ -728,6 +738,64 @@ def test_no_tenant_context_logs_null_and_does_not_write_default(tmp_path, monkey
         assert set(row) == set(ROW_KEYS)
     assert DEFAULT_TENANT not in seen
     assert seen.count(None) >= 1
+    assert _files_under(data_root) == before
+    assert _files_under(data_root / DEFAULT_TENANT) == before_default
+    if not before_default:
+        assert not (data_root / DEFAULT_TENANT).exists()
+
+
+def test_blank_tenant_id_logs_null_and_does_not_write_default(tmp_path, monkeypatch):
+    """Empty or whitespace tenant_id is no tenant: JSON null, no data/default."""
+    monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
+    seen = _install_cap_orders(monkeypatch)
+    logged: list[str] = []
+    data_root = tmp_path / "data"
+    before = _files_under(data_root)
+    before_default = _files_under(data_root / DEFAULT_TENANT)
+    cfg = _tenant_cfg(on=True)
+
+    def _capture(message, level="INFO"):
+        logged.append(str(message))
+
+    with patch("services.universe.cap_order_observe.log", side_effect=_capture):
+        for blank in ("", "   ", "\t", " \n "):
+            rows = maybe_log_existing_cap_order(
+                cfg,
+                rejected_symbol=_REJECTED,
+                tenant_id=blank,
+            )
+            assert rows
+            assert [row["tenant"] for row in rows] == [None]
+            assert [row["symbol"] for row in rows] == list(_CAP_ORDERS[None])
+        padded = maybe_log_existing_cap_order(
+            cfg,
+            rejected_symbol=_REJECTED,
+            tenant_id="  tenant_alpha  ",
+        )
+    assert padded
+    assert [row["tenant"] for row in padded] == ["tenant_alpha", "tenant_alpha"]
+    assert [row["symbol"] for row in padded] == list(_CAP_ORDERS["tenant_alpha"])
+
+    lines = _cap_lines(logged)
+    assert len(lines) == 5
+    blank_lines = lines[:4]
+    for line in blank_lines:
+        assert "tenant=null" in line
+        assert f"tenant={DEFAULT_TENANT}" not in line
+        assert "symbol=TUNSCOPED/USDT" in line
+        assert "symbol=TDEFA/USDT" not in line
+    assert "tenant=tenant_alpha" in lines[4]
+    assert "tenant=null" not in lines[4]
+
+    path = Path(observe_log_path())
+    assert DEFAULT_TENANT not in path.parts
+    raw = path.read_text(encoding="utf-8")
+    assert '"tenant": null' in raw
+    assert f'"tenant": "{DEFAULT_TENANT}"' not in raw
+    assert '"tenant": "   "' not in raw
+    assert '"tenant": ""' not in raw
+    assert all(item is None or item == "tenant_alpha" for item in seen)
+    assert DEFAULT_TENANT not in seen
     assert _files_under(data_root) == before
     assert _files_under(data_root / DEFAULT_TENANT) == before_default
     if not before_default:
