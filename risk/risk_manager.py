@@ -814,55 +814,10 @@ class RiskManager:
         if buy_limit:
             return buy_limit
 
-        open_slots = count_open_full_slots(self.config.raw)
         if not has_position:
-            cap = self._resolve_position_capacity(full_slots=open_slots)
-            if open_slots >= cap.max_open_eff:
-                from risk.position_capacity import format_capacity_reject_message
-
-                msg = format_capacity_reject_message(cap, open_slots)
-                free = max(0, int(cap.max_open_eff) - int(open_slots))
-                evicted_ok = False
-                try:
-                    from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
-
-                    plan, suffix = try_slot_eviction_on_max_open(
-                        order=order,
-                        source=source,
-                        free_full_slots=free,
-                        config=self.config,
-                        risk_config=self.config.risk_config,
-                        config_raw=self.config.raw if hasattr(self.config, "raw") else None,
-                        spike_multiple=float(
-                            getattr(order, "entry_15m_vol_ratio", None) or 0
-                        ),
-                        risk_manager=self,
-                    )
-                    if suffix:
-                        msg = f"{msg}{suffix}"
-                    veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
-                    if veto == "no_positive_price":
-                        return RiskDecision(
-                            approved=False,
-                            message=msg or "slot eviction aborted: no positive price",
-                            code="slot_eviction_no_price",
-                        )
-                    # Structured flag set by the runtime after the eviction sell filled —
-                    # never infer execution from the human-readable suffix (#300 audit).
-                    sell_executed = bool(getattr(plan, "sell_executed", False))
-                    if sell_executed:
-                        open_slots = count_open_full_slots(self.config.raw)
-                        if open_slots < cap.max_open_eff:
-                            evicted_ok = True
-                except Exception:
-                    pass
-                if not evicted_ok:
-                    return RiskDecision(
-                        approved=False,
-                        message=msg,
-                        code="max_open_positions",
-                    )
-                # Slot freed in this evaluate() call — continue _evaluate_impl.
+            slot_block = self._open_slot_cap_blocked(order, source)
+            if slot_block:
+                return slot_block
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
@@ -1701,7 +1656,14 @@ class RiskManager:
         if need:
             from price_fetcher import get_prices_batch
 
-            prices = get_prices_batch(list(dict.fromkeys(need))) or {}
+            try:
+                prices = get_prices_batch(list(dict.fromkeys(need))) or {}
+            except Exception as exc:
+                # A lookup that raises is the same as an empty book: no mark.
+                # Deny even when fail_closed_guards is log. Do not halt 24h.
+                raise _MissingMark(
+                    f"mark lookup failed for open live lot: {exc}"
+                ) from exc
         total = 0.0
         for lot, amount, entry, mark, sym in parsed:
             if mark <= 0:
@@ -1961,9 +1923,9 @@ class RiskManager:
     def _effective_cap_problems(self) -> list[str]:
         """Names of caps whose value the guard would actually use is not > 0.
 
-        ``trading_mode=live`` prefers ``live.max_usdt_per_trade``. A live-block
-        number above the top-level cap is the number that would be traded, so
-        it is rejected here instead of raising the ticket.
+        ``trading_mode=live`` prefers ``live.max_usdt_per_trade`` inside this
+        class. Other sizing paths read the top-level key. Either number above
+        the other is a size that would be sent, so both are rejected here.
         """
         raw = self.config.raw if isinstance(getattr(self.config, "raw", None), dict) else {}
         problems: list[str] = []
@@ -1982,11 +1944,69 @@ class RiskManager:
         if str(raw.get("trading_mode") or "").strip().lower() == "live" and live_has_ticket:
             if live_num is None or (top is not None and live_num > top):
                 problems.append("live.max_usdt_per_trade")
-        if self._positive_cap_value(raw.get("max_open_positions")) is None:
+        # Portfolio, gainer, and Telegram defaults read the top-level ticket.
+        # A top-level number above the live cap is the size those paths would send.
+        if (
+            live_num is not None
+            and top is not None
+            and top > live_num
+            and "max_usdt_per_trade" not in problems
+        ):
+            problems.append("max_usdt_per_trade")
+        open_cap = self._positive_cap_value(raw.get("max_open_positions"))
+        if open_cap is None:
             problems.append("max_open_positions")
+        else:
+            # The slot guard compares against max_open_eff, not the raw cap.
+            # A capacity ceiling above max_open_positions would trade past it.
+            try:
+                eff = int(self._resolve_position_capacity().max_open_eff)
+            except Exception:
+                problems.append("max_open_eff")
+            else:
+                if eff > open_cap:
+                    problems.append("max_open_eff")
         if self._positive_cap_value(raw.get("max_daily_loss_usdt")) is None:
             problems.append("max_daily_loss_usdt")
+        # Live caps count every open long and short. If the guard's counter
+        # still drops tails, or the book cannot be read, the cap is not real.
+        try:
+            counted = count_open_full_slots(raw)
+            every = count_open_full_slots(raw, include_tails=True)
+        except Exception:
+            problems.append("open_slots")
+        else:
+            if counted != every:
+                problems.append("open_slots")
+        try:
+            from risk.slot_eviction import eviction_mode
+
+            if eviction_mode(self.config.risk_config) == "live":
+                problems.append("slot_eviction")
+        except Exception:
+            problems.append("slot_eviction")
+        # allow_live stays false, so a short already on the live book cannot
+        # be opened or covered. Do not start real-money trading on that book.
+        if self._live_scope_has_open_short():
+            problems.append("open_short")
         return problems
+
+    def _live_scope_has_open_short(self) -> bool:
+        """True when this tenant's live book has an open short, or cannot be read."""
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from strategies.positions import counts_toward_open_cap, list_active_positions
+            from strategies.short_math import is_short
+
+            lots = list_active_positions(tenant_id=resolve_tenant_id(), scope="live") or []
+        except Exception:
+            return True
+        for lot in lots:
+            if not isinstance(lot, dict) or not counts_toward_open_cap(lot):
+                continue
+            if is_short(lot):
+                return True
+        return False
 
     def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
         """Fail closed when a real-money tenant cannot trade under its caps.
@@ -2133,6 +2153,63 @@ class RiskManager:
             )
         except Exception:
             return 0, 0, 0
+
+    def _open_slot_cap_blocked(self, order, source: str) -> RiskDecision | None:
+        """Reject a new buy or short open when the book has no free slot.
+
+        Buys and short opens share this check. Live caps count every open
+        long and short, including rotation tails. A freed slot (eviction
+        sell filled) returns None so the caller continues.
+        """
+        open_slots = count_open_full_slots(self.config.raw)
+        cap = self._resolve_position_capacity(full_slots=open_slots)
+        if open_slots < cap.max_open_eff:
+            return None
+        from risk.position_capacity import format_capacity_reject_message
+
+        msg = format_capacity_reject_message(cap, open_slots)
+        free = max(0, int(cap.max_open_eff) - int(open_slots))
+        evicted_ok = False
+        try:
+            from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
+
+            plan, suffix = try_slot_eviction_on_max_open(
+                order=order,
+                source=source,
+                free_full_slots=free,
+                config=self.config,
+                risk_config=self.config.risk_config,
+                config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                spike_multiple=float(
+                    getattr(order, "entry_15m_vol_ratio", None) or 0
+                ),
+                risk_manager=self,
+            )
+            if suffix:
+                msg = f"{msg}{suffix}"
+            veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
+            if veto == "no_positive_price":
+                return RiskDecision(
+                    approved=False,
+                    message=msg or "slot eviction aborted: no positive price",
+                    code="slot_eviction_no_price",
+                )
+            # Structured flag set by the runtime after the eviction sell filled —
+            # never infer execution from the human-readable suffix (#300 audit).
+            sell_executed = bool(getattr(plan, "sell_executed", False))
+            if sell_executed:
+                open_slots = count_open_full_slots(self.config.raw)
+                if open_slots < cap.max_open_eff:
+                    evicted_ok = True
+        except Exception:
+            pass
+        if not evicted_ok:
+            return RiskDecision(
+                approved=False,
+                message=msg,
+                code="max_open_positions",
+            )
+        return None
 
     def _resolve_position_capacity(
         self,
@@ -2955,7 +3032,8 @@ class RiskManager:
             return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
 
         # SHORT open — same material-long test as the flip gate (notional ≥ 1 USDT).
-        if is_short(pos) and float((pos or {}).get("amount") or 0) > 0:
+        adding_short = is_short(pos) and float((pos or {}).get("amount") or 0) > 0
+        if adding_short:
             pass  # add to existing short
         elif is_open_position(pos or {}):
             return RiskDecision(
@@ -2963,6 +3041,11 @@ class RiskManager:
                 message="one-way: close long before short",
                 code="one_way",
             )
+        else:
+            # Same slot check as a new buy. Covers never reach this branch.
+            slot_block = self._open_slot_cap_blocked(order, source)
+            if slot_block:
+                return slot_block
         n_short = 0
         open_margin = 0.0
         invalid_lots = []

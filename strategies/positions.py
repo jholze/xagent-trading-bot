@@ -1473,7 +1473,24 @@ def counts_toward_open_cap(pos: dict | None) -> bool:
     return mode not in {"shadow", "observe"}
 
 
-def count_open_full_slots(config_raw: dict | None = None) -> int:
+def _live_caps_count_every_open(config_raw: dict | None) -> bool:
+    """Real-money live books count every open lot toward the slot cap.
+
+    The tail rule still applies on paper and on a dry-run book. A live tenant
+    with ``live.dry_run`` false is trading under the live caps, so a 100 USDT
+    lot is a slot even when it sits under the rotation tail threshold.
+    """
+    if not isinstance(config_raw, dict):
+        return False
+    if str(config_raw.get("trading_mode") or "").strip().lower() != "live":
+        return False
+    live = config_raw.get("live") if isinstance(config_raw.get("live"), dict) else {}
+    return live.get("dry_run") is False
+
+
+def count_open_full_slots(
+    config_raw: dict | None = None, *, include_tails: bool | None = None
+) -> int:
     from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
 
     if config_raw is None:
@@ -1481,13 +1498,15 @@ def count_open_full_slots(config_raw: dict | None = None) -> int:
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
+    if include_tails is None:
+        include_tails = _live_caps_count_every_open(config_raw)
     store = _active_store()
     with _positions_lock:
         return sum(
             1 for p in store.values()
             if is_open_position(p)
             and counts_toward_open_cap(p)
-            and not _is_tail(p, cfg)
+            and (include_tails or not _is_tail(p, cfg))
         )
 
 

@@ -83,7 +83,7 @@ _RISK_CODES = {
     "cash_floor": "Cash-Floor erreicht — Mindest-Bargeld bleibt frei (keine Auto-Käufe).",
     "size_too_small": "Betrag nach Limits unter dem Mindest-Trade.",
     "ticket_below_min": "Order nach dem Ticket-Cap unter dem Börsen-Minimum — Kauf abgelehnt.",
-    "live_caps_missing": "Live-Caps fehlen oder sind nicht positiv — neue Käufe und Shorts blockiert, Verkäufe laufen weiter.",
+    "live_caps_missing": "Live-Caps fehlen, sind nicht positiv, der Slot-Check würde sie nicht einhalten oder ein offener Short liegt im Live-Buch — neue Käufe und Shorts blockiert, Verkäufe laufen weiter.",
     "sensor_reentry_cooloff": "Nach dem 15m-Sensor-Trade gilt eine Pause — kein sofortiger Re-Entry.",
     "max_daily_dca_buys": "Tageslimit für DCA-Nachkäufe erreicht.",
     "max_daily_trades": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",

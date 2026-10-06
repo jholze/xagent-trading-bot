@@ -7,5 +7,13 @@
   },
   "live": {
     "max_usdt_per_trade": 100
+  },
+  "risk": {
+    "position_capacity": {
+      "enabled": false
+    },
+    "slot_eviction": {
+      "mode": "shadow"
+    }
   }
 }
