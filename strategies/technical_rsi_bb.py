@@ -90,6 +90,82 @@ def _evaluate_take_profit(
     return action, sources
 
 
+def _entry_last_rsi(market: MarketContext, symbol: str, tf: str) -> float:
+    pos_state = _position_state(market, symbol, tf)
+    return float(pos_state.get("last_rsi", market.rsi))
+
+
+def _entry_flags(
+    market: MarketContext,
+    *,
+    last_rsi: float,
+    rsi_buy_low,
+    rsi_buy_high,
+    volume_multiplier_min,
+    reversal_rsi_low: float,
+    reversal_rsi_high: float,
+    reversal_vol_min: float,
+) -> tuple[bool, bool]:
+    """Dip and reversal booleans shared by the live entry and the observe compare."""
+    dip_buy = (
+        market.current_price <= market.lower_bb * 1.01
+        and rsi_buy_low <= market.rsi <= rsi_buy_high
+        and market.vol_multiplier >= volume_multiplier_min
+    )
+    reversal_buy = (
+        last_rsi < reversal_rsi_low
+        and market.rsi >= reversal_rsi_high
+        and market.vol_multiplier >= reversal_vol_min
+    )
+    return dip_buy, reversal_buy
+
+
+def entry_read(
+    market: MarketContext,
+    params: dict | None,
+    *,
+    symbol: str,
+    tf: str,
+    max_open_positions: int,
+    last_rsi: float | None = None,
+) -> str:
+    """Entry verdict for one regime: ``BUY`` or ``HOLD``.
+
+    Same predicate ``TechnicalRSIStrategy.analyze`` uses for a flat book.
+    A full book or an open position is ``HOLD`` because that block does not run.
+    """
+    params = params or {}
+    open_slot = (not market.has_position) and market.open_positions < max_open_positions
+    if not open_slot:
+        return "HOLD"
+    if last_rsi is None:
+        last_rsi = _entry_last_rsi(market, symbol, tf)
+    rsi_buy_low = params.get("rsi_buy_low", 28)
+    rsi_buy_high = params.get("rsi_buy_high", 48)
+    volume_multiplier_min = params.get("volume_multiplier", 1.2)
+    reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
+    reversal_rsi_high = float(params.get("reversal_rsi_cross_high", 38))
+    reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
+    dip_buy, reversal_buy = _entry_flags(
+        market,
+        last_rsi=last_rsi,
+        rsi_buy_low=rsi_buy_low,
+        rsi_buy_high=rsi_buy_high,
+        volume_multiplier_min=volume_multiplier_min,
+        reversal_rsi_low=reversal_rsi_low,
+        reversal_rsi_high=reversal_rsi_high,
+        reversal_vol_min=reversal_vol_min,
+    )
+    regime = params.get("buy_regime", "dip")
+    if regime == "dip" and dip_buy:
+        return "BUY"
+    if regime == "reversal" and reversal_buy:
+        return "BUY"
+    if regime == "both" and (dip_buy or reversal_buy):
+        return "BUY"
+    return "HOLD"
+
+
 def _reset_tiers_if_cooled(
     market: MarketContext,
     symbol: str,
@@ -155,17 +231,16 @@ class TechnicalRSIStrategy(BaseStrategy):
         reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
 
         if not market.has_position and market.open_positions < config.max_open_positions:
-            dip_buy = (
-                market.current_price <= market.lower_bb * 1.01
-                and rsi_buy_low <= market.rsi <= rsi_buy_high
-                and market.vol_multiplier >= volume_multiplier_min
-            )
-            pos_state = _position_state(market, symbol, tf)
-            last_rsi = float(pos_state.get("last_rsi", market.rsi))
-            reversal_buy = (
-                last_rsi < reversal_rsi_low
-                and market.rsi >= reversal_rsi_high
-                and market.vol_multiplier >= reversal_vol_min
+            last_rsi = _entry_last_rsi(market, symbol, tf)
+            dip_buy, reversal_buy = _entry_flags(
+                market,
+                last_rsi=last_rsi,
+                rsi_buy_low=rsi_buy_low,
+                rsi_buy_high=rsi_buy_high,
+                volume_multiplier_min=volume_multiplier_min,
+                reversal_rsi_low=reversal_rsi_low,
+                reversal_rsi_high=reversal_rsi_high,
+                reversal_vol_min=reversal_vol_min,
             )
             if buy_regime == "dip" and dip_buy:
                 action = "BUY"
