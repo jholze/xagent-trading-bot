@@ -29,15 +29,17 @@ _DEFAULTS: dict[str, Any] = {
     "cache_ttl_sec": 90.0,
     "on_fetch_error": "block_sensor",  # block_sensor | allow
     "depth_levels": 5,
-    "order_book_limit": 20,
+    # One fetch deep enough that a tight book on a large pair still fills
+    # the ±0.5% band. If the returned book still ends inside the band, only
+    # the fetched notional counts and a shortfall blocks.
+    "order_book_limit": 100,
     "book_unavailable_policy": "volume_ok",
     "order_book_timeout_sec": 5.0,
-    "order_book_cache_ttl_sec": 15.0,
 }
 
 _cache_lock = threading.RLock()
 _cache: dict[str, tuple[float, "VenueMetrics"]] = {}
-_book_cache: dict[str, tuple[float, tuple[float, float, bool]]] = {}
+_book_cache: dict[str, tuple[float, tuple]] = {}
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class VenueMetrics:
     depth_parsed: bool = False
     quote_volume_present: bool = True
     size_keys_present: bool = True
+    # Prices of levels inside the ±mid band. Empty when the book was not parsed.
+    band_levels: tuple = ()
 
     def to_stamp(self, *, planned_usdt: float = 0.0, venue_ok: bool | None = None, reasons: list[str] | None = None) -> dict[str, Any]:
         vol_to_order = 0.0
@@ -83,6 +87,10 @@ class VenueMetrics:
             "capture": self.capture,
             "quote_volume_present": bool(self.quote_volume_present),
             "size_keys_present": bool(self.size_keys_present),
+            "band_levels": [
+                {"side": side, "price": price, "size": size}
+                for side, price, size in self.band_levels
+            ],
         }
         if venue_ok is not None:
             out["venue_ok"] = bool(venue_ok)
@@ -121,7 +129,16 @@ def gate_public_rest_get(
     url = GATE_PUBLIC_REST_BASE + path
     resp = requests.get(url, params=params, timeout=timeout)
     if resp.status_code != 200:
-        raise RuntimeError(f"gate {path} HTTP {resp.status_code}")
+        # Non-200 is a failed fetch. Callers must not turn the body into a
+        # measured $0 book. Gate's error object is {"label","message"}.
+        detail = ""
+        try:
+            body = resp.json()
+            if isinstance(body, dict) and body.get("label"):
+                detail = f" {body.get('label')}"
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"gate {path} HTTP {resp.status_code}{detail}")
     return resp.json()
 
 
@@ -187,6 +204,56 @@ def _metrics_from_dict(metrics: dict[str, Any]) -> VenueMetrics:
         quote_volume_present=bool(metrics.get("quote_volume_present", True)),
         size_keys_present=bool(metrics.get("size_keys_present", True)),
     )
+
+
+# #641 hard liquidity lock. No off-switch and no numeric fallback.
+# Floor, ±mid window and book-cache max age are read only from
+# risk.liquidity_guard. A missing or invalid key blocks the buy.
+
+
+def _positive_config_float(raw: dict, key: str) -> float | None:
+    if not isinstance(raw, dict) or key not in raw:
+        return None
+    value = raw.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
+    """Gate 24h quote-volume floor, ±% mid window, and book-cache max age.
+
+    Volume is the pair's own Gate ticker ``quote_volume``, never CMC.
+    ``depth_window_pct`` is a percent of mid, not a fraction and not a
+    level count. Each value is None when the key is missing or not a
+    positive number. Callers then block the buy.
+    """
+    if config_raw is None:
+        try:
+            from core.config import get_bot_config
+
+            config_raw = get_bot_config().raw
+        except Exception:
+            config_raw = {}
+    risk = (config_raw or {}).get("risk") or {}
+    raw = risk.get("liquidity_guard") if isinstance(risk, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
+    floor = _positive_config_float(raw, "min_quote_volume_24h_usdt")
+    window = _positive_config_float(raw, "depth_window_pct")
+    max_age = _positive_config_float(raw, "order_book_cache_ttl_sec")
+    return {
+        "min_quote_volume_24h_usdt": floor,
+        "depth_window_pct": window,
+        "order_book_cache_ttl_sec": max_age,
+        "complete": floor is not None and window is not None and max_age is not None,
+    }
 
 
 def _reject_code(reasons: list[str]) -> str:
@@ -339,6 +406,42 @@ def is_thin_venue_stamp(stamp: dict | None, cfg: dict | None = None) -> bool:
     return not evaluate_venue_quality(m, cfg, planned_usdt=planned).ok
 
 
+# Buy sources the proof test enumerates one by one. This is not an
+# allowlist: ``source_applies_venue`` still checks every non-manual
+# source, including one that is not in this tuple. A new buy source
+# must be added here so the enumerated test fails until it is covered.
+AUTOMATIC_BUY_SOURCES = (
+    "auto",
+    "climax_fade",
+    "cmc",
+    "dca",
+    "dca_recovery",
+    "dca_scheduled",
+    "dca_sniper",
+    "dca_sniper_deep",
+    "dca_sniper_fund",
+    "dca_sniper_ws",
+    "deploy_boost",
+    "entry_sensor_15m",
+    "gainer_live_heat",
+    "gainer_live_top",
+    "gainer_rank_entry",
+    "gainer_relvol",
+    "gainer_signal",
+    "grid",
+    "grid_new_entry",
+    "hermes",
+    "lc",
+    "mcp",
+    "recovery",
+    "technical",
+    "vol_buy_boost",
+    "vol_spike_15m",
+    "webhook",
+    "x",
+)
+
+
 def source_applies_venue(source: str, cfg: dict | None = None) -> bool:
     """True unless source is an exact ``exempt_sources`` entry.
 
@@ -389,6 +492,96 @@ def metrics_from_gate_ticker_row(symbol: str, row: dict) -> VenueMetrics:
     )
 
 
+def _best_level_price(levels: list) -> float:
+    for row in levels:
+        if not isinstance(row, (list, tuple)) or len(row) < 1:
+            continue
+        try:
+            px = float(row[0])
+        except (TypeError, ValueError):
+            continue
+        if px > 0:
+            return px
+    return 0.0
+
+
+def _book_cache_max_age(config_raw: dict | None) -> float | None:
+    """Seconds from config. None when the key is missing or invalid."""
+    return liquidity_guard_config(config_raw).get("order_book_cache_ttl_sec")
+
+
+def _band_from_levels(
+    payload: Any, *, window_pct: float
+) -> tuple[float, float, bool, tuple]:
+    """Notional and per-level prices inside ±window_pct of mid.
+
+    A level is ``[price, size]`` as Gate returns it. Unreadable levels are
+    not a measured zero: the book is unparsed. Levels outside the band are
+    ignored. An empty list is unparsed, not $0.
+    """
+    if not isinstance(payload, dict):
+        raise TypeError("order_book payload must be a dict")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise TypeError("order_book payload missing bids/asks lists")
+    if not bids and not asks:
+        return 0.0, 0.0, False, ()
+    best_bid = _best_level_price(bids)
+    best_ask = _best_level_price(asks)
+    if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+        return 0.0, 0.0, False, ()
+    mid = (best_bid + best_ask) / 2.0
+    try:
+        window = float(window_pct)
+    except (TypeError, ValueError):
+        return 0.0, 0.0, False, ()
+    if window <= 0:
+        return 0.0, 0.0, False, ()
+    lo = mid * (1.0 - window / 100.0)
+    hi = mid * (1.0 + window / 100.0)
+    readable = 0
+    kept: list[tuple[str, float, float]] = []
+
+    def _side(levels: list, side: str) -> float:
+        nonlocal readable
+        total = 0.0
+        for row in levels:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            try:
+                px = float(row[0])
+                sz = float(row[1])
+            except (TypeError, ValueError):
+                continue
+            if px <= 0 or sz < 0:
+                continue
+            readable += 1
+            if lo <= px <= hi:
+                total += px * sz
+                kept.append((side, px, sz))
+        return total
+
+    bid_d = _side(bids, "bid")
+    ask_d = _side(asks, "ask")
+    if readable == 0:
+        return 0.0, 0.0, False, ()
+    return bid_d, ask_d, True, tuple(kept)
+
+
+def depth_within_mid_band(
+    payload: Any, *, window_pct: float
+) -> tuple[float, float, bool]:
+    """Sum notional on each side inside ±window_pct of mid.
+
+    Mid is (best bid + best ask) / 2. Every readable level whose price sits
+    in the band counts. There is no level-count cap. Empty or unreadable
+    books are unparsed, not a measured $0.
+    """
+    bid_d, ask_d, parsed, _levels = _band_from_levels(payload, window_pct=window_pct)
+    return bid_d, ask_d, parsed
+
+
 def depth_from_gate_order_book(
     payload: Any, *, depth_levels: int = 5
 ) -> tuple[float, float, bool]:
@@ -423,7 +616,11 @@ def depth_from_gate_order_book(
 
 
 def _with_depth(
-    m: VenueMetrics, bid_d: float, ask_d: float, parsed: bool
+    m: VenueMetrics,
+    bid_d: float,
+    ask_d: float,
+    parsed: bool,
+    levels: tuple = (),
 ) -> VenueMetrics:
     cap = m.capture
     if parsed and cap == "book_unavailable":
@@ -434,22 +631,35 @@ def _with_depth(
         depth_ask_usdt=float(ask_d or 0),
         depth_parsed=bool(parsed),
         capture=cap,
+        band_levels=tuple(levels or ()),
     )
 
 
-def _attach_order_book_depth(m: VenueMetrics, cfg: dict) -> VenueMetrics:
-    depth_levels = int(cfg.get("depth_levels") or 5)
-    limit = int(cfg.get("order_book_limit") or 20)
+def _attach_order_book_depth(
+    m: VenueMetrics, cfg: dict, *, config_raw: dict | None = None
+) -> VenueMetrics:
+    limit = int(cfg.get("order_book_limit") or 100)
     timeout = float(cfg.get("order_book_timeout_sec") or 5.0)
-    ttl = float(cfg.get("order_book_cache_ttl_sec") or 15.0)
+    lg = liquidity_guard_config(config_raw)
+    ttl = lg.get("order_book_cache_ttl_sec")
+    window = lg.get("depth_window_pct")
     pair = _pair(m.symbol)
     now = time.time()
 
     with _cache_lock:
         hit = _book_cache.get(pair)
-        if hit and now - hit[0] <= ttl:
-            bid_d, ask_d, parsed = hit[1]
-            return _with_depth(m, bid_d, ask_d, parsed)
+        if (
+            ttl is not None
+            and window is not None
+            and hit
+            and now - hit[0] <= ttl
+        ):
+            bid_d, ask_d, parsed, levels = hit[1]
+            return _with_depth(m, bid_d, ask_d, parsed, levels)
+
+    if window is None:
+        # No configured band. Do not invent one and do not keep a cached book.
+        return m
 
     try:
         payload = gate_public_rest_get(
@@ -457,12 +667,18 @@ def _attach_order_book_depth(m: VenueMetrics, cfg: dict) -> VenueMetrics:
             {"currency_pair": pair, "limit": limit},
             timeout=timeout,
         )
-        bid_d, ask_d, parsed = depth_from_gate_order_book(
-            payload, depth_levels=depth_levels
-        )
+        # #641: band around mid, not a fixed number of book levels.
+        # A failed or unreadable payload must not become a parsed $0.
+        bid_d, ask_d, parsed, levels = _band_from_levels(payload, window_pct=window)
+        if parsed:
+            prices = " ".join(f"{side}@{price:g}" for side, price, _sz in levels)
+            log(
+                f"venue_band_levels {m.symbol} window=±{window:g}% {prices}",
+                "INFO",
+            )
         with _cache_lock:
-            _book_cache[pair] = (now, (bid_d, ask_d, parsed))
-        return _with_depth(m, bid_d, ask_d, parsed)
+            _book_cache[pair] = (now, (bid_d, ask_d, parsed, levels))
+        return _with_depth(m, bid_d, ask_d, parsed, levels)
     except Exception as e:
         log(f"venue_quality order_book failed {m.symbol}: {e}", "WARNING")
 
@@ -518,7 +734,23 @@ def fetch_gate_venue_metrics(
         for sym in unique:
             hit = _cache.get(sym)
             if not force and hit and now - hit[0] <= ttl:
-                out[sym] = hit[1]
+                cached = hit[1]
+                book = _book_cache.get(_pair(sym))
+                max_age = _book_cache_max_age(config_raw)
+                book_fresh = bool(
+                    max_age is not None and book and now - book[0] <= max_age
+                )
+                if cached.depth_parsed and not book_fresh:
+                    # The ticker cache outlives the book. Do not keep a
+                    # depth figure past the book max age.
+                    cached = replace(
+                        cached,
+                        depth_parsed=False,
+                        depth_bid_usdt=0.0,
+                        depth_ask_usdt=0.0,
+                        band_levels=(),
+                    )
+                out[sym] = cached
             else:
                 missing.append(sym)
 
@@ -552,7 +784,7 @@ def fetch_gate_venue_metrics(
                 continue
             if m.depth_parsed:
                 continue
-            resolved = _attach_order_book_depth(m, cfg)
+            resolved = _attach_order_book_depth(m, cfg, config_raw=config_raw)
             out[sym] = resolved
             with _cache_lock:
                 _cache[sym] = (now, resolved)
@@ -571,6 +803,115 @@ def get_venue_metrics(
     ).get(symbol) or VenueMetrics(symbol=symbol, capture="missing")
 
 
+def _apply_hard_liquidity(
+    prior: VenueQualityResult,
+    metrics: VenueMetrics | dict | None,
+    *,
+    planned_usdt: float,
+    config_raw: dict | None,
+) -> VenueQualityResult:
+    """Repair the #563 gate: Gate volume floor and band depth vs final size.
+
+    Does not replace a prior hard failure with a pass. When the old
+    thresholds would have allowed the buy, a failing hard rule becomes
+    the result. Hard codes are also attached when the old gate already
+    failed, so the tape can count ``liq_guard_*`` on its own.
+    Sells must not call this.
+    """
+    lg = liquidity_guard_config(config_raw)
+    m = prior.metrics
+    if m is None and isinstance(metrics, VenueMetrics):
+        m = metrics
+    elif m is None and isinstance(metrics, dict):
+        try:
+            m = _metrics_from_dict(metrics)
+        except Exception:
+            m = None
+
+    codes: list[str] = []
+    reasons = list(prior.reasons)
+    floor = lg.get("min_quote_volume_24h_usdt")
+    window = lg.get("depth_window_pct")
+    max_age = lg.get("order_book_cache_ttl_sec")
+    planned = float(planned_usdt or 0)
+    if floor is None or window is None or max_age is None:
+        codes.append("liq_guard_missing_input")
+        reasons.append("liquidity guard config missing")
+        out = VenueQualityResult(ok=False, reasons=reasons, metrics=m, code="liq_guard_missing_input")
+        out.guard_codes = list(codes)  # type: ignore[attr-defined]
+        out.planned_usdt = planned  # type: ignore[attr-defined]
+        out.depth_window_pct = window  # type: ignore[attr-defined]
+        return out
+    qv = None
+    ask_d = None
+    bid_d = None
+
+    capture = "" if m is None else str(getattr(m, "capture", "") or "")
+    if m is None or capture in ("missing", "stale"):
+        codes.append("liq_guard_missing_input")
+    else:
+        volume_known = bool(getattr(m, "quote_volume_present", True))
+        if not volume_known:
+            codes.append("liq_guard_missing_input")
+        else:
+            try:
+                qv = float(m.quote_volume_24h_usdt)
+            except (TypeError, ValueError):
+                qv = None
+            if qv is None:
+                codes.append("liq_guard_missing_input")
+            elif qv < float(floor):
+                codes.append("liq_guard_volume_low")
+                reasons.append(
+                    f"quote_vol_24h ${qv:.0f} < liquidity floor ${floor:.0f}"
+                )
+        if not bool(getattr(m, "depth_parsed", False)):
+            if "liq_guard_missing_input" not in codes:
+                codes.append("liq_guard_missing_input")
+                reasons.append("band depth unavailable")
+        elif planned <= 0:
+            if "liq_guard_missing_input" not in codes:
+                codes.append("liq_guard_missing_input")
+                reasons.append("planned size unavailable")
+        else:
+            try:
+                bid_d = float(m.depth_bid_usdt or 0)
+                ask_d = float(m.depth_ask_usdt or 0)
+            except (TypeError, ValueError):
+                bid_d = None
+                ask_d = None
+            if bid_d is None or ask_d is None:
+                if "liq_guard_missing_input" not in codes:
+                    codes.append("liq_guard_missing_input")
+            elif ask_d < planned or bid_d < planned:
+                codes.append("liq_guard_depth_lt_order")
+                reasons.append(
+                    f"order book too thin: band depth ask ${ask_d:.0f} "
+                    f"bid ${bid_d:.0f} < order ${planned:.0f} "
+                    f"(±{window:.2f}% mid)"
+                )
+
+    if not codes:
+        return prior
+
+    # When the old gate already rejected, keep that code first so a thin
+    # book still reports venue_liquidity_block. Hard codes stay on the
+    # list. When the old gate would have allowed the buy, the hard code
+    # is primary.
+    all_codes = list(codes)
+    if prior.code and not prior.ok and prior.code not in all_codes:
+        all_codes = [prior.code] + all_codes
+    primary = all_codes[0]
+    out = VenueQualityResult(ok=False, reasons=reasons, metrics=m, code=primary)
+    out.guard_codes = all_codes  # type: ignore[attr-defined]
+    out.planned_usdt = planned  # type: ignore[attr-defined]
+    out.quote_volume_24h_usdt = qv  # type: ignore[attr-defined]
+    out.depth_ask_usdt = ask_d  # type: ignore[attr-defined]
+    out.depth_bid_usdt = bid_d  # type: ignore[attr-defined]
+    out.depth_window_pct = window  # type: ignore[attr-defined]
+    return out
+
+
 def check_venue_for_buy(
     symbol: str,
     *,
@@ -579,29 +920,62 @@ def check_venue_for_buy(
     config_raw: dict | None = None,
     metrics: VenueMetrics | dict | None = None,
 ) -> VenueQualityResult:
-    """Defense-in-depth BUY gate. Call only for buy orders."""
+    """BUY gate (#563 repaired by #641). Call only for buy orders.
+
+    A fetch error blocks the buy (``liq_guard_missing_input``). It does
+    not raise and it does not apply to sells.
+    """
     cfg = venue_quality_config(config_raw)
     if not cfg.get("enabled", True):
-        return VenueQualityResult(ok=True, reasons=["venue_quality_disabled"])
-    if not source_applies_venue(source, cfg):
-        return VenueQualityResult(ok=True, reasons=["source_exempt"])
+        # The old venue_quality.enabled flag is not an off-switch for the
+        # hard lock. The lock still runs.
+        pass
+    # exempt_sources is not a switch. Every source is evaluated. A human
+    # manual buy is logged and not auto-blocked by the caller.
 
     if metrics is None:
-        metrics = get_venue_metrics(symbol, config_raw=config_raw, fetch_depth=True)
+        try:
+            metrics = get_venue_metrics(symbol, config_raw=config_raw, fetch_depth=True)
+        except Exception as exc:
+            log(f"liquidity guard fetch failed {symbol}: {exc}", "WARNING")
+            missing = VenueMetrics(symbol=symbol, capture="missing", quote_volume_present=False)
+            return VenueQualityResult(
+                ok=False,
+                reasons=["liq_guard_missing_input"],
+                metrics=missing,
+                code="liq_guard_missing_input",
+            )
         if metrics.capture == "missing":
             err_pol = str(cfg.get("on_fetch_error") or "block_sensor")
+            # #641: fail closed for buys. The old allow/fail_open policy
+            # must not let a buy through when Gate data is missing.
             if err_pol in ("allow", "fail_open"):
-                return VenueQualityResult(
-                    ok=True, reasons=["venue_fetch_failed_allow"], metrics=metrics
+                log(
+                    f"liquidity guard ignoring fail-open fetch policy for {symbol}",
+                    "WARNING",
                 )
-            return VenueQualityResult(
+            prior = VenueQualityResult(
                 ok=False,
                 reasons=["venue_fetch_failed_block"],
                 metrics=metrics,
                 code="venue_liquidity_block",
             )
+            return _apply_hard_liquidity(
+                prior, metrics, planned_usdt=planned_usdt, config_raw=config_raw
+            )
 
-    return evaluate_venue_quality(metrics, cfg, planned_usdt=planned_usdt)
+    try:
+        prior = evaluate_venue_quality(metrics, cfg, planned_usdt=planned_usdt)
+    except Exception as exc:
+        log(f"liquidity guard evaluate failed {symbol}: {exc}", "WARNING")
+        return VenueQualityResult(
+            ok=False,
+            reasons=["liq_guard_missing_input"],
+            code="liq_guard_missing_input",
+        )
+    return _apply_hard_liquidity(
+        prior, metrics, planned_usdt=planned_usdt, config_raw=config_raw
+    )
 
 
 def stamp_venue_for_fill(

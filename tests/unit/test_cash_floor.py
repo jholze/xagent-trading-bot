@@ -121,7 +121,7 @@ class TestCashFloor:
             "risk.risk_manager.count_open_full_slots", return_value=30
         ), patch(
             "risk.risk_manager.get_position",
-            return_value={"amount": 1.0, "average_entry": 2800},
+            return_value={"amount": 1.0, "average_entry": 2800, "dca_rounds": 0},
         ), patch.object(rm, "_trade_cooldown_blocked", return_value=(False, "")), patch.object(
             rm, "_daily_buy_limit_blocked", return_value=None
         ), patch.object(rm, "_daily_dca_usdt_limit_blocked", return_value=None), patch.object(

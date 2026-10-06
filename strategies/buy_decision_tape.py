@@ -142,6 +142,34 @@ def _observe_macro_stress(
     return _copy_macro_stress(rec)
 
 
+def _book_fields(
+    *,
+    has_position: bool,
+    signal_name: str,
+    details: dict | None,
+) -> dict[str, Any]:
+    book: dict[str, Any] = {
+        "state": "has_position" if has_position else "empty",
+        "dca": signal_name == "BUY_DCA",
+    }
+    if not details:
+        return book
+    guard = {
+        "codes": list(details.get("codes") or []),
+        "price": details.get("price"),
+        "avg": details.get("avg"),
+        "dca_rounds": details.get("dca_rounds"),
+        "locked": details.get("locked"),
+        "depth_ask_usdt": details.get("depth_ask_usdt"),
+        "depth_bid_usdt": details.get("depth_bid_usdt"),
+        "planned_usdt": details.get("planned_usdt"),
+        "quote_volume_24h_usdt": details.get("quote_volume_24h_usdt"),
+        "depth_window_pct": details.get("depth_window_pct"),
+    }
+    book["guard"] = guard
+    return book
+
+
 def emit_buy_decision_tape(
     order: TradeOrder,
     decision: RiskDecision,
@@ -167,11 +195,20 @@ def emit_buy_decision_tape(
     signal_name = getattr(order, "signal", "") or ""
     signal_source = source if source is not None else (getattr(order, "source", "") or "")
     approved = bool(getattr(decision, "approved", False))
+    details = getattr(decision, "details", None)
+    if not isinstance(details, dict):
+        details = None
     if approved:
         filter_codes: list[str] = []
     else:
-        code = str(getattr(decision, "code", "") or "").strip()
-        filter_codes = [code] if code else ["rejected"]
+        raw_codes = (details or {}).get("codes") if details else None
+        if isinstance(raw_codes, (list, tuple)) and raw_codes:
+            filter_codes = [str(c) for c in raw_codes if str(c or "").strip()]
+        else:
+            code = str(getattr(decision, "code", "") or "").strip()
+            filter_codes = [code] if code else ["rejected"]
+        if not filter_codes:
+            filter_codes = ["rejected"]
     outcome = "accepted" if approved else "rejected"
     row = {
         "ts": _now_ts(),
@@ -180,10 +217,11 @@ def emit_buy_decision_tape(
         "outcome": outcome,
         "signal": {"name": signal_name, "source": signal_source},
         "filter_codes": filter_codes,
-        "book": {
-            "state": "has_position" if has_position else "empty",
-            "dca": signal_name == "BUY_DCA",
-        },
+        "book": _book_fields(
+            has_position=has_position,
+            signal_name=signal_name,
+            details=None if approved else details,
+        ),
         "macro_stress": _observe_macro_stress(
             config,
             has_position=has_position,

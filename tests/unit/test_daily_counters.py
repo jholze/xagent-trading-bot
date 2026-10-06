@@ -39,6 +39,11 @@ def _cfg(
         "position_capacity": {"enabled": False},
         "slot_eviction": {"enabled": False},
         "venue_quality": {"enabled": False},
+        "liquidity_guard": {
+            "min_quote_volume_24h_usdt": 500000,
+            "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
+        },
         "min_trade_usdt": 1.0,
         "max_daily_loss_pct": 0,
         "cash_floor_pct": 0,
@@ -187,7 +192,7 @@ def _patch_load_orders(doc_or_fn):
 
 @contextmanager
 def _buy_dca_eval_env(rm: RiskManager):
-    pos = {"amount": 1.0, "average_entry": 1.0, "sold_percent": 0}
+    pos = {"amount": 1.0, "average_entry": 1.0, "sold_percent": 0, "dca_rounds": 0}
     with ExitStack() as stack:
         stack.enter_context(patch("risk.risk_manager.get_position", return_value=pos))
         stack.enter_context(

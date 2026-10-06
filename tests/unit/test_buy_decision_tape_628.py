@@ -181,7 +181,8 @@ def test_t2b_rejected_venue_liquidity_block_filter_codes(tmp_path, monkeypatch):
     assert len(rows) == 1
     row = rows[0]
     assert row["outcome"] == "rejected"
-    assert row["filter_codes"] == ["venue_liquidity_block"]
+    assert row["filter_codes"][0] == "venue_liquidity_block"
+    assert "liq_guard_missing_input" in row["filter_codes"]
     assert set(row.keys()) == set(ROW_KEYS)
 
 
@@ -235,15 +236,20 @@ def test_t2c_macro_stress_is_whitelisted_copy(tmp_path, monkeypatch):
 def test_t3_open_lot_buy_dca_has_position_no_first_buy_block(tmp_path, monkeypatch):
     cfg = _cfg()
     rm = RiskManager(cfg)
-    position = {"amount": 2.0, "average_entry": 1.0, "strategy_tier": "volatile"}
+    position = {
+        "amount": 2.0,
+        "average_entry": 1.0,
+        "dca_rounds": 0,
+        "strategy_tier": "volatile",
+    }
 
     monkeypatch.setenv("BUY_DECISION_TAPE", "0")
-    with _eval_env(rm, position=position, metrics=_EMPTY_BOOK, mcap=None):
+    with _eval_env(rm, position=position, mcap=None):
         baseline = rm.evaluate(_buy(source="dca", signal="BUY_DCA"), "4h", source="dca")
     assert not _tape_file(tmp_path).exists()
 
     monkeypatch.setenv("BUY_DECISION_TAPE", "1")
-    with _eval_env(rm, position=position, metrics=_EMPTY_BOOK, mcap=None):
+    with _eval_env(rm, position=position, mcap=None):
         taped = rm.evaluate(_buy(source="dca", signal="BUY_DCA"), "4h", source="dca")
 
     assert _money(taped) == _money(baseline)

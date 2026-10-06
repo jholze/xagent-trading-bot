@@ -454,14 +454,36 @@ def deep_analyze_candidate(
     }
 
     try:
+        from strategies.dca_policy import policy_skip_for_guard
+
+        # Log the lock code instead of action=buy_dca. Sizing above is
+        # unchanged so this function stays a size advisor; the order
+        # submit path is what rejects the add.
+        audit_result = policy
+        guard_pos = {
+            "symbol": str(enriched.get("symbol") or ""),
+            "amount": enriched.get("amount"),
+            "average_entry": enriched.get("average_entry"),
+            "dca_rounds": enriched.get("dca_rounds"),
+            "lock": enriched.get("lock"),
+        }
+        if "dca_rounds" not in enriched:
+            guard_pos.pop("dca_rounds", None)
+        guard_skip = policy_skip_for_guard(
+            guard_pos,
+            enriched.get("price") or enriched.get("mark") or enriched.get("current_price"),
+            symbol=str(enriched.get("symbol") or ""),
+        )
+        if guard_skip is not None:
+            audit_result = guard_skip
         emit_dca_policy_audit(
             symbol=str(enriched.get("symbol") or ""),
-            result=policy,
+            result=audit_result,
             ctx=ctx,
             shadow=shadow,
             base_usdt=float(usdt or 0),
             final_usdt=float(usdt or 0),
-            applied="dca_sniper_deep",
+            applied="dca_guard" if guard_skip is not None else "dca_sniper_deep",
         )
     except Exception as e:
         log(f"dca_sniper deep audit fail: {e}", "DEBUG")

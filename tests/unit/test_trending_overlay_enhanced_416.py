@@ -57,7 +57,14 @@ def _raw(*, enhanced: bool, cap: int = 11, size_pct: int = 50) -> dict:
             },
             "cmc_trending_fusion": {"trending_trade_size_pct": size_pct},
         },
-        "risk": {"min_trade_usdt": 5},
+        "risk": {
+            "min_trade_usdt": 5,
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+            },
+        },
         "architecture": {},
     }
 

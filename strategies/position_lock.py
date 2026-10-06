@@ -1,7 +1,8 @@
 """Position lock — block auto-exits / eviction while held.
 
 Default intent: **prevent accidental sells** (trail / exit_ws / eviction).
-DCA and DCA sniper stay allowed unless mode ``no_dca`` is set explicitly.
+Any active lock also blocks DCA adds (#640). There is no mode and no
+config flag that allows an add while the lot is locked.
 
 Persists on the position document under key ``lock``. Manual sells still allowed
 unless mode ``no_manual_sell`` is set (default off).
@@ -195,7 +196,8 @@ def lock_modes(lock: dict | None) -> set[str]:
     """Effective modes for an active lock document.
 
     Stored modes are honored as written. Empty/missing modes → DEFAULT_MODES
-    (sell-only; DCA allowed). Any set that includes ``no_dca`` blocks DCA.
+    (sell-only). DCA adds are blocked by any active lock (#640), not by
+    whether ``no_dca`` is in this set.
     """
     if not lock:
         return set()
@@ -264,8 +266,16 @@ def dca_blocked(
     now: datetime | None = None,
     config: dict | None = None,
 ) -> tuple[bool, str]:
-    if is_position_locked(pos, mode=MODE_NO_DCA, now=now, config=config):
-        return True, _reason(pos, MODE_NO_DCA)
+    """Any active lock blocks adds. ``no_dca`` is not required.
+
+    ``risk.position_locks.enabled=false`` does not re-open DCA: the lock
+    document on the lot is the only truth (#640). ``config`` is accepted
+    so existing callers keep working and is intentionally unused.
+    """
+    del config
+    lock = get_lock(pos)
+    if lock_is_active(lock, now=now):
+        return True, _reason(pos, "locked")
     return False, ""
 
 

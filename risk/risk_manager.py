@@ -397,41 +397,6 @@ class RiskManager:
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
-        # Position lock no_dca: block all BUY_DCA paths (cycle, recovery, sniper)
-        # Defense-in-depth — sniper/bot_http and DE also check, Risk is final rail.
-        # Fail-closed: lock-check errors must not approve adds on locked lots.
-        if self._is_dca_buy(source, order):
-            try:
-                from strategies.position_lock import dca_blocked, log_lock_block
-
-                pos = get_position(order.symbol, timeframe)
-                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                locked, lock_msg = dca_blocked(pos, config=raw_cfg)
-                if locked:
-                    log_lock_block(
-                        order.symbol, lock_msg, source=str(source or "dca")
-                    )
-                    return RiskDecision(
-                        approved=False,
-                        message=lock_msg,
-                        code="position_locked",
-                    )
-            except Exception as exc:
-                try:
-                    from logger import log
-
-                    log(
-                        f"position_lock dca check error {order.symbol}: {exc}",
-                        "ERROR",
-                    )
-                except Exception:
-                    pass
-                return RiskDecision(
-                    approved=False,
-                    message=f"position_lock_check_error: {exc}"[:200],
-                    code="position_lock_check_error",
-                )
-
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
         from core.stablecoins import (
             is_stablecoin_symbol,
@@ -472,9 +437,15 @@ class RiskManager:
                 except Exception:
                     hop_short = False
                 if not hop_short and float(hop.get("amount") or 0) > 1e-12:
+                    # Second timeframe on an open long is an add (#640 R2c).
                     timeframe = hop_tf
                     pos = hop
                     has_position = True
+
+        # Lot the DCA lock sees. Later sizing may re-read the position;
+        # this snapshot is the open lot (including a hopped timeframe).
+        guard_pos = pos if isinstance(pos, dict) else {}
+        guard_has_position = bool(has_position)
 
         # Global market bias (oracle + santiment): block new buys on CRASH / warmup / size 0.
         if not has_position:
@@ -729,56 +700,10 @@ class RiskManager:
                     cool = None
                 if cool:
                     return cool
-            # Venue quality hard gate (buys only; sells never use this).
-            # Open lots skip via has_position only. No-lot DCA is not exempt.
-            from services.venue_quality import (
-                check_venue_for_buy,
-                source_applies_venue,
-                venue_quality_config,
-            )
-
-            venue_hit = False
-            venue_msg = ""
-            try:
-                vcfg = venue_quality_config(
-                    self.config.raw if hasattr(self.config, "raw") else None
-                )
-                if (
-                    vcfg.get("enabled", True)
-                    and source_applies_venue(source, vcfg)
-                ):
-                    planned = float(order.usdt_amount or 0) or float(
-                        self.config.max_usdt_per_trade or 0
-                    )
-                    vres = check_venue_for_buy(
-                        order.symbol,
-                        source=source,
-                        planned_usdt=planned,
-                        config_raw=self.config.raw if hasattr(self.config, "raw") else None,
-                    )
-                    if not vres.ok:
-                        venue_hit = True
-                        venue_msg = (
-                            f"Venue quality block {order.symbol}: "
-                            + ("; ".join(vres.reasons) or "thin market")
-                        )
-            except Exception as e:
-                dec = self._guard_failed("venue_liquidity_block", e, order)
-                if dec:
-                    return dec
-                venue_hit = False
-            if venue_hit:
-                reject_code = "venue_liquidity_block"
-                vcode = getattr(vres, "code", "") or ""
-                if vcode == "book_unavailable":
-                    reject_code = "book_unavailable"
-                return RiskDecision(
-                    approved=False,
-                    message=venue_msg,
-                    code=reject_code,
-                    size_multiplier=0.0,
-                )
-            # Long mcap floor after venue, before size. New long BUY only.
+            # Liquidity lock (#641) runs once, after final sizing, for every
+            # automatic buy including adds. The old pre-size call lived here
+            # and skipped open lots, so DCA never saw it.
+            # Long mcap floor after the new-entry gates, before size. New long BUY only.
             # Open lots skip via has_position only. No-lot DCA is not exempt.
             # Only manual is exempt by default. Sells returned above.
             if (
@@ -1094,6 +1019,20 @@ class RiskManager:
                 trust_factor=factors.get("trust_factor", 1.0),
             )
 
+        # #640 then #641. After the final size, before the relvol minimum,
+        # so a thin book is still reported as a venue/liquidity block.
+        # DCA codes come first, then liquidity codes.
+        locked_out = self._buy_lock_decision(
+            order,
+            source=source,
+            pos=guard_pos,
+            has_position=guard_has_position,
+            planned_usdt=float(sized),
+            indicators=indicators,
+        )
+        if locked_out is not None:
+            return locked_out
+
         # RelVol trade tickets: reject under $1000 after multipliers / shrink-only
         # caps. Do not round up. Other sources keep min_trade_usdt ($100 live).
         if self._is_relvol_buy(source, order) and sized < 1000.0:
@@ -1330,6 +1269,163 @@ class RiskManager:
 
     def _dca_limits_enabled(self) -> bool:
         return self._effective_max_daily_dca_buys() > 0
+
+    def _buy_lock_decision(
+        self,
+        order: TradeOrder,
+        *,
+        source: str,
+        pos: dict,
+        has_position: bool,
+        planned_usdt: float,
+        indicators: dict | None,
+    ) -> RiskDecision | None:
+        """DCA lock (#640) and liquidity lock (#641) at order submit.
+
+        Callers that reach ``RiskManager.evaluate`` on a BUY all pass here:
+        ``dca``, ``dca_sniper`` / ``dca_sniper_deep``, ``deploy_boost`` (a
+        size reason on those orders, not a separate path), ``dca_recovery``,
+        a second-timeframe entry, ``entry_sensor_15m`` and other new-entry
+        sources, and ``mcp:{actor}`` bot buys. A human operator source
+        (``manual`` / telegram, never ``mcp*``) is the only exemption.
+        Sells, stops, covers and kill-switch flattens do not call this.
+        """
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None
+        from strategies.dca_policy import evaluate_dca_guard, is_human_operator_buy
+
+        src = source or getattr(order, "source", None) or ""
+        # A human manual buy is not auto-blocked. The checks still run and
+        # the result is logged. No config list can skip a bot source.
+        human = is_human_operator_buy(src)
+
+        codes: list[str] = []
+        dca_result = None
+        try:
+            dca_result = evaluate_dca_guard(
+                pos,
+                price=getattr(order, "price", None),
+                source=src,
+                has_open_lot=bool(has_position),
+                symbol=getattr(order, "symbol", "") or "",
+                indicators=indicators,
+            )
+        except Exception as exc:
+            dca_result = None
+            if has_position:
+                codes.append("dca_guard_missing_input")
+                try:
+                    from logger import log
+
+                    log(f"dca guard failed {order.symbol}: {exc}", "ERROR")
+                except Exception:
+                    pass
+        if dca_result is not None and dca_result.blocked:
+            codes.extend(dca_result.codes)
+
+        liq = None
+        liq_exc = None
+        try:
+            from services.venue_quality import check_venue_for_buy
+
+            liq = check_venue_for_buy(
+                order.symbol,
+                source=str(src),
+                planned_usdt=float(planned_usdt or 0),
+                config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+            )
+        except Exception as exc:
+            liq_exc = exc
+            codes.append("liq_guard_missing_input")
+            try:
+                from logger import log
+
+                log(f"liquidity guard failed {order.symbol}: {exc}", "ERROR")
+            except Exception:
+                pass
+        if liq is not None and not liq.ok:
+            extra = list(getattr(liq, "guard_codes", None) or [])
+            if not extra and liq.code:
+                extra = [liq.code]
+            # #563 callers (and the #631 membership test) reject with
+            # venue_liquidity_block when the result is not ok and carries
+            # no code. An empty code must not fall through to a later gate.
+            if not any(extra):
+                extra = ["venue_liquidity_block"]
+            for code in extra:
+                if code and code not in codes:
+                    codes.append(code)
+            if liq.code and liq.code not in codes:
+                codes.append(liq.code)
+
+        if human:
+            try:
+                from logger import log
+
+                log(
+                    f"manual_buy_guard {getattr(order, 'symbol', '')} "
+                    f"blocked={bool(codes)} codes={','.join(codes) or '-'}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+            return None
+
+        if not codes:
+            return None
+
+        price = getattr(order, "price", None)
+        avg = dca_result.avg if dca_result is not None else None
+        rounds = dca_result.dca_rounds if dca_result is not None else None
+        locked = dca_result.locked if dca_result is not None else None
+        details = {
+            "codes": codes,
+            "price": price,
+            "avg": avg,
+            "dca_rounds": rounds,
+            "locked": locked,
+            "planned_usdt": float(planned_usdt or 0),
+            "depth_ask_usdt": getattr(liq, "depth_ask_usdt", None) if liq is not None else None,
+            "depth_bid_usdt": getattr(liq, "depth_bid_usdt", None) if liq is not None else None,
+            "quote_volume_24h_usdt": (
+                getattr(liq, "quote_volume_24h_usdt", None) if liq is not None else None
+            ),
+            "depth_window_pct": getattr(liq, "depth_window_pct", None) if liq is not None else None,
+        }
+        if liq is not None and details["quote_volume_24h_usdt"] is None and liq.metrics is not None:
+            try:
+                details["quote_volume_24h_usdt"] = float(liq.metrics.quote_volume_24h_usdt)
+            except (TypeError, ValueError):
+                pass
+            if details["depth_ask_usdt"] is None:
+                try:
+                    details["depth_ask_usdt"] = float(liq.metrics.depth_ask_usdt)
+                    details["depth_bid_usdt"] = float(liq.metrics.depth_bid_usdt)
+                except (TypeError, ValueError):
+                    pass
+        primary = codes[0]
+        bits = [primary]
+        if price is not None:
+            bits.append(f"price={price}")
+        if avg is not None:
+            bits.append(f"avg={avg}")
+        if rounds is not None:
+            bits.append(f"dca_rounds={rounds}")
+        if locked is not None:
+            bits.append(f"locked={locked}")
+        if details.get("planned_usdt"):
+            bits.append(f"planned={details['planned_usdt']}")
+        if liq_exc is not None:
+            bits.append("gate_error")
+        if liq is not None and liq.reasons:
+            bits.append("; ".join(str(r) for r in liq.reasons)[:240])
+        return RiskDecision(
+            approved=False,
+            message=" ".join(str(b) for b in bits)[:400],
+            code=primary,
+            size_multiplier=0.0,
+            details=details,
+        )
 
     @staticmethod
     def _is_dca_buy(source: str, order: TradeOrder) -> bool:
@@ -2584,6 +2680,34 @@ class RiskManager:
                     approved=False,
                     message=f"short margin {open_margin + margin:.0f} > {max_pct:g}% NAV",
                     code="short_margin_pct",
+                )
+        src = str(source or order.source or "")
+        if src != "manual":
+            try:
+                from services.venue_quality import check_venue_for_buy
+
+                liq = check_venue_for_buy(
+                    order.symbol,
+                    source=src,
+                    planned_usdt=float(usdt or 0),
+                    config_raw=raw if isinstance(raw, dict) else None,
+                )
+            except Exception as exc:
+                return RiskDecision(
+                    approved=False,
+                    message=f"liq_guard_missing_input {exc}"[:200],
+                    code="liq_guard_missing_input",
+                )
+            if not liq.ok:
+                extra = list(getattr(liq, "guard_codes", None) or [])
+                if liq.code and liq.code not in extra:
+                    extra.append(liq.code)
+                return RiskDecision(
+                    approved=False,
+                    message=(" ".join(str(r) for r in (liq.reasons or [])) or liq.code)[:400],
+                    code=(extra[0] if extra else liq.code) or "liq_guard_missing_input",
+                    size_multiplier=0.0,
+                    details={"codes": extra, "planned_usdt": float(usdt or 0)},
                 )
         out = TradeOrder(
             type="SHORT",

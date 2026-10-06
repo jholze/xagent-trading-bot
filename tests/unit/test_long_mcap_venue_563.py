@@ -59,6 +59,9 @@ _HEALTHY = VenueMetrics(
     top_book_bid_usdt=10_000.0,
     top_book_ask_usdt=10_000.0,
     capture="ok",
+    depth_bid_usdt=10_000.0,
+    depth_ask_usdt=10_000.0,
+    depth_parsed=True,
 )
 
 _SHORTS = {
@@ -83,6 +86,11 @@ def _cfg(**risk_over) -> BotConfig:
         "slot_eviction": {"enabled": False},
         "max_daily_loss_pct": 0,
         "venue_quality": dict(_VENUE),
+        "liquidity_guard": {
+            "min_quote_volume_24h_usdt": 500000,
+            "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
+        },
     }
     risk.update(risk_over)
     raw = {
@@ -119,7 +127,16 @@ def _buy(
 
 
 @contextmanager
-def _eval_env(rm: RiskManager, *, position: dict | None = None, metrics=None, mcap=6_000_000):
+def _eval_env(
+    rm: RiskManager,
+    *,
+    position: dict | None = None,
+    metrics=None,
+    mcap=6_000_000,
+    get_position_side_effect=None,
+    open_found=None,
+    metrics_side_effect=None,
+):
     pos = {"amount": 0} if position is None else position
     cap = SimpleNamespace(
         max_open_eff=100,
@@ -135,9 +152,17 @@ def _eval_env(rm: RiskManager, *, position: dict | None = None, metrics=None, mc
         else patch("data.cmc_market_cap.resolve_market_cap_usd", side_effect=mcap)
     )
     with ExitStack() as stack:
-        stack.enter_context(patch("risk.risk_manager.get_position", return_value=pos))
+        if get_position_side_effect is not None:
+            stack.enter_context(
+                patch("risk.risk_manager.get_position", side_effect=get_position_side_effect)
+            )
+        else:
+            stack.enter_context(patch("risk.risk_manager.get_position", return_value=pos))
         stack.enter_context(
-            patch("risk.risk_manager.find_open_position_for_symbol", return_value=None)
+            patch(
+                "risk.risk_manager.find_open_position_for_symbol",
+                return_value=open_found,
+            )
         )
         stack.enter_context(patch("risk.risk_manager.count_open_full_slots", return_value=0))
         stack.enter_context(patch("risk.risk_manager.count_open_positions", return_value=0))
@@ -178,9 +203,20 @@ def _eval_env(rm: RiskManager, *, position: dict | None = None, metrics=None, mc
         stack.enter_context(patch("core.stablecoins.is_stablecoin_symbol", return_value=False))
         stack.enter_context(patch("core.stablecoins.stablecoin_buys_blocked", return_value=True))
         stack.enter_context(patch("services.watchlist_quality.config.wqe_mode", return_value="off"))
-        stack.enter_context(
-            patch("services.venue_quality.get_venue_metrics", return_value=metrics or _HEALTHY)
-        )
+        if metrics_side_effect is not None:
+            stack.enter_context(
+                patch(
+                    "services.venue_quality.get_venue_metrics",
+                    side_effect=metrics_side_effect,
+                )
+            )
+        else:
+            stack.enter_context(
+                patch(
+                    "services.venue_quality.get_venue_metrics",
+                    return_value=metrics or _HEALTHY,
+                )
+            )
         stack.enter_context(mcap_patch)
         yield
 
@@ -311,18 +347,23 @@ def test_stable_tier_uses_20m_floor_without_a_lot_amount():
 @pytest.mark.parametrize(
     "position,source,signal",
     [
-        ({"amount": 2.0, "average_entry": 1.0, "strategy_tier": "volatile"}, "dca", "BUY_DCA"),
-        ({"amount": 2.0, "average_entry": 1.0}, "dca", "BUY"),
-        ({"amount": 2.0, "average_entry": 1.0}, "auto", "BUY_DCA"),
+        (
+            {"amount": 2.0, "average_entry": 1.0, "dca_rounds": 0, "strategy_tier": "volatile"},
+            "dca",
+            "BUY_DCA",
+        ),
+        ({"amount": 2.0, "average_entry": 1.0, "dca_rounds": 0}, "dca", "BUY"),
+        ({"amount": 2.0, "average_entry": 1.0, "dca_rounds": 0}, "auto", "BUY_DCA"),
     ],
 )
-def test_open_lot_dca_skips_venue_and_long_mcap(position, source, signal):
+def test_open_lot_dca_skips_long_mcap_but_not_the_buy_locks(position, source, signal):
+    """Open lots still skip the mcap floor. They no longer skip the buy locks."""
     rm = RiskManager(_cfg())
     with _eval_env(rm, position=position, metrics=_EMPTY_BOOK, mcap=None):
         dec = rm.evaluate(_buy(source=source, signal=signal), "4h", source=source)
-    assert dec.code not in ("venue_liquidity_block", "long_mcap")
-    assert dec.approved is True, f"{dec.code}: {dec.message}"
-    assert dec.order.type == "BUY"
+    assert dec.code != "long_mcap"
+    assert dec.approved is False
+    assert dec.code in ("venue_liquidity_block", "liq_guard_missing_input")
 
 
 def test_locked_coin_sell_is_not_created():

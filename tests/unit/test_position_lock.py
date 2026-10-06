@@ -64,9 +64,9 @@ class TestPositionLockCore(unittest.TestCase):
         self.assertIn(MODE_NO_MANUAL_SELL, msg)
 
     def test_dca_and_eviction(self):
-        # Default lock = sell-hold only: DCA allowed, eviction blocked
+        # Default lock blocks sells, eviction, and DCA adds (#640).
         pos = _locked_pos()
-        self.assertFalse(dca_blocked(pos)[0])
+        self.assertTrue(dca_blocked(pos)[0])
         self.assertTrue(eviction_blocked(pos)[0])
         unlocked = {"amount": Decimal("1")}
         self.assertFalse(dca_blocked(unlocked)[0])
@@ -87,11 +87,11 @@ class TestPositionLockCore(unittest.TestCase):
         self.assertTrue(dca_blocked(pos)[0])
         self.assertTrue(eviction_blocked(pos)[0])
 
-    def test_default_telegram_modes_allow_dca(self):
-        """Telegram DEFAULT_MODES = sell-only; DCA/sniper still allowed."""
+    def test_default_telegram_modes_block_dca(self):
+        """Telegram DEFAULT_MODES still block adds. No DCA-under-lock allowance."""
         pos = _locked_pos(modes=list(DEFAULT_MODES), reason="telegram_lock")
         self.assertTrue(auto_sell_blocked(pos, "exit_ws")[0])
-        self.assertFalse(dca_blocked(pos)[0])
+        self.assertTrue(dca_blocked(pos)[0])
         self.assertTrue(eviction_blocked(pos)[0])
 
     def test_until_expiry(self):
@@ -127,13 +127,15 @@ class TestPositionLockCore(unittest.TestCase):
         pos = _locked_pos()
         cfg = {"risk": {"position_locks": {"enabled": False}}}
         self.assertFalse(auto_sell_blocked(pos, "exit_ws", config=cfg)[0])
-        self.assertFalse(dca_blocked(pos, config=cfg)[0])
+        # Sell/eviction honour the kill switch. DCA does not: a lock
+        # document still blocks adds (#640).
+        self.assertTrue(dca_blocked(pos, config=cfg)[0])
         self.assertFalse(eviction_blocked(pos, config=cfg)[0])
 
     def test_partial_modes(self):
         pos = _locked_pos(modes=[MODE_NO_AUTO_SELL])
         self.assertTrue(auto_sell_blocked(pos, "exit_ws")[0])
-        self.assertFalse(dca_blocked(pos)[0])
+        self.assertTrue(dca_blocked(pos)[0])
         self.assertFalse(eviction_blocked(pos)[0])
 
     def test_build_lock_shape(self):
