@@ -1870,14 +1870,27 @@ class RiskManager:
     )
 
     def _live_real_money_buys(self) -> bool:
-        """R3 is active only for trading_mode=live and live.dry_run false."""
+        """R3 applies when fills are real money, or a live book sets dry_run false.
+
+        ``places_real_orders`` is the accounting truth (#410). It is enough on
+        its own. ``dry_run`` false on ``trading_mode=live`` stays on too, so a
+        shadow execution alias does not drop the check. An unset trading mode
+        still asks that helper with the live book, because the helper shadows
+        before it reads ``live.execution``.
+        """
         raw = self.config.raw if hasattr(self.config, "raw") else None
         if not isinstance(raw, dict):
             return False
-        if str(raw.get("trading_mode") or "").strip().lower() != "live":
-            return False
+        from core.execution_mode import places_real_orders
+
+        mode = str(raw.get("trading_mode") or "").strip().lower()
         live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
-        return live.get("dry_run") is False
+        asked = raw
+        if "trading_mode" not in raw:
+            asked = {**raw, "trading_mode": "live"}
+        if places_real_orders(asked):
+            return True
+        return mode == "live" and live.get("dry_run") is False
 
     def _tenant_override_for_caps(self) -> tuple[dict | None, str]:
         """Tenant override body, or (None, reason) when it did not load."""

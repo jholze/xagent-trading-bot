@@ -1474,18 +1474,26 @@ def counts_toward_open_cap(pos: dict | None) -> bool:
 
 
 def _live_caps_count_every_open(config_raw: dict | None) -> bool:
-    """Real-money live books count every open lot toward the slot cap.
+    """Real-money books count every open lot, including tails.
 
-    The tail rule still applies on paper and on a dry-run book. A live tenant
-    with ``live.dry_run`` false is trading under the live caps, so a 100 USDT
-    lot is a slot even when it sits under the rotation tail threshold.
+    ``places_real_orders`` is the accounting truth (#410) and is enough on its
+    own. A live book with ``dry_run`` false stays on the same path. An unset
+    trading mode still asks that helper with the live book, because the helper
+    shadows before it reads ``live.execution``. Paper and dry-run books keep
+    the tail filter.
     """
     if not isinstance(config_raw, dict):
         return False
-    if str(config_raw.get("trading_mode") or "").strip().lower() != "live":
-        return False
+    from core.execution_mode import places_real_orders
+
+    mode = str(config_raw.get("trading_mode") or "").strip().lower()
     live = config_raw.get("live") if isinstance(config_raw.get("live"), dict) else {}
-    return live.get("dry_run") is False
+    asked = config_raw
+    if "trading_mode" not in config_raw:
+        asked = {**config_raw, "trading_mode": "live"}
+    if places_real_orders(asked):
+        return True
+    return mode == "live" and live.get("dry_run") is False
 
 
 def count_open_full_slots(

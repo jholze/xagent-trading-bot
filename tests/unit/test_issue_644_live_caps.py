@@ -1300,6 +1300,83 @@ def test_b3_open_live_short_blocks_live_start(monkeypatch):
         _position_stores.clear()
 
 
+def _real_execution_cfg(*, trading_mode: str | None) -> BotConfig:
+    """execution=real and no dry_run key. trading_mode None leaves the key unset."""
+    cfg = _risk_cfg(
+        max_usdt_per_trade=100,
+        max_open_positions=4,
+        live_confirmed=True,
+        live={
+            "execution": "real",
+            "api_key_env": "GATE_API_KEY",
+            "api_secret_env": "GATE_API_SECRET",
+            "max_usdt_per_trade": 100,
+        },
+        sell_policy={
+            "rotation": {
+                "tail_exempt_notional_usdt": 500,
+                "tail_exempt_sold_pct": 0.25,
+            }
+        },
+    )
+    if trading_mode is None:
+        cfg.raw.pop("trading_mode", None)
+    else:
+        cfg.raw["trading_mode"] = trading_mode
+    return cfg
+
+
+def _assert_real_execution_caps(monkeypatch, cfg: BotConfig) -> None:
+    """Missing tenant caps block, and a sub-threshold lot still occupies a slot."""
+    from strategies.sell_rotation_policy import is_tail_position, rotation_config
+
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("GATE_API_KEY", "dummy-key")
+    monkeypatch.setenv("GATE_API_SECRET", "dummy-secret")
+    _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
+    tid = "tenant-a"
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid)
+    try:
+        _seed_lot(
+            "AAA/USDT",
+            scope="live",
+            tenant=tid,
+            amount=Decimal("100"),
+            peak_amount=100.0,
+            average_entry=1.0,
+            last_buy_price=1.0,
+            current_price=1.0,
+        )
+        _activate(_resolve_store_key("live", tid))
+        row = _ensure_store(_resolve_store_key("live", tid))[get_key("AAA/USDT", "1h")]
+        assert is_tail_position(row, rotation_config(cfg.raw))
+        assert count_open_full_slots(cfg.raw) == 1
+        shadowed = copy.deepcopy(cfg.raw)
+        shadowed["trading_mode"] = "live"
+        shadowed["live"] = {**shadowed["live"], "dry_run": True, "execution": "shadow"}
+        assert count_open_full_slots(shadowed) == 0
+        rm = RiskManager(cfg)
+        with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+            dec = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+        assert dec.approved is False
+        assert dec.code == "live_caps_missing"
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid)
+        _position_stores.clear()
+
+
+def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
+    """execution=real with no dry_run key is real money: caps and tails both apply."""
+    _assert_real_execution_caps(monkeypatch, _real_execution_cfg(trading_mode="live"))
+
+
+def test_execution_real_without_trading_mode_blocks_and_counts_tails(monkeypatch):
+    """The same real execution with trading_mode unset still blocks and counts tails."""
+    _assert_real_execution_caps(monkeypatch, _real_execution_cfg(trading_mode=None))
+
+
 def test_b3_uncounted_tails_are_live_caps_missing(monkeypatch):
     """The slot counter must include tails. A smaller count fails the live check."""
     _arm_tenant_body(monkeypatch, _good_cap_body())
