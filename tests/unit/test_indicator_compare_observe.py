@@ -28,6 +28,7 @@ os.environ.setdefault("PYTEST_DB_SUFFIX", "sIndCmp")
 from core.actions import BUY, HOLD
 from core.config import BotConfig
 from core.models import MarketContext, SignalAnalysis
+from core.tenant_context import current_tenant_context, tenant_context
 from strategies.indicator_compare import (
     ROW_KEYS,
     VERDICT_BUY,
@@ -42,6 +43,7 @@ from tests.unit.test_long_mcap_venue_563 import _HEALTHY, _buy, _cfg, _eval_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SYMBOL = "REV/USDT"
+TENANT = "cmp_obs"
 BAR_MS = 1_700_000_000_000
 
 PARAMS = {
@@ -123,11 +125,21 @@ def _money_signal(analysis) -> dict:
 
 
 def _read_rows(tmp_path: Path) -> list[dict]:
-    path = Path(compare_log_path())
+    path = Path(compare_log_path(TENANT))
     assert path.is_relative_to(tmp_path)
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _capture_log(monkeypatch) -> list[tuple[str, str]]:
+    seen: list[tuple[str, str]] = []
+
+    def _record(message, level="INFO"):
+        seen.append((str(level), str(message)))
+
+    monkeypatch.setattr("logger.log", _record)
+    return seen
 
 
 def test_code_default_false_and_staging_config_enables_without_fire():
@@ -259,7 +271,9 @@ def test_fixture_both_vs_dip_logs_diverge_row_no_order(tmp_path, monkeypatch):
     market = _market()
     analysis, _ = _analyze(market)
     assert analysis.action == "BUY"
-    with patch("services.order_service.OrderService", side_effect=AssertionError("order")), patch(
+    with tenant_context(TENANT, scope="paper"), patch(
+        "services.order_service.OrderService", side_effect=AssertionError("order")
+    ), patch(
         "services.trading_service.TradingService.execute_buy",
         side_effect=AssertionError("buy"),
     ):
@@ -284,6 +298,16 @@ def test_fixture_both_vs_dip_logs_diverge_row_no_order(tmp_path, monkeypatch):
         "%Y-%m-%dT%H:%M:%SZ"
     )
     assert row["bar_time"] == expected_bar
+    written = datetime.fromisoformat(row["written_at"].replace("Z", "+00:00"))
+    assert written.tzinfo is not None
+    assert abs((datetime.now(timezone.utc) - written).total_seconds()) < 120
+    assert row["written_at"] != row["bar_time"]
+    assert row["rsi_buy_low"] == PARAMS["rsi_buy_low"]
+    assert row["rsi_buy_high"] == PARAMS["rsi_buy_high"]
+    assert row["volume_multiplier"] == PARAMS["volume_multiplier"]
+    assert row["reversal_rsi_cross_low"] == float(PARAMS["reversal_rsi_cross_low"])
+    assert row["reversal_rsi_cross_high"] == float(PARAMS["reversal_rsi_cross_high"])
+    assert row["reversal_volume_multiplier"] == float(PARAMS["reversal_volume_multiplier"])
     for key in ("qty", "amount", "usdt_amount", "order", "size", "size_multiplier"):
         assert key not in row
     on_disk = _read_rows(tmp_path)
@@ -292,13 +316,14 @@ def test_fixture_both_vs_dip_logs_diverge_row_no_order(tmp_path, monkeypatch):
 
     dip_market = _market(price=95.0, lower=95.0, rsi=40.0, last_rsi=40.0)
     dip_market.strategy_params = dict(PARAMS)
-    agreed = maybe_log_indicator_compare(
-        _config(enabled=True),
-        coin=_coin(),
-        market=dip_market,
-        params=dip_market.strategy_params,
-        strategy_name="technical_rsi_bb",
-    )
+    with tenant_context(TENANT, scope="paper"):
+        agreed = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=dip_market,
+            params=dip_market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
     assert agreed is not None
     assert agreed["ist_read"] == VERDICT_BUY
     assert agreed["alt_read"] == VERDICT_BUY
@@ -335,13 +360,14 @@ def _risk_once(raw: dict):
 def test_diverge_does_not_change_accept_reject_size(tmp_path, monkeypatch):
     _enable_writes(monkeypatch, tmp_path)
     market = _market()
-    logged = maybe_log_indicator_compare(
-        _config(enabled=True),
-        coin=_coin(),
-        market=market,
-        params=market.strategy_params,
-        strategy_name="technical_rsi_bb",
-    )
+    with tenant_context(TENANT, scope="paper"):
+        logged = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
     assert logged is not None and logged["diverge"] is True
 
     off_signal, _ = _analyze(market)
@@ -357,7 +383,7 @@ def test_diverge_does_not_change_accept_reject_size(tmp_path, monkeypatch):
         "size_multiplier": 0,
         "marker": "POISON",
     }
-    path = Path(compare_log_path())
+    path = Path(compare_log_path(TENANT))
     path.write_text(json.dumps(poison) + "\n", encoding="utf-8")
 
     base = _cfg().raw
@@ -372,8 +398,9 @@ def test_diverge_does_not_change_accept_reject_size(tmp_path, monkeypatch):
     assert "ist_read" not in blob
     assert "diverge" not in blob
 
-    engine_off = _run_engine(enabled=False)
-    engine_on = _run_engine(enabled=True)
+    with tenant_context(TENANT, scope="paper"):
+        engine_off = _run_engine(enabled=False)
+        engine_on = _run_engine(enabled=True)
     assert _money_signal(engine_off) == _money_signal(engine_on)
     assert engine_on.normalized_action == BUY
     assert engine_on.action == "BUY"
@@ -385,7 +412,9 @@ def test_logger_write_error_is_fail_open(tmp_path, monkeypatch):
     _enable_writes(monkeypatch, tmp_path)
     before, market = _analyze()
     assert before.action == "BUY"
-    with patch("services.observability_store.append_jsonl", side_effect=OSError("disk full")):
+    with tenant_context(TENANT, scope="paper"), patch(
+        "services.observability_store.append_jsonl", side_effect=OSError("disk full")
+    ):
         row = maybe_log_indicator_compare(
             _config(enabled=True),
             coin=_coin(),
@@ -396,7 +425,8 @@ def test_logger_write_error_is_fail_open(tmp_path, monkeypatch):
     assert row is not None and row["diverge"] is True
     after, _ = _analyze(market)
     assert _money_signal(after) == _money_signal(before)
-    engine = _run_engine(enabled=True, write_error=True)
+    with tenant_context(TENANT, scope="paper"):
+        engine = _run_engine(enabled=True, write_error=True)
     assert engine.action == "BUY"
     assert engine.normalized_action == BUY
     assert float(getattr(engine, "dca_usdt", 0) or 0) == 0.0
@@ -454,6 +484,195 @@ def test_risk_and_buy_do_not_read_compare_results():
     assert poisoned.action == "BUY"
     assert "POISON" not in poisoned.rationale
     assert "ist_read" not in poisoned.rationale
+
+
+def test_missing_tenant_context_does_not_write_default(tmp_path, monkeypatch):
+    data = _enable_writes(monkeypatch, tmp_path)
+    assert current_tenant_context() is None
+    warnings = _capture_log(monkeypatch)
+    market = _market()
+    row = maybe_log_indicator_compare(
+        _config(enabled=True),
+        coin=_coin(),
+        market=market,
+        params=market.strategy_params,
+        strategy_name="technical_rsi_bb",
+    )
+    assert row is not None and row["diverge"] is True
+    assert list(data.rglob("indicator_compare.jsonl")) == []
+    assert not (data / "default" / "indicator_compare.jsonl").exists()
+    assert not (ROOT / "data" / "default" / "indicator_compare.jsonl").exists()
+    assert any(level == "WARNING" and "tenant" in message.lower() for level, message in warnings)
+    source = (ROOT / "strategies" / "indicator_compare.py").read_text(encoding="utf-8")
+    assert "resolve_tenant_id" not in source
+
+
+def test_missing_max_open_positions_skips_row(tmp_path, monkeypatch):
+    data = _enable_writes(monkeypatch, tmp_path)
+    warnings = _capture_log(monkeypatch)
+
+    class _Missing:
+        raw = {"live": {"dry_run": True}}
+
+    monkeypatch.setattr("core.config.get_bot_config", lambda tenant_id=None: _Missing())
+    market = _market()
+    with tenant_context(TENANT, scope="paper"):
+        skipped = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert skipped is None
+    assert _read_rows(tmp_path) == []
+    assert list(data.rglob("indicator_compare.jsonl")) == []
+    assert not (data / "default" / "indicator_compare.jsonl").exists()
+    assert any(
+        level == "WARNING" and "max_open_positions" in message for level, message in warnings
+    )
+    source = (ROOT / "strategies" / "indicator_compare.py").read_text(encoding="utf-8")
+    assert 'max_open_positions", 5' not in source
+    assert "return 5" not in source
+
+    class _One:
+        raw = {"max_open_positions": 1}
+
+    monkeypatch.setattr("core.config.get_bot_config", lambda tenant_id=None: _One())
+    market.open_positions = 1
+    with tenant_context(TENANT, scope="paper"):
+        full = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert full is None
+    assert _read_rows(tmp_path) == []
+
+    market.open_positions = 0
+    with tenant_context(TENANT, scope="paper"):
+        opened = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert opened is not None and opened["diverge"] is True
+    assert len(_read_rows(tmp_path)) == 1
+
+
+def _pinned_entry_action(market: MarketContext, params: dict, max_open: int) -> str:
+    """Independent copy of the pre-refactor inline entry predicate."""
+    rsi_buy_low = params.get("rsi_buy_low", 28)
+    rsi_buy_high = params.get("rsi_buy_high", 48)
+    volume_multiplier_min = params.get("volume_multiplier", 1.2)
+    buy_regime = params.get("buy_regime", "dip")
+    reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
+    reversal_rsi_high = float(params.get("reversal_rsi_cross_high", 38))
+    reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
+    if not market.has_position and market.open_positions < max_open:
+        dip_buy = (
+            market.current_price <= market.lower_bb * 1.01
+            and rsi_buy_low <= market.rsi <= rsi_buy_high
+            and market.vol_multiplier >= volume_multiplier_min
+        )
+        last_rsi = float((market.sim_state or {}).get("last_rsi", market.rsi))
+        reversal_buy = (
+            last_rsi < reversal_rsi_low
+            and market.rsi >= reversal_rsi_high
+            and market.vol_multiplier >= reversal_vol_min
+        )
+        if buy_regime == "dip" and dip_buy:
+            return "BUY"
+        if buy_regime == "reversal" and reversal_buy:
+            return "BUY"
+        if buy_regime == "both" and (dip_buy or reversal_buy):
+            return "BUY"
+        return "HOLD"
+    return "HOLD"
+
+
+_BOUNDARY_CASES = (
+    ("dip_price_on_band", 101.0, 40.0, 1.2, 40.0, 0, False, True),
+    ("dip_price_above_band", 101.01, 40.0, 1.2, 40.0, 0, False, True),
+    ("dip_rsi_at_low", 100.0, 28.0, 1.2, 40.0, 0, False, True),
+    ("dip_rsi_below_low", 100.0, 27.999, 1.2, 40.0, 0, False, True),
+    ("dip_rsi_at_high", 100.0, 48.0, 1.2, 40.0, 0, False, True),
+    ("dip_rsi_above_high", 100.0, 48.001, 1.2, 40.0, 0, False, True),
+    ("dip_vol_at_min", 100.0, 40.0, 1.2, 40.0, 0, False, True),
+    ("dip_vol_below_min", 100.0, 40.0, 1.199, 40.0, 0, False, True),
+    ("reversal_last_rsi_below", 110.0, 38.0, 1.3, 31.999, 0, False, True),
+    ("reversal_last_rsi_equal_low", 110.0, 38.0, 1.3, 32.0, 0, False, True),
+    ("reversal_rsi_at_high", 110.0, 38.0, 1.3, 31.0, 0, False, True),
+    ("reversal_rsi_below_high", 110.0, 37.999, 1.3, 31.0, 0, False, True),
+    ("reversal_vol_at_min", 110.0, 38.0, 1.3, 31.0, 0, False, True),
+    ("reversal_vol_below_min", 110.0, 38.0, 1.299, 31.0, 0, False, True),
+    ("both_signals", 100.0, 40.0, 1.5, 30.0, 0, False, True),
+    ("neither", 110.0, 50.0, 1.0, 40.0, 0, False, True),
+    ("defaults_only", 100.0, 28.0, 1.2, 40.0, 0, False, False),
+    ("full_book", 100.0, 40.0, 1.5, 30.0, 10_000, False, True),
+    ("has_position", 100.0, 40.0, 1.5, 30.0, 0, True, True),
+)
+
+
+@pytest.mark.parametrize("regime", ["dip", "reversal", "both"])
+@pytest.mark.parametrize(
+    ("name", "price", "rsi", "vol", "last_rsi", "open_positions", "has_position", "explicit_thresholds"),
+    _BOUNDARY_CASES,
+    ids=[case[0] for case in _BOUNDARY_CASES],
+)
+def test_entry_action_matches_pinned_pre_refactor_predicate(
+    regime,
+    name,
+    price,
+    rsi,
+    vol,
+    last_rsi,
+    open_positions,
+    has_position,
+    explicit_thresholds,
+):
+    del name
+    params = {
+        "symbol": SYMBOL,
+        "timeframe": "4h",
+        "buy_regime": regime,
+        "strategy_class": "technical_rsi_bb",
+        "exchange": "gate",
+        "market": "spot",
+    }
+    if explicit_thresholds:
+        params.update(
+            {
+                "rsi_buy_low": 28,
+                "rsi_buy_high": 48,
+                "volume_multiplier": 1.2,
+                "reversal_rsi_cross_low": 32,
+                "reversal_rsi_cross_high": 38,
+                "reversal_volume_multiplier": 1.3,
+            }
+        )
+    market = MarketContext(
+        symbol=SYMBOL,
+        timeframe="4h",
+        current_price=price,
+        rsi=rsi,
+        lower_bb=100.0,
+        vol_multiplier=vol,
+        has_position=has_position,
+        open_positions=open_positions,
+        average_entry=0.0,
+        strategy_params=params,
+        sim_state={"last_rsi": last_rsi, "last_ampel": "🟡", "rsi_sell_tiers_done": {}},
+    )
+    from core.config import get_bot_config
+
+    expected = _pinned_entry_action(market, params, get_bot_config().max_open_positions)
+    analysis = TechnicalRSIStrategy().analyze(_coin(), market)
+    assert analysis.action == expected
 
 
 def _function_source(fn) -> str:

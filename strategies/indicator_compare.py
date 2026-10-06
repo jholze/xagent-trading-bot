@@ -7,6 +7,18 @@ A row diverges only when the current read is ``BUY`` and the alternate is ``HOLD
 The row is appended to ``data/{tenant_id}/indicator_compare.jsonl``. It is not
 an accept, reject, or size input. Nothing here places an order.
 
+``analyze`` runs every cycle, so the same ``(symbol, bar_time)`` is logged
+again while that candle is still open and RSI or volume moves. A diverge
+count should keep one row per ``(symbol, bar_time)``: the last row written
+before the bar closes. ``bar_time`` is the candle timestamp. ``written_at``
+is the UTC time of this record. The threshold fields are the resolved knobs
+from ``entry_thresholds``, so a later parameter change does not rewrite history.
+
+The tenant id comes from ``current_tenant_context()``. With no context the
+row is not written (no ``data/default`` file). The open-slot cap is the
+``max_open_positions`` key on the bot config raw mapping. A missing key skips
+the row. This module does not substitute a numeric default.
+
 Flag: ``indicator_compare.enabled`` (bool, default false). Missing or empty
 config is a no-op. Scope is characteristic, not a name list: Gate spot, 4h,
 ``technical_rsi_bb``, and an explicit ``strategies[]`` row whose ``buy_regime``
@@ -39,10 +51,17 @@ _SWAP_MARKETS = frozenset({"swap", "perp", "perpetual", "future", "futures", "ma
 ROW_KEYS = (
     "symbol",
     "bar_time",
+    "written_at",
     "rsi",
     "last_rsi",
     "volume_factor",
     "dist_lower_bb",
+    "rsi_buy_low",
+    "rsi_buy_high",
+    "volume_multiplier",
+    "reversal_rsi_cross_low",
+    "reversal_rsi_cross_high",
+    "reversal_volume_multiplier",
     "ist_read",
     "alt_read",
     "diverge",
@@ -200,17 +219,36 @@ def _verdict(value: str) -> str:
     return VERDICT_BUY if value == VERDICT_BUY else VERDICT_HOLD
 
 
-def _max_open_positions(config: dict | None) -> int:
+def _written_at() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _max_open_positions() -> int | None:
+    """Slot cap from the bot config raw key.
+
+    ``BotConfig.max_open_positions`` reads this same mapping and substitutes
+    5 when the key is absent. The compare does not. Missing or unusable
+    values skip the row.
+    """
     try:
         from core.config import get_bot_config
 
-        return int(get_bot_config().max_open_positions)
-    except Exception:
-        raw = config if isinstance(config, dict) else {}
-        try:
-            return int(raw.get("max_open_positions", 5))
-        except (TypeError, ValueError):
-            return 5
+        raw = get_bot_config().raw
+    except Exception as exc:
+        _warn(f"max_open_positions unavailable: {exc}")
+        return None
+    if not isinstance(raw, dict) or "max_open_positions" not in raw:
+        _warn("max_open_positions missing; compare row skipped")
+        return None
+    value = raw["max_open_positions"]
+    if isinstance(value, bool):
+        _warn("max_open_positions invalid; compare row skipped")
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        _warn("max_open_positions invalid; compare row skipped")
+        return None
 
 
 def _build_row(
@@ -231,14 +269,17 @@ def _build_row(
         return None
     if getattr(market, "has_position", False):
         return None
-    max_open = _max_open_positions(config)
+    max_open = _max_open_positions()
+    if max_open is None:
+        return None
     if int(getattr(market, "open_positions", 0) or 0) >= max_open:
         return None
 
-    from strategies.technical_rsi_bb import _entry_last_rsi, entry_read
+    from strategies.technical_rsi_bb import _entry_last_rsi, entry_read, entry_thresholds
 
     symbol = str(getattr(market, "symbol", None) or (coin or {}).get("symbol") or "")
     tf = str(getattr(market, "timeframe", None) or TIMEFRAME)
+    knobs = entry_thresholds(params)
     last_rsi = _entry_last_rsi(market, symbol, tf)
     ist = _verdict(
         entry_read(
@@ -267,10 +308,17 @@ def _build_row(
     return {
         "symbol": symbol,
         "bar_time": _bar_time(market),
+        "written_at": _written_at(),
         "rsi": rsi,
         "last_rsi": _finite(last_rsi),
         "volume_factor": volume,
         "dist_lower_bb": _dist_lower_bb(market),
+        "rsi_buy_low": knobs["rsi_buy_low"],
+        "rsi_buy_high": knobs["rsi_buy_high"],
+        "volume_multiplier": knobs["volume_multiplier"],
+        "reversal_rsi_cross_low": knobs["reversal_rsi_cross_low"],
+        "reversal_rsi_cross_high": knobs["reversal_rsi_cross_high"],
+        "reversal_volume_multiplier": knobs["reversal_volume_multiplier"],
         "ist_read": ist,
         "alt_read": alt,
         "diverge": ist == VERDICT_BUY and alt == VERDICT_HOLD,
@@ -282,12 +330,13 @@ def _safe_tenant_id(tenant_id: str) -> str:
     return safe or "tenant"
 
 
-def compare_log_path(tenant_id: str | None = None) -> str:
-    from core.tenant_context import resolve_tenant_id
+def compare_log_path(tenant_id: str) -> str:
+    """Path for an explicit tenant id. Does not invent a tenant."""
     from data_manager import data_dir
 
-    tid = _safe_tenant_id(resolve_tenant_id(tenant_id))
-    return os.path.join(data_dir(), tid, LOG_FILENAME)
+    if not str(tenant_id or "").strip():
+        raise ValueError("tenant_id is required")
+    return os.path.join(data_dir(), _safe_tenant_id(tenant_id), LOG_FILENAME)
 
 
 def _file_write_allowed() -> bool:
@@ -305,8 +354,22 @@ def _warn(detail: object) -> None:
         pass
 
 
-def _write_row(row: dict[str, Any], tenant_id: str | None) -> None:
+def _context_tenant_id() -> str | None:
+    from core.tenant_context import current_tenant_context
+
+    ctx = current_tenant_context()
+    if ctx is None:
+        return None
+    tenant_id = str(ctx.tenant_id or "").strip()
+    return tenant_id or None
+
+
+def _write_row(row: dict[str, Any]) -> None:
     if not _file_write_allowed():
+        return
+    tenant_id = _context_tenant_id()
+    if tenant_id is None:
+        _warn("no tenant context; indicator compare row not written")
         return
     from services.observability_store import append_jsonl, maybe_rotate_jsonl
 
@@ -322,11 +385,11 @@ def maybe_log_indicator_compare(
     market=None,
     params: dict | None = None,
     strategy_name: str | None = None,
-    tenant_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Append one observe row, or return None when the flag or scope is empty.
 
-    Never raises. The returned row is not a trading decision.
+    Never raises. The returned row is not a trading decision. A missing
+    tenant context or a missing ``max_open_positions`` key writes nothing.
     """
     if not indicator_compare_enabled(config):
         return None
@@ -345,7 +408,7 @@ def maybe_log_indicator_compare(
     if row is None:
         return None
     try:
-        _write_row(row, tenant_id)
+        _write_row(row)
     except Exception as exc:
         _warn(exc)
     return row

@@ -120,6 +120,61 @@ def _entry_flags(
     return dip_buy, reversal_buy
 
 
+def entry_thresholds(params: dict | None) -> dict:
+    """Resolved entry knobs. The only place these defaults live."""
+    params = params or {}
+    return {
+        "rsi_buy_low": params.get("rsi_buy_low", 28),
+        "rsi_buy_high": params.get("rsi_buy_high", 48),
+        "volume_multiplier": params.get("volume_multiplier", 1.2),
+        "reversal_rsi_cross_low": float(params.get("reversal_rsi_cross_low", 32)),
+        "reversal_rsi_cross_high": float(params.get("reversal_rsi_cross_high", 38)),
+        "reversal_volume_multiplier": float(params.get("reversal_volume_multiplier", 1.3)),
+        "buy_regime": params.get("buy_regime", "dip"),
+    }
+
+
+def entry_decision(
+    market: MarketContext,
+    params: dict | None,
+    *,
+    symbol: str,
+    tf: str,
+    max_open_positions: int,
+    last_rsi: float | None = None,
+    thresholds: dict | None = None,
+) -> tuple[str, bool]:
+    """Entry verdict and whether the live path should tag ``reversal``.
+
+    Same predicate ``TechnicalRSIStrategy.analyze`` uses for a flat book.
+    A full book or an open position is ``HOLD`` because that block does not run.
+    """
+    knobs = thresholds if thresholds is not None else entry_thresholds(params)
+    open_slot = (not market.has_position) and market.open_positions < max_open_positions
+    if not open_slot:
+        return "HOLD", False
+    if last_rsi is None:
+        last_rsi = _entry_last_rsi(market, symbol, tf)
+    dip_buy, reversal_buy = _entry_flags(
+        market,
+        last_rsi=last_rsi,
+        rsi_buy_low=knobs["rsi_buy_low"],
+        rsi_buy_high=knobs["rsi_buy_high"],
+        volume_multiplier_min=knobs["volume_multiplier"],
+        reversal_rsi_low=knobs["reversal_rsi_cross_low"],
+        reversal_rsi_high=knobs["reversal_rsi_cross_high"],
+        reversal_vol_min=knobs["reversal_volume_multiplier"],
+    )
+    regime = knobs["buy_regime"]
+    if regime == "dip" and dip_buy:
+        return "BUY", False
+    if regime == "reversal" and reversal_buy:
+        return "BUY", True
+    if regime == "both" and (dip_buy or reversal_buy):
+        return "BUY", bool(reversal_buy and not dip_buy)
+    return "HOLD", False
+
+
 def entry_read(
     market: MarketContext,
     params: dict | None,
@@ -129,41 +184,16 @@ def entry_read(
     max_open_positions: int,
     last_rsi: float | None = None,
 ) -> str:
-    """Entry verdict for one regime: ``BUY`` or ``HOLD``.
-
-    Same predicate ``TechnicalRSIStrategy.analyze`` uses for a flat book.
-    A full book or an open position is ``HOLD`` because that block does not run.
-    """
-    params = params or {}
-    open_slot = (not market.has_position) and market.open_positions < max_open_positions
-    if not open_slot:
-        return "HOLD"
-    if last_rsi is None:
-        last_rsi = _entry_last_rsi(market, symbol, tf)
-    rsi_buy_low = params.get("rsi_buy_low", 28)
-    rsi_buy_high = params.get("rsi_buy_high", 48)
-    volume_multiplier_min = params.get("volume_multiplier", 1.2)
-    reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
-    reversal_rsi_high = float(params.get("reversal_rsi_cross_high", 38))
-    reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
-    dip_buy, reversal_buy = _entry_flags(
+    """Entry verdict for one regime: ``BUY`` or ``HOLD``."""
+    verdict, _tag = entry_decision(
         market,
+        params,
+        symbol=symbol,
+        tf=tf,
+        max_open_positions=max_open_positions,
         last_rsi=last_rsi,
-        rsi_buy_low=rsi_buy_low,
-        rsi_buy_high=rsi_buy_high,
-        volume_multiplier_min=volume_multiplier_min,
-        reversal_rsi_low=reversal_rsi_low,
-        reversal_rsi_high=reversal_rsi_high,
-        reversal_vol_min=reversal_vol_min,
     )
-    regime = params.get("buy_regime", "dip")
-    if regime == "dip" and dip_buy:
-        return "BUY"
-    if regime == "reversal" and reversal_buy:
-        return "BUY"
-    if regime == "both" and (dip_buy or reversal_buy):
-        return "BUY"
-    return "HOLD"
+    return verdict
 
 
 def _reset_tiers_if_cooled(
@@ -199,9 +229,6 @@ class TechnicalRSIStrategy(BaseStrategy):
         config = get_bot_config()
         params = market.strategy_params or config.strategy_params(symbol, tf)
 
-        rsi_buy_low = params.get("rsi_buy_low", 28)
-        rsi_buy_high = params.get("rsi_buy_high", 48)
-        volume_multiplier_min = params.get("volume_multiplier", 1.2)
         stop_loss_pct = params.get("stop_loss_pct", config.stop_loss_pct)
         rsi_sell_mode = params.get("rsi_sell_mode", "cross")
         try:
@@ -225,31 +252,22 @@ class TechnicalRSIStrategy(BaseStrategy):
         action = "HOLD"
         sources = ["technical"]
 
-        buy_regime = params.get("buy_regime", "dip")
-        reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
-        reversal_rsi_high = float(params.get("reversal_rsi_cross_high", 38))
-        reversal_vol_min = float(params.get("reversal_volume_multiplier", 1.3))
+        # Resolve reversal floats even when this coin is already held, so a bad
+        # parameter still raises on that path.
+        buy_thresholds = entry_thresholds(params)
 
         if not market.has_position and market.open_positions < config.max_open_positions:
-            last_rsi = _entry_last_rsi(market, symbol, tf)
-            dip_buy, reversal_buy = _entry_flags(
+            verdict, tag_reversal = entry_decision(
                 market,
-                last_rsi=last_rsi,
-                rsi_buy_low=rsi_buy_low,
-                rsi_buy_high=rsi_buy_high,
-                volume_multiplier_min=volume_multiplier_min,
-                reversal_rsi_low=reversal_rsi_low,
-                reversal_rsi_high=reversal_rsi_high,
-                reversal_vol_min=reversal_vol_min,
+                params,
+                symbol=symbol,
+                tf=tf,
+                max_open_positions=config.max_open_positions,
+                thresholds=buy_thresholds,
             )
-            if buy_regime == "dip" and dip_buy:
+            if verdict == "BUY":
                 action = "BUY"
-            elif buy_regime == "reversal" and reversal_buy:
-                action = "BUY"
-                sources.append("reversal")
-            elif buy_regime == "both" and (dip_buy or reversal_buy):
-                action = "BUY"
-                if reversal_buy and not dip_buy:
+                if tag_reversal:
                     sources.append("reversal")
         elif market.has_position:
             pos = _position_state(market, symbol, tf)
