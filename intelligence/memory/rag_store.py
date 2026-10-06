@@ -94,6 +94,18 @@ class InMemoryRagBackend:
         with self._lock:
             self._docs.clear()
 
+    def all_docs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(doc) for doc in self._docs.values()]
+
+    def delete_ids(self, ids: list[str]) -> int:
+        removed = 0
+        with self._lock:
+            for item in ids:
+                if self._docs.pop(str(item), None) is not None:
+                    removed += 1
+        return removed
+
 
 class RagStore:
     """CRUD for RAG chunks. Fail-open on Mongo errors."""
@@ -172,6 +184,21 @@ class RagStore:
         except Exception as e:
             log(f"rag list_chunks failed: {e}", "WARNING")
             return []
+
+    def iter_docs(self, *, session=None) -> list[dict[str, Any]]:
+        """Chunk documents without embeddings. No tenant field is queried."""
+        if self._memory is not None:
+            return self._memory.all_docs()
+        return list(self._col().find({}, {"embedding": 0}, session=session))
+
+    def delete_ids(self, ids: list[str], *, session=None) -> int:
+        wanted = [str(item) for item in ids if item]
+        if not wanted:
+            return 0
+        if self._memory is not None:
+            return self._memory.delete_ids(wanted)
+        result = self._col().delete_many({"_id": {"$in": wanted}}, session=session)
+        return int(getattr(result, "deleted_count", 0) or 0)
 
     def ensure_indexes(self) -> None:
         if self._memory is not None:
