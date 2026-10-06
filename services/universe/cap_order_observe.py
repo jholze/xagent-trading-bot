@@ -5,6 +5,11 @@ returned, in that order. Rank is the 1-based position in that list. This
 module does not score, does not pick a rank key, and does not build a new
 candidate set. It does not change accept, reject, or size.
 
+The caller passes ``getattr(current_tenant_context(), "tenant_id", None)``.
+A missing or blank id stays ``None``: the row and the INFO line store JSON
+null, not the default tenant name, and nothing is written under that name.
+The cap list is the order for the stripped id that was passed.
+
 Flag: ``universe.cap_order_observe.observe_enabled`` (default false), same
 shape as other observe/shadow flags. ``fire_enabled`` is always false and
 is never applied, even if config sets it.
@@ -33,6 +38,7 @@ _UNDER_TEST_ENV = "CAP_ORDER_OBSERVE_UNDER_TEST"
 # Jsonl whitelist. No order, size, or secret fields.
 ROW_KEYS = (
     "ts",
+    "tenant",
     "symbol",
     "rank",
     "cap_name",
@@ -128,10 +134,34 @@ def _now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _stamp(row: dict[str, Any], *, rejected_symbol: str, ts: str) -> dict[str, Any]:
-    """Copy the four would-rank fields onto a whitelist row."""
+def _logged_tenant(tenant_id: str | None) -> str | None:
+    """Strip the passed tenant. Blank or missing stays None (JSON null).
+
+    Same rule as the indicator-compare observe path: whitespace is removed,
+    and an empty result is no tenant. Do not call ``resolve_tenant_id``:
+    with no context that helper names the default tenant.
+    """
+    text = str(tenant_id or "").strip()
+    return text or None
+
+
+def _tenant_log_token(tenant: str | None) -> str:
+    if tenant is None:
+        return "null"
+    return str(tenant)
+
+
+def _stamp(
+    row: dict[str, Any],
+    *,
+    rejected_symbol: str,
+    ts: str,
+    tenant: str | None,
+) -> dict[str, Any]:
+    """Copy the would-rank fields onto a whitelist row."""
     return {
         "ts": ts,
+        "tenant": tenant,
         "symbol": row.get("symbol"),
         "rank": row.get("rank"),
         "cap_name": row.get("cap_name"),
@@ -144,6 +174,7 @@ def format_cap_order_observe_log(
     rows: list[dict[str, Any]],
     *,
     rejected_symbol: str,
+    tenant: str | None = None,
 ) -> str:
     body = " ".join(
         (
@@ -154,10 +185,14 @@ def format_cap_order_observe_log(
         )
         for row in rows
     )
-    return (
-        f"[cap_order_observe] rejected_symbol={rejected_symbol} "
-        f"{body} fire_enabled={cap_order_fire_enabled()}"
-    ).strip()
+    head = (
+        f"[cap_order_observe] tenant={_tenant_log_token(tenant)} "
+        f"rejected_symbol={rejected_symbol}"
+    )
+    tail = f"fire_enabled={cap_order_fire_enabled()}"
+    if body:
+        return f"{head} {body} {tail}"
+    return f"{head} {tail}"
 
 
 def observe_log_path() -> str:
@@ -205,14 +240,25 @@ def maybe_log_existing_cap_order(
     try:
         if not cap_order_observe_enabled(config):
             return None
-        base = existing_cap_order(config, tenant_id=tenant_id)
+        tenant = _logged_tenant(tenant_id)
+        base = existing_cap_order(config, tenant_id=tenant)
         ts = _now_ts()
-        rows = [_stamp(row, rejected_symbol=rejected_symbol, ts=ts) for row in base]
+        rows = [
+            _stamp(row, rejected_symbol=rejected_symbol, ts=ts, tenant=tenant)
+            for row in base
+        ]
     except Exception as exc:
         _warn(exc)
         return None
     try:
-        log(format_cap_order_observe_log(rows, rejected_symbol=rejected_symbol), "INFO")
+        log(
+            format_cap_order_observe_log(
+                rows,
+                rejected_symbol=rejected_symbol,
+                tenant=tenant,
+            ),
+            "INFO",
+        )
     except Exception as exc:
         _warn(exc)
     try:
