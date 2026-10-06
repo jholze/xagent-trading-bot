@@ -4,7 +4,7 @@
     "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 3},
     "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 3},
     "mongo.positions (lots)": {"tenant_a": 1, "tenant_h": 1},
-    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 5},
     "mongo.memory_trades": {"not_a_real_tenant": 1, "tenant_a": 0, "tenant_h": 1},
     "mongo.memory_lessons": {"someone_else": 1, "tenant_a": 0, "tenant_h": 0},
     "mongo.memory_coin_profiles": {"tenant_a": 1, "tenant_h": 0},
@@ -67,7 +67,8 @@
       "in_scope_ids": [
         {"doc_id": "tenant_a:demo", "index": 3, "order_id": "ord_a_entry"},
         {"doc_id": "tenant_h:demo", "index": 0, "order_id": "ord_h_entry"},
-        {"doc_id": "tenant_h:live", "index": 0, "order_id": "ord_h_dca_live"}
+        {"doc_id": "tenant_h:live", "index": 0, "order_id": "ord_h_dca_live"},
+        {"doc_id": "tenant_h:live", "index": 7, "order_id": "ord_orphan_sell"}
       ],
       "keep_henry_0812_ids": ["tenant_h:live#663", "tenant_h:live#671", "ord_keep_buy", "ord_keep_sell"],
       "keep_ctexp_ids": []

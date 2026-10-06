@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +15,6 @@ from scripts.cleanup_id_list import (
     CleanupAborted,
     InMemoryCleanupStore,
     _parse_dt,
-    _replay_snapshot,
     apply_plan,
     build_plan,
     commit_nav_result,
@@ -23,11 +25,13 @@ from scripts.cleanup_id_list import (
 
 ROOT = Path(__file__).resolve().parents[2]
 IDS = ROOT / "tests" / "fixtures" / "cleanup_639" / "synthetic_scope_ids.json"
-FIGURE = 23.637
+FIGURE = 23.63710924
+STORED_LIVE_REALIZED = 17.38710924
+DEMO_CASH = 9439.73285138
 TENANTS = ["tenant_a", "tenant_h"]
 
 
-def _order(oid, *, side, symbol, usdt, amount, price, ts, tenant, scope, pnl=None):
+def _order(oid, *, side, symbol, usdt, amount, price, ts, tenant, scope, pnl=None, fee=0.0):
     row = {
         "id": oid,
         "order_id": oid,
@@ -35,6 +39,7 @@ def _order(oid, *, side, symbol, usdt, amount, price, ts, tenant, scope, pnl=Non
         "symbol": symbol,
         "timeframe": "1h",
         "status": "filled",
+        "fee": fee,
         "execution": {"usdt": usdt, "amount": amount, "price": price},
         "timestamps": {"filled": ts},
         "tenant_id": tenant,
@@ -51,14 +56,43 @@ def _v2(order):
     return doc
 
 
-def _trade(oid, *, symbol, ts, trade_id=None):
-    return {
+def _trade(
+    oid,
+    *,
+    symbol,
+    ts,
+    trade_id=None,
+    side=None,
+    price=None,
+    qty=None,
+    fee=None,
+    pnl=None,
+    usdt_amount=None,
+    usdt_received=None,
+):
+    row = {
         "id": trade_id or f"trade-{oid}",
         "order_id": oid,
         "symbol": symbol,
         "timestamp": ts,
         "timestamps": {"filled": ts},
     }
+    if side is not None:
+        row["type"] = side
+        row["side"] = side
+    if price is not None:
+        row["price"] = price
+    if qty is not None:
+        row["amount"] = qty
+    if fee is not None:
+        row["fee"] = fee
+    if pnl is not None:
+        row["pnl"] = pnl
+    if usdt_amount is not None:
+        row["usdt_amount"] = usdt_amount
+    if usdt_received is not None:
+        row["usdt_received"] = usdt_received
+    return row
 
 
 def _ledger(doc_id, tenant, scope, **payload):
@@ -82,15 +116,15 @@ def build_store() -> InMemoryCleanupStore:
         ],
         "tenant_h:demo": [
             _order("ord_h_other", side="buy", symbol="BBB/USDT", usdt=20, amount=1, price=1, ts="2026-09-01T00:00:00", tenant="tenant_h", scope="demo"),
-            _order("ord_h_entry", side="buy", symbol="AAA/USDT", usdt=80, amount=2, price=1, ts="2026-09-27T21:40:00", tenant="tenant_h", scope="demo"),
-            _order("ord_h_dca_demo", side="buy", symbol="AAA/USDT", usdt=30, amount=1, price=1, ts="2026-09-30T12:00:00", tenant="tenant_h", scope="demo"),
+            _order("ord_h_entry", side="buy", symbol="AAA/USDT", usdt=20.5, amount=10, price=2, fee=0.5, ts="2026-09-27T21:40:00", tenant="tenant_h", scope="demo"),
+            _order("ord_h_dca_demo", side="buy", symbol="AAA/USDT", usdt=1.1, amount=1, price=1, fee=0.1, ts="2026-09-30T12:00:00", tenant="tenant_h", scope="demo"),
         ],
         "tenant_h:live": [
             _order("ord_keep_buy", side="buy", symbol="AAA/USDT", usdt=10, amount=10, price=1, ts="2026-08-12T10:00:00", tenant="tenant_h", scope="live"),
             _order("ord_keep_sell", side="sell", symbol="AAA/USDT", usdt=33.637, amount=10, price=3.3637, pnl=FIGURE, ts="2026-08-12T11:00:00", tenant="tenant_h", scope="live"),
             _order("ord_h_extra_buy", side="buy", symbol="BBB/USDT", usdt=7.5, amount=1, price=7.5, ts="2026-08-19T00:00:00", tenant="tenant_h", scope="live"),
             _order("ord_h_extra_kept", side="sell", symbol="BBB/USDT", usdt=7.5, amount=1, price=7.5, pnl=7.5, ts="2026-08-20T00:00:00", tenant="tenant_h", scope="live"),
-            _order("ord_h_dca_live", side="buy", symbol="AAA/USDT", usdt=50, amount=1, price=1, ts="2026-10-02T12:00:00", tenant="tenant_h", scope="live"),
+            _order("ord_h_dca_live", side="buy", symbol="AAA/USDT", usdt=3.3, amount=3, price=1, fee=0.3, ts="2026-10-02T12:00:00", tenant="tenant_h", scope="live"),
         ],
         "tenant_a:live": [
             _order("ord_a_live_quiet", side="buy", symbol="BBB/USDT", usdt=12, amount=1, price=1, ts="2026-10-01T00:00:00", tenant="tenant_a", scope="live"),
@@ -130,47 +164,125 @@ def build_store() -> InMemoryCleanupStore:
         "tenant_a:demo",
         "tenant_a",
         "demo",
-        initial_capital=10000,
         virtual_balance=1,
         realized_pnl=0,
         trades=[
             _trade("ord_a_before", symbol="AAA/USDT", ts="2026-08-01T00:00:00"),
-            _trade("ord_a_entry", symbol="AAA/USDT", ts="2026-09-27T21:36:00"),
-            _trade("ord_a_dca", symbol="AAA/USDT", ts="2026-09-30T12:00:00"),
+            _trade(
+                "ord_a_entry",
+                symbol="AAA/USDT",
+                ts="2026-09-27T21:36:00",
+                side="BUY",
+                price=1,
+                qty=2,
+                fee=0,
+                usdt_amount=2,
+            ),
+            _trade(
+                "ord_a_dca",
+                symbol="AAA/USDT",
+                ts="2026-09-30T12:00:00",
+                side="BUY",
+                price=1,
+                qty=1,
+                fee=0,
+                usdt_amount=1,
+            ),
         ],
     )
     store.trades["tenant_h:demo"] = _ledger(
         "tenant_h:demo",
         "tenant_h",
         "demo",
-        initial_capital=10000,
-        virtual_balance=1,
-        realized_pnl=0,
+        virtual_balance=DEMO_CASH,
+        realized_pnl=11.5,
         trades=[
             _trade("ord_h_other", symbol="BBB/USDT", ts="2026-09-01T00:00:00"),
-            _trade("ord_h_entry", symbol="AAA/USDT", ts="2026-09-27T21:40:00"),
-            _trade("ord_h_dca_demo", symbol="AAA/USDT", ts="2026-09-30T12:00:00"),
+            _trade(
+                "ord_h_entry",
+                symbol="AAA/USDT",
+                ts="2026-09-27T21:40:00",
+                trade_id="fill_h_entry",
+                side="BUY",
+                price=2,
+                qty=10,
+                fee=0.5,
+                usdt_amount=20.5,
+            ),
+            _trade(
+                "ord_h_dca_demo",
+                symbol="AAA/USDT",
+                ts="2026-09-30T12:00:00",
+                trade_id="fill_h_dca_demo",
+                side="BUY",
+                price=1,
+                qty=1,
+                fee=0.1,
+                usdt_amount=1.1,
+            ),
         ],
     )
     store.trades["tenant_h:live"] = _ledger(
         "tenant_h:live",
         "tenant_h",
         "live",
-        initial_capital=10000,
-        virtual_balance=1,
-        realized_pnl=FIGURE,
+        virtual_balance=5000,
+        realized_pnl=STORED_LIVE_REALIZED,
         figure_note="kept-round-trip",
         trades=[
             _trade("ord_keep_buy", symbol="AAA/USDT", ts="2026-08-12T10:00:00", trade_id="tenant_h:live#663"),
-            _trade("ord_keep_sell", symbol="AAA/USDT", ts="2026-08-12T11:00:00", trade_id="tenant_h:live#671"),
-            _trade("ord_h_dca_live", symbol="AAA/USDT", ts="2026-10-02T12:00:00"),
+            _trade(
+                "ord_keep_sell",
+                symbol="AAA/USDT",
+                ts="2026-08-12T11:00:00",
+                trade_id="tenant_h:live#671",
+                side="SELL",
+                price=3.3637,
+                qty=10,
+                fee=0,
+                pnl=FIGURE,
+                usdt_received=33.637,
+            ),
+            _trade(
+                "ord_h_dca_live",
+                symbol="AAA/USDT",
+                ts="2026-10-02T12:00:00",
+                trade_id="fill_partial_a",
+                side="BUY",
+                price=1,
+                qty=1,
+                fee=0.1,
+                usdt_amount=1.1,
+            ),
+            _trade(
+                "ord_h_dca_live",
+                symbol="AAA/USDT",
+                ts="2026-10-02T12:00:01",
+                trade_id="fill_partial_b",
+                side="BUY",
+                price=1,
+                qty=2,
+                fee=0.2,
+                usdt_amount=2.2,
+            ),
+            _trade(
+                "ord_orphan_sell",
+                symbol="AAA/USDT",
+                ts="2026-10-02T15:00:00",
+                trade_id="fill_orphan_sell",
+                side="SELL",
+                price=4,
+                qty=2,
+                fee=0.4,
+                pnl=-6.25,
+                usdt_received=7.6,
+            ),
         ],
     )
     store.trades["tenant_a:live"] = _ledger(
         "tenant_a:live",
         "tenant_a",
         "live",
-        initial_capital=10000,
         virtual_balance=4242,
         realized_pnl=FIGURE,
         seal="untouched-trades",
@@ -180,13 +292,22 @@ def build_store() -> InMemoryCleanupStore:
         "tenant_c:demo",
         "tenant_c",
         "demo",
-        initial_capital=10000,
         virtual_balance=5000,
         realized_pnl=0,
         trades=[_trade("ord_ctexp_1", symbol="AAA/USDT", ts="2026-09-29T00:00:00")],
     )
-    store.memory["trades"]["mem_trade_1"] = {"_id": "mem_trade_1", "tenant_id": "not_a_real_tenant", "symbol": "AAA/USDT"}
-    store.memory["trades"]["mem_trade_2"] = {"_id": "mem_trade_2", "tenant_id": "tenant_h", "symbol": "AAA/USDT"}
+    store.memory["trades"]["mem_trade_1"] = {
+        "_id": "mem_trade_1",
+        "tenant_id": "not_a_real_tenant",
+        "symbol": "AAA/USDT",
+        "order_id": "ord_a_entry",
+    }
+    store.memory["trades"]["mem_trade_2"] = {
+        "_id": "mem_trade_2",
+        "tenant_id": "tenant_h",
+        "symbol": "AAA/USDT",
+        "order_id": "ord_h_entry",
+    }
     store.memory["trades"]["mem_trade_stay"] = {"_id": "mem_trade_stay", "tenant_id": "tenant_a", "symbol": "BBB/USDT"}
     store.memory["events"]["evt_listed"] = {
         "_id": "evt_listed",
@@ -240,7 +361,7 @@ def build_store() -> InMemoryCleanupStore:
             "nav": 250.5,
             "cash": 80.25,
             "positions_mtm": 170.25,
-            "realized_pnl": FIGURE,
+            "realized_pnl": STORED_LIVE_REALIZED,
             "mark": "market",
             "tenant_id": "tenant_h",
             "ledger_scope": "live",
@@ -281,6 +402,8 @@ def test_script_has_no_hardcoded_coin_or_default_tenants():
     source = (ROOT / "scripts" / "cleanup_id_list.py").read_text(encoding="utf-8")
     assert "2Z" not in source
     assert "default,henry" not in source
+    assert "replay_simulated_ledger" not in source
+    assert "missing initial_capital" not in source
     assert "--tenant" in source
     assert UNTOUCHED.isdisjoint(
         {
@@ -320,20 +443,51 @@ def test_dry_run_changes_nothing_and_prints_ids_sha256(capsys):
     assert _row(report, "mongo.orders (embedded entries)", "tenant_c")["to_delete"] == 0
     assert _row(report, "mongo.positions (lots)", "tenant_h")["to_delete"] == 1
     live = next(row for row in report["metrics"] if row["tenant"] == "tenant_h" and row["scope"] == "live")
-    assert live["stored_realized"] == FIGURE
-    assert live["replay_realized"] != FIGURE
-    assert live["realized_delta"] == 0
-    assert live["realized_after"] == FIGURE
-    assert live["cash_delta"] == -50
-    assert live["cash_after"] == 51
+    assert live["realized_pnl_before"] == STORED_LIVE_REALIZED
+    assert live["realized_pnl_delta"] == 6.25
+    assert live["realized_pnl_after"] == FIGURE
+    assert live["virtual_balance_before"] == 5000
+    assert live["virtual_balance_delta"] == -4.3
+    assert live["virtual_balance_after"] == 4995.7
     assert live["writes_metrics"] is True
     assert live["writes_nav"] is True
+    demo = next(row for row in report["metrics"] if row["tenant"] == "tenant_h" and row["scope"] == "demo")
+    assert demo["virtual_balance_before"] == DEMO_CASH
+    assert demo["virtual_balance_delta"] == 21.6
+    assert demo["virtual_balance_after"] == 9461.33285138
+    assert demo["realized_pnl_before"] == 11.5
+    assert demo["realized_pnl_delta"] == 0
+    assert demo["realized_pnl_after"] == 11.5
+    henry_fills = [row for row in report["fill_groups"] if row["tenant"] == "tenant_h"]
+    assert len(henry_fills) == 5
+    assert len({row["trade_id"] for row in henry_fills}) == 5
+    entry_fill = next(row for row in henry_fills if row["trade_id"] == "fill_h_entry")
+    assert entry_fill["cash_effect"] == 20.5
+    assert entry_fill["orders_doc_id"] == "tenant_h:demo"
+    assert entry_fill["orders_v2_id"] == "tenant_h:demo:ord_h_entry"
+    assert entry_fill["memory_trade_ids"] == "mem_trade_2"
+    assert entry_fill["position_keys"] == "AAA_USDT_1h"
+    assert sum(1 for row in henry_fills if row["order_id"] == "ord_h_entry") == 1
+    partials = [row for row in henry_fills if row["order_id"] == "ord_h_dca_live"]
+    assert [row["qty"] for row in partials] == [1, 2]
+    assert round(sum(row["cash_effect"] for row in partials), 8) == 3.3
+    orphan = next(row for row in henry_fills if row["trade_id"] == "fill_orphan_sell")
+    assert orphan["orders_doc_id"] == "-"
+    assert orphan["orders_v2_id"] == "-"
+    assert orphan["cash_effect"] == -7.6
+    assert orphan["realized_effect"] == 6.25
+    assert round(sum(row["cash_effect"] for row in henry_fills if row["scope"] == "demo"), 8) == demo["virtual_balance_delta"]
+    assert round(sum(row["cash_effect"] for row in henry_fills if row["scope"] == "live"), 8) == live["virtual_balance_delta"]
+    assert report["fill_problems"] == []
+    assert report["fill_source"].endswith("trade_history (embedded trades)")
+    assert "missing initial_capital" not in out
+    assert "replay_cash" not in out
     quiet = next(row for row in report["metrics"] if row["tenant"] == "tenant_a" and row["scope"] == "live")
-    assert quiet["stored_realized"] == FIGURE
-    assert quiet["replay_realized"] != FIGURE
+    assert quiet["realized_pnl_before"] == FIGURE
     assert quiet["writes_metrics"] is False
     assert quiet["writes_nav"] is False
-    assert quiet["realized_after"] == FIGURE
+    assert quiet["realized_pnl_after"] == FIGURE
+    assert quiet["virtual_balance_delta"] == 0
     preserved = [row for row in report["preserved_lot_realized_pnl"] if row["tenant"] == "tenant_h"]
     assert preserved[0]["realized_pnl"] == pytest.approx(FIGURE)
     assert any(note["status"] in {"mismatch", "index_out_of_range"} for note in report["index_cross_check"])
@@ -341,6 +495,8 @@ def test_dry_run_changes_nothing_and_prints_ids_sha256(capsys):
     assert "--- expected_counts ---" in out
     assert report["expected_count_problems"] == []
     assert report["expected_counts_actual"]["mongo.orders_v2"]["tenant_h"] == 3
+    assert report["expected_counts_actual"]["mongo.trade_history (embedded trades)"]["tenant_h"] == 5
+    assert _row(report, "mongo.orders (embedded entries)", "tenant_h")["to_delete"] == 3
 
 
 def test_real_run_without_sha256_refuses(capsys):
@@ -453,9 +609,8 @@ def test_apply_removes_by_id_recomputes_and_preserves_figure(tmp_path, capsys):
     quiet_trades = json.dumps(store.trades["tenant_a:live"], sort_keys=True)
     quiet_nav = json.dumps(store.nav[("tenant_a", "live")], sort_keys=True)
     other_trades = json.dumps(store.trades["tenant_c:demo"], sort_keys=True)
-    original_live = json.loads(json.dumps(store.orders["tenant_h:live"]["orders"]))
     code, report = _apply(store, tmp_path, capsys)
-    assert code == 0
+    assert code == 0, report.get("fill_problems")
     assert report["mode"] == "applied"
 
     # Index 0 was a different order than the id list claimed. It stays.
@@ -487,7 +642,9 @@ def test_apply_removes_by_id_recomputes_and_preserves_figure(tmp_path, capsys):
     live_ids = [row["order_id"] for row in store.trades["tenant_h:live"]["trades"]]
     assert live_ids == ["ord_keep_buy", "ord_keep_sell"]
     assert store.trades["tenant_h:live"]["realized_pnl"] == FIGURE
-    assert store.trades["tenant_h:live"]["virtual_balance"] == 51
+    assert store.trades["tenant_h:live"]["virtual_balance"] == 4995.7
+    assert store.trades["tenant_h:demo"]["virtual_balance"] == 9461.33285138
+    assert store.trades["tenant_h:demo"]["realized_pnl"] == 11.5
     assert store.trades["tenant_h:live"]["figure_note"] == "kept-round-trip"
     assert store.trades["tenant_h:live"]["trades"][0]["id"] == "tenant_h:live#663"
     demo_trade_ids = [row["order_id"] for row in store.trades["tenant_h:demo"]["trades"]]
@@ -524,15 +681,11 @@ def test_apply_removes_by_id_recomputes_and_preserves_figure(tmp_path, capsys):
     assert kept_day["nav"] == 1
     assert kept_day["mark"] == "market"
     marked = next(point for point in nav if point["date"] == "2026-10-02")
-    remaining_live = store.orders["tenant_h:live"]["orders"]
-    before_nav = _replay_snapshot(original_live, 10000, "2026-10-02")
-    after_nav = _replay_snapshot(remaining_live, 10000, "2026-10-02")
     assert marked["mark"] == "market"
     assert marked["realized_pnl"] == FIGURE
-    assert marked["nav"] == pytest.approx(250.5 - (before_nav["nav"] - after_nav["nav"]))
-    assert marked["cash"] == pytest.approx(80.25 - (before_nav["cash"] - after_nav["cash"]))
-    assert marked["positions_mtm"] == pytest.approx(170.25 - (before_nav["mtm"] - after_nav["mtm"]))
-    assert marked["nav"] != pytest.approx(after_nav["nav"])
+    assert marked["nav"] == 246.2
+    assert marked["cash"] == 75.95
+    assert marked["positions_mtm"] == 170.25
     assert json.dumps(store.orders["tenant_a:live"], sort_keys=True) == quiet_orders
     assert json.dumps(store.trades["tenant_a:live"], sort_keys=True) == quiet_trades
     assert json.dumps(store.nav[("tenant_a", "live")], sort_keys=True) == quiet_nav
@@ -542,9 +695,8 @@ def test_apply_removes_by_id_recomputes_and_preserves_figure(tmp_path, capsys):
     assert store.sentinels["redis"]["cache"] == "warm"
 
     live = next(row for row in report["metrics"] if row["tenant"] == "tenant_h" and row["scope"] == "live")
-    assert live["stored_realized"] == FIGURE
-    assert live["replay_realized"] != FIGURE
-    assert live["realized_after"] == FIGURE
+    assert live["realized_pnl_before"] == STORED_LIVE_REALIZED
+    assert live["realized_pnl_after"] == FIGURE
     assert any(row["realized_pnl"] == pytest.approx(FIGURE) for row in report["preserved_lot_realized_pnl"])
 
 
@@ -782,6 +934,9 @@ def test_help_documents_expected_counts(capsys):
     assert "per tenant" in out
     assert "mongo.memory_market_events" in out
     assert "mongo.memory_rag_chunks" in out
+    assert "fill source" in out
+    assert "trade_history" in out
+    assert "does not read initial_capital" in out
     assert "2Z" not in out
 
 
@@ -803,3 +958,88 @@ def test_parse_dt_normalizes_non_utc_offset():
     assert _parse_dt("2026-09-27T21:36:00+02:00") == cutoff
     assert _parse_dt("2026-09-27T19:36:00Z") == cutoff
     assert cutoff.tzinfo is None
+
+
+def test_qty_mismatch_aborts_before_write(tmp_path, capsys):
+    store = build_store()
+    partial = next(row for row in store.trades["tenant_h:live"]["trades"] if row["id"] == "fill_partial_b")
+    partial["amount"] = 9
+    partial["usdt_amount"] = 9.2
+    before = _snap(store)
+    code = _run(store)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "qty sum" in out
+    assert _snap(store) == before
+    code = _apply_ids(store, IDS, tmp_path)
+    assert code == 2
+    assert _snap(store) == before
+
+
+def test_missing_fee_aborts_before_write(capsys):
+    store = build_store()
+    entry = next(row for row in store.trades["tenant_h:demo"]["trades"] if row["id"] == "fill_h_entry")
+    entry.pop("fee")
+    before = _snap(store)
+    code = _run(store)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "missing fee" in out
+    assert "missing initial_capital" not in out
+    assert _snap(store) == before
+
+
+def test_missing_nav_cash_aborts_before_write(capsys):
+    store = build_store()
+    point = next(row for row in store.nav[("tenant_h", "live")] if row["date"] == "2026-10-02")
+    point.pop("cash")
+    before = _snap(store)
+    code = _run(store)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "missing nav or cash" in out
+    assert _snap(store) == before
+
+
+def test_cli_dry_run_imports_without_pythonpath(tmp_path):
+    # cwd is not the repo, so the script must put the repo root on sys.path.
+    # A minimal config.json avoids the ledger logger retrying a missing file.
+    (tmp_path / "config.json").write_text("{}\n", encoding="utf-8")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "PYTHONPATH",
+            "PYTEST_RUNNING",
+            "PYTEST_CURRENT_TEST",
+            "FORCE_OPERATOR_MONGO",
+            "DEMO_ALLOW_REMOTE_MONGO",
+            "MONGO_URL",
+            "ALLOW_DEV_DB_MUTATION",
+        }
+    }
+    env["MONGODB_URI"] = "mongodb://127.0.0.1:27017"
+    env["MONGODB_DB"] = "xagent_pytest_smoke"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "cleanup_id_list.py"),
+            "--ids",
+            str(IDS),
+            "--tenant",
+            "tenant_a",
+            "--tenant",
+            "tenant_h",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert "ModuleNotFoundError" not in proc.stderr
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "ids_sha256:" in proc.stdout
+    assert "--apply" not in proc.args
