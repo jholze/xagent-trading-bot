@@ -36,6 +36,10 @@ _EQUITY_MTM_UNAVAILABLE_LOGGED = False
 _EVAL_DOC_PENDING = object()
 
 
+class _MissingMark(RuntimeError):
+    """Open live lot has no mark. The USDT daily-loss check always denies."""
+
+
 def reset_risk_manager_globals_for_tests() -> None:
     global _EQUITY_MTM_UNAVAILABLE_LOGGED
     _EQUITY_MTM_UNAVAILABLE_LOGGED = False
@@ -295,9 +299,9 @@ class RiskManager:
             if halt:
                 return halt
 
-        # Live caps are presence-only and fail closed. Sells and exits never
-        # reach this check. Shorts stay on their own gate.
-        if order.type == "BUY":
+        # Live caps fail closed on the value the guard will trade. Sells and
+        # covers never reach this check. Short opens do.
+        if order.type in ("BUY", "SHORT"):
             missing_caps = self._live_caps_missing_blocked(order)
             if missing_caps:
                 return missing_caps
@@ -1706,7 +1710,7 @@ class RiskManager:
                 except (TypeError, ValueError):
                     mark = 0.0
             if mark <= 0:
-                raise RuntimeError(f"mark missing for open live lot {sym}")
+                raise _MissingMark(f"mark missing for open live lot {sym}")
             side = "short" if is_short(lot) else "long"
             total += float(unrealized_pnl(side, amount, entry, mark))
         return total
@@ -1769,6 +1773,18 @@ class RiskManager:
                     # Same rollout switch as every other guard: 'log' -> ERROR + allow
                     # (old behaviour, visible), 'deny' -> block new exposure (#302 audit).
                     return self._guard_failed("daily_loss_limit", e, order)
+                # Both limits are set and the pct figure failed. Do not pretend
+                # the pct check ran; the USDT check still decides.
+                try:
+                    from logger import log
+
+                    log(
+                        "daily_loss_limit pct figure failed "
+                        f"({type(e).__name__}: {e}); USDT check still runs",
+                        "ERROR",
+                    )
+                except Exception:
+                    pass
                 realized = 0.0
             else:
                 nav = self._portfolio_equity()
@@ -1786,6 +1802,9 @@ class RiskManager:
         if usdt_limit is not None:
             try:
                 usdt_figure = float(self._daily_loss_usdt_figure())
+            except _MissingMark as e:
+                # A missing mark must deny even when fail_closed_guards is log.
+                return self._daily_loss_mark_denied(e, order)
             except Exception as e:
                 return self._guard_failed("daily_loss_limit", e, order)
             usdt_breach = usdt_figure <= -float(usdt_limit)
@@ -1855,10 +1874,36 @@ class RiskManager:
             size_multiplier=0.0,
         )
 
+    def _daily_loss_mark_denied(self, exc: BaseException, order=None) -> RiskDecision:
+        """Missing mark on the USDT loss figure. Deny regardless of the log/deny switch."""
+        symbol = getattr(order, "symbol", "") or ""
+        try:
+            from logger import log
+
+            log(
+                f"daily_loss_limit mark missing {symbol} ({exc}); denying new exposure",
+                "ERROR",
+            )
+        except Exception:
+            pass
+        try:
+            from core.operator_notify import notify_operator
+
+            notify_operator(
+                f"🛑 Daily loss limit: mark missing ({exc}). New buys/shorts blocked."
+            )
+        except Exception:
+            pass
+        return RiskDecision(
+            approved=False,
+            message=f"Daily loss limit: {exc}"[:200],
+            code="daily_loss_limit",
+            size_multiplier=0.0,
+        )
+
     _LIVE_CAP_BODY_KEYS = (
         "max_usdt_per_trade",
         "max_open_positions",
-        "live_max_loss_usdt",
         "max_daily_loss_usdt",
     )
 
@@ -1898,23 +1943,76 @@ class RiskManager:
             return None, "tenant_body_empty"
         return body, ""
 
-    def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
-        """Fail closed when a real-money tenant is missing its live caps.
+    @staticmethod
+    def _positive_cap_value(val) -> float | None:
+        """A cap the guard can enforce. 0, blank, None, and non-numbers are not."""
+        if val is None or isinstance(val, bool):
+            return None
+        if isinstance(val, str) and not val.strip():
+            return None
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if num != num or num <= 0 or num == float("inf"):
+            return None
+        return num
 
-        Presence only: the four keys must be on the tenant override body,
-        not merely inherited. Sells never call this.
+    def _effective_cap_problems(self) -> list[str]:
+        """Names of caps whose value the guard would actually use is not > 0.
+
+        ``trading_mode=live`` prefers ``live.max_usdt_per_trade``. A live-block
+        number above the top-level cap is the number that would be traded, so
+        it is rejected here instead of raising the ticket.
+        """
+        raw = self.config.raw if isinstance(getattr(self.config, "raw", None), dict) else {}
+        problems: list[str] = []
+        top = self._positive_cap_value(raw.get("max_usdt_per_trade"))
+        live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
+        live_has_ticket = isinstance(live, dict) and "max_usdt_per_trade" in live
+        live_num = (
+            self._positive_cap_value(live.get("max_usdt_per_trade")) if live_has_ticket else None
+        )
+        try:
+            used = float(self._base_usdt_cap())
+        except (TypeError, ValueError):
+            used = 0.0
+        if self._positive_cap_value(used) is None or top is None:
+            problems.append("max_usdt_per_trade")
+        if str(raw.get("trading_mode") or "").strip().lower() == "live" and live_has_ticket:
+            if live_num is None or (top is not None and live_num > top):
+                problems.append("live.max_usdt_per_trade")
+        if self._positive_cap_value(raw.get("max_open_positions")) is None:
+            problems.append("max_open_positions")
+        if self._positive_cap_value(raw.get("max_daily_loss_usdt")) is None:
+            problems.append("max_daily_loss_usdt")
+        return problems
+
+    def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
+        """Fail closed when a real-money tenant cannot trade under its caps.
+
+        The tenant body must load and carry the three keys. Each value the
+        guard reads must be a number > 0. A live-block ticket above the
+        top-level ticket is the same failure: that is the size that would
+        be sent. Sells and covers never call this. Short opens do.
         """
         if not self._live_real_money_buys():
             return None
-        if order is not None and str(getattr(order, "type", "") or "").upper() != "BUY":
+        kind = str(getattr(order, "type", "") or "").upper() if order is not None else "BUY"
+        if kind not in ("BUY", "SHORT"):
             return None
         body, err = self._tenant_override_for_caps()
-        missing: list[str] = []
+        parts: list[str] = []
         if body is None:
-            reason = err or "tenant_body_missing"
+            parts.append(err or "tenant_body_missing")
         else:
             missing = [key for key in self._LIVE_CAP_BODY_KEYS if key not in body]
-            reason = "missing:" + ",".join(missing) if missing else ""
+            if missing:
+                parts.append("missing:" + ",".join(missing))
+            bad = self._effective_cap_problems()
+            if bad:
+                parts.append("effective:" + ",".join(bad))
+        reason = " ".join(parts)
         if not reason:
             return None
         symbol = getattr(order, "symbol", "") or ""
@@ -1928,7 +2026,8 @@ class RiskManager:
             from core.operator_notify import notify_operator
 
             notify_operator(
-                f"live_caps_missing {symbol} {reason}. New buys blocked; sells still run."
+                f"live_caps_missing {symbol} {reason}. "
+                "New buys and shorts blocked; sells still run."
             )
         except Exception:
             pass
@@ -2942,6 +3041,33 @@ class RiskManager:
                     )
         lev = clamp_leverage(order.leverage or params["leverage"], cap=params["leverage_cap"])
         usdt = float(order.usdt_amount or 0) or float(self.config.max_usdt_per_trade)
+        # Same final-notional cap as buys, every source including manual.
+        try:
+            ticket_cap = float(self._base_usdt_cap() or 0)
+        except (TypeError, ValueError):
+            ticket_cap = 0.0
+        if ticket_cap > 0 and usdt > ticket_cap:
+            try:
+                from logger import log
+
+                log(
+                    f"ticket_cap {order.symbol} original={usdt:.2f} "
+                    f"capped={ticket_cap:.2f}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+            usdt = ticket_cap
+            try:
+                min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+            except (TypeError, ValueError):
+                min_trade = 5.0
+            if usdt < min_trade:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Capped size ${usdt:.2f} below minimum (${min_trade:.0f})",
+                    code="ticket_below_min",
+                )
         if order.price <= 0:
             return RiskDecision(approved=False, message="invalid price", code="bad_price")
         qty = usdt / order.price

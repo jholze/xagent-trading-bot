@@ -52,7 +52,6 @@ _LIQ = {
 _CAP_KEYS = (
     "max_usdt_per_trade",
     "max_open_positions",
-    "live_max_loss_usdt",
     "max_daily_loss_usdt",
 )
 _FALSE_HUMAN = (
@@ -330,8 +329,9 @@ def test_t1_overlay_binds_r1_and_leaves_runtime_flags(caps_store):
     assert _DISK.read_bytes() == before
     assert effective["max_usdt_per_trade"] == 100
     assert effective["max_open_positions"] == 4
-    assert effective["live_max_loss_usdt"] == 25
     assert effective["max_daily_loss_usdt"] == 50
+    assert "live_max_loss_usdt" not in effective
+    assert "live_max_loss_usdt" not in load_overlay(_OVERLAY)
     assert effective["trading"]["entries_enabled"] is False
     assert effective["live"]["max_usdt_per_trade"] == 100
     assert effective["live"]["dry_run"] is True
@@ -539,7 +539,6 @@ def _live_cfg(dry_run):
         live={"dry_run": dry_run, "execution": "shadow", "max_usdt_per_trade": 100},
         max_usdt_per_trade=100,
         max_open_positions=4,
-        live_max_loss_usdt=25,
         max_daily_loss_usdt=50,
     )
 
@@ -633,11 +632,10 @@ def test_t5_body_does_not_load_blocks_buy_not_sell(monkeypatch, reason):
     assert sell.approved is True, sell.message
 
 
-def test_t5_all_four_present_and_dry_run_skips_r3(monkeypatch):
+def test_t5_all_required_caps_present_and_dry_run_skips_r3(monkeypatch):
     body = {
         "max_usdt_per_trade": 100,
         "max_open_positions": 4,
-        "live_max_loss_usdt": 25,
         "max_daily_loss_usdt": 50,
     }
     _arm_tenant_body(monkeypatch, body)
@@ -658,12 +656,128 @@ def test_t5_all_four_present_and_dry_run_skips_r3(monkeypatch):
 
 
 def test_t5_inherited_caps_do_not_count(monkeypatch):
-    """Effective config has the four keys; the tenant body does not."""
+    """Effective config has the three keys; the tenant body does not."""
     _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
     rm = RiskManager(_live_cfg(False))
     with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
         buy = rm.evaluate(_buy(), "4h", source="manual")
     assert buy.code == "live_caps_missing"
+
+
+def _good_cap_body() -> dict:
+    return {
+        "max_usdt_per_trade": 100,
+        "max_open_positions": 4,
+        "max_daily_loss_usdt": 50,
+    }
+
+
+def test_b_t7_manual_short_above_cap_is_capped_and_missing_caps_block_shorts(monkeypatch):
+    """#642 B T7. A 500 USDT short, including source manual, is not submitted at 500.
+
+    The same ticket cap as buys binds the final notional. The live-cap check
+    runs before the short open and blocks when the tenant body has no caps.
+    """
+    _arm_tenant_body(monkeypatch, _good_cap_body())
+    rm = RiskManager(_live_cfg(False))
+    order = _short("manual")
+    order.usdt_amount = 500
+    with _eval_env(rm, metrics=_THICK, mcap=80_000_000), patch(
+        "strategies.positions.list_active_positions", return_value=[]
+    ), patch("core.operator_notify.notify_operator", return_value=True):
+        dec = rm.evaluate(order, "15m", source="manual")
+    assert dec.approved is True, f"{dec.code} {dec.message}"
+    assert dec.order.usdt_amount <= 100
+    assert dec.order.usdt_amount != pytest.approx(500)
+
+    bare = RiskManager(_live_cfg(False))
+    _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        blocked = bare.evaluate(_short("manual"), "15m", source="manual")
+        cover = TradeOrder(
+            type="COVER", symbol="AAA/USDT", price=1.0, amount=1, signal="COVER", source="manual"
+        )
+        exited = bare.evaluate(cover, "15m", source="manual")
+    assert blocked.approved is False
+    assert blocked.code == "live_caps_missing"
+    assert exited.code != "live_caps_missing"
+
+
+@pytest.mark.parametrize(
+    "key,bad",
+    [
+        ("max_usdt_per_trade", 0),
+        ("max_usdt_per_trade", ""),
+        ("max_usdt_per_trade", None),
+        ("max_open_positions", 0),
+        ("max_open_positions", ""),
+        ("max_open_positions", None),
+        ("max_daily_loss_usdt", 0),
+        ("max_daily_loss_usdt", ""),
+        ("max_daily_loss_usdt", None),
+    ],
+)
+def test_b_t8_non_positive_effective_cap_blocks(monkeypatch, key, bad):
+    """#642 B T8. 0, empty, and None do not switch the cap off."""
+    body = _good_cap_body()
+    body[key] = bad
+    _arm_tenant_body(monkeypatch, body)
+    cfg = _live_cfg(False)
+    cfg.raw[key] = bad
+    if key == "max_usdt_per_trade":
+        cfg.raw["live"]["max_usdt_per_trade"] = bad
+    rm = RiskManager(cfg)
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        dec = rm.evaluate(_buy(usdt=50), "4h", source="manual")
+    assert dec.approved is False
+    assert dec.code == "live_caps_missing"
+    assert key in dec.message
+
+
+def test_b_t8_live_block_above_top_level_never_trades_the_higher_cap(monkeypatch):
+    """#642 B T8. Top-level 100 with 4500 in the live block is not a 4500 ticket."""
+    body = _good_cap_body()
+    body["live"] = {"max_usdt_per_trade": 4500}
+    _arm_tenant_body(monkeypatch, body)
+    cfg = _live_cfg(False)
+    cfg.raw["max_usdt_per_trade"] = 100
+    cfg.raw["live"]["max_usdt_per_trade"] = 4500
+    rm = RiskManager(cfg)
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=500, source="manual"), "4h", source="manual")
+        short = rm.evaluate(_short("manual"), "15m", source="manual")
+    assert buy.approved is False
+    assert buy.code == "live_caps_missing"
+    assert "live.max_usdt_per_trade" in buy.message
+    assert short.code == "live_caps_missing"
+    assert getattr(buy, "order", None) is None or buy.order.usdt_amount != pytest.approx(4500)
+
+
+def test_b_t9_missing_mark_blocks_even_when_switch_is_log():
+    """#642 B T9. No mark on an open live lot denies, including fail_closed_guards=log."""
+    rm = RiskManager(_risk_cfg(usdt=50, pct=5.0))
+    assert rm.config.risk_config.get("fail_closed_guards") == "log"
+    lot = {
+        "symbol": "AAA/USDT",
+        "amount": 2.0,
+        "average_entry": 10.0,
+        "side": "long",
+    }
+    with patch.object(rm, "_trailing_24h_realized_pnl", return_value=0.0), patch.object(
+        rm, "_risk_history_load", return_value={}
+    ), patch.object(rm, "_risk_history_save"), patch(
+        "strategies.positions.list_active_positions", return_value=[lot]
+    ), patch(
+        "price_fetcher.get_prices_batch", return_value={}
+    ), patch(
+        "core.operator_notify.notify_operator", return_value=True
+    ), patch(
+        "risk.risk_manager._DAILY_LOSS_HALT_UNTIL", None
+    ):
+        dec = rm.evaluate(_buy(usdt=50), "4h", source="auto")
+    assert dec.approved is False
+    assert dec.code == "daily_loss_limit"
+    assert "mark missing" in dec.message
 
 
 # --- T8 / T10 / T12 ---------------------------------------------------------

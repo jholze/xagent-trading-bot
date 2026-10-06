@@ -12,10 +12,11 @@ not add a snapshot.
 The tenant id is an argument. This script does not name a tenant.
 
 ``trading_mode=live`` reads ``live.max_usdt_per_trade`` as the ticket cap
-(``RiskManager._base_usdt_cap``). The overlay therefore sets that key to the
-same number as top-level ``max_usdt_per_trade`` so the existing reader binds.
-It must not set ``live.dry_run``, ``live.execution``, ``allow_live``, or
-``fire_enabled``.
+(``RiskManager._base_usdt_cap``), for buys and for short opens. The overlay
+sets that key to the same number as top-level ``max_usdt_per_trade`` so the
+existing reader binds. It does not set ``live_max_loss_usdt`` (nothing reads
+that key). It must not set ``live.dry_run``, ``live.execution``,
+``allow_live``, or ``fire_enabled``.
 """
 
 from __future__ import annotations

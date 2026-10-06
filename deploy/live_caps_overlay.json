@@ -1,7 +1,6 @@
 {
   "max_usdt_per_trade": 100,
   "max_open_positions": 4,
-  "live_max_loss_usdt": 25,
   "max_daily_loss_usdt": 50,
   "trading": {
     "entries_enabled": false

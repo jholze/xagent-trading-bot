@@ -52,12 +52,13 @@ class TestLiveGateReadiness(unittest.TestCase):
 
         cfg = self._live_config()
         rm = RiskManager(cfg)
-        # Real-money buys require the four cap keys on a tenant body (#644 R3).
-        # This test still checks the Gate balance cap, so the body is present.
+        # Real-money buys require the three caps on the config the guard
+        # reads and on the tenant body (#644). This test still checks the
+        # Gate balance cap, so those values are present and positive.
+        cfg.raw["max_daily_loss_usdt"] = 50
         body = {
             "max_usdt_per_trade": cfg.max_usdt_per_trade,
             "max_open_positions": cfg.max_open_positions,
-            "live_max_loss_usdt": 25,
             "max_daily_loss_usdt": 50,
         }
         with tenant_context("tenant-gate", scope="live"), \
