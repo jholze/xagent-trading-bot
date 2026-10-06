@@ -16,6 +16,18 @@ from storage.errors import LedgerUnavailable, WriterLeaseLost
 
 _ledger_unavailable_notified: set[tuple[str, str]] = set()
 
+# A call that does not name a source is not a human buy. Exact ``manual``
+# (Telegram /buy and the confirm tap) is the only liquidity-guard exemption.
+# ``execute_order`` builds an automatic idempotency key when the source is
+# anything other than ``manual``, so a source-less buy now gets that key.
+DEFAULT_ORDER_SOURCE = "unspecified"
+
+
+def coerce_order_source(source: str | None) -> str:
+    """Blank and missing sources use :data:`DEFAULT_ORDER_SOURCE`."""
+    text = str(source).strip() if source is not None else ""
+    return text or DEFAULT_ORDER_SOURCE
+
 # Operator-facing German copy for the entries/exits split (#305 slice 3).
 ENTRIES_PAUSED_MSG = "Neue Käufe pausiert (/pause). Stops und Exits laufen weiter."
 EXITS_PAUSED_MSG = "Verkäufe pausiert. Notverkäufe (Stops) laufen weiter."
@@ -132,11 +144,12 @@ class TradingService:
         self,
         order: TradeOrder,
         timeframe: str = "4h",
-        source: str = "manual",
+        source: str | None = None,
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
     ):
+        source = coerce_order_source(source)
         return self.risk.evaluate(
             order,
             timeframe,
@@ -150,7 +163,7 @@ class TradingService:
         self,
         order: TradeOrder,
         timeframe: str = "4h",
-        source: str = "manual",
+        source: str | None = None,
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
@@ -163,11 +176,14 @@ class TradingService:
         from services.trading_engine_runtime import should_queue_intent, submit_trade_intent
         from strategies.positions import bind_buy_timeframe
 
+        source = coerce_order_source(source)
         if order.type == "BUY":
             timeframe = bind_buy_timeframe(order.symbol, timeframe)
 
         scope = resolve_tenant_scope()
         idem = idempotency_key or order.client_order_id or order.idempotency_key or ""
+        # Source-less orders used to stay ``manual`` and skip this key.
+        # They now take DEFAULT_ORDER_SOURCE and receive one.
         if not idem and source != "manual":
             idem = make_idempotency_key(
                 order.symbol, timeframe, order.signal or order.type, source, scope
@@ -329,7 +345,7 @@ class TradingService:
         self,
         order: TradeOrder,
         timeframe: str = "4h",
-        source: str = "manual",
+        source: str | None = None,
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
@@ -338,6 +354,7 @@ class TradingService:
         idempotency_key: str = None,
         _lock_held: bool = False,
     ) -> TradeResult:
+        source = coerce_order_source(source)
         from bus.writer_lease import require_lease_for_order
 
         from execution.gate_adapter import _clamp_gate_client_order_id
@@ -557,10 +574,10 @@ class TradingService:
         price: float,
         usdt: float = None,
         order_id: str = None,
-        source: str = "manual",
+        source: str | None = None,
         idempotency_key: str | None = None,
     ) -> TradeResult:
-        src = source or "manual"
+        src = coerce_order_source(source)
         order = TradeOrder(
             type="BUY",
             symbol=symbol,
@@ -583,10 +600,10 @@ class TradingService:
         signal: str,
         amount: float,
         order_id: str = None,
-        source: str = "manual",
+        source: str | None = None,
         idempotency_key: str | None = None,
     ) -> TradeResult:
-        src = source or "manual"
+        src = coerce_order_source(source)
         order = TradeOrder(
             type="SELL",
             symbol=symbol,
@@ -609,10 +626,10 @@ class TradingService:
         usdt: float = None,
         leverage: float | None = None,
         order_id: str = None,
-        source: str = "manual",
+        source: str | None = None,
         idempotency_key: str | None = None,
     ) -> TradeResult:
-        src = source or "manual"
+        src = coerce_order_source(source)
         order = TradeOrder(
             type="SHORT",
             symbol=symbol,
@@ -636,10 +653,10 @@ class TradingService:
         price: float,
         amount: float = None,
         order_id: str = None,
-        source: str = "manual",
+        source: str | None = None,
         idempotency_key: str | None = None,
     ) -> TradeResult:
-        src = source or "manual"
+        src = coerce_order_source(source)
         order = TradeOrder(
             type="COVER",
             symbol=symbol,

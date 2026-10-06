@@ -1459,6 +1459,20 @@ def count_open_positions():
         return _open_positions_count
 
 
+def counts_toward_open_cap(pos: dict | None) -> bool:
+    """Paper, other tenants, and shadow/observe rows are not in this store.
+
+    A row that is still stored on the live book but marked shadow or observe
+    does not count toward ``max_open_positions``.
+    """
+    if not isinstance(pos, dict):
+        return False
+    if pos.get("observe") or pos.get("shadow"):
+        return False
+    mode = str(pos.get("mode") or pos.get("book") or "").strip().lower()
+    return mode not in {"shadow", "observe"}
+
+
 def count_open_full_slots(config_raw: dict | None = None) -> int:
     from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
 
@@ -1471,7 +1485,9 @@ def count_open_full_slots(config_raw: dict | None = None) -> int:
     with _positions_lock:
         return sum(
             1 for p in store.values()
-            if is_open_position(p) and not _is_tail(p, cfg)
+            if is_open_position(p)
+            and counts_toward_open_cap(p)
+            and not _is_tail(p, cfg)
         )
 
 

@@ -295,6 +295,13 @@ class RiskManager:
             if halt:
                 return halt
 
+        # Live caps are presence-only and fail closed. Sells and exits never
+        # reach this check. Shorts stay on their own gate.
+        if order.type == "BUY":
+            missing_caps = self._live_caps_missing_blocked(order)
+            if missing_caps:
+                return missing_caps
+
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
 
@@ -977,11 +984,24 @@ class RiskManager:
 
         # Hard per-ticket ceiling AFTER multipliers (moderate_deploy / cash-rich / DCA
         # boosts must not push above max_usdt_per_trade — e.g. 4500 * 1.38 was ~6.2k).
+        # The cap is the final notional: original and capped size are logged.
+        pre_ticket_usdt = float(sized)
         ticket_cap = float(self._base_usdt_cap() or 0)
-        if ticket_cap > 0 and float(sized) > ticket_cap:
+        if ticket_cap > 0 and pre_ticket_usdt > ticket_cap:
             sized = ticket_cap
             factors["ticket_capped"] = True
             factors["ticket_cap_usdt"] = ticket_cap
+            factors["ticket_original_usdt"] = pre_ticket_usdt
+            try:
+                from logger import log
+
+                log(
+                    f"ticket_cap {order.symbol} original={pre_ticket_usdt:.2f} "
+                    f"capped={float(ticket_cap):.2f}",
+                    "INFO",
+                )
+            except Exception:
+                pass
 
         equity = self._equity_for_sizing(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
@@ -1006,6 +1026,18 @@ class RiskManager:
             factors["spendable_usdt"] = round(balance, 2)
 
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+        if factors.get("ticket_capped") and sized < min_trade:
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Capped size ${sized:.2f} below minimum (${min_trade:.0f})"
+                ),
+                code="ticket_below_min",
+                size_multiplier=factors.get("total_multiplier", 1.0),
+                drawdown_pct=factors.get("drawdown_pct", 0.0),
+                atr_factor=factors.get("atr_factor", 1.0),
+                trust_factor=factors.get("trust_factor", 1.0),
+            )
         if sized < min_trade:
             floor_abs = self._cash_floor_abs()
             cash = self._available_usdt(equity)
@@ -1049,7 +1081,11 @@ class RiskManager:
 
         # RelVol trade tickets: reject under $1000 after multipliers / shrink-only
         # caps. Do not round up. Other sources keep min_trade_usdt ($100 live).
-        if self._is_relvol_buy(source, order) and sized < 1000.0:
+        # max_usdt_per_trade is applied above and is the submit size. A ticket
+        # that was above the relvol floor before that cap is still submitted
+        # at the cap.
+        relvol_basis = pre_ticket_usdt if factors.get("ticket_capped") else float(sized)
+        if self._is_relvol_buy(source, order) and relvol_basis < 1000.0:
             return RiskDecision(
                 approved=False,
                 message=f"Adjusted size ${sized:.2f} below minimum ($1000)",
@@ -1300,8 +1336,9 @@ class RiskManager:
         ``dca``, ``dca_sniper`` / ``dca_sniper_deep``, ``deploy_boost`` (a
         size reason on those orders, not a separate path), ``dca_recovery``,
         a second-timeframe entry, ``entry_sensor_15m`` and other new-entry
-        sources, and ``mcp:{actor}`` bot buys. A human operator source
-        (``manual`` / telegram, never ``mcp*``) is the only exemption.
+        sources, and ``mcp:{actor}`` bot buys. A human operator source is
+        the exact string ``manual`` (never a prefix, never ``mcp:``). It is
+        the only exemption, and it does not skip the live caps.
         Sells, stops, covers and kill-switch flattens do not call this.
         """
         if str(getattr(order, "type", "") or "").upper() != "BUY":
@@ -1560,13 +1597,140 @@ class RiskManager:
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
         return float((stats or {}).get("realized_pnl") or 0)
 
+    def _configured_max_daily_loss_usdt(self) -> float | None:
+        """Optional USDT daily-loss cap. Missing key → unset (pct path only)."""
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        if not isinstance(raw, dict) or "max_daily_loss_usdt" not in raw:
+            return None
+        val = raw.get("max_daily_loss_usdt")
+        if val is None or val == "":
+            return None
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if num <= 0:
+            return None
+        return num
+
+    def _operator_zone(self):
+        """Zone from ``observability.operator_timezone``. No zone name in this module."""
+        from zoneinfo import ZoneInfo
+
+        from core.time_utils import operator_tz
+
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        obs = raw.get("observability") if isinstance(raw, dict) else None
+        name = ""
+        if isinstance(obs, dict):
+            name = str(obs.get("operator_timezone") or "").strip()
+        if name:
+            try:
+                return ZoneInfo(name)
+            except Exception:
+                pass
+        return operator_tz()
+
+    def _realized_pnl_operator_day(self, now: datetime | None = None) -> float:
+        """Realized PnL of filled sells/covers since 00:00 in the operator zone."""
+        from data_manager import resolve_ledger_scope
+        from services.order_service import OrderService, is_executed_status, order_event_ts_utc
+        from storage.order_ledger_v2 import stats_from_filled_orders
+
+        tz = self._operator_zone()
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        local = moment.astimezone(tz)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        scope = resolve_ledger_scope(self.config.trading_mode)
+        orders = OrderService(scope)._scoped_orders_newest_first(mutate=False)
+        chosen = []
+        for row in orders or []:
+            if not isinstance(row, dict):
+                continue
+            if not is_executed_status(row.get("status")):
+                continue
+            ts = order_event_ts_utc(row)
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if start_utc <= ts.astimezone(timezone.utc) < end_utc:
+                chosen.append(row)
+        return float(stats_from_filled_orders(chosen).get("realized_pnl") or 0)
+
+    def _open_live_unrealized_pnl(self) -> float:
+        """Unrealized PnL of this tenant's open live lots at mark. Paper is excluded."""
+        from core.tenant_context import resolve_tenant_id
+        from strategies.positions import counts_toward_open_cap, list_active_positions
+        from strategies.short_math import is_short, unrealized_pnl
+
+        lots = list_active_positions(tenant_id=resolve_tenant_id(), scope="live")
+        parsed: list[tuple] = []
+        need: list[str] = []
+        for lot in lots or []:
+            if not counts_toward_open_cap(lot):
+                continue
+            try:
+                amount = float(lot.get("amount") or 0)
+                entry = float(lot.get("average_entry") or lot.get("entry_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 1e-12 or entry <= 0:
+                continue
+            mark_raw = lot.get("current_price")
+            try:
+                mark = float(mark_raw) if mark_raw not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                mark = 0.0
+            sym = str(lot.get("symbol") or "")
+            if sym and "/" not in sym:
+                sym = f"{sym}/USDT"
+            parsed.append((lot, amount, entry, mark, sym))
+            if mark <= 0 and sym:
+                need.append(sym)
+        prices: dict = {}
+        if need:
+            from price_fetcher import get_prices_batch
+
+            prices = get_prices_batch(list(dict.fromkeys(need))) or {}
+        total = 0.0
+        for lot, amount, entry, mark, sym in parsed:
+            if mark <= 0:
+                try:
+                    mark = float((prices or {}).get(sym) or 0)
+                except (TypeError, ValueError):
+                    mark = 0.0
+            if mark <= 0:
+                raise RuntimeError(f"mark missing for open live lot {sym}")
+            side = "short" if is_short(lot) else "long"
+            total += float(unrealized_pnl(side, amount, entry, mark))
+        return total
+
+    def _daily_loss_usdt_figure(self, now: datetime | None = None) -> float:
+        """Operator-day realized PnL plus unrealized PnL of open live lots."""
+        return float(self._realized_pnl_operator_day(now)) + float(
+            self._open_live_unrealized_pnl()
+        )
+
     def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:
-        """Kill switch: block BUY/SHORT when trailing-24h realized PnL ≤ -pct of NAV."""
+        """Block new BUY/SHORT on the pct rail, and on optional USDT loss.
+
+        ``max_daily_loss_usdt`` unset → the pct check only (same figure, same
+        24h window, same halt). Set → also stop new exposure when operator-day
+        realized PnL plus open-live unrealized PnL reaches the USDT value.
+        The stricter of the two wins. Sells and exits do not call this.
+        """
         try:
             pct = float(self.config.risk_config.get("max_daily_loss_pct", 0) or 0)
         except (TypeError, ValueError):
             pct = 0.0
-        if pct <= 0:
+        usdt_limit = self._configured_max_daily_loss_usdt()
+        if pct <= 0 and usdt_limit is None:
             return None
         history = self._risk_history_load()
         if not isinstance(history, dict):
@@ -1594,20 +1758,61 @@ class RiskManager:
                 code="daily_loss_limit",
                 size_multiplier=0.0,
             )
-        try:
-            realized = float(self._trailing_24h_realized_pnl())
-        except Exception as e:
-            # Same rollout switch as every other guard: 'log' -> ERROR + allow (old
-            # behaviour, visible), 'deny' -> block new exposure (#302 audit).
-            return self._guard_failed("daily_loss_limit", e, order)
-        nav = self._portfolio_equity()
-        if nav is None or float(nav) <= 0:
-            nav = float(self._initial_capital() or 0)
-        if nav <= 0:
+        pct_breach = False
+        realized = 0.0
+        nav = 0.0
+        if pct > 0:
+            try:
+                realized = float(self._trailing_24h_realized_pnl())
+            except Exception as e:
+                if usdt_limit is None:
+                    # Same rollout switch as every other guard: 'log' -> ERROR + allow
+                    # (old behaviour, visible), 'deny' -> block new exposure (#302 audit).
+                    return self._guard_failed("daily_loss_limit", e, order)
+                realized = 0.0
+            else:
+                nav = self._portfolio_equity()
+                if nav is None or float(nav) <= 0:
+                    nav = float(self._initial_capital() or 0)
+                if usdt_limit is None and (nav is None or float(nav) <= 0):
+                    return None
+                if nav is not None and float(nav) > 0:
+                    threshold = -(pct / 100.0) * float(nav)
+                    pct_breach = realized <= threshold
+                elif usdt_limit is None:
+                    return None
+        usdt_figure = None
+        usdt_breach = False
+        if usdt_limit is not None:
+            try:
+                usdt_figure = float(self._daily_loss_usdt_figure())
+            except Exception as e:
+                return self._guard_failed("daily_loss_limit", e, order)
+            usdt_breach = usdt_figure <= -float(usdt_limit)
+        if not pct_breach and not usdt_breach:
             return None
-        threshold = -(pct / 100.0) * float(nav)
-        if realized > threshold:
-            return None
+        if pct_breach:
+            detail = (
+                f"Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
+            )
+            notify = (
+                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
+            )
+        else:
+            detail = (
+                f"Daily loss limit: day pnl ${float(usdt_figure):.2f} "
+                f"≤ -{usdt_limit:g} USDT"
+            )
+            notify = (
+                f"🛑 Daily loss limit: day pnl ${float(usdt_figure):.2f} "
+                f"≤ -{usdt_limit:g} USDT. "
+            )
+        if pct_breach and usdt_breach:
+            detail += (
+                f"; day pnl ${float(usdt_figure):.2f} ≤ -{usdt_limit:g} USDT"
+            )
         halt_until = now + timedelta(hours=24)
         halt_iso = halt_until.isoformat()
         history["risk_halt_until"] = halt_iso
@@ -1634,11 +1839,7 @@ class RiskManager:
         try:
             from core.operator_notify import notify_operator
 
-            text = (
-                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
-                f"New buys/shorts halted until {halt_iso}."
-            )
+            text = notify + f"New buys/shorts halted until {halt_iso}."
             if persist_error is not None:
                 text += (
                     f"\n⚠️ Halt NOT persisted ({type(persist_error).__name__}: "
@@ -1649,11 +1850,92 @@ class RiskManager:
             pass
         return RiskDecision(
             approved=False,
-            message=(
-                f"Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
-            ),
+            message=detail,
             code="daily_loss_limit",
+            size_multiplier=0.0,
+        )
+
+    _LIVE_CAP_BODY_KEYS = (
+        "max_usdt_per_trade",
+        "max_open_positions",
+        "live_max_loss_usdt",
+        "max_daily_loss_usdt",
+    )
+
+    def _live_real_money_buys(self) -> bool:
+        """R3 is active only for trading_mode=live and live.dry_run false."""
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        if not isinstance(raw, dict):
+            return False
+        if str(raw.get("trading_mode") or "").strip().lower() != "live":
+            return False
+        live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
+        return live.get("dry_run") is False
+
+    def _tenant_override_for_caps(self) -> tuple[dict | None, str]:
+        """Tenant override body, or (None, reason) when it did not load."""
+        from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled, resolve_tenant_id
+
+        if not multi_tenant_enabled():
+            return None, "multi_tenant_off"
+        tid = resolve_tenant_id()
+        if not tid or tid == DEFAULT_TENANT:
+            return None, "tenant_unknown"
+        try:
+            from data_manager import (
+                _load_default_config_from_disk,
+                _load_tenant_config_body,
+                _should_use_mongo_for_tenant_config,
+            )
+
+            default_cfg = _load_default_config_from_disk()
+            if not _should_use_mongo_for_tenant_config(default_cfg):
+                return None, "tenant_store_unavailable"
+            body = _load_tenant_config_body(tid, default_cfg)
+        except Exception as exc:
+            return None, f"tenant_body_load_error:{type(exc).__name__}"
+        if not isinstance(body, dict) or not body:
+            return None, "tenant_body_empty"
+        return body, ""
+
+    def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
+        """Fail closed when a real-money tenant is missing its live caps.
+
+        Presence only: the four keys must be on the tenant override body,
+        not merely inherited. Sells never call this.
+        """
+        if not self._live_real_money_buys():
+            return None
+        if order is not None and str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None
+        body, err = self._tenant_override_for_caps()
+        missing: list[str] = []
+        if body is None:
+            reason = err or "tenant_body_missing"
+        else:
+            missing = [key for key in self._LIVE_CAP_BODY_KEYS if key not in body]
+            reason = "missing:" + ",".join(missing) if missing else ""
+        if not reason:
+            return None
+        symbol = getattr(order, "symbol", "") or ""
+        try:
+            from logger import log
+
+            log(f"live_caps_missing {symbol} {reason}", "ERROR")
+        except Exception:
+            pass
+        try:
+            from core.operator_notify import notify_operator
+
+            notify_operator(
+                f"live_caps_missing {symbol} {reason}. New buys blocked; sells still run."
+            )
+        except Exception:
+            pass
+        return RiskDecision(
+            approved=False,
+            message=f"live_caps_missing {reason}"[:200],
+            code="live_caps_missing",
             size_multiplier=0.0,
         )
 
@@ -2625,7 +2907,9 @@ class RiskManager:
             is_short(pos) and float((pos or {}).get("amount") or 0) > 0
         ):
             return RiskDecision(approved=False, message="shorts.max_open reached", code="shorts_slots")
-        if (source or order.source or "") != "manual":
+        from strategies.dca_policy import is_human_operator_buy
+
+        if not is_human_operator_buy(source or getattr(order, "source", None)):
             min_mcap = float(params.get("market_cap_min_usd") or 0)
             if min_mcap > 0:
                 mcap = None
@@ -2696,7 +2980,7 @@ class RiskManager:
                     code="short_margin_pct",
                 )
         src = str(source or order.source or "")
-        if src != "manual":
+        if not is_human_operator_buy(src):
             try:
                 from services.venue_quality import check_venue_for_buy
 
