@@ -3,8 +3,10 @@
 
 The id list is a runtime file (``--ids``). It is not shipped in the repo.
 Dry-run is the default: it prints what would be removed, the fill grouping,
-and the cash/realized delta of the deleted trade_history fills only. It does
-not replay from a starting balance. It also prints the sha256 of the id file
+and the cash/realized delta of the deleted trade_history fills only. A fill
+stored in both scopes counts once and is booked on the order's scope. NAV
+points lose the still-held quantity times the close listed in the id file.
+It does not replay from a starting balance. It also prints the sha256 of the id file
 and the per-store per-tenant delete counts in the ``expected_counts`` shape.
 A real run requires ``--apply`` plus that same id-file sha256, the sha256 of
 a fresh backup file, expected counts that match, every ledger tenant named
@@ -29,7 +31,8 @@ import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -128,10 +131,54 @@ by adding usdt_received (proceeds) and adding pnl to realized_pnl. orders and
 orders_v2 are the same order, not another fill. A partial fill, or a sell
 that has no order of its own, shows up as an extra trade_history row. Those
 other collections are cross-checks only. Any mismatch aborts before a write.
-A deleted fill with no price, qty, fee, side, scope, or timestamp aborts
-before a write. This script does not read initial_capital. Dry-run prints one
-fill_groups line per deleted trade_history fill, and per scope the
-virtual_balance and realized_pnl before, the delta (after - before), and after.
+A deleted fill with no price, qty, fee, side, scope, symbol, or timestamp
+aborts before a write. The same fill stored in demo and live (same tenant,
+order, side, price, qty, and fee, at most 120 seconds apart) counts once.
+Anything else with that identity in both scopes aborts and names the rows.
+Cash and realized are booked on the order's scope (orders and orders_v2),
+not on the trade_history document that held the row. A live trade_history
+document with virtual_balance 100000 and realized_pnl 0 is not maintained
+per fill: that document is not written, and the dry-run logs the skip.
+This script does not read initial_capital. Dry-run prints one fill_groups
+line per counted fill, and per scope the virtual_balance and realized_pnl
+before, the delta (after - before), and after.
+
+NAV points on or after the cutoff, in a scope that receives a fill delta,
+keep every other stored field. cash moves by the cash correction.
+positions_mtm and nav both move by minus the deleted quantity still held
+at that snapshot times the close from nav_prices in this id file. The
+script does not fetch prices and does not read a close off the NAV row
+(portfolio_nav_daily stores only the positions_mtm total and btc_close).
+Held quantity is computed from the deleted fills in the order's scope.
+A qty field inside nav_prices is rejected. Naive trade_history timestamps
+are Europe/Berlin; nav as_of is UTC. An as_of on the full hour belongs to
+the candle that starts then. Dry-run prints one nav_day line per point:
+held quantity, close, mtm and nav before and after, and whether
+nav = cash + positions_mtm. A missing price entry, an as_of that does not
+match the NAV row, a candle_start that does not contain as_of, or a
+broken invariant aborts before any write.
+
+nav_prices (same --ids file, so the sha256 covers every close)
+
+One object per affected NAV point. Required keys: tenant, scope, date,
+as_of, candle_start, close, source, fetched_at. close is the 1h candle
+that contains as_of. source is the URL the close was taken from. The
+script does not open that URL.
+
+{
+  "nav_prices": [
+    {
+      "tenant": "tenant_h",
+      "scope": "demo",
+      "date": "2026-09-28",
+      "as_of": "2026-09-28T16:00:00+00:00",
+      "candle_start": "2026-09-28T16:00:00+00:00",
+      "close": 1.25,
+      "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+      "fetched_at": "2026-10-06T08:00:00+00:00"
+    }
+  ]
+}
 
 {
   "expected_counts": {
@@ -645,11 +692,68 @@ def _side_of(row: dict) -> tuple[str, str]:
     return side, ""
 
 
-def _fill_day(entry: dict) -> tuple[str, str]:
-    ts = _order_ts(entry) or _parse_dt(entry.get("timestamp"))
-    if ts is None:
-        return "", "missing timestamp"
-    return ts.date().isoformat(), ""
+_FILL_TZ = ZoneInfo("Europe/Berlin")
+_QTY_PRICE_KEYS = {"qty", "held_qty", "quantity", "held_quantity"}
+
+
+def _parse_trade_timestamp(value: object) -> datetime | None:
+    """Trade-history clocks are naive Europe/Berlin. Return naive UTC.
+
+    An explicit offset is an absolute instant and is converted to UTC.
+    A naive value is not UTC: it is the Berlin local time written by the
+    ledger (captured_at 19:41Z is stored as 21:41).
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_FILL_TZ)
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    """NAV as_of and candle times are UTC. Naive values stay UTC."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _fill_instant(entry: dict) -> datetime | None:
+    stamps = entry.get("timestamps") if isinstance(entry.get("timestamps"), dict) else {}
+    for value in (stamps.get("filled"), stamps.get("created"), entry.get("timestamp")):
+        parsed = _parse_trade_timestamp(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _berlin_day(utc_naive: datetime) -> str:
+    aware = utc_naive.replace(tzinfo=timezone.utc).astimezone(_FILL_TZ)
+    return aware.date().isoformat()
+
+
+def _candle_contains(candle_start: datetime, as_of: datetime) -> bool:
+    """1h candle [start, start+1h). The full hour belongs to the candle that starts then."""
+    return candle_start <= as_of < candle_start + timedelta(hours=1)
 
 
 def _fill_effect(entry: dict, *, where: str) -> tuple[dict | None, str]:
@@ -681,9 +785,13 @@ def _fill_effect(entry: dict, *, where: str) -> tuple[dict | None, str]:
     if not fee_present or fee is None:
         return None, f"{where} missing fee"
     assert price is not None and qty is not None and fee is not None
-    day, day_problem = _fill_day(entry)
-    if day_problem:
-        return None, f"{where} {day_problem}"
+    ts = _fill_instant(entry)
+    if ts is None:
+        return None, f"{where} missing timestamp"
+    day = _berlin_day(ts)
+    symbol = _norm_symbol(entry.get("symbol"))
+    if not symbol:
+        return None, f"{where} missing symbol"
     notional = price * qty
     if side == "BUY":
         cash_effect = _round(notional + fee)
@@ -713,9 +821,238 @@ def _fill_effect(entry: dict, *, where: str) -> tuple[dict | None, str]:
         "qty": _round(qty),
         "fee": _round(fee),
         "day": day,
+        "symbol": symbol,
+        "ts": ts,
         "cash_effect": cash_effect,
         "realized_effect": realized_effect,
     }, ""
+
+
+# Real mirrored rows land about one second apart. A wider window still
+# treats only near-copies as one fill; anything further apart aborts.
+_MIRROR_WINDOW_SECONDS = 120
+_UNMAINTAINED_LIVE_BALANCE = 100000.0
+
+
+def _unmaintained_live(doc: dict) -> bool:
+    """Live trade docs that still show the untouched balance are not per-fill ledgers."""
+    if _doc_scope(doc) != "live":
+        return False
+    present, cash, problem = _raw_number(doc, ("virtual_balance",))
+    if problem or not present or cash is None or not _close(cash, _UNMAINTAINED_LIVE_BALANCE):
+        return False
+    realized_present, realized, realized_problem = _raw_number(doc, ("realized_pnl",))
+    if realized_problem or not realized_present or realized is None:
+        return False
+    return _close(realized, 0.0)
+
+
+def _display_trade_id(fill: dict) -> str:
+    trade_id = str(fill.get("trade_id") or "").strip()
+    if trade_id:
+        return trade_id
+    ts = fill.get("ts")
+    stamp = ts.isoformat() if isinstance(ts, datetime) else ""
+    order_id = str(fill.get("order_id") or "").strip()
+    if order_id and stamp:
+        return f"{order_id}@{stamp}"
+    return order_id or stamp or "-"
+
+
+def _name_fill(fill: dict) -> str:
+    scope = fill.get("trade_scope") or fill.get("scope") or "?"
+    return (
+        f"{fill.get('tenant')}/{scope} trade {_display_trade_id(fill)} "
+        f"order {fill.get('order_id') or '-'} doc {fill.get('doc_id') or '-'}"
+    )
+
+
+def _dedupe_mirrors(fills: list[dict]) -> tuple[list[dict], list[str]]:
+    """Count a demo/live copy of the same fill once. Ambiguous pairs abort."""
+    groups: dict[tuple, list[dict]] = {}
+    for fill in fills:
+        key = (
+            fill["tenant"],
+            fill["order_id"],
+            fill["side"],
+            fill["price"],
+            fill["qty"],
+            fill["fee"],
+        )
+        groups.setdefault(key, []).append(fill)
+    kept: list[dict] = []
+    problems: list[str] = []
+    for rows in groups.values():
+        scopes = {row.get("trade_scope") or row.get("scope") for row in rows}
+        if len(scopes) <= 1:
+            kept.extend(rows)
+            continue
+        if not scopes <= {"demo", "live"}:
+            named = "; ".join(_name_fill(row) for row in rows)
+            problems.append(f"ambiguous mirror spans more than demo and live: {named}")
+            continue
+        demos = [row for row in rows if (row.get("trade_scope") or row.get("scope")) == "demo"]
+        lives = [row for row in rows if (row.get("trade_scope") or row.get("scope")) == "live"]
+        if not demos or not lives:
+            named = "; ".join(_name_fill(row) for row in rows)
+            problems.append(f"ambiguous mirror is not a demo/live pair: {named}")
+            continue
+        if any(row.get("booked_on") != "order" for row in rows):
+            named = "; ".join(_name_fill(row) for row in rows)
+            problems.append(f"ambiguous mirror has no single order scope: {named}")
+            continue
+        lives_left = list(lives)
+        pairs: list[tuple[dict, dict]] = []
+        ambiguous = False
+        for demo in sorted(demos, key=lambda row: (row["ts"], row.get("doc_id") or "")):
+            near = [
+                live
+                for live in lives_left
+                if abs((demo["ts"] - live["ts"]).total_seconds()) <= _MIRROR_WINDOW_SECONDS
+            ]
+            if not near:
+                continue
+            near.sort(key=lambda live: (abs((demo["ts"] - live["ts"]).total_seconds()), live.get("doc_id") or ""))
+            if len(near) > 1 and _close(
+                abs((demo["ts"] - near[0]["ts"]).total_seconds()),
+                abs((demo["ts"] - near[1]["ts"]).total_seconds()),
+            ):
+                named = "; ".join(_name_fill(row) for row in (demo, near[0], near[1]))
+                problems.append(f"ambiguous mirror matches more than one row: {named}")
+                ambiguous = True
+                break
+            pairs.append((demo, near[0]))
+            lives_left.remove(near[0])
+        if ambiguous:
+            continue
+        paired_demo_ids = {id(demo) for demo, _live in pairs}
+        unpaired_demos = [demo for demo in demos if id(demo) not in paired_demo_ids]
+        if lives_left:
+            named = "; ".join(_name_fill(row) for row in unpaired_demos + lives_left)
+            problems.append(
+                "ambiguous mirror: demo and live rows share a fill identity but do not pair: "
+                + named
+            )
+            continue
+        for demo, live in pairs:
+            if demo.get("trade_scope") == demo.get("scope"):
+                primary, other = demo, live
+            elif live.get("trade_scope") == live.get("scope"):
+                primary, other = live, demo
+            else:
+                primary, other = demo, live
+            primary["mirror_doc"] = str(other.get("doc_id") or "")
+            primary["mirror_scope"] = str(other.get("trade_scope") or "")
+            kept.append(primary)
+        kept.extend(unpaired_demos)
+    return kept, problems
+
+
+def _field_number(row: dict, key: str) -> tuple[float | None, str]:
+    if key not in row or row.get(key) is None:
+        return None, ""
+    _present, value, problem = _raw_number(row, (key,))
+    if problem or value is None:
+        return None, problem or "is not a number"
+    return value, ""
+
+
+def _index_nav_prices(spec: dict) -> tuple[dict[tuple[str, str, str], dict], list[str]]:
+    """Closes from the id file. A quantity on an entry is rejected.
+
+    The key is (tenant, scope, date). Nothing is fetched.
+    """
+    raw = spec.get("nav_prices")
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, list):
+        return {}, ["nav_prices must be a list"]
+    found: dict[tuple[str, str, str], dict] = {}
+    problems: list[str] = []
+    for index, entry in enumerate(raw):
+        where = f"nav_prices[{index}]"
+        if not isinstance(entry, dict):
+            problems.append(f"{where} must be an object")
+            continue
+        dictated = sorted(str(key) for key in entry if str(key).lower() in _QTY_PRICE_KEYS)
+        if dictated:
+            problems.append(
+                f"{where} must not set a quantity ({', '.join(dictated)}); "
+                "held quantity is computed from the deleted fills"
+            )
+            continue
+        tenant = str(entry.get("tenant") or "").strip()
+        scope = str(entry.get("scope") or "").strip()
+        day = str(entry.get("date") or "")[:10]
+        if not tenant or not scope or not day:
+            problems.append(f"{where} missing tenant, scope, or date")
+            continue
+        as_of = _parse_utc_timestamp(entry.get("as_of"))
+        candle = _parse_utc_timestamp(entry.get("candle_start"))
+        if as_of is None or candle is None:
+            problems.append(f"{where} missing as_of or candle_start")
+            continue
+        _present, close, close_problem = _raw_number(entry, ("close",))
+        if close_problem or close is None:
+            problems.append(f"{where} close {close_problem or 'is missing'}")
+            continue
+        if close <= 0:
+            problems.append(f"{where} close is not positive")
+            continue
+        source = str(entry.get("source") or "").strip()
+        fetched_at = str(entry.get("fetched_at") or "").strip()
+        if not source or not fetched_at:
+            problems.append(f"{where} missing source or fetched_at")
+            continue
+        key = (tenant, scope, day)
+        if key in found:
+            problems.append(f"{where} duplicates {tenant}/{scope} {day}")
+            continue
+        found[key] = {
+            "close": _round(close),
+            "as_of": as_of,
+            "candle_start": candle,
+            "source": source,
+            "fetched_at": fetched_at,
+        }
+    return found, problems
+
+
+def _num_text(value: float) -> str:
+    text = f"{value:.8f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _fmt_qty_map(values: dict[str, float], *, empty: str) -> str:
+    if not values:
+        return empty
+    return ",".join(f"{symbol}:{_num_text(values[symbol])}" for symbol in sorted(values))
+
+
+def _invariant_flag(nav: float | None, cash: float | None, mtm: float | None) -> str:
+    if nav is None or cash is None or mtm is None:
+        return "-"
+    return "ok" if _close(nav, cash + mtm) else "fail"
+
+
+def _held_at(fills: list[dict], as_of: datetime) -> tuple[dict[str, float], list[str]]:
+    totals: dict[str, float] = {}
+    for fill in fills:
+        ts = fill.get("ts")
+        if not isinstance(ts, datetime) or ts > as_of:
+            continue
+        sign = 1.0 if fill["side"] == "BUY" else -1.0
+        symbol = str(fill.get("symbol") or "")
+        totals[symbol] = totals.get(symbol, 0.0) + sign * float(fill["qty"])
+    held: dict[str, float] = {}
+    problems: list[str] = []
+    for symbol, qty in totals.items():
+        rounded = _round(qty)
+        if rounded < 0:
+            problems.append(symbol)
+        elif rounded > 0:
+            held[symbol] = rounded
+    return held, problems
 
 
 def _order_effect(entry: dict, *, where: str) -> tuple[dict | None, str]:
@@ -871,11 +1208,13 @@ def _attach_memory(fills: list[dict], memory_docs: list[dict]) -> list[str]:
 
 def _fill_group_row(fill: dict) -> dict:
     return {
-        "trade_id": fill["trade_id"],
+        "trade_id": _display_trade_id(fill),
         "tenant": fill["tenant"],
         "scope": fill["scope"],
+        "trade_scope": fill.get("trade_scope") or fill["scope"],
         "side": fill["side"],
         "order_id": fill["order_id"],
+        "symbol": fill.get("symbol") or "",
         "price": fill["price"],
         "qty": fill["qty"],
         "fee": fill["fee"],
@@ -885,6 +1224,8 @@ def _fill_group_row(fill: dict) -> dict:
         "orders_v2_id": _dash(fill["orders_v2_id"]),
         "position_keys": _join_ids(fill["position_keys"]),
         "memory_trade_ids": _join_ids(fill["memory_trade_ids"]),
+        "mirror_doc": _dash(fill.get("mirror_doc")),
+        "mirror_scope": _dash(fill.get("mirror_scope")),
     }
 
 
@@ -910,21 +1251,26 @@ def _nav_with_fill_delta(
     existing: list[dict],
     fills: list[dict],
     cutoff: datetime,
+    prices: dict[tuple[str, str, str], dict],
     *,
     where: str,
-) -> tuple[list[dict] | None, list[str]]:
-    """Add the same fill-only delta onto stored NAV points.
+    tenant: str,
+    scope: str,
+) -> tuple[list[dict] | None, list[str], list[dict]]:
+    """Apply the fill delta and the still-held mark to stored NAV points.
 
-    Points before the cutoff are copied unchanged. Later points keep every
-    stored field, including positions_mtm. nav and cash move by the cash
-    correction of fills on or before that date. realized_pnl moves by the
-    realized correction. A point that would change and lacks date, nav, or
-    cash aborts. A non-zero realized correction aborts when realized_pnl
-    is missing.
+    Points before the cutoff are copied. Later points move cash by the cash
+    correction. positions_mtm and nav move by minus held quantity times the
+    close from ``prices`` (the id file). Held quantity is computed here from
+    the deleted fills; the id file cannot supply it. Fill instants are UTC
+    (naive trade_history clocks were read as Europe/Berlin). as_of is UTC.
+    A missing price, an as_of mismatch, or a candle that does not contain
+    as_of aborts. Nothing is fetched.
     """
     cutoff_day = cutoff.date().isoformat()
     problems: list[str] = []
     adjusted: list[dict] = []
+    table: list[dict] = []
     for point in existing:
         row = copy.deepcopy(point)
         day = str(row.get("date") or "")[:10]
@@ -933,26 +1279,170 @@ def _nav_with_fill_delta(
             adjusted.append(row)
             continue
         if day < cutoff_day:
+            nav_before, _nav_problem = _field_number(row, "nav")
+            cash_before, _cash_problem = _field_number(row, "cash")
+            mtm_before, _mtm_problem = _field_number(row, "positions_mtm")
+            table.append(
+                _nav_day_row(
+                    tenant=tenant,
+                    scope=scope,
+                    day=day,
+                    held={},
+                    close=None,
+                    source="",
+                    copied=True,
+                    nav_before=nav_before,
+                    nav_after=nav_before,
+                    cash_before=cash_before,
+                    cash_after=cash_before,
+                    mtm_before=mtm_before,
+                    mtm_after=mtm_before,
+                )
+            )
             adjusted.append(row)
             continue
         cash_delta = _round(sum(fill["cash_effect"] for fill in fills if fill["day"] and fill["day"] <= day))
         realized_delta = _round(
             sum(fill["realized_effect"] for fill in fills if fill["day"] and fill["day"] <= day)
         )
-        would_adjust = bool(cash_delta or realized_delta)
-        if would_adjust and (row.get("nav") is None or row.get("cash") is None):
+        entry = prices.get((tenant, scope, day))
+        listed_close = None if entry is None else entry["close"]
+        listed_source = "" if entry is None else str(entry["source"])
+        as_of = _parse_utc_timestamp(row.get("as_of"))
+        if entry is None:
+            problems.append(f"{where} nav point {day} has no price entry")
+        if as_of is None:
+            problems.append(f"{where} nav point {day} missing as_of")
+        elif entry is not None and as_of != entry["as_of"]:
+            problems.append(
+                f"{where} nav point {day} as_of does not match the price entry "
+                f"({row.get('as_of')} != file as_of)"
+            )
+        elif entry is not None and not _candle_contains(entry["candle_start"], as_of):
+            problems.append(
+                f"{where} nav point {day} candle_start does not contain as_of"
+            )
+        held: dict[str, float] = {}
+        negative: list[str] = []
+        if as_of is not None:
+            held, negative = _held_at(fills, as_of)
+            for symbol in negative:
+                problems.append(
+                    f"{where} nav point {day} deleted quantity for {symbol or '?'} is negative"
+                )
+        mtm_delta = 0.0
+        price_ok = entry is not None and as_of is not None and not negative
+        if len(held) > 1:
+            names = ", ".join(sorted(held))
+            problems.append(f"{where} nav point {day} held quantity spans more than one symbol ({names})")
+            price_ok = False
+        elif price_ok and held and listed_close is not None:
+            qty = next(iter(held.values()))
+            mtm_delta = _round(-(qty * listed_close))
+        if not price_ok:
+            mtm_delta = 0.0
+        would_move = bool(cash_delta or mtm_delta)
+        nav_before, nav_problem = _field_number(row, "nav")
+        cash_before, cash_problem = _field_number(row, "cash")
+        mtm_before, mtm_problem = _field_number(row, "positions_mtm")
+        if nav_problem:
+            problems.append(f"{where} nav point {day} nav {nav_problem}")
+        if cash_problem:
+            problems.append(f"{where} nav point {day} cash {cash_problem}")
+        if mtm_problem:
+            problems.append(f"{where} nav point {day} positions_mtm {mtm_problem}")
+        if would_move and (nav_before is None or cash_before is None) and not nav_problem and not cash_problem:
             problems.append(f"{where} nav point {day} missing nav or cash")
-        elif would_adjust:
-            _add_present(row, "nav", cash_delta)
-            _add_present(row, "cash", cash_delta)
+        if would_move and mtm_before is None and not mtm_problem:
+            problems.append(f"{where} nav point {day} missing positions_mtm")
         if realized_delta and row.get("realized_pnl") is None:
             problems.append(f"{where} nav point {day} missing realized_pnl")
-        elif realized_delta:
-            _add_present(row, "realized_pnl", realized_delta)
+        realized_number, realized_problem = _field_number(row, "realized_pnl")
+        if realized_problem:
+            problems.append(f"{where} nav point {day} realized_pnl {realized_problem}")
+        invariant_before = _invariant_flag(nav_before, cash_before, mtm_before)
+        if would_move and invariant_before == "fail":
+            problems.append(
+                f"{where} nav point {day} invariant failed before correction: "
+                "nav != cash + positions_mtm"
+            )
+        nav_after = nav_before
+        cash_after = cash_before
+        mtm_after = mtm_before
+        point_problems = [
+            item
+            for item in problems
+            if item.startswith(f"{where} nav point {day}") or item.startswith(f"{where} nav point missing")
+        ]
+        if price_ok and not point_problems and would_move and nav_before is not None and cash_before is not None and mtm_before is not None:
+            cash_after = _round(cash_before + cash_delta)
+            mtm_after = _round(mtm_before + mtm_delta)
+            nav_after = _round(nav_before + cash_delta + mtm_delta)
+            row["cash"] = cash_after
+            row["positions_mtm"] = mtm_after
+            row["nav"] = nav_after
+            if _invariant_flag(nav_after, cash_after, mtm_after) != "ok":
+                problems.append(
+                    f"{where} nav point {day} invariant failed after correction: "
+                    "nav != cash + positions_mtm"
+                )
+        if realized_delta and realized_number is not None and not realized_problem and price_ok and not point_problems:
+            row["realized_pnl"] = _round(realized_number + realized_delta)
+        table.append(
+            _nav_day_row(
+                tenant=tenant,
+                scope=scope,
+                day=day,
+                held=held,
+                close=listed_close,
+                source=listed_source,
+                copied=False,
+                nav_before=nav_before,
+                nav_after=nav_after,
+                cash_before=cash_before,
+                cash_after=cash_after,
+                mtm_before=mtm_before,
+                mtm_after=mtm_after,
+            )
+        )
         adjusted.append(row)
     if problems:
-        return None, problems
-    return adjusted, []
+        return None, problems, table
+    return adjusted, [], table
+
+
+def _nav_day_row(
+    *,
+    tenant: str,
+    scope: str,
+    day: str,
+    held: dict[str, float],
+    close: float | None,
+    source: str,
+    copied: bool,
+    nav_before: float | None,
+    nav_after: float | None,
+    cash_before: float | None,
+    cash_after: float | None,
+    mtm_before: float | None,
+    mtm_after: float | None,
+) -> dict:
+    return {
+        "tenant": tenant,
+        "scope": scope,
+        "day": day,
+        "held_qty": "-" if copied else _fmt_qty_map(held, empty="0"),
+        "close": "-" if copied or close is None else close,
+        "source": source or "-",
+        "mtm_before": mtm_before,
+        "mtm_after": mtm_after,
+        "nav_before": nav_before,
+        "nav_after": nav_after,
+        "cash_before": cash_before,
+        "cash_after": cash_after,
+        "invariant_before": _invariant_flag(nav_before, cash_before, mtm_before),
+        "invariant_after": _invariant_flag(nav_after, cash_after, mtm_after),
+    }
 
 
 def _order_owners(order_docs: list[dict]) -> dict[str, str]:
@@ -1440,8 +1930,8 @@ def build_fill_correction(
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Delta from deleted trade_history fills only. Orders are a cross-check.
 
-    Returns fill rows, per-scope balance rows, and problems. Problems mean
-    no balance or NAV write is attached to ``groups``.
+    Returns fill rows, per-scope balance rows, problems, and NAV-day rows.
+    Problems mean no balance or NAV write is attached to ``groups``.
     """
     problems: list[str] = []
     embedded = _index_embedded(order_docs)
@@ -1476,6 +1966,8 @@ def build_fill_correction(
                 **effect,
                 "tenant": item["tenant"],
                 "scope": scope,
+                "trade_scope": scope,
+                "doc_id": str(item.get("doc_id") or ""),
                 "trade_id": trade_id,
                 "order_id": order_id,
                 "where": where,
@@ -1483,9 +1975,14 @@ def build_fill_correction(
                 "orders_v2_id": orders_v2_id,
                 "position_keys": _position_keys_for(spec, item["tenant"], order_id),
                 "memory_trade_ids": [],
+                "mirror_doc": "",
+                "mirror_scope": "",
+                "booked_on": "trade",
             }
         )
 
+    order_scope: dict[tuple[str, str], str] = {}
+    order_effects: dict[tuple[str, str], dict] = {}
     for tenant, order_id in sorted(deleted_orders):
         key = (tenant, order_id)
         where = f"{tenant} order {order_id}"
@@ -1495,7 +1992,11 @@ def build_fill_correction(
             problems.append(f"{where} is in only one of orders and orders_v2")
             continue
         if len(emb) != 1 or len(v2s) != 1:
-            problems.append(f"{where} is duplicated inside orders or orders_v2")
+            emb_names = ", ".join(f"{item['scope']}:{item['doc_id']}" for item in emb) or "none"
+            v2_names = ", ".join(str(doc.get("_id") or "") for doc in v2s) or "none"
+            problems.append(
+                f"{where} is duplicated inside orders ({emb_names}) or orders_v2 ({v2_names})"
+            )
             continue
         left, left_problem = _order_effect(emb[0]["entry"], where=f"{where} orders")
         right, right_problem = _order_effect(v2s[0], where=f"{where} orders_v2")
@@ -1507,21 +2008,46 @@ def build_fill_correction(
             for field_name in ("side", "price", "qty", "fee"):
                 if left[field_name] != right[field_name]:
                     problems.append(f"{where} {field_name} mismatches between orders and orders_v2")
-        raw_count = sum(
-            1
-            for item in removed_trades
-            if item["tenant"] == tenant and str(item["entry"].get("order_id") or "").strip() == order_id
-        )
-        linked = [fill for fill in fills if fill["tenant"] == tenant and fill["order_id"] == order_id]
-        if raw_count != len(linked):
+        emb_scope = str(emb[0]["scope"] or "")
+        v2_scope = str(v2s[0].get("ledger_scope") or "") or _doc_scope(v2s[0])
+        if not emb_scope or emb_scope != v2_scope:
+            problems.append(
+                f"{where} orders scope {emb_scope or '?'} disagrees with orders_v2 scope {v2_scope or '?'}"
+            )
             continue
+        if left is None or left_problem or right_problem:
+            continue
+        if left and right and any(left[field_name] != right[field_name] for field_name in ("side", "price", "qty", "fee")):
+            continue
+        order_scope[key] = emb_scope
+        order_effects[key] = left
+
+    for fill in fills:
+        booked = order_scope.get((fill["tenant"], fill["order_id"]))
+        if not booked:
+            continue
+        fill["scope"] = booked
+        fill["booked_on"] = "order"
+        match = embedded.get((fill["tenant"], fill["order_id"]), [])
+        if len(match) == 1:
+            fill["orders_doc_id"] = match[0]["doc_id"]
+        v2_match = v2_index.get((fill["tenant"], fill["order_id"]), [])
+        if len(v2_match) == 1:
+            fill["orders_v2_id"] = str(v2_match[0].get("_id") or "")
+
+    fills, mirror_problems = _dedupe_mirrors(fills)
+    problems.extend(mirror_problems)
+
+    for key, left in order_effects.items():
+        tenant, order_id = key
+        where = f"{tenant} order {order_id}"
+        linked = [fill for fill in fills if fill["tenant"] == tenant and fill["order_id"] == order_id]
         if not linked:
             problems.append(f"{where} has no deleted trade_history fill")
             continue
-        if left is None:
-            continue
         if not _close(sum(fill["qty"] for fill in linked), left["qty"]):
-            problems.append(f"{where} trade qty sum does not match the order")
+            scopes = ", ".join(sorted({fill.get("trade_scope") or fill["scope"] for fill in linked}))
+            problems.append(f"{where} trade qty sum does not match the order (trade scopes {scopes})")
         if not _close(sum(fill["fee"] for fill in linked), left["fee"]):
             problems.append(f"{where} trade fee sum does not match the order")
         notion = sum(fill["price"] * fill["qty"] for fill in linked)
@@ -1560,24 +2086,44 @@ def build_fill_correction(
     for fill in fills:
         by_scope.setdefault((fill["tenant"], fill["scope"]), []).append(fill)
 
+    price_index, price_problems = _index_nav_prices(spec)
+    problems.extend(price_problems)
     metrics: list[dict] = []
+    nav_days: list[dict] = []
     for tenant, scope in sorted(seen):
         fills_here = by_scope.get((tenant, scope), [])
         cash_delta = _round(sum(fill["cash_effect"] for fill in fills_here))
         realized_delta = _round(sum(fill["realized_effect"] for fill in fills_here))
         trade_doc = trade_by_scope.get((tenant, scope))
-        stored_cash = trade_doc.get("virtual_balance") if isinstance(trade_doc, dict) else None
-        stored_realized = trade_doc.get("realized_pnl") if isinstance(trade_doc, dict) else None
-        if fills_here and (not isinstance(trade_doc, dict) or stored_cash is None):
+        skipped_live = isinstance(trade_doc, dict) and _unmaintained_live(trade_doc)
+        if fills_here and skipped_live:
+            problems.append(
+                f"{tenant}/{scope} is not maintained per fill "
+                "(virtual_balance=100000 realized_pnl=0); refusing to book deleted fills there"
+            )
+        cash_before: float | None = None
+        realized_before: float | None = None
+        if isinstance(trade_doc, dict):
+            cash_number, cash_problem = _field_number(trade_doc, "virtual_balance")
+            realized_number, realized_problem = _field_number(trade_doc, "realized_pnl")
+            if cash_problem:
+                problems.append(f"{tenant}/{scope} virtual_balance {cash_problem}")
+            elif fills_here and cash_number is None:
+                problems.append(f"{tenant}/{scope} missing virtual_balance")
+            else:
+                cash_before = None if cash_number is None else _round(cash_number)
+            if realized_problem:
+                problems.append(f"{tenant}/{scope} realized_pnl {realized_problem}")
+            elif fills_here and realized_delta and realized_number is None:
+                problems.append(f"{tenant}/{scope} missing realized_pnl")
+            else:
+                realized_before = None if realized_number is None else _round(realized_number)
+        elif fills_here:
             problems.append(f"{tenant}/{scope} missing virtual_balance")
-        if fills_here and realized_delta and (not isinstance(trade_doc, dict) or stored_realized is None):
-            problems.append(f"{tenant}/{scope} missing realized_pnl")
         touched = (tenant, scope) in scope_touched
         existing_nav = store.nav_points(tenant, scope) if touched else []
         if touched and existing_nav and cutoff is None:
             problems.append(f"{tenant}/{scope} has NAV points and no cutoff_utc")
-        cash_before = None if stored_cash is None else _round(_float(stored_cash))
-        realized_before = None if stored_realized is None else _round(_float(stored_realized))
         metrics.append(
             {
                 "tenant": tenant,
@@ -1590,6 +2136,7 @@ def build_fill_correction(
                 "realized_pnl_after": None if realized_before is None else _round(realized_before + realized_delta),
                 "writes_metrics": False,
                 "writes_nav": False,
+                "skipped_unmaintained": skipped_live,
                 "_fills": fills_here,
                 "_nav": existing_nav,
                 "_trade_doc": trade_doc if isinstance(trade_doc, dict) else None,
@@ -1603,26 +2150,7 @@ def build_fill_correction(
             row.pop("_fills", None)
             row.pop("_nav", None)
             row.pop("_trade_doc", None)
-        groups_out = [
-            {
-                "trade_id": fill["trade_id"],
-                "tenant": fill["tenant"],
-                "scope": fill["scope"],
-                "side": fill["side"],
-                "order_id": fill["order_id"],
-                "price": fill["price"],
-                "qty": fill["qty"],
-                "fee": fill["fee"],
-                "cash_effect": fill["cash_effect"],
-                "realized_effect": fill["realized_effect"],
-                "orders_doc_id": _dash(fill["orders_doc_id"]),
-                "orders_v2_id": _dash(fill["orders_v2_id"]),
-                "position_keys": _join_ids(fill["position_keys"]),
-                "memory_trade_ids": _join_ids(fill["memory_trade_ids"]),
-            }
-            for fill in fills
-        ]
-        return groups_out, metrics, problems
+        return [_fill_group_row(fill) for fill in fills], metrics, problems, nav_days
 
     pending_nav: list[tuple[dict, list, list]] = []
     for row in metrics:
@@ -1632,12 +2160,18 @@ def build_fill_correction(
         fills_here = row["_fills"]
         if (tenant, scope) not in scope_touched or not existing_nav or cutoff is None:
             continue
-        adjusted, nav_problems = _nav_with_fill_delta(
+        if row["skipped_unmaintained"]:
+            continue
+        adjusted, nav_problems, table = _nav_with_fill_delta(
             existing_nav,
             fills_here,
             cutoff,
+            price_index,
             where=f"{tenant}/{scope}",
+            tenant=tenant,
+            scope=scope,
         )
+        nav_days.extend(table)
         if nav_problems:
             problems.extend(nav_problems)
             continue
@@ -1652,7 +2186,7 @@ def build_fill_correction(
             row.pop("_nav", None)
             row.pop("_trade_doc", None)
         fill_groups = [_fill_group_row(fill) for fill in fills]
-        return fill_groups, metrics, problems
+        return fill_groups, metrics, problems, nav_days
 
     for row in metrics:
         tenant = row["tenant"]
@@ -1661,6 +2195,8 @@ def build_fill_correction(
         row.pop("_fills", None)
         row.pop("_nav", None)
         if (tenant, scope) not in scope_touched or not isinstance(trade_doc, dict):
+            continue
+        if row.get("skipped_unmaintained"):
             continue
         prior = [
             step
@@ -1700,7 +2236,7 @@ def build_fill_correction(
         row["writes_nav"] = True
 
     fill_groups = [_fill_group_row(fill) for fill in fills]
-    return fill_groups, metrics, problems
+    return fill_groups, metrics, problems, nav_days
 
 
 def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, ids_file: str) -> Plan:
@@ -1871,6 +2407,24 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
                 kept_entries.append(entry)
                 continue
             if tenant in selected_set and any(token in delete_ids for token in tokens):
+                if _unmaintained_live(doc):
+                    removed_trades.append(
+                        {
+                            "tenant": tenant,
+                            "scope": scope,
+                            "doc_id": str(doc.get("_id") or ""),
+                            "entry": copy.deepcopy(entry),
+                            "source_only": True,
+                        }
+                    )
+                    note = (
+                        f"skipped unmaintained live scope {tenant}/{scope}: "
+                        "virtual_balance=100000 realized_pnl=0; trade_history document not written"
+                    )
+                    if note not in warnings:
+                        warnings.append(note)
+                    kept_entries.append(entry)
+                    continue
                 _add_count(counts_for(STORE_TRADES, tenant), "delete")
                 removed = True
                 removed_trades.append(
@@ -2035,7 +2589,7 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
         for doc_id in dict.fromkeys(memory_plan["trades"])
         if doc_id in memory_baseline["trades"]
     ]
-    fill_groups, metrics, fill_problems = build_fill_correction(
+    fill_groups, metrics, fill_problems, nav_days = build_fill_correction(
         spec=spec,
         buckets=buckets,
         order_docs=order_docs,
@@ -2100,6 +2654,7 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
         "fill_source": STORE_TRADES,
         "fill_groups": fill_groups,
         "fill_problems": fill_problems,
+        "nav_days": nav_days,
         "metrics": metrics,
         "preserved_lot_realized_pnl": preserved,
         "warnings": warnings,
@@ -2186,7 +2741,8 @@ def format_report(report: dict) -> str:
             "order_id={order_id} price={price} qty={qty} fee={fee} "
             "cash_effect={cash_effect} realized_effect={realized_effect} "
             "orders_doc_id={orders_doc_id} orders_v2_id={orders_v2_id} "
-            "position_keys={position_keys} memory_trade_ids={memory_trade_ids}".format(**row)
+            "position_keys={position_keys} memory_trade_ids={memory_trade_ids} "
+            "mirror_doc={mirror_doc} mirror_scope={mirror_scope}".format(**row)
         )
     for row in report.get("metrics") or []:
         lines.append(
@@ -2197,7 +2753,16 @@ def format_report(report: dict) -> str:
             "realized_pnl_before={realized_pnl_before} "
             "realized_pnl_delta={realized_pnl_delta} "
             "realized_pnl_after={realized_pnl_after} "
-            "write_metrics={writes_metrics} write_nav={writes_nav}".format(**row)
+            "write_metrics={writes_metrics} write_nav={writes_nav} "
+            "skipped_unmaintained={skipped_unmaintained}".format(**row)
+        )
+    for row in report.get("nav_days") or []:
+        lines.append(
+            "nav_day tenant={tenant} scope={scope} day={day} held_qty={held_qty} "
+            "close={close} source={source} mtm_before={mtm_before} mtm_after={mtm_after} "
+            "nav_before={nav_before} nav_after={nav_after} "
+            "cash_before={cash_before} cash_after={cash_after} "
+            "invariant_before={invariant_before} invariant_after={invariant_after}".format(**row)
         )
     lines.append("--- expected_counts ---")
     lines.append(

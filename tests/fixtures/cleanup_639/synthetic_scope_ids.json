@@ -1,5 +1,27 @@
 {
   "cutoff_utc": "2026-09-27T19:36:00",
+  "nav_prices": [
+    {
+      "tenant": "tenant_h",
+      "scope": "live",
+      "date": "2026-09-28",
+      "as_of": "2026-09-28T16:00:00+00:00",
+      "candle_start": "2026-09-28T16:00:00+00:00",
+      "close": 2,
+      "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+      "fetched_at": "2026-10-06T08:00:00+00:00"
+    },
+    {
+      "tenant": "tenant_h",
+      "scope": "live",
+      "date": "2026-10-02",
+      "as_of": "2026-10-02T11:00:00+00:00",
+      "candle_start": "2026-10-02T11:00:00+00:00",
+      "close": 5,
+      "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+      "fetched_at": "2026-10-06T08:00:00+00:00"
+    }
+  ],
   "expected_counts": {
     "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 3},
     "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 3},

@@ -355,13 +355,24 @@ def build_store() -> InMemoryCleanupStore:
     store.memory["profiles"]["tenant_h|demo|BBB/USDT"] = {"_id": "tenant_h|demo|BBB/USDT", "tenant_id": "tenant_h"}
     store.nav[("tenant_h", "live")] = [
         {"date": "2026-08-01", "nav": 111, "cash": 111, "tenant_id": "tenant_h", "ledger_scope": "live"},
-        {"date": "2026-09-28", "nav": 1, "cash": 1, "mark": "market", "tenant_id": "tenant_h", "ledger_scope": "live"},
+        {
+            "date": "2026-09-28",
+            "as_of": "2026-09-28T16:00:00+00:00",
+            "nav": 5,
+            "cash": 1,
+            "positions_mtm": 4,
+            "mark": "market",
+            "tenant_id": "tenant_h",
+            "ledger_scope": "live",
+        },
         {
             "date": "2026-10-02",
+            "as_of": "2026-10-02T11:00:00+00:00",
             "nav": 250.5,
             "cash": 80.25,
             "positions_mtm": 170.25,
             "realized_pnl": STORED_LIVE_REALIZED,
+            "btc_close": 99999,
             "mark": "market",
             "tenant_id": "tenant_h",
             "ledger_scope": "live",
@@ -482,6 +493,24 @@ def test_dry_run_changes_nothing_and_prints_ids_sha256(capsys):
     assert report["fill_source"].endswith("trade_history (embedded trades)")
     assert "missing initial_capital" not in out
     assert "replay_cash" not in out
+    assert "nav_day " in out
+    held_day = next(row for row in report["nav_days"] if row["tenant"] == "tenant_h" and row["day"] == "2026-10-02")
+    assert held_day["held_qty"] == "AAA/USDT:3"
+    assert held_day["close"] == 5
+    assert held_day["mtm_before"] == 170.25
+    assert held_day["mtm_after"] == 155.25
+    assert held_day["nav_before"] == 250.5
+    assert held_day["nav_after"] == 231.2
+    assert held_day["invariant_before"] == "ok"
+    assert held_day["invariant_after"] == "ok"
+    flat_day = next(row for row in report["nav_days"] if row["tenant"] == "tenant_h" and row["day"] == "2026-09-28")
+    assert flat_day["held_qty"] == "0"
+    assert flat_day["mtm_before"] == 4
+    assert flat_day["mtm_after"] == 4
+    assert flat_day["nav_before"] == 5
+    assert flat_day["nav_after"] == 5
+    assert flat_day["invariant_before"] == "ok"
+    assert flat_day["invariant_after"] == "ok"
     quiet = next(row for row in report["metrics"] if row["tenant"] == "tenant_a" and row["scope"] == "live")
     assert quiet["realized_pnl_before"] == FIGURE
     assert quiet["writes_metrics"] is False
@@ -678,14 +707,17 @@ def test_apply_removes_by_id_recomputes_and_preserves_figure(tmp_path, capsys):
         "ledger_scope": "live",
     }
     kept_day = next(point for point in nav if point["date"] == "2026-09-28")
-    assert kept_day["nav"] == 1
+    assert kept_day["nav"] == 5
+    assert kept_day["cash"] == 1
+    assert kept_day["positions_mtm"] == 4
     assert kept_day["mark"] == "market"
     marked = next(point for point in nav if point["date"] == "2026-10-02")
     assert marked["mark"] == "market"
     assert marked["realized_pnl"] == FIGURE
-    assert marked["nav"] == 246.2
     assert marked["cash"] == 75.95
-    assert marked["positions_mtm"] == 170.25
+    assert marked["positions_mtm"] == 155.25
+    assert marked["nav"] == 231.2
+    assert marked["nav"] == marked["cash"] + marked["positions_mtm"]
     assert json.dumps(store.orders["tenant_a:live"], sort_keys=True) == quiet_orders
     assert json.dumps(store.trades["tenant_a:live"], sort_keys=True) == quiet_trades
     assert json.dumps(store.nav[("tenant_a", "live")], sort_keys=True) == quiet_nav
@@ -937,6 +969,10 @@ def test_help_documents_expected_counts(capsys):
     assert "fill source" in out
     assert "trade_history" in out
     assert "does not read initial_capital" in out
+    assert "nav_prices" in out
+    assert "Europe/Berlin" in out
+    assert "counts once" in out
+    assert "100000" in out
     assert "2Z" not in out
 
 
@@ -998,6 +1034,329 @@ def test_missing_nav_cash_aborts_before_write(capsys):
     out = capsys.readouterr().out
     assert code == 2
     assert "missing nav or cash" in out
+    assert _snap(store) == before
+
+
+def _plan(store, spec=None):
+    payload = spec if spec is not None else json.loads(IDS.read_text(encoding="utf-8"))
+    return build_plan(store, payload, TENANTS, ids_sha256="test", ids_file=str(IDS))
+
+
+def _ids_copy():
+    return json.loads(IDS.read_text(encoding="utf-8"))
+
+
+def test_mirrored_fill_counts_once_and_books_order_scope():
+    store = build_store()
+    demo = next(row for row in store.trades["tenant_h:demo"]["trades"] if row["id"] == "fill_h_entry")
+    demo["id"] = ""
+    mirror = json.loads(json.dumps(demo))
+    mirror["timestamp"] = "2026-09-27T21:40:01"
+    mirror["timestamps"] = {"filled": "2026-09-27T21:40:01"}
+    store.trades["tenant_h:live"]["trades"].append(mirror)
+    plan = _plan(store)
+    assert plan.report["fill_problems"] == []
+    rows = [row for row in plan.report["fill_groups"] if row["order_id"] == "ord_h_entry"]
+    assert len(rows) == 1
+    assert rows[0]["trade_id"] == "ord_h_entry@2026-09-27T19:40:00"
+    assert rows[0]["scope"] == "demo"
+    assert rows[0]["trade_scope"] == "demo"
+    assert rows[0]["mirror_scope"] == "live"
+    assert rows[0]["mirror_doc"] == "tenant_h:live"
+    assert rows[0]["cash_effect"] == 20.5
+    assert rows[0]["memory_trade_ids"] == "mem_trade_2"
+    demo_metrics = next(row for row in plan.report["metrics"] if row["tenant"] == "tenant_h" and row["scope"] == "demo")
+    live_metrics = next(row for row in plan.report["metrics"] if row["tenant"] == "tenant_h" and row["scope"] == "live")
+    assert demo_metrics["virtual_balance_delta"] == 21.6
+    assert live_metrics["virtual_balance_delta"] == -4.3
+    apply_plan(store, plan)
+    assert store.trades["tenant_h:demo"]["virtual_balance"] == 9461.33285138
+    assert store.trades["tenant_h:demo"]["realized_pnl"] == 11.5
+    assert store.trades["tenant_h:live"]["virtual_balance"] == 4995.7
+    assert store.trades["tenant_h:live"]["realized_pnl"] == FIGURE
+    assert "ord_h_entry" not in [row.get("order_id") for row in store.trades["tenant_h:live"]["trades"]]
+
+
+def test_ambiguous_mirror_names_rows_and_aborts(capsys):
+    store = build_store()
+    demo = next(row for row in store.trades["tenant_h:demo"]["trades"] if row["id"] == "fill_h_entry")
+    mirror = json.loads(json.dumps(demo))
+    mirror["id"] = ""
+    mirror["timestamp"] = "2026-09-27T23:40:00"
+    mirror["timestamps"] = {"filled": mirror["timestamp"]}
+    store.trades["tenant_h:live"]["trades"].append(mirror)
+    before = _snap(store)
+    code = _run(store)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "ambiguous mirror" in out
+    assert "tenant_h/demo" in out
+    assert "tenant_h/live" in out
+    assert "ord_h_entry" in out
+    assert _snap(store) == before
+
+
+def test_unmaintained_live_is_not_written_and_demo_nav_is_corrected():
+    store = build_store()
+    live = store.trades["tenant_a:live"]
+    live["virtual_balance"] = 100000
+    live["realized_pnl"] = 0
+    demo_trades = store.trades["tenant_a:demo"]["trades"]
+    moved = next(row for row in demo_trades if row["order_id"] == "ord_a_entry")
+    store.trades["tenant_a:demo"]["trades"] = [row for row in demo_trades if row["order_id"] != "ord_a_entry"]
+    live["trades"].append(moved)
+    store.nav[("tenant_a", "demo")] = [
+        {
+            "date": "2026-09-27",
+            "as_of": "2026-09-27T00:00:00",
+            "nav": 10,
+            "cash": 4,
+            "positions_mtm": 6,
+            "closes": {"AAA/USDT": 3},
+            "tenant_id": "tenant_a",
+            "ledger_scope": "demo",
+        },
+        {
+            "date": "2026-10-03",
+            "as_of": "2026-10-03T12:00:00",
+            "nav": 30,
+            "cash": 10,
+            "positions_mtm": 20,
+            "closes": {"AAA/USDT": 4},
+            "tenant_id": "tenant_a",
+            "ledger_scope": "demo",
+        },
+    ]
+    before_live = json.dumps(live, sort_keys=True)
+    before_live_nav = json.dumps(store.nav[("tenant_a", "live")], sort_keys=True)
+    spec = _ids_copy()
+    spec["nav_prices"] = list(spec["nav_prices"]) + [
+        {
+            "tenant": "tenant_a",
+            "scope": "demo",
+            "date": "2026-09-27",
+            "as_of": "2026-09-27T00:00:00+00:00",
+            "candle_start": "2026-09-27T00:00:00+00:00",
+            "close": 3,
+            "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+            "fetched_at": "2026-10-06T08:00:00+00:00",
+        },
+        {
+            "tenant": "tenant_a",
+            "scope": "demo",
+            "date": "2026-10-03",
+            "as_of": "2026-10-03T12:00:00+00:00",
+            "candle_start": "2026-10-03T12:00:00+00:00",
+            "close": 4,
+            "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+            "fetched_at": "2026-10-06T08:00:00+00:00",
+        },
+    ]
+    plan = _plan(store, spec)
+    assert plan.report["fill_problems"] == [], plan.report["fill_problems"]
+    assert any("skipped unmaintained live scope tenant_a/live" in note for note in plan.report["warnings"])
+    demo = next(row for row in plan.report["metrics"] if row["tenant"] == "tenant_a" and row["scope"] == "demo")
+    live_metrics = next(row for row in plan.report["metrics"] if row["tenant"] == "tenant_a" and row["scope"] == "live")
+    assert demo["virtual_balance_before"] == 1
+    assert demo["virtual_balance_delta"] == 3
+    assert demo["virtual_balance_after"] == 4
+    assert demo["realized_pnl_delta"] == 0
+    assert live_metrics["virtual_balance_delta"] == 0
+    assert live_metrics["writes_metrics"] is False
+    assert live_metrics["writes_nav"] is False
+    assert live_metrics["skipped_unmaintained"] is True
+    early = next(row for row in plan.report["nav_days"] if row["scope"] == "demo" and row["day"] == "2026-09-27")
+    assert early["held_qty"] == "0"
+    assert early["mtm_before"] == 6
+    assert early["mtm_after"] == 6
+    assert early["nav_after"] == 12
+    assert early["cash_after"] == 6
+    assert early["invariant_before"] == "ok"
+    assert early["invariant_after"] == "ok"
+    later = next(row for row in plan.report["nav_days"] if row["scope"] == "demo" and row["day"] == "2026-10-03")
+    assert later["held_qty"] == "AAA/USDT:3"
+    assert later["close"] == 4
+    assert later["mtm_before"] == 20
+    assert later["mtm_after"] == 8
+    assert later["nav_before"] == 30
+    assert later["nav_after"] == 21
+    assert later["cash_after"] == 13
+    assert later["invariant_before"] == "ok"
+    assert later["invariant_after"] == "ok"
+    assert later["nav_after"] == later["cash_after"] + later["mtm_after"]
+    apply_plan(store, plan)
+    assert json.dumps(store.trades["tenant_a:live"], sort_keys=True) == before_live
+    assert json.dumps(store.nav[("tenant_a", "live")], sort_keys=True) == before_live_nav
+    assert store.trades["tenant_a:demo"]["virtual_balance"] == 4
+    assert store.trades["tenant_a:demo"]["realized_pnl"] == 0
+    written = next(point for point in store.nav[("tenant_a", "demo")] if point["date"] == "2026-10-03")
+    assert written["positions_mtm"] == 8
+    assert written["nav"] == 21
+    assert written["cash"] == 13
+    assert written["nav"] == written["cash"] + written["positions_mtm"]
+    untouched = next(point for point in store.nav[("tenant_a", "demo")] if point["date"] == "2026-09-27")
+    assert untouched["positions_mtm"] == 6
+
+
+def test_missing_nav_price_entry_aborts_before_write(tmp_path, capsys):
+    spec = _ids_copy()
+    spec["nav_prices"] = [row for row in spec["nav_prices"] if row["date"] != "2026-10-02"]
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    store = build_store()
+    before = _snap(store)
+    code = execute(
+        ["--ids", str(path), "--tenant", "tenant_a", "--tenant", "tenant_h"],
+        store=store,
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "no price entry" in out
+    assert "tenant_h/live" in out
+    assert "2026-10-02" in out
+    assert "btc_close" not in out.split("fill:", 1)[-1] or "99999" not in out
+    assert _snap(store) == before
+    assert _apply_ids(store, path, tmp_path) == 2
+    assert _snap(store) == before
+
+
+def test_nav_price_as_of_must_match_the_row(tmp_path, capsys):
+    spec = _ids_copy()
+    row = next(item for item in spec["nav_prices"] if item["date"] == "2026-10-02")
+    row["as_of"] = "2026-10-02T12:00:00+00:00"
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    store = build_store()
+    before = _snap(store)
+    code = execute(
+        ["--ids", str(path), "--tenant", "tenant_a", "--tenant", "tenant_h"],
+        store=store,
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "as_of does not match" in out
+    assert "tenant_h/live" in out
+    assert "2026-10-02" in out
+    assert _snap(store) == before
+
+
+def test_candle_start_must_contain_as_of(tmp_path, capsys):
+    spec = _ids_copy()
+    row = next(item for item in spec["nav_prices"] if item["date"] == "2026-10-02")
+    # 11:00 is the next candle, not inside [10:00, 11:00).
+    row["candle_start"] = "2026-10-02T10:00:00+00:00"
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    store = build_store()
+    before = _snap(store)
+    code = execute(
+        ["--ids", str(path), "--tenant", "tenant_a", "--tenant", "tenant_h"],
+        store=store,
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "candle_start does not contain as_of" in out
+    assert "tenant_h/live" in out
+    assert "2026-10-02" in out
+    assert _snap(store) == before
+
+
+def test_nav_price_qty_field_is_rejected(tmp_path, capsys):
+    spec = _ids_copy()
+    spec["nav_prices"][0]["qty"] = 99
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    store = build_store()
+    before = _snap(store)
+    code = execute(
+        ["--ids", str(path), "--tenant", "tenant_a", "--tenant", "tenant_h"],
+        store=store,
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "must not set a quantity" in out
+    assert "99" not in out.split("held_qty=", 1)[-1] if "held_qty=" in out else True
+    assert _snap(store) == before
+
+
+def test_naive_fill_time_is_berlin_against_utc_snapshot():
+    store = build_store()
+    store.nav[("tenant_h", "demo")] = [
+        {
+            "date": "2026-09-27",
+            "as_of": "2026-09-27T19:50:00+00:00",
+            "nav": 100,
+            "cash": 40,
+            "positions_mtm": 60,
+            "tenant_id": "tenant_h",
+            "ledger_scope": "demo",
+        }
+    ]
+    spec = _ids_copy()
+    spec["nav_prices"].append(
+        {
+            "tenant": "tenant_h",
+            "scope": "demo",
+            "date": "2026-09-27",
+            "as_of": "2026-09-27T19:50:00+00:00",
+            "candle_start": "2026-09-27T19:00:00+00:00",
+            "close": 2,
+            "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+            "fetched_at": "2026-10-06T08:00:00+00:00",
+        }
+    )
+    plan = _plan(store, spec)
+    assert plan.report["fill_problems"] == [], plan.report["fill_problems"]
+    point = next(row for row in plan.report["nav_days"] if row["scope"] == "demo" and row["day"] == "2026-09-27")
+    # 21:40 Berlin is 19:40 UTC, ten minutes before 19:50Z. Read as UTC it would be after the snapshot.
+    assert point["held_qty"] == "AAA/USDT:10"
+    assert point["close"] == 2
+    assert point["mtm_before"] == 60
+    assert point["mtm_after"] == 40
+    assert point["nav_after"] == 100.5
+    assert point["cash_after"] == 60.5
+    assert point["invariant_before"] == "ok"
+    assert point["invariant_after"] == "ok"
+    apply_plan(store, plan)
+    written = store.nav[("tenant_h", "demo")][0]
+    assert written["positions_mtm"] == 40
+    assert written["nav"] == written["cash"] + written["positions_mtm"]
+
+
+def test_live_only_fill_books_on_demo_order_scope():
+    """A fill that exists only on the live trade document is booked on the order's demo scope."""
+    store = build_store()
+    demo_trades = store.trades["tenant_h:demo"]["trades"]
+    moved = next(row for row in demo_trades if row["id"] == "fill_h_entry")
+    store.trades["tenant_h:demo"]["trades"] = [row for row in demo_trades if row["id"] != "fill_h_entry"]
+    store.trades["tenant_h:live"]["trades"].append(moved)
+    plan = _plan(store)
+    assert plan.report["fill_problems"] == [], plan.report["fill_problems"]
+    row = next(item for item in plan.report["fill_groups"] if item["order_id"] == "ord_h_entry")
+    assert row["scope"] == "demo"
+    assert row["trade_scope"] == "live"
+    assert row["cash_effect"] == 20.5
+    demo = next(item for item in plan.report["metrics"] if item["tenant"] == "tenant_h" and item["scope"] == "demo")
+    live = next(item for item in plan.report["metrics"] if item["tenant"] == "tenant_h" and item["scope"] == "live")
+    assert demo["virtual_balance_delta"] == 21.6
+    assert live["virtual_balance_delta"] == -4.3
+    apply_plan(store, plan)
+    assert store.trades["tenant_h:demo"]["virtual_balance"] == 9461.33285138
+    assert store.trades["tenant_h:live"]["virtual_balance"] == 4995.7
+    assert "ord_h_entry" not in [item.get("order_id") for item in store.trades["tenant_h:live"]["trades"]]
+
+
+def test_broken_nav_invariant_aborts_before_write(capsys):
+    store = build_store()
+    point = next(row for row in store.nav[("tenant_h", "live")] if row["date"] == "2026-10-02")
+    point["nav"] = 999
+    before = _snap(store)
+    code = _run(store)
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "invariant failed" in out
+    assert "tenant_h/live" in out
+    assert "2026-10-02" in out
     assert _snap(store) == before
 
 
