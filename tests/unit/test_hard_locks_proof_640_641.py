@@ -14,14 +14,11 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-os.environ.setdefault("PYTEST_DB_SUFFIX", "sHardLocks")
 
 from core.config import BotConfig
 from core.models import TradeOrder
@@ -129,6 +126,7 @@ def _cfg(**risk) -> BotConfig:
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
         },
         "moderate_deploy": {"enabled": False},
     }
@@ -667,3 +665,98 @@ def test_final_size_after_dca_boost_is_what_the_book_is_compared_to():
     allowed = _decide(plain, order, "dca", metrics, position=lot)
     assert allowed.approved is True, f"{allowed.code}: {allowed.message}"
     assert allowed.order.usdt_amount == pytest.approx(400)
+
+
+def _loss_row(order_id: str) -> dict:
+    with _FIXTURE.open(newline="") as handle:
+        for raw in csv.DictReader(handle):
+            if raw.get("order_id") == order_id:
+                return raw
+    raise AssertionError(f"missing loss row {order_id}")
+
+
+def test_dexe_dca_addon_blocks_on_volume_and_band_depth():
+    """default DEXE DCA, 2026-10-06 04:44 Berlin, order c16fe90655dd.
+
+    The add filled on staging because an open lot never reached the venue
+    check. The order the book is compared with is 702.73 USDT, the size
+    after the 1.9 DCA multiplier, not the old 200 USDT book minimum.
+    Quote volume 148772 is under the configured floor and the ask band
+    198.90 is under 702.73, so both codes are on the decision.
+    """
+    raw = _loss_row("c16fe90655dd")
+    assert raw["tenant"] == "default"
+    assert raw["kind"] != "entry"
+    assert raw["buy_source"] == "dca"
+    assert raw["time_berlin"].startswith("2026-10-06 04:44")
+    final = float(raw["usdt_final"])
+    assert final == pytest.approx(702.73)
+    multiplier = 1.9
+    base = final / multiplier
+    ask_band = float(raw["depth_ask_band"])
+    bid_band = float(raw["depth_bid_band"])
+    assert ask_band == pytest.approx(198.90)
+    assert bid_band == pytest.approx(339.30)
+    quote_volume = float(raw["qv24_logged"])
+    assert quote_volume == pytest.approx(148_772)
+
+    rm = RiskManager(
+        _cfg(
+            moderate_deploy={
+                "enabled": True,
+                "apply_to_dca": True,
+                "size_boost_neutral": multiplier,
+                "dca_boost_scale": 1.0,
+                "max_boost": multiplier,
+                "cash_rich_pct": 100,
+                "cash_rich_extra_mult": 1.0,
+            }
+        )
+    )
+    symbol = "DEXE/USDT"
+    metrics = _book(
+        symbol=symbol,
+        quote_volume_24h_usdt=quote_volume,
+        last=float(raw["price"]),
+        bid=1.8499,
+        ask=1.8504,
+        depth_bid_usdt=bid_band,
+        depth_ask_usdt=ask_band,
+        top_book_bid_usdt=bid_band,
+        top_book_ask_usdt=ask_band,
+        depth_parsed=True,
+        quote_volume_present=True,
+        size_keys_present=False,
+    )
+    lot = {
+        "amount": 10.0,
+        "average_entry": float(raw["avg_before"]),
+        "dca_rounds": int(raw["dca_rounds_before"] or 0),
+        "symbol": symbol,
+    }
+    order = TradeOrder(
+        "BUY",
+        symbol,
+        float(raw["price"]),
+        0,
+        usdt_amount=base,
+        signal="BUY_DCA",
+        source="dca",
+    )
+    with _eval_env(rm, position=lot, metrics=metrics, mcap=50_000_000):
+        with patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value={"regime": "NEUTRAL", "block_buys": False, "active": True},
+        ):
+            dec = rm.evaluate(order, "1h", source="dca")
+
+    assert dec.approved is False, f"{dec.code}: {dec.message}"
+    codes = _codes(dec)
+    assert "liq_guard_volume_low" in codes, codes
+    assert "liq_guard_depth_lt_order" in codes, codes
+    assert "order book too thin" in (dec.message or "")
+    assert dec.details["planned_usdt"] == pytest.approx(702.73)
+    assert dec.details["planned_usdt"] != pytest.approx(200)
+    assert dec.details["planned_usdt"] != pytest.approx(base)
+    assert dec.details["quote_volume_24h_usdt"] == pytest.approx(148_772)
+    assert dec.details["depth_ask_usdt"] == pytest.approx(198.90)

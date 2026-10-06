@@ -803,7 +803,7 @@ def evaluate_dca_addon(
 
         pcfg = dca_policy_config(cfg)
         if pcfg.get("enabled"):
-            from risk.dca_guard import policy_skip_for_guard
+            from strategies.dca_policy import policy_skip_for_guard
 
             # #640: the policy log must not say action=buy_dca when the
             # lock rejects the add. The candidate can still be built; the

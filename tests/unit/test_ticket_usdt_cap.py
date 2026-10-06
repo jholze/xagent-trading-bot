@@ -25,6 +25,11 @@ class TestTicketUsdtCap(unittest.TestCase):
             "aggression": {"max_position_multiplier": 2.5},
             "risk": {
                 "min_trade_usdt": 100,
+                "liquidity_guard": {
+                    "min_quote_volume_24h_usdt": 500000,
+                    "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
+                },
                 "min_size_multiplier": 0.25,
                 "moderate_deploy": {
                     "enabled": True,
@@ -101,6 +106,11 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
+                "liquidity_guard": {
+                    "min_quote_volume_24h_usdt": 500000,
+                    "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
+                },
                 "moderate_deploy": {
                     "enabled": True,
                     "size_boost_risk_off": 1.25,
@@ -152,6 +162,7 @@ class TestTicketUsdtCap(unittest.TestCase):
                 "amount": 1_000_000,
                 "sold_percent": 0,
                 "average_entry": 0.0013,
+                "dca_rounds": 0,
                 "strategy_tier": "volatile",
             },
         ), patch(
@@ -177,6 +188,11 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
+                "liquidity_guard": {
+                    "min_quote_volume_24h_usdt": 500000,
+                    "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
+                },
                 "moderate_deploy": {
                     "enabled": True,
                     "size_boost_neutral": 2.0,
@@ -230,6 +246,7 @@ class TestTicketUsdtCap(unittest.TestCase):
                 "amount": 1_000_000,
                 "sold_percent": 0,
                 "average_entry": 0.0013,
+                "dca_rounds": 0,
                 "strategy_tier": "volatile",
             },
         ), patch(

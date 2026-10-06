@@ -86,6 +86,11 @@ def _cfg(**risk_over) -> BotConfig:
         "slot_eviction": {"enabled": False},
         "max_daily_loss_pct": 0,
         "venue_quality": dict(_VENUE),
+        "liquidity_guard": {
+            "min_quote_volume_24h_usdt": 500000,
+            "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
+        },
     }
     risk.update(risk_over)
     raw = {

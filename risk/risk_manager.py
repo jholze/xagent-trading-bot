@@ -397,33 +397,6 @@ class RiskManager:
         if blocked:
             return RiskDecision(approved=False, message=reason, code="trade_cooldown")
 
-        # Lock-document read errors fail closed. The decision itself is the
-        # #640 guard later in this function (code dca_guard_locked), so a
-        # locked add is not reported as the older position_locked code.
-        if self._is_dca_buy(source, order):
-            try:
-                from strategies.position_lock import dca_blocked
-
-                pos = get_position(order.symbol, timeframe)
-                raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
-                dca_blocked(pos, config=raw_cfg)
-            except Exception as exc:
-                try:
-                    from logger import log
-
-                    log(
-                        f"position_lock dca check error {order.symbol}: {exc}",
-                        "ERROR",
-                    )
-                except Exception:
-                    pass
-                return RiskDecision(
-                    approved=False,
-                    message=f"dca_guard_missing_input {exc}"[:200],
-                    code="dca_guard_missing_input",
-                    details={"codes": ["dca_guard_missing_input"], "locked": None},
-                )
-
         # Permanent stablecoin buy rail (all buy paths: TA, grid, gainer, DCA, …)
         from core.stablecoins import (
             is_stablecoin_symbol,
@@ -1319,11 +1292,12 @@ class RiskManager:
         """
         if str(getattr(order, "type", "") or "").upper() != "BUY":
             return None
-        from risk.dca_guard import evaluate_dca_guard, is_human_operator_buy
+        from strategies.dca_policy import evaluate_dca_guard, is_human_operator_buy
 
         src = source or getattr(order, "source", None) or ""
-        if is_human_operator_buy(src):
-            return None
+        # A human manual buy is not auto-blocked. The checks still run and
+        # the result is logged. No config list can skip a bot source.
+        human = is_human_operator_buy(src)
 
         codes: list[str] = []
         dca_result = None
@@ -1373,14 +1347,29 @@ class RiskManager:
             extra = list(getattr(liq, "guard_codes", None) or [])
             if not extra and liq.code:
                 extra = [liq.code]
+            # #563 callers (and the #631 membership test) reject with
+            # venue_liquidity_block when the result is not ok and carries
+            # no code. An empty code must not fall through to a later gate.
+            if not any(extra):
+                extra = ["venue_liquidity_block"]
             for code in extra:
                 if code and code not in codes:
                     codes.append(code)
-            # Old venue_liquidity_block / book_unavailable stay countable
-            # when the repaired gate still produces them and the hard
-            # codes did not already include that string.
             if liq.code and liq.code not in codes:
                 codes.append(liq.code)
+
+        if human:
+            try:
+                from logger import log
+
+                log(
+                    f"manual_buy_guard {getattr(order, 'symbol', '')} "
+                    f"blocked={bool(codes)} codes={','.join(codes) or '-'}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+            return None
 
         if not codes:
             return None

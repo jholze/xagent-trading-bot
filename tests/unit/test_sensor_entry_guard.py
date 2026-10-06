@@ -286,7 +286,15 @@ class TestRiskVenueAndSoftBlockScope(unittest.TestCase):
 
         rm = RiskManager(config=MagicMock())
         rm.config.raw = {
-            "risk": {"venue_quality": VENUE_CFG, "cash_floor_pct": 0},
+            "risk": {
+                "venue_quality": VENUE_CFG,
+                "cash_floor_pct": 0,
+                "liquidity_guard": {
+                    "min_quote_volume_24h_usdt": 500000,
+                    "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
+                },
+            },
             "memory": {"gross_loss": {"soft_block_scope": "sensor_only"}},
         }
         rm.config.max_open_positions = 50

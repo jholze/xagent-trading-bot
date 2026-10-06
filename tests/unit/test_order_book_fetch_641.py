@@ -294,14 +294,33 @@ def test_rate_limit_blocks_the_buy_and_the_cycle_still_sells():
     assert any("order_book" in url for url in calls)
 
 
-def test_cached_book_expires_at_a_fixed_max_age_even_if_config_is_longer():
-    assert _book_cache_max_age({"order_book_cache_ttl_sec": 10_000}) == 15.0
-    assert _book_cache_max_age({"order_book_cache_ttl_sec": 15}) == 15.0
+def test_cached_book_expires_at_the_configured_max_age():
+    """Book age comes from config. A missing age does not fall back to 15s."""
+    configured = {
+        "risk": {
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+            }
+        }
+    }
+    assert _book_cache_max_age(configured) == 15.0
+    longer = {
+        "risk": {
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 10_000,
+            }
+        }
+    }
+    assert _book_cache_max_age(longer) == 10_000.0
+    assert _book_cache_max_age({"risk": {}}) is None
     cfg = _cfg(
         venue_quality={
             "enabled": True,
             "cache_ttl_sec": 90,
-            "order_book_cache_ttl_sec": 10_000,
             "order_book_limit": 100,
             "min_quote_volume_24h_usdt": 50_000,
             "min_top_book_usdt_per_side": 200,
@@ -389,7 +408,16 @@ def test_cached_book_expires_at_a_fixed_max_age_even_if_config_is_longer():
     [
         {"venue_quality": {"enabled": False, "book_unavailable_policy": "volume_ok", "on_fetch_error": "allow"}},
         {"fail_closed_guards": "log"},
-        {"liquidity_guard": {"mode": "log", "enabled": False, "log_only": True, "min_quote_volume_24h_usdt": 1}},
+        {
+            "liquidity_guard": {
+                "mode": "log",
+                "enabled": False,
+                "log_only": True,
+                "min_quote_volume_24h_usdt": 1,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+            }
+        },
         {"venue_quality": {"enabled": True, "book_unavailable_policy": "volume_ok", "on_fetch_error": "fail_open"}},
     ],
 )
@@ -398,7 +426,8 @@ def test_no_config_switch_makes_the_lock_log_only(risk_over):
     cfg = liquidity_guard_config({"risk": {"liquidity_guard": {"mode": "log", "enabled": False}}})
     assert "mode" not in cfg
     assert "enabled" not in cfg
-    assert cfg["min_quote_volume_24h_usdt"] == 500_000
+    assert cfg["min_quote_volume_24h_usdt"] is None
+    assert cfg["complete"] is False
 
     thin = VenueMetrics(
         symbol="L3/USDT",

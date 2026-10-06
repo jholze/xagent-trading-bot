@@ -8,17 +8,14 @@ Times in the fixture names are Europe/Berlin; the ids use the true UTC.
 from __future__ import annotations
 
 import json
-import os
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
 
-os.environ["PYTEST_DB_SUFFIX"] = "sDcaGuard"
-
 from core.config import BotConfig
 from core.models import TradeOrder
-from risk.dca_guard import evaluate_dca_guard
+from strategies.dca_policy import evaluate_dca_guard
 from risk.risk_manager import RiskManager
 from services.venue_quality import VenueMetrics
 from strategies.positions import (
@@ -81,6 +78,7 @@ def _cfg():
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
                 },
             },
             "trading": {"mode": "paper", "initial_capital": 10000},
@@ -246,20 +244,29 @@ def test_new_entry_without_a_lot_is_not_a_dca_add():
 
 
 def test_human_operator_is_exempt_mcp_bot_is_not():
+    """A human buy is not auto-blocked. The same checks still run and are logged."""
     rm = RiskManager(_cfg())
     lot = _lot(dca_rounds=2, average_entry=1.0)
     with _open(rm, lot):
-        human = rm.evaluate(
-            _buy(price=0.4, source="manual", signal="BUY"),
-            "1h",
-            source="manual",
-        )
+        with patch("logger.log") as log:
+            human = rm.evaluate(
+                _buy(price=0.4, source="manual", signal="BUY"),
+                "1h",
+                source="manual",
+            )
         bot = rm.evaluate(
             _buy(price=0.4, source="mcp:agent-7", signal="BUY"),
             "1h",
             source="mcp:agent-7",
         )
     assert human.approved is True, f"{human.code}: {human.message}"
+    texts = [str(call.args[0]) for call in log.call_args_list if call.args]
+    assert any(
+        line.startswith("manual_buy_guard")
+        and "blocked=True" in line
+        and "dca_guard_below_avg" in line
+        for line in texts
+    ), texts
     assert bot.approved is False
     assert bot.code.startswith("dca_guard_")
 

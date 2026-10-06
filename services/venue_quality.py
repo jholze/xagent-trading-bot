@@ -35,7 +35,6 @@ _DEFAULTS: dict[str, Any] = {
     "order_book_limit": 100,
     "book_unavailable_policy": "volume_ok",
     "order_book_timeout_sec": 5.0,
-    "order_book_cache_ttl_sec": 15.0,
 }
 
 _cache_lock = threading.RLock()
@@ -207,19 +206,33 @@ def _metrics_from_dict(metrics: dict[str, Any]) -> VenueMetrics:
     )
 
 
-# #641 hard liquidity lock. No off-switch. The 500k floor is Lena's scan
-# threshold, not a backtested edge. A configured value below this is raised
-# back up: lowering it takes a PR reviewed with Viktor and Jens' go.
-_LIQ_FLOOR_MIN_USDT = 500_000.0
-_LIQ_WINDOW_PCT_DEFAULT = 0.5
+# #641 hard liquidity lock. No off-switch and no numeric fallback.
+# Floor, ±mid window and book-cache max age are read only from
+# risk.liquidity_guard. A missing or invalid key blocks the buy.
+
+
+def _positive_config_float(raw: dict, key: str) -> float | None:
+    if not isinstance(raw, dict) or key not in raw:
+        return None
+    value = raw.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
 
 
 def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
-    """Gate 24h quote-volume floor and ±% mid book window.
+    """Gate 24h quote-volume floor, ±% mid window, and book-cache max age.
 
     Volume is the pair's own Gate ticker ``quote_volume``, never CMC.
-    ``depth_window_pct`` is a percent of mid (0.5 means ±0.5%), not a
-    fraction and not a level count.
+    ``depth_window_pct`` is a percent of mid, not a fraction and not a
+    level count. Each value is None when the key is missing or not a
+    positive number. Callers then block the buy.
     """
     if config_raw is None:
         try:
@@ -232,21 +245,14 @@ def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
     raw = risk.get("liquidity_guard") if isinstance(risk, dict) else None
     if not isinstance(raw, dict):
         raw = {}
-    try:
-        floor = float(raw.get("min_quote_volume_24h_usdt") or _LIQ_FLOOR_MIN_USDT)
-    except (TypeError, ValueError):
-        floor = _LIQ_FLOOR_MIN_USDT
-    if floor < _LIQ_FLOOR_MIN_USDT:
-        floor = _LIQ_FLOOR_MIN_USDT
-    try:
-        window = float(raw.get("depth_window_pct", _LIQ_WINDOW_PCT_DEFAULT))
-    except (TypeError, ValueError):
-        window = _LIQ_WINDOW_PCT_DEFAULT
-    if window <= 0:
-        window = _LIQ_WINDOW_PCT_DEFAULT
+    floor = _positive_config_float(raw, "min_quote_volume_24h_usdt")
+    window = _positive_config_float(raw, "depth_window_pct")
+    max_age = _positive_config_float(raw, "order_book_cache_ttl_sec")
     return {
         "min_quote_volume_24h_usdt": floor,
         "depth_window_pct": window,
+        "order_book_cache_ttl_sec": max_age,
+        "complete": floor is not None and window is not None and max_age is not None,
     }
 
 
@@ -499,23 +505,13 @@ def _best_level_price(levels: list) -> float:
     return 0.0
 
 
-# A cached book older than this is not a book. Config cannot stretch it.
-_BOOK_CACHE_MAX_AGE_SEC = 15.0
-
-
-def _book_cache_max_age(cfg: dict | None) -> float:
-    raw = (cfg or {}).get("order_book_cache_ttl_sec")
-    try:
-        ttl = float(raw if raw is not None else _BOOK_CACHE_MAX_AGE_SEC)
-    except (TypeError, ValueError):
-        ttl = _BOOK_CACHE_MAX_AGE_SEC
-    if ttl <= 0 or ttl > _BOOK_CACHE_MAX_AGE_SEC:
-        return _BOOK_CACHE_MAX_AGE_SEC
-    return ttl
+def _book_cache_max_age(config_raw: dict | None) -> float | None:
+    """Seconds from config. None when the key is missing or invalid."""
+    return liquidity_guard_config(config_raw).get("order_book_cache_ttl_sec")
 
 
 def _band_from_levels(
-    payload: Any, *, window_pct: float = _LIQ_WINDOW_PCT_DEFAULT
+    payload: Any, *, window_pct: float
 ) -> tuple[float, float, bool, tuple]:
     """Notional and per-level prices inside ±window_pct of mid.
 
@@ -539,9 +535,9 @@ def _band_from_levels(
     try:
         window = float(window_pct)
     except (TypeError, ValueError):
-        window = _LIQ_WINDOW_PCT_DEFAULT
+        return 0.0, 0.0, False, ()
     if window <= 0:
-        window = _LIQ_WINDOW_PCT_DEFAULT
+        return 0.0, 0.0, False, ()
     lo = mid * (1.0 - window / 100.0)
     hi = mid * (1.0 + window / 100.0)
     readable = 0
@@ -574,7 +570,7 @@ def _band_from_levels(
 
 
 def depth_within_mid_band(
-    payload: Any, *, window_pct: float = _LIQ_WINDOW_PCT_DEFAULT
+    payload: Any, *, window_pct: float
 ) -> tuple[float, float, bool]:
     """Sum notional on each side inside ±window_pct of mid.
 
@@ -639,19 +635,31 @@ def _with_depth(
     )
 
 
-def _attach_order_book_depth(m: VenueMetrics, cfg: dict) -> VenueMetrics:
+def _attach_order_book_depth(
+    m: VenueMetrics, cfg: dict, *, config_raw: dict | None = None
+) -> VenueMetrics:
     limit = int(cfg.get("order_book_limit") or 100)
     timeout = float(cfg.get("order_book_timeout_sec") or 5.0)
-    ttl = _book_cache_max_age(cfg)
-    window = float(liquidity_guard_config().get("depth_window_pct") or _LIQ_WINDOW_PCT_DEFAULT)
+    lg = liquidity_guard_config(config_raw)
+    ttl = lg.get("order_book_cache_ttl_sec")
+    window = lg.get("depth_window_pct")
     pair = _pair(m.symbol)
     now = time.time()
 
     with _cache_lock:
         hit = _book_cache.get(pair)
-        if hit and now - hit[0] <= ttl:
+        if (
+            ttl is not None
+            and window is not None
+            and hit
+            and now - hit[0] <= ttl
+        ):
             bid_d, ask_d, parsed, levels = hit[1]
             return _with_depth(m, bid_d, ask_d, parsed, levels)
+
+    if window is None:
+        # No configured band. Do not invent one and do not keep a cached book.
+        return m
 
     try:
         payload = gate_public_rest_get(
@@ -728,8 +736,9 @@ def fetch_gate_venue_metrics(
             if not force and hit and now - hit[0] <= ttl:
                 cached = hit[1]
                 book = _book_cache.get(_pair(sym))
+                max_age = _book_cache_max_age(config_raw)
                 book_fresh = bool(
-                    book and now - book[0] <= _book_cache_max_age(cfg)
+                    max_age is not None and book and now - book[0] <= max_age
                 )
                 if cached.depth_parsed and not book_fresh:
                     # The ticker cache outlives the book. Do not keep a
@@ -775,7 +784,7 @@ def fetch_gate_venue_metrics(
                 continue
             if m.depth_parsed:
                 continue
-            resolved = _attach_order_book_depth(m, cfg)
+            resolved = _attach_order_book_depth(m, cfg, config_raw=config_raw)
             out[sym] = resolved
             with _cache_lock:
                 _cache[sym] = (now, resolved)
@@ -821,9 +830,18 @@ def _apply_hard_liquidity(
 
     codes: list[str] = []
     reasons = list(prior.reasons)
-    floor = float(lg["min_quote_volume_24h_usdt"])
-    window = float(lg["depth_window_pct"])
+    floor = lg.get("min_quote_volume_24h_usdt")
+    window = lg.get("depth_window_pct")
+    max_age = lg.get("order_book_cache_ttl_sec")
     planned = float(planned_usdt or 0)
+    if floor is None or window is None or max_age is None:
+        codes.append("liq_guard_missing_input")
+        reasons.append("liquidity guard config missing")
+        out = VenueQualityResult(ok=False, reasons=reasons, metrics=m, code="liq_guard_missing_input")
+        out.guard_codes = list(codes)  # type: ignore[attr-defined]
+        out.planned_usdt = planned  # type: ignore[attr-defined]
+        out.depth_window_pct = window  # type: ignore[attr-defined]
+        return out
     qv = None
     ask_d = None
     bid_d = None
@@ -842,7 +860,7 @@ def _apply_hard_liquidity(
                 qv = None
             if qv is None:
                 codes.append("liq_guard_missing_input")
-            elif qv < floor:
+            elif qv < float(floor):
                 codes.append("liq_guard_volume_low")
                 reasons.append(
                     f"quote_vol_24h ${qv:.0f} < liquidity floor ${floor:.0f}"
@@ -912,8 +930,8 @@ def check_venue_for_buy(
         # The old venue_quality.enabled flag is not an off-switch for the
         # hard lock. The lock still runs.
         pass
-    if not source_applies_venue(source, cfg):
-        return VenueQualityResult(ok=True, reasons=["source_exempt"])
+    # exempt_sources is not a switch. Every source is evaluated. A human
+    # manual buy is logged and not auto-blocked by the caller.
 
     if metrics is None:
         try:

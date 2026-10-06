@@ -442,6 +442,7 @@ class TestDcaPathNoBoostUnderRiskOff(unittest.TestCase):
                 "amount": 1_000_000,
                 "sold_percent": 0,
                 "average_entry": 0.0013,
+                "dca_rounds": 0,
                 "strategy_tier": "volatile",
             },
         ), patch(

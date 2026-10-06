@@ -8,12 +8,11 @@ orders store is not read (it has no 2Z rows).
 
 from __future__ import annotations
 
-import os
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-os.environ["PYTEST_DB_SUFFIX"] = "sLiqGuard"
 
 from core.config import BotConfig
 from core.models import TradeOrder
@@ -38,6 +37,7 @@ def _cfg(**risk):
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
         },
     }
     raw_risk.update(risk)
@@ -99,18 +99,69 @@ def _eval(rm, order, source, metrics, position=None, indicators=None):
         return rm.evaluate(order, "15m", source=source, indicators=indicators)
 
 
-def test_floor_below_500k_is_ignored():
-    cfg = liquidity_guard_config(
-        {"risk": {"liquidity_guard": {"min_quote_volume_24h_usdt": 50_000, "depth_window_pct": 0.5}}}
+def test_floor_below_500k_is_used_not_clamped():
+    """A configured floor is used as written. Nothing in code raises it to 500k."""
+    raw = {
+        "risk": {
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 50_000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+            }
+        }
+    }
+    cfg = liquidity_guard_config(raw)
+    assert cfg["min_quote_volume_24h_usdt"] == 50_000.0
+    assert cfg["depth_window_pct"] == pytest.approx(0.5)
+    assert cfg["complete"] is True
+    result = check_venue_for_buy(
+        "LAB/USDT",
+        source="technical",
+        planned_usdt=1000,
+        config_raw=raw,
+        metrics=_book(quote_volume_24h_usdt=301_891, symbol="LAB/USDT"),
     )
-    assert cfg["min_quote_volume_24h_usdt"] == 500_000.0
-    assert cfg["depth_window_pct"] == pytest.approx(0.5)
+    assert result.ok is True, result.reasons
+    assert "liq_guard_volume_low" not in (getattr(result, "guard_codes", None) or [])
 
 
-def test_window_default_is_half_a_percent():
+def test_missing_or_invalid_guard_config_blocks():
     cfg = liquidity_guard_config({"risk": {}})
-    assert cfg["depth_window_pct"] == pytest.approx(0.5)
-    assert cfg["min_quote_volume_24h_usdt"] == 500_000.0
+    assert cfg["depth_window_pct"] is None
+    assert cfg["min_quote_volume_24h_usdt"] is None
+    assert cfg["order_book_cache_ttl_sec"] is None
+    assert cfg["complete"] is False
+    invalid = liquidity_guard_config(
+        {
+            "risk": {
+                "liquidity_guard": {
+                    "min_quote_volume_24h_usdt": 0,
+                    "depth_window_pct": "nope",
+                    "order_book_cache_ttl_sec": -1,
+                }
+            }
+        }
+    )
+    assert invalid["complete"] is False
+    result = check_venue_for_buy(
+        "LAB/USDT",
+        source="technical",
+        planned_usdt=1000,
+        config_raw={"risk": {}},
+        metrics=_book(symbol="LAB/USDT"),
+    )
+    assert result.ok is False
+    assert result.code == "liq_guard_missing_input"
+
+
+def test_config_json_pins_floor_window_and_book_age():
+    raw = json.loads(
+        (Path(__file__).resolve().parents[2] / "config.json").read_text()
+    )
+    guard = raw["risk"]["liquidity_guard"]
+    assert float(guard["min_quote_volume_24h_usdt"]) >= 500_000
+    assert float(guard["depth_window_pct"]) == pytest.approx(0.5)
+    assert float(guard["order_book_cache_ttl_sec"]) <= 15
 
 
 def test_band_not_level_count_aave_style_book_passes_a_1000_usdt_order():
@@ -309,13 +360,74 @@ def test_sells_stops_and_exits_are_never_blocked(signal):
     assert not str(dec.code).startswith("liq_guard_")
 
 
-def test_manual_buy_is_exempt_from_the_liquidity_lock():
+def test_manual_buy_is_not_auto_blocked_but_the_check_is_logged():
     rm = RiskManager(_cfg())
     thin = _book(quote_volume_24h_usdt=1_000, depth_bid_usdt=1, depth_ask_usdt=1)
-    dec = _eval(
-        rm,
-        TradeOrder("BUY", "L3/USDT", 1.0, 0, usdt_amount=500, signal="BUY", source="manual"),
-        "manual",
-        thin,
+    order = TradeOrder(
+        "BUY", "L3/USDT", 1.0, 0, usdt_amount=500, signal="BUY", source="manual"
     )
+    with _eval_env(rm, position=None, metrics=thin, mcap=50_000_000):
+        with patch("logger.log") as log:
+            dec = rm.evaluate(order, "15m", source="manual")
     assert dec.approved is True, f"{dec.code}: {dec.message}"
+    texts = [str(call.args[0]) for call in log.call_args_list if call.args]
+    assert any(
+        line.startswith("manual_buy_guard L3/USDT")
+        and "blocked=True" in line
+        and "liq_guard_volume_low" in line
+        for line in texts
+    ), texts
+
+
+def test_exempt_sources_cannot_skip_dca_deploy_boost_or_mcp():
+    """A config list of sources is not an exemption. Bot buys stay blocked."""
+    rm = RiskManager(
+        _cfg(
+            venue_quality={
+                "enabled": False,
+                "exempt_sources": ["dca", "deploy_boost", "mcp"],
+                "book_unavailable_policy": "volume_ok",
+                "on_fetch_error": "allow",
+            }
+        )
+    )
+    thin = _book(
+        symbol="LAB/USDT",
+        quote_volume_24h_usdt=5_000_000,
+        depth_bid_usdt=1,
+        depth_ask_usdt=1,
+    )
+    direct = check_venue_for_buy(
+        "LAB/USDT",
+        source="dca",
+        planned_usdt=800,
+        config_raw=rm.config.raw,
+        metrics=thin,
+    )
+    assert direct.ok is False
+    assert direct.code != "source_exempt"
+    assert "liq_guard_depth_lt_order" in (getattr(direct, "guard_codes", None) or [direct.code])
+    for source in ("dca", "deploy_boost", "mcp"):
+        signal = "BUY_DCA" if source == "dca" else "BUY"
+        position = (
+            {"amount": 10.0, "average_entry": 0.5, "dca_rounds": 0}
+            if source == "dca"
+            else None
+        )
+        dec = _eval(
+            rm,
+            TradeOrder(
+                "BUY",
+                "LAB/USDT",
+                1.0,
+                0,
+                usdt_amount=800,
+                signal=signal,
+                source=source,
+            ),
+            source,
+            thin,
+            position=position,
+        )
+        assert dec.approved is False, f"{source} {dec.code}: {dec.message}"
+        assert "liq_guard_depth_lt_order" in _codes(dec), source

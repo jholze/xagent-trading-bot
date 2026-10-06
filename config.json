@@ -626,7 +626,8 @@
     "liquidity_guard": {
       "min_quote_volume_24h_usdt": 500000,
       "depth_window_pct": 0.5,
-      "_doc": "Hard buy lock (#641). No off-switch. Gate ticker 24h quote volume (not CMC) and book notional within ±depth_window_pct of mid on each side (asks for the fill, bids for the exit). Never a level count. Change either value only via PR (review:viktor). Floor must not go below 500000 without Jens; a lower config value is ignored. 500000 is a scan threshold, not backtested."
+      "order_book_cache_ttl_sec": 15,
+      "_doc": "Hard buy lock (#641). No off-switch. Gate ticker 24h quote volume (not CMC) and book notional within ±depth_window_pct of mid on each side (asks for the fill, bids for the exit). Never a level count. order_book_cache_ttl_sec is the oldest cached book the lock may use. All three keys are required: a missing or invalid value blocks the buy. Change them only via PR (review:viktor)."
     },
     "sensor_entry": {
       "reentry_cooloff_hours_after_gross_loss": 168

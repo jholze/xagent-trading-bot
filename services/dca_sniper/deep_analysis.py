@@ -454,7 +454,7 @@ def deep_analyze_candidate(
     }
 
     try:
-        from risk.dca_guard import policy_skip_for_guard
+        from strategies.dca_policy import policy_skip_for_guard
 
         # Log the lock code instead of action=buy_dca. Sizing above is
         # unchanged so this function stays a size advisor; the order

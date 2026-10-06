@@ -1,4 +1,4 @@
-tenant,symbol,timeframe,order_id,time_berlin,kind,buy_source,usdt_final,price,qv24_logged,depth_bid_top5_logged,depth_ask_top5_logged,avg_before,dca_rounds_before,lock_state,expected,expected_rules,l1_proof
+tenant,symbol,timeframe,order_id,time_berlin,kind,buy_source,usdt_final,price,qv24_logged,depth_bid_top5_logged,depth_ask_top5_logged,avg_before,dca_rounds_before,lock_state,expected,expected_rules,l1_proof,depth_bid_band,depth_ask_band
 default,GUSD,1h,fcb3442b340e,2026-08-01 01:06:56,entry,auto,3839.06,0.9991,1408591,,,,0,nl,PASS,,no_data
 default,LAB,?,c7e82c16a920,2026-08-01 05:57:28,entry,grid,603.24,0.1695,,,,,0,nl,NOT_PROVABLE,,no_data
 default,LAB,?,b1d25f287a3e,2026-08-01 18:07:00,add_same_tf,dca,758.32,0.1441,,,,0.1695,0,nl,BLOCK,R1_add_below_avg,no_data
@@ -143,7 +143,7 @@ default,LTC,4h,11fdb4519ba3,2026-10-05 17:39:34,entry,entry_sensor_15m,1000.00,7
 default,ENA,4h,3b2bc0495ff8,2026-10-05 23:43:48,entry,entry_sensor_15m,1000.00,0.25123146,11818331,1496,4703,,0,nl,PASS,,not_provable
 default,PEPE,4h,6f27cd737c9e,2026-10-06 03:29:54,entry,entry_sensor_15m,1000.00,4.361211e-06,8961138,12573,3857,,0,nl,PASS,,not_provable
 default,CRV,1h,556d7506e8f7,2026-10-06 04:44:17,add_same_tf,dca,619.44,0.3643272,312035,1763,2819,0.3782774258,1,nl,BLOCK,L2_qv24<500k+R1_add_below_avg+R2_round>=1,not_provable
-default,DEXE,1h,c16fe90655dd,2026-10-06 04:44:42,add_same_tf,dca,702.73,1.854201,148772,339,199,1.9206673347,0,nl,BLOCK,L2_qv24<500k+R1_add_below_avg,not_provable
+default,DEXE,1h,c16fe90655dd,2026-10-06 04:44:39,add_same_tf,dca,702.73,1.854201,148772,339,199,1.9206673347,0,nl,BLOCK,L2_qv24<500k+R1_add_below_avg,not_provable,339.30,198.90
 default,LINK,4h,1d527a216811,2026-10-06 06:17:35,entry,entry_sensor_15m,1000.00,13.828602,11294993,1928,18729,,0,nl,PASS,,not_provable
 henry,LAB,?,e6a461aa3b46,2026-08-01 05:52:14,entry,grid,275.31,0.1693,,,,,0,nl,NOT_PROVABLE,,no_data
 henry,LAB,?,ac0c6c43c655,2026-08-01 19:48:32,add_same_tf,dca,650.00,0.1365,,,,0.1693,0,nl,BLOCK,R1_add_below_avg,no_data
