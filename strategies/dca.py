@@ -803,6 +803,20 @@ def evaluate_dca_addon(
 
         pcfg = dca_policy_config(cfg)
         if pcfg.get("enabled"):
+            from risk.dca_guard import policy_skip_for_guard
+
+            # #640: the policy log must not say action=buy_dca when the
+            # lock rejects the add. The candidate can still be built; the
+            # order-submit path is what rejects it.
+            guard_skip = policy_skip_for_guard(
+                position,
+                getattr(market, "current_price", None),
+                symbol=str(
+                    (position or {}).get("symbol")
+                    or getattr(market, "symbol", "")
+                    or ""
+                ),
+            )
             sym = str(
                 (position or {}).get("symbol")
                 or getattr(market, "symbol", "")
@@ -828,7 +842,7 @@ def evaluate_dca_addon(
             breakdown["policy_mult"] = result.size_mult
             breakdown["policy_skip"] = 1 if result.skip else 0
             base_before = usdt_amount
-            if result.skip and not shadow:
+            if result.skip and not shadow and guard_skip is None:
                 from strategies.dca_policy import emit_dca_policy_audit
 
                 emit_dca_policy_audit(
@@ -842,6 +856,20 @@ def evaluate_dca_addon(
                     policy_cfg=pcfg,
                 )
                 return None
+            if guard_skip is not None and result.skip and not shadow:
+                from strategies.dca_policy import emit_dca_policy_audit
+
+                emit_dca_policy_audit(
+                    symbol=sym,
+                    result=guard_skip,
+                    ctx=ctx,
+                    shadow=False,
+                    base_usdt=base_before,
+                    final_usdt=0.0,
+                    applied="dca_guard",
+                    policy_cfg=pcfg,
+                )
+                return None
             usdt_amount = apply_policy_to_usdt(
                 usdt_amount,
                 result,
@@ -852,12 +880,16 @@ def evaluate_dca_addon(
 
             emit_dca_policy_audit(
                 symbol=sym,
-                result=result,
+                result=guard_skip if guard_skip is not None else result,
                 ctx=ctx,
                 shadow=shadow,
                 base_usdt=base_before,
                 final_usdt=usdt_amount,
-                applied="shadow" if shadow else "live",
+                applied=(
+                    "dca_guard"
+                    if guard_skip is not None
+                    else ("shadow" if shadow else "live")
+                ),
                 policy_cfg=pcfg,
             )
     except Exception:

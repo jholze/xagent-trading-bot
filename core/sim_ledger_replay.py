@@ -94,7 +94,8 @@ def _reset_position_cycle(pos: dict, *, amount: float, price: float, trade_ts: s
     pos["dca_recovery_max_rounds"] = 0
     pos["last_dca_recovery_at"] = None
     pos["entry_source"] = None
-    pos["entry_at"] = None
+    pos["entry_at"] = trade_ts
+    pos["first_buy_at"] = trade_ts
 
 
 def _apply_acknowledged_buy(
@@ -177,6 +178,10 @@ def _apply_acknowledged_sell(
     if pnl is not None:
         realized = float(pnl) * pnl_scale
         pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + realized
+    # Full flat only. A partial sell keeps dca_rounds.
+    if float(pos.get("amount") or 0) <= 1e-12:
+        pos["dca_rounds"] = 0
+        pos["dca_recovery_rounds"] = 0
     return realized
 
 

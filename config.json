@@ -455,7 +455,7 @@
     "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
     "position_locks": {
       "enabled": true,
-      "_doc": "Per-position lock on pos.lock: default blocks auto-sell (exit_ws/trail/TA) + slot eviction. DCA and sniper stay allowed unless mode no_dca is set explicitly. Manual /sell still allowed unless no_manual_sell. Kill: enabled=false. Telegram: /lock SYMBOL [duration] [reason], /unlock SYMBOL."
+      "_doc": "Per-position lock on pos.lock: blocks auto-sell (exit_ws/trail/TA) + slot eviction. Any active lock also blocks DCA adds (#640); there is no mode that allows DCA under a lock. Manual /sell still allowed unless no_manual_sell. Kill enabled=false stops sell/eviction enforcement only; it does not allow DCA on a lot that still has a lock. Telegram: /lock SYMBOL [duration] [reason], /unlock SYMBOL."
     },
     "cash_floor_pct": 12,
     "cash_floor_basis": "initial",
@@ -611,7 +611,9 @@
       "max_spread_pct": 1.5,
       "min_top_book_usdt_per_side": 200,
       "depth_levels": 5,
-      "book_unavailable_policy": "volume_ok",
+      "order_book_limit": 100,
+      "depth_window_pct": 0.5,
+      "book_unavailable_policy": "block",
       "min_volume_to_order_multiple": 20,
       "apply_to": [
         "entry_sensor_15m",
@@ -620,6 +622,11 @@
       ],
       "cache_ttl_sec": 90,
       "on_fetch_error": "block_sensor"
+    },
+    "liquidity_guard": {
+      "min_quote_volume_24h_usdt": 500000,
+      "depth_window_pct": 0.5,
+      "_doc": "Hard buy lock (#641). No off-switch. Gate ticker 24h quote volume (not CMC) and book notional within ±depth_window_pct of mid on each side (asks for the fill, bids for the exit). Never a level count. Change either value only via PR (review:viktor). Floor must not go below 500000 without Jens; a lower config value is ignored. 500000 is a scan threshold, not backtested."
     },
     "sensor_entry": {
       "reentry_cooloff_hours_after_gross_loss": 168

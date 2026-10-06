@@ -498,7 +498,9 @@ def test_real_thin_book_and_low_volume_is_liquidity_block_with_measured_notional
     m = r.metrics
     assert m is not None
     assert m.depth_parsed is True
-    assert m.depth_bid_usdt == pytest.approx(49.0, rel=0.05)
+    # ±0.5% of mid keeps only the touch on this book (~10 USDT), not the
+    # top-five sum of ~49.
+    assert m.depth_bid_usdt == pytest.approx(10.0, rel=0.05)
 
 
 # --- 4. One touch under 200, depth over 200 ---
@@ -551,8 +553,9 @@ def test_empty_order_book_lists_are_unparsed_volume_fallback_applies():
     assert r.metrics is not None
     assert r.metrics.depth_parsed is False
     assert r.metrics.capture == "book_unavailable"
-    assert r.ok is True
-    assert "book_unavailable_volume_ok" in r.reasons
+    # #641: a missing band is not a pass, even when 24h volume is fine.
+    assert r.ok is False
+    assert r.code == "liq_guard_missing_input"
     joined = "; ".join(r.reasons)
     assert "bid book $0" not in joined
     assert "ask book $0" not in joined
@@ -689,7 +692,7 @@ def test_dca_and_manual_still_exempt():
     assert manual.approved is True, f"{manual.code}: {manual.message}"
     assert manual.code not in ("venue_liquidity_block", "book_unavailable")
 
-    dca_pos = {"amount": 2.0, "average_entry": 1.0}
+    dca_pos = {"amount": 2.0, "average_entry": 1.0, "dca_rounds": 0}
     with _eval_env(rm, position=dca_pos, extra=[
         patch("services.venue_quality.get_venue_metrics", return_value=_EMPTY_BOOK_OK)
     ]):
@@ -698,8 +701,10 @@ def test_dca_and_manual_still_exempt():
             "4h",
             source="dca",
         )
-    assert dca.approved is True, f"{dca.code}: {dca.message}"
-    assert dca.code not in ("venue_liquidity_block", "book_unavailable")
+    # Price equals average, so the below-avg rule passes. The empty book
+    # does not: adds are no longer exempt from the liquidity lock.
+    assert dca.approved is False
+    assert dca.code in ("liq_guard_missing_input", "venue_liquidity_block")
 
 
 def test_gainer_relvol_not_exempt_on_real_empty_book():
@@ -825,7 +830,7 @@ def test_sensor_exception_fail_open_risk_exception_fail_closed():
     ):
         dec = rm.evaluate(_buy(), "4h", source="gainer_relvol")
     assert dec.approved is False
-    assert dec.code == "venue_liquidity_block_error"
+    assert dec.code == "liq_guard_missing_input"
 
 
 def test_defaults_include_depth_and_volume_ok_policy():

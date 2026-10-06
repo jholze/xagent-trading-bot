@@ -167,7 +167,6 @@ A_RISK_GUARDS = (
     "coin_memory_soft_block",
     "watchlist_quality",
     "sensor_reentry_cooloff",
-    "venue_liquidity_block",
     "macro_calendar_block",
 )
 
@@ -222,6 +221,22 @@ class TestASitesRiskEvaluate:
         assert dec.code == f"{guard}_error"
         assert dec.size_multiplier == 0.0
         assert any(guard in m for m in _error_messages(mock_log))
+
+
+class TestVenueLockIgnoresFailClosedMode:
+    """#641: a venue-fetch error is liq_guard_missing_input in log and in deny."""
+
+    @pytest.mark.parametrize("mode", ["log", "deny"])
+    def test_fetch_exception_always_blocks(self, mode):
+        rm = _rm(mode)
+        order = _buy_order()
+        with patch("logger.log") as mock_log, _buy_eval_env(
+            rm, extra=_raise_patches("venue_liquidity_block", rm)
+        ):
+            dec = rm.evaluate(order, timeframe="4h", source="grid")
+        assert dec.approved is False
+        assert dec.code == "liq_guard_missing_input"
+        assert any("liquidity guard failed" in m for m in _error_messages(mock_log))
 
 
 def _de_engine(mode: str):
