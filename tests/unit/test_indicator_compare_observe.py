@@ -15,6 +15,7 @@ import ast
 import copy
 import json
 import os
+import subprocess
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -535,6 +536,59 @@ def test_sim_state_writes_no_row_live_market_still_writes(tmp_path, monkeypatch)
     on_disk = _read_rows(tmp_path)
     assert on_disk == [row]
     assert len(on_disk) == 1
+
+
+def test_paper_cycle_market_without_sim_state_writes_one_row(tmp_path, monkeypatch):
+    """Same MarketContext shape as DecisionEngine paper evaluate (~line 530)."""
+    data = _enable_writes(monkeypatch, tmp_path)
+    params = dict(PARAMS)
+    market = MarketContext(
+        symbol=SYMBOL,
+        timeframe="4h",
+        current_price=100.0,
+        rsi=40.0,
+        lower_bb=95.0,
+        middle_bb=95.0,
+        upper_bb=95.0,
+        atr_pct=3.0,
+        vol_multiplier=1.5,
+        funding_rate_pct=None,
+        btc_underperf_ratio=None,
+        has_position=False,
+        average_entry=0,
+        open_positions=0,
+        strategy_params=params,
+        ohlcv_df=pd.DataFrame({"ts": [BAR_MS]}),
+    )
+    assert market.sim_state is None
+    assert market.strategy_params is params
+    logger_src = (ROOT / "strategies" / "indicator_compare.py").read_text(encoding="utf-8")
+    tenant_imports = [
+        line.strip()
+        for line in logger_src.splitlines()
+        if "core.tenant_context" in line
+    ]
+    assert tenant_imports == ["from core.tenant_context import current_tenant_context"]
+    assert "resolve_tenant_id" not in logger_src
+    staged = (ROOT / "core" / "tenant_context.py").read_bytes()
+    baseline = subprocess.check_output(
+        ["git", "show", "origin/staging:core/tenant_context.py"],
+        cwd=ROOT,
+    )
+    assert staged == baseline
+
+    with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0):
+        row = maybe_log_indicator_compare(
+            _config(enabled=True),
+            coin=_coin(),
+            market=market,
+            params=market.strategy_params,
+            strategy_name="technical_rsi_bb",
+        )
+    assert row is not None
+    on_disk = _read_rows(tmp_path)
+    assert on_disk == [row]
+    assert len(list(data.rglob("indicator_compare.jsonl"))) == 1
 
 
 def test_missing_tenant_context_does_not_write_default(tmp_path, monkeypatch):
