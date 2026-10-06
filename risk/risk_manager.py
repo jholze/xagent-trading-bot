@@ -487,7 +487,7 @@ class RiskManager:
                     return dec
                 universe_hit = False
             if universe_hit:
-                return RiskDecision(
+                decision = RiskDecision(
                     approved=False,
                     message=(
                         f"Outside trade universe (observe-only): {order.symbol}"
@@ -495,6 +495,20 @@ class RiskManager:
                     code="universe_trade_cap",
                     size_multiplier=0.0,
                 )
+                # #633 Slice B: log the existing cap order. Observe only.
+                # A write error must not change this decision or become a gate.
+                try:
+                    from services.universe.cap_order_observe import (
+                        maybe_log_existing_cap_order,
+                    )
+
+                    maybe_log_existing_cap_order(
+                        raw_cfg,
+                        rejected_symbol=str(order.symbol or ""),
+                    )
+                except Exception:
+                    pass
+                return decision
 
             # Issue #162: prev-day gainer chase guard (new entries only, not DCA add)
             if not self._is_dca_buy(source, order):
