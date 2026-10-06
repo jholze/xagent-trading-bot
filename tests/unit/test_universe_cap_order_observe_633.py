@@ -21,13 +21,16 @@ from unittest.mock import patch
 
 import pytest
 
+from core.tenant_context import DEFAULT_TENANT, context_tenant_id, resolve_tenant_id, tenant_context
 from services.universe.cap_order_observe import (
     IST_CAP_NAME,
+    LOG_FILENAME,
     ROW_KEYS,
     cap_order_fire_enabled,
     cap_order_observe_enabled,
     existing_cap_order,
     maybe_log_existing_cap_order,
+    observe_log_path,
 )
 from services.universe.membership_revise import ERSATZ_CAP_NAME, MembershipReviseRefused
 from services.universe.split import is_trade_eligible, load_trade_universe
@@ -482,4 +485,275 @@ def test_fail_open_maybe_log_swallows_builder_and_writer(monkeypatch):
             rows = maybe_log_existing_cap_order(cfg, rejected_symbol=OUT_SET)
     assert rows is not None
     assert rows[0]["reject_code"] == REJECT
+    assert rows[0]["tenant"] is None
     assert "order" not in rows[0]
+
+
+# --- tenant on the observe row --------------------------------------------
+
+# Synthetic ids and symbols. Not production tenants or coins.
+_REJECTED = "TREJECT/USDT"
+_CAP_ORDERS = {
+    None: ("TUNSCOPED/USDT",),
+    DEFAULT_TENANT: ("TDEFA/USDT", "TDEFB/USDT"),
+    "tenant_alpha": ("TALPHA/USDT", "TALPHB/USDT"),
+    "tenant_beta": ("TBETA/USDT",),
+}
+
+
+def _member(symbol: str) -> dict:
+    return {"symbol": symbol, "active": True, "ticker": symbol.split("/")[0]}
+
+
+def _install_cap_orders(monkeypatch) -> list:
+    """Trade list depends on the tenant id passed in, including None."""
+    seen: list = []
+
+    def _observe(tenant_id=None, **kwargs):
+        seen.append(tenant_id)
+        symbols = _CAP_ORDERS.get(tenant_id, _CAP_ORDERS[None])
+        return [_member(sym) for sym in symbols]
+
+    monkeypatch.setattr("data_manager.load_watchlist", lambda tenant_id=None: [])
+    monkeypatch.setattr(
+        "services.universe.split._quality_lookup",
+        lambda tenant_id=DEFAULT_TENANT, use_ai_score=True: {},
+    )
+    monkeypatch.setattr("services.universe.split._open_symbols_live", lambda: set())
+    monkeypatch.setattr("services.universe.split.load_observe_universe", _observe)
+    return seen
+
+
+def _tenant_cfg(*, on: bool) -> dict:
+    base = _risk_raw()
+    uni = _universe(
+        mode="off",
+        trade_max=10,
+        rank="as_is",
+        include_cap=False,
+        cap=None,
+    )
+    base["universe"] = uni["universe"]
+    return _with_observe(base, on=on, fire=True)
+
+
+def _evaluate(raw: dict, rm=None):
+    # Build the manager outside any tenant context. BotConfig() with no raw
+    # calls get_config(), which follows the context and must not run here.
+    if rm is None:
+        rm = _rm(raw)
+    order = _order(_REJECTED, source="entry_sensor_15m", signal="BUY")
+    with _eval_env(rm, venue_ok=True, mcap=50_000_000):
+        dec = rm.evaluate(order, timeframe="15m", source="entry_sensor_15m")
+    return dec, order
+
+
+def _cap_lines(logged: list[str]) -> list[str]:
+    return [line for line in logged if line.startswith("[cap_order_observe]")]
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _files_under(root: Path) -> set[str]:
+    if not root.exists():
+        return set()
+    return {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+
+
+def test_context_tenant_id_reads_contextvar_and_resolve_still_falls_back():
+    """Helper returns None with no context. resolve_tenant_id is unchanged."""
+    assert context_tenant_id() is None
+    assert resolve_tenant_id(None) == DEFAULT_TENANT
+    with tenant_context("tenant_alpha", scope="paper"):
+        assert context_tenant_id() == "tenant_alpha"
+        assert resolve_tenant_id(None) == "tenant_alpha"
+    with tenant_context(DEFAULT_TENANT, scope="paper"):
+        assert context_tenant_id() == DEFAULT_TENANT
+    assert context_tenant_id() is None
+
+
+def test_two_tenants_log_their_own_cap_order(tmp_path, monkeypatch):
+    """Each context logs its own tenant id and its own cap list."""
+    monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
+    seen = _install_cap_orders(monkeypatch)
+    logged: list[str] = []
+    data_root = tmp_path / "data"
+    before_default = _files_under(data_root / DEFAULT_TENANT)
+    off_cfg = _tenant_cfg(on=False)
+    on_cfg = _tenant_cfg(on=True)
+
+    def _capture(message, level="INFO"):
+        logged.append(str(message))
+
+    off_rm = _rm(off_cfg)
+    on_rm = _rm(on_cfg)
+    with patch("services.universe.cap_order_observe.log", side_effect=_capture):
+        for tid in ("tenant_alpha", "tenant_beta"):
+            with tenant_context(tid, scope="paper"):
+                off_dec, off_order = _evaluate(off_cfg, off_rm)
+                on_dec, on_order = _evaluate(on_cfg, on_rm)
+            assert _money(off_dec, off_order) == _money(on_dec, on_order)
+            assert on_dec.approved is False
+            assert on_dec.code == REJECT
+            assert on_dec.size_multiplier == 0.0
+            assert on_dec.order is None
+
+    lines = _cap_lines(logged)
+    assert len(lines) == 2
+    path = tmp_path / "logs" / LOG_FILENAME
+    rows = _read_jsonl(path)
+    assert [row["tenant"] for row in rows] == [
+        "tenant_alpha",
+        "tenant_alpha",
+        "tenant_beta",
+    ]
+    by_tenant: dict[str, list[str]] = {}
+    for row in rows:
+        assert set(row) == set(ROW_KEYS)
+        assert row["rejected_symbol"] == _REJECTED
+        assert row["reject_code"] == REJECT
+        assert "order" not in row
+        by_tenant.setdefault(row["tenant"], []).append(row["symbol"])
+    assert by_tenant["tenant_alpha"] == list(_CAP_ORDERS["tenant_alpha"])
+    assert by_tenant["tenant_beta"] == list(_CAP_ORDERS["tenant_beta"])
+    assert DEFAULT_TENANT not in by_tenant
+
+    alpha_line = next(line for line in lines if "tenant=tenant_alpha" in line)
+    beta_line = next(line for line in lines if "tenant=tenant_beta" in line)
+    assert "symbol=TALPHA/USDT" in alpha_line and "rank=1" in alpha_line
+    assert "symbol=TALPHB/USDT" in alpha_line and "rank=2" in alpha_line
+    assert "symbol=TBETA/USDT" not in alpha_line
+    assert "symbol=TUNSCOPED/USDT" not in alpha_line
+    assert f"symbol={_CAP_ORDERS[DEFAULT_TENANT][0]}" not in alpha_line
+    assert "symbol=TBETA/USDT" in beta_line and "rank=1" in beta_line
+    assert "symbol=TALPHA/USDT" not in beta_line
+    assert "fire_enabled=False" in alpha_line
+    assert "fire_enabled=False" in beta_line
+    assert "order=" not in alpha_line and "order=" not in beta_line
+    # Gate reads with no id; the log read uses the context id.
+    assert seen.count("tenant_alpha") == 1
+    assert seen.count("tenant_beta") == 1
+    assert DEFAULT_TENANT not in seen
+    assert _files_under(data_root / DEFAULT_TENANT) == before_default
+
+
+def test_default_tenant_context_logs_its_own_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
+    seen = _install_cap_orders(monkeypatch)
+    logged: list[str] = []
+    off_cfg = _tenant_cfg(on=False)
+    on_cfg = _tenant_cfg(on=True)
+
+    def _capture(message, level="INFO"):
+        logged.append(str(message))
+
+    off_rm = _rm(off_cfg)
+    on_rm = _rm(on_cfg)
+    with patch("services.universe.cap_order_observe.log", side_effect=_capture):
+        with tenant_context(DEFAULT_TENANT, scope="paper"):
+            off_dec, off_order = _evaluate(off_cfg, off_rm)
+            on_dec, on_order = _evaluate(on_cfg, on_rm)
+    assert _money(off_dec, off_order) == _money(on_dec, on_order)
+    assert on_dec.code == REJECT
+    lines = _cap_lines(logged)
+    assert len(lines) == 1
+    assert f"tenant={DEFAULT_TENANT}" in lines[0]
+    assert "tenant=null" not in lines[0]
+    assert "symbol=TDEFA/USDT" in lines[0] and "rank=1" in lines[0]
+    assert "symbol=TDEFB/USDT" in lines[0] and "rank=2" in lines[0]
+    assert "symbol=TUNSCOPED/USDT" not in lines[0]
+    assert "fire_enabled=False" in lines[0]
+    rows = _read_jsonl(tmp_path / "logs" / LOG_FILENAME)
+    assert [row["symbol"] for row in rows] == list(_CAP_ORDERS[DEFAULT_TENANT])
+    assert {row["tenant"] for row in rows} == {DEFAULT_TENANT}
+    assert seen.count(DEFAULT_TENANT) == 1
+
+
+def test_no_tenant_context_logs_null_and_does_not_write_default(tmp_path, monkeypatch):
+    """No context: JSON null, and no data/default file or default-attributed row."""
+    monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
+    assert context_tenant_id() is None
+    seen = _install_cap_orders(monkeypatch)
+    logged: list[str] = []
+    data_root = tmp_path / "data"
+    before = _files_under(data_root)
+    before_default = _files_under(data_root / DEFAULT_TENANT)
+    off_cfg = _tenant_cfg(on=False)
+    on_cfg = _tenant_cfg(on=True)
+
+    def _capture(message, level="INFO"):
+        logged.append(str(message))
+
+    off_rm = _rm(off_cfg)
+    on_rm = _rm(on_cfg)
+    with patch("services.universe.cap_order_observe.log", side_effect=_capture):
+        off_dec, off_order = _evaluate(off_cfg, off_rm)
+        assert _cap_lines(logged) == []
+        assert not (tmp_path / "logs" / LOG_FILENAME).exists()
+        on_dec, on_order = _evaluate(on_cfg, on_rm)
+
+    assert _money(off_dec, off_order) == _money(on_dec, on_order)
+    assert on_dec.approved is False
+    assert on_dec.code == REJECT
+    assert on_dec.size_multiplier == 0.0
+    assert on_dec.order is None
+
+    lines = _cap_lines(logged)
+    assert len(lines) == 1
+    assert "tenant=null" in lines[0]
+    assert f"tenant={DEFAULT_TENANT}" not in lines[0]
+    assert "tenant=None" not in lines[0]
+    assert "symbol=TUNSCOPED/USDT" in lines[0]
+    assert "symbol=TDEFA/USDT" not in lines[0]
+    assert "symbol=TDEFB/USDT" not in lines[0]
+    assert "fire_enabled=False" in lines[0]
+    assert "order=" not in lines[0]
+
+    path = Path(observe_log_path())
+    assert path == tmp_path / "logs" / LOG_FILENAME
+    assert DEFAULT_TENANT not in path.parts
+    raw = path.read_text(encoding="utf-8")
+    assert '"tenant": null' in raw
+    assert f'"tenant": "{DEFAULT_TENANT}"' not in raw
+    assert '"tenant": "null"' not in raw
+    rows = _read_jsonl(path)
+    assert rows
+    for row in rows:
+        assert row["tenant"] is None
+        assert row["symbol"] in _CAP_ORDERS[None]
+        assert set(row) == set(ROW_KEYS)
+    assert DEFAULT_TENANT not in seen
+    assert seen.count(None) >= 1
+    assert _files_under(data_root) == before
+    assert _files_under(data_root / DEFAULT_TENANT) == before_default
+    if not before_default:
+        assert not (data_root / DEFAULT_TENANT).exists()
+
+
+def test_flag_off_writes_no_log_or_default_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAP_ORDER_OBSERVE_UNDER_TEST", "1")
+    _install_cap_orders(monkeypatch)
+    logged: list[str] = []
+    data_root = tmp_path / "data"
+    before = _files_under(data_root)
+    cfg = _tenant_cfg(on=False)
+
+    rm = _rm(cfg)
+    with patch(
+        "services.universe.cap_order_observe.log",
+        side_effect=lambda *a, **k: logged.append(str(a[0])),
+    ):
+        with tenant_context("tenant_alpha", scope="paper"):
+            dec, order = _evaluate(cfg, rm)
+        bare_dec, bare_order = _evaluate(cfg, rm)
+    assert dec.code == REJECT
+    assert bare_dec.code == REJECT
+    assert dec.order is None and bare_order.usdt_amount == order.usdt_amount
+    assert _cap_lines(logged) == []
+    assert not (tmp_path / "logs" / LOG_FILENAME).exists()
+    assert _files_under(data_root) == before
+    assert not (data_root / DEFAULT_TENANT).exists()

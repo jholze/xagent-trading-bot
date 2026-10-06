@@ -498,6 +498,7 @@ class RiskManager:
                 # #633 Slice B: log the existing cap order. Observe only.
                 # A write error must not change this decision or become a gate.
                 try:
+                    from core.tenant_context import context_tenant_id
                     from services.universe.cap_order_observe import (
                         maybe_log_existing_cap_order,
                     )
@@ -505,6 +506,7 @@ class RiskManager:
                     maybe_log_existing_cap_order(
                         raw_cfg,
                         rejected_symbol=str(order.symbol or ""),
+                        tenant_id=context_tenant_id(),
                     )
                 except Exception:
                     pass
