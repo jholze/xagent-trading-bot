@@ -1477,10 +1477,10 @@ def _live_caps_count_every_open(config_raw: dict | None) -> bool:
     """Real-money books count every open lot, including tails.
 
     ``places_real_orders`` is the accounting truth (#410) and is enough on its
-    own. A live book with ``dry_run`` false stays on the same path. An unset
-    trading mode still asks that helper with the live book, because the helper
-    shadows before it reads ``live.execution``. Paper and dry-run books keep
-    the tail filter.
+    own, including a fail-closed unresolvable real mode. A live book with
+    ``dry_run`` false stays on the same path. An unset trading mode stays
+    off, because that helper returns shadow before it reads ``live.execution``.
+    Paper and dry-run books keep the tail filter.
     """
     if not isinstance(config_raw, dict):
         return False
@@ -1488,10 +1488,7 @@ def _live_caps_count_every_open(config_raw: dict | None) -> bool:
 
     mode = str(config_raw.get("trading_mode") or "").strip().lower()
     live = config_raw.get("live") if isinstance(config_raw.get("live"), dict) else {}
-    asked = config_raw
-    if "trading_mode" not in config_raw:
-        asked = {**config_raw, "trading_mode": "live"}
-    if places_real_orders(asked):
+    if places_real_orders(config_raw):
         return True
     return mode == "live" and live.get("dry_run") is False
 

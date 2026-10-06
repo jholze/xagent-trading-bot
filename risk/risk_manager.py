@@ -1872,11 +1872,11 @@ class RiskManager:
     def _live_real_money_buys(self) -> bool:
         """R3 applies when fills are real money, or a live book sets dry_run false.
 
-        ``places_real_orders`` is the accounting truth (#410). It is enough on
-        its own. ``dry_run`` false on ``trading_mode=live`` stays on too, so a
-        shadow execution alias does not drop the check. An unset trading mode
-        still asks that helper with the live book, because the helper shadows
-        before it reads ``live.execution``.
+        ``places_real_orders`` is the accounting truth (#410) and is enough on
+        its own, including a fail-closed unresolvable real mode. ``dry_run``
+        false on ``trading_mode=live`` stays on too, so a shadow execution
+        alias does not drop the check. An unset trading mode stays off:
+        that helper returns shadow before it reads ``live.execution``.
         """
         raw = self.config.raw if hasattr(self.config, "raw") else None
         if not isinstance(raw, dict):
@@ -1885,10 +1885,7 @@ class RiskManager:
 
         mode = str(raw.get("trading_mode") or "").strip().lower()
         live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
-        asked = raw
-        if "trading_mode" not in raw:
-            asked = {**raw, "trading_mode": "live"}
-        if places_real_orders(asked):
+        if places_real_orders(raw):
             return True
         return mode == "live" and live.get("dry_run") is False
 

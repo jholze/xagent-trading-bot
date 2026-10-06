@@ -1300,65 +1300,80 @@ def test_b3_open_live_short_blocks_live_start(monkeypatch):
         _position_stores.clear()
 
 
-def _real_execution_cfg(*, trading_mode: str | None) -> BotConfig:
+def _real_execution_cfg(*, trading_mode: str | None, live_confirmed: bool | None = True) -> BotConfig:
     """execution=real and no dry_run key. trading_mode None leaves the key unset."""
-    cfg = _risk_cfg(
-        max_usdt_per_trade=100,
-        max_open_positions=4,
-        live_confirmed=True,
-        live={
+    over = {
+        "max_usdt_per_trade": 100,
+        "max_open_positions": 4,
+        "live": {
             "execution": "real",
             "api_key_env": "GATE_API_KEY",
             "api_secret_env": "GATE_API_SECRET",
             "max_usdt_per_trade": 100,
         },
-        sell_policy={
+        "sell_policy": {
             "rotation": {
                 "tail_exempt_notional_usdt": 500,
                 "tail_exempt_sold_pct": 0.25,
             }
         },
-    )
+    }
+    if live_confirmed is not None:
+        over["live_confirmed"] = live_confirmed
+    cfg = _risk_cfg(**over)
     if trading_mode is None:
         cfg.raw.pop("trading_mode", None)
     else:
         cfg.raw["trading_mode"] = trading_mode
+    if live_confirmed is None:
+        cfg.raw.pop("live_confirmed", None)
     return cfg
 
 
-def _assert_real_execution_caps(monkeypatch, cfg: BotConfig) -> None:
-    """Missing tenant caps block, and a sub-threshold lot still occupies a slot."""
+def _seed_real_tail(cfg: BotConfig):
+    """One open live lot under the tail threshold. Returns the stored row."""
     from strategies.sell_rotation_policy import is_tail_position, rotation_config
 
+    tid = "tenant-a"
+    _seed_lot(
+        "AAA/USDT",
+        scope="live",
+        tenant=tid,
+        amount=Decimal("100"),
+        peak_amount=100.0,
+        average_entry=1.0,
+        last_buy_price=1.0,
+        current_price=1.0,
+    )
+    _activate(_resolve_store_key("live", tid))
+    row = _ensure_store(_resolve_store_key("live", tid))[get_key("AAA/USDT", "1h")]
+    assert is_tail_position(row, rotation_config(cfg.raw))
+    return row
+
+
+def _eval_buy(cfg: BotConfig):
+    rm = RiskManager(cfg)
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        return rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+
+
+def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
+    """execution=real, dry_run absent, confirmed, with creds: caps and tails both apply."""
     monkeypatch.setenv("DEMO_MODE", "0")
     monkeypatch.setenv("GATE_API_KEY", "dummy-key")
     monkeypatch.setenv("GATE_API_SECRET", "dummy-secret")
+    cfg = _real_execution_cfg(trading_mode="live", live_confirmed=True)
     _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
     tid = "tenant-a"
     clear_positions_memory()
     clear_positions_memory(tenant_id=tid)
     try:
-        _seed_lot(
-            "AAA/USDT",
-            scope="live",
-            tenant=tid,
-            amount=Decimal("100"),
-            peak_amount=100.0,
-            average_entry=1.0,
-            last_buy_price=1.0,
-            current_price=1.0,
-        )
-        _activate(_resolve_store_key("live", tid))
-        row = _ensure_store(_resolve_store_key("live", tid))[get_key("AAA/USDT", "1h")]
-        assert is_tail_position(row, rotation_config(cfg.raw))
+        _seed_real_tail(cfg)
         assert count_open_full_slots(cfg.raw) == 1
         shadowed = copy.deepcopy(cfg.raw)
-        shadowed["trading_mode"] = "live"
         shadowed["live"] = {**shadowed["live"], "dry_run": True, "execution": "shadow"}
         assert count_open_full_slots(shadowed) == 0
-        rm = RiskManager(cfg)
-        with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
-            dec = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+        dec = _eval_buy(cfg)
         assert dec.approved is False
         assert dec.code == "live_caps_missing"
     finally:
@@ -1367,14 +1382,91 @@ def _assert_real_execution_caps(monkeypatch, cfg: BotConfig) -> None:
         _position_stores.clear()
 
 
-def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
-    """execution=real with no dry_run key is real money: caps and tails both apply."""
-    _assert_real_execution_caps(monkeypatch, _real_execution_cfg(trading_mode="live"))
+def test_unresolvable_real_fails_closed_blocks_and_counts_tails(monkeypatch):
+    """Missing live_confirmed or creds fail closed: the check stays on."""
+    monkeypatch.setenv("DEMO_MODE", "0")
+    cfg = _real_execution_cfg(trading_mode="live", live_confirmed=None)
+    _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
+    tid = "tenant-a"
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid)
+    created: list = []
+
+    def _created(*args, **kwargs):
+        created.append((args, kwargs))
+        return False
+
+    try:
+        monkeypatch.setenv("GATE_API_KEY", "dummy-key")
+        monkeypatch.setenv("GATE_API_SECRET", "dummy-secret")
+        _seed_real_tail(cfg)
+        assert "live_confirmed" not in cfg.raw
+        assert "dry_run" not in cfg.raw["live"]
+        assert count_open_full_slots(cfg.raw) == 1
+        with patch("data_manager.save_orders", side_effect=_created):
+            dec = _eval_buy(cfg)
+        assert dec.approved is False
+        assert dec.code == "live_caps_missing"
+        assert created == []
+
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid)
+        monkeypatch.delenv("GATE_API_KEY", raising=False)
+        monkeypatch.delenv("GATE_API_SECRET", raising=False)
+        confirmed = _real_execution_cfg(trading_mode="live", live_confirmed=True)
+        _seed_real_tail(confirmed)
+        assert count_open_full_slots(confirmed.raw) == 1
+        with patch("data_manager.save_orders", side_effect=_created):
+            missing_creds = _eval_buy(confirmed)
+        assert missing_creds.approved is False
+        assert missing_creds.code == "live_caps_missing"
+        assert created == []
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid)
+        _position_stores.clear()
 
 
-def test_execution_real_without_trading_mode_blocks_and_counts_tails(monkeypatch):
-    """The same real execution with trading_mode unset still blocks and counts tails."""
-    _assert_real_execution_caps(monkeypatch, _real_execution_cfg(trading_mode=None))
+def test_trading_mode_absent_leaves_check_off_and_creates_no_order(monkeypatch):
+    """Unset trading_mode is shadow: the check stays off and no order is written."""
+    from core.execution_mode import places_real_orders, resolve_execution_mode
+
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("GATE_API_KEY", "dummy-key")
+    monkeypatch.setenv("GATE_API_SECRET", "dummy-secret")
+    cfg = _real_execution_cfg(trading_mode=None, live_confirmed=True)
+    assert "trading_mode" not in cfg.raw
+    assert "dry_run" not in cfg.raw["live"]
+    _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
+    tid = "tenant-a"
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid)
+    created: list = []
+
+    def _created(*args, **kwargs):
+        created.append((args, kwargs))
+        return False
+
+    try:
+        _seed_real_tail(cfg)
+        resolved = resolve_execution_mode(cfg.raw)
+        assert places_real_orders(cfg.raw) is False
+        assert resolved.places_real_orders is False
+        assert resolved.adapter_mode == "shadow"
+        assert count_open_full_slots(cfg.raw) == 0
+        with patch("data_manager.save_orders", side_effect=_created), patch(
+            "services.order_service.OrderService.create_from_request", side_effect=_created
+        ), patch(
+            "services.order_service.OrderService.record_rejected", side_effect=_created
+        ):
+            dec = _eval_buy(cfg)
+        assert dec.code != "live_caps_missing"
+        assert not getattr(getattr(dec, "order", None), "order_id", None)
+        assert created == []
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid)
+        _position_stores.clear()
 
 
 def test_b3_uncounted_tails_are_live_caps_missing(monkeypatch):
