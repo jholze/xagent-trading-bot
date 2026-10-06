@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from core.config import BotConfig
@@ -27,6 +28,8 @@ def _live_cfg(execution: str, *, dry_run: bool = False) -> dict:
         "trading_mode": "live",
         "live_confirmed": True,
         "max_usdt_per_trade": 150,
+        "max_open_positions": 4,
+        "max_daily_loss_usdt": 50,
         "live": {
             "execution": execution,
             "dry_run": dry_run,
@@ -50,6 +53,22 @@ def _manager(execution: str, *, dry_run: bool = False) -> RiskManager:
     return RiskManager(config=BotConfig(_live_cfg(execution, dry_run=dry_run)))
 
 
+@contextmanager
+def _tenant_caps():
+    """Real-money shorts require the three caps on the tenant body (#644)."""
+    body = {
+        "max_usdt_per_trade": 150,
+        "max_open_positions": 4,
+        "max_daily_loss_usdt": 50,
+    }
+    with patch("core.tenant_context.multi_tenant_enabled", return_value=True), patch(
+        "core.tenant_context.resolve_tenant_id", return_value="tenant-short-gate"
+    ), patch(
+        "data_manager._should_use_mongo_for_tenant_config", return_value=True
+    ), patch("data_manager._load_tenant_config_body", return_value=body):
+        yield
+
+
 class TestRiskShortGateShadow(unittest.TestCase):
     def setUp(self):
         clear_positions_memory()
@@ -60,7 +79,7 @@ class TestRiskShortGateShadow(unittest.TestCase):
     def test_shadow_short_not_shorts_live_blocked_when_dry_run_false(self):
         """live+shadow+dry_run=false+confirmed used to reject every SHORT at the live gate."""
         rm = _manager("shadow")
-        with patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
+        with _tenant_caps(), patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
             os.environ, {"DEMO_MODE": ""}, clear=False
         ), patch.object(rm, "_available_usdt", return_value=10_000), patch.object(
             rm, "_portfolio_equity", return_value=10_000
@@ -124,7 +143,7 @@ class TestRiskShortGateShadow(unittest.TestCase):
         """Real mode must keep the live kill switch; message and code frozen."""
         rm = _manager("real")
         env = {**_GATE_CREDS, "DEMO_MODE": ""}
-        with patch.dict(os.environ, env, clear=False), patch.object(
+        with _tenant_caps(), patch.dict(os.environ, env, clear=False), patch.object(
             rm, "_available_usdt", return_value=10_000
         ), patch.object(rm, "_portfolio_equity", return_value=10_000):
             dec = rm.evaluate(
@@ -146,7 +165,7 @@ class TestRiskShortGateShadow(unittest.TestCase):
         """resolve_execution_mode raises without GATE creds → reject, no escape."""
         rm = _manager("real")
         empty = {"GATE_API_KEY": "", "GATE_API_SECRET": "", "DEMO_MODE": ""}
-        with patch.dict(os.environ, empty, clear=False), patch.object(
+        with _tenant_caps(), patch.dict(os.environ, empty, clear=False), patch.object(
             rm, "_available_usdt", return_value=10_000
         ), patch.object(rm, "_portfolio_equity", return_value=10_000):
             dec = rm.evaluate(

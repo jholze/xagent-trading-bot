@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock, patch
 
 from core.config import BotConfig
@@ -26,6 +26,8 @@ def _live_cfg(execution: str) -> dict:
         "trading_mode": "live",
         "live_confirmed": True,
         "max_usdt_per_trade": 150,
+        "max_open_positions": 4,
+        "max_daily_loss_usdt": 50,
         "live": {
             "execution": execution,
             "dry_run": False,
@@ -49,6 +51,22 @@ def _manager(execution: str) -> RiskManager:
     return RiskManager(config=BotConfig(_live_cfg(execution)))
 
 
+@contextmanager
+def _tenant_caps():
+    """Real-money shorts require the three caps on the tenant body (#644)."""
+    body = {
+        "max_usdt_per_trade": 150,
+        "max_open_positions": 4,
+        "max_daily_loss_usdt": 50,
+    }
+    with patch("core.tenant_context.multi_tenant_enabled", return_value=True), patch(
+        "core.tenant_context.resolve_tenant_id", return_value="tenant-short-gate"
+    ), patch(
+        "data_manager._should_use_mongo_for_tenant_config", return_value=True
+    ), patch("data_manager._load_tenant_config_body", return_value=body):
+        yield
+
+
 class TestRiskShortGateTestnet(unittest.TestCase):
     def setUp(self):
         clear_positions_memory()
@@ -59,7 +77,7 @@ class TestRiskShortGateTestnet(unittest.TestCase):
     def test_testnet_short_not_shorts_live_blocked(self):
         """live+testnet+allow_live=false used to reject every SHORT at the live gate."""
         rm = _manager("testnet")
-        with patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
+        with _tenant_caps(), patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
             os.environ, {"DEMO_MODE": ""}, clear=False
         ), patch.object(rm, "_available_usdt", return_value=10_000), patch.object(
             rm, "_portfolio_equity", return_value=10_000
@@ -85,7 +103,7 @@ class TestRiskShortGateTestnet(unittest.TestCase):
         """Real mode must keep the live kill switch; message and code frozen."""
         rm = _manager("real")
         env = {**_GATE_CREDS, "DEMO_MODE": ""}
-        with patch.dict(os.environ, env, clear=False), patch.object(
+        with _tenant_caps(), patch.dict(os.environ, env, clear=False), patch.object(
             rm, "_available_usdt", return_value=10_000
         ), patch.object(rm, "_portfolio_equity", return_value=10_000):
             dec = rm.evaluate(
@@ -107,7 +125,7 @@ class TestRiskShortGateTestnet(unittest.TestCase):
         """resolve_execution_mode raises without GATE creds → old reject, no escape."""
         rm = _manager("testnet")
         empty = {"GATE_API_KEY": "", "GATE_API_SECRET": "", "DEMO_MODE": ""}
-        with patch.dict(os.environ, empty, clear=False), patch.object(
+        with _tenant_caps(), patch.dict(os.environ, empty, clear=False), patch.object(
             rm, "_available_usdt", return_value=10_000
         ), patch.object(rm, "_portfolio_equity", return_value=10_000):
             dec = rm.evaluate(
@@ -161,7 +179,7 @@ class TestRiskShortGateTestnet(unittest.TestCase):
         mock_ledger.find_by_idempotency_key.return_value = None
         mock_ledger.create_from_request.return_value = {"id": "ord-t347"}
 
-        with patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
+        with _tenant_caps(), patch.dict(os.environ, _GATE_CREDS, clear=False), patch.dict(
             os.environ, {"DEMO_MODE": ""}, clear=False
         ), patch.object(svc, "refresh"), patch.object(
             svc.risk, "_available_usdt", return_value=10_000
