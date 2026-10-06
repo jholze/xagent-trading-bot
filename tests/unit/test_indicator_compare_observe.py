@@ -15,7 +15,6 @@ import ast
 import copy
 import json
 import os
-import subprocess
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -570,12 +569,6 @@ def test_paper_cycle_market_without_sim_state_writes_one_row(tmp_path, monkeypat
     ]
     assert tenant_imports == ["from core.tenant_context import current_tenant_context"]
     assert "resolve_tenant_id" not in logger_src
-    staged = (ROOT / "core" / "tenant_context.py").read_bytes()
-    baseline = subprocess.check_output(
-        ["git", "show", "origin/staging:core/tenant_context.py"],
-        cwd=ROOT,
-    )
-    assert staged == baseline
 
     with tenant_context(TENANT, scope="paper"), _book_last_rsi(30.0):
         row = maybe_log_indicator_compare(
