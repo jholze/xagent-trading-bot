@@ -7,7 +7,6 @@ Tenant ids and symbols here are test data.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -43,7 +42,6 @@ from tests.unit.test_long_mcap_venue_563 import _eval_env
 
 _REPO = Path(__file__).resolve().parents[2]
 _OVERLAY = _REPO / "deploy" / "live_caps_overlay.json"
-_FREEZE = _REPO / "tests" / "fixtures" / "issue_644_base_effective.sha256"
 _DISK = _REPO / "config.json"
 
 _LIQ = {
@@ -119,14 +117,6 @@ _THIN = VenueMetrics(
 
 def _disk_config() -> dict:
     return json.loads(_DISK.read_text(encoding="utf-8"))
-
-
-def _canonical(doc: dict) -> str:
-    return json.dumps(doc, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _freeze_hash(doc: dict) -> str:
-    return hashlib.sha256(_canonical(doc).encode()).hexdigest()
 
 
 def _cfg(**over) -> BotConfig:
@@ -361,23 +351,35 @@ def test_t1_overlay_binds_r1_and_leaves_runtime_flags(caps_store):
 
 
 def test_t2_default_and_ctexp_match_freeze_base():
+    """No overlay and an empty body stay on the disk merge.
+
+    A pinned hash of the whole file breaks when staging adds unrelated keys.
+    The freeze is the operator document itself: no profile, no overlay keys,
+    and the #645 liquidity floor left as it is.
+    """
     disk = _disk_config()
     base = apply_effective_config(disk, None)
-    digest = _freeze_hash(base)
-    assert digest == _FREEZE.read_text(encoding="utf-8").strip()
-    assert _freeze_hash(apply_effective_config(disk, {})) == digest
-    # No stored body → paper tenants stay on the freeze merge.
-    assert _freeze_hash(apply_effective_config(disk, None)) == digest
-    assert disk["max_usdt_per_trade"] == 4500
-    assert disk["max_open_positions"] == 36
+    assert not disk.get("trading_profile")
+    assert base == disk
+    assert apply_effective_config(disk, {}) == base
+    assert apply_effective_config(disk, None) == base
     assert "max_daily_loss_usdt" not in disk
+    assert "max_daily_loss_usdt" not in base
+    assert disk["live"]["dry_run"] is True
+    assert disk["live"]["execution"] == "shadow"
+    assert disk["shorts"]["allow_live"] is False
+    assert disk["hermes"]["enabled"] is False
+    assert disk["exit_realtime"]["cascade"]["fire_enabled"] is False
+    assert disk["mcp"]["allow_live"] is False
     assert disk["risk"]["liquidity_guard"]["min_quote_volume_24h_usdt"] == 500000
     overlay = load_overlay(_OVERLAY)
-    assert overlay["max_usdt_per_trade"] == 100
     merged = apply_effective_config(disk, overlay)
-    assert _freeze_hash(base) == digest
-    assert merged["max_usdt_per_trade"] == 100
-    assert base["max_usdt_per_trade"] == 4500
+    assert merged["max_usdt_per_trade"] == overlay["max_usdt_per_trade"]
+    assert merged["max_usdt_per_trade"] != disk["max_usdt_per_trade"]
+    assert merged["live"]["dry_run"] is True
+    assert merged["live"]["execution"] == "shadow"
+    assert merged["risk"]["liquidity_guard"]["min_quote_volume_24h_usdt"] == 500000
+    assert base["max_usdt_per_trade"] == disk["max_usdt_per_trade"]
 
 
 def test_t6_apply_is_idempotent(caps_store):

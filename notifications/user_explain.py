@@ -82,6 +82,8 @@ _RISK_CODES = {
     "max_position_percent": "Dieser Coin wäre zu groß im Portfolio — Kauf wurde begrenzt oder blockiert.",
     "cash_floor": "Cash-Floor erreicht — Mindest-Bargeld bleibt frei (keine Auto-Käufe).",
     "size_too_small": "Betrag nach Limits unter dem Mindest-Trade.",
+    "ticket_below_min": "Order nach dem Ticket-Cap unter dem Börsen-Minimum — Kauf abgelehnt.",
+    "live_caps_missing": "Live-Caps fehlen im Tenant — neue Käufe blockiert, Verkäufe laufen weiter.",
     "sensor_reentry_cooloff": "Nach dem 15m-Sensor-Trade gilt eine Pause — kein sofortiger Re-Entry.",
     "max_daily_dca_buys": "Tageslimit für DCA-Nachkäufe erreicht.",
     "max_daily_trades": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",

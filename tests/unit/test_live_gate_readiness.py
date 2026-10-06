@@ -48,9 +48,25 @@ class TestLiveGateReadiness(unittest.TestCase):
         self.assertFalse(uses_exchange_ledger("off"))
 
     def test_risk_manager_caps_buy_to_gate_usdt(self):
+        from core.tenant_context import tenant_context
+
         cfg = self._live_config()
         rm = RiskManager(cfg)
-        with patch("risk.risk_manager.fetch_usdt_balance", return_value=30.0), \
+        # Real-money buys require the four cap keys on a tenant body (#644 R3).
+        # This test still checks the Gate balance cap, so the body is present.
+        body = {
+            "max_usdt_per_trade": cfg.max_usdt_per_trade,
+            "max_open_positions": cfg.max_open_positions,
+            "live_max_loss_usdt": 25,
+            "max_daily_loss_usdt": 50,
+        }
+        with tenant_context("tenant-gate", scope="live"), \
+             patch("core.tenant_context.multi_tenant_enabled", return_value=True), \
+             patch("data_manager._should_use_mongo_for_tenant_config", return_value=True), \
+             patch("data_manager._load_tenant_config_body", return_value=body), \
+             patch("data_manager.get_config", return_value=cfg.raw), \
+             patch("core.operator_notify.notify_operator", return_value=True), \
+             patch("risk.risk_manager.fetch_usdt_balance", return_value=30.0), \
              patch("risk.risk_manager.fetch_portfolio_equity", return_value=500.0), \
              patch("risk.risk_manager.count_open_positions", return_value=1), \
              patch("risk.risk_manager.get_position", return_value={"amount": 0}), \
