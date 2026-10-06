@@ -36,12 +36,33 @@ def _watchlist_mode_label() -> str:
     return ""
 
 
-def format_watchlist_message(coins: list = None) -> str:
+def format_watchlist_message(coins: list = None, source_tags: dict | None = None) -> str:
     """Single-message format (may exceed Telegram limit — prefer chunk_watchlist_messages)."""
-    return "\n\n".join(chunk_watchlist_messages(coins))
+    return "\n\n".join(chunk_watchlist_messages(coins, source_tags=source_tags))
 
 
-def chunk_watchlist_messages(coins: list = None, *, limit: int = _WATCHLIST_CHUNK_LIMIT) -> list[str]:
+def _format_coin_line_with_tag(index: int, coin: dict, source_tags: dict | None) -> str:
+    """Existing coin line, plus optional ``lane/source`` when shadow tags exist."""
+    line = _format_coin_line(index, coin)
+    if not source_tags:
+        return line
+    sym = str(coin.get("symbol") or "").strip()
+    tag = source_tags.get(sym)
+    if not isinstance(tag, dict):
+        return line
+    source = str(tag.get("source") or "").strip()
+    lane = str(tag.get("lane") or "").strip()
+    if not source or lane not in ("observe", "trade"):
+        return line
+    return f"{line} <i>{lane}/{source}</i>"
+
+
+def chunk_watchlist_messages(
+    coins: list = None,
+    *,
+    limit: int = _WATCHLIST_CHUNK_LIMIT,
+    source_tags: dict | None = None,
+) -> list[str]:
     """Split watchlist into Telegram-safe HTML chunks (one line per coin)."""
     coins = coins if coins is not None else list_coins()
     if not coins:
@@ -53,7 +74,7 @@ def chunk_watchlist_messages(coins: list = None, *, limit: int = _WATCHLIST_CHUN
     chunks: list[str] = []
     current = header
     for i, coin in enumerate(coins, 1):
-        line = _format_coin_line(i, coin) + "\n"
+        line = _format_coin_line_with_tag(i, coin, source_tags) + "\n"
         # hard-split oversized single line
         if len(line) > limit:
             if current.strip() and current != header and current != cont:
@@ -88,8 +109,8 @@ def chunk_watchlist_messages(coins: list = None, *, limit: int = _WATCHLIST_CHUN
     return chunks
 
 
-def send_watchlist_messages(coins: list = None) -> None:
-    for part in chunk_watchlist_messages(coins):
+def send_watchlist_messages(coins: list = None, source_tags: dict | None = None) -> None:
+    for part in chunk_watchlist_messages(coins, source_tags=source_tags):
         send_telegram_message(part)
 
 
@@ -402,7 +423,14 @@ def handle(text: str) -> bool:
         return True
 
     if text in ["/list", "/watchlist", "/show"]:
-        send_watchlist_messages(list_coins())
+        tags = None
+        try:
+            from services.universe.source_tags import list_formatter_tags
+
+            tags = list_formatter_tags()
+        except Exception:
+            tags = None
+        send_watchlist_messages(list_coins(), source_tags=tags)
         return True
 
     return False
