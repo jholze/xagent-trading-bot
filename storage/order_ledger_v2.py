@@ -472,6 +472,8 @@ class OrderLedgerV2(Protocol):
     def rebuild_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict: ...
     def full_blob_load_count(self) -> int: ...
     def ensure_indexes(self) -> None: ...
+    def find_by_keys(self, keys: Iterable[str], *, session=None) -> list[dict]: ...
+    def delete_by_ids(self, doc_ids: Iterable[str], *, session=None) -> int: ...
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +603,47 @@ class MemoryOrderLedgerV2:
             self._day_stats[sid] = copy.deepcopy(stats)
         return copy.deepcopy(stats)
 
+    def find_by_keys(self, keys: Iterable[str], *, session=None) -> list[dict]:
+        del session  # memory backend has no server session
+        wanted = {str(k) for k in keys if k}
+        if not wanted:
+            return []
+        out: list[dict] = []
+        with self._lock:
+            for doc_id, doc in self._orders.items():
+                oid = str(doc.get("id") or "")
+                if doc_id in wanted or oid in wanted:
+                    out.append(copy.deepcopy(doc))
+        return out
+
+    def delete_by_ids(self, doc_ids: Iterable[str], *, session=None) -> int:
+        del session
+        days: set[tuple[str, str, str]] = set()
+        n = 0
+        with self._lock:
+            for raw_id in doc_ids:
+                doc_id = str(raw_id)
+                doc = self._orders.pop(doc_id, None)
+                if not doc:
+                    continue
+                n += 1
+                tid = str(doc.get("tenant_id") or "")
+                scope = str(doc.get("ledger_scope") or "")
+                day = str(doc.get("day_key") or "")
+                bucket = self._day_index.get((tid, scope, day))
+                if bucket:
+                    self._day_index[(tid, scope, day)] = [
+                        item for item in bucket if item != doc_id
+                    ]
+                seq = doc.get("display_seq")
+                if seq is not None and tid and scope:
+                    self._display_index.pop((tid, scope, int(seq)), None)
+                if tid and scope and day:
+                    days.add((tid, scope, day))
+            for tid, scope, day in days:
+                self.rebuild_day_stats(tid, scope, day)
+        return n
+
 
 # ---------------------------------------------------------------------------
 # Mongo backend
@@ -711,6 +754,7 @@ class MongoOrderLedgerV2:
         filled_only: bool = False,
         blocked_only: bool = False,
         limit: int = 500,
+        session=None,
     ) -> list[dict]:
         filt: dict[str, Any] = {
             "tenant_id": tenant_id,
@@ -725,7 +769,7 @@ class MongoOrderLedgerV2:
             filt["status"] = {"$in": sorted(status_filter)}
         cur = (
             self._db()[ORDERS_V2_COLLECTION]
-            .find(filt)
+            .find(filt, session=session)
             .sort([("ts_event", -1), ("display_seq", -1)])
             .limit(max(1, int(limit)))
         )
@@ -741,7 +785,39 @@ class MongoOrderLedgerV2:
             return out
         return self.rebuild_day_stats(tenant_id, scope, day_key)
 
-    def rebuild_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict:
+    def find_by_keys(self, keys: Iterable[str], *, session=None) -> list[dict]:
+        wanted = [str(k) for k in keys if k]
+        if not wanted:
+            return []
+        cur = self._db()[ORDERS_V2_COLLECTION].find(
+            {"$or": [{"_id": {"$in": wanted}}, {"id": {"$in": wanted}}]},
+            session=session,
+        )
+        return list(cur)
+
+    def delete_by_ids(self, doc_ids: Iterable[str], *, session=None) -> int:
+        from storage.mongo_client import assert_safe_dev_db_mutation, resolve_database_name
+
+        ids = [str(item) for item in doc_ids if item]
+        if not ids:
+            return 0
+        assert_safe_dev_db_mutation(
+            resolve_database_name(test=self._test, config=self._config),
+            action="write",
+        )
+        col = self._db()[ORDERS_V2_COLLECTION]
+        found = list(col.find({"_id": {"$in": ids}}, session=session))
+        result = col.delete_many({"_id": {"$in": ids}}, session=session)
+        days = {
+            (str(doc.get("tenant_id") or ""), str(doc.get("ledger_scope") or ""), str(doc.get("day_key") or ""))
+            for doc in found
+        }
+        for tid, scope, day in days:
+            if tid and scope and day:
+                self.rebuild_day_stats(tid, scope, day, session=session)
+        return int(getattr(result, "deleted_count", 0) or 0)
+
+    def rebuild_day_stats(self, tenant_id: str, scope: str, day_key: str, session=None) -> dict:
         from storage.mongo_client import assert_safe_dev_db_mutation, resolve_database_name
 
         assert_safe_dev_db_mutation(
@@ -749,12 +825,12 @@ class MongoOrderLedgerV2:
             action="write",
         )
         filled = self.query_day(
-            tenant_id, scope, day_key, filled_only=True, limit=10_000,
+            tenant_id, scope, day_key, filled_only=True, limit=10_000, session=session,
         )
         stats = empty_day_stats(tenant_id, scope, day_key)
         stats.update(stats_from_filled_orders(filled))
         blocked = self.query_day(
-            tenant_id, scope, day_key, blocked_only=True, limit=10_000,
+            tenant_id, scope, day_key, blocked_only=True, limit=10_000, session=session,
         )
         stats["blocked"] = len(blocked)
         by_st: dict[str, int] = {}
@@ -766,7 +842,7 @@ class MongoOrderLedgerV2:
         payload = dict(stats)
         payload["_id"] = compound_day_stats_id(tenant_id, scope, day_key)
         self._db()[DAY_STATS_COLLECTION].replace_one(
-            {"_id": payload["_id"]}, payload, upsert=True,
+            {"_id": payload["_id"]}, payload, upsert=True, session=session,
         )
         out = copy.deepcopy(stats)
         return out

@@ -233,6 +233,31 @@ class MongoLedgerStore:
                 tenant_id=payload.get("tenant_id"),
             )
 
+    def list_docs(self, collection: str, *, session=None) -> list[dict]:
+        """Every document in a ledger collection.
+
+        Cleanup scans these arrays by ``order_id``. There is one document per
+        tenant and scope, so this is the tenant store read, not an ad-hoc query.
+        """
+        return list(self._collection(collection).find({}, session=session))
+
+    def replace_scoped_doc(self, collection: str, doc: dict, *, session=None) -> None:
+        """Replace one tenant+scope ledger document.
+
+        ``session`` participates in a multi-document transaction when the
+        server allows it. Without a session the fenced replace is used.
+        """
+        self._guard_dev_db()
+        scope = str(doc.get("ledger_scope") or "")
+        tenant_id = doc.get("tenant_id")
+        payload = self._prepare_payload(doc, scope, tenant_id)
+        if session is not None:
+            self._collection(collection).replace_one(
+                {"_id": payload["_id"]}, payload, upsert=True, session=session
+            )
+            return
+        self._replace_with_fence(collection, payload)
+
     def count_documents(self, tenant_id: str | None = None) -> dict[str, int]:
         tid = self._resolve_tenant(tenant_id)
         filt: dict[str, Any] = {"tenant_id": tid}

@@ -1,0 +1,13 @@
+{
+  "expected_counts": {
+    "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.positions (lots)": {"tenant_a": 1, "tenant_h": 1},
+    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.memory_trades": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_lessons": {"tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_coin_profiles": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_market_events": null,
+    "mongo.memory_rag_chunks": null
+  }
+}

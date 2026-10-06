@@ -78,7 +78,7 @@ def _save_json(path: Path, points: list[dict]) -> bool:
         return False
 
 
-def _load_mongo(tenant_id: str, scope: str) -> list[dict]:
+def _load_mongo(tenant_id: str, scope: str, session=None) -> list[dict]:
     try:
         from storage.mongo_client import get_database
 
@@ -86,6 +86,7 @@ def _load_mongo(tenant_id: str, scope: str) -> list[dict]:
         cur = db[_COLLECTION].find(
             {"tenant_id": tenant_id, "ledger_scope": scope},
             {"_id": 0},
+            session=session,
         ).sort("date", 1)
         return list(cur)
     except Exception as e:
@@ -113,18 +114,65 @@ def _upsert_mongo(point: dict) -> bool:
         return False
 
 
+def replace_nav_points(
+    tenant_id: str,
+    scope: str,
+    points: list[dict],
+    *,
+    session=None,
+    write_json: bool = True,
+    write_mongo: bool | None = None,
+) -> bool:
+    """Replace the NAV series for one tenant and scope.
+
+    Used when metrics are recomputed from remaining fills. ``session`` keeps
+    the Mongo write inside a multi-document transaction. JSON is a sidecar
+    the caller can defer until the transaction commits.
+    """
+    clean: list[dict] = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        row = {key: value for key, value in point.items() if key != "_id"}
+        row["tenant_id"] = tenant_id
+        row["ledger_scope"] = scope
+        clean.append(row)
+    if write_mongo is None:
+        write_mongo = _use_mongo() or session is not None
+    mongo_ok = True
+    if write_mongo:
+        try:
+            from storage.mongo_client import get_database
+
+            col = get_database()[_COLLECTION]
+            col.delete_many(
+                {"tenant_id": tenant_id, "ledger_scope": scope},
+                session=session,
+            )
+            if clean:
+                col.insert_many(clean, session=session)
+        except Exception as e:
+            log(f"nav history mongo replace failed: {e}", "WARNING")
+            mongo_ok = False
+    json_ok = True
+    if write_json:
+        json_ok = _save_json(_json_path(tenant_id, scope), clean)
+    return bool(mongo_ok and json_ok)
+
+
 def load_nav_history(
     *,
     tenant_id: str | None = None,
     scope: str | None = None,
     limit: int | None = None,
+    session=None,
 ) -> list[dict]:
     tid, sc = _tenant_scope()
     tenant_id = tenant_id or tid
     scope = scope or sc
     with _LOCK:
         if _use_mongo():
-            points = _load_mongo(tenant_id, scope)
+            points = _load_mongo(tenant_id, scope, session=session)
             if not points:
                 points = _load_json(_json_path(tenant_id, scope))
         else:
