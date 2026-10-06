@@ -884,7 +884,7 @@ def _run_tenant_price_cycle(
             config=bot_config.raw,
         )
     except Exception as e:
-        log(f"universe_early_trend tag skip: {e}", "DEBUG")
+        log(f"universe_early_trend tag skip: {e}", "WARNING")
     active_coins = [coin for coin in trade_watchlist if coin.get("active", True)]
     if not use_dashboard and len(active_coins) != len(active_observe):
         print(

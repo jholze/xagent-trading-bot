@@ -448,6 +448,7 @@ def test_t1_every_member_has_source_and_lane(tmp_path, monkeypatch):
     assert payload["behavior_change"] is False
     assert payload["mode"] == "shadow"
     assert payload["counts"]["tagged"] == payload["counts"]["members"] == 2
+    assert payload["counts"]["errors"] == 0
     assert "rate" not in payload["counts"]
     for member in payload["members"]:
         assert member["source"]
@@ -467,7 +468,10 @@ def test_t1_every_member_has_source_and_lane(tmp_path, monkeypatch):
     )
     again = json.loads(path.read_text(encoding="utf-8"))
     assert [m["symbol"] for m in again["members"]] == ["JJJ/USDT"]
-    assert any(line.startswith("universe_early_trend counts ") for line in logged)
+    assert any(
+        line.startswith("universe_early_trend counts ") and "errors=0" in line
+        for line in logged
+    )
 
 
 # --- T3 ---
@@ -502,6 +506,7 @@ def test_t3_formatter_and_log_show_source_without_telegram(monkeypatch):
     assert "%" not in counts
     assert "rate" not in counts
     assert "members=1" in counts
+    assert "errors=0" in counts
 
 
 # --- T4 ---
@@ -578,7 +583,10 @@ def test_overlay_order_follows_existing_builders(monkeypatch):
         "services.gainer_universe.inject.expand_candidates_for_trade",
         lambda state, cfg: [_row("G/USDT", "gate_prev_top")],
     )
-    lists = collect_overlay_lists({"gainer_universe": {"enabled": True, "mode": "shadow"}})
+    lists, errors = collect_overlay_lists(
+        {"gainer_universe": {"enabled": True, "mode": "shadow"}}
+    )
+    assert errors == 0
     symbols = [[c["symbol"] for c in lst] for lst in lists]
     assert symbols == [
         ["A/USDT"],
@@ -602,3 +610,251 @@ def test_expand_source_kept_ahead_of_live_top():
     )
     assert tagged[0]["source"] == "gainer_prev"
     assert "discovery" in tagged[0]["also"]
+
+
+def _capture_logs(monkeypatch) -> list[tuple[str, str]]:
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "services.universe.source_tags.log",
+        lambda msg, level="INFO": logged.append((level, msg)),
+    )
+    return logged
+
+
+def test_counts_line_is_info_member_lines_are_debug(tmp_path, monkeypatch):
+    """Per-cycle count stays INFO. Per-coin lines are DEBUG; the JSON has them."""
+    logged = _capture_logs(monkeypatch)
+    base = _row("AAA/USDT", "base")
+    cmc = _row("BBB/USDT", "cmc_trending")
+    members = publish_cycle_tags(
+        [base, cmc],
+        [base],
+        open_symbols=set(),
+        base_symbols={"AAA/USDT"},
+        config=_shadow(),
+        tenant_id="sUnivSrc",
+        data_root=str(tmp_path),
+        overlays=[[cmc]],
+    )
+    assert members is not None and len(members) == 2
+    info = [msg for level, msg in logged if level == "INFO"]
+    debug = [msg for level, msg in logged if level == "DEBUG"]
+    assert info == [
+        "universe_early_trend counts members=2 observe=1 trade=1 tagged=2 errors=0"
+    ]
+    assert any("symbol=AAA/USDT" in line and "source=base" in line for line in debug)
+    assert any("symbol=BBB/USDT" in line and "source=cmc_trending" in line for line in debug)
+    assert not any("symbol=" in line for line in info)
+
+
+def test_publish_failure_is_warning_not_debug(tmp_path, monkeypatch):
+    logged = _capture_logs(monkeypatch)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("tagger down")
+
+    monkeypatch.setattr("services.universe.source_tags.tag_universe_members", _boom)
+    result = publish_cycle_tags(
+        [_row("AAA/USDT", "base")],
+        [_row("AAA/USDT", "base")],
+        open_symbols=set(),
+        base_symbols={"AAA/USDT"},
+        config=_shadow(),
+        tenant_id="sUnivSrc",
+        data_root=str(tmp_path),
+        overlays=[],
+    )
+    assert result is None
+    warnings = [msg for level, msg in logged if level == "WARNING"]
+    assert any("universe_early_trend tag skip:" in msg for msg in warnings)
+    assert not any(
+        level == "DEBUG" and "tag skip:" in msg for level, msg in logged
+    )
+    assert not any(level == "INFO" and msg.startswith("universe_early_trend counts ") for level, msg in logged)
+    assert not any(Path(tmp_path).rglob(_ARTIFACT))
+
+
+def test_feeder_failures_warn_and_count_errors(tmp_path, monkeypatch):
+    logged = _capture_logs(monkeypatch)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("feeder down")
+
+    monkeypatch.setattr("data_manager.uses_watchlist_expansion", lambda config=None: True)
+    monkeypatch.setattr("data_manager.is_dry_run_enhanced", lambda config=None: False)
+    monkeypatch.setattr(
+        "data_manager.trending_watchlist_live_enabled", lambda config=None: False
+    )
+    monkeypatch.setattr("data_manager.load_dry_run_expansion", _boom)
+    monkeypatch.setattr(
+        "services.gainer_universe.config.gainer_universe_enabled",
+        lambda config=None: True,
+    )
+    monkeypatch.setattr("services.gainer_universe.store.load_gainer_state", _boom)
+
+    lists, errors = collect_overlay_lists({})
+    assert lists == []
+    assert errors == 2
+    assert any(
+        level == "WARNING" and "watchlist feeders skip:" in msg for level, msg in logged
+    )
+    assert any(
+        level == "WARNING" and "gainer feeders skip:" in msg for level, msg in logged
+    )
+    assert not any(level == "DEBUG" and "feeders skip:" in msg for level, msg in logged)
+
+    coin = _row("AAA/USDT", "base")
+    members = publish_cycle_tags(
+        [coin],
+        [coin],
+        open_symbols=set(),
+        base_symbols={"AAA/USDT"},
+        config=_shadow(),
+        tenant_id="sUnivSrc",
+        data_root=str(tmp_path),
+        overlays=None,
+    )
+    assert members is not None
+    assert members[0]["source"] == "base"
+    info = [msg for level, msg in logged if level == "INFO"]
+    assert len(info) == 1
+    assert "errors=2" in info[0]
+    path = Path(members_artifact_path("sUnivSrc", data_root=str(tmp_path)))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["counts"]["errors"] == 2
+
+
+def test_base_watchlist_failure_warns_and_counts_errors(tmp_path, monkeypatch):
+    logged = _capture_logs(monkeypatch)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("watchlist down")
+
+    monkeypatch.setattr("data_manager.load_watchlist", _boom)
+    monkeypatch.setattr("data_manager.uses_watchlist_expansion", lambda config=None: False)
+    monkeypatch.setattr("data_manager.is_dry_run_enhanced", lambda config=None: False)
+    monkeypatch.setattr(
+        "data_manager.trending_watchlist_live_enabled", lambda config=None: False
+    )
+    monkeypatch.setattr(
+        "services.gainer_universe.config.gainer_universe_enabled",
+        lambda config=None: False,
+    )
+    coin = _row("AAA/USDT", "manual")
+    members = publish_cycle_tags(
+        [coin],
+        [],
+        open_symbols=set(),
+        base_symbols=None,
+        config=_shadow(),
+        tenant_id="henry",
+        data_root=str(tmp_path),
+        overlays=None,
+    )
+    assert members is not None
+    assert members[0]["source"] == "discovery"
+    assert any(
+        level == "WARNING" and "base set skip:" in msg for level, msg in logged
+    )
+    info = [msg for level, msg in logged if level == "INFO"]
+    assert len(info) == 1 and "errors=1" in info[0]
+
+
+def test_aria_tag_skip_is_warning():
+    bot = (REPO / "aria_bot.py").read_text(encoding="utf-8")
+    assert 'log(f"universe_early_trend tag skip: {e}", "WARNING")' in bot
+    text = (REPO / "services" / "universe" / "source_tags.py").read_text(encoding="utf-8")
+    assert 'tag skip: {e}", "DEBUG"' not in text
+    assert 'feeders skip: {e}", "DEBUG"' not in text
+    assert 'base set skip: {e}", "DEBUG"' not in text
+
+
+_DECISION_ROOTS = (
+    REPO / "risk",
+    REPO / "strategies",
+    REPO / "execution",
+    REPO / "services" / "venue_quality.py",
+)
+_TAG_MARKERS = (
+    "services.universe.source_tags",
+    "universe.source_tags",
+    "universe_members",
+    "universe_early_trend",
+    "publish_cycle_tags",
+    "list_formatter_tags",
+    "tag_universe_members",
+)
+
+
+def test_risk_and_buy_code_do_not_read_source_lane_tags():
+    """Tags are display-only. Risk, strategy, and execution code must not read them.
+
+    Operational coin[\"source\"] (chase guard and the like) is a different field
+    and is not this artifact.
+    """
+    offenders: list[str] = []
+    files: list[Path] = []
+    for root in _DECISION_ROOTS:
+        if root.is_file():
+            files.append(root)
+        else:
+            files.extend(p for p in root.rglob("*.py") if p.is_file())
+    assert files, "decision trees missing"
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for marker in _TAG_MARKERS:
+            if marker in text:
+                offenders.append(f"{path.relative_to(REPO)} contains {marker}")
+    assert offenders == []
+
+
+def test_overlay_loaders_shared_base_watchlist_is_tenant_scoped(tmp_path, monkeypatch):
+    """Overlay files are process-shared, same as build_merged_watchlist_coins.
+
+    The base watchlist is tenant-scoped, so henry's tags load henry's watchlist.
+    """
+    import inspect
+
+    import data_manager
+    from services.gainer_universe.store import load_gainer_state
+
+    doc = collect_overlay_lists.__doc__ or ""
+    for snippet in (
+        "data/watchlist.dry_run_expansion.json",
+        "data/watchlist.dry_run_overlay.json",
+        "data/watchlist.cmc_trending_overlay.json",
+        "gainer_universe_state.json",
+        "load_watchlist(tenant_id)",
+    ):
+        assert snippet in doc
+    for fn in (
+        data_manager.load_dry_run_expansion,
+        data_manager.load_dry_run_overlay,
+        data_manager.load_cmc_trending_overlay,
+        load_gainer_state,
+    ):
+        assert "tenant_id" not in inspect.signature(fn).parameters
+
+    seen: dict[str, str | None] = {}
+
+    def _load(tenant_id=None):
+        seen["tenant_id"] = tenant_id
+        return [{"symbol": "AAA/USDT", "source": "base"}]
+
+    monkeypatch.setattr("data_manager.load_watchlist", _load)
+    members = publish_cycle_tags(
+        [_row("AAA/USDT", "base")],
+        [_row("AAA/USDT", "base")],
+        open_symbols=set(),
+        base_symbols=None,
+        config=_shadow(),
+        tenant_id="henry",
+        data_root=str(tmp_path),
+        overlays=[],
+    )
+    assert seen["tenant_id"] == "henry"
+    assert members is not None
+    assert members[0]["source"] == "base"
+    path = Path(members_artifact_path("henry", data_root=str(tmp_path)))
+    assert path.is_file()
+    assert path.parent.name == "henry"

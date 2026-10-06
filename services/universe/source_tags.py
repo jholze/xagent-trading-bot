@@ -238,25 +238,41 @@ def format_cycle_log_line(member: dict) -> str:
     )
 
 
-def format_counts_line(members: list[dict] | None) -> str:
+def format_counts_line(members: list[dict] | None, *, errors: int = 0) -> str:
+    """One INFO line per cycle. ``errors`` counts feeder failures, not members."""
     counts = member_counts(members)
     return (
         "universe_early_trend counts "
         f"members={counts['members']} observe={counts['observe']} "
-        f"trade={counts['trade']} tagged={counts['tagged']}"
+        f"trade={counts['trade']} tagged={counts['tagged']} "
+        f"errors={int(errors)}"
     )
 
 
-def collect_overlay_lists(config: dict | None) -> list[list[dict]]:
+def collect_overlay_lists(config: dict | None) -> tuple[list[list[dict]], int]:
     """Overlay coin lists in the order the existing membership builders apply them.
 
     Watchlist merge order (``build_merged_watchlist_coins``): expansion, dry-run
     overlay, CMC trending. Gainer inject then writes eligible-expand ``source``
     over live-top, so expand is listed before live-top — that is the source the
     builder keeps, not a new ranking.
+
+    These feeders are process-shared, same as the membership builders. They do
+    not take a tenant id:
+
+    * ``data/watchlist.dry_run_expansion.json`` (``load_dry_run_expansion``)
+    * ``data/watchlist.dry_run_overlay.json`` (``load_dry_run_overlay``)
+    * ``data/watchlist.cmc_trending_overlay.json`` (``load_cmc_trending_overlay``)
+    * ``gainer_universe_state.json`` via ``load_gainer_state``
+      (``GAINER_UNIVERSE_STATE_PATH``, else ``/app/logs/``, else ``data/``)
+
+    The base watchlist is the tenant-scoped input (``load_watchlist(tenant_id)``).
+    Returns ``(lists, error_count)``. A feeder exception is a WARNING and does
+    not raise.
     """
     cfg = config if isinstance(config, dict) else {}
     lists: list[list[dict]] = []
+    errors = 0
     try:
         from data_manager import (
             is_dry_run_enhanced,
@@ -275,7 +291,8 @@ def collect_overlay_lists(config: dict | None) -> list[list[dict]]:
         if trending_watchlist_live_enabled(cfg) and should_include_trending_overlay(cfg):
             lists.append(list((load_cmc_trending_overlay() or {}).get("coins") or []))
     except Exception as e:
-        log(f"universe_early_trend watchlist feeders skip: {e}", "DEBUG")
+        errors += 1
+        log(f"universe_early_trend watchlist feeders skip: {e}", "WARNING")
 
     try:
         from services.gainer_universe.config import gainer_universe_config, gainer_universe_enabled
@@ -296,25 +313,26 @@ def collect_overlay_lists(config: dict | None) -> list[list[dict]]:
                 })
             lists.append(live)
     except Exception as e:
-        log(f"universe_early_trend gainer feeders skip: {e}", "DEBUG")
-    return lists
+        errors += 1
+        log(f"universe_early_trend gainer feeders skip: {e}", "WARNING")
+    return lists, errors
 
 
-def _base_symbols_from_watchlist(tenant_id: str | None) -> set[str]:
+def _base_symbols_from_watchlist(tenant_id: str | None) -> tuple[set[str], int]:
     try:
         from data_manager import load_watchlist
 
         coins = load_watchlist(tenant_id=tenant_id) or []
     except Exception as e:
-        log(f"universe_early_trend base set skip: {e}", "DEBUG")
-        return set()
+        log(f"universe_early_trend base set skip: {e}", "WARNING")
+        return set(), 1
     out: set[str] = set()
     for coin in coins:
         if isinstance(coin, dict) and coin.get("symbol"):
             sym = str(coin.get("symbol") or "").strip()
             if sym:
                 out.add(sym)
-    return out
+    return out, 0
 
 
 def _open_symbols_from_positions(positions: Iterable | None) -> set[str]:
@@ -364,12 +382,17 @@ def publish_cycle_tags(
             if open_symbols is not None
             else _open_symbols_from_positions(open_positions)
         )
-        base = (
-            {str(s).strip() for s in base_symbols if str(s).strip()}
-            if base_symbols is not None
-            else _base_symbols_from_watchlist(tid)
-        )
-        overlay_lists = overlays if overlays is not None else collect_overlay_lists(config)
+        if base_symbols is not None:
+            base = {str(s).strip() for s in base_symbols if str(s).strip()}
+            base_errors = 0
+        else:
+            base, base_errors = _base_symbols_from_watchlist(tid)
+        if overlays is not None:
+            overlay_lists = overlays
+            feeder_errors = 0
+        else:
+            overlay_lists, feeder_errors = collect_overlay_lists(config)
+        errors = int(base_errors) + int(feeder_errors)
         members = tag_universe_members(
             observe,
             trade,
@@ -378,14 +401,14 @@ def publish_cycle_tags(
             overlays=overlay_lists,
         )
         for member in members:
-            log(format_cycle_log_line(member), "INFO")
-        log(format_counts_line(members), "INFO")
+            log(format_cycle_log_line(member), "DEBUG")
+        log(format_counts_line(members, errors=errors), "INFO")
         payload = {
             "tenant_id": tid,
             "mode": "shadow",
             "behavior_change": False,
             "members": members,
-            "counts": member_counts(members),
+            "counts": {**member_counts(members), "errors": errors},
         }
         path = members_artifact_path(tid, data_root=data_root)
         from data_manager import atomic_write_json
@@ -393,7 +416,7 @@ def publish_cycle_tags(
         atomic_write_json(path, payload)
         return members
     except Exception as e:
-        log(f"universe_early_trend tag skip: {e}", "DEBUG")
+        log(f"universe_early_trend tag skip: {e}", "WARNING")
         return None
 
 
