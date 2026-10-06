@@ -33,4 +33,9 @@ def healthy_offline_venue_metrics(symbol="OFFLINE/USDT", *args, **kwargs):
         top_book_ask_usdt=1_000_000.0,
         exchange="gate",
         capture="ok",
+        # ±0.5% band notional, both sides, so the #641 lock does not
+        # treat the offline stub as a missing book.
+        depth_bid_usdt=1_000_000.0,
+        depth_ask_usdt=1_000_000.0,
+        depth_parsed=True,
     )

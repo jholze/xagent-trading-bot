@@ -1,0 +1,6 @@
+{
+  "label": "INVALID_CURRENCY_PAIR",
+  "message": "Invalid currency pair BTC/USDT",
+  "http_status": 400,
+  "captured": "2026-10-06 live GET /spot/order_book?currency_pair=BTC/USDT"
+}

@@ -69,7 +69,7 @@ def dca_add_blocked(
     *,
     config: dict | None = None,
 ) -> tuple[bool, str]:
-    """True if DCA / sniper add-on must not execute (explicit no_dca only)."""
+    """True if a DCA / sniper add must not execute (any active lock, #640)."""
     try:
         from strategies.position_lock import dca_blocked
 

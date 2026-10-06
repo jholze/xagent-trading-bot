@@ -358,6 +358,24 @@ _DCA_ORDER_PRIORITY_FIELDS = (
 )
 
 
+def _merged_dca_round(order_val, cached_val, snap: dict, cached: dict) -> int:
+    """DCA counter for one lot after an orders+cache merge.
+
+    The counter is per lot and starts at 0 when a new cycle opens (the
+    order replay resets it on a full flat). Cache may still hold the
+    previous cycle's count; that must not be copied onto the new lot.
+    """
+    order_n = int(order_val or 0)
+    cache_n = int(cached_val or 0)
+    snap_open = str(snap.get("first_buy_at") or snap.get("entry_at") or "")
+    cache_open = str(cached.get("first_buy_at") or cached.get("entry_at") or "")
+    if snap_open and cache_open and snap_open != cache_open:
+        return order_n
+    if snap_open and not cache_open:
+        return order_n
+    return max(order_n, cache_n)
+
+
 def _cached_lot_stays_flat(cached: dict) -> bool:
     """True when the stored cache already closed this key (#584).
 
@@ -396,7 +414,11 @@ def derive_positions_from_orders_and_cache(
             order_val = snap.get(field)
             cached_val = cached.get(field)
             if field in ("dca_rounds", "dca_recovery_rounds"):
-                best = max(int(order_val or 0), int(cached_val or 0))
+                # Current open cycle wins. A previous cycle's cached count
+                # must not stick to a lot that was fully closed and reopened
+                # (#640). Same cycle still keeps the higher of order vs cache
+                # so an unreplayed fill is not dropped.
+                best = _merged_dca_round(order_val, cached_val, snap, cached)
                 if best > 0 or cached_val is not None or order_val is not None:
                     pos[field] = best
             elif order_val is not None:
@@ -1393,6 +1415,12 @@ def update_position(
                 )
             if "FULL" in signal:
                 apply_hard_clear_if_closed(pos)
+            # #640: the DCA counter resets only when the lot is fully flat.
+            # A partial sell leaves amount > 0 and keeps dca_rounds. A lock
+            # does not touch the counter.
+            if float(pos.get("amount") or 0) <= DUST_AMOUNT_EPSILON:
+                pos["dca_rounds"] = 0
+                pos["dca_recovery_rounds"] = 0
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
         is_open_now = is_open_position(pos)

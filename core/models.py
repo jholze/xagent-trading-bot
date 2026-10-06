@@ -357,6 +357,9 @@ class RiskDecision:
     drawdown_pct: float = 0.0
     atr_factor: float = 1.0
     trust_factor: float = 1.0
+    # #640 / #641: every reject code plus the price and book fields the tape
+    # needs. Primary ``code`` is ``details["codes"][0]`` when set.
+    details: Optional[dict] = None
 
 
 @dataclass

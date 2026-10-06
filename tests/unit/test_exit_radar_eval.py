@@ -131,18 +131,21 @@ class TestDdPolicyAlignment(unittest.TestCase):
 
 
 class TestPositionGates(unittest.TestCase):
-    def test_default_lock_allows_dca(self):
+    def test_default_lock_blocks_dca(self):
+        """#640: any active lock blocks DCA, including the default modes."""
         pos = {"amount": 1}
         apply_lock(pos, build_lock(modes=DEFAULT_MODES, reason="test"))
-        blocked, _ = dca_add_blocked(pos)
-        self.assertFalse(blocked)
+        blocked, msg = dca_add_blocked(pos)
+        self.assertTrue(blocked)
+        self.assertIn("position_locked", msg)
 
     def test_explicit_no_dca(self):
         pos = {"amount": 1}
         apply_lock(pos, build_lock(modes=[MODE_NO_DCA], reason="test"))
         blocked, msg = dca_add_blocked(pos)
         self.assertTrue(blocked)
-        self.assertIn("no_dca", msg)
+        self.assertIn("position_locked", msg)
+        self.assertIn("locked", msg)
 
     def test_legacy_triple_blocks_dca(self):
         pos = {"amount": 1}
@@ -155,7 +158,8 @@ class TestPositionGates(unittest.TestCase):
         )
         blocked, why = dca_add_blocked(pos)
         self.assertTrue(blocked)
-        self.assertIn("no_dca", why)
+        self.assertIn("position_locked", why)
+        self.assertIn("locked", why)
 
     def test_hold_blocks_auto_exit(self):
         pos = {"recovery_hold": True, "sniper_focus": True, "amount": 1}

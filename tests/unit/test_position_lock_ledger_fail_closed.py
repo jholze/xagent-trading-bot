@@ -137,10 +137,11 @@ class TestLedgerReadFailClosed(unittest.TestCase):
         blocked_tg, _ = auto_sell_blocked(result, source="telegram", config=_LOCK_CFG)
         self.assertFalse(blocked_tg)
 
-    def test_c_eviction_blocked_dca_allowed(self):
+    def test_c_eviction_blocked_dca_blocked(self):
         result = self._attach_on_raise(_open_pos())
         self.assertTrue(eviction_blocked(result, config=_LOCK_CFG)[0])
-        self.assertFalse(dca_blocked(result, config=_LOCK_CFG)[0])
+        # Synthetic ledger-fail lock is still a lock: adds are blocked.
+        self.assertTrue(dca_blocked(result, config=_LOCK_CFG)[0])
 
     def test_d_risk_manager_exit_ws_denied_manual_approved(self):
         from core.models import TradeOrder

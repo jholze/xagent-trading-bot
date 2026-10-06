@@ -57,6 +57,11 @@ def _risk_cfg(*, max_usdt: float = 4500.0, min_trade: float = 100.0) -> BotConfi
             "position_capacity": {"enabled": False},
             "moderate_deploy": {"enabled": False},
             "venue_quality": {"enabled": False},
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+            },
             "slot_eviction": {"enabled": False},
         },
         "architecture": {},

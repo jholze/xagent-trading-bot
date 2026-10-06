@@ -94,7 +94,8 @@ def _reset_position_cycle(pos: dict, *, amount: float, price: float, trade_ts: s
     pos["dca_recovery_max_rounds"] = 0
     pos["last_dca_recovery_at"] = None
     pos["entry_source"] = None
-    pos["entry_at"] = None
+    pos["entry_at"] = trade_ts
+    pos["first_buy_at"] = trade_ts
 
 
 def _build_positions_snapshot_from_orders(

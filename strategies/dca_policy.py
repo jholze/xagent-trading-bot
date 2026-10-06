@@ -342,3 +342,186 @@ def apply_policy_to_usdt(
     if spendable_dca is not None and spendable_dca >= 0:
         usdt = min(usdt, float(spendable_dca))
     return max(0.0, usdt)
+
+
+# #640 add rules. The lock document is read only through dca_blocked.
+
+
+_CODE_MISSING = "dca_guard_missing_input"
+_CODE_LOCKED = "dca_guard_locked"
+_CODE_BELOW = "dca_guard_below_avg"
+_CODE_ROUNDS = "dca_guard_max_rounds"
+
+
+@dataclass
+class DcaGuardResult:
+    blocked: bool
+    codes: list[str] = field(default_factory=list)
+    price: float | None = None
+    avg: float | None = None
+    dca_rounds: int | None = None
+    locked: bool | None = None
+
+    @property
+    def code(self) -> str:
+        return self.codes[0] if self.codes else ""
+
+
+def is_human_operator_buy(source: str | None) -> bool:
+    """Human operator only. Every ``mcp*`` source is automatic."""
+    src = str(source or "").strip().lower()
+    if not src or src.startswith("mcp"):
+        return False
+    from strategies.position_lock import is_manual_source
+
+    return is_manual_source(src)
+
+
+def _price_is_stale(symbol: str, indicators: dict | None) -> bool:
+    from price_fetcher import _stale_price_max_age_sec, stale_expired_symbols
+
+    max_age = float(_stale_price_max_age_sec())
+    if isinstance(indicators, dict) and indicators.get("price_age_sec") is not None:
+        try:
+            age = float(indicators.get("price_age_sec"))
+        except (TypeError, ValueError):
+            return True
+        if age > max_age:
+            return True
+    try:
+        expired = stale_expired_symbols()
+    except Exception:
+        return True
+    return str(symbol or "") in expired
+
+
+def _lock_state(pos: dict) -> bool | None:
+    """One read of the lock document via ``dca_blocked``. None if it cannot be read."""
+    raw = pos.get("lock") if isinstance(pos, dict) else None
+    if "lock" in pos and raw is not None and not isinstance(raw, dict):
+        return None
+    try:
+        from strategies.position_lock import dca_blocked
+
+        blocked, _msg = dca_blocked(pos)
+        return bool(blocked)
+    except Exception:
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out
+
+
+def evaluate_dca_guard(
+    pos: dict | None,
+    *,
+    price: float | None,
+    source: str | None,
+    has_open_lot: bool,
+    symbol: str = "",
+    indicators: dict | None = None,
+) -> DcaGuardResult:
+    """Add-on rules. New entries (no open lot) are not this guard.
+
+    A human manual source is still evaluated. The caller logs that result
+    and does not auto-block it.
+    """
+    del source
+    if not has_open_lot:
+        return DcaGuardResult(blocked=False, price=_as_float(price))
+
+    if not isinstance(pos, dict):
+        return DcaGuardResult(
+            blocked=True,
+            codes=[_CODE_MISSING],
+            price=_as_float(price),
+            locked=None,
+        )
+
+    live = _as_float(price)
+    avg = _as_float(pos.get("average_entry"))
+    if avg is None:
+        avg = _as_float(pos.get("entry_price"))
+    rounds_raw = pos.get("dca_rounds") if "dca_rounds" in pos else None
+    rounds: int | None
+    if rounds_raw is None:
+        rounds = None
+    else:
+        try:
+            rounds = int(rounds_raw)
+        except (TypeError, ValueError):
+            rounds = None
+    locked = _lock_state(pos)
+    stale = False
+    try:
+        stale = _price_is_stale(symbol or str(pos.get("symbol") or ""), indicators)
+    except Exception:
+        stale = True
+
+    missing = (
+        live is None
+        or live <= 0
+        or avg is None
+        or avg <= 0
+        or rounds is None
+        or rounds < 0
+        or locked is None
+        or stale
+    )
+    if missing:
+        return DcaGuardResult(
+            blocked=True,
+            codes=[_CODE_MISSING],
+            price=live,
+            avg=avg,
+            dca_rounds=rounds,
+            locked=locked,
+        )
+
+    codes: list[str] = []
+    if locked:
+        codes.append(_CODE_LOCKED)
+    if live < avg:
+        codes.append(_CODE_BELOW)
+    if rounds >= 1:
+        codes.append(_CODE_ROUNDS)
+    return DcaGuardResult(
+        blocked=bool(codes),
+        codes=codes,
+        price=live,
+        avg=avg,
+        dca_rounds=rounds,
+        locked=bool(locked),
+    )
+
+
+def policy_skip_for_guard(
+    pos: dict | None,
+    price: float | None,
+    *,
+    symbol: str = "",
+    indicators: dict | None = None,
+) -> DcaPolicyResult | None:
+    """Skip the policy buy when the add rules would block it."""
+    result = evaluate_dca_guard(
+        pos,
+        price=price,
+        source="dca",
+        has_open_lot=True,
+        symbol=symbol,
+        indicators=indicators,
+    )
+    if not result.blocked:
+        return None
+    return DcaPolicyResult(
+        size_mult=1.0,
+        skip=True,
+        reason_codes=tuple(result.codes),
+    )
