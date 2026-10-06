@@ -873,6 +873,18 @@ def _run_tenant_price_cycle(
         observe_coins=observe_watchlist,
         open_positions=open_positions,
     )
+    # #594 shadow tags. Fail-open: a tag error must not change the trade list.
+    try:
+        from services.universe.source_tags import publish_cycle_tags
+
+        publish_cycle_tags(
+            observe_watchlist,
+            trade_watchlist,
+            open_positions=open_positions,
+            config=bot_config.raw,
+        )
+    except Exception as e:
+        log(f"universe_early_trend tag skip: {e}", "WARNING")
     active_coins = [coin for coin in trade_watchlist if coin.get("active", True)]
     if not use_dashboard and len(active_coins) != len(active_observe):
         print(

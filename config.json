@@ -2055,6 +2055,11 @@
       "_doc": "#631 Ersatz-Cap universe.membership_revise.ersatz_cap_trade_max. Flag universe.membership_revise.mode is off|shadow|enforce. Shadow does not change the live trade set. Enforce applies staged trade_max/rank clamped to the cap. Missing cap refuses config. RelVol universe exempt unchanged. Does not widen by default."
     }
   },
+  "universe_early_trend": {
+    "mode": "shadow",
+    "behavior_change": false,
+    "_doc": "#594 shadow visibility only. mode off|shadow. behavior_change stays false: tags do not change membership or BUY. Cycle log plus data/{tenant_id}/universe_members.json. /list source suffix is optional."
+  },
   "universe_core_seed": {
     "mode": "shadow",
     "behavior_change": false,
