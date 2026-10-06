@@ -78,7 +78,7 @@ def _save_json(path: Path, points: list[dict]) -> bool:
         return False
 
 
-def _load_mongo(tenant_id: str, scope: str) -> list[dict]:
+def _load_mongo(tenant_id: str, scope: str, session=None) -> list[dict]:
     try:
         from storage.mongo_client import get_database
 
@@ -86,6 +86,7 @@ def _load_mongo(tenant_id: str, scope: str) -> list[dict]:
         cur = db[_COLLECTION].find(
             {"tenant_id": tenant_id, "ledger_scope": scope},
             {"_id": 0},
+            session=session,
         ).sort("date", 1)
         return list(cur)
     except Exception as e:
@@ -164,13 +165,14 @@ def load_nav_history(
     tenant_id: str | None = None,
     scope: str | None = None,
     limit: int | None = None,
+    session=None,
 ) -> list[dict]:
     tid, sc = _tenant_scope()
     tenant_id = tenant_id or tid
     scope = scope or sc
     with _LOCK:
         if _use_mongo():
-            points = _load_mongo(tenant_id, scope)
+            points = _load_mongo(tenant_id, scope, session=session)
             if not points:
                 points = _load_json(_json_path(tenant_id, scope))
         else:

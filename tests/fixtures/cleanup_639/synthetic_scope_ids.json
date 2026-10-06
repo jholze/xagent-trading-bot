@@ -1,5 +1,16 @@
 {
   "cutoff_utc": "2026-09-27T19:36:00",
+  "expected_counts": {
+    "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.positions (lots)": {"tenant_a": 1, "tenant_h": 1},
+    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.memory_trades": {"not_a_real_tenant": 1, "tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_lessons": {"someone_else": 1, "tenant_a": 0, "tenant_h": 0},
+    "mongo.memory_coin_profiles": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_market_events": {"not_a_real_tenant": 1, "tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_rag_chunks": {"tenant_a": 2, "tenant_h": 0}
+  },
   "positions": {
     "tenant_a": {
       "lot_id": "positions:tenant_a:demo/AAA_USDT_1h",

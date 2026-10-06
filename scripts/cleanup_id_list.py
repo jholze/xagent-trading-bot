@@ -2,9 +2,12 @@
 """Remove ledger and memory rows named by an external id list.
 
 The id list is a runtime file (``--ids``). It is not shipped in the repo.
-Dry-run is the default: it prints what would be removed, the recomputed
-metrics, and the sha256 of the id file. A real run requires ``--apply`` plus
-that same id-file sha256 and the sha256 of a fresh backup file.
+Dry-run is the default: it prints what would be removed, stored balances next
+to a replay of the original fills, the sha256 of the id file, and the
+per-store per-tenant delete counts in the ``expected_counts`` shape.
+A real run requires ``--apply`` plus that same id-file sha256, the sha256 of
+a fresh backup file, expected counts that match, every ledger tenant named
+in the file, and a server that can run a multi-document transaction.
 
 Lots, orders, and trade-history rows are removed by id. Embedded orders and
 trades live in one document per tenant and scope; array indexes are only a
@@ -24,7 +27,7 @@ import json
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -82,9 +85,56 @@ UNTOUCHED = frozenset(
     }
 )
 
+# to_delete counts, per store and per tenant. Never a single total.
+# Events and RAG may be null on a first dry-run; --apply still requires every one.
+COUNT_STORES = (
+    STORE_ORDERS_V2,
+    STORE_ORDERS,
+    STORE_POSITIONS,
+    STORE_TRADES,
+    STORE_MEMORY_TRADES,
+    STORE_LESSONS,
+    STORE_PROFILES,
+    STORE_EVENTS,
+    STORE_RAG,
+)
+
+_EXPECTED_COUNTS_HELP = """
+expected_counts (inside the --ids JSON, bound to the file sha256)
+
+Per store and per tenant. Each number is to_delete for that pair, not a
+combined total. Tenant keys are the ledger tenant ids, plus any extra memory
+count bucket the dry-run prints (a memory row is still deleted by id; the
+bucket is only the tally). Use 0 when that tenant has nothing to delete.
+JSON null, or a missing store, means unknown. That is allowed on a first
+dry-run for events and RAG: the dry-run prints a block between
+--- expected_counts --- and --- end expected_counts ---. That block is the
+expected_counts object. Merge it into the id file, re-hash, and dry-run
+again. --apply refuses unless every store below is present and every tenant
+count is an integer that matches.
+
+{
+  "expected_counts": {
+    "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.positions (lots)": {"tenant_a": 1, "tenant_h": 1},
+    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 1},
+    "mongo.memory_trades": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_lessons": {"tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_coin_profiles": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_market_events": null,
+    "mongo.memory_rag_chunks": null
+  }
+}
+"""
+
 
 class CleanupRefused(Exception):
     """A real run was rejected before any read or write of the stores."""
+
+
+class CleanupConflict(Exception):
+    """A document changed between the plan read and the write."""
 
 
 class CleanupAborted(Exception):
@@ -110,6 +160,8 @@ class WriteStep:
     tenant_id: str | None = None
     scope: str | None = None
     points: list | None = None
+    baseline: Any = None
+    baseline_id: str | None = None
 
 
 @dataclass
@@ -127,19 +179,25 @@ def sha256_file(path: Path) -> str:
 
 
 def _parse_dt(value: object) -> datetime | None:
+    """Parse a timestamp and return naive UTC.
+
+    Offsets other than Z are converted to UTC so they can be compared with
+    the naive cutoff from the id file.
+    """
     if value is None:
         return None
     raw = str(value).strip()
     if not raw:
         return None
     if raw.endswith("Z"):
-        raw = raw[:-1]
-    if raw.endswith("+00:00"):
-        raw = raw[: -len("+00:00")]
+        raw = raw[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(raw)
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _float(value: object, default: float = 0.0) -> float:
@@ -538,61 +596,166 @@ def _order_day(order: dict) -> str:
     return ts.date().isoformat()
 
 
-def _nav_series(
-    orders: list[dict],
-    initial: float,
-    cutoff: datetime | None,
+def _orders_through(orders: list[dict], day: str | None) -> list[dict]:
+    if day is None:
+        return list(orders)
+    subset = [order for order in orders if _order_day(order) and _order_day(order) <= day]
+    subset.extend(order for order in orders if not _order_day(order))
+    return subset
+
+
+def _replay_snapshot(orders: list[dict], initial: float, day: str | None) -> dict:
+    """Replay cash, realized, and cost-basis mtm. Used only as a delta."""
+    snap = _replay(_orders_through(orders, day), initial)
+    mtm = 0.0
+    for pos in (snap.get("positions") or {}).values():
+        mtm += _float(pos.get("amount")) * _float(pos.get("average_entry"))
+    return {
+        "cash": _round(snap["cash"]),
+        "realized": _round(snap["realized_pnl"]),
+        "mtm": _round(mtm),
+        "nav": _round(_float(snap["cash"]) + mtm),
+        "open_positions": len(snap.get("positions") or {}),
+    }
+
+
+def _subtract_present(row: dict, key: str, delta: float) -> None:
+    if key not in row or row[key] is None:
+        return
+    if not delta:
+        return
+    row[key] = _round(_float(row[key]) - delta)
+
+
+def _adjust_nav_points(
     existing: list[dict],
+    original: list[dict],
+    remaining: list[dict],
+    initial: float,
+    cutoff: datetime,
 ) -> list[dict]:
-    if cutoff is None:
-        return []
+    """Subtract the removed fills' per-day replay delta from stored NAV points.
+
+    Points before the cutoff are copied unchanged. Points on or after the
+    cutoff keep every stored field; only nav, cash, realized_pnl, and
+    positions_mtm that are already present move by the replay delta. The
+    series is not rebuilt at cost basis.
+    """
     cutoff_day = cutoff.date().isoformat()
-    days: set[str] = set()
+    adjusted: list[dict] = []
     for point in existing:
-        day = str(point.get("date") or "")[:10]
+        row = copy.deepcopy(point)
+        day = str(row.get("date") or "")[:10]
         if day and day >= cutoff_day:
-            days.add(day)
-    for order in orders:
-        day = _order_day(order)
-        if day and day >= cutoff_day:
-            days.add(day)
-    undated = [order for order in orders if not _order_day(order)]
-    series: list[dict] = []
-    for day in sorted(days):
-        subset = [order for order in orders if _order_day(order) and _order_day(order) <= day]
-        subset.extend(undated)
-        snap = _replay(subset, initial)
-        mtm = 0.0
-        for pos in (snap.get("positions") or {}).values():
-            mtm += _float(pos.get("amount")) * _float(pos.get("average_entry"))
-        series.append(
-            {
-                "date": day,
-                "nav": _round(snap["cash"] + mtm),
-                "cash": _round(snap["cash"]),
-                "positions_mtm": _round(mtm),
-                "realized_pnl": _round(snap["realized_pnl"]),
-            }
-        )
-    return series
+            before = _replay_snapshot(original, initial, day)
+            after = _replay_snapshot(remaining, initial, day)
+            _subtract_present(row, "nav", before["nav"] - after["nav"])
+            _subtract_present(row, "cash", before["cash"] - after["cash"])
+            _subtract_present(row, "realized_pnl", before["realized"] - after["realized"])
+            _subtract_present(row, "positions_mtm", before["mtm"] - after["mtm"])
+        adjusted.append(row)
+    return adjusted
 
 
-def _merge_nav(existing: list[dict], series: list[dict], cutoff: datetime | None, tenant: str, scope: str) -> list[dict]:
-    if cutoff is None:
-        return list(existing)
-    cutoff_day = cutoff.date().isoformat()
-    kept = []
-    for point in existing:
-        day = str(point.get("date") or "")[:10]
-        if day and day < cutoff_day:
-            kept.append(copy.deepcopy(point))
-    for point in series:
-        row = dict(point)
-        row["tenant_id"] = tenant
-        row["ledger_scope"] = scope
-        kept.append(row)
-    kept.sort(key=lambda point: str(point.get("date") or ""))
-    return kept
+def _order_owners(order_docs: list[dict]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for doc in order_docs:
+        tenant = _doc_tenant(doc)
+        if not tenant:
+            continue
+        for entry in doc.get("orders") or []:
+            if not isinstance(entry, dict):
+                continue
+            order_id = _entry_order_id(entry)
+            if not order_id:
+                continue
+            previous = found.get(order_id)
+            if previous is None:
+                found[order_id] = tenant
+            elif previous != tenant:
+                ambiguous.add(order_id)
+    for order_id in ambiguous:
+        found.pop(order_id, None)
+    return found
+
+
+def _linked_order_tenant(blob: object, owners: dict[str, str]) -> str:
+    text = str(blob or "").strip()
+    if not text:
+        return ""
+    if text in owners:
+        return owners[text]
+    tail = text.split(":")[-1]
+    if tail and tail in owners:
+        return owners[tail]
+    return ""
+
+
+def memory_count_tenant(doc: dict, owners: dict[str, str], known_tenants: set[str]) -> str:
+    """Tally bucket for a memory row. Deletion itself never consults this."""
+    doc_id = str(doc.get("_id") or "")
+    if "|" in doc_id:
+        prefix = doc_id.split("|", 1)[0]
+        if prefix in known_tenants:
+            return prefix
+    meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    for blob in (doc_id, meta.get("source_id"), doc.get("source_id")):
+        tenant = _linked_order_tenant(blob, owners)
+        if tenant:
+            return tenant
+    label = str(doc.get("tenant_id") or doc.get("tenant") or "").strip()
+    return label or "unattributed"
+
+
+def commit_nav_result(ok: bool) -> None:
+    if not ok:
+        raise RuntimeError("nav history replace failed")
+
+
+def actual_counts_block(counts: dict[tuple[str, str | None], dict[str, int]], tenants: list[str]) -> dict[str, dict[str, int]]:
+    block: dict[str, dict[str, int]] = {store: {} for store in COUNT_STORES}
+    for (store_name, tenant), row in counts.items():
+        if store_name not in block or not tenant:
+            continue
+        deleted = int(row["to_delete"])
+        if tenant not in tenants and deleted == 0:
+            continue
+        block[store_name][str(tenant)] = deleted
+    for store_name in COUNT_STORES:
+        for tenant in tenants:
+            block[store_name].setdefault(tenant, 0)
+        block[store_name] = {key: block[store_name][key] for key in sorted(block[store_name])}
+    return block
+
+
+def expected_count_problems(spec: dict, actual: dict[str, dict[str, int]], tenants: list[str]) -> list[str]:
+    table = spec.get("expected_counts")
+    if not isinstance(table, dict):
+        return ["expected_counts object missing"]
+    problems: list[str] = []
+    for store_name in COUNT_STORES:
+        body = table.get(store_name, None)
+        found = actual.get(store_name) or {}
+        if body is None or not isinstance(body, dict):
+            problems.append(f"{store_name} missing or unknown")
+            continue
+        keys = set(tenants) | set(found) | {str(key) for key in body}
+        for tenant in sorted(keys):
+            if tenant not in body or body[tenant] is None:
+                problems.append(f"{store_name} tenant {tenant} missing")
+                continue
+            try:
+                expected = int(body[tenant])
+            except (TypeError, ValueError):
+                problems.append(f"{store_name} tenant {tenant} not an integer")
+                continue
+            actual_n = int(found.get(tenant, 0))
+            if expected != actual_n:
+                problems.append(
+                    f"{store_name} tenant {tenant} expected {expected} actual {actual_n}"
+                )
+    return problems
 
 
 def _index_notes(docs_by_id: dict[str, dict], rows: list[dict], *, entry_field: str) -> list[dict]:
@@ -682,6 +845,7 @@ class InMemoryCleanupStore:
         self.nav: dict[tuple[str, str], list] = {}
         self.sentinels = {"logs": ["audit-trail"], "redis": {"cache": "warm"}}
         self.fail_on: tuple[str, str] | None = None
+        self.nav_ok = True
         self.transactions_enabled = True
         self.committed_log: list[str] = []
         self._label = ""
@@ -759,6 +923,7 @@ class InMemoryCleanupStore:
             for doc_id in step.ids or []:
                 bucket.pop(str(doc_id), None)
         elif step.action == "replace_nav" and step.tenant_id and step.scope is not None:
+            commit_nav_result(self.nav_ok)
             self.nav[(step.tenant_id, step.scope)] = copy.deepcopy(step.points or [])
         else:
             raise RuntimeError(f"unknown cleanup step {step.action}")
@@ -812,13 +977,14 @@ class MongoCleanupStore:
         pending = self._deferred_nav
         self._deferred_nav = []
         for tenant_id, scope, points in pending:
-            replace_nav_points(
+            wrote = replace_nav_points(
                 tenant_id,
                 scope,
                 points,
                 write_json=True,
                 write_mongo=False,
             )
+            commit_nav_result(wrote)
 
     @contextmanager
     def transaction(self, label: str) -> Iterator[None]:
@@ -883,7 +1049,7 @@ class MongoCleanupStore:
     def nav_points(self, tenant_id: str, scope: str) -> list[dict]:
         from services.portfolio_nav_history import load_nav_history
 
-        return load_nav_history(tenant_id=tenant_id, scope=scope)
+        return load_nav_history(tenant_id=tenant_id, scope=scope, session=self._session)
 
     def apply_step(self, step: WriteStep) -> None:
         from services.portfolio_nav_history import replace_nav_points
@@ -908,7 +1074,7 @@ class MongoCleanupStore:
         elif step.action == "replace_nav" and step.tenant_id and step.scope is not None:
             points = list(step.points or [])
             if self.transactions_enabled and self._session is not None:
-                replace_nav_points(
+                wrote = replace_nav_points(
                     step.tenant_id,
                     step.scope,
                     points,
@@ -916,15 +1082,17 @@ class MongoCleanupStore:
                     write_json=False,
                     write_mongo=True,
                 )
+                commit_nav_result(wrote)
                 self._deferred_nav.append((step.tenant_id, step.scope, points))
             else:
-                replace_nav_points(
+                wrote = replace_nav_points(
                     step.tenant_id,
                     step.scope,
                     points,
                     write_json=True,
                     write_mongo=True,
                 )
+                commit_nav_result(wrote)
         else:
             raise RuntimeError(f"unknown cleanup step {step.action}")
         if not self.transactions_enabled:
@@ -1006,6 +1174,7 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
     preserved: list[dict] = []
     removed_orders_by_scope: dict[tuple[str, str], list[dict]] = {}
     original_orders_by_scope: dict[tuple[str, str], list[dict]] = {}
+    scope_touched: set[tuple[str, str]] = set()
 
     for doc in order_docs:
         tenant = _doc_tenant(doc)
@@ -1029,9 +1198,18 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
             original_orders_by_scope[(tenant, scope)] = list(entries)
             removed_orders_by_scope[(tenant, scope)] = list(kept_entries)
             if removed:
+                scope_touched.add((tenant, scope))
                 updated = copy.deepcopy(doc)
                 updated["orders"] = kept_entries
-                groups[tenant].append(WriteStep("orders", "replace_orders", doc=updated))
+                groups[tenant].append(
+                    WriteStep(
+                        "orders",
+                        "replace_orders",
+                        doc=updated,
+                        baseline=copy.deepcopy(doc),
+                        baseline_id=str(doc.get("_id") or ""),
+                    )
+                )
 
     for doc in order_docs:
         tenant = _doc_tenant(doc)
@@ -1070,6 +1248,7 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
             _add_count(counts_for(STORE_ORDERS_V2, tenant), "delete")
 
     v2_ids_by_tenant: dict[str, list[str]] = {tenant: [] for tenant in selected}
+    v2_baseline_by_tenant: dict[str, dict[str, dict]] = {tenant: {} for tenant in selected}
     for doc in v2_docs:
         if not isinstance(doc, dict):
             continue
@@ -1083,11 +1262,18 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
         if order_id in order_ids.get(tenant, set()) or doc_id in _listed_ids(spec, STORE_ORDERS_V2):
             if doc_id:
                 v2_ids_by_tenant.setdefault(tenant, []).append(doc_id)
+                v2_baseline_by_tenant.setdefault(tenant, {})[doc_id] = copy.deepcopy(doc)
+                scope_touched.add((tenant, str(doc.get("ledger_scope") or _doc_scope(doc))))
     for tenant, doc_ids in v2_ids_by_tenant.items():
         unique_ids = list(dict.fromkeys(doc_ids))
         if unique_ids:
             groups.setdefault(tenant, []).append(
-                WriteStep("orders_v2", "delete_orders_v2", ids=unique_ids)
+                WriteStep(
+                    "orders_v2",
+                    "delete_orders_v2",
+                    ids=unique_ids,
+                    baseline=v2_baseline_by_tenant.get(tenant, {}),
+                )
             )
 
     for doc in trade_docs:
@@ -1116,9 +1302,18 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
                 _add_count(counts_for(STORE_TRADES, tenant), "before_cutoff")
             kept_entries.append(entry)
         if removed and tenant in selected_set:
+            scope_touched.add((tenant, scope))
             updated = copy.deepcopy(doc)
             updated["trades"] = kept_entries
-            groups[tenant].append(WriteStep("trade_history", "replace_trades", doc=updated))
+            groups[tenant].append(
+                WriteStep(
+                    "trade_history",
+                    "replace_trades",
+                    doc=updated,
+                    baseline=copy.deepcopy(doc),
+                    baseline_id=str(doc.get("_id") or ""),
+                )
+            )
 
     keys_by_doc: dict[str, set[str]] = {}
     for tenant, doc_id, key in targets:
@@ -1156,75 +1351,139 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
                 continue
             updated_positions[key] = lot
         if changed:
+            scope_touched.add((tenant, _doc_scope(doc)))
             updated = copy.deepcopy(doc)
             updated["positions"] = updated_positions
-            groups[tenant].append(WriteStep("positions", "replace_positions", doc=updated))
+            groups[tenant].append(
+                WriteStep(
+                    "positions",
+                    "replace_positions",
+                    doc=updated,
+                    baseline=copy.deepcopy(doc),
+                    baseline_id=doc_id,
+                )
+            )
 
     metrics: list[dict] = []
-    trade_by_scope = {( _doc_tenant(doc), _doc_scope(doc) ): doc for doc in trade_docs}
-    seen_scopes = sorted(original_orders_by_scope)
-    for tenant, scope in seen_scopes:
-        original = original_orders_by_scope[(tenant, scope)]
+    trade_by_scope = {(_doc_tenant(doc), _doc_scope(doc)): doc for doc in trade_docs}
+    seen_scopes = set(original_orders_by_scope)
+    for doc in trade_docs:
+        tenant = _doc_tenant(doc)
+        if tenant in selected_set:
+            seen_scopes.add((tenant, _doc_scope(doc)))
+    for tenant, scope in sorted(seen_scopes):
+        original = original_orders_by_scope.get((tenant, scope), [])
         remaining = removed_orders_by_scope.get((tenant, scope), original)
         trade_doc = trade_by_scope.get((tenant, scope))
         initial = _initial_capital(trade_doc)
         if initial is None:
-            initial = _initial_capital(next((doc for doc in order_docs if _doc_tenant(doc) == tenant and _doc_scope(doc) == scope), None))
+            initial = _initial_capital(
+                next(
+                    (
+                        doc
+                        for doc in order_docs
+                        if _doc_tenant(doc) == tenant and _doc_scope(doc) == scope
+                    ),
+                    None,
+                )
+            )
         if initial is None:
             initial = 0.0
             warnings.append(f"missing initial_capital for {tenant}/{scope}; replay baseline is 0")
-        before = _replay(original, initial)
-        after = _replay(remaining, initial)
-        existing_nav = store.nav_points(tenant, scope)
-        nav_before = _nav_series(original, initial, cutoff, existing_nav)
-        nav_after = _nav_series(remaining, initial, cutoff, existing_nav)
+        before = _replay_snapshot(original, initial, None)
+        after = _replay_snapshot(remaining, initial, None)
+        cash_delta = _round(before["cash"] - after["cash"])
+        realized_delta = _round(before["realized"] - after["realized"])
+        open_delta = before["open_positions"] - after["open_positions"]
+        touched = (tenant, scope) in scope_touched
+        stored_cash = trade_doc.get("virtual_balance") if isinstance(trade_doc, dict) else None
+        stored_realized = trade_doc.get("realized_pnl") if isinstance(trade_doc, dict) else None
+        writes_metrics = False
+        writes_nav = False
+        if touched and isinstance(trade_doc, dict):
+            prior = [
+                step
+                for step in groups[tenant]
+                if step.action == "replace_trades"
+                and step.doc
+                and str(step.doc.get("_id")) == str(trade_doc.get("_id"))
+            ]
+            updated = copy.deepcopy(prior[0].doc if prior else trade_doc)
+            if "virtual_balance" in trade_doc:
+                _subtract_present(updated, "virtual_balance", cash_delta)
+            if "realized_pnl" in trade_doc:
+                _subtract_present(updated, "realized_pnl", realized_delta)
+            if "open_positions" in trade_doc:
+                _subtract_present(updated, "open_positions", open_delta)
+            if prior:
+                prior[0].doc = updated
+                writes_metrics = True
+            elif _stable(updated) != _stable(trade_doc):
+                groups[tenant].append(
+                    WriteStep(
+                        "trade_history",
+                        "replace_trades",
+                        doc=updated,
+                        baseline=copy.deepcopy(trade_doc),
+                        baseline_id=str(trade_doc.get("_id") or ""),
+                    )
+                )
+                writes_metrics = True
+        existing_nav = store.nav_points(tenant, scope) if touched else []
+        if touched and existing_nav and cutoff is not None:
+            adjusted_nav = _adjust_nav_points(existing_nav, original, remaining, initial, cutoff)
+            if _stable(adjusted_nav) != _stable(existing_nav):
+                groups[tenant].append(
+                    WriteStep(
+                        "nav",
+                        "replace_nav",
+                        tenant_id=tenant,
+                        scope=scope,
+                        points=adjusted_nav,
+                        baseline=copy.deepcopy(existing_nav),
+                    )
+                )
+                writes_nav = True
+
+        def _stored_after(stored: object, delta: float, write: bool) -> float | None:
+            if stored is None:
+                return None
+            base = _round(_float(stored))
+            if not write:
+                return base
+            return _round(base - delta)
+
         metrics.append(
             {
                 "tenant": tenant,
                 "scope": scope,
                 "initial_capital": _round(initial),
-                "cash_before": _round(before["cash"]),
-                "cash_after": _round(after["cash"]),
-                "realized_before": _round(before["realized_pnl"]),
-                "realized_after": _round(after["realized_pnl"]),
-                "nav_from_cutoff_before": nav_before,
-                "nav_from_cutoff_after": nav_after,
+                "stored_cash": None if stored_cash is None else _round(_float(stored_cash)),
+                "replay_cash": before["cash"],
+                "stored_realized": None if stored_realized is None else _round(_float(stored_realized)),
+                "replay_realized": before["realized"],
+                "cash_delta": cash_delta,
+                "realized_delta": realized_delta,
+                "cash_after": _stored_after(stored_cash, cash_delta, touched),
+                "realized_after": _stored_after(stored_realized, realized_delta, touched),
+                "writes_metrics": writes_metrics,
+                "writes_nav": writes_nav,
             }
         )
-        if trade_doc is not None:
-            updated = copy.deepcopy(trade_doc)
-            # Trade removal may already have produced a step. Fold metrics into it.
-            updated["trades"] = [
-                entry
-                for entry in (updated.get("trades") or [])
-                if isinstance(entry, dict) and not _drop_trade(entry, order_ids.get(tenant, set()), buckets)
-            ]
-            updated["virtual_balance"] = _round(after["cash"])
-            updated["realized_pnl"] = _round(after["realized_pnl"])
-            updated["open_positions"] = len(after.get("positions") or {})
-            prior = [step for step in groups[tenant] if step.action == "replace_trades" and step.doc and str(step.doc.get("_id")) == str(updated.get("_id"))]
-            if prior:
-                prior[0].doc = updated
-            elif _stable(updated) != _stable(trade_doc):
-                groups[tenant].append(WriteStep("trade_history", "replace_trades", doc=updated))
-        merged_nav = _merge_nav(existing_nav, nav_after, cutoff, tenant, scope)
-        if cutoff is not None and _stable(merged_nav) != _stable(existing_nav):
-            groups[tenant].append(
-                WriteStep(
-                    "nav",
-                    "replace_nav",
-                    tenant_id=tenant,
-                    scope=scope,
-                    points=merged_nav,
-                )
-            )
 
     memory_steps: list[WriteStep] = []
     deleted_anchors: set[str] = set()
     for tenant in selected:
         deleted_anchors.update(order_ids.get(tenant, set()))
+    owners = _order_owners(order_docs)
+    known_tenants = file_ledger_tenants(spec) | selected_set
+
+    def _tally_memory(kind: str, doc: dict, bucket_name: str) -> None:
+        tenant_bucket = memory_count_tenant(doc, owners, known_tenants)
+        _add_count(counts_for(_KIND_STORE[kind], tenant_bucket), bucket_name)
 
     memory_plan: dict[str, list[str]] = {kind: [] for kind in MEMORY_KINDS}
+    memory_baseline: dict[str, dict[str, dict]] = {kind: {} for kind in MEMORY_KINDS}
     if memory_ok:
         for kind in ("trades", "lessons", "profiles"):
             listed = _listed_ids(spec, _KIND_STORE[kind])
@@ -1232,29 +1491,31 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
                 doc_id = str(doc.get("_id") or "")
                 keep = _kept_bucket(doc_id, buckets)
                 if keep:
-                    _add_count(counts_for(_KIND_STORE[kind], None), keep)
+                    _tally_memory(kind, doc, keep)
                     continue
                 if doc_id and doc_id in listed:
-                    _add_count(counts_for(_KIND_STORE[kind], None), "delete")
+                    _tally_memory(kind, doc, "delete")
                     memory_plan[kind].append(doc_id)
+                    memory_baseline[kind][doc_id] = copy.deepcopy(doc)
                     deleted_anchors.add(doc_id)
         listed_events = _listed_ids(spec, STORE_EVENTS)
         for doc in store.memory_docs("events"):
             doc_id = str(doc.get("_id") or doc.get("event_id") or "")
             keep = _kept_bucket(doc_id, buckets)
             if keep:
-                _add_count(counts_for(STORE_EVENTS, None), keep)
+                _tally_memory("events", doc, keep)
                 continue
             if (doc_id and doc_id in listed_events) or _dca_rule_match(doc, symbols, cutoff):
-                _add_count(counts_for(STORE_EVENTS, None), "delete")
+                _tally_memory("events", doc, "delete")
                 if doc_id:
                     memory_plan["events"].append(doc_id)
+                    memory_baseline["events"][doc_id] = copy.deepcopy(doc)
                     deleted_anchors.add(doc_id)
                 continue
             if _is_dca_policy(doc) and _symbol_hit(_event_symbols(doc), symbols) and _before_cutoff(
                 _event_ts(doc), cutoff, True
             ):
-                _add_count(counts_for(STORE_EVENTS, None), "before_cutoff")
+                _tally_memory("events", doc, "before_cutoff")
         listed_rag = _listed_ids(spec, STORE_RAG)
         for doc in store.memory_docs("rag"):
             doc_id = str(doc.get("_id") or doc.get("chunk_id") or "")
@@ -1262,12 +1523,13 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
             source_id = meta.get("source_id") or doc.get("source_id")
             keep = _kept_bucket(doc_id, buckets) or _kept_bucket(source_id, buckets)
             if keep:
-                _add_count(counts_for(STORE_RAG, None), keep)
+                _tally_memory("rag", doc, keep)
                 continue
             if (doc_id and doc_id in listed_rag) or _source_hits(source_id, deleted_anchors, buckets):
-                _add_count(counts_for(STORE_RAG, None), "delete")
+                _tally_memory("rag", doc, "delete")
                 if doc_id:
                     memory_plan["rag"].append(doc_id)
+                    memory_baseline["rag"][doc_id] = copy.deepcopy(doc)
         for kind, step_name in (
             ("trades", "memory_trades"),
             ("events", "memory_events"),
@@ -1277,14 +1539,18 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
         ):
             unique_ids = list(dict.fromkeys(memory_plan[kind]))
             if unique_ids:
-                memory_steps.append(WriteStep(step_name, "delete_memory", kind=kind, ids=unique_ids))
-    else:
-        for kind in MEMORY_KINDS:
-            counts_for(_KIND_STORE[kind], None)
+                memory_steps.append(
+                    WriteStep(
+                        step_name,
+                        "delete_memory",
+                        kind=kind,
+                        ids=unique_ids,
+                        baseline={doc_id: memory_baseline[kind][doc_id] for doc_id in unique_ids if doc_id in memory_baseline[kind]},
+                    )
+                )
 
-    # Ensure selected tenants appear in the ledger store rows even when empty.
     for tenant in selected:
-        for store_name in (STORE_ORDERS, STORE_ORDERS_V2, STORE_TRADES, STORE_POSITIONS):
+        for store_name in COUNT_STORES:
             counts_for(store_name, tenant)
 
     store_rows = []
@@ -1305,6 +1571,14 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
     if memory_steps:
         ordered_groups.append(("memory", memory_steps))
 
+    counts_block = actual_counts_block(counts, selected)
+    count_problems = expected_count_problems(spec, counts_block, selected)
+    if count_problems:
+        warnings.append(
+            "expected_counts do not match this plan (paste the expected_counts block, "
+            "re-hash, and dry-run again): " + "; ".join(count_problems)
+        )
+
     report = {
         "mode": "dry-run",
         "ids_file": ids_file,
@@ -1317,6 +1591,8 @@ def build_plan(store: Any, spec: dict, tenants: list[str], *, ids_sha256: str, i
         "redis": "untouched",
         "memory_selected_by": "id",
         "memory_applied": memory_ok,
+        "expected_counts_actual": counts_block,
+        "expected_count_problems": count_problems,
         "stores": store_rows,
         "index_cross_check": index_notes,
         "metrics": metrics,
@@ -1330,6 +1606,36 @@ def _stable(value: object) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _find_by_id(docs: list[dict], doc_id: object) -> dict | None:
+    for doc in docs:
+        if isinstance(doc, dict) and str(doc.get("_id")) == str(doc_id):
+            return doc
+    return None
+
+
+def _live_baseline(store: Any, step: WriteStep) -> object:
+    if step.action == "replace_orders":
+        return _find_by_id(store.order_docs(), step.baseline_id)
+    if step.action == "replace_positions":
+        return _find_by_id(store.position_docs(), step.baseline_id)
+    if step.action == "replace_trades":
+        return _find_by_id(store.trade_docs(), step.baseline_id)
+    if step.action == "delete_orders_v2":
+        docs = store.orders_v2_matching(step.ids or [])
+        return {str(doc.get("_id")): doc for doc in docs if isinstance(doc, dict)}
+    if step.action == "delete_memory":
+        wanted = {str(item) for item in (step.ids or [])}
+        docs = store.memory_docs(step.kind or "")
+        return {
+            str(doc.get("_id")): doc
+            for doc in docs
+            if isinstance(doc, dict) and str(doc.get("_id")) in wanted
+        }
+    if step.action == "replace_nav":
+        return store.nav_points(step.tenant_id or "", step.scope or "")
+    raise RuntimeError(f"unknown cleanup step {step.action}")
+
+
 def apply_plan(store: Any, plan: Plan) -> list[str]:
     completed: list[str] = []
     for label, steps in plan.groups:
@@ -1338,6 +1644,11 @@ def apply_plan(store: Any, plan: Plan) -> list[str]:
         try:
             with store.transaction(label):
                 for step in steps:
+                    live = _live_baseline(store, step)
+                    if _stable(live) != _stable(step.baseline):
+                        raise CleanupConflict(
+                            f"abort: {step.name} changed since the plan snapshot; refusing to write"
+                        )
                     store.apply_step(step)
         except Exception as exc:
             done = list(getattr(store, "committed_log", completed))
@@ -1366,9 +1677,17 @@ def format_report(report: dict) -> str:
         )
     for row in report.get("metrics") or []:
         lines.append(
-            "metrics tenant={tenant} scope={scope} cash {cash_before} -> {cash_after} "
-            "realized {realized_before} -> {realized_after}".format(**row)
+            "metrics tenant={tenant} scope={scope} stored_cash={stored_cash} replay_cash={replay_cash} "
+            "stored_realized={stored_realized} replay_realized={replay_realized} "
+            "cash_delta={cash_delta} realized_delta={realized_delta} "
+            "cash_after={cash_after} realized_after={realized_after} "
+            "write_metrics={writes_metrics} write_nav={writes_nav}".format(**row)
         )
+    lines.append("--- expected_counts ---")
+    lines.append(
+        json.dumps({"expected_counts": report.get("expected_counts_actual") or {}}, indent=2)
+    )
+    lines.append("--- end expected_counts ---")
     for note in report.get("warnings") or []:
         lines.append(f"warning: {note}")
     lines.append("--- json ---")
@@ -1394,7 +1713,9 @@ def _apply_refusal(args: argparse.Namespace, ids_digest: str) -> str | None:
 
 def execute(argv: list[str] | None = None, *, store: Any = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Dry-run or apply an id-list cleanup. Does not rewrite logs."
+        description="Dry-run or apply an id-list cleanup. Does not rewrite logs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_EXPECTED_COUNTS_HELP,
     )
     parser.add_argument("--ids", required=True, help="Path to the id-list JSON. Not stored in the repo.")
     parser.add_argument(
@@ -1461,6 +1782,26 @@ def execute(argv: list[str] | None = None, *, store: Any = None) -> int:
         ids_file=str(ids_path),
     )
     if args.apply:
+        missing_tenants = sorted(file_ledger_tenants(spec) - set(tenants))
+        if missing_tenants:
+            print(
+                "refusing real run: --tenant must name every ledger tenant in the id file "
+                f"({', '.join(missing_tenants)}). memory has no reliable tenant field "
+                "and is selected by id only"
+            )
+            print(format_report(plan.report))
+            return 2
+        if not getattr(store, "transactions_enabled", False):
+            print("refusing real run: multi-document transactions are not available")
+            print(format_report(plan.report))
+            return 2
+        count_problems = list(plan.report.get("expected_count_problems") or [])
+        if count_problems:
+            print("refusing real run: expected_counts do not match the plan")
+            for item in count_problems:
+                print(f"count: {item}")
+            print(format_report(plan.report))
+            return 2
         try:
             apply_plan(store, plan)
         except CleanupAborted as exc:
