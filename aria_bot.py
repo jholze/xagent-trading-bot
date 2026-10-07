@@ -216,20 +216,25 @@ def _run_ledger_startup_sync() -> None:
             return
         try:
             from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
-            from core.tenant_routing import iter_price_cycle_tenants, tenant_cycle_context
             from data_manager import reconcile_demo_trade_history_on_startup, resolve_ledger_scope
             from services.ledger_sync import rebuild_positions_from_orders, sync_positions_on_startup
             from strategies.positions import flush_positions
 
             _ledger_scope = resolve_ledger_scope()
-            rebuild_positions_from_orders(_ledger_scope, tenant_id=DEFAULT_TENANT)
+            from bus.writer_lease import writer_lease_held
+
+            _reanchor = writer_lease_held()
             if multi_tenant_enabled():
-                for _startup_tenant in iter_price_cycle_tenants():
-                    if _startup_tenant == DEFAULT_TENANT:
-                        continue
-                    with tenant_cycle_context(_startup_tenant):
-                        rebuild_positions_from_orders(_ledger_scope)
-            sync_positions_on_startup()
+                # F6a: every tenant, default included, inside its own context.
+                # The satellite-only continue does not apply to this sync.
+                from services.ledger_sync import run_per_tenant_startup
+
+                run_per_tenant_startup(
+                    _ledger_scope, include_legacy_reanchor=_reanchor
+                )
+            else:
+                rebuild_positions_from_orders(_ledger_scope, tenant_id=DEFAULT_TENANT)
+                sync_positions_on_startup(include_legacy_reanchor=_reanchor)
             reconcile_demo_trade_history_on_startup()
             flush_positions(scope=resolve_ledger_scope(), force=True)
             _ledger_startup_sync_done = True

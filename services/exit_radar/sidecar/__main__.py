@@ -47,7 +47,8 @@ def _sync_ledger() -> None:
         rebuild_positions_from_orders(scope)
         if lease_enabled() and not writer_lease_held():
             return
-        sync_positions_on_startup()
+        # C8: the sidecar never re-anchors legacy peaks, even if the lease is off.
+        sync_positions_on_startup(include_legacy_reanchor=False)
     except Exception as exc:
         log(f"exit-radar initial position sync: {exc}", "WARNING")
 

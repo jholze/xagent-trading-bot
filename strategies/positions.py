@@ -128,6 +128,63 @@ _CACHE_FIELDS = (
     "entry_snapshot",
     "short_recipe",
     "exit_source",
+    # #651 F0: survive rebuild/restart (serialize + deserialize + cache overlay).
+    "peak_epoch_high",
+    "peak_epoch_at",
+    "peak_at",
+    "v3",
+)
+
+# #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
+# Not cycle-bound (stay as today): last_sell_signal, last_cmc_sell_at,
+# last_ampel, last_rsi, lock.
+CYCLE_FIELDS = (
+    "dca_rounds",
+    "dca_max_rounds",
+    "last_dca_at",
+    "last_scheduled_dca_at",
+    "dca_total_usdt",
+    "dca_recovery_rounds",
+    "dca_recovery_max_rounds",
+    "last_dca_recovery_at",
+    "last_recovery_ref_price",
+    "peak_amount",
+    "sold_percent",
+    "exit_ladder_step",
+    "trail_tp_steps",
+    "last_trail_tp_at",
+    "profit_max_lifetime_done",
+    "time_profit_exit_done",
+    "profit_armed_at",
+    "rsi_sell_tiers_done",
+    "exit_source",
+    "strategy_tier",
+    "entry_snapshot",
+    "entry_source",
+    "entry_at",
+    "side",
+    "short_recipe",
+    "entry_15m_vol_ratio",
+    "recent_high",
+    "first_buy_at",
+    "peak_epoch_high",
+    "peak_epoch_at",
+    "peak_at",
+    "v3",
+    "leverage",
+    "recent_low",
+)
+
+_PEAK_STAMP_FIELDS = (
+    "recent_high",
+    "peak_epoch_high",
+    "peak_epoch_at",
+    "peak_at",
+    "v3",
+)
+
+_DCA_FILL_SOURCES = frozenset(
+    {"dca", "dca_recovery", "dca_scheduled", "dca_sniper"}
 )
 
 
@@ -252,6 +309,14 @@ def _deserialize_position(raw: dict) -> dict:
         "side": str(raw.get("side") or "long").strip().lower() or "long",
         "leverage": float(raw.get("leverage") or 0) or None,
         "recent_low": float(raw["recent_low"]) if raw.get("recent_low") not in (None, "") else None,
+        "peak_epoch_high": (
+            float(raw["peak_epoch_high"])
+            if raw.get("peak_epoch_high") not in (None, "")
+            else None
+        ),
+        "peak_epoch_at": raw.get("peak_epoch_at"),
+        "peak_at": raw.get("peak_at"),
+        "v3": bool(raw.get("v3")),
     }
     if raw.get("short_recipe"):
         out["short_recipe"] = raw.get("short_recipe")
@@ -316,6 +381,10 @@ def _serialize_positions() -> dict:
             "trail_tp_steps": int(p.get("trail_tp_steps", 0) or 0),
             "last_trail_tp_at": p.get("last_trail_tp_at"),
             "profit_max_lifetime_done": bool(p.get("profit_max_lifetime_done", False)),
+            "peak_epoch_high": p.get("peak_epoch_high"),
+            "peak_epoch_at": p.get("peak_epoch_at"),
+            "peak_at": p.get("peak_at"),
+            "v3": bool(p.get("v3")),
         }
         lock = p.get("lock")
         if isinstance(lock, dict) and lock:
@@ -358,20 +427,113 @@ _DCA_ORDER_PRIORITY_FIELDS = (
 )
 
 
-def _merged_dca_round(order_val, cached_val, snap: dict, cached: dict) -> int:
-    """DCA counter for one lot after an orders+cache merge.
+def _ledger_utc(value):
+    """Aware UTC via ledger_datetime_utc. Never a fixed offset."""
+    from core.time_utils import ledger_datetime_utc
 
-    The counter is per lot and starts at 0 when a new cycle opens (the
-    order replay resets it on a full flat). Cache may still hold the
-    previous cycle's count; that must not be copied onto the new lot.
+    return ledger_datetime_utc(value)
+
+
+def _opening_window(snap: dict) -> tuple[object, object]:
+    """created, filled of the buy that opened the replay cycle.
+
+    filled missing → created (same fallback as replay trade_ts).
+    """
+    created = snap.get("cycle_open_created")
+    filled = snap.get("cycle_open_filled") or created
+    return created, filled
+
+
+def k3_cycle_status(
+    snap: dict,
+    cached: dict,
+    *,
+    lot_key: str = "",
+    tenant_id: str | None = None,
+) -> tuple[bool, str | None]:
+    """One-sided cycle change (#651 K3.1).
+
+    True only when the cache ``first_buy_at`` is before the opening order's
+    ``created``. Cache newer than the replay window is not a change (WARNING,
+    #656). No opening order or an unparseable time: no change, WARNING.
+    Both sides go through ``ledger_datetime_utc`` (aware UTC).
+    """
+    cached = cached or {}
+    if not cached:
+        return False, None
+    created_raw, filled_raw = _opening_window(snap or {})
+    cache_raw = cached.get("first_buy_at")
+    tid = tenant_id or ""
+    amounts = (
+        f"tenant={tid} symbol={lot_key} "
+        f"cache_first_buy_at={cache_raw} window=[{created_raw},{filled_raw}] "
+        f"replay_amount={ (snap or {}).get('amount') } cache_amount={cached.get('amount')}"
+    )
+    if not created_raw:
+        if cache_raw:
+            return False, f"k3 no opening order ({amounts})"
+        return False, None
+    created = _ledger_utc(created_raw)
+    filled = _ledger_utc(filled_raw) if filled_raw else created
+    cache_dt = _ledger_utc(cache_raw) if cache_raw else None
+    if created is None or (cache_raw and cache_dt is None):
+        return False, f"k3 unparseable time ({amounts})"
+    if cache_dt is None:
+        return False, None
+    if cache_dt < created:
+        return True, None
+    if filled is not None and cache_dt > filled:
+        return False, (
+            f"k3 cache newer than replay (#656) ({amounts})"
+        )
+    return False, None
+
+
+def _cached_dca_time_before_open(cached_value, snap: dict) -> bool:
+    """K3.3b: cached DCA timestamp is from before this cycle's opening order."""
+    if cached_value in (None, ""):
+        return False
+    created_raw, _filled = _opening_window(snap or {})
+    if not created_raw:
+        return False
+    created = _ledger_utc(created_raw)
+    cached_dt = _ledger_utc(cached_value)
+    if created is None or cached_dt is None:
+        return False
+    return cached_dt < created
+
+
+def _replay_stamp_newer(snap: dict, cached: dict) -> bool:
+    """True when a new fill moved the replay epoch past the cached stamp.
+
+    A legacy cache with no ``peak_epoch_at`` is not newer: F6 owns that lot,
+    and replaying known fills must not replace ``recent_high``.
+    """
+    snap_at = _ledger_utc((snap or {}).get("peak_epoch_at"))
+    cache_at = _ledger_utc((cached or {}).get("peak_epoch_at"))
+    if snap_at is None or cache_at is None:
+        return False
+    return snap_at > cache_at
+
+
+def _merged_dca_round(order_val, cached_val, snap: dict, cached: dict, field: str = "dca_rounds") -> int:
+    """DCA counter after an orders+cache merge (#651 K3.3c).
+
+    Parsed times, K3.1 rule — never a string compare. On a cycle change, or
+    when the matching cached DCA time is from before the opening order
+    (K3.3b), the order count wins, including 0. Otherwise max(order, cache)
+    so an unreplayed fill in the same cycle is kept (#640).
     """
     order_n = int(order_val or 0)
     cache_n = int(cached_val or 0)
-    snap_open = str(snap.get("first_buy_at") or snap.get("entry_at") or "")
-    cache_open = str(cached.get("first_buy_at") or cached.get("entry_at") or "")
-    if snap_open and cache_open and snap_open != cache_open:
+    changed, _warn = k3_cycle_status(snap, cached)
+    if changed:
         return order_n
-    if snap_open and not cache_open:
+    time_field = "last_dca_recovery_at" if field == "dca_recovery_rounds" else "last_dca_at"
+    if _cached_dca_time_before_open((cached or {}).get(time_field), snap):
+        return order_n
+    cache_open = _ledger_utc((cached or {}).get("first_buy_at"))
+    if (snap or {}).get("first_buy_at") and cache_open is None and not (cached or {}).get("first_buy_at"):
         return order_n
     return max(order_n, cache_n)
 
@@ -401,26 +563,55 @@ def derive_positions_from_orders_and_cache(
     cache_positions = cache_doc.get("positions", {}) or {}
     for key, snap in order_snap.items():
         cached = cache_positions.get(key) or {}
-        if key in cache_positions and _cached_lot_stays_flat(cached):
+        cycle_change, warn = k3_cycle_status(
+            snap, cached, lot_key=str(key), tenant_id=tid
+        )
+        if warn:
+            log(warn, "WARNING")
+        # K3.2: a flat/dust cache lot stays only when this is still its cycle.
+        if key in cache_positions and _cached_lot_stays_flat(cached) and not cycle_change:
             merged[key] = dict(cached)
             continue
         pos = dict(snap)
+        replay_newer = _replay_stamp_newer(snap, cached)
+        legacy_no_epoch = bool(cached) and not cached.get("peak_epoch_at") and not cycle_change and not replay_newer
         for field in _CACHE_FIELDS:
             if field in _DCA_ORDER_PRIORITY_FIELDS:
                 continue
+            if cycle_change and field in CYCLE_FIELDS:
+                continue
+            if replay_newer and field in _PEAK_STAMP_FIELDS:
+                continue
             if field in cached and cached[field] is not None:
                 pos[field] = cached[field]
+        if legacy_no_epoch:
+            # Replay of known fills must not invent an epoch on a legacy lot
+            # (F6 re-anchors those). Keep the cached peak.
+            for field in ("peak_epoch_high", "peak_epoch_at", "peak_at", "v3"):
+                if cached.get(field) is None:
+                    pos.pop(field, None)
+            if cached.get("recent_high") is not None:
+                pos["recent_high"] = cached["recent_high"]
         for field in _DCA_ORDER_PRIORITY_FIELDS:
             order_val = snap.get(field)
             cached_val = cached.get(field)
+            if cycle_change:
+                # K3.3: order value wins, including None.
+                pos[field] = order_val
+                continue
             if field in ("dca_rounds", "dca_recovery_rounds"):
                 # Current open cycle wins. A previous cycle's cached count
                 # must not stick to a lot that was fully closed and reopened
                 # (#640). Same cycle still keeps the higher of order vs cache
-                # so an unreplayed fill is not dropped.
-                best = _merged_dca_round(order_val, cached_val, snap, cached)
+                # so an unreplayed fill is not dropped, unless K3.3b/K3.3c.
+                best = _merged_dca_round(order_val, cached_val, snap, cached, field)
                 if best > 0 or cached_val is not None or order_val is not None:
                     pos[field] = best
+            elif field in ("last_dca_at", "last_dca_recovery_at") and _cached_dca_time_before_open(
+                cached_val, snap
+            ):
+                # K3.3b: older-cycle DCA time, None from orders included.
+                pos[field] = order_val
             elif order_val is not None:
                 pos[field] = order_val
             elif cached_val is not None:
@@ -668,6 +859,14 @@ def save_positions(scope: str = None):
     flush_positions(scope, force=True)
 
 
+def _iso_high_time(value) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return datetime.now().isoformat()
+
+
 def update_market_snapshot(
     symbol: str,
     timeframe: str,
@@ -675,12 +874,23 @@ def update_market_snapshot(
     atr_pct: float = 0.0,
     *,
     peak_hint: float | None = None,
+    high_at: datetime | str | None = None,
 ) -> bool:
-    """Bump recent_high when price makes a new peak. Returns True if peak changed."""
+    """Bump recent_high when price makes a new peak. Returns True if peak changed.
+
+    ``high_at`` is optional and keyword-only (default now). The F2 hint passes
+    a candle open time only when that hint is the high that wins.
+    A V3 floor (``v3``) clears only when the new high is strictly above
+    ``peak_epoch_high``.
+    """
     _activate(_resolve_store_key())
     key = get_key(symbol, timeframe)
     store = _active_store()
     changed = False
+    cleared_v3 = False
+    floor = 0.0
+    new_high = 0.0
+    cleared_at = ""
     candidate = max(float(current_price), float(peak_hint or 0))
     with _positions_lock:
         pos = _ensure_key(store, key)
@@ -690,8 +900,26 @@ def update_market_snapshot(
             pos["recent_high"] = new_high
             # Stagnant-rotation idle clock: time since last genuine progress,
             # not time since last fill (which partial-sells/DCA reset).
-            pos["peak_at"] = datetime.now().isoformat()
+            hint_wins = float(peak_hint or 0) > float(current_price) and high_at is not None
+            pos["peak_at"] = _iso_high_time(high_at) if hint_wins else datetime.now().isoformat()
+            if pos.get("v3"):
+                try:
+                    floor = float(pos.get("peak_epoch_high") or 0)
+                except (TypeError, ValueError):
+                    floor = 0.0
+                if floor > 0 and new_high > floor:
+                    pos["v3"] = False
+                    cleared_v3 = True
+                    cleared_at = str(pos.get("peak_at") or "")
             changed = True
+    if cleared_v3:
+        from core.tenant_context import resolve_tenant_id
+
+        log(
+            f"v3 cleared tenant={resolve_tenant_id()} symbol={symbol} "
+            f"floor={floor} new_high={new_high} time={cleared_at}",
+            "INFO",
+        )
     if changed:
         flush_positions()
     return changed
@@ -983,9 +1211,93 @@ def _is_dca_buy_signal(signal: str) -> bool:
     return (signal or "").upper() == "BUY_DCA"
 
 
+def _is_dca_fill(signal: str | None, source: str | None) -> bool:
+    """BUY_DCA and every DCA source, including signal BUY with source dca*."""
+    if _is_dca_buy_signal(signal or ""):
+        return True
+    return (source or "").strip().lower() in _DCA_FILL_SOURCES
+
+
 def _is_addon_buy(old_amount, position: dict) -> bool:
     """True when adding to an existing open lot (must preserve DCA / ladder state)."""
     return float(old_amount) > 0
+
+
+def _apply_dca_peak_reset(
+    pos: dict,
+    fill_price: float,
+    fill_time: str | None,
+    params,
+    *,
+    recovery_hold: bool = False,
+) -> None:
+    """Re-anchor + epoch stamp from the fill that changed the average. Clears v3."""
+    try:
+        from strategies.dca import (
+            reanchor_recent_high_after_dca,
+            should_reanchor_peak_on_dca,
+        )
+
+        if should_reanchor_peak_on_dca(params):
+            reanchor_recent_high_after_dca(pos, float(fill_price))
+    except Exception:
+        pass
+    try:
+        from strategies.recovery_hold import (
+            recovery_hold_config,
+            set_recovery_hold,
+            stamp_peak_epoch_on_dca,
+        )
+
+        rh_cfg = recovery_hold_config(params)
+        if rh_cfg.get("stamp_peak_epoch_on_dca", True):
+            stamp_peak_epoch_on_dca(pos, float(fill_price), at=fill_time)
+        if recovery_hold and rh_cfg.get("set_on_dca"):
+            set_recovery_hold(pos, sniper_focus=False, heavy=False)
+    except Exception:
+        pass
+    if fill_time:
+        pos["peak_at"] = fill_time
+        if not pos.get("peak_epoch_at"):
+            pos["peak_epoch_at"] = fill_time
+    pos["v3"] = False
+
+
+def _apply_new_long_cycle(pos: dict, *, fill_price: float, fill_time: str, new_amount) -> None:
+    """Reset every cycle field for a new long entry (flat or dust re-entry)."""
+    pos["peak_amount"] = float(new_amount)
+    pos["sold_percent"] = 0.0
+    pos["last_action"] = "BUY"
+    pos["rsi_sell_tiers_done"] = {}
+    pos["recent_high"] = fill_price
+    pos["peak_at"] = fill_time
+    pos["peak_epoch_high"] = fill_price
+    pos["peak_epoch_at"] = fill_time
+    pos["v3"] = False
+    pos["exit_ladder_step"] = 0
+    pos["last_trade_type"] = "BUY"
+    pos["dca_rounds"] = 0
+    pos["dca_max_rounds"] = 0
+    pos["last_dca_at"] = None
+    pos["last_scheduled_dca_at"] = None
+    pos["dca_total_usdt"] = 0.0
+    pos["dca_recovery_rounds"] = 0
+    pos["dca_recovery_max_rounds"] = 0
+    pos["last_dca_recovery_at"] = None
+    pos["last_recovery_ref_price"] = 0.0
+    pos["time_profit_exit_done"] = False
+    pos["profit_armed_at"] = None
+    pos["trail_tp_steps"] = 0
+    pos["last_trail_tp_at"] = None
+    pos["profit_max_lifetime_done"] = False
+    pos["first_buy_at"] = fill_time
+    pos["strategy_tier"] = None
+    pos["side"] = "long"
+    pos["leverage"] = None
+    pos["recent_low"] = None
+    pos.pop("entry_snapshot", None)
+    pos.pop("short_recipe", None)
+    pos.pop("exit_source", None)
 
 
 def sell_fraction_for_signal(
@@ -1185,15 +1497,26 @@ def update_position(
                 pos["average_entry"] = current_price
             pos["amount"] = new_amount
             pos["last_buy_price"] = current_price
-            pos["last_trade_at"] = datetime.now().isoformat()
-            if _is_dca_buy_signal(signal) and _is_addon_buy(old_amount, pos):
+            fill_time = datetime.now().isoformat()
+            pos["last_trade_at"] = fill_time
+            try:
+                old_avg_f = float(old_average or 0)
+            except (TypeError, ValueError):
+                old_avg_f = 0.0
+            average_changed = abs(float(pos["average_entry"]) - old_avg_f) > 1e-12
+            # Dust remainder is a new entry (F7), not an add-on. was_open was
+            # taken before this fill, so the dust amount is already in the average.
+            if was_open and _is_dca_fill(signal, source):
                 pos["last_action"] = "BUY_DCA"
                 pos["last_trade_type"] = "BUY_DCA"
                 usdt_added = current_price * float(amount_traded)
                 pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
-                pos["last_dca_at"] = datetime.now().isoformat()
+                pos["last_dca_at"] = fill_time
                 pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
+                if (source or "").strip().lower() == "dca_recovery":
+                    pos["dca_recovery_rounds"] = int(pos.get("dca_recovery_rounds", 0) or 0) + 1
+                    pos["last_dca_recovery_at"] = fill_time
                 params = None
                 try:
                     from strategies.registry import resolve_strategy_params
@@ -1210,73 +1533,44 @@ def update_position(
 
                     cfg = _dca_cfg(params)
                     pos["dca_max_rounds"] = int(cfg.get("max_rounds", 3))
-                # Recovery mode: re-base trail peak so WS trail_stop does not use pre-dump high
-                try:
-                    from strategies.dca import (
-                        reanchor_recent_high_after_dca,
-                        should_reanchor_peak_on_dca,
+                if average_changed:
+                    _apply_dca_peak_reset(
+                        pos, float(current_price), fill_time, params, recovery_hold=True
                     )
-
-                    if should_reanchor_peak_on_dca(params):
-                        reanchor_recent_high_after_dca(pos, float(current_price))
-                except Exception:
-                    pass
-                # Epoch peak for sniper/recovery_hold (clamp stale pre-DCA recent_high)
-                try:
-                    from strategies.recovery_hold import (
-                        stamp_peak_epoch_on_dca,
-                        recovery_hold_config,
-                        set_recovery_hold,
-                    )
-
-                    rh_cfg = recovery_hold_config(params)
-                    if rh_cfg.get("stamp_peak_epoch_on_dca", True):
-                        stamp_peak_epoch_on_dca(pos, float(current_price))
-                    if rh_cfg.get("set_on_dca"):
-                        set_recovery_hold(pos, sniper_focus=False, heavy=False)
-                except Exception:
-                    pass
-            elif _is_addon_buy(old_amount, pos):
+            elif was_open:
                 pos["last_action"] = "BUY"
                 pos["last_trade_type"] = "BUY"
                 if entry_source and not pos.get("entry_source"):
                     pos["entry_source"] = entry_source
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
+                if average_changed:
+                    params = None
+                    try:
+                        from strategies.registry import resolve_strategy_params
+
+                        params = resolve_strategy_params(
+                            {"symbol": symbol, "timeframe": timeframe},
+                            has_position=True,
+                            frozen_tier=pos.get("strategy_tier"),
+                        )
+                    except Exception:
+                        params = None
+                    _apply_dca_peak_reset(
+                        pos, float(current_price), fill_time, params, recovery_hold=False
+                    )
             else:
-                pos["peak_amount"] = float(new_amount)
-                pos["sold_percent"] = 0.0
-                pos["last_action"] = "BUY"
-                pos["rsi_sell_tiers_done"] = {}
-                pos["recent_high"] = current_price
-                pos["peak_at"] = datetime.now().isoformat()
-                pos["exit_ladder_step"] = 0
-                pos["last_trade_type"] = "BUY"
-                pos["dca_rounds"] = 0
-                pos["dca_max_rounds"] = 0
-                pos["last_dca_at"] = None
-                pos["last_scheduled_dca_at"] = None
-                pos["dca_total_usdt"] = 0.0
-                pos["dca_recovery_rounds"] = 0
-                pos["dca_recovery_max_rounds"] = 0
-                pos["last_dca_recovery_at"] = None
-                pos["last_recovery_ref_price"] = 0.0
-                pos["time_profit_exit_done"] = False
-                pos["profit_armed_at"] = None
-                pos["trail_tp_steps"] = 0
-                pos["last_trail_tp_at"] = None
-                pos["profit_max_lifetime_done"] = False
-                pos["first_buy_at"] = datetime.now().isoformat()
+                _apply_new_long_cycle(
+                    pos,
+                    fill_price=float(current_price),
+                    fill_time=fill_time,
+                    new_amount=new_amount,
+                )
                 if entry_source:
                     pos["entry_source"] = entry_source
                     pos["entry_at"] = pos["first_buy_at"]
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
-                pos["strategy_tier"] = None
-                pos["side"] = "long"
-                pos.pop("entry_snapshot", None)
-                pos.pop("short_recipe", None)
-                pos.pop("exit_source", None)
                 attach_snapshot = True
         elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
             old_amount = pos["amount"]
