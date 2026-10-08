@@ -1290,6 +1290,7 @@ _CYCLE_RESET_DEFAULTS = {
     "strategy_tier": None,
     "entry_snapshot": _CYCLE_RESET_POP,
     "entry_source": None,
+    "entry_at": None,
     "side": "long",
     "short_recipe": None,
     "entry_15m_vol_ratio": None,
@@ -1304,7 +1305,6 @@ _CYCLE_FILL_FIELDS = (
     "peak_epoch_high",
     "peak_epoch_at",
     "peak_at",
-    "entry_at",
 )
 
 
@@ -1317,7 +1317,6 @@ def apply_cycle_field_reset(pos: dict, *, fill_price: float, fill_time: str | No
         "peak_epoch_high": float(fill_price),
         "peak_epoch_at": fill_time,
         "peak_at": fill_time,
-        "entry_at": fill_time,
     }
     known = set(_CYCLE_FILL_FIELDS) | set(_CYCLE_RESET_DEFAULTS)
     missing = [name for name in CYCLE_FIELDS if name not in known]

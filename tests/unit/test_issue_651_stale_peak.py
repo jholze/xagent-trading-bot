@@ -655,11 +655,11 @@ class TestIssue651(unittest.TestCase):
                 name,
             )
         self.assertIsNone(live.get("entry_source"))
-        self.assertEqual(live.get("entry_at"), fill)
+        self.assertIsNone(live.get("entry_at"))
         self.assertIsNone(live.get("entry_15m_vol_ratio"))
-        self.assertNotEqual(live.get("entry_source"), stale["entry_source"])
+        self.assertNotEqual(live.get("entry_at"), stale["entry_at"])
         self.assertIsNone(replay_pos.get("entry_source"))
-        self.assertEqual(replay_pos.get("entry_at"), fill)
+        self.assertIsNone(replay_pos.get("entry_at"))
         self.assertIsNone(replay_pos.get("entry_15m_vol_ratio"))
 
     def test_recovery_fill_counts_once_live_and_replay(self):
