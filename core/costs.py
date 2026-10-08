@@ -48,6 +48,18 @@ class CostParams:
     source: str = "config"  # "config" | "exchange"
 
 
+# Spot VIP-0 used only when config["costs"] has no block for the market.
+# One object so #654 F3 and the missing-block branch share it.
+vip0_default = CostParams(
+    fee_maker_pct=float(_VIP0_SPOT["fee_maker_pct"]),
+    fee_taker_pct=float(_VIP0_SPOT["fee_taker_pct"]),
+    slippage_pct=float(_VIP0_SPOT["slippage_pct"]),
+    fee_side_buy=_VIP0_SPOT["fee_side_buy"],
+    fee_side_sell=_VIP0_SPOT["fee_side_sell"],
+    source="config",
+)
+
+
 @dataclass(frozen=True)
 class Fill:
     side: Side
@@ -282,7 +294,12 @@ class CostModel:
                     f"— using VIP-0 defaults",
                     "WARNING",
                 )
-            params = _params_from_block({}, market=market_key, source="config")
+            # vip0_default only on this missing-block branch (spot). A present
+            # block keeps its own params, source "config" or a later "exchange".
+            if market_key == "spot":
+                params = vip0_default
+            else:
+                params = _params_from_block({}, market=market_key, source="config")
         else:
             params = _params_from_block(block, market=market_key, source="config")
 
@@ -315,6 +332,30 @@ class CostModel:
                 "INFO",
             )
         return cls(params, exchange=exchange_key, market=market_key)
+
+    def estimated_buy_entry(self, gross_price: float, order_type: OrderType = "market") -> float:
+        """F7 basis price for one buy row. Never below the gross fill price.
+
+        Base fee: ``p / (1 − f)``. Quote fee: ``p · (1 + f)``. ``f`` is
+        ``fee_pct(order_type) / 100``. An unusable fee keeps the gross price
+        so ``average_entry`` stays positive and the exit is not blocked.
+        """
+        p = float(gross_price or 0)
+        if p <= 0:
+            return 0.0
+        try:
+            f = float(self.fee_pct(order_type)) / 100.0
+        except (TypeError, ValueError):
+            f = 0.0
+        if f <= 0.0 or f >= 1.0:
+            return p
+        if self.params.fee_side_buy == "quote":
+            basis = p * (1.0 + f)
+        else:
+            basis = p / (1.0 - f)
+        if basis < p:
+            return p
+        return basis
 
     def fee_pct(self, order_type: OrderType = "market") -> float:
         """Percent of notional. market/taker → taker, limit/maker → maker."""

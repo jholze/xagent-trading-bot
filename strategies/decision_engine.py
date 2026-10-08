@@ -50,6 +50,7 @@ from strategies.positions import (
     count_open_positions,
     flush_positions,
     get_position,
+    is_open_position,
     lock_strategy_tier,
     mark_profit_max_lifetime_done,
     mark_trailing_take_profit_step,
@@ -483,7 +484,7 @@ class DecisionEngine:
         coin = resolve_coin_config({**coin, "timeframe": tf})
         symbol = coin["symbol"]
         pos = get_position(symbol, tf)
-        has_position = float(pos["amount"]) > 0
+        has_position = is_open_position(pos)
         if not has_position:
             # Defense: lot may sit on another TF than resolve_effective_timeframe
             # returned (e.g. store race / legacy key). Bind analysis to the real lot.

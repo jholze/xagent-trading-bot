@@ -422,12 +422,37 @@ def _gross_unrealized_pct(pos: dict[str, Any], price: float) -> float:
     return (px / entry - 1.0) * 100.0
 
 
-def _lot_in_profit(pos: dict[str, Any], price: float, raw_config: dict | None) -> bool:
+def _lot_in_profit(
+    pos: dict[str, Any],
+    price: float,
+    raw_config: dict | None,
+    *,
+    symbol: str | None = None,
+) -> bool:
+    """Longs: net of one sell (buy fee already in average_entry). Shorts: gross minus round trip."""
     from core.costs import CostModel
 
-    gain = _gross_unrealized_pct(pos, price)
-    rt = float(CostModel.from_config(raw_config).round_trip_pct())
-    return (gain - rt) > 0.0
+    try:
+        from strategies.short_math import is_short as _is_short
+
+        short = _is_short(pos)
+    except Exception:
+        short = False
+    if short:
+        gain = _gross_unrealized_pct(pos, price)
+        rt = float(CostModel.from_config(raw_config).round_trip_pct())
+        return (gain - rt) > 0.0
+    amount = float(pos.get("amount") or 0)
+    entry = float(pos.get("average_entry") or 0)
+    px = float(price or 0)
+    if amount <= 0 or entry <= 0 or px <= 0:
+        return False
+    # Ledger lots have no symbol field. Callers pass the key they already resolved.
+    named = str(symbol or pos.get("symbol") or "").strip() or None
+    model = CostModel.from_config(raw_config, symbol=named)
+    sell = model.simulate_sell(px, amount)
+    pnl = CostModel.realized_pnl(qty_sold=amount, avg_entry_net=entry, sell=sell)
+    return pnl > 0.0
 
 
 def execute_cascade_exit(
@@ -608,7 +633,7 @@ def execute_cascade_exit(
                 )
                 continue
 
-            if not _lot_in_profit(pos, px, raw_config):
+            if not _lot_in_profit(pos, px, raw_config, symbol=sym):
                 results.append(
                     {
                         "symbol": sym,
@@ -1331,7 +1356,7 @@ def _execute_long_cascade_batch(
                     _release_if_unused(sym)
                     continue
 
-                if not _lot_in_profit(pos, px, raw_config):
+                if not _lot_in_profit(pos, px, raw_config, symbol=sym):
                     results.append(
                         _evidence(
                             symbol=sym,

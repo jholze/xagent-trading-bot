@@ -423,7 +423,7 @@ class RiskManager:
             )
 
         pos = get_position(order.symbol, timeframe)
-        has_position = float(pos.get("amount", 0)) > 0
+        has_position = is_open_position(pos)
         if order.type == "BUY" and not has_position:
             found = find_open_position_for_symbol(
                 order.symbol, preferred_timeframe=timeframe
@@ -2444,7 +2444,7 @@ class RiskManager:
             pos = get_position(order.symbol, timeframe)
             params = resolve_strategy_params(
                 {"symbol": order.symbol, "timeframe": timeframe},
-                has_position=float(pos.get("amount", 0) or 0) > 0,
+                has_position=is_open_position(pos),
                 frozen_tier=pos.get("strategy_tier"),
             )
         except Exception:
