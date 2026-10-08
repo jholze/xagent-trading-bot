@@ -1175,6 +1175,221 @@ def test_new_short_open_rejected_when_book_is_full(monkeypatch):
         _position_stores.clear()
 
 
+_SLOT_NEUTRAL = {
+    "block_buys": False,
+    "apply_size_mult": False,
+    "active": True,
+    "size_mult": 1.0,
+    "regime": "NEUTRAL",
+    "degraded": False,
+}
+
+
+def _own_ticket_body() -> dict:
+    return {
+        "max_usdt_per_trade": 25,
+        "initial_capital_usdt": _OWN_BASELINE,
+        "sell_policy": {
+            "rotation": {
+                "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+                "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+            }
+        },
+    }
+
+
+def _capacity_neutral_below_base(disk: dict) -> dict:
+    """Disk position capacity, with the NEUTRAL regime step pulled down.
+
+    ``resolve_max_open_eff`` reads this table. The static ``max_open_positions``
+    stays the disk base, so the computed cap is no longer that base.
+    """
+    pc = copy.deepcopy(disk["risk"]["position_capacity"])
+    adj = dict(pc.get("regime_adj") or {})
+    adj["NEUTRAL"] = -8
+    pc["regime_adj"] = adj
+    return pc
+
+
+def _live_slot_cfg(disk: dict, position_capacity: dict) -> BotConfig:
+    return _risk_cfg(
+        trading_mode="live",
+        max_usdt_per_trade=25,
+        max_open_positions=int(disk["max_open_positions"]),
+        live={"dry_run": False, "execution": "shadow", "max_usdt_per_trade": 25},
+        initial_capital_usdt=_OWN_BASELINE,
+        sell_policy={
+            "rotation": {
+                "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+                "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+            }
+        },
+        risk={
+            "min_trade_usdt": 15,
+            "max_daily_loss_pct": 0,
+            "cash_floor_pct": 0,
+            "cash_policy": {"enabled": False},
+            "position_capacity": position_capacity,
+            "liquidity_guard": dict(_LIQ),
+            "fail_closed_guards": "log",
+        },
+    )
+
+
+@contextmanager
+def _pinned_slot_inputs(rm, tid):
+    """Stable resolver inputs. Does not stub max_open_eff or the slot counter."""
+    with patch(
+        "strategies.positions.resolve_tenant_id", lambda tenant_id=None: tid
+    ), patch(
+        "strategies.positions.resolve_tenant_scope", lambda scope=None: "live"
+    ), patch(
+        "services.market_policy_fusion.get_global_market_bias",
+        return_value=dict(_SLOT_NEUTRAL),
+    ), patch(
+        "intelligence.memory.cache.get_coin_profile", return_value=None
+    ), patch.object(
+        rm, "_process_uptime_sec", return_value=86_400.0
+    ), patch.object(
+        rm, "_equity_drawdown_pct", return_value=0.0
+    ):
+        yield
+
+
+def _seed_ticket_lots(n: int, tid: str, prefix: str) -> None:
+    for i in range(n):
+        _seed_lot(
+            f"{prefix}{i:02d}/USDT",
+            scope="live",
+            tenant=tid,
+            amount=Decimal("25"),
+            peak_amount=25.0,
+            average_entry=1.0,
+            last_buy_price=1.0,
+            current_price=1.0,
+            sold_percent=0.0,
+            side="long",
+        )
+
+
+def _fresh_short(symbol: str) -> TradeOrder:
+    return TradeOrder(
+        type="SHORT",
+        symbol=symbol,
+        price=1.0,
+        amount=0,
+        usdt_amount=25,
+        signal="SHORT",
+        source="manual",
+    )
+
+
+def test_new_short_open_rejected_when_eff_differs_from_base(monkeypatch):
+    """A new short is rejected at the computed cap, not the static base.
+
+    Disk ``max_open_positions`` and the capacity section base match. The
+    NEUTRAL regime step in the capacity config is negative, so
+    ``_resolve_position_capacity`` / ``resolve_max_open_eff`` returns a
+    smaller ``max_open_eff``. The test reads that number; it does not
+    stub it. Lots are 25 USDT with own T=1, S=0.75, baseline 1000, and
+    ``min_trade_usdt`` 15, so they are full slots.
+    """
+    from risk.position_capacity import format_capacity_reject_message
+    from strategies.positions import position_notional_usdt
+    from strategies.sell_rotation_policy import is_tail_position, rotation_config
+
+    tid = "tenant-a"
+    disk = _disk_config()
+    _arm_tenant_body(monkeypatch, _own_ticket_body())
+    cfg = _live_slot_cfg(disk, _capacity_neutral_below_base(disk))
+    assert float(cfg.risk_config["min_trade_usdt"]) == 15
+    assert cfg.risk_config["position_capacity"]["enabled"] is True
+    assert cfg.risk_config["position_capacity"]["regime_adj"]["NEUTRAL"] == -8
+    rm = RiskManager(cfg)
+    base = int(rm.config.max_open_positions)
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid, scope="live")
+    try:
+        with _pinned_slot_inputs(rm, tid):
+            preview = rm._resolve_position_capacity(full_slots=0)
+            eff = int(preview.max_open_eff)
+            assert preview.enabled is True
+            assert eff != base
+            assert int(preview.base) == base
+            if eff < base:
+                _seed_ticket_lots(eff, tid, "D")
+                _activate(_resolve_store_key("live", tid))
+                sample = _ensure_store(_resolve_store_key("live", tid))[get_key("D00/USDT", "1h")]
+                assert position_notional_usdt(sample) == pytest.approx(25)
+                assert is_tail_position(sample, rotation_config(cfg.raw)) is False
+                filled = count_open_full_slots(cfg.raw)
+                cap = rm._resolve_position_capacity(full_slots=filled)
+                assert filled == eff
+                assert filled == int(cap.max_open_eff)
+                assert filled < base
+                short = rm.evaluate(_fresh_short("ZZZ/USDT"), "15m", source="manual")
+                assert short.approved is False
+                assert short.code == "max_open_positions"
+                assert short.message == format_capacity_reject_message(cap, filled)
+                assert count_open_full_slots(cfg.raw) == filled
+            else:
+                early_n = base + 1
+                assert early_n < eff
+                _seed_ticket_lots(early_n, tid, "D")
+                _activate(_resolve_store_key("live", tid))
+                assert count_open_full_slots(cfg.raw) == early_n
+                early = rm.evaluate(_fresh_short("YYY/USDT"), "15m", source="manual")
+                assert early.code != "max_open_positions"
+                _seed_ticket_lots(eff - early_n, tid, "E")
+                _activate(_resolve_store_key("live", tid))
+                filled = count_open_full_slots(cfg.raw)
+                cap = rm._resolve_position_capacity(full_slots=filled)
+                assert filled == eff
+                assert filled == int(cap.max_open_eff)
+                short = rm.evaluate(_fresh_short("ZZZ/USDT"), "15m", source="manual")
+                assert short.approved is False
+                assert short.code == "max_open_positions"
+                assert short.message == format_capacity_reject_message(cap, filled)
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid, scope="live")
+        _position_stores.clear()
+
+
+def test_new_short_open_one_free_slot_skips_slot_guard(monkeypatch):
+    """One slot under the computed cap is not a full-book reject.
+
+    The short may still fail for another reason. It must not fail with
+    ``max_open_positions``.
+    """
+    tid = "tenant-a"
+    disk = _disk_config()
+    _arm_tenant_body(monkeypatch, _own_ticket_body())
+    cfg = _live_slot_cfg(disk, _capacity_neutral_below_base(disk))
+    rm = RiskManager(cfg)
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid, scope="live")
+    try:
+        with _pinned_slot_inputs(rm, tid):
+            preview = rm._resolve_position_capacity(full_slots=0)
+            eff = int(preview.max_open_eff)
+            assert preview.enabled is True
+            assert eff >= 2
+            _seed_ticket_lots(eff - 1, tid, "F")
+            _activate(_resolve_store_key("live", tid))
+            filled = count_open_full_slots(cfg.raw)
+            cap = rm._resolve_position_capacity(full_slots=filled)
+            assert filled == eff - 1
+            assert int(cap.max_open_eff) - filled == 1
+            short = rm.evaluate(_fresh_short("ZZZ/USDT"), "15m", source="manual")
+            assert short.code != "max_open_positions"
+            assert count_open_full_slots(cfg.raw) == filled
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid, scope="live")
+        _position_stores.clear()
+
+
 def _seed_tail_lot(symbol: str, tenant: str, **extra) -> None:
     row = {
         "amount": Decimal("100"),
