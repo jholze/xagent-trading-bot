@@ -512,10 +512,17 @@ def test_mcp_buy_is_checked_and_exits_are_not():
         ("COVER", "COVER", "auto"),
     ):
         pos = dict(lot)
+        sell_amount = 5
         if order_type == "COVER":
             pos["side"] = "short"
+        elif signal == "SELL_STOP_PARTIAL":
+            # The partial-sell guard applies to a hard partial again. Size
+            # this exit above that guard; the assertion is still the DCA and
+            # liquidity checks.
+            pos["amount"] = 200.0
+            sell_amount = 80
         order = TradeOrder(
-            order_type, "BOT/USDT", 0.2, 5, signal=signal, source=source
+            order_type, "BOT/USDT", 0.2, sell_amount, signal=signal, source=source
         )
         dec = _decide(rm, order, source, thick_missing, position=pos)
         assert dec.approved is True, f"{order_type} {signal} {dec.code}: {dec.message}"
