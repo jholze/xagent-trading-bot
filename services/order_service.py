@@ -494,7 +494,15 @@ class OrderService:
             store.upsert_order(omit_empty_idempotency_key(record))
         except Exception as e:
             # Fail-open: v2 is still a shadow; legacy blob remains source of truth.
-            log(f"order ledger v2 dual-write failed: {e}", "WARNING")
+            # The fields below are what a later backfill needs to reconcile a gap.
+            tid = record.get("tenant_id") or resolve_tenant_id()
+            scope = record.get("ledger_scope") or self.scope
+            log(
+                "order ledger v2 dual-write failed: "
+                f"tenant={tid} scope={scope} order_id={record.get('id')} "
+                f"display_seq={record.get('display_seq')} error={e}",
+                "WARNING",
+            )
 
     def _v2_day_key(self, now: datetime | None = None) -> str:
         """Display-calendar day key YYYY-MM-DD for v2 day queries."""
