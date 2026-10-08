@@ -28,6 +28,95 @@ _GATE_TEXT_ALLOWED = frozenset(
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
 )
 
+# R4 market cache on the existing adapter path. Tests install an override;
+# production fills the cache from load_markets. No second market client.
+_VENUE_CACHE: dict[str, dict] = {}
+_VENUE_OVERRIDE: dict | None = None
+
+
+def price_precision_places(raw) -> int | None:
+    """Decimal places of the pair price. Tick sizes below 1 use the tick."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number >= 1:
+        return int(number) if number == int(number) and number <= 18 else 0
+    text = f"{number:.12f}".rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.split(".", 1)[1])
+
+
+def _amount_step(market: dict) -> float | None:
+    prec = (market.get("precision") or {}).get("amount")
+    if isinstance(prec, int) and not isinstance(prec, bool) and prec >= 0:
+        return 10 ** (-prec) if prec else 1.0
+    try:
+        step = float(prec)
+    except (TypeError, ValueError):
+        step = 0.0
+    if step > 0:
+        return step
+    try:
+        min_amt = float(((market.get("limits") or {}).get("amount") or {}).get("min") or 0)
+    except (TypeError, ValueError):
+        min_amt = 0.0
+    return min_amt if min_amt > 0 else None
+
+
+def venue_limits_from_market(market: dict | None) -> dict:
+    if not isinstance(market, dict) or not market:
+        return {"known": False, "min_cost": None, "amount_step": None, "price_places": None}
+    try:
+        min_cost = float(((market.get("limits") or {}).get("cost") or {}).get("min") or 0)
+    except (TypeError, ValueError):
+        min_cost = 0.0
+    return {
+        "known": min_cost > 0,
+        "min_cost": min_cost if min_cost > 0 else None,
+        "amount_step": _amount_step(market),
+        "price_places": price_precision_places((market.get("precision") or {}).get("price")),
+    }
+
+
+def remember_venue_markets(markets: dict | None) -> None:
+    if not isinstance(markets, dict):
+        return
+    for symbol, market in markets.items():
+        if isinstance(market, dict):
+            _VENUE_CACHE[str(symbol)] = venue_limits_from_market(market)
+
+
+def set_venue_limits_override(limits: dict | None) -> None:
+    global _VENUE_OVERRIDE
+    _VENUE_OVERRIDE = None if limits is None else dict(limits)
+
+
+def venue_limits_for(symbol: str) -> dict:
+    if _VENUE_OVERRIDE is not None:
+        return dict(_VENUE_OVERRIDE)
+    cached = _VENUE_CACHE.get(str(symbol or ""))
+    if cached is not None:
+        return dict(cached)
+    return {"known": False, "min_cost": None, "amount_step": None, "price_places": None}
+
+
+def round_usdt_to_price_precision(value: float, limits: dict | None) -> float:
+    """Round a USDT loss to the pair price precision. Fallback is order-path cents."""
+    places = None if not isinstance(limits, dict) else limits.get("price_places")
+    if places is None:
+        return round(float(value), 2)
+    return round(float(value), int(places))
+
 
 def _clamp_gate_client_order_id(key: str) -> str:
     """Deterministic Gate clientOrderId payload (no `t-` prefix).
@@ -316,6 +405,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         existing = getattr(exchange, "markets", None) if exchange is not None else None
         if isinstance(existing, dict) and existing:
             cls._shadow_markets_cache = existing
+            remember_venue_markets(existing)
             return True
         if cls._shadow_markets_cache is not None:
             if exchange is not None:
@@ -337,6 +427,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             if not loaded:
                 raise RuntimeError("empty markets")
             cls._shadow_markets_cache = loaded
+            remember_venue_markets(loaded)
             return True
         except Exception:
             cls._shadow_markets_failed = True
@@ -525,6 +616,21 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         return amount, ""
 
+    def _reject_sell_below_venue_min(self, order: TradeOrder, timeframe: str, error: str) -> TradeResult:
+        """A stop or full sell the venue refuses for size enters the below-min state once."""
+        text = str(error or "")
+        signal = str(getattr(order, "signal", "") or "")
+        if "minimum" in text.lower() and ("STOP" in signal or "FULL" in signal):
+            from core.tenant_context import resolve_tenant_id
+            from strategies.positions import BELOW_VENUE_MINIMUM, mark_exchange_min_reject
+
+            if mark_exchange_min_reject(order.symbol, timeframe):
+                log(
+                    f"{BELOW_VENUE_MINIMUM} tenant={resolve_tenant_id()} symbol={order.symbol}",
+                    "WARNING",
+                )
+        return self._rejected_result(order, error)
+
     def _execute_sell(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         amount = float(order.qty or 0)
         if amount <= 0:
@@ -535,7 +641,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 try:
                     amount, error = self._validate_sell_amount(exchange, order, amount)
                     if error:
-                        return self._rejected_result(order, error)
+                        return self._reject_sell_below_venue_min(order, timeframe, error)
                     self._precision_unverified = False
                 except Exception:
                     amount = self._shadow_cap_sell(exchange, order, amount)
@@ -546,7 +652,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         else:
             amount, error = self._validate_sell_amount(exchange, order, amount)
             if error:
-                return self._rejected_result(order, error)
+                return self._reject_sell_below_venue_min(order, timeframe, error)
 
         params = self._client_order_params(order)
         create_attempted = False

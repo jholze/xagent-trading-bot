@@ -376,6 +376,26 @@ def should_pause_partial_stop(
     return mx > 0 and used < mx
 
 
+def _partial_stop_ratio_from_config() -> float:
+    """One config key. Today's value is 0.67, so a missing key matches today."""
+    try:
+        from core.config import get_bot_config
+        from core.simulated_trading import is_dry_run_enhanced
+
+        cfg = get_bot_config()
+        raw = cfg.raw if hasattr(cfg, "raw") else {}
+        if is_dry_run_enhanced(raw):
+            defaults = raw.get("dry_run_defaults") or {}
+            if defaults.get("partial_stop_ratio") is not None:
+                return float(defaults["partial_stop_ratio"])
+        risk = raw.get("risk") or {}
+        if risk.get("partial_stop_ratio") is not None:
+            return float(risk["partial_stop_ratio"])
+    except Exception:
+        pass
+    return 0.67
+
+
 def effective_stop_loss_thresholds(
     position: dict,
     strategy_params: dict | None,
@@ -389,7 +409,10 @@ def effective_stop_loss_thresholds(
     if params.get("partial_stop_pct") is not None:
         partial_stop = float(params["partial_stop_pct"])
     else:
-        partial_ratio = float(params.get("partial_stop_ratio", 0.67))
+        partial_ratio = params.get("partial_stop_ratio")
+        if partial_ratio is None:
+            partial_ratio = _partial_stop_ratio_from_config()
+        partial_ratio = float(partial_ratio)
         partial_stop = stop_loss_pct * partial_ratio
 
     dca_rounds = int(position.get("dca_rounds", 0) or 0)

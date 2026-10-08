@@ -8,6 +8,7 @@ from logger import log
 from strategies.positions import (
     bind_buy_timeframe,
     get_position,
+    refresh_venue_min_mark,
     sell_fraction_for_signal,
     update_position,
 )
@@ -142,6 +143,14 @@ class PortfolioService:
             entry_15m_vol_ratio=entry_15m_vol_ratio,
             fee_estimated=bool(fee_unknown),
         )
+        try:
+            # The fill is a fresh mark. A merged lot at or above the lift
+            # threshold leaves the below-min state; the brake flag stays.
+            refresh_venue_min_mark(
+                symbol, timeframe, mark=float(price), mark_fresh=True
+            )
+        except Exception as exc:
+            log(f"venue min refresh after buy failed {symbol}: {exc}", "WARNING")
         if fee_unknown and not prior_marker:
             from core.tenant_context import resolve_tenant_id
 

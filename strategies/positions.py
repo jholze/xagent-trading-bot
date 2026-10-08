@@ -93,6 +93,8 @@ def _mark_positions_unknown(key: tuple[str, str], err: BaseException) -> None:
 
 DUST_AMOUNT_EPSILON = 1e-12
 MIN_OPEN_POSITION_USDT = 1.0
+BELOW_VENUE_MINIMUM = "below_venue_minimum"
+VENUE_MIN_MERGE_LOSS_EXCEEDED = "venue_min_merge_loss_exceeded"
 
 _CACHE_FIELDS = (
     "strategy_tier",
@@ -133,6 +135,10 @@ _CACHE_FIELDS = (
     "peak_epoch_at",
     "peak_at",
     "v3",
+    "venue_min_state",
+    "venue_min_brake",
+    "venue_min_open_pnl",
+    "venue_min_merge_logged",
 )
 
 # #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
@@ -214,14 +220,137 @@ def has_position_amount(pos: dict) -> bool:
     return float(pos.get("amount", 0) or 0) > DUST_AMOUNT_EPSILON
 
 
+def is_below_venue_minimum(pos: dict | None) -> bool:
+    return str((pos or {}).get("venue_min_state") or "") == BELOW_VENUE_MINIMUM
+
+
 def is_open_position(pos: dict) -> bool:
     """True when the lot is material (BTC-sized fractions, not token-dust)."""
     if not has_position_amount(pos):
+        return False
+    if is_below_venue_minimum(pos):
         return False
     notional = position_notional_usdt(pos)
     if notional > 0:
         return notional >= MIN_OPEN_POSITION_USDT
     return True
+
+
+def _venue_hysteresis() -> float:
+    try:
+        from core.config import get_bot_config
+        from core.simulated_trading import is_dry_run_enhanced
+
+        cfg = get_bot_config()
+        raw = cfg.raw if hasattr(cfg, "raw") else {}
+        if is_dry_run_enhanced(raw):
+            defaults = raw.get("dry_run_defaults") or {}
+            if defaults.get("venue_min_hysteresis") is not None:
+                return float(defaults["venue_min_hysteresis"])
+        risk = raw.get("risk") or {}
+        if risk.get("venue_min_hysteresis") is not None:
+            return float(risk["venue_min_hysteresis"])
+    except Exception:
+        pass
+    return 0.25
+
+
+def _log_venue_code(symbol: str, code: str, extra: str = "") -> None:
+    from core.tenant_context import resolve_tenant_id
+    from logger import log
+
+    tail = f" {extra}" if extra else ""
+    log(f"{code} tenant={resolve_tenant_id()} symbol={symbol}{tail}", "WARNING")
+
+
+def mark_exchange_min_reject(symbol: str, timeframe: str) -> bool:
+    """Venue refused a stop or full sell. Enter the below-min state once. No retry."""
+    _activate(_resolve_store_key())
+    key = get_key(symbol, timeframe)
+    with _positions_lock:
+        pos = _ensure_key(_active_store(), key)
+        if is_below_venue_minimum(pos):
+            return False
+        amount = float(pos.get("amount") or 0)
+        entry = float(pos.get("average_entry") or 0)
+        pos["venue_min_state"] = BELOW_VENUE_MINIMUM
+        pos["venue_min_brake"] = True
+        pos["venue_min_open_pnl"] = -(amount * entry)
+        pos.pop("venue_min_merge_logged", None)
+        _recompute_open_count()
+    return True
+
+
+def refresh_venue_min_mark(
+    symbol: str,
+    timeframe: str,
+    *,
+    mark: float | None,
+    mark_fresh: bool,
+) -> str:
+    """Set or lift the below-min state from a fresh mark.
+
+    A missing or stale mark leaves the state as it is.
+    """
+    from execution.gate_adapter import venue_limits_for
+
+    _activate(_resolve_store_key())
+    key = get_key(symbol, timeframe)
+    limits = venue_limits_for(symbol)
+    min_cost = limits.get("min_cost") if limits.get("known") else None
+    transition = "unchanged"
+    with _positions_lock:
+        pos = _ensure_key(_active_store(), key)
+        amount = float(pos.get("amount") or 0)
+        if amount <= DUST_AMOUNT_EPSILON:
+            return "unchanged"
+        if not mark_fresh or mark is None or float(mark) <= 0 or not min_cost:
+            return "unchanged"
+        entry = float(pos.get("average_entry") or 0)
+        value = amount * float(mark)
+        open_pnl = (float(mark) - entry) * amount
+        floor = float(min_cost)
+        if is_below_venue_minimum(pos):
+            lift_at = floor * (1.0 + _venue_hysteresis())
+            pos["venue_min_open_pnl"] = open_pnl
+            if value >= lift_at:
+                pos.pop("venue_min_state", None)
+                pos.pop("venue_min_merge_logged", None)
+                transition = "lifted"
+        elif value < floor:
+            pos["venue_min_state"] = BELOW_VENUE_MINIMUM
+            pos["venue_min_brake"] = True
+            pos["venue_min_open_pnl"] = open_pnl
+            pos.pop("venue_min_merge_logged", None)
+            transition = "set"
+        elif pos.get("venue_min_brake"):
+            # After a lift or a merge the loss stays in the day figure, once,
+            # through this lot's open pnl. A stale mark never reaches here.
+            pos["venue_min_open_pnl"] = open_pnl
+        _recompute_open_count()
+    if transition in ("set", "lifted"):
+        _log_venue_code(symbol, BELOW_VENUE_MINIMUM if transition == "set" else "venue_min_lifted")
+    return transition
+
+
+def brake_open_pnl() -> float:
+    """Open pnl kept in the daily-loss figure until the lot is flat.
+
+    Measurement only. It does not arm a halt or a daily-loss cap.
+    """
+    _activate(_resolve_store_key())
+    total = 0.0
+    with _positions_lock:
+        for pos in _active_store().values():
+            if not pos.get("venue_min_brake"):
+                continue
+            if float(pos.get("amount") or 0) <= DUST_AMOUNT_EPSILON:
+                continue
+            try:
+                total += float(pos.get("venue_min_open_pnl") or 0)
+            except (TypeError, ValueError):
+                continue
+    return total
 
 
 def apply_hard_clear_if_closed(pos: dict) -> bool:
@@ -328,6 +457,17 @@ def _deserialize_position(raw: dict) -> dict:
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
     if raw.get("basis_fee_estimated"):
         out["basis_fee_estimated"] = True
+    if raw.get("venue_min_state"):
+        out["venue_min_state"] = raw.get("venue_min_state")
+    if raw.get("venue_min_brake"):
+        out["venue_min_brake"] = True
+    if raw.get("venue_min_open_pnl") is not None:
+        try:
+            out["venue_min_open_pnl"] = float(raw.get("venue_min_open_pnl") or 0)
+        except (TypeError, ValueError):
+            pass
+    if raw.get("venue_min_merge_logged"):
+        out["venue_min_merge_logged"] = True
     return out
 
 
@@ -412,6 +552,14 @@ def _serialize_positions() -> dict:
         if p.get("basis_fee_estimated"):
             # Rebuilt by the replay. Not a _CACHE_FIELDS overlay.
             data["positions"][tf]["basis_fee_estimated"] = True
+        if p.get("venue_min_state"):
+            data["positions"][tf]["venue_min_state"] = p.get("venue_min_state")
+        if p.get("venue_min_brake"):
+            data["positions"][tf]["venue_min_brake"] = True
+        if p.get("venue_min_open_pnl") is not None:
+            data["positions"][tf]["venue_min_open_pnl"] = float(p.get("venue_min_open_pnl") or 0)
+        if p.get("venue_min_merge_logged"):
+            data["positions"][tf]["venue_min_merge_logged"] = True
     return data
 
 

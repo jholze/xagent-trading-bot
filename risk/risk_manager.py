@@ -375,6 +375,19 @@ class RiskManager:
                 order = self._fill_sell_amount_from_open_lot(order, timeframe)
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
+            self._refresh_venue_mark(order.symbol, timeframe, order.price)
+            from strategies.positions import BELOW_VENUE_MINIMUM, is_below_venue_minimum
+
+            if is_below_venue_minimum(get_position(order.symbol, timeframe)):
+                # The transition already logged once. Do not log again, and do not retry.
+                return RiskDecision(
+                    approved=False,
+                    message="Lot is below the venue minimum",
+                    code=BELOW_VENUE_MINIMUM,
+                )
+            venue_block, order = self._venue_partial_guard(order, timeframe)
+            if venue_block is not None:
+                return venue_block
             partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
             if partial_block:
                 return RiskDecision(approved=False, message=partial_reason, code="partial_sell_guard")
@@ -422,6 +435,8 @@ class RiskManager:
                 size_multiplier=0.0,
             )
 
+        pos = get_position(order.symbol, timeframe)
+        self._refresh_venue_mark(order.symbol, timeframe, order.price)
         pos = get_position(order.symbol, timeframe)
         has_position = is_open_position(pos)
         if order.type == "BUY" and not has_position:
@@ -853,6 +868,16 @@ class RiskManager:
                     )
                 # Slot freed in this evaluate() call — continue _evaluate_impl.
 
+        # R4/R7 and the below-min merge run after the existing new-entry gates
+        # (universe, capacity). They do not add a second slot cap.
+        merge_plan = None
+        pair_block = self._venue_pair_buy_block(order)
+        if pair_block is not None:
+            return pair_block
+        merge_reject, merge_plan = self._venue_min_merge(order, timeframe)
+        if merge_reject is not None:
+            return merge_reject
+
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
             fusion = self.config.cmc_trending_fusion_config
@@ -884,6 +909,10 @@ class RiskManager:
                 base_usdt = recovery_usdt_amount(rec_cfg, params, position=pos)
             elif dca_cfg.get("fixed_usdt"):
                 base_usdt = float(dca_cfg["fixed_usdt"])
+        # Merge buy is ticket − remainder, then the existing multipliers
+        # (size_mult, drawdown) shrink that buy. They never size it back up.
+        if merge_plan is not None:
+            base_usdt = min(float(base_usdt), float(merge_plan["cap"]))
         if source == "manual":
             # Telegram /buy amounts are explicit user intent — don't shrink via auto-trade multipliers.
             sized = base_usdt
@@ -1005,6 +1034,36 @@ class RiskManager:
             factors["balance_capped"] = True
             factors["spendable_usdt"] = round(balance, 2)
 
+        # Bound uses the merged cost after every reduction, including
+        # size_mult and drawdown. A full ticket (multiplier 1) matches
+        # (stop − buffer) / 100 × ticket. The size floor runs first: a
+        # final buy below min_trade_usdt is size_too_small and never
+        # reaches the bound (T9d-3b).
+        if merge_plan is not None:
+            cap = float(merge_plan["cap"])
+            if float(sized) > cap:
+                sized = cap
+                factors["venue_min_merge_capped"] = True
+            min_trade_merge = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+            if float(sized) < min_trade_merge:
+                return RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Adjusted size ${float(sized):.2f} below minimum "
+                        f"(${min_trade_merge:.0f})"
+                    ),
+                    code="size_too_small",
+                    size_multiplier=factors.get("total_multiplier", 1.0),
+                    drawdown_pct=factors.get("drawdown_pct", 0.0),
+                    atr_factor=factors.get("atr_factor", 1.0),
+                    trust_factor=factors.get("trust_factor", 1.0),
+                )
+            bound_reject = self._venue_merge_loss_reject(
+                order, timeframe, merge_plan, float(sized)
+            )
+            if bound_reject is not None:
+                return bound_reject
+
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
         if sized < min_trade:
             floor_abs = self._cash_floor_abs()
@@ -1047,12 +1106,13 @@ class RiskManager:
         if locked_out is not None:
             return locked_out
 
-        # RelVol trade tickets: reject under $1000 after multipliers / shrink-only
-        # caps. Do not round up. Other sources keep min_trade_usdt ($100 live).
-        if self._is_relvol_buy(source, order) and sized < 1000.0:
+        # RelVol floor reads risk.relvol_min_trade_usdt (today 1000). Explicit 0
+        # disables the floor. Other sources keep min_trade_usdt.
+        relvol_floor = self._cfg_number("relvol_min_trade_usdt", 1000.0)
+        if self._is_relvol_buy(source, order) and relvol_floor > 0 and sized < relvol_floor:
             return RiskDecision(
                 approved=False,
-                message=f"Adjusted size ${sized:.2f} below minimum ($1000)",
+                message=f"Adjusted size ${sized:.2f} below minimum (${relvol_floor:.0f})",
                 code="size_too_small",
                 size_multiplier=factors.get("total_multiplier", 1.0),
                 drawdown_pct=factors.get("drawdown_pct", 0.0),
@@ -1066,12 +1126,19 @@ class RiskManager:
                 return dca_usdt_limit
 
         resolved_source = order.source if order.source not in ("", "auto") else source
+        usdt_places = 2
+        if merge_plan is not None:
+            from execution.gate_adapter import venue_limits_for
+
+            raw_places = (venue_limits_for(order.symbol) or {}).get("price_places")
+            if raw_places is not None:
+                usdt_places = max(2, int(raw_places))
         approved = TradeOrder(
             type=order.type,
             symbol=order.symbol,
             price=order.price,
             amount=order.amount,
-            usdt_amount=round(sized, 2),
+            usdt_amount=round(float(sized), usdt_places),
             signal=order.signal,
             source=resolved_source,
             order_id=order.order_id,
@@ -1595,6 +1662,8 @@ class RiskManager:
                 size_multiplier=0.0,
             )
         try:
+            # Below-min open loss is measured separately. It is not fed into
+            # this halt: v1.3 has no brake and no daily-loss cap.
             realized = float(self._trailing_24h_realized_pnl())
         except Exception as e:
             # Same rollout switch as every other guard: 'log' -> ERROR + allow (old
@@ -1656,6 +1725,50 @@ class RiskManager:
             code="daily_loss_limit",
             size_multiplier=0.0,
         )
+
+    def _mark_is_fresh(self, symbol: str, price: float) -> bool:
+        """True only when the order price matches a non-expired cached mark."""
+        if price <= 0:
+            return False
+        try:
+            from price_fetcher import _cache_get, stale_expired_symbols
+
+            if symbol in stale_expired_symbols():
+                return False
+            cached = _cache_get(symbol)
+            if cached is None:
+                return False
+            return abs(float(cached) - float(price)) <= 1e-8 * max(1.0, float(price))
+        except Exception:
+            return False
+
+    def _refresh_venue_mark(self, symbol: str, timeframe: str, price: float) -> None:
+        from strategies.positions import refresh_venue_min_mark
+
+        try:
+            px = float(price or 0)
+        except (TypeError, ValueError):
+            px = 0.0
+        refresh_venue_min_mark(
+            symbol,
+            timeframe,
+            mark=px if px > 0 else None,
+            mark_fresh=self._mark_is_fresh(symbol, px),
+        )
+
+    def _cfg_number(self, key: str, default: float) -> float:
+        """Dry-run block first when enhanced, then risk. Explicit 0 is kept."""
+        from core.simulated_trading import is_dry_run_enhanced
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        if is_dry_run_enhanced(raw):
+            defaults = self.config.dry_run_defaults or {}
+            if key in defaults and defaults.get(key) is not None:
+                return float(defaults[key])
+        risk = self.config.risk_config or {}
+        if key in risk and risk.get(key) is not None:
+            return float(risk[key])
+        return float(default)
 
     def _base_usdt_cap(self) -> float:
         if self.config.trading_mode == "live":
@@ -2256,6 +2369,320 @@ class RiskManager:
         }
         return base_usdt * total, factors
 
+    def _venue_pair_buy_block(self, order: TradeOrder) -> RiskDecision | None:
+        """R4 missing minimum data and R7 pair rule. Stops are not buys."""
+        from execution.gate_adapter import venue_limits_for
+
+        if str(order.type or "").upper() != "BUY":
+            return None
+        limits = venue_limits_for(order.symbol)
+        if not limits.get("known") or not limits.get("min_cost") or not limits.get("amount_step"):
+            return RiskDecision(
+                approved=False,
+                message=f"Venue minimum unknown for {order.symbol}",
+                code="venue_min_missing",
+                size_multiplier=0.0,
+            )
+        ticket = float(self._base_usdt_cap() or 0)
+        if ticket <= 0:
+            return RiskDecision(
+                approved=False,
+                message="Configured ticket is not positive",
+                code="venue_pair_blocked",
+                size_multiplier=0.0,
+            )
+        min_cost = float(limits["min_cost"])
+        max_min_pct = self._cfg_number("venue_min_max_pct_of_ticket", 0.20)
+        step_pct = self._cfg_number("venue_step_max_pct_of_ticket", 0.02)
+        if min_cost > max_min_pct * ticket:
+            self._log_venue_once(
+                order.symbol,
+                "venue_pair_blocked",
+                f"min={min_cost} pct={max_min_pct} ticket={ticket}",
+            )
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Pair minimum {min_cost:.4g} is above "
+                    f"{max_min_pct:.0%} of the ticket"
+                ),
+                code="venue_pair_blocked",
+                size_multiplier=0.0,
+            )
+        step = float(limits["amount_step"])
+        price = float(order.price or 0)
+        if price <= 0 or step * price > step_pct * ticket:
+            self._log_venue_once(
+                order.symbol,
+                "venue_pair_blocked",
+                f"step={step} price={price} pct={step_pct}",
+            )
+            return RiskDecision(
+                approved=False,
+                message="Amount step is above the configured share of the ticket",
+                code="venue_pair_blocked",
+                size_multiplier=0.0,
+            )
+        return None
+
+    def _log_venue_once(self, symbol: str, code: str, extra: str) -> None:
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+
+        seen = getattr(self, "_venue_pair_logged", None)
+        if seen is None:
+            seen = set()
+            self._venue_pair_logged = seen
+        key = (resolve_tenant_id(), symbol, code)
+        if key in seen:
+            return
+        seen.add(key)
+        log(f"{code} tenant={key[0]} symbol={symbol} {extra}", "WARNING")
+
+    def _effective_stop_loss_pct(self, symbol: str, timeframe: str) -> float:
+        """Stop the exit path uses: the symbol's strategy row, else the top-level key.
+
+        Both are percent, the same unit as ``risk.stop_gap_buffer_pct``.
+        """
+        params = {}
+        try:
+            params = self.config.strategy_params(symbol, timeframe) or {}
+        except Exception:
+            params = {}
+        raw = params.get("stop_loss_pct") if isinstance(params, dict) else None
+        if raw is None:
+            raw = self.config.stop_loss_pct
+        try:
+            return float(raw or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _stop_gap_buffer_pct(self) -> float | None:
+        """Percent gap buffer. None when the key is absent (fail closed, no default)."""
+        from core.simulated_trading import is_dry_run_enhanced
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        if is_dry_run_enhanced(raw):
+            defaults = self.config.dry_run_defaults or {}
+            if "stop_gap_buffer_pct" in defaults and defaults.get("stop_gap_buffer_pct") is not None:
+                return float(defaults["stop_gap_buffer_pct"])
+        risk = self.config.risk_config or {}
+        if "stop_gap_buffer_pct" in risk and risk.get("stop_gap_buffer_pct") is not None:
+            return float(risk["stop_gap_buffer_pct"])
+        return None
+
+    def _log_merge_once(self, order: TradeOrder, timeframe: str, loss: float, bound) -> None:
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+        from strategies.positions import VENUE_MIN_MERGE_LOSS_EXCEEDED, get_position
+
+        pos = get_position(order.symbol, timeframe)
+        if pos.get("venue_min_merge_logged"):
+            return
+        log(
+            f"{VENUE_MIN_MERGE_LOSS_EXCEEDED} tenant={resolve_tenant_id()} "
+            f"symbol={order.symbol} loss={loss} bound={bound}",
+            "WARNING",
+        )
+        pos["venue_min_merge_logged"] = True
+
+    def _venue_min_merge(self, order: TradeOrder, timeframe: str):
+        """Plan a below-min merge. The loss bound is applied after final sizing.
+
+        Returns (reject, plan). plan carries the reduced-buy cap and the
+        remainder cost and loss. A missing buffer, or a stop that is not
+        above the buffer, rejects here and a merge never happens.
+        """
+        from strategies.positions import (
+            VENUE_MIN_MERGE_LOSS_EXCEEDED,
+            get_position,
+            is_below_venue_minimum,
+        )
+
+        if str(order.type or "").upper() != "BUY":
+            return None, None
+        pos = get_position(order.symbol, timeframe)
+        if not is_below_venue_minimum(pos):
+            return None, None
+        price = float(order.price or 0)
+        if price <= 0:
+            self._log_merge_once(order, timeframe, 0.0, None)
+            return (
+                RiskDecision(
+                    approved=False,
+                    message="Mark missing; below-minimum lot is unchanged",
+                    code=VENUE_MIN_MERGE_LOSS_EXCEEDED,
+                    size_multiplier=0.0,
+                    details={"reason": "mark_missing", "loss": None, "bound": None},
+                ),
+                None,
+            )
+        amount = float(pos.get("amount") or 0)
+        entry = float(pos.get("average_entry") or 0)
+        cost = amount * entry
+        loss = cost - amount * price
+        buffer = self._stop_gap_buffer_pct()
+        if buffer is None:
+            self._log_merge_once(order, timeframe, loss, None)
+            return (
+                RiskDecision(
+                    approved=False,
+                    message="stop_gap_buffer_pct missing; merge refused",
+                    code=VENUE_MIN_MERGE_LOSS_EXCEEDED,
+                    size_multiplier=0.0,
+                    details={"reason": "missing_key", "loss": loss, "bound": None},
+                ),
+                None,
+            )
+        stop_pct = self._effective_stop_loss_pct(order.symbol, timeframe)
+        if stop_pct <= float(buffer):
+            self._log_merge_once(order, timeframe, loss, 0.0)
+            return (
+                RiskDecision(
+                    approved=False,
+                    message=(
+                        "stop_loss_pct is not above stop_gap_buffer_pct; "
+                        "merge refused"
+                    ),
+                    code=VENUE_MIN_MERGE_LOSS_EXCEEDED,
+                    size_multiplier=0.0,
+                    details={
+                        "reason": "stop_not_above_buffer",
+                        "loss": loss,
+                        "bound": 0.0,
+                        "stop_pct": stop_pct,
+                        "buffer_pct": float(buffer),
+                    },
+                ),
+                None,
+            )
+        ticket = float(self._base_usdt_cap() or 0)
+        buy_usdt = ticket - cost
+        # Pre-multiplier basis is the looser one (a later size_mult can only
+        # shrink it). A loss that already exceeds that basis is the bound
+        # reject (T9b/T9c). The size floor runs only when this bound holds,
+        # and again after final sizing.
+        plan = {
+            "cap": max(buy_usdt, 0.0),
+            "cost": cost,
+            "loss": loss,
+            "stop_pct": stop_pct,
+            "buffer_pct": float(buffer),
+        }
+        bound_reject = self._venue_merge_loss_reject(
+            order, timeframe, plan, max(buy_usdt, 0.0)
+        )
+        if bound_reject is not None:
+            return bound_reject, None
+        min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+        if buy_usdt < min_trade:
+            return (
+                RiskDecision(
+                    approved=False,
+                    message=f"Adjusted size ${buy_usdt:.2f} below minimum (${min_trade:.0f})",
+                    code="size_too_small",
+                    size_multiplier=0.0,
+                ),
+                None,
+            )
+        return None, plan
+
+    def _venue_merge_loss_reject(
+        self, order: TradeOrder, timeframe: str, plan: dict, final_buy: float
+    ) -> RiskDecision | None:
+        """Reject when the remainder loss exceeds the bound on the sized basis."""
+        from execution.gate_adapter import round_usdt_to_price_precision, venue_limits_for
+        from strategies.positions import VENUE_MIN_MERGE_LOSS_EXCEEDED
+
+        loss = float(plan["loss"])
+        basis = float(plan["cost"]) + float(final_buy)
+        bound = (float(plan["stop_pct"]) - float(plan["buffer_pct"])) / 100.0 * basis
+        limits = venue_limits_for(order.symbol)
+        rounded_loss = round_usdt_to_price_precision(loss, limits)
+        rounded_bound = round_usdt_to_price_precision(bound, limits)
+        if rounded_loss <= rounded_bound:
+            return None
+        self._log_merge_once(order, timeframe, loss, bound)
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"Below-minimum merge loss {loss:.6g} exceeds bound {bound:.6g}"
+            ),
+            code=VENUE_MIN_MERGE_LOSS_EXCEEDED,
+            size_multiplier=0.0,
+            details={
+                "reason": "loss_bound",
+                "loss": loss,
+                "bound": bound,
+                "basis": basis,
+                "final_buy": float(final_buy),
+                "stop_pct": float(plan["stop_pct"]),
+                "buffer_pct": float(plan["buffer_pct"]),
+            },
+        )
+
+    def _venue_partial_guard(self, order: TradeOrder, timeframe: str):
+        """Skip a partial below the pair minimum. Sell the whole lot if the remainder would be."""
+        from execution.gate_adapter import venue_limits_for
+        from logger import log
+        from strategies.positions import get_position
+
+        if not _is_partial_sell(order.signal):
+            return None, order
+        limits = venue_limits_for(order.symbol)
+        if not limits.get("known") or not limits.get("min_cost"):
+            log(
+                f"partial skipped: venue minimum unknown symbol={order.symbol}",
+                "WARNING",
+            )
+            return (
+                RiskDecision(
+                    approved=False,
+                    message=f"Partial skipped: venue minimum unknown for {order.symbol}",
+                    code="venue_min_missing",
+                ),
+                order,
+            )
+        pos = get_position(order.symbol, timeframe)
+        held = float(pos.get("amount") or 0)
+        price = float(order.price or 0)
+        notional = float(order.amount or 0) * price
+        remainder = held * price - notional
+        min_cost = float(limits["min_cost"])
+        if notional < min_cost:
+            log(
+                f"partial skipped: value {notional:.4g} below venue minimum "
+                f"{min_cost:.4g} symbol={order.symbol}",
+                "WARNING",
+            )
+            return (
+                RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Partial skipped: value {notional:.2f} below venue "
+                        f"minimum {min_cost:.2f}"
+                    ),
+                    code="venue_min_partial_skipped",
+                ),
+                order,
+            )
+        if remainder < min_cost and held > 0:
+            return None, TradeOrder(
+                type=order.type,
+                symbol=order.symbol,
+                price=order.price,
+                amount=held,
+                signal="SELL_FULL",
+                source=order.source,
+                order_id=order.order_id,
+                timestamp=order.timestamp,
+                ctx_oracle_state=getattr(order, "ctx_oracle_state", None),
+                ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
+                ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
+                ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
+            )
+        return None, order
+
     def _partial_sell_limits(self, symbol: str, timeframe: str) -> dict:
         params = self.config.strategy_params(symbol, timeframe)
         cmc_cfg = self.config.cmc_config
@@ -2373,12 +2800,6 @@ class RiskManager:
         remainder = pos_value - notional
 
         dust_min = limits["dust_sweep_min_remainder_usdt"]
-        if sold_pct >= 0.50:
-            dust_min = min(dust_min, 100.0)
-        if sold_pct >= 0.70:
-            limits["dust_sweep_max_position_usdt"] = max(
-                limits["dust_sweep_max_position_usdt"], 500.0,
-            )
 
         sweep = (
             pos_value <= limits["dust_sweep_max_position_usdt"]
