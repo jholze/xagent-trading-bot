@@ -113,46 +113,15 @@ def _reset_position_cycle(
     created/filled ride on the snapshot for the K3.1 window.
     """
     px = float(fill_price if fill_price is not None else price)
+    from strategies.positions import apply_cycle_field_reset
+
+    apply_cycle_field_reset(pos, fill_price=px, fill_time=trade_ts, new_amount=amount)
     pos["amount"] = amount
-    pos["peak_amount"] = amount
-    pos["sold_percent"] = 0.0
     pos["average_entry"] = price
     pos["last_buy_price"] = px
     pos["last_action"] = "BUY"
     pos["last_trade_type"] = "BUY"
     pos["last_trade_at"] = trade_ts
-    pos["rsi_sell_tiers_done"] = {}
-    pos["exit_ladder_step"] = 0
-    pos["dca_rounds"] = 0
-    pos["dca_max_rounds"] = 0
-    pos["last_dca_at"] = None
-    pos["last_scheduled_dca_at"] = None
-    pos["dca_total_usdt"] = 0.0
-    pos["dca_recovery_rounds"] = 0
-    pos["dca_recovery_max_rounds"] = 0
-    pos["last_dca_recovery_at"] = None
-    pos["last_recovery_ref_price"] = 0.0
-    pos["entry_source"] = None
-    pos["entry_at"] = trade_ts
-    pos["first_buy_at"] = trade_ts
-    pos["recent_high"] = px
-    pos["peak_epoch_high"] = px
-    pos["peak_epoch_at"] = trade_ts
-    pos["peak_at"] = trade_ts
-    pos["v3"] = False
-    pos["strategy_tier"] = None
-    pos["exit_source"] = None
-    pos["side"] = "long"
-    pos["short_recipe"] = None
-    pos["entry_15m_vol_ratio"] = 0.0
-    pos["leverage"] = None
-    pos["recent_low"] = None
-    pos["trail_tp_steps"] = 0
-    pos["last_trail_tp_at"] = None
-    pos["profit_max_lifetime_done"] = False
-    pos["time_profit_exit_done"] = False
-    pos["profit_armed_at"] = None
-    pos["entry_snapshot"] = None
     pos["cycle_open_created"] = cycle_created or trade_ts
     pos["cycle_open_filled"] = cycle_filled or cycle_created or trade_ts
 
@@ -228,9 +197,7 @@ def _apply_acknowledged_buy(
         pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
         pos["last_dca_at"] = trade_ts
         pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + price * amount
-        if (order.get("source") or "").lower() == "dca_recovery":
-            pos["dca_recovery_rounds"] = int(pos.get("dca_recovery_rounds", 0) or 0) + 1
-            pos["last_dca_recovery_at"] = trade_ts
+        # Same as live: a recovery fill increments dca_rounds only.
         if abs(new_avg - old_avg) > 1e-12:
             _replay_peak_reset(pos, price, trade_ts)
     else:

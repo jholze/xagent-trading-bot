@@ -137,7 +137,8 @@ _CACHE_FIELDS = (
 
 # #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
 # Not cycle-bound (stay as today): last_sell_signal, last_cmc_sell_at,
-# last_ampel, last_rsi, lock.
+# last_ampel, last_rsi, lock. Both F7 resets call apply_cycle_field_reset;
+# there is no second copy of this list.
 CYCLE_FIELDS = (
     "dca_rounds",
     "dca_max_rounds",
@@ -1263,41 +1264,86 @@ def _apply_dca_peak_reset(
     pos["v3"] = False
 
 
+# Values for CYCLE_FIELDS that are not taken from the new fill.
+# entry_snapshot is removed (not stored as None) so the first flush of a
+# new entry still omits it until the snapshot attach runs.
+_CYCLE_RESET_POP = object()
+_CYCLE_RESET_DEFAULTS = {
+    "dca_rounds": 0,
+    "dca_max_rounds": 0,
+    "last_dca_at": None,
+    "last_scheduled_dca_at": None,
+    "dca_total_usdt": 0.0,
+    "dca_recovery_rounds": 0,
+    "dca_recovery_max_rounds": 0,
+    "last_dca_recovery_at": None,
+    "last_recovery_ref_price": 0.0,
+    "sold_percent": 0.0,
+    "exit_ladder_step": 0,
+    "trail_tp_steps": 0,
+    "last_trail_tp_at": None,
+    "profit_max_lifetime_done": False,
+    "time_profit_exit_done": False,
+    "profit_armed_at": None,
+    "rsi_sell_tiers_done": None,
+    "exit_source": None,
+    "strategy_tier": None,
+    "entry_snapshot": _CYCLE_RESET_POP,
+    "entry_source": None,
+    "side": "long",
+    "short_recipe": None,
+    "entry_15m_vol_ratio": None,
+    "v3": False,
+    "leverage": None,
+    "recent_low": None,
+}
+_CYCLE_FILL_FIELDS = (
+    "peak_amount",
+    "recent_high",
+    "first_buy_at",
+    "peak_epoch_high",
+    "peak_epoch_at",
+    "peak_at",
+    "entry_at",
+)
+
+
+def apply_cycle_field_reset(pos: dict, *, fill_price: float, fill_time: str | None, new_amount) -> None:
+    """Write every CYCLE_FIELDS key for a new entry. One list, both F7 paths."""
+    fill = {
+        "peak_amount": float(new_amount),
+        "recent_high": float(fill_price),
+        "first_buy_at": fill_time,
+        "peak_epoch_high": float(fill_price),
+        "peak_epoch_at": fill_time,
+        "peak_at": fill_time,
+        "entry_at": fill_time,
+    }
+    known = set(_CYCLE_FILL_FIELDS) | set(_CYCLE_RESET_DEFAULTS)
+    missing = [name for name in CYCLE_FIELDS if name not in known]
+    extra = [name for name in known if name not in CYCLE_FIELDS]
+    if missing or extra:
+        raise RuntimeError(f"CYCLE_FIELDS reset drift missing={missing} extra={extra}")
+    for name in CYCLE_FIELDS:
+        if name in fill:
+            pos[name] = fill[name]
+            continue
+        value = _CYCLE_RESET_DEFAULTS[name]
+        if value is _CYCLE_RESET_POP:
+            pos.pop(name, None)
+        elif name == "rsi_sell_tiers_done":
+            pos[name] = {}
+        else:
+            pos[name] = value
+
+
 def _apply_new_long_cycle(pos: dict, *, fill_price: float, fill_time: str, new_amount) -> None:
     """Reset every cycle field for a new long entry (flat or dust re-entry)."""
-    pos["peak_amount"] = float(new_amount)
-    pos["sold_percent"] = 0.0
+    apply_cycle_field_reset(
+        pos, fill_price=fill_price, fill_time=fill_time, new_amount=new_amount
+    )
     pos["last_action"] = "BUY"
-    pos["rsi_sell_tiers_done"] = {}
-    pos["recent_high"] = fill_price
-    pos["peak_at"] = fill_time
-    pos["peak_epoch_high"] = fill_price
-    pos["peak_epoch_at"] = fill_time
-    pos["v3"] = False
-    pos["exit_ladder_step"] = 0
     pos["last_trade_type"] = "BUY"
-    pos["dca_rounds"] = 0
-    pos["dca_max_rounds"] = 0
-    pos["last_dca_at"] = None
-    pos["last_scheduled_dca_at"] = None
-    pos["dca_total_usdt"] = 0.0
-    pos["dca_recovery_rounds"] = 0
-    pos["dca_recovery_max_rounds"] = 0
-    pos["last_dca_recovery_at"] = None
-    pos["last_recovery_ref_price"] = 0.0
-    pos["time_profit_exit_done"] = False
-    pos["profit_armed_at"] = None
-    pos["trail_tp_steps"] = 0
-    pos["last_trail_tp_at"] = None
-    pos["profit_max_lifetime_done"] = False
-    pos["first_buy_at"] = fill_time
-    pos["strategy_tier"] = None
-    pos["side"] = "long"
-    pos["leverage"] = None
-    pos["recent_low"] = None
-    pos.pop("entry_snapshot", None)
-    pos.pop("short_recipe", None)
-    pos.pop("exit_source", None)
 
 
 def sell_fraction_for_signal(
@@ -1514,9 +1560,9 @@ def update_position(
                 pos["last_dca_at"] = fill_time
                 pos["last_recovery_ref_price"] = current_price
                 pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + usdt_added
-                if (source or "").strip().lower() == "dca_recovery":
-                    pos["dca_recovery_rounds"] = int(pos.get("dca_recovery_rounds", 0) or 0) + 1
-                    pos["last_dca_recovery_at"] = fill_time
+                # A recovery fill counts once, in dca_rounds, as on staging.
+                # _total_dca_rounds also reads dca_recovery_rounds, so a second
+                # increment would widen the hard stop by two steps.
                 params = None
                 try:
                     from strategies.registry import resolve_strategy_params

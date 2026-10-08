@@ -19,11 +19,14 @@ from core.sim_ledger_replay import replay_simulated_ledger
 from core.tenant_context import DEFAULT_TENANT
 from services.exit_realtime.shadow_eval import evaluate_would_sells
 from strategies.dca import (
+    _total_dca_rounds,
+    effective_stop_loss_thresholds,
     lot_has_dca_rounds,
     recent_high_reached_after_dca,
     trail_exits_paused_after_dca,
 )
 from strategies.positions import (
+    CYCLE_FIELDS,
     _active_store,
     _merged_dca_round,
     apply_positions_snapshot,
@@ -578,6 +581,260 @@ class TestIssue651(unittest.TestCase):
         self.assertEqual(got.get("peak_at"), raw["peak_at"])
         self.assertTrue(got.get("v3"))
         self.assertAlmostEqual(float(got["peak_epoch_high"]), 1.1)
+
+    def test_c1_dust_reentry_live_and_replay_match_cycle_fields(self):
+        """Both F7 resets write CYCLE_FIELDS. Dust re-entry must not keep stale entry fields."""
+        symbol = "DUSTEQ/USDT"
+        fill = "2026-10-08T09:00:00"
+        stale = {
+            "entry_source": "stale-source",
+            "entry_at": "2020-01-01T00:00:00",
+            "entry_15m_vol_ratio": 9.9,
+            "strategy_tier": "volatile",
+            "exit_source": "old-exit",
+            "dca_rounds": 4,
+            "dca_recovery_rounds": 2,
+            "last_dca_at": "2020-06-01T00:00:00",
+            "v3": True,
+            "recent_high": 50.0,
+            "side": "long",
+            "leverage": 3,
+            "entry_snapshot": {"fill_price": 9},
+        }
+
+        class _FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 10, 8, 9, 0, 0)
+                if tz is not None:
+                    return base.replace(tzinfo=tz)
+                return base
+
+        # #600 attaches entry_snapshot after the reset on the live path only.
+        # The shared reset is what both paths must match, so that post-step stays off.
+        with patch("strategies.positions.flush_positions", lambda *a, **k: None), patch(
+            "strategies.positions._attach_and_persist_entry_snapshot", lambda *a, **k: None
+        ), patch(
+            "strategies.positions.datetime", _FixedDateTime
+        ):
+            update_position(
+                symbol,
+                "1h",
+                "BUY",
+                2.0,
+                10,
+                entry_source="entry_sensor_15m",
+                entry_15m_vol_ratio=4.5,
+            )
+            dust = get_position(symbol, "1h")
+            dust["amount"] = Decimal("0.1")
+            dust["average_entry"] = 2.0
+            dust.update(stale)
+            self.assertFalse(is_open_position(dust))
+            update_position(symbol, "1h", "BUY", 1.2, 8)
+            live = get_position(symbol, "1h")
+
+        orders = [
+            _buy(symbol, "1h", 2.0, 0.1, "2020-01-01T00:00:00", source="entry_sensor_15m"),
+            _buy(symbol, "1h", 1.2, 8, fill),
+        ]
+        replayed = replay_simulated_ledger(orders, initial=100000)["positions"]
+        replay_pos = replayed[get_key(symbol, "1h")]
+
+        def _norm(value):
+            if isinstance(value, Decimal):
+                value = float(value)
+            if isinstance(value, float):
+                return round(value, 8)
+            return value
+
+        for name in CYCLE_FIELDS:
+            self.assertEqual(
+                _norm(live.get(name)),
+                _norm(replay_pos.get(name)),
+                name,
+            )
+        self.assertIsNone(live.get("entry_source"))
+        self.assertEqual(live.get("entry_at"), fill)
+        self.assertIsNone(live.get("entry_15m_vol_ratio"))
+        self.assertNotEqual(live.get("entry_source"), stale["entry_source"])
+        self.assertIsNone(replay_pos.get("entry_source"))
+        self.assertEqual(replay_pos.get("entry_at"), fill)
+        self.assertIsNone(replay_pos.get("entry_15m_vol_ratio"))
+
+    def test_recovery_fill_counts_once_live_and_replay(self):
+        symbol = "RECONCE/USDT"
+        widen = 4.0
+        stop = 10.0
+        params = {
+            "stop_loss_pct": stop,
+            "dca": {"stop_loss_widen_pct_per_round": widen, "interval_hours": 12},
+        }
+        with patch("strategies.positions.flush_positions", lambda *a, **k: None), patch(
+            "strategies.registry.resolve_strategy_params", return_value=_params()
+        ):
+            update_position(symbol, "1h", "BUY", 2.0, 10)
+            update_position(symbol, "1h", "BUY_DCA", 1.5, 5, source="dca_recovery")
+            live = get_position(symbol, "1h")
+        self.assertEqual(_total_dca_rounds(live), 1)
+        self.assertEqual(int(live.get("dca_recovery_rounds") or 0), 0)
+        full, _, _ = effective_stop_loss_thresholds(live, params, stop)
+        self.assertEqual(full, stop + 1 * widen)
+
+        orders = [
+            _buy(symbol, "1h", 2.0, 10, "2026-10-01T00:00:00"),
+            _buy(
+                symbol,
+                "1h",
+                1.5,
+                5,
+                "2026-10-02T00:00:00",
+                source="dca_recovery",
+                signal="BUY_DCA",
+            ),
+        ]
+        replay_pos = replay_simulated_ledger(orders, initial=100000)["positions"][
+            get_key(symbol, "1h")
+        ]
+        self.assertEqual(_total_dca_rounds(replay_pos), 1)
+        self.assertEqual(int(replay_pos.get("dca_rounds") or 0), 1)
+        self.assertEqual(int(replay_pos.get("dca_recovery_rounds") or 0), 0)
+        full_replay, _, _ = effective_stop_loss_thresholds(replay_pos, params, stop)
+        self.assertEqual(full_replay, stop + 1 * widen)
+
+    def test_conservative_atr_is_the_tightest_configured(self):
+        from services.ledger_sync import _conservative_atr_pct, _v3_would_sell
+
+        class _Cfg:
+            raw = {
+                "risk": {"atr_reference_pct": 9.0, "atr_pct": 6.0},
+                "exit_realtime": {"default_atr_pct": 2.5},
+            }
+
+        params = _params()
+        params["atr_pct"] = 4.0
+        with patch("core.config.get_bot_config", return_value=_Cfg()):
+            self.assertEqual(_conservative_atr_pct(params), 2.5)
+            self.assertEqual(_conservative_atr_pct({}), 2.5)
+        with patch("core.config.get_bot_config", side_effect=RuntimeError("no cfg")):
+            self.assertEqual(_conservative_atr_pct({}), 3.0)
+
+        seen = {}
+
+        def _stop(market, position, strategy_params, **kwargs):
+            seen["atr"] = market.atr_pct
+            return None
+
+        pos = {
+            "average_entry": 100.0,
+            "last_buy_price": 100.0,
+            "recent_high": 100.0,
+            "dca_rounds": 1,
+            "last_dca_at": "2026-09-01T00:00:00",
+        }
+        with patch("core.config.get_bot_config", return_value=_Cfg()), patch(
+            "strategies.registry.resolve_strategy_params", return_value=params
+        ), patch("strategies.trailing_stop.evaluate_trailing_stop", side_effect=_stop), patch(
+            "strategies.trailing_take_profit.evaluate_trailing_take_profit", return_value=None
+        ):
+            sold = _v3_would_sell(
+                pos,
+                {"recent_high": 101.0, "peak_epoch_at": "2026-09-02T00:00:00"},
+                price=100.5,
+                symbol="ATR/USDT",
+                timeframe="1h",
+                tenant_id="henry",
+            )
+        self.assertFalse(sold)
+        self.assertEqual(seen["atr"], 2.5)
+
+    def test_v3_check_fail_closed_names_the_lot(self):
+        from datetime import datetime as real_dt
+
+        from services.ledger_sync import _reanchor_one_legacy_lot
+
+        symbol = "FAILC/USDT"
+        pos = {
+            "amount": 10.0,
+            "peak_amount": 10.0,
+            "sold_percent": 0.0,
+            "average_entry": 100.0,
+            "last_buy_price": 100.0,
+            "recent_high": 100.0,
+            "dca_rounds": 1,
+            "last_dca_at": "2026-09-01T00:00:00",
+            "first_buy_at": "2026-08-01T00:00:00",
+        }
+
+        class _Svc:
+            def infer_ohlcv_peak_price(self, symbol, timeframe, since, **kwargs):
+                return {
+                    "covered": True,
+                    "price": 101.0,
+                    "candle_open": real_dt(2026, 9, 2),
+                    "reason": None,
+                }
+
+        def _run(resolve):
+            notes = []
+
+            def _log(message, level="INFO"):
+                notes.append((level, message))
+
+            with patch("services.ledger_sync.log", side_effect=_log), patch(
+                "strategies.registry.resolve_strategy_params", side_effect=resolve
+            ), patch(
+                "services.ledger_sync._latest_buy_fill_iso",
+                return_value="2026-09-01T00:00:00",
+            ):
+                out = _reanchor_one_legacy_lot(
+                    pos,
+                    symbol=symbol,
+                    timeframe="1h",
+                    scope="demo",
+                    tenant_id="henry",
+                    price=100.5,
+                    market_svc=_Svc(),
+                )
+            return out, notes
+
+        for resolve in (RuntimeError("no params"), lambda *a, **k: None, lambda *a, **k: {}):
+            out, notes = _run(resolve)
+            self.assertIsNotNone(out)
+            self.assertTrue(out["fields"]["v3"])
+            self.assertAlmostEqual(float(out["fields"]["recent_high"]), 100.5)
+            warnings = [msg for level, msg in notes if level == "WARNING"]
+            self.assertTrue(any(symbol in msg and "henry" in msg for msg in warnings), warnings)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("eval blew up")
+
+        notes = []
+
+        def _log(message, level="INFO"):
+            notes.append((level, message))
+
+        with patch("services.ledger_sync.log", side_effect=_log), patch(
+            "strategies.registry.resolve_strategy_params", return_value=_params()
+        ), patch(
+            "strategies.trailing_stop.evaluate_trailing_stop", side_effect=_boom
+        ), patch(
+            "services.ledger_sync._latest_buy_fill_iso",
+            return_value="2026-09-01T00:00:00",
+        ):
+            out = _reanchor_one_legacy_lot(
+                pos,
+                symbol=symbol,
+                timeframe="1h",
+                scope="demo",
+                tenant_id="henry",
+                price=100.5,
+                market_svc=_Svc(),
+            )
+        self.assertTrue(out["fields"]["v3"])
+        self.assertTrue(
+            any(level == "WARNING" and symbol in msg and "eval blew up" in msg for level, msg in notes)
+        )
 
 
 class TestIssue651Startup(unittest.TestCase):

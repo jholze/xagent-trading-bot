@@ -528,7 +528,14 @@ def _reanchor_one_legacy_lot(
         "peak_epoch_at": start,
         "v3": False,
     }
-    v3 = _v3_would_sell(pos, fields, price=price, symbol=symbol, timeframe=timeframe)
+    v3 = _v3_would_sell(
+        pos,
+        fields,
+        price=price,
+        symbol=symbol,
+        timeframe=timeframe,
+        tenant_id=tenant_id,
+    )
     if v3:
         floor = max(v for v in (last_buy, average, price) if v and v > 0)
         boot = datetime.now().isoformat(sep=" ")
@@ -581,8 +588,74 @@ def _resulting_stop(pos: dict, peak: float, symbol: str, timeframe: str) -> floa
     )
 
 
-def _v3_would_sell(pos: dict, fields: dict, *, price: float, symbol: str, timeframe: str) -> bool:
-    """V3 when trail stop or TTP would return a candidate on the re-anchored lot."""
+def _positive_atr(raw) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value > 0:
+        return value
+    return None
+
+
+def _conservative_atr_pct(params: dict | None) -> float:
+    """Smallest configured ATR (default 3.0).
+
+    ``compute_trail_pct`` grows with ATR until ``max_trail_pct``, so the
+    smallest configured value is the tightest trail this check can use.
+    """
+    found: list[float] = []
+    params = params or {}
+    for raw in (params.get("atr_pct"), params.get("atr_reference_pct")):
+        value = _positive_atr(raw)
+        if value is not None:
+            found.append(value)
+    raw_cfg: dict = {}
+    try:
+        from core.config import get_bot_config
+
+        loaded = get_bot_config().raw
+        if isinstance(loaded, dict):
+            raw_cfg = loaded
+    except Exception:
+        raw_cfg = {}
+    risk = raw_cfg.get("risk") if isinstance(raw_cfg.get("risk"), dict) else {}
+    exit_rt = raw_cfg.get("exit_realtime") if isinstance(raw_cfg.get("exit_realtime"), dict) else {}
+    for raw in (
+        risk.get("atr_pct"),
+        risk.get("atr_reference_pct"),
+        exit_rt.get("atr_pct"),
+        exit_rt.get("default_atr_pct"),
+    ):
+        value = _positive_atr(raw)
+        if value is not None:
+            found.append(value)
+    if not found:
+        return 3.0
+    return min(found)
+
+
+def _v3_fail_closed(tenant_id: str, symbol: str, timeframe: str, reason: str) -> None:
+    log(
+        f"F6 V3 fail-closed tenant={tenant_id} symbol={symbol} tf={timeframe} reason={reason}",
+        "WARNING",
+    )
+
+
+def _v3_would_sell(
+    pos: dict,
+    fields: dict,
+    *,
+    price: float,
+    symbol: str,
+    timeframe: str,
+    tenant_id: str = "",
+) -> bool:
+    """V3 when trail stop or TTP would return a candidate on the re-anchored lot.
+
+    An exception, or params that cannot be resolved, is also V3. The boot
+    check must not treat that as "safe".
+    """
     from core.models import MarketContext
     from strategies.trailing_stop import evaluate_trailing_stop
     from strategies.trailing_take_profit import evaluate_trailing_take_profit
@@ -592,7 +665,6 @@ def _v3_would_sell(pos: dict, fields: dict, *, price: float, symbol: str, timefr
     entry = float(trial.get("average_entry") or 0)
     if entry <= 0 or price <= 0:
         return False
-    params = {}
     try:
         from strategies.registry import resolve_strategy_params
 
@@ -600,28 +672,30 @@ def _v3_would_sell(pos: dict, fields: dict, *, price: float, symbol: str, timefr
             {"symbol": symbol, "timeframe": timeframe},
             has_position=True,
             frozen_tier=pos.get("strategy_tier"),
-        ) or {}
-    except Exception:
-        params = {}
+        )
+    except Exception as exc:
+        _v3_fail_closed(tenant_id, symbol, timeframe, f"params_unresolved:{exc}")
+        return True
+    if not params:
+        _v3_fail_closed(tenant_id, symbol, timeframe, "params_unresolved")
+        return True
     market = MarketContext(
         symbol=symbol,
         timeframe=timeframe,
         current_price=price,
         has_position=True,
         average_entry=entry,
-        atr_pct=3.0,
+        atr_pct=_conservative_atr_pct(params),
         strategy_params=params,
     )
     try:
         if evaluate_trailing_stop(market, trial, params) is not None:
             return True
-    except Exception:
-        pass
-    try:
         if evaluate_trailing_take_profit(market, trial, params) is not None:
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _v3_fail_closed(tenant_id, symbol, timeframe, f"eval_error:{exc}")
+        return True
     return False
 
 
