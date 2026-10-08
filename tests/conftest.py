@@ -947,8 +947,9 @@ def _venue_limits_known():
     Production stays fail-closed when market data is missing. Tests that need
     a 3 USDT minimum or missing data call set_venue_limits_override themselves.
     """
-    from execution.gate_adapter import set_venue_limits_override
+    from execution.gate_adapter import reset_venue_limit_load_state, set_venue_limits_override
 
+    reset_venue_limit_load_state()
     set_venue_limits_override(
         {
             "known": True,
@@ -959,6 +960,7 @@ def _venue_limits_known():
     )
     yield
     set_venue_limits_override(None)
+    reset_venue_limit_load_state()
 
 
 @pytest.fixture(autouse=True)

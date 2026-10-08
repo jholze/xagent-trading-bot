@@ -428,9 +428,15 @@ def test_t4_partial_below_min_skipped_and_missing_data_blocks_buy_not_stop():
 
     set_venue_limits_override(None)
     from execution import gate_adapter
+    from execution.gate_adapter import GateExecutionAdapter
 
-    gate_adapter._VENUE_CACHE.pop("PART/USDT", None)
-    with _quiet(rm):
+    gate_adapter.reset_venue_limit_load_state()
+    GateExecutionAdapter._shadow_markets_cache = None
+
+    def _no_exchange(self):
+        raise RuntimeError("markets down")
+
+    with patch.object(GateExecutionAdapter, "_get_exchange", _no_exchange), _quiet(rm):
         missing_buy = rm.evaluate(_buy("PART/USDT", price=10, usdt=20), TF, source="manual")
         stop = rm.evaluate(
             _sell("PART/USDT", 10, 2.5, signal="SELL_STOP_FULL"),
@@ -616,11 +622,13 @@ def test_t8_config_blocks_stay_at_today_and_buffer_is_copied():
         "venue_min_hysteresis",
         "venue_min_max_pct_of_ticket",
         "venue_step_max_pct_of_ticket",
+        "venue_limits_retry_sec",
         "stop_gap_buffer_pct",
     )
     for key in shared:
         assert risk[key] == dry[key]
     assert risk["stop_gap_buffer_pct"] == pytest.approx(6.21)
+    assert risk["venue_limits_retry_sec"] == 60
     assert disk["max_usdt_per_trade"] == 4500
     assert disk["live"]["max_usdt_per_trade"] == 4500
     assert disk["paper"]["initial_capital_usdt"] == disk["live"]["simulated_balance_usdt"]
@@ -845,3 +853,137 @@ def test_t9e_fee_stays_inside_the_ticket_and_is_counted_once():
     open_before_sell = before - buy.fee_usdt
     assert sold.pnl == pytest.approx(open_before_sell - sell.fee_usdt)
     assert brake_open_pnl() == pytest.approx(0)
+
+
+def _opt_out_venue_override():
+    """Drop the autouse limits so a test sees a real cache miss."""
+    from execution import gate_adapter
+    from execution.gate_adapter import GateExecutionAdapter
+
+    set_venue_limits_override(None)
+    gate_adapter.reset_venue_limit_load_state()
+    GateExecutionAdapter._shadow_markets_cache = None
+    GateExecutionAdapter._shadow_markets_failed = False
+
+
+def _pair_markets(symbol: str, min_cost: float = 3.0) -> dict:
+    return {
+        symbol: {
+            "limits": {"cost": {"min": min_cost}, "amount": {"min": 0.0001}},
+            "precision": {"amount": 4, "price": 4},
+        }
+    }
+
+
+class _StubExchange:
+    def __init__(self, markets=None, fail=False):
+        self._markets = markets
+        self._fail = fail
+        self.markets = None
+        self.loads = 0
+
+    def load_markets(self):
+        self.loads += 1
+        if self._fail:
+            raise RuntimeError("load failed")
+        self.markets = self._markets
+        return self._markets
+
+
+def _patch_exchange(monkeypatch, exchange):
+    modes: list[str] = []
+
+    def _get_exchange(self):
+        modes.append(self.mode)
+        return exchange
+
+    monkeypatch.setattr(
+        "execution.gate_adapter.GateExecutionAdapter._get_exchange",
+        _get_exchange,
+    )
+    return modes
+
+
+def test_v666_warmup_loads_once_per_process(monkeypatch):
+    _opt_out_venue_override()
+    symbol = "WARM/USDT"
+    exchange = _StubExchange(_pair_markets(symbol))
+    modes = _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg())
+    with _quiet(rm):
+        first = rm.evaluate(_buy(symbol, price=10, usdt=25), TF, source="manual")
+        second = rm.evaluate(_buy(symbol, price=10, usdt=25), TF, source="manual")
+        third = rm.evaluate(_buy(symbol, price=10, usdt=25), TF, source="manual")
+    assert first.approved is True
+    assert second.approved is True
+    assert third.approved is True
+    assert exchange.loads == 1
+    assert modes == ["shadow"]
+    assert venue_limits_for(symbol)["min_cost"] == pytest.approx(3)
+
+
+def test_v666_load_error_blocks_then_retries_after_backoff(monkeypatch):
+    _opt_out_venue_override()
+    retry = 45.0
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("execution.gate_adapter.time.monotonic", lambda: clock["t"])
+    exchange = _StubExchange(fail=True)
+    _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg(risk={
+        "venue_limits_retry_sec": retry,
+        "dust_sweep_max_position_usdt": 1,
+        "dust_sweep_min_remainder_usdt": 0,
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+    }))
+    _plant("FAIL/USDT", 20, 1)
+    with _logs() as lines, _quiet(rm):
+        blocked = rm.evaluate(_buy("RETRY/USDT", price=10, usdt=25), TF, source="manual")
+        stop = rm.evaluate(
+            _sell("FAIL/USDT", 10, 1, signal="SELL_STOP_FULL"),
+            TF,
+            source="auto",
+        )
+        blocked_again = rm.evaluate(_buy("RETRY/USDT", price=10, usdt=25), TF, source="manual")
+    assert blocked.code == "venue_min_missing"
+    assert blocked_again.code == "venue_min_missing"
+    assert stop.approved is True
+    assert stop.order.signal == "SELL_STOP_FULL"
+    assert exchange.loads == 1
+    assert sum("venue limits unavailable" in line for line in lines) == 1
+
+    clock["t"] += retry - 1
+    with _quiet(rm):
+        still = rm.evaluate(_buy("RETRY/USDT", price=10, usdt=25), TF, source="manual")
+    assert still.code == "venue_min_missing"
+    assert exchange.loads == 1
+
+    exchange._fail = False
+    exchange._markets = _pair_markets("RETRY/USDT")
+    clock["t"] += 1
+    with _quiet(rm):
+        passed = rm.evaluate(_buy("RETRY/USDT", price=10, usdt=25), TF, source="manual")
+    assert passed.approved is True
+    assert exchange.loads == 2
+
+
+def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
+    _opt_out_venue_override()
+    symbol = "LIVE/USDT"
+    monkeypatch.setattr(
+        "core.execution_mode.resolve_execution_mode",
+        lambda *_a, **_k: SimpleNamespace(
+            adapter_mode="real", places_real_orders=True, reason="test"
+        ),
+    )
+    exchange = _StubExchange(_pair_markets(symbol))
+    modes = _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg())
+    with _quiet(rm):
+        first = rm.evaluate(_buy(symbol, price=10, usdt=25), TF, source="manual")
+        second = rm.evaluate(_buy(symbol, price=10, usdt=25), TF, source="manual")
+    assert first.approved is True
+    assert second.approved is True
+    assert exchange.loads == 1
+    assert modes == ["real"]
+    assert venue_limits_for(symbol)["known"] is True

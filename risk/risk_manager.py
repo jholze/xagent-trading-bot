@@ -2371,10 +2371,11 @@ class RiskManager:
 
     def _venue_pair_buy_block(self, order: TradeOrder) -> RiskDecision | None:
         """R4 missing minimum data and R7 pair rule. Stops are not buys."""
-        from execution.gate_adapter import venue_limits_for
+        from execution.gate_adapter import ensure_venue_limits_loaded, venue_limits_for
 
         if str(order.type or "").upper() != "BUY":
             return None
+        ensure_venue_limits_loaded(self.config)
         limits = venue_limits_for(order.symbol)
         if not limits.get("known") or not limits.get("min_cost") or not limits.get("amount_step"):
             return RiskDecision(

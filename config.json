@@ -81,6 +81,7 @@
     "venue_min_hysteresis": 0.25,
     "venue_min_max_pct_of_ticket": 0.20,
     "venue_step_max_pct_of_ticket": 0.02,
+    "venue_limits_retry_sec": 60,
     "stop_gap_buffer_pct": 6.21
   },
   "initial_capital_usdt": 100000,
@@ -621,6 +622,7 @@
     "venue_min_hysteresis": 0.25,
     "venue_min_max_pct_of_ticket": 0.20,
     "venue_step_max_pct_of_ticket": 0.02,
+    "venue_limits_retry_sec": 60,
     "stop_gap_buffer_pct": 6.21,
     "venue_quality": {
       "enabled": true,

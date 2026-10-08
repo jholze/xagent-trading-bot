@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -108,6 +110,127 @@ def venue_limits_for(symbol: str) -> dict:
     if cached is not None:
         return dict(cached)
     return {"known": False, "min_cost": None, "amount_step": None, "price_places": None}
+
+
+# A failed load_markets stays fail-closed and is tried again after this many
+# seconds when the config key is absent. The key itself lives in config.json.
+_VENUE_LIMITS_RETRY_DEFAULT_SEC = 60.0
+_VENUE_LOADED = False
+_VENUE_FAILED_AT: float | None = None
+_VENUE_WARNED = False
+_VENUE_LOADER = None
+_VENUE_LOCK = threading.Lock()
+
+
+def reset_venue_limit_load_state() -> None:
+    """Drop the process load bookkeeping. Tests use this; production does not."""
+    global _VENUE_LOADED, _VENUE_FAILED_AT, _VENUE_WARNED, _VENUE_LOADER
+    _VENUE_LOADED = False
+    _VENUE_FAILED_AT = None
+    _VENUE_WARNED = False
+    _VENUE_LOADER = None
+    _VENUE_CACHE.clear()
+
+
+def _venue_limits_retry_sec(config) -> float:
+    """Backoff after a failed load. Explicit 0 retries on the next check."""
+    raw = {}
+    risk = {}
+    defaults = {}
+    if config is not None:
+        raw = getattr(config, "raw", None) or {}
+        risk = getattr(config, "risk_config", None) or {}
+        defaults = getattr(config, "dry_run_defaults", None) or {}
+    try:
+        from core.simulated_trading import is_dry_run_enhanced
+
+        if is_dry_run_enhanced(raw if isinstance(raw, dict) else {}):
+            if (
+                "venue_limits_retry_sec" in defaults
+                and defaults.get("venue_limits_retry_sec") is not None
+            ):
+                return float(defaults["venue_limits_retry_sec"])
+    except Exception:
+        pass
+    if (
+        isinstance(risk, dict)
+        and "venue_limits_retry_sec" in risk
+        and risk.get("venue_limits_retry_sec") is not None
+    ):
+        try:
+            return float(risk["venue_limits_retry_sec"])
+        except (TypeError, ValueError):
+            return _VENUE_LIMITS_RETRY_DEFAULT_SEC
+    return _VENUE_LIMITS_RETRY_DEFAULT_SEC
+
+
+def _warn_venue_limits_unavailable() -> None:
+    global _VENUE_WARNED
+    if _VENUE_WARNED:
+        return
+    _VENUE_WARNED = True
+    log("venue limits unavailable — buys stay blocked until retry", "WARNING")
+
+
+def _adapter_for_venue_load(config):
+    """One adapter per process and mode. Its exchange is the existing client."""
+    global _VENUE_LOADER
+    from core.execution_mode import resolve_execution_mode
+
+    raw = getattr(config, "raw", None) if config is not None else None
+    mode = resolve_execution_mode(raw if isinstance(raw, dict) else {}).adapter_mode
+    if _VENUE_LOADER is not None and _VENUE_LOADER.mode == mode:
+        return _VENUE_LOADER
+    _VENUE_LOADER = GateExecutionAdapter(config, mode=mode)
+    return _VENUE_LOADER
+
+
+def _mark_venue_loaded(loaded: dict) -> None:
+    global _VENUE_LOADED, _VENUE_FAILED_AT, _VENUE_WARNED
+    remember_venue_markets(loaded)
+    _VENUE_LOADED = True
+    _VENUE_FAILED_AT = None
+    _VENUE_WARNED = False
+
+
+def ensure_venue_limits_loaded(config=None) -> None:
+    """Load pair limits before the buy check, in shadow and in live mode.
+
+    An installed override is left alone. A successful ``load_markets`` runs
+    once per process. A failure stays unknown, logs once, and is retried
+    after ``venue_limits_retry_sec``.
+    """
+    global _VENUE_FAILED_AT, _VENUE_LOADED
+    if _VENUE_OVERRIDE is not None or _VENUE_LOADED:
+        return
+    with _VENUE_LOCK:
+        if _VENUE_OVERRIDE is not None or _VENUE_LOADED:
+            return
+        if _VENUE_CACHE:
+            _VENUE_LOADED = True
+            _VENUE_FAILED_AT = None
+            return
+        now = time.monotonic()
+        if _VENUE_FAILED_AT is not None and (
+            now - _VENUE_FAILED_AT < _venue_limits_retry_sec(config)
+        ):
+            return
+        try:
+            adapter = _adapter_for_venue_load(config)
+            exchange = adapter._get_exchange()
+            if exchange is None:
+                raise RuntimeError("exchange unavailable")
+            existing = getattr(exchange, "markets", None)
+            if isinstance(existing, dict) and existing:
+                loaded = existing
+            else:
+                loaded = exchange.load_markets()
+            if not isinstance(loaded, dict) or not loaded:
+                raise RuntimeError("empty markets")
+            _mark_venue_loaded(loaded)
+        except Exception:
+            _VENUE_FAILED_AT = now
+            _warn_venue_limits_unavailable()
 
 
 def round_usdt_to_price_precision(value: float, limits: dict | None) -> float:
