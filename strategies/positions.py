@@ -225,23 +225,23 @@ def is_open_position(pos: dict) -> bool:
 
 
 def apply_hard_clear_if_closed(pos: dict) -> bool:
-    """Zero leftover dust on a lot that is no longer a material open position.
+    """Mark a dust remainder sold. Amount and average_entry stay.
 
-    Caller must hold ``_positions_lock``. Returns True when the lot was cleared.
+    Caller must hold ``_positions_lock``. Returns True when ``sold_percent``
+    was set to 1. Already-sold lots return immediately so a later sell does
+    not flush the book again.
     """
     if not pos or is_open_position(pos):
         return False
-    amount = float(pos.get("amount") or 0)
     sold = float(pos.get("sold_percent") or 0)
-    if amount <= 0 and sold >= 1.0:
+    if sold >= 1.0:
         return False
-    pos["amount"] = Decimal("0")
     pos["sold_percent"] = 1.0
     return True
 
 
 def hard_clear_closed_lot(symbol: str, timeframe: str) -> bool:
-    """Hard-clear a dust remainder after SELL_FULL (amount=0, sold_percent=1).
+    """Set sold_percent=1 on a dust remainder. Amount and basis stay.
 
     Material longs (``is_open_position``) are left untouched.
     """
@@ -326,6 +326,8 @@ def _deserialize_position(raw: dict) -> dict:
     if "entry_snapshot" in raw:
         snap = raw["entry_snapshot"]
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
+    if raw.get("basis_fee_estimated"):
+        out["basis_fee_estimated"] = True
     return out
 
 
@@ -407,6 +409,9 @@ def _serialize_positions() -> dict:
             data["positions"][tf]["entry_snapshot"] = (
                 dict(snap) if isinstance(snap, dict) else snap
             )
+        if p.get("basis_fee_estimated"):
+            # Rebuilt by the replay. Not a _CACHE_FIELDS overlay.
+            data["positions"][tf]["basis_fee_estimated"] = True
     return data
 
 
@@ -571,7 +576,19 @@ def derive_positions_from_orders_and_cache(
             log(warn, "WARNING")
         # K3.2: a flat/dust cache lot stays only when this is still its cycle.
         if key in cache_positions and _cached_lot_stays_flat(cached) and not cycle_change:
-            merged[key] = dict(cached)
+            kept = dict(cached)
+            # N11: cache amount 0 + replay dust takes replay amount and basis.
+            # The rest of the cached lot stays. A cached dust amount > 0 still
+            # wins whole. A material replay lot against a zero cache stays flat.
+            cache_amt = float(cached.get("amount") or 0)
+            if (
+                cache_amt <= DUST_AMOUNT_EPSILON
+                and has_position_amount(snap)
+                and not is_open_position(snap)
+            ):
+                kept["amount"] = snap.get("amount")
+                kept["average_entry"] = snap.get("average_entry")
+            merged[key] = kept
             continue
         pos = dict(snap)
         replay_newer = _replay_stamp_newer(snap, cached)
@@ -1511,6 +1528,7 @@ def update_position(
     cap_applied=None,
     short_recipe: str | None = None,
     exit_source: str | None = None,
+    fee_estimated: bool = False,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
@@ -1532,6 +1550,7 @@ def update_position(
                 return
             old_amount = pos["amount"]
             old_average = pos.get("average_entry", current_price)
+            prior_marker = bool(pos.get("basis_fee_estimated"))
             new_amount = old_amount + Decimal(str(amount_traded))
             if old_amount > 0:
                 pos["average_entry"] = float(
@@ -1617,10 +1636,17 @@ def update_position(
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
                 attach_snapshot = True
+            dust_reentry = (not was_open) and float(old_amount or 0) > DUST_AMOUNT_EPSILON
+            if not was_open:
+                pos.pop("basis_fee_estimated", None)
+                if dust_reentry and prior_marker:
+                    pos["basis_fee_estimated"] = True
+            if fee_estimated:
+                pos["basis_fee_estimated"] = True
         elif signal in ("SHORT", "SHORT_ADD") and amount_traded > 0:
             old_amount = pos["amount"]
             old_side = str(pos.get("side") or "long").lower()
-            if old_side != "short" and float(old_amount or 0) > 1e-12:
+            if old_side != "short" and is_open_position(pos):
                 from logger import log as _log
 
                 _log(
@@ -1760,6 +1786,7 @@ def update_position(
             if float(pos.get("amount") or 0) <= DUST_AMOUNT_EPSILON:
                 pos["dca_rounds"] = 0
                 pos["dca_recovery_rounds"] = 0
+                pos.pop("basis_fee_estimated", None)
         if pos["amount"] < 0:
             pos["amount"] = Decimal("0")
         is_open_now = is_open_position(pos)

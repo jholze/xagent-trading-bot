@@ -423,11 +423,28 @@ def _gross_unrealized_pct(pos: dict[str, Any], price: float) -> float:
 
 
 def _lot_in_profit(pos: dict[str, Any], price: float, raw_config: dict | None) -> bool:
+    """Longs: net of one sell (buy fee already in average_entry). Shorts: gross minus round trip."""
     from core.costs import CostModel
 
-    gain = _gross_unrealized_pct(pos, price)
-    rt = float(CostModel.from_config(raw_config).round_trip_pct())
-    return (gain - rt) > 0.0
+    try:
+        from strategies.short_math import is_short as _is_short
+
+        short = _is_short(pos)
+    except Exception:
+        short = False
+    if short:
+        gain = _gross_unrealized_pct(pos, price)
+        rt = float(CostModel.from_config(raw_config).round_trip_pct())
+        return (gain - rt) > 0.0
+    amount = float(pos.get("amount") or 0)
+    entry = float(pos.get("average_entry") or 0)
+    px = float(price or 0)
+    if amount <= 0 or entry <= 0 or px <= 0:
+        return False
+    model = CostModel.from_config(raw_config, symbol=str(pos.get("symbol") or "") or None)
+    sell = model.simulate_sell(px, amount)
+    pnl = CostModel.realized_pnl(qty_sold=amount, avg_entry_net=entry, sell=sell)
+    return pnl > 0.0
 
 
 def execute_cascade_exit(

@@ -386,11 +386,12 @@ def collect_open_position_symbols(
     get_position_fn=None,
     resolve_coin_config_fn=None,
 ) -> list[str]:
-    """Symbols with open amount > 0 (stable order from coins list)."""
+    """Symbols with a material open lot (stable order from coins list)."""
     if get_position_fn is None:
         from strategies.positions import get_position as get_position_fn
     if resolve_coin_config_fn is None:
         from strategies.registry import resolve_coin_config as resolve_coin_config_fn
+    from strategies.positions import is_open_position
 
     out: list[str] = []
     for coin in coins or []:
@@ -401,7 +402,7 @@ def collect_open_position_symbols(
             coin_cfg = resolve_coin_config_fn(coin)
             tf = coin_cfg.get("timeframe", "4h")
             pos = get_position_fn(symbol, tf)
-            if float(pos.get("amount", 0) or 0) > 0:
+            if is_open_position(pos):
                 out.append(symbol)
         except Exception:
             continue
