@@ -111,11 +111,17 @@ class TestDcaTrailGuard(unittest.TestCase):
         cand2 = evaluate_trailing_stop(market, pos_old, params, now=now)
         self.assertIsNone(cand2)
 
-        # Recovered above entry, still below trail stop → trail may fire
+        # After grace, a stale pre-DCA peak with no epoch proof does not arm (#651 F3/F4).
         market_green = _mkt("BEAT/USDT", 2.25, entry, atr=6.0)
         cand3 = evaluate_trailing_stop(market_green, pos_old, params, now=now)
-        self.assertIsNotNone(cand3)
-        self.assertEqual(cand3.source, "trailing_stop")
+        self.assertIsNone(cand3)
+        proved = dict(pos_old)
+        proved["peak_epoch_high"] = entry
+        proved["peak_epoch_at"] = pos_old["last_dca_at"]
+        proved["recent_high"] = recent_high
+        cand4 = evaluate_trailing_stop(market_green, proved, params, now=now)
+        self.assertIsNotNone(cand4)
+        self.assertEqual(cand4.source, "trailing_stop")
 
     def test_ttp_also_paused_in_grace(self):
         now = datetime(2026, 8, 6, 12, 0, 0)
@@ -286,6 +292,7 @@ class TestDcaTrailGuard(unittest.TestCase):
             "average_entry": entry,
             "recent_high": 1.61,
             "peak_epoch_high": entry,
+            "peak_epoch_at": dca_at.isoformat(),
             "dca_rounds": 1,
             "last_dca_at": dca_at.isoformat(),
             "peak_at": (dca_at - timedelta(hours=3)).isoformat(),

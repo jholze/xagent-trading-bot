@@ -27,7 +27,29 @@ def _filled_order_usdt(order: dict) -> float:
 def _is_dca_order(order: dict) -> bool:
     signal = (order.get("signal") or "").upper()
     source = (order.get("source") or "").lower()
-    return signal == "BUY_DCA" or source in ("dca", "dca_recovery")
+    return signal == "BUY_DCA" or source in (
+        "dca",
+        "dca_recovery",
+        "dca_scheduled",
+        "dca_sniper",
+    )
+
+
+def _order_window(order: dict) -> tuple[str | None, str | None]:
+    ts = order.get("timestamps") or {}
+    created = ts.get("created") or None
+    filled = ts.get("filled") or created
+    if created == "":
+        created = None
+    if filled == "":
+        filled = created
+    return created, filled
+
+
+def _is_dust_remainder(pos: dict) -> bool:
+    from strategies.positions import has_position_amount, is_open_position
+
+    return has_position_amount(pos) and not is_open_position(pos)
 
 
 def _entry_source_tag(source: str | None) -> str | None:
@@ -75,27 +97,53 @@ def _empty_order_position() -> dict:
     }
 
 
-def _reset_position_cycle(pos: dict, *, amount: float, price: float, trade_ts: str | None) -> None:
+def _reset_position_cycle(
+    pos: dict,
+    *,
+    amount: float,
+    price: float,
+    trade_ts: str | None,
+    cycle_created: str | None = None,
+    cycle_filled: str | None = None,
+    fill_price: float | None = None,
+) -> None:
+    """Start a new cycle. ``price`` is the average (dust stays weighted in).
+
+    ``fill_price`` is the fill itself, used for the peak stamp. Opening-order
+    created/filled ride on the snapshot for the K3.1 window.
+    """
+    px = float(fill_price if fill_price is not None else price)
+    from strategies.positions import apply_cycle_field_reset
+
+    apply_cycle_field_reset(pos, fill_price=px, fill_time=trade_ts, new_amount=amount)
     pos["amount"] = amount
-    pos["peak_amount"] = amount
-    pos["sold_percent"] = 0.0
     pos["average_entry"] = price
-    pos["last_buy_price"] = price
+    pos["last_buy_price"] = px
     pos["last_action"] = "BUY"
     pos["last_trade_type"] = "BUY"
     pos["last_trade_at"] = trade_ts
-    pos["rsi_sell_tiers_done"] = {}
-    pos["exit_ladder_step"] = 0
-    pos["dca_rounds"] = 0
-    pos["dca_max_rounds"] = 0
-    pos["last_dca_at"] = None
-    pos["dca_total_usdt"] = 0.0
-    pos["dca_recovery_rounds"] = 0
-    pos["dca_recovery_max_rounds"] = 0
-    pos["last_dca_recovery_at"] = None
-    pos["entry_source"] = None
-    pos["entry_at"] = trade_ts
-    pos["first_buy_at"] = trade_ts
+    pos["cycle_open_created"] = cycle_created or trade_ts
+    pos["cycle_open_filled"] = cycle_filled or cycle_created or trade_ts
+
+
+def _replay_peak_reset(pos: dict, fill_price: float, trade_ts: str | None) -> None:
+    """F1 replay stamp: fill price and fill time, never the rebuild clock."""
+    try:
+        from strategies.dca import reanchor_recent_high_after_dca
+
+        reanchor_recent_high_after_dca(pos, float(fill_price))
+    except Exception:
+        pass
+    if trade_ts:
+        try:
+            from strategies.recovery_hold import stamp_peak_epoch_on_dca
+
+            stamp_peak_epoch_on_dca(pos, float(fill_price), at=trade_ts)
+        except Exception:
+            pass
+        pos["peak_at"] = trade_ts
+        pos["peak_epoch_at"] = pos.get("peak_epoch_at") or trade_ts
+    pos["v3"] = False
 
 
 def _apply_acknowledged_buy(
@@ -114,17 +162,34 @@ def _apply_acknowledged_buy(
     key = get_key(symbol, timeframe)
     pos = snapshot.setdefault(key, _empty_order_position())
 
-    old_amount = pos["amount"]
-    new_amount = old_amount + amount
-    if old_amount <= 0:
-        _reset_position_cycle(pos, amount=new_amount, price=price, trade_ts=trade_ts)
+    old_amount = float(pos.get("amount") or 0)
+    dust = old_amount > 0 and _is_dust_remainder(pos)
+    created, filled = _order_window(order)
+    if old_amount <= 0 or dust:
+        new_amount = old_amount + amount
+        if dust:
+            old_avg = float(pos.get("average_entry") or price)
+            avg = (old_avg * old_amount + price * amount) / new_amount
+        else:
+            avg = price
+        _reset_position_cycle(
+            pos,
+            amount=new_amount,
+            price=avg,
+            trade_ts=trade_ts,
+            cycle_created=created,
+            cycle_filled=filled,
+            fill_price=price,
+        )
         tagged = _entry_source_tag(source)
         if tagged:
             pos["entry_source"] = tagged
             pos["entry_at"] = trade_ts
     elif _is_dca_order(order):
-        pos["average_entry"] = (pos["average_entry"] * old_amount + price * amount) / new_amount
-        pos["amount"] = new_amount
+        old_avg = float(pos.get("average_entry") or price)
+        new_avg = (old_avg * old_amount + price * amount) / (old_amount + amount)
+        pos["average_entry"] = new_avg
+        pos["amount"] = old_amount + amount
         pos["last_buy_price"] = price
         pos["last_action"] = "BUY_DCA"
         pos["last_trade_type"] = "BUY_DCA"
@@ -132,8 +197,14 @@ def _apply_acknowledged_buy(
         pos["dca_rounds"] = int(pos.get("dca_rounds", 0) or 0) + 1
         pos["last_dca_at"] = trade_ts
         pos["dca_total_usdt"] = float(pos.get("dca_total_usdt", 0) or 0) + price * amount
+        # Same as live: a recovery fill increments dca_rounds only.
+        if abs(new_avg - old_avg) > 1e-12:
+            _replay_peak_reset(pos, price, trade_ts)
     else:
-        pos["average_entry"] = (pos["average_entry"] * old_amount + price * amount) / new_amount
+        old_avg = float(pos.get("average_entry") or price)
+        new_amount = old_amount + amount
+        new_avg = (old_avg * old_amount + price * amount) / new_amount
+        pos["average_entry"] = new_avg
         pos["amount"] = new_amount
         pos["last_buy_price"] = price
         pos["last_action"] = "BUY"
@@ -144,6 +215,8 @@ def _apply_acknowledged_buy(
             if tagged:
                 pos["entry_source"] = tagged
                 pos["entry_at"] = pos.get("entry_at") or trade_ts
+        if abs(new_avg - old_avg) > 1e-12:
+            _replay_peak_reset(pos, price, trade_ts)
 
 
 def _apply_acknowledged_sell(
@@ -259,6 +332,7 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
             pos = positions.setdefault(key, _empty_order_position())
             old = float(pos.get("amount") or 0)
             if old <= 0 or str(pos.get("side") or "") != "short":
+                created, filled = _order_window(order)
                 pos.update({
                     "amount": amount,
                     "peak_amount": amount,
@@ -269,6 +343,12 @@ def replay_simulated_ledger(orders: list, initial: float = 5000.0) -> dict:
                     "last_action": "SHORT",
                     "last_trade_type": "SHORT",
                     "last_trade_at": trade_ts,
+                    "first_buy_at": trade_ts,
+                    "entry_at": trade_ts,
+                    "recent_low": price,
+                    "v3": False,
+                    "cycle_open_created": created or trade_ts,
+                    "cycle_open_filled": filled or trade_ts,
                 })
             else:
                 new_a = old + amount
