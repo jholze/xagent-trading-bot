@@ -143,6 +143,7 @@ class ExitRealtimeHub:
             "connected": False,
             "book_tenant_collisions": 0,
             "ws_stop_skip_no_bid": 0,
+            "ws_stop_skip_no_base": 0,
         }
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
@@ -863,6 +864,18 @@ class ExitRealtimeHub:
                         f"ws_stop_skip_no_bid symbol={sym} tenant={row_tenant or ''} "
                         f"last={price} bid={ev.get('bid_raw')!r} tick_age={age_label}",
                         "INFO",
+                    )
+                continue
+            if ev.get("skip") == "ws_stop_skip_no_base":
+                if self._debounce_ok(
+                    sym, "ws_stop_skip_no_base", cooldown, tenant_id=row_tenant
+                ):
+                    self._stats["ws_stop_skip_no_base"] = (
+                        int(self._stats.get("ws_stop_skip_no_base") or 0) + 1
+                    )
+                    log(
+                        f"ws_stop_skip_no_base symbol={sym} tenant={row_tenant or ''}",
+                        "WARNING",
                     )
                 continue
             if ev.get("error") or not ev.get("action"):

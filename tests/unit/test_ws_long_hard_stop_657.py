@@ -118,8 +118,19 @@ def _frame(pair, last, bid, time_ms=None):
     )
 
 
-def _analysis(symbol, action, timeframe="1h", sell_source="stop_loss"):
-    normalized = "SELL_FULL" if "FULL" in action else "SELL_PARTIAL_50"
+def _analysis(
+    symbol,
+    action,
+    timeframe="1h",
+    sell_source="stop_loss",
+    *,
+    sources=None,
+    normalized_action=None,
+    long_hard_stop=True,
+):
+    normalized = normalized_action or (
+        "SELL_FULL" if "FULL" in action else "SELL_PARTIAL_50"
+    )
     return SignalAnalysis(
         action=action,
         symbol=symbol,
@@ -129,11 +140,12 @@ def _analysis(symbol, action, timeframe="1h", sell_source="stop_loss"):
         vol_multiplier=1.0,
         ampel_emoji="",
         ampel_text="",
-        sources=["technical", "stop_loss"],
+        sources=list(sources) if sources is not None else ["technical", "stop_loss"],
         normalized_action=normalized,
         rationale="hard stop",
         confidence=80.0,
         sell_source=sell_source,
+        long_hard_stop=long_hard_stop,
     )
 
 
@@ -1063,3 +1075,169 @@ class TestT14TickAge:
         assert any(o.get("status") == "filled" for o in _orders("AAA/USDT"))
         assert any(o.get("status") == "filled" for o in _orders("CCC/USDT"))
         assert not any(o.get("status") == "filled" and o.get("source") == "exit_ws" for o in _orders("BBB/USDT"))
+
+
+class TestV663HardStopOnlyWhenStopFired:
+    def _arm_limit(self, limit=1):
+        import data_manager
+
+        raw = data_manager.get_config()
+        raw.setdefault("risk", {})["max_daily_sells"] = limit
+        raw.setdefault("dry_run_defaults", {})["max_daily_sells"] = limit
+
+    def test_rsi_full_sell_at_gain_stays_sell_full_and_hits_daily_limit(self):
+        """+30% RSI full sell is not a hard stop: no exemption, no stop cooldown."""
+        from risk.rebuy_cooldown import is_hard_stop_sell, resolve_rebuy_cooldown_hours
+        from strategies.positions import get_position
+
+        self._arm_limit(1)
+        _seed_filled_sells(1)
+        _seed("AAA/USDT", amount=40, entry=1.0)
+        # Legacy mapping turns SELL_FULL into SELL_STOP_FULL. The stop did not fire.
+        analysis = _analysis(
+            "AAA/USDT",
+            "SELL_STOP_FULL",
+            sell_source="rsi_sell",
+            sources=["technical", "rsi_sell"],
+            normalized_action="SELL_FULL",
+            long_hard_stop=False,
+        )
+        with _paper():
+            from services.signal_orchestrator import SignalOrchestrator
+
+            orch = SignalOrchestrator(notify_callback=lambda *a, **k: None)
+            result = orch.execute_if_needed(
+                analysis,
+                {"symbol": "AAA/USDT", "timeframe": "1h"},
+                1.30,
+            )
+        assert result is not None
+        assert result.executed is False
+        assert result.code == "max_daily_sells"
+        rows = [o for o in _orders("AAA/USDT") if o.get("status") == "rejected"]
+        assert rows
+        assert rows[-1]["signal"] == "SELL_FULL"
+        assert rows[-1]["exit_source"] == "rsi_sell"
+        assert not is_hard_stop_sell(rows[-1]["signal"])
+        assert not is_hard_stop_sell(rows[-1]["exit_source"])
+        lot = get_position("AAA/USDT", "1h")
+        assert not lot.get("last_sell_signal")
+        assert str(lot.get("exit_source") or "") != "stop_loss"
+        cooled = resolve_rebuy_cooldown_hours(
+            last_sell_signal=rows[-1]["signal"],
+            last_exit_source=rows[-1]["exit_source"],
+            config={
+                "enabled": True,
+                "block_rebuy_if_last_sell_was_stop": True,
+                "stop_loss_hours": 24,
+            },
+        )
+        assert cooled.stop_sell is False
+        assert "stop_loss" not in cooled.reasons
+        assert _held("AAA/USDT") == 40
+
+    def test_real_hard_stop_is_still_exempt(self):
+        hit = evaluate_long_hard_stop(
+            price=0.80,
+            entry=1.0,
+            position=_lot(amount=40, entry=1.0),
+            strategy_params=_params(full=10, partial=5),
+            base_stop_loss_pct=10,
+        )
+        assert hit == ("SELL_STOP_FULL", "stop_loss")
+        self._arm_limit(1)
+        _seed_filled_sells(1)
+        _seed("BBB/USDT", amount=40, entry=1.0)
+        with _paper(), _logs() as lines:
+            from services.signal_orchestrator import SignalOrchestrator
+
+            orch = SignalOrchestrator(notify_callback=lambda *a, **k: None)
+            result = orch.execute_if_needed(
+                _analysis("BBB/USDT", "SELL_STOP_FULL"),
+                {"symbol": "BBB/USDT", "timeframe": "1h"},
+                0.80,
+            )
+        assert result is not None and result.executed
+        filled = [o for o in _orders("BBB/USDT") if o.get("status") == "filled"]
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        assert filled[-1]["exit_source"] == "stop_loss"
+        assert any("daily_sells_limit_bypassed_hard_stop" in line for line in lines)
+
+
+class TestV663MissingBaseStop:
+    def _warnings(self):
+        found: list[str] = []
+
+        def _rec(message, level="INFO"):
+            if str(level).upper() == "WARNING":
+                found.append(str(message))
+
+        return found, _rec
+
+    def test_missing_base_stop_does_not_sell(self):
+        _seed("AAA/USDT", amount=20, entry=1.0)
+        hub = _hub(cooldown=60)
+        hub.update_book(
+            [
+                _row(
+                    "AAA/USDT",
+                    params={"dca": {}},
+                    tenant_id="henry",
+                    entry=1.0,
+                )
+            ]
+        )
+        found, _rec = self._warnings()
+
+        @contextmanager
+        def _stay(_tenant_id):
+            yield
+
+        with patch(
+            "services.exit_realtime.hub.restoring_tenant_cycle_context", _stay
+        ), patch(
+            "core.config.get_bot_config", side_effect=RuntimeError("config unread")
+        ), patch("logger.log", side_effect=_rec), patch(
+            "services.exit_realtime.hub.log", side_effect=_rec
+        ):
+            _fire(hub, "AAA/USDT", "0.99", "0.99")
+        assert _held("AAA/USDT") == 20
+        assert _orders("AAA/USDT") == []
+        assert len(found) == 1
+        assert "ws_stop_skip_no_base" in found[0]
+        assert "tenant=henry" in found[0]
+        assert hub.stats()["ws_stop_skip_no_base"] == 1
+
+    def test_missing_base_stop_warning_is_throttled(self):
+        _seed("BBB/USDT", amount=20, entry=1.0)
+        hub = _hub(cooldown=60)
+        hub.update_book(
+            [
+                _row(
+                    "BBB/USDT",
+                    params={"dca": {}},
+                    tenant_id="henry",
+                    entry=1.0,
+                )
+            ]
+        )
+        found, _rec = self._warnings()
+
+        @contextmanager
+        def _stay(_tenant_id):
+            yield
+
+        with patch(
+            "services.exit_realtime.hub.restoring_tenant_cycle_context", _stay
+        ), patch(
+            "core.config.get_bot_config", side_effect=RuntimeError("config unread")
+        ), patch("logger.log", side_effect=_rec), patch(
+            "services.exit_realtime.hub.log", side_effect=_rec
+        ):
+            _fire(hub, "BBB/USDT", "0.99", "0.99")
+            _fire(hub, "BBB/USDT", "0.99", "0.99")
+        assert len(found) == 1
+        assert "tenant=henry" in found[0]
+        assert hub.stats()["ws_stop_skip_no_base"] == 1
+        assert _held("BBB/USDT") == 20
+        assert _orders("BBB/USDT") == []

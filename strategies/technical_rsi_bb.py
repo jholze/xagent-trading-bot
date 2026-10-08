@@ -148,6 +148,7 @@ class TechnicalRSIStrategy(BaseStrategy):
 
         action = "HOLD"
         sources = ["technical"]
+        long_hard_stop = False
 
         buy_regime = params.get("buy_regime", "dip")
         reversal_rsi_low = float(params.get("reversal_rsi_cross_low", 32))
@@ -197,6 +198,7 @@ class TechnicalRSIStrategy(BaseStrategy):
                 if hit:
                     action, stop_src = hit
                     sources.append(stop_src)
+                    long_hard_stop = True
 
             gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
             # Fixed tiers stay 40/80/120. Inside the DCA grace window, a
@@ -276,4 +278,5 @@ class TechnicalRSIStrategy(BaseStrategy):
             normalized_action=normalized,
             rationale=f"TA: RSI={market.rsi:.1f} Vol={market.vol_multiplier:.2f}x",
             confidence=50.0,
+            long_hard_stop=long_hard_stop,
         )

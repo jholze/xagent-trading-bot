@@ -78,6 +78,34 @@ def _confirm_long_hard_stop(
     return None
 
 
+def _resolve_base_stop_loss_pct(
+    strategy_params: dict[str, Any] | None,
+    explicit: float | None,
+) -> float | None:
+    """Cycle lookup: params ``stop_loss_pct``, else ``config.stop_loss_pct``.
+
+    A failed read is unresolved. Callers must not substitute 0.
+    """
+    if explicit is not None:
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            return None
+    params = strategy_params or {}
+    raw_sl = params.get("stop_loss_pct")
+    if raw_sl is not None:
+        try:
+            return float(raw_sl)
+        except (TypeError, ValueError):
+            return None
+    try:
+        from core.config import get_bot_config
+
+        return float(get_bot_config().stop_loss_pct)
+    except Exception:
+        return None
+
+
 def evaluate_would_sells(
     *,
     symbol: str,
@@ -117,24 +145,26 @@ def evaluate_would_sells(
         try:
             from strategies.dca import evaluate_long_hard_stop
 
-            base_sl = base_stop_loss_pct
+            base_sl = _resolve_base_stop_loss_pct(strategy_params, base_stop_loss_pct)
             if base_sl is None:
-                raw_sl = (strategy_params or {}).get("stop_loss_pct")
-                base_sl = float(raw_sl) if raw_sl is not None else None
-            if base_sl is None:
-                try:
-                    from core.config import get_bot_config
-
-                    base_sl = float(get_bot_config().stop_loss_pct)
-                except Exception:
-                    base_sl = 0.0
-            last_hit = evaluate_long_hard_stop(
-                price=px,
-                entry=stop_entry,
-                position=stop_pos,
-                strategy_params=strategy_params,
-                base_stop_loss_pct=float(base_sl),
-            )
+                out.append(
+                    {
+                        "source": "stop_loss",
+                        "action": "",
+                        "skip": "ws_stop_skip_no_base",
+                        "priority": 8,
+                        "strategy_shadow": False,
+                    }
+                )
+                last_hit = None
+            else:
+                last_hit = evaluate_long_hard_stop(
+                    price=px,
+                    entry=stop_entry,
+                    position=stop_pos,
+                    strategy_params=strategy_params,
+                    base_stop_loss_pct=float(base_sl),
+                )
             if last_hit:
                 bid_px = _positive_number(bid)
                 if bid_px is None:

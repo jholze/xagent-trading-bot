@@ -214,12 +214,16 @@ class SignalOrchestrator:
                     )
                 except Exception:
                     strategy_params = {}
-            # Execution action is SELL_STOP_* (decision_engine.to_execution_action).
-            # normalized_action collapses that to SELL_FULL / SELL_PARTIAL_50.
-            # The ledger signal for a hard stop stays SELL_STOP_* so it matches
-            # the WS order and the daily-sell exemption (#657 R1 / R11).
+            # to_execution_action maps every SELL_FULL to SELL_STOP_FULL and
+            # every 50% partial to SELL_STOP_PARTIAL. That string is not a
+            # hard stop. SELL_STOP_* and exit_source stop_loss apply only when
+            # evaluate_long_hard_stop fired in this same analysis.
             sell_signal = analysis.normalized_action or analysis.action
-            if str(analysis.action or "") in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL"):
+            long_hard_stop = bool(getattr(analysis, "long_hard_stop", False))
+            if long_hard_stop and str(analysis.action or "") in (
+                "SELL_STOP_FULL",
+                "SELL_STOP_PARTIAL",
+            ):
                 sell_signal = str(analysis.action)
             fraction = sell_fraction_for_signal(
                 analysis.action, symbol, pos_tf, current_price, strategy_params,
@@ -239,7 +243,10 @@ class SignalOrchestrator:
                 sources=list(analysis.sources or []),
                 action=sell_signal,
             )
-            if sell_signal in ("SELL_STOP_FULL", "SELL_STOP_PARTIAL"):
+            if long_hard_stop and sell_signal in (
+                "SELL_STOP_FULL",
+                "SELL_STOP_PARTIAL",
+            ):
                 exit_src = "stop_loss"
             order = TradeOrder(
                 type="SELL",
