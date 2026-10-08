@@ -2402,6 +2402,16 @@ class RiskManager:
             return order
         order.amount = held
         order.signal = "SELL_STOP_FULL"
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+
+        log(
+            "partial_stop_upgraded_to_full "
+            f"symbol={order.symbol} timeframe={timeframe} "
+            f"tenant={resolve_tenant_id()} "
+            f"reason=remainder_below_gate_minimum",
+            "INFO",
+        )
         return order
 
     def _log_hard_stop_daily_bypass(

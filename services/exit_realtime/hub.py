@@ -123,6 +123,8 @@ class ExitRealtimeHub:
         self._ct_eval_interval: float = 5.0
         self._ct_flag_ttl: float = 30.0
         self._last_fire: dict[str, float] = {}
+        # Action that opened the venue-minimum pause, keyed like that cooldown.
+        self._below_min_action: dict[str, str] = {}
         self._last_prices: dict[str, float] = {}
         self._connected = False
         self._ws: Any = None
@@ -903,13 +905,34 @@ class ExitRealtimeHub:
                 # still fire if strategy is live; strategy_shadow means trail rule in shadow
                 continue
             src = str(ev.get("source") or "")
+            action = str(ev.get("action") or "SELL_FULL")
             # A sell the venue already refused stays quiet for this window,
             # the same per-tenant per-symbol throttle as ws_stop_skip_no_bid.
-            if self._cooldown_active(
+            # A full hard stop still goes out when that refusal was not itself
+            # a full stop: the pause must not swallow it.
+            pause_key = f"{str(row_tenant or '').strip()}|{sym}|ws_stop_below_min"
+            venue_min_pause = self._cooldown_active(
                 sym, "ws_stop_below_min", cooldown, tenant_id=row_tenant
-            ):
+            )
+            full_hard_stop = action == "SELL_STOP_FULL" and src == "stop_loss"
+            full_stop_outranks_pause = (
+                venue_min_pause
+                and full_hard_stop
+                and self._below_min_action.get(pause_key) != "SELL_STOP_FULL"
+            )
+            if venue_min_pause and not full_stop_outranks_pause:
                 continue
-            if not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
+            if full_stop_outranks_pause:
+                # The rejected partial already stamped stop_loss. One full-stop
+                # attempt still leaves during this window.
+                if not self._debounce_ok(
+                    sym,
+                    "ws_full_stop_during_below_min",
+                    cooldown,
+                    tenant_id=row_tenant,
+                ):
+                    continue
+            elif not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
                 continue
 
             ev["mode"] = mode
@@ -921,7 +944,6 @@ class ExitRealtimeHub:
                 _log_event(ev, live=False)
                 continue
 
-            action = str(ev.get("action") or "SELL_FULL")
             sell_amount = None
             if src == "stop_loss":
                 from strategies.positions import sell_fraction_for_signal
@@ -970,6 +992,7 @@ class ExitRealtimeHub:
                 if "below Gate minimum" in msg and self._debounce_ok(
                     sym, "ws_stop_below_min", cooldown, tenant_id=row_tenant
                 ):
+                    self._below_min_action[pause_key] = action
                     self._stats["ws_stop_below_min"] = (
                         int(self._stats.get("ws_stop_below_min") or 0) + 1
                     )

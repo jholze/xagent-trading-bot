@@ -1363,6 +1363,134 @@ class TestB3BelowMinThrottle:
             o.get("status") != "filled" for o in _orders(symbol)
         )
 
+    def test_full_stop_during_venue_min_pause_is_attempted(self):
+        """A venue-min refusal of a partial must not swallow a later full stop."""
+        from unittest.mock import MagicMock
+
+        from execution.gate_adapter import GateExecutionAdapter
+
+        symbol = "HHH/USDT"
+        params = _params(full=10, partial=5)
+        lot = _seed(symbol, amount=40, entry=1.0)
+        hub = _hub(cooldown=15)
+        hub.update_book([_row(symbol, params=params, position=lot)])
+        ex = MagicMock()
+        ex.markets = {
+            symbol: {"limits": {"amount": {"min": 0.0}, "cost": {"min": 25.0}}}
+        }
+        ex.load_markets.return_value = ex.markets
+        ex.amount_to_precision.side_effect = lambda _sym, amt: float(amt)
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        prev_failed = GateExecutionAdapter._shadow_markets_failed
+        try:
+            with _paper(), _logs() as lines:
+                GateExecutionAdapter._shadow_markets_failed = False
+                GateExecutionAdapter._shadow_markets_cache = None
+                with patch.object(GateExecutionAdapter, "_get_exchange", lambda self: ex):
+                    _fire(hub, symbol, "0.94", "0.94")
+                    assert _held(symbol) == pytest.approx(40.0, abs=0.05)
+                    assert hub.stats()["ws_stop_below_min"] == 1
+                    partial_fires = [
+                        line
+                        for line in lines
+                        if "exit_ws stop fire" in line and "SELL_STOP_PARTIAL" in line
+                    ]
+                    assert len(partial_fires) == 1
+                    _fire(hub, symbol, "0.94", "0.94")
+                    assert _held(symbol) == pytest.approx(40.0, abs=0.05)
+                    assert [
+                        line
+                        for line in lines
+                        if "exit_ws stop fire" in line and "SELL_STOP_PARTIAL" in line
+                    ] == partial_fires
+                    _fire(hub, symbol, "0.89", "0.89")
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+            GateExecutionAdapter._shadow_markets_failed = prev_failed
+        assert _held(symbol) == pytest.approx(0.0, abs=0.05)
+        filled = [o for o in _orders(symbol) if o.get("status") == "filled"]
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        assert filled[-1]["exit_source"] == "stop_loss"
+        full_fires = [
+            line
+            for line in lines
+            if "exit_ws stop fire" in line and "SELL_STOP_FULL" in line
+        ]
+        assert len(full_fires) == 1
+
+
+class TestB3PartialSellGuard:
+    def test_ws_partial_stop_rejected_by_partial_sell_guard(self):
+        """WS hard partial on a 25 USDT lot stops at partial_sell_guard."""
+        from execution.gate_adapter import GateExecutionAdapter
+
+        symbol = "GGG/USDT"
+        params = _params(full=10, partial=5)
+        lot = _seed(symbol, amount=27, entry=1.0)
+        hub = _hub(cooldown=0)
+        hub.update_book([_row(symbol, params=params, position=lot)])
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        try:
+            GateExecutionAdapter._shadow_markets_cache = None
+            with _paper():
+                _fire(hub, symbol, "0.93", "0.93")
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+        assert _held(symbol) == pytest.approx(27.0, abs=0.01)
+        rows = _orders(symbol)
+        assert rows
+        assert all(o.get("status") != "filled" for o in rows)
+        rejected = [o for o in rows if o.get("status") == "rejected"]
+        assert rejected
+        assert rejected[-1]["signal"] == "SELL_STOP_PARTIAL"
+        assert (rejected[-1].get("risk") or {}).get("code") == "partial_sell_guard"
+        from strategies.positions import get_position
+
+        pos = get_position(symbol, "1h")
+        assert pos.get("hard_partial_stop_done") is not True
+        assert evaluate_long_hard_stop(
+            price=0.93,
+            entry=1.0,
+            position=pos,
+            strategy_params=params,
+            base_stop_loss_pct=10.0,
+        ) == ("SELL_STOP_PARTIAL", "stop_loss")
+
+
+class TestB3RemainderUpgradeLog:
+    def test_remainder_upgrade_logs_one_line(self):
+        from execution.gate_adapter import GateExecutionAdapter
+
+        symbol = "III/USDT"
+        params = _params(full=10, partial=5)
+        lot = _seed(symbol, amount=10, entry=1.0)
+        hub = _hub(cooldown=0)
+        hub.update_book([_row(symbol, params=params, position=lot)])
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        try:
+            with _paper(), _logs() as lines:
+                GateExecutionAdapter._shadow_markets_cache = {
+                    symbol: {
+                        "limits": {
+                            "amount": {"min": 0},
+                            "cost": {"min": 6},
+                        }
+                    }
+                }
+                _fire(hub, symbol, "0.93", "0.93")
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+        upgrades = [line for line in lines if "partial_stop_upgraded_to_full" in line]
+        assert len(upgrades) == 1
+        assert f"symbol={symbol}" in upgrades[0]
+        assert "reason=remainder_below_gate_minimum" in upgrades[0]
+        assert _held(symbol) == pytest.approx(0.0, abs=0.05)
+        filled = [o for o in _orders(symbol) if o.get("status") == "filled"]
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        from strategies.positions import get_position
+
+        assert get_position(symbol, "1h").get("hard_partial_stop_done") is not True
+
 
 class TestB3HardStopFlagMerge:
     def _run(self, technical):
