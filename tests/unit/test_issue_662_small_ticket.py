@@ -16,7 +16,7 @@ import pytest
 
 from core.config import BotConfig
 from core.costs import CostModel
-from core.models import TradeOrder
+from core.models import MarketContext, TradeOrder
 from execution.gate_adapter import (
     set_venue_limits_override,
     venue_limits_for,
@@ -649,6 +649,28 @@ def _merge_buy(rm, symbol, price, *, source="manual", dynamic=None, usdt=None):
         return rm.evaluate(order, TF, source=source, indicators={})
 
 
+def _first_firing_stop(base_stop: float, *, partial_stop_pct=None) -> float:
+    """Same number the merge bound uses: effective_stop_loss_thresholds on a fresh cycle."""
+    from strategies.dca import effective_stop_loss_thresholds
+
+    params = {}
+    if partial_stop_pct is not None:
+        params["partial_stop_pct"] = partial_stop_pct
+    full, partial, in_grace = effective_stop_loss_thresholds(
+        {
+            "dca_rounds": 0,
+            "dca_recovery_rounds": 0,
+            "last_dca_at": None,
+            "last_dca_recovery_at": None,
+        },
+        params,
+        base_stop,
+    )
+    if in_grace or partial is None:
+        return float(full)
+    return min(float(full), float(partial))
+
+
 def test_t9_merge_keeps_loss_once_and_lifts():
     _limits()
     rm = RiskManager(_cfg())
@@ -725,70 +747,106 @@ def test_t9b_and_t9c_loss_above_bound_logs_once():
 def test_t9d_boundary_merges_on_equal_loss_and_rejects_a_cent_over():
     _limits()
     rm = RiskManager(_cfg())
-    _below("EDGE/USDT", 5.4475, 1, 2.0)
-    dec = _merge_buy(rm, "EDGE/USDT", 2.0)
+    price = 2.0
+    ticket = 25.0
+    stop = _first_firing_stop(20.0)
+    bound = (stop - 6.21) / 100.0 * ticket
+    _below("EDGE/USDT", price + bound, 1, price)
+    dec = _merge_buy(rm, "EDGE/USDT", price)
     assert dec.approved is True
-    assert dec.order.usdt_amount == pytest.approx(19.5525)
+    assert dec.order.usdt_amount == pytest.approx(ticket - (price + bound))
     PortfolioService(rm.config).execute_buy(
-        "EDGE/USDT", TF, 2.0, usdt_amount=dec.order.usdt_amount, sync_virtual_ledger=False
+        "EDGE/USDT", TF, price, usdt_amount=dec.order.usdt_amount, sync_virtual_ledger=False
     )
     pos = get_position("EDGE/USDT", TF)
     cost = float(pos["amount"]) * float(pos["average_entry"])
-    assert cost == pytest.approx(25)
-    assert brake_open_pnl() == pytest.approx(-3.4475)
-    assert abs(brake_open_pnl()) / cost * 100 == pytest.approx(13.79, abs=0.01)
-    assert abs(brake_open_pnl()) / cost * 100 < 20
+    assert cost == pytest.approx(ticket)
+    assert brake_open_pnl() == pytest.approx(-bound)
+    loss_pct = abs(brake_open_pnl()) / cost * 100
+    assert loss_pct == pytest.approx(bound / ticket * 100, abs=0.01)
+    assert loss_pct < stop
 
     clear_positions_memory()
-    _below("EDGE/USDT", 5.4475, 1, 1.99)
-    rejected = _merge_buy(rm, "EDGE/USDT", 1.99)
+    _below("EDGE/USDT", price + bound, 1, price - 0.01)
+    rejected = _merge_buy(rm, "EDGE/USDT", price - 0.01)
     assert rejected.code == VENUE_MIN_MERGE_LOSS_EXCEEDED
     assert float(get_position("EDGE/USDT", TF)["amount"]) == pytest.approx(1)
 
 
 def test_t9d2_per_symbol_stop_12_5():
     _limits()
+    row_stop = 12.5
     rm = RiskManager(_cfg(
         stop_loss_pct=20.0,
         strategies=[{
             "symbol": "SYM/USDT",
             "timeframe": TF,
-            "stop_loss_pct": 12.5,
+            "stop_loss_pct": row_stop,
         }],
     ))
-    _below("SYM/USDT", 3.57, 1, 2.0)  # loss 1.57
-    merged = _merge_buy(rm, "SYM/USDT", 2.0)
+    price = 2.0
+    ticket = 25.0
+    first = _first_firing_stop(row_stop)
+    bound = (first - 6.21) / 100.0 * ticket
+    raw_bound = (row_stop - 6.21) / 100.0 * ticket
+    assert first < row_stop < _first_firing_stop(20.0)
+    _below("SYM/USDT", price + bound, 1, price)
+    merged = _merge_buy(rm, "SYM/USDT", price)
     assert merged.approved is True
-    assert merged.order.usdt_amount == pytest.approx(21.43)
+    assert merged.order.usdt_amount == pytest.approx(ticket - (price + bound), abs=1e-4)
 
     clear_positions_memory()
-    _below("SYM/USDT", 3.58, 1, 2.0)  # loss 1.58 > bound 1.5725
-    rejected = _merge_buy(rm, "SYM/USDT", 2.0)
+    # Between the resolver bound and the raw-row bound. A raw stop_loss_pct
+    # of 12.5 would still approve this loss.
+    mid_loss = (bound + raw_bound) / 2.0
+    _below("SYM/USDT", price + mid_loss, 1, price)
+    rejected = _merge_buy(rm, "SYM/USDT", price)
     assert rejected.code == VENUE_MIN_MERGE_LOSS_EXCEEDED
-    assert rejected.details["stop_pct"] == pytest.approx(12.5)
-    assert rejected.details["bound"] == pytest.approx(1.5725, abs=1e-4)
+    assert rejected.details["stop_pct"] == pytest.approx(first)
+    assert rejected.details["bound"] == pytest.approx(bound, abs=1e-4)
 
 
 def test_t9d3_size_mult_0_8_rejects_on_the_bound_code():
     _limits()
     rm = RiskManager(_cfg())
-    _below("SYM/USDT", 5.4475, 1, 2.0)
-    dec = _merge_buy(rm, "SYM/USDT", 2.0, source="auto", dynamic=_mult(0.8))
+    price = 2.0
+    ticket = 25.0
+    stop = _first_firing_stop(20.0)
+    pre_bound = (stop - 6.21) / 100.0 * ticket
+    loss = pre_bound * 0.9
+    cost = price + loss
+    sized = 0.8 * (ticket - cost)
+    basis = cost + sized
+    sized_bound = (stop - 6.21) / 100.0 * basis
+    assert loss <= pre_bound
+    assert loss > sized_bound
+    assert sized >= 15
+    _below("SYM/USDT", cost, 1, price)
+    dec = _merge_buy(rm, "SYM/USDT", price, source="auto", dynamic=_mult(0.8))
     assert dec.approved is False
     assert dec.code == "venue_min_merge_loss_exceeded"
     assert dec.details["reason"] == "loss_bound"
-    assert dec.details["final_buy"] == pytest.approx(15.642, abs=1e-4)
-    assert dec.details["basis"] == pytest.approx(21.0895, abs=1e-4)
-    assert dec.details["bound"] == pytest.approx(2.9082, abs=1e-4)
-    assert dec.details["loss"] == pytest.approx(3.4475, abs=1e-6)
+    assert dec.details["final_buy"] == pytest.approx(sized, abs=1e-4)
+    assert dec.details["basis"] == pytest.approx(basis, abs=1e-4)
+    assert dec.details["bound"] == pytest.approx(sized_bound, abs=1e-4)
+    assert dec.details["loss"] == pytest.approx(loss, abs=1e-6)
     assert float(get_position("SYM/USDT", TF)["amount"]) == pytest.approx(1)
 
 
 def test_t9d3b_size_mult_0_5_is_size_too_small():
     _limits()
     rm = RiskManager(_cfg())
-    _below("SYM/USDT", 5.4475, 1, 2.0)
-    dec = _merge_buy(rm, "SYM/USDT", 2.0, source="auto", dynamic=_mult(0.5))
+    price = 2.0
+    ticket = 25.0
+    stop = _first_firing_stop(20.0)
+    pre_bound = (stop - 6.21) / 100.0 * ticket
+    loss = pre_bound * 0.5
+    cost = price + loss
+    sized = 0.5 * (ticket - cost)
+    assert loss <= pre_bound
+    assert sized < 15
+    _below("SYM/USDT", cost, 1, price)
+    dec = _merge_buy(rm, "SYM/USDT", price, source="auto", dynamic=_mult(0.5))
     assert dec.approved is False
     assert dec.code == "size_too_small"
     assert dec.code != VENUE_MIN_MERGE_LOSS_EXCEEDED
@@ -987,3 +1045,161 @@ def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
     assert exchange.loads == 1
     assert modes == ["real"]
     assert venue_limits_for(symbol)["known"] is True
+
+
+def test_b1_cold_cache_partial_loads_once_and_is_approved(monkeypatch):
+    _opt_out_venue_override()
+    symbol = "TPART/USDT"
+    exchange = _StubExchange(_pair_markets(symbol, min_cost=3.0))
+    _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg(risk={
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+        "dust_sweep_max_position_usdt": 6,
+        "dust_sweep_min_remainder_usdt": 6,
+    }))
+    _plant(symbol, 10, 40)  # 400 USDT at the mark
+    with _quiet(rm):
+        dec = rm.evaluate(_sell(symbol, 10, 4), TF, source="auto")
+    assert dec.approved is True
+    assert dec.order.signal == "SELL_PARTIAL"
+    assert exchange.loads == 1
+
+
+def test_b1_loader_error_partial_continues_with_one_warning(monkeypatch):
+    _opt_out_venue_override()
+    symbol = "TCOLD/USDT"
+    exchange = _StubExchange(fail=True)
+    _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg(risk={
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+        "dust_sweep_max_position_usdt": 6,
+        "dust_sweep_min_remainder_usdt": 6,
+    }))
+    _plant(symbol, 10, 40)
+    with _logs() as lines, _quiet(rm):
+        dec = rm.evaluate(_sell(symbol, 10, 4), TF, source="auto")
+    assert dec.approved is True
+    assert dec.code != "venue_min_missing"
+    assert dec.order.signal == "SELL_PARTIAL"
+    assert dec.order.amount == pytest.approx(4)
+    assert sum("venue limits unavailable" in line for line in lines) == 1
+
+
+def test_b1_full_slots_buy_stops_before_loader_partial_still_approved(monkeypatch):
+    _opt_out_venue_override()
+    symbol = "TFULL/USDT"
+    exchange = _StubExchange(_pair_markets(symbol, min_cost=3.0))
+    _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg(risk={
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+        "dust_sweep_max_position_usdt": 6,
+        "dust_sweep_min_remainder_usdt": 6,
+    }))
+    _plant(symbol, 10, 40)
+    with _quiet(rm, open_slots=36, max_eff=36):
+        blocked = rm.evaluate(_buy("TNEW/USDT", price=10, usdt=25), TF, source="manual")
+        assert exchange.loads == 0
+        partial = rm.evaluate(_sell(symbol, 10, 4), TF, source="auto")
+    assert blocked.approved is False
+    assert blocked.code == "max_open_positions"
+    assert partial.approved is True
+    assert partial.order.signal == "SELL_PARTIAL"
+    assert exchange.loads == 1
+
+
+def test_b1_stop_partial_does_not_need_the_loader(monkeypatch):
+    _opt_out_venue_override()
+    exchange = _StubExchange(fail=True)
+    _patch_exchange(monkeypatch, exchange)
+    rm = RiskManager(_cfg(risk={
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+    }))
+    _plant("TSTOP/USDT", 20, 1)
+    with _quiet(rm):
+        dec = rm.evaluate(
+            _sell("TSTOP/USDT", 10, 1, signal="SELL_STOP_PARTIAL"),
+            TF,
+            source="auto",
+        )
+    assert dec.approved is True
+    assert dec.order.signal == "SELL_STOP_PARTIAL"
+    assert exchange.loads == 0
+
+
+def test_b2_dust_sweep_literals_100_and_500_stay_removed():
+    rm = RiskManager(_cfg(risk={
+        "dust_sweep_max_position_usdt": 6,
+        "dust_sweep_min_remainder_usdt": 6,
+        "dust_sweep_sold_percent_min": 0.99,
+        "min_sell_notional_usdt": 1,
+        "min_position_usdt_for_partial_sell": 1,
+        "block_partial_sell_if_sold_percent_above": 0.99,
+    }))
+    pos = _plant("TSWEEP/USDT", 9, 40)  # 400 USDT at price 10, in profit
+    pos["sold_percent"] = 0.75
+    with _quiet(rm):
+        dec = rm.evaluate(_sell("TSWEEP/USDT", 10, 1), TF, source="auto")
+    assert dec.approved is True
+    assert dec.order.signal == "SELL_PARTIAL"
+
+
+def test_c1_merged_lot_does_not_fire_partial_stop_same_cycle():
+    _limits()
+    full = 20.0
+    partial = 10.0
+    buffer = 6.21
+    ticket = 25.0
+    value = 2.0
+    resolver_bound = (partial - buffer) / 100.0 * ticket
+    rm = RiskManager(_cfg(
+        stop_loss_pct=full,
+        strategies=[{
+            "symbol": "SYM/USDT",
+            "timeframe": TF,
+            "stop_loss_pct": full,
+            "partial_stop_pct": partial,
+        }],
+    ))
+    # Between the resolver bound and the raw-row bound (20 − buffer).
+    _below("SYM/USDT", value + 2.0, 1, value)
+    refused = _merge_buy(rm, "SYM/USDT", value)
+    assert refused.code == VENUE_MIN_MERGE_LOSS_EXCEEDED
+    assert refused.details["stop_pct"] == pytest.approx(partial)
+
+    clear_positions_memory()
+    _below("SYM/USDT", value + resolver_bound, 1, value)
+    merged = _merge_buy(rm, "SYM/USDT", value)
+    assert merged.approved is True
+    PortfolioService(rm.config).execute_buy(
+        "SYM/USDT",
+        TF,
+        value,
+        usdt_amount=merged.order.usdt_amount,
+        sync_virtual_ledger=False,
+    )
+    pos = get_position("SYM/USDT", TF)
+    from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+    market = MarketContext(
+        symbol="SYM/USDT",
+        timeframe=TF,
+        current_price=value,
+        rsi=40.0,
+        has_position=True,
+        average_entry=float(pos["average_entry"]),
+        strategy_params={
+            "stop_loss_pct": full,
+            "partial_stop_pct": partial,
+            "buy_regime": "dip",
+        },
+    )
+    analysis = TechnicalRSIStrategy().analyze(
+        {"symbol": "SYM/USDT", "timeframe": TF},
+        market,
+    )
+    assert analysis.action != "SELL_STOP_PARTIAL"
+    assert analysis.action != "SELL_STOP_FULL"

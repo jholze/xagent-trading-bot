@@ -2440,23 +2440,47 @@ class RiskManager:
         seen.add(key)
         log(f"{code} tenant={key[0]} symbol={symbol} {extra}", "WARNING")
 
-    def _effective_stop_loss_pct(self, symbol: str, timeframe: str) -> float:
-        """Stop the exit path uses: the symbol's strategy row, else the top-level key.
+    def _effective_stop_loss_pct(self, symbol: str, timeframe: str, position: dict | None = None) -> float:
+        """First stop the exit path fires, in percent.
 
-        Both are percent, the same unit as ``risk.stop_gap_buffer_pct``.
+        Same resolver as the stop path (``effective_stop_loss_thresholds``):
+        profile ``partial_stop_pct`` when the params carry it, otherwise the
+        configured partial ratio, and DCA widening on the full stop. A merge
+        is a new cycle, so remainder DCA rounds do not widen this stop.
         """
-        params = {}
+        from strategies.dca import effective_stop_loss_thresholds
+
+        params: dict = {}
         try:
-            params = self.config.strategy_params(symbol, timeframe) or {}
+            params = dict(self.config.strategy_params(symbol, timeframe) or {})
         except Exception:
             params = {}
-        raw = params.get("stop_loss_pct") if isinstance(params, dict) else None
+        try:
+            profile = self.config.volatile_altcoin_config or {}
+        except Exception:
+            profile = {}
+        if isinstance(profile, dict):
+            if params.get("partial_stop_pct") is None and profile.get("partial_stop_pct") is not None:
+                params["partial_stop_pct"] = profile["partial_stop_pct"]
+            if "dca" not in params and isinstance(profile.get("dca"), dict):
+                params["dca"] = profile["dca"]
+        raw = params.get("stop_loss_pct")
         if raw is None:
             raw = self.config.stop_loss_pct
         try:
-            return float(raw or 0)
+            base = float(raw or 0)
         except (TypeError, ValueError):
-            return 0.0
+            base = 0.0
+        fresh = {
+            "dca_rounds": 0,
+            "dca_recovery_rounds": 0,
+            "last_dca_at": None,
+            "last_dca_recovery_at": None,
+        }
+        full, partial, in_grace = effective_stop_loss_thresholds(fresh, params, base)
+        if in_grace or partial is None:
+            return float(full)
+        return min(float(full), float(partial))
 
     def _stop_gap_buffer_pct(self) -> float | None:
         """Percent gap buffer. None when the key is absent (fail closed, no default)."""
@@ -2535,7 +2559,7 @@ class RiskManager:
                 ),
                 None,
             )
-        stop_pct = self._effective_stop_loss_pct(order.symbol, timeframe)
+        stop_pct = self._effective_stop_loss_pct(order.symbol, timeframe, pos)
         if stop_pct <= float(buffer):
             self._log_merge_once(order, timeframe, loss, 0.0)
             return (
@@ -2623,27 +2647,30 @@ class RiskManager:
         )
 
     def _venue_partial_guard(self, order: TradeOrder, timeframe: str):
-        """Skip a partial below the pair minimum. Sell the whole lot if the remainder would be."""
-        from execution.gate_adapter import venue_limits_for
+        """Skip a partial below the pair minimum. Sell the whole lot if the remainder would be.
+
+        Missing pair limits never block a sell. Load them on the same adapter
+        path as a buy; if they are still unknown, keep today's partial path.
+        """
+        from execution import gate_adapter
+        from execution.gate_adapter import ensure_venue_limits_loaded, venue_limits_for
         from logger import log
         from strategies.positions import get_position
 
         if not _is_partial_sell(order.signal):
             return None, order
+        ensure_venue_limits_loaded(self.config)
         limits = venue_limits_for(order.symbol)
         if not limits.get("known") or not limits.get("min_cost"):
-            log(
-                f"partial skipped: venue minimum unknown symbol={order.symbol}",
-                "WARNING",
-            )
-            return (
-                RiskDecision(
-                    approved=False,
-                    message=f"Partial skipped: venue minimum unknown for {order.symbol}",
-                    code="venue_min_missing",
-                ),
-                order,
-            )
+            # The loader already warned on a failed load. Log once only when
+            # the load succeeded and this pair is still unknown.
+            if not gate_adapter._VENUE_WARNED:
+                self._log_venue_once(
+                    order.symbol,
+                    "venue_limits_unavailable",
+                    "partial continues",
+                )
+            return None, order
         pos = get_position(order.symbol, timeframe)
         held = float(pos.get("amount") or 0)
         price = float(order.price or 0)
