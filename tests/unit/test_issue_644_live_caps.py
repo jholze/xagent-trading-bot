@@ -1046,6 +1046,135 @@ def test_t10_open_cap_counts_only_this_tenants_live_lots():
         _position_stores.clear()
 
 
+def test_new_short_open_rejected_when_book_is_full(monkeypatch):
+    """A new short open hits the full-book guard once every slot is taken.
+
+    The lots are 25 USDT, the live ticket. The tenant body sets
+    tail_exempt_notional_usdt 1, tail_exempt_sold_pct 0.75 and
+    initial_capital_usdt 1000, and risk.min_trade_usdt is 15, so those
+    lots are full slots. The fill count is max_open_eff from
+    resolve_max_open_eff, not a fixed number. The capacity resolver and
+    the slot counter stay real.
+    """
+    from risk.position_capacity import format_capacity_reject_message
+    from strategies.positions import position_notional_usdt
+    from strategies.sell_rotation_policy import is_tail_position, rotation_config
+
+    tid = "tenant-a"
+    disk = _disk_config()
+    _arm_tenant_body(
+        monkeypatch,
+        {
+            "max_usdt_per_trade": 25,
+            "initial_capital_usdt": _OWN_BASELINE,
+            "sell_policy": {
+                "rotation": {
+                    "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+                    "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+                }
+            },
+        },
+    )
+    cfg = _risk_cfg(
+        trading_mode="live",
+        max_usdt_per_trade=25,
+        max_open_positions=int(disk["max_open_positions"]),
+        live={"dry_run": False, "execution": "shadow", "max_usdt_per_trade": 25},
+        initial_capital_usdt=_OWN_BASELINE,
+        sell_policy={
+            "rotation": {
+                "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+                "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+            }
+        },
+        risk={
+            "min_trade_usdt": 15,
+            "max_daily_loss_pct": 0,
+            "cash_floor_pct": 0,
+            "cash_policy": {"enabled": False},
+            "position_capacity": copy.deepcopy(disk["risk"]["position_capacity"]),
+            "liquidity_guard": dict(_LIQ),
+            "fail_closed_guards": "log",
+        },
+    )
+    assert float(cfg.risk_config["min_trade_usdt"]) == 15
+    assert cfg.raw["max_usdt_per_trade"] == 25
+    assert cfg.raw["live"]["max_usdt_per_trade"] == 25
+    assert cfg.risk_config["position_capacity"]["enabled"] is True
+    rm = RiskManager(cfg)
+    neutral = {
+        "block_buys": False,
+        "apply_size_mult": False,
+        "active": True,
+        "size_mult": 1.0,
+        "regime": "NEUTRAL",
+        "degraded": False,
+    }
+    clear_positions_memory()
+    clear_positions_memory(tenant_id=tid, scope="live")
+    try:
+        with patch(
+            "strategies.positions.resolve_tenant_id", lambda tenant_id=None: tid
+        ), patch(
+            "strategies.positions.resolve_tenant_scope", lambda scope=None: "live"
+        ), patch(
+            "services.market_policy_fusion.get_global_market_bias", return_value=neutral
+        ), patch(
+            "intelligence.memory.cache.get_coin_profile", return_value=None
+        ), patch.object(
+            rm, "_process_uptime_sec", return_value=86_400.0
+        ), patch.object(
+            rm, "_equity_drawdown_pct", return_value=0.0
+        ):
+            preview = rm._resolve_position_capacity(full_slots=0)
+            n = int(preview.max_open_eff)
+            assert preview.enabled is True
+            assert n >= 1
+            for i in range(n):
+                _seed_lot(
+                    f"C{i:02d}/USDT",
+                    scope="live",
+                    tenant=tid,
+                    amount=Decimal("25"),
+                    peak_amount=25.0,
+                    average_entry=1.0,
+                    last_buy_price=1.0,
+                    current_price=1.0,
+                    sold_percent=0.0,
+                    side="long",
+                )
+            _activate(_resolve_store_key("live", tid))
+            sample = _ensure_store(_resolve_store_key("live", tid))[get_key("C00/USDT", "1h")]
+            assert position_notional_usdt(sample) == pytest.approx(25)
+            assert is_tail_position(sample, rotation_config(cfg.raw)) is False
+            filled = count_open_full_slots(cfg.raw)
+            cap = rm._resolve_position_capacity(full_slots=filled)
+            assert filled == n
+            assert filled == int(cap.max_open_eff)
+            expected = format_capacity_reject_message(cap, filled)
+            short = rm.evaluate(
+                TradeOrder(
+                    type="SHORT",
+                    symbol="ZZZ/USDT",
+                    price=1.0,
+                    amount=0,
+                    usdt_amount=25,
+                    signal="SHORT",
+                    source="manual",
+                ),
+                "15m",
+                source="manual",
+            )
+            assert short.approved is False
+            assert short.code == "max_open_positions"
+            assert short.message == expected
+            assert count_open_full_slots(cfg.raw) == filled
+    finally:
+        clear_positions_memory()
+        clear_positions_memory(tenant_id=tid, scope="live")
+        _position_stores.clear()
+
+
 def _seed_tail_lot(symbol: str, tenant: str, **extra) -> None:
     row = {
         "amount": Decimal("100"),
@@ -1384,23 +1513,48 @@ def test_r3_sold_pct_not_above_half_blocks(monkeypatch, sold):
     assert "tail_exempt_sold_pct" in buy.message
 
 
+def _missing_names(message: str) -> list[str]:
+    """Keys listed after ``missing:``, before any ``effective:`` section."""
+    text = str(message)
+    assert "missing:" in text
+    rest = text.split("missing:", 1)[1]
+    rest = rest.split(" effective:", 1)[0]
+    return [part for part in rest.split(",") if part]
+
+
 def test_r3_inherited_tail_and_baseline_block(monkeypatch):
-    """The same values on the effective config do not count. The body must set them."""
-    _arm_tenant_body(monkeypatch, {"max_usdt_per_trade": 100})
+    """Valid values on the effective config do not count. The body must set them.
+
+    Inherited notional 1, sold pct 0.75 and baseline 1000 are valid against
+    min trade 15 and the 25 USDT ticket. The tenant body has none of the three.
+    """
+    _arm_tenant_body(monkeypatch, {"max_usdt_per_trade": 25})
     cfg = _live_cfg(False)
-    cfg.raw["initial_capital_usdt"] = 100_000
+    cfg.raw["max_usdt_per_trade"] = 25
+    cfg.raw["live"]["max_usdt_per_trade"] = 25
+    cfg.raw["max_daily_loss_usdt"] = 0
+    cfg.raw["risk"]["min_trade_usdt"] = 15
+    cfg.raw["initial_capital_usdt"] = _OWN_BASELINE
     cfg.raw["sell_policy"] = {
         "rotation": {
-            "tail_exempt_notional_usdt": 500,
-            "tail_exempt_sold_pct": 0.25,
+            "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+            "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
         }
     }
+    assert float(cfg.risk_config["min_trade_usdt"]) == 15
     rm = RiskManager(cfg)
     with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
-        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
-    assert buy.code == "live_caps_missing"
-    for key in ("tail_exempt_notional_usdt", "tail_exempt_sold_pct", "initial_capital_usdt"):
-        assert key in buy.message
+        buy = rm.evaluate(_buy(usdt=25, source="manual"), "4h", source="manual")
+        short = rm.evaluate(_short("manual"), "15m", source="manual")
+    expected = [
+        "tail_exempt_notional_usdt",
+        "tail_exempt_sold_pct",
+        "initial_capital_usdt",
+    ]
+    for dec in (buy, short):
+        assert dec.approved is False
+        assert dec.code == "live_caps_missing"
+        assert _missing_names(dec.message) == expected
 
 
 def test_r3_tail_keys_outside_rotation_do_not_count(monkeypatch):
