@@ -144,6 +144,7 @@ class ExitRealtimeHub:
             "book_tenant_collisions": 0,
             "ws_stop_skip_no_bid": 0,
             "ws_stop_skip_no_base": 0,
+            "ws_stop_below_min": 0,
         }
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
@@ -539,6 +540,23 @@ class ExitRealtimeHub:
         self._last_fire[key] = now
         return True
 
+    def _cooldown_active(
+        self,
+        symbol: str,
+        source: str,
+        cooldown_sec: float,
+        tenant_id: str | None = None,
+    ) -> bool:
+        """True when a prior ``_debounce_ok`` for this key is still inside the window.
+
+        Does not record a new timestamp, so a suppressed retry stays silent.
+        """
+        key = f"{str(tenant_id or '').strip()}|{symbol}|{source}"
+        last = self._last_fire.get(key, 0.0)
+        if last <= 0:
+            return False
+        return (time.monotonic() - last) < cooldown_sec
+
     def on_ticker(
         self,
         gate_pair: str,
@@ -885,6 +903,12 @@ class ExitRealtimeHub:
                 # still fire if strategy is live; strategy_shadow means trail rule in shadow
                 continue
             src = str(ev.get("source") or "")
+            # A sell the venue already refused stays quiet for this window,
+            # the same per-tenant per-symbol throttle as ws_stop_skip_no_bid.
+            if self._cooldown_active(
+                sym, "ws_stop_below_min", cooldown, tenant_id=row_tenant
+            ):
+                continue
             if not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
                 continue
 
@@ -942,6 +966,17 @@ class ExitRealtimeHub:
                 )
             else:
                 self._stats["blocked"] += 1
+                msg = str(result.get("message") or "")
+                if "below Gate minimum" in msg and self._debounce_ok(
+                    sym, "ws_stop_below_min", cooldown, tenant_id=row_tenant
+                ):
+                    self._stats["ws_stop_below_min"] = (
+                        int(self._stats.get("ws_stop_below_min") or 0) + 1
+                    )
+                    log(
+                        f"ws_stop_below_min symbol={sym} tenant={row_tenant or ''}",
+                        "INFO",
+                    )
             _log_event(ev, live=True)
             self._broadcast_gui({**ev, "type": "hub", "msg": f"{src} executed={ev.get('executed')}"})
 

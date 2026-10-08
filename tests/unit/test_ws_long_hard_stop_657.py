@@ -716,7 +716,8 @@ class TestT8BidConfirm:
 
     def test_both_through_full_sells_and_partial_band_sells_partial(self):
         _seed("AAA/USDT", amount=30, entry=1.0)
-        _seed("BBB/USDT", amount=30, entry=1.0)
+        # Half of 30 at 0.92 is under the partial-sell notional guard.
+        _seed("BBB/USDT", amount=40, entry=1.0)
         hub = _hub()
         params = _params(full=10, partial=5)
         hub.update_book(
@@ -732,7 +733,7 @@ class TestT8BidConfirm:
         bbb = [o for o in _orders("BBB/USDT") if o.get("status") == "filled"][-1]
         assert aaa["signal"] == "SELL_STOP_FULL"
         assert bbb["signal"] == "SELL_STOP_PARTIAL"
-        assert _held("BBB/USDT") == pytest.approx(15.0, abs=0.01)
+        assert _held("BBB/USDT") == pytest.approx(20.0, abs=0.01)
 
 
 class TestT9MissingBid:
@@ -1241,3 +1242,216 @@ class TestV663MissingBaseStop:
         assert hub.stats()["ws_stop_skip_no_base"] == 1
         assert _held("BBB/USDT") == 20
         assert _orders("BBB/USDT") == []
+
+
+class TestB3PartialStopOnce:
+    def test_no_second_partial_after_window_stops_halving_chain(self):
+        """100 → 50 would have gone on to 25. The lot marker stops it after the first."""
+        import time
+
+        import services.exit_realtime.execute as ex
+
+        params = _params(full=10, partial=5)
+        symbol = "CCC/USDT"
+        _seed(symbol, amount=100, entry=1.0)
+        hub = _hub(cooldown=0)
+        hub.update_book([_row(symbol, params=params)])
+        with _paper():
+            _fire(hub, symbol, "0.93", "0.93")
+            held = _held(symbol)
+            ex._last_exit_at[exit_guard_key(symbol)] = time.monotonic() - 61
+            hub._last_fire.clear()
+            hub.update_book([_row(symbol, params=params)])
+            _fire(hub, symbol, "0.93", "0.93")
+        assert held == pytest.approx(50.0, abs=0.05)
+        assert _held(symbol) == pytest.approx(held, abs=1e-9)
+        from strategies.positions import get_position
+
+        pos = get_position(symbol, "1h")
+        assert pos.get("hard_partial_stop_done") is True
+        assert evaluate_long_hard_stop(
+            price=0.93,
+            entry=1.0,
+            position=pos,
+            strategy_params=params,
+            base_stop_loss_pct=10.0,
+        ) is None
+        assert evaluate_long_hard_stop(
+            price=0.80,
+            entry=1.0,
+            position=pos,
+            strategy_params=params,
+            base_stop_loss_pct=10.0,
+        ) == ("SELL_STOP_FULL", "stop_loss")
+        filled = [
+            o
+            for o in _orders(symbol)
+            if o.get("status") == "filled" and o.get("signal") == "SELL_STOP_PARTIAL"
+        ]
+        assert len(filled) == 1
+
+
+class TestB3RemainderBecomesFull:
+    def test_remainder_below_gate_minimum_sells_the_lot(self):
+        from execution.gate_adapter import GateExecutionAdapter
+
+        symbol = "DDD/USDT"
+        params = _params(full=10, partial=5)
+        _seed(symbol, amount=10, entry=1.0)
+        hub = _hub(cooldown=0)
+        hub.update_book([_row(symbol, params=params)])
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        try:
+            with _paper():
+                GateExecutionAdapter._shadow_markets_cache = {
+                    symbol: {
+                        "limits": {
+                            "amount": {"min": 0},
+                            "cost": {"min": 6},
+                        }
+                    }
+                }
+                _fire(hub, symbol, "0.93", "0.93")
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+        assert _held(symbol) == pytest.approx(0.0, abs=0.05)
+        filled = [o for o in _orders(symbol) if o.get("status") == "filled"]
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        assert filled[-1]["exit_source"] == "stop_loss"
+        from strategies.positions import get_position
+
+        assert get_position(symbol, "1h").get("hard_partial_stop_done") is not True
+
+
+class TestB3BelowMinThrottle:
+    def test_second_below_min_attempt_inside_window_is_silent(self):
+        from unittest.mock import MagicMock
+
+        from execution.gate_adapter import GateExecutionAdapter
+
+        symbol = "EEE/USDT"
+        _seed(symbol, amount=2, entry=1.0)
+        hub = _hub(cooldown=60)
+        hub.update_book([_row(symbol, params=_params(full=10, partial=5))])
+        ex = MagicMock()
+        ex.markets = {
+            symbol: {"limits": {"amount": {"min": 0.0}, "cost": {"min": 10.0}}}
+        }
+        ex.load_markets.return_value = ex.markets
+        ex.amount_to_precision.side_effect = lambda _sym, amt: float(amt)
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        prev_failed = GateExecutionAdapter._shadow_markets_failed
+        try:
+            with _paper(), _logs() as lines:
+                GateExecutionAdapter._shadow_markets_failed = False
+                GateExecutionAdapter._shadow_markets_cache = None
+                with patch.object(GateExecutionAdapter, "_get_exchange", lambda self: ex):
+                    _fire(hub, symbol, "0.80", "0.80")
+                    after_first = len(lines)
+                    assert any("ws_stop_below_min" in line for line in lines)
+                    for key in list(hub._last_fire):
+                        if key.endswith("|stop_loss"):
+                            hub._last_fire.pop(key, None)
+                    _fire(hub, symbol, "0.80", "0.80")
+                    assert len(lines) == after_first
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+            GateExecutionAdapter._shadow_markets_failed = prev_failed
+        assert _held(symbol) == pytest.approx(2.0, abs=0.01)
+        assert hub.stats()["ws_stop_below_min"] == 1
+        assert _orders(symbol) == [] or all(
+            o.get("status") != "filled" for o in _orders(symbol)
+        )
+
+
+class TestB3HardStopFlagMerge:
+    def _run(self, technical):
+        from core.models import MarketContext
+        from strategies.decision_engine import DecisionEngine
+
+        symbol = technical.symbol
+        _seed(symbol, amount=10, entry=1.0)
+        engine = DecisionEngine()
+        engine.config.raw.setdefault("regime_detector", {})["enabled"] = False
+        engine.config.raw.setdefault("strategy_allocator", {})["enabled"] = False
+        # Unit tests turn the RSI overlay off. This case needs the merge to
+        # label the technical sell as rsi_sell.
+        regime = engine.config.raw.setdefault("sell_policy", {}).setdefault(
+            "indicator_regime", {}
+        )
+        regime["enabled"] = True
+        regime["trail_allow_rsi"] = True
+        market = MarketContext(
+            symbol=symbol,
+            timeframe="1h",
+            current_price=1.30 if technical.action == "SELL_30" else 0.70,
+            has_position=True,
+            average_entry=1.0,
+            rsi=80.0,
+            strategy_params={"stop_loss_pct": 50.0, "partial_stop_pct": 25.0, "dca": {}},
+        )
+
+        class _Strat:
+            def analyze(self, coin, market, x_signals=None):
+                return technical
+
+        with patch("strategies.decision_engine.get_strategy", return_value=_Strat()), patch(
+            "strategies.decision_engine.evaluate_market_structure_sells", return_value=[]
+        ), patch(
+            "strategies.decision_engine.evaluate_trailing_take_profit", return_value=None
+        ), patch(
+            "strategies.decision_engine.evaluate_trailing_stop", return_value=None
+        ), patch(
+            "strategies.decision_engine.evaluate_time_profit_exit", return_value=None
+        ), patch(
+            "strategies.decision_engine.evaluate_profit_max_lifetime", return_value=None
+        ), patch(
+            "strategies.decision_engine.sync_profit_armed_at", return_value=False
+        ), patch.object(
+            engine, "_exit_sensor_cfg", return_value={"enabled": False}
+        ), patch.object(
+            engine, "_oracle_climax_state", return_value=(None, {})
+        ):
+            return engine._evaluate_internal(
+                {"symbol": symbol, "timeframe": "1h"}, market
+            )
+
+    def test_flag_stays_off_when_rsi_wins_the_merge(self):
+        technical = SignalAnalysis(
+            action="SELL_30",
+            symbol="FFF/USDT",
+            timeframe="1h",
+            rsi=80.0,
+            lower_bb=0.2,
+            vol_multiplier=1.0,
+            ampel_emoji="",
+            ampel_text="",
+            sources=["technical"],
+            normalized_action="SELL_30",
+            rationale="rsi",
+            confidence=50.0,
+            long_hard_stop=True,
+        )
+        analysis = self._run(technical)
+        assert analysis.sell_source == "rsi_sell"
+        assert analysis.long_hard_stop is False
+
+    def test_flag_is_set_when_stop_wins_the_merge(self):
+        technical = SignalAnalysis(
+            action="SELL_STOP_PARTIAL",
+            symbol="GGG/USDT",
+            timeframe="1h",
+            rsi=40.0,
+            lower_bb=0.2,
+            vol_multiplier=1.0,
+            ampel_emoji="",
+            ampel_text="",
+            sources=["technical", "stop_loss"],
+            normalized_action="SELL_PARTIAL_50",
+            rationale="stop",
+            confidence=80.0,
+            long_hard_stop=True,
+        )
+        analysis = self._run(technical)
+        assert analysis.sell_source == "partial_stop"
+        assert analysis.long_hard_stop is True

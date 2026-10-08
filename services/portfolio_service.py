@@ -152,6 +152,7 @@ class PortfolioService:
         sync_virtual_ledger: bool = True,
         fill: Fill | None = None,
         ctx: dict | None = None,
+        exit_source: str | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
@@ -173,7 +174,9 @@ class PortfolioService:
         received = f.quote_net
         entry = pos.get("average_entry", price)
         pnl = CostModel.realized_pnl(qty_sold=qty_sold, avg_entry_net=entry, sell=f)
-        update_position(symbol, timeframe, signal, f.fill_price, qty_sold)
+        update_position(
+            symbol, timeframe, signal, f.fill_price, qty_sold, exit_source=exit_source
+        )
         if source == "cmc":
             from strategies.positions import save_positions, set_position_field
 
@@ -361,6 +364,7 @@ class PortfolioService:
         return self.execute_sell(
             order.symbol, timeframe, order.price, order.signal or "SELL", order.amount or None,
             source=source, order_id=oid, ctx=ctx,
+            exit_source=getattr(order, "exit_source", None) or None,
         )
 
     def get_balance_summary(self) -> dict:

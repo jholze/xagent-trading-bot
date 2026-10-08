@@ -408,6 +408,7 @@ class RiskManager:
                 if isinstance(capped, RiskDecision):
                     return capped
                 order = capped
+                order = self._upgrade_partial_stop_below_gate_min(order, timeframe)
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
@@ -2362,6 +2363,47 @@ class RiskManager:
             )
         return order
 
+    def _upgrade_partial_stop_below_gate_min(
+        self, order: TradeOrder, timeframe: str
+    ) -> TradeOrder:
+        """Sell the whole lot when a hard partial would leave a sub-minimum remainder.
+
+        Same remainder rule as #662 R5: the pair minimum comes from the loaded
+        Gate market. Unknown minimums do not upgrade and are not treated as zero.
+        """
+        if str(order.signal or "") != "SELL_STOP_PARTIAL":
+            return order
+        if str(getattr(order, "exit_source", "") or "") != "stop_loss":
+            return order
+        try:
+            price = float(order.price or 0)
+            sell_amt = float(order.amount or 0)
+        except (TypeError, ValueError):
+            return order
+        if price <= 0 or sell_amt <= 0:
+            return order
+        from execution.gate_adapter import gate_pair_minimums
+
+        mins = gate_pair_minimums(order.symbol)
+        if mins is None:
+            return order
+        min_amount, min_cost = mins
+        pos = get_position(order.symbol, timeframe) or {}
+        try:
+            held = float(pos.get("amount") or 0)
+        except (TypeError, ValueError):
+            return order
+        if held <= sell_amt:
+            return order
+        remainder = held - sell_amt
+        below_amount = min_amount > 0 and remainder < min_amount
+        below_cost = min_cost > 0 and remainder * price < min_cost
+        if not (below_amount or below_cost):
+            return order
+        order.amount = held
+        order.signal = "SELL_STOP_FULL"
+        return order
+
     def _log_hard_stop_daily_bypass(
         self,
         order: TradeOrder,
@@ -2525,9 +2567,19 @@ class RiskManager:
         )
 
     def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
-        if source == "manual" or _is_emergency_sell(order.signal):
+        signal = str(order.signal or "")
+        if source == "manual":
             return False, ""
-        if not _is_partial_sell(order.signal) or order.price <= 0:
+        # The full hard stop skips this guard. A hard partial does not:
+        # ``_is_emergency_sell`` matches it via the STOP substring, and that
+        # match must not exempt SELL_STOP_PARTIAL (#663 B3, spec R11).
+        if signal == "SELL_STOP_FULL":
+            return False, ""
+        if _is_emergency_sell(signal) and signal != "SELL_STOP_PARTIAL":
+            return False, ""
+        if order.price <= 0:
+            return False, ""
+        if signal != "SELL_STOP_PARTIAL" and not _is_partial_sell(signal):
             return False, ""
 
         params = self.config.strategy_params(order.symbol, timeframe)

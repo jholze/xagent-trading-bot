@@ -418,6 +418,9 @@ def evaluate_long_hard_stop(
     if loss_pct > full_stop:
         return "SELL_STOP_FULL", "stop_loss"
     if partial_stop is not None and loss_pct > partial_stop:
+        # One hard partial per lot. A later full stop still fires.
+        if (position or {}).get("hard_partial_stop_done"):
+            return None
         return "SELL_STOP_PARTIAL", "stop_loss"
     return None
 
