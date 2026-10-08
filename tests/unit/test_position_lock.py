@@ -232,9 +232,12 @@ class TestExitExecuteLock(unittest.TestCase):
             # clear inflight
             import services.exit_realtime.execute as ex
 
+            from services.exit_realtime.execute import exit_guard_key
+
             with ex._inflight_lock:
-                ex._inflight.discard("BLESS/USDT")
-                ex._last_exit_at.pop("BLESS/USDT", None)
+                for key in ("BLESS/USDT", exit_guard_key("BLESS/USDT")):
+                    ex._inflight.discard(key)
+                    ex._last_exit_at.pop(key, None)
             out = try_execute_trail_exit(
                 symbol="BLESS/USDT",
                 timeframe="1h",

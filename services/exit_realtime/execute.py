@@ -14,7 +14,20 @@ from logger import log
 
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
-_last_exit_at: dict[str, float] = {}  # symbol -> mono time
+_last_exit_at: dict[str, float] = {}  # "{tenant}|{symbol}" -> mono time
+
+
+def exit_guard_key(symbol: str, tenant_id: str | None = None) -> str:
+    """WS exit guards are per (tenant, symbol), not per symbol (#657 R10)."""
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        try:
+            from core.tenant_context import resolve_tenant_id
+
+            tid = str(resolve_tenant_id() or "").strip()
+        except Exception:
+            tid = ""
+    return f"{tid}|{str(symbol or '')}"
 
 
 @contextmanager
@@ -45,8 +58,12 @@ def restoring_tenant_cycle_context(tenant_id: str) -> Iterator[None]:
             )
 
 
-def recently_exited(symbol: str, within_sec: float = 120.0) -> bool:
-    t = _last_exit_at.get(symbol, 0.0)
+def recently_exited(
+    symbol: str,
+    within_sec: float = 120.0,
+    tenant_id: str | None = None,
+) -> bool:
+    t = _last_exit_at.get(exit_guard_key(symbol, tenant_id), 0.0)
     return t > 0 and (time.monotonic() - t) < within_sec
 
 
@@ -146,7 +163,7 @@ def _execute_short_cover(
     executed = bool(getattr(result, "executed", False))
     msg = str(getattr(result, "message", "") or "")
     if executed:
-        _last_exit_at[symbol] = time.monotonic()
+        _last_exit_at[exit_guard_key(symbol)] = time.monotonic()
         log(
             f"exit_ws COVER {symbol} {timeframe} src={exit_source} "
             f"px={price:.6g} amt={amount:.6g} :: {msg[:80]}",
@@ -176,6 +193,8 @@ def try_execute_trail_exit(
     trading: Any | None = None,
     force_local: bool = False,
     tenant_id: str | None = None,
+    sell_amount: float | None = None,
+    strategy_params: dict | None = None,
 ) -> dict[str, Any]:
     """
     Full-position SELL through RiskManager + order path.
@@ -200,6 +219,8 @@ def try_execute_trail_exit(
                 trading=trading,
                 force_local=force_local,
                 tenant_id=None,
+                sell_amount=sell_amount,
+                strategy_params=strategy_params,
             )
 
     sym = str(symbol or "")
@@ -232,7 +253,11 @@ def try_execute_trail_exit(
                         f"exit_ws recovery_hold flush failed {sym}: {exc}",
                         "WARNING",
                     )
-            block = auto_sells_blocked_reason(pos, str(exit_source or "trailing_stop"))
+            hold_source = str(exit_source or "trailing_stop")
+            # Full hard stop is allowed under hold; partial is not (partial_stop).
+            if hold_source == "stop_loss" and "PARTIAL" in str(action or "").upper():
+                hold_source = "partial_stop"
+            block = auto_sells_blocked_reason(pos, hold_source)
             if block:
                 return {
                     "ok": True,
@@ -265,20 +290,52 @@ def try_execute_trail_exit(
         mark_trailing_take_profit_step,
     )
 
+    guard = exit_guard_key(sym, active_tid or None)
     with _inflight_lock:
-        if sym in _inflight:
+        if guard in _inflight:
             return {"ok": False, "executed": False, "message": "inflight"}
-        if recently_exited(sym, within_sec=60.0):
+        if recently_exited(sym, within_sec=60.0, tenant_id=active_tid or None):
             return {"ok": False, "executed": False, "message": "recent_exit"}
-        _inflight.add(sym)
+        _inflight.add(guard)
 
     try:
         pos = get_position(sym, tf)
         if not is_open_position(pos):
             return {"ok": False, "executed": False, "message": "no_open_position"}
-        amount = float(pos.get("amount") or 0)
-        if amount <= 0:
+        held = float(pos.get("amount") or 0)
+        if held <= 0:
             return {"ok": False, "executed": False, "message": "amount_zero"}
+        amount = held
+        if str(exit_source or "") == "stop_loss" or str(action or "") in (
+            "SELL_STOP_FULL",
+            "SELL_STOP_PARTIAL",
+        ):
+            # R2: size from the same fraction the cycle uses. Do not leave
+            # amount at 0 for the risk fill (that passes strategy params None).
+            from strategies.positions import sell_fraction_for_signal
+
+            params = strategy_params
+            if not isinstance(params, dict):
+                params = {}
+            fraction = sell_fraction_for_signal(
+                str(action or ""), sym, tf, px, params
+            )
+            sized = held * float(fraction or 0)
+            if sell_amount is not None:
+                try:
+                    sized = float(sell_amount)
+                except (TypeError, ValueError):
+                    sized = 0.0
+            if sized <= 0:
+                return {"ok": False, "executed": False, "message": "amount_zero"}
+            amount = min(held, sized)
+        elif sell_amount is not None:
+            try:
+                asked = float(sell_amount)
+            except (TypeError, ValueError):
+                asked = 0.0
+            if asked > 0:
+                amount = min(held, asked)
 
         short_lot = False
         try:
@@ -374,7 +431,7 @@ def try_execute_trail_exit(
             "amount": amount,
         }
         if executed:
-            _last_exit_at[sym] = time.monotonic()
+            _last_exit_at[guard] = time.monotonic()
             try:
                 if exit_source == "trailing_take_profit":
                     mark_trailing_take_profit_step(sym, tf, px)
@@ -403,7 +460,7 @@ def try_execute_trail_exit(
         return {"ok": False, "executed": False, "message": str(exc)[:200]}
     finally:
         with _inflight_lock:
-            _inflight.discard(sym)
+            _inflight.discard(guard)
 
 
 def _gross_unrealized_pct(pos: dict[str, Any], price: float) -> float:
@@ -523,8 +580,9 @@ def execute_cascade_exit(
             )
             continue
 
+        guard = exit_guard_key(sym)
         with _inflight_lock:
-            if sym in _inflight:
+            if guard in _inflight:
                 results.append(
                     {
                         "symbol": sym,
@@ -544,7 +602,7 @@ def execute_cascade_exit(
                     }
                 )
                 continue
-            _inflight.add(sym)
+            _inflight.add(guard)
 
         try:
             pos = get_position(sym, tf) or dict(lot)
@@ -645,7 +703,7 @@ def execute_cascade_exit(
             }
             if executed:
                 filled += 1
-                _last_exit_at[sym] = time.monotonic()
+                _last_exit_at[exit_guard_key(sym)] = time.monotonic()
                 log(
                     f"liq_cascade {action} {sym} {tf} px={px:.6g} amt={amount:.6g} :: {msg[:80]}",
                     "INFO",
@@ -663,7 +721,7 @@ def execute_cascade_exit(
             )
         finally:
             with _inflight_lock:
-                _inflight.discard(sym)
+                _inflight.discard(exit_guard_key(sym))
 
     if filled > 0 and state is not None:
         try:
@@ -1078,7 +1136,7 @@ def _attribute_acked_batch_sell(
 
 
 def _mark_closed(order: dict[str, Any], *, how: str) -> None:
-    _last_exit_at[str(order["symbol"])] = time.monotonic()
+    _last_exit_at[exit_guard_key(str(order["symbol"]))] = time.monotonic()
     log(
         f"liq_cascade batch SELL_FULL {order['symbol']} {order['timeframe']} "
         f"px={float(order['price']):.6g} amt={float(order['amount']):.6g} :: {how}",
@@ -1201,9 +1259,10 @@ def _execute_long_cascade_batch(
     def _release_if_unused(sym: str) -> None:
         if any(row["symbol"] == sym for row in selected):
             return
+        guard = exit_guard_key(sym)
         with _inflight_lock:
-            claimed.discard(sym)
-            _inflight.discard(sym)
+            claimed.discard(guard)
+            _inflight.discard(guard)
 
     try:
         for lot in snapshot:
@@ -1230,9 +1289,10 @@ def _execute_long_cascade_batch(
                 )
                 continue
 
+            guard = exit_guard_key(sym)
             with _inflight_lock:
-                ours = sym in claimed
-                if sym in _inflight and not ours:
+                ours = guard in claimed
+                if guard in _inflight and not ours:
                     results.append(
                         _evidence(
                             symbol=sym,
@@ -1257,8 +1317,8 @@ def _execute_long_cascade_batch(
                     )
                     continue
                 if not ours:
-                    _inflight.add(sym)
-                    claimed.add(sym)
+                    _inflight.add(guard)
+                    claimed.add(guard)
 
             try:
                 pos = get_position(sym, tf) or dict(lot)
@@ -1790,7 +1850,7 @@ def _submit_long_cascade_batches(
 
 def _brake_resend(symbol: str, *, why: str) -> None:
     """Block a second cascade sell for 60s. Does not count as a fill."""
-    _last_exit_at[str(symbol)] = time.monotonic()
+    _last_exit_at[exit_guard_key(str(symbol))] = time.monotonic()
     log(
         f"liq_cascade batch resend brake {symbol} ({why}) — no fill invented",
         "ERROR",

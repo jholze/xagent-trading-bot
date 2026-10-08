@@ -67,6 +67,8 @@ class SignalAnalysis:
     ctx_oracle_state: str | None = None
     ctx_volume_rel: float | None = None
     ctx_volume_window_days: float | None = None
+    # True only when evaluate_long_hard_stop fired in this same analysis.
+    long_hard_stop: bool = False
 
 
 class OrderStatus(str, Enum):

@@ -413,11 +413,19 @@ def test_sells_and_stops_are_not_blocked_by_the_dca_guard():
     rm = RiskManager(_cfg())
     lot = _lot(dca_rounds=2, average_entry=1.0, amount=100)
     for signal in ("SELL_FULL", "SELL_STOP_FULL", "SELL_STOP_PARTIAL"):
+        # A hard partial is subject to the partial-sell guard again. Size this
+        # one above that guard so the assertion stays about the DCA guard.
+        if signal == "SELL_STOP_PARTIAL":
+            lot = _lot(dca_rounds=2, average_entry=1.0, amount=3000)
+            sell_amount = 1600
+        else:
+            lot = _lot(dca_rounds=2, average_entry=1.0, amount=100)
+            sell_amount = 10
         order = TradeOrder(
             type="SELL",
             symbol="2Z/USDT",
             price=0.01,
-            amount=10,
+            amount=sell_amount,
             signal=signal,
             source="exit_ws",
         )

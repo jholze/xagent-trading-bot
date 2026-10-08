@@ -386,6 +386,45 @@ def effective_stop_loss_thresholds(
     return full_stop, partial_effective, in_grace
 
 
+def evaluate_long_hard_stop(
+    *,
+    price: float,
+    entry: float,
+    position: dict | None,
+    strategy_params: dict | None,
+    base_stop_loss_pct: float,
+) -> tuple[str, str] | None:
+    """Long hard stop shared by the cycle and the WS exit path.
+
+    Same formula, same ``effective_stop_loss_thresholds`` call, same strict
+    ``>`` and the same full-then-partial order. Returns
+    ``(SELL_STOP_FULL|SELL_STOP_PARTIAL, "stop_loss")`` or None.
+    A non-positive entry does not fire. Price is not re-checked here: the
+    cycle already refuses a missing price, and a 0 price is a 100% loss.
+    """
+    try:
+        px = float(price)
+        ent = float(entry)
+    except (TypeError, ValueError):
+        return None
+    if ent <= 0:
+        return None
+    loss_pct = (px / ent - 1) * -100
+    full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
+        position or {}, strategy_params, float(base_stop_loss_pct)
+    )
+    if in_grace:
+        return None
+    if loss_pct > full_stop:
+        return "SELL_STOP_FULL", "stop_loss"
+    if partial_stop is not None and loss_pct > partial_stop:
+        # One hard partial per lot. A later full stop still fires.
+        if (position or {}).get("hard_partial_stop_done"):
+            return None
+        return "SELL_STOP_PARTIAL", "stop_loss"
+    return None
+
+
 def _effective_max_dca_rounds(position: dict, cfg: dict) -> int:
     """Freeze max DCA rounds on first use so tier flips cannot grant extra rounds."""
     cfg_max = int(cfg.get("max_rounds", 3))

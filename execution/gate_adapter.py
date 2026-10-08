@@ -79,6 +79,29 @@ GATE_SPOT_BATCH_MAX_PAIRS = 4
 GATE_SPOT_BATCH_MAX_ORDERS_PER_PAIR = 10
 
 
+def gate_pair_minimums(symbol: str) -> tuple[float, float] | None:
+    """``(min_amount, min_cost)`` from the loaded Gate market cache.
+
+    None when that pair is not in the cache. A missing market is not a zero
+    minimum, and this does not load markets or invent a floor.
+    """
+    cache = getattr(GateExecutionAdapter, "_shadow_markets_cache", None)
+    if not isinstance(cache, dict):
+        return None
+    market = cache.get(symbol)
+    if not isinstance(market, dict):
+        return None
+    limits = market.get("limits") or {}
+    try:
+        min_amount = float((limits.get("amount") or {}).get("min") or 0)
+        min_cost = float((limits.get("cost") or {}).get("min") or 0)
+    except (TypeError, ValueError):
+        return None
+    if min_amount <= 0 and min_cost <= 0:
+        return None
+    return min_amount, min_cost
+
+
 class BatchMarketSellNoAck(Exception):
     """POST /spot/batch_orders did not return a per-order ACK list.
 
@@ -2080,6 +2103,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
                 fill=fill, ctx=ctx,
+                exit_source=getattr(order, "exit_source", None) or None,
             )
         else:
             return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")

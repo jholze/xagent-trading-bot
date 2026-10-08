@@ -1812,6 +1812,12 @@ class DecisionEngine:
             sell_policy_audit=sell_policy_audit,
             sell_source=str(sell_source or ""),
         )
+        # Hard stop only if the shared stop fired and this merge kept it.
+        # A later RSI / trail / TP winner stays its own sell.
+        analysis.long_hard_stop = bool(
+            getattr(technical, "long_hard_stop", False)
+            and str(sell_source or "") in ("stop_loss", "partial_stop")
+        )
         if dca_usdt > 0:
             analysis.dca_usdt = dca_usdt
         elif float(getattr(technical, "dca_usdt", 0) or 0) > 0:

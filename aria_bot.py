@@ -904,6 +904,8 @@ def _run_tenant_price_cycle(
     scan_coins = order_watchlist_positions_first(
         active_coins, open_positions, prefer_gainer=prefer_gainer
     )
+    # Queue-off fallback (#657 R13). Same Gate ``last`` batch as
+    # eval_queue_runtime.process_eval_job; that worker is the live path.
     price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
 
     try:

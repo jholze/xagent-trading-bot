@@ -117,6 +117,7 @@ _CACHE_FIELDS = (
     "entry_at",
     "entry_15m_vol_ratio",
     "time_profit_exit_done",
+    "hard_partial_stop_done",
     "profit_armed_at",
     "trail_tp_steps",
     "last_trail_tp_at",
@@ -244,6 +245,7 @@ def _deserialize_position(raw: dict) -> dict:
         "entry_at": raw.get("entry_at"),
         "entry_15m_vol_ratio": float(raw.get("entry_15m_vol_ratio", 0) or 0),
         "time_profit_exit_done": bool(raw.get("time_profit_exit_done", False)),
+        "hard_partial_stop_done": bool(raw.get("hard_partial_stop_done", False)),
         "profit_armed_at": raw.get("profit_armed_at"),
         "trail_tp_steps": int(raw.get("trail_tp_steps", 0) or 0),
         "last_trail_tp_at": raw.get("last_trail_tp_at"),
@@ -312,6 +314,7 @@ def _serialize_positions() -> dict:
             "entry_at": p.get("entry_at"),
             "entry_15m_vol_ratio": p.get("entry_15m_vol_ratio"),
             "time_profit_exit_done": bool(p.get("time_profit_exit_done", False)),
+            "hard_partial_stop_done": bool(p.get("hard_partial_stop_done", False)),
             "profit_armed_at": p.get("profit_armed_at"),
             "trail_tp_steps": int(p.get("trail_tp_steps", 0) or 0),
             "last_trail_tp_at": p.get("last_trail_tp_at"),
@@ -748,6 +751,7 @@ def _empty_position() -> dict:
         "entry_at": None,
         "entry_15m_vol_ratio": None,
         "time_profit_exit_done": False,
+        "hard_partial_stop_done": False,
         "profit_armed_at": None,
         "trail_tp_steps": 0,
         "last_trail_tp_at": None,
@@ -1262,6 +1266,7 @@ def update_position(
                 pos["last_dca_recovery_at"] = None
                 pos["last_recovery_ref_price"] = 0.0
                 pos["time_profit_exit_done"] = False
+                pos["hard_partial_stop_done"] = False
                 pos["profit_armed_at"] = None
                 pos["trail_tp_steps"] = 0
                 pos["last_trail_tp_at"] = None
@@ -1388,6 +1393,12 @@ def update_position(
             pos["last_trade_at"] = datetime.now().isoformat()
             pos["last_trade_type"] = "SELL"
             pos["last_sell_signal"] = signal
+            if (
+                signal == "SELL_STOP_PARTIAL"
+                and str(exit_source or "") == "stop_loss"
+                and float(pos["amount"] or 0) > DUST_AMOUNT_EPSILON
+            ):
+                pos["hard_partial_stop_done"] = True
             tiers = dict(pos.get("rsi_sell_tiers_done") or {})
             if "TP" in signal.upper():
                 from strategies.take_profit import mark_triggered_tier
