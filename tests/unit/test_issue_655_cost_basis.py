@@ -1039,6 +1039,93 @@ def test_t9_long_profit_counts_buy_fee_once_short_keeps_round_trip():
         for r in batch_low["results"]
     )
 
+    # Ledger lots have no symbol field. Tier slippage is read from config.
+    import json
+    from pathlib import Path
+
+    disk = json.loads((Path(__file__).resolve().parents[2] / "config.json").read_text())
+    tiered_raw = _fee_cfg(side="base", maker=0.10, taker=0.20)
+    tiered_raw["costs"]["slippage_by_tier"] = dict(disk["costs"]["slippage_by_tier"])
+    bare = {
+        "timeframe": TF,
+        "amount": amount,
+        "average_entry": entry,
+        "side": "long",
+    }
+    assert "symbol" not in bare
+    tier_symbol = "LOT/USDT"
+    flat = CostModel.from_config(tiered_raw)
+    tiered_model = CostModel.from_config(tiered_raw, symbol=tier_symbol)
+
+    def _sell_threshold(model) -> float:
+        slip = float(model.params.slippage_pct) / 100.0
+        fee = float(model.fee_pct("market")) / 100.0
+        if model.params.fee_side_sell == "quote":
+            return entry / ((1.0 - slip) * (1.0 - fee))
+        return entry / (1.0 - slip)
+
+    flat_threshold = _sell_threshold(flat)
+    tier_threshold = _sell_threshold(tiered_model)
+    assert tier_threshold > flat_threshold
+    between_tiers = (flat_threshold + tier_threshold) / 2.0
+    assert CostModel.realized_pnl(
+        qty_sold=amount,
+        avg_entry_net=entry,
+        sell=flat.simulate_sell(between_tiers, amount),
+    ) > 0
+    assert CostModel.realized_pnl(
+        qty_sold=amount,
+        avg_entry_net=entry,
+        sell=tiered_model.simulate_sell(between_tiers, amount),
+    ) < 0
+    assert _lot_in_profit(bare, between_tiers, tiered_raw, symbol=tier_symbol) is False
+
+    def _run_bare(fn):
+        import services.exit_realtime.execute as ex
+
+        with ex._inflight_lock:
+            ex._inflight.discard(tier_symbol)
+            ex._last_exit_at.pop(tier_symbol, None)
+        trading = MagicMock()
+        trading.execute_order.return_value = SimpleNamespace(executed=True, message="ok")
+        book = dict(bare)
+        book["current_price"] = between_tiers
+        route = {**book, "symbol": tier_symbol}
+        with patch("strategies.positions.get_position", return_value=dict(book)), patch(
+            "strategies.positions.is_open_position", return_value=True
+        ), patch(
+            "strategies.position_lock.attach_lock_from_ledger", side_effect=lambda pos, *a, **k: pos
+        ):
+            if fn == "cascade":
+                return execute_cascade_exit(
+                    side="long",
+                    lots=[route],
+                    prices={tier_symbol: between_tiers},
+                    trading=trading,
+                    fire_enabled=True,
+                    raw_config=tiered_raw,
+                )
+            return _execute_long_cascade_batch(
+                side_key="long",
+                action="SELL_FULL",
+                lots=[route],
+                prices={tier_symbol: between_tiers},
+                trading=trading,
+                raw_config=tiered_raw,
+                mono=1.0,
+                state=None,
+                source="liq_cascade",
+            )
+
+    bare_cascade = _run_bare("cascade")
+    bare_batch = _run_bare("batch")
+    assert any(r.get("message") == "not_in_profit" for r in bare_cascade["results"])
+    assert bare_cascade["executed"] is False
+    assert any(
+        r.get("code") == "not_in_profit" or r.get("message") == "not_in_profit"
+        for r in bare_batch["results"]
+    )
+
     short_entry = 100.0
     short_px = 99.0
     gain = (short_entry - short_px) / short_entry * 100.0
