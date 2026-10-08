@@ -36,6 +36,10 @@ _EQUITY_MTM_UNAVAILABLE_LOGGED = False
 _EVAL_DOC_PENDING = object()
 
 
+class _MissingMark(RuntimeError):
+    """Open live lot has no mark. The USDT daily-loss check always denies."""
+
+
 def reset_risk_manager_globals_for_tests() -> None:
     global _EQUITY_MTM_UNAVAILABLE_LOGGED
     _EQUITY_MTM_UNAVAILABLE_LOGGED = False
@@ -294,6 +298,13 @@ class RiskManager:
             halt = self._daily_loss_limit_blocked(order)
             if halt:
                 return halt
+
+        # Live caps fail closed on the value the guard will trade. Sells and
+        # covers never reach this check. Short opens do.
+        if order.type in ("BUY", "SHORT"):
+            missing_caps = self._live_caps_missing_blocked(order)
+            if missing_caps:
+                return missing_caps
 
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
@@ -803,55 +814,10 @@ class RiskManager:
         if buy_limit:
             return buy_limit
 
-        open_slots = count_open_full_slots(self.config.raw)
         if not has_position:
-            cap = self._resolve_position_capacity(full_slots=open_slots)
-            if open_slots >= cap.max_open_eff:
-                from risk.position_capacity import format_capacity_reject_message
-
-                msg = format_capacity_reject_message(cap, open_slots)
-                free = max(0, int(cap.max_open_eff) - int(open_slots))
-                evicted_ok = False
-                try:
-                    from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
-
-                    plan, suffix = try_slot_eviction_on_max_open(
-                        order=order,
-                        source=source,
-                        free_full_slots=free,
-                        config=self.config,
-                        risk_config=self.config.risk_config,
-                        config_raw=self.config.raw if hasattr(self.config, "raw") else None,
-                        spike_multiple=float(
-                            getattr(order, "entry_15m_vol_ratio", None) or 0
-                        ),
-                        risk_manager=self,
-                    )
-                    if suffix:
-                        msg = f"{msg}{suffix}"
-                    veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
-                    if veto == "no_positive_price":
-                        return RiskDecision(
-                            approved=False,
-                            message=msg or "slot eviction aborted: no positive price",
-                            code="slot_eviction_no_price",
-                        )
-                    # Structured flag set by the runtime after the eviction sell filled —
-                    # never infer execution from the human-readable suffix (#300 audit).
-                    sell_executed = bool(getattr(plan, "sell_executed", False))
-                    if sell_executed:
-                        open_slots = count_open_full_slots(self.config.raw)
-                        if open_slots < cap.max_open_eff:
-                            evicted_ok = True
-                except Exception:
-                    pass
-                if not evicted_ok:
-                    return RiskDecision(
-                        approved=False,
-                        message=msg,
-                        code="max_open_positions",
-                    )
-                # Slot freed in this evaluate() call — continue _evaluate_impl.
+            slot_block = self._open_slot_cap_blocked(order, source)
+            if slot_block:
+                return slot_block
 
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
@@ -977,11 +943,24 @@ class RiskManager:
 
         # Hard per-ticket ceiling AFTER multipliers (moderate_deploy / cash-rich / DCA
         # boosts must not push above max_usdt_per_trade — e.g. 4500 * 1.38 was ~6.2k).
+        # The cap is the final notional: original and capped size are logged.
+        pre_ticket_usdt = float(sized)
         ticket_cap = float(self._base_usdt_cap() or 0)
-        if ticket_cap > 0 and float(sized) > ticket_cap:
+        if ticket_cap > 0 and pre_ticket_usdt > ticket_cap:
             sized = ticket_cap
             factors["ticket_capped"] = True
             factors["ticket_cap_usdt"] = ticket_cap
+            factors["ticket_original_usdt"] = pre_ticket_usdt
+            try:
+                from logger import log
+
+                log(
+                    f"ticket_cap {order.symbol} original={pre_ticket_usdt:.2f} "
+                    f"capped={float(ticket_cap):.2f}",
+                    "INFO",
+                )
+            except Exception:
+                pass
 
         equity = self._equity_for_sizing(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
@@ -1006,6 +985,18 @@ class RiskManager:
             factors["spendable_usdt"] = round(balance, 2)
 
         min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+        if factors.get("ticket_capped") and sized < min_trade:
+            return RiskDecision(
+                approved=False,
+                message=(
+                    f"Capped size ${sized:.2f} below minimum (${min_trade:.0f})"
+                ),
+                code="ticket_below_min",
+                size_multiplier=factors.get("total_multiplier", 1.0),
+                drawdown_pct=factors.get("drawdown_pct", 0.0),
+                atr_factor=factors.get("atr_factor", 1.0),
+                trust_factor=factors.get("trust_factor", 1.0),
+            )
         if sized < min_trade:
             floor_abs = self._cash_floor_abs()
             cash = self._available_usdt(equity)
@@ -1049,7 +1040,11 @@ class RiskManager:
 
         # RelVol trade tickets: reject under $1000 after multipliers / shrink-only
         # caps. Do not round up. Other sources keep min_trade_usdt ($100 live).
-        if self._is_relvol_buy(source, order) and sized < 1000.0:
+        # max_usdt_per_trade is applied above and is the submit size. A ticket
+        # that was above the relvol floor before that cap is still submitted
+        # at the cap.
+        relvol_basis = pre_ticket_usdt if factors.get("ticket_capped") else float(sized)
+        if self._is_relvol_buy(source, order) and relvol_basis < 1000.0:
             return RiskDecision(
                 approved=False,
                 message=f"Adjusted size ${sized:.2f} below minimum ($1000)",
@@ -1300,8 +1295,9 @@ class RiskManager:
         ``dca``, ``dca_sniper`` / ``dca_sniper_deep``, ``deploy_boost`` (a
         size reason on those orders, not a separate path), ``dca_recovery``,
         a second-timeframe entry, ``entry_sensor_15m`` and other new-entry
-        sources, and ``mcp:{actor}`` bot buys. A human operator source
-        (``manual`` / telegram, never ``mcp*``) is the only exemption.
+        sources, and ``mcp:{actor}`` bot buys. A human operator source is
+        the exact string ``manual`` (never a prefix, never ``mcp:``). It is
+        the only exemption, and it does not skip the live caps.
         Sells, stops, covers and kill-switch flattens do not call this.
         """
         if str(getattr(order, "type", "") or "").upper() != "BUY":
@@ -1560,13 +1556,147 @@ class RiskManager:
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
         return float((stats or {}).get("realized_pnl") or 0)
 
+    def _configured_max_daily_loss_usdt(self) -> float | None:
+        """Optional USDT daily-loss cap. Missing key → unset (pct path only)."""
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        if not isinstance(raw, dict) or "max_daily_loss_usdt" not in raw:
+            return None
+        val = raw.get("max_daily_loss_usdt")
+        if val is None or val == "":
+            return None
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if num <= 0:
+            return None
+        return num
+
+    def _operator_zone(self):
+        """Zone from ``observability.operator_timezone``. No zone name in this module."""
+        from zoneinfo import ZoneInfo
+
+        from core.time_utils import operator_tz
+
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        obs = raw.get("observability") if isinstance(raw, dict) else None
+        name = ""
+        if isinstance(obs, dict):
+            name = str(obs.get("operator_timezone") or "").strip()
+        if name:
+            try:
+                return ZoneInfo(name)
+            except Exception:
+                pass
+        return operator_tz()
+
+    def _realized_pnl_operator_day(self, now: datetime | None = None) -> float:
+        """Realized PnL of filled sells/covers since 00:00 in the operator zone."""
+        from data_manager import resolve_ledger_scope
+        from services.order_service import OrderService, is_executed_status, order_event_ts_utc
+        from storage.order_ledger_v2 import stats_from_filled_orders
+
+        tz = self._operator_zone()
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        local = moment.astimezone(tz)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        scope = resolve_ledger_scope(self.config.trading_mode)
+        orders = OrderService(scope)._scoped_orders_newest_first(mutate=False)
+        chosen = []
+        for row in orders or []:
+            if not isinstance(row, dict):
+                continue
+            if not is_executed_status(row.get("status")):
+                continue
+            ts = order_event_ts_utc(row)
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if start_utc <= ts.astimezone(timezone.utc) < end_utc:
+                chosen.append(row)
+        return float(stats_from_filled_orders(chosen).get("realized_pnl") or 0)
+
+    def _open_live_unrealized_pnl(self) -> float:
+        """Unrealized PnL of this tenant's open live lots at mark. Paper is excluded."""
+        from core.tenant_context import resolve_tenant_id
+        from strategies.positions import counts_toward_open_cap, list_active_positions
+        from strategies.short_math import is_short, unrealized_pnl
+
+        lots = list_active_positions(tenant_id=resolve_tenant_id(), scope="live")
+        parsed: list[tuple] = []
+        need: list[str] = []
+        for lot in lots or []:
+            if not counts_toward_open_cap(lot):
+                continue
+            try:
+                amount = float(lot.get("amount") or 0)
+                entry = float(lot.get("average_entry") or lot.get("entry_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 1e-12 or entry <= 0:
+                continue
+            mark_raw = lot.get("current_price")
+            try:
+                mark = float(mark_raw) if mark_raw not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                mark = 0.0
+            sym = str(lot.get("symbol") or "")
+            if sym and "/" not in sym:
+                sym = f"{sym}/USDT"
+            parsed.append((lot, amount, entry, mark, sym))
+            if mark <= 0 and sym:
+                need.append(sym)
+        prices: dict = {}
+        if need:
+            from price_fetcher import get_prices_batch
+
+            try:
+                prices = get_prices_batch(list(dict.fromkeys(need))) or {}
+            except Exception as exc:
+                # A lookup that raises is the same as an empty book: no mark.
+                # Deny even when fail_closed_guards is log. Do not halt 24h.
+                raise _MissingMark(
+                    f"mark lookup failed for open live lot: {exc}"
+                ) from exc
+        total = 0.0
+        for lot, amount, entry, mark, sym in parsed:
+            if mark <= 0:
+                try:
+                    mark = float((prices or {}).get(sym) or 0)
+                except (TypeError, ValueError):
+                    mark = 0.0
+            if mark <= 0:
+                raise _MissingMark(f"mark missing for open live lot {sym}")
+            side = "short" if is_short(lot) else "long"
+            total += float(unrealized_pnl(side, amount, entry, mark))
+        return total
+
+    def _daily_loss_usdt_figure(self, now: datetime | None = None) -> float:
+        """Operator-day realized PnL plus unrealized PnL of open live lots."""
+        return float(self._realized_pnl_operator_day(now)) + float(
+            self._open_live_unrealized_pnl()
+        )
+
     def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:
-        """Kill switch: block BUY/SHORT when trailing-24h realized PnL ≤ -pct of NAV."""
+        """Block new BUY/SHORT on the pct rail, and on optional USDT loss.
+
+        ``max_daily_loss_usdt`` unset → the pct check only (same figure, same
+        24h window, same halt). Set → also stop new exposure when operator-day
+        realized PnL plus open-live unrealized PnL reaches the USDT value.
+        The stricter of the two wins. Sells and exits do not call this.
+        """
         try:
             pct = float(self.config.risk_config.get("max_daily_loss_pct", 0) or 0)
         except (TypeError, ValueError):
             pct = 0.0
-        if pct <= 0:
+        usdt_limit = self._configured_max_daily_loss_usdt()
+        if pct <= 0 and usdt_limit is None:
             return None
         history = self._risk_history_load()
         if not isinstance(history, dict):
@@ -1594,20 +1724,76 @@ class RiskManager:
                 code="daily_loss_limit",
                 size_multiplier=0.0,
             )
-        try:
-            realized = float(self._trailing_24h_realized_pnl())
-        except Exception as e:
-            # Same rollout switch as every other guard: 'log' -> ERROR + allow (old
-            # behaviour, visible), 'deny' -> block new exposure (#302 audit).
-            return self._guard_failed("daily_loss_limit", e, order)
-        nav = self._portfolio_equity()
-        if nav is None or float(nav) <= 0:
-            nav = float(self._initial_capital() or 0)
-        if nav <= 0:
+        pct_breach = False
+        realized = 0.0
+        nav = 0.0
+        if pct > 0:
+            try:
+                realized = float(self._trailing_24h_realized_pnl())
+            except Exception as e:
+                if usdt_limit is None:
+                    # Same rollout switch as every other guard: 'log' -> ERROR + allow
+                    # (old behaviour, visible), 'deny' -> block new exposure (#302 audit).
+                    return self._guard_failed("daily_loss_limit", e, order)
+                # Both limits are set and the pct figure failed. Do not pretend
+                # the pct check ran; the USDT check still decides.
+                try:
+                    from logger import log
+
+                    log(
+                        "daily_loss_limit pct figure failed "
+                        f"({type(e).__name__}: {e}); USDT check still runs",
+                        "ERROR",
+                    )
+                except Exception:
+                    pass
+                realized = 0.0
+            else:
+                nav = self._portfolio_equity()
+                if nav is None or float(nav) <= 0:
+                    nav = float(self._initial_capital() or 0)
+                if usdt_limit is None and (nav is None or float(nav) <= 0):
+                    return None
+                if nav is not None and float(nav) > 0:
+                    threshold = -(pct / 100.0) * float(nav)
+                    pct_breach = realized <= threshold
+                elif usdt_limit is None:
+                    return None
+        usdt_figure = None
+        usdt_breach = False
+        if usdt_limit is not None:
+            try:
+                usdt_figure = float(self._daily_loss_usdt_figure())
+            except _MissingMark as e:
+                # A missing mark must deny even when fail_closed_guards is log.
+                return self._daily_loss_mark_denied(e, order)
+            except Exception as e:
+                return self._guard_failed("daily_loss_limit", e, order)
+            usdt_breach = usdt_figure <= -float(usdt_limit)
+        if not pct_breach and not usdt_breach:
             return None
-        threshold = -(pct / 100.0) * float(nav)
-        if realized > threshold:
-            return None
+        if pct_breach:
+            detail = (
+                f"Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
+            )
+            notify = (
+                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
+                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
+            )
+        else:
+            detail = (
+                f"Daily loss limit: day pnl ${float(usdt_figure):.2f} "
+                f"≤ -{usdt_limit:g} USDT"
+            )
+            notify = (
+                f"🛑 Daily loss limit: day pnl ${float(usdt_figure):.2f} "
+                f"≤ -{usdt_limit:g} USDT. "
+            )
+        if pct_breach and usdt_breach:
+            detail += (
+                f"; day pnl ${float(usdt_figure):.2f} ≤ -{usdt_limit:g} USDT"
+            )
         halt_until = now + timedelta(hours=24)
         halt_iso = halt_until.isoformat()
         history["risk_halt_until"] = halt_iso
@@ -1634,11 +1820,7 @@ class RiskManager:
         try:
             from core.operator_notify import notify_operator
 
-            text = (
-                f"🛑 Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}. "
-                f"New buys/shorts halted until {halt_iso}."
-            )
+            text = notify + f"New buys/shorts halted until {halt_iso}."
             if persist_error is not None:
                 text += (
                     f"\n⚠️ Halt NOT persisted ({type(persist_error).__name__}: "
@@ -1649,11 +1831,254 @@ class RiskManager:
             pass
         return RiskDecision(
             approved=False,
-            message=(
-                f"Daily loss limit: realized 24h ${realized:.0f} "
-                f"≤ -{pct:g}% of NAV ${float(nav):.0f}"
-            ),
+            message=detail,
             code="daily_loss_limit",
+            size_multiplier=0.0,
+        )
+
+    def _daily_loss_mark_denied(self, exc: BaseException, order=None) -> RiskDecision:
+        """Missing mark on the USDT loss figure. Deny regardless of the log/deny switch."""
+        symbol = getattr(order, "symbol", "") or ""
+        try:
+            from logger import log
+
+            log(
+                f"daily_loss_limit mark missing {symbol} ({exc}); denying new exposure",
+                "ERROR",
+            )
+        except Exception:
+            pass
+        try:
+            from core.operator_notify import notify_operator
+
+            notify_operator(
+                f"🛑 Daily loss limit: mark missing ({exc}). New buys/shorts blocked."
+            )
+        except Exception:
+            pass
+        return RiskDecision(
+            approved=False,
+            message=f"Daily loss limit: {exc}"[:200],
+            code="daily_loss_limit",
+            size_multiplier=0.0,
+        )
+
+    _LIVE_CAP_BODY_KEYS = (
+        "max_usdt_per_trade",
+    )
+
+    def _live_real_money_buys(self) -> bool:
+        """R3 applies when fills are real money, or a live book sets dry_run false.
+
+        ``places_real_orders`` is the accounting truth (#410) and is enough on
+        its own, including a fail-closed unresolvable real mode. ``dry_run``
+        false on ``trading_mode=live`` stays on too, so a shadow execution
+        alias does not drop the check. An unset trading mode stays off:
+        that helper returns shadow before it reads ``live.execution``.
+        """
+        raw = self.config.raw if hasattr(self.config, "raw") else None
+        if not isinstance(raw, dict):
+            return False
+        from core.execution_mode import places_real_orders
+
+        mode = str(raw.get("trading_mode") or "").strip().lower()
+        live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
+        if places_real_orders(raw):
+            return True
+        return mode == "live" and live.get("dry_run") is False
+
+    def _tenant_override_for_caps(self) -> tuple[dict | None, str]:
+        """Tenant override body, or (None, reason) when it did not load."""
+        from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled, resolve_tenant_id
+
+        if not multi_tenant_enabled():
+            return None, "multi_tenant_off"
+        tid = resolve_tenant_id()
+        if not tid or tid == DEFAULT_TENANT:
+            return None, "tenant_unknown"
+        try:
+            from data_manager import (
+                _load_default_config_from_disk,
+                _load_tenant_config_body,
+                _should_use_mongo_for_tenant_config,
+            )
+
+            default_cfg = _load_default_config_from_disk()
+            if not _should_use_mongo_for_tenant_config(default_cfg):
+                return None, "tenant_store_unavailable"
+            body = _load_tenant_config_body(tid, default_cfg)
+        except Exception as exc:
+            return None, f"tenant_body_load_error:{type(exc).__name__}"
+        if not isinstance(body, dict) or not body:
+            return None, "tenant_body_empty"
+        return body, ""
+
+    @staticmethod
+    def _positive_cap_value(val) -> float | None:
+        """A cap the guard can enforce. 0, blank, None, and non-numbers are not."""
+        if val is None or isinstance(val, bool):
+            return None
+        if isinstance(val, str) and not val.strip():
+            return None
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None
+        if num != num or num <= 0 or num == float("inf"):
+            return None
+        return num
+
+    def _effective_cap_problems(self) -> list[str]:
+        """Names of caps whose value the guard would actually use is not > 0.
+
+        ``trading_mode=live`` prefers ``live.max_usdt_per_trade`` inside this
+        class. Other sizing paths read the top-level key. Either number above
+        the other is a size that would be sent, so both are rejected here.
+        """
+        raw = self.config.raw if isinstance(getattr(self.config, "raw", None), dict) else {}
+        problems: list[str] = []
+        top = self._positive_cap_value(raw.get("max_usdt_per_trade"))
+        live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
+        live_has_ticket = isinstance(live, dict) and "max_usdt_per_trade" in live
+        live_num = (
+            self._positive_cap_value(live.get("max_usdt_per_trade")) if live_has_ticket else None
+        )
+        try:
+            used = float(self._base_usdt_cap())
+        except (TypeError, ValueError):
+            used = 0.0
+        if self._positive_cap_value(used) is None or top is None:
+            problems.append("max_usdt_per_trade")
+        if str(raw.get("trading_mode") or "").strip().lower() == "live" and live_has_ticket:
+            if live_num is None or (top is not None and live_num > top):
+                problems.append("live.max_usdt_per_trade")
+        # Portfolio, gainer, and Telegram defaults read the top-level ticket.
+        # A top-level number above the live cap is the size those paths would send.
+        if (
+            live_num is not None
+            and top is not None
+            and top > live_num
+            and "max_usdt_per_trade" not in problems
+        ):
+            problems.append("max_usdt_per_trade")
+        try:
+            from risk.slot_eviction import eviction_mode
+
+            if eviction_mode(self.config.risk_config) == "live":
+                problems.append("slot_eviction")
+        except Exception:
+            problems.append("slot_eviction")
+        # allow_live stays false, so a short already on the live book cannot
+        # be opened or covered. Do not start real-money trading on that book.
+        if self._live_scope_has_open_short():
+            problems.append("open_short")
+        return problems
+
+    def _live_scope_has_open_short(self) -> bool:
+        """True when this tenant's live book has an open short, or cannot be read."""
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from strategies.positions import counts_toward_open_cap, list_active_positions
+            from strategies.short_math import is_short
+
+            lots = list_active_positions(tenant_id=resolve_tenant_id(), scope="live") or []
+        except Exception:
+            return True
+        for lot in lots:
+            if not isinstance(lot, dict) or not counts_toward_open_cap(lot):
+                continue
+            if is_short(lot):
+                return True
+        return False
+
+    def _own_tail_baseline_problems(self, body: dict) -> tuple[list[str], list[str]]:
+        """Own-body tail keys and baseline. Inherited config does not count.
+
+        ``rotation_config`` reads ``sell_policy.rotation.tail_exempt_notional_usdt``
+        and ``tail_exempt_sold_pct``. ``live_sim_initial_capital`` reads top-level
+        ``initial_capital_usdt``. ``0 < T < risk.min_trade_usdt`` is also below
+        the live ticket. ``S > 0.5``. Baseline is a number > 0.
+        """
+        missing: list[str] = []
+        bad: list[str] = []
+        sell = body.get("sell_policy") if isinstance(body.get("sell_policy"), dict) else {}
+        rotation = sell.get("rotation") if isinstance(sell.get("rotation"), dict) else {}
+        notional_key = "tail_exempt_notional_usdt"
+        if notional_key not in rotation:
+            missing.append(notional_key)
+        else:
+            try:
+                min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+            except (TypeError, ValueError):
+                min_trade = 0.0
+            t = self._positive_cap_value(rotation.get(notional_key))
+            if t is None or not (t < min_trade):
+                bad.append(notional_key)
+        sold_key = "tail_exempt_sold_pct"
+        if sold_key not in rotation:
+            missing.append(sold_key)
+        else:
+            sold = self._positive_cap_value(rotation.get(sold_key))
+            if sold is None or not (sold > 0.5):
+                bad.append(sold_key)
+        capital_key = "initial_capital_usdt"
+        if capital_key not in body:
+            missing.append(capital_key)
+        elif self._positive_cap_value(body.get(capital_key)) is None:
+            bad.append(capital_key)
+        return missing, bad
+
+    def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
+        """Fail closed when a real-money tenant cannot trade under its caps.
+
+        The tenant body must load and carry the ticket. It must also set the
+        tail keys and ``initial_capital_usdt`` itself; config.json and presets
+        do not count. The ticket the guard reads must be a number > 0. A
+        live-block ticket above the top-level ticket is the same failure.
+        Sells and covers never call this. Short opens do.
+        """
+        if not self._live_real_money_buys():
+            return None
+        kind = str(getattr(order, "type", "") or "").upper() if order is not None else "BUY"
+        if kind not in ("BUY", "SHORT"):
+            return None
+        body, err = self._tenant_override_for_caps()
+        parts: list[str] = []
+        if body is None:
+            parts.append(err or "tenant_body_missing")
+        else:
+            missing = [key for key in self._LIVE_CAP_BODY_KEYS if key not in body]
+            own_missing, own_bad = self._own_tail_baseline_problems(body)
+            missing.extend(own_missing)
+            if missing:
+                parts.append("missing:" + ",".join(missing))
+            bad = self._effective_cap_problems()
+            bad.extend(own_bad)
+            if bad:
+                parts.append("effective:" + ",".join(bad))
+        reason = " ".join(parts)
+        if not reason:
+            return None
+        symbol = getattr(order, "symbol", "") or ""
+        try:
+            from logger import log
+
+            log(f"live_caps_missing {symbol} {reason}", "ERROR")
+        except Exception:
+            pass
+        try:
+            from core.operator_notify import notify_operator
+
+            notify_operator(
+                f"live_caps_missing {symbol} {reason}. "
+                "New buys and shorts blocked; sells still run."
+            )
+        except Exception:
+            pass
+        return RiskDecision(
+            approved=False,
+            message=f"live_caps_missing {reason}"[:200],
+            code="live_caps_missing",
             size_multiplier=0.0,
         )
 
@@ -1752,6 +2177,63 @@ class RiskManager:
             )
         except Exception:
             return 0, 0, 0
+
+    def _open_slot_cap_blocked(self, order, source: str) -> RiskDecision | None:
+        """Reject a new buy or short open when the book has no free slot.
+
+        Buys and short opens share this check. Live caps count every open
+        long and short, including rotation tails. A freed slot (eviction
+        sell filled) returns None so the caller continues.
+        """
+        open_slots = count_open_full_slots(self.config.raw)
+        cap = self._resolve_position_capacity(full_slots=open_slots)
+        if open_slots < cap.max_open_eff:
+            return None
+        from risk.position_capacity import format_capacity_reject_message
+
+        msg = format_capacity_reject_message(cap, open_slots)
+        free = max(0, int(cap.max_open_eff) - int(open_slots))
+        evicted_ok = False
+        try:
+            from risk.slot_eviction_runtime import try_slot_eviction_on_max_open
+
+            plan, suffix = try_slot_eviction_on_max_open(
+                order=order,
+                source=source,
+                free_full_slots=free,
+                config=self.config,
+                risk_config=self.config.risk_config,
+                config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                spike_multiple=float(
+                    getattr(order, "entry_15m_vol_ratio", None) or 0
+                ),
+                risk_manager=self,
+            )
+            if suffix:
+                msg = f"{msg}{suffix}"
+            veto = str(getattr(plan, "veto_reason", "") or "") if plan is not None else ""
+            if veto == "no_positive_price":
+                return RiskDecision(
+                    approved=False,
+                    message=msg or "slot eviction aborted: no positive price",
+                    code="slot_eviction_no_price",
+                )
+            # Structured flag set by the runtime after the eviction sell filled —
+            # never infer execution from the human-readable suffix (#300 audit).
+            sell_executed = bool(getattr(plan, "sell_executed", False))
+            if sell_executed:
+                open_slots = count_open_full_slots(self.config.raw)
+                if open_slots < cap.max_open_eff:
+                    evicted_ok = True
+        except Exception:
+            pass
+        if not evicted_ok:
+            return RiskDecision(
+                approved=False,
+                message=msg,
+                code="max_open_positions",
+            )
+        return None
 
     def _resolve_position_capacity(
         self,
@@ -2574,7 +3056,8 @@ class RiskManager:
             return RiskDecision(approved=False, message="shorts disabled", code="shorts_disabled")
 
         # SHORT open — same material-long test as the flip gate (notional ≥ 1 USDT).
-        if is_short(pos) and float((pos or {}).get("amount") or 0) > 0:
+        adding_short = is_short(pos) and float((pos or {}).get("amount") or 0) > 0
+        if adding_short:
             pass  # add to existing short
         elif is_open_position(pos or {}):
             return RiskDecision(
@@ -2582,6 +3065,11 @@ class RiskManager:
                 message="one-way: close long before short",
                 code="one_way",
             )
+        else:
+            # Same slot check as a new buy. Covers never reach this branch.
+            slot_block = self._open_slot_cap_blocked(order, source)
+            if slot_block:
+                return slot_block
         n_short = 0
         open_margin = 0.0
         invalid_lots = []
@@ -2625,7 +3113,9 @@ class RiskManager:
             is_short(pos) and float((pos or {}).get("amount") or 0) > 0
         ):
             return RiskDecision(approved=False, message="shorts.max_open reached", code="shorts_slots")
-        if (source or order.source or "") != "manual":
+        from strategies.dca_policy import is_human_operator_buy
+
+        if not is_human_operator_buy(source or getattr(order, "source", None)):
             min_mcap = float(params.get("market_cap_min_usd") or 0)
             if min_mcap > 0:
                 mcap = None
@@ -2658,6 +3148,33 @@ class RiskManager:
                     )
         lev = clamp_leverage(order.leverage or params["leverage"], cap=params["leverage_cap"])
         usdt = float(order.usdt_amount or 0) or float(self.config.max_usdt_per_trade)
+        # Same final-notional cap as buys, every source including manual.
+        try:
+            ticket_cap = float(self._base_usdt_cap() or 0)
+        except (TypeError, ValueError):
+            ticket_cap = 0.0
+        if ticket_cap > 0 and usdt > ticket_cap:
+            try:
+                from logger import log
+
+                log(
+                    f"ticket_cap {order.symbol} original={usdt:.2f} "
+                    f"capped={ticket_cap:.2f}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+            usdt = ticket_cap
+            try:
+                min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+            except (TypeError, ValueError):
+                min_trade = 5.0
+            if usdt < min_trade:
+                return RiskDecision(
+                    approved=False,
+                    message=f"Capped size ${usdt:.2f} below minimum (${min_trade:.0f})",
+                    code="ticket_below_min",
+                )
         if order.price <= 0:
             return RiskDecision(approved=False, message="invalid price", code="bad_price")
         qty = usdt / order.price
@@ -2696,7 +3213,7 @@ class RiskManager:
                     code="short_margin_pct",
                 )
         src = str(source or order.source or "")
-        if src != "manual":
+        if not is_human_operator_buy(src):
             try:
                 from services.venue_quality import check_venue_for_buy
 

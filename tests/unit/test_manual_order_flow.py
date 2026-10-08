@@ -113,7 +113,9 @@ class TestManualOrderFlow(unittest.TestCase):
              patch("price_fetcher.get_prices", return_value=(0.0325, 0.0325, None)), \
              patch("notifications.telegram_commands.manual_order_flow.answer_callback_query"):
             self.assertTrue(handle_callback({"id": "cb1", "data": "manual_ok:abc123"}))
-            trading.execute_buy.assert_called_once_with("ARIA/USDT", "4h", 0.0325, 200, order_id="abc123")
+            trading.execute_buy.assert_called_once_with(
+                "ARIA/USDT", "4h", 0.0325, 200, order_id="abc123", source="manual",
+            )
 
     def test_request_sell_shows_preview_buttons(self):
         trading = MagicMock()

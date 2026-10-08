@@ -593,8 +593,12 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
         return
 
     kind = pending["kind"]
+    # Confirm tap is the human operator. Pass ``manual`` explicitly; the
+    # trading-service default is not a human buy.
     if kind == "buy":
-        result = trading.execute_buy(symbol, timeframe, price, pending["usdt"], order_id=order_id)
+        result = trading.execute_buy(
+            symbol, timeframe, price, pending["usdt"], order_id=order_id, source="manual",
+        )
     elif kind == "short":
         usdt = float(pending.get("usdt") or 0)
         if usdt <= 0:
@@ -605,6 +609,7 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
         result = trading.execute_short(
             symbol, timeframe, price,
             usdt=usdt, leverage=float(lev) if lev else None, order_id=order_id,
+            source="manual",
         )
     elif kind == "cover":
         pos = get_position(symbol, timeframe)
@@ -617,7 +622,9 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
             ledger.update_status(order_id, "failed", error="No coverable amount")
             send_telegram_message(t("manual_no_short", sym=_ticker(symbol)))
             return
-        result = trading.execute_cover(symbol, timeframe, price, amount=amount, order_id=order_id)
+        result = trading.execute_cover(
+            symbol, timeframe, price, amount=amount, order_id=order_id, source="manual",
+        )
     else:
         pos = get_position(symbol, timeframe)
         amount = float(pos.get("amount", 0)) * float(pending["pct"])
@@ -625,7 +632,10 @@ def _execute_pending(order_id: str, trading: TradingService) -> None:
             ledger.update_status(order_id, "failed", error="No sellable amount")
             send_telegram_message(t("manual_no_qty", sym=_ticker(symbol)))
             return
-        result = trading.execute_sell(symbol, timeframe, price, pending["signal"], amount, order_id=order_id)
+        result = trading.execute_sell(
+            symbol, timeframe, price, pending["signal"], amount, order_id=order_id,
+            source="manual",
+        )
 
     if not result.executed:
         send_telegram_message(t("manual_failed", msg=result.message))
