@@ -52,14 +52,17 @@ class TestLiveGateReadiness(unittest.TestCase):
 
         cfg = self._live_config()
         rm = RiskManager(cfg)
-        # Real-money buys require the three caps on the config the guard
-        # reads and on the tenant body (#644). This test still checks the
-        # Gate balance cap, so those values are present and positive.
-        cfg.raw["max_daily_loss_usdt"] = 50
+        # Real-money buys require the ticket plus the tenant's own tail keys
+        # and baseline (#644). This test still checks the Gate balance cap.
         body = {
             "max_usdt_per_trade": cfg.max_usdt_per_trade,
-            "max_open_positions": cfg.max_open_positions,
-            "max_daily_loss_usdt": 50,
+            "initial_capital_usdt": 1000,
+            "sell_policy": {
+                "rotation": {
+                    "tail_exempt_notional_usdt": 1,
+                    "tail_exempt_sold_pct": 0.75,
+                }
+            },
         }
         with tenant_context("tenant-gate", scope="live"), \
              patch("core.tenant_context.multi_tenant_enabled", return_value=True), \

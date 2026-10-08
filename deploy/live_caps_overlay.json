@@ -1,7 +1,6 @@
 {
   "max_usdt_per_trade": 100,
-  "max_open_positions": 4,
-  "max_daily_loss_usdt": 50,
+  "max_daily_loss_usdt": 0,
   "trading": {
     "entries_enabled": false
   },
@@ -9,9 +8,7 @@
     "max_usdt_per_trade": 100
   },
   "risk": {
-    "position_capacity": {
-      "enabled": false
-    },
+    "max_daily_loss_pct": 0,
     "slot_eviction": {
       "mode": "shadow"
     }

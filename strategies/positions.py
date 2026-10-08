@@ -1473,29 +1473,12 @@ def counts_toward_open_cap(pos: dict | None) -> bool:
     return mode not in {"shadow", "observe"}
 
 
-def _live_caps_count_every_open(config_raw: dict | None) -> bool:
-    """Real-money books count every open lot, including tails.
+def count_open_full_slots(config_raw: dict | None = None) -> int:
+    """Open lots that are not tails. Every book uses this rule.
 
-    ``places_real_orders`` is the accounting truth (#410) and is enough on its
-    own, including a fail-closed unresolvable real mode. A live book with
-    ``dry_run`` false stays on the same path. An unset trading mode stays
-    off, because that helper returns shadow before it reads ``live.execution``.
-    Paper and dry-run books keep the tail filter.
+    A tail is ``sell_policy.rotation`` (``tail_exempt_sold_pct`` or
+    ``tail_exempt_notional_usdt``). Live does not count those lots a second way.
     """
-    if not isinstance(config_raw, dict):
-        return False
-    from core.execution_mode import places_real_orders
-
-    mode = str(config_raw.get("trading_mode") or "").strip().lower()
-    live = config_raw.get("live") if isinstance(config_raw.get("live"), dict) else {}
-    if places_real_orders(config_raw):
-        return True
-    return mode == "live" and live.get("dry_run") is False
-
-
-def count_open_full_slots(
-    config_raw: dict | None = None, *, include_tails: bool | None = None
-) -> int:
     from strategies.sell_rotation_policy import is_tail_position as _is_tail, rotation_config
 
     if config_raw is None:
@@ -1503,15 +1486,13 @@ def count_open_full_slots(
 
         config_raw = get_bot_config().raw
     cfg = rotation_config(config_raw)
-    if include_tails is None:
-        include_tails = _live_caps_count_every_open(config_raw)
     store = _active_store()
     with _positions_lock:
         return sum(
             1 for p in store.values()
             if is_open_position(p)
             and counts_toward_open_cap(p)
-            and (include_tails or not _is_tail(p, cfg))
+            and not _is_tail(p, cfg)
         )
 
 

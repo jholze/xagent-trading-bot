@@ -55,11 +55,16 @@ def _manager(execution: str, *, dry_run: bool = False) -> RiskManager:
 
 @contextmanager
 def _tenant_caps():
-    """Real-money shorts require the three caps on the tenant body (#644)."""
+    """Real-money shorts require the ticket, own tail keys, and baseline (#644)."""
     body = {
         "max_usdt_per_trade": 150,
-        "max_open_positions": 4,
-        "max_daily_loss_usdt": 50,
+        "initial_capital_usdt": 1000,
+        "sell_policy": {
+            "rotation": {
+                "tail_exempt_notional_usdt": 1,
+                "tail_exempt_sold_pct": 0.75,
+            }
+        },
     }
     with patch("core.tenant_context.multi_tenant_enabled", return_value=True), patch(
         "core.tenant_context.resolve_tenant_id", return_value="tenant-short-gate"

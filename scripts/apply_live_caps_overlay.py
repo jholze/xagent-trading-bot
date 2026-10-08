@@ -14,11 +14,14 @@ The tenant id is an argument. This script does not name a tenant.
 ``trading_mode=live`` reads ``live.max_usdt_per_trade`` as the ticket cap
 (``RiskManager._base_usdt_cap``), for buys and for short opens. Other sizing
 paths read top-level ``max_usdt_per_trade`` directly. The overlay sets both
-keys to the same number so neither path can size above the cap. It turns ``risk.position_capacity.enabled`` off so the
-slot check reads ``max_open_positions``, and pins ``risk.slot_eviction.mode``
-to shadow so a full book does not sell a live lot to make room. It does not
-set ``live_max_loss_usdt`` (nothing reads that key). It must not set
-``live.dry_run``, ``live.execution``, ``allow_live``, or ``fire_enabled``.
+keys to the same number so neither path can size above the cap. It sets
+``max_daily_loss_usdt`` and ``risk.max_daily_loss_pct`` to 0 (a deep merge
+overwrites an older stored USDT limit; 0 is the same as unset). Slot count
+stays on ``risk.position_capacity`` (this file does not touch it) and pins
+``risk.slot_eviction.mode`` to shadow so a full book does not sell a live lot
+to make room. It does not set ``live_max_loss_usdt`` (nothing reads that key).
+It must not set ``live.dry_run``, ``live.execution``, ``allow_live``, or
+``fire_enabled``.
 """
 
 from __future__ import annotations

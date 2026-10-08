@@ -51,9 +51,10 @@ _LIQ = {
 }
 _CAP_KEYS = (
     "max_usdt_per_trade",
-    "max_open_positions",
-    "max_daily_loss_usdt",
 )
+_OWN_TAIL_NOTIONAL = 1.0
+_OWN_TAIL_SOLD = 0.75
+_OWN_BASELINE = 1000.0
 _FALSE_HUMAN = (
     "manual_x",
     "manualbuy",
@@ -324,14 +325,20 @@ def _body(db, tid) -> dict:
 
 def test_t1_overlay_binds_r1_and_leaves_runtime_flags(caps_store):
     before = _DISK.read_bytes()
+    disk = _disk_config()
     tid = "henry"
     effective = apply_live_caps(tid, _OVERLAY)
+    overlay = load_overlay(_OVERLAY)
     assert _DISK.read_bytes() == before
     assert effective["max_usdt_per_trade"] == 100
-    assert effective["max_open_positions"] == 4
-    assert effective["max_daily_loss_usdt"] == 50
+    assert effective["max_open_positions"] == disk["max_open_positions"]
+    assert "max_open_positions" not in overlay
+    assert effective["max_daily_loss_usdt"] == 0
+    assert effective["risk"]["max_daily_loss_pct"] == 0
     assert "live_max_loss_usdt" not in effective
-    assert "live_max_loss_usdt" not in load_overlay(_OVERLAY)
+    assert "live_max_loss_usdt" not in overlay
+    assert "initial_capital_usdt" not in overlay
+    assert "tail_exempt" not in json.dumps(overlay)
     assert effective["trading"]["entries_enabled"] is False
     assert effective["live"]["max_usdt_per_trade"] == 100
     assert effective["live"]["dry_run"] is True
@@ -341,17 +348,22 @@ def test_t1_overlay_binds_r1_and_leaves_runtime_flags(caps_store):
     assert effective["exit_realtime"]["cascade"]["fire_enabled"] is False
     assert effective["mcp"]["allow_live"] is False
     assert effective["risk"]["liquidity_guard"]["min_quote_volume_24h_usdt"] == 500000
-    assert effective["risk"]["position_capacity"]["enabled"] is False
-    assert effective["risk"]["position_capacity"]["base"] == _disk_config()["risk"]["position_capacity"]["base"]
+    assert "position_capacity" not in overlay.get("risk", {})
+    assert effective["risk"]["position_capacity"]["enabled"] is True
+    assert effective["risk"]["position_capacity"]["enabled"] == disk["risk"]["position_capacity"]["enabled"]
+    assert effective["risk"]["position_capacity"]["base"] == disk["risk"]["position_capacity"]["base"]
     assert effective["risk"]["slot_eviction"]["mode"] in ("shadow", "off")
     rm = RiskManager(BotConfig(effective))
     assert rm._base_usdt_cap() == 100
     stored = _body(caps_store, tid)
     for key in _CAP_KEYS:
         assert key in stored
+    assert stored["max_daily_loss_usdt"] == 0
+    assert stored["risk"]["max_daily_loss_pct"] == 0
+    assert "max_open_positions" not in stored
+    assert "position_capacity" not in stored.get("risk", {})
     assert "dry_run" not in stored.get("live", {})
     assert "execution" not in stored.get("live", {})
-    assert stored["risk"]["position_capacity"]["enabled"] is False
     assert stored["risk"]["slot_eviction"]["mode"] in ("shadow", "off")
 
 
@@ -381,6 +393,10 @@ def test_t2_default_and_ctexp_match_freeze_base():
     merged = apply_effective_config(disk, overlay)
     assert merged["max_usdt_per_trade"] == overlay["max_usdt_per_trade"]
     assert merged["max_usdt_per_trade"] != disk["max_usdt_per_trade"]
+    assert merged["max_open_positions"] == disk["max_open_positions"]
+    assert merged["risk"]["position_capacity"]["enabled"] == disk["risk"]["position_capacity"]["enabled"]
+    assert merged["max_daily_loss_usdt"] == 0
+    assert merged["risk"]["max_daily_loss_pct"] == 0
     assert merged["live"]["dry_run"] is True
     assert merged["live"]["execution"] == "shadow"
     assert merged["risk"]["liquidity_guard"]["min_quote_volume_24h_usdt"] == 500000
@@ -398,7 +414,8 @@ def test_t6_apply_is_idempotent(caps_store):
     assert redact_secrets(second) == redact_secrets(first)
     assert len(list_snapshots(tid)) == 1
     assert first["max_usdt_per_trade"] == 100
-    assert first["max_daily_loss_usdt"] == 50
+    assert first["max_daily_loss_usdt"] == 0
+    assert first["risk"]["max_daily_loss_pct"] == 0
     assert "api_key" not in json.dumps(redact_secrets(first)).lower() or "[redacted]" in json.dumps(
         redact_secrets(first)
     )
@@ -413,6 +430,42 @@ def test_overlay_file_has_no_tenant_or_runtime_flags():
     blob = json.dumps(overlay)
     assert "allow_live" not in blob
     assert "fire_enabled" not in blob
+    assert "max_open_positions" not in overlay
+    assert "position_capacity" not in overlay.get("risk", {})
+    assert "tail_exempt" not in blob
+    assert "initial_capital_usdt" not in overlay
+    assert overlay["max_daily_loss_usdt"] == 0
+    assert overlay["risk"]["max_daily_loss_pct"] == 0
+
+
+def test_overlay_zeroes_stored_daily_loss_usdt_and_check_is_off(caps_store):
+    """A deep merge must replace a stored 50. Both keys at 0 turn the check off."""
+    from storage import tenant_meta_store as tms
+
+    tid = "tenant-stored-loss"
+    caps_store[tms.TENANT_CONFIGS_COLL].docs[tid] = {
+        "tenant_id": tid,
+        "body": {"max_daily_loss_usdt": 50},
+    }
+    effective = apply_live_caps(tid, _OVERLAY)
+    stored = _body(caps_store, tid)
+    assert stored["max_daily_loss_usdt"] == 0
+    assert stored["risk"]["max_daily_loss_pct"] == 0
+    assert effective["max_daily_loss_usdt"] == 0
+    assert effective["risk"]["max_daily_loss_pct"] == 0
+    assert effective["risk"]["position_capacity"]["enabled"] is True
+    rm = RiskManager(BotConfig(effective))
+
+    def _boom():
+        raise AssertionError("daily-loss figure must not run when both limits are 0")
+
+    history = {"risk_halt_until": "2999-01-01T00:00:00+00:00"}
+    with patch.object(rm, "_daily_loss_usdt_figure", side_effect=_boom), patch.object(
+        rm, "_trailing_24h_realized_pnl", side_effect=_boom
+    ), patch.object(rm, "_risk_history_load", return_value=history), patch(
+        "risk.risk_manager._DAILY_LOSS_HALT_UNTIL", None
+    ):
+        assert rm._daily_loss_limit_blocked(_buy()) is None
 
 
 # --- T3 / T4 / T9 -----------------------------------------------------------
@@ -599,7 +652,7 @@ def _arm_tenant_body(monkeypatch, body, *, tenant="tenant-a", multi=True, boom=F
 
 @pytest.mark.parametrize("missing", _CAP_KEYS)
 def test_t5_missing_cap_blocks_buy_only(monkeypatch, missing):
-    body = {key: 1 for key in _CAP_KEYS}
+    body = _good_cap_body()
     body.pop(missing)
     _arm_tenant_body(monkeypatch, body)
     rm = RiskManager(_live_cfg(False))
@@ -638,21 +691,9 @@ def test_t5_body_does_not_load_blocks_buy_not_sell(monkeypatch, reason):
 
 
 def test_t5_all_required_caps_present_and_dry_run_skips_r3(monkeypatch):
-    body = {
-        "max_usdt_per_trade": 100,
-        "max_open_positions": 4,
-        "max_daily_loss_usdt": 50,
-    }
-    _arm_tenant_body(monkeypatch, body)
+    _arm_tenant_body(monkeypatch, _good_cap_body())
     rm = RiskManager(_live_cfg(False))
-    # _eval_env stubs the capacity snapshot at 100 slots. The live check reads
-    # that snapshot, so this case pins it to the configured open cap.
-    capped = SimpleNamespace(
-        max_open_eff=4, enabled=False, rationale="", factors={}, free_slots=4, regime="NEUTRAL"
-    )
-    with _eval_env(rm, metrics=_THICK, mcap=50_000_000), patch.object(
-        rm, "_resolve_position_capacity", return_value=capped
-    ), patch(
+    with _eval_env(rm, metrics=_THICK, mcap=50_000_000), patch(
         "core.operator_notify.notify_operator", return_value=True
     ) as notify:
         buy = rm.evaluate(_buy(usdt=50), "4h", source="auto")
@@ -668,7 +709,7 @@ def test_t5_all_required_caps_present_and_dry_run_skips_r3(monkeypatch):
 
 
 def test_t5_inherited_caps_do_not_count(monkeypatch):
-    """Effective config has the three keys; the tenant body does not."""
+    """Effective config has the ticket; the tenant body does not."""
     _arm_tenant_body(monkeypatch, {"trading": {"entries_enabled": False}})
     rm = RiskManager(_live_cfg(False))
     with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
@@ -677,10 +718,16 @@ def test_t5_inherited_caps_do_not_count(monkeypatch):
 
 
 def _good_cap_body() -> dict:
+    """Ticket plus the own-body tail keys and baseline the live check requires."""
     return {
         "max_usdt_per_trade": 100,
-        "max_open_positions": 4,
-        "max_daily_loss_usdt": 50,
+        "initial_capital_usdt": _OWN_BASELINE,
+        "sell_policy": {
+            "rotation": {
+                "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+                "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+            }
+        },
     }
 
 
@@ -726,12 +773,6 @@ def test_b_t7_manual_short_above_cap_is_capped_and_missing_caps_block_shorts(mon
         ("max_usdt_per_trade", 0),
         ("max_usdt_per_trade", ""),
         ("max_usdt_per_trade", None),
-        ("max_open_positions", 0),
-        ("max_open_positions", ""),
-        ("max_open_positions", None),
-        ("max_daily_loss_usdt", 0),
-        ("max_daily_loss_usdt", ""),
-        ("max_daily_loss_usdt", None),
     ],
 )
 def test_b_t8_non_positive_effective_cap_blocks(monkeypatch, key, bad):
@@ -1005,123 +1046,6 @@ def test_t10_open_cap_counts_only_this_tenants_live_lots():
         _position_stores.clear()
 
 
-_SLOT_REGIMES = ("NEUTRAL", "RISK_ON", "RISK_OFF", "CRASH")
-
-
-def _staging_slot_pieces() -> tuple[dict, dict, dict]:
-    disk = _disk_config()
-    capacity = copy.deepcopy(disk["risk"]["position_capacity"])
-    eviction = copy.deepcopy(disk["risk"]["slot_eviction"])
-    rotation = copy.deepcopy(disk["sell_policy"]["rotation"])
-    assert capacity.get("enabled") is True
-    assert float(rotation["tail_exempt_notional_usdt"]) > 100
-    assert float(rotation["tail_exempt_sold_pct"]) <= 0.30
-    return capacity, eviction, rotation
-
-
-def _t10b_raw(*, overlay: bool) -> dict:
-    """Disk capacity and rotation, then the live-caps overlay (or without its disable)."""
-    from core.trading_profiles import deep_merge_dicts
-
-    capacity, eviction, rotation = _staging_slot_pieces()
-    disk = _disk_config()
-    base = {
-        "trading_mode": "live",
-        "max_usdt_per_trade": 4500,
-        "max_open_positions": int(disk["max_open_positions"]),
-        "max_position_percent": 100,
-        "trade_cooldown_hours": 0,
-        "max_daily_trades": 0,
-        "trading": {"entries_enabled": True, "exits_enabled": True},
-        "live": {"dry_run": False, "execution": "shadow", "max_usdt_per_trade": 4500},
-        "shorts": {
-            "enabled": True,
-            "allow_live": False,
-            "max_open": 6,
-            "max_margin_pct": 80,
-            "volatile": {"market_cap_min_usd": 0},
-        },
-        "risk": {
-            "min_trade_usdt": 5,
-            "max_daily_loss_pct": 0,
-            "cash_floor_pct": 0,
-            "cash_policy": {"enabled": False},
-            "position_capacity": capacity,
-            "slot_eviction": eviction,
-            "liquidity_guard": dict(_LIQ),
-            "fail_closed_guards": "log",
-        },
-        "sell_policy": {"rotation": rotation},
-        "observability": {
-            "operator_timezone": disk["observability"]["operator_timezone"]
-        },
-    }
-    patch_overlay = copy.deepcopy(load_overlay(_OVERLAY))
-    if not overlay:
-        patch_overlay.get("risk", {}).pop("position_capacity", None)
-    return deep_merge_dicts(base, patch_overlay)
-
-
-@contextmanager
-def _reach_slot(rm, regime: str):
-    """Stub gates that are not the slot cap. Capacity and tail counting stay real."""
-    from contextlib import ExitStack
-
-    bias = {
-        "block_buys": False,
-        "apply_size_mult": False,
-        "active": True,
-        "size_mult": 1.0,
-        "regime": regime,
-        "degraded": False,
-    }
-    with ExitStack() as stack:
-        stack.enter_context(patch.object(rm, "_trade_cooldown_blocked", return_value=(False, "")))
-        stack.enter_context(patch.object(rm, "_cash_floor_blocked", return_value=None))
-        stack.enter_context(patch.object(rm, "_daily_buy_limit_blocked", return_value=None))
-        stack.enter_context(patch.object(rm, "_portfolio_equity", return_value=100_000.0))
-        stack.enter_context(patch.object(rm, "_spendable_usdt", return_value=50_000.0))
-        stack.enter_context(patch.object(rm, "_available_usdt", return_value=50_000.0))
-        stack.enter_context(patch.object(rm, "_initial_capital", return_value=100_000.0))
-        stack.enter_context(patch.object(rm, "_equity_drawdown_pct", return_value=0.0))
-        stack.enter_context(patch.object(rm, "_daily_dca_usdt_limit_blocked", return_value=None))
-        stack.enter_context(patch.object(rm, "_sensor_reentry_cooloff_blocked", return_value=None))
-        stack.enter_context(
-            patch("services.correlated_tier.api.correlated_tier_selloff_active", return_value=False)
-        )
-        stack.enter_context(
-            patch(
-                "services.gainer_universe.chase_guard.check_gainer_chase_guard",
-                return_value=(False, ""),
-            )
-        )
-        stack.enter_context(
-            patch("services.market_policy_fusion.get_global_market_bias", return_value=bias)
-        )
-        stack.enter_context(patch("intelligence.memory.cache.get_entry_bias", return_value="neutral"))
-        stack.enter_context(patch("intelligence.memory.cache.get_coin_profile", return_value=None))
-        stack.enter_context(patch("intelligence.macro.snapshot.get_risk_multipliers", return_value={}))
-        stack.enter_context(patch("services.universe.split.universe_split_enabled", return_value=False))
-        stack.enter_context(patch("services.universe.split.is_trade_eligible", return_value=True))
-        stack.enter_context(patch("core.stablecoins.is_stablecoin_symbol", return_value=False))
-        stack.enter_context(patch("services.watchlist_quality.config.wqe_mode", return_value="off"))
-        stack.enter_context(patch("price_fetcher.get_prices_batch", return_value={}))
-        stack.enter_context(patch("core.operator_notify.notify_operator", return_value=True))
-        stack.enter_context(
-            patch.object(
-                rm.market,
-                "fetch_indicators",
-                return_value={"rsi": 50, "atr": 0.01, "close": 1.0},
-            )
-        )
-        stack.enter_context(patch("data.cmc_market_cap.resolve_market_cap_usd", return_value=None))
-        stack.enter_context(patch("strategies.positions.resolve_tenant_scope", lambda: "live"))
-        stack.enter_context(
-            patch("strategies.positions.resolve_tenant_id", lambda tenant_id=None: "tenant-a")
-        )
-        yield
-
-
 def _seed_tail_lot(symbol: str, tenant: str, **extra) -> None:
     row = {
         "amount": Decimal("100"),
@@ -1135,112 +1059,6 @@ def _seed_tail_lot(symbol: str, tenant: str, **extra) -> None:
     }
     row.update(extra)
     _seed_lot(symbol, scope="live", tenant=tenant, **row)
-
-
-def test_t10b_fifth_buy_and_short_rejected_in_every_regime(monkeypatch):
-    """Real capacity and tail rules. Four ~100 USDT lots fill the cap of 4.
-
-    One lot is partly sold. A short is counted, then removed so the live-start
-    check does not hide the slot rejection. No patch of the capacity resolver
-    or the tail counter.
-    """
-    tid = "tenant-a"
-    _arm_tenant_body(monkeypatch, _good_cap_body())
-    merged = _t10b_raw(overlay=True)
-    assert merged["risk"]["position_capacity"]["enabled"] is False
-    assert merged["max_open_positions"] == 4
-    assert merged["max_usdt_per_trade"] == 100
-    assert merged["live"]["max_usdt_per_trade"] == 100
-    assert merged["risk"]["slot_eviction"]["mode"] in ("shadow", "off")
-    clear_positions_memory()
-    clear_positions_memory(tenant_id=tid)
-    try:
-        for name in ("AAA", "BBB", "CCC"):
-            _seed_tail_lot(f"{name}/USDT", tid)
-        _seed_tail_lot(
-            "DDD/USDT",
-            tid,
-            amount=Decimal("70"),
-            peak_amount=100.0,
-            sold_percent=0.30,
-        )
-        _seed_tail_lot("EEE/USDT", tid, side="short")
-        _activate(_resolve_store_key("live", tid))
-        assert count_open_full_slots(merged) == 5
-        dry = copy.deepcopy(merged)
-        dry["live"] = {**dry["live"], "dry_run": True}
-        assert count_open_full_slots(dry) < 5
-        store = _ensure_store(_resolve_store_key("live", tid))
-        del store[get_key("EEE/USDT", "1h")]
-        _activate(_resolve_store_key("live", tid))
-        assert count_open_full_slots(merged) == 4
-        rm = RiskManager(BotConfig(merged))
-        for regime in _SLOT_REGIMES:
-            with _reach_slot(rm, regime):
-                buy = rm.evaluate(
-                    TradeOrder(
-                        type="BUY",
-                        symbol="FFF/USDT",
-                        price=1.0,
-                        amount=0,
-                        usdt_amount=100,
-                        signal="BUY",
-                        source="manual",
-                    ),
-                    "1h",
-                    source="manual",
-                )
-                short = rm.evaluate(
-                    TradeOrder(
-                        type="SHORT",
-                        symbol="GGG/USDT",
-                        price=1.0,
-                        amount=0,
-                        usdt_amount=100,
-                        signal="SHORT",
-                        source="manual",
-                    ),
-                    "1h",
-                    source="manual",
-                )
-            assert buy.approved is False, regime
-            assert buy.code == "max_open_positions", f"{regime} buy {buy.code} {buy.message}"
-            assert short.approved is False, regime
-            assert short.code == "max_open_positions", f"{regime} short {short.code} {short.message}"
-        assert count_open_full_slots(merged) == 4
-    finally:
-        clear_positions_memory()
-        clear_positions_memory(tenant_id=tid)
-        _position_stores.clear()
-
-
-def test_t10b_missing_capacity_disable_is_live_caps_missing(monkeypatch):
-    """Without position_capacity.enabled false, the guard's ceiling is above 4."""
-    tid = "tenant-a"
-    _arm_tenant_body(monkeypatch, _good_cap_body())
-    merged = _t10b_raw(overlay=False)
-    assert merged["risk"]["position_capacity"]["enabled"] is True
-    assert merged["max_open_positions"] == 4
-    clear_positions_memory()
-    clear_positions_memory(tenant_id=tid)
-    try:
-        for name in ("AAA", "BBB", "CCC"):
-            _seed_tail_lot(f"{name}/USDT", tid)
-        _seed_tail_lot("DDD/USDT", tid, sold_percent=0.30, amount=Decimal("70"), peak_amount=100.0)
-        _activate(_resolve_store_key("live", tid))
-        rm = RiskManager(BotConfig(merged))
-        for regime in _SLOT_REGIMES:
-            with _reach_slot(rm, regime):
-                buy = rm.evaluate(_buy(usdt=100, source="manual"), "1h", source="manual")
-                short = rm.evaluate(_short("manual"), "1h", source="manual")
-            assert buy.code == "live_caps_missing", f"{regime} {buy.code} {buy.message}"
-            assert "max_open_eff" in buy.message
-            assert short.code == "live_caps_missing", f"{regime} {short.code} {short.message}"
-            assert "max_open_eff" in short.message
-    finally:
-        clear_positions_memory()
-        clear_positions_memory(tenant_id=tid)
-        _position_stores.clear()
 
 
 def test_b3_slot_eviction_live_blocks(monkeypatch):
@@ -1357,8 +1175,12 @@ def _eval_buy(cfg: BotConfig):
         return rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
 
 
-def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
-    """execution=real, dry_run absent, confirmed, with creds: caps and tails both apply."""
+def test_execution_real_dry_run_absent_blocks(monkeypatch):
+    """execution=real, dry_run absent: the live-cap check is on.
+
+    The seeded lot is a tail under the normal full-slot rule, so it does not
+    occupy a slot.
+    """
     monkeypatch.setenv("DEMO_MODE", "0")
     monkeypatch.setenv("GATE_API_KEY", "dummy-key")
     monkeypatch.setenv("GATE_API_SECRET", "dummy-secret")
@@ -1369,10 +1191,7 @@ def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
     clear_positions_memory(tenant_id=tid)
     try:
         _seed_real_tail(cfg)
-        assert count_open_full_slots(cfg.raw) == 1
-        shadowed = copy.deepcopy(cfg.raw)
-        shadowed["live"] = {**shadowed["live"], "dry_run": True, "execution": "shadow"}
-        assert count_open_full_slots(shadowed) == 0
+        assert count_open_full_slots(cfg.raw) == 0
         dec = _eval_buy(cfg)
         assert dec.approved is False
         assert dec.code == "live_caps_missing"
@@ -1382,7 +1201,7 @@ def test_execution_real_dry_run_absent_blocks_and_counts_tails(monkeypatch):
         _position_stores.clear()
 
 
-def test_unresolvable_real_fails_closed_blocks_and_counts_tails(monkeypatch):
+def test_unresolvable_real_fails_closed_blocks(monkeypatch):
     """Missing live_confirmed or creds fail closed: the check stays on."""
     monkeypatch.setenv("DEMO_MODE", "0")
     cfg = _real_execution_cfg(trading_mode="live", live_confirmed=None)
@@ -1402,7 +1221,7 @@ def test_unresolvable_real_fails_closed_blocks_and_counts_tails(monkeypatch):
         _seed_real_tail(cfg)
         assert "live_confirmed" not in cfg.raw
         assert "dry_run" not in cfg.raw["live"]
-        assert count_open_full_slots(cfg.raw) == 1
+        assert count_open_full_slots(cfg.raw) == 0
         with patch("data_manager.save_orders", side_effect=_created):
             dec = _eval_buy(cfg)
         assert dec.approved is False
@@ -1415,7 +1234,7 @@ def test_unresolvable_real_fails_closed_blocks_and_counts_tails(monkeypatch):
         monkeypatch.delenv("GATE_API_SECRET", raising=False)
         confirmed = _real_execution_cfg(trading_mode="live", live_confirmed=True)
         _seed_real_tail(confirmed)
-        assert count_open_full_slots(confirmed.raw) == 1
+        assert count_open_full_slots(confirmed.raw) == 0
         with patch("data_manager.save_orders", side_effect=_created):
             missing_creds = _eval_buy(confirmed)
         assert missing_creds.approved is False
@@ -1428,7 +1247,10 @@ def test_unresolvable_real_fails_closed_blocks_and_counts_tails(monkeypatch):
 
 
 def test_trading_mode_absent_leaves_check_off_and_creates_no_order(monkeypatch):
-    """Unset trading_mode is shadow: the check stays off and no order is written."""
+    """Unset trading_mode is shadow: the check stays off and no order is written.
+
+    The seeded lot is a tail, so the normal full-slot count stays 0.
+    """
     from core.execution_mode import places_real_orders, resolve_execution_mode
 
     monkeypatch.setenv("DEMO_MODE", "0")
@@ -1469,20 +1291,157 @@ def test_trading_mode_absent_leaves_check_off_and_creates_no_order(monkeypatch):
         _position_stores.clear()
 
 
-def test_b3_uncounted_tails_are_live_caps_missing(monkeypatch):
-    """The slot counter must include tails. A smaller count fails the live check."""
+def _cover(symbol="BBB/USDT") -> TradeOrder:
+    return TradeOrder(
+        type="COVER", symbol=symbol, price=1.0, amount=1, signal="COVER", source="manual"
+    )
+
+
+def _seed_coverable_short(symbol="BBB/USDT", timeframe="15m") -> None:
+    """Open short on the store ``get_position`` reads, so a cover has a lot."""
+    from strategies.positions import get_position
+
+    pos = get_position(symbol, timeframe)
+    pos["side"] = "short"
+    pos["amount"] = Decimal("1")
+    pos["average_entry"] = 1.0
+    pos["peak_amount"] = 1.0
+
+
+def _drop_own_key(body: dict, key: str) -> dict:
+    if key == "initial_capital_usdt":
+        body.pop(key)
+    else:
+        del body["sell_policy"]["rotation"][key]
+    return body
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["tail_exempt_notional_usdt", "tail_exempt_sold_pct", "initial_capital_usdt"],
+)
+def test_r3_each_missing_own_key_blocks(monkeypatch, key):
+    """A live tenant must set each tail key and the baseline on its own body."""
+    _arm_tenant_body(monkeypatch, _drop_own_key(_good_cap_body(), key))
+    rm = RiskManager(_live_cfg(False))
+    clear_positions_memory()
+    try:
+        with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+            buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+            short = rm.evaluate(_short("manual"), "15m", source="manual")
+            _seed_coverable_short()
+            cover = rm.evaluate(_cover(), "15m", source="manual")
+        assert buy.approved is False
+        assert buy.code == "live_caps_missing"
+        assert key in buy.message
+        assert short.approved is False
+        assert short.code == "live_caps_missing"
+        assert key in short.message
+        assert cover.code != "live_caps_missing"
+        assert cover.approved is True, f"{cover.code} {cover.message}"
+    finally:
+        clear_positions_memory()
+
+
+@pytest.mark.parametrize("notional", [0, 5, 100])
+def test_r3_tail_notional_not_below_min_trade_blocks(monkeypatch, notional):
+    """T = 0 and T >= risk.min_trade_usdt (5 in this fixture) block."""
+    body = _good_cap_body()
+    body["sell_policy"]["rotation"]["tail_exempt_notional_usdt"] = notional
+    _arm_tenant_body(monkeypatch, body)
+    rm = RiskManager(_live_cfg(False))
+    assert float(rm.config.risk_config["min_trade_usdt"]) == 5
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+        short = rm.evaluate(_short("manual"), "15m", source="manual")
+    assert buy.code == "live_caps_missing"
+    assert "tail_exempt_notional_usdt" in buy.message
+    assert short.code == "live_caps_missing"
+
+
+@pytest.mark.parametrize("capital", [0, -1, ""])
+def test_r3_initial_capital_not_positive_blocks(monkeypatch, capital):
+    body = _good_cap_body()
+    body["initial_capital_usdt"] = capital
+    _arm_tenant_body(monkeypatch, body)
+    rm = RiskManager(_live_cfg(False))
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+    assert buy.code == "live_caps_missing"
+    assert "initial_capital_usdt" in buy.message
+
+
+@pytest.mark.parametrize("sold", [0.5, 0.25, 0])
+def test_r3_sold_pct_not_above_half_blocks(monkeypatch, sold):
+    body = _good_cap_body()
+    body["sell_policy"]["rotation"]["tail_exempt_sold_pct"] = sold
+    _arm_tenant_body(monkeypatch, body)
+    rm = RiskManager(_live_cfg(False))
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+    assert buy.approved is False
+    assert buy.code == "live_caps_missing"
+    assert "tail_exempt_sold_pct" in buy.message
+
+
+def test_r3_inherited_tail_and_baseline_block(monkeypatch):
+    """The same values on the effective config do not count. The body must set them."""
+    _arm_tenant_body(monkeypatch, {"max_usdt_per_trade": 100})
+    cfg = _live_cfg(False)
+    cfg.raw["initial_capital_usdt"] = 100_000
+    cfg.raw["sell_policy"] = {
+        "rotation": {
+            "tail_exempt_notional_usdt": 500,
+            "tail_exempt_sold_pct": 0.25,
+        }
+    }
+    rm = RiskManager(cfg)
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+    assert buy.code == "live_caps_missing"
+    for key in ("tail_exempt_notional_usdt", "tail_exempt_sold_pct", "initial_capital_usdt"):
+        assert key in buy.message
+
+
+def test_r3_tail_keys_outside_rotation_do_not_count(monkeypatch):
+    """The check reads sell_policy.rotation, the path count_open_full_slots uses."""
+    body = {
+        "max_usdt_per_trade": 100,
+        "initial_capital_usdt": _OWN_BASELINE,
+        "tail_exempt_notional_usdt": _OWN_TAIL_NOTIONAL,
+        "tail_exempt_sold_pct": _OWN_TAIL_SOLD,
+    }
+    _arm_tenant_body(monkeypatch, body)
+    rm = RiskManager(_live_cfg(False))
+    with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+        buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+    assert buy.code == "live_caps_missing"
+    assert "tail_exempt_notional_usdt" in buy.message
+    assert "tail_exempt_sold_pct" in buy.message
+    assert "initial_capital_usdt" not in buy.message
+
+
+def test_r3_valid_own_values_pass_and_cover_runs(monkeypatch):
     _arm_tenant_body(monkeypatch, _good_cap_body())
     rm = RiskManager(_live_cfg(False))
-
-    def _count(raw, include_tails=None):
-        return 4 if include_tails else 0
-
-    with patch("risk.risk_manager.count_open_full_slots", side_effect=_count), patch(
-        "core.operator_notify.notify_operator", return_value=True
-    ), patch("logger.log"):
-        dec = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
-    assert dec.code == "live_caps_missing"
-    assert "open_slots" in dec.message
+    clear_positions_memory()
+    try:
+        with _eval_env(rm, metrics=_THICK, mcap=80_000_000), patch(
+            "strategies.positions.list_active_positions", return_value=[]
+        ), patch("core.operator_notify.notify_operator", return_value=True):
+            buy = rm.evaluate(_buy(usdt=50, source="manual"), "4h", source="manual")
+            short = rm.evaluate(_short("manual"), "15m", source="manual")
+        _seed_coverable_short()
+        with patch("core.operator_notify.notify_operator", return_value=True), patch("logger.log"):
+            cover = rm.evaluate(_cover(), "15m", source="manual")
+        assert buy.code != "live_caps_missing"
+        assert buy.approved is True, f"{buy.code} {buy.message}"
+        assert short.code != "live_caps_missing"
+        assert short.approved is True, f"{short.code} {short.message}"
+        assert cover.code != "live_caps_missing"
+        assert cover.approved is True, f"{cover.code} {cover.message}"
+    finally:
+        clear_positions_memory()
 
 
 def test_t12_telegram_buy_stays_manual_capped_and_r3_still_applies(monkeypatch):

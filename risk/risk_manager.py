@@ -1865,8 +1865,6 @@ class RiskManager:
 
     _LIVE_CAP_BODY_KEYS = (
         "max_usdt_per_trade",
-        "max_open_positions",
-        "max_daily_loss_usdt",
     )
 
     def _live_real_money_buys(self) -> bool:
@@ -1963,31 +1961,6 @@ class RiskManager:
             and "max_usdt_per_trade" not in problems
         ):
             problems.append("max_usdt_per_trade")
-        open_cap = self._positive_cap_value(raw.get("max_open_positions"))
-        if open_cap is None:
-            problems.append("max_open_positions")
-        else:
-            # The slot guard compares against max_open_eff, not the raw cap.
-            # A capacity ceiling above max_open_positions would trade past it.
-            try:
-                eff = int(self._resolve_position_capacity().max_open_eff)
-            except Exception:
-                problems.append("max_open_eff")
-            else:
-                if eff > open_cap:
-                    problems.append("max_open_eff")
-        if self._positive_cap_value(raw.get("max_daily_loss_usdt")) is None:
-            problems.append("max_daily_loss_usdt")
-        # Live caps count every open long and short. If the guard's counter
-        # still drops tails, or the book cannot be read, the cap is not real.
-        try:
-            counted = count_open_full_slots(raw)
-            every = count_open_full_slots(raw, include_tails=True)
-        except Exception:
-            problems.append("open_slots")
-        else:
-            if counted != every:
-                problems.append("open_slots")
         try:
             from risk.slot_eviction import eviction_mode
 
@@ -2018,13 +1991,51 @@ class RiskManager:
                 return True
         return False
 
+    def _own_tail_baseline_problems(self, body: dict) -> tuple[list[str], list[str]]:
+        """Own-body tail keys and baseline. Inherited config does not count.
+
+        ``rotation_config`` reads ``sell_policy.rotation.tail_exempt_notional_usdt``
+        and ``tail_exempt_sold_pct``. ``live_sim_initial_capital`` reads top-level
+        ``initial_capital_usdt``. ``0 < T < risk.min_trade_usdt`` is also below
+        the live ticket. ``S > 0.5``. Baseline is a number > 0.
+        """
+        missing: list[str] = []
+        bad: list[str] = []
+        sell = body.get("sell_policy") if isinstance(body.get("sell_policy"), dict) else {}
+        rotation = sell.get("rotation") if isinstance(sell.get("rotation"), dict) else {}
+        notional_key = "tail_exempt_notional_usdt"
+        if notional_key not in rotation:
+            missing.append(notional_key)
+        else:
+            try:
+                min_trade = float(self.config.risk_config.get("min_trade_usdt", 5.0))
+            except (TypeError, ValueError):
+                min_trade = 0.0
+            t = self._positive_cap_value(rotation.get(notional_key))
+            if t is None or not (t < min_trade):
+                bad.append(notional_key)
+        sold_key = "tail_exempt_sold_pct"
+        if sold_key not in rotation:
+            missing.append(sold_key)
+        else:
+            sold = self._positive_cap_value(rotation.get(sold_key))
+            if sold is None or not (sold > 0.5):
+                bad.append(sold_key)
+        capital_key = "initial_capital_usdt"
+        if capital_key not in body:
+            missing.append(capital_key)
+        elif self._positive_cap_value(body.get(capital_key)) is None:
+            bad.append(capital_key)
+        return missing, bad
+
     def _live_caps_missing_blocked(self, order=None) -> RiskDecision | None:
         """Fail closed when a real-money tenant cannot trade under its caps.
 
-        The tenant body must load and carry the three keys. Each value the
-        guard reads must be a number > 0. A live-block ticket above the
-        top-level ticket is the same failure: that is the size that would
-        be sent. Sells and covers never call this. Short opens do.
+        The tenant body must load and carry the ticket. It must also set the
+        tail keys and ``initial_capital_usdt`` itself; config.json and presets
+        do not count. The ticket the guard reads must be a number > 0. A
+        live-block ticket above the top-level ticket is the same failure.
+        Sells and covers never call this. Short opens do.
         """
         if not self._live_real_money_buys():
             return None
@@ -2037,9 +2048,12 @@ class RiskManager:
             parts.append(err or "tenant_body_missing")
         else:
             missing = [key for key in self._LIVE_CAP_BODY_KEYS if key not in body]
+            own_missing, own_bad = self._own_tail_baseline_problems(body)
+            missing.extend(own_missing)
             if missing:
                 parts.append("missing:" + ",".join(missing))
             bad = self._effective_cap_problems()
+            bad.extend(own_bad)
             if bad:
                 parts.append("effective:" + ",".join(bad))
         reason = " ".join(parts)
