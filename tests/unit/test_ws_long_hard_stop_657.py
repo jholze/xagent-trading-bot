@@ -176,14 +176,27 @@ def _seed_filled_sells(n, symbol_prefix="ZZ"):
 
 
 @contextmanager
+def _tenant_config_is_normalized():
+    """A non-default context must not load Mongo tenant config in this test."""
+    from core.config import get_bot_config
+
+    raw = get_bot_config().raw
+    with patch("data_manager.get_config", lambda *a, **k: raw), patch(
+        "data_manager.load_config", lambda *a, **k: raw
+    ):
+        yield
+
+
+@contextmanager
 def _paper():
     """Paper TradingService path: no Gate markets, no config reload, no auto-short."""
-    from core.config import get_bot_config
+    import data_manager
     from execution.gate_adapter import GateExecutionAdapter
     from services.trading_service import TradingService
 
-    cfg = get_bot_config()
-    shorts = cfg.raw.setdefault("shorts", {})
+    # Same cache get_bot_config() copies. A copy here would not reach the service.
+    raw = data_manager.get_config()
+    shorts = raw.setdefault("shorts", {})
     prev_auto = shorts.get("auto_after_sell", None)
     shorts["auto_after_sell"] = False
     prev_failed = GateExecutionAdapter._shadow_markets_failed
@@ -334,27 +347,32 @@ class TestT1SameRule:
 
     def test_equal_loss_does_not_fire(self):
         # loss_pct is strict '>'. entry 1, full 10 → price 0.90 is exactly 10.
-        hit = evaluate_long_hard_stop(
-            price=0.90,
-            entry=1.0,
-            position=_lot(),
-            strategy_params=_params(full=10, partial=5),
-            base_stop_loss_pct=10,
+        # Strict '>'. 3/4 is exact in binary: loss 25. Exactly 25 does not
+        # clear a 25 stop. Exactly 25 against a 40 full stop is not a full.
+        params = _params(full=40, partial=25)
+        assert (
+            evaluate_long_hard_stop(
+                price=3.0,
+                entry=4.0,
+                position=_lot(entry=4.0),
+                strategy_params=params,
+                base_stop_loss_pct=40,
+            )
+            is None
         )
-        assert hit is None
-        above = evaluate_long_hard_stop(
-            price=0.95,
-            entry=1.0,
-            position=_lot(),
-            strategy_params=_params(full=10, partial=5),
-            base_stop_loss_pct=10,
+        exact_full = evaluate_long_hard_stop(
+            price=3.0,
+            entry=4.0,
+            position=_lot(entry=4.0),
+            strategy_params=_params(full=25, partial=10),
+            base_stop_loss_pct=25,
         )
-        assert above is None
-        _seed("AAA/USDT", amount=100, entry=1.0)
+        assert exact_full == ("SELL_STOP_PARTIAL", "stop_loss")
+        _seed("AAA/USDT", amount=100, entry=4.0)
         hub = _hub()
-        hub.update_book([_row("AAA/USDT")])
+        hub.update_book([_row("AAA/USDT", params=params, entry=4.0)])
         with _paper():
-            _fire(hub, "AAA/USDT", "0.90", "0.90")
+            _fire(hub, "AAA/USDT", "3.0", "3.0")
         assert _orders("AAA/USDT") == []
         assert _held("AAA/USDT") == 100
 
@@ -786,7 +804,7 @@ class TestT10TenantContext:
             ]
         )
         # 0.85 is 15% under henry's entry and a gain vs default's entry 2.0.
-        with _paper(), patch(
+        with _paper(), _tenant_config_is_normalized(), patch(
             "storage.tenant_registry.get_tenant", side_effect=self._henry_doc
         ), patch("strategies.positions.bootstrap_positions"), patch(
             "strategies.positions.get_position", side_effect=_spy
@@ -847,7 +865,7 @@ class TestT10TenantContext:
             }
         )
         hub.update_book([_row("AAA/USDT", position=short, params={}, tenant_id="henry")])
-        with patch(
+        with _tenant_config_is_normalized(), patch(
             "storage.tenant_registry.get_tenant", side_effect=self._henry_doc
         ), patch("strategies.positions.bootstrap_positions"), patch(
             "strategies.positions.get_position", side_effect=_spy
@@ -886,10 +904,13 @@ class TestT11DebounceThenCycleRemainder:
 
 class TestT12DailySellExemption:
     def _arm_limit(self, limit=1):
-        from core.config import get_bot_config
+        # get_bot_config() deep-copies the normalized cache. Mutate the cache
+        # so the copy the orchestrator builds still sees the limit.
+        import data_manager
 
-        risk = get_bot_config().raw.setdefault("risk", {})
-        risk["max_daily_sells"] = limit
+        raw = data_manager.get_config()
+        raw.setdefault("risk", {})["max_daily_sells"] = limit
+        raw.setdefault("dry_run_defaults", {})["max_daily_sells"] = limit
 
     def test_hard_stops_bypass_and_other_sells_do_not(self):
         self._arm_limit(1)
@@ -966,12 +987,13 @@ class TestT13TenantGuards:
         from core.tenant_context import resolve_tenant_scope
         from strategies import positions as pm
 
-        _seed("AAA/USDT", amount=10, entry=2.0)
+        # Default entry 0.80: 0.85 is a gain. Henry entry 1.0: 0.85 is a 15% loss.
+        _seed("AAA/USDT", amount=10, entry=0.80)
         _seed("AAA/USDT", amount=10, entry=1.0, tenant_id="henry")
         hub = _hub(cooldown=30)
         hub.update_book(
             [
-                _row("AAA/USDT", position=_lot(amount=10, entry=2.0), params=_params(), tenant_id="default"),
+                _row("AAA/USDT", position=_lot(amount=10, entry=0.80), params=_params(), tenant_id="default"),
                 _row("AAA/USDT", position=_lot(amount=10, entry=1.0), params=_params(), tenant_id="henry"),
                 _row("AAA/USDT", position=_lot(amount=10, entry=1.0), params=_params(), tenant_id="henry", timeframe="4h"),
             ]
@@ -983,7 +1005,7 @@ class TestT13TenantGuards:
         hub2 = _hub()
         hub2.update_book(
             [
-                _row("AAA/USDT", position=_lot(amount=10, entry=2.0), params=_params(full=10, partial=5), tenant_id="default"),
+                _row("AAA/USDT", position=_lot(amount=10, entry=0.80), params=_params(full=10, partial=5), tenant_id="default"),
                 _row("AAA/USDT", position=_lot(amount=10, entry=1.0), params=_params(full=10, partial=5), tenant_id="henry"),
             ]
         )
@@ -996,7 +1018,7 @@ class TestT13TenantGuards:
                 "defaults": {"ledger_scope": "paper"},
             }
 
-        with _paper(), patch(
+        with _paper(), _tenant_config_is_normalized(), patch(
             "storage.tenant_registry.get_tenant", side_effect=_doc
         ), patch("strategies.positions.bootstrap_positions"):
             _fire(hub2, "AAA/USDT", "0.85", "0.85")
