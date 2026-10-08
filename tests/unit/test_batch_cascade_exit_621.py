@@ -35,11 +35,13 @@ from strategies.sell_sources import LIQ_CASCADE_SOURCE
 
 def _clear(symbols: list[str]) -> None:
     import services.exit_realtime.execute as ex
+    from services.exit_realtime.execute import exit_guard_key
 
     with ex._inflight_lock:
         for sym in symbols:
-            ex._inflight.discard(sym)
-            ex._last_exit_at.pop(sym, None)
+            for key in {sym, exit_guard_key(sym)}:
+                ex._inflight.discard(key)
+                ex._last_exit_at.pop(key, None)
 
 
 def _lot(symbol: str, **over) -> dict:

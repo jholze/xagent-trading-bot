@@ -9,7 +9,7 @@ from strategies.positions import (
     reset_rsi_sell_tiers_if_cooled,
 )
 from strategies.dca import (
-    effective_stop_loss_thresholds,
+    evaluate_long_hard_stop,
     recent_high_reached_after_dca,
     trail_exits_paused_after_dca,
 )
@@ -187,17 +187,16 @@ class TechnicalRSIStrategy(BaseStrategy):
 
             entry = market.average_entry
             if entry > 0:
-                loss_pct = (market.current_price / entry - 1) * -100
-                full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
-                    pos, params, float(stop_loss_pct)
+                hit = evaluate_long_hard_stop(
+                    price=market.current_price,
+                    entry=entry,
+                    position=pos,
+                    strategy_params=params,
+                    base_stop_loss_pct=float(stop_loss_pct),
                 )
-                if not in_grace:
-                    if loss_pct > full_stop:
-                        action = "SELL_STOP_FULL"
-                        sources.append("stop_loss")
-                    elif partial_stop is not None and loss_pct > partial_stop:
-                        action = "SELL_STOP_PARTIAL"
-                        sources.append("stop_loss")
+                if hit:
+                    action, stop_src = hit
+                    sources.append(stop_src)
 
             gain_pct = (market.current_price / entry - 1) * 100 if entry > 0 else 0.0
             # Fixed tiers stay 40/80/120. Inside the DCA grace window, a

@@ -18,7 +18,10 @@ from services.exit_realtime.config import (
     exit_realtime_mode,
     exit_realtime_sources,
 )
-from services.exit_realtime.execute import try_execute_trail_exit
+from services.exit_realtime.execute import (
+    restoring_tenant_cycle_context,
+    try_execute_trail_exit,
+)
 from services.exit_realtime.shadow_eval import (
     evaluate_would_sells,
     from_gate_pair,
@@ -27,6 +30,37 @@ from services.exit_realtime.shadow_eval import (
 
 WS_URL = "wss://api.gateio.ws/ws/v4/"
 CHANNEL = "spot.tickers"
+
+
+def book_key(tenant_id: str | None, symbol: str) -> tuple[str, str]:
+    """Hub book and per-lot guards are keyed by (tenant, symbol) (#657 R10)."""
+    return (str(tenant_id or "").strip(), str(symbol or ""))
+
+
+def tick_age_seconds(time_ms: Any, now: float | None = None) -> float | None:
+    """Age of a Gate ``time_ms`` in seconds. Missing or non-numeric → None.
+
+    Values above 1e10 are unix milliseconds (spot.tickers ``time_ms``).
+    """
+    if time_ms is None or time_ms == "":
+        return None
+    try:
+        raw = float(time_ms)
+    except (TypeError, ValueError):
+        return None
+    if raw != raw:  # NaN
+        return None
+    now_s = time.time() if now is None else float(now)
+    if abs(raw) > 10_000_000_000:
+        return now_s - (raw / 1000.0)
+    return now_s - raw
+
+
+def tick_age_label(time_ms: Any, now: float | None = None) -> str:
+    age = tick_age_seconds(time_ms, now)
+    if age is None:
+        return "missing"
+    return f"{age:.3f}"
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -108,6 +142,7 @@ class ExitRealtimeHub:
             "ct_watch": 0,
             "connected": False,
             "book_tenant_collisions": 0,
+            "ws_stop_skip_no_bid": 0,
         }
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
@@ -128,7 +163,11 @@ class ExitRealtimeHub:
     def book_snapshot(self) -> list[dict[str, Any]]:
         with self._pos_lock:
             rows = []
-            for sym, row in self._book.items():
+            for key, row in self._book.items():
+                if isinstance(key, tuple) and len(key) > 1:
+                    sym = str(row.get("symbol") or key[1])
+                else:
+                    sym = str(row.get("symbol") or key)
                 r = {
                     "symbol": sym,
                     "timeframe": row.get("timeframe"),
@@ -182,29 +221,27 @@ class ExitRealtimeHub:
                     pass
 
     def update_book(self, positions: list[dict[str, Any]]) -> list[str]:
-        book: dict[str, dict[str, Any]] = {}
+        book: dict[tuple[str, str], dict[str, Any]] = {}
         gmap: dict[str, str] = {}
         collisions = 0
         for row in positions:
             sym = str(row.get("symbol") or "")
             if not sym:
                 continue
-            existing = book.get(sym)
+            key = book_key(row.get("tenant_id"), sym)
+            existing = book.get(key)
             if existing is not None:
-                old_tid = str(existing.get("tenant_id") or "").strip()
-                new_tid = str(row.get("tenant_id") or "").strip()
-                if old_tid and new_tid and old_tid != new_tid:
-                    # Symbol-keyed book: keep the incumbent (default is loaded
-                    # first). Overwriting would drop the operator lot's WS trail.
-                    collisions += 1
-                    log(
-                        f"exit_realtime book collision symbol={sym} "
-                        f"incumbent_tenant={old_tid} dropped_tenant={new_tid} "
-                        f"— keeping incumbent (dropped lot has no WS trail)",
-                        "WARNING",
-                    )
-                    continue
-            book[sym] = row
+                # Same (tenant, symbol) twice (two timeframes). Keep the
+                # incumbent. Different tenants never share a key, so
+                # book_tenant_collisions stays 0 for them (#657 R10).
+                collisions += 1
+                log(
+                    f"exit_realtime book collision tenant={key[0]} symbol={sym} "
+                    f"— keeping incumbent row",
+                    "WARNING",
+                )
+                continue
+            book[key] = row
             gmap[to_gate_pair(sym)] = sym
         with self._pos_lock:
             self._book = book
@@ -486,8 +523,14 @@ class ExitRealtimeHub:
             except Exception:
                 pass
 
-    def _debounce_ok(self, symbol: str, source: str, cooldown_sec: float) -> bool:
-        key = f"{symbol}|{source}"
+    def _debounce_ok(
+        self,
+        symbol: str,
+        source: str,
+        cooldown_sec: float,
+        tenant_id: str | None = None,
+    ) -> bool:
+        key = f"{str(tenant_id or '').strip()}|{symbol}|{source}"
         now = time.monotonic()
         last = self._last_fire.get(key, 0.0)
         if now - last < cooldown_sec:
@@ -502,6 +545,8 @@ class ExitRealtimeHub:
         *,
         pct_24h: float | None = None,
         quote_volume: float | None = None,
+        highest_bid: Any = None,
+        time_ms: Any = None,
     ) -> None:
         if price <= 0:
             return
@@ -517,18 +562,20 @@ class ExitRealtimeHub:
             self._last_prices[sym] = float(price)
             in_watch = sym in self._watch_symbols or gate_pair in self._watch_gate
             in_ct = sym in self._ct_watch_symbols or gate_pair in self._ct_watch_gate
-            row = self._book.get(sym)
-            snapshot = None
-            if row:
+            snapshots: list[dict[str, Any]] = []
+            for key, row in self._book.items():
+                row_sym = str(row.get("symbol") or "")
+                key_sym = key[1] if isinstance(key, tuple) and len(key) > 1 else ""
+                if row_sym != sym and key_sym != sym:
+                    continue
                 rh = float(row.get("recent_high") or 0)
                 if price > rh:
                     row["recent_high"] = price
-                    # keep nested position peak in sync for eval
                     pos0 = row.get("position")
                     if isinstance(pos0, dict):
                         pos0["recent_high"] = price
-                snapshot = {
-                    "symbol": row.get("symbol"),
+                snap = {
+                    "symbol": row.get("symbol") or sym,
                     "timeframe": row.get("timeframe"),
                     "tenant_id": row.get("tenant_id"),
                     "strategy_params": dict(row.get("strategy_params") or {}),
@@ -536,15 +583,15 @@ class ExitRealtimeHub:
                     "position": dict(row.get("position") or {}),
                     "recent_high": row.get("recent_high"),
                 }
-                # ensure position has peak + entry
-                pos = snapshot["position"]
-                if snapshot.get("recent_high"):
-                    pos["recent_high"] = snapshot["recent_high"]
+                pos = snap["position"]
+                if snap.get("recent_high"):
+                    pos["recent_high"] = snap["recent_high"]
                 if not pos.get("average_entry") and row.get("average_entry"):
                     pos["average_entry"] = row["average_entry"]
+                snapshots.append(snap)
 
         # Identify board (watch or any tick we track) — never places orders
-        if in_watch or snapshot is None:
+        if in_watch or not snapshots:
             try:
                 from services.gainer_universe.ws_board import (
                     get_ws_board,
@@ -572,7 +619,7 @@ class ExitRealtimeHub:
                 pass
 
         # No open position → identify-only path done
-        if snapshot is None:
+        if not snapshots:
             return
 
         # GUI tick stream (UI further samples feed lines)
@@ -586,6 +633,70 @@ class ExitRealtimeHub:
             }
         )
 
+        for snapshot in snapshots:
+            self._eval_row(
+                sym,
+                price,
+                snapshot,
+                highest_bid=highest_bid,
+                time_ms=time_ms,
+            )
+
+    def _drop_book_row(self, symbol: str, tenant_id: str | None) -> None:
+        key = book_key(tenant_id, symbol)
+        with self._pos_lock:
+            self._book.pop(key, None)
+            still = False
+            for other, row in self._book.items():
+                row_sym = str(row.get("symbol") or "")
+                key_sym = other[1] if isinstance(other, tuple) and len(other) > 1 else ""
+                if row_sym == symbol or key_sym == symbol:
+                    still = True
+                    break
+            if not still:
+                self._gate_to_symbol.pop(to_gate_pair(symbol), None)
+            self._stats["symbols"] = len(self._book)
+
+    def _eval_row(
+        self,
+        sym: str,
+        price: float,
+        snapshot: dict[str, Any],
+        *,
+        highest_bid: Any = None,
+        time_ms: Any = None,
+    ) -> None:
+        row_tenant = str(snapshot.get("tenant_id") or "").strip() or None
+        if row_tenant:
+            with restoring_tenant_cycle_context(row_tenant):
+                self._eval_row_in_context(
+                    sym,
+                    price,
+                    snapshot,
+                    row_tenant=row_tenant,
+                    highest_bid=highest_bid,
+                    time_ms=time_ms,
+                )
+            return
+        self._eval_row_in_context(
+            sym,
+            price,
+            snapshot,
+            row_tenant=None,
+            highest_bid=highest_bid,
+            time_ms=time_ms,
+        )
+
+    def _eval_row_in_context(
+        self,
+        sym: str,
+        price: float,
+        snapshot: dict[str, Any],
+        *,
+        row_tenant: str | None,
+        highest_bid: Any = None,
+        time_ms: Any = None,
+    ) -> None:
         cfg = exit_realtime_config(self._raw)
         mode = exit_realtime_mode(self._raw)
         sources = exit_realtime_sources(self._raw)
@@ -652,7 +763,7 @@ class ExitRealtimeHub:
                     if not hit:
                         return
                     src = str(hit.get("source") or "climax_stop")
-                    if not self._debounce_ok(sym, src, cooldown):
+                    if not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
                         return
                     result = try_execute_trail_exit(
                         symbol=sym,
@@ -665,8 +776,7 @@ class ExitRealtimeHub:
                     )
                     if result.get("executed"):
                         self._stats["executed"] += 1
-                        with self._pos_lock:
-                            self._book.pop(sym, None)
+                        self._drop_book_row(sym, row_tenant)
                         self._broadcast_gui(
                             {
                                 "type": "would_exit",
@@ -700,7 +810,7 @@ class ExitRealtimeHub:
                 if not hit:
                     return
                 src = str(hit.get("source") or "short_cover")
-                if not self._debounce_ok(sym, src, cooldown):
+                if not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
                     return
                 result = try_execute_trail_exit(
                     symbol=sym,
@@ -713,8 +823,7 @@ class ExitRealtimeHub:
                 )
                 if result.get("executed"):
                     self._stats["executed"] += 1
-                    with self._pos_lock:
-                        self._book.pop(sym, None)
+                    self._drop_book_row(sym, row_tenant)
                     self._broadcast_gui(
                         {
                             "type": "would_exit",
@@ -728,6 +837,8 @@ class ExitRealtimeHub:
                 log(f"exit_realtime short cover skip {sym}: {exc}", "WARNING")
             return
 
+        # Book snapshot params come from resolve_strategy_params at refresh,
+        # the same call the cycle uses. They can be up to book_refresh_sec old.
         events = evaluate_would_sells(
             symbol=sym,
             timeframe=tf,
@@ -736,8 +847,24 @@ class ExitRealtimeHub:
             strategy_params=params,
             sources=sources,
             atr_pct=atr,
+            bid=highest_bid,
+            stop_position=live_for_side,
         )
+        age_label = tick_age_label(time_ms)
         for ev in events:
+            if ev.get("skip") == "ws_stop_skip_no_bid":
+                if self._debounce_ok(
+                    sym, "ws_stop_skip_no_bid", cooldown, tenant_id=row_tenant
+                ):
+                    self._stats["ws_stop_skip_no_bid"] = (
+                        int(self._stats.get("ws_stop_skip_no_bid") or 0) + 1
+                    )
+                    log(
+                        f"ws_stop_skip_no_bid symbol={sym} tenant={row_tenant or ''} "
+                        f"last={price} bid={ev.get('bid_raw')!r} tick_age={age_label}",
+                        "INFO",
+                    )
+                continue
             if ev.get("error") or not ev.get("action"):
                 continue
             # Skip pure strategy-shadow candidates (mode=shadow inside trail config)
@@ -745,7 +872,7 @@ class ExitRealtimeHub:
                 # still fire if strategy is live; strategy_shadow means trail rule in shadow
                 continue
             src = str(ev.get("source") or "")
-            if not self._debounce_ok(sym, src, cooldown):
+            if not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
                 continue
 
             ev["mode"] = mode
@@ -757,25 +884,40 @@ class ExitRealtimeHub:
                 _log_event(ev, live=False)
                 continue
 
+            action = str(ev.get("action") or "SELL_FULL")
+            sell_amount = None
+            if src == "stop_loss":
+                from strategies.positions import sell_fraction_for_signal
+
+                held = float((live_for_side or {}).get("amount") or 0)
+                fraction = sell_fraction_for_signal(
+                    action, sym, tf, float(price), params
+                )
+                sell_amount = held * float(fraction or 0)
+                log(
+                    f"exit_ws stop fire symbol={sym} tenant={row_tenant or ''} "
+                    f"signal={action} source=exit_ws exit_source=stop_loss "
+                    f"last={price} tick_age={age_label}",
+                    "INFO",
+                )
+
             result = try_execute_trail_exit(
                 symbol=sym,
                 timeframe=tf,
                 price=price,
-                action=str(ev.get("action") or "SELL_FULL"),
+                action=action,
                 exit_source=src,
                 rationale=str(ev.get("rationale") or ""),
                 tenant_id=row_tenant,
+                sell_amount=sell_amount,
+                strategy_params=params if src == "stop_loss" else None,
             )
             ev["executed"] = bool(result.get("executed"))
             ev["message"] = result.get("message")
             if result.get("executed"):
                 self._stats["executed"] += 1
-                # drop from book so we stop ticking this symbol until refresh
-                with self._pos_lock:
-                    self._book.pop(sym, None)
-                    gp = to_gate_pair(sym)
-                    self._gate_to_symbol.pop(gp, None)
-                    self._stats["symbols"] = len(self._book)
+                # drop this tenant's row until the next book refresh
+                self._drop_book_row(sym, row_tenant)
                 self._broadcast_gui(
                     {
                         "type": "would_exit",
@@ -836,6 +978,54 @@ class ExitRealtimeHub:
             except Exception:
                 continue
 
+    def handle_ws_message(self, message: str) -> None:
+        """Parse one Gate ``spot.tickers`` frame and hand it to ``on_ticker``.
+
+        ``highest_bid`` and ``time_ms`` stay on the payload. Size keys are
+        ignored: this channel does not carry them (#657 R7 / R12).
+        """
+        try:
+            data = json.loads(message)
+        except Exception:
+            return
+        if data.get("event") in ("subscribe", "unsubscribe"):
+            return
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return
+        pair = result.get("currency_pair") or result.get("s")
+        last = result.get("last") or result.get("c")
+        if not pair or last is None:
+            return
+        try:
+            px = float(last)
+        except (TypeError, ValueError):
+            return
+        pct: float | None = None
+        for k in ("change_percentage", "change_percent", "change"):
+            if result.get(k) is not None:
+                try:
+                    pct = float(result.get(k))
+                    break
+                except (TypeError, ValueError):
+                    pass
+        qv: float | None = None
+        for k in ("quote_volume", "quoteVolume", "base_volume"):
+            if result.get(k) is not None:
+                try:
+                    qv = float(result.get(k))
+                    break
+                except (TypeError, ValueError):
+                    pass
+        self.on_ticker(
+            str(pair).upper(),
+            px,
+            pct_24h=pct,
+            quote_volume=qv,
+            highest_bid=result.get("highest_bid"),
+            time_ms=result.get("time_ms"),
+        )
+
     def _run_loop(self) -> None:
         try:
             import websocket
@@ -859,45 +1049,7 @@ class ExitRealtimeHub:
                 continue
 
             def on_message(_ws, message: str) -> None:
-                try:
-                    data = json.loads(message)
-                except Exception:
-                    return
-                if data.get("event") in ("subscribe", "unsubscribe"):
-                    return
-                result = data.get("result")
-                if not isinstance(result, dict):
-                    return
-                pair = result.get("currency_pair") or result.get("s")
-                last = result.get("last") or result.get("c")
-                if not pair or last is None:
-                    return
-                try:
-                    px = float(last)
-                except (TypeError, ValueError):
-                    return
-                pct: float | None = None
-                for k in ("change_percentage", "change_percent", "change"):
-                    if result.get(k) is not None:
-                        try:
-                            pct = float(result.get(k))
-                            break
-                        except (TypeError, ValueError):
-                            pass
-                qv: float | None = None
-                for k in ("quote_volume", "quoteVolume", "base_volume"):
-                    if result.get(k) is not None:
-                        try:
-                            qv = float(result.get(k))
-                            break
-                        except (TypeError, ValueError):
-                            pass
-                self.on_ticker(
-                    str(pair).upper(),
-                    px,
-                    pct_24h=pct,
-                    quote_volume=qv,
-                )
+                self.handle_ws_message(message)
 
             def on_open(ws) -> None:
                 self._ws = ws

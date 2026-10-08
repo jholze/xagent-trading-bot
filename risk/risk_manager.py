@@ -150,6 +150,31 @@ def _execution_places_real_orders(raw) -> bool:
         return True
 
 
+_HARD_STOP_SIGNALS = frozenset({"SELL_STOP_FULL", "SELL_STOP_PARTIAL"})
+
+
+def is_hard_stop_order(order, source: str | None = None) -> bool:
+    """R11 hard stop. Fail closed when ``exit_source`` is not visible.
+
+    All three must hold: signal in (SELL_STOP_FULL, SELL_STOP_PARTIAL),
+    exit_source == "stop_loss", and neither the order source nor the
+    evaluate source is "manual".
+    """
+    signal = str(getattr(order, "signal", "") or "")
+    if signal not in _HARD_STOP_SIGNALS:
+        return False
+    if not hasattr(order, "exit_source"):
+        return False
+    exit_source = getattr(order, "exit_source")
+    if exit_source is None or str(exit_source) != "stop_loss":
+        return False
+    order_source = str(getattr(order, "source", "") or "")
+    call_source = str(source or "")
+    if order_source == "manual" or call_source == "manual":
+        return False
+    return True
+
+
 class RiskManager:
     """Central gate for trade sizing and portfolio limits."""
 
@@ -176,6 +201,7 @@ class RiskManager:
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
+        locked_sell_checks: bool = False,
     ) -> RiskDecision:
         # One orders-document snapshot per evaluate() call, loaded lazily on the
         # first counter read. Nested evaluate() (auto-short) must not reuse the
@@ -191,6 +217,7 @@ class RiskManager:
                 trust_score=trust_score,
                 confidence=confidence,
                 indicators=indicators,
+                locked_sell_checks=locked_sell_checks,
             )
             # R15: durable risk_rejects.jsonl for all BUY denies (fail-open)
             try:
@@ -274,6 +301,7 @@ class RiskManager:
         trust_score: float = None,
         confidence: float = None,
         indicators: dict = None,
+        locked_sell_checks: bool = False,
     ) -> RiskDecision:
         from core.test_symbols import is_phantom_test_symbol
 
@@ -373,6 +401,13 @@ class RiskManager:
             order = self._resolve_sell_order(order, timeframe, source)
             if order.amount <= 0:
                 order = self._fill_sell_amount_from_open_lot(order, timeframe)
+            if locked_sell_checks:
+                # R5: cap against the lot this sell reduces, under the lock only.
+                # The unlocked pre-check (TradingService.evaluate_risk) does not.
+                capped = self._cap_sell_to_open_lot(order, timeframe)
+                if isinstance(capped, RiskDecision):
+                    return capped
+                order = capped
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
@@ -381,11 +416,16 @@ class RiskManager:
             max_daily_sells = self._effective_max_daily_sells()
             daily_sells = self._daily_sells_count()
             if max_daily_sells > 0 and daily_sells >= max_daily_sells:
-                return RiskDecision(
-                    approved=False,
-                    message=f"Daily sell limit reached ({daily_sells}/{max_daily_sells})",
-                    code="max_daily_sells",
-                )
+                if locked_sell_checks and is_hard_stop_order(order, source):
+                    self._log_hard_stop_daily_bypass(
+                        order, source, daily_sells, max_daily_sells
+                    )
+                else:
+                    return RiskDecision(
+                        approved=False,
+                        message=f"Daily sell limit reached ({daily_sells}/{max_daily_sells})",
+                        code="max_daily_sells",
+                    )
             return RiskDecision(approved=True, order=order, message="Sell approved")
 
         if order.price <= 0:
@@ -2288,6 +2328,59 @@ class RiskManager:
                 risk_cfg.get("dust_sweep_min_remainder_usdt", 10)
             ),
         }
+
+    def _cap_sell_to_open_lot(self, order: TradeOrder, timeframe: str):
+        """Re-read the order's (symbol, timeframe) lot and cap the sell.
+
+        Returns the order, or a rejecting RiskDecision when the lot is closed.
+        """
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+
+        pos = get_position(order.symbol, timeframe) or {}
+        try:
+            held = float(pos.get("amount") or 0)
+        except (TypeError, ValueError):
+            held = 0.0
+        if held <= 0:
+            return RiskDecision(
+                approved=False,
+                message=f"sell_lot_closed {order.symbol} {timeframe}",
+                code="sell_lot_closed",
+                order=order,
+            )
+        try:
+            asked = float(order.amount or 0)
+        except (TypeError, ValueError):
+            asked = 0.0
+        if asked > held:
+            order.amount = held
+            log(
+                f"sell_amount_capped symbol={order.symbol} timeframe={timeframe} "
+                f"tenant={resolve_tenant_id()} old_amount={asked} new_amount={held}",
+                "WARNING",
+            )
+        return order
+
+    def _log_hard_stop_daily_bypass(
+        self,
+        order: TradeOrder,
+        source: str,
+        daily_sells: int,
+        max_daily_sells: int,
+    ) -> None:
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+
+        log(
+            "daily_sells_limit_bypassed_hard_stop "
+            f"symbol={order.symbol} tenant={resolve_tenant_id()} "
+            f"signal={getattr(order, 'signal', '')} "
+            f"source={getattr(order, 'source', None) or source} "
+            f"exit_source={getattr(order, 'exit_source', '')} "
+            f"count={daily_sells} limit={max_daily_sells}",
+            "INFO",
+        )
 
     def _fill_sell_amount_from_open_lot(
         self, order: TradeOrder, timeframe: str
