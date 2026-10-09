@@ -143,11 +143,17 @@ class MongoLedgerStore:
         tid = self._resolve_tenant(tenant_id)
         doc = self._find_doc(ORDERS_COLLECTION, scope, tid)
         if not doc:
-            return _empty_orders(scope, tid)
-        data = _strip_id(doc)
-        data.setdefault("orders", [])
-        data["ledger_scope"] = scope
-        data.setdefault("tenant_id", tid)
+            data = _empty_orders(scope, tid)
+        else:
+            data = _strip_id(doc)
+            data.setdefault("orders", [])
+            data["ledger_scope"] = scope
+            data.setdefault("tenant_id", tid)
+        groups = self._archived_order_groups(tid, scope)
+        if groups:
+            from storage.order_blob_parts import merge_order_rows
+
+            data["orders"] = merge_order_rows(*groups, data.get("orders") or [])
         return data
 
     def save_orders(
@@ -155,8 +161,95 @@ class MongoLedgerStore:
     ) -> bool:
         self._guard_dev_db()
         payload = self._prepare_payload(data, scope, tenant_id)
-        self._replace_with_fence(ORDERS_COLLECTION, payload)
+        hot = self._persist_order_archive(payload)
+        self._replace_with_fence(ORDERS_COLLECTION, hot)
         return True
+
+    def _archived_order_groups(self, tenant_id: str, scope: str) -> list[list]:
+        from storage.order_blob_parts import ORDERS_ARCHIVE_COLLECTION
+
+        base = compound_ledger_id(tenant_id, scope)
+        docs = []
+        for doc in self._collection(ORDERS_ARCHIVE_COLLECTION).find(
+            {"tenant_id": tenant_id, "ledger_scope": scope, "kind": "orders_archive"}
+        ):
+            doc_id = str(doc.get("_id") or "")
+            if not doc_id.startswith(f"{base}:part:"):
+                continue
+            docs.append(doc)
+        docs.sort(key=lambda row: int(row.get("part_index") or 0))
+        return [list(row.get("orders") or []) for row in docs]
+
+    def _persist_order_archive(self, payload: dict) -> dict:
+        """Write overflow parts first. Return the hot document for the fenced replace.
+
+        A failed part write leaves the previous hot document unchanged.
+        """
+        from storage.errors import LedgerWriteFailed
+        from storage.order_blob_parts import (
+            BSON_HARD_MAX,
+            HOT_MAX_BYTES,
+            ORDERS_ARCHIVE_COLLECTION,
+            PART_MAX_BYTES,
+            bson_size,
+            split_order_payload,
+        )
+
+        hot, parts = split_order_payload(
+            payload,
+            hot_max=HOT_MAX_BYTES,
+            part_max=PART_MAX_BYTES,
+        )
+        if bson_size(hot) + 4096 >= BSON_HARD_MAX:
+            raise LedgerWriteFailed(
+                "orders document still exceeds MongoDB 16MB limit",
+                op="save_orders",
+                scope=payload.get("ledger_scope"),
+                tenant_id=payload.get("tenant_id"),
+            )
+        base = str(payload.get("_id") or "")
+        for part in parts:
+            body = dict(part)
+            body["_id"] = f"{base}:part:{int(part['part_index']):04d}"
+            self._replace_with_fence(ORDERS_ARCHIVE_COLLECTION, body)
+        self._delete_extra_order_parts(base, keep=len(parts))
+        return hot
+
+    def _delete_extra_order_parts(self, base: str, keep: int) -> None:
+        import re
+
+        from bus.writer_lease import mongo_fence_filter, write_fence
+        from storage.errors import LedgerWriteFailed
+        from storage.order_blob_parts import ORDERS_ARCHIVE_COLLECTION
+
+        prefix = f"{base}:part:"
+        coll = self._collection(ORDERS_ARCHIVE_COLLECTION)
+        find = getattr(coll, "find", None)
+        # Writer-lease unit doubles only implement replace_one. Nothing to drop.
+        if find is None:
+            return
+        fence = write_fence()
+        for doc in list(find({"_id": {"$regex": f"^{re.escape(prefix)}" }})):
+            raw = str(doc.get("_id") or "")[len(prefix):]
+            try:
+                index = int(doc.get("part_index") if doc.get("part_index") is not None else raw)
+            except (TypeError, ValueError):
+                index = keep
+            if index < keep:
+                continue
+            if fence is None:
+                coll.delete_one({"_id": doc["_id"]})
+                continue
+            result = coll.delete_one(mongo_fence_filter(doc["_id"], fence))
+            if int(getattr(result, "deleted_count", 0) or 0) == 0 and coll.find_one(
+                {"_id": doc["_id"]}
+            ):
+                raise LedgerWriteFailed(
+                    "stale fence",
+                    op="save_orders_archive",
+                    scope=doc.get("ledger_scope"),
+                    tenant_id=doc.get("tenant_id"),
+                )
 
     def load_positions(self, scope: str, tenant_id: str | None = None) -> dict:
         tid = self._resolve_tenant(tenant_id)
