@@ -369,5 +369,36 @@ class TestSellGuidedFlow(unittest.TestCase):
             mock_pos.assert_not_called()
 
 
+
+    def test_sellpct_ledger_full_is_not_reported_as_missing_price(self):
+        from storage.errors import LedgerWriteFailed
+
+        ctx.set_context(
+            "99", "sell", state="sell_awaiting_pct",
+            position="W", label="W", timeframe="4h",
+        )
+        with patch(
+            "notifications.telegram_commands.trading_commands._finish_sell_pct_from_context",
+            side_effect=LedgerWriteFailed(
+                "Resulting document after update is larger than 16777216",
+                op="save_orders",
+                scope="demo",
+                tenant_id="default",
+            ),
+        ), patch(
+            "notifications.telegram_commands.trading_commands.send_telegram_message",
+        ) as mock_msg, patch(
+            "notifications.telegram_commands.trading_commands.answer_callback_query",
+        ):
+            self.assertTrue(trading_commands.handle_callback({
+                "id": "cb-w",
+                "data": "sellpct:50",
+                "message": {"chat": {"id": "99"}},
+            }))
+        texts = [str(call.args[0]) for call in mock_msg.call_args_list]
+        self.assertTrue(any("Orderbuch" in text for text in texts))
+        self.assertFalse(any("Kurs für" in text for text in texts))
+
+
 if __name__ == "__main__":
     unittest.main()
