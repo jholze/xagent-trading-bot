@@ -259,12 +259,13 @@ def open_positions_summary(bot_dir: Path | None = None) -> tuple[int, float]:
             positions = load_json(path).get("positions", {})
         except Exception:
             continue
-        open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
+        from strategies.positions import is_open_position
+
+        open_lots = [p for p in positions.values() if is_open_position(p)]
+        open_count = len(open_lots)
         total = 0.0
-        for pos in positions.values():
+        for pos in open_lots:
             amt = float(pos.get("amount") or 0)
-            if amt <= 0:
-                continue
             total += amt * float(pos.get("average_entry") or 0)
         return open_count, total
     return 0, 0.0

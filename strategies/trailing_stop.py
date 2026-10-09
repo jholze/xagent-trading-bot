@@ -104,8 +104,19 @@ def evaluate_trailing_stop(
         )
         if paused:
             return None
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            from logger import log
+            from core.tenant_context import resolve_tenant_id
+
+            log(
+                f"trail arm check failed tenant={resolve_tenant_id()} "
+                f"symbol={getattr(market, 'symbol', '')} exc={exc}",
+                "WARNING",
+            )
+        except Exception:
+            pass
+        return None
 
     try:
         from strategies.recovery_hold import (
@@ -130,6 +141,28 @@ def evaluate_trailing_stop(
             return None
     except Exception:
         pass
+
+    try:
+        from strategies.dca import lot_has_dca_rounds, recent_high_reached_after_dca
+
+        # F3/F4: a DCA lot arms only with a post-average peak, also after grace.
+        # An error is fail-closed (no arm). The normal stop-loss is elsewhere.
+        # Recovery-hold promotion above still runs; this only blocks the sell.
+        if lot_has_dca_rounds(position) and not recent_high_reached_after_dca(position):
+            return None
+    except Exception as exc:
+        try:
+            from logger import log
+            from core.tenant_context import resolve_tenant_id
+
+            log(
+                f"trail arm check failed tenant={resolve_tenant_id()} "
+                f"symbol={getattr(market, 'symbol', '')} exc={exc}",
+                "WARNING",
+            )
+        except Exception:
+            pass
+        return None
 
     entry = market.average_entry
     price = market.current_price
@@ -187,10 +220,16 @@ def evaluate_trailing_stop(
     mode = str(cfg.get("mode", "live")).strip().lower()
     shadow = mode == "shadow"
     stop_gain = (stop_px / entry - 1.0) * 100.0
+    try:
+        from strategies.dca import trail_arm_log_fields
+
+        arm_fields = trail_arm_log_fields(position)
+    except Exception:
+        arm_fields = ""
     why = (
         f"Trail->stop (px {price:.6g} <= stop {stop_px:.6g} "
         f"[~{stop_gain:+.1f}% vs entry], drop {drop_pct:.1f}%, "
-        f"trail {trail_pct:.1f}%, peak {peak_gain_pct:.1f}%)"
+        f"trail {trail_pct:.1f}%, peak {peak_gain_pct:.1f}%) {arm_fields}"
     )
     return TrailingStopCandidate(
         action=SELL_FULL,

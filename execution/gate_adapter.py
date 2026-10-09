@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -27,6 +29,216 @@ _GATE_TEXT_PAYLOAD_MAX_BYTES = _GATE_TEXT_PARAM_MAX_BYTES - len(_GATE_TEXT_PREFI
 _GATE_TEXT_ALLOWED = frozenset(
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
 )
+
+# R4 market cache on the existing adapter path. Tests install an override;
+# production fills the cache from load_markets. No second market client.
+_VENUE_CACHE: dict[str, dict] = {}
+_VENUE_OVERRIDE: dict | None = None
+
+
+def price_precision_places(raw) -> int | None:
+    """Decimal places of the pair price. Tick sizes below 1 use the tick."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number >= 1:
+        return int(number) if number == int(number) and number <= 18 else 0
+    text = f"{number:.12f}".rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.split(".", 1)[1])
+
+
+def _amount_step(market: dict) -> float | None:
+    prec = (market.get("precision") or {}).get("amount")
+    if isinstance(prec, int) and not isinstance(prec, bool) and prec >= 0:
+        return 10 ** (-prec) if prec else 1.0
+    try:
+        step = float(prec)
+    except (TypeError, ValueError):
+        step = 0.0
+    if step > 0:
+        return step
+    try:
+        min_amt = float(((market.get("limits") or {}).get("amount") or {}).get("min") or 0)
+    except (TypeError, ValueError):
+        min_amt = 0.0
+    return min_amt if min_amt > 0 else None
+
+
+def venue_limits_from_market(market: dict | None) -> dict:
+    if not isinstance(market, dict) or not market:
+        return {"known": False, "min_cost": None, "amount_step": None, "price_places": None}
+    try:
+        min_cost = float(((market.get("limits") or {}).get("cost") or {}).get("min") or 0)
+    except (TypeError, ValueError):
+        min_cost = 0.0
+    return {
+        "known": min_cost > 0,
+        "min_cost": min_cost if min_cost > 0 else None,
+        "amount_step": _amount_step(market),
+        "price_places": price_precision_places((market.get("precision") or {}).get("price")),
+    }
+
+
+def remember_venue_markets(markets: dict | None) -> None:
+    if not isinstance(markets, dict):
+        return
+    for symbol, market in markets.items():
+        if isinstance(market, dict):
+            _VENUE_CACHE[str(symbol)] = venue_limits_from_market(market)
+
+
+def set_venue_limits_override(limits: dict | None) -> None:
+    global _VENUE_OVERRIDE
+    _VENUE_OVERRIDE = None if limits is None else dict(limits)
+
+
+def venue_limits_for(symbol: str) -> dict:
+    if _VENUE_OVERRIDE is not None:
+        return dict(_VENUE_OVERRIDE)
+    cached = _VENUE_CACHE.get(str(symbol or ""))
+    if cached is not None:
+        return dict(cached)
+    return {"known": False, "min_cost": None, "amount_step": None, "price_places": None}
+
+
+# A failed load_markets stays fail-closed and is tried again after this many
+# seconds when the config key is absent. The key itself lives in config.json.
+_VENUE_LIMITS_RETRY_DEFAULT_SEC = 60.0
+_VENUE_LOADED = False
+_VENUE_FAILED_AT: float | None = None
+_VENUE_WARNED = False
+_VENUE_LOADER = None
+_VENUE_LOCK = threading.Lock()
+
+
+def reset_venue_limit_load_state() -> None:
+    """Drop the process load bookkeeping. Tests use this; production does not."""
+    global _VENUE_LOADED, _VENUE_FAILED_AT, _VENUE_WARNED, _VENUE_LOADER
+    _VENUE_LOADED = False
+    _VENUE_FAILED_AT = None
+    _VENUE_WARNED = False
+    _VENUE_LOADER = None
+    _VENUE_CACHE.clear()
+
+
+def _venue_limits_retry_sec(config) -> float:
+    """Backoff after a failed load. Explicit 0 retries on the next check."""
+    raw = {}
+    risk = {}
+    defaults = {}
+    if config is not None:
+        raw = getattr(config, "raw", None) or {}
+        risk = getattr(config, "risk_config", None) or {}
+        defaults = getattr(config, "dry_run_defaults", None) or {}
+    try:
+        from core.simulated_trading import is_dry_run_enhanced
+
+        if is_dry_run_enhanced(raw if isinstance(raw, dict) else {}):
+            if (
+                "venue_limits_retry_sec" in defaults
+                and defaults.get("venue_limits_retry_sec") is not None
+            ):
+                return float(defaults["venue_limits_retry_sec"])
+    except Exception:
+        pass
+    if (
+        isinstance(risk, dict)
+        and "venue_limits_retry_sec" in risk
+        and risk.get("venue_limits_retry_sec") is not None
+    ):
+        try:
+            return float(risk["venue_limits_retry_sec"])
+        except (TypeError, ValueError):
+            return _VENUE_LIMITS_RETRY_DEFAULT_SEC
+    return _VENUE_LIMITS_RETRY_DEFAULT_SEC
+
+
+def _warn_venue_limits_unavailable() -> None:
+    global _VENUE_WARNED
+    if _VENUE_WARNED:
+        return
+    _VENUE_WARNED = True
+    log("venue limits unavailable — buys stay blocked until retry", "WARNING")
+
+
+def _adapter_for_venue_load(config):
+    """One adapter per process and mode. Its exchange is the existing client."""
+    global _VENUE_LOADER
+    from core.execution_mode import resolve_execution_mode
+
+    raw = getattr(config, "raw", None) if config is not None else None
+    mode = resolve_execution_mode(raw if isinstance(raw, dict) else {}).adapter_mode
+    if _VENUE_LOADER is not None and _VENUE_LOADER.mode == mode:
+        return _VENUE_LOADER
+    _VENUE_LOADER = GateExecutionAdapter(config, mode=mode)
+    return _VENUE_LOADER
+
+
+def _mark_venue_loaded(loaded: dict) -> None:
+    global _VENUE_LOADED, _VENUE_FAILED_AT, _VENUE_WARNED
+    remember_venue_markets(loaded)
+    _VENUE_LOADED = True
+    _VENUE_FAILED_AT = None
+    _VENUE_WARNED = False
+
+
+def ensure_venue_limits_loaded(config=None) -> None:
+    """Load pair limits before the buy check, in shadow and in live mode.
+
+    An installed override is left alone. A successful ``load_markets`` runs
+    once per process. A failure stays unknown, logs once, and is retried
+    after ``venue_limits_retry_sec``.
+    """
+    global _VENUE_FAILED_AT, _VENUE_LOADED
+    if _VENUE_OVERRIDE is not None or _VENUE_LOADED:
+        return
+    with _VENUE_LOCK:
+        if _VENUE_OVERRIDE is not None or _VENUE_LOADED:
+            return
+        if _VENUE_CACHE:
+            _VENUE_LOADED = True
+            _VENUE_FAILED_AT = None
+            return
+        now = time.monotonic()
+        if _VENUE_FAILED_AT is not None and (
+            now - _VENUE_FAILED_AT < _venue_limits_retry_sec(config)
+        ):
+            return
+        try:
+            adapter = _adapter_for_venue_load(config)
+            exchange = adapter._get_exchange()
+            if exchange is None:
+                raise RuntimeError("exchange unavailable")
+            existing = getattr(exchange, "markets", None)
+            if isinstance(existing, dict) and existing:
+                loaded = existing
+            else:
+                loaded = exchange.load_markets()
+            if not isinstance(loaded, dict) or not loaded:
+                raise RuntimeError("empty markets")
+            _mark_venue_loaded(loaded)
+        except Exception:
+            _VENUE_FAILED_AT = now
+            _warn_venue_limits_unavailable()
+
+
+def round_usdt_to_price_precision(value: float, limits: dict | None) -> float:
+    """Round a USDT loss to the pair price precision. Fallback is order-path cents."""
+    places = None if not isinstance(limits, dict) else limits.get("price_places")
+    if places is None:
+        return round(float(value), 2)
+    return round(float(value), int(places))
 
 
 def _clamp_gate_client_order_id(key: str) -> str:
@@ -316,6 +528,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         existing = getattr(exchange, "markets", None) if exchange is not None else None
         if isinstance(existing, dict) and existing:
             cls._shadow_markets_cache = existing
+            remember_venue_markets(existing)
             return True
         if cls._shadow_markets_cache is not None:
             if exchange is not None:
@@ -337,6 +550,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             if not loaded:
                 raise RuntimeError("empty markets")
             cls._shadow_markets_cache = loaded
+            remember_venue_markets(loaded)
             return True
         except Exception:
             cls._shadow_markets_failed = True
@@ -525,6 +739,21 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         return amount, ""
 
+    def _reject_sell_below_venue_min(self, order: TradeOrder, timeframe: str, error: str) -> TradeResult:
+        """A stop or full sell the venue refuses for size enters the below-min state once."""
+        text = str(error or "")
+        signal = str(getattr(order, "signal", "") or "")
+        if "minimum" in text.lower() and ("STOP" in signal or "FULL" in signal):
+            from core.tenant_context import resolve_tenant_id
+            from strategies.positions import BELOW_VENUE_MINIMUM, mark_exchange_min_reject
+
+            if mark_exchange_min_reject(order.symbol, timeframe):
+                log(
+                    f"{BELOW_VENUE_MINIMUM} tenant={resolve_tenant_id()} symbol={order.symbol}",
+                    "WARNING",
+                )
+        return self._rejected_result(order, error)
+
     def _execute_sell(self, exchange, order: TradeOrder, timeframe: str) -> TradeResult:
         amount = float(order.qty or 0)
         if amount <= 0:
@@ -535,7 +764,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 try:
                     amount, error = self._validate_sell_amount(exchange, order, amount)
                     if error:
-                        return self._rejected_result(order, error)
+                        return self._reject_sell_below_venue_min(order, timeframe, error)
                     self._precision_unverified = False
                 except Exception:
                     amount = self._shadow_cap_sell(exchange, order, amount)
@@ -546,7 +775,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         else:
             amount, error = self._validate_sell_amount(exchange, order, amount)
             if error:
-                return self._rejected_result(order, error)
+                return self._reject_sell_below_venue_min(order, timeframe, error)
 
         params = self._client_order_params(order)
         create_attempted = False
@@ -1357,7 +1586,9 @@ class GateExecutionAdapter(ExecutionAdapter):
         order.qty = base_qty
 
         pos = get_position(order.symbol, timeframe)
-        if float(pos.get("amount") or 0) > 1e-12 and not is_short(pos):
+        from strategies.positions import is_open_position
+
+        if is_open_position(pos) and not is_short(pos):
             return self._rejected_result(order, "one-way: close long before short")
 
         required = margin_usdt(base_qty, float(order.price or 0), lev)
@@ -1929,6 +2160,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange_order_id=order.exchange_order_id,
             usdt_received=cost if order.type == "SELL" else 0,
             fill=fill,
+            fee_unknown=fee_unknown,
         )
         result.exchange_order_id = order.exchange_order_id
         result.fee = fill.fee_usdt if fill is not None else 0.0
@@ -2020,6 +2252,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         exchange_order_id: str = "",
         usdt_received: float = 0,
         fill: Fill | None = None,
+        fee_unknown: bool = False,
     ) -> TradeResult:
         oid = order.order_id or None
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
@@ -2038,6 +2271,17 @@ class GateExecutionAdapter(ExecutionAdapter):
                     fill = cm.simulate_buy(order.price, usdt=usdt)
             elif order.amount and order.amount > 0:
                 fill = cm.simulate_sell(order.price, order.amount)
+        row_order_type = None
+        if fee_unknown and order.type == "BUY" and oid:
+            try:
+                from data_manager import resolve_ledger_scope
+                from services.order_service import OrderService
+
+                stored = OrderService(resolve_ledger_scope()).get_by_id(oid)
+                if isinstance(stored, dict) and stored.get("order_type"):
+                    row_order_type = str(stored.get("order_type"))
+            except Exception:
+                row_order_type = None
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
                 order.symbol,
@@ -2050,6 +2294,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
                 fill=fill,
                 ctx=ctx,
+                fee_unknown=fee_unknown,
+                order_type=row_order_type,
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(
@@ -2079,7 +2325,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
-                fill=fill, ctx=ctx,
+                fill=fill, ctx=ctx, fee_unknown=fee_unknown,
             )
         else:
             return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")

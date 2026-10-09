@@ -521,7 +521,9 @@ def resolve_spendable_ok_for_entry(
     cfg = slot_eviction_section(risk_config)
     if not cfg.get("require_spendable_for_entry", True):
         return True
-    min_trade = float((risk_config or {}).get("min_trade_usdt", 100) or 100)
+    raw_min = (risk_config or {}).get("min_trade_usdt")
+    # Same key as the buy floor. Explicit 0 stays 0. Absent key keeps today's 100.
+    min_trade = 100.0 if raw_min is None else float(raw_min)
     try:
         planned = float(getattr(order, "usdt_amount", 0) or 0)
     except (TypeError, ValueError):

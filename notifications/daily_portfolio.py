@@ -31,11 +31,13 @@ def _history_and_trades(trading_mode: str = None):
 
 
 def _position_value_from_snapshot(snapshot: dict, prices: dict) -> float:
+    from strategies.positions import is_open_position
+
     total = 0.0
     for key, pos in snapshot.items():
-        amt = float(pos.get("amount", 0) or 0)
-        if amt <= 1e-12:
+        if not is_open_position(pos):
             continue
+        amt = float(pos.get("amount", 0) or 0)
         sym = key.rpartition("_")[0].replace("_", "/")
         price = float(prices.get(sym, 0) or 0)
         total += price * amt
@@ -236,8 +238,14 @@ def estimate_nav_at_day_start(
     pre = [t for t in all_trades if (t.get("timestamp") or "") < cutoff]
     cash = _cash_at_cutoff(cutoff, scope, initial, pre)
     snap = _snapshot_from_orders_before(cutoff, scope)
+    from strategies.positions import is_open_position
+
     symbols = sorted(
-        {key.rpartition("_")[0].replace("_", "/") for key in snap if snap[key].get("amount", 0) > 1e-12}
+        {
+            key.rpartition("_")[0].replace("_", "/")
+            for key, pos in snap.items()
+            if is_open_position(pos)
+        }
     )
     if symbols:
         if prices and all(float(prices.get(s, 0) or 0) > 0 for s in symbols):
