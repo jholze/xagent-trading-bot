@@ -941,6 +941,29 @@ def clear_ledger_caches():
 
 
 @pytest.fixture(autouse=True)
+def _venue_limits_known():
+    """Known pair limits so the fail-closed venue check does not reject every buy.
+
+    Production stays fail-closed when market data is missing. Tests that need
+    a 3 USDT minimum or missing data call set_venue_limits_override themselves.
+    """
+    from execution.gate_adapter import reset_venue_limit_load_state, set_venue_limits_override
+
+    reset_venue_limit_load_state()
+    set_venue_limits_override(
+        {
+            "known": True,
+            "min_cost": 1e-6,
+            "amount_step": 1e-8,
+            "price_places": 8,
+        }
+    )
+    yield
+    set_venue_limits_override(None)
+    reset_venue_limit_load_state()
+
+
+@pytest.fixture(autouse=True)
 def normalize_unit_test_config(monkeypatch, request):
     """Keep unit tests independent of operator-scaled production config.json."""
     import copy

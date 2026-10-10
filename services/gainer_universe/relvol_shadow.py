@@ -152,7 +152,12 @@ def size_usdt_for_signal(
     are unchanged.
     """
     part = float(cfg.get("participation") or 0.02)
-    min_ticket = float(cfg.get("min_ticket_usdt") or 50)
+    raw_min = cfg.get("min_ticket_usdt")
+    # Explicit 0 disables the floor. A missing key uses the config default.
+    if raw_min is None or raw_min == "":
+        min_ticket = float(_DEFAULT["min_ticket_usdt"])
+    else:
+        min_ticket = float(raw_min)
     max_pct_24 = float(cfg.get("max_pct_of_vol_24h") or 0.02)
     usdt = min(float(max_usdt_per_trade or 500), part * float(qvol_1h or 0))
     mode = str(cfg.get("mode") or "").strip().lower()
