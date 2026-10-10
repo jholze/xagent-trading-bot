@@ -166,37 +166,76 @@ def _latest_dca_fill_at(position: dict) -> datetime | None:
     return latest
 
 
-def recent_high_reached_after_dca(position: dict | None) -> bool:
-    """True when the current recent_high was printed after the last DCA fill.
+def lot_has_dca_rounds(position: dict | None) -> bool:
+    """C7: rounds > 0 or a DCA / recovery fill time is set."""
+    pos = position or {}
+    if _total_dca_rounds(pos) > 0:
+        return True
+    return bool(pos.get("last_dca_at") or pos.get("last_dca_recovery_at"))
 
-    trail_exits_paused_after_dca stays true for the whole grace window.
-    Trailing take-profit bypasses that pause only when this is true, so a
-    pre-DCA peak (BEAT) cannot arm a trail and a post-DCA peak can.
+
+def _recent_high_after_dca(position: dict | None) -> tuple[bool, str]:
+    """(armed, proof branch). Pure: changes no state.
 
     Proof, fail-closed when both are missing:
-    - peak_at is strictly after last_dca_at / last_dca_recovery_at, or
-    - recent_high is strictly above peak_epoch_high. The DCA epoch stamp
-      sets those equal; a later print (including an exit_ws tick that
-      raises recent_high without refreshing peak_at) is the only way the
-      high moves above the epoch.
+    - peak_at is strictly after the latest DCA fill, unless v3 is set
+      (a V3 floor's peak_at is boot time and must not arm), or
+    - recent_high is strictly above peak_epoch_high AND peak_epoch_at is
+      at or after the latest DCA fill. Equality counts: a replay reset
+      stamps both from the same fill, and the WS path only raises
+      recent_high.
     """
     pos = position or {}
     dca_at = _latest_dca_fill_at(pos)
     if dca_at is None:
-        return False
+        return False, ""
 
-    peak_at = _parse_position_ts(pos.get("peak_at"))
-    if peak_at is not None:
-        peak_at, dca_cmp = _align_ts(peak_at, dca_at)
-        if peak_at > dca_cmp:
-            return True
+    if not bool(pos.get("v3")):
+        peak_at = _parse_position_ts(pos.get("peak_at"))
+        if peak_at is not None:
+            peak_at, dca_cmp = _align_ts(peak_at, dca_at)
+            if peak_at > dca_cmp:
+                return True, "peak_at"
 
+    epoch_at = _parse_position_ts(pos.get("peak_epoch_at"))
+    if epoch_at is None:
+        return False, ""
+    epoch_at, dca_cmp = _align_ts(epoch_at, dca_at)
+    if epoch_at < dca_cmp:
+        return False, ""
     try:
         high = float(pos.get("recent_high") or 0)
         epoch = float(pos.get("peak_epoch_high") or 0)
     except (TypeError, ValueError):
-        return False
-    return epoch > 0 and high > epoch
+        return False, ""
+    if epoch > 0 and high > epoch:
+        return True, "epoch"
+    return False, ""
+
+
+def recent_high_reached_after_dca(position: dict | None) -> bool:
+    """True when the current recent_high was printed after the last DCA fill.
+
+    trail_exits_paused_after_dca stays true for the whole grace window.
+    Trailing stop and trailing take-profit arm on a DCA lot only when this
+    is true, including after the grace window.
+    """
+    ok, _branch = _recent_high_after_dca(position)
+    return ok
+
+
+def trail_arm_log_fields(position: dict | None) -> str:
+    """C6 fields for a stop / TTP rationale line."""
+    pos = position or {}
+    _ok, branch = _recent_high_after_dca(pos)
+    latest = _latest_dca_fill_at(pos)
+    latest_s = latest.isoformat(sep=" ") if latest else ""
+    return (
+        f"peak_at={pos.get('peak_at') or ''} "
+        f"peak_epoch_at={pos.get('peak_epoch_at') or ''} "
+        f"latest_dca={latest_s} proof={branch or 'none'} "
+        f"v3={bool(pos.get('v3'))} first_buy_at={pos.get('first_buy_at') or ''}"
+    )
 
 
 def trail_exits_paused_after_dca(
@@ -218,9 +257,7 @@ def trail_exits_paused_after_dca(
     cfg = dca_config(strategy_params)
     if not bool(cfg.get("pause_trail_exits_after_dca", True)):
         return False, ""
-    if _total_dca_rounds(pos) <= 0 and not pos.get("last_dca_at") and not pos.get(
-        "last_dca_recovery_at"
-    ):
+    if not lot_has_dca_rounds(pos):
         return False, ""
 
     grace_h = trail_grace_hours_after_dca(strategy_params)

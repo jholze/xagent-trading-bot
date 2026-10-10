@@ -18,6 +18,11 @@ _TF_HOURS = {
     "1d": 24.0,
 }
 
+def _timeframe_ms(timeframe: str) -> float:
+    hours = float(_TF_HOURS.get(str(timeframe or "").strip(), 1.0))
+    return hours * 3600.0 * 1000.0
+
+
 _24H_BARS = {
     "15m": 96,
     "30m": 48,
@@ -282,23 +287,87 @@ class MarketService:
         since_iso: str | None = None,
         *,
         limit: int = 200,
-    ) -> float | None:
-        """Highest candle high since *since_iso* (or full window if unknown)."""
+        with_meta: bool = False,
+        page_to_since: bool = False,
+    ):
+        """Highest candle high since *since_iso*.
+
+        An unparseable ``since_iso`` is fail-closed (no full-window search).
+        With ``page_to_since``, fetches back until a candle opens at or before
+        the search start; otherwise the result is uncovered (V2). Highs count
+        only for candles that open strictly after the search start. Candle
+        times are naive process-local (``datetime.fromtimestamp``).
+
+        Default return is ``float | None`` for existing callers. ``with_meta``
+        returns a dict: price, candle_open, covered, reason.
+        """
         from datetime import datetime
 
-        df = self._fetch_ohlcv(symbol, timeframe, limit)
-        if df is None or df.empty:
-            return None
+        from core.time_utils import process_local_tz
+
+        def _pack(price, *, candle_open=None, covered=True, reason=None):
+            if not with_meta:
+                return price
+            return {
+                "price": price,
+                "candle_open": candle_open,
+                "covered": covered,
+                "reason": reason,
+            }
+
+        since_dt = None
+        since_ms = None
         if since_iso:
             try:
-                since_dt = datetime.fromisoformat(str(since_iso).replace("Z", ""))
-                since_ms = since_dt.timestamp() * 1000
-                df = df[df["ts"] >= since_ms]
-                if df.empty:
-                    return None
+                raw = str(since_iso).strip().replace("Z", "+00:00")
+                since_dt = datetime.fromisoformat(raw)
             except Exception:
-                pass
-        return float(df["high"].max())
+                return _pack(None, covered=False, reason="unparseable_since")
+            if since_dt.tzinfo is not None:
+                since_dt = since_dt.astimezone(process_local_tz()).replace(tzinfo=None)
+            since_ms = since_dt.timestamp() * 1000
+
+        if page_to_since and since_ms is not None:
+            bar_ms = _timeframe_ms(timeframe)
+            cursor = max(0.0, since_ms - bar_ms)
+            frames = []
+            seen_last = None
+            for _ in range(40):
+                page = self._fetch_ohlcv(symbol, timeframe, limit, since_ms=cursor)
+                if page is None or page.empty:
+                    break
+                frames.append(page)
+                last = float(page["ts"].iloc[-1])
+                if len(page) < limit or (seen_last is not None and last <= seen_last):
+                    break
+                seen_last = last
+                cursor = last + 1
+            if not frames:
+                return _pack(None, covered=False, reason="no_candles")
+            df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ts"])
+        else:
+            df = self._fetch_ohlcv(symbol, timeframe, limit)
+            if df is None or df.empty:
+                return _pack(None, covered=False, reason="no_candles")
+
+        if since_dt is None or since_ms is None:
+            idx = df["high"].idxmax()
+            open_at = datetime.fromtimestamp(float(df.loc[idx, "ts"]) / 1000.0)
+            return _pack(float(df.loc[idx, "high"]), candle_open=open_at, covered=True)
+
+        earliest = datetime.fromtimestamp(float(df["ts"].min()) / 1000.0)
+        if earliest > since_dt:
+            return _pack(None, covered=False, reason="not_covered")
+        after = df[df["ts"] > since_ms]
+        if after.empty:
+            return _pack(None, candle_open=None, covered=True, reason="no_candle_after")
+        idx = after["high"].idxmax()
+        open_at = datetime.fromtimestamp(float(after.loc[idx, "ts"]) / 1000.0)
+        return _pack(
+            float(after.loc[idx, "high"]),
+            candle_open=open_at,
+            covered=True,
+        )
 
     @staticmethod
     def compute_15m_sensor_metrics(
@@ -456,24 +525,29 @@ class MarketService:
             return None
         return coin_chg - btc_chg
 
-    def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int):
+    def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int, since_ms: float | None = None):
         cache = None
-        try:
-            from bus.ohlcv_cache import ohlcv_cache_enabled, ohlcv_cache_from_config
+        # A paged ``since`` window must not reuse the tail-only cache.
+        if since_ms is None:
+            try:
+                from bus.ohlcv_cache import ohlcv_cache_enabled, ohlcv_cache_from_config
 
-            if ohlcv_cache_enabled(self._config_raw):
-                cache = ohlcv_cache_from_config(self._config_raw)
-                cached = cache.get(symbol, timeframe, limit)
-                if cached and cached.bars:
-                    return self._bars_to_dataframe(cached.bars)
-        except Exception:
-            cache = None
+                if ohlcv_cache_enabled(self._config_raw):
+                    cache = ohlcv_cache_from_config(self._config_raw)
+                    cached = cache.get(symbol, timeframe, limit)
+                    if cached and cached.bars:
+                        return self._bars_to_dataframe(cached.bars)
+            except Exception:
+                cache = None
 
         for ex_name in self.EXCHANGES:
             try:
                 exchange = self._get_spot_exchange(ex_name)
-                bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-                if cache and bars:
+                kwargs = {"timeframe": timeframe, "limit": limit}
+                if since_ms is not None:
+                    kwargs["since"] = int(since_ms)
+                bars = exchange.fetch_ohlcv(symbol, **kwargs)
+                if cache and bars and since_ms is None:
                     cache.set(symbol, timeframe, limit, bars, exchange=ex_name)
                 return self._bars_to_dataframe(bars)
             except Exception as e:

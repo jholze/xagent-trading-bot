@@ -204,7 +204,15 @@ def _normalize_positions(positions: dict) -> dict:
         key: {
             k: _value(k, v)
             for k, v in value.items()
-            if k not in ("last_trade_at", "last_dca_at", "first_buy_at")
+            if k not in (
+                "last_trade_at",
+                "last_dca_at",
+                "first_buy_at",
+                # F0/F7 stamp these with datetime.now() on a new entry.
+                # Two sequential buy/sell runs cannot share one clock reading.
+                "peak_at",
+                "peak_epoch_at",
+            )
         }
         for key, value in positions.items()
     }

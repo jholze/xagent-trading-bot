@@ -325,7 +325,7 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     from core.actions import BUY_DCA
     from core.models import TradeOrder
     from strategies.positions import get_position, flush_positions
-    from strategies.recovery_hold import set_recovery_hold, stamp_peak_epoch_on_dca
+    from strategies.recovery_hold import set_recovery_hold
 
     symbol = str(data.get("symbol") or "").strip()
     tf = str(data.get("timeframe") or "1h")
@@ -403,10 +403,7 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
             if pos:
                 if set_hold:
                     set_recovery_hold(pos, sniper_focus=True, heavy=heavy)
-                try:
-                    stamp_peak_epoch_on_dca(pos, float(getattr(result, "price", None) or price))
-                except Exception:
-                    pass
+                # Peak epoch is stamped on the BUY_DCA fill inside update_position.
                 # analysis meta
                 if data.get("analysis_id"):
                     pos["last_sniper_analysis_id"] = str(data.get("analysis_id"))

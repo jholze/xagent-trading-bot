@@ -469,6 +469,9 @@ def test_merge_does_not_inherit_rounds_onto_a_new_cycle():
             "average_entry": 2.0,
             "dca_rounds": 0,
             "first_buy_at": "2026-10-01T00:00:00Z",
+            # K3.1 reads the opening-order window replay writes, not first_buy_at.
+            "cycle_open_created": "2026-10-01T00:00:00Z",
+            "cycle_open_filled": "2026-10-01T00:00:01Z",
         }
     }
     cache = {
