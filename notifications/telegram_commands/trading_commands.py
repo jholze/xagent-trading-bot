@@ -475,8 +475,19 @@ def _handle_sell_pct_callback(callback_query: dict) -> bool:
         return _finish_sell_pct_from_context(label, position, timeframe, canonical)
     except Exception as e:
         log(f"sellpct preview failed: {e}", "ERROR")
-        send_telegram_message(t("price_fetch_failed", sym=label or position))
+        _report_sell_preview_failure(e, label or position)
         return True
+
+
+
+def _report_sell_preview_failure(exc: Exception, sym: str) -> None:
+    """Ledger failures are not a missing price. The price string hid a full order book."""
+    from storage.errors import LedgerUnavailable
+
+    if isinstance(exc, LedgerUnavailable):
+        send_telegram_message(t("ledger_write_failed"))
+        return
+    send_telegram_message(t("sell_preview_failed", sym=sym))
 
 
 def _finish_sell_pct_from_context(
@@ -531,7 +542,7 @@ def _handle_sell_pos_callback(callback_query: dict) -> bool:
         ok = _continue_sell_for_lot_identity(ticker, tf)
     except Exception as e:
         log(f"sellpos preview failed: {e}", "ERROR")
-        send_telegram_message(t("price_fetch_failed", sym=ticker))
+        _report_sell_preview_failure(e, ticker)
         ok = True
     _log_callback_first_reply("sellpos", t0)
     return ok
