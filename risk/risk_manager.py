@@ -2440,7 +2440,7 @@ class RiskManager:
         seen.add(key)
         log(f"{code} tenant={key[0]} symbol={symbol} {extra}", "WARNING")
 
-    def _effective_stop_loss_pct(self, symbol: str, timeframe: str, position: dict | None = None) -> float:
+    def _effective_stop_loss_pct(self, symbol: str, timeframe: str) -> float:
         """First stop the exit path fires, in percent.
 
         Same resolver as the stop path (``effective_stop_loss_thresholds``):
@@ -2559,7 +2559,7 @@ class RiskManager:
                 ),
                 None,
             )
-        stop_pct = self._effective_stop_loss_pct(order.symbol, timeframe, pos)
+        stop_pct = self._effective_stop_loss_pct(order.symbol, timeframe)
         if stop_pct <= float(buffer):
             self._log_merge_once(order, timeframe, loss, 0.0)
             return (
