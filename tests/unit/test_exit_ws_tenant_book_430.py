@@ -189,7 +189,7 @@ class TestLoadOpenBookTenantAware(unittest.TestCase):
         self.assertEqual(seen, [DEFAULT_TENANT, "henry", "ctexp"])
 
     def test_shared_symbol_keeps_default_row_henry_only_still_appear(self):
-        """B1: default and henry both hold X/USDT — incumbent (default) stays."""
+        """#657 R10: default and henry both hold X/USDT — both rows stay."""
         from strategies.positions import get_key, positions
 
         positions[get_key("X/USDT", "1h")] = _open_lot(amount=10.0, entry=1.0)
@@ -236,19 +236,28 @@ class TestLoadOpenBookTenantAware(unittest.TestCase):
         snap = hub.book_snapshot()
         default_book = [r for r in snap if r.get("tenant_id") == DEFAULT_TENANT]
         self.assertEqual(len(default_book), 2)
-        xrow = next(r for r in snap if r["symbol"] == "X/USDT")
-        self.assertEqual(xrow["tenant_id"], DEFAULT_TENANT)
-        self.assertEqual(float((xrow.get("position") or {}).get("amount") or 0), 10.0)
+        # #657 R10: different tenants on one symbol both stay. Collisions stay 0.
+        x_rows = [r for r in snap if r["symbol"] == "X/USDT"]
+        self.assertEqual(len(x_rows), 2)
+        x_by_tenant = {r["tenant_id"]: r for r in x_rows}
+        self.assertEqual(
+            float((x_by_tenant[DEFAULT_TENANT].get("position") or {}).get("amount") or 0),
+            10.0,
+        )
+        self.assertEqual(
+            float((x_by_tenant["henry"].get("position") or {}).get("amount") or 0),
+            5.0,
+        )
         self.assertTrue(
             any(
                 r["symbol"] == "NPC/USDT" and r.get("tenant_id") == "henry"
                 for r in snap
             )
         )
-        self.assertGreaterEqual(hub.stats().get("book_tenant_collisions") or 0, 1)
+        self.assertEqual(hub.stats().get("book_tenant_collisions") or 0, 0)
 
     def test_update_book_does_not_overwrite_incumbent_tenant(self):
-        """B1 unit: last writer must not evict a different tenant's row."""
+        """#657 R10: a different tenant on the same symbol is not a collision."""
         hub = ExitRealtimeHub({"exit_realtime": {"enabled": True, "mode": "shadow"}})
         hub.update_book(
             [
@@ -285,14 +294,17 @@ class TestLoadOpenBookTenantAware(unittest.TestCase):
             ]
         )
         snap = hub.book_snapshot()
-        xrow = next(r for r in snap if r["symbol"] == "X/USDT")
-        self.assertEqual(xrow["tenant_id"], DEFAULT_TENANT)
-        self.assertEqual(float((xrow.get("position") or {}).get("amount") or 0), 10.0)
+        x_rows = [r for r in snap if r["symbol"] == "X/USDT"]
+        self.assertEqual({r["tenant_id"] for r in x_rows}, {DEFAULT_TENANT, "henry"})
+        default_x = next(r for r in x_rows if r["tenant_id"] == DEFAULT_TENANT)
+        self.assertEqual(float((default_x.get("position") or {}).get("amount") or 0), 10.0)
+        henry_x = next(r for r in x_rows if r["tenant_id"] == "henry")
+        self.assertEqual(float((henry_x.get("position") or {}).get("amount") or 0), 5.0)
         self.assertTrue(
             any(r["symbol"] == "NPC/USDT" and r.get("tenant_id") == "henry" for r in snap)
         )
-        self.assertEqual(len(snap), 2)
-        self.assertGreaterEqual(hub.stats().get("book_tenant_collisions") or 0, 1)
+        self.assertEqual(len(snap), 3)
+        self.assertEqual(hub.stats().get("book_tenant_collisions") or 0, 0)
 
     def test_satellite_rows_use_that_tenant_strategy_params(self):
         """B2: henry lots must carry henry's strategy_params / atr_pct."""

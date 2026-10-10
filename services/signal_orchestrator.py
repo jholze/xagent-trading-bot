@@ -214,6 +214,17 @@ class SignalOrchestrator:
                     )
                 except Exception:
                     strategy_params = {}
+            # to_execution_action maps every SELL_FULL to SELL_STOP_FULL and
+            # every 50% partial to SELL_STOP_PARTIAL. That string is not a
+            # hard stop. SELL_STOP_* and exit_source stop_loss apply only when
+            # evaluate_long_hard_stop fired in this same analysis.
+            sell_signal = analysis.normalized_action or analysis.action
+            long_hard_stop = bool(getattr(analysis, "long_hard_stop", False))
+            if long_hard_stop and str(analysis.action or "") in (
+                "SELL_STOP_FULL",
+                "SELL_STOP_PARTIAL",
+            ):
+                sell_signal = str(analysis.action)
             fraction = sell_fraction_for_signal(
                 analysis.action, symbol, pos_tf, current_price, strategy_params,
             )
@@ -225,7 +236,6 @@ class SignalOrchestrator:
                     "WARNING",
                 )
                 return None
-            sell_signal = analysis.normalized_action or analysis.action
             from strategies.exit_attribution import resolve_exit_source, truncate_rationale
 
             exit_src = resolve_exit_source(
@@ -233,6 +243,11 @@ class SignalOrchestrator:
                 sources=list(analysis.sources or []),
                 action=sell_signal,
             )
+            if long_hard_stop and sell_signal in (
+                "SELL_STOP_FULL",
+                "SELL_STOP_PARTIAL",
+            ):
+                exit_src = "stop_loss"
             order = TradeOrder(
                 type="SELL",
                 symbol=symbol,

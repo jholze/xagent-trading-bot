@@ -168,7 +168,10 @@ class TestTryExecuteTrailExit(unittest.TestCase):
     def test_inflight_blocks_second(self):
         import services.exit_realtime.execute as ex
 
-        ex._inflight.add("X/USDT")
+        from services.exit_realtime.execute import exit_guard_key
+
+        guard = exit_guard_key("X/USDT")
+        ex._inflight.add(guard)
         r = try_execute_trail_exit(
             symbol="X/USDT",
             timeframe="1h",
@@ -177,7 +180,7 @@ class TestTryExecuteTrailExit(unittest.TestCase):
             exit_source="trailing_stop",
         )
         self.assertEqual(r["message"], "inflight")
-        ex._inflight.discard("X/USDT")
+        ex._inflight.discard(guard)
 
     def test_risk_block_not_executed(self):
         trading = MagicMock()
@@ -313,8 +316,10 @@ class TestHubLivePath(unittest.TestCase):
             hub.on_ticker("H_USDT", 1.10)
         mock_ex.assert_called()
         self.assertGreaterEqual(hub.stats()["executed"], 1)
-        # removed from book after exec
-        self.assertNotIn("H/USDT", hub._book)
+        # removed from book after exec (book is keyed by tenant, symbol)
+        self.assertFalse(
+            any(r.get("symbol") == "H/USDT" for r in hub.book_snapshot())
+        )
 
     def test_on_ticker_non_live_does_not_execute(self):
         raw = {

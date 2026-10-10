@@ -45,10 +45,13 @@ def _continuation_metrics() -> dict:
 
 def _clear_guards(symbol: str) -> None:
     import services.exit_realtime.execute as ex
+    from services.exit_realtime.execute import exit_guard_key
 
+    keys = {symbol, exit_guard_key(symbol)}
     with ex._inflight_lock:
-        ex._inflight.discard(symbol)
-        ex._last_exit_at.pop(symbol, None)
+        for key in keys:
+            ex._inflight.discard(key)
+            ex._last_exit_at.pop(key, None)
 
 
 def _long_lot(**over):

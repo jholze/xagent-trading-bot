@@ -57,6 +57,7 @@ _RISK_CODES = {
     "position_locked": "Position ist gesperrt — kein automatischer Verkauf oder Nachkauf.",
     "position_lock_check_error": "Sperr-Prüfung ist fehlgeschlagen — Trade vorsichtshalber blockiert.",
     "no_amount": "Verkaufsmenge ist null — nichts zu verkaufen.",
+    "sell_lot_closed": "Dieses Los ist schon geschlossen — nichts mehr zu verkaufen.",
     "partial_sell_guard": "Teilverkauf nicht erlaubt — Guard hat den Schnitt blockiert.",
     "max_daily_sells": "Tageslimit für Verkäufe erreicht.",
     "stablecoin_blocked": "Stablecoin-Käufe sind gesperrt.",

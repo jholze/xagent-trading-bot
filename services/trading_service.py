@@ -396,6 +396,7 @@ class TradingService:
                 trust_score=trust_score,
                 confidence=confidence,
                 indicators=indicators,
+                locked_sell_checks=True,
             )
             if not decision.approved:
                 log(f"Risk rejected {order.type} {order.symbol}: {decision.message}", "WARNING")

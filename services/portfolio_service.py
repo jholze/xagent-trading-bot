@@ -189,6 +189,7 @@ class PortfolioService:
         sync_virtual_ledger: bool = True,
         fill: Fill | None = None,
         ctx: dict | None = None,
+        exit_source: str | None = None,
         fee_unknown: bool = False,
     ) -> TradeResult:
         if price <= 0:
@@ -237,7 +238,9 @@ class PortfolioService:
         else:
             pnl_basis = "net"
         pnl_fee_source = str(getattr(cm.params, "source", "") or "config")
-        update_position(symbol, timeframe, signal, f.fill_price, qty_sold)
+        update_position(
+            symbol, timeframe, signal, f.fill_price, qty_sold, exit_source=exit_source
+        )
         if source == "cmc":
             from strategies.positions import save_positions, set_position_field
 
@@ -430,6 +433,7 @@ class PortfolioService:
         return self.execute_sell(
             order.symbol, timeframe, order.price, order.signal or "SELL", order.amount or None,
             source=source, order_id=oid, ctx=ctx,
+            exit_source=getattr(order, "exit_source", None) or None,
         )
 
     def get_balance_summary(self) -> dict:
