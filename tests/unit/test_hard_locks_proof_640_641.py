@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +30,12 @@ from services.venue_quality import (
     depth_within_mid_band,
     source_applies_venue,
 )
-from strategies.positions import get_position, positions, update_position
+from strategies.positions import (
+    MIN_OPEN_POSITION_USDT,
+    get_position,
+    positions,
+    update_position,
+)
 from tests.unit.test_long_mcap_venue_563 import _eval_env
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "loss_cases_641.csv"
@@ -200,9 +206,18 @@ def _metrics_for(row: dict, *, missing_book: bool = False) -> VenueMetrics:
 def _position_for(row: dict) -> dict | None:
     if not row.get("has_open_lot"):
         return None
+    entry = float(row["avg_before"])
+    # These rows are held adds. N10 treats notional under 1 USDT as dust,
+    # so a 1-coin stand-in on a sub-dollar price is not an open lot.
+    amount = 1.0
+    if entry > 0 and amount * entry < MIN_OPEN_POSITION_USDT:
+        amount = MIN_OPEN_POSITION_USDT / entry
+        # 1/entry * entry can land one ulp under the floor.
+        while amount * entry < MIN_OPEN_POSITION_USDT:
+            amount = math.nextafter(amount, math.inf)
     pos = {
-        "amount": 1.0,
-        "average_entry": float(row["avg_before"]),
+        "amount": amount,
+        "average_entry": entry,
         "dca_rounds": int(row.get("dca_rounds_before") or 0),
         "symbol": row["symbol"],
     }

@@ -132,16 +132,28 @@ def evaluate_trailing_take_profit(
             trail_exits_paused_after_dca,
         )
 
+        reached = recent_high_reached_after_dca(position)
         paused, _why = trail_exits_paused_after_dca(
             position, strategy_params, now=now
         )
         # Grace still pauses a trail off the pre-DCA peak. A high printed
         # after the fill may arm take-profit; the drop check below still
         # refuses the exact high.
-        if paused and not recent_high_reached_after_dca(position):
+        if paused and not reached:
             return None
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from logger import log
+
+            log(
+                f"trail arm check failed tenant={resolve_tenant_id()} "
+                f"symbol={getattr(market, 'symbol', '')} exc={exc}",
+                "WARNING",
+            )
+        except Exception:
+            pass
+        return None
 
     try:
         from strategies.recovery_hold import (
@@ -165,6 +177,28 @@ def evaluate_trailing_take_profit(
             return None
     except Exception:
         pass
+
+    try:
+        from strategies.dca import lot_has_dca_rounds, recent_high_reached_after_dca
+
+        # F3b: the same post-DCA proof, called whether or not the grace
+        # pause is active. After grace a stale pre-DCA peak must not arm.
+        # Recovery-hold promotion above still runs; this only blocks the sell.
+        if lot_has_dca_rounds(position) and not recent_high_reached_after_dca(position):
+            return None
+    except Exception as exc:
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from logger import log
+
+            log(
+                f"trail arm check failed tenant={resolve_tenant_id()} "
+                f"symbol={getattr(market, 'symbol', '')} exc={exc}",
+                "WARNING",
+            )
+        except Exception:
+            pass
+        return None
 
     action = _resolve_action(position, strategy_params)
     if not action:
@@ -199,13 +233,19 @@ def evaluate_trailing_take_profit(
         if full_close_gain is not None and gain >= full_close_gain:
             shadow = mode == "shadow"
             priority = int(cfg.get("priority", 7))
+            try:
+                from strategies.dca import trail_arm_log_fields
+
+                arm_fields = trail_arm_log_fields(position)
+            except Exception:
+                arm_fields = ""
             return TrailingTakeProfitCandidate(
                 action=SELL_FULL,
                 source="trailing_take_profit",
                 priority=priority,
                 rationale=(
                     f"TrailTP->SELL_FULL full_close {gain:.1f}%>= {full_close_gain:.1f}% "
-                    f"(armed peak={peak_gain:.1f}%)"
+                    f"(armed peak={peak_gain:.1f}%) {arm_fields}"
                 ),
                 shadow_only=shadow,
             )
@@ -229,13 +269,20 @@ def evaluate_trailing_take_profit(
     shadow = mode == "shadow"
     # Higher than trailing_stop (6) so profit-take wins in DE when both fire.
     priority = int(cfg.get("priority", 7))
+    try:
+        from strategies.dca import trail_arm_log_fields
+
+        arm_fields = trail_arm_log_fields(position)
+    except Exception:
+        arm_fields = ""
     return TrailingTakeProfitCandidate(
         action=action,
         source="trailing_take_profit",
         priority=priority,
         rationale=(
             f"TrailTP->{action} (drop {drop_pct:.1f}% from high, "
-            f"trail {trail_pct:.1f}%, peak={peak_gain:.1f}%, gain={gain:.1f}%)"
+            f"trail {trail_pct:.1f}%, peak={peak_gain:.1f}%, gain={gain:.1f}%) "
+            f"{arm_fields}"
         ),
         shadow_only=shadow,
     )
