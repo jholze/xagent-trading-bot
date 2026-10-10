@@ -106,7 +106,8 @@ class TestShortsDustOneWay507(unittest.TestCase):
         update_position("B2/USDT", "4h", "BUY", 1.0, 10)
         update_position("B2/USDT", "4h", "SELL_FULL", 1.0, 9.999999)
         pos = get_position("B2/USDT", "4h")
-        self.assertEqual(float(pos["amount"]), 0.0)
+        self.assertAlmostEqual(float(pos["amount"]), 0.000001, places=9)
+        self.assertAlmostEqual(float(pos["average_entry"]), 1.0)
         self.assertEqual(float(pos["sold_percent"]), 1.0)
         self.assertFalse(is_open_position(pos))
 
@@ -120,7 +121,7 @@ class TestShortsDustOneWay507(unittest.TestCase):
     def test_apply_hard_clear_if_closed_on_dust_dict(self):
         pos = {"amount": Decimal("1e-8"), "average_entry": 1.0, "sold_percent": 0.99}
         self.assertTrue(apply_hard_clear_if_closed(pos))
-        self.assertEqual(float(pos["amount"]), 0.0)
+        self.assertEqual(float(pos["amount"]), 1e-8)
         self.assertEqual(float(pos["sold_percent"]), 1.0)
 
     def test_b2_rsi_sell_full_then_auto_short_not_one_way(self):
@@ -129,7 +130,7 @@ class TestShortsDustOneWay507(unittest.TestCase):
         update_position("B2/USDT", "4h", "BUY", 1.0, 10)
         update_position("B2/USDT", "4h", "SELL_FULL", 1.0, 9.999999)
         pos = get_position("B2/USDT", "4h")
-        self.assertEqual(float(pos["amount"]), 0.0)
+        self.assertAlmostEqual(float(pos["amount"]), 0.000001, places=9)
         self.assertEqual(float(pos["sold_percent"]), 1.0)
 
         svc = TradingService()

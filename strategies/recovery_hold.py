@@ -242,8 +242,12 @@ def maybe_promote_recovery_hold(
     return True
 
 
-def stamp_peak_epoch_on_dca(position: dict, fill_price: float) -> float:
-    """Set peak_epoch_high = max(fill, avg); clamp stale pre-DCA recent_high down."""
+def stamp_peak_epoch_on_dca(position: dict, fill_price: float, *, at=None) -> float:
+    """Set peak_epoch_high = max(fill, avg); clamp stale pre-DCA recent_high down.
+
+    ``at`` is the fill time (replay). Omitted → now, which is correct for a
+    live fill and wrong for a rebuild.
+    """
     try:
         avg = float(position.get("average_entry") or 0)
         px = float(fill_price or 0)
@@ -264,7 +268,15 @@ def stamp_peak_epoch_on_dca(position: dict, fill_price: float) -> float:
     position["peak_epoch_high"] = epoch
     # Hard reset trail peak into post-DCA world (clamp stale high AND lift low peaks)
     position["recent_high"] = epoch
-    position["peak_epoch_at"] = datetime.now().isoformat()
+    if isinstance(at, datetime):
+        stamp = at.isoformat()
+    elif isinstance(at, str) and at.strip():
+        stamp = at.strip()
+    else:
+        stamp = datetime.now().isoformat()
+    position["peak_epoch_at"] = stamp
+    position["peak_at"] = stamp
+    position["v3"] = False
     return epoch
 
 

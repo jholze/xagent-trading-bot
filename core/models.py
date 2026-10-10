@@ -187,6 +187,8 @@ class TradeResult:
     code: str = ""
     funding_usdt: float | None = None
     funding_unknown: bool = False
+    pnl_basis: str = ""
+    pnl_fee_source: str = ""
 
 
 def execution_filled_qty_gross(execution: dict | None, request: dict | None = None) -> float:

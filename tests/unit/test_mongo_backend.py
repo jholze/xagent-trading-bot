@@ -73,13 +73,13 @@ def test_orders_local_vs_mongo_equivalent(tmp_path, monkeypatch, mongo_test_env,
 
     local_cfg = _local_config(base)
     monkeypatch.setattr("data_manager._config_cache", None)
-    monkeypatch.setattr("data_manager.get_config", lambda: local_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: local_cfg)
     assert save_orders(orders, scope) is True
     local_loaded = load_orders(scope)
 
     mongo_cfg = _mongo_config(base)
     monkeypatch.setattr("data_manager._config_cache", None)
-    monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: mongo_cfg)
     assert save_orders(orders, scope) is True
     mongo_loaded = load_orders(scope)
 
@@ -99,14 +99,14 @@ def test_dual_write_reads_mongo_authoritative(
         "migrated_from_trades": False,
     }
     dual_cfg = _dual_write_config(base)
-    monkeypatch.setattr("data_manager.get_config", lambda: dual_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: dual_cfg)
     assert save_orders(orders, scope) is True
 
     read_back = load_orders(scope)
     assert read_back["orders"][0]["id"] == "dual-1"
 
     mongo_cfg = _mongo_config(base)
-    monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: mongo_cfg)
     mongo_read = load_orders(scope)
     assert mongo_read["orders"][0]["id"] == "dual-1"
 
@@ -123,7 +123,7 @@ def test_trade_history_paper_roundtrip_mongo(monkeypatch, mongo_test_env):
         "trades": [{"type": "BUY", "symbol": "SOL/USDT", "usdt_amount": 50}],
     }
     mongo_cfg = _mongo_config(base)
-    monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: mongo_cfg)
     assert save_trade_history_document(history, scope) is True
     loaded = load_trade_history_document(scope)
     assert loaded["trades"][0]["symbol"] == "SOL/USDT"
@@ -139,7 +139,7 @@ def test_positions_document_roundtrip_mongo(monkeypatch, mongo_test_env):
         "positions": {"BTC_USDT_4h": {"amount": 1.0, "average_entry": 50000}},
     }
     mongo_cfg = _mongo_config(base)
-    monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: mongo_cfg)
     assert save_positions_document(payload, scope) is True
     loaded = load_positions_document(scope)
     assert loaded["positions"]["BTC_USDT_4h"]["amount"] == 1.0
@@ -170,7 +170,7 @@ def _apply_backend_config(monkeypatch, cfg: dict, paths: dict):
     import storage.ledger_router as ledger_router
 
     monkeypatch.setattr(data_manager, "_config_cache", cfg)
-    monkeypatch.setattr(data_manager, "get_config", lambda: cfg)
+    monkeypatch.setattr(data_manager, "get_config", lambda *_a, **_k: cfg)
     monkeypatch.setattr(data_manager, "ORDERS_SCOPE_FILES", paths["orders"])
     monkeypatch.setattr(data_manager, "POSITIONS_SCOPE_FILES", paths["positions"])
     monkeypatch.setattr(ledger_router, "ORDERS_SCOPE_FILES", paths["orders"])
@@ -204,7 +204,15 @@ def _normalize_positions(positions: dict) -> dict:
         key: {
             k: _value(k, v)
             for k, v in value.items()
-            if k not in ("last_trade_at", "last_dca_at", "first_buy_at")
+            if k not in (
+                "last_trade_at",
+                "last_dca_at",
+                "first_buy_at",
+                # F0/F7 stamp these with datetime.now() on a new entry.
+                # Two sequential buy/sell runs cannot share one clock reading.
+                "peak_at",
+                "peak_epoch_at",
+            )
         }
         for key, value in positions.items()
     }
@@ -353,7 +361,7 @@ def test_migration_json_matches_mongo_content(tmp_path, monkeypatch, mongo_test_
     assert summary["roundtrip"]["trades"] is True
 
     mongo_cfg = _mongo_config(base)
-    monkeypatch.setattr("data_manager.get_config", lambda: mongo_cfg)
+    monkeypatch.setattr("data_manager.get_config", lambda *_a, **_k: mongo_cfg)
     assert load_orders(scope)["orders"] == orders["orders"]
     assert load_positions_document(scope)["positions"] == positions["positions"]
     assert load_trade_history_document(scope)["trades"] == history["trades"]
