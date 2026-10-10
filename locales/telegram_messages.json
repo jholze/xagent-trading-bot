@@ -355,7 +355,9 @@
     "reload_confirm_expired": "⏱️ Reload-Bestätigung abgelaufen. Sende <code>/reload</code> erneut.",
     "dryrun_confirm": "<b>🧪 Enhanced Dry Run</b>\n\nStatus laden? (lädt die Config neu.)",
     "dryrun_confirm_btn_ok": "Ja, laden",
-    "dryrun_confirm_expired": "⏱️ Dry-Run-Bestätigung abgelaufen. Sende <code>/dryrun</code> erneut."
+    "dryrun_confirm_expired": "⏱️ Dry-Run-Bestätigung abgelaufen. Sende <code>/dryrun</code> erneut.",
+    "ledger_write_failed": "❌ Orderbuch konnte nicht gespeichert werden. Verkauf nicht vorgemerkt.",
+    "sell_preview_failed": "❌ Verkaufsvorschau für {sym} fehlgeschlagen."
   },
   "en": {
     "portfolio_loading_compact": "⏳ <b>Portfolio</b> (compact list) loading…",
@@ -713,6 +715,8 @@
     "reload_confirm_expired": "⏱️ Reload confirmation expired. Send <code>/reload</code> again.",
     "dryrun_confirm": "<b>🧪 Enhanced Dry Run</b>\n\nLoad status now? (reloads config.)",
     "dryrun_confirm_btn_ok": "Yes, load",
-    "dryrun_confirm_expired": "⏱️ Dry-run confirmation expired. Send <code>/dryrun</code> again."
+    "dryrun_confirm_expired": "⏱️ Dry-run confirmation expired. Send <code>/dryrun</code> again.",
+    "ledger_write_failed": "❌ Order book could not be saved. Sell was not staged.",
+    "sell_preview_failed": "❌ Sell preview for {sym} failed."
   }
 }
