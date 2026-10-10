@@ -412,15 +412,37 @@ class RiskManager:
             if order.amount <= 0:
                 return RiskDecision(approved=False, message="No amount to sell", code="no_amount")
             self._refresh_venue_mark(order.symbol, timeframe, order.price)
+            from strategies.dca import confirmed_full_long_hard_stop
             from strategies.positions import BELOW_VENUE_MINIMUM, is_below_venue_minimum
 
-            if is_below_venue_minimum(get_position(order.symbol, timeframe)):
-                # The transition already logged once. Do not log again, and do not retry.
-                return RiskDecision(
-                    approved=False,
-                    message="Lot is below the venue minimum",
-                    code=BELOW_VENUE_MINIMUM,
+            below_min_pos = get_position(order.symbol, timeframe)
+            if is_below_venue_minimum(below_min_pos):
+                stop_params = getattr(order, "_full_hard_stop_params", None)
+                full_stop_on_below_min = confirmed_full_long_hard_stop(
+                    action=str(order.signal or ""),
+                    exit_source=getattr(order, "exit_source", None),
+                    source=getattr(order, "source", None),
+                    call_source=source,
+                    price=float(order.price or 0),
+                    position=below_min_pos,
+                    strategy_params=stop_params if isinstance(stop_params, dict) else None,
                 )
+                if full_stop_on_below_min:
+                    # Ledger amount. A venue-minimum figure is not a size.
+                    # An exchange reject still uses the existing dust path.
+                    try:
+                        held = float(below_min_pos.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        held = 0.0
+                    if held > 0:
+                        order.amount = held
+                else:
+                    # The transition already logged once. Do not log again, and do not retry.
+                    return RiskDecision(
+                        approved=False,
+                        message="Lot is below the venue minimum",
+                        code=BELOW_VENUE_MINIMUM,
+                    )
             venue_block, order = self._venue_partial_guard(order, timeframe)
             if venue_block is not None:
                 return venue_block

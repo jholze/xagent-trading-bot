@@ -300,13 +300,35 @@ def try_execute_trail_exit(
 
     try:
         pos = get_position(sym, tf)
-        if not is_open_position(pos):
+        params = strategy_params if isinstance(strategy_params, dict) else None
+        from strategies.dca import confirmed_full_long_hard_stop
+        from strategies.positions import is_below_venue_minimum
+
+        # Below-min lots are not open. A full hard stop that
+        # evaluate_long_hard_stop just returned may still sell the ledger
+        # amount. Partials and other sells stay on the closed-lot path.
+        full_stop_on_below_min = bool(
+            isinstance(pos, dict)
+            and is_below_venue_minimum(pos)
+            and confirmed_full_long_hard_stop(
+                action=str(action or ""),
+                exit_source=str(exit_source or ""),
+                source="exit_ws",
+                price=px,
+                position=pos,
+                strategy_params=params,
+            )
+        )
+        if not is_open_position(pos) and not full_stop_on_below_min:
             return {"ok": False, "executed": False, "message": "no_open_position"}
         held = float(pos.get("amount") or 0)
         if held <= 0:
             return {"ok": False, "executed": False, "message": "amount_zero"}
         amount = held
-        if str(exit_source or "") == "stop_loss" or str(action or "") in (
+        if full_stop_on_below_min:
+            # Ledger size. Do not substitute a venue-minimum figure.
+            amount = held
+        elif str(exit_source or "") == "stop_loss" or str(action or "") in (
             "SELL_STOP_FULL",
             "SELL_STOP_PARTIAL",
         ):
@@ -406,6 +428,9 @@ def try_execute_trail_exit(
             exit_source=str(exit_source or ""),
             exit_rationale=str(rationale or "")[:240],
         )
+        if full_stop_on_below_min and isinstance(params, dict):
+            # Risk re-checks evaluate_long_hard_stop with these params.
+            order._full_hard_stop_params = params
 
         if trading is None:
             from services.trading_service import TradingService

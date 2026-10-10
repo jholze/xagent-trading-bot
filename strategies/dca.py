@@ -485,6 +485,59 @@ def evaluate_long_hard_stop(
     return None
 
 
+def confirmed_full_long_hard_stop(
+    *,
+    action: str,
+    exit_source: str | None,
+    source: str | None = None,
+    call_source: str | None = None,
+    price: float,
+    position: dict | None,
+    strategy_params: dict | None,
+) -> bool:
+    """True only when this sell is the full stop ``evaluate_long_hard_stop`` just fired.
+
+    Same rule as V-663-1: the action string is not the proof. A partial, a
+    take-profit, a manual sell, or a relabelled ``SELL_STOP_FULL`` stays out.
+    """
+    if str(action or "") != "SELL_STOP_FULL":
+        return False
+    if str(exit_source or "") != "stop_loss":
+        return False
+    if str(source or "") == "manual" or str(call_source or "") == "manual":
+        return False
+    pos = position if isinstance(position, dict) else {}
+    try:
+        px = float(price)
+        entry = float(pos.get("average_entry") or 0)
+    except (TypeError, ValueError):
+        return False
+    if px <= 0 or entry <= 0:
+        return False
+    params = strategy_params if isinstance(strategy_params, dict) else None
+    base = None
+    if params is not None and params.get("stop_loss_pct") is not None:
+        try:
+            base = float(params.get("stop_loss_pct"))
+        except (TypeError, ValueError):
+            return False
+    else:
+        try:
+            base = float(get_bot_config().stop_loss_pct)
+        except Exception:
+            return False
+    if base <= 0:
+        return False
+    hit = evaluate_long_hard_stop(
+        price=px,
+        entry=entry,
+        position=pos,
+        strategy_params=params,
+        base_stop_loss_pct=base,
+    )
+    return hit == ("SELL_STOP_FULL", "stop_loss")
+
+
 def _effective_max_dca_rounds(position: dict, cfg: dict) -> int:
     """Freeze max DCA rounds on first use so tier flips cannot grant extra rounds."""
     cfg_max = int(cfg.get("max_rounds", 3))

@@ -1419,6 +1419,128 @@ class TestB3BelowMinThrottle:
         assert len(full_fires) == 1
 
 
+class TestBelowVenueMinimumFullStop:
+    """A full hard stop may sell a below-min lot. Slot counts and other sells may not."""
+
+    def _markets(self, symbol, min_cost=25.0):
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        ex.markets = {
+            symbol: {"limits": {"amount": {"min": 0.0}, "cost": {"min": min_cost}}}
+        }
+        ex.load_markets.return_value = ex.markets
+        ex.amount_to_precision.side_effect = lambda _sym, amt: float(amt)
+        return ex
+
+    def test_full_stop_at_below_venue_minimum_sells_the_ledger_amount(self):
+        """RED if the full-stop exception is removed: the lot stays put."""
+        from execution.gate_adapter import GateExecutionAdapter
+        from strategies.positions import BELOW_VENUE_MINIMUM, get_position, is_below_venue_minimum
+
+        symbol = "III/USDT"
+        params = _params(full=10, partial=5)
+        _seed(
+            symbol,
+            amount=40,
+            entry=1.0,
+            venue_min_state=BELOW_VENUE_MINIMUM,
+        )
+        assert is_below_venue_minimum(get_position(symbol, "1h"))
+        hub = _hub(cooldown=0)
+        hub.update_book([_row(symbol, params=params)])
+        ex = self._markets(symbol)
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        prev_failed = GateExecutionAdapter._shadow_markets_failed
+        try:
+            with _paper():
+                GateExecutionAdapter._shadow_markets_failed = False
+                GateExecutionAdapter._shadow_markets_cache = None
+                with patch.object(GateExecutionAdapter, "_get_exchange", lambda self: ex):
+                    _fire(hub, symbol, "0.89", "0.89")
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+            GateExecutionAdapter._shadow_markets_failed = prev_failed
+        assert _held(symbol) == pytest.approx(0.0, abs=0.05)
+        filled = [o for o in _orders(symbol) if o.get("status") == "filled"]
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        assert filled[-1]["exit_source"] == "stop_loss"
+        assert float(filled[-1]["request"]["amount"]) == pytest.approx(40.0)
+
+    def test_slot_count_and_dca_plan_still_skip_below_min_lot(self):
+        """RED if the exception is moved into is_open_position: the lot becomes a slot."""
+        from strategies.dca_scheduled import (
+            collect_open_position_symbols,
+            open_symbols_for_schedule,
+        )
+        from strategies.positions import (
+            BELOW_VENUE_MINIMUM,
+            count_open_full_slots,
+            count_open_tail_slots,
+            get_position,
+            is_open_position,
+        )
+
+        below = "SLOTLOW/USDT"
+        open_sym = "SLOTOPN/USDT"
+        _seed(below, timeframe="4h", amount=40, entry=1.0, venue_min_state=BELOW_VENUE_MINIMUM)
+        _seed(open_sym, timeframe="4h", amount=40, entry=1.0)
+        assert is_open_position(get_position(below, "4h")) is False
+        assert is_open_position(get_position(open_sym, "4h")) is True
+        assert count_open_full_slots() + count_open_tail_slots() == 1
+        coins = [
+            {"symbol": below, "timeframe": "4h"},
+            {"symbol": open_sym, "timeframe": "4h"},
+        ]
+        planned = collect_open_position_symbols(coins)
+        assert below not in planned
+        assert open_sym in planned
+        scheduled = open_symbols_for_schedule()
+        assert below not in scheduled
+        assert open_sym in scheduled
+
+    def test_take_profit_partial_at_below_venue_minimum_does_not_sell(self):
+        """RED if the exception applies to every sell: this partial would fill."""
+        from execution.gate_adapter import GateExecutionAdapter
+        from services.exit_realtime.execute import try_execute_trail_exit
+        from strategies.positions import BELOW_VENUE_MINIMUM, get_position, is_below_venue_minimum
+
+        symbol = "JJJ/USDT"
+        _seed(
+            symbol,
+            amount=100,
+            entry=1.0,
+            venue_min_state=BELOW_VENUE_MINIMUM,
+        )
+        assert is_below_venue_minimum(get_position(symbol, "1h"))
+        ex = self._markets(symbol, min_cost=1.0)
+        prev_cache = GateExecutionAdapter._shadow_markets_cache
+        prev_failed = GateExecutionAdapter._shadow_markets_failed
+        try:
+            with _paper():
+                GateExecutionAdapter._shadow_markets_failed = False
+                GateExecutionAdapter._shadow_markets_cache = None
+                with patch.object(GateExecutionAdapter, "_get_exchange", lambda self: ex):
+                    out = try_execute_trail_exit(
+                        symbol=symbol,
+                        timeframe="1h",
+                        price=1.5,
+                        action="SELL_TP",
+                        exit_source="take_profit",
+                        rationale="take profit partial",
+                        force_local=True,
+                        sell_amount=30.0,
+                        strategy_params=_params(full=10, partial=5),
+                    )
+        finally:
+            GateExecutionAdapter._shadow_markets_cache = prev_cache
+            GateExecutionAdapter._shadow_markets_failed = prev_failed
+        assert out.get("executed") is False
+        assert _held(symbol) == pytest.approx(100.0, abs=0.01)
+        assert is_below_venue_minimum(get_position(symbol, "1h"))
+        assert [o for o in _orders(symbol) if o.get("status") == "filled"] == []
+
+
 class TestB3PartialSellGuard:
     def test_ws_partial_stop_rejected_by_partial_sell_guard(self):
         """WS hard partial on a 25 USDT lot stops at partial_sell_guard."""
