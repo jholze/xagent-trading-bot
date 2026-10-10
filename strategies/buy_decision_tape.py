@@ -32,7 +32,6 @@ from logger import log
 TAPE_FILENAME = "buy_decision_tape.jsonl"
 ROTATE_MAX_BYTES = 8_000_000
 ROTATE_KEEP_LINES = 20_000
-_AMOUNT_EPS = 1e-12
 _UNDER_TEST_ENV = "BUY_DECISION_TAPE_UNDER_TEST"
 
 ROW_KEYS = (
@@ -190,8 +189,9 @@ def emit_buy_decision_tape(
     pos = _lookup_position(getattr(order, "symbol", "") or "", timeframe)
     if not isinstance(pos, dict):
         raise TypeError("get_position did not return a dict")
-    amount = float(pos.get("amount") or 0)
-    has_position = amount > _AMOUNT_EPS
+    from strategies.positions import is_open_position
+
+    has_position = is_open_position(pos)
     signal_name = getattr(order, "signal", "") or ""
     signal_source = source if source is not None else (getattr(order, "source", "") or "")
     approved = bool(getattr(decision, "approved", False))

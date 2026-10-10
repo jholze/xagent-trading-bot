@@ -42,7 +42,7 @@ class AuditTrail:
         from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
         from services.observability_store import persist_decision, runtime_context
         from services.position_metrics import position_metrics
-        from strategies.positions import get_position
+        from strategies.positions import get_position, is_open_position
 
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -73,7 +73,7 @@ class AuditTrail:
             "risk_message": risk_message or (trade_result.message if trade_result else ""),
         }
         pos = get_position(analysis.symbol, analysis.timeframe)
-        has_position = float(pos.get("amount") or 0) > 0
+        has_position = is_open_position(pos)
         entry["has_position"] = has_position
         if has_position and price > 0 and self._needs_position_metrics(analysis, trade_result):
             from core.models import MarketContext

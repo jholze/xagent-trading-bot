@@ -107,14 +107,16 @@ def _build_positions_snapshot_from_orders(
     from core.sim_ledger_replay import replay_simulated_ledger
     from data_manager import get_config, load_orders
 
-    cfg = get_config()
+    cfg = get_config(tenant_id)
     orders = [
         o
         for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
         if o.get("status") == OrderStatus.EXECUTED.value
     ]
     initial = initial_capital(scope=scope, config=cfg)
-    snapshot = dict(replay_simulated_ledger(orders, initial)["positions"])
+    snapshot = dict(
+        replay_simulated_ledger(orders, initial, config=cfg, tenant_id=tenant_id)["positions"]
+    )
     _reconcile_ladder_steps_in_snapshot(snapshot)
     return snapshot
 

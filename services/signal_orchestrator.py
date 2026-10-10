@@ -8,7 +8,7 @@ from services.portfolio_service import PortfolioService
 from services.audit_trail import AuditTrail
 from services.trading_service import TradingService
 from core.actions import BUY_DCA, SELL_FULL, is_buy, is_sell
-from strategies.positions import find_open_position_for_symbol, get_position
+from strategies.positions import find_open_position_for_symbol, get_position, is_open_position
 from strategies.decision_engine import DecisionEngine
 from strategies.dca_portfolio import build_portfolio_dca_plan, portfolio_config
 from strategies.registry import resolve_coin_config
@@ -388,7 +388,7 @@ class SignalOrchestrator:
         symbol = coin["symbol"]
         tf = analysis.timeframe
         pos = get_position(symbol, tf)
-        has_position = float(pos.get("amount", 0)) > 0
+        has_position = is_open_position(pos)
 
         trade_executed = bool(trade_result.executed) if trade_result else False
         reported_action = analysis.action if is_buy(analysis.action) else "HOLD"
@@ -466,7 +466,7 @@ class SignalOrchestrator:
         symbol = coin["symbol"]
         tf = analysis.timeframe
         pos = get_position(symbol, tf)
-        has_position = float(pos.get("amount", 0)) > 0
+        has_position = is_open_position(pos)
 
         if self.config.raw.get("debug", False):
             print(get_text("debug_ampel_change").format(

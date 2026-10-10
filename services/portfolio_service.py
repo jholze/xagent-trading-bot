@@ -93,6 +93,8 @@ class PortfolioService:
         entry_15m_vol_ratio: float | None = None,
         fill: Fill | None = None,
         ctx: dict | None = None,
+        fee_unknown: bool = False,
+        order_type: str | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
@@ -105,12 +107,29 @@ class PortfolioService:
                 False, "BUY", symbol, message="one-way: cover short before buy",
             )
         usdt = usdt_amount or self.config.max_usdt_per_trade
-        cm = CostModel.from_config(self.config, symbol=symbol)
-        f = fill if fill is not None else cm.simulate_buy(price, usdt=usdt)
+        if fee_unknown:
+            # F7: config fees only. The copy is at this call site so auto
+            # fee_source cannot fetch exchange fees on the basis.
+            raw_in = self.config.raw if hasattr(self.config, "raw") else self.config
+            raw = dict(raw_in) if isinstance(raw_in, dict) else {}
+            costs = raw.get("costs")
+            costs = dict(costs) if isinstance(costs, dict) else {}
+            costs["fee_source"] = "config"
+            raw["costs"] = costs
+            cm = CostModel.from_config(raw, symbol=symbol)
+            f = fill if fill is not None else cm.simulate_buy(price, usdt=usdt)
+        else:
+            cm = CostModel.from_config(self.config, symbol=symbol)
+            f = fill if fill is not None else cm.simulate_buy(price, usdt=usdt)
         if f.qty_net <= 0:
             return TradeResult(False, "BUY", symbol, message="Fill qty_net is 0")
-        net_entry = f.quote_net / f.qty_net
         amount = f.qty_net
+        prior_marker = bool(existing.get("basis_fee_estimated"))
+        if fee_unknown:
+            gross_px = float(f.fill_price or price)
+            net_entry = cm.estimated_buy_entry(gross_px, order_type or "market")
+        else:
+            net_entry = f.quote_net / f.qty_net
         signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
         effective_entry_source = entry_source or _default_entry_source(source)
         update_position(
@@ -121,7 +140,16 @@ class PortfolioService:
             amount,
             entry_source=effective_entry_source,
             entry_15m_vol_ratio=entry_15m_vol_ratio,
+            fee_estimated=bool(fee_unknown),
         )
+        if fee_unknown and not prior_marker:
+            from core.tenant_context import resolve_tenant_id
+
+            log(
+                f"basis fee estimated tenant={resolve_tenant_id()} symbol={symbol} "
+                f"trigger=fee_unknown",
+                "WARNING",
+            )
         if sync_virtual_ledger:
             record_trade({
                 "type": "BUY",
@@ -152,6 +180,7 @@ class PortfolioService:
         sync_virtual_ledger: bool = True,
         fill: Fill | None = None,
         ctx: dict | None = None,
+        fee_unknown: bool = False,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SELL", symbol, message="Invalid price")
@@ -168,11 +197,37 @@ class PortfolioService:
         if amount <= 0:
             return TradeResult(False, "SELL", symbol, message="No position to sell")
         cm = CostModel.from_config(self.config, symbol=symbol)
-        f = fill if fill is not None else cm.simulate_sell(price, amount)
+        if fee_unknown and fill is None:
+            # F8: no sell-fee estimate. Credit the gross quote.
+            gross_qty = float(amount)
+            gross_quote = float(price) * gross_qty
+            f = Fill(
+                side="sell",
+                order_type="market",
+                request_price=float(price),
+                fill_price=float(price),
+                qty_gross=gross_qty,
+                qty_net=gross_qty,
+                quote_gross=gross_quote,
+                quote_net=gross_quote,
+                fee_base=0.0,
+                fee_quote=0.0,
+                fee_usdt=0.0,
+                slippage_usdt=0.0,
+            )
+        else:
+            f = fill if fill is not None else cm.simulate_sell(price, amount)
         qty_sold = f.qty_net if f.qty_net > 0 else amount
         received = f.quote_net
         entry = pos.get("average_entry", price)
         pnl = CostModel.realized_pnl(qty_sold=qty_sold, avg_entry_net=entry, sell=f)
+        if fee_unknown:
+            pnl_basis = "sell_fee_unknown"
+        elif pos.get("basis_fee_estimated"):
+            pnl_basis = "fee_estimated"
+        else:
+            pnl_basis = "net"
+        pnl_fee_source = str(getattr(cm.params, "source", "") or "config")
         update_position(symbol, timeframe, signal, f.fill_price, qty_sold)
         if source == "cmc":
             from strategies.positions import save_positions, set_position_field
@@ -187,6 +242,8 @@ class PortfolioService:
                 "amount": qty_sold,
                 "usdt_received": received,
                 "pnl": pnl,
+                "pnl_basis": pnl_basis,
+                "pnl_fee_source": pnl_fee_source,
                 "source": source,
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
@@ -196,6 +253,7 @@ class PortfolioService:
         return TradeResult(
             True, "SELL", symbol, amount=qty_sold, price=f.fill_price,
             usdt_amount=received, pnl=pnl, order_id=order_id or "", fee=f.fee_usdt,
+            pnl_basis=pnl_basis, pnl_fee_source=pnl_fee_source,
         )
 
     def execute_short(
@@ -219,7 +277,9 @@ class PortfolioService:
         from strategies.short_policy import resolve_short_params
 
         existing = get_position(symbol, timeframe)
-        if float(existing.get("amount") or 0) > 1e-12 and not is_short(existing):
+        from strategies.positions import is_open_position
+
+        if is_open_position(existing) and not is_short(existing):
             return TradeResult(
                 False, "SHORT", symbol, message="one-way: close long before short",
             )

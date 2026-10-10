@@ -1357,7 +1357,9 @@ class GateExecutionAdapter(ExecutionAdapter):
         order.qty = base_qty
 
         pos = get_position(order.symbol, timeframe)
-        if float(pos.get("amount") or 0) > 1e-12 and not is_short(pos):
+        from strategies.positions import is_open_position
+
+        if is_open_position(pos) and not is_short(pos):
             return self._rejected_result(order, "one-way: close long before short")
 
         required = margin_usdt(base_qty, float(order.price or 0), lev)
@@ -1929,6 +1931,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             exchange_order_id=order.exchange_order_id,
             usdt_received=cost if order.type == "SELL" else 0,
             fill=fill,
+            fee_unknown=fee_unknown,
         )
         result.exchange_order_id = order.exchange_order_id
         result.fee = fill.fee_usdt if fill is not None else 0.0
@@ -2020,6 +2023,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         exchange_order_id: str = "",
         usdt_received: float = 0,
         fill: Fill | None = None,
+        fee_unknown: bool = False,
     ) -> TradeResult:
         oid = order.order_id or None
         sync_virtual = not uses_exchange_ledger(self.config.trading_mode)
@@ -2038,6 +2042,17 @@ class GateExecutionAdapter(ExecutionAdapter):
                     fill = cm.simulate_buy(order.price, usdt=usdt)
             elif order.amount and order.amount > 0:
                 fill = cm.simulate_sell(order.price, order.amount)
+        row_order_type = None
+        if fee_unknown and order.type == "BUY" and oid:
+            try:
+                from data_manager import resolve_ledger_scope
+                from services.order_service import OrderService
+
+                stored = OrderService(resolve_ledger_scope()).get_by_id(oid)
+                if isinstance(stored, dict) and stored.get("order_type"):
+                    row_order_type = str(stored.get("order_type"))
+            except Exception:
+                row_order_type = None
         if order.type == "BUY":
             local = self.portfolio.execute_buy(
                 order.symbol,
@@ -2050,6 +2065,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
                 fill=fill,
                 ctx=ctx,
+                fee_unknown=fee_unknown,
+                order_type=row_order_type,
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(
@@ -2079,7 +2096,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             local = self.portfolio.execute_sell(
                 order.symbol, timeframe, order.price, order.signal or "SELL", order.amount,
                 source=order.source, order_id=oid, sync_virtual_ledger=sync_virtual,
-                fill=fill, ctx=ctx,
+                fill=fill, ctx=ctx, fee_unknown=fee_unknown,
             )
         else:
             return TradeResult(False, order.type, order.symbol, message=f"Unknown type {order.type}")

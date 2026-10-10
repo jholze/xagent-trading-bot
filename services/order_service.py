@@ -1185,6 +1185,18 @@ class OrderService:
                 execution=execution,
                 pnl=float(result.pnl) if result.pnl is not None else None,
             )
+            basis = str(getattr(result, "pnl_basis", "") or "")
+            fee_src = str(getattr(result, "pnl_fee_source", "") or "")
+            if basis or fee_src:
+                fresh = self._load()
+                stored = self._find(fresh, order_id=order_id)
+                if stored is not None:
+                    if basis:
+                        stored["pnl_basis"] = basis
+                    if fee_src:
+                        stored["pnl_fee_source"] = fee_src
+                    self._save(fresh)
+                    record = stored
         elif getattr(result, "pending", False) or getattr(result, "needs_reconcile", False):
             record = self.update_status(
                 order_id,
