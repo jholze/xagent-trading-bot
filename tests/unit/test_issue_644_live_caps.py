@@ -500,6 +500,47 @@ def test_t3_usdt_unset_keeps_pct_path_and_skips_the_new_figure():
         assert rm0._daily_loss_limit_blocked(_buy()) is None
 
 
+def test_absent_daily_loss_configuration_does_not_halt():
+    """Neither key is set: a large loss does not halt.
+
+    ``config.json`` carries no daily-loss value. A non-null code default for
+    the USDT rail, or a non-zero default for the pct rail, would block here.
+    """
+    disk = _disk_config()
+    assert "max_daily_loss_usdt" not in disk
+    assert "max_daily_loss_pct" not in (disk.get("risk") or {})
+    raw = {
+        "max_usdt_per_trade": 100,
+        "max_open_positions": 50,
+        "max_position_percent": 100,
+        "trade_cooldown_hours": 0,
+        "trading_mode": "paper",
+        "trading": {"entries_enabled": True, "exits_enabled": True},
+        "live": {"dry_run": True, "execution": "shadow"},
+        "risk": {
+            "min_trade_usdt": 5,
+            "cash_floor_pct": 0,
+            "cash_policy": {"enabled": False},
+            "position_capacity": {"enabled": False},
+            "fail_closed_guards": "log",
+        },
+    }
+    assert "max_daily_loss_usdt" not in raw
+    assert "max_daily_loss_pct" not in raw["risk"]
+    rm = RiskManager(BotConfig(raw))
+    with patch.object(rm, "_trailing_24h_realized_pnl", return_value=-1_000_000.0), patch.object(
+        rm, "_daily_loss_usdt_figure", return_value=-1_000_000.0
+    ), patch.object(rm, "_portfolio_equity", return_value=100_000.0), patch.object(
+        rm, "_initial_capital", return_value=100_000.0
+    ), patch.object(rm, "_risk_history_load", return_value={}), patch.object(
+        rm, "_risk_history_save"
+    ), patch("core.operator_notify.notify_operator", return_value=True), patch(
+        "risk.risk_manager._DAILY_LOSS_HALT_UNTIL", None
+    ):
+        decision = rm._daily_loss_limit_blocked(_buy())
+    assert decision is None
+
+
 def test_t4_usdt_threshold_and_stricter_of_pct_and_usdt():
     rm = RiskManager(_risk_cfg(usdt=50, pct=0))
     with _quiet_loss(rm, figure=-49.99), _eval_env(rm, metrics=_THICK, mcap=50_000_000):
