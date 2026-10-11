@@ -446,6 +446,98 @@ def effective_stop_loss_thresholds(
     return full_stop, partial_effective, in_grace
 
 
+def evaluate_long_hard_stop(
+    *,
+    price: float,
+    entry: float,
+    position: dict | None,
+    strategy_params: dict | None,
+    base_stop_loss_pct: float,
+) -> tuple[str, str] | None:
+    """Long hard stop shared by the cycle and the WS exit path.
+
+    Same formula, same ``effective_stop_loss_thresholds`` call, same strict
+    ``>`` and the same full-then-partial order. Returns
+    ``(SELL_STOP_FULL|SELL_STOP_PARTIAL, "stop_loss")`` or None.
+    A non-positive entry does not fire. Price is not re-checked here: the
+    cycle already refuses a missing price, and a 0 price is a 100% loss.
+    """
+    try:
+        px = float(price)
+        ent = float(entry)
+    except (TypeError, ValueError):
+        return None
+    if ent <= 0:
+        return None
+    loss_pct = (px / ent - 1) * -100
+    full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
+        position or {}, strategy_params, float(base_stop_loss_pct)
+    )
+    if in_grace:
+        return None
+    if loss_pct > full_stop:
+        return "SELL_STOP_FULL", "stop_loss"
+    if partial_stop is not None and loss_pct > partial_stop:
+        # One hard partial per lot. A later full stop still fires.
+        if (position or {}).get("hard_partial_stop_done"):
+            return None
+        return "SELL_STOP_PARTIAL", "stop_loss"
+    return None
+
+
+def confirmed_full_long_hard_stop(
+    *,
+    action: str,
+    exit_source: str | None,
+    source: str | None = None,
+    call_source: str | None = None,
+    price: float,
+    position: dict | None,
+    strategy_params: dict | None,
+) -> bool:
+    """True only when this sell is the full stop ``evaluate_long_hard_stop`` just fired.
+
+    Same rule as V-663-1: the action string is not the proof. A partial, a
+    take-profit, a manual sell, or a relabelled ``SELL_STOP_FULL`` stays out.
+    """
+    if str(action or "") != "SELL_STOP_FULL":
+        return False
+    if str(exit_source or "") != "stop_loss":
+        return False
+    if str(source or "") == "manual" or str(call_source or "") == "manual":
+        return False
+    pos = position if isinstance(position, dict) else {}
+    try:
+        px = float(price)
+        entry = float(pos.get("average_entry") or 0)
+    except (TypeError, ValueError):
+        return False
+    if px <= 0 or entry <= 0:
+        return False
+    params = strategy_params if isinstance(strategy_params, dict) else None
+    base = None
+    if params is not None and params.get("stop_loss_pct") is not None:
+        try:
+            base = float(params.get("stop_loss_pct"))
+        except (TypeError, ValueError):
+            return False
+    else:
+        try:
+            base = float(get_bot_config().stop_loss_pct)
+        except Exception:
+            return False
+    if base <= 0:
+        return False
+    hit = evaluate_long_hard_stop(
+        price=px,
+        entry=entry,
+        position=pos,
+        strategy_params=params,
+        base_stop_loss_pct=base,
+    )
+    return hit == ("SELL_STOP_FULL", "stop_loss")
+
+
 def _effective_max_dca_rounds(position: dict, cfg: dict) -> int:
     """Freeze max DCA rounds on first use so tier flips cannot grant extra rounds."""
     cfg_max = int(cfg.get("max_rounds", 3))

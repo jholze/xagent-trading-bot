@@ -191,6 +191,10 @@ def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
         except Exception as exc:
             log(f"eval_worker tenant init failed ({job.tenant_id}): {exc}", "WARNING")
         coin = _coin_for_symbol(job.symbol, job.timeframe)
+        # Cycle decision price (#657 R13): Gate spot ticker field ``last``
+        # via get_prices_batch → _download_gate_ticker_snapshot. This is the
+        # path while architecture.eval_queue_enabled is on. The non-Gate CCXT
+        # branch in price_fetcher.get_ticker_price is not this call.
         price = float(get_prices_batch([job.symbol]).get(job.symbol, 0) or 0)
         if price <= 0:
             return None

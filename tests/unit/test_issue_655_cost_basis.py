@@ -991,8 +991,9 @@ def test_t9_long_profit_counts_buy_fee_once_short_keeps_round_trip():
         import services.exit_realtime.execute as ex
 
         with ex._inflight_lock:
-            ex._inflight.discard("LOT/USDT")
-            ex._last_exit_at.pop("LOT/USDT", None)
+            guard = ex.exit_guard_key("LOT/USDT")
+            ex._inflight.discard(guard)
+            ex._last_exit_at.pop(guard, None)
         trading = MagicMock()
         trading.execute_order.return_value = SimpleNamespace(executed=True, message="ok")
         lot = {**long_lot, "current_price": price}
@@ -1084,8 +1085,9 @@ def test_t9_long_profit_counts_buy_fee_once_short_keeps_round_trip():
         import services.exit_realtime.execute as ex
 
         with ex._inflight_lock:
-            ex._inflight.discard(tier_symbol)
-            ex._last_exit_at.pop(tier_symbol, None)
+            guard = ex.exit_guard_key(tier_symbol)
+            ex._inflight.discard(guard)
+            ex._last_exit_at.pop(guard, None)
         trading = MagicMock()
         trading.execute_order.return_value = SimpleNamespace(executed=True, message="ok")
         book = dict(bare)
@@ -1143,8 +1145,9 @@ def test_t9_long_profit_counts_buy_fee_once_short_keeps_round_trip():
     import services.exit_realtime.execute as ex
 
     with ex._inflight_lock:
-        ex._inflight.discard("SH/USDT")
-        ex._last_exit_at.pop("SH/USDT", None)
+        guard = ex.exit_guard_key("SH/USDT")
+        ex._inflight.discard(guard)
+        ex._last_exit_at.pop(guard, None)
     trading = MagicMock()
     trading.execute_order.return_value = SimpleNamespace(executed=True, message="ok")
     with patch("strategies.positions.get_position", return_value=dict(short_lot)), patch(
