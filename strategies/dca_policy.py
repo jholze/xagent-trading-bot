@@ -368,13 +368,14 @@ class DcaGuardResult:
 
 
 def is_human_operator_buy(source: str | None) -> bool:
-    """Human operator only. Every ``mcp*`` source is automatic."""
-    src = str(source or "").strip().lower()
-    if not src or src.startswith("mcp"):
-        return False
-    from strategies.position_lock import is_manual_source
+    """True only for the exact source ``manual``.
 
-    return is_manual_source(src)
+    Prefixes (``manual_x``), aliases (``operator``, ``telegram``, ``user``,
+    ``confirm``) and every ``mcp:`` source are automatic. A missing source
+    is not a human buy. ``is_manual_source`` stays the sell/lock check and
+    is intentionally not used here.
+    """
+    return str(source or "").strip().lower() == "manual"
 
 
 def _price_is_stale(symbol: str, indicators: dict | None) -> bool:

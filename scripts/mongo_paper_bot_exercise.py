@@ -63,8 +63,8 @@ def main() -> int:
             RiskDecision(approved=True, order=buy_order),
             RiskDecision(approved=True, order=sell_order),
         ]
-        buy_result = trading.execute_order(buy_order, "4h", source="manual")
-        sell_result = trading.execute_order(sell_order, "4h", source="manual")
+        buy_result = trading.execute_order(buy_order, "4h", source="paper_exercise")
+        sell_result = trading.execute_order(sell_order, "4h", source="paper_exercise")
 
     print(f"buy_executed: {buy_result.executed} amount={buy_result.amount}")
     print(f"sell_executed: {sell_result.executed} amount={sell_result.amount}")

@@ -315,6 +315,7 @@ class TestShortCoverConfirmFlow(unittest.TestCase):
             self.assertTrue(handle_callback({"id": "cb", "data": "manual_ok:sh0rt1"}))
         trading.execute_short.assert_called_once_with(
             "H/USDT", "4h", 0.05, usdt=25.0, leverage=2.0, order_id="sh0rt1",
+            source="manual",
         )
         trading.execute_cover.assert_not_called()
 
@@ -442,6 +443,7 @@ class TestShortCoverConfirmFlow(unittest.TestCase):
             self.assertTrue(handle_callback({"id": "cb", "data": "manual_ok:c0ver1"}))
         trading.execute_cover.assert_called_once_with(
             "H/USDT", "4h", 0.04, amount=200.0, order_id="c0ver1",
+            source="manual",
         )
         trading.execute_short.assert_not_called()
 

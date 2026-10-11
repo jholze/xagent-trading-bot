@@ -1034,6 +1034,29 @@ def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
             adapter_mode="real", places_real_orders=True, reason="test"
         ),
     )
+    # The patched real mode turns the live-cap gate on. This fixture is the
+    # only tenant body; min_trade_usdt on _cfg is 15, so the tail notional
+    # stays below that and the sold fraction stays above 0.5.
+    monkeypatch.setattr("core.tenant_context.multi_tenant_enabled", lambda: True)
+    monkeypatch.setattr(
+        "core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "tenant-live-caps"
+    )
+    body = {
+        "max_usdt_per_trade": 25,
+        "initial_capital_usdt": 1000,
+        "sell_policy": {
+            "rotation": {
+                "tail_exempt_notional_usdt": 1,
+                "tail_exempt_sold_pct": 0.75,
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "data_manager._load_default_config_from_disk",
+        lambda: {"demo": {"backend": "mongo"}},
+    )
+    monkeypatch.setattr("data_manager._should_use_mongo_for_tenant_config", lambda cfg=None: True)
+    monkeypatch.setattr("data_manager._load_tenant_config_body", lambda tid, default_cfg: body)
     exchange = _StubExchange(_pair_markets(symbol))
     modes = _patch_exchange(monkeypatch, exchange)
     rm = RiskManager(_cfg())
