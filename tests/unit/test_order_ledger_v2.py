@@ -92,13 +92,64 @@ class TestOrderLedgerV2Pure(unittest.TestCase):
         self.assertTrue(any("x1" in rec and "hedge" in rec for rec in cm.output))
 
     def test_bad_pnl_logged_counts_zero(self):
+        # #679 R8: an unparseable pnl is logged and charged as a loss, not summed as 0.
         with self.assertLogs("storage.order_ledger_v2", level="WARNING") as cm:
             s = stats_from_filled_orders([
                 {"status": "filled", "side": "sell", "id": "p1", "pnl": "nope", "execution": {"usdt": 5}},
             ])
-        self.assertEqual(s["realized_pnl"], 0.0)
+        self.assertEqual(s["pnl_missing"], 1)
+        self.assertLess(s["realized_pnl"], 0.0)
         self.assertEqual(s["sells"], 1)
         self.assertTrue(any("p1" in rec and "nope" in rec for rec in cm.output))
+        self.assertTrue(any("order_pnl_missing" in rec and "p1" in rec for rec in cm.output))
+
+    def test_t9_missing_and_unparseable_pnl_is_a_loss(self):
+        """#679 T9: missing or unparseable cover pnl is not counted as 0."""
+        notional = 1000.0
+        rate = 0.00075
+        both = notional * rate * 2
+        missing = {
+            "status": "filled",
+            "side": "cover",
+            "id": "c-miss",
+            "execution": {"usdt": notional},
+        }
+        with self.assertLogs("storage.order_ledger_v2", level="WARNING") as cm:
+            stats = stats_from_filled_orders([missing])
+        self.assertEqual(stats["pnl_missing"], 1)
+        self.assertLess(stats["realized_pnl"], 0.0)
+        self.assertLessEqual(stats["realized_pnl"], -both)
+        self.assertAlmostEqual(stats["realized_pnl"], -both)
+        self.assertTrue(
+            any(
+                "order_pnl_missing" in rec and "id=c-miss" in rec and "side=cover" in rec
+                for rec in cm.output
+            )
+        )
+
+        bad = {
+            "status": "filled",
+            "side": "cover",
+            "id": "c-bad",
+            "pnl": "nope",
+            "execution": {"usdt": notional},
+        }
+        with self.assertLogs("storage.order_ledger_v2", level="WARNING") as cm:
+            stats_bad = stats_from_filled_orders([bad])
+        self.assertEqual(stats_bad["pnl_missing"], 1)
+        self.assertAlmostEqual(stats_bad["realized_pnl"], -both)
+        self.assertTrue(any("order_pnl_missing" in rec and "c-bad" in rec for rec in cm.output))
+
+        stored = {
+            "status": "filled",
+            "side": "cover",
+            "id": "c-fee",
+            "open_fee_usdt": 1.25,
+            "execution": {"usdt": notional, "fee": 0.4},
+        }
+        stats_fee = stats_from_filled_orders([stored])
+        self.assertEqual(stats_fee["pnl_missing"], 1)
+        self.assertAlmostEqual(stats_fee["realized_pnl"], -(1.25 + 0.4))
 
     def test_cover_pnl_in_wins_not_sell_wins(self):
         s = stats_from_filled_orders([

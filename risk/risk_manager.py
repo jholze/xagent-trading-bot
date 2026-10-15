@@ -376,6 +376,13 @@ class RiskManager:
             if missing_caps:
                 return missing_caps
 
+        # #679 K2: a filled sell/cover with no pnl blocks new buys and shorts
+        # until recovery writes a pnl. Sells, covers, and stops do not enter.
+        if order.type in ("BUY", "SHORT"):
+            missing_pnl = self._missing_pnl_entry_block(order)
+            if missing_pnl:
+                return missing_pnl
+
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
 
@@ -2076,7 +2083,13 @@ class RiskManager:
         now = _display_now_naive()
         start = now - timedelta(hours=24)
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
-        return float((stats or {}).get("realized_pnl") or 0)
+        raw_pnl = stats.get("realized_pnl") if isinstance(stats, dict) else None
+        if raw_pnl is None:
+            from logger import log
+
+            log("trailing 24h realized pnl missing", "ERROR")
+            return 0.0
+        return float(raw_pnl)
 
     def _configured_max_daily_loss_usdt(self) -> float | None:
         """Optional USDT daily-loss cap. Missing key → unset (pct path only)."""
@@ -2142,7 +2155,13 @@ class RiskManager:
                 ts = ts.replace(tzinfo=timezone.utc)
             if start_utc <= ts.astimezone(timezone.utc) < end_utc:
                 chosen.append(row)
-        return float(stats_from_filled_orders(chosen).get("realized_pnl") or 0)
+        raw_pnl = stats_from_filled_orders(chosen).get("realized_pnl")
+        if raw_pnl is None:
+            from logger import log
+
+            log("operator day realized pnl missing", "ERROR")
+            return 0.0
+        return float(raw_pnl)
 
     def _open_live_unrealized_pnl(self) -> float:
         """Unrealized PnL of this tenant's open live lots at mark. Paper is excluded."""
@@ -2203,6 +2222,59 @@ class RiskManager:
         """Operator-day realized PnL plus unrealized PnL of open live lots."""
         return float(self._realized_pnl_operator_day(now)) + float(
             self._open_live_unrealized_pnl()
+        )
+
+    def _filled_pnl_missing_count(self) -> int:
+        """Marked sell/cover rows whose pnl is still missing.
+
+        Legacy rows without the marker are counted in a log line and do not
+        block. This check does not read ``fail_closed_guards``.
+        """
+        from data_manager import resolve_ledger_scope
+        from logger import log
+        from services.order_service import OrderService
+        from storage.order_ledger_v2 import split_missing_pnl
+
+        scope = resolve_ledger_scope(getattr(self.config, "trading_mode", None))
+        orders = OrderService(scope)._scoped_orders_newest_first(mutate=False)
+        tracked, legacy = split_missing_pnl(orders or [])
+        if legacy > 0:
+            log(f"pnl_missing_legacy count={legacy}", "WARNING")
+        return int(tracked)
+
+    def _missing_pnl_entry_block(self, order=None) -> RiskDecision | None:
+        """Block new exposure while a marked fill's pnl is unresolved (#679 K2).
+
+        Buys and shorts only. A raise blocks those entries even when
+        ``fail_closed_guards`` is ``log``. Sells, covers, and stops do not
+        enter this function from ``_evaluate_impl``.
+        """
+        kind = str(getattr(order, "type", "") or "").upper()
+        if kind not in ("BUY", "SHORT"):
+            return None
+        try:
+            missing = self._filled_pnl_missing_count()
+        except Exception as exc:
+            from logger import log
+
+            symbol = getattr(order, "symbol", "") or ""
+            log(f"risk guard pnl_missing failed {symbol}: {exc}", "ERROR")
+            return RiskDecision(
+                approved=False,
+                message=f"pnl_missing check failed: {exc}"[:200],
+                code="pnl_missing",
+                size_multiplier=0.0,
+            )
+        if missing <= 0:
+            return None
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"pnl_missing={missing}: new exposure blocked until recovery "
+                "resolves the row"
+            ),
+            code="pnl_missing",
+            size_multiplier=0.0,
         )
 
     def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:
@@ -3033,7 +3105,11 @@ class RiskManager:
 
                     if is_short(pos):
                         snap = snapshot(pos, px)
-                        total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
+                        from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+                        total += float(snap.get("margin") or 0) + mark_pnl_or_exclude(
+                            snap.get("pnl"), where="risk_equity_short",
+                        )
                         continue
                 except Exception:
                     pass

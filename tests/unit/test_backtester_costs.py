@@ -71,7 +71,9 @@ def test_fee_zero_slip_zero_matches_naive():
     sells = [t for t in result.trades if t.get("type") == "SELL"]
     assert sells
     naive = _naive_pnl(len(sells))
-    realized = sum(float(t.get("pnl") or 0) for t in sells)
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    realized = sum(pnl_for_sum(t) for t in sells)
     assert realized == pytest.approx(naive, abs=1e-9)
     assert result.metrics.realized_pnl == pytest.approx(naive, abs=1e-6)
 
@@ -90,8 +92,10 @@ def test_fee_0_2_pct_lowers_pnl_by_modelled_cost():
     assert sells1
     # Same-price round trip at 1000 USDT / 0.2 %: pnl == −3.996 per sell (design §6.4).
     per_rt = -3.996
-    realized1 = sum(float(t.get("pnl") or 0) for t in sells1)
-    realized0 = sum(float(t.get("pnl") or 0) for t in sells0)
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    realized1 = sum(pnl_for_sum(t) for t in sells1)
+    realized0 = sum(pnl_for_sum(t) for t in sells0)
     assert realized0 == pytest.approx(0.0, abs=1e-9)
     assert realized1 == pytest.approx(per_rt * len(sells1), abs=1e-6)
     assert realized1 < realized0

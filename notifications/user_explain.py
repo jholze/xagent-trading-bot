@@ -93,6 +93,7 @@ _RISK_CODES = {
     "max_daily_trades": "Tageslimit für Käufe erreicht — Verkäufe zählen separat.",
     "max_daily_dca_usdt": "Tages-Volumenlimit für DCA-Nachkäufe erreicht.",
     "daily_loss_limit": "Tagesverlust-Limit erreicht — Handel für heute gestoppt.",
+    "pnl_missing": "Ein Verkauf oder Cover ohne PnL ist noch offen — keine neuen Käufe oder Shorts, bis Recovery den Wert schreibt. Verkäufe, Cover und Stops laufen weiter.",
     "shorts_live_blocked": "Live-Shorts sind nicht freigeschaltet.",
     "no_short": "Kein offener Short zum Cover.",
     "shorts_disabled": "Shorts sind in der Config ausgeschaltet.",

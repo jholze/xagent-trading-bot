@@ -16,10 +16,9 @@ from services.reporting.fills import _as_float, _event_ts, _side_token, list_fil
 
 
 def _order_pnl(order: dict) -> float:
-    raw = order.get("pnl")
-    if isinstance(raw, dict):
-        raw = raw.get("usdt", raw.get("realized", raw.get("pnl")))
-    return _as_float(raw)
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    return pnl_for_sum(order)
 
 
 def order_to_closed_trade(order: dict) -> dict[str, Any]:
@@ -63,7 +62,9 @@ def _group_stats(trades: Iterable[dict], field: str) -> list[dict[str, Any]]:
     for trade in trades:
         key = str(trade.get(field) or "").strip() or "?"
         slot = buckets.setdefault(key, {"name": key, "pnl": 0.0, "n": 0, "wins": 0})
-        pnl = _as_float(trade.get("pnl"))
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        pnl = pnl_for_sum(trade)
         slot["pnl"] += pnl
         slot["n"] += 1
         if pnl > 0:
@@ -97,8 +98,11 @@ def attribution_summary(
     source_md = daily_pnl_by_source(sells)
     by_source = _group_stats(sells, "source")
     by_exit = _group_stats(sells, "exit_source")
-    total_pnl = round(sum(float(t.get("pnl") or 0) for t in sells), 6)
-    wins = sum(1 for t in sells if _as_float(t.get("pnl")) > 0)
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    summed = [pnl_for_sum(t) for t in sells]
+    total_pnl = round(sum(summed), 6)
+    wins = sum(1 for value in summed if value > 0)
     n = len(sells)
     return {
         "days": days,

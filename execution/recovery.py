@@ -625,7 +625,8 @@ def _link_result(scope: str, order_id: str, result: TradeResult, trade_order: Tr
 
     svc = OrderService(scope)
     svc.link_execution_result(order_id, result, trade_order)
-    # Terminal resolve always clears the in-flight flag.
+    # Terminal resolve clears the in-flight flag, except while the fee is
+    # still unknown or only an estimate (#679 R4).
     st = getattr(result, "order_status", None)
     if st in (
         OrderStatus.EXECUTED,
@@ -635,7 +636,31 @@ def _link_result(scope: str, order_id: str, result: TradeResult, trade_order: Tr
     ):
         data = svc._load()
         rec = svc._find(data, order_id=order_id)
-        if rec is not None and rec.get("needs_reconcile"):
+        if rec is None:
+            return
+        fee_unresolved = bool(getattr(result, "fee_unknown", False)) or bool(
+            getattr(result, "fee_estimated", False)
+        )
+        if not fee_unresolved:
+            exe = rec.get("execution") if isinstance(rec.get("execution"), dict) else {}
+            fee_unresolved = bool(rec.get("fee_unknown") or rec.get("fee_estimated")) or bool(
+                exe.get("fee_unknown") or exe.get("fee_estimated")
+            )
+        from storage.order_ledger_v2 import _order_pnl_or_missing, order_is_pnl_tracked
+
+        _pnl_value, pnl_missing = _order_pnl_or_missing(rec)
+        # A flagged row with no pnl stays selectable. Clearing the flag here
+        # when only the fee is settled leaves a permanent entry block.
+        tracked_missing = order_is_pnl_tracked(rec) and pnl_missing
+        if fee_unresolved or tracked_missing:
+            rec["needs_reconcile"] = True
+            if getattr(result, "fee_unknown", False) or rec.get("fee_unknown"):
+                rec["fee_unknown"] = True
+            if getattr(result, "fee_estimated", False) or rec.get("fee_estimated"):
+                rec["fee_estimated"] = True
+            svc._save(data)
+            return
+        if rec.get("needs_reconcile"):
             rec["needs_reconcile"] = False
             svc._save(data)
 
@@ -859,6 +884,9 @@ def _apply_raw_without_adapter(
         )
     if remainder_canceled:
         status = OrderStatus.CANCELED
+    # This path does not compute short/cover pnl. Leave it None so the order
+    # row is missing, not a stored 0.0. Sells keep the dataclass default.
+    missing_pnl = None if order.type in ("SHORT", "COVER") else 0.0
     return TradeResult(
         True,
         order.type,
@@ -866,6 +894,7 @@ def _apply_raw_without_adapter(
         amount=fill.qty_net,
         price=fill.fill_price,
         usdt_amount=fill.quote_net,
+        pnl=missing_pnl,
         order_id=order.order_id,
         exchange_order_id=str(raw.get("id") or ""),
         fee=fill.fee_usdt,

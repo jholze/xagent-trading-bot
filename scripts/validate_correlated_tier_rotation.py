@@ -254,7 +254,9 @@ def replay_lots(orders: list[dict]) -> tuple[list[Lot], list[tuple[datetime, dic
             lot.recent_high = max(lot.recent_high, price)
             lot.amount = max(0.0, lot.amount - amount)
             lot.last_trade_at = ts
-            lot.realized_pnl += float(order.get("pnl") or 0)
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            lot.realized_pnl += pnl_for_sum(order)
             if lot.amount <= 1e-12:
                 finished.append(lot)
                 del active[key]

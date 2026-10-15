@@ -7,6 +7,13 @@ import math
 from core.models import SandboxMetrics
 
 
+def _trade_pnl(trade: dict) -> float:
+    """Sell pnl for a quality sum. Missing is the two-sided fee loss, not 0."""
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    return pnl_for_sum(trade if isinstance(trade, dict) else {"pnl": None})
+
+
 def compute_trade_quality(trades: list) -> dict:
     sells = [t for t in trades if t.get("type") == "SELL"]
     if not sells:
@@ -18,8 +25,9 @@ def compute_trade_quality(trades: list) -> dict:
             "loss_count": 0,
         }
 
-    wins = [float(t.get("pnl", 0)) for t in sells if float(t.get("pnl", 0)) > 0]
-    losses = [abs(float(t.get("pnl", 0))) for t in sells if float(t.get("pnl", 0)) < 0]
+    pnls = [_trade_pnl(t) for t in sells]
+    wins = [p for p in pnls if p > 0]
+    losses = [abs(p) for p in pnls if p < 0]
     win_rate = len(wins) / len(sells)
     loss_rate = 1.0 - win_rate
     avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -112,8 +120,8 @@ def sharpe_from_trades(trades: list) -> float:
     returns = []
     for trade in sells:
         usdt = trade.get("usdt_received", 0)
-        if usdt > 0:
-            returns.append(trade.get("pnl", 0) / usdt)
+        if usdt and usdt > 0:
+            returns.append(_trade_pnl(trade) / usdt)
     if len(returns) > 1:
         mean_r = sum(returns) / len(returns)
         var = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)

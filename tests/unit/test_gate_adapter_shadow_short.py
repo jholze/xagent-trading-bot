@@ -188,6 +188,10 @@ def test_shadow_cover_after_short_realizes_pnl(monkeypatch):
     assert "leverage" in rec
     assert "margin_usdt" in rec
     expected = unrealized_pnl("short", qty, entry, float(rec["price"]))
+    expected -= float(rec.get("open_fee_usdt") or 0)
+    expected -= float(rec.get("fee") or rec.get("fee_usdt") or 0)
+    if rec.get("funding_usdt") is not None:
+        expected -= float(rec.get("funding_usdt") or 0)
     assert rec["pnl"] == pytest.approx(expected, abs=1.0)
 
 

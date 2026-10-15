@@ -166,15 +166,17 @@ class PaperSandbox:
     def compute_metrics(self, hypothesis_id: str, mark_prices: dict = None) -> SandboxMetrics:
         portfolio = self._ensure_portfolio(hypothesis_id)
         trades = portfolio.get("trades", [])
+        from storage.order_ledger_v2 import pnl_for_sum
+
         sells = [t for t in trades if t.get("type") == "SELL"]
-        wins = [t for t in sells if t.get("pnl", 0) > 0]
+        wins = [t for t in sells if pnl_for_sum(t) > 0]
         win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
 
         returns = []
         for trade in sells:
             usdt = trade.get("usdt_received", 0)
-            if usdt > 0:
-                returns.append(trade.get("pnl", 0) / usdt)
+            if usdt and usdt > 0:
+                returns.append(pnl_for_sum(trade) / usdt)
 
         if len(returns) > 1:
             mean_r = sum(returns) / len(returns)

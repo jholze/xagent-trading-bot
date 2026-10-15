@@ -240,7 +240,9 @@ def join_leaders_to_fills(
         sell_pnl = 0.0
         for s in sells:
             try:
-                sell_pnl += float(s.get("pnl") or 0)
+                from storage.order_ledger_v2 import pnl_for_sum
+
+                sell_pnl += pnl_for_sum(s)
             except (TypeError, ValueError):
                 pass
         if rec is None:
@@ -354,7 +356,9 @@ def compute_kpis(
             exit_src = str(o.get("exit_source") or src or "unknown")
             sell_by_exit[exit_src] += 1
             try:
-                pnl = float(o.get("pnl") or 0)
+                from storage.order_ledger_v2 import pnl_for_sum
+
+                pnl = pnl_for_sum(o)
             except (TypeError, ValueError):
                 pnl = 0.0
             # attribute sell pnl to exit_source primarily, also source

@@ -145,7 +145,11 @@ def _equity_cash_plus_positions(
 
                 if is_short(p):
                     snap = snapshot(p, price)
-                    total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
+                    from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+                    total += float(snap.get("margin") or 0) + mark_pnl_or_exclude(
+                        snap.get("pnl"), where="gate_equity_short",
+                    )
                     continue
             except Exception:
                 pass

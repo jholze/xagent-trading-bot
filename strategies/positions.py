@@ -140,6 +140,14 @@ _CACHE_FIELDS = (
     "venue_min_brake",
     "venue_min_open_pnl",
     "venue_min_merge_logged",
+    # #679: opening fee on a short lot. load_positions overlays only these
+    # fields, so a restart would otherwise drop the fee deserialize restored.
+    # open_fee_tracked marks a lot opened after #685. It is written in the
+    # same flush as the lot, so a crash before the fee field lands still
+    # identifies the lot (C5).
+    "open_fee_usdt",
+    "open_fee_estimated",
+    "open_fee_tracked",
 )
 
 # #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
@@ -391,6 +399,18 @@ def get_active_scope() -> str:
     return _active_key[1]
 
 
+def _realized_field(value, *, where: str):
+    """Position realized total. Explicit None stays None and is logged."""
+    if value is None:
+        log(f"position realized pnl missing where={where}", "ERROR")
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        log(f"position realized pnl missing where={where}", "ERROR")
+        return None
+
+
 def _deserialize_position(raw: dict) -> dict:
     amount = Decimal(str(raw.get("amount", 0)))
     peak = float(raw.get("peak_amount", 0) or 0)
@@ -405,7 +425,11 @@ def _deserialize_position(raw: dict) -> dict:
         "peak_amount": peak,
         "sold_percent": float(raw.get("sold_percent", 0)),
         "average_entry": float(raw.get("average_entry", raw.get("entry_price", 0))),
-        "realized_pnl": float(raw.get("realized_pnl", 0)),
+        "realized_pnl": (
+            0.0
+            if "realized_pnl" not in raw
+            else _realized_field(raw.get("realized_pnl"), where="positions_deserialize")
+        ),
         "last_buy_price": float(raw.get("last_buy_price", 0)),
         "last_ampel": raw.get("last_ampel", "🟡"),
         "last_rsi": float(raw.get("last_rsi", 45.0)),
@@ -459,6 +483,15 @@ def _deserialize_position(raw: dict) -> dict:
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
     if raw.get("basis_fee_estimated"):
         out["basis_fee_estimated"] = True
+    if raw.get("open_fee_usdt") not in (None, ""):
+        try:
+            out["open_fee_usdt"] = float(raw.get("open_fee_usdt") or 0)
+        except (TypeError, ValueError):
+            out["open_fee_usdt"] = 0.0
+    if raw.get("open_fee_estimated"):
+        out["open_fee_estimated"] = True
+    if raw.get("open_fee_tracked"):
+        out["open_fee_tracked"] = True
     if raw.get("venue_min_state"):
         out["venue_min_state"] = raw.get("venue_min_state")
     if raw.get("venue_min_brake"):
@@ -479,6 +512,9 @@ def _position_persistable(p: dict) -> bool:
         return True
     if p.get("first_buy_at") or p.get("last_action"):
         return True
+    if "realized_pnl" in p and p.get("realized_pnl") is None:
+        log("position realized pnl missing where=positions_persistable", "ERROR")
+        return True
     if float(p.get("realized_pnl", 0) or 0) != 0:
         return True
     return False
@@ -495,7 +531,11 @@ def _serialize_positions() -> dict:
             "peak_amount": float(p.get("peak_amount", 0) or 0),
             "sold_percent": p["sold_percent"],
             "average_entry": float(p.get("average_entry", p.get("entry_price", 0))),
-            "realized_pnl": float(p.get("realized_pnl", 0)),
+            "realized_pnl": (
+                0.0
+                if "realized_pnl" not in p
+                else _realized_field(p.get("realized_pnl"), where="positions_serialize")
+            ),
             "last_buy_price": p["last_buy_price"],
             "last_ampel": p.get("last_ampel", "🟡"),
             "last_rsi": p.get("last_rsi", 45.0),
@@ -555,6 +595,16 @@ def _serialize_positions() -> dict:
         if p.get("basis_fee_estimated"):
             # Rebuilt by the replay. Not a _CACHE_FIELDS overlay.
             data["positions"][tf]["basis_fee_estimated"] = True
+        try:
+            open_fee = float(p.get("open_fee_usdt") or 0)
+        except (TypeError, ValueError):
+            open_fee = 0.0
+        if open_fee:
+            data["positions"][tf]["open_fee_usdt"] = open_fee
+        if p.get("open_fee_estimated"):
+            data["positions"][tf]["open_fee_estimated"] = True
+        if p.get("open_fee_tracked"):
+            data["positions"][tf]["open_fee_tracked"] = True
         if p.get("venue_min_state"):
             data["positions"][tf]["venue_min_state"] = p.get("venue_min_state")
         if p.get("venue_min_brake"):
@@ -1709,6 +1759,7 @@ def update_position(
     short_recipe: str | None = None,
     exit_source: str | None = None,
     fee_estimated: bool = False,
+    open_fee_tracked: bool = False,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
@@ -1865,6 +1916,13 @@ def update_position(
                     pos.pop("short_recipe", None)
                     pos.pop("exit_source", None)
             pos["side"] = "short"
+            # Marker shares this flush. A new open drops a stale fee so a
+            # crash before set_position_field leaves the key absent.
+            if open_fee_tracked and not adding:
+                pos.pop("open_fee_usdt", None)
+                pos.pop("open_fee_estimated", None)
+            if open_fee_tracked:
+                pos["open_fee_tracked"] = True
             if leverage:
                 pos["leverage"] = float(leverage)
             elif not pos.get("leverage"):
@@ -2088,7 +2146,11 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "average_entry": p.get("average_entry", 0),
         "entry_price": p.get("average_entry", 0),
         "last_buy_price": p.get("last_buy_price", 0),
-        "realized_pnl": p.get("realized_pnl", 0),
+        "realized_pnl": (
+            0.0
+            if "realized_pnl" not in p
+            else _realized_field(p.get("realized_pnl"), where="positions_active_lot")
+        ),
         "peak_amount": float(p.get("peak_amount", 0) or 0),
         "sold_percent": float(p.get("sold_percent", 0)),
         "last_action": p.get("last_action"),

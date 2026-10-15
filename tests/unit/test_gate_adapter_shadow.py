@@ -177,7 +177,9 @@ def test_shadow_buy_sell_pnl_equals_cash(monkeypatch):
     trades = history["trades"]
     spent = sum(float(t.get("usdt_amount") or 0) for t in trades if t.get("type") == "BUY")
     received = sum(float(t.get("usdt_received") or 0) for t in trades if t.get("type") == "SELL")
-    pnl = sum(float(t.get("pnl") or 0) for t in trades if t.get("type") == "SELL")
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    pnl = sum(pnl_for_sum(t) for t in trades if t.get("type") == "SELL")
     assert abs((received - spent) - pnl) < 1e-9
     assert pnl == pytest.approx(-3.996)
     for t in captured:

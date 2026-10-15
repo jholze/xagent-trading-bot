@@ -292,7 +292,9 @@ def build_cycles(orders: Iterable[dict], *, hints: dict | None = None) -> list[P
             source_hint = lookup_source_hint(hints, symbol, ts)
             category = infer_sell_category(signal, source_hint)
             sold_frac = amount / cycle.peak_amount if cycle.peak_amount > 0 else 0.0
-            pnl = float(order.get("pnl") or 0)
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            pnl = pnl_for_sum(order)
             cycle.sells.append(
                 SellEvent(
                     ts=ts,
@@ -538,7 +540,9 @@ def compute_baseline(orders: list[dict], cycles: list[PositionCycle]) -> Baselin
             if is_partial_signal(sig):
                 partial_vol += usdt
             if sig == "SELL_PARTIAL_30":
-                stats.partial_30_pnl += float(o.get("pnl") or 0)
+                from storage.order_ledger_v2 import pnl_for_sum
+
+                stats.partial_30_pnl += pnl_for_sum(o)
     stats.sell_volume_usdt = sell_vol
     stats.partial_sell_share = partial_vol / sell_vol if sell_vol > 0 else 0.0
     stats.closed_cycles = sum(1 for c in cycles if c.close_ts and not c.still_open)

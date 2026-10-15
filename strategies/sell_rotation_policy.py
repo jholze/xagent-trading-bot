@@ -130,7 +130,16 @@ def can_rotation_evict(
     cfg: dict,
 ) -> bool:
     gain = rotation_gain_pct(market)
-    realized = float(position.get("realized_pnl", 0) or 0)
+    if "realized_pnl" in position and position.get("realized_pnl") is None:
+        from storage.order_ledger_v2 import decision_pnl
+
+        realized = decision_pnl(
+            None,
+            notional=position_notional_usdt(position),
+            where="sell_rotation_realized",
+        )
+    else:
+        realized = float(position.get("realized_pnl", 0) or 0)
     min_gain = float(cfg.get("evict_min_gain_pct", 0.0))
     return gain >= min_gain or realized > 0
 

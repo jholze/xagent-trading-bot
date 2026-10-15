@@ -456,6 +456,7 @@ class OrderService:
         error: str = None,
         pnl: float = None,
         risk: dict = None,
+        stamp: dict | None = None,
     ) -> Optional[dict]:
         data = self._load()
         record = self._find(data, order_id=order_id)
@@ -474,6 +475,9 @@ class OrderService:
             record["pnl"] = pnl
         if risk:
             record["risk"] = {**record.get("risk", {}), **risk}
+        if stamp:
+            for key, val in stamp.items():
+                record[key] = val
         self._save(data)
         self._dual_write_v2(record)
         return record
@@ -956,6 +960,12 @@ class OrderService:
                     stats = store.get_day_stats(
                         tid, self.scope, self._v2_day_key(now),
                     )
+                    day_pnl = stats.get("realized_pnl")
+                    if day_pnl is None:
+                        from logger import log
+
+                        log("day stats realized pnl missing", "ERROR")
+                        day_pnl = 0.0
                     return {
                         "filled": int(stats.get("filled") or 0),
                         "buys": int(stats.get("buys") or 0),
@@ -966,7 +976,7 @@ class OrderService:
                         "sell_usdt": float(stats.get("sell_usdt") or 0),
                         "short_usdt": float(stats.get("short_usdt") or 0),
                         "cover_usdt": float(stats.get("cover_usdt") or 0),
-                        "realized_pnl": float(stats.get("realized_pnl") or 0),
+                        "realized_pnl": float(day_pnl),
                         "sell_wins": int(stats.get("sell_wins") or 0),
                         "sell_losses": int(stats.get("sell_losses") or 0),
                         "wins": int(stats.get("wins") or 0),
@@ -1104,6 +1114,10 @@ class OrderService:
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:
         if not order_id:
             return
+        # Marker and needs_reconcile share this call's update_status save.
+        # A later save would leave a filled row the entry block can see and
+        # recovery will not pick up.
+        stamp = _sell_cover_stamp(result, approved_order)
         if result.executed and approved_order:
             data = self._load()
             record = self._find(data, order_id=order_id)
@@ -1159,6 +1173,25 @@ class OrderService:
             filled_gross = float(getattr(result, "filled_qty", 0) or 0)
             if filled_gross > 0:
                 execution["filled_qty_gross"] = filled_gross
+            side_name = ""
+            if approved_order is not None:
+                side_name = str(getattr(approved_order, "type", "") or "")
+            if not side_name:
+                side_name = str(getattr(result, "order_type", "") or "")
+            # Each Gate slice books its own ledger row. The order row the
+            # loss brake reads must equal the sum of those rows, not the
+            # last slice alone.
+            totals = _cover_slice_totals(order_id, side_name)
+            linked_pnl = float(result.pnl) if result.pnl is not None else None
+            if totals is not None:
+                linked_pnl = totals["pnl"]
+                execution["fee"] = totals["fee"]
+                execution["amount"] = totals["qty"]
+                if totals["usdt"] > 0:
+                    execution["usdt"] = totals["usdt"]
+                if totals["qty"] > 0:
+                    execution["filled_qty_gross"] = totals["qty"]
+                    extra_fields["filled_qty"] = totals["qty"]
             lev_pay = _leverage_payload(approved_order)
             if lev_pay:
                 execution.update(lev_pay)
@@ -1183,7 +1216,8 @@ class OrderService:
                 order_id,
                 st,
                 execution=execution,
-                pnl=float(result.pnl) if result.pnl is not None else None,
+                pnl=linked_pnl,
+                stamp=stamp,
             )
             basis = str(getattr(result, "pnl_basis", "") or "")
             fee_src = str(getattr(result, "pnl_fee_source", "") or "")
@@ -1253,6 +1287,78 @@ class OrderService:
             "approved_usdt": approved_usdt,
             "checked_at": _now(),
         }
+
+
+def _cover_ledger_rows(order_id: str) -> list[dict]:
+    """COVER rows already booked for this order, on whichever ledger has them."""
+    from core.config import get_bot_config
+    from data_manager import uses_exchange_ledger
+    from services.portfolio_service import _booking_rows
+
+    cfg = get_bot_config()
+    rows = _booking_rows(cfg, order_id, "COVER")
+    if rows:
+        return rows
+
+    class _Mode:
+        def __init__(self, mode: str) -> None:
+            self.trading_mode = mode
+
+    live = uses_exchange_ledger(getattr(cfg, "trading_mode", None))
+    other = _Mode("paper" if live else "live")
+    return _booking_rows(other, order_id, "COVER")
+
+
+def _cover_slice_totals(order_id: str, side: str) -> dict | None:
+    """Sum of booked COVER slices. None when this link has no ledger rows."""
+    if str(side or "").upper() != "COVER" or not order_id:
+        return None
+    rows = _cover_ledger_rows(str(order_id))
+    if not rows:
+        return None
+    from services.portfolio_service import _row_fee, _row_qty
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    pnl = 0.0
+    fee = 0.0
+    qty = 0.0
+    usdt = 0.0
+    for row in rows:
+        qty += _row_qty(row)
+        fee += _row_fee(row)
+        try:
+            usdt += float(row.get("usdt_amount") or row.get("usdt_received") or 0)
+        except (TypeError, ValueError):
+            pass
+        raw = row.get("pnl") if isinstance(row, dict) else None
+        if not isinstance(row, dict) or "pnl" not in row or raw is None:
+            pnl += pnl_for_sum(row if isinstance(row, dict) else {})
+            continue
+        try:
+            pnl += float(raw)
+        except (TypeError, ValueError):
+            pnl += pnl_for_sum(row)
+    return {"pnl": pnl, "fee": fee, "qty": qty, "usdt": usdt}
+
+
+def _sell_cover_stamp(result: TradeResult, approved_order: TradeOrder | None) -> dict:
+    """Fields written in the same save as a new sell or cover fill."""
+    if not getattr(result, "executed", False):
+        return {}
+    side = ""
+    if approved_order is not None:
+        side = str(getattr(approved_order, "type", "") or "")
+    if not side:
+        side = str(getattr(result, "order_type", "") or "")
+    if side.upper() not in ("SELL", "COVER"):
+        return {}
+    from storage.order_ledger_v2 import PNL_TRACKED_FIELD
+
+    stamp = {PNL_TRACKED_FIELD: True}
+    if getattr(result, "pnl", None) is None:
+        result.needs_reconcile = True
+        stamp["needs_reconcile"] = True
+    return stamp
 
 
 def _leverage_payload(order: TradeOrder | None) -> dict:

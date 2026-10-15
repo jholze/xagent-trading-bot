@@ -79,7 +79,12 @@ def orders_to_trade_memories(
         usdt = float(ex.get("usdt") or req.get("usdt") or 0)
         pnl = o.get("pnl")
         if isinstance(pnl, dict):
-            pnl = pnl.get("usdt") or pnl.get("realized")
+            if pnl.get("usdt") is not None:
+                pnl = pnl.get("usdt")
+            elif pnl.get("realized") is not None:
+                pnl = pnl.get("realized")
+            else:
+                pnl = pnl.get("pnl")
         try:
             pnl_f = float(pnl) if pnl is not None else None
         except Exception:
@@ -118,6 +123,36 @@ def orders_to_trade_memories(
     return out
 
 
+def _memory_sell_pnl(trade: TradeMemory) -> float:
+    """Sell pnl for a memory sum. Missing pnl is the two-sided fee loss."""
+    if trade.pnl_usdt is not None:
+        try:
+            return float(trade.pnl_usdt)
+        except (TypeError, ValueError):
+            pass
+    meta = trade.metadata if isinstance(trade.metadata, dict) else {}
+    try:
+        usdt = float(meta.get("usdt") or 0)
+    except (TypeError, ValueError):
+        usdt = 0.0
+    try:
+        amount = float(meta.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    return pnl_for_sum(
+        {
+            "type": "SELL",
+            "side": "sell",
+            "pnl": None,
+            "execution": {"usdt": usdt},
+            "price": float(trade.entry_price or 0),
+            "amount": amount,
+        }
+    )
+
+
 def _by_source_stats(trades: list[TradeMemory]) -> dict[str, Any]:
     by: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"buys": 0, "sells": 0, "pnl_usdt": 0.0}
@@ -128,8 +163,7 @@ def _by_source_stats(trades: list[TradeMemory]) -> dict[str, Any]:
             by[src]["buys"] += 1
         elif t.direction == "sell":
             by[src]["sells"] += 1
-            if t.pnl_usdt is not None:
-                by[src]["pnl_usdt"] = float(by[src]["pnl_usdt"]) + float(t.pnl_usdt)
+            by[src]["pnl_usdt"] = float(by[src]["pnl_usdt"]) + _memory_sell_pnl(t)
     return {k: dict(v) for k, v in by.items()}
 
 
@@ -157,10 +191,10 @@ def _venue_features(trades: list[TradeMemory], config_raw: dict | None = None) -
         # attach pnl from later sells loosely: use sell on same symbol after this buy
         sell_pnl = 0.0
         for s in trades:
-            if s.direction != "sell" or s.pnl_usdt is None:
+            if s.direction != "sell":
                 continue
             if s.entry_time and t.entry_time and s.entry_time >= t.entry_time:
-                sell_pnl += float(s.pnl_usdt)
+                sell_pnl += _memory_sell_pnl(s)
         if thin:
             thin_n += 1
             pnl_thin += sell_pnl
@@ -197,7 +231,7 @@ def compute_profile_from_trades(
 ) -> CoinProfile:
     sells = [t for t in trades if t.direction == "sell"]
     buys = [t for t in trades if t.direction == "buy"]
-    pnls = [float(t.pnl_usdt) for t in sells if t.pnl_usdt is not None]
+    pnls = [_memory_sell_pnl(t) for t in sells]
     wins = sum(1 for p in pnls if p > 0.5)
     win_rate = (wins / len(pnls)) if pnls else 0.0
     total_pnl = sum(pnls) if pnls else 0.0
@@ -223,14 +257,15 @@ def compute_profile_from_trades(
     last_loss_at = None
     last_loss_source = None
     for t in sells:
-        if t.pnl_usdt is None or float(t.pnl_usdt) >= 0:
+        sell_pnl = _memory_sell_pnl(t)
+        if sell_pnl >= 0:
             continue
         # approximate pct from entry/exit if present
         pct = 0.0
         if t.entry_price and t.exit_price and t.entry_price > 0:
             pct = (float(t.exit_price) / float(t.entry_price) - 1.0) * 100.0
-        if float(t.pnl_usdt) <= worst_usdt:
-            worst_usdt = float(t.pnl_usdt)
+        if sell_pnl <= worst_usdt:
+            worst_usdt = sell_pnl
             worst_pct = pct
             last_loss_at = t.exit_time or t.entry_time
             last_loss_source = t.source

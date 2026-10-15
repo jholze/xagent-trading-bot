@@ -1,17 +1,30 @@
 from datetime import datetime
 
 from core.config import get_bot_config
-from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
+from core.costs import (
+    COST_MODEL_VERSION,
+    CostModel,
+    Fill,
+    fee_rate_field,
+    read_rate_fraction,
+    swap_taker_estimate_rate,
+    trade_cost_fields,
+    write_rate_fraction,
+)
 from core.models import TradeResult, TradeOrder, ctx_float_or_none, trade_ctx_fields
 from data_manager import load_trade_history, record_trade
 from logger import log
 from strategies.positions import (
     bind_buy_timeframe,
+    flush_positions,
     get_position,
     refresh_venue_min_mark,
     sell_fraction_for_signal,
+    set_position_field,
     update_position,
 )
+
+_QTY_EPS = 1e-12
 
 
 def _default_entry_source(source: str | None) -> str | None:
@@ -73,6 +86,114 @@ def _cover_funding_usdt(
         hours,
         float(params.get("funding_rate_8h") or 0),
     )
+
+
+def _booking_rows(config, order_id: str | None, typ: str) -> list[dict]:
+    """Trade rows already booked for this order_id and type.
+
+    Live mode writes ``record_live_trade``; paper/demo writes ``record_trade``.
+    Read the ledger that this mode actually appends to, so a partial fill's
+    later remainder is a delta and a replay of the same cumulative qty is not.
+    """
+    if not order_id:
+        return []
+    from data_manager import load_live_trade_history, load_trade_history, uses_exchange_ledger
+
+    mode = getattr(config, "trading_mode", None)
+    if uses_exchange_ledger(mode):
+        history = load_live_trade_history() or {}
+    else:
+        history = load_trade_history() or {}
+    typ_u = str(typ or "").upper()
+    rows: list[dict] = []
+    for row in history.get("trades") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("order_id") or "") != str(order_id):
+            continue
+        if str(row.get("type") or "").upper() != typ_u:
+            continue
+        rows.append(row)
+    return rows
+
+
+def _row_qty(row: dict) -> float:
+    try:
+        return float(row.get("amount") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _lot_open_fee(config, pos: dict, lot_qty: float, entry: float) -> tuple[float, bool]:
+    """Stored opening fee, or a max-rule estimate when a tracked lot lost it.
+
+    A missing ``open_fee_usdt`` on a lot opened after #685 is not zero (C5).
+    Legacy lots have no marker and stay at 0. The bool is True when the
+    number was estimated (or could not be, which still needs reconcile).
+    """
+    tracked = bool(pos.get("open_fee_tracked"))
+    if not tracked or "open_fee_usdt" in pos:
+        try:
+            return float(pos.get("open_fee_usdt") or 0), False
+        except (TypeError, ValueError):
+            return 0.0, False
+    picked = swap_taker_estimate_rate(config)
+    try:
+        notional = float(lot_qty) * float(entry)
+    except (TypeError, ValueError):
+        notional = 0.0
+    if not picked or notional <= 0:
+        log("open_fee_unresolved tracked lot has no rate or notional", "ERROR")
+        return 0.0, True
+    rate = float(picked[0])
+    if rate <= 0:
+        log("open_fee_unresolved tracked lot has no positive rate", "ERROR")
+        return 0.0, True
+    return notional * rate, True
+
+
+def _row_fee(row: dict) -> float:
+    for key in ("fee_usdt", "fee"):
+        raw = row.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _replay_result(symbol: str, typ: str, order_id: str, rows: list[dict]) -> TradeResult:
+    last = rows[-1] if rows else {}
+    if not isinstance(last, dict) or "pnl" not in last or last.get("pnl") is None:
+        replay_pnl = None
+    else:
+        try:
+            replay_pnl = float(last.get("pnl"))
+        except (TypeError, ValueError):
+            replay_pnl = None
+    result = TradeResult(
+        True,
+        typ,
+        symbol,
+        amount=float(_row_qty(last)),
+        price=float(last.get("price") or 0),
+        usdt_amount=float(last.get("usdt_amount") or last.get("usdt_received") or 0),
+        pnl=replay_pnl,
+        order_id=order_id or "",
+        fee=float(_row_fee(last)),
+        message="already booked",
+    )
+    result.booking_skipped = True
+    result.fee_estimated = bool(last.get("fee_estimated"))
+    result.fee_rate_source = str(last.get("fee_rate_source") or "")
+    write_rate_fraction(result, read_rate_fraction(last))
+    if typ == "COVER":
+        result.funding_usdt = last.get("funding_usdt")
+        result.funding_unknown = bool(last.get("funding_unknown"))
+        result.open_fee_usdt = float(last.get("open_fee_usdt") or 0)
+    return result
 
 
 class PortfolioService:
@@ -282,6 +403,11 @@ class PortfolioService:
         ctx: dict | None = None,
         exit_source: str | None = None,
         short_recipe: str | None = None,
+        fill: Fill | None = None,
+        fee_usdt: float | None = None,
+        fee_estimated: bool = False,
+        fee_rate_source: str = "",
+        rate: float = 0.0,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
@@ -299,8 +425,40 @@ class PortfolioService:
         params = resolve_short_params(symbol=symbol, config_raw=self.config.raw)
         lev = clamp_leverage(leverage or params["leverage"], cap=params["leverage_cap"])
         notional = usdt_amount or self.config.max_usdt_per_trade
-        margin = margin_usdt(notional / price, price, lev) if price else 0.0
-        amount = notional / price
+        reported_qty = notional / price if price else 0.0
+        reported_fee = fee_usdt
+        if reported_fee is None and fill is not None:
+            reported_fee = float(fill.fee_usdt or 0)
+        if reported_fee is None:
+            reported_fee = 0.0
+        if fill is not None and getattr(fill, "fee_estimated", False):
+            fee_estimated = True
+            fee_rate_source = fee_rate_source or str(getattr(fill, "fee_rate_source", "") or "")
+            if not rate:
+                rate = read_rate_fraction(fill)
+
+        rows = _booking_rows(self.config, order_id, "SHORT") if order_id else []
+        booked_qty = sum(_row_qty(row) for row in rows)
+        # Same order_id books only the qty above what is already stored (K1).
+        if order_id:
+            delta = reported_qty - booked_qty
+            if delta <= _QTY_EPS:
+                return _replay_result(symbol, "SHORT", order_id, rows)
+            amount = delta
+            booked_fee = sum(_row_fee(row) for row in rows)
+            fee_slice = reported_fee - booked_fee if booked_qty > _QTY_EPS else reported_fee
+            if fee_slice < 0:
+                fee_slice = 0.0
+            notional = price * amount
+        else:
+            amount = reported_qty
+            fee_slice = reported_fee
+        margin = margin_usdt(amount, price, lev) if price else 0.0
+        adding = is_short(existing) and float(existing.get("amount") or 0) > _QTY_EPS
+        prior_fee = float(existing.get("open_fee_usdt") or 0) if adding else 0.0
+        prior_est = bool(existing.get("open_fee_estimated")) if adding else False
+        open_fee = prior_fee + float(fee_slice or 0)
+        open_est = bool(prior_est or fee_estimated)
         update_position(
             symbol,
             timeframe,
@@ -311,7 +469,20 @@ class PortfolioService:
             leverage=lev,
             short_recipe=short_recipe,
             exit_source=exit_source,
+            open_fee_tracked=True,
         )
+        set_position_field(symbol, timeframe, "open_fee_usdt", open_fee)
+        set_position_field(symbol, timeframe, "open_fee_estimated", open_est)
+        # update_position already flushed the lot without these fields.
+        flush_positions(force=True)
+        fee_fields = {
+            "fee": float(fee_slice or 0),
+            "fee_usdt": float(fee_slice or 0),
+            "open_fee_usdt": open_fee,
+            "fee_estimated": open_est,
+            "fee_rate_source": str(fee_rate_source or ""),
+            **fee_rate_field(rate),
+        }
         if sync_virtual_ledger:
             record_trade({
                 "type": "SHORT",
@@ -325,11 +496,21 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 "cost_model": COST_MODEL_VERSION,
+                **fee_fields,
                 **_ctx_ledger_fields(ctx),
             })
-        return TradeResult(
-            True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional, order_id=order_id or "",
+        result = TradeResult(
+            True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional,
+            order_id=order_id or "", fee=float(fee_slice or 0),
+            # A short open has no realized pnl. The dataclass default 0.0 would
+            # store a fake zero on the order row.
+            pnl=None,
         )
+        result.fee_estimated = bool(fee_estimated)
+        result.fee_rate_source = str(fee_rate_source or "")
+        write_rate_fraction(result, rate)
+        result.open_fee_usdt = open_fee
+        return result
 
     def execute_cover(
         self,
@@ -341,17 +522,59 @@ class PortfolioService:
         order_id: str = None,
         sync_virtual_ledger: bool = True,
         ctx: dict | None = None,
+        fill: Fill | None = None,
+        fee_usdt: float | None = None,
+        fee_estimated: bool = False,
+        fee_rate_source: str = "",
+        rate: float = 0.0,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "COVER", symbol, message="Invalid price")
-        pos = get_position(symbol, timeframe)
         from strategies.short_math import is_short, margin_usdt, unrealized_pnl
 
+        reported_fee = fee_usdt
+        if reported_fee is None and fill is not None:
+            reported_fee = float(fill.fee_usdt or 0)
+        if reported_fee is None:
+            reported_fee = 0.0
+        if fill is not None and getattr(fill, "fee_estimated", False):
+            fee_estimated = True
+            fee_rate_source = fee_rate_source or str(getattr(fill, "fee_rate_source", "") or "")
+            if not rate:
+                rate = read_rate_fraction(fill)
+
+        rows = _booking_rows(self.config, order_id, "COVER") if order_id else []
+        booked_qty = sum(_row_qty(row) for row in rows)
+        reported_qty = float(amount) if amount and amount > 0 else None
+        # Replay of the same cumulative cover qty must not require the lot
+        # to still be open and must not write another row.
+        if order_id and reported_qty is not None:
+            delta = reported_qty - booked_qty
+            if delta <= _QTY_EPS and booked_qty > _QTY_EPS:
+                return _replay_result(symbol, "COVER", order_id, rows)
+            cover_qty = delta
+            booked_fee = sum(_row_fee(row) for row in rows)
+            close_fee = reported_fee - booked_fee if booked_qty > _QTY_EPS else reported_fee
+            if close_fee < 0:
+                close_fee = 0.0
+        else:
+            cover_qty = reported_qty
+            close_fee = reported_fee
+
+        pos = get_position(symbol, timeframe)
         if not is_short(pos) or float(pos.get("amount") or 0) <= 0:
             return TradeResult(False, "COVER", symbol, message="No short to cover")
-        qty = float(amount) if amount and amount > 0 else float(pos["amount"])
-        qty = min(qty, float(pos["amount"]))
+        lot_qty = float(pos["amount"])
+        qty = float(cover_qty) if cover_qty and cover_qty > 0 else lot_qty
+        qty = min(qty, lot_qty)
         entry = float(pos.get("average_entry") or price)
+        # Missing key on a post-#685 lot is estimated. Do not read it as 0.
+        lot_open_fee, open_fee_missing = _lot_open_fee(self.config, pos, lot_qty, entry)
+        open_share = lot_open_fee * (qty / lot_qty) if lot_qty > _QTY_EPS else 0.0
+        if open_share < 0:
+            open_share = 0.0
+        if open_share > lot_open_fee:
+            open_share = lot_open_fee
         pnl = unrealized_pnl("short", qty, entry, price)
         funding_usdt: float | None = None
         funding_unknown = True
@@ -367,7 +590,31 @@ class PortfolioService:
                 f"COVER funding treated as 0 for {symbol} {timeframe}: {exc!r}",
                 "WARNING",
             )
+        pnl -= open_share
+        pnl -= float(close_fee or 0)
         update_position(symbol, timeframe, "COVER", price, qty)
+        remaining_fee = lot_open_fee - open_share
+        if remaining_fee < _QTY_EPS:
+            remaining_fee = 0.0
+        still_open = float(get_position(symbol, timeframe).get("amount") or 0) > _QTY_EPS
+        set_position_field(
+            symbol, timeframe, "open_fee_usdt", remaining_fee if still_open else 0.0,
+        )
+        if not still_open:
+            set_position_field(symbol, timeframe, "open_fee_estimated", False)
+        flush_positions(force=True)
+        open_estimated = (
+            bool(pos.get("open_fee_estimated")) or open_fee_missing
+        ) and open_share > 0
+        fee_fields = {
+            "fee": float(close_fee or 0),
+            "fee_usdt": float(close_fee or 0),
+            "open_fee_usdt": open_share,
+            "open_fee_estimated": open_estimated,
+            "fee_estimated": bool(fee_estimated),
+            "fee_rate_source": str(fee_rate_source or ""),
+            **fee_rate_field(rate),
+        }
         if sync_virtual_ledger:
             record_trade({
                 "type": "COVER",
@@ -383,12 +630,22 @@ class PortfolioService:
                 "order_id": order_id,
                 "timestamp": datetime.now().isoformat(),
                 "cost_model": COST_MODEL_VERSION,
+                **fee_fields,
                 **_ctx_ledger_fields(ctx),
             })
-        return TradeResult(
-            True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl, order_id=order_id or "",
+        result = TradeResult(
+            True, "COVER", symbol, amount=qty, price=price, usdt_amount=price * qty, pnl=pnl,
+            order_id=order_id or "", fee=float(close_fee or 0),
             funding_usdt=funding_usdt, funding_unknown=funding_unknown,
         )
+        result.fee_estimated = bool(fee_estimated)
+        result.fee_rate_source = str(fee_rate_source or "")
+        write_rate_fraction(result, rate)
+        result.open_fee_usdt = open_share
+        result.open_fee_estimated = open_estimated
+        if open_fee_missing:
+            result.needs_reconcile = True
+        return result
 
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
         source = order.source or "auto"

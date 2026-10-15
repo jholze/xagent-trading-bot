@@ -254,7 +254,17 @@ def build_victim_candidates(
         except Exception:
             trail_armed = peak_g >= float(cfg.get("protect_peak_gain_pct", 12) or 12)
 
-        realized = float(pos.get("realized_pnl", 0) or 0)
+        if "realized_pnl" in pos and pos.get("realized_pnl") is None:
+            from storage.order_ledger_v2 import decision_pnl
+            from strategies.positions import position_notional_usdt
+
+            realized = decision_pnl(
+                None,
+                notional=position_notional_usdt(pos),
+                where="slot_eviction_runtime_realized",
+            )
+        else:
+            realized = float(pos.get("realized_pnl", 0) or 0)
         rot_ok = gain >= float(rot.get("evict_min_gain_pct", 0) or 0) or realized > 0
         class_name = "A" if gain >= 0 else "B"
         feats = getattr(prof, "features", None) if prof else None

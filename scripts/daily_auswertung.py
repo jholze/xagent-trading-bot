@@ -25,6 +25,7 @@ from notifications.daily_stats import (  # noqa: E402
     post_timestamp,
 )
 from storage.errors import LedgerUnavailable  # noqa: E402
+from storage.order_ledger_v2 import pnl_for_sum  # noqa: E402
 
 normalize_action = normalize_social_action
 
@@ -137,9 +138,50 @@ def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> 
     return out
 
 
+def _fmt_realized(value, spec: str) -> str:
+    """Stored realized total. None is the word unknown, never a format crash."""
+    if value is None:
+        from logger import log
+
+        log("daily report realized total missing", "ERROR")
+        return "unknown"
+    try:
+        return format(float(value), spec)
+    except (TypeError, ValueError):
+        from logger import log
+
+        log("daily report realized total missing", "ERROR")
+        return "unknown"
+
+
+def _missing_pnl_count(trades: list) -> int:
+    """SELL/COVER rows in this report whose pnl key is missing or null."""
+    n = 0
+    for trade in trades or []:
+        if str(trade.get("type") or "").upper() not in ("SELL", "COVER"):
+            continue
+        if "pnl" not in trade or trade.get("pnl") is None:
+            n += 1
+    return n
+
+
+def _shown_pnl(trade: dict) -> float:
+    """SELL/COVER missing pnl is the fee loss. Other sides have no realized pnl."""
+    side = str(trade.get("type") or "").upper()
+    if side in ("SELL", "COVER"):
+        return pnl_for_sum(trade)
+    raw = trade.get("pnl")
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return pnl_for_sum(trade)
+
+
 def fmt_trade_row(trade: dict) -> str:
     ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
-    pnl = trade.get("pnl") or 0
+    pnl = _shown_pnl(trade)
     usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
     return (
         f"| {ts} | {trade['type']} | {trade['symbol']} | "
@@ -171,7 +213,7 @@ def pnl_by_source(trades: list) -> str:
     pnl = defaultdict(float)
     for trade in trades:
         if trade["type"] == "SELL":
-            pnl[trade.get("source", "?")] += trade.get("pnl") or 0
+            pnl[trade.get("source", "?")] += pnl_for_sum(trade)
     if not pnl:
         return "_Keine Verkäufe im Zeitraum._"
     lines = ["| Quelle | Realized PnL |", "|--------|--------------|"]
@@ -359,7 +401,7 @@ def climax_fade_telegram_line(
         ts = _ts(t)
         if ts is None:
             continue
-        closed.append({"ts": ts, "pnl": float(t.get("pnl") or 0), "src": str(
+        closed.append({"ts": ts, "pnl": pnl_for_sum(t), "src": str(
             t.get("exit_source") or t.get("source") or "climax_cover"
         )})
         if last_ts is None or ts >= last_ts:
@@ -400,9 +442,10 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         1 for t in day_trades
         if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
     )
-    sell_pnl_day = sum((t.get("pnl") or 0) for t in day_trades if t["type"] == "SELL")
+    sell_pnl_day = sum(pnl_for_sum(t) for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)
-    realized_total = th.get("realized_pnl", 0)
+    realized_total = th.get("realized_pnl", 0) if "realized_pnl" in th else 0
+    pnl_missing = _missing_pnl_count(day_trades)
 
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
     _, pos_value = open_positions_table(positions)
@@ -422,9 +465,9 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     for trade in sorted(day_trades, key=lambda x: x["timestamp"])[-8:]:
         ts = parse_ts(trade["timestamp"]).strftime("%H:%M")
         usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
-        pnl = trade.get("pnl") or 0
         src = trade.get("source", "?")
         if trade["type"] == "SELL":
+            pnl = pnl_for_sum(trade)
             trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src}) PnL {pnl:+.1f}")
         else:
             trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src})")
@@ -436,7 +479,8 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         f"<i>dry_run={live.get('dry_run')} · Report in auswertungen/</i>\n\n"
         f"<b>Portfolio</b>\n"
         f"{portfolio_block}\n"
-        f"Realized gesamt {realized_total:+.1f} USDT · heute {sell_pnl_day:+.1f} USDT\n\n"
+        f"Realized gesamt {_fmt_realized(realized_total, '+.1f')} USDT · heute {sell_pnl_day:+.1f} USDT\n"
+        f"pnl_missing={pnl_missing}\n\n"
         f"<b>Trades heute</b> {len(day_trades)} ({buys_day} BUY / {sells_day} SELL"
         f"{f', davon {dca_buys} DCA' if dca_buys else ''})\n"
         f"Orders {len(day_orders)} ({filled_orders} filled / {rejected_orders} rejected)\n\n"
@@ -541,11 +585,12 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
             if sym:
                 buy_coins[sym] += 1
 
-    sell_pnl_day = sum((t.get("pnl") or 0) for t in day_trades if t["type"] == "SELL")
+    sell_pnl_day = sum(pnl_for_sum(t) for t in day_trades if t["type"] == "SELL")
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
     sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)
-    realized_total = th.get("realized_pnl", 0)
+    realized_total = th.get("realized_pnl", 0) if "realized_pnl" in th else 0
+    pnl_missing = _missing_pnl_count(day_trades)
 
     trade_rows = [fmt_trade_row(t) for t in sorted(day_trades, key=lambda x: x["timestamp"])]
     if not trade_rows:
@@ -568,8 +613,9 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
         )
     summary_parts.append(
         f"Portfolio: ${cash:,.2f} Cash + ${pos_value:,.2f} Positionen, "
-        f"realized gesamt {realized_total:+.2f} USDT."
+        f"realized gesamt {_fmt_realized(realized_total, '+.2f')} USDT."
     )
+    summary_parts.append(f"pnl_missing={pnl_missing}.")
 
     return f"""# Tages-Auswertung Trading Bot
 
@@ -592,7 +638,8 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
 | Cash (Sim) | ${cash:,.2f} |
 | Offene Positionen | {open_count} (~${pos_value:,.2f} Buchwert) |
 | Gesamtwert (Entry-Basis) | ~${cash + pos_value:,.2f} |
-| Realized PnL gesamt | {realized_total:+.2f} USDT |
+| Realized PnL gesamt | {_fmt_realized(realized_total, '+.2f')} USDT |
+| pnl_missing | {pnl_missing} |
 | Realized PnL heute (Verkäufe) | {sell_pnl_day:+.2f} USDT |
 | Trades heute | {len(day_trades)} ({buys_day} BUY / {sells_day} SELL) |
 | Orders heute | {len(day_orders)} ({filled_orders} filled / {rejected_orders} rejected) |

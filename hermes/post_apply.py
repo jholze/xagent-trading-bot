@@ -109,7 +109,9 @@ def evaluate(
         trades=trades,
     )
     sells = [t for t in sample if _is_sell(t)]
-    pnls = [float(t.get("pnl") or 0) for t in sells]
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    pnls = [pnl_for_sum(t) for t in sells]
     n = len(sells)
     realized = round(sum(pnls), 4)
     wins = sum(1 for p in pnls if p > 0)

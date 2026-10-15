@@ -75,6 +75,9 @@ class Fill:
     fee_usdt: float  # fee_base · fill_price + fee_quote — reporting only
     slippage_usdt: float  # |fill_price − request_price| · qty_gross
     cost_model_version: str = COST_MODEL_VERSION
+    fee_estimated: bool = False
+    fee_rate_source: str = ""
+    fee_rate: float = 0.0
 
 
 def _config_dict(config: object | None) -> dict:
@@ -228,6 +231,62 @@ def _normalize_order_type(order_type: str | None) -> OrderType:
     return "market"
 
 
+def fee_usdt_from_legs(fee_base: float, fee_quote: float, fill_price: float) -> float:
+    """USDT fee. A base-coin fee converts at the fill price and is never booked raw."""
+    return float(fee_base) * float(fill_price) + float(fee_quote)
+
+
+def swap_taker_estimate_rate(
+    config: object | None,
+    *,
+    exchange_taker_fraction: float | None = None,
+    exchange_maker_fraction: float | None = None,
+) -> tuple[float, str] | None:
+    """Conservative Gate futures taker fraction and where it came from.
+
+    Candidates are ``fee_taker_conservative_pct``, ``fee_taker_pct``, and a
+    known exchange taker fraction. The max wins. Exchange maker rates are
+    never candidates (a maker rebate is not assumed). Returns None when no
+    candidate is > 0. Fractions, not percent: 0.00075 == 0.075%.
+    """
+    # Accepted so a caller can pass the maker quote it already loaded.
+    # It must not enter the max (M7 / T8).
+    _ = exchange_maker_fraction
+    raw = _config_dict(config)
+    costs = raw.get("costs") if isinstance(raw.get("costs"), dict) else {}
+    gate = costs.get("gate") if isinstance(costs.get("gate"), dict) else {}
+    swap = gate.get("swap") if isinstance(gate.get("swap"), dict) else {}
+    candidates: list[tuple[float, str]] = []
+
+    def _add_pct(key: str, source: str) -> None:
+        if key not in swap:
+            return
+        try:
+            frac = float(swap.get(key)) / 100.0
+        except (TypeError, ValueError):
+            return
+        if frac > 0:
+            candidates.append((frac, source))
+
+    _add_pct("fee_taker_conservative_pct", "config_conservative")
+    _add_pct("fee_taker_pct", "config_fallback")
+    if exchange_taker_fraction is not None:
+        try:
+            taker = float(exchange_taker_fraction)
+        except (TypeError, ValueError):
+            taker = 0.0
+        if taker > 0:
+            candidates.append((taker, "exchange"))
+    if not candidates:
+        return None
+    best = max(item[0] for item in candidates)
+    # Equal rates: the conservative config rate is the one we name.
+    rank = {"config_conservative": 0, "exchange": 1, "config_fallback": 2}
+    winners = [item for item in candidates if abs(item[0] - best) <= 1e-15]
+    winners.sort(key=lambda item: rank.get(item[1], 9))
+    return winners[0]
+
+
 def _fill(
     *,
     side: Side,
@@ -252,7 +311,7 @@ def _fill(
         quote_net=quote_net,
         fee_base=fee_base,
         fee_quote=fee_quote,
-        fee_usdt=fee_base * fill_price + fee_quote,
+        fee_usdt=fee_usdt_from_legs(fee_base, fee_quote, fill_price),
         slippage_usdt=abs(fill_price - request_price) * qty_gross,
         cost_model_version=COST_MODEL_VERSION,
     )
@@ -533,7 +592,7 @@ class CostModel:
             quote_net=quote_net,
             fee_base=fee_base,
             fee_quote=fee_quote,
-            fee_usdt=fee_base * fill_price + fee_quote,
+            fee_usdt=fee_usdt_from_legs(fee_base, fee_quote, fill_price),
             slippage_usdt=abs(fill_price - float(request_price)) * qty_gross,
             cost_model_version=COST_MODEL_VERSION,
         )
@@ -546,10 +605,46 @@ class CostModel:
 
 def trade_cost_fields(fill: Fill) -> dict:
     """Fields every new trade record must carry."""
-    return {
+    out = {
         "fee_base": fill.fee_base,
         "fee_quote": fill.fee_quote,
         "fee_usdt": fill.fee_usdt,
         "slippage_usdt": fill.slippage_usdt,
         "cost_model": fill.cost_model_version,
     }
+    if getattr(fill, "fee_estimated", False) or getattr(fill, "fee_rate_source", ""):
+        out["fee_estimated"] = bool(fill.fee_estimated)
+        out["fee_rate_source"] = str(fill.fee_rate_source or "")
+        out.update(fee_rate_field(read_rate_fraction(fill)))
+    return out
+
+
+def read_rate_fraction(obj, default: float = 0.0) -> float:
+    """Fraction stored as ``fee_rate``. The field name stays in this module."""
+    if obj is None:
+        return float(default or 0)
+    if isinstance(obj, dict):
+        raw = obj.get("fee_rate", default)
+    else:
+        raw = getattr(obj, "fee_rate", default)
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def write_rate_fraction(obj, rate: float) -> None:
+    setattr(obj, "fee_rate", float(rate or 0))
+
+
+def fee_rate_field(rate: float) -> dict:
+    return {"fee_rate": float(rate or 0)}
+
+
+def fill_with_rate_fraction(fill: Fill, *, source: str, rate: float) -> Fill:
+    return replace(
+        fill,
+        fee_estimated=True,
+        fee_rate_source=str(source or ""),
+        fee_rate=float(rate or 0),
+    )

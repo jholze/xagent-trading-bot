@@ -236,7 +236,11 @@ def build_radar_snapshot() -> dict[str, Any]:
     n_loss = sum(1 for e in exits if (e.get("gain_pct") is not None and e["gain_pct"] < 0))
     n_hold = sum(1 for e in exits if e.get("recovery_hold") or e.get("sniper_focus"))
     n_hold_block = sum(1 for e in exits if e.get("blocked_by_hold"))
-    total_pnl = sum(float(e.get("pnl_usdt") or 0) for e in exits)
+    from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+    total_pnl = sum(
+        mark_pnl_or_exclude(e.get("pnl_usdt"), where="exit_radar_http") for e in exits
+    )
     total_notional = sum(float(e.get("notional_usdt") or 0) for e in exits)
 
     ticks = int(bot_hub.get("ticks") or 0)

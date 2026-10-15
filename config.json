@@ -101,6 +101,7 @@
       "swap": {
         "fee_maker_pct": 0.02,
         "fee_taker_pct": 0.05,
+        "fee_taker_conservative_pct": 0.075,
         "slippage_pct": 0.10,
         "fee_side_buy": "quote",
         "fee_side_sell": "quote",

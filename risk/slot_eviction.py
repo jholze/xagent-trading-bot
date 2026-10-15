@@ -353,7 +353,17 @@ def memory_keep_score(
     score += (0.5 - risk_s) * 0.2
 
     try:
-        total_pnl = float(getattr(profile, "total_pnl_usdt", 0.0) or 0.0)
+        raw_total = getattr(profile, "total_pnl_usdt", 0.0)
+        if raw_total is None:
+            from storage.order_ledger_v2 import decision_pnl
+
+            feats = getattr(profile, "features", None)
+            notional = 0.0
+            if isinstance(feats, dict):
+                notional = float(feats.get("missing_pnl_notional_usdt") or feats.get("usdt") or 0)
+            total_pnl = decision_pnl(None, notional=notional, where="slot_eviction_total_pnl")
+        else:
+            total_pnl = float(raw_total or 0.0)
     except (TypeError, ValueError):
         total_pnl = 0.0
     if total_pnl > 0:

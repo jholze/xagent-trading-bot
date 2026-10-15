@@ -263,7 +263,9 @@ def evaluate_position(
         from strategies.short_math import snapshot as _short_snap
 
         _ss = _short_snap(pos, price)
-        pnl_usdt = float(_ss.get("pnl") or 0)
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        pnl_usdt = pnl_for_sum(_ss)
     except Exception:
         pnl_usdt = float(pos.get("amount") or 0) * (price - entry)
 

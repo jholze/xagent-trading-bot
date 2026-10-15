@@ -226,20 +226,23 @@ class Backtester:
         max_drawdown_pct: float,
         initial_capital: float,
     ) -> SandboxMetrics:
+        from storage.order_ledger_v2 import pnl_for_sum
+
         sells = [t for t in trades if t.get("type") == "SELL"]
-        wins = [t for t in sells if t.get("pnl", 0) > 0]
+        pnls = [pnl_for_sum(t) for t in sells]
+        wins = [p for p in pnls if p > 0]
         win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
 
         returns = []
-        for trade in sells:
+        for trade, pnl in zip(sells, pnls):
             usdt = trade.get("usdt_received", 0)
-            if usdt > 0:
-                returns.append(trade.get("pnl", 0) / usdt)
+            if usdt and usdt > 0:
+                returns.append(pnl / usdt)
 
         sharpe = sharpe_from_trades(trades)
 
         equity = balance + position.get("amount", 0) * float(last_price)
-        realized_pnl = sum(t.get("pnl", 0) for t in sells)
+        realized_pnl = sum(pnls)
 
         return SandboxMetrics(
             win_rate=round(win_rate, 1),

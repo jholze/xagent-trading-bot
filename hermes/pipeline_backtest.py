@@ -220,11 +220,15 @@ class PipelineBacktester:
             realized_pnl = window_sell_pnl
             sell_count = window_sells
         else:
+            from storage.order_ledger_v2 import pnl_for_sum
+
             sells = [t for t in trades if t.get("type") == "SELL"]
-            realized_pnl = sum(t.get("pnl", 0) for t in sells)
+            realized_pnl = sum(pnl_for_sum(t) for t in sells)
             sell_count = len(sells)
 
-        wins = [t for t in sells if t.get("pnl", 0) > 0]
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        wins = [t for t in sells if pnl_for_sum(t) > 0]
         win_rate = (len(wins) / len(sells) * 100) if sells else 0.0
         equity = balance + position.get("amount", 0) * float(df.iloc[-1]["close"])
 

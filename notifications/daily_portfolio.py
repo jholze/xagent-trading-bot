@@ -167,10 +167,18 @@ def today_activity_stats(
             stats = OrderService(resolve_ledger_scope(mode)).stats_day_filled_fast()
         if int(stats.get("filled") or 0) <= 0:
             return 0, 0, 0.0, False
+        raw_pnl = stats.get("realized_pnl") if isinstance(stats, dict) else None
+        if isinstance(stats, dict) and "realized_pnl" in stats and raw_pnl is None:
+            from logger import log
+
+            log("daily activity realized pnl missing", "ERROR")
+            realized_today = None
+        else:
+            realized_today = round(float(raw_pnl or 0), 2)
         return (
             int(stats.get("buys") or 0),
             int(stats.get("sells") or 0),
-            round(float(stats.get("realized_pnl") or 0), 2),
+            realized_today,
             True,
         )
     today = trades_today()
@@ -182,8 +190,14 @@ def today_activity_stats(
 
 
 def realized_pnl_for(trade_list: list) -> float:
+    from storage.order_ledger_v2 import pnl_for_sum
+
     return round(
-        sum(float(t.get("pnl") or 0) for t in trade_list if t.get("type") == "SELL"),
+        sum(
+            pnl_for_sum(t)
+            for t in trade_list
+            if t.get("type") == "SELL"
+        ),
         2,
     )
 
@@ -295,7 +309,9 @@ def format_daily_nav_line(
     if not has_activity:
         return ""
 
-    def _signed_usd(value: float) -> str:
+    def _signed_usd(value: float | None) -> str:
+        if value is None:
+            return "unknown"
         if value >= 0:
             return f"+${value:,.0f}"
         return f"-${abs(value):,.0f}"
@@ -303,9 +319,11 @@ def format_daily_nav_line(
     # Interactive portfolio always prefers the cheap path unless caller forces full.
     if lightweight or day_stats is not None:
         extra = _today_short_cover_bit(day_stats)
+        missing_n = int((day_stats or {}).get("pnl_missing") or 0)
+        missing_bit = f" · pnl_missing={missing_n}" if missing_n else ""
         return (
             f"📅 <b>Heute:</b> {buys} Käufe / {sells} Verkäufe{extra} · "
-            f"Heute Verk. <b>{_signed_usd(realized_today)}</b>"
+            f"Heute Verk. <b>{_signed_usd(realized_today)}</b>{missing_bit}"
         )
 
     nav_start = estimate_nav_at_day_start(mode, prices=prices, cache_ttl_sec=cache_ttl_sec)

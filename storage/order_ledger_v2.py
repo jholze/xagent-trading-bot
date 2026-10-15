@@ -18,6 +18,10 @@ from typing import Any, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
+# Present only on sell/cover rows written by this code. Legacy rows lack it
+# and do not feed the entry block.
+PNL_TRACKED_FIELD = "pnl_tracked"
+
 from core.models import OrderStatus, is_executed_status
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
@@ -244,6 +248,21 @@ def order_notional_usdt(order: dict) -> float:
         price = float(exe.get("price") or req.get("price") or 0)
         amount = float(exe.get("amount") or req.get("amount") or 0)
     except (TypeError, ValueError):
+        price = 0.0
+        amount = 0.0
+    if price > 0 and amount > 0:
+        return price * amount
+    for key in ("usdt_amount", "usdt_received"):
+        try:
+            usdt = float(order.get(key) or 0)
+        except (TypeError, ValueError):
+            usdt = 0.0
+        if usdt > 0:
+            return usdt
+    try:
+        price = float(order.get("price") or 0)
+        amount = float(order.get("amount") or 0)
+    except (TypeError, ValueError):
         return 0.0
     if price > 0 and amount > 0:
         return price * amount
@@ -308,19 +327,241 @@ def _order_ref(order: dict) -> object:
 
 
 def _parse_order_pnl(order: dict) -> float:
-    """Sell/cover realized pnl. Invalid values log and count as 0.0."""
+    """Sell/cover realized pnl. Missing values are not a usable number.
+
+    ``stats_from_filled_orders`` does not sum this 0 into realized PnL (R8).
+    """
+    value, missing = _order_pnl_or_missing(order)
+    if missing or value is None:
+        return 0.0
+    return value
+
+
+def _order_pnl_or_missing(order: dict) -> tuple[float | None, bool]:
+    """(pnl, missing). Missing covers absent and unparseable pnl."""
     raw = order.get("pnl")
     if raw is None:
-        return 0.0
+        return None, True
     if isinstance(raw, dict):
         raw = raw.get("usdt", raw.get("realized", raw.get("pnl")))
         if raw is None:
-            return 0.0
+            return None, True
     try:
-        return float(raw)
+        return float(raw), False
     except (TypeError, ValueError):
         logger.warning("order pnl parse failed id=%s raw=%r", _order_ref(order), raw)
+        return None, True
+
+
+def _positive_fee(value: object) -> float | None:
+    try:
+        num = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if num > 0:
+        return num
+    return None
+
+
+def _stored_open_fee(order: dict) -> float | None:
+    found = _positive_fee(order.get("open_fee_usdt"))
+    if found is not None:
+        return found
+    exe = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    return _positive_fee(exe.get("open_fee_usdt"))
+
+
+def _stored_close_fee(order: dict) -> float | None:
+    exe = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    for raw in (
+        exe.get("fee"),
+        order.get("fee"),
+        order.get("fee_usdt"),
+        exe.get("fee_usdt"),
+    ):
+        found = _positive_fee(raw)
+        if found is not None:
+            return found
+    return None
+
+
+def _conservative_taker_fraction() -> float:
+    try:
+        from core.config import get_bot_config
+        from core.costs import swap_taker_estimate_rate
+
+        picked = swap_taker_estimate_rate(get_bot_config())
+    except Exception:
         return 0.0
+    if not picked:
+        return 0.0
+    try:
+        return float(picked[0])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _missing_pnl_charge(order: dict) -> float:
+    """Conservative loss for a filled sell/cover whose pnl is missing.
+
+    Stored open and close fees when present, otherwise each side is
+    ``notional × conservative taker``. The result is never 0 and never > 0.
+    """
+    notional = order_notional_usdt(order)
+    est = notional * _conservative_taker_fraction()
+    if est < 0:
+        est = 0.0
+    open_fee = _stored_open_fee(order)
+    close_fee = _stored_close_fee(order)
+    if open_fee is None:
+        open_fee = est
+    if close_fee is None:
+        close_fee = est
+    charged = float(open_fee) + float(close_fee)
+    if charged <= 0:
+        logger.error("order_pnl_missing_unpriced id=%s", _order_ref(order))
+        # Only this unpriced fallback. A priced missing-pnl charge does not.
+        order["needs_reconcile"] = True
+        charged = 1e-12
+    return -abs(charged)
+
+
+def mark_pnl_or_exclude(value: object, *, where: str) -> float:
+    """Unrealized mark. None is excluded and logged, not booked as a zero trade."""
+    if value is None or value == "":
+        logger.error("unrealized_pnl_missing where=%s", where)
+        return 0.0
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("unrealized_pnl_missing where=%s", where)
+        return 0.0
+
+
+def decision_pnl(value: object, *, notional: float, where: str) -> float:
+    """Risk or decision input. Explicit None is the two-sided fee loss, not 0."""
+    if value is None or value == "":
+        return pnl_for_sum(
+            {
+                "type": "SELL",
+                "side": "sell",
+                "pnl": None,
+                "execution": {"usdt": float(notional or 0)},
+            }
+        )
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("pnl_unknown where=%s", where)
+        return pnl_for_sum(
+            {
+                "type": "SELL",
+                "side": "sell",
+                "pnl": None,
+                "execution": {"usdt": float(notional or 0)},
+            }
+        )
+
+
+def read_stored_pnl(doc: object, *keys: str, where: str) -> float | None:
+    """Stored account total.
+
+    Absent keys are a legacy 0. An explicit None logs ERROR and returns None
+    so a display can say unknown instead of printing 0.
+    """
+    if not isinstance(doc, dict):
+        logger.error("pnl_unknown where=%s", where)
+        return None
+    names = keys or ("realized_pnl", "total_pnl")
+    saw_none = False
+    for key in names:
+        if key not in doc:
+            continue
+        raw = doc.get(key)
+        if raw is None:
+            saw_none = True
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.error("pnl_unknown where=%s", where)
+            return None
+    if saw_none:
+        logger.error("pnl_unknown where=%s", where)
+        return None
+    return 0.0
+
+
+def format_pnl_unknown(value: object, *, where: str, spec: str = "+.2f") -> str:
+    """Display text. None is the word unknown, never 0."""
+    if value is None or value == "":
+        logger.error("pnl_unknown where=%s", where)
+        return "unknown"
+    try:
+        return format(float(value), spec)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("pnl_unknown where=%s", where)
+        return "unknown"
+
+
+def pnl_for_sum(row: dict) -> float:
+    """Number to add when a row's pnl is summed.
+
+    A real number, including 0, is that number. Missing pnl is not 0: it is
+    the two-sided fee loss from ``_missing_pnl_charge`` (stored fees, or the
+    config taker rate on each side). An ERROR is logged for that substitute.
+    """
+    if not isinstance(row, dict):
+        logger.error("order_pnl_missing_charged id=?")
+        return -1e-12
+    value, missing = _order_pnl_or_missing(row)
+    if not missing:
+        return float(value or 0)
+    charged = _missing_pnl_charge(row)
+    logger.error(
+        "order_pnl_missing_charged id=%s charged=%s",
+        _order_ref(row),
+        charged,
+    )
+    return charged
+
+
+def order_is_pnl_tracked(order: dict) -> bool:
+    """True when this sell/cover row was written with the #679 marker."""
+    if not isinstance(order, dict):
+        return False
+    if order.get(PNL_TRACKED_FIELD):
+        return True
+    exe = order.get("execution")
+    return isinstance(exe, dict) and bool(exe.get(PNL_TRACKED_FIELD))
+
+
+def split_missing_pnl(orders: Iterable[dict]) -> tuple[int, int]:
+    """(tracked, legacy) filled sell/cover rows whose pnl is missing.
+
+    Only ``tracked`` blocks new buys and shorts. ``legacy`` is reported and
+    ignored: those rows were written before the marker existed.
+    """
+    tracked = 0
+    legacy = 0
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        raw_status = o.get("status")
+        if raw_status is not None and not is_executed_status(raw_status):
+            continue
+        side = _token(o.get("side"))
+        spec = _SIDE_STATS.get(side)
+        if spec is None or not spec[2]:
+            continue
+        _pnl, missing = _order_pnl_or_missing(o)
+        if not missing:
+            continue
+        if order_is_pnl_tracked(o):
+            tracked += 1
+        else:
+            legacy += 1
+    return tracked, legacy
 
 
 def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
@@ -354,6 +595,7 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         "wins": 0,
         "losses": 0,
         "unknown_side": 0,
+        "pnl_missing": 0,
     }
     for o in orders:
         if not isinstance(o, dict):
@@ -378,8 +620,23 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         counts[usdt_key] += notional
         if not has_pnl:
             continue
-        pnl = _parse_order_pnl(o)
-        counts["realized_pnl"] += pnl
+        pnl, missing = _order_pnl_or_missing(o)
+        if missing:
+            charged = pnl_for_sum(o)
+            counts["pnl_missing"] += 1
+            counts["realized_pnl"] += charged
+            logger.warning(
+                "order_pnl_missing id=%s side=%s charged=%s",
+                _order_ref(o),
+                side,
+                charged,
+            )
+            counts["losses"] += 1
+            if side == "sell":
+                counts["sell_losses"] += 1
+            continue
+        counts["realized_pnl"] += float(pnl)
+        pnl = float(pnl)
         if pnl > 0:
             counts["wins"] += 1
             if side == "sell":

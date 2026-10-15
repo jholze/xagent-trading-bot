@@ -89,12 +89,20 @@ def format_fills_html(summary: dict) -> str:
     if drag is None:
         lines.append(t("fills_fee_drag_na"))
     else:
+        from storage.order_ledger_v2 import format_pnl_unknown
+
+        gross = summary.get("gross_realized_pnl") if "gross_realized_pnl" in summary else 0.0
+        pnl_text = (
+            format_pnl_unknown(None, where="reporting_gross_realized")
+            if gross is None
+            else signed_money(float(gross or 0), decimals=2)
+        )
         lines.append(
             t(
                 "fills_fee_drag",
                 pct=f"{float(drag):.1f}%",
                 fees=f"${float(summary.get('total_fees') or 0):,.2f}",
-                pnl=signed_money(float(summary.get("gross_realized_pnl") or 0), decimals=2),
+                pnl=pnl_text,
             )
         )
     return "\n".join(lines).rstrip()
@@ -109,7 +117,12 @@ def format_attribution_html(summary: dict) -> str:
             t(
                 "attribution_row",
                 name=_esc(row.get("name") or "?"),
-                pnl=signed_money(float(row.get("pnl") or 0), decimals=2),
+                pnl=signed_money(
+                    __import__(
+                        "storage.order_ledger_v2", fromlist=["pnl_for_sum"]
+                    ).pnl_for_sum(row),
+                    decimals=2,
+                ),
                 n=int(row.get("n") or 0),
                 wr=f"{float(row.get('win_rate') or 0):.0f}%",
             )
@@ -121,7 +134,12 @@ def format_attribution_html(summary: dict) -> str:
             t(
                 "attribution_row",
                 name=_esc(row.get("name") or "?"),
-                pnl=signed_money(float(row.get("pnl") or 0), decimals=2),
+                pnl=signed_money(
+                    __import__(
+                        "storage.order_ledger_v2", fromlist=["pnl_for_sum"]
+                    ).pnl_for_sum(row),
+                    decimals=2,
+                ),
                 n=int(row.get("n") or 0),
                 wr=f"{float(row.get('win_rate') or 0):.0f}%",
             )

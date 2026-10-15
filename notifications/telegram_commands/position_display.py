@@ -591,7 +591,9 @@ def _position_metrics(p: dict, price: float) -> dict:
         if is_short(p):
             side = "short"
             snap = snapshot(p, price)
-            unreal = float(snap.get("pnl") or 0)
+            from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+            unreal = mark_pnl_or_exclude(snap.get("pnl"), where="position_display")
             margin = float(snap.get("margin") or 0)
             value_usdt = margin + unreal
             unreal_pct = float(snap.get("roe_pct") or 0)
@@ -922,7 +924,18 @@ def format_sell_trade_detail(result) -> str:
     amount = float(result.amount or 0)
     price = float(result.price or 0)
     usdt = float(result.usdt_amount or 0)
-    pnl = float(result.pnl or 0) if result.pnl is not None else 0.0
+    if result.pnl is None:
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        pnl = pnl_for_sum({
+            "pnl": None,
+            "symbol": sym,
+            "usdt_amount": usdt,
+            "fee": getattr(result, "fee", None),
+            "open_fee_usdt": getattr(result, "open_fee_usdt", None),
+        })
+    else:
+        pnl = float(result.pnl)
     ticker = sym.replace("/USDT", "")
     from notifications.coin_links import format_ticker_html
 
@@ -1160,8 +1173,15 @@ def format_portfolio_summary(
         history=history,
         trading_mode=cfg.trading_mode,
     )
+    realized_unknown = False
     if trade_realized is None:
-        trade_realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        from storage.order_ledger_v2 import read_stored_pnl
+
+        looked = read_stored_pnl(
+            history, "realized_pnl", "total_pnl", where="position_display_header",
+        )
+        realized_unknown = looked is None
+        trade_realized = 0.0 if looked is None else looked
     open_mtm = float(total_unreal or 0)
     pos_mv = float(positions_market_value or 0)
     cost_basis = (
@@ -1186,7 +1206,7 @@ def format_portfolio_summary(
     from notifications.telegram_i18n import money, signed_money, t
 
     wert_icon = _pnl_emoji(total_pnl)
-    trade_icon = _pnl_emoji(trade_realized)
+    trade_icon = _pnl_emoji(0.0 if realized_unknown else trade_realized)
     lots_icon = _pnl_emoji(open_lots_mtm)
     mode_line = f" · <i>{mode_label}</i>" if mode_label else ""
     daily_line = ""
@@ -1212,11 +1232,11 @@ def format_portfolio_summary(
         initial=money(initial),
     ) + "\n"
     trade_detail = ""
-    if trade_realized or position_count > 0:
+    if realized_unknown or trade_realized or position_count > 0:
         trade_detail = t(
             "portfolio_realized",
             icon=trade_icon,
-            realized=signed_money(trade_realized),
+            realized=("unknown" if realized_unknown else signed_money(trade_realized)),
         ) + "\n"
 
     # Capacity / floor: "Kaufplätze" vs open coins (proposal B wording)
@@ -1746,7 +1766,7 @@ def _sim_order_ledger_bundle(
         return {
             "history": history,
             "cash_balance": float(hist_cash),
-            "trade_realized": float(hist_realized or 0),
+            "trade_realized": float(hist_realized),
             "active": active,
             "gate_holdings": None,
             "filled_orders": None,
@@ -1766,7 +1786,14 @@ def _sim_order_ledger_bundle(
     )
     replayed = replay_simulated_ledger(filled, initial)
     cash = float(replayed["cash"])
-    trade_realized = float(replayed["realized_pnl"])
+    replay_pnl = replayed.get("realized_pnl") if isinstance(replayed, dict) else None
+    if replay_pnl is None:
+        from storage.order_ledger_v2 import format_pnl_unknown
+
+        format_pnl_unknown(None, where="position_display_replay_realized")
+        trade_realized = 0.0
+    else:
+        trade_realized = float(replay_pnl)
 
     if not active:
         order_snap = dict(replayed["positions"])
@@ -1863,9 +1890,12 @@ def resolve_portfolio_context(
             history=history,
             tenant_id=tid,
         )
-        trade_realized = float(
-            history.get("realized_pnl", history.get("total_pnl", 0)) or 0
+        from storage.order_ledger_v2 import read_stored_pnl
+
+        looked = read_stored_pnl(
+            history, "realized_pnl", "total_pnl", where="position_display_sim_realized",
         )
+        trade_realized = 0.0 if looked is None else looked
         return {
             "history": history,
             "cash_balance": cash,
@@ -1876,19 +1906,29 @@ def resolve_portfolio_context(
     if uses_exchange_ledger(cfg.trading_mode):
         from services.gate_balance import fetch_balance_bundle
 
+        from storage.order_ledger_v2 import read_stored_pnl
+
         bundle = fetch_balance_bundle(cfg, max_age_sec=25.0 if fast else 20.0)
+        looked = read_stored_pnl(
+            history, "realized_pnl", "total_pnl", where="position_display_live_realized",
+        )
         return {
             "history": history,
             "cash_balance": float(bundle.get("usdt", 0)),
             "cash_label": "Gate USDT",
-            "trade_realized": float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0),
+            "trade_realized": 0.0 if looked is None else looked,
             "gate_holdings": bundle.get("holdings") or [],
         }
+    from storage.order_ledger_v2 import read_stored_pnl
+
+    looked = read_stored_pnl(
+        history, "realized_pnl", "total_pnl", where="position_display_cash_realized",
+    )
     return {
         "history": history,
         "cash_balance": float(history.get("virtual_balance", 0)),
         "cash_label": "Cash",
-        "trade_realized": float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0),
+        "trade_realized": 0.0 if looked is None else looked,
         "gate_holdings": None,
     }
 

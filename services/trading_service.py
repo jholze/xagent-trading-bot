@@ -308,6 +308,16 @@ class TradingService:
         st = OrderStatus.try_legacy(status)
         if st is OrderStatus.EXECUTED:
             req = record.get("request") or {}
+            stored_pnl = record.get("pnl")
+            if stored_pnl is None and side in ("SHORT", "COVER", "SELL"):
+                replay_pnl = None
+            elif stored_pnl is None:
+                replay_pnl = 0.0
+            else:
+                try:
+                    replay_pnl = float(stored_pnl)
+                except (TypeError, ValueError):
+                    replay_pnl = None if side in ("SHORT", "COVER", "SELL") else 0.0
             return TradeResult(
                 True,
                 side or "BUY",
@@ -315,7 +325,7 @@ class TradingService:
                 amount=float(execution.get("amount") or req.get("amount") or 0),
                 price=float(execution.get("price") or req.get("price") or 0),
                 usdt_amount=float(execution.get("usdt") or req.get("usdt") or 0),
-                pnl=float(record.get("pnl") or 0),
+                pnl=replay_pnl,
                 message="Idempotent replay",
                 order_id=record.get("id", ""),
                 order_status=st,

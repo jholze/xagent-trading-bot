@@ -18,6 +18,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+
+
+def _fmt_sell_pnl(value) -> str:
+    """Display a sell pnl. Explicit None is unknown, not 0."""
+    if value is None:
+        from logger import log
+
+        log("gis monitor sell pnl missing", "ERROR")
+        return "unknown"
+    try:
+        return f"{float(value):+.2f}"
+    except (TypeError, ValueError):
+        from logger import log
+
+        log("gis monitor sell pnl missing", "ERROR")
+        return "unknown"
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -239,7 +255,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{'Y' if j.get('bought_gainer') else 'N'} | "
             f"{'Y' if j.get('bought_other') else 'N'} | "
             f"{'Y' if j.get('missed') else 'N'} | "
-            f"{float(j.get('sell_pnl') or 0):+.2f} | {j.get('note') or ''} |"
+            f"{_fmt_sell_pnl(j.get('sell_pnl') if 'sell_pnl' in j else 0)} | {j.get('note') or ''} |"
         )
     lines += [
         "",

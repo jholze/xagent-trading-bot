@@ -275,7 +275,9 @@ def run_trading_trials(coins):
     if any(float(p.get("amount", 0)) < 0 for p in active):
         portfolio_ok = False
         portfolio_detail.append("negative amount")
-    sell_pnls = [t.get("pnl", 0) for t in history.get("trades", []) if t.get("type") == "SELL"]
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    sell_pnls = [pnl_for_sum(t) for t in history.get("trades", []) if t.get("type") == "SELL"]
     if sell_pnls and abs(sum(sell_pnls) - history.get("realized_pnl", 0)) > 0.05:
         portfolio_ok = False
         portfolio_detail.append("realized_pnl mismatch")
