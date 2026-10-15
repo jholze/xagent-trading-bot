@@ -304,6 +304,23 @@ def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -
     return profile
 
 
+def _attach_long_hard_stop_cap(result: dict, cfg) -> dict:
+    """Copy ``risk.long_hard_stop_max_loss_pct`` onto the stop params.
+
+    The value is whatever the loaded config holds. This function does not
+    invent a number when the key is absent.
+    """
+    raw = getattr(cfg, "raw", None) if cfg is not None else None
+    if not isinstance(raw, dict):
+        return result
+    risk = raw.get("risk")
+    if not isinstance(risk, dict) or "long_hard_stop_max_loss_pct" not in risk:
+        return result
+    out = dict(result)
+    out["long_hard_stop_max_loss_pct"] = risk["long_hard_stop_max_loss_pct"]
+    return out
+
+
 def _apply_path_stats_soft_bias(result: dict, symbol: str, has_position: bool, cfg) -> dict:
     """Soft-bias trail/arm from path-stats memory (positions only). Fail-open."""
     if not has_position or not result or not symbol:
@@ -376,7 +393,7 @@ def resolve_strategy_params(
             )
         except Exception:
             pass
-        return result
+        return _attach_long_hard_stop_cap(result, cfg)
 
     # Personal / Hermes buy keys always beat config.strategies[] and tier overlay.
     # Load before explicit short-circuit so ARIA/USDT-style config entries still

@@ -1543,7 +1543,12 @@ class TestBelowVenueMinimumFullStop:
 
 class TestB3PartialSellGuard:
     def test_ws_partial_stop_rejected_by_partial_sell_guard(self):
-        """WS hard partial on a 25 USDT lot stops at partial_sell_guard."""
+        """A guard-blocked WS hard partial escalates to a full stop (#695).
+
+        The evaluator still emits SELL_STOP_PARTIAL. The existing partial
+        guard used to reject the 25 USDT lot. It now sells the held amount
+        as SELL_STOP_FULL. Minimum size does not block the stop.
+        """
         from execution.gate_adapter import GateExecutionAdapter
 
         symbol = "GGG/USDT"
@@ -1558,14 +1563,14 @@ class TestB3PartialSellGuard:
                 _fire(hub, symbol, "0.93", "0.93")
         finally:
             GateExecutionAdapter._shadow_markets_cache = prev_cache
-        assert _held(symbol) == pytest.approx(27.0, abs=0.01)
+        assert _held(symbol) == pytest.approx(0.0, abs=0.05)
         rows = _orders(symbol)
-        assert rows
-        assert all(o.get("status") != "filled" for o in rows)
-        rejected = [o for o in rows if o.get("status") == "rejected"]
-        assert rejected
-        assert rejected[-1]["signal"] == "SELL_STOP_PARTIAL"
-        assert (rejected[-1].get("risk") or {}).get("code") == "partial_sell_guard"
+        filled = [o for o in rows if o.get("status") == "filled"]
+        assert filled
+        assert filled[-1]["signal"] == "SELL_STOP_FULL"
+        assert not any(
+            (o.get("risk") or {}).get("code") == "partial_sell_guard" for o in rows
+        )
         from strategies.positions import get_position
 
         pos = get_position(symbol, "1h")
@@ -1573,7 +1578,7 @@ class TestB3PartialSellGuard:
         assert evaluate_long_hard_stop(
             price=0.93,
             entry=1.0,
-            position=pos,
+            position=lot,
             strategy_params=params,
             base_stop_loss_pct=10.0,
         ) == ("SELL_STOP_PARTIAL", "stop_loss")

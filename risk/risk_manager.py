@@ -4039,6 +4039,26 @@ class RiskManager:
         notional = float(order.amount) * order.price
         sold_pct = float(pos.get("sold_percent", 0))
 
+        would_block = (
+            pos_value < limits["min_position_usdt"]
+            or notional < limits["min_notional_usdt"]
+            or sold_pct >= limits["max_sold_percent"]
+        )
+        # A hard-stop partial that this guard would block is escalated to
+        # the full stop instead (same guard, no parallel path). Proof is the
+        # exit_source, not the action string; manual never gets here.
+        # Minimum-size limits do not block a stop.
+        if (
+            would_block
+            and signal == "SELL_STOP_PARTIAL"
+            and str(getattr(order, "exit_source", "") or "") == "stop_loss"
+        ):
+            held = float(pos.get("amount", 0) or 0)
+            if held > 0:
+                order.amount = held
+                order.signal = "SELL_STOP_FULL"
+                return False, ""
+
         if pos_value < limits["min_position_usdt"]:
             return True, (
                 f"Partial sell blocked: position ${pos_value:.2f} "

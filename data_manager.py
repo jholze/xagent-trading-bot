@@ -782,6 +782,56 @@ def _load_tenant_config_body(tid: str, default_cfg: dict) -> dict | None:
         _raise_ledger_unavailable("load_tenant_config_body", e, tenant_id=tid)
 
 
+def _stop_cap_error(config):
+    from core.config_guardrails import long_hard_stop_cap_error
+
+    return long_hard_stop_cap_error(config)
+
+
+def _log_stop_cap_rejected(where: str, err: str) -> None:
+    log(
+        f"config risk.long_hard_stop_max_loss_pct rejected {where}: {err}",
+        "ERROR",
+    )
+
+
+def _require_stop_cap_or_exit(config) -> None:
+    """Startup of a full bot config. A bad cap is not cached and does not start."""
+    from core.config_guardrails import stop_cap_applies
+
+    if not stop_cap_applies(config):
+        return
+    err = _stop_cap_error(config)
+    if err:
+        _log_stop_cap_rejected("at start", err)
+        raise SystemExit(1)
+
+
+def _tenant_config_or_base(default_cfg: dict, tenant_body: dict | None, tid: str) -> dict:
+    """Merge a tenant overlay. An invalid cap rejects that overlay entirely.
+
+    The tenant keeps the base config, including its cap. No key from the
+    rejected overlay is applied. An overlay that does not touch the cap is
+    merged as before.
+    """
+    from core.config_guardrails import stop_cap_is_valid
+
+    base = _apply_trading_profile_merge(default_cfg, None)
+    merged = _apply_trading_profile_merge(default_cfg, tenant_body)
+    if not stop_cap_is_valid(base):
+        return merged
+    err = _stop_cap_error(merged)
+    if err:
+        _log_stop_cap_rejected(f"for tenant {tid}", err)
+        return base
+    return merged
+
+
+# Depth guard: logger.log reads config for the json sink. A rejected start
+# must not re-enter this loader and stack-overflow.
+_config_load_depth = 0
+
+
 def load_config(tenant_id: str | None = None):
     """Thin dispatcher.
     - default path: use pure disk loader + cache
@@ -791,16 +841,29 @@ def load_config(tenant_id: str | None = None):
     Default-tenant cache is the merged dict in ``_config_cache``. It is filled on
     first miss and dropped by ``reload_config()`` (no mtime key). Tenant path is
     uncached — Mongo bodies can change without a reload, so caching would stale.
+
+    A full bot config (one that carries ``stop_loss_pct``) with a missing or
+    invalid ``risk.long_hard_stop_max_loss_pct`` does not start (#695). A tenant
+    overlay that removes the cap or sets it out of range is dropped for that
+    tenant; the base cap stays active.
     """
+    global _config_cache, _config_load_depth
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     tid = resolve_tenant_id(tenant_id)
     if tid == DEFAULT_TENANT:
-        global _config_cache
         if _config_cache is not None:
             return _config_cache
-        default_cfg = _load_default_config_from_disk()
-        _config_cache = _apply_trading_profile_merge(default_cfg, None)
-        return _config_cache
+        if _config_load_depth:
+            raise SystemExit(1)
+        _config_load_depth += 1
+        try:
+            default_cfg = _load_default_config_from_disk()
+            merged = _apply_trading_profile_merge(default_cfg, None)
+            _require_stop_cap_or_exit(merged)
+            _config_cache = merged
+            return _config_cache
+        finally:
+            _config_load_depth -= 1
     default_cfg = _load_default_config_from_disk()
     tenant_body = None
     try:
@@ -812,7 +875,7 @@ def load_config(tenant_id: str | None = None):
         # A tenant without a stored body is *legitimately* base-only (profile
         # layering: config.json → preset → tenant overrides) — not an error (#318 audit).
         tenant_body = _load_tenant_config_body(tid, default_cfg)
-    return _apply_trading_profile_merge(default_cfg, tenant_body)
+    return _tenant_config_or_base(default_cfg, tenant_body, tid)
 
 
 # Simple module-level cache to avoid repeated disk reads
@@ -824,33 +887,53 @@ def get_config(tenant_id: str | None = None):
     - explicit or ctx non-default: delegate to load_config (which uses pure default + meta store)
     - default: use cached pure disk loader
     """
-    global _config_cache
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     if tenant_id is not None:
         if tenant_id != DEFAULT_TENANT:
             return load_config(tenant_id=tenant_id)
         # explicit default
         if _config_cache is None:
-            _config_cache = _apply_trading_profile_merge(_load_default_config_from_disk(), None)
+            return load_config(tenant_id=DEFAULT_TENANT)
         return _config_cache
     # no explicit arg: respect ctx via load_config (which will handle tenant or default)
     tid = resolve_tenant_id(None)
     if tid != DEFAULT_TENANT:
         return load_config(tenant_id=tid)
     if _config_cache is None:
-        _config_cache = _apply_trading_profile_merge(_load_default_config_from_disk(), None)
+        return load_config(tenant_id=DEFAULT_TENANT)
     return _config_cache
 
 
 def reload_config(tenant_id: str | None = None):
-    """Forces reload. For tenant: always fresh load."""
+    """Forces reload. For tenant: always fresh load.
+
+    A default-tenant document that fails the long-hard-stop cap check does
+    not replace the cache (#695). The last valid config stays active, an
+    ERROR is logged, and no key from the rejected document is applied. With
+    no last valid config, this is startup: the process does not continue.
+    """
     global _config_cache
+    from core.config_guardrails import stop_cap_applies, stop_cap_is_valid
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     tid = resolve_tenant_id(tenant_id)
     if tid != DEFAULT_TENANT:
         return load_config(tenant_id=tid)
-    _config_cache = None
-    return load_config()
+    previous = _config_cache
+    fresh_disk = _load_default_config_from_disk()
+    fresh = _apply_trading_profile_merge(fresh_disk, None)
+    if stop_cap_applies(fresh) or stop_cap_applies(previous):
+        err = _stop_cap_error(fresh)
+        if err:
+            # Leave the cache on the last valid document while logging, so
+            # the log sink cannot read the rejected file.
+            _log_stop_cap_rejected("on reload", err)
+            if stop_cap_is_valid(previous):
+                _config_cache = previous
+                return previous
+            _config_cache = None
+            raise SystemExit(1)
+    _config_cache = fresh
+    return fresh
 
 
 def _load_previous_default_config() -> dict | None:
