@@ -165,38 +165,66 @@ GUARDED_KEYS: dict[str, Callable[[str, Any], None]] = {
 
 
 # Operator-pinned shorts keys: Hermes / patch_config must not mention them (#614).
+# Leaf names kept for callers that inspect the set. The pin walks dotted paths
+# below; extending this set alone does not pin anything.
 FROZEN_SHORTS_PATCH_KEYS = frozenset(
     ("allow_live", "leverage_cap", "auto_after_sell", "climax_fade")
 )
 
+# Save pin and patch pin share this list. Floor paths are added only where
+# R6 says so (patch: every tenant; save: default branch only).
+PINNED_SHORTS_PATHS = (
+    "shorts.allow_live",
+    "shorts.leverage_cap",
+    "shorts.auto_after_sell",
+    "shorts.climax_fade",
+)
 
-def reject_frozen_shorts_patch(updates: Any) -> None:
-    """Raise if a patch body writes operator-pinned ``shorts.*`` keys."""
+_PIN_REASON = "operator-pinned; Hermes cannot write"
+
+
+def _liquidity_floor_paths() -> tuple[str, str]:
+    from services.venue_quality import DEPTH_FLOOR_PATH, VOLUME_FLOOR_PATH
+
+    return (DEPTH_FLOOR_PATH, VOLUME_FLOOR_PATH)
+
+
+def pinned_patch_paths() -> tuple[str, ...]:
+    """Paths a patch body must not mention (shorts plus the two floors)."""
+    return PINNED_SHORTS_PATHS + _liquidity_floor_paths()
+
+
+def reject_pinned_patch(updates: Any, paths: tuple[str, ...] | list[str]) -> None:
+    """Raise if ``updates`` contains any pinned path."""
     if not isinstance(updates, dict):
         return
-    shorts = updates.get("shorts")
-    if not isinstance(shorts, dict):
-        return
-    for key in ("climax_fade", "allow_live", "leverage_cap", "auto_after_sell"):
-        if key in shorts:
-            raise ConfigValidationError(
-                f"shorts.{key}",
-                shorts[key],
-                "operator-pinned; Hermes cannot write",
-            )
+    for path in paths:
+        value = _get_path(updates, path)
+        if value is _MISSING:
+            continue
+        raise ConfigValidationError(path, value, _PIN_REASON)
 
 
-def frozen_shorts_changed(new_cfg: Any, previous: Any) -> str | None:
-    """Return the path if a frozen shorts value changed vs ``previous``."""
+def reject_frozen_shorts_patch(updates: Any) -> None:
+    """Raise if a patch body writes a pinned shorts or liquidity-floor path."""
+    reject_pinned_patch(updates, pinned_patch_paths())
+
+
+def frozen_shorts_changed(
+    new_cfg: Any,
+    previous: Any,
+    paths: tuple[str, ...] | list[str] | None = None,
+) -> str | None:
+    """Return the path if a pinned value changed vs ``previous``.
+
+    ``paths`` defaults to the shorts save list. Callers add floor paths only
+    on the default-tenant save (R6). Present-before / missing-now is a change.
+    """
     if not isinstance(new_cfg, dict):
         return None
     prev = previous if isinstance(previous, dict) else {}
-    for path in (
-        "shorts.allow_live",
-        "shorts.leverage_cap",
-        "shorts.auto_after_sell",
-        "shorts.climax_fade",
-    ):
+    checked = PINNED_SHORTS_PATHS if paths is None else paths
+    for path in checked:
         nv = _get_path(new_cfg, path)
         pv = _get_path(prev, path)
         # Present-before / missing-now is a change: a /config restore of a
@@ -206,6 +234,86 @@ def frozen_shorts_changed(new_cfg: Any, previous: Any) -> str | None:
         if nv is not _MISSING and pv is not _MISSING and nv != pv:
             return path
     return None
+
+
+def _base_liquidity_floors() -> dict[str, float]:
+    """Floors from base config.json. Unreadable or invalid rejects the save (R7)."""
+    from services.venue_quality import parse_liquidity_floor
+
+    import data_manager
+
+    floor_paths = _liquidity_floor_paths()
+    try:
+        loaded = data_manager._load_default_config_from_disk()
+    except Exception as exc:
+        raise ConfigValidationError(
+            floor_paths[0],
+            None,
+            "liquidity guard floor missing",
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise ConfigValidationError(
+            floor_paths[0],
+            type(loaded).__name__,
+            "liquidity guard floor missing",
+        )
+    floors: dict[str, float] = {}
+    for path in floor_paths:
+        raw = _get_path(loaded, path)
+        parsed = None if raw is _MISSING else parse_liquidity_floor(raw)
+        if parsed is None:
+            shown = None if raw is _MISSING else raw
+            raise ConfigValidationError(path, shown, "liquidity guard floor missing")
+        floors[path] = parsed
+    return floors
+
+
+def assert_liquidity_multiples_within_base_floor(config: Any) -> None:
+    """Reject a present multiple that sits below the base floor (R7).
+
+    The floor always comes from disk, never from ``config``. A base read
+    error or an invalid base floor rejects the save.
+    """
+    from services.venue_quality import (
+        DEPTH_FLOOR_PATH,
+        DEPTH_MULTIPLE_PATH,
+        VOLUME_FLOOR_PATH,
+        VOLUME_MULTIPLE_PATH,
+    )
+
+    if not isinstance(config, dict):
+        return
+    floors = _base_liquidity_floors()
+    pairs = (
+        (DEPTH_MULTIPLE_PATH, DEPTH_FLOOR_PATH),
+        (VOLUME_MULTIPLE_PATH, VOLUME_FLOOR_PATH),
+    )
+    for multiple_path, floor_path in pairs:
+        raw = _get_path(config, multiple_path)
+        if raw is _MISSING:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        if not math.isfinite(raw):
+            continue
+        number = float(raw)
+        floor = floors[floor_path]
+        if number < floor:
+            raise ConfigValidationError(multiple_path, raw, f"below floor {floor}")
+
+
+def assert_default_config_floors_present(config: Any) -> None:
+    """Default-branch presence rule (R7): both floors in the body, valid per R3."""
+    from services.venue_quality import parse_liquidity_floor
+
+    if not isinstance(config, dict):
+        raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
+    for path in _liquidity_floor_paths():
+        raw = _get_path(config, path)
+        parsed = None if raw is _MISSING else parse_liquidity_floor(raw)
+        if parsed is None:
+            shown = None if raw is _MISSING else raw
+            raise ConfigValidationError(path, shown, "liquidity guard floor missing")
 
 
 def validate_config_for_save(config: Any) -> None:
@@ -228,3 +336,4 @@ def validate_config_for_save(config: Any) -> None:
     from services.universe.membership_revise import assert_membership_revise_config
 
     assert_membership_revise_config(config)
+    assert_liquidity_multiples_within_base_floor(config)

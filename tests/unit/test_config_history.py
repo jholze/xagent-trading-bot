@@ -37,10 +37,22 @@ def history_home(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(data_manager, "_config_cache", None)
     monkeypatch.setattr(data_manager, "save_config", _REAL_SAVE_CONFIG)
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"trading_mode": "paper", "risk": _floor_keys()},
+    )
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
     config_commands.reset_config_revert_for_tests()
     yield tmp_path
     config_commands.reset_config_revert_for_tests()
+
+
+def _floor_keys() -> dict:
+    return {
+        "liquidity_guard": {"depth_to_order_multiple_min": 1},
+        "venue_quality": {"min_volume_to_order_multiple_min": 20},
+    }
 
 
 def _valid_cfg(**overrides) -> dict:
@@ -49,6 +61,7 @@ def _valid_cfg(**overrides) -> dict:
         "max_usdt_per_trade": 100,
         "trading_mode": "paper",
         "live": {"execution": "shadow", "max_usdt_per_trade": 100},
+        "risk": _floor_keys(),
     }
     body.update(overrides)
     return body
@@ -121,7 +134,11 @@ def test_tenant_save_snapshots_previous_mongo_body(history_home, monkeypatch):
     previous = {"virtual_trading": True, "max_open_positions": 3}
 
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: tenant_id or "t1")
-    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {"trading_mode": "demo"})
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"trading_mode": "demo", "risk": _floor_keys()},
+    )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_mongo_test_mode", lambda cfg=None: True)
     monkeypatch.setattr(tms, "load_tenant_config_body", lambda tid, *, default_cfg, test=False: previous)
@@ -144,7 +161,11 @@ def test_tenant_failed_snapshot_skips_meta_store(history_home, monkeypatch):
 
     saved = []
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "t1")
-    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {})
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"risk": _floor_keys()},
+    )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_mongo_test_mode", lambda cfg=None: True)
     monkeypatch.setattr(tms, "load_tenant_config_body", lambda *a, **k: {"max_open_positions": 2})

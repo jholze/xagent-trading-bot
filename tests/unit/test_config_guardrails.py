@@ -142,10 +142,22 @@ def test_current_repo_config_json_is_valid():
 # --- save_config wiring: default path (config.json) -------------------------
 
 
+def _floor_keys() -> dict:
+    return {
+        "liquidity_guard": {"depth_to_order_multiple_min": 1},
+        "venue_quality": {"min_volume_to_order_multiple_min": 20},
+    }
+
+
 @pytest.fixture
 def default_tenant(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(data_manager, "_config_cache", None)
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"trading_mode": "paper", "risk": _floor_keys()},
+    )
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
     return tmp_path
 
@@ -168,7 +180,12 @@ def test_default_save_accepts_boundary_valid_values(default_tenant):
         "trading_mode": "paper",
         "live": {"execution": "shadow", "max_usdt_per_trade": 4500},
         "costs": {"gate": {"spot": {"fee_maker_pct": 0, "fee_taker_pct": 100}}},
-        "risk": {"max_daily_loss_pct": 100, "max_daily_sells": 0, "min_trade_usdt": 0},
+        "risk": {
+            "max_daily_loss_pct": 100,
+            "max_daily_sells": 0,
+            "min_trade_usdt": 0,
+            **_floor_keys(),
+        },
     }
     assert _REAL_SAVE_CONFIG(cfg) is True
     with open(default_tenant / "config.json", "r", encoding="utf-8") as f:
@@ -182,8 +199,9 @@ def test_default_save_validates_before_atomic_write(default_tenant, monkeypatch)
     with pytest.raises(ConfigValidationError):
         _REAL_SAVE_CONFIG({"risk": {"cash_floor_pct": 101}})
     assert calls == []
-    assert _REAL_SAVE_CONFIG({"risk": {"cash_floor_pct": 100}}) is True
-    assert calls == [("config.json", {"risk": {"cash_floor_pct": 100}})]
+    ok_body = {"risk": {"cash_floor_pct": 100, **_floor_keys()}}
+    assert _REAL_SAVE_CONFIG(ok_body) is True
+    assert calls == [("config.json", ok_body)]
 
 
 # --- save_config wiring: tenant path (tenant_meta_store) --------------------
@@ -195,7 +213,11 @@ def tenant_mongo(monkeypatch):
 
     calls = []
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: tenant_id or "t1")
-    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {"trading_mode": "demo"})
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"trading_mode": "demo", "risk": _floor_keys()},
+    )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_mongo_test_mode", lambda cfg=None: True)
 
@@ -227,7 +249,11 @@ def test_tenant_save_non_mongo_backend_still_validates(monkeypatch):
     the former silent ``True``.
     """
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "t2")
-    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {})
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"risk": _floor_keys()},
+    )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: False)
     with pytest.raises(ConfigValidationError):
         _REAL_SAVE_CONFIG({"risk": {"max_daily_buys": -1}}, tenant_id="t2")
