@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from strategies.dca_policy import DcaContext, DcaPolicyResult
+
+# Fixture rows below are 2026-07-15 and 2026-07-18. Pin the mapper's clock
+# so both stay inside its 90-day lookback no matter when the suite runs.
+_HISTORY_NOW = datetime(2026, 7, 20, 12, 0, 0)
+
+
+class _FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return _HISTORY_NOW
+        return _HISTORY_NOW.replace(tzinfo=tz)
 
 
 class TestDcaAskSnapshot(unittest.TestCase):
@@ -110,9 +123,10 @@ class TestTradeHistoryMemory(unittest.TestCase):
                 "order_id": "abc2",
             },
         ]
-        mems = trade_history_to_trade_memories(
-            rows, ledger_scope="demo", tenant_id="default", lookback_days=90
-        )
+        with patch("intelligence.memory.rebuild.datetime", _FrozenDateTime):
+            mems = trade_history_to_trade_memories(
+                rows, ledger_scope="demo", tenant_id="default", lookback_days=90
+            )
         self.assertEqual(len(mems), 2)
         sells = [m for m in mems if m.direction == "sell"]
         self.assertEqual(len(sells), 1)
