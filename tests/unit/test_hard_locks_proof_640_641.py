@@ -129,10 +129,12 @@ def _cfg(**risk) -> BotConfig:
         "max_daily_sells": 0,
         "fail_closed_guards": "deny",
         "block_stablecoin_buys": False,
+        "venue_quality": {"min_volume_to_order_multiple": 20},
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
             "order_book_cache_ttl_sec": 15,
+            "depth_to_order_multiple": 1,
         },
         "moderate_deploy": {"enabled": False},
     }
@@ -365,8 +367,9 @@ def test_henry_first_dca_thin_book_is_rejected_not_only_logged():
         rm = RiskManager(_cfg(fail_closed_guards=mode))
         dec = _decide(rm, _order_for(row), row["source"], thin, position=_position_for(row))
         assert dec.approved is False, mode
-        assert "order book too thin" in dec.message
-        assert "liq_guard_depth_lt_order" in _codes(dec)
+        assert "liq_guard_volume_low" in _codes(dec)
+        assert "liq_guard_depth_lt_order" not in _codes(dec)
+        assert "order book too thin" not in (dec.message or "")
         assert dec.code != "buy_dca"
 
 
@@ -415,8 +418,9 @@ def test_book_that_does_not_reach_the_band_counts_only_what_is_inside():
     )
     dec = _decide(rm, order, "technical", metrics)
     assert dec.approved is False
-    assert "liq_guard_depth_lt_order" in _codes(dec)
-    assert "order book too thin" in dec.message
+    assert dec.code == "venue_liquidity_block"
+    assert "liq_guard_depth_lt_order" not in _codes(dec)
+    assert "order book too thin" not in (dec.message or "")
     assert dec.details["depth_ask_usdt"] == pytest.approx(ask_d)
 
 
@@ -639,8 +643,9 @@ def test_thin_book_rejects_in_log_mode_and_in_deny_mode():
         rm = RiskManager(_cfg(fail_closed_guards=mode))
         dec = _decide(rm, order, "technical", metrics)
         assert dec.approved is False, mode
-        assert "order book too thin" in dec.message
-        assert "liq_guard_depth_lt_order" in _codes(dec)
+        assert dec.code == "venue_liquidity_block"
+        assert "order book too thin" not in (dec.message or "")
+        assert "liq_guard_depth_lt_order" not in _codes(dec)
         assert dec.order is None
 
 
@@ -679,9 +684,10 @@ def test_final_size_after_dca_boost_is_what_the_book_is_compared_to():
             return_value={"regime": "NEUTRAL", "block_buys": False, "active": True},
         ):
             boosted = rm.evaluate(order, "1h", source="dca")
-    assert boosted.approved is False
+    assert boosted.approved is True, boosted.message
     assert boosted.details["planned_usdt"] == pytest.approx(540)
-    assert "liq_guard_depth_lt_order" in _codes(boosted)
+    assert boosted.order.usdt_amount == pytest.approx(500)
+    assert "liq_guard_depth_lt_order" not in _codes(boosted)
 
     plain = RiskManager(_cfg())
     allowed = _decide(plain, order, "dca", metrics, position=lot)
@@ -775,8 +781,8 @@ def test_dexe_dca_addon_blocks_on_volume_and_band_depth():
     assert dec.approved is False, f"{dec.code}: {dec.message}"
     codes = _codes(dec)
     assert "liq_guard_volume_low" in codes, codes
-    assert "liq_guard_depth_lt_order" in codes, codes
-    assert "order book too thin" in (dec.message or "")
+    assert "liq_guard_depth_lt_order" not in codes, codes
+    assert "order book too thin" not in (dec.message or "")
     assert dec.details["planned_usdt"] == pytest.approx(702.73)
     assert dec.details["planned_usdt"] != pytest.approx(200)
     assert dec.details["planned_usdt"] != pytest.approx(base)

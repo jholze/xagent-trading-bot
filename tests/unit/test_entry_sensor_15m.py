@@ -18,10 +18,20 @@ from strategies.entry_sensor_15m import (
 from strategies import watch_15m_state
 
 
+def _venue_pass(reasons=None):
+    """Ok venue stub with a cap these tests never hit."""
+    from services.venue_quality import VenueQualityResult
+
+    result = VenueQualityResult(ok=True, reasons=list(reasons or []))
+    result.liq_cap_usdt = 1_000_000_000.0
+    result.cap_depth = 1_000_000_000.0
+    result.cap_volume = 1_000_000_000.0
+    return result
+
+
 @pytest.fixture(autouse=True)
 def reset_sensor_state(tmp_path, monkeypatch):
     from strategies.positions import clear_positions_memory
-    from services.venue_quality import VenueQualityResult
 
     clear_pending_for_tests()
     clear_positions_memory()
@@ -52,7 +62,7 @@ def reset_sensor_state(tmp_path, monkeypatch):
     # Synthetic symbols are not on Gate — venue must not kill classic sensor unit tests
     monkeypatch.setattr(
         "services.venue_quality.check_venue_for_buy",
-        lambda *a, **k: VenueQualityResult(ok=True, reasons=["test_fixture"]),
+        lambda *a, **k: _venue_pass(["test_fixture"]),
     )
     yield
     clear_pending_for_tests()
@@ -441,9 +451,7 @@ class TestActiveOrchestratorPath:
             return_value={"active": False, "block_buys": False, "apply_size_mult": False},
         ), patch(
             "services.venue_quality.check_venue_for_buy",
-            return_value=__import__(
-                "services.venue_quality", fromlist=["VenueQualityResult"]
-            ).VenueQualityResult(ok=True, reasons=[]),
+            return_value=_venue_pass(),
         ), patch.object(
             orch.trading.risk, "_spendable_usdt", return_value=50_000.0
         ), patch.object(
@@ -606,9 +614,7 @@ class TestEntrySensorLoop:
             },
         ), patch(
             "services.venue_quality.check_venue_for_buy",
-            return_value=__import__(
-                "services.venue_quality", fromlist=["VenueQualityResult"]
-            ).VenueQualityResult(ok=True, reasons=[]),
+            return_value=_venue_pass(),
         ), patch.object(
             orch.trading.risk, "_spendable_usdt", return_value=50_000.0
         ), patch.object(
@@ -837,9 +843,7 @@ class TestProcessEntrySensorPath:
             },
         ), patch(
             "services.venue_quality.check_venue_for_buy",
-            return_value=__import__(
-                "services.venue_quality", fromlist=["VenueQualityResult"]
-            ).VenueQualityResult(ok=True, reasons=[]),
+            return_value=_venue_pass(),
         ), patch.object(
             orch.trading.risk, "_spendable_usdt", return_value=50_000.0
         ), patch.object(

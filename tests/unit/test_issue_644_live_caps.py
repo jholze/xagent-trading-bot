@@ -48,6 +48,7 @@ _LIQ = {
     "min_quote_volume_24h_usdt": 500000,
     "depth_window_pct": 0.5,
     "order_book_cache_ttl_sec": 15,
+    "depth_to_order_multiple": 1,
 }
 _CAP_KEYS = (
     "max_usdt_per_trade",
@@ -136,6 +137,7 @@ def _cfg(**over) -> BotConfig:
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": {"enabled": False},
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": dict(_LIQ),
         },
         "sell_policy": {"rotation": {"tail_exempt_notional_usdt": 0}},
@@ -156,6 +158,7 @@ def _risk_cfg(usdt=None, pct=0.0, **over) -> BotConfig:
         "cash_floor_pct": 0,
         "cash_policy": {"enabled": False},
         "position_capacity": {"enabled": False},
+        "venue_quality": {"min_volume_to_order_multiple": 20},
         "liquidity_guard": dict(_LIQ),
         "fail_closed_guards": "log",
     }
@@ -981,6 +984,7 @@ def test_t8_capped_below_minimum_is_rejected():
                 "cash_floor_pct": 0,
                 "cash_policy": {"enabled": False},
                 "position_capacity": {"enabled": False},
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": dict(_LIQ),
             },
         )
@@ -1134,6 +1138,7 @@ def test_new_short_open_rejected_when_book_is_full(monkeypatch):
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": copy.deepcopy(disk["risk"]["position_capacity"]),
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": dict(_LIQ),
             "fail_closed_guards": "log",
         },
@@ -1271,6 +1276,7 @@ def _live_slot_cfg(disk: dict, position_capacity: dict) -> BotConfig:
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": position_capacity,
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": dict(_LIQ),
             "fail_closed_guards": "log",
         },

@@ -25,10 +25,12 @@ class TestTicketUsdtCap(unittest.TestCase):
             "aggression": {"max_position_multiplier": 2.5},
             "risk": {
                 "min_trade_usdt": 100,
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
                     "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
                 },
                 "min_size_multiplier": 0.25,
                 "moderate_deploy": {
@@ -106,10 +108,12 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
                     "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
                 },
                 "moderate_deploy": {
                     "enabled": True,
@@ -188,10 +192,12 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
                     "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
                 },
                 "moderate_deploy": {
                     "enabled": True,

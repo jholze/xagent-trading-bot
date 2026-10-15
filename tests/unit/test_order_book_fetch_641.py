@@ -165,10 +165,11 @@ def test_real_aave_book_is_nonzero_logs_levels_and_a_normal_buy_passes():
         config_raw=_cfg().raw,
         metrics=metrics,
     )
-    assert thin.ok is False
-    assert "liq_guard_depth_lt_order" in _codes(thin)
+    assert thin.ok is True, thin.reasons
+    assert "liq_guard_depth_lt_order" not in _codes(thin)
     assert "liq_guard_missing_input" not in _codes(thin)
-    assert any(str(r).startswith("order book too thin") for r in thin.reasons)
+    assert thin.liq_cap_usdt == pytest.approx(min(thin.band_bid_usdt, thin.band_ask_usdt))
+    assert not any(str(r).startswith("order book too thin") for r in thin.reasons)
 
 
 def test_explicit_zero_size_book_is_thin_not_a_failed_fetch():
@@ -196,9 +197,12 @@ def test_explicit_zero_size_book_is_thin_not_a_failed_fetch():
         config_raw=_cfg().raw,
         metrics=metrics,
     )
-    assert "liq_guard_depth_lt_order" in _codes(result)
+    assert result.ok is False
+    assert result.code == "venue_liquidity_block"
+    assert result.liq_cap_usdt == pytest.approx(0)
+    assert "liq_guard_depth_lt_order" not in _codes(result)
     assert "liq_guard_missing_input" not in _codes(result)
-    assert any("order book too thin" in str(r) for r in result.reasons)
+    assert not any("order book too thin" in str(r) for r in result.reasons)
 
 
 def test_unreadable_levels_are_a_failed_parse_not_a_thin_book():
@@ -298,20 +302,24 @@ def test_cached_book_expires_at_the_configured_max_age():
     """Book age comes from config. A missing age does not fall back to 15s."""
     configured = {
         "risk": {
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,
                 "order_book_cache_ttl_sec": 15,
+                "depth_to_order_multiple": 1,
             }
         }
     }
     assert _book_cache_max_age(configured) == 15.0
     longer = {
         "risk": {
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,
                 "order_book_cache_ttl_sec": 10_000,
+                "depth_to_order_multiple": 1,
             }
         }
     }
@@ -404,25 +412,55 @@ def test_cached_book_expires_at_the_configured_max_age():
 
 
 @pytest.mark.parametrize(
-    "risk_over",
+    ("risk_over", "cuts_to_band"),
     [
-        {"venue_quality": {"enabled": False, "book_unavailable_policy": "volume_ok", "on_fetch_error": "allow"}},
-        {"fail_closed_guards": "log"},
-        {
-            "liquidity_guard": {
-                "mode": "log",
-                "enabled": False,
-                "log_only": True,
-                "min_quote_volume_24h_usdt": 1,
-                "depth_window_pct": 0.5,
-                "order_book_cache_ttl_sec": 15,
-            }
-        },
-        {"venue_quality": {"enabled": True, "book_unavailable_policy": "volume_ok", "on_fetch_error": "fail_open"}},
+        (
+            {
+                "venue_quality": {
+                    "enabled": False,
+                    "min_volume_to_order_multiple": 20,
+                    "book_unavailable_policy": "volume_ok",
+                    "on_fetch_error": "allow",
+                }
+            },
+            True,
+        ),
+        ({"fail_closed_guards": "log"}, False),
+        (
+            {
+                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "liquidity_guard": {
+                    "mode": "log",
+                    "enabled": False,
+                    "log_only": True,
+                    "min_quote_volume_24h_usdt": 1,
+                    "depth_window_pct": 0.5,
+                    "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
+                },
+            },
+            False,
+        ),
+        (
+            {
+                "venue_quality": {
+                    "enabled": True,
+                    "min_volume_to_order_multiple": 20,
+                    "book_unavailable_policy": "volume_ok",
+                    "on_fetch_error": "fail_open",
+                }
+            },
+            False,
+        ),
     ],
 )
-def test_no_config_switch_makes_the_lock_log_only(risk_over):
-    """The lock blocks on staging. enabled/policy/log/mode cannot pass a thin book."""
+def test_no_config_switch_makes_the_lock_log_only(risk_over, cuts_to_band):
+    """enabled, log, mode and fail_open do not turn the lock into a log.
+
+    ``venue_quality.enabled: false`` skips only the old book gate. The hard
+    lock still cuts this $10 book to 10. The other switches leave the $200
+    book gate on, so the buy is ``venue_liquidity_block``.
+    """
     cfg = liquidity_guard_config({"risk": {"liquidity_guard": {"mode": "log", "enabled": False}}})
     assert "mode" not in cfg
     assert "enabled" not in cfg
@@ -449,6 +487,13 @@ def test_no_config_switch_makes_the_lock_log_only(risk_over):
     with _eval_env(rm, mcap=50_000_000):
         with patch("services.venue_quality.get_venue_metrics", return_value=thin):
             dec = rm.evaluate(order, "1h", source="technical")
-    assert dec.approved is False
-    assert "liq_guard_depth_lt_order" in _decision_codes(dec)
-    assert "order book too thin" in (dec.message or "")
+    if cuts_to_band:
+        assert dec.approved is True, dec.message
+        assert dec.order.usdt_amount == pytest.approx(10)
+        assert dec.order.usdt_amount < 200
+    else:
+        assert dec.approved is False
+        assert dec.code == "venue_liquidity_block"
+        assert dec.order is None
+    assert "liq_guard_depth_lt_order" not in _decision_codes(dec)
+    assert "order book too thin" not in (dec.message or "")

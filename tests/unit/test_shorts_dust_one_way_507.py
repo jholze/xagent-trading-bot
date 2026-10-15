@@ -40,10 +40,12 @@ _SHORTS_PAPER = {
         "volatile": {"market_cap_min_usd": 0},
     },
     "risk": {
+        "venue_quality": {"min_volume_to_order_multiple": 20},
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
             "order_book_cache_ttl_sec": 15,
+            "depth_to_order_multiple": 1,
         }
     },
 }

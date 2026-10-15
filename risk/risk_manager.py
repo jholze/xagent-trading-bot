@@ -1,4 +1,5 @@
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from core.config import BotConfig, get_bot_config
@@ -20,11 +21,52 @@ from strategies.positions import (
     count_open_full_slots,
     count_open_positions,
     find_open_position_for_symbol,
+    find_open_positions_for_symbol,
     get_position,
     is_open_position,
+    is_positions_state_unknown,
     list_active_positions,
+    position_notional_usdt,
     sell_fraction_for_signal,
 )
+
+
+def floor_usdt_cents(amount: float) -> float:
+    """Round a notional down to cents so a later round() cannot exceed the cap."""
+    from decimal import ROUND_DOWN, Decimal
+
+    quantized = Decimal(str(float(amount))).quantize(
+        Decimal("0.01"), rounding=ROUND_DOWN
+    )
+    return float(quantized)
+
+
+def _fmt_liq(value) -> str:
+    if value is None:
+        return "None"
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return "None"
+
+
+@dataclass
+class BuyLockResult:
+    """Lock outcome plus the liquidity room ``evaluate`` uses to cut a buy."""
+
+    decision: RiskDecision | None = None
+    apply_cap: bool = False
+    liq_cap_usdt: float | None = None
+    cap_depth: float | None = None
+    cap_volume: float | None = None
+    open_cost_usdt: float | None = None
+    allowed_usdt: float | None = None
+    band_bid_usdt: float | None = None
+    band_ask_usdt: float | None = None
+    qv24_usdt: float | None = None
+    book_age_sec: float | None = None
+    depth_window_pct: float | None = None
+    planned_usdt: float | None = None
 
 
 _EQUITY_MTM_UNAVAILABLE_LOGGED = False
@@ -1146,10 +1188,9 @@ class RiskManager:
                 trust_factor=factors.get("trust_factor", 1.0),
             )
 
-        # #640 then #641. After the final size, before the relvol minimum,
-        # so a thin book is still reported as a venue/liquidity block.
-        # DCA codes come first, then liquidity codes.
-        locked_out = self._buy_lock_decision(
+        # #640 then #641, then #671. After the final size, before RelVol,
+        # so later checks see the cut size. DCA codes come first.
+        locked = self._buy_lock_decision(
             order,
             source=source,
             pos=guard_pos,
@@ -1157,8 +1198,70 @@ class RiskManager:
             planned_usdt=float(sized),
             indicators=indicators,
         )
-        if locked_out is not None:
-            return locked_out
+        if locked is None:
+            locked = BuyLockResult(decision=None, apply_cap=False)
+        if locked.decision is not None:
+            return locked.decision
+
+        planned_liq = float(sized)
+        # A cut is the cap binding, not the cents floor. Sub-cent planned
+        # sizes still round the way staging does when allowed_usdt is at
+        # least the planned size.
+        cap_binds = False
+        if locked.apply_cap:
+            if locked.allowed_usdt is None:
+                return self._liq_size_reject(
+                    locked,
+                    factors,
+                    code="liq_guard_missing_input",
+                    planned=planned_liq,
+                    final=None,
+                    message="liq_guard_missing_input",
+                )
+            if float(locked.allowed_usdt) <= 0:
+                return self._liq_size_reject(
+                    locked,
+                    factors,
+                    code="liq_guard_depth_lt_order",
+                    planned=planned_liq,
+                    final=None,
+                    message="liq_guard_depth_lt_order",
+                )
+            cap_binds = float(locked.allowed_usdt) < planned_liq
+            if cap_binds:
+                sized = min(float(sized), float(locked.allowed_usdt))
+                sized = floor_usdt_cents(sized)
+            if sized < min_trade:
+                return self._liq_size_reject(
+                    locked,
+                    factors,
+                    code="liq_guard_depth_lt_order",
+                    planned=planned_liq,
+                    final=sized,
+                    message=(
+                        f"liq_guard_depth_lt_order planned={planned_liq:g} "
+                        f"final={sized:g} min_trade={min_trade:g}"
+                    ),
+                )
+            if cap_binds:
+                self._log_liq_size_capped(order, locked, planned_liq, sized)
+
+        # #662 R6 runs on the cut size. A bound that held before the cut
+        # can fail once the buy is smaller.
+        if merge_plan is not None:
+            bound_reject = self._venue_merge_loss_reject(
+                order, timeframe, merge_plan, float(sized)
+            )
+            if bound_reject is not None:
+                return self._attach_liq_details(
+                    bound_reject, locked, planned_liq, float(sized)
+                )
+
+        pair_min_reject = self._cut_below_pair_min(order, float(sized))
+        if pair_min_reject is not None:
+            return self._attach_liq_details(
+                pair_min_reject, locked, planned_liq, float(sized)
+            )
 
         # RelVol trade tickets: reject under the floor after multipliers /
         # shrink-only caps. Do not round up. Other sources keep min_trade_usdt.
@@ -1167,26 +1270,37 @@ class RiskManager:
         # size. A ticket that was above the floor before that cap is still
         # submitted at the cap.
         relvol_floor = self._cfg_number("relvol_min_trade_usdt", 1000.0)
+        # A ticket cap that stays above the floor still submits (#589).
+        # A liquidity cut is a new size: the floor sees that smaller notional.
         relvol_basis = pre_ticket_usdt if factors.get("ticket_capped") else float(sized)
+        if cap_binds:
+            relvol_basis = float(sized)
         if (
             self._is_relvol_buy(source, order)
             and relvol_floor > 0
             and relvol_basis < relvol_floor
         ):
-            return RiskDecision(
-                approved=False,
-                message=f"Adjusted size ${sized:.2f} below minimum (${relvol_floor:.0f})",
-                code="size_too_small",
-                size_multiplier=factors.get("total_multiplier", 1.0),
-                drawdown_pct=factors.get("drawdown_pct", 0.0),
-                atr_factor=factors.get("atr_factor", 1.0),
-                trust_factor=factors.get("trust_factor", 1.0),
+            return self._attach_liq_details(
+                RiskDecision(
+                    approved=False,
+                    message=f"Adjusted size ${sized:.2f} below minimum (${relvol_floor:.0f})",
+                    code="size_too_small",
+                    size_multiplier=factors.get("total_multiplier", 1.0),
+                    drawdown_pct=factors.get("drawdown_pct", 0.0),
+                    atr_factor=factors.get("atr_factor", 1.0),
+                    trust_factor=factors.get("trust_factor", 1.0),
+                ),
+                locked,
+                planned_liq,
+                float(sized),
             )
 
         if is_dca:
             dca_usdt_limit = self._daily_dca_usdt_limit_blocked(sized)
             if dca_usdt_limit:
-                return dca_usdt_limit
+                return self._attach_liq_details(
+                    dca_usdt_limit, locked, planned_liq, float(sized)
+                )
 
         resolved_source = order.source if order.source not in ("", "auto") else source
         usdt_places = 2
@@ -1212,7 +1326,7 @@ class RiskManager:
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
             ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
-        return RiskDecision(
+        approved_decision = RiskDecision(
             approved=True,
             order=approved,
             message="Approved",
@@ -1221,6 +1335,11 @@ class RiskManager:
             atr_factor=factors.get("atr_factor", 1.0),
             trust_factor=factors.get("trust_factor", 1.0),
         )
+        if locked.apply_cap or locked.liq_cap_usdt is not None or locked.band_bid_usdt is not None:
+            return self._attach_liq_details(
+                approved_decision, locked, planned_liq, float(approved.usdt_amount)
+            )
+        return approved_decision
 
     def status_summary(self, current_price: float = None) -> dict:
         history = self._primary_history()
@@ -1414,6 +1533,268 @@ class RiskManager:
     def _dca_limits_enabled(self) -> bool:
         return self._effective_max_daily_dca_buys() > 0
 
+    def _liq_lock_fields(self, liq, planned_usdt: float) -> dict:
+        """Cap and book fields copied off a venue result. Missing stays None."""
+
+        def _num(obj, name: str):
+            if obj is None:
+                return None
+            raw = getattr(obj, name, None)
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        band_bid = _num(liq, "band_bid_usdt")
+        if band_bid is None:
+            band_bid = _num(liq, "depth_bid_usdt")
+        band_ask = _num(liq, "band_ask_usdt")
+        if band_ask is None:
+            band_ask = _num(liq, "depth_ask_usdt")
+        qv = _num(liq, "qv24_usdt")
+        if qv is None:
+            qv = _num(liq, "quote_volume_24h_usdt")
+        if liq is not None and getattr(liq, "metrics", None) is not None:
+            metrics = liq.metrics
+            if qv is None:
+                try:
+                    qv = float(metrics.quote_volume_24h_usdt)
+                except (TypeError, ValueError):
+                    qv = None
+            if band_bid is None:
+                try:
+                    band_bid = float(metrics.depth_bid_usdt)
+                    band_ask = float(metrics.depth_ask_usdt)
+                except (TypeError, ValueError):
+                    pass
+        return {
+            "liq_cap_usdt": _num(liq, "liq_cap_usdt"),
+            "cap_depth": _num(liq, "cap_depth"),
+            "cap_volume": _num(liq, "cap_volume"),
+            "open_cost_usdt": None,
+            "allowed_usdt": None,
+            "band_bid_usdt": band_bid,
+            "band_ask_usdt": band_ask,
+            "qv24_usdt": qv,
+            "book_age_sec": _num(liq, "book_age_sec"),
+            "depth_window_pct": _num(liq, "depth_window_pct"),
+            "planned_usdt": float(planned_usdt or 0),
+        }
+
+    def _open_cost_usdt(self, symbol: str, *, side: str) -> tuple[float | None, str | None]:
+        """Entry-cost room already used by open lots of one side.
+
+        Longs are ``side != short``. Shorts are ``side == short``. Lots
+        parked below the exchange minimum still count. A lot with amount
+        > 0 whose notional is 0 or unreadable fails closed. Unknown
+        positions state fails closed. No matching lot is 0.
+        """
+        from strategies.short_math import is_short
+
+        try:
+            if is_positions_state_unknown():
+                return None, "liq_guard_missing_input"
+        except Exception:
+            return None, "liq_guard_missing_input"
+        try:
+            lots = find_open_positions_for_symbol(
+                symbol, include_below_venue_minimum=True
+            )
+        except Exception:
+            return None, "liq_guard_missing_input"
+        want_short = str(side or "") == "short"
+        total = 0.0
+        for _tf, lot in lots:
+            if not isinstance(lot, dict):
+                return None, "liq_guard_missing_input"
+            try:
+                short = bool(is_short(lot))
+            except Exception:
+                return None, "liq_guard_missing_input"
+            if want_short != short:
+                continue
+            try:
+                amount = float(lot.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                return None, "liq_guard_missing_input"
+            if amount <= 0:
+                return None, "liq_guard_missing_input"
+            try:
+                notional = float(position_notional_usdt(lot))
+            except Exception:
+                return None, "liq_guard_missing_input"
+            if notional <= 0:
+                return None, "liq_guard_missing_input"
+            total += notional
+        return total, None
+
+    def _liq_detail_dict(self, locked: BuyLockResult, planned, final) -> dict:
+        return {
+            "planned_usdt": None if planned is None else float(planned),
+            "final_usdt": None if final is None else float(final),
+            "liq_cap_usdt": locked.liq_cap_usdt,
+            "cap_depth": locked.cap_depth,
+            "cap_volume": locked.cap_volume,
+            "open_cost_usdt": locked.open_cost_usdt,
+            "allowed_usdt": locked.allowed_usdt,
+            "band_bid_usdt": locked.band_bid_usdt,
+            "band_ask_usdt": locked.band_ask_usdt,
+            "depth_bid_usdt": locked.band_bid_usdt,
+            "depth_ask_usdt": locked.band_ask_usdt,
+            "qv24_usdt": locked.qv24_usdt,
+            "quote_volume_24h_usdt": locked.qv24_usdt,
+            "book_age_sec": locked.book_age_sec,
+            "depth_window_pct": locked.depth_window_pct,
+        }
+
+    def _liq_size_reject(
+        self,
+        locked: BuyLockResult,
+        factors: dict | None,
+        *,
+        code: str,
+        planned,
+        final,
+        message: str,
+    ) -> RiskDecision:
+        factors = factors or {}
+        details = self._liq_detail_dict(locked, planned, final)
+        details["codes"] = [code]
+        return RiskDecision(
+            approved=False,
+            message=message,
+            code=code,
+            size_multiplier=factors.get("total_multiplier", 1.0),
+            drawdown_pct=factors.get("drawdown_pct", 0.0),
+            atr_factor=factors.get("atr_factor", 1.0),
+            trust_factor=factors.get("trust_factor", 1.0),
+            details=details,
+        )
+
+    def _attach_liq_details(
+        self,
+        decision: RiskDecision,
+        locked: BuyLockResult,
+        planned,
+        final,
+    ) -> RiskDecision:
+        """Merge tape fields. Leave a merge-bound's own numbers alone."""
+        details = dict(getattr(decision, "details", None) or {})
+        protected = {"reason", "loss", "bound", "final_buy", "basis", "stop_pct", "buffer_pct"}
+        extra = self._liq_detail_dict(locked, planned, final)
+        for key, value in extra.items():
+            if key in protected and key in details:
+                continue
+            details[key] = value
+        if "codes" not in details:
+            code = str(getattr(decision, "code", "") or "").strip()
+            details["codes"] = [code] if code else []
+        decision.details = details
+        return decision
+
+    def _log_liq_size_capped(
+        self,
+        order: TradeOrder,
+        locked: BuyLockResult,
+        planned: float,
+        final: float,
+    ) -> None:
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from logger import log
+            from services.venue_quality import LIQ_GUARD_SIZE_CAPPED
+
+            log(
+                f"{LIQ_GUARD_SIZE_CAPPED} tenant={resolve_tenant_id()} "
+                f"symbol={getattr(order, 'symbol', '')} "
+                f"planned={_fmt_liq(planned)} final={_fmt_liq(final)} "
+                f"liq_cap_usdt={_fmt_liq(locked.liq_cap_usdt)} "
+                f"cap_depth={_fmt_liq(locked.cap_depth)} "
+                f"cap_volume={_fmt_liq(locked.cap_volume)} "
+                f"open_cost_usdt={_fmt_liq(locked.open_cost_usdt)}",
+                "INFO",
+            )
+        except Exception:
+            pass
+
+    def _cut_below_pair_min(self, order: TradeOrder, sized: float) -> RiskDecision | None:
+        """Reject a cut that is still above min_trade but under the pair minimum."""
+        from execution.gate_adapter import venue_limits_for
+
+        limits = venue_limits_for(order.symbol) or {}
+        if not limits.get("known"):
+            return None
+        try:
+            min_cost = float(limits.get("min_cost") or 0)
+        except (TypeError, ValueError):
+            return None
+        if min_cost <= 0 or float(sized) + 1e-9 >= min_cost:
+            return None
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"Adjusted size ${float(sized):.2f} below venue minimum ${min_cost:.4g}"
+            ),
+            code="venue_pair_blocked",
+            size_multiplier=0.0,
+        )
+
+    def _short_liq_room_reject(
+        self,
+        order: TradeOrder,
+        liq,
+        usdt: float,
+    ) -> RiskDecision | None:
+        """Shorts compare against short room and never shrink."""
+        fields = self._liq_lock_fields(liq, usdt)
+        cap = fields.get("liq_cap_usdt")
+        if cap is None:
+            fields["planned_usdt"] = float(usdt)
+            return self._room_reject(order, fields, "liq_guard_missing_input", usdt)
+        cost, err = self._open_cost_usdt(getattr(order, "symbol", "") or "", side="short")
+        if err:
+            fields["planned_usdt"] = float(usdt)
+            return self._room_reject(order, fields, err, usdt)
+        allowed = float(cap) - float(cost)
+        fields["open_cost_usdt"] = float(cost)
+        fields["allowed_usdt"] = allowed
+        fields["planned_usdt"] = float(usdt)
+        if float(usdt) > allowed:
+            return self._room_reject(order, fields, "liq_guard_depth_lt_order", usdt)
+        return None
+
+    def _room_reject(
+        self,
+        order: TradeOrder,
+        fields: dict,
+        code: str,
+        usdt: float,
+    ) -> RiskDecision:
+        locked = BuyLockResult(**{k: fields.get(k) for k in (
+            "liq_cap_usdt",
+            "cap_depth",
+            "cap_volume",
+            "open_cost_usdt",
+            "allowed_usdt",
+            "band_bid_usdt",
+            "band_ask_usdt",
+            "qv24_usdt",
+            "book_age_sec",
+            "depth_window_pct",
+            "planned_usdt",
+        )})
+        details = self._liq_detail_dict(locked, usdt, None)
+        details["codes"] = [code]
+        return RiskDecision(
+            approved=False,
+            message=code,
+            code=code,
+            size_multiplier=0.0,
+            details=details,
+        )
+
     def _buy_lock_decision(
         self,
         order: TradeOrder,
@@ -1423,7 +1804,7 @@ class RiskManager:
         has_position: bool,
         planned_usdt: float,
         indicators: dict | None,
-    ) -> RiskDecision | None:
+    ) -> BuyLockResult | None:
         """DCA lock (#640) and liquidity lock (#641) at order submit.
 
         Callers that reach ``RiskManager.evaluate`` on a BUY all pass here:
@@ -1503,7 +1884,10 @@ class RiskManager:
             if liq.code and liq.code not in codes:
                 codes.append(liq.code)
 
+        fields = self._liq_lock_fields(liq, planned_usdt)
         if human:
+            # Logged only. No cap, and the lot sum stays below this return
+            # so a bot buy still pays for open cost.
             try:
                 from logger import log
 
@@ -1514,40 +1898,42 @@ class RiskManager:
                 )
             except Exception:
                 pass
-            return None
+            return BuyLockResult(decision=None, apply_cap=False, **fields)
+
+        cost, cost_err = self._open_cost_usdt(
+            getattr(order, "symbol", "") or "", side="long"
+        )
+        if cost_err:
+            if cost_err not in codes:
+                codes.append(cost_err)
+        else:
+            fields["open_cost_usdt"] = float(cost)
+            if fields.get("liq_cap_usdt") is not None:
+                fields["allowed_usdt"] = float(fields["liq_cap_usdt"]) - float(cost)
+
+        if not codes and (
+            fields.get("liq_cap_usdt") is None or fields.get("allowed_usdt") is None
+        ):
+            codes.append("liq_guard_missing_input")
 
         if not codes:
-            return None
+            return BuyLockResult(decision=None, apply_cap=True, **fields)
 
         price = getattr(order, "price", None)
         avg = dca_result.avg if dca_result is not None else None
         rounds = dca_result.dca_rounds if dca_result is not None else None
-        locked = dca_result.locked if dca_result is not None else None
-        details = {
-            "codes": codes,
-            "price": price,
-            "avg": avg,
-            "dca_rounds": rounds,
-            "locked": locked,
-            "planned_usdt": float(planned_usdt or 0),
-            "depth_ask_usdt": getattr(liq, "depth_ask_usdt", None) if liq is not None else None,
-            "depth_bid_usdt": getattr(liq, "depth_bid_usdt", None) if liq is not None else None,
-            "quote_volume_24h_usdt": (
-                getattr(liq, "quote_volume_24h_usdt", None) if liq is not None else None
-            ),
-            "depth_window_pct": getattr(liq, "depth_window_pct", None) if liq is not None else None,
-        }
-        if liq is not None and details["quote_volume_24h_usdt"] is None and liq.metrics is not None:
-            try:
-                details["quote_volume_24h_usdt"] = float(liq.metrics.quote_volume_24h_usdt)
-            except (TypeError, ValueError):
-                pass
-            if details["depth_ask_usdt"] is None:
-                try:
-                    details["depth_ask_usdt"] = float(liq.metrics.depth_ask_usdt)
-                    details["depth_bid_usdt"] = float(liq.metrics.depth_bid_usdt)
-                except (TypeError, ValueError):
-                    pass
+        locked_flag = dca_result.locked if dca_result is not None else None
+        snapshot = BuyLockResult(**fields)
+        details = self._liq_detail_dict(snapshot, fields.get("planned_usdt"), None)
+        details.update(
+            {
+                "codes": list(codes),
+                "price": price,
+                "avg": avg,
+                "dca_rounds": rounds,
+                "locked": locked_flag,
+            }
+        )
         primary = codes[0]
         bits = [primary]
         if price is not None:
@@ -1556,21 +1942,22 @@ class RiskManager:
             bits.append(f"avg={avg}")
         if rounds is not None:
             bits.append(f"dca_rounds={rounds}")
-        if locked is not None:
-            bits.append(f"locked={locked}")
+        if locked_flag is not None:
+            bits.append(f"locked={locked_flag}")
         if details.get("planned_usdt"):
             bits.append(f"planned={details['planned_usdt']}")
         if liq_exc is not None:
             bits.append("gate_error")
         if liq is not None and liq.reasons:
             bits.append("; ".join(str(r) for r in liq.reasons)[:240])
-        return RiskDecision(
+        decision = RiskDecision(
             approved=False,
             message=" ".join(str(b) for b in bits)[:400],
             code=primary,
             size_multiplier=0.0,
             details=details,
         )
+        return BuyLockResult(decision=decision, apply_cap=False, **fields)
 
     @staticmethod
     def _is_dca_buy(source: str, order: TradeOrder) -> bool:
@@ -3871,6 +4258,9 @@ class RiskManager:
                     size_multiplier=0.0,
                     details={"codes": extra, "planned_usdt": float(usdt or 0)},
                 )
+            room = self._short_liq_room_reject(order, liq, float(usdt or 0))
+            if room is not None:
+                return room
         out = TradeOrder(
             type="SHORT",
             symbol=order.symbol,

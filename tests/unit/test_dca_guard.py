@@ -75,10 +75,12 @@ def _cfg():
                 "min_trade_usdt": 5,
                 "cash_floor_pct": 0,
                 "max_daily_sells": 0,
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
                     "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
                 },
             },
             "trading": {"mode": "paper", "initial_capital": 10000},

@@ -346,11 +346,14 @@ def _eval_env(rm: RiskManager, *, venue_ok: bool, mcap: float):
         free_slots=100,
         regime=None,
     )
-    venue = (
-        VenueQualityResult(ok=True, reasons=["ok"])
-        if venue_ok
-        else VenueQualityResult(ok=False, reasons=["thin market"], code="")
-    )
+    if venue_ok:
+        venue = VenueQualityResult(ok=True, reasons=["ok"])
+        # The lock fail-closes without a cap. These cases are not size tests.
+        venue.liq_cap_usdt = 1_000_000_000.0
+        venue.cap_depth = 1_000_000_000.0
+        venue.cap_volume = 1_000_000_000.0
+    else:
+        venue = VenueQualityResult(ok=False, reasons=["thin market"], code="")
     with ExitStack() as stack:
         stack.enter_context(patch("risk.risk_manager.get_position", return_value={"amount": 0}))
         stack.enter_context(
