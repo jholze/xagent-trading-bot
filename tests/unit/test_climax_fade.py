@@ -958,12 +958,26 @@ def test_save_config_rejects_dropping_auto_after_sell(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default"
     )
+    floors = {
+        "liquidity_guard": {"depth_to_order_multiple_min": 1},
+        "venue_quality": {"min_volume_to_order_multiple_min": 20},
+    }
+    monkeypatch.setattr(
+        _data_manager,
+        "_load_default_config_from_disk",
+        lambda: {"trading_mode": "paper", "risk": floors},
+    )
     prev = {
         "trading_mode": "paper",
         "shorts": {"auto_after_sell": False, "allow_live": False},
+        "risk": floors,
     }
     assert _REAL_SAVE_CONFIG(prev) is True
-    body = {"trading_mode": "paper", "shorts": {"allow_live": False}}
+    body = {
+        "trading_mode": "paper",
+        "shorts": {"allow_live": False},
+        "risk": floors,
+    }
     with pytest.raises(ConfigValidationError) as ei:
         _REAL_SAVE_CONFIG(body)
     assert ei.value.path == "shorts.auto_after_sell"

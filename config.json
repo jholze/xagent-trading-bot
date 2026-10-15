@@ -634,6 +634,8 @@
       "depth_window_pct": 0.5,
       "book_unavailable_policy": "block",
       "min_volume_to_order_multiple": 20,
+      "min_volume_to_order_multiple_min": 20,
+      "_doc": "min_volume_to_order_multiple_min is the lower bound for min_volume_to_order_multiple (start 20). Change that floor only via PR (review:viktor).",
       "apply_to": [
         "entry_sensor_15m",
         "vol_spike_15m",
@@ -647,7 +649,8 @@
       "depth_window_pct": 0.5,
       "order_book_cache_ttl_sec": 15,
       "depth_to_order_multiple": 1,
-      "_doc": "Hard buy lock (#641, size cap #671). No off-switch. Gate ticker 24h quote volume (not CMC) and book notional within ±depth_window_pct of mid on each side (asks for the fill, bids for the exit). Never a level count. order_book_cache_ttl_sec is the oldest cached book the lock may use. depth_to_order_multiple is the band divisor (start value 1, no code default). All four keys are required: a missing or invalid value blocks the buy. Change them only via PR (review:viktor)."
+      "depth_to_order_multiple_min": 1,
+      "_doc": "Hard buy lock (#641, size cap #671, floors #689). No off-switch. Gate ticker 24h quote volume (not CMC) and book notional within ±depth_window_pct of mid on each side (asks for the fill, bids for the exit). Never a level count. order_book_cache_ttl_sec is the oldest cached book the lock may use. depth_to_order_multiple is the band divisor (start value 1, no code default). depth_to_order_multiple_min (start 1) and risk.venue_quality.min_volume_to_order_multiple_min (start 20) are the lower bounds for those multiples. All four sizing keys are required: a missing or invalid value blocks the buy. Change the floor keys only via PR (review:viktor)."
     },
     "sensor_entry": {
       "reentry_cooloff_hours_after_gross_loss": 168

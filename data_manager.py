@@ -901,6 +901,22 @@ def _snapshot_previous_or_raise(previous: dict | None, tenant_id: str) -> None:
         ) from e
 
 
+def _pinned_save_value(config, path: str):
+    """Value shown on an operator-pinned save rejection.
+
+    Shorts paths keep the whole ``shorts`` object, matching the pre-#689
+    error text. Floor paths show the new value at that path.
+    """
+    if str(path).startswith("shorts."):
+        return (config.get("shorts") or {}) if isinstance(config, dict) else {}
+    node = config if isinstance(config, dict) else None
+    for part in str(path).split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
 def save_config(config, tenant_id: str | None = None):
     """Persist ``config`` for the resolved tenant.
 
@@ -921,7 +937,10 @@ def save_config(config, tenant_id: str | None = None):
     global _config_cache
     from core.config_guardrails import (
         ConfigValidationError,
+        assert_default_config_floors_present,
+        assert_liquidity_multiples_within_base_floor,
         frozen_shorts_changed,
+        pinned_patch_paths,
         validate_config_for_save,
     )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
@@ -940,6 +959,9 @@ def save_config(config, tenant_id: str | None = None):
                 # so do not report success (#456).
                 log(f"save_config skipped for tenant {tid}: no mongo tenant config backend", "WARNING")
                 return False
+            if isinstance(config, dict):
+                merged = _apply_trading_profile_merge(default_cfg, config)
+                assert_liquidity_multiples_within_base_floor(merged)
             previous = _load_previous_tenant_config(tid, default_cfg)
             frozen = frozen_shorts_changed(config, previous)
             if frozen:
@@ -961,13 +983,16 @@ def save_config(config, tenant_id: str | None = None):
                 return False
         # default
         previous = _load_previous_default_config()
-        frozen = frozen_shorts_changed(config, previous)
+        frozen = frozen_shorts_changed(
+            config, previous, pinned_patch_paths()
+        )
         if frozen:
             raise ConfigValidationError(
                 frozen,
-                (config.get("shorts") or {}),
+                _pinned_save_value(config, frozen),
                 "operator-pinned; Hermes cannot write",
             )
+        assert_default_config_floors_present(config)
         _snapshot_previous_or_raise(previous, tid)
         path = "config.json"
         try:

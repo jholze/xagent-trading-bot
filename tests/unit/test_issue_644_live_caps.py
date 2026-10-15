@@ -684,7 +684,17 @@ def _arm_tenant_body(monkeypatch, body, *, tenant="tenant-a", multi=True, boom=F
             return {"ok": 1}
 
     monkeypatch.setattr("storage.mongo_client.get_database", lambda *a, **k: _NoNetDb())
-    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: {"demo": {"backend": "mongo"}})
+    monkeypatch.setattr(
+        data_manager,
+        "_load_default_config_from_disk",
+        lambda: {
+            "demo": {"backend": "mongo"},
+            "risk": {
+                "liquidity_guard": {"depth_to_order_multiple_min": 1},
+                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+            },
+        },
+    )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_load_tenant_config_body", _load)
     monkeypatch.setattr(data_manager, "load_trade_history_document", lambda *a, **k: dict(empty_hist))

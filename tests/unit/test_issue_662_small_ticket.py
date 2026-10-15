@@ -1053,7 +1053,13 @@ def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
     }
     monkeypatch.setattr(
         "data_manager._load_default_config_from_disk",
-        lambda: {"demo": {"backend": "mongo"}},
+        lambda: {
+            "demo": {"backend": "mongo"},
+            "risk": {
+                "liquidity_guard": {"depth_to_order_multiple_min": 1},
+                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+            },
+        },
     )
     monkeypatch.setattr("data_manager._should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr("data_manager._load_tenant_config_body", lambda tid, default_cfg: body)

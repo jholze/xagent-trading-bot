@@ -86,6 +86,10 @@ class TestTradingProfileTenantLoad(unittest.TestCase):
             "virtual_trading": True,
             "max_open_positions": 99,
             "architecture": {"ledger_backend": "mongo"},
+            "risk": {
+                "liquidity_guard": {"depth_to_order_multiple_min": 1},
+                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+            },
         }
 
     def tearDown(self):

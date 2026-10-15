@@ -98,7 +98,12 @@ def _operator_cfg() -> dict:
         "virtual_trading": True,
         "max_open_positions": 5,
         "trading": {"entries_enabled": True, "exits_enabled": True},
-        "risk": {"max_daily_buys": 5, "cash_floor_pct": 10},
+        "risk": {
+            "max_daily_buys": 5,
+            "cash_floor_pct": 10,
+            "liquidity_guard": {"depth_to_order_multiple_min": 1},
+            "venue_quality": {"min_volume_to_order_multiple_min": 20},
+        },
         "shorts": {"enabled": False},
         "live": {"dry_run": True, "execution": "shadow", "max_usdt_per_trade": 50},
         "strategies": [

@@ -44,6 +44,19 @@ _book_cache: dict[str, tuple[float, tuple]] = {}
 # One log code for a buy whose size was cut to the liquidity room (#671).
 LIQ_GUARD_SIZE_CAPPED = "liq_guard_size_capped"
 _VOLUME_MULTIPLE_WARNED = False
+# One WARNING per tenant+key per process (R10). Reset with the venue cache.
+_FLOOR_WARNED: set[tuple[str, str]] = set()
+
+# Multiples the hard lock reads from the passed config. Floors are not here:
+# they are read from base config.json only (R2). No numeric default.
+DEPTH_MULTIPLE_PATH = "risk.liquidity_guard.depth_to_order_multiple"
+VOLUME_MULTIPLE_PATH = "risk.venue_quality.min_volume_to_order_multiple"
+DEPTH_FLOOR_PATH = "risk.liquidity_guard.depth_to_order_multiple_min"
+VOLUME_FLOOR_PATH = "risk.venue_quality.min_volume_to_order_multiple_min"
+_FLOOR_PAIRS = (
+    (DEPTH_MULTIPLE_PATH, DEPTH_FLOOR_PATH),
+    (VOLUME_MULTIPLE_PATH, VOLUME_FLOOR_PATH),
+)
 
 
 @dataclass(frozen=True)
@@ -239,6 +252,116 @@ def _positive_config_float(raw: dict, key: str) -> float | None:
     if number is None or number <= 0:
         return None
     return number
+
+
+def parse_liquidity_floor(value: Any) -> float | None:
+    """R3: a floor is valid only as a finite int or float > 0.
+
+    Bool and str are not numbers here. Anything else is missing.
+    There is no code-constant substitute.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return float(value)
+
+
+def _format_floor_number(number: float) -> str:
+    if float(number).is_integer():
+        return str(int(number))
+    return format(float(number), "g")
+
+
+def _lookup_path(raw: dict, path: str) -> Any:
+    node: Any = raw
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _read_base_config_for_floors() -> dict | None:
+    """Base config.json only, via the disk loader, at call time (R2).
+
+    A raise propagates. The caller blocks the buy. ``None`` means the
+    loader returned no dict.
+    """
+    import data_manager
+
+    loaded = data_manager._load_default_config_from_disk()
+    if not isinstance(loaded, dict):
+        return None
+    return loaded
+
+
+def _warn_liquidity_floor(tenant_id: str, key: str, value: str, floor: str) -> None:
+    token = (tenant_id, key)
+    if token in _FLOOR_WARNED:
+        return
+    _FLOOR_WARNED.add(token)
+    log(
+        f"liquidity guard floor tenant={tenant_id} key={key} value={value} floor={floor}",
+        "WARNING",
+    )
+
+
+def liquidity_multiple_floor_reasons(depth_mult: float, volume_mult: float) -> list[str]:
+    """Block reasons when a multiple is below its base floor, or the floor is unusable.
+
+    Read on every call. No cache and no numeric fallback. A disk error or a
+    non-dict is the same as a missing floor for each key (R4).
+    """
+    from core.tenant_context import resolve_tenant_id
+
+    tenant_id = resolve_tenant_id()
+    values = {
+        DEPTH_MULTIPLE_PATH: depth_mult,
+        VOLUME_MULTIPLE_PATH: volume_mult,
+    }
+    try:
+        base = _read_base_config_for_floors()
+    except Exception:
+        base = None
+    reasons: list[str] = []
+    for multiple_path, floor_path in _FLOOR_PAIRS:
+        multiple = values[multiple_path]
+        raw = None if not isinstance(base, dict) else _lookup_path(base, floor_path)
+        present = isinstance(base, dict) and _path_present(base, floor_path)
+        parsed = parse_liquidity_floor(raw) if present else None
+        if parsed is None:
+            reason = f"liquidity guard floor missing: {floor_path}"
+            reasons.append(reason)
+            _warn_liquidity_floor(
+                tenant_id,
+                floor_path,
+                _format_floor_number(multiple),
+                "missing",
+            )
+            continue
+        if multiple < parsed:
+            reason = (
+                f"{multiple_path} {_format_floor_number(multiple)} "
+                f"below floor {_format_floor_number(parsed)}"
+            )
+            reasons.append(reason)
+            _warn_liquidity_floor(
+                tenant_id,
+                multiple_path,
+                _format_floor_number(multiple),
+                _format_floor_number(parsed),
+            )
+    return reasons
+
+
+def _path_present(raw: dict, path: str) -> bool:
+    node: Any = raw
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return True
 
 
 def raw_min_volume_to_order_multiple(config_raw: dict | None) -> float | None:
@@ -969,6 +1092,26 @@ def _apply_hard_liquidity(
             liq_cap=None,
             book_age=book_age_sec(symbol) if symbol else None,
         )
+    floor_reasons = liquidity_multiple_floor_reasons(float(depth_mult), float(k))
+    if floor_reasons:
+        codes.append("liq_guard_missing_input")
+        reasons.extend(floor_reasons)
+        out = VenueQualityResult(
+            ok=False, reasons=reasons, metrics=m, code="liq_guard_missing_input"
+        )
+        return _stamp_liquidity(
+            out,
+            codes=codes,
+            planned=planned,
+            window=window,
+            qv=None,
+            bid_d=None,
+            ask_d=None,
+            cap_depth=None,
+            cap_volume=None,
+            liq_cap=None,
+            book_age=book_age_sec(symbol) if symbol else None,
+        )
     capture = "" if m is None else str(getattr(m, "capture", "") or "")
     if m is None or capture in ("missing", "stale"):
         codes.append("liq_guard_missing_input")
@@ -1152,6 +1295,7 @@ def stamp_venue_for_fill(
 def reset_venue_cache_for_tests() -> None:
     global _VOLUME_MULTIPLE_WARNED
     _VOLUME_MULTIPLE_WARNED = False
+    _FLOOR_WARNED.clear()
     with _cache_lock:
         _cache.clear()
         _book_cache.clear()
