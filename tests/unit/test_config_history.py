@@ -37,11 +37,19 @@ def history_home(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(data_manager, "_config_cache", None)
     monkeypatch.setattr(data_manager, "save_config", _REAL_SAVE_CONFIG)
-    monkeypatch.setattr(
-        data_manager,
-        "_load_default_config_from_disk",
-        lambda: {"trading_mode": "paper", "risk": _floor_keys()},
-    )
+
+    def _loader():
+        # Floors are required on every save. Before the first write there is
+        # no config.json; after that, /config diff must see the saved body
+        # (a constant stub hid max_open_positions and clipped "11" out).
+        path = Path("config.json")
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded
+        return {"trading_mode": "paper", "risk": _floor_keys()}
+
+    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", _loader)
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
     config_commands.reset_config_revert_for_tests()
     yield tmp_path
