@@ -845,10 +845,11 @@ def _tenant_config_or_base(default_cfg: dict, tenant_body: dict | None, tid: str
     from core.config_guardrails import stop_cap_applies, stop_cap_is_valid
 
     disk_base = _apply_trading_profile_merge(default_cfg, None)
-    # Partial stubs (no top-level stop_loss_pct) are not this gate. The old
-    # "invalid base → return the overlay" shortcut is only wrong for a bot
-    # config whose cap went missing or out of range.
-    if not stop_cap_applies(disk_base):
+    # Partial stubs are not this gate. A bot config is one that carries
+    # both stop_loss_pct and a risk block. Only that document, once its cap
+    # is missing or out of range, is replaced by the last valid default.
+    # A stub that sets stop_loss_pct and no risk block is merged as before.
+    if not stop_cap_applies(disk_base) or not isinstance(disk_base.get("risk"), dict):
         return _apply_trading_profile_merge(default_cfg, tenant_body)
 
     reference = disk_base
