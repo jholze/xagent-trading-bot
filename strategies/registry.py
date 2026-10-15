@@ -99,8 +99,9 @@ def _patch_has_param_keys(patch: dict | None) -> bool:
     return False
 
 
-def _explicit_strategy_entry(symbol: str, tf: str) -> dict | None:
-    cfg = get_bot_config()
+def _explicit_strategy_entry(symbol: str, tf: str, cfg=None) -> dict | None:
+    if cfg is None:
+        cfg = get_bot_config()
     for entry in cfg.raw.get("strategies", []):
         if entry.get("symbol") == symbol and entry.get("timeframe", "4h") == tf:
             if is_identity_strategy_entry(entry):
@@ -325,14 +326,19 @@ def resolve_strategy_params(
     change_24h_pct: float | None = None,
     regime_result: RegimeResult | None = None,
     allocation: AllocationDecision | None = None,
+    cfg=None,
 ) -> dict:
     """
     Pick strategy params.
     Erweitert um regime_result + allocation (von RegimeDetector + StrategyAllocator).
     Bestehende volatility_tier Logik wird erweitert, nicht ersetzt.
     Open positions get optional path-stats soft bias on trail/arm knobs.
+
+    ``cfg`` defaults to ``get_bot_config()``. Callers that already hold a
+    tenant config pass it so this function does not read the process config.
     """
-    cfg = get_bot_config()
+    if cfg is None:
+        cfg = get_bot_config()
     symbol = coin.get("symbol", "")
     tf = coin.get("timeframe", "4h")
 
@@ -408,7 +414,7 @@ def resolve_strategy_params(
         }
         return preserve_buy_params(result, {**meta, **preferred})
 
-    explicit = _explicit_strategy_entry(symbol, tf)
+    explicit = _explicit_strategy_entry(symbol, tf, cfg)
     if explicit:
         base = dict(explicit)
         preserved = {k: base[k] for k in _EXPLICIT_PRESERVE_KEYS if k in base}

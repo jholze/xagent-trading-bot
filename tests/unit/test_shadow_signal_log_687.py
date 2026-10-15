@@ -24,6 +24,7 @@ CTRL = "CTRL/USDT"
 def _raw(**overrides) -> dict:
     raw = {
         "stop_loss_pct": 20,
+        "max_usdt_per_trade": 100,
         "costs": {"gate": {"spot": {"fee_taker_conservative_pct": 0.2}}},
         "entry_sensor_15m": {
             "enabled": True,
@@ -43,7 +44,8 @@ def _raw(**overrides) -> dict:
                 "min_quote_volume_24h_usdt": 1000,
                 "depth_window_pct": 0.5,
                 "order_book_cache_ttl_sec": 15,
-            }
+            },
+            "venue_quality": {"min_volume_to_order_multiple": 20},
         },
     }
     raw.update(overrides)
@@ -134,6 +136,9 @@ def _trigger(logs, raw, symbol=SIG, price=1.25, gate=_UNSET, batch=None, cache=N
         candidate_cache=cache if cache is not None else {},
         gate_cache=gate,
         sensor_cfg=_sensor(raw),
+        atr_pct=kwargs.get("atr_pct"),
+        range_24h_pct=kwargs.get("range_24h_pct"),
+        change_24h_pct=kwargs.get("change_24h_pct"),
         now=now or T0,
     )
 
@@ -1119,6 +1124,8 @@ def test_missing_fee_key_ret_net_pct_is_null(logs):
     assert rows[0]["exit_reason"] == "4h"
     assert rows[0]["ret_net_pct"] is None
     assert rows[0]["ret_net_pct"] != 0
+    assert rows[0]["excluded_from_evaluation"] is True
+    assert rows[0]["excluded_reason"] == "ret_net_unavailable"
 
 
 def test_exit_guard_loop_continues(logs, monkeypatch):
@@ -1174,15 +1181,50 @@ def test_link_guard_buy_result_continues(logs, monkeypatch):
 
 
 def test_t4_repeat_poll_does_not_collect_or_touch_ledger(logs, monkeypatch):
-    """A poll that mints no new signal must not collect gates or touch the ledger."""
+    """25 polls, two symbols, gap 0, reconcile drift: two snapshots and no ledger I/O.
+
+    A real ``load_trade_history`` under that drift does call
+    ``save_trade_history_document``. Repeats must not.
+    """
     import data_manager
 
-    io_calls = []
+    monkeypatch.setattr(
+        data_manager,
+        "_ledger_reads_mongo_trade_history",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        data_manager,
+        "_load_trade_history_json",
+        lambda *args, **kwargs: {
+            "trades": [],
+            "virtual_balance": 1.0,
+            "realized_pnl": 0.0,
+            "open_positions": 0,
+        },
+    )
+    monkeypatch.setattr(
+        data_manager,
+        "_reconcile_scoped_trade_history",
+        lambda history, scope, config=None, tenant_id=None: (dict(history or {}), True),
+    )
+    monkeypatch.setattr(data_manager, "get_config", lambda *args, **kwargs: {"virtual_trading": True})
+    sanity_saves: list[str] = []
 
-    def _spy(name):
+    def _sanity_save(*args, **kwargs):
+        sanity_saves.append("save_trade_history_document")
+        return True
+
+    monkeypatch.setattr(data_manager, "save_trade_history_document", _sanity_save)
+    data_manager.load_trade_history()
+    assert sanity_saves == ["save_trade_history_document"]
+
+    io_calls: list[str] = []
+
+    def _spy(name, result=None):
         def _fn(*args, **kwargs):
             io_calls.append(name)
-            return {}
+            return {} if result is None else result
 
         return _fn
 
@@ -1192,9 +1234,9 @@ def test_t4_repeat_poll_does_not_collect_or_touch_ledger(logs, monkeypatch):
         data_manager, "load_trade_history_document", _spy("load_trade_history_document")
     )
     monkeypatch.setattr(
-        data_manager, "save_trade_history_document", _spy("save_trade_history_document")
+        data_manager, "save_trade_history_document", _spy("save_trade_history_document", True)
     )
-    snaps = []
+    snaps: list[int] = []
     real_snap = shadow.snapshot_gate_inputs
 
     def _snap(*args, **kwargs):
@@ -1203,17 +1245,16 @@ def test_t4_repeat_poll_does_not_collect_or_touch_ledger(logs, monkeypatch):
 
     monkeypatch.setattr(shadow, "snapshot_gate_inputs", _snap)
     raw = _raw()
-    orch, _batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
-    entry_sensor_loop._poll_once(orch)
-    assert len(_of(logs, "shadow_signal")) == 1
-    assert snaps == [1]
+    raw["entry_sensor_15m"]["min_poll_gap_sec_per_coin"] = 0
+    orch, _batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [SIG, OTHER])
+    for _ in range(25):
+        entry_sensor_loop._poll_once(orch)
+    assert len(_of(logs, "shadow_signal")) == 2
+    assert snaps == [1, 1]
     assert io_calls == []
-    snaps.clear()
-    io_calls.clear()
-    entry_sensor_loop._poll_once(orch)
-    assert len(_of(logs, "shadow_signal")) == 1
-    assert snaps == []
-    assert io_calls == []
+    open_signals = [row for row in shadow._OPEN.values() if not row.get("control")]
+    assert len(open_signals) == 2
+    assert {int(row["repeat_count"]) for row in open_signals} == {24}
 
 
 def test_c5_cold_venue_cache_uses_watchlist_volume(logs, monkeypatch):
@@ -1252,6 +1293,7 @@ def test_venue_liquidity_null_reason_only_for_that_gate(logs):
     assert row_floor["gates"]["venue_liquidity"] is None
     assert row_floor["gates"]["market_cap"] is True
     assert row_floor["venue_liquidity_null_reason"] == "missing_floor"
+    assert row_floor["venue_liquidity_missing_key"] == shadow.MISSING_FLOOR_KEY
     assert "market_cap_null_reason" not in row_floor
 
     passed = _trigger(logs, raw, symbol=FREE, gate=_passing_gate())
@@ -1721,3 +1763,500 @@ def test_orchestrator_lookup_guard_buy_continues(logs, monkeypatch):
         level == "WARNING" and "shadow_log_error link" in message
         for level, message in warnings
     )
+
+
+def test_parallel_thread_keeps_its_tenant_config(logs, monkeypatch):
+    """A late get_bot_config(tenant_id=...) during stops and sizing stays that tenant."""
+    import threading
+
+    import core.config as config_mod
+    import strategies.registry as registry_mod
+    import strategies.sensor_entry_policy as size_mod
+
+    holder: dict = {"markers": []}
+
+    def _config(tenant_id=None):
+        holder["seen_tenant"] = tenant_id
+        if tenant_id == "tenant-b":
+            return {"MARKER": "tenant-b", "stop_loss_pct": 11}
+        return {"MARKER": "process", "stop_loss_pct": 7}
+
+    def _real_get_bot_config(tenant_id=None):
+        return config_mod.BotConfig(tenant_id=tenant_id)
+
+    # The suite fixture replaces get_bot_config with a default-tenant stub.
+    # This test needs the real lookup so a process-wide lambda would TypeError.
+    monkeypatch.setattr(config_mod, "get_bot_config", _real_get_bot_config)
+    monkeypatch.setattr(config_mod, "get_config", _config)
+    monkeypatch.setattr("data_manager.get_config", _config)
+    stop_gate = threading.Barrier(2, timeout=3)
+    size_gate = threading.Barrier(2, timeout=3)
+    real_resolve = registry_mod.resolve_strategy_params
+    real_size = size_mod.resolve_sensor_usdt
+
+    def _hold_stops(*args, **kwargs):
+        stop_gate.wait()
+        return real_resolve(*args, **kwargs)
+
+    def _hold_size(*args, **kwargs):
+        holder["sizing"] = True
+        size_gate.wait()
+        return real_size(*args, **kwargs)
+
+    monkeypatch.setattr(registry_mod, "resolve_strategy_params", _hold_stops)
+    monkeypatch.setattr(size_mod, "resolve_sensor_usdt", _hold_size)
+
+    def _worker():
+        from core.config import get_bot_config as late_get
+
+        try:
+            stop_gate.wait()
+            got = late_get(tenant_id="tenant-b")
+            holder["markers"].append(got.raw.get("MARKER"))
+            size_gate.wait()
+            got = late_get(tenant_id="tenant-b")
+            holder["markers"].append(got.raw.get("MARKER"))
+            holder["error"] = None
+        except Exception as exc:
+            holder["error"] = exc
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    try:
+        row = _trigger(logs, _raw(), price=100.0, now=T0)
+    finally:
+        thread.join(5)
+    assert thread.is_alive() is False
+    assert holder.get("error") is None
+    assert holder.get("sizing") is True
+    assert holder.get("markers") == ["tenant-b", "tenant-b"]
+    assert row is not None
+    assert row["planned_order_usdt"] is not None
+    assert config_mod.get_bot_config(tenant_id="tenant-b").raw.get("MARKER") == "tenant-b"
+
+
+def test_shadow_module_does_not_assign_get_bot_config():
+    import inspect
+
+    source = inspect.getsource(shadow)
+    assert "get_bot_config =" not in source
+    assert ".get_bot_config =" not in source
+
+
+def test_unlisted_volatile_stop_matches_live_exit(logs, monkeypatch):
+    """An unlisted coin whose entry ATR freezes volatile uses the live open-lot stop."""
+    from intelligence.volatility_classifier import volatility_tier
+    from strategies.dca import effective_stop_loss_thresholds
+    from strategies.registry import resolve_strategy_params
+
+    symbol = "UNL/USDT"
+    atr = 12.0
+    tenant = _raw()
+    tenant["stop_loss_pct"] = 50
+    tenant["risk"]["partial_stop_ratio"] = 0.8
+    tenant["volatile_altcoin"] = {
+        "enabled": True,
+        "freeze_tier_on_entry": True,
+        "partial_stop_pct": 25,
+        "atr_volatile_enter_pct": 5.0,
+        "atr_stable_exit_pct": 3.5,
+        "tier_scoring": {
+            "enabled": True,
+            "volatile_enter_score": 4,
+            "volatile_exit_score": 2,
+            "atr_bands": [{"min_pct": 10.0, "points": 4}],
+            "class_points": {"mid_cap": 0, "large_cap": -99, "meme": 2},
+        },
+    }
+    process = _raw()
+    process["stop_loss_pct"] = 50
+    process["risk"]["partial_stop_ratio"] = 0.67
+    process["volatile_altcoin"] = {
+        "enabled": True,
+        "freeze_tier_on_entry": True,
+        "partial_stop_pct": 40,
+        "tier_scoring": tenant["volatile_altcoin"]["tier_scoring"],
+    }
+    process_cfg = BotConfig(raw=process)
+    monkeypatch.setattr("core.config.get_bot_config", lambda *args, **kwargs: process_cfg)
+    monkeypatch.setattr("strategies.registry.get_bot_config", lambda *args, **kwargs: process_cfg)
+    monkeypatch.setattr(
+        "strategies.entry_recipe.load_personal_params", lambda *args, **kwargs: None
+    )
+    cfg = BotConfig(raw=tenant)
+    coin = {"symbol": symbol, "timeframe": "4h"}
+    live_tier = volatility_tier(coin, atr, cfg.volatile_altcoin_config)
+    live_params = resolve_strategy_params(
+        coin,
+        has_position=True,
+        atr_pct=atr,
+        frozen_tier=live_tier,
+        cfg=cfg,
+    )
+    base = float(live_params.get("stop_loss_pct") or cfg.stop_loss_pct)
+    fresh = {
+        "dca_rounds": 0,
+        "dca_recovery_rounds": 0,
+        "last_dca_at": None,
+        "last_dca_recovery_at": None,
+    }
+    full, partial, in_grace = effective_stop_loss_thresholds(fresh, live_params, base, cfg=cfg)
+    assert in_grace is False
+    assert partial is not None
+    first = min(float(full), float(partial))
+    row = _trigger(logs, tenant, symbol=symbol, price=100.0, now=T0, atr_pct=atr)
+    assert live_tier == "volatile"
+    assert row["volatility_tier"] == live_tier
+    assert row["stop_pct"] == pytest.approx(first / 100.0)
+    assert row["stop_full_pct"] == pytest.approx(float(full) / 100.0)
+    assert row["stop_partial_pct"] == pytest.approx(float(partial) / 100.0)
+    assert row["stop_pct_source"] == shadow.STOP_PCT_SOURCE
+
+
+def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
+    """missing_floor is the hard floor. The multiple is checked with planned size."""
+    from strategies.sensor_entry_policy import resolve_sensor_usdt
+
+    cache = _passing_gate()
+    present = _raw()
+    assert shadow.venue_liquidity_null_reason(cache, present) is None
+    assert shadow.MISSING_FLOOR_KEY == "risk.liquidity_guard.min_quote_volume_24h_usdt"
+    assert shadow.LIQUIDITY_FLOOR_KEY == "min_quote_volume_24h_usdt"
+    assert shadow.VENUE_ORDER_MULTIPLE_KEY == "min_volume_to_order_multiple"
+
+    floor_gone = _raw()
+    floor_gone["risk"].pop("liquidity_guard")
+    assert shadow.venue_liquidity_null_reason(cache, floor_gone) == "missing_floor"
+    row = _trigger(logs, floor_gone, symbol=OTHER, gate=cache)
+    assert row["venue_liquidity_null_reason"] == "missing_floor"
+    assert row["venue_liquidity_missing_key"] == shadow.MISSING_FLOOR_KEY
+    assert row["gates_passed"] is None
+
+    # A *_min key, and a missing multiple, do not satisfy the floor.
+    min_key = _raw()
+    min_key["risk"]["liquidity_guard"] = {"min_quote_volume_24h_usdt_min": 1000}
+    assert shadow.venue_liquidity_null_reason(cache, min_key) == "missing_floor"
+    no_multiple = _raw()
+    no_multiple["risk"].pop("venue_quality")
+    assert shadow.venue_liquidity_null_reason(cache, no_multiple) is None
+    assert shadow.VENUE_ORDER_MULTIPLE_KEY in shadow.venue_defaults_used(no_multiple)
+    passed = _trigger(logs, no_multiple, symbol=FREE, gate=cache)
+    assert passed["gates"]["venue_liquidity"] is True
+    assert "venue_liquidity_null_reason" not in passed
+    assert shadow.VENUE_ORDER_MULTIPLE_KEY in passed["venue_defaults_used"]
+    expected = resolve_sensor_usdt(
+        "",
+        volatility_tier=passed["volatility_tier"] or "",
+        max_usdt_per_trade=100,
+        cfg=no_multiple["entry_sensor_15m"],
+    )
+    assert passed["planned_order_usdt"] == pytest.approx(expected)
+
+    thin = _raw()
+    thin["max_usdt_per_trade"] = 200_000
+    thin["risk"]["venue_quality"]["min_volume_to_order_multiple"] = 20
+    blocked = _trigger(logs, thin, symbol="THIN/USDT", gate=cache)
+    assert blocked["gates"]["venue_liquidity"] is False
+    assert blocked["gates_passed"] is False
+    assert blocked["planned_order_usdt"] is not None
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "shadow_price_fetch_max_per_poll",
+        "shadow_price_fetch_budget_s",
+        "shadow_price_fetch_timeout_s",
+    ],
+)
+def test_single_missing_fetch_key_disables_fetch(logs, monkeypatch, missing):
+    calls = []
+
+    def _single(symbol, timeout=6):
+        calls.append(symbol)
+        return 3.0
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _single)
+    raw = _raw()
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    raw["entry_sensor_15m"].pop(missing)
+    opened = datetime.now(timezone.utc) - timedelta(hours=5)
+    _trigger(logs, raw, now=opened)
+    shadow.fill_offwatch_signal_prices(
+        {}, watchlist=set(), sensor_cfg=raw["entry_sensor_15m"]
+    )
+    exits = shadow.check_open_exits(
+        {},
+        price_source="gate_spot_last",
+        watchlist=set(),
+        now=datetime.now(timezone.utc),
+    )
+    signal = [row for row in exits if not row["control"]][0]
+    assert calls == []
+    assert signal["no_price_reason"] == "fetch_disabled_config"
+
+
+def test_repo_config_pins_shadow_fetch_limits():
+    root = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
+    with open(root, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    sensor = raw["entry_sensor_15m"]
+    assert sensor["shadow_price_fetch_max_per_poll"] == 5
+    assert sensor["shadow_price_fetch_budget_s"] == 5
+    assert sensor["shadow_price_fetch_timeout_s"] == 2
+
+
+def test_fetch_timeout_is_its_own_reason(logs, monkeypatch):
+    def _single(symbol, timeout=6):
+        raise TimeoutError("stalled")
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _single)
+    raw = _raw()
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    opened = datetime.now(timezone.utc) - timedelta(hours=5)
+    _trigger(logs, raw, now=opened)
+    priced = shadow.fill_offwatch_signal_prices(
+        {}, watchlist=set(), sensor_cfg=raw["entry_sensor_15m"]
+    )
+    exits = shadow.check_open_exits(
+        priced,
+        price_source="gate_spot_last",
+        watchlist=set(),
+        now=datetime.now(timezone.utc),
+    )
+    signal = [row for row in exits if not row["control"]][0]
+    assert signal["no_price_reason"] == "fetch_timeout"
+    assert signal["no_price"] is True
+
+
+def test_wqe_writer_stores_quote_volume_under_shared_key():
+    from services.watchlist_quality.venue_batch import attach_quote_volumes
+
+    def _batch(symbols):
+        return {symbols[0]: SimpleNamespace(quote_volume_24h_usdt=1234.0)}
+
+    out = attach_quote_volumes([{"symbol": SIG}], batch_fn=_batch)
+    assert out[0][QUOTE_VOL_24H_KEY] == 1234.0
+    assert "quote_volume_24h_usdt" not in out[0]
+
+
+def test_wqe_writer_volume_reaches_shadow_row(logs):
+    """Writer key and the engine copy both have to be the shared constant."""
+    from services.watchlist_quality.engine import apply_soft_to_effective_candidates
+    from services.watchlist_quality.venue_batch import attach_quote_volumes
+
+    def _batch(symbols):
+        return {symbols[0]: SimpleNamespace(quote_volume_24h_usdt=1_000_000.0)}
+
+    written = attach_quote_volumes([{"symbol": SIG}], batch_fn=_batch)
+    assert written[0][QUOTE_VOL_24H_KEY] == 1_000_000.0
+    raw = _raw()
+    raw["watchlist_quality"] = {"mode": "soft", "vol_floors": {"t1_min_quote_vol_usd": 1}}
+    copied = apply_soft_to_effective_candidates(
+        [{"symbol": SIG, "quality_score": 0.9}],
+        config=raw,
+        scored_summary={"coins": [{"symbol": SIG, "metrics": {QUOTE_VOL_24H_KEY: written[0][QUOTE_VOL_24H_KEY]}}]},
+    )
+    assert copied[0][QUOTE_VOL_24H_KEY] == 1_000_000.0
+    info = shadow.candidate_info_from_coin(SIG, copied[0], raw)
+    row = _trigger(
+        logs,
+        raw,
+        gate=_passing_gate(quote_volume_24h_usdt=info["quote_volume_24h_usdt"]),
+    )
+    assert row["quote_volume_24h_usdt"] == 1_000_000.0
+    assert row["gates"]["venue_liquidity"] is True
+
+
+def test_planned_size_takes_no_lock_and_writes_nothing(logs, monkeypatch):
+    import data_manager
+    from strategies import positions as posmod
+
+    writes = []
+    locks = []
+    real_lock = posmod._positions_lock
+
+    class _CountLock:
+        def acquire(self, *args, **kwargs):
+            locks.append("acquire")
+            return real_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return real_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *args):
+            self.release()
+
+    monkeypatch.setattr(posmod, "_positions_lock", _CountLock())
+    for name in ("save_trade_history_document", "save_orders", "save_trade_history"):
+        if hasattr(data_manager, name):
+            monkeypatch.setattr(
+                data_manager,
+                name,
+                lambda *a, _name=name, **k: writes.append(_name),
+            )
+    row = _trigger(logs, _raw(), price=100.0, now=T0)
+    assert row["planned_order_usdt"] is not None
+    assert locks == []
+    assert writes == []
+
+
+def test_missing_max_usdt_nulls_gates_as_input_uncached(logs):
+    raw = _raw()
+    raw.pop("max_usdt_per_trade")
+    row = _trigger(logs, raw, price=100.0, now=T0)
+    assert row["planned_order_usdt"] is None
+    assert row["gates"]["venue_liquidity"] is None
+    assert row["gates_passed"] is None
+    assert row["gate_reject_reason"] == "input_uncached"
+    assert "venue_liquidity_null_reason" not in row
+    assert row.get("structurally_null") is not True
+
+
+def test_missing_shadow_exit_hours_stops_with_error(logs, monkeypatch):
+    raw = _raw()
+    raw["entry_sensor_15m"].pop("shadow_exit_hours")
+    orch, _batch, _fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
+    entry_sensor_loop._poll_once(orch)
+    assert _of(logs, "shadow_signal") == []
+    errors = [msg for level, msg in logs if level == "ERROR" and "shadow_exit_hours" in msg]
+    assert errors
+
+
+def test_fetch_disabled_error_is_logged_once(logs):
+    raw = _raw()
+    _trigger(logs, raw, price=100.0, now=T0, symbol=SIG)
+    _trigger(logs, raw, price=100.0, now=T0, symbol=OTHER)
+    sensor = dict(raw["entry_sensor_15m"])
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    errors = [msg for level, msg in logs if level == "ERROR" and "shadow price fetch disabled" in msg]
+    assert len(errors) == 1
+
+
+def test_poll_exception_still_prices_open_exit(logs, monkeypatch):
+    raw = _raw()
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    _trigger(logs, raw, price=100.0, now=T0)
+    due = T0 + timedelta(hours=4, seconds=1)
+
+    orch, _batch, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("poll broke")
+
+    monkeypatch.setattr(entry_sensor_loop, "_coin_by_symbol", _boom)
+    try:
+        entry_sensor_loop._poll_once(orch)
+    except RuntimeError:
+        pass
+    exits = _of(logs, "shadow_exit")
+    assert exits
+    assert fetched == []
+
+
+def test_drift_loop_no_ledger_io_per_poll(logs, monkeypatch):
+    import time
+
+    import data_manager
+    from services.order_service import OrderService, _ORDERS_READ_CACHE
+    from strategies import positions as posmod
+
+    io_calls = []
+
+    def _spy(name):
+        def _fn(*args, **kwargs):
+            io_calls.append(name)
+            if name == "load_orders":
+                return {"orders": []}
+            return {}
+
+        return _fn
+
+    for name in (
+        "load_orders",
+        "save_orders",
+        "load_trade_history",
+        "load_trade_history_document",
+        "save_trade_history_document",
+        "_load_trade_history_json",
+        "load_positions_document",
+    ):
+        if hasattr(data_manager, name):
+            monkeypatch.setattr(data_manager, name, _spy(name))
+    monkeypatch.setattr(
+        data_manager,
+        "_reconcile_scoped_trade_history",
+        lambda history, *a, **k: (io_calls.append("_reconcile") or history, True),
+    )
+    real_load = OrderService._load
+    monkeypatch.setattr(
+        OrderService,
+        "_load",
+        lambda self: (io_calls.append("OrderService._load"), real_load(self))[1],
+    )
+    lock_takes = []
+    real_lock = posmod._positions_lock
+
+    class _CountLock:
+        def acquire(self, *a, **k):
+            import traceback
+
+            stack = "".join(traceback.format_stack())
+            if "services/shadow_signal_log.py" in stack:
+                lock_takes.append(1)
+            return real_lock.acquire(*a, **k)
+
+        def release(self):
+            return real_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *a):
+            self.release()
+
+    monkeypatch.setattr(posmod, "_positions_lock", _CountLock())
+    ensure = []
+    real_ensure = posmod._ensure_store
+    monkeypatch.setattr(posmod, "_ensure_store", lambda key: (ensure.append(key), real_ensure(key))[1])
+    snaps = []
+    real_snap = shadow.snapshot_gate_inputs
+    monkeypatch.setattr(
+        shadow, "snapshot_gate_inputs", lambda *a, **k: (snaps.append(1), real_snap(*a, **k))[1]
+    )
+    raw = _raw()
+    raw["risk"]["slot_eviction"] = {"max_evictions_per_hour": 3, "max_evictions_per_day": 9}
+    _ORDERS_READ_CACHE[OrderService()._cache_key()] = (time.time(), {"orders": []})
+    syms = [SIG, OTHER, FREE]
+    orch, batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, syms)
+    polls = 60
+    per_poll = []
+    try:
+        for _i in range(polls):
+            before_io, before_snap = len(io_calls), len(snaps)
+            before_sig = len(_of(logs, "shadow_signal"))
+            entry_sensor_loop._last_poll_at.clear()
+            entry_sensor_loop._poll_once(orch)
+            per_poll.append(
+                (
+                    len(_of(logs, "shadow_signal")) - before_sig,
+                    len(snaps) - before_snap,
+                    len(io_calls) - before_io,
+                )
+            )
+    finally:
+        _ORDERS_READ_CACHE.pop(OrderService()._cache_key(), None)
+    new_signals = sum(p[0] for p in per_poll)
+    assert new_signals == len(syms)
+    assert sum(p[1] for p in per_poll) == new_signals
+    assert all(p[1] == 0 for p in per_poll if p[0] == 0)
+    assert io_calls == []
+    assert lock_takes == []
+    assert ensure == []
+    assert len(batch_calls) == polls

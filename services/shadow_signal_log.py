@@ -58,6 +58,12 @@ _GATE_REJECT = {
 # Same method the exit path uses. The row stores the fraction of that percent.
 STOP_PCT_SOURCE = "strategies.dca.effective_stop_loss_thresholds"
 _VENUE_NULL_REASONS = ("missing_quote_volume", "missing_floor")
+# Live hard floor. No code default. A missing key is missing_floor.
+LIQUIDITY_FLOOR_KEY = "min_quote_volume_24h_usdt"
+MISSING_FLOOR_KEY = "risk.liquidity_guard.min_quote_volume_24h_usdt"
+# Live multiple inside the merged venue config (evaluate_venue_quality).
+VENUE_ORDER_MULTIPLE_KEY = "min_volume_to_order_multiple"
+_FETCH_DISABLED_LOGGED = False
 
 # Why a no_price exit had no price. Closed list. Controls are never fetched.
 _NO_PRICE_REASONS = (
@@ -117,9 +123,10 @@ def _ensure_counts() -> None:
 
 def reset_for_tests() -> None:
     """Drop in-memory shadow state and the journal file."""
-    global _DAY, _COUNTS_LOADED, _PRICE_FETCH_CURSOR
+    global _DAY, _COUNTS_LOADED, _PRICE_FETCH_CURSOR, _FETCH_DISABLED_LOGGED
     _COUNTS_LOADED = False
     _PRICE_FETCH_CURSOR = 0
+    _FETCH_DISABLED_LOGGED = False
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -198,58 +205,93 @@ def fee_taker_conservative_pct(config_raw: dict | None) -> float | None:
         return None
 
 
-def _stops_from_exit_path(config_raw: dict | None, symbol: str, timeframe: str) -> dict:
-    """Stops the live exit path applies. Does not call the risk resolver.
+def _stops_from_exit_path(
+    config_raw: dict | None,
+    symbol: str,
+    timeframe: str,
+    *,
+    atr_pct: float | None = None,
+    range_24h_pct: float | None = None,
+    change_24h_pct: float | None = None,
+) -> dict:
+    """Stops the live exit applies to the position this entry would open.
 
-    The exit path resolves params with ``resolve_strategy_params`` (the tenant
-    config), then ``effective_stop_loss_thresholds``. Both of those read
-    ``get_bot_config()``, so this call shows them ``config_raw`` rather than
-    the process config. Fractions so ``price * (1 - stop)`` is literal.
-    ``stop_pct`` is the first threshold that path can fire.
+    The exit resolves an open lot with ``resolve_strategy_params``
+    (``has_position=True``, frozen tier) and ``effective_stop_loss_thresholds``.
+    Both receive the passed config. This function does not replace
+    ``get_bot_config``. The tier is the one entry freezes from the ATR already
+    in hand (``freeze_tier_on_entry``). Fractions so ``price * (1 - stop)`` is
+    literal. ``stop_pct`` is the first threshold that path can fire.
     """
-    import core.config as config_mod
-    import strategies.registry as registry_mod
+    from intelligence.volatility_classifier import volatility_tier
     from strategies.dca import effective_stop_loss_thresholds
+    from strategies.registry import resolve_strategy_params
 
     cfg = _config_view(config_raw)
     coin = {"symbol": symbol, "timeframe": timeframe}
-    prev_core = config_mod.get_bot_config
-    prev_reg = registry_mod.get_bot_config
-    config_mod.get_bot_config = lambda: cfg
-    registry_mod.get_bot_config = lambda: cfg
     try:
-        params = dict(
-            registry_mod.resolve_strategy_params(coin, has_position=False) or {}
-        )
+        va_cfg = cfg.volatile_altcoin_config or {}
+    except Exception:
+        va_cfg = {}
+    frozen = None
+    if atr_pct is not None and va_cfg.get("freeze_tier_on_entry", True):
         try:
-            atr_default = registry_mod.resolve_strategy_params.__defaults__[1]
-            tier = registry_mod._resolve_volatility_tier(
+            frozen = volatility_tier(
                 coin,
-                atr_default,
-                cfg.volatile_altcoin_config,
+                float(atr_pct),
+                va_cfg,
+                range_24h_pct=range_24h_pct,
+                change_24h_pct=change_24h_pct,
+            )
+        except Exception:
+            frozen = None
+    resolve_args: dict = {
+        "has_position": True,
+        "frozen_tier": frozen,
+        "cfg": cfg,
+    }
+    if atr_pct is not None:
+        resolve_args["atr_pct"] = float(atr_pct)
+    if range_24h_pct is not None:
+        resolve_args["range_24h_pct"] = range_24h_pct
+    if change_24h_pct is not None:
+        resolve_args["change_24h_pct"] = change_24h_pct
+    params = dict(resolve_strategy_params(coin, **resolve_args) or {})
+    tier = params.get("volatility_tier") or frozen
+    if not tier:
+        try:
+            from strategies.registry import _resolve_volatility_tier
+
+            used_atr = atr_pct
+            if used_atr is None:
+                used_atr = resolve_strategy_params.__defaults__[1]
+            tier = _resolve_volatility_tier(
+                coin,
+                used_atr,
+                va_cfg,
+                frozen_tier=frozen,
+                range_24h_pct=range_24h_pct,
+                change_24h_pct=change_24h_pct,
             )
         except Exception:
             tier = params.get("volatility_tier")
-        raw = params.get("stop_loss_pct")
-        if raw is None:
-            try:
-                raw = cfg.stop_loss_pct
-            except Exception:
-                raw = 0
+    raw = params.get("stop_loss_pct")
+    if raw is None:
         try:
-            base = float(raw or 0)
-        except (TypeError, ValueError):
-            base = 0.0
-        fresh = {
-            "dca_rounds": 0,
-            "dca_recovery_rounds": 0,
-            "last_dca_at": None,
-            "last_dca_recovery_at": None,
-        }
-        full, partial, in_grace = effective_stop_loss_thresholds(fresh, params, base)
-    finally:
-        config_mod.get_bot_config = prev_core
-        registry_mod.get_bot_config = prev_reg
+            raw = cfg.stop_loss_pct
+        except Exception:
+            raw = 0
+    try:
+        base = float(raw or 0)
+    except (TypeError, ValueError):
+        base = 0.0
+    fresh = {
+        "dca_rounds": 0,
+        "dca_recovery_rounds": 0,
+        "last_dca_at": None,
+        "last_dca_recovery_at": None,
+    }
+    full, partial, in_grace = effective_stop_loss_thresholds(fresh, params, base, cfg=cfg)
     full_f = float(full)
     partial_f = None if partial is None else float(partial)
     if in_grace or partial_f is None:
@@ -346,12 +388,78 @@ def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
         mcap_ok, _reason = passes_market_cap_filter(float(cache["market_cap_usd"]), sensor)
         gates["market_cap"] = bool(mcap_ok)
     if not _gate_missing(cache, "quote_volume_24h_usdt"):
-        from services.venue_quality import liquidity_guard_config
+        from services.venue_quality import liquidity_guard_config, venue_quality_config
 
-        floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
-        if floor is not None:
-            gates["venue_liquidity"] = float(cache["quote_volume_24h_usdt"]) >= float(floor)
+        floor = liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY)
+        if floor is None:
+            gates["venue_liquidity"] = None
+        elif _gate_missing(cache, "planned_order_usdt"):
+            gates["venue_liquidity"] = None
+        else:
+            volume = float(cache["quote_volume_24h_usdt"])
+            ok = volume >= float(floor)
+            merged = venue_quality_config(config_raw)
+            try:
+                multiple = float(merged.get(VENUE_ORDER_MULTIPLE_KEY) or 0)
+            except (TypeError, ValueError):
+                multiple = 0.0
+            planned = float(cache["planned_order_usdt"])
+            if multiple > 0 and planned > 0 and volume < multiple * planned:
+                ok = False
+            gates["venue_liquidity"] = ok
     return _publish_gates(gates)
+
+
+def venue_defaults_used(config_raw: dict | None) -> list[str]:
+    """venue_quality keys filled from ``_DEFAULTS`` because raw omitted them.
+
+    Informational. Never a null reason. ``_DEFAULTS`` itself is unchanged.
+    """
+    from services.venue_quality import _DEFAULTS
+
+    risk = (config_raw or {}).get("risk") if isinstance(config_raw, dict) else None
+    raw = risk.get("venue_quality") if isinstance(risk, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
+    return sorted(key for key in _DEFAULTS if key not in raw)
+
+
+def _planned_order_usdt(
+    config_raw: dict | None,
+    *,
+    volatility_tier: str | None,
+    sensor_cfg: dict | None,
+) -> float | None:
+    """Order size the sensor path would plan. Config is an argument.
+
+    Uses ``resolve_sensor_usdt``. No budget reservation, no positions lock,
+    no DCA or slot counters, no writes. A missing ``max_usdt_per_trade`` on
+    the passed raw cannot be sized from cache and returns None.
+    """
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    if "max_usdt_per_trade" not in raw:
+        return None
+    try:
+        base = float(raw["max_usdt_per_trade"])
+    except (TypeError, ValueError):
+        return None
+    if isinstance(raw.get("max_usdt_per_trade"), bool) or base <= 0:
+        return None
+    from strategies.sensor_entry_policy import resolve_sensor_usdt
+
+    mode = str(raw.get("trading_mode") or "")
+    cfg = sensor_cfg if isinstance(sensor_cfg, dict) else {}
+    if not cfg:
+        block = raw.get("entry_sensor_15m")
+        cfg = block if isinstance(block, dict) else {}
+    return float(
+        resolve_sensor_usdt(
+            mode,
+            volatility_tier=str(volatility_tier or ""),
+            max_usdt_per_trade=base,
+            cfg=cfg,
+        )
+    )
 
 
 def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> str | None:
@@ -364,8 +472,7 @@ def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> 
         return "missing_quote_volume"
     from services.venue_quality import liquidity_guard_config
 
-    floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
-    if floor is None:
+    if liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY) is None:
         return "missing_floor"
     return None
 
@@ -377,7 +484,10 @@ def _venue_null_fields(cache: dict | None, config_raw: dict | None, gates: dict)
     reason = venue_liquidity_null_reason(cache, config_raw)
     if reason not in _VENUE_NULL_REASONS:
         return {}
-    return {"venue_liquidity_null_reason": reason}
+    fields = {"venue_liquidity_null_reason": reason}
+    if reason == "missing_floor":
+        fields["venue_liquidity_missing_key"] = MISSING_FLOOR_KEY
+    return fields
 
 
 def dry_check_gates(cache: dict | None, config_raw: dict | None = None) -> tuple[bool | None, str | None]:
@@ -1013,6 +1123,15 @@ def _fetch_disabled_message() -> str:
     return f"shadow price fetch disabled: {keys} missing or invalid"
 
 
+def _log_fetch_disabled_once() -> None:
+    """One ERROR for a disabled fetch. Later polls in this process stay quiet."""
+    global _FETCH_DISABLED_LOGGED
+    if _FETCH_DISABLED_LOGGED:
+        return
+    _FETCH_DISABLED_LOGGED = True
+    log(_fetch_disabled_message(), "ERROR")
+
+
 def _is_fetch_timeout(exc: BaseException) -> bool:
     if isinstance(exc, TimeoutError):
         return True
@@ -1087,7 +1206,7 @@ def fill_offwatch_signal_prices(
         signals.sort(key=lambda item: (item["exit_at"], item["symbol"], item["signal_id"]))
         if limits is None:
             if signals or controls:
-                log(_fetch_disabled_message(), "ERROR")
+                _log_fetch_disabled_once()
             for item in signals + controls:
                 _stamp_open_reason(item["signal_id"], item["control"], "fetch_disabled_config")
             return batch
@@ -1181,6 +1300,9 @@ def log_shadow_trigger(
     market_cap_usd: float | None = None,
     quote_volume_24h_usdt: float | None = None,
     sensor_cfg: dict | None = None,
+    atr_pct: float | None = None,
+    range_24h_pct: float | None = None,
+    change_24h_pct: float | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """Write one ``shadow_signal`` row, unless this symbol already has one open."""
@@ -1205,13 +1327,34 @@ def log_shadow_trigger(
             )
 
         signal_id = str(uuid.uuid4())
-        stops = _stops_from_exit_path(config_raw, symbol, timeframe)
+        stops = _stops_from_exit_path(
+            config_raw,
+            symbol,
+            timeframe,
+            atr_pct=atr_pct,
+            range_24h_pct=range_24h_pct,
+            change_24h_pct=change_24h_pct,
+        )
         stop_pct = stops["stop_pct"]
-        hours = exit_hours_from(config_raw, sensor_cfg)
+        try:
+            hours = exit_hours_from(config_raw, sensor_cfg)
+        except KeyError:
+            log("shadow_exit_hours missing: shadow signal not logged", "ERROR")
+            return None
         fee = fee_taker_conservative_pct(config_raw)
         version, version_reason = config_version(config_raw)
-        gates_passed, gate_reject_reason = dry_check_gates(gate_cache, config_raw)
-        gates = project_gates(gate_cache, config_raw)
+        planned = None
+        gate_for_check = gate_cache
+        if isinstance(gate_cache, dict):
+            planned = _planned_order_usdt(
+                config_raw,
+                volatility_tier=stops.get("volatility_tier"),
+                sensor_cfg=sensor_cfg,
+            )
+            gate_for_check = dict(gate_cache)
+            gate_for_check["planned_order_usdt"] = planned
+        gates_passed, gate_reject_reason = dry_check_gates(gate_for_check, config_raw)
+        gates = project_gates(gate_for_check, config_raw)
         px = float(price)
         cached_mcap = None
         cached_vol = None
@@ -1242,8 +1385,10 @@ def log_shadow_trigger(
             "gate_reject_reason": gate_reject_reason,
             "market_cap_usd": cached_mcap,
             "quote_volume_24h_usdt": cached_vol,
+            "planned_order_usdt": planned,
+            "venue_defaults_used": venue_defaults_used(config_raw),
         }
-        row.update(_venue_null_fields(gate_cache, config_raw, gates))
+        row.update(_venue_null_fields(gate_for_check, config_raw, gates))
         if version_reason:
             row["config_version_reason"] = version_reason
         open_row = {
@@ -1375,6 +1520,10 @@ def _write_exit(
             open_row.get("fee_pct"),
             control=control,
         )
+    excluded_reason = None
+    if ret is None and not excluded:
+        excluded = True
+        excluded_reason = "ret_net_unavailable"
     row = {
         "type": "shadow_exit",
         "signal_id": signal_id,
@@ -1387,6 +1536,8 @@ def _write_exit(
         "no_price": reason == "no_price",
         "excluded_from_evaluation": excluded,
     }
+    if excluded_reason:
+        row["excluded_reason"] = excluded_reason
     if reason == "no_price":
         stamped = open_row.get("no_price_reason")
         if stamped is None:

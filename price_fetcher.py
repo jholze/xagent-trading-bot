@@ -252,7 +252,28 @@ def _apply_price_fallbacks(
     return sources
 
 
-def _fetch_gate_single(symbol: str, timeout: float = 6):
+def _gate_single_timeout_s() -> float | None:
+    """Live single-ticker timeout. Value lives in config.json. No code default."""
+    try:
+        from core.config import get_bot_config
+
+        arch = get_bot_config().raw.get("architecture") or {}
+        raw = arch.get("gate_single_ticker_timeout_s")
+        if raw is None or isinstance(raw, bool):
+            return None
+        value = float(raw)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _fetch_gate_single(symbol: str, timeout: float | None = None):
+    if timeout is None:
+        timeout = _gate_single_timeout_s()
+    if timeout is None:
+        return None
     pair = symbol.replace("/", "_").upper()
     url = f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={pair}"
     response = requests.get(url, timeout=timeout)

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
+
 
 def _f(v: Any, default: float = 0.0) -> float:
     try:
@@ -23,7 +25,7 @@ def _sym(coin: dict[str, Any]) -> str:
 
 def _quote_vol(coin: dict[str, Any]) -> float | None:
     for k in (
-        "quote_vol_24h",
+        QUOTE_VOL_24H_KEY,
         "volume_24h",
         "quote_volume_24h_usdt",
         "quote_volume_24h",

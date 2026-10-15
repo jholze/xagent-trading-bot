@@ -385,6 +385,7 @@
     "price_cache_ttl_sec": 120,
     "stale_price_max_age_sec": 300,
     "gate_ticker_snapshot_ttl_sec": 25,
+    "gate_single_ticker_timeout_s": 6,
     "ohlcv_cache_enabled": true,
     "ohlcv_cache_ttl_sec": {
       "15m": 60,

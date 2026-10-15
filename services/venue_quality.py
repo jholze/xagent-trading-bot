@@ -1295,7 +1295,13 @@ def stamp_venue_for_fill(
 def peek_cached_quote_volume(symbol: str, *, config_raw: dict | None = None) -> float | None:
     """Return a still-fresh cached 24h quote volume. Does not fetch."""
     cfg = venue_quality_config(config_raw)
-    ttl = float(cfg.get("cache_ttl_sec") or 90)
+    raw_ttl = cfg.get("cache_ttl_sec")
+    if raw_ttl is None:
+        return None
+    try:
+        ttl = float(raw_ttl)
+    except (TypeError, ValueError):
+        return None
     now = time.time()
     with _cache_lock:
         hit = _cache.get(symbol)
