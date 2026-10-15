@@ -308,19 +308,102 @@ def _order_ref(order: dict) -> object:
 
 
 def _parse_order_pnl(order: dict) -> float:
-    """Sell/cover realized pnl. Invalid values log and count as 0.0."""
+    """Sell/cover realized pnl. Missing values are not a usable number.
+
+    ``stats_from_filled_orders`` does not sum this 0 into realized PnL (R8).
+    """
+    value, missing = _order_pnl_or_missing(order)
+    if missing or value is None:
+        return 0.0
+    return value
+
+
+def _order_pnl_or_missing(order: dict) -> tuple[float | None, bool]:
+    """(pnl, missing). Missing covers absent and unparseable pnl."""
     raw = order.get("pnl")
     if raw is None:
-        return 0.0
+        return None, True
     if isinstance(raw, dict):
         raw = raw.get("usdt", raw.get("realized", raw.get("pnl")))
         if raw is None:
-            return 0.0
+            return None, True
     try:
-        return float(raw)
+        return float(raw), False
     except (TypeError, ValueError):
         logger.warning("order pnl parse failed id=%s raw=%r", _order_ref(order), raw)
+        return None, True
+
+
+def _positive_fee(value: object) -> float | None:
+    try:
+        num = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if num > 0:
+        return num
+    return None
+
+
+def _stored_open_fee(order: dict) -> float | None:
+    found = _positive_fee(order.get("open_fee_usdt"))
+    if found is not None:
+        return found
+    exe = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    return _positive_fee(exe.get("open_fee_usdt"))
+
+
+def _stored_close_fee(order: dict) -> float | None:
+    exe = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    for raw in (
+        exe.get("fee"),
+        order.get("fee"),
+        order.get("fee_usdt"),
+        exe.get("fee_usdt"),
+    ):
+        found = _positive_fee(raw)
+        if found is not None:
+            return found
+    return None
+
+
+def _conservative_taker_fraction() -> float:
+    try:
+        from core.config import get_bot_config
+        from core.costs import swap_taker_estimate_rate
+
+        picked = swap_taker_estimate_rate(get_bot_config())
+    except Exception:
         return 0.0
+    if not picked:
+        return 0.0
+    try:
+        return float(picked[0])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _missing_pnl_charge(order: dict) -> float:
+    """Conservative loss for a filled sell/cover whose pnl is missing.
+
+    Stored open and close fees when present, otherwise each side is
+    ``notional × conservative taker``. The result is never 0 and never > 0.
+    """
+    notional = order_notional_usdt(order)
+    est = notional * _conservative_taker_fraction()
+    if est < 0:
+        est = 0.0
+    open_fee = _stored_open_fee(order)
+    close_fee = _stored_close_fee(order)
+    if open_fee is None:
+        open_fee = est
+    if close_fee is None:
+        close_fee = est
+    charged = float(open_fee) + float(close_fee)
+    if charged <= 0:
+        charged = est * 2
+    if charged <= 0:
+        charged = 1e-12
+    return -abs(charged)
 
 
 def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
@@ -354,6 +437,7 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         "wins": 0,
         "losses": 0,
         "unknown_side": 0,
+        "pnl_missing": 0,
     }
     for o in orders:
         if not isinstance(o, dict):
@@ -378,8 +462,23 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
         counts[usdt_key] += notional
         if not has_pnl:
             continue
-        pnl = _parse_order_pnl(o)
-        counts["realized_pnl"] += pnl
+        pnl, missing = _order_pnl_or_missing(o)
+        if missing:
+            charged = _missing_pnl_charge(o)
+            counts["pnl_missing"] += 1
+            counts["realized_pnl"] += charged
+            logger.warning(
+                "order_pnl_missing id=%s side=%s charged=%s",
+                _order_ref(o),
+                side,
+                charged,
+            )
+            counts["losses"] += 1
+            if side == "sell":
+                counts["sell_losses"] += 1
+            continue
+        counts["realized_pnl"] += float(pnl or 0)
+        pnl = float(pnl or 0)
         if pnl > 0:
             counts["wins"] += 1
             if side == "sell":

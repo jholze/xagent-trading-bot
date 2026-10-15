@@ -376,6 +376,13 @@ class RiskManager:
             if missing_caps:
                 return missing_caps
 
+        # #679 K2: a filled sell/cover with no pnl blocks new buys and shorts
+        # until recovery writes a pnl. Sells, covers, and stops do not enter.
+        if order.type in ("BUY", "SHORT"):
+            missing_pnl = self._missing_pnl_entry_block(order)
+            if missing_pnl:
+                return missing_pnl
+
         if order.type in ("SHORT", "COVER"):
             return self._evaluate_short_or_cover(order, timeframe, source=source)
 
@@ -2203,6 +2210,38 @@ class RiskManager:
         """Operator-day realized PnL plus unrealized PnL of open live lots."""
         return float(self._realized_pnl_operator_day(now)) + float(
             self._open_live_unrealized_pnl()
+        )
+
+    def _filled_pnl_missing_count(self) -> int:
+        """Filled sell/cover rows whose pnl is missing or unparseable."""
+        from data_manager import resolve_ledger_scope
+        from services.order_service import OrderService
+        from storage.order_ledger_v2 import stats_from_filled_orders
+
+        scope = resolve_ledger_scope(getattr(self.config, "trading_mode", None))
+        orders = OrderService(scope)._scoped_orders_newest_first(mutate=False)
+        stats = stats_from_filled_orders(orders or [])
+        return int(stats.get("pnl_missing") or 0)
+
+    def _missing_pnl_entry_block(self, order=None) -> RiskDecision | None:
+        """Block new exposure while a fill's pnl is still unresolved (#679 K2)."""
+        kind = str(getattr(order, "type", "") or "").upper()
+        if kind not in ("BUY", "SHORT"):
+            return None
+        try:
+            missing = self._filled_pnl_missing_count()
+        except Exception as exc:
+            return self._guard_failed("pnl_missing", exc, order)
+        if missing <= 0:
+            return None
+        return RiskDecision(
+            approved=False,
+            message=(
+                f"pnl_missing={missing}: new exposure blocked until recovery "
+                "resolves the row"
+            ),
+            code="pnl_missing",
+            size_multiplier=0.0,
         )
 
     def _daily_loss_limit_blocked(self, order=None) -> RiskDecision | None:

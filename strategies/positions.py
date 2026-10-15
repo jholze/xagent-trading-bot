@@ -140,6 +140,10 @@ _CACHE_FIELDS = (
     "venue_min_brake",
     "venue_min_open_pnl",
     "venue_min_merge_logged",
+    # #679: opening fee on a short lot. load_positions overlays only these
+    # fields, so a restart would otherwise drop the fee deserialize restored.
+    "open_fee_usdt",
+    "open_fee_estimated",
 )
 
 # #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
@@ -459,6 +463,13 @@ def _deserialize_position(raw: dict) -> dict:
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
     if raw.get("basis_fee_estimated"):
         out["basis_fee_estimated"] = True
+    if raw.get("open_fee_usdt") not in (None, ""):
+        try:
+            out["open_fee_usdt"] = float(raw.get("open_fee_usdt") or 0)
+        except (TypeError, ValueError):
+            out["open_fee_usdt"] = 0.0
+    if raw.get("open_fee_estimated"):
+        out["open_fee_estimated"] = True
     if raw.get("venue_min_state"):
         out["venue_min_state"] = raw.get("venue_min_state")
     if raw.get("venue_min_brake"):
@@ -555,6 +566,14 @@ def _serialize_positions() -> dict:
         if p.get("basis_fee_estimated"):
             # Rebuilt by the replay. Not a _CACHE_FIELDS overlay.
             data["positions"][tf]["basis_fee_estimated"] = True
+        try:
+            open_fee = float(p.get("open_fee_usdt") or 0)
+        except (TypeError, ValueError):
+            open_fee = 0.0
+        if open_fee:
+            data["positions"][tf]["open_fee_usdt"] = open_fee
+        if p.get("open_fee_estimated"):
+            data["positions"][tf]["open_fee_estimated"] = True
         if p.get("venue_min_state"):
             data["positions"][tf]["venue_min_state"] = p.get("venue_min_state")
         if p.get("venue_min_brake"):

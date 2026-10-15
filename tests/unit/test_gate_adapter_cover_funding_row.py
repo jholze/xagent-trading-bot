@@ -204,7 +204,13 @@ def test_shadow_cover_live_row_records_funding_when_computation_succeeds(monkeyp
     assert expected_fund == pytest.approx(10.0)
     assert rec["funding_unknown"] is False
     assert rec["funding_usdt"] == pytest.approx(expected_fund)
-    assert rec["pnl"] == pytest.approx(raw_pnl - rec["funding_usdt"])
+    # #679 R7: cover pnl is net of the open-fee share and the close fee.
+    assert rec["pnl"] == pytest.approx(
+        raw_pnl
+        - rec["funding_usdt"]
+        - float(rec.get("open_fee_usdt") or 0)
+        - float(rec.get("fee") or 0)
+    )
 
     buy = adapter.execute(
         TradeOrder("BUY", SYMBOL, ENTRY, 0, usdt_amount=1000.0, source="manual"), TF,
@@ -240,7 +246,9 @@ def test_shadow_cover_live_row_marks_funding_unknown_when_entry_at_unparsable(mo
     raw_pnl = unrealized_pnl("short", qty, entry, float(rec["price"]))
     assert rec["funding_unknown"] is True
     assert rec["funding_usdt"] is None
-    assert rec["pnl"] == pytest.approx(raw_pnl)
+    assert rec["pnl"] == pytest.approx(
+        raw_pnl - float(rec.get("open_fee_usdt") or 0) - float(rec.get("fee") or 0)
+    )
 
 
 def _sync_cover_with_local(monkeypatch, local: TradeResult) -> dict:
