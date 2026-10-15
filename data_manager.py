@@ -1341,7 +1341,15 @@ def resolve_sim_realized_pnl(
     resolved_scope = scope or resolve_ledger_scope()
     if not uses_order_ledger_cash(cfg):
         hist = load_trade_history_document(resolved_scope, cfg, tenant_id=resolve_tenant_id(tenant_id))
-        return float(hist.get("realized_pnl", hist.get("total_pnl", 0)) or 0)
+        raw = hist.get("realized_pnl")
+        if raw is None:
+            raw = hist.get("total_pnl")
+        if raw is None:
+            from logger import log
+
+            log("sim realized pnl aggregate missing", "ERROR")
+            return 0.0
+        return float(raw)
     from core.portfolio_baseline import initial_capital
 
     tid = resolve_tenant_id(tenant_id)
@@ -1666,7 +1674,13 @@ def record_trade(trade):
 
         cover_pnl = pnl_for_sum(trade)
         history["virtual_balance"] = float(history.get("virtual_balance") or 0) + _trade_margin_usdt(trade) + cover_pnl
-        history["realized_pnl"] = float(history.get("realized_pnl") or 0) + cover_pnl
+        prior = history.get("realized_pnl")
+        if prior is None:
+            from logger import log
+
+            log("trade history realized pnl missing before cover", "ERROR")
+            prior = 0.0
+        history["realized_pnl"] = float(prior) + cover_pnl
     try:
         from strategies.positions import count_open_positions
         history["open_positions"] = count_open_positions()

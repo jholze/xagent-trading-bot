@@ -960,6 +960,12 @@ class OrderService:
                     stats = store.get_day_stats(
                         tid, self.scope, self._v2_day_key(now),
                     )
+                    day_pnl = stats.get("realized_pnl")
+                    if day_pnl is None:
+                        from logger import log
+
+                        log("day stats realized pnl missing", "ERROR")
+                        day_pnl = 0.0
                     return {
                         "filled": int(stats.get("filled") or 0),
                         "buys": int(stats.get("buys") or 0),
@@ -970,7 +976,7 @@ class OrderService:
                         "sell_usdt": float(stats.get("sell_usdt") or 0),
                         "short_usdt": float(stats.get("short_usdt") or 0),
                         "cover_usdt": float(stats.get("cover_usdt") or 0),
-                        "realized_pnl": float(stats.get("realized_pnl") or 0),
+                        "realized_pnl": float(day_pnl),
                         "sell_wins": int(stats.get("sell_wins") or 0),
                         "sell_losses": int(stats.get("sell_losses") or 0),
                         "wins": int(stats.get("wins") or 0),
