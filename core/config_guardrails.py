@@ -394,13 +394,36 @@ def refuse_start_if_stop_cap_invalid(config: Any) -> None:
         raise SystemExit(1)
 
 
+def _reject_full_config_without_stop_cap(config: Any) -> None:
+    """A bot document that carries ``stop_loss_pct`` and a ``risk`` block needs a valid cap.
+
+    Partial tenant bodies omit ``stop_loss_pct`` and stay valid without the
+    key. Tenant seeds set ``stop_loss_pct`` and no ``risk`` block; the cap
+    stays on the operator base and is merged at load. A present but
+    out-of-range cap is already rejected by the guarded key. This is the
+    missing-key case on a full save, including a /config restore of a
+    pre-cap snapshot.
+    """
+    if not stop_cap_applies(config):
+        return
+    if not isinstance(config.get("risk"), dict):
+        return
+    err = long_hard_stop_cap_error(config)
+    if not err:
+        return
+    value = _get_path(config, LONG_HARD_STOP_CAP_PATH)
+    shown = None if value is _MISSING else value
+    raise ConfigValidationError(LONG_HARD_STOP_CAP_PATH, shown, err)
+
+
 def validate_config_for_save(config: Any) -> None:
     """Raise :class:`ConfigValidationError` on the first out-of-bounds key.
 
     ``config`` must be a dict; missing keys are fine, ``None`` is treated as
     "unset" only for keys that consumers already default (all guarded keys
     use ``.get(key, default)``), so ``None`` is rejected to keep the written
-    file unambiguous.
+    file unambiguous. A full bot document must still include a valid
+    ``risk.long_hard_stop_max_loss_pct``.
     """
     if not isinstance(config, dict):
         raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
@@ -409,6 +432,7 @@ def validate_config_for_save(config: Any) -> None:
         if value is _MISSING:
             continue
         check(path, value)
+    _reject_full_config_without_stop_cap(config)
     # #631: shadow/enforce membership revise requires the named Ersatz-Cap.
     # Absent section and mode=off stay valid. Lazy import avoids a cycle.
     from services.universe.membership_revise import assert_membership_revise_config

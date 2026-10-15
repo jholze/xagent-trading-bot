@@ -501,10 +501,20 @@ def evaluate_long_hard_stop(
     full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
         position or {}, strategy_params, float(base_stop_loss_pct)
     )
+    # Grace pauses the partial stop only. The absolute cap still closes
+    # the lot. With no cap configured, grace keeps suppressing the widened
+    # full stop, same as before the cap existed.
+    cap_hit = False
+    cap_raw = (strategy_params or {}).get("long_hard_stop_max_loss_pct")
+    try:
+        if cap_raw is not None and float(cap_raw) > 0 and loss_pct > float(cap_raw):
+            cap_hit = True
+    except (TypeError, ValueError):
+        cap_hit = False
+    if cap_hit or (not in_grace and loss_pct > full_stop):
+        return "SELL_STOP_FULL", "stop_loss"
     if in_grace:
         return None
-    if loss_pct > full_stop:
-        return "SELL_STOP_FULL", "stop_loss"
     if partial_stop is not None and loss_pct > partial_stop:
         # One hard partial per lot. A later full stop still fires.
         if (position or {}).get("hard_partial_stop_done"):

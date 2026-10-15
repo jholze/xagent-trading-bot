@@ -478,6 +478,14 @@ class RiskManager:
             below_min_pos = get_position(order.symbol, timeframe)
             if is_below_venue_minimum(below_min_pos):
                 stop_params = getattr(order, "_full_hard_stop_params", None)
+                if not isinstance(stop_params, dict):
+                    # The WS execute path stamps the book params. A cycle
+                    # stop does not, so resolve them here (the resolver
+                    # attaches the cap). An uncapped re-check would reject
+                    # a loss between the cap and the wide base stop.
+                    stop_params = self._resolved_hard_stop_params(
+                        order, timeframe, below_min_pos
+                    )
                 full_stop_on_below_min = confirmed_full_long_hard_stop(
                     action=str(order.signal or ""),
                     exit_source=getattr(order, "exit_source", None),
@@ -3997,6 +4005,30 @@ class RiskManager:
             ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
         )
 
+    def _resolved_hard_stop_params(self, order, timeframe: str, pos) -> dict | None:
+        """Strategy params for a cycle full-stop check, including the cap."""
+        try:
+            from strategies.registry import resolve_strategy_params
+
+            tier = pos.get("strategy_tier") if isinstance(pos, dict) else None
+            return resolve_strategy_params(
+                {"symbol": getattr(order, "symbol", "") or "", "timeframe": timeframe},
+                has_position=True,
+                frozen_tier=tier,
+            )
+        except Exception as exc:
+            try:
+                from logger import log
+
+                log(
+                    "config risk.long_hard_stop_max_loss_pct missing on "
+                    f"below-min stop check: {exc}",
+                    "ERROR",
+                )
+            except Exception:
+                pass
+            return None
+
     def _partial_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
         signal = str(order.signal or "")
         if source == "manual":
@@ -4052,6 +4084,7 @@ class RiskManager:
             would_block
             and signal == "SELL_STOP_PARTIAL"
             and str(getattr(order, "exit_source", "") or "") == "stop_loss"
+            and str(getattr(order, "source", "") or "") != "manual"
         ):
             held = float(pos.get("amount", 0) or 0)
             if held > 0:

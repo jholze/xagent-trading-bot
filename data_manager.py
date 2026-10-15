@@ -788,11 +788,22 @@ def _stop_cap_error(config):
     return long_hard_stop_cap_error(config)
 
 
+_stop_cap_log_depth = 0
+
+
 def _log_stop_cap_rejected(where: str, err: str) -> None:
-    log(
-        f"config risk.long_hard_stop_max_loss_pct rejected {where}: {err}",
-        "ERROR",
-    )
+    """ERROR log that does not re-enter config load through the log sink."""
+    global _stop_cap_log_depth
+    if _stop_cap_log_depth:
+        return
+    _stop_cap_log_depth += 1
+    try:
+        log(
+            f"config risk.long_hard_stop_max_loss_pct rejected {where}: {err}",
+            "ERROR",
+        )
+    finally:
+        _stop_cap_log_depth -= 1
 
 
 def _require_stop_cap_or_exit(config) -> None:
@@ -807,24 +818,58 @@ def _require_stop_cap_or_exit(config) -> None:
         raise SystemExit(1)
 
 
-def _tenant_config_or_base(default_cfg: dict, tenant_body: dict | None, tid: str) -> dict:
-    """Merge a tenant overlay. An invalid cap rejects that overlay entirely.
-
-    The tenant keeps the base config, including its cap. No key from the
-    rejected overlay is applied. An overlay that does not touch the cap is
-    merged as before.
-    """
+def _last_valid_default_config() -> dict | None:
+    """Cached default config when it still carries a valid hard-stop cap."""
     from core.config_guardrails import stop_cap_is_valid
 
-    base = _apply_trading_profile_merge(default_cfg, None)
-    merged = _apply_trading_profile_merge(default_cfg, tenant_body)
-    if not stop_cap_is_valid(base):
-        return merged
-    err = _stop_cap_error(merged)
-    if err:
+    cached = _config_cache
+    if stop_cap_is_valid(cached):
+        return cached
+    return None
+
+
+def _tenant_config_or_base(default_cfg: dict, tenant_body: dict | None, tid: str) -> dict:
+    """Merge a tenant overlay onto the last valid default config.
+
+    An invalid cap rejects that overlay entirely: the tenant keeps the
+    reference config, including its cap, and no key from the rejected
+    overlay is applied. An overlay that does not touch the cap is merged
+    as before.
+
+    A disk ``config.json`` that has lost its cap is not the reference.
+    The last valid default stays in force, an ERROR is logged, and this
+    function does not return a config without a valid cap.
+    """
+    import copy
+
+    from core.config_guardrails import stop_cap_applies, stop_cap_is_valid
+
+    disk_base = _apply_trading_profile_merge(default_cfg, None)
+    # Partial stubs (no top-level stop_loss_pct) are not this gate. The old
+    # "invalid base → return the overlay" shortcut is only wrong for a bot
+    # config whose cap went missing or out of range.
+    if not stop_cap_applies(disk_base):
+        return _apply_trading_profile_merge(default_cfg, tenant_body)
+
+    reference = disk_base
+    reference_src = default_cfg
+    if not stop_cap_is_valid(disk_base):
+        err = _stop_cap_error(disk_base) or "invalid"
+        cached = _last_valid_default_config()
+        if cached is None:
+            _log_stop_cap_rejected(f"for tenant {tid}", err)
+            raise SystemExit(1)
         _log_stop_cap_rejected(f"for tenant {tid}", err)
-        return base
-    return merged
+        reference = cached
+        reference_src = cached
+    merged = _apply_trading_profile_merge(reference_src, tenant_body)
+    if stop_cap_is_valid(merged):
+        return merged
+    err = _stop_cap_error(merged) or "invalid"
+    _log_stop_cap_rejected(f"for tenant {tid}", err)
+    if reference is not disk_base:
+        return copy.deepcopy(reference)
+    return reference
 
 
 # Depth guard: logger.log reads config for the json sink. A rejected start
@@ -1034,7 +1079,16 @@ def save_config(config, tenant_id: str | None = None):
     )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from storage.config_history import config_write_lock
-    validate_config_for_save(config)
+    try:
+        validate_config_for_save(config)
+    except ConfigValidationError as exc:
+        if "long_hard_stop_max_loss_pct" in str(getattr(exc, "path", "") or ""):
+            log(
+                "config risk.long_hard_stop_max_loss_pct rejected on save: "
+                f"{exc}",
+                "ERROR",
+            )
+        raise
     tid = resolve_tenant_id(tenant_id)
     with config_write_lock():
         if tid != DEFAULT_TENANT:
