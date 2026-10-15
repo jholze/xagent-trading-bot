@@ -93,6 +93,7 @@
       "spot": {
         "fee_maker_pct": 0.2,
         "fee_taker_pct": 0.2,
+        "fee_taker_conservative_pct": 0.2,
         "slippage_pct": 0.15,
         "fee_side_buy": "base",
         "fee_side_sell": "quote"
@@ -1947,7 +1948,8 @@
     "memory_size_down_flow_only": true,
     "memory_flow_only_size_mult": 0.5,
     "memory_size_down_profit_taking": true,
-    "memory_profit_taking_size_mult": 0.7
+    "memory_profit_taking_size_mult": 0.7,
+    "shadow_exit_hours": 4
   },
   "regime_detector": {
     "enabled": true,

@@ -28,6 +28,19 @@ def coerce_order_source(source: str | None) -> str:
     text = str(source).strip() if source is not None else ""
     return text or DEFAULT_ORDER_SOURCE
 
+
+def _attach_shadow_link(order, result):
+    """Information-only shadow id. Never changes the trade result fields."""
+    try:
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return result
+        from services.shadow_signal_log import attach_shadow_signal_id
+
+        attach_shadow_signal_id(order, result)
+    except Exception as exc:
+        log(f"shadow_log_error link: {exc}", "WARNING")
+    return result
+
 # Operator-facing German copy for the entries/exits split (#305 slice 3).
 ENTRIES_PAUSED_MSG = "Neue Käufe pausiert (/pause). Stops und Exits laufen weiter."
 EXITS_PAUSED_MSG = "Verkäufe pausiert. Notverkäufe (Stops) laufen weiter."
@@ -197,20 +210,23 @@ class TradingService:
         try:
             require_lease_for_order()
         except LedgerUnavailable as exc:
-            return self._deny_ledger_unavailable(order, exc)
+            return _attach_shadow_link(order, self._deny_ledger_unavailable(order, exc))
 
         if should_queue_intent(source, self.config):
-            return submit_trade_intent(
+            return _attach_shadow_link(
                 order,
-                timeframe,
-                source=source,
-                trust_score=trust_score,
-                confidence=confidence,
-                indicators=indicators,
-                order_id=order_id,
-                request_extra=request_extra,
-                idempotency_key=idem,
-                scope=scope,
+                submit_trade_intent(
+                    order,
+                    timeframe,
+                    source=source,
+                    trust_score=trust_score,
+                    confidence=confidence,
+                    indicators=indicators,
+                    order_id=order_id,
+                    request_extra=request_extra,
+                    idempotency_key=idem,
+                    scope=scope,
+                ),
             )
 
         from bus.locks import ledger_lock
@@ -230,9 +246,9 @@ class TradingService:
                     _lock_held=True,
                 )
         except LedgerUnavailable as exc:
-            return self._deny_ledger_unavailable(order, exc)
+            return _attach_shadow_link(order, self._deny_ledger_unavailable(order, exc))
         self._send_recorded_positions_snapshots(result)
-        return result
+        return _attach_shadow_link(order, result)
 
     def _notify_ledger_write_after_fill(self, order: TradeOrder, result: TradeResult, exc) -> None:
         """Alert once per episode: the fill is real but the ledger row is stale."""

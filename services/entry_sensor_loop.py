@@ -100,7 +100,20 @@ def _maybe_seed_watches(cfg: dict, *, force: bool = False) -> int:
     return added
 
 
-def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict, market_svc) -> None:
+def _shadow_log(
+    symbol: str,
+    coin: dict,
+    price: float,
+    metrics: dict,
+    cfg: dict,
+    market_svc,
+    *,
+    price_source: str,
+    sensor_policy_source: str,
+    price_batch: dict | None = None,
+    candidate_cache: dict | None = None,
+    gate_cache: dict | None = None,
+) -> None:
     """Shadow annotation uses live 4h RSI — not the snapshot stored at set_watch."""
     tf = str(coin.get("timeframe") or "4h")
     indicators = market_svc.fetch_indicators(symbol, tf, price)
@@ -114,9 +127,22 @@ def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict,
         tech_already_buy=False,
     )
     if result.triggered:
-        log(
-            f"15m sensor shadow {symbol}: {result.rationale} ({result.action})",
-            "INFO",
+        from services.shadow_signal_log import log_shadow_trigger
+
+        raw = get_bot_config().raw
+        log_shadow_trigger(
+            symbol=symbol,
+            timeframe=tf,
+            price=price,
+            price_source=price_source,
+            rationale=result.rationale,
+            action=result.action,
+            sensor_policy_source=sensor_policy_source,
+            config_raw=raw,
+            price_batch=price_batch,
+            candidate_cache=candidate_cache,
+            gate_cache=gate_cache,
+            sensor_cfg=cfg,
         )
     elif result.rationale:
         log(f"15m sensor shadow skip {symbol}: {result.rationale}", "INFO")
@@ -180,16 +206,54 @@ def _poll_once(orchestrator) -> None:
         watched = watch_15m_state.list_watched()
     else:
         _maybe_seed_watches(cfg)
-    if not watched:
+    try:
+        from services.shadow_signal_log import open_signal_symbols
+
+        extra_symbols = open_signal_symbols()
+    except Exception as exc:
+        log(f"shadow_log_error symbols: {exc}", "WARNING")
+        extra_symbols = []
+    if not watched and not extra_symbols:
         return
 
-    watched = _sort_watched_for_poll(watched)
+    watched = _sort_watched_for_poll(watched) if watched else []
     symbols = [w["symbol"] for w in watched]
+    for sym in extra_symbols:
+        if sym not in symbols:
+            symbols.append(sym)
     gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
     ex = get_bot_config().exchange
+    price_source = "gate_spot_last" if gate_only else "fallback"
     # For now still use gate batch if gate_only (legacy), else general.
     # TODO: make get_prices_batch(exchange=ex) when gate_only means exchange_only
+    # One batch call. Open signal symbols that left the watchlist are included.
+    # Control symbols are never added.
     prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
+    try:
+        from services.shadow_signal_log import check_open_exits, note_poll_clock
+
+        note_poll_clock()
+        check_open_exits(
+            prices,
+            price_source=price_source,
+            watchlist={w["symbol"] for w in watched},
+        )
+    except Exception as exc:
+        log(f"shadow_log_error exit: {exc}", "WARNING")
+    if not watched:
+        return
+    candidate_cache: dict = {}
+    try:
+        from services.shadow_signal_log import candidate_info_from_coin
+
+        raw_cfg = get_bot_config().raw
+        for entry in watched:
+            sym = entry["symbol"]
+            coin_for_cache = _coin_by_symbol(sym, entry) or {}
+            candidate_cache[sym] = candidate_info_from_coin(sym, coin_for_cache, raw_cfg)
+    except Exception as exc:
+        log(f"shadow_log_error candidates: {exc}", "WARNING")
+        candidate_cache = {}
     market_svc = orchestrator.market
     vol_avg_period = int(cfg.get("vol_avg_period", 20))
     ema_period = int(cfg.get("ema_period", 9))
@@ -240,6 +304,7 @@ def _poll_once(orchestrator) -> None:
 
         # Global bias (oracle + santiment) sensor_policy: block / shadow.
         effective_mode = mode
+        sensor_policy_source = "mode"
         try:
             from services.market_policy_fusion import get_global_market_bias
 
@@ -255,6 +320,7 @@ def _poll_once(orchestrator) -> None:
                     continue
                 if pol == "shadow":
                     effective_mode = "shadow"
+                    sensor_policy_source = "global_bias"
         except Exception:
             pass
 
@@ -269,7 +335,28 @@ def _poll_once(orchestrator) -> None:
                 set_pending_sensor_metrics(symbol, metrics)
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
-            _shadow_log(symbol, coin, price, metrics, cfg, market_svc)
+            gate_cache = {}
+            if mcap is not None:
+                gate_cache["market_cap_usd"] = mcap
+            cached_vol = (candidate_cache.get(symbol) or {}).get("quote_volume_24h_usdt")
+            if cached_vol is not None:
+                gate_cache["quote_volume_24h_usdt"] = cached_vol
+            try:
+                _shadow_log(
+                    symbol,
+                    coin,
+                    price,
+                    metrics,
+                    cfg,
+                    market_svc,
+                    price_source=price_source,
+                    sensor_policy_source=sensor_policy_source,
+                    price_batch=prices,
+                    candidate_cache=candidate_cache,
+                    gate_cache=gate_cache,
+                )
+            except Exception as exc:
+                log(f"shadow_log_error {symbol}: {exc}", "WARNING")
 
 
 def _loop_main(orchestrator) -> None:
@@ -294,6 +381,13 @@ def start_entry_sensor_loop(orchestrator) -> threading.Thread | None:
         return None
     if _loop_thread is not None and _loop_thread.is_alive():
         return _loop_thread
+
+    try:
+        from services.shadow_signal_log import resolve_restart
+
+        resolve_restart()
+    except Exception as exc:
+        log(f"shadow_log_error restart: {exc}", "WARNING")
 
     _stop_event.clear()
     _loop_thread = threading.Thread(

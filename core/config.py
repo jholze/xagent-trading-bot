@@ -546,6 +546,8 @@ class BotConfig:
             "memory_flow_only_size_mult": 0.5,
             "memory_size_down_profit_taking": True,
             "memory_profit_taking_size_mult": 0.7,
+            # Spec #687: shadow exit window. Frozen onto each signal at trigger time.
+            "shadow_exit_hours": 4,
         }
         raw = self._raw.get("entry_sensor_15m", {})
         merged = {**defaults, **raw}
