@@ -138,9 +138,23 @@ def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> 
     return out
 
 
+def _shown_pnl(trade: dict) -> float:
+    """SELL/COVER missing pnl is the fee loss. Other sides have no realized pnl."""
+    side = str(trade.get("type") or "").upper()
+    if side in ("SELL", "COVER"):
+        return pnl_for_sum(trade)
+    raw = trade.get("pnl")
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return pnl_for_sum(trade)
+
+
 def fmt_trade_row(trade: dict) -> str:
     ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
-    pnl = pnl_for_sum(trade)
+    pnl = _shown_pnl(trade)
     usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
     return (
         f"| {ts} | {trade['type']} | {trade['symbol']} | "
@@ -423,9 +437,9 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     for trade in sorted(day_trades, key=lambda x: x["timestamp"])[-8:]:
         ts = parse_ts(trade["timestamp"]).strftime("%H:%M")
         usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
-        pnl = pnl_for_sum(trade)
         src = trade.get("source", "?")
         if trade["type"] == "SELL":
+            pnl = pnl_for_sum(trade)
             trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src}) PnL {pnl:+.1f}")
         else:
             trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src})")
