@@ -1204,6 +1204,10 @@ class RiskManager:
             return locked.decision
 
         planned_liq = float(sized)
+        # A cut is the cap binding, not the cents floor. Sub-cent planned
+        # sizes still round the way staging does when allowed_usdt is at
+        # least the planned size.
+        cap_binds = False
         if locked.apply_cap:
             if locked.allowed_usdt is None:
                 return self._liq_size_reject(
@@ -1223,8 +1227,10 @@ class RiskManager:
                     final=None,
                     message="liq_guard_depth_lt_order",
                 )
-            sized = min(float(sized), float(locked.allowed_usdt))
-            sized = floor_usdt_cents(sized)
+            cap_binds = float(locked.allowed_usdt) < planned_liq
+            if cap_binds:
+                sized = min(float(sized), float(locked.allowed_usdt))
+                sized = floor_usdt_cents(sized)
             if sized < min_trade:
                 return self._liq_size_reject(
                     locked,
@@ -1237,7 +1243,7 @@ class RiskManager:
                         f"final={sized:g} min_trade={min_trade:g}"
                     ),
                 )
-            if sized + 1e-9 < planned_liq:
+            if cap_binds:
                 self._log_liq_size_capped(order, locked, planned_liq, sized)
 
         # #662 R6 runs on the cut size. A bound that held before the cut
@@ -1267,7 +1273,7 @@ class RiskManager:
         # A ticket cap that stays above the floor still submits (#589).
         # A liquidity cut is a new size: the floor sees that smaller notional.
         relvol_basis = pre_ticket_usdt if factors.get("ticket_capped") else float(sized)
-        if locked.apply_cap and float(sized) + 1e-9 < float(planned_liq):
+        if cap_binds:
             relvol_basis = float(sized)
         if (
             self._is_relvol_buy(source, order)
@@ -1580,9 +1586,10 @@ class RiskManager:
     def _open_cost_usdt(self, symbol: str, *, side: str) -> tuple[float | None, str | None]:
         """Entry-cost room already used by open lots of one side.
 
-        Longs are ``side != short``. Shorts are ``side == short``. A lot
-        with amount > 0 whose notional is 0 or unreadable fails closed.
-        Unknown positions state fails closed. No matching lot is 0.
+        Longs are ``side != short``. Shorts are ``side == short``. Lots
+        parked below the exchange minimum still count. A lot with amount
+        > 0 whose notional is 0 or unreadable fails closed. Unknown
+        positions state fails closed. No matching lot is 0.
         """
         from strategies.short_math import is_short
 
@@ -1592,7 +1599,9 @@ class RiskManager:
         except Exception:
             return None, "liq_guard_missing_input"
         try:
-            lots = find_open_positions_for_symbol(symbol)
+            lots = find_open_positions_for_symbol(
+                symbol, include_below_venue_minimum=True
+            )
         except Exception:
             return None, "liq_guard_missing_input"
         want_short = str(side or "") == "short"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -70,6 +71,27 @@ def _money(dec) -> dict:
         "qty": None if order is None else order.qty,
         "usdt_amount": None if order is None else order.usdt_amount,
     }
+
+
+def _seed_book_age(symbol: str = "L3/USDT", age: float = 4.0) -> None:
+    import services.venue_quality as vq
+
+    pair = symbol.replace("/", "_").upper()
+    vq._book_cache[pair] = (time.time() - age, (1.0, 1.0, True, ()))
+
+
+def _assert_healthy_guard(guard: dict) -> None:
+    """R6 values for the healthy L3 book and a 200 USDT order that is not cut."""
+    assert guard["band_bid_usdt"] == pytest.approx(10_000)
+    assert guard["band_ask_usdt"] == pytest.approx(10_000)
+    assert guard["qv24_usdt"] == pytest.approx(5_000_000)
+    assert guard["book_age_sec"] == pytest.approx(4, abs=2)
+    assert guard["liq_cap_usdt"] == pytest.approx(10_000)
+    assert guard["cap_depth"] == pytest.approx(10_000)
+    assert guard["cap_volume"] == pytest.approx(250_000)
+    assert guard["open_cost_usdt"] == pytest.approx(0)
+    assert guard["planned_usdt"] == pytest.approx(200)
+    assert guard["final_usdt"] == pytest.approx(200)
 
 
 def _assert_money_flags_untouched(cfg: BotConfig) -> None:
@@ -144,6 +166,7 @@ def test_t2a_accepted_empty_book_row_schema(tmp_path, monkeypatch):
     rm = RiskManager(_cfg())
     order = _buy(source="cmc")
     order.idempotency_key = "tape-corr-628"
+    _seed_book_age()
     with patch(
         "strategies.macro_stress_observe.observe_macro_stress",
         return_value=None,
@@ -166,20 +189,7 @@ def test_t2a_accepted_empty_book_row_schema(tmp_path, monkeypatch):
     assert row["filter_codes"] == []
     assert row["book"]["state"] == "empty"
     assert row["book"]["dca"] is False
-    guard = row["book"]["guard"]
-    for key in (
-        "band_bid_usdt",
-        "band_ask_usdt",
-        "qv24_usdt",
-        "book_age_sec",
-        "liq_cap_usdt",
-        "cap_depth",
-        "cap_volume",
-        "open_cost_usdt",
-        "planned_usdt",
-        "final_usdt",
-    ):
-        assert key in guard, key
+    _assert_healthy_guard(row["book"]["guard"])
     assert row["macro_stress"] is None
     assert row["correlation_id"] == "tape-corr-628"
 
@@ -264,6 +274,7 @@ def test_t3_open_lot_buy_dca_has_position_no_first_buy_block(tmp_path, monkeypat
     assert not _tape_file(tmp_path).exists()
 
     monkeypatch.setenv("BUY_DECISION_TAPE", "1")
+    _seed_book_age()
     with _eval_env(rm, position=position, mcap=None):
         taped = rm.evaluate(_buy(source="dca", signal="BUY_DCA"), "4h", source="dca")
 
@@ -278,19 +289,6 @@ def test_t3_open_lot_buy_dca_has_position_no_first_buy_block(tmp_path, monkeypat
     assert row["outcome"] == "accepted"
     assert row["book"]["state"] == "has_position"
     assert row["book"]["dca"] is True
-    guard = row["book"]["guard"]
-    for key in (
-        "band_bid_usdt",
-        "band_ask_usdt",
-        "qv24_usdt",
-        "book_age_sec",
-        "liq_cap_usdt",
-        "cap_depth",
-        "cap_volume",
-        "open_cost_usdt",
-        "planned_usdt",
-        "final_usdt",
-    ):
-        assert key in guard, key
+    _assert_healthy_guard(row["book"]["guard"])
     assert row["signal"]["name"] == "BUY_DCA"
     assert row["filter_codes"] == []

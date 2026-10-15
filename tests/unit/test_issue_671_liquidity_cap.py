@@ -43,20 +43,6 @@ from tests.unit.test_long_mcap_venue_563 import _eval_env
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "loss_cases_641.csv"
 
-_R6 = (
-    "band_bid_usdt",
-    "band_ask_usdt",
-    "qv24_usdt",
-    "book_age_sec",
-    "liq_cap_usdt",
-    "cap_depth",
-    "cap_volume",
-    "open_cost_usdt",
-    "planned_usdt",
-    "final_usdt",
-)
-
-
 @pytest.fixture(autouse=True)
 def _clean():
     clear_positions_memory()
@@ -282,12 +268,53 @@ def test_t4d_exact_boundary_is_not_cut_and_cents_floor_down():
     assert kept.order.usdt_amount == pytest.approx(20)
     assert _capped_lines(log) == []
 
+    # 16.256 rounds to 16.26. The floor must stay at 16.25, under the cap.
     odd = RiskManager(_cfg(volume_floor=1))
-    book = _book(bid=16.255, ask=16.255, qv=1_000_000)
+    book = _book(bid=16.256, ask=16.256, qv=1_000_000)
     cut = _eval(odd, _buy(usdt=25), "technical", book, planned=25)
     assert cut.approved is True, cut.message
     assert cut.order.usdt_amount == pytest.approx(16.25)
-    assert cut.order.usdt_amount <= 16.255
+    assert cut.order.usdt_amount <= 16.256
+
+
+def test_subcent_planned_size_is_not_logged_as_a_liquidity_cut():
+    """A cap that does not bind is not a cut, even when the size has sub-cent digits."""
+    rm = RiskManager(_cfg(volume_floor=100))
+    book = _book(bid=100_000, ask=100_000, qv=10_000_000)
+    with patch("logger.log") as log:
+        dec = _eval(rm, _buy(usdt=25.004), "technical", book, planned=25.004)
+    assert dec.approved is True, dec.message
+    assert dec.order.usdt_amount == pytest.approx(25.0)
+    assert _capped_lines(log) == []
+
+
+def test_relvol_subcent_balance_stays_approved_when_the_cap_does_not_bind():
+    """Ticket then balance can leave 24.997. Staging approves that at 25.0.
+
+    The liquidity cap is far above the order, so RelVol still uses the
+    pre-ticket size and does not reject size_too_small.
+    """
+    rm = RiskManager(
+        _cfg(
+            min_trade=15,
+            max_usdt=25,
+            volume_floor=100,
+            extra_risk={"relvol_min_trade_usdt": 1000},
+        )
+    )
+    book = _book(bid=100_000, ask=100_000, qv=10_000_000)
+    order = _buy(usdt=1500, source="gainer_relvol", signal="GAINER_RELVOL")
+    with _eval_env(rm, metrics=book, mcap=50_000_000):
+        with patch.object(
+            rm, "_dynamic_size", return_value=(1500.0, {"total_multiplier": 1.0})
+        ):
+            with patch.object(rm, "_spendable_usdt", return_value=24.997):
+                with patch("logger.log") as log:
+                    dec = rm.evaluate(order, "1h", source="gainer_relvol", indicators={})
+    assert dec.approved is True, dec.message
+    assert dec.code != "size_too_small"
+    assert dec.order.usdt_amount == pytest.approx(25.0)
+    assert _capped_lines(log) == []
 
 
 def test_t5_size_is_never_raised_to_the_cap():
@@ -434,6 +461,27 @@ def test_short_lot_does_not_reduce_long_room():
     assert long_cost == pytest.approx(16)
 
 
+def test_below_venue_minimum_lot_counts_toward_open_cost():
+    """A parked below-min lot still uses room. The one-way scan does not see it."""
+    set_venue_limits_override(
+        {"known": True, "min_cost": 18.0, "amount_step": 1e-8, "price_places": 8}
+    )
+    update_position("LAB/USDT", "4h", "BUY", 8.0, 1.0)
+    assert refresh_venue_min_mark("LAB/USDT", "4h", mark=1.0, mark_fresh=True) == "set"
+    assert find_open_positions_for_symbol("LAB/USDT") == []
+    counted = find_open_positions_for_symbol(
+        "LAB/USDT", include_below_venue_minimum=True
+    )
+    assert len(counted) == 1
+    rm = RiskManager(_cfg(volume_floor=100))
+    book = _book(bid=20, ask=20, qv=1_000_000)
+    dec = _eval(rm, _buy(usdt=25), "technical", book, planned=25)
+    assert dec.approved is False, dec.message
+    assert dec.code == "liq_guard_depth_lt_order"
+    assert dec.details["open_cost_usdt"] == pytest.approx(8)
+    assert dec.order is None
+
+
 def test_dust_under_one_usdt_is_not_in_the_open_scan():
     update_position("LAB/USDT", "4h", "BUY", 0.4, 1.0)
     assert find_open_positions_for_symbol("LAB/USDT") == []
@@ -483,7 +531,8 @@ def test_t8b_merge_loss_bound_is_recomputed_on_the_cut_size():
     assert cut_bound < loss <= uncut_bound
     assert 0 < price < 18
     assert refresh_venue_min_mark(symbol, "1h", mark=price, mark_fresh=True) == "set"
-    book = _book(symbol=symbol, bid=20, ask=20, qv=1_000_000)
+    # Band 30 leaves room of 20 after the below-min cost of 10.
+    book = _book(symbol=symbol, bid=30, ask=30, qv=1_000_000)
     order = _buy(symbol, usdt=100, source="auto", price=price)
     with _eval_env(rm, metrics=book, mcap=50_000_000, position=get_position(symbol, "1h")):
         with patch.object(
@@ -597,26 +646,34 @@ def test_t11_tape_records_the_guard_on_approve_cut_and_reject(monkeypatch, tmp_p
     monkeypatch.setenv("BUY_DECISION_TAPE", "1")
     monkeypatch.setenv("BUY_DECISION_TAPE_UNDER_TEST", "1")
     _seed_book_age()
+    # Band 325/1694, qv 600_000, k 20 → cap_volume 30_000. Depth multiple
+    # 1 leaves the 25 order inside the cap. 20 cuts to 16.25. 25 cuts to
+    # 13, which is under min_trade 15.
     cases = (
-        (_cfg(), 25, True),
-        (_cfg(depth_multiple=20), 25, True),
-        (_cfg(depth_multiple=25), 25, False),
+        (1, "accepted", 25.0, 325.0, 325.0, 325.0),
+        (20, "accepted", 16.25, 16.25, 16.25, 16.25),
+        (25, "rejected", 13.0, 13.0, 13.0, 13.0),
     )
-    for cfg, planned, _ok in cases:
-        rm = RiskManager(cfg)
-        _eval(rm, _buy(usdt=planned), "technical", _book(), planned=planned)
+    for multiple, _outcome, _final, _cap, _depth, _allowed in cases:
+        rm = RiskManager(_cfg(depth_multiple=multiple))
+        _eval(rm, _buy(usdt=25), "technical", _book(), planned=25)
     path = tmp_path / "logs" / "buy_decision_tape.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     assert len(rows) == 3
-    assert [row["outcome"] for row in rows] == ["accepted", "accepted", "rejected"]
-    for row in rows:
+    for row, (_multiple, outcome, final, cap, depth, allowed) in zip(rows, cases):
+        assert row["outcome"] == outcome
         guard = row["book"]["guard"]
-        for key in _R6:
-            assert key in guard
-        assert guard["book_age_sec"] is not None
-        assert guard["book_age_sec"] >= 0
         assert guard["band_bid_usdt"] == pytest.approx(325)
+        assert guard["band_ask_usdt"] == pytest.approx(1694)
         assert guard["qv24_usdt"] == pytest.approx(600_000)
+        assert guard["book_age_sec"] == pytest.approx(4, abs=2)
+        assert guard["liq_cap_usdt"] == pytest.approx(cap)
+        assert guard["cap_depth"] == pytest.approx(depth)
+        assert guard["cap_volume"] == pytest.approx(30_000)
+        assert guard["open_cost_usdt"] == pytest.approx(0)
+        assert guard["planned_usdt"] == pytest.approx(25)
+        assert guard["final_usdt"] == pytest.approx(final)
+        assert guard["allowed_usdt"] == pytest.approx(allowed)
 
 
 def test_t12_fill_stamp_still_applies_the_volume_multiple():
@@ -638,6 +695,39 @@ def test_t12_fill_stamp_still_applies_the_volume_multiple():
     assert stamp["venue_ok"] is False
     assert any("× order" in str(reason) for reason in stamp["venue_reasons"])
     assert is_thin_venue_stamp(stamp, raw["risk"]["venue_quality"]) is True
+
+
+@pytest.mark.parametrize("bad", (float("nan"), float("inf")))
+def test_non_finite_depth_multiple_is_missing_input(bad):
+    cfg = _cfg()
+    cfg.raw["risk"]["liquidity_guard"]["depth_to_order_multiple"] = bad
+    dec = _eval(RiskManager(cfg), _buy(), "technical", _book(), planned=25)
+    assert dec.approved is False
+    assert dec.code == "liq_guard_missing_input"
+    assert dec.order is None
+
+
+@pytest.mark.parametrize("bad", (float("nan"), float("inf")))
+def test_non_finite_volume_multiple_is_missing_input(bad):
+    cfg = _cfg()
+    cfg.raw["risk"]["venue_quality"]["min_volume_to_order_multiple"] = bad
+    dec = _eval(RiskManager(cfg), _buy(), "technical", _book(), planned=25)
+    assert dec.approved is False
+    assert dec.code == "liq_guard_missing_input"
+    assert dec.order is None
+
+
+@pytest.mark.parametrize(
+    ("bid", "ask"),
+    ((float("nan"), 1_000.0), (float("inf"), float("inf"))),
+)
+def test_non_finite_depth_is_missing_input(bid, ask):
+    rm = RiskManager(_cfg(volume_floor=100, min_book=0))
+    book = _book(bid=bid, ask=ask, qv=1_000_000)
+    dec = _eval(rm, _buy(usdt=25), "technical", book, planned=25)
+    assert dec.approved is False
+    assert dec.code == "liq_guard_missing_input"
+    assert dec.order is None
 
 
 def test_manual_buy_is_not_capped():

@@ -8,6 +8,7 @@ on BUY paths).
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -214,17 +215,28 @@ def _metrics_from_dict(metrics: dict[str, Any]) -> VenueMetrics:
 # risk.liquidity_guard. A missing or invalid key blocks the buy.
 
 
+def _as_finite(value: Any) -> float | None:
+    """A real number, or None when the value is missing, NaN, or infinite.
+
+    Callers fail closed. This does not substitute a default.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _positive_config_float(raw: dict, key: str) -> float | None:
     if not isinstance(raw, dict) or key not in raw:
         return None
     value = raw.get(key)
     if value is None or value == "":
         return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number <= 0:
+    number = _as_finite(value)
+    if number is None or number <= 0:
         return None
     return number
 
@@ -965,10 +977,7 @@ def _apply_hard_liquidity(
         if not volume_known:
             codes.append("liq_guard_missing_input")
         else:
-            try:
-                qv = float(m.quote_volume_24h_usdt)
-            except (TypeError, ValueError):
-                qv = None
+            qv = _as_finite(getattr(m, "quote_volume_24h_usdt", None))
             if qv is None:
                 codes.append("liq_guard_missing_input")
             elif qv < float(floor):
@@ -981,12 +990,8 @@ def _apply_hard_liquidity(
                 codes.append("liq_guard_missing_input")
                 reasons.append("band depth unavailable")
         else:
-            try:
-                bid_d = float(m.depth_bid_usdt or 0)
-                ask_d = float(m.depth_ask_usdt or 0)
-            except (TypeError, ValueError):
-                bid_d = None
-                ask_d = None
+            bid_d = _as_finite(getattr(m, "depth_bid_usdt", None))
+            ask_d = _as_finite(getattr(m, "depth_ask_usdt", None))
             if bid_d is None or ask_d is None:
                 if "liq_guard_missing_input" not in codes:
                     codes.append("liq_guard_missing_input")

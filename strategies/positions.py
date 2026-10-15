@@ -1182,12 +1182,20 @@ def _symbol_key_base(symbol: str) -> str:
     return str(symbol or "").replace("/", "_").upper()
 
 
-def find_open_positions_for_symbol(symbol: str) -> list[tuple[str, dict]]:
+def find_open_positions_for_symbol(
+    symbol: str,
+    *,
+    include_below_venue_minimum: bool = False,
+) -> list[tuple[str, dict]]:
     """Every open lot for *symbol* in the active tenant store, all timeframes.
 
     Same scan and lock as ``find_open_position_for_symbol``. Does not filter
     by side: callers that need only longs or only shorts do that themselves.
     Dust below ``MIN_OPEN_POSITION_USDT`` is not open, so it is not included.
+
+    ``include_below_venue_minimum`` adds lots the exchange minimum has parked.
+    The one-way scan leaves that flag off. The liquidity cost sum turns it on
+    so those lots still consume room.
     """
     _activate(_resolve_store_key())
     want = _symbol_key_base(symbol)
@@ -1201,7 +1209,17 @@ def find_open_positions_for_symbol(symbol: str) -> list[tuple[str, dict]]:
             sym, tf = parse_position_key(key)
             if _symbol_key_base(sym) != want:
                 continue
-            if not isinstance(raw, dict) or not is_open_position(raw):
+            if not isinstance(raw, dict):
+                continue
+            counted = is_open_position(raw)
+            if (
+                not counted
+                and include_below_venue_minimum
+                and is_below_venue_minimum(raw)
+                and has_position_amount(raw)
+            ):
+                counted = True
+            if not counted:
                 continue
             # Copy under lock so callers can read safely without holding it.
             matches.append((tf, dict(raw)))
