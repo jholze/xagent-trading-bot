@@ -1930,18 +1930,22 @@ def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     assert row["venue_liquidity_missing_key"] == shadow.MISSING_FLOOR_KEY
     assert row["gates_passed"] is None
 
-    # A *_min key, and a missing multiple, do not satisfy the floor.
+    # A *_min key does not satisfy the floor. #686 removed
+    # min_volume_to_order_multiple from venue_quality._DEFAULTS, so a
+    # popped venue_quality block does not list it as a default fill and
+    # the merged multiple is 0. An explicit raw multiple still blocks.
     min_key = _raw()
     min_key["risk"]["liquidity_guard"] = {"min_quote_volume_24h_usdt_min": 1000}
     assert shadow.venue_liquidity_null_reason(cache, min_key) == "missing_floor"
     no_multiple = _raw()
     no_multiple["risk"].pop("venue_quality")
     assert shadow.venue_liquidity_null_reason(cache, no_multiple) is None
-    assert shadow.VENUE_ORDER_MULTIPLE_KEY in shadow.venue_defaults_used(no_multiple)
+    assert "enabled" in shadow.venue_defaults_used(no_multiple)
+    assert shadow.VENUE_ORDER_MULTIPLE_KEY not in shadow.venue_defaults_used(no_multiple)
     passed = _trigger(logs, no_multiple, symbol=FREE, gate=cache)
     assert passed["gates"]["venue_liquidity"] is True
     assert "venue_liquidity_null_reason" not in passed
-    assert shadow.VENUE_ORDER_MULTIPLE_KEY in passed["venue_defaults_used"]
+    assert shadow.VENUE_ORDER_MULTIPLE_KEY not in passed["venue_defaults_used"]
     from strategies.sensor_entry_policy import venue_gate_planned_usdt
 
     assert passed["planned_order_usdt"] == pytest.approx(
