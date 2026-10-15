@@ -138,6 +138,33 @@ def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> 
     return out
 
 
+def _fmt_realized(value, spec: str) -> str:
+    """Stored realized total. None is the word unknown, never a format crash."""
+    if value is None:
+        from logger import log
+
+        log("daily report realized total missing", "ERROR")
+        return "unknown"
+    try:
+        return format(float(value), spec)
+    except (TypeError, ValueError):
+        from logger import log
+
+        log("daily report realized total missing", "ERROR")
+        return "unknown"
+
+
+def _missing_pnl_count(trades: list) -> int:
+    """SELL/COVER rows in this report whose pnl key is missing or null."""
+    n = 0
+    for trade in trades or []:
+        if str(trade.get("type") or "").upper() not in ("SELL", "COVER"):
+            continue
+        if "pnl" not in trade or trade.get("pnl") is None:
+            n += 1
+    return n
+
+
 def _shown_pnl(trade: dict) -> float:
     """SELL/COVER missing pnl is the fee loss. Other sides have no realized pnl."""
     side = str(trade.get("type") or "").upper()
@@ -417,7 +444,8 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     )
     sell_pnl_day = sum(pnl_for_sum(t) for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)
-    realized_total = th.get("realized_pnl", 0)
+    realized_total = th.get("realized_pnl", 0) if "realized_pnl" in th else 0
+    pnl_missing = _missing_pnl_count(day_trades)
 
     open_count = sum(1 for p in positions.values() if (p.get("amount") or 0) > 0)
     _, pos_value = open_positions_table(positions)
@@ -451,7 +479,8 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         f"<i>dry_run={live.get('dry_run')} · Report in auswertungen/</i>\n\n"
         f"<b>Portfolio</b>\n"
         f"{portfolio_block}\n"
-        f"Realized gesamt {realized_total:+.1f} USDT · heute {sell_pnl_day:+.1f} USDT\n\n"
+        f"Realized gesamt {_fmt_realized(realized_total, '+.1f')} USDT · heute {sell_pnl_day:+.1f} USDT\n"
+        f"pnl_missing={pnl_missing}\n\n"
         f"<b>Trades heute</b> {len(day_trades)} ({buys_day} BUY / {sells_day} SELL"
         f"{f', davon {dca_buys} DCA' if dca_buys else ''})\n"
         f"Orders {len(day_orders)} ({filled_orders} filled / {rejected_orders} rejected)\n\n"
@@ -560,7 +589,8 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
     sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)
-    realized_total = th.get("realized_pnl", 0)
+    realized_total = th.get("realized_pnl", 0) if "realized_pnl" in th else 0
+    pnl_missing = _missing_pnl_count(day_trades)
 
     trade_rows = [fmt_trade_row(t) for t in sorted(day_trades, key=lambda x: x["timestamp"])]
     if not trade_rows:
@@ -583,8 +613,9 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
         )
     summary_parts.append(
         f"Portfolio: ${cash:,.2f} Cash + ${pos_value:,.2f} Positionen, "
-        f"realized gesamt {realized_total:+.2f} USDT."
+        f"realized gesamt {_fmt_realized(realized_total, '+.2f')} USDT."
     )
+    summary_parts.append(f"pnl_missing={pnl_missing}.")
 
     return f"""# Tages-Auswertung Trading Bot
 
@@ -607,7 +638,8 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
 | Cash (Sim) | ${cash:,.2f} |
 | Offene Positionen | {open_count} (~${pos_value:,.2f} Buchwert) |
 | Gesamtwert (Entry-Basis) | ~${cash + pos_value:,.2f} |
-| Realized PnL gesamt | {realized_total:+.2f} USDT |
+| Realized PnL gesamt | {_fmt_realized(realized_total, '+.2f')} USDT |
+| pnl_missing | {pnl_missing} |
 | Realized PnL heute (Verkäufe) | {sell_pnl_day:+.2f} USDT |
 | Trades heute | {len(day_trades)} ({buys_day} BUY / {sells_day} SELL) |
 | Orders heute | {len(day_orders)} ({filled_orders} filled / {rejected_orders} rejected) |

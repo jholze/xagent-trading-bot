@@ -1173,6 +1173,25 @@ class OrderService:
             filled_gross = float(getattr(result, "filled_qty", 0) or 0)
             if filled_gross > 0:
                 execution["filled_qty_gross"] = filled_gross
+            side_name = ""
+            if approved_order is not None:
+                side_name = str(getattr(approved_order, "type", "") or "")
+            if not side_name:
+                side_name = str(getattr(result, "order_type", "") or "")
+            # Each Gate slice books its own ledger row. The order row the
+            # loss brake reads must equal the sum of those rows, not the
+            # last slice alone.
+            totals = _cover_slice_totals(order_id, side_name)
+            linked_pnl = float(result.pnl) if result.pnl is not None else None
+            if totals is not None:
+                linked_pnl = totals["pnl"]
+                execution["fee"] = totals["fee"]
+                execution["amount"] = totals["qty"]
+                if totals["usdt"] > 0:
+                    execution["usdt"] = totals["usdt"]
+                if totals["qty"] > 0:
+                    execution["filled_qty_gross"] = totals["qty"]
+                    extra_fields["filled_qty"] = totals["qty"]
             lev_pay = _leverage_payload(approved_order)
             if lev_pay:
                 execution.update(lev_pay)
@@ -1197,7 +1216,7 @@ class OrderService:
                 order_id,
                 st,
                 execution=execution,
-                pnl=float(result.pnl) if result.pnl is not None else None,
+                pnl=linked_pnl,
                 stamp=stamp,
             )
             basis = str(getattr(result, "pnl_basis", "") or "")
@@ -1268,6 +1287,58 @@ class OrderService:
             "approved_usdt": approved_usdt,
             "checked_at": _now(),
         }
+
+
+def _cover_ledger_rows(order_id: str) -> list[dict]:
+    """COVER rows already booked for this order, on whichever ledger has them."""
+    from core.config import get_bot_config
+    from data_manager import uses_exchange_ledger
+    from services.portfolio_service import _booking_rows
+
+    cfg = get_bot_config()
+    rows = _booking_rows(cfg, order_id, "COVER")
+    if rows:
+        return rows
+
+    class _Mode:
+        def __init__(self, mode: str) -> None:
+            self.trading_mode = mode
+
+    live = uses_exchange_ledger(getattr(cfg, "trading_mode", None))
+    other = _Mode("paper" if live else "live")
+    return _booking_rows(other, order_id, "COVER")
+
+
+def _cover_slice_totals(order_id: str, side: str) -> dict | None:
+    """Sum of booked COVER slices. None when this link has no ledger rows."""
+    if str(side or "").upper() != "COVER" or not order_id:
+        return None
+    rows = _cover_ledger_rows(str(order_id))
+    if not rows:
+        return None
+    from services.portfolio_service import _row_fee, _row_qty
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    pnl = 0.0
+    fee = 0.0
+    qty = 0.0
+    usdt = 0.0
+    for row in rows:
+        qty += _row_qty(row)
+        fee += _row_fee(row)
+        try:
+            usdt += float(row.get("usdt_amount") or row.get("usdt_received") or 0)
+        except (TypeError, ValueError):
+            pass
+        raw = row.get("pnl") if isinstance(row, dict) else None
+        if not isinstance(row, dict) or "pnl" not in row or raw is None:
+            pnl += pnl_for_sum(row if isinstance(row, dict) else {})
+            continue
+        try:
+            pnl += float(raw)
+        except (TypeError, ValueError):
+            pnl += pnl_for_sum(row)
+    return {"pnl": pnl, "fee": fee, "qty": qty, "usdt": usdt}
 
 
 def _sell_cover_stamp(result: TradeResult, approved_order: TradeOrder | None) -> dict:

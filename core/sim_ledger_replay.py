@@ -533,7 +533,14 @@ def replay_simulated_ledger(
             pos["last_action"] = "COVER"
             pos["last_trade_type"] = "COVER"
             pos["last_trade_at"] = trade_ts
-            pos["realized_pnl"] = float(pos.get("realized_pnl") or 0) + pnl
+            if "realized_pnl" in pos and pos.get("realized_pnl") is None:
+                from logger import log
+
+                log("sim cover position realized pnl missing", "ERROR")
+                prior_realized = 0.0
+            else:
+                prior_realized = float(pos.get("realized_pnl") or 0)
+            pos["realized_pnl"] = prior_realized + pnl
             if pos["amount"] <= _SIM_CASH_EPS:
                 pos["amount"] = 0.0
                 pos["side"] = "long"

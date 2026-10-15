@@ -60,7 +60,13 @@ def _perf_lines(stats: dict, *, period_label: str) -> list[str]:
     sells = int(stats.get("sells") or 0)
     buy_usdt = float(stats.get("buy_usdt") or 0)
     sell_usdt = float(stats.get("sell_usdt") or 0)
-    pnl = float(stats.get("realized_pnl") or 0)
+    raw_pnl = stats.get("realized_pnl") if "realized_pnl" in stats else 0.0
+    if raw_pnl is None:
+        from storage.order_ledger_v2 import format_pnl_unknown
+
+        pnl_text = format_pnl_unknown(None, where="order_commands_perf")
+    else:
+        pnl_text = _fmt_pnl(float(raw_pnl))
     if "wins" in stats:
         wins = int(stats.get("wins") or 0)
         losses = int(stats.get("losses") or 0)
@@ -82,7 +88,7 @@ def _perf_lines(stats: dict, *, period_label: str) -> list[str]:
             f"🟢 {buys} Käufe ({_fmt_usdt(buy_usdt)}) · "
             f"🔴 {sells} Verkäufe ({_fmt_usdt(sell_usdt)}){extra}"
         ),
-        f"{period_label}: <b>{_fmt_pnl(pnl)}</b>  ({wins}W / {losses}L)",
+        f"{period_label}: <b>{pnl_text}</b>  ({wins}W / {losses}L)",
     ]
 
 

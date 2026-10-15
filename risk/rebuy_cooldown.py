@@ -109,6 +109,39 @@ def _attr_f(obj: Any, name: str, default: float = 0.0) -> float:
     return _num(getattr(obj, name, default), default)
 
 
+def _missing_pnl_loss(notional: float) -> float:
+    """A sell with no pnl is both sides' fees, from config, not a zero loss."""
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    return pnl_for_sum(
+        {
+            "type": "SELL",
+            "side": "sell",
+            "pnl": None,
+            "execution": {"usdt": float(notional or 0)},
+        }
+    )
+
+
+def _profile_notional(profile: Any) -> float:
+    feats = getattr(profile, "features", None)
+    if not isinstance(feats, dict):
+        return 0.0
+    for key in ("missing_pnl_notional_usdt", "usdt", "notional_usdt"):
+        if key in feats and feats.get(key) not in (None, ""):
+            return _num(feats.get(key))
+    return 0.0
+
+
+def _attr_pnl(profile: Any, name: str) -> float:
+    if profile is None or not hasattr(profile, name):
+        return 0.0
+    value = getattr(profile, name)
+    if value is None:
+        return _missing_pnl_loss(_profile_notional(profile))
+    return _num(value)
+
+
 def _attr_i(obj: Any, name: str, default: int = 0) -> int:
     try:
         return int(getattr(obj, name, default) or default)
@@ -238,8 +271,8 @@ def resolve_memory_mult(
     n = _attr_i(profile, "sells_30d") or _attr_i(profile, "trades_30d")
     min_n = int(mem_cfg.get("min_samples", 3) or 3)
     wr = _attr_f(profile, "win_rate")
-    total_pnl = _attr_f(profile, "total_pnl_usdt")
-    avg_pnl = _attr_f(profile, "avg_pnl_usdt")
+    total_pnl = _attr_pnl(profile, "total_pnl_usdt")
+    avg_pnl = _attr_pnl(profile, "avg_pnl_usdt")
     risk_score = _attr_f(profile, "risk_score", 0.5)
     size_bias = _attr_f(profile, "size_bias", 1.0)
     dca_n = _attr_i(profile, "dca_count_30d")
@@ -329,7 +362,12 @@ def resolve_memory_mult(
                 row = by_src.get(tag) or {}
                 if not isinstance(row, dict):
                     continue
-                ch_pnl += _num(row.get("pnl_usdt"))
+                if "pnl_usdt" in row and row.get("pnl_usdt") is None:
+                    ch_pnl += _missing_pnl_loss(
+                        _num(row.get("usdt", row.get("notional_usdt", 0)))
+                    )
+                else:
+                    ch_pnl += _num(row.get("pnl_usdt"))
                 ch_sells += int(_num(row.get("sells")))
             factors["channel_pnl_usdt"] = round(ch_pnl, 2)
             factors["channel_sells"] = ch_sells
@@ -350,7 +388,12 @@ def resolve_memory_mult(
         venue = feats.get("venue")
         if isinstance(venue, dict):
             thin_n = int(_num(venue.get("entries_thin_30d")))
-            pnl_thin = _num(venue.get("pnl_when_thin_usdt"))
+            if "pnl_when_thin_usdt" in venue and venue.get("pnl_when_thin_usdt") is None:
+                pnl_thin = _missing_pnl_loss(
+                    _num(venue.get("usdt", venue.get("notional_usdt", 0)))
+                )
+            else:
+                pnl_thin = _num(venue.get("pnl_when_thin_usdt"))
             factors["venue_thin_entries"] = thin_n
             factors["venue_pnl_thin"] = round(pnl_thin, 2)
             if thin_n >= int(mem_cfg.get("venue_thin_min_entries", 2) or 2) and pnl_thin < 0:

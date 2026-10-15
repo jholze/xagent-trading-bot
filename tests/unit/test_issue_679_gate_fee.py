@@ -1362,3 +1362,424 @@ def test_cover_pnl_none_without_fee_uses_config_rate_both_sides():
     assert stored.get("pnl") is None
     stats = stats_from_filled_orders([stored])
     assert stats["realized_pnl"] == pytest.approx(-(1000.0 * RATE * 2))
+
+
+def _config_rate() -> float:
+    from core.config import get_bot_config
+    from core.costs import swap_taker_estimate_rate
+
+    picked = swap_taker_estimate_rate(get_bot_config())
+    assert picked
+    return float(picked[0])
+
+
+def test_multi_slice_cover_order_row_equals_ledger_sum():
+    """Three Gate slices through order_service. One slice has no fee."""
+    from execution.recovery import _link_result, _trade_order_from_record
+    from storage.order_ledger_v2 import stats_from_filled_orders
+    from strategies.positions import set_position_field
+
+    adapter, ex = _adapter()
+    symbol = "MSL/USDT"
+    with tenant_context("default", scope="demo"):
+        from strategies.positions import flush_positions
+
+        update_position(symbol, TF, "SHORT", 100.0, 10.0, leverage=2)
+        set_position_field(symbol, TF, "open_fee_usdt", 1.0)
+        flush_positions(force=True)
+        svc = OrderService("demo")
+        rec = _active_order(
+            svc, typ="COVER", symbol=symbol, qty=10, price=90, usdt=900, ex_id="ex-msl",
+        )
+        trade_order = _trade_order_from_record(svc.get_by_id(rec["id"]))
+        slices = [
+            _closed_raw(
+                filled=3, oid="ex-msl", average=90,
+                fee={"cost": 0.20, "currency": "USDT"}, status="open", cost=270,
+            ),
+            _closed_raw(
+                filled=6, oid="ex-msl", average=90, fee=None, status="open", cost=540,
+            ),
+            _closed_raw(
+                filled=10, oid="ex-msl", average=90,
+                fee={"cost": 0.80, "currency": "USDT"}, status="closed", cost=900,
+            ),
+        ]
+        results = []
+        for raw in slices:
+            fresh = svc.get_by_id(rec["id"])
+            trade_order = _trade_order_from_record(fresh)
+            result = adapter._finalize_exchange_order(
+                ex, trade_order, raw, side="buy", qty=10, timeframe=TF,
+            )
+            results.append(result)
+            _link_result("demo", rec["id"], result, trade_order)
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+        stored = svc.get_by_id(rec["id"])
+        rows = _rows(rec["id"], "COVER")
+    assert results[0].order_status is OrderStatus.PARTIALLY_FILLED
+    assert len(rows) == 3
+    assert any(row.get("fee_estimated") for row in rows)
+    ledger_pnl = sum(float(row["pnl"]) for row in rows)
+    ledger_fee = sum(float(row.get("fee_usdt") or row.get("fee") or 0) for row in rows)
+    ledger_qty = sum(float(row["amount"]) for row in rows)
+    assert ledger_fee > 0
+    assert float(stored["pnl"]) == pytest.approx(ledger_pnl)
+    assert float(stored["execution"]["fee"]) == pytest.approx(ledger_fee)
+    assert float(stored["execution"]["amount"]) == pytest.approx(ledger_qty)
+    assert float(stored.get("filled_qty") or 0) == pytest.approx(ledger_qty)
+    # Last slice alone is not the sum. Keeping only that slice fails this.
+    assert float(results[-1].pnl) != pytest.approx(ledger_pnl)
+    stats = stats_from_filled_orders([stored])
+    assert stats["realized_pnl"] == pytest.approx(ledger_pnl)
+    with tenant_context("default", scope="demo"):
+        brake = RiskManager(_cfg())._trailing_24h_realized_pnl()
+    assert brake == pytest.approx(ledger_pnl)
+
+
+def test_c5_needs_reconcile_survives_gate_finalize():
+    adapter, ex = _adapter()
+    ex.fetch_my_trades.return_value = []
+    with tenant_context("default", scope="demo"):
+        short = TradeOrder(
+            "SHORT", "C5G/USDT", 100.0, 10.0, usdt_amount=1000.0,
+            source="manual", order_id="c5g-s",
+        )
+        adapter._finalize_exchange_order(
+            ex, short,
+            _closed_raw(filled=10, oid="ex-c5gs", fee={"cost": 1.5, "currency": "USDT"}, cost=1000),
+            side="sell", qty=10, timeframe=TF,
+        )
+        lot = get_position("C5G/USDT", TF)
+        assert lot.get("open_fee_tracked") is True
+        lot.pop("open_fee_usdt", None)
+        lot.pop("open_fee_estimated", None)
+        cover = TradeOrder(
+            "COVER", "C5G/USDT", 90.0, 10.0, usdt_amount=900.0,
+            source="manual", order_id="c5g-c",
+        )
+        closed = adapter._finalize_exchange_order(
+            ex, cover,
+            _closed_raw(
+                filled=10, oid="ex-c5gc", average=90,
+                fee={"cost": 0.4, "currency": "USDT"}, cost=900,
+            ),
+            side="buy", qty=10, timeframe=TF,
+        )
+        assert closed.needs_reconcile is True
+        svc = OrderService("demo")
+        rec = svc.create_from_request(
+            TradeOrder("COVER", "C5G/USDT", 90.0, 10.0, usdt_amount=900.0, source="manual"),
+            status=OrderStatus.ACTIVE, timeframe=TF,
+        )
+        svc.link_execution_result(rec["id"], closed, cover)
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+        stored = svc.get_by_id(rec["id"])
+    assert stored.get("needs_reconcile") is True
+
+
+def test_v1_short_open_unknown_fee_is_estimated():
+    adapter, ex = _adapter()
+    ex.fetch_my_trades.return_value = [{
+        "order": "ex-v1so",
+        "cost": 1000.0,
+        "price": 100.0,
+        "amount": 10.0,
+        "fee": {"cost": 4.0, "currency": "BTC"},
+    }]
+    short = TradeOrder(
+        "SHORT", "V1SO/USDT", 100.0, 10.0, usdt_amount=1000.0,
+        source="manual", order_id="v1-so",
+    )
+    with tenant_context("default", scope="demo"):
+        opened = adapter._finalize_exchange_order(
+            ex, short,
+            _closed_raw(filled=10, oid="ex-v1so", fee=None, cost=1000),
+            side="sell", qty=10, timeframe=TF,
+        )
+    assert opened.fee == pytest.approx(1000.0 * RATE)
+    assert opened.fee != pytest.approx(0)
+    assert opened.needs_reconcile is True
+
+
+def test_execute_short_pnl_stays_none():
+    svc = PortfolioService(_cfg())
+    with tenant_context("default", scope="demo"):
+        opened = svc.execute_short(
+            "E3S/USDT", TF, 100.0, usdt_amount=1000.0, source="manual",
+            order_id="e3-s", fee_usdt=0.5,
+        )
+        orders = OrderService("demo")
+        rec = orders.create_from_request(
+            TradeOrder("SHORT", "E3S/USDT", 100.0, 10.0, usdt_amount=1000.0, source="manual"),
+            status=OrderStatus.ACTIVE, timeframe=TF,
+        )
+        orders.link_execution_result(
+            rec["id"], opened,
+            TradeOrder("SHORT", "E3S/USDT", 100.0, 10.0, usdt_amount=1000.0, source="manual"),
+        )
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+        stored = orders.get_by_id(rec["id"])
+    assert opened.executed is True
+    assert opened.pnl is None
+    assert stored.get("pnl") is None
+
+
+def test_replay_result_keeps_none_pnl():
+    from data_manager import record_trade
+
+    with tenant_context("default", scope="demo"):
+        record_trade({
+            "type": "COVER",
+            "symbol": "E5R/USDT",
+            "price": 90.0,
+            "amount": 10.0,
+            "usdt_amount": 900.0,
+            "pnl": None,
+            "fee": 0.3,
+            "fee_usdt": 0.3,
+            "order_id": "e5-c",
+            "timestamp": datetime.now().isoformat(),
+        })
+        replayed = PortfolioService(_cfg()).execute_cover(
+            "E5R/USDT", TF, 90.0, amount=10.0, source="manual",
+            order_id="e5-c", fee_usdt=0.3,
+        )
+    assert replayed.booking_skipped is True
+    assert replayed.pnl is None
+
+
+def test_idempotent_ledger_replay_keeps_none_pnl():
+    from services.trading_service import TradingService
+
+    result = TradingService._result_from_ledger(None, {
+        "status": "filled",
+        "side": "cover",
+        "symbol": "E6/USDT",
+        "pnl": None,
+        "id": "e6",
+        "execution": {"amount": 4, "price": 90, "usdt": 360},
+        "request": {},
+    })
+    assert result.executed is True
+    assert result.pnl is None
+
+
+def test_sum_sites_charge_missing_pnl_not_zero():
+    """F5–F11. Reverting any one site to ``or 0`` fails its assertion."""
+    from pathlib import Path
+
+    from core.sim_ledger_replay import replay_simulated_ledger
+    from data_manager import compute_sim_realized_pnl, load_trade_history, record_trade
+    from hermes.metrics import compute_trade_quality
+    from notifications import daily_stats
+    from services.reporting.attribution import order_to_closed_trade
+    from services.reporting.fills import fill_quality_summary
+
+    rate = _config_rate()
+    expect = -(1000.0 * rate * 2)
+    row = {"type": "SELL", "pnl": None, "price": 100.0, "amount": 10.0}
+    assert compute_sim_realized_pnl([row]) == pytest.approx(expect)
+
+    now = datetime.now().isoformat()
+    order = {
+        "status": "filled",
+        "side": "sell",
+        "pnl": None,
+        "symbol": "F/USDT",
+        "execution": {"usdt": 1000.0, "price": 100.0, "amount": 10.0, "fee": 0.0},
+        "request": {"price": 100.0},
+        "timestamps": {"filled": now},
+    }
+    quality = fill_quality_summary([order])
+    assert quality["gross_realized_pnl"] == pytest.approx(expect)
+    assert order_to_closed_trade(order)["pnl"] == pytest.approx(expect)
+    metrics = compute_trade_quality([row])
+    assert metrics["avg_loss"] == pytest.approx(abs(expect))
+
+    def _trades(*_a, **_k):
+        return [dict(row, timestamp=now)]
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(daily_stats, "trades_in_window", _trades)
+    monkey.setattr(daily_stats, "orders_in_window", lambda *_a, **_k: [])
+    monkey.setattr(
+        daily_stats, "load_trade_history_doc",
+        lambda: {"virtual_balance": 1.0, "realized_pnl": 0.0},
+    )
+    monkey.setattr(daily_stats, "open_positions_summary", lambda *_a, **_k: (0, 0.0))
+    monkey.setattr(daily_stats, "decision_stats", lambda *_a, **_k: {})
+    monkey.setattr(daily_stats, "decision_highlights", lambda *_a, **_k: [])
+    monkey.setattr(daily_stats, "social_highlights", lambda *_a, **_k: [])
+    monkey.setattr(daily_stats, "hermes_brief_line", lambda *_a, **_k: "")
+    try:
+        window = daily_stats.window_stats(
+            Path("."), datetime.now(), datetime.now(),
+        )
+    finally:
+        monkey.undo()
+    assert window["sell_pnl"] == pytest.approx(expect)
+
+    with tenant_context("default", scope="demo"):
+        before = load_trade_history() or {}
+        prior = before.get("realized_pnl")
+        base = 0.0 if prior is None else float(prior)
+        booked = record_trade({
+            "type": "COVER",
+            "symbol": "F9/USDT",
+            "pnl": None,
+            "price": 100.0,
+            "amount": 10.0,
+            "usdt_amount": 1000.0,
+            "margin_usdt": 1.0,
+            "timestamp": now,
+        })
+    assert float(booked["realized_pnl"]) == pytest.approx(base + expect)
+
+    replayed = replay_simulated_ledger(
+        [
+            {
+                "status": "filled",
+                "side": "buy",
+                "symbol": "F10/USDT",
+                "timeframe": "4h",
+                "execution": {"price": 100.0, "amount": 10.0, "usdt": 1000.0},
+                "request": {},
+                "timestamps": {"filled": "2026-01-01T00:00:00"},
+            },
+            {
+                "status": "filled",
+                "side": "sell",
+                "symbol": "F10/USDT",
+                "timeframe": "4h",
+                "pnl": None,
+                "execution": {"price": 110.0, "amount": 10.0, "usdt": 1000.0},
+                "request": {},
+                "timestamps": {"filled": "2026-01-01T01:00:00"},
+            },
+        ],
+        5000.0,
+    )
+    assert replayed["realized_pnl"] == pytest.approx(expect)
+
+
+def test_rebuy_missing_pnl_is_a_loss_not_zero():
+    from types import SimpleNamespace
+
+    from risk.rebuy_cooldown import resolve_memory_mult, resolve_rebuy_cooldown_hours
+
+    rate = _config_rate()
+    notional = 1000.0
+    expect = -(notional * rate * 2)
+    features = {
+        "missing_pnl_notional_usdt": notional,
+        "by_source": {"auto": {"pnl_usdt": None, "usdt": notional, "sells": 2}},
+        "venue": {
+            "entries_thin_30d": 2,
+            "pnl_when_thin_usdt": None,
+            "usdt": notional,
+        },
+    }
+    charged = SimpleNamespace(
+        sells_30d=3, trades_30d=3, win_rate=0.5,
+        total_pnl_usdt=None, avg_pnl_usdt=0.0,
+        risk_score=0.5, size_bias=1.0, dca_count_30d=0,
+        entry_bias="neutral", features=features,
+    )
+    zero = SimpleNamespace(
+        sells_30d=3, trades_30d=3, win_rate=0.5,
+        total_pnl_usdt=0.0, avg_pnl_usdt=0.0,
+        risk_score=0.5, size_bias=1.0, dca_count_30d=0,
+        entry_bias="neutral", features={},
+    )
+    cfg = {
+        "enabled": True,
+        "base_hours_by_regime": {"NEUTRAL": 4.0},
+        "min_hours": 0.5,
+        "max_hours": 24.0,
+        "memory": {
+            "enabled": True,
+            "min_samples": 3,
+            "pnl_weak_usdt": -1.0,
+            "pnl_weak_mult": 1.25,
+            "channel_pnl_weak_usdt": -1.0,
+        },
+    }
+    _mult, mem_reasons, mem_factors = resolve_memory_mult(
+        charged, cfg["memory"], exit_key="vol_structure",
+    )
+    got = resolve_rebuy_cooldown_hours(
+        regime="NEUTRAL", profile=charged, config=cfg,
+    )
+    base = resolve_rebuy_cooldown_hours(
+        regime="NEUTRAL", profile=zero, config=cfg,
+    )
+    assert mem_factors["total_pnl_usdt"] == pytest.approx(expect)
+    assert "pnl_weak" in mem_reasons
+    assert mem_factors["channel_pnl_usdt"] == pytest.approx(expect)
+    assert "venue_thin_loss" in mem_reasons
+    assert got.hours > base.hours
+
+
+def test_daily_report_counts_rows_without_pnl(tmp_path):
+    from scripts import daily_auswertung
+    from scripts.daily_auswertung import (
+        _fmt_realized,
+        build_telegram_daily_summary,
+        generate_report,
+    )
+    from strategies.positions import _deserialize_position, _serialize_positions
+
+    assert _fmt_realized(None, "+.2f") == "unknown"
+    loaded = _deserialize_position({
+        "amount": "1",
+        "average_entry": 1,
+        "realized_pnl": None,
+        "last_buy_price": 1,
+    })
+    assert loaded["realized_pnl"] is None
+    (tmp_path / "config.json").write_text('{"live": {}, "hermes": {}}', encoding="utf-8")
+    now = datetime.now().replace(microsecond=0)
+    sell = {
+        "type": "SELL",
+        "symbol": "DAY/USDT",
+        "pnl": None,
+        "price": 100.0,
+        "amount": 10.0,
+        "usdt_amount": 1000.0,
+        "source": "manual",
+        "timestamp": now.isoformat(),
+    }
+
+    def _bundle():
+        return (
+            {"trades": [sell], "virtual_balance": 100.0, "realized_pnl": None},
+            {"orders": []},
+            {},
+        )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(daily_auswertung, "_ledger_bundle", _bundle)
+    try:
+        report = generate_report(tmp_path, now)
+        telegram = build_telegram_daily_summary(tmp_path, now)
+    finally:
+        monkeypatch.undo()
+    with tenant_context("default", scope="demo"):
+        update_position("NONEP/USDT", TF, "BUY", 1.0, 1.0)
+        lot = get_position("NONEP/USDT", TF)
+        lot["realized_pnl"] = None
+        blob = _serialize_positions()
+    assert "pnl_missing=1" in report
+    assert "pnl_missing=1" in telegram
+    assert "unknown" in report
+    assert any(
+        isinstance(row, dict) and row.get("realized_pnl") is None
+        for row in (blob.get("positions") or {}).values()
+    )

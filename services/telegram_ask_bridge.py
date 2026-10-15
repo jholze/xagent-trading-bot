@@ -427,9 +427,12 @@ def build_context_snapshot(question: str) -> dict:
         )
         snapshot["open_positions"] = int(hist.get("open_positions", 0) or 0)
         snapshot["virtual_balance_usdt"] = round(float(hist.get("virtual_balance", 0) or 0), 2)
-        snapshot["realized_pnl"] = round(
-            float(hist.get("realized_pnl", hist.get("total_pnl", 0)) or 0), 2
+        from storage.order_ledger_v2 import read_stored_pnl
+
+        looked = read_stored_pnl(
+            hist, "realized_pnl", "total_pnl", where="telegram_ask_realized",
         )
+        snapshot["realized_pnl"] = "unknown" if looked is None else round(looked, 2)
     except Exception as e:
         snapshot["portfolio_error"] = str(e)
 

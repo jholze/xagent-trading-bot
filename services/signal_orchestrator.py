@@ -591,7 +591,15 @@ class SignalOrchestrator:
             if uses_exchange_ledger(self.config.trading_mode)
             else load_trade_history()
         )
-        realized = history.get("total_pnl", history.get("realized_pnl", 0))
+        from storage.order_ledger_v2 import read_stored_pnl
+
+        looked = read_stored_pnl(
+            history if isinstance(history, dict) else {},
+            "total_pnl",
+            "realized_pnl",
+            where="signal_orchestrator_realized",
+        )
+        realized = looked
         pos_info = (
             f" | Pos: {float(pos.get('amount', 0)):.2f} | Unrealized: ${unrealized:.1f}"
             if has_position else " | No position"
@@ -603,7 +611,7 @@ class SignalOrchestrator:
                 f"{symbol} → {analysis.action} ({analysis.normalized_action}) | RSI: {analysis.rsi:.1f} | "
                 f"Vol: {analysis.vol_multiplier:.2f}x | Ampel: {analysis.ampel_emoji} {analysis.ampel_text}"
                 f"{rationale}{pos_info}{executed} | Bal: ${history.get('virtual_balance', 0):.0f} | "
-                f"RealPnL: ${float(realized or 0):.1f}\n"
+                f"RealPnL: {'unknown' if realized is None else f'${float(realized):.1f}'}\n"
             )
         return {
             "action": analysis.action,

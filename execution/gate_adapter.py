@@ -2482,7 +2482,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.fee_estimated = bool(fee_estimated)
         result.fee_rate_source = fee_rate_source if fee_estimated else ""
         write_rate_fraction(result, est_rate if fee_estimated else 0.0)
-        result.needs_reconcile = bool(fee_unknown or fee_estimated)
+        # execute_cover may already have set this (missing open fee). A known
+        # close fee must not wipe that flag on the real Gate path.
+        kept_reconcile = bool(getattr(result, "needs_reconcile", False))
+        result.needs_reconcile = bool(kept_reconcile or fee_unknown or fee_estimated)
         result.pending = status is OrderStatus.PARTIALLY_FILLED
         result.order_exist_in_exchange = order.order_exist_in_exchange
         result.executed = True
@@ -2500,7 +2503,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             order.status = OrderStatus.CANCELED
             result.order_status = OrderStatus.CANCELED
             result.pending = False
-            if not fee_unknown and not fee_estimated:
+            if not fee_unknown and not fee_estimated and not kept_reconcile:
                 result.needs_reconcile = False
             from price_fetcher import format_usdt_price
 

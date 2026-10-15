@@ -32,7 +32,10 @@ def print_dashboard(data):
     sidebar_table.add_row("Mode", str(p.get("trading_mode", "PAPER")))
     sidebar_table.add_row("Balance", str(p.get("balance", "$0")))
     sidebar_table.add_row("Unrealized", str(p.get("unrealized", "$0")))
-    sidebar_table.add_row("Realized PnL", str(p.get("realized_pnl", "$0")))
+    realized_cell = p.get("realized_pnl", "$0") if "realized_pnl" in p else "$0"
+    if realized_cell is None:
+        realized_cell = "unknown"
+    sidebar_table.add_row("Realized PnL", str(realized_cell))
     sidebar_table.add_row("Total Value", str(p.get("total_value", "$0")))
     sidebar_table.add_row("Active Pos.", str(p.get("active_positions", 0)))
     sidebar_table.add_row("Win Rate", str(p.get("win_rate", "—")))

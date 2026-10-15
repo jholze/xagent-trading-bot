@@ -435,9 +435,14 @@ def recost_one(
     )
     row.new_verdict_reason = verdict.reason
     row.unresolvable = False
-    row.pnl_delta = float(row.new_variant.get("realized_pnl", 0) or 0) - float(
-        row.old_variant.get("realized_pnl", 0) or 0
-    )
+    from storage.order_ledger_v2 import read_stored_pnl
+
+    new_pnl = read_stored_pnl(row.new_variant, "realized_pnl", where="hermes_recost_new")
+    old_pnl = read_stored_pnl(row.old_variant, "realized_pnl", where="hermes_recost_old")
+    if new_pnl is None or old_pnl is None:
+        row.pnl_delta = None
+    else:
+        row.pnl_delta = new_pnl - old_pnl
     return row
 
 
@@ -460,6 +465,23 @@ def _fmt_val(val: Any) -> str:
             return str(int(val))
         return f"{val:g}"
     return str(val)
+
+
+def _fmt_pnl_cell(value: Any, spec: str) -> str:
+    """A missing experiment pnl is the word unknown, not a format crash."""
+    if value is None:
+        return "unknown"
+    try:
+        return format(float(value), spec)
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _abs_pnl_delta(row: RecostRow) -> float:
+    try:
+        return abs(float(row.pnl_delta))
+    except (TypeError, ValueError):
+        return -1.0
 
 
 def render_report(summary: RecostSummary) -> str:
@@ -490,7 +512,7 @@ def render_report(summary: RecostSummary) -> str:
 
     pnl_sorted = sorted(
         (r for r in rows if not r.unresolvable),
-        key=lambda r: abs(r.pnl_delta),
+        key=_abs_pnl_delta,
         reverse=True,
     )[:10]
 
@@ -581,7 +603,7 @@ def render_report(summary: RecostSummary) -> str:
                         r.variable,
                         f"{_fmt_val(r.old_value)} → {_fmt_val(r.new_value)}",
                         r.source,
-                        f"{r.pnl_delta:+.2f}",
+                        _fmt_pnl_cell(r.pnl_delta, "+.2f"),
                         f"{r.old_variant.get('sharpe', 0)} → {r.new_variant.get('sharpe', 0)}",
                         f"{r.folds_won}/{r.folds_total}",
                     ]
@@ -614,9 +636,9 @@ def render_report(summary: RecostSummary) -> str:
                     r.experiment_id,
                     r.symbol,
                     r.variable,
-                    f"{r.old_variant.get('realized_pnl', 0):.2f}",
-                    f"{r.new_variant.get('realized_pnl', 0):.2f}",
-                    f"{r.pnl_delta:+.2f}",
+                    _fmt_pnl_cell(r.old_variant.get("realized_pnl", 0), ".2f"),
+                    _fmt_pnl_cell(r.new_variant.get("realized_pnl", 0), ".2f"),
+                    _fmt_pnl_cell(r.pnl_delta, "+.2f"),
                     r.old_variant.get("trades", 0),
                     r.new_variant.get("trades", 0),
                     f"{r.old_verdict} → {r.new_verdict}",

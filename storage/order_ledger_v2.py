@@ -438,6 +438,72 @@ def mark_pnl_or_exclude(value: object, *, where: str) -> float:
         return 0.0
 
 
+def decision_pnl(value: object, *, notional: float, where: str) -> float:
+    """Risk or decision input. Explicit None is the two-sided fee loss, not 0."""
+    if value is None or value == "":
+        return pnl_for_sum(
+            {
+                "type": "SELL",
+                "side": "sell",
+                "pnl": None,
+                "execution": {"usdt": float(notional or 0)},
+            }
+        )
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("pnl_unknown where=%s", where)
+        return pnl_for_sum(
+            {
+                "type": "SELL",
+                "side": "sell",
+                "pnl": None,
+                "execution": {"usdt": float(notional or 0)},
+            }
+        )
+
+
+def read_stored_pnl(doc: object, *keys: str, where: str) -> float | None:
+    """Stored account total.
+
+    Absent keys are a legacy 0. An explicit None logs ERROR and returns None
+    so a display can say unknown instead of printing 0.
+    """
+    if not isinstance(doc, dict):
+        logger.error("pnl_unknown where=%s", where)
+        return None
+    names = keys or ("realized_pnl", "total_pnl")
+    saw_none = False
+    for key in names:
+        if key not in doc:
+            continue
+        raw = doc.get(key)
+        if raw is None:
+            saw_none = True
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.error("pnl_unknown where=%s", where)
+            return None
+    if saw_none:
+        logger.error("pnl_unknown where=%s", where)
+        return None
+    return 0.0
+
+
+def format_pnl_unknown(value: object, *, where: str, spec: str = "+.2f") -> str:
+    """Display text. None is the word unknown, never 0."""
+    if value is None or value == "":
+        logger.error("pnl_unknown where=%s", where)
+        return "unknown"
+    try:
+        return format(float(value), spec)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("pnl_unknown where=%s", where)
+        return "unknown"
+
+
 def pnl_for_sum(row: dict) -> float:
     """Number to add when a row's pnl is summed.
 

@@ -11,6 +11,7 @@ from core.build_info import format_build_line
 from core.config import get_bot_config
 from data_manager import atomic_write_json
 from notifications.daily_stats import BOT_ROOT, window_stats
+from storage.order_ledger_v2 import format_pnl_unknown
 
 _STATE_FILE = BOT_ROOT / "data" / "morning_briefing.json"
 _CHUNK_LIMIT = 4000
@@ -174,7 +175,7 @@ def build_morning_briefing(chat_id: str | None = None) -> list[str]:
         f"Modus: <code>{_esc(cfg.trading_mode)}</code> · dry_run=<code>{_esc(live.get('dry_run'))}</code>\n\n"
         f"<b>Portfolio jetzt</b>\n"
         f"NAV <b>${total_value:,.0f}</b> · Cash ${balance:,.0f} · {open_pos} Positionen\n"
-        f"Realized gesamt {stats['realized_total']:+.1f} USDT\n\n"
+        f"Realized gesamt {format_pnl_unknown(stats.get('realized_total'), where='morning_briefing_realized', spec='+.1f')} USDT\n\n"
         f"<b>Risk</b>\n"
         f"Equity ${float(risk.get('portfolio_equity', total_value) or 0):,.0f} · "
         f"Drawdown {float(risk.get('drawdown_pct', 0) or 0):.1f}%\n"

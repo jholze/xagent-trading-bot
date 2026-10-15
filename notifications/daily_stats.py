@@ -620,7 +620,7 @@ def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
         1 for t in window_trades
         if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
     )
-    from storage.order_ledger_v2 import pnl_for_sum
+    from storage.order_ledger_v2 import pnl_for_sum, read_stored_pnl
 
     sell_pnl = sum(
         pnl_for_sum(t) for t in window_trades if t["type"] in ("SELL", "COVER")
@@ -642,7 +642,7 @@ def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
         "filled_orders": filled_orders,
         "rejected_orders": rejected_orders,
         "cash": float(th.get("virtual_balance", 0) or 0),
-        "realized_total": float(th.get("realized_pnl", 0) or 0),
+        "realized_total": read_stored_pnl(th, "realized_pnl", where="daily_stats_realized_total"),
         "open_count": open_count,
         "pos_value": pos_value,
         "decisions": decision_stats(bot_dir, since, until),

@@ -63,6 +63,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
     from core.simulated_trading import is_simulated_trading, uses_order_ledger_cash
     from data_manager import resolve_sim_cash_balance, resolve_sim_realized_pnl
 
+    realized_unknown = False
     if uses_order_ledger_cash(cfg.raw):
         from notifications.telegram_commands.position_display import _refresh_positions_for_snapshot
 
@@ -73,7 +74,13 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         realized = resolve_sim_realized_pnl(scope=scope, config=cfg.raw, tenant_id=tid)
     else:
         balance = float(history.get("virtual_balance", 0) or 0)
-        realized = float(history.get("realized_pnl", history.get("total_pnl", 0)) or 0)
+        from storage.order_ledger_v2 import read_stored_pnl
+
+        looked = read_stored_pnl(
+            history, "realized_pnl", "total_pnl", where="terminal_history_realized",
+        )
+        realized = 0.0 if looked is None else looked
+        realized_unknown = looked is None
         active = None
 
     if is_simulated_trading(cfg.raw):
@@ -127,6 +134,7 @@ def _portfolio_snapshot(trading_mode: str = None) -> dict:
         "balance": balance,
         "balance_label": balance_label,
         "realized": pnl["trade_realized"],
+        "realized_unknown": realized_unknown,
         "trade_realized": pnl["trade_realized"],
         "realized_ledger": realized,
         "unrealized": pnl["unrealized"],
@@ -181,7 +189,9 @@ def build_dashboard_data(
     return {
         "balance": f"${balance:,.0f}",
         "unrealized": f"${unrealized:,.1f}",
-        "realized_pnl": f"${realized:,.1f}",
+        "realized_pnl": (
+            "unknown" if snap.get("realized_unknown") else f"${realized:,.1f}"
+        ),
         "total_value": f"${total_value:,.0f}",
         "active_positions": len(list_active_positions()),
         "win_rate": _win_rate(history),
@@ -377,7 +387,14 @@ def build_cycle_summary(
     balance_label = snap["balance_label"]
     realized = snap["realized"]
     total_value = snap["total_value"]
-    nav_pnl = float(snap.get("total_pnl", float(realized or 0) + float(snap.get("unrealized", 0) or 0)))
+    if snap.get("realized_unknown"):
+        from storage.order_ledger_v2 import format_pnl_unknown
+
+        realized_text = format_pnl_unknown(None, where="terminal_cycle_realized")
+        nav_pnl = float(snap.get("unrealized", 0) or 0)
+    else:
+        realized_text = None
+        nav_pnl = float(snap.get("total_pnl", float(realized or 0) + float(snap.get("unrealized", 0) or 0)))
     pnl_pct = float(snap.get("pnl_pct", 0.0))
     scope = snap.get("ledger_scope", resolve_ledger_scope(trading_mode))
 
@@ -441,12 +458,23 @@ def build_cycle_summary(
                     "cycle_slots_realized",
                     open=open_n,
                     max=max_open,
-                    realized=signed_money(float(realized or 0)),
+                    realized=(
+                        realized_text
+                        if snap.get("realized_unknown")
+                        else signed_money(float(realized or 0))
+                    ),
                 )
             )
         else:
             lines.append(
-                t("cycle_realized_only", realized=signed_money(float(realized or 0)))
+                t(
+                    "cycle_realized_only",
+                    realized=(
+                        realized_text
+                        if snap.get("realized_unknown")
+                        else signed_money(float(realized or 0))
+                    ),
+                )
             )
 
         try:
@@ -495,7 +523,8 @@ def build_cycle_summary(
         t("cycle_mode_ledger", mode=trading_mode.upper(), scope=scope.upper()),
         f"{balance_label}: ${float(balance or 0):,.0f} | "
         f"Gesamtwert: ${float(total_value or 0):,.0f} | "
-        f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, Trades ${float(realized or 0):,.1f})",
+        f"PnL: ${nav_pnl:+,.0f} ({pnl_pct:+.1f}%, Trades "
+        f"{'unknown' if snap.get('realized_unknown') else f'${float(realized or 0):,.1f}'})",
         t(
             "cycle_signals",
             actions=len(actions),
