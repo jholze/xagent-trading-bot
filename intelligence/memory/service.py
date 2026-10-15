@@ -283,12 +283,14 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
                     else:
                         wv_fail += 1
                 for tr in store.list_trades(limit=30):
+                    if tr.pnl_usdt is None:
+                        continue
                     if idx.upsert_trade(
                         tr.trade_id,
                         tr.symbol,
                         outcome=tr.outcome,
                         source=tr.source,
-                        pnl_usdt=float(tr.pnl_usdt or 0),
+                        pnl_usdt=float(tr.pnl_usdt),
                         reason=tr.reason,
                         vector=tr.embedding or None,
                     ):

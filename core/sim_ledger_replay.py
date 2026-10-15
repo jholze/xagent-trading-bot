@@ -365,10 +365,13 @@ def _apply_acknowledged_sell(
     if "PARTIAL" in signal or signal in ("SELL_30", "SELL_20", "SELL_10"):
         pos["_partial_sell_count"] = int(pos.get("_partial_sell_count") or 0) + 1
     pnl = order.get("pnl")
-    realized = 0.0
-    if pnl is not None:
+    if pnl is None:
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        realized = pnl_for_sum(order) * (pnl_scale or 1.0)
+    else:
         realized = float(pnl) * pnl_scale
-        pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + realized
+    pos["realized_pnl"] = float(pos.get("realized_pnl", 0)) + realized
     # Full flat only. A partial sell keeps dca_rounds. Dust keeps the marker.
     if float(pos.get("amount") or 0) <= 1e-12:
         pos["dca_rounds"] = 0

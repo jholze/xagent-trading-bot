@@ -346,7 +346,7 @@ class WeaviateIndex:
                 "symbol": symbol,
                 "outcome": outcome or "",
                 "source": source or "",
-                "pnl_usdt": float(pnl_usdt or 0),
+                "pnl_usdt": None if pnl_usdt is None else float(pnl_usdt),
                 "reason": (reason or "")[:300],
             },
             vec,

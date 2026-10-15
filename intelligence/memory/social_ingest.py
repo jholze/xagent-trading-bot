@@ -888,7 +888,7 @@ def reflect_social(
         sells = [t for t in tlist if t.direction == "sell" and t.pnl_usdt is not None]
         if len(sells) < min_samples:
             continue
-        total_pnl = sum(float(t.pnl_usdt or 0) for t in sells)
+        total_pnl = sum(float(t.pnl_usdt) for t in sells)
         # CMC bullish events near this symbol
         bullish = [
             e

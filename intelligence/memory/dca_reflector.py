@@ -214,7 +214,7 @@ def derive_dca_lesson_specs(
             tt = _parse_ts(t.exit_time or t.entry_time)
             if tt is None or tt < et or tt > end:
                 continue
-            pnl = float(t.pnl_usdt or 0)
+            pnl = float(t.pnl_usdt)
             if pnl <= -abs(loss_usdt_threshold):
                 loss_hits.append((sym, pnl))
             elif pnl >= abs(win_usdt_threshold):

@@ -25,6 +25,7 @@ from notifications.daily_stats import (  # noqa: E402
     post_timestamp,
 )
 from storage.errors import LedgerUnavailable  # noqa: E402
+from storage.order_ledger_v2 import pnl_for_sum  # noqa: E402
 
 normalize_action = normalize_social_action
 
@@ -139,7 +140,7 @@ def _orders_in_day(orders_raw: dict, day_start: datetime, day_end: datetime) -> 
 
 def fmt_trade_row(trade: dict) -> str:
     ts = parse_ts(trade["timestamp"]).strftime("%d.%m. %H:%M")
-    pnl = trade.get("pnl") or 0
+    pnl = pnl_for_sum(trade)
     usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
     return (
         f"| {ts} | {trade['type']} | {trade['symbol']} | "
@@ -171,7 +172,7 @@ def pnl_by_source(trades: list) -> str:
     pnl = defaultdict(float)
     for trade in trades:
         if trade["type"] == "SELL":
-            pnl[trade.get("source", "?")] += trade.get("pnl") or 0
+            pnl[trade.get("source", "?")] += pnl_for_sum(trade)
     if not pnl:
         return "_Keine Verkäufe im Zeitraum._"
     lines = ["| Quelle | Realized PnL |", "|--------|--------------|"]
@@ -359,7 +360,7 @@ def climax_fade_telegram_line(
         ts = _ts(t)
         if ts is None:
             continue
-        closed.append({"ts": ts, "pnl": float(t.get("pnl") or 0), "src": str(
+        closed.append({"ts": ts, "pnl": pnl_for_sum(t), "src": str(
             t.get("exit_source") or t.get("source") or "climax_cover"
         )})
         if last_ts is None or ts >= last_ts:
@@ -400,7 +401,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
         1 for t in day_trades
         if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
     )
-    sell_pnl_day = sum((t.get("pnl") or 0) for t in day_trades if t["type"] == "SELL")
+    sell_pnl_day = sum(pnl_for_sum(t) for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)
     realized_total = th.get("realized_pnl", 0)
 
@@ -422,7 +423,7 @@ def build_telegram_daily_summary(bot_dir: Path, report_date: datetime | None = N
     for trade in sorted(day_trades, key=lambda x: x["timestamp"])[-8:]:
         ts = parse_ts(trade["timestamp"]).strftime("%H:%M")
         usdt = trade.get("usdt_amount") or trade.get("usdt_received") or 0
-        pnl = trade.get("pnl") or 0
+        pnl = pnl_for_sum(trade)
         src = trade.get("source", "?")
         if trade["type"] == "SELL":
             trade_lines.append(f"• {ts} {trade['type']} {trade['symbol']} ${usdt:,.0f} ({src}) PnL {pnl:+.1f}")
@@ -541,7 +542,7 @@ def generate_report(bot_dir: Path, report_date: datetime | None = None) -> str:
             if sym:
                 buy_coins[sym] += 1
 
-    sell_pnl_day = sum((t.get("pnl") or 0) for t in day_trades if t["type"] == "SELL")
+    sell_pnl_day = sum(pnl_for_sum(t) for t in day_trades if t["type"] == "SELL")
     buys_day = sum(1 for t in day_trades if t["type"] == "BUY")
     sells_day = sum(1 for t in day_trades if t["type"] == "SELL")
     cash = th.get("virtual_balance", 0)

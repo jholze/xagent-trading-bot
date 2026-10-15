@@ -233,7 +233,8 @@ def test_t1b_partial_then_remainder_and_duplicate_cumulative():
 def _finalize_null_fee(adapter, *, cost: float, role: str, symbol: str = "NULL/USDT") -> object:
     ex = adapter._exchange
     order = TradeOrder(
-        "SHORT", symbol, 100.0, cost / 100.0, usdt_amount=cost, source="manual", order_id="null-1",
+        "SHORT", symbol, 100.0, cost / 100.0, usdt_amount=cost, source="manual",
+        order_id=f"null-{symbol.split('/')[0]}",
     )
     raw = _closed_raw(
         filled=cost / 100.0,
@@ -464,6 +465,8 @@ def test_t7_cover_pnl_nets_open_and_close_fees_including_partial():
         fund_p = float(partial.funding_usdt or 0)
         assert partial.open_fee_usdt == pytest.approx(0.4)
         assert partial.pnl == pytest.approx(gross_p - fund_p - 0.4 - 0.2)
+        part_row = _rows("cv-part", "COVER")[-1]
+        assert part_row.get("open_fee_estimated") is True
         left = get_position(symbol_p, TF)
         assert float(left["amount"]) == pytest.approx(6)
         assert float(left["open_fee_usdt"]) == pytest.approx(0.6)
@@ -823,6 +826,8 @@ def test_cover_partial_then_remainder(monkeypatch):
         booked = _live_rows(rows, "crem-1", "COVER")
         assert len(booked) == 2
         assert sum(float(row["amount"]) for row in booked) == pytest.approx(10)
+        assert [float(row["fee_usdt"]) for row in booked] == pytest.approx([0.30, 0.45])
+        assert [float(row["pnl"]) for row in booked] == pytest.approx([39.70, 59.55])
         assert float(get_position("CREM/USDT", TF).get("amount") or 0) == pytest.approx(0)
 
 
@@ -1042,6 +1047,11 @@ def test_pnl_missing_fail_closed_even_when_guards_log(monkeypatch):
     raw["risk"] = risk
     cfg = BotConfig(raw)
     rm = RiskManager(cfg)
+    logs: list[str] = []
+    monkeypatch.setattr(
+        "logger.log",
+        lambda msg, level="INFO": logs.append(f"{level}:{msg}"),
+    )
 
     def _boom():
         raise RuntimeError("ledger down")
@@ -1057,6 +1067,12 @@ def test_pnl_missing_fail_closed_even_when_guards_log(monkeypatch):
         )
         assert buy.approved is False
         assert buy.code == "pnl_missing"
+        assert any(
+            line.startswith("ERROR:")
+            and "risk guard pnl_missing failed" in line
+            and "NEWX/USDT" in line
+            for line in logs
+        )
         short = rm.evaluate(
             TradeOrder("SHORT", "NEWSH/USDT", 1.0, 0, usdt_amount=50, source="manual", leverage=2),
             TF,
@@ -1086,3 +1102,263 @@ def test_pnl_missing_fail_closed_even_when_guards_log(monkeypatch):
         )
         assert cover.code != "pnl_missing"
         assert cover.approved is True, cover.message
+        plain = rm.evaluate(
+            TradeOrder("SELL", "LONGX/USDT", 1.1, 5, signal="SELL", source="manual"),
+            TF,
+            source="manual",
+        )
+        assert plain.code != "pnl_missing"
+        assert plain.approved is True, plain.message
+
+
+class _NotGate:
+    """Recovery must take the no-adapter path. The type name is the switch."""
+
+    portfolio = None
+
+
+def test_c5_tracked_lot_missing_open_fee_is_estimated_legacy_stays_zero():
+    svc = PortfolioService(_cfg())
+    with tenant_context("default", scope="demo"):
+        opened = svc.execute_short(
+            "C5S/USDT", TF, 100.0, usdt_amount=1000.0, source="manual",
+            order_id="c5-s", fee_usdt=1.5,
+        )
+        assert opened.executed
+        lot = get_position("C5S/USDT", TF)
+        assert lot.get("open_fee_tracked") is True
+        lot.pop("open_fee_usdt", None)
+        lot.pop("open_fee_estimated", None)
+        covered = svc.execute_cover(
+            "C5S/USDT", TF, 90.0, amount=10.0, source="manual",
+            order_id="c5-c", fee_usdt=0.4,
+        )
+        est = 1000.0 * RATE
+        gross = unrealized_pnl("short", 10.0, 100.0, 90.0)
+        fund = float(covered.funding_usdt or 0)
+        assert covered.open_fee_usdt == pytest.approx(est)
+        assert covered.open_fee_usdt != pytest.approx(0)
+        assert covered.open_fee_usdt != pytest.approx(1.5)
+        assert covered.needs_reconcile is True
+        assert covered.pnl == pytest.approx(gross - fund - est - 0.4)
+
+        update_position("C5L/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        legacy_lot = get_position("C5L/USDT", TF)
+        assert not legacy_lot.get("open_fee_tracked")
+        legacy = svc.execute_cover(
+            "C5L/USDT", TF, 90.0, amount=10.0, source="manual",
+            order_id="c5-l", fee_usdt=0.4,
+        )
+        assert legacy.open_fee_usdt == pytest.approx(0)
+        assert legacy.needs_reconcile is not True
+
+
+def test_c3_unpriced_missing_pnl_flags_reconcile_priced_does_not(caplog):
+    from storage.order_ledger_v2 import stats_from_filled_orders
+
+    bare = {"id": "unpriced-1", "status": "filled", "side": "cover"}
+    with caplog.at_level("ERROR"):
+        stats = stats_from_filled_orders([bare])
+    assert stats["realized_pnl"] == pytest.approx(-1e-12)
+    assert bare.get("needs_reconcile") is True
+    assert "order_pnl_missing_unpriced" in caplog.text
+
+    priced = {
+        "id": "priced-1",
+        "status": "filled",
+        "side": "cover",
+        "execution": {"usdt": 1000.0},
+    }
+    priced_stats = stats_from_filled_orders([priced])
+    assert priced.get("needs_reconcile") is not True
+    assert priced_stats["realized_pnl"] == pytest.approx(-(1000.0 * RATE * 2))
+
+
+def test_c10_result_fee_stays_the_fill_increment(monkeypatch):
+    _live_ledger(monkeypatch)
+    adapter, _ex = _adapter()
+    with tenant_context("default", scope="demo"):
+        short = TradeOrder(
+            "SHORT", "C10S/USDT", 100.0, 10.0, usdt_amount=1000.0,
+            source="manual", order_id="c10-s",
+        )
+        first = adapter._finalize_exchange_order(
+            _ex, short,
+            _closed_raw(filled=2, oid="ex-c10s", fee={"cost": 0.20, "currency": "USDT"}, status="open"),
+            side="sell", qty=10, timeframe=TF,
+        )
+        second = adapter._finalize_exchange_order(
+            _ex, short,
+            _closed_raw(filled=5, oid="ex-c10s", fee={"cost": 0.50, "currency": "USDT"}, status="open"),
+            side="sell", qty=10, timeframe=TF,
+        )
+        assert first.fee == pytest.approx(0.20)
+        assert second.fee == pytest.approx(0.30)
+        svc = OrderService("demo")
+        rec = svc.create_from_request(
+            TradeOrder("SHORT", "C10S/USDT", 100.0, 10.0, usdt_amount=1000.0, source="manual"),
+            status=OrderStatus.ACTIVE,
+            timeframe=TF,
+        )
+        svc.link_execution_result(rec["id"], second, short)
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+        stored = svc.get_by_id(rec["id"])
+        assert float(stored["execution"]["fee"]) == pytest.approx(0.30)
+
+        update_position("C10C/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        cover = TradeOrder(
+            "COVER", "C10C/USDT", 90.0, 10.0, usdt_amount=900.0,
+            source="manual", order_id="c10-c",
+        )
+        adapter._finalize_exchange_order(
+            _ex, cover,
+            _closed_raw(
+                filled=4, oid="ex-c10c", average=90,
+                fee={"cost": 0.20, "currency": "USDT"}, status="open", cost=360,
+            ),
+            side="buy", qty=10, timeframe=TF,
+        )
+        closed = adapter._finalize_exchange_order(
+            _ex, cover,
+            _closed_raw(
+                filled=10, oid="ex-c10c", average=90,
+                fee={"cost": 0.45, "currency": "USDT"}, status="closed", cost=900,
+            ),
+            side="buy", qty=10, timeframe=TF,
+        )
+        assert closed.fee == pytest.approx(0.25)
+        gross = unrealized_pnl("short", 6.0, 100.0, 90.0)
+        fund = float(closed.funding_usdt or 0)
+        assert closed.pnl == pytest.approx(gross - fund - 0.25)
+
+
+def _cover_unknown_fee(adapter, ex, symbol: str, oid: str, trades: list, *, fee):
+    ex.fetch_my_trades.return_value = trades
+    with tenant_context("default", scope="demo"):
+        update_position(symbol, TF, "SHORT", 100.0, 10.0, leverage=2)
+        cover = TradeOrder(
+            "COVER", symbol, 90.0, 10.0, usdt_amount=900.0, source="manual", order_id=oid,
+        )
+        return adapter._finalize_exchange_order(
+            ex, cover,
+            _closed_raw(filled=10, oid=oid, average=90, fee=fee, cost=900),
+            side="buy", qty=10, timeframe=TF,
+        )
+
+
+def test_v1_unknown_currency_estimates_instead_of_zero():
+    adapter, ex = _adapter()
+    closed = _cover_unknown_fee(
+        adapter, ex, "V1U/USDT", "ex-v1u",
+        [{
+            "order": "ex-v1u",
+            "cost": 900.0,
+            "price": 90.0,
+            "amount": 10.0,
+            "fee": {"cost": 4.0, "currency": "BTC"},
+        }],
+        fee=None,
+    )
+    assert closed.fee == pytest.approx(900.0 * RATE)
+    assert closed.needs_reconcile is True
+    gross = unrealized_pnl("short", 10.0, 100.0, 90.0)
+    assert closed.pnl == pytest.approx(gross - 900.0 * RATE)
+
+
+def test_v1_gt_order_fee_estimates_and_ignores_usdt_trades():
+    adapter, ex = _adapter()
+    closed = _cover_unknown_fee(
+        adapter, ex, "V1G/USDT", "ex-v1g",
+        [{
+            "order": "ex-v1g",
+            "cost": 900.0,
+            "price": 90.0,
+            "amount": 10.0,
+            "fee": {"cost": 50.0, "currency": "USDT"},
+        }],
+        fee={"cost": 0.5, "currency": "GT"},
+    )
+    assert closed.fee == pytest.approx(900.0 * RATE)
+    assert closed.fee != pytest.approx(50.0)
+    assert closed.needs_reconcile is True
+
+
+def test_v1_null_fee_without_trade_notional_estimates_from_order():
+    adapter, ex = _adapter()
+    closed = _cover_unknown_fee(
+        adapter, ex, "V1N/USDT", "ex-v1n",
+        [{"order": "ex-v1n", "fee": {"cost": None, "currency": "USDT"}}],
+        fee=None,
+    )
+    assert closed.fee == pytest.approx(900.0 * RATE)
+    assert closed.needs_reconcile is True
+
+
+def test_v1_settled_plus_unpriced_trade_does_not_book_zero():
+    adapter, ex = _adapter()
+    closed = _cover_unknown_fee(
+        adapter, ex, "V1M/USDT", "ex-v1m",
+        [
+            {
+                "order": "ex-v1m",
+                "cost": 450.0,
+                "price": 90.0,
+                "amount": 5.0,
+                "fee": {"cost": 0.20, "currency": "USDT"},
+            },
+            {"order": "ex-v1m", "fee": {"cost": None, "currency": "USDT"}},
+        ],
+        fee=None,
+    )
+    assert closed.fee == pytest.approx(900.0 * RATE)
+    assert closed.fee != pytest.approx(0.20)
+    assert closed.needs_reconcile is True
+
+
+def _recover_cover_pnl_none(*, fee, cost=1000.0, ex_id="ex-pnl-none"):
+    cfg = _cfg()
+    ex = MagicMock()
+    ex.fetch_order.return_value = _closed_raw(
+        filled=10, oid=ex_id, average=100.0, fee=fee, cost=cost,
+    )
+    with tenant_context("default", scope="demo"):
+        svc = OrderService("demo")
+        rec = _active_order(
+            svc, typ="COVER", symbol="PNLN/USDT", qty=10, price=100, usdt=1000, ex_id=ex_id,
+        )
+        _resolve_in_flight_orders(
+            [rec], exchange=ex, adapter=_NotGate(), config=cfg, scope="demo",
+        )
+        from services import order_service
+
+        order_service._ORDERS_READ_CACHE.clear()
+        stored = svc.get_by_id(rec["id"])
+        return cfg, stored
+
+
+def test_cover_pnl_none_loss_is_at_least_two_fees():
+    """Real recovery path. The test does not assign pnl."""
+    from storage.order_ledger_v2 import stats_from_filled_orders
+
+    close_fee = 0.30
+    cfg, stored = _recover_cover_pnl_none(
+        fee={"cost": close_fee, "currency": "USDT"}, ex_id="ex-pnl-fee",
+    )
+    assert stored.get("pnl") is None
+    assert stored.get("needs_reconcile") is True
+    stats = stats_from_filled_orders([stored])
+    assert stats["realized_pnl"] <= -2 * close_fee
+    notional = float(stored["execution"]["usdt"])
+    assert stats["realized_pnl"] == pytest.approx(-(close_fee + notional * RATE))
+    assert RiskManager(cfg)._trailing_24h_realized_pnl() <= -2 * close_fee
+
+
+def test_cover_pnl_none_without_fee_uses_config_rate_both_sides():
+    from storage.order_ledger_v2 import stats_from_filled_orders
+
+    _cfg_obj, stored = _recover_cover_pnl_none(fee=None, ex_id="ex-pnl-nofee")
+    assert stored.get("pnl") is None
+    stats = stats_from_filled_orders([stored])
+    assert stats["realized_pnl"] == pytest.approx(-(1000.0 * RATE * 2))

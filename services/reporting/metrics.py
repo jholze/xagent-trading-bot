@@ -67,7 +67,9 @@ def metrics_from_closed_trades(
     else:
         profit_factor = 0.0
 
-    pnls = [_as_float(t.get("pnl")) for t in sells]
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    pnls = [pnl_for_sum(t) for t in sells]
     start = _start_equity(start_equity)
     dd = max_drawdown_pct(_equity_curve(pnls, start)) if sells else 0.0
     sharpe = sharpe_from_trades(sells) if sells else 0.0

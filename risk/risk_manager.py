@@ -2083,7 +2083,13 @@ class RiskManager:
         now = _display_now_naive()
         start = now - timedelta(hours=24)
         stats = OrderService(resolve_ledger_scope())._stats_filled_window(start, now)
-        return float((stats or {}).get("realized_pnl") or 0)
+        raw_pnl = stats.get("realized_pnl") if isinstance(stats, dict) else None
+        if raw_pnl is None:
+            from logger import log
+
+            log("trailing 24h realized pnl missing", "ERROR")
+            return 0.0
+        return float(raw_pnl)
 
     def _configured_max_daily_loss_usdt(self) -> float | None:
         """Optional USDT daily-loss cap. Missing key → unset (pct path only)."""
@@ -2149,7 +2155,13 @@ class RiskManager:
                 ts = ts.replace(tzinfo=timezone.utc)
             if start_utc <= ts.astimezone(timezone.utc) < end_utc:
                 chosen.append(row)
-        return float(stats_from_filled_orders(chosen).get("realized_pnl") or 0)
+        raw_pnl = stats_from_filled_orders(chosen).get("realized_pnl")
+        if raw_pnl is None:
+            from logger import log
+
+            log("operator day realized pnl missing", "ERROR")
+            return 0.0
+        return float(raw_pnl)
 
     def _open_live_unrealized_pnl(self) -> float:
         """Unrealized PnL of this tenant's open live lots at mark. Paper is excluded."""
@@ -3093,7 +3105,11 @@ class RiskManager:
 
                     if is_short(pos):
                         snap = snapshot(pos, px)
-                        total += float(snap.get("margin") or 0) + float(snap.get("pnl") or 0)
+                        from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+                        total += float(snap.get("margin") or 0) + mark_pnl_or_exclude(
+                            snap.get("pnl"), where="risk_equity_short",
+                        )
                         continue
                 except Exception:
                     pass

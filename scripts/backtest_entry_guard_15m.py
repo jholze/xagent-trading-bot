@@ -16,6 +16,8 @@ import talib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from storage.order_ledger_v2 import pnl_for_sum  # noqa: E402
 os.environ.setdefault("DEMO_MODE", "1")
 
 from historical_prices import _bars_in_range, _fetch_ohlcv_range, clear_cache
@@ -148,7 +150,7 @@ def load_lots() -> tuple[list[Lot], str]:
                 continue
             mins = (sts - entry_ts).total_seconds() / 60.0
             if first is None or mins < first[0]:
-                first = (mins, sts, float(s.get("pnl") or 0), s.get("signal") or "", s.get("source") or "")
+                first = (mins, sts, pnl_for_sum(s), s.get("signal") or "", s.get("source") or "")
         lot = Lot(sym, tf, entry_ts, px, usdt)
         if first:
             lot.first_sell_mins, lot.first_sell_ts = first[0], first[1]

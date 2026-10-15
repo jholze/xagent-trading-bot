@@ -283,7 +283,13 @@ class Hub:
         n_loss = sum(
             1 for e in exits if (e.get("gain_pct") is not None and e["gain_pct"] < 0)
         )
-        total_pnl = sum(float(e.get("pnl_usdt") or 0) for e in exits if e.get("price"))
+        from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+        total_pnl = sum(
+            mark_pnl_or_exclude(e.get("pnl_usdt"), where="gate_ws_dashboard")
+            for e in exits
+            if e.get("price")
+        )
         total_notional = sum(
             float(e.get("notional_usdt") or 0) for e in exits if e.get("price")
         )

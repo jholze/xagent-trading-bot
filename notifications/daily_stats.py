@@ -182,7 +182,12 @@ def filled_order_to_trade(order: dict) -> dict | None:
         usdt_f = 0.0
     pnl = order.get("pnl")
     if isinstance(pnl, dict):
-        pnl = pnl.get("usdt") or pnl.get("realized") or pnl.get("pnl")
+        picked = None
+        for key in ("usdt", "realized", "pnl"):
+            if key in pnl and pnl.get(key) is not None:
+                picked = pnl.get(key)
+                break
+        pnl = picked
     ts_raw = (order.get("timestamps") or {}).get("filled") or (
         order.get("timestamps") or {}
     ).get("created")
@@ -615,7 +620,11 @@ def window_stats(bot_dir: Path, since: datetime, until: datetime) -> dict:
         1 for t in window_trades
         if t["type"] == "BUY" and str(t.get("source", "")).lower() == "dca"
     )
-    sell_pnl = sum((t.get("pnl") or 0) for t in window_trades if t["type"] in ("SELL", "COVER"))
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    sell_pnl = sum(
+        pnl_for_sum(t) for t in window_trades if t["type"] in ("SELL", "COVER")
+    )
     filled_orders = sum(1 for o in window_orders if o["status"] == "filled")
     rejected_orders = sum(1 for o in window_orders if o["status"] == "rejected")
     open_count, pos_value = open_positions_summary(bot_dir)

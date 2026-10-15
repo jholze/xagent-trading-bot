@@ -1329,6 +1329,10 @@ class GateExecutionAdapter(ExecutionAdapter):
         estimated_cost = 0.0
         est_source = ""
         est_rate = 0.0
+        if saw_estimate and estimate_notional <= 0:
+            # A sibling trade that needs an estimate but has no notional must
+            # not be booked as a zero fee next to a settled USDT leg.
+            return {"_unresolved": True}
         if saw_estimate and estimate_notional > 0:
             est = self._estimate_swap_notional(estimate_notional)
             if est is None:
@@ -1338,8 +1342,6 @@ class GateExecutionAdapter(ExecutionAdapter):
             # is still the max-rule rate, which is at least that rate.
             est_source = "config_conservative" if saw_gt else str(est["source"])
             est_rate = float(est["rate"])
-        elif saw_estimate and not saw_settled:
-            return {"_unresolved": True}
 
         if not saw_settled and not saw_estimate:
             return None
@@ -2241,6 +2243,14 @@ class GateExecutionAdapter(ExecutionAdapter):
                     "ERROR",
                 )
         quote_gross = float(raw.get("cost") or 0) or fill_price * filled
+        fee_usdt = 0.0
+        est = None
+        # Unknown currency, a non-USDT order fee, and an unresolved trade
+        # all land here. Short and cover must not book that as a zero fee.
+        if order.type in ("SHORT", "COVER"):
+            est = self._estimate_swap_notional(quote_gross)
+            if est is not None:
+                fee_usdt = float(est["cost"])
         fill = Fill(
             side="sell" if str(side).lower() == "sell" else "buy",
             order_type="market",
@@ -2251,10 +2261,14 @@ class GateExecutionAdapter(ExecutionAdapter):
             quote_gross=quote_gross,
             quote_net=quote_gross,
             fee_base=0.0,
-            fee_quote=0.0,
-            fee_usdt=0.0,
+            fee_quote=fee_usdt,
+            fee_usdt=fee_usdt,
             slippage_usdt=abs(fill_price - float(order.price or 0)) * filled,
         )
+        if est is not None and fee_usdt > 0:
+            fill = fill_with_rate_fraction(
+                fill, source=str(est["source"]), rate=float(est["rate"]),
+            )
         return fill, True
 
     def _finalize_exchange_order(
@@ -2456,7 +2470,11 @@ class GateExecutionAdapter(ExecutionAdapter):
             fee_unknown=fee_unknown,
         )
         result.exchange_order_id = order.exchange_order_id
-        result.fee = fill.fee_usdt if fill is not None else 0.0
+        # fill.fee_usdt is the order's cumulative fee. SHORT/COVER pnl and
+        # the trade row already use this fill's increment (result.fee).
+        # Overwriting it would store the cumulative on the order ledger.
+        if order.type not in ("SHORT", "COVER"):
+            result.fee = fill.fee_usdt if fill is not None else 0.0
         result.order_status = status
         result.filled_qty = filled  # GROSS: ccxt filled (exchange reconciliation)
         result.amount = fill.qty_net  # NET: qty owned; matches the position book

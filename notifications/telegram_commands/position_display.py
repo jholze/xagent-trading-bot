@@ -591,7 +591,9 @@ def _position_metrics(p: dict, price: float) -> dict:
         if is_short(p):
             side = "short"
             snap = snapshot(p, price)
-            unreal = float(snap.get("pnl") or 0)
+            from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+            unreal = mark_pnl_or_exclude(snap.get("pnl"), where="position_display")
             margin = float(snap.get("margin") or 0)
             value_usdt = margin + unreal
             unreal_pct = float(snap.get("roe_pct") or 0)
@@ -922,7 +924,18 @@ def format_sell_trade_detail(result) -> str:
     amount = float(result.amount or 0)
     price = float(result.price or 0)
     usdt = float(result.usdt_amount or 0)
-    pnl = float(result.pnl or 0) if result.pnl is not None else 0.0
+    if result.pnl is None:
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        pnl = pnl_for_sum({
+            "pnl": None,
+            "symbol": sym,
+            "usdt_amount": usdt,
+            "fee": getattr(result, "fee", None),
+            "open_fee_usdt": getattr(result, "open_fee_usdt", None),
+        })
+    else:
+        pnl = float(result.pnl)
     ticker = sym.replace("/USDT", "")
     from notifications.coin_links import format_ticker_html
 

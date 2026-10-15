@@ -1065,7 +1065,10 @@ def _record_batch_fill(
     )
     ledger_id = str(created.get("id") or "")
     usdt = float(getattr(sell_result, "usdt_amount", 0) or 0) or (fill_price * filled)
-    pnl = float(getattr(sell_result, "pnl", 0) or 0)
+    # Explicit None stays missing. A missing attribute keeps the old 0.0 so a
+    # batch fill that never computed pnl is unchanged.
+    raw_pnl = getattr(sell_result, "pnl", 0)
+    pnl = None if raw_pnl is None else float(raw_pnl)
     fee = float(getattr(sell_result, "fee", 0) or 0)
     booked = float(getattr(sell_result, "amount", 0) or 0) or filled
     result = TradeResult(

@@ -123,10 +123,10 @@ def _fee_usdt(order: dict) -> float:
 
 
 def _order_pnl(order: dict) -> float:
-    raw = order.get("pnl")
-    if isinstance(raw, dict):
-        raw = raw.get("usdt", raw.get("realized", raw.get("pnl")))
-    return _as_float(raw)
+    """Realized pnl for a sum. Missing pnl is the two-sided fee loss, not 0."""
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    return pnl_for_sum(order)
 
 
 def percentile(values: Iterable[float], p: float) -> float | None:

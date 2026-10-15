@@ -76,11 +76,16 @@ def compute_live_metrics(
         window_trades.append(trade)
         if trade.get("type") == "SELL":
             sells.append(trade)
-            pnl = float(trade.get("pnl") or 0)
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            pnl = pnl_for_sum(trade)
             pnl_by_source[source] = pnl_by_source.get(source, 0.0) + pnl
 
-    sell_pnl = sum(float(t.get("pnl") or 0) for t in sells)
-    wins = sum(1 for t in sells if float(t.get("pnl") or 0) > 0)
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    sell_pnls = [pnl_for_sum(t) for t in sells]
+    sell_pnl = sum(sell_pnls)
+    wins = sum(1 for value in sell_pnls if value > 0)
     win_rate = (wins / len(sells) * 100.0) if sells else 0.0
 
     orders = _load_orders(scope)

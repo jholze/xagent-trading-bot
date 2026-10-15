@@ -28,6 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from storage.order_ledger_v2 import pnl_for_sum  # noqa: E402
 os.environ.setdefault("DEMO_MODE", "1")
 
 import ccxt  # noqa: E402
@@ -665,8 +667,8 @@ def gainer_coverage(
             buys = [t for t in st.trades if t.get("side") == "buy" and t.get("symbol") == sym]
             sells = [t for t in st.trades if t.get("side") == "sell" and t.get("symbol") == sym]
             opens = [t for t in st.trades if t.get("side") == "open" and t.get("symbol") == sym]
-            realized = sum(float(t.get("pnl") or 0) for t in sells)
-            open_mtm = sum(float(t.get("pnl") or 0) for t in opens)
+            realized = sum(pnl_for_sum(t) for t in sells)
+            open_mtm = sum(pnl_for_sum(t) for t in opens)
             first_buy = buys[0]["ts"] if buys else None
             first_score = buys[0].get("entry_score") if buys else None
             max_sell_peak = max((float(t.get("peak_gain_pct") or 0) for t in sells), default=0.0)
@@ -1138,18 +1140,20 @@ def print_stats(st: SimStats) -> None:
         for t in st.top_trades[:8]:
             if t.get("side") != "sell":
                 continue
+            shown = pnl_for_sum(t)
             print(
-                f"    {t['symbol']:14} pnl=${t['pnl']:+7.0f} ({t['pnl_pct']:+5.1f}%) "
+                f"    {t['symbol']:14} pnl=${shown:+7.0f} ({t['pnl_pct']:+5.1f}%) "
                 f"peak={t['peak_gain_pct']:5.1f}% hold={t['hold_h']:5.0f}h via {t['reason']}"
             )
         print("  worst sells:")
         sells = [t for t in st.top_trades if t.get("side") == "sell"]
         # top_trades is best then worst — show last few negative
         for t in sells[-5:]:
-            if t["pnl"] >= 0:
+            shown = pnl_for_sum(t)
+            if shown >= 0:
                 continue
             print(
-                f"    {t['symbol']:14} pnl=${t['pnl']:+7.0f} ({t['pnl_pct']:+5.1f}%) "
+                f"    {t['symbol']:14} pnl=${shown:+7.0f} ({t['pnl_pct']:+5.1f}%) "
                 f"hold={t['hold_h']:5.0f}h via {t['reason']}"
             )
 
@@ -1352,19 +1356,19 @@ def main() -> int:
                 if t.get("side") == "sell" and "expand" in str(t.get("reason") or "")
             ]
             if exp_sells:
-                exp_sells_s = sorted(exp_sells, key=lambda x: float(x.get("pnl") or 0), reverse=True)
+                exp_sells_s = sorted(exp_sells, key=lambda x: pnl_for_sum(x), reverse=True)
                 print("  expand sells (best/worst):")
                 for t in exp_sells_s[:5]:
                     print(
-                        f"    {t['symbol']:14} pnl=${float(t['pnl']):+.0f} "
+                        f"    {t['symbol']:14} pnl=${pnl_for_sum(t):+.0f} "
                         f"({float(t.get('pnl_pct') or 0):+.1f}%) "
                         f"hold={float(t.get('hold_h') or 0):.0f}h {t.get('reason')}"
                     )
                 for t in exp_sells_s[-3:]:
-                    if float(t.get("pnl") or 0) >= 0:
+                    if pnl_for_sum(t) >= 0:
                         continue
                     print(
-                        f"    {t['symbol']:14} pnl=${float(t['pnl']):+.0f} "
+                        f"    {t['symbol']:14} pnl=${pnl_for_sum(t):+.0f} "
                         f"({float(t.get('pnl_pct') or 0):+.1f}%) "
                         f"hold={float(t.get('hold_h') or 0):.0f}h {t.get('reason')}"
                     )

@@ -14,6 +14,8 @@ os.environ.setdefault("DEMO_MODE", "1")
 
 import ccxt
 
+from storage.order_ledger_v2 import pnl_for_sum
+
 from data_manager import load_orders, load_trade_history_document
 from historical_prices import _bars_in_range, _fetch_ohlcv_range, clear_cache
 from strategies.positions import load_positions, is_open_position, positions
@@ -222,7 +224,7 @@ def main():
             if next_buy_ts and sts >= next_buy_ts:
                 continue
             sells.append(s)
-        realized = sum(float(s.get("pnl") or 0) for s in sells)
+        realized = sum(pnl_for_sum(s) for s in sells)
         last_sell = max((parse_ts((s.get("timestamps") or {}).get("filled")) for s in sells), default=None)
         entry_price, entry_usdt = resolve_entry_basis(sym, tf, ts, next_buy_ts, orders, px, usdt)
         lots.append({
@@ -282,7 +284,7 @@ def main():
         rows.append({**lot, **new, "old_pnl": old["sim_pnl"], "actual": actual, "mark": mark})
 
     realized_30d = sum(
-        float(o.get("pnl") or 0)
+        pnl_for_sum(o)
         for o in orders
         if (o.get("side") or "").lower() == "sell"
         and (t := parse_ts((o.get("timestamps") or {}).get("filled") or (o.get("timestamps") or {}).get("created")))

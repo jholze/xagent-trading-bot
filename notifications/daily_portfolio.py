@@ -182,8 +182,14 @@ def today_activity_stats(
 
 
 def realized_pnl_for(trade_list: list) -> float:
+    from storage.order_ledger_v2 import pnl_for_sum
+
     return round(
-        sum(float(t.get("pnl") or 0) for t in trade_list if t.get("type") == "SELL"),
+        sum(
+            pnl_for_sum(t)
+            for t in trade_list
+            if t.get("type") == "SELL"
+        ),
         2,
     )
 

@@ -1422,7 +1422,7 @@ def _reconcile_scoped_trade_history(
         history["virtual_balance"] = computed_cash
         changed = True
     stored_pnl = history.get("realized_pnl")
-    if stored_pnl is None or abs(float(stored_pnl or 0) - computed_pnl) > 0.01:
+    if stored_pnl is None or abs(float(stored_pnl) - computed_pnl) > 0.01:
         history["realized_pnl"] = computed_pnl
         changed = True
     open_pos = count_open_positions_from_orders(scope, tenant_id=tid)
@@ -1476,14 +1476,18 @@ def compute_sim_cash_from_trades(trades: list, initial: float = 5000.0) -> float
                 continue
             balance -= margin
         elif typ == "COVER":
-            balance += _trade_margin_usdt(trade) + float(trade.get("pnl") or 0)
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            balance += _trade_margin_usdt(trade) + pnl_for_sum(trade)
     return round(max(0.0, balance), 8)
 
 
 def compute_sim_realized_pnl(trades: list) -> float:
+    from storage.order_ledger_v2 import pnl_for_sum
+
     return round(
         sum(
-            float(t.get("pnl") or 0)
+            pnl_for_sum(t)
             for t in (trades or [])
             if str(t.get("type") or "").upper() in ("SELL", "COVER")
         ),
@@ -1636,7 +1640,9 @@ def record_live_trade(trade):
     if is_live_dry_run(cfg):
         history = _ensure_live_virtual_balance(history, cfg)
     elif trade.get("type") == "SELL":
-        history["total_pnl"] = history.get("total_pnl", 0) + trade.get("pnl", 0)
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        history["total_pnl"] = history.get("total_pnl", 0) + pnl_for_sum(trade)
         history["realized_pnl"] = history["total_pnl"]
     save_live_trade_history(history)
     return history
@@ -1649,13 +1655,18 @@ def record_trade(trade):
     if typ == "BUY":
         history["virtual_balance"] = max(0, history["virtual_balance"] - trade.get("usdt_amount", 0))
     elif typ == "SELL":
+        from storage.order_ledger_v2 import pnl_for_sum
+
         history["virtual_balance"] += trade.get("usdt_received", 0)
-        history["realized_pnl"] += trade.get("pnl", 0)
+        history["realized_pnl"] += pnl_for_sum(trade)
     elif typ == "SHORT":
         history["virtual_balance"] = max(0, float(history.get("virtual_balance") or 0) - _trade_margin_usdt(trade))
     elif typ == "COVER":
-        history["virtual_balance"] = float(history.get("virtual_balance") or 0) + _trade_margin_usdt(trade) + float(trade.get("pnl") or 0)
-        history["realized_pnl"] = float(history.get("realized_pnl") or 0) + float(trade.get("pnl") or 0)
+        from storage.order_ledger_v2 import pnl_for_sum
+
+        cover_pnl = pnl_for_sum(trade)
+        history["virtual_balance"] = float(history.get("virtual_balance") or 0) + _trade_margin_usdt(trade) + cover_pnl
+        history["realized_pnl"] = float(history.get("realized_pnl") or 0) + cover_pnl
     try:
         from strategies.positions import count_open_positions
         history["open_positions"] = count_open_positions()

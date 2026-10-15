@@ -203,7 +203,9 @@ def _format_lot_line(idx: int, lot: dict[str, Any]) -> str:
     ticker = _esc(str(lot.get("symbol") or ""))
     amount = float(lot.get("amount") or 0)
     price = float(lot.get("price") or 0)
-    pnl = float(lot.get("pnl") or 0)
+    from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+    pnl = mark_pnl_or_exclude(lot.get("pnl"), where="pause_lot")
     notional = float(lot.get("notional") or 0)
     line = (
         f"{idx}. <code>{ticker}</code>  Menge <code>{amount:.4f}</code>  "
@@ -219,7 +221,11 @@ def _format_preview(lots: list[dict[str, Any]]) -> str:
     sellable = [row for row in lots if not row.get("locked")]
     locked_n = len(lots) - len(sellable)
     total_notional = sum(float(row.get("notional") or 0) for row in sellable)
-    total_pnl = sum(float(row.get("pnl") or 0) for row in sellable)
+    from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+    total_pnl = sum(
+        mark_pnl_or_exclude(row.get("pnl"), where="pause_sellable") for row in sellable
+    )
     total_cost = sum(float(row.get("cost") or 0) for row in sellable)
     lines = [t("panic_title"), ""]
     for i, lot in enumerate(lots, 1):

@@ -109,7 +109,12 @@ def format_attribution_html(summary: dict) -> str:
             t(
                 "attribution_row",
                 name=_esc(row.get("name") or "?"),
-                pnl=signed_money(float(row.get("pnl") or 0), decimals=2),
+                pnl=signed_money(
+                    __import__(
+                        "storage.order_ledger_v2", fromlist=["pnl_for_sum"]
+                    ).pnl_for_sum(row),
+                    decimals=2,
+                ),
                 n=int(row.get("n") or 0),
                 wr=f"{float(row.get('win_rate') or 0):.0f}%",
             )
@@ -121,7 +126,12 @@ def format_attribution_html(summary: dict) -> str:
             t(
                 "attribution_row",
                 name=_esc(row.get("name") or "?"),
-                pnl=signed_money(float(row.get("pnl") or 0), decimals=2),
+                pnl=signed_money(
+                    __import__(
+                        "storage.order_ledger_v2", fromlist=["pnl_for_sum"]
+                    ).pnl_for_sum(row),
+                    decimals=2,
+                ),
                 n=int(row.get("n") or 0),
                 wr=f"{float(row.get('win_rate') or 0):.0f}%",
             )

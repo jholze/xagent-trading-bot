@@ -60,6 +60,8 @@ from typing import Any, Callable, Iterator
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from storage.order_ledger_v2 import pnl_for_sum  # noqa: E402
+
 CACHE_DIR = ROOT / "auswertungen" / "cache" / "correlated_tier"
 OUT_DIR = ROOT / "auswertungen" / "gis"
 
@@ -1738,7 +1740,7 @@ def sharpe_like(trades: list[dict[str, Any]]) -> float:
         else:
             usdt = float(t.get("usdt_received") or 0)
             if usdt > 0:
-                rets.append(float(t.get("pnl") or 0) / usdt)
+                rets.append(pnl_for_sum(t) / usdt)
     if len(rets) > 1:
         mean_r = sum(rets) / len(rets)
         var = sum((r - mean_r) ** 2 for r in rets) / (len(rets) - 1)
@@ -1756,7 +1758,7 @@ def _group_breakdown(trades: list[dict[str, Any]]) -> dict[str, Any]:
             by[str(t.get("group") or "crypto_market")].append(t)
     out: dict[str, Any] = {}
     for name, rows in by.items():
-        pnls = [float(t.get("pnl") or 0) for t in rows]
+        pnls = [pnl_for_sum(t) for t in rows]
         nets = [float(t.get("net_pct") or 0) for t in rows]
         wins = [p for p in pnls if p > 0]
         out[name] = {
@@ -1813,7 +1815,7 @@ def summarize_run(
         }
 
     rets = [float(t.get("net_pct") or 0) for t in sells]
-    pnls = [float(t.get("pnl") or 0) for t in sells]
+    pnls = [pnl_for_sum(t) for t in sells]
     wins = [r for r in rets if r > 0]
     rets_sorted = sorted(rets)
     peak = knobs.start_equity
@@ -2180,7 +2182,7 @@ def aggregate_trades_by_regime(
 
     out: dict[str, Any] = {}
     for name, rows in buckets.items():
-        pnls = [float(t.get("pnl") or 0) for t in rows]
+        pnls = [pnl_for_sum(t) for t in rows]
         nets = [float(t.get("net_pct") or 0) for t in rows]
         by_g = _group_breakdown(rows)
         out[name] = {

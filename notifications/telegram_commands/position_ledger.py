@@ -205,8 +205,9 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
                 take = min(sell_qty, lot.remaining)
                 lot.remaining -= take
                 sell_qty -= take
-            pnl = order.get("pnl")
-            realized = float(pnl) if pnl is not None else None
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            realized = pnl_for_sum(order)
             events.append(
                 _Event(
                     kind="cover" if side == "cover" else "sell",
@@ -239,7 +240,12 @@ def replay_position_events(orders: list[dict], *, mark_price: float) -> list[dic
             "cycle": ev.cycle,
         }
         if is_exit:
-            row["realized_usd"] = ev.realized_usd if ev.realized_usd is not None else 0.0
+            if ev.realized_usd is None:
+                from storage.order_ledger_v2 import pnl_for_sum
+
+                row["realized_usd"] = pnl_for_sum({"pnl": None})
+            else:
+                row["realized_usd"] = ev.realized_usd
             if ev.cycle_closed:
                 row["cycle_closed"] = True
         elif ev.lot:
@@ -297,7 +303,18 @@ def events_for_cycle(events: list[dict], cycle: int) -> list[dict]:
 
 
 def cycle_realized_usd(events: list[dict]) -> float:
-    return sum(float(ev.get("realized_usd", 0) or 0) for ev in events if ev.get("kind") == "sell")
+    from storage.order_ledger_v2 import pnl_for_sum
+
+    total = 0.0
+    for ev in events:
+        if ev.get("kind") != "sell":
+            continue
+        raw = ev.get("realized_usd", 0)
+        if raw is None:
+            total += pnl_for_sum(ev if isinstance(ev, dict) else {"pnl": None})
+        else:
+            total += float(raw)
+    return total
 
 
 def cycle_unreal_usd(events: list[dict]) -> float:
@@ -326,7 +343,13 @@ def format_event_line(ev: dict) -> str:
     icon = _event_icon(ev.get("kind", ""), label, realized_for_icon)
 
     if ev.get("kind") == "sell" or label == "Cover":
-        realized = float(ev.get("realized_usd", 0) or 0)
+        raw_realized = ev.get("realized_usd")
+        if raw_realized is None:
+            from storage.order_ledger_v2 import pnl_for_sum
+
+            realized = pnl_for_sum({"pnl": None})
+        else:
+            realized = float(raw_realized)
         return (
             f"{icon} {label} · <b>${usdt:,.0f}</b> @{price} · {ts} · {source} · "
             f"real <b>${realized:+.0f}</b>"
@@ -397,7 +420,9 @@ def build_position_trade_tree(
             from strategies.short_math import snapshot
 
             snap = snapshot(position, mark)
-            unreal = float(snap.get("pnl") or 0)
+            from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+            unreal = mark_pnl_or_exclude(snap.get("pnl"), where="position_ledger")
             value_usdt = float(snap.get("margin") or 0) + unreal
         except Exception:
             unreal = (entry - mark) * amount if mark > 0 else cycle_unreal_usd(events)

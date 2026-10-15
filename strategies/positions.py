@@ -142,8 +142,12 @@ _CACHE_FIELDS = (
     "venue_min_merge_logged",
     # #679: opening fee on a short lot. load_positions overlays only these
     # fields, so a restart would otherwise drop the fee deserialize restored.
+    # open_fee_tracked marks a lot opened after #685. It is written in the
+    # same flush as the lot, so a crash before the fee field lands still
+    # identifies the lot (C5).
     "open_fee_usdt",
     "open_fee_estimated",
+    "open_fee_tracked",
 )
 
 # #651 K3.4 / F7: one list for the new-entry reset and the cache merge.
@@ -470,6 +474,8 @@ def _deserialize_position(raw: dict) -> dict:
             out["open_fee_usdt"] = 0.0
     if raw.get("open_fee_estimated"):
         out["open_fee_estimated"] = True
+    if raw.get("open_fee_tracked"):
+        out["open_fee_tracked"] = True
     if raw.get("venue_min_state"):
         out["venue_min_state"] = raw.get("venue_min_state")
     if raw.get("venue_min_brake"):
@@ -574,6 +580,8 @@ def _serialize_positions() -> dict:
             data["positions"][tf]["open_fee_usdt"] = open_fee
         if p.get("open_fee_estimated"):
             data["positions"][tf]["open_fee_estimated"] = True
+        if p.get("open_fee_tracked"):
+            data["positions"][tf]["open_fee_tracked"] = True
         if p.get("venue_min_state"):
             data["positions"][tf]["venue_min_state"] = p.get("venue_min_state")
         if p.get("venue_min_brake"):
@@ -1728,6 +1736,7 @@ def update_position(
     short_recipe: str | None = None,
     exit_source: str | None = None,
     fee_estimated: bool = False,
+    open_fee_tracked: bool = False,
 ):
     global _open_positions_count
     _activate(_resolve_store_key())
@@ -1884,6 +1893,13 @@ def update_position(
                     pos.pop("short_recipe", None)
                     pos.pop("exit_source", None)
             pos["side"] = "short"
+            # Marker shares this flush. A new open drops a stale fee so a
+            # crash before set_position_field leaves the key absent.
+            if open_fee_tracked and not adding:
+                pos.pop("open_fee_usdt", None)
+                pos.pop("open_fee_estimated", None)
+            if open_fee_tracked:
+                pos["open_fee_tracked"] = True
             if leverage:
                 pos["leverage"] = float(leverage)
             elif not pos.get("leverage"):

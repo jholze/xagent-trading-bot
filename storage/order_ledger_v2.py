@@ -248,6 +248,21 @@ def order_notional_usdt(order: dict) -> float:
         price = float(exe.get("price") or req.get("price") or 0)
         amount = float(exe.get("amount") or req.get("amount") or 0)
     except (TypeError, ValueError):
+        price = 0.0
+        amount = 0.0
+    if price > 0 and amount > 0:
+        return price * amount
+    for key in ("usdt_amount", "usdt_received"):
+        try:
+            usdt = float(order.get(key) or 0)
+        except (TypeError, ValueError):
+            usdt = 0.0
+        if usdt > 0:
+            return usdt
+    try:
+        price = float(order.get("price") or 0)
+        amount = float(order.get("amount") or 0)
+    except (TypeError, ValueError):
         return 0.0
     if price > 0 and amount > 0:
         return price * amount
@@ -404,11 +419,45 @@ def _missing_pnl_charge(order: dict) -> float:
         close_fee = est
     charged = float(open_fee) + float(close_fee)
     if charged <= 0:
-        charged = est * 2
-    if charged <= 0:
         logger.error("order_pnl_missing_unpriced id=%s", _order_ref(order))
+        # Only this unpriced fallback. A priced missing-pnl charge does not.
+        order["needs_reconcile"] = True
         charged = 1e-12
     return -abs(charged)
+
+
+def mark_pnl_or_exclude(value: object, *, where: str) -> float:
+    """Unrealized mark. None is excluded and logged, not booked as a zero trade."""
+    if value is None or value == "":
+        logger.error("unrealized_pnl_missing where=%s", where)
+        return 0.0
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.error("unrealized_pnl_missing where=%s", where)
+        return 0.0
+
+
+def pnl_for_sum(row: dict) -> float:
+    """Number to add when a row's pnl is summed.
+
+    A real number, including 0, is that number. Missing pnl is not 0: it is
+    the two-sided fee loss from ``_missing_pnl_charge`` (stored fees, or the
+    config taker rate on each side). An ERROR is logged for that substitute.
+    """
+    if not isinstance(row, dict):
+        logger.error("order_pnl_missing_charged id=?")
+        return -1e-12
+    value, missing = _order_pnl_or_missing(row)
+    if not missing:
+        return float(value or 0)
+    charged = _missing_pnl_charge(row)
+    logger.error(
+        "order_pnl_missing_charged id=%s charged=%s",
+        _order_ref(row),
+        charged,
+    )
+    return charged
 
 
 def order_is_pnl_tracked(order: dict) -> bool:
@@ -507,7 +556,7 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
             continue
         pnl, missing = _order_pnl_or_missing(o)
         if missing:
-            charged = _missing_pnl_charge(o)
+            charged = pnl_for_sum(o)
             counts["pnl_missing"] += 1
             counts["realized_pnl"] += charged
             logger.warning(
@@ -520,8 +569,8 @@ def stats_from_filled_orders(orders: Iterable[dict]) -> dict:
             if side == "sell":
                 counts["sell_losses"] += 1
             continue
-        counts["realized_pnl"] += float(pnl or 0)
-        pnl = float(pnl or 0)
+        counts["realized_pnl"] += float(pnl)
+        pnl = float(pnl)
         if pnl > 0:
             counts["wins"] += 1
             if side == "sell":

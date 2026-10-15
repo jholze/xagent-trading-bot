@@ -7,6 +7,7 @@ from core.costs import (
     Fill,
     fee_rate_field,
     read_rate_fraction,
+    swap_taker_estimate_rate,
     trade_cost_fields,
     write_rate_fraction,
 )
@@ -123,6 +124,34 @@ def _row_qty(row: dict) -> float:
         return 0.0
 
 
+def _lot_open_fee(config, pos: dict, lot_qty: float, entry: float) -> tuple[float, bool]:
+    """Stored opening fee, or a max-rule estimate when a tracked lot lost it.
+
+    A missing ``open_fee_usdt`` on a lot opened after #685 is not zero (C5).
+    Legacy lots have no marker and stay at 0. The bool is True when the
+    number was estimated (or could not be, which still needs reconcile).
+    """
+    tracked = bool(pos.get("open_fee_tracked"))
+    if not tracked or "open_fee_usdt" in pos:
+        try:
+            return float(pos.get("open_fee_usdt") or 0), False
+        except (TypeError, ValueError):
+            return 0.0, False
+    picked = swap_taker_estimate_rate(config)
+    try:
+        notional = float(lot_qty) * float(entry)
+    except (TypeError, ValueError):
+        notional = 0.0
+    if not picked or notional <= 0:
+        log("open_fee_unresolved tracked lot has no rate or notional", "ERROR")
+        return 0.0, True
+    rate = float(picked[0])
+    if rate <= 0:
+        log("open_fee_unresolved tracked lot has no positive rate", "ERROR")
+        return 0.0, True
+    return notional * rate, True
+
+
 def _row_fee(row: dict) -> float:
     for key in ("fee_usdt", "fee"):
         raw = row.get(key)
@@ -137,6 +166,13 @@ def _row_fee(row: dict) -> float:
 
 def _replay_result(symbol: str, typ: str, order_id: str, rows: list[dict]) -> TradeResult:
     last = rows[-1] if rows else {}
+    if not isinstance(last, dict) or "pnl" not in last or last.get("pnl") is None:
+        replay_pnl = None
+    else:
+        try:
+            replay_pnl = float(last.get("pnl"))
+        except (TypeError, ValueError):
+            replay_pnl = None
     result = TradeResult(
         True,
         typ,
@@ -144,7 +180,7 @@ def _replay_result(symbol: str, typ: str, order_id: str, rows: list[dict]) -> Tr
         amount=float(_row_qty(last)),
         price=float(last.get("price") or 0),
         usdt_amount=float(last.get("usdt_amount") or last.get("usdt_received") or 0),
-        pnl=float(last.get("pnl") or 0),
+        pnl=replay_pnl,
         order_id=order_id or "",
         fee=float(_row_fee(last)),
         message="already booked",
@@ -433,6 +469,7 @@ class PortfolioService:
             leverage=lev,
             short_recipe=short_recipe,
             exit_source=exit_source,
+            open_fee_tracked=True,
         )
         set_position_field(symbol, timeframe, "open_fee_usdt", open_fee)
         set_position_field(symbol, timeframe, "open_fee_estimated", open_est)
@@ -465,6 +502,9 @@ class PortfolioService:
         result = TradeResult(
             True, "SHORT", symbol, amount=amount, price=price, usdt_amount=notional,
             order_id=order_id or "", fee=float(fee_slice or 0),
+            # A short open has no realized pnl. The dataclass default 0.0 would
+            # store a fake zero on the order row.
+            pnl=None,
         )
         result.fee_estimated = bool(fee_estimated)
         result.fee_rate_source = str(fee_rate_source or "")
@@ -528,7 +568,8 @@ class PortfolioService:
         qty = float(cover_qty) if cover_qty and cover_qty > 0 else lot_qty
         qty = min(qty, lot_qty)
         entry = float(pos.get("average_entry") or price)
-        lot_open_fee = float(pos.get("open_fee_usdt") or 0)
+        # Missing key on a post-#685 lot is estimated. Do not read it as 0.
+        lot_open_fee, open_fee_missing = _lot_open_fee(self.config, pos, lot_qty, entry)
         open_share = lot_open_fee * (qty / lot_qty) if lot_qty > _QTY_EPS else 0.0
         if open_share < 0:
             open_share = 0.0
@@ -562,11 +603,14 @@ class PortfolioService:
         if not still_open:
             set_position_field(symbol, timeframe, "open_fee_estimated", False)
         flush_positions(force=True)
+        open_estimated = (
+            bool(pos.get("open_fee_estimated")) or open_fee_missing
+        ) and open_share > 0
         fee_fields = {
             "fee": float(close_fee or 0),
             "fee_usdt": float(close_fee or 0),
             "open_fee_usdt": open_share,
-            "open_fee_estimated": bool(pos.get("open_fee_estimated")) and open_share > 0,
+            "open_fee_estimated": open_estimated,
             "fee_estimated": bool(fee_estimated),
             "fee_rate_source": str(fee_rate_source or ""),
             **fee_rate_field(rate),
@@ -598,7 +642,9 @@ class PortfolioService:
         result.fee_rate_source = str(fee_rate_source or "")
         write_rate_fraction(result, rate)
         result.open_fee_usdt = open_share
-        result.open_fee_estimated = bool(pos.get("open_fee_estimated")) and open_share > 0
+        result.open_fee_estimated = open_estimated
+        if open_fee_missing:
+            result.needs_reconcile = True
         return result
 
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:

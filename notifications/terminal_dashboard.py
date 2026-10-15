@@ -19,7 +19,21 @@ def _win_rate(history: dict) -> str:
     sells = [t for t in history.get("trades", []) if t.get("type") == "SELL" and "pnl" in t]
     if not sells:
         return "—"
-    wins = sum(1 for t in sells if t.get("pnl", 0) > 0)
+    wins = 0
+    for trade in sells:
+        raw = trade.get("pnl")
+        if raw is None:
+            from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+            mark_pnl_or_exclude(None, where="terminal_win_rate")
+            continue
+        try:
+            if float(raw) > 0:
+                wins += 1
+        except (TypeError, ValueError):
+            from storage.order_ledger_v2 import mark_pnl_or_exclude
+
+            mark_pnl_or_exclude(raw, where="terminal_win_rate")
     return f"{wins / len(sells) * 100:.0f}%"
 
 
