@@ -566,6 +566,7 @@ class PortfolioService:
             "fee": float(close_fee or 0),
             "fee_usdt": float(close_fee or 0),
             "open_fee_usdt": open_share,
+            "open_fee_estimated": bool(pos.get("open_fee_estimated")) and open_share > 0,
             "fee_estimated": bool(fee_estimated),
             "fee_rate_source": str(fee_rate_source or ""),
             **fee_rate_field(rate),
@@ -597,6 +598,7 @@ class PortfolioService:
         result.fee_rate_source = str(fee_rate_source or "")
         write_rate_fraction(result, rate)
         result.open_fee_usdt = open_share
+        result.open_fee_estimated = bool(pos.get("open_fee_estimated")) and open_share > 0
         return result
 
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:

@@ -18,6 +18,10 @@ from typing import Any, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
+# Present only on sell/cover rows written by this code. Legacy rows lack it
+# and do not feed the entry block.
+PNL_TRACKED_FIELD = "pnl_tracked"
+
 from core.models import OrderStatus, is_executed_status
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
@@ -402,8 +406,47 @@ def _missing_pnl_charge(order: dict) -> float:
     if charged <= 0:
         charged = est * 2
     if charged <= 0:
+        logger.error("order_pnl_missing_unpriced id=%s", _order_ref(order))
         charged = 1e-12
     return -abs(charged)
+
+
+def order_is_pnl_tracked(order: dict) -> bool:
+    """True when this sell/cover row was written with the #679 marker."""
+    if not isinstance(order, dict):
+        return False
+    if order.get(PNL_TRACKED_FIELD):
+        return True
+    exe = order.get("execution")
+    return isinstance(exe, dict) and bool(exe.get(PNL_TRACKED_FIELD))
+
+
+def split_missing_pnl(orders: Iterable[dict]) -> tuple[int, int]:
+    """(tracked, legacy) filled sell/cover rows whose pnl is missing.
+
+    Only ``tracked`` blocks new buys and shorts. ``legacy`` is reported and
+    ignored: those rows were written before the marker existed.
+    """
+    tracked = 0
+    legacy = 0
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        raw_status = o.get("status")
+        if raw_status is not None and not is_executed_status(raw_status):
+            continue
+        side = _token(o.get("side"))
+        spec = _SIDE_STATS.get(side)
+        if spec is None or not spec[2]:
+            continue
+        _pnl, missing = _order_pnl_or_missing(o)
+        if not missing:
+            continue
+        if order_is_pnl_tracked(o):
+            tracked += 1
+        else:
+            legacy += 1
+    return tracked, legacy
 
 
 def stats_from_filled_orders(orders: Iterable[dict]) -> dict:

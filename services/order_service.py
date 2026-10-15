@@ -456,6 +456,7 @@ class OrderService:
         error: str = None,
         pnl: float = None,
         risk: dict = None,
+        stamp: dict | None = None,
     ) -> Optional[dict]:
         data = self._load()
         record = self._find(data, order_id=order_id)
@@ -474,6 +475,9 @@ class OrderService:
             record["pnl"] = pnl
         if risk:
             record["risk"] = {**record.get("risk", {}), **risk}
+        if stamp:
+            for key, val in stamp.items():
+                record[key] = val
         self._save(data)
         self._dual_write_v2(record)
         return record
@@ -1104,6 +1108,10 @@ class OrderService:
     def link_execution_result(self, order_id: str, result: TradeResult, approved_order: TradeOrder = None) -> None:
         if not order_id:
             return
+        # Marker and needs_reconcile share this call's update_status save.
+        # A later save would leave a filled row the entry block can see and
+        # recovery will not pick up.
+        stamp = _sell_cover_stamp(result, approved_order)
         if result.executed and approved_order:
             data = self._load()
             record = self._find(data, order_id=order_id)
@@ -1184,6 +1192,7 @@ class OrderService:
                 st,
                 execution=execution,
                 pnl=float(result.pnl) if result.pnl is not None else None,
+                stamp=stamp,
             )
             basis = str(getattr(result, "pnl_basis", "") or "")
             fee_src = str(getattr(result, "pnl_fee_source", "") or "")
@@ -1253,6 +1262,26 @@ class OrderService:
             "approved_usdt": approved_usdt,
             "checked_at": _now(),
         }
+
+
+def _sell_cover_stamp(result: TradeResult, approved_order: TradeOrder | None) -> dict:
+    """Fields written in the same save as a new sell or cover fill."""
+    if not getattr(result, "executed", False):
+        return {}
+    side = ""
+    if approved_order is not None:
+        side = str(getattr(approved_order, "type", "") or "")
+    if not side:
+        side = str(getattr(result, "order_type", "") or "")
+    if side.upper() not in ("SELL", "COVER"):
+        return {}
+    from storage.order_ledger_v2 import PNL_TRACKED_FIELD
+
+    stamp = {PNL_TRACKED_FIELD: True}
+    if getattr(result, "pnl", None) is None:
+        result.needs_reconcile = True
+        stamp["needs_reconcile"] = True
+    return stamp
 
 
 def _leverage_payload(order: TradeOrder | None) -> dict:

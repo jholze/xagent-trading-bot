@@ -43,6 +43,35 @@ _GATE_TEXT_ALLOWED = frozenset(
 # ccxt adds these as extra fee entries. They must not make a USDT fee "mixed".
 _NON_USDT_FEE_CCY = frozenset({"GT", "GATEPOINT"})
 
+
+def _fee_entry_signature(fee: dict) -> tuple[str, object]:
+    return (str(fee.get("currency") or "").strip().upper(), fee.get("cost"))
+
+
+def _trade_fee_entries(trade: dict) -> list[dict]:
+    """Fee legs on one ccxt trade.
+
+    ccxt 4.5 puts every leg in ``fees`` and, when there is more than one,
+    leaves ``fee`` as ``{cost: None}``. A single leg is copied into both.
+    Count each leg once.
+    """
+    fees = trade.get("fees") if isinstance(trade, dict) else None
+    entries = [item for item in fees if isinstance(item, dict)] if isinstance(fees, list) else []
+    fee = trade.get("fee") if isinstance(trade, dict) else None
+    if not isinstance(fee, dict):
+        return entries
+    if not entries:
+        return [fee]
+    if any(item is fee for item in entries):
+        return entries
+    sig = _fee_entry_signature(fee)
+    if any(_fee_entry_signature(item) == sig for item in entries):
+        return entries
+    # Empty placeholder next to real legs is not a second fee.
+    if fee.get("cost") is None or fee.get("cost") == "":
+        return entries
+    return [*entries, fee]
+
 # R4 market cache on the existing adapter path. Tests install an override;
 # production fills the cache from load_markets. No second market client.
 _VENUE_CACHE: dict[str, dict] = {}
@@ -1149,14 +1178,64 @@ class GateExecutionAdapter(ExecutionAdapter):
             return None
         return {"cost": cost, "source": source, "rate": float(rate)}
 
+    def _estimated_fee_payload(self, notional_usdt: float, *, source_override: str = "") -> dict:
+        est = self._estimate_swap_notional(notional_usdt)
+        if est is None:
+            return {"_unresolved": True}
+        source = source_override or str(est["source"])
+        return {
+            "cost": est["cost"],
+            "currency": "USDT",
+            "fee_estimated": True,
+            "fee_rate_source": source,
+            **fee_rate_field(est["rate"]),
+        }
+
+    def _raw_notional_usdt(self, order: TradeOrder, raw: dict | None) -> float:
+        raw = raw if isinstance(raw, dict) else {}
+        try:
+            cost = float(raw.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        if cost > 0:
+            return cost
+        try:
+            px = float(raw.get("average") or raw.get("price") or order.price or 0)
+            filled = float(raw.get("filled") or 0)
+        except (TypeError, ValueError):
+            px, filled = 0.0, 0.0
+        if px > 0 and filled > 0:
+            return px * filled
+        try:
+            return float(order.usdt_amount or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _trade_notional_usdt(self, trade: dict, fill_price: float) -> float:
+        try:
+            cost = float(trade.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        if cost > 0:
+            return cost
+        try:
+            px = float(trade.get("price") or 0) or float(fill_price or 0)
+            amt = abs(float(trade.get("amount") or 0))
+        except (TypeError, ValueError):
+            return 0.0
+        if px > 0 and amt > 0:
+            return px * amt
+        return 0.0
+
     def _fees_from_my_trades(
         self, exchange, order: TradeOrder, raw: dict, lookup_symbol: str
     ) -> dict | None:
         matched = self._fetch_matched_my_trades(
             exchange, order, raw, lookup_symbol=lookup_symbol
         )
+        # No matching trade is not a zero fee (V1). Estimate, or stay unresolved.
         if not matched:
-            return None
+            return self._estimated_fee_payload(self._raw_notional_usdt(order, raw))
         base, _, quote = str(order.symbol).partition("/")
         quote_u = (quote.split(":")[0] or "USDT").upper()
         base_u = base.upper()
@@ -1167,57 +1246,71 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         fee_quote = 0.0
         saw_settled = False
-        saw_null = False
-        saw_ignored = False
+        saw_estimate = False
+        saw_gt = False
         unknown_ccy: set[str] = set()
-        null_notional = 0.0
-        ignored_notional = 0.0
-        total_notional = 0.0
+        estimate_notional = 0.0
 
         for t in matched:
-            try:
-                trade_cost = float(t.get("cost") or 0)
-            except (TypeError, ValueError):
-                trade_cost = 0.0
-            total_notional += trade_cost
+            if not isinstance(t, dict):
+                continue
             px = fill_price
             if px <= 0:
                 try:
                     px = float(t.get("price") or 0)
                 except (TypeError, ValueError):
                     px = 0.0
-            fee = t.get("fee") if isinstance(t.get("fee"), dict) else None
-            raw_cost = fee.get("cost") if isinstance(fee, dict) else None
-            # Null or missing cost is not a zero fee (R2). Do not use `or 0`.
-            if (
-                not isinstance(fee, dict)
-                or "cost" not in fee
-                or raw_cost is None
-                or raw_cost == ""
-            ):
-                saw_null = True
-                null_notional += trade_cost
-                continue
-            try:
-                cost = float(raw_cost)
-            except (TypeError, ValueError) as e:
-                log(f"swap trade fee parse failed: {e}", "WARNING")
-                continue
-            ccy = str(fee.get("currency") or "").strip().upper()
-            if not ccy:
-                continue
-            if ccy in _NON_USDT_FEE_CCY:
-                saw_ignored = True
-                ignored_notional += trade_cost
-                continue
-            if ccy == quote_u or ccy == "USDT":
-                fee_quote += cost
+            notional = self._trade_notional_usdt(t, px)
+            entries = _trade_fee_entries(t)
+            quote_add = 0.0
+            positive = False
+            gt = False
+            needs_estimate = False
+            if not entries:
+                needs_estimate = True
+            for fee in entries:
+                raw_cost = fee.get("cost") if isinstance(fee, dict) else None
+                # Null or missing cost is not a zero fee (R2). Do not use `or 0`.
+                if not isinstance(fee, dict) or "cost" not in fee or raw_cost is None or raw_cost == "":
+                    needs_estimate = True
+                    continue
+                try:
+                    cost = float(raw_cost)
+                except (TypeError, ValueError) as e:
+                    log(f"swap trade fee parse failed: {e}", "WARNING")
+                    needs_estimate = True
+                    continue
+                # An explicit 0 is not a settled fee (V1). Estimate that trade.
+                if cost == 0:
+                    needs_estimate = True
+                    continue
+                ccy = str(fee.get("currency") or "").strip().upper()
+                if not ccy:
+                    needs_estimate = True
+                    continue
+                if ccy in _NON_USDT_FEE_CCY:
+                    gt = True
+                    continue
+                if ccy == quote_u or ccy == "USDT":
+                    quote_add += cost
+                    positive = True
+                elif ccy == base_u:
+                    quote_add += fee_usdt_from_legs(cost, 0.0, px)
+                    positive = True
+                else:
+                    unknown_ccy.add(ccy)
+            if unknown_ccy:
+                break
+            if positive:
+                # R9b: a USDT leg on this trade is the fee. GT beside it is not added.
+                fee_quote += quote_add
                 saw_settled = True
-            elif ccy == base_u:
-                fee_quote += fee_usdt_from_legs(cost, 0.0, px)
-                saw_settled = True
-            else:
-                unknown_ccy.add(ccy)
+                continue
+            if gt or needs_estimate:
+                saw_estimate = True
+                if gt:
+                    saw_gt = True
+                estimate_notional += notional
 
         if unknown_ccy:
             log(
@@ -1226,43 +1319,35 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
             return None
 
-        # Only GT/point: estimate the USDT fee. Do not call the book mixed.
-        if saw_ignored and not saw_settled and not saw_null:
+        if saw_gt:
             log(
                 f"futures_fee_non_usdt order_id={order.order_id or ''} "
                 f"symbol={order.symbol}",
                 "WARNING",
             )
-            est = self._estimate_swap_notional(ignored_notional or total_notional)
-            if est is None:
-                return {"_unresolved": True}
-            return {
-                "cost": est["cost"],
-                "currency": "USDT",
-                "fee_estimated": True,
-                # R9b: this path is the conservative estimate, not a GT conversion.
-                "fee_rate_source": "config_conservative",
-                **fee_rate_field(est["rate"]),
-            }
 
         estimated_cost = 0.0
         est_source = ""
         est_rate = 0.0
-        if saw_null:
-            est = self._estimate_swap_notional(null_notional)
+        if saw_estimate and estimate_notional > 0:
+            est = self._estimate_swap_notional(estimate_notional)
             if est is None:
                 return {"_unresolved": True}
             estimated_cost = float(est["cost"])
-            est_source = str(est["source"])
+            # R9b labels a GT/point estimate config_conservative. The number
+            # is still the max-rule rate, which is at least that rate.
+            est_source = "config_conservative" if saw_gt else str(est["source"])
             est_rate = float(est["rate"])
+        elif saw_estimate and not saw_settled:
+            return {"_unresolved": True}
 
-        if not saw_settled and not saw_null:
+        if not saw_settled and not saw_estimate:
             return None
         total = fee_quote + estimated_cost
-        if total == 0 and not saw_null:
+        if total == 0 and not saw_estimate:
             return None
         out = {"cost": total, "currency": "USDT"}
-        if saw_null:
+        if estimated_cost > 0:
             out["fee_estimated"] = True
             out["fee_rate_source"] = est_source
             out.update(fee_rate_field(est_rate))
@@ -2578,6 +2663,12 @@ class GateExecutionAdapter(ExecutionAdapter):
         }
         if fill is not None:
             rec.update(trade_cost_fields(fill))
+        # trade_cost_fields writes the order's cumulative fee_usdt. The live
+        # row has to store this fill's increment, or the next delta sums
+        # cumulatives and under-books (B1).
+        if order.type in ("SHORT", "COVER"):
+            rec["fee"] = booked_fee
+            rec["fee_usdt"] = booked_fee
         if order.type in ("SHORT", "COVER"):
             from strategies.positions import get_position
             from strategies.short_math import margin_usdt
@@ -2606,6 +2697,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                     local.executed
                 )
                 rec["open_fee_usdt"] = float(getattr(local, "open_fee_usdt", 0) or 0)
+                if getattr(local, "open_fee_estimated", False):
+                    rec["open_fee_estimated"] = True
         if order.type in ("SHORT", "COVER") and (
             getattr(local, "fee_estimated", False)
             or (fill is not None and getattr(fill, "fee_estimated", False))

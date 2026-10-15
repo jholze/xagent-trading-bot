@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.config import BotConfig
-from core.models import OrderStatus, TradeOrder
+from core.models import OrderStatus, TradeOrder, TradeResult
 from core.tenant_context import tenant_context
 from data_manager import load_trade_history, save_orders
 from execution.gate_adapter import GateExecutionAdapter
@@ -337,7 +337,7 @@ def test_t3_no_positive_rate_stays_fee_unknown(monkeypatch):
 
 
 def test_t4_recovery_keeps_needs_reconcile_for_unknown_and_estimated():
-    adapter, ex = _adapter()
+    adapter, ex = _adapter(_cfg(fee_taker_pct=0, fee_taker_conservative_pct=0))
     with tenant_context("default", scope="demo"):
         svc = OrderService("demo")
         unknown = _active_order(
@@ -358,6 +358,7 @@ def test_t4_recovery_keeps_needs_reconcile_for_unknown_and_estimated():
         assert stored.get("needs_reconcile") is True
         assert stored.get("fee_unknown") is True
 
+        estimated_adapter, ex = _adapter()
         estimated = _active_order(
             svc, typ="SHORT", symbol="EST/USDT", qty=2, price=50, usdt=100, ex_id="ex-est",
         )
@@ -376,8 +377,8 @@ def test_t4_recovery_keeps_needs_reconcile_for_unknown_and_estimated():
         _resolve_in_flight_orders(
             [svc.get_by_id(estimated["id"])],
             exchange=ex,
-            adapter=adapter,
-            config=adapter.config,
+            adapter=estimated_adapter,
+            config=estimated_adapter.config,
             scope="demo",
         )
         stored_est = svc.get_by_id(estimated["id"])
@@ -542,6 +543,29 @@ def test_t10_base_fee_converts_at_fill_price():
     assert result.fee == pytest.approx(qty_fee * price)
 
 
+def _ccxt_swap_trade(**fields) -> dict:
+    """Real ccxt.gate parse_trade output. No network."""
+    import ccxt
+
+    gate = ccxt.gate()
+    trade = {
+        "id": "1",
+        "contract": "SYN_USDT",
+        "order_id": "ex-gt",
+        "size": -2,
+        "price": "100",
+        "role": "taker",
+        "fee": "0",
+        "fee_currency": "USDT",
+        "gt_fee": "0",
+        "point_fee": "0",
+    }
+    trade.update(fields)
+    parsed = gate.parse_trade(trade)
+    parsed["order"] = fields.get("order_id", trade["order_id"])
+    return parsed
+
+
 def test_t11_gt_and_point_do_not_mix_out_usdt_fee(monkeypatch):
     logs: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -554,32 +578,26 @@ def test_t11_gt_and_point_do_not_mix_out_usdt_fee(monkeypatch):
         "SHORT", symbol, 100.0, 2.0, usdt_amount=200.0, source="manual", order_id="gt-1",
     )
     raw = _closed_raw(filled=2, oid="ex-gt", fee=None, cost=200)
-    ex.fetch_my_trades.return_value = [
-        {"order": "ex-gt", "cost": 200.0, "price": 100.0, "fee": {"cost": 0.2, "currency": "USDT"}},
-        {"order": "ex-gt", "cost": 200.0, "price": 100.0, "fee": {"cost": 0.01, "currency": "GT"}},
-        {"order": "ex-gt", "cost": 0.0, "price": 100.0, "fee": {"cost": 1.0, "currency": "GATEPOINT"}},
-    ]
+    # Same trade: USDT leg plus GT. The USDT leg is the fee.
+    mixed = _ccxt_swap_trade(fee="0.15", gt_fee="0.01", size=-2, price="100")
+    ex.fetch_my_trades.return_value = [mixed]
     with tenant_context("default", scope="demo"):
         result = adapter._finalize_exchange_order(
             ex, order, raw, side="sell", qty=2, timeframe=TF,
         )
     assert result.fee_unknown is False
-    assert result.fee == pytest.approx(0.2)
+    assert result.fee == pytest.approx(0.15)
     assert result.fee_estimated is not True
 
+    # Pure GT fill: fee cost 0 plus a GT leg. Estimate the notional.
     only, only_ex = _adapter()
     only_order = TradeOrder(
         "SHORT", "GTONLY/USDT", 100.0, 2.0, usdt_amount=200.0, source="manual", order_id="gt-2",
     )
-    only_ex.fetch_my_trades.return_value = [
-        {
-            "order": "ex-gtonly",
-            "cost": 200.0,
-            "price": 100.0,
-            "takerOrMaker": "taker",
-            "fee": {"cost": 0.05, "currency": "GT"},
-        }
-    ]
+    pure = _ccxt_swap_trade(
+        id="2", order_id="ex-gtonly", fee="0", gt_fee="0.05", size=-2, price="100",
+    )
+    only_ex.fetch_my_trades.return_value = [pure]
     raw_only = _closed_raw(filled=2, oid="ex-gtonly", fee=None, cost=200)
     with tenant_context("default", scope="demo"):
         estimated = only._finalize_exchange_order(
@@ -591,30 +609,48 @@ def test_t11_gt_and_point_do_not_mix_out_usdt_fee(monkeypatch):
     assert estimated.needs_reconcile is True
     assert any("futures_fee_non_usdt" in msg for _level, msg in logs)
 
+    # One USDT trade and one GT-only trade: the GT notional is not booked as 0.
+    both, both_ex = _adapter()
+    both_order = TradeOrder(
+        "SHORT", "GTMIX/USDT", 100.0, 3.0, usdt_amount=300.0, source="manual", order_id="gt-3",
+    )
+    usdt_leg = _ccxt_swap_trade(
+        id="3", order_id="ex-mix", fee="0.10", gt_fee="0", size=-1, price="100",
+    )
+    gt_leg = _ccxt_swap_trade(
+        id="4", order_id="ex-mix", fee="0", gt_fee="0.04", size=-2, price="100",
+    )
+    both_ex.fetch_my_trades.return_value = [usdt_leg, gt_leg]
+    raw_both = _closed_raw(filled=3, oid="ex-mix", fee=None, cost=300)
+    with tenant_context("default", scope="demo"):
+        mixed_orders = both._finalize_exchange_order(
+            both_ex, both_order, raw_both, side="sell", qty=3, timeframe=TF,
+        )
+    assert mixed_orders.fee_estimated is True
+    assert mixed_orders.fee == pytest.approx(0.10 + 200.0 * RATE)
+    assert mixed_orders.fee > 0.10
 
-def _stamp_missing_pnl(order_id: str = "miss-1", pnl=None) -> None:
+
+def _stamp_missing_pnl(order_id: str = "miss-1", pnl=None, *, tracked: bool = True) -> None:
     from services import order_service
+    from storage.order_ledger_v2 import PNL_TRACKED_FIELD
 
     now = datetime.now().isoformat()
     order_service._ORDERS_READ_CACHE.clear()
-    save_orders(
-        {
-            "ledger_scope": "demo",
-            "orders": [
-                {
-                    "id": order_id,
-                    "status": "filled",
-                    "side": "cover",
-                    "symbol": "MISS/USDT",
-                    "ledger_scope": "demo",
-                    "pnl": pnl,
-                    "execution": {"usdt": 500.0, "price": 10.0, "amount": 50.0},
-                    "timestamps": {"created": now, "filled": now, "updated": now},
-                }
-            ],
-        },
-        "demo",
-    )
+    row = {
+        "id": order_id,
+        "status": "filled",
+        "side": "cover",
+        "symbol": "MISS/USDT",
+        "ledger_scope": "demo",
+        "pnl": pnl,
+        "needs_reconcile": pnl is None,
+        "execution": {"usdt": 500.0, "price": 10.0, "amount": 50.0},
+        "timestamps": {"created": now, "filled": now, "updated": now},
+    }
+    if tracked:
+        row[PNL_TRACKED_FIELD] = True
+    save_orders({"ledger_scope": "demo", "orders": [row]}, "demo")
     order_service._ORDERS_READ_CACHE.clear()
 
 
@@ -680,3 +716,373 @@ def test_t12_missing_pnl_blocks_entries_not_exits_and_lifts():
         )
         assert lifted.code != "pnl_missing"
         assert lifted.approved is True, lifted.message
+
+
+def _live_ledger(monkeypatch):
+    """Live trade rows stay in memory. Paper history is not the booking source."""
+    rows: list[dict] = []
+
+    def _uses(_mode=None):
+        return True
+
+    def _record(trade):
+        rows.append(dict(trade))
+
+    def _load():
+        return {"trades": list(rows)}
+
+    monkeypatch.setattr("data_manager.uses_exchange_ledger", _uses)
+    monkeypatch.setattr("execution.gate_adapter.uses_exchange_ledger", _uses)
+    monkeypatch.setattr("execution.gate_adapter.record_live_trade", _record)
+    monkeypatch.setattr("data_manager.load_live_trade_history", _load)
+    return rows
+
+
+def _live_rows(rows: list[dict], order_id: str, typ: str) -> list[dict]:
+    return [
+        row for row in rows
+        if str(row.get("order_id") or "") == order_id
+        and str(row.get("type") or "").upper() == typ
+    ]
+
+
+def test_live_three_partials_book_each_fee_increment(monkeypatch):
+    rows = _live_ledger(monkeypatch)
+    adapter, _ex = _adapter()
+    symbol = "LIVE/USDT"
+    order = TradeOrder(
+        "SHORT", symbol, 100.0, 10.0, usdt_amount=1000.0, source="manual", order_id="live-s",
+    )
+    reports = [(2.0, 0.20, "open"), (5.0, 0.50, "open"), (10.0, 1.00, "closed")]
+    with tenant_context("default", scope="demo"):
+        for filled, fee, status in reports:
+            raw = _closed_raw(
+                filled=filled, oid="ex-live-s", fee={"cost": fee, "currency": "USDT"}, status=status,
+            )
+            adapter._finalize_exchange_order(_ex, order, raw, side="sell", qty=10, timeframe=TF)
+        again = _closed_raw(
+            filled=10, oid="ex-live-s", fee={"cost": 1.00, "currency": "USDT"}, status="closed",
+        )
+        adapter._finalize_exchange_order(_ex, order, again, side="sell", qty=10, timeframe=TF)
+        lot = get_position(symbol, TF)
+        booked = _live_rows(rows, "live-s", "SHORT")
+        assert len(booked) == 3
+        assert [float(row["fee_usdt"]) for row in booked] == pytest.approx([0.20, 0.30, 0.50])
+        assert [float(row["fee"]) for row in booked] == pytest.approx([0.20, 0.30, 0.50])
+        assert sum(float(row["amount"]) for row in booked) == pytest.approx(10)
+        assert float(lot["open_fee_usdt"]) == pytest.approx(1.00)
+        assert float(lot["amount"]) == pytest.approx(10)
+
+        update_position("LIVC/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        cover = TradeOrder(
+            "COVER", "LIVC/USDT", 90.0, 10.0, usdt_amount=900.0, source="manual", order_id="live-c",
+        )
+        cover_reports = [(4.0, 0.20, "open"), (7.0, 0.45, "open"), (10.0, 0.80, "closed")]
+        for filled, fee, status in cover_reports:
+            raw = _closed_raw(
+                filled=filled,
+                oid="ex-live-c",
+                average=90.0,
+                fee={"cost": fee, "currency": "USDT"},
+                status=status,
+                cost=filled * 90.0,
+            )
+            adapter._finalize_exchange_order(
+                _ex, cover, raw, side="buy", qty=10, timeframe=TF,
+            )
+        replay = _closed_raw(
+            filled=10, oid="ex-live-c", average=90.0, fee={"cost": 0.80, "currency": "USDT"},
+            status="closed", cost=900.0,
+        )
+        adapter._finalize_exchange_order(_ex, cover, replay, side="buy", qty=10, timeframe=TF)
+        cover_rows = _live_rows(rows, "live-c", "COVER")
+        assert len(cover_rows) == 3
+        assert [float(row["fee_usdt"]) for row in cover_rows] == pytest.approx([0.20, 0.25, 0.35])
+        assert sum(float(row["amount"]) for row in cover_rows) == pytest.approx(10)
+        assert float(get_position("LIVC/USDT", TF).get("amount") or 0) == pytest.approx(0)
+
+
+def test_cover_partial_then_remainder(monkeypatch):
+    rows = _live_ledger(monkeypatch)
+    adapter, _ex = _adapter()
+    with tenant_context("default", scope="demo"):
+        update_position("CREM/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        cover = TradeOrder(
+            "COVER", "CREM/USDT", 90.0, 10.0, usdt_amount=900.0, source="manual", order_id="crem-1",
+        )
+        first = _closed_raw(
+            filled=4, oid="ex-crem", average=90, fee={"cost": 0.30, "currency": "USDT"},
+            status="open", cost=360,
+        )
+        adapter._finalize_exchange_order(_ex, cover, first, side="buy", qty=10, timeframe=TF)
+        second = _closed_raw(
+            filled=10, oid="ex-crem", average=90, fee={"cost": 0.75, "currency": "USDT"},
+            status="closed", cost=900,
+        )
+        adapter._finalize_exchange_order(_ex, cover, second, side="buy", qty=10, timeframe=TF)
+        booked = _live_rows(rows, "crem-1", "COVER")
+        assert len(booked) == 2
+        assert sum(float(row["amount"]) for row in booked) == pytest.approx(10)
+        assert float(get_position("CREM/USDT", TF).get("amount") or 0) == pytest.approx(0)
+
+
+def test_v1_missing_and_zero_fee_are_estimated_on_open_and_close():
+    adapter, ex = _adapter()
+    ex.fetch_my_trades.return_value = []
+    short = TradeOrder(
+        "SHORT", "V1S/USDT", 100.0, 10.0, usdt_amount=1000.0, source="manual", order_id="v1-s",
+    )
+    raw = _closed_raw(filled=10, oid="ex-v1s", fee=None, cost=1000)
+    with tenant_context("default", scope="demo"):
+        opened = adapter._finalize_exchange_order(
+            ex, short, raw, side="sell", qty=10, timeframe=TF,
+        )
+        lot = get_position("V1S/USDT", TF)
+    assert opened.fee_estimated is True
+    assert opened.needs_reconcile is True
+    assert opened.fee == pytest.approx(1000.0 * RATE)
+    assert float(lot["open_fee_usdt"]) == pytest.approx(1000.0 * RATE)
+
+    zero_ad, zero_ex = _adapter()
+    zero_ex.fetch_my_trades.return_value = [
+        {
+            "order": "ex-v1z",
+            "cost": 1000.0,
+            "price": 100.0,
+            "amount": 10.0,
+            "fee": {"cost": 0, "currency": "USDT"},
+        }
+    ]
+    zero_order = TradeOrder(
+        "SHORT", "V1Z/USDT", 100.0, 10.0, usdt_amount=1000.0, source="manual", order_id="v1-z",
+    )
+    zero_raw = _closed_raw(
+        filled=10, oid="ex-v1z", fee={"cost": 0, "currency": "USDT"}, cost=1000,
+    )
+    with tenant_context("default", scope="demo"):
+        zeroed = zero_ad._finalize_exchange_order(
+            zero_ex, zero_order, zero_raw, side="sell", qty=10, timeframe=TF,
+        )
+    assert zeroed.fee_estimated is True
+    assert zeroed.needs_reconcile is True
+    assert zeroed.fee == pytest.approx(1000.0 * RATE)
+    assert float(get_position("V1Z/USDT", TF)["open_fee_usdt"]) == pytest.approx(1000.0 * RATE)
+
+    cover_ad, cover_ex = _adapter()
+    cover_ex.fetch_my_trades.return_value = []
+    with tenant_context("default", scope="demo"):
+        update_position("V1C/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        cover = TradeOrder(
+            "COVER", "V1C/USDT", 90.0, 10.0, usdt_amount=900.0, source="manual", order_id="v1-c",
+        )
+        cover_raw = _closed_raw(
+            filled=10, oid="ex-v1c", average=90, fee=None, cost=900,
+        )
+        closed = cover_ad._finalize_exchange_order(
+            cover_ex, cover, cover_raw, side="buy", qty=10, timeframe=TF,
+        )
+        gross = unrealized_pnl("short", 10, 100, 90)
+        assert closed.fee_estimated is True
+        assert closed.needs_reconcile is True
+        assert closed.fee == pytest.approx(900.0 * RATE)
+        assert closed.pnl == pytest.approx(gross - 900.0 * RATE)
+
+        update_position("V1D/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        zero_cover_ex_trades = [
+            {
+                "order": "ex-v1d",
+                "cost": 900.0,
+                "price": 90.0,
+                "amount": 10.0,
+                "fee": {"cost": 0, "currency": "USDT"},
+            }
+        ]
+    zero_cover_ad, zero_cover_ex = _adapter()
+    zero_cover_ex.fetch_my_trades.return_value = zero_cover_ex_trades
+    zero_cover = TradeOrder(
+        "COVER", "V1D/USDT", 90.0, 10.0, usdt_amount=900.0, source="manual", order_id="v1-d",
+    )
+    zero_cover_raw = _closed_raw(
+        filled=10, oid="ex-v1d", average=90, fee={"cost": 0, "currency": "USDT"}, cost=900,
+    )
+    with tenant_context("default", scope="demo"):
+        zero_closed = zero_cover_ad._finalize_exchange_order(
+            zero_cover_ex, zero_cover, zero_cover_raw, side="buy", qty=10, timeframe=TF,
+        )
+    assert zero_closed.fee_estimated is True
+    assert zero_closed.needs_reconcile is True
+    assert zero_closed.fee == pytest.approx(900.0 * RATE)
+    assert zero_closed.pnl == pytest.approx(gross - 900.0 * RATE)
+
+
+def test_c1_legacy_missing_pnl_does_not_block_and_marker_is_same_write(monkeypatch):
+    import copy
+
+    from services import order_service
+    from storage.order_ledger_v2 import PNL_TRACKED_FIELD
+
+    cfg = _cfg()
+    rm = RiskManager(cfg)
+    logs: list[str] = []
+    monkeypatch.setattr("logger.log", lambda msg, level="INFO": logs.append(str(msg)))
+    with tenant_context("default", scope="demo"):
+        _stamp_missing_pnl(order_id="legacy-1", pnl=None, tracked=False)
+        buy = rm.evaluate(
+            TradeOrder("BUY", "LEGX/USDT", 1.0, 0, usdt_amount=25, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert buy.code != "pnl_missing"
+        assert buy.approved is True, buy.message
+        short = rm.evaluate(
+            TradeOrder("SHORT", "LEGS/USDT", 1.0, 0, usdt_amount=50, source="manual", leverage=2),
+            TF,
+            source="manual",
+        )
+        assert short.code != "pnl_missing"
+        assert short.approved is True, short.message
+        assert any(msg.startswith("pnl_missing_legacy count=") for msg in logs)
+
+        _stamp_missing_pnl(order_id="new-1", pnl=None, tracked=True)
+        blocked = rm.evaluate(
+            TradeOrder("BUY", "LEGX/USDT", 1.0, 0, usdt_amount=25, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert blocked.approved is False
+        assert blocked.code == "pnl_missing"
+
+        snapshots: list[dict] = []
+        real_save = order_service.save_orders
+
+        def _spy(data, scope):
+            snapshots.append(copy.deepcopy(data))
+            return real_save(data, scope)
+
+        monkeypatch.setattr(order_service, "save_orders", _spy)
+        svc = OrderService("demo")
+        created = svc.create_from_request(
+            TradeOrder("SELL", "SYN/USDT", 2.0, 1.0, usdt_amount=2.0, source="manual"),
+            status=OrderStatus.ACTIVE,
+            timeframe=TF,
+        )
+        snapshots.clear()
+        filled = TradeResult(True, "SELL", "SYN/USDT", amount=1.0, price=2.0, usdt_amount=2.0)
+        filled.pnl = None
+        filled.order_status = OrderStatus.EXECUTED
+        approved = TradeOrder("SELL", "SYN/USDT", 2.0, 1.0, usdt_amount=2.0, source="manual")
+        svc.link_execution_result(created["id"], filled, approved)
+        filled_saves = []
+        for snap in snapshots:
+            for row in snap.get("orders") or []:
+                if row.get("id") == created["id"] and row.get("status") == "filled":
+                    filled_saves.append(row)
+                    break
+        assert filled_saves, "sell fill was not saved"
+        first = filled_saves[0]
+        assert first.get(PNL_TRACKED_FIELD) is True
+        assert first.get("needs_reconcile") is True
+        assert first.get("pnl") is None
+
+
+def test_v2_recovery_writes_pnl_and_lifts_the_block():
+    from services import order_service
+    from storage.order_ledger_v2 import PNL_TRACKED_FIELD
+
+    cfg = _cfg()
+    rm = RiskManager(cfg)
+    adapter, ex = _adapter(cfg)
+    with tenant_context("default", scope="demo"):
+        update_position("LIFT/USDT", TF, "SHORT", 100.0, 10.0, leverage=2)
+        svc = OrderService("demo")
+        rec = _active_order(
+            svc, typ="COVER", symbol="LIFT/USDT", qty=10, price=90, usdt=900, ex_id="ex-lift",
+        )
+        data = svc._load()
+        stored = svc._find(data, order_id=rec["id"])
+        stored[PNL_TRACKED_FIELD] = True
+        stored["needs_reconcile"] = True
+        stored["status"] = "filled"
+        stored.pop("pnl", None)
+        svc._save(data)
+        order_service._ORDERS_READ_CACHE.clear()
+        blocked = rm.evaluate(
+            TradeOrder("BUY", "LIFTN/USDT", 1.0, 0, usdt_amount=25, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert blocked.code == "pnl_missing"
+        ex.fetch_order.return_value = _closed_raw(
+            filled=10, oid="ex-lift", average=90, fee={"cost": 0.2, "currency": "USDT"}, cost=900,
+        )
+        _resolve_in_flight_orders(
+            [svc.get_by_id(rec["id"])],
+            exchange=ex,
+            adapter=adapter,
+            config=cfg,
+            scope="demo",
+        )
+        order_service._ORDERS_READ_CACHE.clear()
+        after = svc.get_by_id(rec["id"])
+        assert after.get("pnl") is not None
+        lifted = rm.evaluate(
+            TradeOrder("BUY", "LIFTN/USDT", 1.0, 0, usdt_amount=25, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert lifted.code != "pnl_missing"
+        assert lifted.approved is True, lifted.message
+
+
+def test_pnl_missing_fail_closed_even_when_guards_log(monkeypatch):
+    cfg = _cfg()
+    raw = dict(cfg.raw)
+    risk = dict(raw.get("risk") or {})
+    risk["fail_closed_guards"] = "log"
+    raw["risk"] = risk
+    cfg = BotConfig(raw)
+    rm = RiskManager(cfg)
+
+    def _boom():
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(rm, "_filled_pnl_missing_count", lambda: _boom())
+    with tenant_context("default", scope="demo"):
+        update_position("LONGX/USDT", TF, "BUY", 1.0, 20)
+        update_position("SHRTX/USDT", TF, "SHORT", 1.0, 8, leverage=2)
+        buy = rm.evaluate(
+            TradeOrder("BUY", "NEWX/USDT", 1.0, 0, usdt_amount=25, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert buy.approved is False
+        assert buy.code == "pnl_missing"
+        short = rm.evaluate(
+            TradeOrder("SHORT", "NEWSH/USDT", 1.0, 0, usdt_amount=50, source="manual", leverage=2),
+            TF,
+            source="manual",
+        )
+        assert short.approved is False
+        assert short.code == "pnl_missing"
+        stop = rm.evaluate(
+            TradeOrder(
+                "SELL",
+                "LONGX/USDT",
+                0.8,
+                5,
+                signal="SELL_STOP_FULL",
+                source="auto",
+                exit_source="stop_loss",
+            ),
+            TF,
+            source="auto",
+        )
+        assert stop.code != "pnl_missing"
+        assert stop.approved is True, stop.message
+        cover = rm.evaluate(
+            TradeOrder("COVER", "SHRTX/USDT", 0.9, 4, source="manual"),
+            TF,
+            source="manual",
+        )
+        assert cover.code != "pnl_missing"
+        assert cover.approved is True, cover.message

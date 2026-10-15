@@ -2213,25 +2213,46 @@ class RiskManager:
         )
 
     def _filled_pnl_missing_count(self) -> int:
-        """Filled sell/cover rows whose pnl is missing or unparseable."""
+        """Marked sell/cover rows whose pnl is still missing.
+
+        Legacy rows without the marker are counted in a log line and do not
+        block. This check does not read ``fail_closed_guards``.
+        """
         from data_manager import resolve_ledger_scope
+        from logger import log
         from services.order_service import OrderService
-        from storage.order_ledger_v2 import stats_from_filled_orders
+        from storage.order_ledger_v2 import split_missing_pnl
 
         scope = resolve_ledger_scope(getattr(self.config, "trading_mode", None))
         orders = OrderService(scope)._scoped_orders_newest_first(mutate=False)
-        stats = stats_from_filled_orders(orders or [])
-        return int(stats.get("pnl_missing") or 0)
+        tracked, legacy = split_missing_pnl(orders or [])
+        if legacy > 0:
+            log(f"pnl_missing_legacy count={legacy}", "WARNING")
+        return int(tracked)
 
     def _missing_pnl_entry_block(self, order=None) -> RiskDecision | None:
-        """Block new exposure while a fill's pnl is still unresolved (#679 K2)."""
+        """Block new exposure while a marked fill's pnl is unresolved (#679 K2).
+
+        Buys and shorts only. A raise blocks those entries even when
+        ``fail_closed_guards`` is ``log``. Sells, covers, and stops do not
+        enter this function from ``_evaluate_impl``.
+        """
         kind = str(getattr(order, "type", "") or "").upper()
         if kind not in ("BUY", "SHORT"):
             return None
         try:
             missing = self._filled_pnl_missing_count()
         except Exception as exc:
-            return self._guard_failed("pnl_missing", exc, order)
+            from logger import log
+
+            symbol = getattr(order, "symbol", "") or ""
+            log(f"risk guard pnl_missing failed {symbol}: {exc}", "ERROR")
+            return RiskDecision(
+                approved=False,
+                message=f"pnl_missing check failed: {exc}"[:200],
+                code="pnl_missing",
+                size_multiplier=0.0,
+            )
         if missing <= 0:
             return None
         return RiskDecision(
