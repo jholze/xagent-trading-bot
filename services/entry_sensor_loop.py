@@ -112,7 +112,8 @@ def _shadow_log(
     sensor_policy_source: str,
     price_batch: dict | None = None,
     candidate_cache: dict | None = None,
-    gate_cache: dict | None = None,
+    market_cap_usd: float | None = None,
+    quote_volume_24h_usdt: float | None = None,
 ) -> None:
     """Shadow annotation uses live 4h RSI — not the snapshot stored at set_watch."""
     tf = str(coin.get("timeframe") or "4h")
@@ -141,7 +142,8 @@ def _shadow_log(
             config_raw=raw,
             price_batch=price_batch,
             candidate_cache=candidate_cache,
-            gate_cache=gate_cache,
+            market_cap_usd=market_cap_usd,
+            quote_volume_24h_usdt=quote_volume_24h_usdt,
             sensor_cfg=cfg,
         )
     elif result.rationale:
@@ -218,29 +220,16 @@ def _poll_once(orchestrator) -> None:
 
     watched = _sort_watched_for_poll(watched) if watched else []
     symbols = [w["symbol"] for w in watched]
-    for sym in extra_symbols:
-        if sym not in symbols:
-            symbols.append(sym)
     gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
     ex = get_bot_config().exchange
     price_source = "gate_spot_last" if gate_only else "fallback"
-    # For now still use gate batch if gate_only (legacy), else general.
-    # TODO: make get_prices_batch(exchange=ex) when gate_only means exchange_only
-    # One batch call. Open signal symbols that left the watchlist are included.
-    # Control symbols are never added.
-    prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
-    try:
-        from services.shadow_signal_log import check_open_exits, note_poll_clock
-
-        note_poll_clock()
-        check_open_exits(
-            prices,
-            price_source=price_source,
-            watchlist={w["symbol"] for w in watched},
-        )
-    except Exception as exc:
-        log(f"shadow_log_error exit: {exc}", "WARNING")
+    # Watched symbols only. Off-watchlist shadow signals are priced after the
+    # active triggers, in their own try, and never via this batch.
+    prices: dict = {}
+    if symbols:
+        prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
     if not watched:
+        _shadow_exit_prices(prices, watched, cfg, price_source)
         return
     candidate_cache: dict = {}
     try:
@@ -336,16 +325,7 @@ def _poll_once(orchestrator) -> None:
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
             try:
-                from services.shadow_signal_log import snapshot_gate_inputs
-
                 cached_vol = (candidate_cache.get(symbol) or {}).get("quote_volume_24h_usdt")
-                gate_cache = snapshot_gate_inputs(
-                    symbol=symbol,
-                    timeframe=str(coin.get("timeframe") or "4h"),
-                    market_cap_usd=mcap,
-                    quote_volume_24h_usdt=cached_vol,
-                    config_raw=get_bot_config().raw,
-                )
                 _shadow_log(
                     symbol,
                     coin,
@@ -357,10 +337,36 @@ def _poll_once(orchestrator) -> None:
                     sensor_policy_source=sensor_policy_source,
                     price_batch=prices,
                     candidate_cache=candidate_cache,
-                    gate_cache=gate_cache,
+                    market_cap_usd=mcap,
+                    quote_volume_24h_usdt=cached_vol,
                 )
             except Exception as exc:
                 log(f"shadow_log_error {symbol}: {exc}", "WARNING")
+    _shadow_exit_prices(prices, watched, cfg, price_source)
+
+
+def _shadow_exit_prices(prices: dict, watched: list, cfg: dict, price_source: str) -> None:
+    """Single-ticker exit prices after this poll's triggers. Errors stay here."""
+    try:
+        from services.shadow_signal_log import (
+            check_open_exits,
+            fill_offwatch_signal_prices,
+            note_poll_clock,
+        )
+
+        note_poll_clock()
+        priced = fill_offwatch_signal_prices(
+            prices,
+            watchlist={w["symbol"] for w in watched},
+            sensor_cfg=cfg,
+        )
+        check_open_exits(
+            priced,
+            price_source=price_source,
+            watchlist={w["symbol"] for w in watched},
+        )
+    except Exception as exc:
+        log(f"shadow_log_error exit: {exc}", "WARNING")
 
 
 def _loop_main(orchestrator) -> None:

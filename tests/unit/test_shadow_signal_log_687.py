@@ -12,6 +12,7 @@ import pytest
 
 from core.config import BotConfig
 from services import entry_sensor_loop, shadow_signal_log as shadow
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
 
 T0 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 SIG = "SIG/USDT"
@@ -75,7 +76,7 @@ def _eligible(symbol: str) -> dict:
         "timeframe": "4h",
         "active": True,
         "market_cap_usd": 5_000_000,
-        "quote_volume_24h_usdt": 1_000_000,
+        QUOTE_VOL_24H_KEY: 1_000_000,
     }
 
 
@@ -166,12 +167,25 @@ def test_t1_entry_row_includes_price(logs):
     assert got["symbol"] == SIG
     assert got["timeframe"] == "4h"
     assert got["price_source"] == "gate_spot_last"
-    from risk.risk_manager import RiskManager
+    from strategies.dca import effective_stop_loss_thresholds
 
-    rm = RiskManager.__new__(RiskManager)
-    rm.config = BotConfig(raw=raw)
-    expected_stop = float(RiskManager._effective_stop_loss_pct(rm, SIG, "4h", None)) / 100.0
-    assert got["stop_pct"] == pytest.approx(expected_stop)
+    cfg = BotConfig(raw=raw)
+    params = dict(cfg.strategy_params(SIG, "4h") or {})
+    base = float(params.get("stop_loss_pct", cfg.stop_loss_pct))
+    full, partial, _grace = effective_stop_loss_thresholds(
+        {
+            "dca_rounds": 0,
+            "dca_recovery_rounds": 0,
+            "last_dca_at": None,
+            "last_dca_recovery_at": None,
+        },
+        params,
+        base,
+    )
+    first = float(full) if partial is None else min(float(full), float(partial))
+    assert got["stop_pct"] == pytest.approx(first / 100.0)
+    assert got["stop_full_pct"] == pytest.approx(float(full) / 100.0)
+    assert got["stop_partial_pct"] == pytest.approx(float(partial) / 100.0)
     assert got["stop_pct_source"] == shadow.STOP_PCT_SOURCE
     assert got["exit_hours"] == 4
     assert got["sensor_policy_source"] == "mode"
@@ -734,7 +748,7 @@ def test_t18_control_does_not_add_exchange_calls(logs, monkeypatch):
     )
     assert _state_snapshot() == risk_before
     assert "max_daily_buys" in snap
-    assert "daily_buys_count" in snap
+    assert "daily_buys_count" not in snap
     assert "loss_brake_halted" in snap
     assert "open_slots" in snap
     assert "max_open_positions" in snap
@@ -854,7 +868,7 @@ def test_t20_daily_summary_counts(logs):
     assert summary["no_control"] == 1
     assert summary["no_price_controls"] == 1
     assert summary["no_price_signals"] == 0
-    assert summary["restart_unresolved_signals"] >= 1
+    assert summary["restart_unresolved_signals"] == 1
     assert summary["restart_unresolved_controls"] == 1
     assert summary["drawn_with_result"] == 1
     assert summary["no_price_rate_signals"] == 0
@@ -955,6 +969,10 @@ def test_b1_loop_logs_per_gate_values(logs, monkeypatch):
         "price_fetcher.get_ticker_price",
         lambda symbol, exchange=None: ticker.append(symbol) or 1.0,
     )
+    monkeypatch.setattr(
+        "services.venue_quality.peek_cached_quote_volume",
+        lambda *args, **kwargs: None,
+    )
     try:
         orch, batch_calls, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
         entry_sensor_loop._poll_once(orch)
@@ -974,22 +992,38 @@ def test_b1_loop_logs_per_gate_values(logs, monkeypatch):
     assert row["gates_passed"] is True
 
 
-def test_b2_stop_uses_risk_resolver(logs):
+def test_b2_stop_matches_exit_path_not_profile(logs):
+    """Volatile profile partial_stop_pct is not the stop the exit path fires."""
     from risk.risk_manager import RiskManager
+    from strategies.dca import effective_stop_loss_thresholds
 
     raw = _raw()
-    raw["stop_loss_pct"] = 40
-    raw["volatile_altcoin"] = {"partial_stop_pct": 10}
-    before = _state_snapshot()
+    raw["stop_loss_pct"] = 50
+    raw["volatile_altcoin"] = {"partial_stop_pct": 25, "enabled": True}
+    cfg = BotConfig(raw=raw)
+    params = dict(cfg.strategy_params(SIG, "4h") or {})
+    base = float(params.get("stop_loss_pct", cfg.stop_loss_pct))
+    fresh = {
+        "dca_rounds": 0,
+        "dca_recovery_rounds": 0,
+        "last_dca_at": None,
+        "last_dca_recovery_at": None,
+    }
+    full, partial, in_grace = effective_stop_loss_thresholds(fresh, params, base)
+    assert in_grace is False
+    assert partial is not None
     rm = RiskManager.__new__(RiskManager)
-    rm.config = BotConfig(raw=raw)
-    expected = RiskManager._effective_stop_loss_pct(rm, SIG, "4h", None)
-    assert _state_snapshot() == before
+    rm.config = cfg
+    resolver = float(RiskManager._effective_stop_loss_pct(rm, SIG, "4h", None))
+    assert resolver == pytest.approx(25.0)
+    before = _state_snapshot()
     row = _trigger(logs, raw, price=100.0, now=T0)
     assert _state_snapshot() == before
     assert row["stop_pct_source"] == shadow.STOP_PCT_SOURCE
-    assert row["stop_pct"] == pytest.approx(float(expected) / 100.0)
-    assert row["stop_pct"] != pytest.approx(float(raw["stop_loss_pct"]) / 100.0)
+    assert row["stop_full_pct"] == pytest.approx(float(full) / 100.0)
+    assert row["stop_partial_pct"] == pytest.approx(float(partial) / 100.0)
+    assert row["stop_pct"] == pytest.approx(min(float(full), float(partial)) / 100.0)
+    assert row["stop_pct"] != pytest.approx(resolver / 100.0)
 
 
 def test_c1_buy_persists_shadow_signal_id(logs):
@@ -1018,8 +1052,24 @@ def test_c1_buy_persists_shadow_signal_id(logs):
     assert links[-1]["order_id"] == "ord-shadow-1"
 
 
+def _fetch_keys(max_per_poll=5, budget_s=5, timeout_s=2) -> dict:
+    return {
+        "shadow_price_fetch_max_per_poll": max_per_poll,
+        "shadow_price_fetch_budget_s": budget_s,
+        "shadow_price_fetch_timeout_s": timeout_s,
+    }
+
+
 def test_c2_loop_tracks_symbol_that_left_watchlist(logs, monkeypatch):
     raw = _raw()
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    calls = []
+
+    def _single(symbol, timeout=6):
+        calls.append((symbol, timeout))
+        return 1.5
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _single)
     _trigger(
         logs,
         raw,
@@ -1031,8 +1081,10 @@ def test_c2_loop_tracks_symbol_that_left_watchlist(logs, monkeypatch):
     orch, batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [OTHER])
     entry_sensor_loop._poll_once(orch)
     assert batch_calls
-    assert SIG in batch_calls[0]
+    assert SIG not in batch_calls[0]
     assert CTRL not in batch_calls[0]
+    assert [item[0] for item in calls] == [SIG]
+    assert calls[0][1] == 2
 
 
 def test_c6_counts_and_journal_survive_restart(logs):
@@ -1119,3 +1171,553 @@ def test_link_guard_buy_result_continues(logs, monkeypatch):
     assert out.message == "filled"
     assert out.order_id == "ord-shadow-2"
     assert any(level == "WARNING" and "shadow_log_error" in message for level, message in warnings)
+
+
+def test_t4_repeat_poll_does_not_collect_or_touch_ledger(logs, monkeypatch):
+    """A poll that mints no new signal must not collect gates or touch the ledger."""
+    import data_manager
+
+    io_calls = []
+
+    def _spy(name):
+        def _fn(*args, **kwargs):
+            io_calls.append(name)
+            return {}
+
+        return _fn
+
+    monkeypatch.setattr(data_manager, "load_orders", _spy("load_orders"))
+    monkeypatch.setattr(data_manager, "load_trade_history", _spy("load_trade_history"))
+    monkeypatch.setattr(
+        data_manager, "load_trade_history_document", _spy("load_trade_history_document")
+    )
+    monkeypatch.setattr(
+        data_manager, "save_trade_history_document", _spy("save_trade_history_document")
+    )
+    snaps = []
+    real_snap = shadow.snapshot_gate_inputs
+
+    def _snap(*args, **kwargs):
+        snaps.append(1)
+        return real_snap(*args, **kwargs)
+
+    monkeypatch.setattr(shadow, "snapshot_gate_inputs", _snap)
+    raw = _raw()
+    orch, _batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
+    entry_sensor_loop._poll_once(orch)
+    assert len(_of(logs, "shadow_signal")) == 1
+    assert snaps == [1]
+    assert io_calls == []
+    snaps.clear()
+    io_calls.clear()
+    entry_sensor_loop._poll_once(orch)
+    assert len(_of(logs, "shadow_signal")) == 1
+    assert snaps == []
+    assert io_calls == []
+
+
+def test_c5_cold_venue_cache_uses_watchlist_volume(logs, monkeypatch):
+    monkeypatch.setattr(
+        "services.venue_quality.peek_cached_quote_volume",
+        lambda *args, **kwargs: None,
+    )
+    raw = _raw()
+    orch, batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [SIG, OTHER])
+    entry_sensor_loop._poll_once(orch)
+    signals = _of(logs, "shadow_signal")
+    controls = [row for row in _of(logs, "shadow_control") if row.get("control_symbol")]
+    assert signals
+    for row in signals:
+        assert row["gates"]["venue_liquidity"] is not None
+        assert row["quote_volume_24h_usdt"] == 1_000_000
+    assert controls
+    assert controls[0]["universe_size"] > 0
+    assert batch_calls
+
+
+def test_venue_liquidity_null_reason_only_for_that_gate(logs):
+    raw = _raw()
+    missing_vol = _passing_gate()
+    missing_vol.pop("quote_volume_24h_usdt")
+    missing_vol.pop("market_cap_usd")
+    row = _trigger(logs, raw, gate=missing_vol)
+    assert row["gates"]["venue_liquidity"] is None
+    assert row["gates"]["market_cap"] is None
+    assert row["venue_liquidity_null_reason"] == "missing_quote_volume"
+    assert [key for key in row if key.endswith("_null_reason")] == ["venue_liquidity_null_reason"]
+
+    raw_floor = _raw()
+    raw_floor["risk"].pop("liquidity_guard")
+    row_floor = _trigger(logs, raw_floor, symbol=OTHER, gate=_passing_gate())
+    assert row_floor["gates"]["venue_liquidity"] is None
+    assert row_floor["gates"]["market_cap"] is True
+    assert row_floor["venue_liquidity_null_reason"] == "missing_floor"
+    assert "market_cap_null_reason" not in row_floor
+
+    passed = _trigger(logs, raw, symbol=FREE, gate=_passing_gate())
+    assert passed["gates"]["venue_liquidity"] is True
+    assert "venue_liquidity_null_reason" not in passed
+
+
+def test_c4_no_price_flag_on_signal_and_control_rows(logs):
+    raw = _raw()
+    batch = {SIG: 100.0, CTRL: 50.0}
+    cache = {CTRL: {"market_cap_usd": 5_000_000, "quote_volume_24h_usdt": 50_000}}
+    _trigger(logs, raw, price=100.0, batch=batch, cache=cache, now=T0)
+    exits = shadow.check_open_exits(
+        {SIG: 110.0},
+        price_source="gate_spot_last",
+        watchlist={SIG, CTRL},
+        now=T0 + timedelta(hours=4, seconds=1),
+    )
+    signal = [row for row in exits if not row["control"]][0]
+    control = [row for row in exits if row["control"]][0]
+    assert signal["exit_reason"] == "4h"
+    assert signal["no_price"] is False
+    assert control["exit_reason"] == "no_price"
+    assert control["no_price"] is True
+    assert control["no_price_reason"] == "fetch_error"
+
+
+_CLOSED_NO_PRICE_REASONS = (
+    "cap_reached",
+    "fetch_timeout",
+    "fetch_error",
+    "fetch_disabled_config",
+)
+
+
+def test_shadow_fetch_runs_after_active_triggers(logs, monkeypatch):
+    """A ticker that raises or hangs does not run before this poll's triggers."""
+    raw = _raw()
+    raw["entry_sensor_15m"]["mode"] = "active"
+    raw["entry_sensor_15m"]["min_poll_gap_sec_per_coin"] = 0
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    events: list[str] = []
+
+    def _trigger_active(*args, **kwargs):
+        events.append("trigger")
+
+    monkeypatch.setattr(entry_sensor_loop, "_active_trigger", _trigger_active)
+    monkeypatch.setattr(entry_sensor_loop, "_has_open_position", lambda *args, **kwargs: False)
+    monkeypatch.setattr("bus.eval_queue.eval_queue_enabled", lambda: False)
+    _trigger(logs, raw, symbol="OFF/USDT", now=datetime.now(timezone.utc))
+
+    def _raise(symbol, timeout=6):
+        events.append("fetch")
+        raise RuntimeError("ticker down")
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _raise)
+    orch, _batch, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
+    entry_sensor_loop._poll_once(orch)
+    assert fetched == [SIG]
+    assert events[0] == "trigger"
+    assert events.index("trigger") < events.index("fetch")
+
+    events.clear()
+    entry_sensor_loop._last_poll_at.clear()
+
+    def _hang(symbol, timeout=6):
+        events.append("fetch")
+        raise TimeoutError("ticker hung")
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _hang)
+    entry_sensor_loop._poll_once(orch)
+    assert events[0] == "trigger"
+    assert events.index("trigger") < events.index("fetch")
+
+
+def test_shadow_fetch_cap_keeps_nearest_exit(logs, monkeypatch):
+    raw = _raw()
+    sensor = raw["entry_sensor_15m"]
+    sensor.update(_fetch_keys(max_per_poll=1, budget_s=5, timeout_s=2))
+    calls = []
+
+    def _single(symbol, timeout=6):
+        calls.append(symbol)
+        return 4.0
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _single)
+    near = "NEAR/USDT"
+    far = "FAR/USDT"
+    _trigger(logs, raw, symbol=near, now=T0)
+    _trigger(logs, raw, symbol=far, now=T0 + timedelta(hours=2))
+    priced = shadow.fill_offwatch_signal_prices(
+        {}, watchlist=set(), sensor_cfg=sensor
+    )
+    assert calls == [near]
+    assert priced[near] == 4.0
+    assert far not in priced
+
+    mid = "MID/USDT"
+    later = "LATER/USDT"
+    sensor["shadow_price_fetch_max_per_poll"] = 2
+    shadow._PRICE_FETCH_CURSOR = 0
+    calls.clear()
+    _trigger(logs, raw, symbol=mid, now=T0 + timedelta(hours=1))
+    _trigger(logs, raw, symbol=later, now=T0 + timedelta(hours=3))
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    assert calls == [near, mid]
+    calls.clear()
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    assert calls == [near, far]
+    calls.clear()
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    assert calls == [near, later]
+
+
+def test_shadow_fetch_budget_keeps_next_poll_on_time(logs, monkeypatch):
+    raw = _raw()
+    sensor = raw["entry_sensor_15m"]
+    cap = 5
+    timeout_s = 2
+    budget_s = 5
+    sensor.update(_fetch_keys(max_per_poll=cap, budget_s=budget_s, timeout_s=timeout_s))
+    clock = {"t": 0.0}
+    monkeypatch.setattr(shadow.time, "monotonic", lambda: clock["t"])
+    calls = []
+
+    def _hang(symbol, timeout=6):
+        calls.append((symbol, timeout))
+        clock["t"] += float(timeout)
+        raise TimeoutError("hung")
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _hang)
+    for index in range(cap):
+        _trigger(
+            logs,
+            raw,
+            symbol=f"H{index}/USDT",
+            now=T0 + timedelta(minutes=index),
+        )
+    started = clock["t"]
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    elapsed = clock["t"] - started
+    assert elapsed <= budget_s
+    assert len(calls) < cap
+    assert calls
+    assert all(item[1] <= timeout_s for item in calls)
+    next_start = clock["t"]
+    shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    assert clock["t"] - next_start <= budget_s
+
+
+def test_no_price_reason_list_is_closed(logs, monkeypatch):
+    assert shadow._NO_PRICE_REASONS == _CLOSED_NO_PRICE_REASONS
+    raw = _raw()
+    sensor = raw["entry_sensor_15m"]
+    sensor.update(_fetch_keys())
+
+    def _boom(symbol, timeout=6):
+        raise RuntimeError("ticker down")
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _boom)
+    opened = datetime.now(timezone.utc) - timedelta(hours=5)
+    _trigger(
+        logs,
+        raw,
+        batch={SIG: 1.25, CTRL: 2.0},
+        cache={CTRL: {"market_cap_usd": 5_000_000, "quote_volume_24h_usdt": 50_000}},
+        now=opened,
+    )
+    priced = shadow.fill_offwatch_signal_prices({}, watchlist=set(), sensor_cfg=sensor)
+    exits = shadow.check_open_exits(
+        priced,
+        price_source="gate_spot_last",
+        watchlist=set(),
+        now=datetime.now(timezone.utc),
+    )
+    signal = [row for row in exits if not row["control"]][0]
+    control = [row for row in exits if row["control"]][0]
+    assert signal["no_price_reason"] == "fetch_error"
+    assert control["no_price_reason"] == "cap_reached"
+    for row in (signal, control):
+        assert row["no_price_reason"] in _CLOSED_NO_PRICE_REASONS
+    summary = shadow.build_daily_summary(datetime.now(timezone.utc).date().isoformat())
+    assert summary["no_price_by_reason"]["signals"]["fetch_error"] == 1
+    assert summary["no_price_by_reason"]["controls"]["fetch_error"] == 0
+    assert summary["no_price_by_reason"]["controls"]["cap_reached"] == 1
+    assert summary["no_price_by_reason"]["signals"]["cap_reached"] == 0
+
+
+def test_missing_fetch_config_disables_single_fetch(logs, monkeypatch):
+    calls = []
+
+    def _single(symbol, timeout=6):
+        calls.append(symbol)
+        return 3.0
+
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", _single)
+    raw = _raw()
+    opened = datetime.now(timezone.utc) - timedelta(hours=5)
+    _trigger(logs, raw, symbol=SIG, now=opened)
+    orch, batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [OTHER])
+    entry_sensor_loop._poll_once(orch)
+    assert calls == []
+    assert SIG not in batch_calls[0]
+    exits = [
+        row
+        for row in _of(logs, "shadow_exit")
+        if not row.get("control") and row.get("exit_reason") == "no_price"
+    ]
+    assert exits
+    assert exits[0]["no_price_reason"] == "fetch_disabled_config"
+    assert any(
+        level == "ERROR" and "shadow price fetch disabled" in message
+        for level, message in logs
+    )
+
+    raw_bad = _raw()
+    raw_bad["entry_sensor_15m"].update(_fetch_keys())
+    raw_bad["entry_sensor_15m"]["shadow_price_fetch_budget_s"] = 0
+    calls.clear()
+    _trigger(logs, raw_bad, symbol="BAD/USDT", now=opened)
+    orch_bad, _batch_bad, _fetched_bad = _arm_shadow_poll(monkeypatch, raw_bad, [OTHER])
+    entry_sensor_loop._poll_once(orch_bad)
+    assert "BAD/USDT" not in calls
+    bad_exit = [
+        row
+        for row in _of(logs, "shadow_exit")
+        if row.get("symbol") is None or row.get("exit_reason") == "no_price"
+    ]
+    reasons = {row.get("no_price_reason") for row in bad_exit}
+    assert "fetch_disabled_config" in reasons
+
+
+def test_open_slots_read_tenant_snapshot_without_lock(logs):
+    from core.tenant_context import tenant_context
+    from strategies import positions as posmod
+
+    foreign = "shadow-tenant-b"
+    missing = "shadow-tenant-empty"
+    key = (foreign, "paper")
+    missing_key = (missing, "paper")
+    saved_positions = dict(posmod.positions)
+    saved_stores = dict(posmod._position_stores)
+    saved_lock = posmod._positions_lock
+    lock_calls = []
+    ensure_calls = []
+    real_ensure = posmod._ensure_store
+
+    class _RecordingLock:
+        def acquire(self, *args, **kwargs):
+            lock_calls.append(1)
+            return saved_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return saved_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *args):
+            self.release()
+
+    def _ensure(store_key):
+        ensure_calls.append(store_key)
+        return real_ensure(store_key)
+
+    posmod._positions_lock = _RecordingLock()
+    posmod._ensure_store = _ensure
+    try:
+        posmod.positions.clear()
+        posmod.positions["A"] = {"amount": 5}
+        posmod.positions["B"] = {"amount": 5}
+        posmod._position_stores.pop(key, None)
+        posmod._position_stores.pop(missing_key, None)
+        with tenant_context(missing, scope="paper"):
+            assert shadow._peek_open_slots(_raw()) is None
+            assert missing_key not in posmod._position_stores
+        posmod._position_stores[key] = {"LOT": {"amount": 5}}
+        with tenant_context(foreign, scope="paper"):
+            assert shadow._peek_open_slots(_raw()) == 1
+        assert ensure_calls == []
+        assert lock_calls == []
+    finally:
+        posmod._positions_lock = saved_lock
+        posmod._ensure_store = real_ensure
+        posmod.positions.clear()
+        posmod.positions.update(saved_positions)
+        posmod._position_stores.clear()
+        posmod._position_stores.update(saved_stores)
+        posmod._position_stores.pop(key, None)
+        posmod._position_stores.pop(missing_key, None)
+
+
+def test_stop_ratio_comes_from_tenant_config(logs, monkeypatch):
+    """0.5 on the passed config wins over 0.67 on the process config."""
+    strategies = [
+        {
+            "symbol": "SOL/USDT",
+            "timeframe": "4h",
+            "stop_loss_pct": 40,
+            "description": "SOL 4h Live — Large-Cap",
+        },
+        {
+            "symbol": "ARIA/USDT",
+            "timeframe": "4h",
+            "stop_loss_pct": 40,
+            "description": "ARIA 4h Live — Meme/High-Vol",
+        },
+    ]
+    process = _raw()
+    process["stop_loss_pct"] = 40
+    process["risk"]["partial_stop_ratio"] = 0.67
+    process["volatile_altcoin"] = {"enabled": True}
+    process["strategies"] = strategies
+    tenant = _raw()
+    tenant["stop_loss_pct"] = 40
+    tenant["risk"]["partial_stop_ratio"] = 0.5
+    tenant["volatile_altcoin"] = {"enabled": True}
+    tenant["strategies"] = strategies
+    process_cfg = BotConfig(raw=process)
+    monkeypatch.setattr("core.config.get_bot_config", lambda: process_cfg)
+    monkeypatch.setattr("strategies.registry.get_bot_config", lambda: process_cfg)
+    monkeypatch.setattr(
+        "strategies.entry_recipe.load_personal_params", lambda *args, **kwargs: None
+    )
+    expected_tier = {
+        "SOL/USDT": "stable",
+        "ARIA/USDT": "volatile",
+        "STABLE/USDT": "stable",
+    }
+    for symbol, tier in expected_tier.items():
+        row = _trigger(logs, tenant, symbol=symbol, price=100.0, now=T0)
+        assert row["partial_stop_ratio"] == pytest.approx(0.5)
+        assert row["stop_full_pct"] == pytest.approx(0.40)
+        assert row["stop_partial_pct"] == pytest.approx(0.20)
+        assert row["stop_pct"] == pytest.approx(0.20)
+        assert row["volatility_tier"] == tier
+        assert row["stop_pct_source"] == shadow.STOP_PCT_SOURCE
+
+
+def test_symbols_guard_poll_continues(logs, monkeypatch):
+    warnings = []
+
+    def _boom():
+        raise RuntimeError("symbols blew up")
+
+    monkeypatch.setattr(shadow, "open_signal_symbols", _boom)
+    raw = _raw()
+    orch, _batch, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG], warnings=warnings)
+    continued = True
+    try:
+        entry_sensor_loop._poll_once(orch)
+    except Exception:
+        continued = False
+    assert continued
+    assert fetched == [SIG]
+    assert any(
+        level == "WARNING" and "shadow_log_error symbols" in message
+        for level, message in warnings
+    )
+
+
+def test_candidates_guard_poll_continues(logs, monkeypatch):
+    warnings = []
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("candidates blew up")
+
+    monkeypatch.setattr(shadow, "candidate_info_from_coin", _boom)
+    raw = _raw()
+    orch, _batch, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG, OTHER], warnings=warnings)
+    continued = True
+    try:
+        entry_sensor_loop._poll_once(orch)
+    except Exception:
+        continued = False
+    assert continued
+    assert set(fetched) == {SIG, OTHER}
+    assert any(
+        level == "WARNING" and "shadow_log_error candidates" in message
+        for level, message in warnings
+    )
+
+
+def test_restart_guard_loop_starts(logs, monkeypatch):
+    warnings = []
+    raw = _raw()
+    cfg = BotConfig(raw=raw)
+
+    def _boom():
+        raise RuntimeError("restart blew up")
+
+    monkeypatch.setattr(entry_sensor_loop, "get_bot_config", lambda: cfg)
+    monkeypatch.setattr(
+        entry_sensor_loop,
+        "log",
+        lambda message, level="INFO": warnings.append((level, message)),
+    )
+    monkeypatch.setattr(entry_sensor_loop, "_loop_main", lambda orchestrator: None)
+    monkeypatch.setattr(entry_sensor_loop, "_maybe_seed_watches", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(shadow, "resolve_restart", _boom)
+    entry_sensor_loop.reset_poll_state_for_tests()
+    continued = True
+    thread = None
+    try:
+        thread = entry_sensor_loop.start_entry_sensor_loop(MagicMock())
+    except Exception:
+        continued = False
+    finally:
+        entry_sensor_loop.stop_entry_sensor_loop()
+        entry_sensor_loop.reset_poll_state_for_tests()
+    assert continued
+    assert thread is not None
+    assert any(
+        level == "WARNING" and "shadow_log_error restart" in message
+        for level, message in warnings
+    )
+
+
+def test_orchestrator_lookup_guard_buy_continues(logs, monkeypatch):
+    warnings = []
+
+    def _boom(symbol):
+        raise RuntimeError("lookup blew up")
+
+    def _log(message, level="INFO"):
+        warnings.append((level, message))
+
+    monkeypatch.setattr(shadow, "lookup_open_signal_id", _boom)
+    monkeypatch.setattr("services.signal_orchestrator.log", _log)
+    monkeypatch.setattr("services.signal_orchestrator.get_position", lambda *args, **kwargs: {})
+    from services.signal_orchestrator import SignalOrchestrator
+
+    orch = SignalOrchestrator.__new__(SignalOrchestrator)
+    orch.audit = MagicMock()
+    analysis = SimpleNamespace(
+        action="BUY",
+        normalized_action="BUY",
+        symbol=SIG,
+        timeframe="4h",
+        rationale="spike",
+        sources=["entry_sensor_15m"],
+        confidence=0.5,
+    )
+    orch.analyze = lambda *args, **kwargs: analysis
+    trade = SimpleNamespace(
+        executed=True,
+        order_type="BUY",
+        message="filled",
+        pnl=1.0,
+        usdt_amount=10.0,
+    )
+    orch.execute_if_needed = lambda *args, **kwargs: trade
+    continued = True
+    out = None
+    try:
+        out = orch.process_entry_sensor({"symbol": SIG, "timeframe": "4h"}, 1.25)
+    except Exception:
+        continued = False
+    assert continued
+    assert out is not None
+    assert out["action"] == "BUY"
+    assert out["executed"] is True
+    assert out["trade_message"] == "filled"
+    assert out["shadow_signal_id"] is None
+    assert any(
+        level == "WARNING" and "shadow_log_error link" in message
+        for level, message in warnings
+    )

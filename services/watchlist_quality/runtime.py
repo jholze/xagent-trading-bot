@@ -11,7 +11,7 @@ from services.watchlist_quality.config import use_ai_sort_score, vol_floor_t1_us
 from services.watchlist_quality.engine import run_shadow_score
 from services.watchlist_quality.enforce import apply_enforce_tiers, filter_new_adds_memory
 from services.watchlist_quality.soft import apply_soft_watchlist
-from services.watchlist_quality.venue_batch import attach_quote_volumes
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY, attach_quote_volumes
 
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _CACHE_TTL = 45.0
@@ -129,8 +129,8 @@ def apply_wqe_to_watchlist(
                 row["hard_exclude_new_add"] = mem.get("hard_exclude_new_add")
                 row["memory"] = mem
                 m = sc.get("metrics") or {}
-                if row.get("quote_vol_24h") is None and m.get("quote_vol_24h") is not None:
-                    row["quote_vol_24h"] = m.get("quote_vol_24h")
+                if row.get(QUOTE_VOL_24H_KEY) is None and m.get(QUOTE_VOL_24H_KEY) is not None:
+                    row[QUOTE_VOL_24H_KEY] = m.get(QUOTE_VOL_24H_KEY)
                 if not row.get("source"):
                     row["source"] = m.get("source")
             if sym in open_syms:

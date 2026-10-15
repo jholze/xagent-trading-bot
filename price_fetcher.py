@@ -252,10 +252,10 @@ def _apply_price_fallbacks(
     return sources
 
 
-def _fetch_gate_single(symbol: str):
+def _fetch_gate_single(symbol: str, timeout: float = 6):
     pair = symbol.replace("/", "_").upper()
     url = f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={pair}"
-    response = requests.get(url, timeout=6)
+    response = requests.get(url, timeout=timeout)
     if response.status_code == 200:
         data = response.json()
         if data and len(data) > 0:

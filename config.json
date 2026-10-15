@@ -1949,7 +1949,10 @@
     "memory_flow_only_size_mult": 0.5,
     "memory_size_down_profit_taking": true,
     "memory_profit_taking_size_mult": 0.7,
-    "shadow_exit_hours": 4
+    "shadow_exit_hours": 4,
+    "shadow_price_fetch_max_per_poll": 5,
+    "shadow_price_fetch_budget_s": 5,
+    "shadow_price_fetch_timeout_s": 2
   },
   "regime_detector": {
     "enabled": true,

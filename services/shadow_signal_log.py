@@ -1,8 +1,9 @@
 """Shadow signal log for the 15m entry sensor (spec #687, v2.2).
 
 Writes JSON rows only. Does not place orders or change slot, cooldown,
-daily-buy, loss-brake, or rate-limiter state. Prices come from the poll
-batch the loop already fetched. Control symbols are never fetched.
+daily-buy, loss-brake, or rate-limiter state. Control symbols are never
+fetched. Open signal symbols that left the watchlist may take one ticker
+after the poll's active triggers, under the config cap and budget.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -54,13 +56,42 @@ _GATE_REJECT = {
 }
 
 # Same method the exit path uses. The row stores the fraction of that percent.
-STOP_PCT_SOURCE = "risk_manager._effective_stop_loss_pct"
+STOP_PCT_SOURCE = "strategies.dca.effective_stop_loss_thresholds"
+_VENUE_NULL_REASONS = ("missing_quote_volume", "missing_floor")
+
+# Why a no_price exit had no price. Closed list. Controls are never fetched.
+_NO_PRICE_REASONS = (
+    "cap_reached",
+    "fetch_timeout",
+    "fetch_error",
+    "fetch_disabled_config",
+)
+# Read from entry_sensor_15m. No numeric fallback: a missing or invalid key
+# disables the single fetch.
+_FETCH_LIMIT_KEYS = (
+    "shadow_price_fetch_max_per_poll",
+    "shadow_price_fetch_budget_s",
+    "shadow_price_fetch_timeout_s",
+)
+_PRICE_FETCH_CURSOR = 0
+
+
+class _CollectGates:
+    """Default: build gate inputs inside the new-signal branch."""
+
+
+_COLLECT_GATES = _CollectGates()
 
 _EXIT_REASONS_EXCLUDED = frozenset({"no_price", "restart_unresolved"})
 
 
+def _reason_count_key(reason: str, control: bool) -> str:
+    side = "controls" if control else "signals"
+    return f"no_price_{reason}_{side}"
+
+
 def _fresh_counts() -> dict[str, int]:
-    return {
+    counts = {
         "controls_drawn": 0,
         "no_control": 0,
         "exit_signals": 0,
@@ -72,6 +103,10 @@ def _fresh_counts() -> dict[str, int]:
         "control_priced": 0,
         "signal_priced": 0,
     }
+    for reason in _NO_PRICE_REASONS:
+        counts[_reason_count_key(reason, False)] = 0
+        counts[_reason_count_key(reason, True)] = 0
+    return counts
 
 
 def _ensure_counts() -> None:
@@ -82,8 +117,9 @@ def _ensure_counts() -> None:
 
 def reset_for_tests() -> None:
     """Drop in-memory shadow state and the journal file."""
-    global _DAY, _COUNTS_LOADED
+    global _DAY, _COUNTS_LOADED, _PRICE_FETCH_CURSOR
     _COUNTS_LOADED = False
+    _PRICE_FETCH_CURSOR = 0
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -162,22 +198,80 @@ def fee_taker_conservative_pct(config_raw: dict | None) -> float | None:
         return None
 
 
-def _stop_pct_from_resolver(config_raw: dict | None, symbol: str, timeframe: str) -> float:
-    """Percent from the same resolver the exit path calls. No order, no state."""
-    from risk.risk_manager import RiskManager
+def _stops_from_exit_path(config_raw: dict | None, symbol: str, timeframe: str) -> dict:
+    """Stops the live exit path applies. Does not call the risk resolver.
 
-    rm = RiskManager.__new__(RiskManager)
-    rm.config = _config_view(config_raw)
-    return float(RiskManager._effective_stop_loss_pct(rm, symbol, timeframe, None))
+    The exit path resolves params with ``resolve_strategy_params`` (the tenant
+    config), then ``effective_stop_loss_thresholds``. Both of those read
+    ``get_bot_config()``, so this call shows them ``config_raw`` rather than
+    the process config. Fractions so ``price * (1 - stop)`` is literal.
+    ``stop_pct`` is the first threshold that path can fire.
+    """
+    import core.config as config_mod
+    import strategies.registry as registry_mod
+    from strategies.dca import effective_stop_loss_thresholds
+
+    cfg = _config_view(config_raw)
+    coin = {"symbol": symbol, "timeframe": timeframe}
+    prev_core = config_mod.get_bot_config
+    prev_reg = registry_mod.get_bot_config
+    config_mod.get_bot_config = lambda: cfg
+    registry_mod.get_bot_config = lambda: cfg
+    try:
+        params = dict(
+            registry_mod.resolve_strategy_params(coin, has_position=False) or {}
+        )
+        try:
+            atr_default = registry_mod.resolve_strategy_params.__defaults__[1]
+            tier = registry_mod._resolve_volatility_tier(
+                coin,
+                atr_default,
+                cfg.volatile_altcoin_config,
+            )
+        except Exception:
+            tier = params.get("volatility_tier")
+        raw = params.get("stop_loss_pct")
+        if raw is None:
+            try:
+                raw = cfg.stop_loss_pct
+            except Exception:
+                raw = 0
+        try:
+            base = float(raw or 0)
+        except (TypeError, ValueError):
+            base = 0.0
+        fresh = {
+            "dca_rounds": 0,
+            "dca_recovery_rounds": 0,
+            "last_dca_at": None,
+            "last_dca_recovery_at": None,
+        }
+        full, partial, in_grace = effective_stop_loss_thresholds(fresh, params, base)
+    finally:
+        config_mod.get_bot_config = prev_core
+        registry_mod.get_bot_config = prev_reg
+    full_f = float(full)
+    partial_f = None if partial is None else float(partial)
+    if in_grace or partial_f is None:
+        first = full_f
+    else:
+        first = min(full_f, partial_f)
+    used_ratio = None
+    if params.get("partial_stop_pct") is None and partial_f is not None and full_f:
+        used_ratio = partial_f / full_f
+    return {
+        "stop_pct": first / 100.0,
+        "stop_full_pct": full_f / 100.0,
+        "stop_partial_pct": None if partial_f is None else partial_f / 100.0,
+        "stop_pct_source": STOP_PCT_SOURCE,
+        "partial_stop_ratio": used_ratio,
+        "volatility_tier": params.get("volatility_tier") or tier,
+    }
 
 
 def effective_stop_fraction(config_raw: dict | None, symbol: str, timeframe: str) -> float:
-    """Fraction used as ``price * (1 - stop_pct)``.
-
-    The resolver returns percent (25 means 25%). The shadow row stores the
-    fraction so the spec formula applies directly.
-    """
-    return float(_stop_pct_from_resolver(config_raw, symbol, timeframe)) / 100.0
+    """Fraction used as ``price * (1 - stop_pct)``."""
+    return float(_stops_from_exit_path(config_raw, symbol, timeframe)["stop_pct"])
 
 
 def exit_hours_from(config_raw: dict | None, sensor_cfg: dict | None = None) -> float:
@@ -260,6 +354,32 @@ def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
     return _publish_gates(gates)
 
 
+def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> str | None:
+    """Why the venue gate is null. Closed list, and only for that gate.
+
+    Missing quote volume wins when both inputs are absent, because the floor
+    is not consulted until a volume is present.
+    """
+    if not isinstance(cache, dict) or _gate_missing(cache, "quote_volume_24h_usdt"):
+        return "missing_quote_volume"
+    from services.venue_quality import liquidity_guard_config
+
+    floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
+    if floor is None:
+        return "missing_floor"
+    return None
+
+
+def _venue_null_fields(cache: dict | None, config_raw: dict | None, gates: dict) -> dict:
+    """One reason field, and only when the venue gate itself is null."""
+    if not isinstance(gates, dict) or gates.get("venue_liquidity") is not None:
+        return {}
+    reason = venue_liquidity_null_reason(cache, config_raw)
+    if reason not in _VENUE_NULL_REASONS:
+        return {}
+    return {"venue_liquidity_null_reason": reason}
+
+
 def dry_check_gates(cache: dict | None, config_raw: dict | None = None) -> tuple[bool | None, str | None]:
     """Aggregate of :func:`project_gates`.
 
@@ -309,12 +429,27 @@ def _peek_max_daily_buys(config_raw: dict | None) -> int | None:
 
 
 def _peek_daily_buys() -> int | None:
-    """Filled buys in the ledger window. Read only. Failure → missing."""
-    try:
-        from data_manager import load_orders, resolve_ledger_scope
-        from risk.risk_manager import RiskManager
+    """Filled buys from the warm orders cache. A cold cache is missing.
 
-        doc = load_orders(resolve_ledger_scope()) or {}
+    Does not call ``load_orders``. A miss stays null.
+    """
+    try:
+        import time
+
+        from risk.risk_manager import RiskManager
+        from services.order_service import (
+            _ORDERS_READ_CACHE,
+            _ORDERS_READ_CACHE_TTL,
+            OrderService,
+        )
+
+        svc = OrderService()
+        cached = _ORDERS_READ_CACHE.get(svc._cache_key())
+        if not cached or (time.time() - float(cached[0])) >= float(_ORDERS_READ_CACHE_TTL):
+            return None
+        doc = cached[1] if isinstance(cached[1], dict) else None
+        if not isinstance(doc, dict):
+            return None
         rm = RiskManager.__new__(RiskManager)
         return sum(
             1
@@ -327,32 +462,51 @@ def _peek_daily_buys() -> int | None:
 
 
 def _peek_loss_brake_halted() -> bool | None:
-    """In-memory halt, plus the trade-history halt when that read works."""
-    from risk.risk_manager import _daily_loss_halt_memory
-
-    now = datetime.now(timezone.utc)
-    mem = _daily_loss_halt_memory()
-    mem_halt = bool(mem is not None and _parse_utc(mem) is not None and _parse_utc(mem) > now)
+    """In-memory halt only. Does not read or reconcile trade history."""
     try:
-        from data_manager import load_trade_history
+        from risk.risk_manager import _daily_loss_halt_memory
 
-        history = load_trade_history() or {}
-        until = _parse_utc(history.get("risk_halt_until")) if isinstance(history, dict) else None
-        disk_halt = bool(until is not None and until > now)
-        return mem_halt or disk_halt
-    except Exception:
+        mem = _daily_loss_halt_memory()
         if mem is None:
+            return False
+        until = _parse_utc(mem)
+        if until is None:
             return None
-        return mem_halt
+        return until > datetime.now(timezone.utc)
+    except Exception:
+        return None
 
 
 def _peek_open_slots(config_raw: dict | None) -> int | None:
-    try:
-        from strategies.positions import count_open_full_slots, is_positions_state_unknown
+    """Open full slots for the current tenant. No lock, no new store.
 
-        if is_positions_state_unknown():
+    Reads a snapshot of the store that already exists for this tenant. The
+    process-wide active store can belong to someone else, and creating an
+    empty store takes the positions lock.
+    """
+    try:
+        from core.tenant_context import DEFAULT_TENANT
+        from strategies import positions as posmod
+        from strategies.sell_rotation_policy import is_tail_position, rotation_config
+
+        if posmod.is_positions_state_unknown():
             return None
-        return int(count_open_full_slots(config_raw))
+        key = posmod._resolve_store_key()
+        if key[0] == DEFAULT_TENANT:
+            live = posmod.positions
+        else:
+            live = posmod._position_stores.get(key)
+            if live is None:
+                return None
+        snapshot = dict(live)
+        cfg = rotation_config(config_raw if isinstance(config_raw, dict) else {})
+        return sum(
+            1
+            for pos in snapshot.values()
+            if posmod.is_open_position(pos)
+            and posmod.counts_toward_open_cap(pos)
+            and not is_tail_position(pos, cfg)
+        )
     except Exception:
         return None
 
@@ -758,6 +912,9 @@ def _account_exit(row: dict) -> None:
         _COUNTS["exit_signals"] += 1
     if reason == "no_price":
         _COUNTS["no_price_controls" if control else "no_price_signals"] += 1
+        detail = row.get("no_price_reason")
+        if detail in _NO_PRICE_REASONS:
+            _COUNTS[_reason_count_key(str(detail), control)] += 1
     elif reason == "restart_unresolved":
         _COUNTS["restart_controls" if control else "restart_signals"] += 1
     elif reason in ("stop", "4h"):
@@ -789,6 +946,16 @@ def build_daily_summary(day: str) -> dict:
         "no_price_rate_signals": _rate(no_price_signals, signal_exits),
         "no_price_rate_controls": _rate(no_price_controls, control_exits),
         "drawn_with_result": drawn_with_result,
+        "no_price_by_reason": {
+            "signals": {
+                reason: int(_COUNTS[_reason_count_key(reason, False)])
+                for reason in _NO_PRICE_REASONS
+            },
+            "controls": {
+                reason: int(_COUNTS[_reason_count_key(reason, True)])
+                for reason in _NO_PRICE_REASONS
+            },
+        },
     }
 
 
@@ -815,6 +982,160 @@ def _touch_day(now: datetime) -> None:
     global _DAY
     if _DAY is None:
         _DAY = _day(now)
+
+
+def _parse_fetch_limits(sensor_cfg: dict | None) -> dict | None:
+    """Config values for the off-watchlist ticker. Missing or invalid → None."""
+    cfg = sensor_cfg if isinstance(sensor_cfg, dict) else {}
+    parsed: dict[str, float] = {}
+    for key in _FETCH_LIMIT_KEYS:
+        if key not in cfg:
+            return None
+        raw = cfg[key]
+        if isinstance(raw, bool) or raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0 or value != value or value == float("inf"):
+            return None
+        parsed[key] = value
+    max_n = parsed["shadow_price_fetch_max_per_poll"]
+    if abs(max_n - round(max_n)) > 1e-9:
+        return None
+    parsed["shadow_price_fetch_max_per_poll"] = int(round(max_n))
+    return parsed
+
+
+def _fetch_disabled_message() -> str:
+    keys = ", ".join(f"entry_sensor_15m.{key}" for key in _FETCH_LIMIT_KEYS)
+    return f"shadow price fetch disabled: {keys} missing or invalid"
+
+
+def _is_fetch_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    return any(
+        cls.__name__ in {"Timeout", "ConnectTimeout", "ReadTimeout"}
+        for cls in type(exc).__mro__
+    )
+
+
+def _stamp_open_reason(signal_id: str, control: bool, reason: str | None) -> None:
+    row = _OPEN.get(_key(signal_id, control))
+    if row is None:
+        return
+    if reason is None:
+        row.pop("no_price_reason", None)
+    else:
+        row["no_price_reason"] = reason
+
+
+def _select_shadow_fetches(
+    ordered: list[dict], cap: int, cursor: int
+) -> tuple[list[dict], int]:
+    """Nearest exit first. Remaining slots rotate across polls."""
+    if cap <= 0 or not ordered:
+        return [], cursor
+    chosen = [ordered[0]]
+    rest = ordered[1:]
+    if cap == 1 or not rest:
+        return chosen, cursor
+    start = cursor % len(rest)
+    rotated = rest[start:] + rest[:start]
+    take = rotated[: cap - 1]
+    chosen.extend(take)
+    return chosen, (start + len(take)) % len(rest)
+
+
+def fill_offwatch_signal_prices(
+    prices: dict | None,
+    *,
+    watchlist: set[str] | None,
+    sensor_cfg: dict | None,
+) -> dict:
+    """Price open signals that left the watchlist. Controls are never fetched.
+
+    Count, budget, and per-call timeout come only from ``sensor_cfg``. If any
+    of those keys is missing or invalid, nothing is fetched, missing rows are
+    marked ``fetch_disabled_config``, and an ERROR is logged.
+    """
+    global _PRICE_FETCH_CURSOR
+    batch = dict(prices or {})
+    watched = {str(sym) for sym in (watchlist or set())}
+    limits = _parse_fetch_limits(sensor_cfg)
+    with _LOCK:
+        signals: list[dict] = []
+        controls: list[dict] = []
+        for row in _OPEN.values():
+            sym = str(row.get("symbol") or "")
+            if not sym or sym in watched or _positive_price(batch.get(sym)) is not None:
+                if sym and _positive_price(batch.get(sym)) is not None:
+                    _stamp_open_reason(str(row.get("signal_id")), bool(row.get("control")), None)
+                continue
+            item = {
+                "signal_id": str(row.get("signal_id")),
+                "symbol": sym,
+                "control": bool(row.get("control")),
+                "exit_at": row["ts"] + timedelta(hours=float(row["exit_hours"])),
+            }
+            if item["control"]:
+                controls.append(item)
+            else:
+                signals.append(item)
+        signals.sort(key=lambda item: (item["exit_at"], item["symbol"], item["signal_id"]))
+        if limits is None:
+            if signals or controls:
+                log(_fetch_disabled_message(), "ERROR")
+            for item in signals + controls:
+                _stamp_open_reason(item["signal_id"], item["control"], "fetch_disabled_config")
+            return batch
+        cap = int(limits["shadow_price_fetch_max_per_poll"])
+        chosen, _PRICE_FETCH_CURSOR = _select_shadow_fetches(
+            signals, cap, _PRICE_FETCH_CURSOR
+        )
+        chosen_ids = {item["signal_id"] for item in chosen}
+        for item in signals:
+            if item["signal_id"] not in chosen_ids:
+                _stamp_open_reason(item["signal_id"], False, "cap_reached")
+        # Controls never take a fetch slot, so a missing batch price is the cap.
+        for item in controls:
+            _stamp_open_reason(item["signal_id"], True, "cap_reached")
+        budget = float(limits["shadow_price_fetch_budget_s"])
+        timeout_s = float(limits["shadow_price_fetch_timeout_s"])
+    deadline = time.monotonic() + budget
+    updates: dict[str, float] = {}
+    outcomes: dict[str, str | None] = {}
+    for item in chosen:
+        sym = item["symbol"]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            outcomes[item["signal_id"]] = "cap_reached"
+            continue
+        call_timeout = min(timeout_s, remaining)
+        try:
+            from price_fetcher import _fetch_gate_single
+
+            raw_px = _fetch_gate_single(sym, timeout=call_timeout)
+        except Exception as exc:
+            outcomes[item["signal_id"]] = (
+                "fetch_timeout" if _is_fetch_timeout(exc) else "fetch_error"
+            )
+            continue
+        px = _positive_price(raw_px)
+        if px is None:
+            outcomes[item["signal_id"]] = "fetch_error"
+            continue
+        updates[sym] = px
+        outcomes[item["signal_id"]] = None
+    with _LOCK:
+        for item in chosen:
+            reason = outcomes.get(item["signal_id"])
+            _stamp_open_reason(item["signal_id"], False, reason)
+        for sym, px in updates.items():
+            batch[sym] = px
+    return batch
 
 
 def open_signal_symbols() -> list[str]:
@@ -856,7 +1177,9 @@ def log_shadow_trigger(
     config_raw: dict,
     price_batch: dict | None = None,
     candidate_cache: dict | None = None,
-    gate_cache: dict | None = None,
+    gate_cache: dict | None | _CollectGates = _COLLECT_GATES,
+    market_cap_usd: float | None = None,
+    quote_volume_24h_usdt: float | None = None,
     sensor_cfg: dict | None = None,
     now: datetime | None = None,
 ) -> dict | None:
@@ -870,8 +1193,20 @@ def log_shadow_trigger(
             _save_journal()
             return None
 
+        # Gate inputs only for a new id. Repeats must not touch the ledger.
+        # An explicit None stays unavailable (gate_check_unavailable).
+        if gate_cache is _COLLECT_GATES:
+            gate_cache = snapshot_gate_inputs(
+                symbol=symbol,
+                timeframe=timeframe,
+                market_cap_usd=market_cap_usd,
+                quote_volume_24h_usdt=quote_volume_24h_usdt,
+                config_raw=config_raw,
+            )
+
         signal_id = str(uuid.uuid4())
-        stop_pct = effective_stop_fraction(config_raw, symbol, timeframe)
+        stops = _stops_from_exit_path(config_raw, symbol, timeframe)
+        stop_pct = stops["stop_pct"]
         hours = exit_hours_from(config_raw, sensor_cfg)
         fee = fee_taker_conservative_pct(config_raw)
         version, version_reason = config_version(config_raw)
@@ -892,7 +1227,11 @@ def log_shadow_trigger(
             "price_at_signal": px,
             "price_source": price_source,
             "stop_pct": stop_pct,
-            "stop_pct_source": STOP_PCT_SOURCE,
+            "stop_full_pct": stops["stop_full_pct"],
+            "stop_partial_pct": stops["stop_partial_pct"],
+            "stop_pct_source": stops["stop_pct_source"],
+            "partial_stop_ratio": stops.get("partial_stop_ratio"),
+            "volatility_tier": stops.get("volatility_tier"),
             "exit_hours": hours,
             "rationale": rationale,
             "action": action,
@@ -904,6 +1243,7 @@ def log_shadow_trigger(
             "market_cap_usd": cached_mcap,
             "quote_volume_24h_usdt": cached_vol,
         }
+        row.update(_venue_null_fields(gate_cache, config_raw, gates))
         if version_reason:
             row["config_version_reason"] = version_reason
         open_row = {
@@ -915,6 +1255,9 @@ def log_shadow_trigger(
             "price_at_signal": px,
             "price_source": price_source,
             "stop_pct": stop_pct,
+            "stop_full_pct": stops["stop_full_pct"],
+            "stop_partial_pct": stops["stop_partial_pct"],
+            "stop_pct_source": stops["stop_pct_source"],
             "exit_hours": hours,
             "fee_pct": fee,
             "repeat_count": 0,
@@ -963,7 +1306,9 @@ def _write_control_locked(
             "price_at_signal": None,
             "price_source": signal_row.get("price_source"),
             "stop_pct": signal_row["stop_pct"],
-            "stop_pct_source": STOP_PCT_SOURCE,
+            "stop_full_pct": signal_row.get("stop_full_pct"),
+            "stop_partial_pct": signal_row.get("stop_partial_pct"),
+            "stop_pct_source": signal_row.get("stop_pct_source"),
             "exit_hours": signal_row["exit_hours"],
             "reason": "no_control",
         }
@@ -982,7 +1327,9 @@ def _write_control_locked(
         "price_at_signal": px,
         "price_source": signal_row.get("price_source"),
         "stop_pct": signal_row["stop_pct"],
-        "stop_pct_source": STOP_PCT_SOURCE,
+        "stop_full_pct": signal_row.get("stop_full_pct"),
+        "stop_partial_pct": signal_row.get("stop_partial_pct"),
+        "stop_pct_source": signal_row.get("stop_pct_source"),
         "exit_hours": signal_row["exit_hours"],
     }
     _emit(row)
@@ -1037,8 +1384,15 @@ def _write_exit(
         "exit_reason": reason,
         "ret_net_pct": ret,
         "control": control,
+        "no_price": reason == "no_price",
         "excluded_from_evaluation": excluded,
     }
+    if reason == "no_price":
+        stamped = open_row.get("no_price_reason")
+        if stamped is None:
+            # The caller passed a batch with no price and no fetch classification.
+            stamped = "fetch_error"
+        row["no_price_reason"] = stamped
     if not control:
         row["repeat_count"] = int(open_row.get("repeat_count") or 0)
     _emit(row)
@@ -1157,11 +1511,14 @@ def candidate_info_from_coin(symbol: str, coin: dict | None, config_raw: dict | 
         info["market_cap_usd"] = float(mcap)
 
     vol = None
-    if isinstance(coin, dict) and coin.get("quote_volume_24h_usdt") not in (None, ""):
-        try:
-            vol = float(coin["quote_volume_24h_usdt"])
-        except (TypeError, ValueError):
-            vol = None
+    if isinstance(coin, dict):
+        from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
+
+        if coin.get(QUOTE_VOL_24H_KEY) not in (None, ""):
+            try:
+                vol = float(coin[QUOTE_VOL_24H_KEY])
+            except (TypeError, ValueError):
+                vol = None
     if vol is None or vol <= 0:
         from services.venue_quality import peek_cached_quote_volume
 
