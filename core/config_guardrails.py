@@ -269,10 +269,13 @@ def _base_liquidity_floors() -> dict[str, float]:
 
 
 def assert_liquidity_multiples_within_base_floor(config: Any) -> None:
-    """Reject a present multiple that sits below the base floor (R7).
+    """Reject a present multiple that is not a finite number, or sits below the base floor.
 
     The floor always comes from disk, never from ``config``. A base read
-    error or an invalid base floor rejects the save.
+    error or an invalid base floor rejects the save. A present multiple must
+    be an int or float (not bool), finite, and at least the base floor.
+    ``True == 1`` must not let a bool through. Strings and NaN are rejected
+    here; the buy lock already fail-closes them.
     """
     from services.venue_quality import (
         DEPTH_FLOOR_PATH,
@@ -292,13 +295,15 @@ def assert_liquidity_multiples_within_base_floor(config: Any) -> None:
         raw = _get_path(config, multiple_path)
         if raw is _MISSING:
             continue
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            continue
-        if not math.isfinite(raw):
-            continue
+        # Bool and str are not numbers. NaN/inf are not usable multiples.
+        # Compare only after that, so True is not treated as 1.
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise ConfigValidationError(
+                multiple_path, raw, "liquidity guard multiple invalid"
+            )
         number = float(raw)
         floor = floors[floor_path]
-        if number < floor:
+        if number <= 0 or number < floor:
             raise ConfigValidationError(multiple_path, raw, f"below floor {floor}")
 
 

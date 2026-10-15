@@ -650,6 +650,153 @@ def test_689_t18b_shorts_patch_rejects_every_key(key, value):
     assert ei.value.path == f"shorts.{key}"
 
 
+def test_689_c1_missing_or_invalid_floor_on_disk_rejects_save(monkeypatch, tmp_path):
+    """A floor already on disk that is missing or invalid rejects the save.
+
+    The body under test is otherwise valid, so this is not the presence rule
+    on the body. NaN and inf cannot round-trip through JSON, so those two
+    cases come back from the disk loader.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data_manager, "_config_cache", None)
+    monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
+    repair = _floor_body()
+
+    disk = _floor_body()
+    del disk["risk"]["liquidity_guard"]["depth_to_order_multiple_min"]
+    (tmp_path / "config.json").write_text(json.dumps(disk), encoding="utf-8")
+    with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
+        _REAL_SAVE(repair)
+    assert ei.value.path == _DEPTH_FLOOR
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert "depth_to_order_multiple_min" not in saved["risk"]["liquidity_guard"]
+
+    for bad in (0, -1, True, "20"):
+        disk = _floor_body()
+        disk["risk"]["venue_quality"]["min_volume_to_order_multiple_min"] = bad
+        (tmp_path / "config.json").write_text(json.dumps(disk), encoding="utf-8")
+        with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
+            _REAL_SAVE(repair)
+        assert ei.value.path == _VOLUME_FLOOR, bad
+        on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert on_disk["risk"]["venue_quality"]["min_volume_to_order_multiple_min"] == bad
+
+    for bad in (math.nan, math.inf):
+        disk = _floor_body()
+        disk["risk"]["liquidity_guard"]["depth_to_order_multiple_min"] = bad
+        _patch_disk(monkeypatch, disk)
+        with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
+            _REAL_SAVE(repair)
+        assert ei.value.path == _DEPTH_FLOOR, bad
+
+    tenant_disk = _floor_body()
+    del tenant_disk["risk"]["venue_quality"]["min_volume_to_order_multiple_min"]
+    saved_calls = _arm_tenant(monkeypatch, tenant_disk, previous={})
+    with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
+        _REAL_SAVE(repair, tenant_id="t689")
+    assert ei.value.path == _VOLUME_FLOOR
+    assert saved_calls == []
+
+
+def test_689_c2_default_save_rejects_bool_floor(monkeypatch, tmp_path):
+    """Default save rejects floor True even though the pin treats True as 1."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data_manager, "_config_cache", None)
+    monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
+    previous = _floor_body()
+    (tmp_path / "config.json").write_text(json.dumps(previous), encoding="utf-8")
+    body = _floor_body()
+    body["risk"]["liquidity_guard"]["depth_to_order_multiple_min"] = True
+    assert frozen_shorts_changed(body, previous, pinned_patch_paths()) is None
+    with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
+        _REAL_SAVE(body)
+    assert ei.value.path == _DEPTH_FLOOR
+    assert ei.value.value is True
+    assert "operator-pinned" not in str(ei.value)
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk["risk"]["liquidity_guard"]["depth_to_order_multiple_min"] == 1
+    assert isinstance(on_disk["risk"]["liquidity_guard"]["depth_to_order_multiple_min"], int)
+
+
+def test_689_c3_non_positive_multiples_rejected_on_save(monkeypatch, tmp_path):
+    from core.config_guardrails import validate_config_for_save
+
+    _patch_disk(monkeypatch, _floor_body())
+    cases = (
+        (0, 20, _DEPTH_MULTIPLE),
+        (-1, 20, _DEPTH_MULTIPLE),
+        (1, 0, _VOLUME_MULTIPLE),
+        (1, -1, _VOLUME_MULTIPLE),
+    )
+    for depth, volume, path in cases:
+        with pytest.raises(ConfigValidationError, match="below floor") as ei:
+            validate_config_for_save(_floor_body(depth=depth, volume=volume))
+        assert ei.value.path == path
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data_manager, "_config_cache", None)
+    monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
+    previous = _floor_body()
+    (tmp_path / "config.json").write_text(json.dumps(previous), encoding="utf-8")
+    with pytest.raises(ConfigValidationError, match="below floor") as ei:
+        _REAL_SAVE(_floor_body(volume=0))
+    assert ei.value.path == _VOLUME_MULTIPLE
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk["risk"]["venue_quality"]["min_volume_to_order_multiple"] == 20
+
+
+def test_689_c4_save_rejects_string_nan_and_bool_multiples(monkeypatch, tmp_path):
+    """A present multiple that is a str, NaN/inf, or bool is rejected on save.
+
+    Depth ``True`` and volume ``"20"`` would pass a numeric compare (``True == 1``,
+    ``float("20") == 20``). The type check has to reject them first.
+    """
+    from core.config_guardrails import validate_config_for_save
+
+    _patch_disk(monkeypatch, _floor_body())
+    cases = (
+        ("depth", True),
+        ("depth", False),
+        ("volume", "20"),
+        ("volume", "2"),
+        ("depth", math.nan),
+        ("depth", math.inf),
+        ("volume", math.nan),
+    )
+    for side, bad in cases:
+        body = _floor_body()
+        if side == "depth":
+            body["risk"]["liquidity_guard"]["depth_to_order_multiple"] = bad
+            path = _DEPTH_MULTIPLE
+        else:
+            body["risk"]["venue_quality"]["min_volume_to_order_multiple"] = bad
+            path = _VOLUME_MULTIPLE
+        with pytest.raises(ConfigValidationError, match="liquidity guard multiple invalid") as ei:
+            validate_config_for_save(body)
+        assert ei.value.path == path, (side, bad)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data_manager, "_config_cache", None)
+    monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
+    previous = _floor_body()
+    (tmp_path / "config.json").write_text(json.dumps(previous), encoding="utf-8")
+    body = _floor_body()
+    body["risk"]["liquidity_guard"]["depth_to_order_multiple"] = True
+    with pytest.raises(ConfigValidationError, match="liquidity guard multiple invalid") as ei:
+        _REAL_SAVE(body)
+    assert ei.value.path == _DEPTH_MULTIPLE
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk["risk"]["liquidity_guard"]["depth_to_order_multiple"] == 1
+
+    saved_calls = _arm_tenant(monkeypatch, _floor_body(), previous=_floor_body())
+    tenant_body = _floor_body()
+    tenant_body["risk"]["venue_quality"]["min_volume_to_order_multiple"] = "20"
+    with pytest.raises(ConfigValidationError, match="liquidity guard multiple invalid") as ei:
+        _REAL_SAVE(tenant_body, tenant_id="t689")
+    assert ei.value.path == _VOLUME_MULTIPLE
+    assert saved_calls == []
+
+
 def test_689_path_constants_match_the_spec():
     assert DEPTH_FLOOR_PATH == _DEPTH_FLOOR
     assert VOLUME_FLOOR_PATH == _VOLUME_FLOOR
