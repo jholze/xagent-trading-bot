@@ -23,6 +23,7 @@ _OPEN: dict[str, dict] = {}
 _CLOSED: set[str] = set()
 _COUNTS: dict[str, int] = {}
 _DAY: str | None = None
+_COUNTS_LOADED = False
 
 _REQUIRED_GATE_INPUTS = (
     "market_cap_usd",
@@ -35,6 +36,25 @@ _REQUIRED_GATE_INPUTS = (
     "cooldown_blocked",
     "rate_limited",
 )
+
+# Per-gate pass/fail. True means the gate would allow the buy. None means
+# that gate's input is missing. Order is the first-failure order of the
+# aggregate ``gates_passed`` flag.
+_GATE_ORDER = (
+    "daily_loss_brake",
+    "trade_cooldown",
+    "rate_limited",
+    "max_daily_trades",
+    "max_open_positions",
+    "market_cap",
+    "venue_liquidity",
+)
+_GATE_REJECT = {
+    "venue_liquidity": "venue_liquidity_block",
+}
+
+# Same method the exit path uses. The row stores the fraction of that percent.
+STOP_PCT_SOURCE = "risk_manager._effective_stop_loss_pct"
 
 _EXIT_REASONS_EXCLUDED = frozenset({"no_price", "restart_unresolved"})
 
@@ -62,7 +82,8 @@ def _ensure_counts() -> None:
 
 def reset_for_tests() -> None:
     """Drop in-memory shadow state and the journal file."""
-    global _DAY
+    global _DAY, _COUNTS_LOADED
+    _COUNTS_LOADED = False
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -141,30 +162,22 @@ def fee_taker_conservative_pct(config_raw: dict | None) -> float | None:
         return None
 
 
+def _stop_pct_from_resolver(config_raw: dict | None, symbol: str, timeframe: str) -> float:
+    """Percent from the same resolver the exit path calls. No order, no state."""
+    from risk.risk_manager import RiskManager
+
+    rm = RiskManager.__new__(RiskManager)
+    rm.config = _config_view(config_raw)
+    return float(RiskManager._effective_stop_loss_pct(rm, symbol, timeframe, None))
+
+
 def effective_stop_fraction(config_raw: dict | None, symbol: str, timeframe: str) -> float:
     """Fraction used as ``price * (1 - stop_pct)``.
 
-    ``stop_loss_pct`` in this bot is percent (50 means 50%). The shadow row
-    stores the fraction so the spec formula applies directly.
+    The resolver returns percent (25 means 25%). The shadow row stores the
+    fraction so the spec formula applies directly.
     """
-    raw = config_raw or {}
-    chosen = None
-    for entry in raw.get("strategies") or []:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("symbol") == symbol and str(entry.get("timeframe") or "") == str(timeframe):
-            if entry.get("stop_loss_pct") is not None:
-                chosen = entry.get("stop_loss_pct")
-                break
-    if chosen is None:
-        chosen = raw.get("stop_loss_pct")
-    if chosen is None:
-        sensor = raw.get("entry_sensor_15m") or {}
-        if isinstance(sensor, dict):
-            chosen = sensor.get("stop_pct", sensor.get("stop_loss_pct"))
-    if chosen is None:
-        raise KeyError("stop_loss_pct")
-    return float(chosen) / 100.0
+    return float(_stop_pct_from_resolver(config_raw, symbol, timeframe)) / 100.0
 
 
 def exit_hours_from(config_raw: dict | None, sensor_cfg: dict | None = None) -> float:
@@ -197,51 +210,274 @@ def _exit_ret(entry: float, exit_price: float, fee_pct: float | None, *, control
     return ret_net_pct(entry, exit_price, fee_pct)
 
 
-def dry_check_gates(cache: dict | None, config_raw: dict | None = None) -> tuple[bool | None, str | None]:
-    """Read-only gate projection from cached inputs.
+def _publish_gates(gates: dict) -> dict:
+    """Logged per-gate map. Identity, so a mutation can blank every gate."""
+    return dict(gates)
 
-    Does not call the active risk path and does not mutate ``cache`` or any
-    counter. ``cache is None`` means there is no side-effect-free entry point.
-    A missing key means that input was not cached.
+
+def _gate_missing(cache: dict, key: str) -> bool:
+    return key not in cache or cache[key] is None
+
+
+def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
+    """One true/false/null per gate. Null only when that gate's input is missing.
+
+    Does not mutate ``cache`` and does not call the active risk path.
     """
+    gates = {name: None for name in _GATE_ORDER}
     if not isinstance(cache, dict):
-        return _null_gate("gate_check_unavailable")
-    for key in _REQUIRED_GATE_INPUTS:
-        if key not in cache or cache[key] is None:
-            return _null_gate("input_uncached")
+        return _publish_gates(gates)
 
-    if bool(cache["loss_brake_halted"]):
-        return False, "daily_loss_brake"
-    if bool(cache["cooldown_blocked"]):
-        return False, "trade_cooldown"
-    if bool(cache["rate_limited"]):
-        return False, "rate_limited"
-
-    max_daily = float(cache["max_daily_buys"])
-    if max_daily > 0 and float(cache["daily_buys_count"]) >= max_daily:
-        return False, "max_daily_trades"
-
-    max_slots = float(cache["max_open_positions"])
-    if max_slots > 0 and float(cache["open_slots"]) >= max_slots:
-        return False, "max_open_positions"
+    if not _gate_missing(cache, "loss_brake_halted"):
+        gates["daily_loss_brake"] = not bool(cache["loss_brake_halted"])
+    if not _gate_missing(cache, "cooldown_blocked"):
+        gates["trade_cooldown"] = not bool(cache["cooldown_blocked"])
+    if not _gate_missing(cache, "rate_limited"):
+        gates["rate_limited"] = not bool(cache["rate_limited"])
+    if not _gate_missing(cache, "max_daily_buys") and not _gate_missing(cache, "daily_buys_count"):
+        max_daily = float(cache["max_daily_buys"])
+        blocked = max_daily > 0 and float(cache["daily_buys_count"]) >= max_daily
+        gates["max_daily_trades"] = not blocked
+    if not _gate_missing(cache, "max_open_positions") and not _gate_missing(cache, "open_slots"):
+        max_slots = float(cache["max_open_positions"])
+        blocked = max_slots > 0 and float(cache["open_slots"]) >= max_slots
+        gates["max_open_positions"] = not blocked
 
     sensor = (config_raw or {}).get("entry_sensor_15m") or {}
     if not isinstance(sensor, dict):
         sensor = {}
-    from data.cmc_market_cap import passes_market_cap_filter
+    if not _gate_missing(cache, "market_cap_usd"):
+        from data.cmc_market_cap import passes_market_cap_filter
 
-    mcap_ok, _reason = passes_market_cap_filter(float(cache["market_cap_usd"]), sensor)
-    if not mcap_ok:
-        return False, "market_cap"
+        mcap_ok, _reason = passes_market_cap_filter(float(cache["market_cap_usd"]), sensor)
+        gates["market_cap"] = bool(mcap_ok)
+    if not _gate_missing(cache, "quote_volume_24h_usdt"):
+        from services.venue_quality import liquidity_guard_config
 
-    from services.venue_quality import liquidity_guard_config
+        floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
+        if floor is not None:
+            gates["venue_liquidity"] = float(cache["quote_volume_24h_usdt"]) >= float(floor)
+    return _publish_gates(gates)
 
-    floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
-    if floor is None:
+
+def dry_check_gates(cache: dict | None, config_raw: dict | None = None) -> tuple[bool | None, str | None]:
+    """Aggregate of :func:`project_gates`.
+
+    Does not call the active risk path and does not mutate ``cache`` or any
+    counter. ``cache is None`` means there is no side-effect-free entry point.
+    A missing input nulls only that gate; the aggregate is null when any gate
+    is null and none has failed.
+    """
+    if not isinstance(cache, dict):
+        return _null_gate("gate_check_unavailable")
+    gates = project_gates(cache, config_raw)
+    for name in _GATE_ORDER:
+        if gates[name] is False:
+            return False, _GATE_REJECT.get(name, name)
+    if any(gates[name] is None for name in _GATE_ORDER):
         return _null_gate("input_uncached")
-    if float(cache["quote_volume_24h_usdt"]) < float(floor):
-        return False, "venue_liquidity_block"
     return True, None
+
+
+def _config_view(config_raw: dict | None):
+    from core.config import BotConfig
+
+    return BotConfig(raw=config_raw or {})
+
+
+def _parse_utc(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value)
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return _utc(parsed)
+
+
+def _peek_max_daily_buys(config_raw: dict | None) -> int | None:
+    try:
+        from risk.risk_manager import RiskManager
+
+        rm = RiskManager.__new__(RiskManager)
+        rm.config = _config_view(config_raw)
+        return int(RiskManager._effective_max_daily_buys(rm))
+    except Exception:
+        return None
+
+
+def _peek_daily_buys() -> int | None:
+    """Filled buys in the ledger window. Read only. Failure → missing."""
+    try:
+        from data_manager import load_orders, resolve_ledger_scope
+        from risk.risk_manager import RiskManager
+
+        doc = load_orders(resolve_ledger_scope()) or {}
+        rm = RiskManager.__new__(RiskManager)
+        return sum(
+            1
+            for _ in RiskManager._iter_daily_filled_orders(
+                rm, side="buy", orders_doc=doc
+            )
+        )
+    except Exception:
+        return None
+
+
+def _peek_loss_brake_halted() -> bool | None:
+    """In-memory halt, plus the trade-history halt when that read works."""
+    from risk.risk_manager import _daily_loss_halt_memory
+
+    now = datetime.now(timezone.utc)
+    mem = _daily_loss_halt_memory()
+    mem_halt = bool(mem is not None and _parse_utc(mem) is not None and _parse_utc(mem) > now)
+    try:
+        from data_manager import load_trade_history
+
+        history = load_trade_history() or {}
+        until = _parse_utc(history.get("risk_halt_until")) if isinstance(history, dict) else None
+        disk_halt = bool(until is not None and until > now)
+        return mem_halt or disk_halt
+    except Exception:
+        if mem is None:
+            return None
+        return mem_halt
+
+
+def _peek_open_slots(config_raw: dict | None) -> int | None:
+    try:
+        from strategies.positions import count_open_full_slots, is_positions_state_unknown
+
+        if is_positions_state_unknown():
+            return None
+        return int(count_open_full_slots(config_raw))
+    except Exception:
+        return None
+
+
+def _peek_max_open_positions(config_raw: dict | None) -> int | None:
+    try:
+        return int(_config_view(config_raw).max_open_positions)
+    except Exception:
+        return None
+
+
+def _peek_cooldown_blocked(symbol: str, timeframe: str, config_raw: dict | None) -> bool | None:
+    """Buy cooldown from the position already in memory. Does not create a lot."""
+    try:
+        from core.tenant_context import DEFAULT_TENANT
+        from strategies import positions as posmod
+
+        if posmod.is_positions_state_unknown():
+            return None
+        key = posmod._resolve_store_key()
+        if key[0] == DEFAULT_TENANT:
+            store = posmod.positions
+        else:
+            store = posmod._position_stores.get(key)
+            if store is None:
+                return None
+        pos = store.get(posmod.get_key(symbol, timeframe))
+        if not isinstance(pos, dict):
+            return False
+        if str(pos.get("last_trade_type") or "").upper() != "BUY":
+            return False
+        last_ts = _parse_utc(pos.get("last_trade_at"))
+        if last_ts is None:
+            return False if not pos.get("last_trade_at") else None
+        cfg = _config_view(config_raw)
+        params = cfg.strategy_params(symbol, timeframe) or {}
+        hours = params.get("min_hours_between_buys")
+        if hours is None:
+            hours = cfg.trade_cooldown_hours
+        elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600.0
+        return elapsed < float(hours)
+    except Exception:
+        return None
+
+
+def _peek_rate_limited(config_raw: dict | None) -> bool | None:
+    """Eviction cap from RAM plus a still-fresh orders cache.
+
+    Does not refresh the cache, does not prune ``_EVICT_TS``, and does not
+    call the exchange. A cold cache leaves this input missing.
+    """
+    try:
+        import time
+
+        from risk.slot_eviction import slot_eviction_section
+        from risk.slot_eviction_runtime import _EVICT_TS, _is_slot_evict_order
+        from services.order_service import (
+            _ORDERS_READ_CACHE,
+            _ORDERS_READ_CACHE_TTL,
+            OrderService,
+            order_event_ts,
+        )
+
+        risk = (config_raw or {}).get("risk") if isinstance(config_raw, dict) else None
+        cfg = slot_eviction_section(risk if isinstance(risk, dict) else None)
+        if "max_evictions_per_hour" not in cfg or "max_evictions_per_day" not in cfg:
+            return None
+        max_h = int(cfg["max_evictions_per_hour"])
+        max_d = int(cfg["max_evictions_per_day"])
+        svc = OrderService()
+        cached = _ORDERS_READ_CACHE.get(svc._cache_key())
+        if not cached or (time.time() - float(cached[0])) >= float(_ORDERS_READ_CACHE_TTL):
+            return None
+        orders = (cached[1] or {}).get("orders") if isinstance(cached[1], dict) else None
+        now = datetime.now()
+        hour_n = 0
+        day_n = 0
+        for order in orders or []:
+            if not _is_slot_evict_order(order):
+                continue
+            ts = order_event_ts(order)
+            if ts is None:
+                continue
+            ts_naive = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
+            age_s = (now - ts_naive).total_seconds()
+            if age_s <= 86400:
+                day_n += 1
+            if age_s <= 3600:
+                hour_n += 1
+        now_mono = time.time()
+        ram = list(_EVICT_TS)
+        n_hour = max(hour_n, sum(1 for t in ram if now_mono - t < 3600))
+        n_day = max(day_n, sum(1 for t in ram if now_mono - t < 86400))
+        return (max_h > 0 and n_hour >= max_h) or (max_d > 0 and n_day >= max_d)
+    except Exception:
+        return None
+
+
+def snapshot_gate_inputs(
+    *,
+    symbol: str,
+    timeframe: str,
+    market_cap_usd: float | None,
+    quote_volume_24h_usdt: float | None,
+    config_raw: dict | None,
+) -> dict:
+    """Gate inputs the process already holds. No exchange call, no risk evaluate."""
+    cache: dict = {}
+    if market_cap_usd is not None:
+        cache["market_cap_usd"] = market_cap_usd
+    if quote_volume_24h_usdt is not None:
+        cache["quote_volume_24h_usdt"] = quote_volume_24h_usdt
+
+    def _store(key: str, value) -> None:
+        if value is not None:
+            cache[key] = value
+
+    _store("max_daily_buys", _peek_max_daily_buys(config_raw))
+    _store("daily_buys_count", _peek_daily_buys())
+    _store("loss_brake_halted", _peek_loss_brake_halted())
+    _store("open_slots", _peek_open_slots(config_raw))
+    _store("max_open_positions", _peek_max_open_positions(config_raw))
+    _store("cooldown_blocked", _peek_cooldown_blocked(symbol, timeframe, config_raw))
+    _store("rate_limited", _peek_rate_limited(config_raw))
+    return cache
 
 
 def control_seed_from_signal_id(signal_id: str) -> int:
@@ -355,6 +591,40 @@ def lookup_open_signal_id(symbol: str, now: datetime | None = None) -> str | Non
         return str(row["signal_id"])
 
 
+def _persist_shadow_link(order: Any, result: Any, sid: str | None, now: datetime | None) -> None:
+    """Write the buy link on the decision log. Not a risk input."""
+    symbol = getattr(order, "symbol", None)
+    order_id = None
+    if result is not None:
+        order_id = getattr(result, "order_id", None) or None
+    if not order_id:
+        order_id = getattr(order, "order_id", None) or None
+    source = getattr(order, "source", None) or None
+    record = {
+        "type": "shadow_link",
+        "signal_id": sid,
+        "shadow_signal_id": sid,
+        "symbol": symbol,
+        "order_id": order_id,
+        "ts_utc": _ts(_utc(now)),
+        "source": source,
+    }
+    _emit(record)
+    from logger import log_decision
+
+    log_decision(
+        {
+            "type": "shadow_link",
+            "shadow_signal_id": sid,
+            "signal_id": sid,
+            "symbol": symbol,
+            "order_id": order_id,
+            "source": source,
+            "action": "BUY",
+        }
+    )
+
+
 def attach_shadow_signal_id(order: Any, result: Any = None, now: datetime | None = None) -> str | None:
     """Stamp the open shadow id onto a buy. Does not read or write risk state."""
     try:
@@ -370,10 +640,22 @@ def attach_shadow_signal_id(order: Any, result: Any = None, now: datetime | None
                 object.__setattr__(result, "shadow_signal_id", sid)
             except Exception:
                 pass
+        _persist_shadow_link(order, result, sid, now)
         return sid
     except Exception as exc:
         log(f"shadow_log_error link: {exc}", "WARNING")
         return None
+
+
+def _encode_open_rows() -> list[dict]:
+    encoded = []
+    for row in _OPEN.values():
+        item = dict(row)
+        ts = item.get("ts")
+        if isinstance(ts, datetime):
+            item["ts"] = _ts(ts)
+        encoded.append(item)
+    return encoded
 
 
 def _save_journal() -> None:
@@ -381,34 +663,41 @@ def _save_journal() -> None:
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    payload = list(_OPEN.values())
-    # Datetimes are not JSON native.
-    encoded = []
-    for row in payload:
-        item = dict(row)
-        ts = item.get("ts")
-        if isinstance(ts, datetime):
-            item["ts"] = _ts(ts)
-        encoded.append(item)
+    _ensure_counts()
+    payload = {
+        "open": _encode_open_rows(),
+        "counts": {key: int(value) for key, value in _COUNTS.items()},
+        "day": _DAY,
+    }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(encoded, handle)
+        json.dump(payload, handle)
     os.replace(tmp, path)
 
 
-def _load_journal() -> list[dict]:
+def _read_journal_payload() -> tuple[list, dict | None, str | None]:
     path = _state_path()
     if not path or not os.path.isfile(path):
-        return []
+        return [], None, None
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
-        return []
+        return [], None, None
+    if isinstance(data, list):
+        return data, None, None
+    if isinstance(data, dict):
+        rows = data.get("open") if isinstance(data.get("open"), list) else []
+        counts = data.get("counts") if isinstance(data.get("counts"), dict) else None
+        day = data.get("day")
+        return rows, counts, str(day) if day else None
+    return [], None, None
+
+
+def _load_journal() -> list[dict]:
+    raw_rows, _counts, _day = _read_journal_payload()
     rows = []
-    for item in data:
+    for item in raw_rows:
         if not isinstance(item, dict) or not item.get("signal_id"):
             continue
         row = dict(item)
@@ -418,6 +707,37 @@ def _load_journal() -> list[dict]:
             row["ts"] = datetime.fromisoformat(text)
         rows.append(row)
     return rows
+
+
+def _restore_persisted_counters() -> None:
+    """Load daily counts once after a restart. Later in-process updates win."""
+    global _DAY, _COUNTS, _COUNTS_LOADED
+    if _COUNTS_LOADED:
+        return
+    _COUNTS_LOADED = True
+    _rows, counts, day = _read_journal_payload()
+    if isinstance(counts, dict):
+        fresh = _fresh_counts()
+        for key in fresh:
+            if key in counts:
+                try:
+                    fresh[key] = int(counts[key])
+                except (TypeError, ValueError):
+                    pass
+        _COUNTS = fresh
+    if day and _DAY is None:
+        _DAY = day
+
+
+def drop_process_memory() -> None:
+    """Drop RAM shadow state and keep the journal. Simulates a restart."""
+    global _DAY, _COUNTS_LOADED
+    _COUNTS_LOADED = False
+    with _LOCK:
+        _OPEN.clear()
+        _CLOSED.clear()
+        _COUNTS.clear()
+        _DAY = None
 
 
 def _account_control(row: dict) -> None:
@@ -556,7 +876,13 @@ def log_shadow_trigger(
         fee = fee_taker_conservative_pct(config_raw)
         version, version_reason = config_version(config_raw)
         gates_passed, gate_reject_reason = dry_check_gates(gate_cache, config_raw)
+        gates = project_gates(gate_cache, config_raw)
         px = float(price)
+        cached_mcap = None
+        cached_vol = None
+        if isinstance(gate_cache, dict):
+            cached_mcap = gate_cache.get("market_cap_usd")
+            cached_vol = gate_cache.get("quote_volume_24h_usdt")
         row = {
             "type": "shadow_signal",
             "signal_id": signal_id,
@@ -566,13 +892,17 @@ def log_shadow_trigger(
             "price_at_signal": px,
             "price_source": price_source,
             "stop_pct": stop_pct,
+            "stop_pct_source": STOP_PCT_SOURCE,
             "exit_hours": hours,
             "rationale": rationale,
             "action": action,
             "sensor_policy_source": sensor_policy_source,
             "config_version": version,
+            "gates": gates,
             "gates_passed": gates_passed,
             "gate_reject_reason": gate_reject_reason,
+            "market_cap_usd": cached_mcap,
+            "quote_volume_24h_usdt": cached_vol,
         }
         if version_reason:
             row["config_version_reason"] = version_reason
@@ -633,6 +963,7 @@ def _write_control_locked(
             "price_at_signal": None,
             "price_source": signal_row.get("price_source"),
             "stop_pct": signal_row["stop_pct"],
+            "stop_pct_source": STOP_PCT_SOURCE,
             "exit_hours": signal_row["exit_hours"],
             "reason": "no_control",
         }
@@ -651,6 +982,7 @@ def _write_control_locked(
         "price_at_signal": px,
         "price_source": signal_row.get("price_source"),
         "stop_pct": signal_row["stop_pct"],
+        "stop_pct_source": STOP_PCT_SOURCE,
         "exit_hours": signal_row["exit_hours"],
     }
     _emit(row)
@@ -773,6 +1105,7 @@ def resolve_restart(now: datetime | None = None) -> list[dict]:
     current = _utc(now)
     written: list[dict] = []
     with _LOCK:
+        _restore_persisted_counters()
         _touch_day(current)
         seen: set[str] = set()
         loaded = _load_journal()

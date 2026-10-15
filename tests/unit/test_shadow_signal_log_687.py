@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -165,7 +166,13 @@ def test_t1_entry_row_includes_price(logs):
     assert got["symbol"] == SIG
     assert got["timeframe"] == "4h"
     assert got["price_source"] == "gate_spot_last"
-    assert got["stop_pct"] == pytest.approx(0.20)
+    from risk.risk_manager import RiskManager
+
+    rm = RiskManager.__new__(RiskManager)
+    rm.config = BotConfig(raw=raw)
+    expected_stop = float(RiskManager._effective_stop_loss_pct(rm, SIG, "4h", None)) / 100.0
+    assert got["stop_pct"] == pytest.approx(expected_stop)
+    assert got["stop_pct_source"] == shadow.STOP_PCT_SOURCE
     assert got["exit_hours"] == 4
     assert got["sensor_policy_source"] == "mode"
     assert got["config_version"] == version
@@ -659,9 +666,26 @@ def test_t18_control_does_not_add_exchange_calls(logs, monkeypatch):
         ticker_calls.append(symbol)
         return 9.0
 
+    direct_batches = []
+
+    def _direct_batch(symbols, *args, **kwargs):
+        names = list(symbols) if isinstance(symbols, (list, tuple, set)) else []
+        direct_batches.append(names)
+        prices = {s: 1.0 for s in names}
+        if kwargs.get("return_sources"):
+            return prices, {}
+        return prices
+
     monkeypatch.setattr(entry_sensor_loop, "get_bot_config", lambda: cfg)
     monkeypatch.setattr(entry_sensor_loop, "get_gate_prices_batch", _batch)
     monkeypatch.setattr("price_fetcher.get_ticker_price", _ticker)
+    monkeypatch.setattr("price_fetcher.get_gate_prices_batch", _direct_batch)
+    monkeypatch.setattr("price_fetcher.get_prices_batch", _direct_batch)
+    monkeypatch.setattr(
+        "services.market_policy_fusion.get_global_market_bias",
+        lambda *args, **kwargs: {"active": False, "apply_sensor_policy": False},
+    )
+    monkeypatch.setattr(entry_sensor_loop.watch_15m_state, "hours_since_sensor_reject", lambda symbol: None)
     monkeypatch.setattr(
         entry_sensor_loop,
         "_coin_by_symbol",
@@ -673,15 +697,15 @@ def test_t18_control_does_not_add_exchange_calls(logs, monkeypatch):
     )
     from strategies import watch_15m_state
 
-    def _poll():
+    def _poll(spike: float = 0.1):
         entry_sensor_loop.reset_poll_state_for_tests()
         watch_15m_state.reset_cache_for_tests()
         watch_15m_state.set_watch(SIG, "4h")
         orch = MagicMock()
         orch.market.fetch_ohlcv.return_value = object()
         orch.market.compute_15m_sensor_metrics.return_value = {
-            "volume_spike_ratio": 0.1,
-            "body_atr_ratio": 0.0,
+            "volume_spike_ratio": spike,
+            "body_atr_ratio": 1.0,
         }
         entry_sensor_loop._poll_once(orch)
 
@@ -700,11 +724,31 @@ def test_t18_control_does_not_add_exchange_calls(logs, monkeypatch):
     )
     control = _of(logs, "shadow_control")[0]
     assert control["control_symbol"] == CTRL
-    _poll()
+    risk_before = _state_snapshot()
+    snap = shadow.snapshot_gate_inputs(
+        symbol=SIG,
+        timeframe="4h",
+        market_cap_usd=5_000_000,
+        quote_volume_24h_usdt=1_000_000,
+        config_raw=raw,
+    )
+    assert _state_snapshot() == risk_before
+    assert "max_daily_buys" in snap
+    assert "daily_buys_count" in snap
+    assert "loss_brake_halted" in snap
+    assert "open_slots" in snap
+    assert "max_open_positions" in snap
+    assert "cooldown_blocked" in snap
+    assert ticker_calls == []
+    assert direct_batches == []
+    # Second poll reaches the shadow branch, so the loop builds gate inputs too.
+    _poll(spike=5.0)
     assert len(batch_calls) == 2
     assert batch_calls[1] == without
     assert CTRL not in batch_calls[1]
+    assert SIG in batch_calls[1]
     assert ticker_calls == []
+    assert direct_batches == []
 
     missing = shadow.check_open_exits(
         {SIG: 1.25},
@@ -828,3 +872,250 @@ def test_t20_daily_summary_counts(logs):
     assert len(daily_lines) == 1
     assert daily_lines[0]["drawn_with_result"] == 1
     assert any(level == "INFO" for level, message in logs if "shadow_control_daily" in message)
+
+
+def _arm_shadow_poll(monkeypatch, raw, symbols, *, spike=5.0, warnings=None):
+    """Real ``_poll_once`` with prices and market cap already in hand."""
+    cfg = BotConfig(raw=raw)
+    batch_calls = []
+    fetched = []
+
+    def _batch(names):
+        batch_calls.append(list(names))
+        return {name: 1.0 for name in names}
+
+    def _log(message, level="INFO"):
+        if warnings is not None:
+            warnings.append((level, message))
+
+    monkeypatch.setattr(entry_sensor_loop, "get_bot_config", lambda: cfg)
+    monkeypatch.setattr(entry_sensor_loop, "get_gate_prices_batch", _batch)
+    monkeypatch.setattr(entry_sensor_loop, "log", _log)
+    monkeypatch.setattr(
+        entry_sensor_loop,
+        "_coin_by_symbol",
+        lambda symbol, entry=None: _eligible(symbol),
+    )
+    monkeypatch.setattr(
+        "data.cmc_market_cap.resolve_market_cap_usd",
+        lambda symbol, coin=None: 5_000_000,
+    )
+    monkeypatch.setattr(
+        "services.market_policy_fusion.get_global_market_bias",
+        lambda *args, **kwargs: {"active": False, "apply_sensor_policy": False},
+    )
+    monkeypatch.setattr(
+        entry_sensor_loop.watch_15m_state,
+        "hours_since_sensor_reject",
+        lambda symbol: None,
+    )
+    monkeypatch.setattr(
+        entry_sensor_loop,
+        "evaluate_entry_sensor_15m",
+        lambda **kwargs: SimpleNamespace(triggered=True, rationale="spike", action="BUY"),
+    )
+    from strategies import watch_15m_state
+
+    entry_sensor_loop.reset_poll_state_for_tests()
+    watch_15m_state.reset_cache_for_tests()
+    for symbol in symbols:
+        watch_15m_state.set_watch(symbol, "4h")
+
+    class Market:
+        def fetch_ohlcv(self, symbol, timeframe, limit):
+            fetched.append(symbol)
+            return object()
+
+        def compute_15m_sensor_metrics(self, df, **kwargs):
+            return {"volume_spike_ratio": spike, "body_atr_ratio": 1.0}
+
+        def fetch_indicators(self, symbol, timeframe, price):
+            return {"rsi": 40}
+
+    orch = MagicMock()
+    orch.market = Market()
+    return orch, batch_calls, fetched
+
+
+def test_b1_loop_logs_per_gate_values(logs, monkeypatch):
+    import time
+
+    from services.order_service import OrderService, _ORDERS_READ_CACHE
+
+    raw = _raw()
+    raw["risk"]["slot_eviction"] = {
+        "max_evictions_per_hour": 3,
+        "max_evictions_per_day": 9,
+    }
+    svc = OrderService()
+    cache_key = svc._cache_key()
+    _ORDERS_READ_CACHE[cache_key] = (time.time(), {"orders": []})
+    ticker = []
+    monkeypatch.setattr(
+        "price_fetcher.get_ticker_price",
+        lambda symbol, exchange=None: ticker.append(symbol) or 1.0,
+    )
+    try:
+        orch, batch_calls, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
+        entry_sensor_loop._poll_once(orch)
+    finally:
+        _ORDERS_READ_CACHE.pop(cache_key, None)
+    assert fetched == [SIG]
+    assert ticker == []
+    assert batch_calls and SIG in batch_calls[0]
+    row = _of(logs, "shadow_signal")[0]
+    gates = row["gates"]
+    for name in shadow._GATE_ORDER:
+        assert gates[name] is not None, name
+    assert gates["market_cap"] is True
+    assert gates["venue_liquidity"] is True
+    assert row["market_cap_usd"] is not None
+    assert row["quote_volume_24h_usdt"] is not None
+    assert row["gates_passed"] is True
+
+
+def test_b2_stop_uses_risk_resolver(logs):
+    from risk.risk_manager import RiskManager
+
+    raw = _raw()
+    raw["stop_loss_pct"] = 40
+    raw["volatile_altcoin"] = {"partial_stop_pct": 10}
+    before = _state_snapshot()
+    rm = RiskManager.__new__(RiskManager)
+    rm.config = BotConfig(raw=raw)
+    expected = RiskManager._effective_stop_loss_pct(rm, SIG, "4h", None)
+    assert _state_snapshot() == before
+    row = _trigger(logs, raw, price=100.0, now=T0)
+    assert _state_snapshot() == before
+    assert row["stop_pct_source"] == shadow.STOP_PCT_SOURCE
+    assert row["stop_pct"] == pytest.approx(float(expected) / 100.0)
+    assert row["stop_pct"] != pytest.approx(float(raw["stop_loss_pct"]) / 100.0)
+
+
+def test_c1_buy_persists_shadow_signal_id(logs):
+    import logger
+    from core.models import TradeOrder, TradeResult
+    from services.trading_service import _attach_shadow_link
+
+    raw = _raw()
+    row = _trigger(logs, raw, now=datetime.now(timezone.utc))
+    order = TradeOrder(type="BUY", symbol=SIG, price=1.25, source="entry_sensor_15m")
+    result = TradeResult(True, "BUY", SIG, order_id="ord-shadow-1", message="filled")
+    out = _attach_shadow_link(order, result)
+    assert out is result
+    assert out.executed is True
+    saved = []
+    path = logger.DECISIONS_LOG_FILE
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    saved.append(json.loads(line))
+    links = [item for item in saved if item.get("type") == "shadow_link"]
+    assert links
+    assert links[-1]["shadow_signal_id"] == row["signal_id"]
+    assert links[-1]["symbol"] == SIG
+    assert links[-1]["order_id"] == "ord-shadow-1"
+
+
+def test_c2_loop_tracks_symbol_that_left_watchlist(logs, monkeypatch):
+    raw = _raw()
+    _trigger(
+        logs,
+        raw,
+        batch={SIG: 1.25, CTRL: 2.0},
+        cache={CTRL: {"market_cap_usd": 5_000_000, "quote_volume_24h_usdt": 50_000}},
+        now=datetime.now(timezone.utc),
+    )
+    assert _of(logs, "shadow_control")[0]["control_symbol"] == CTRL
+    orch, batch_calls, _fetched = _arm_shadow_poll(monkeypatch, raw, [OTHER])
+    entry_sensor_loop._poll_once(orch)
+    assert batch_calls
+    assert SIG in batch_calls[0]
+    assert CTRL not in batch_calls[0]
+
+
+def test_c6_counts_and_journal_survive_restart(logs):
+    raw = _raw()
+    batch = {SIG: 1.0, OTHER: 2.0}
+    cache = {OTHER: {"market_cap_usd": 5_000_000, "quote_volume_24h_usdt": 50_000}}
+    row = _trigger(logs, raw, batch=batch, cache=cache, now=T0)
+    assert shadow.build_daily_summary(T0.date().isoformat())["controls_drawn"] == 1
+    shadow.drop_process_memory()
+    assert shadow.build_daily_summary(T0.date().isoformat())["controls_drawn"] == 0
+    restarted = shadow.resolve_restart(now=T0 + timedelta(minutes=5))
+    ids = {(item["signal_id"], item["control"]) for item in restarted}
+    assert (row["signal_id"], False) in ids
+    assert (row["signal_id"], True) in ids
+    assert all(item["exit_reason"] == "restart_unresolved" for item in restarted)
+    summary = shadow.build_daily_summary(T0.date().isoformat())
+    assert summary["controls_drawn"] == 1
+    assert summary["restart_unresolved_signals"] == 1
+    assert summary["restart_unresolved_controls"] == 1
+
+
+def test_missing_fee_key_ret_net_pct_is_null(logs):
+    raw = _raw()
+    raw["costs"] = {"gate": {"spot": {}}}
+    _trigger(logs, raw, price=100.0, now=T0)
+    rows = shadow.check_open_exits(
+        {SIG: 110.0},
+        price_source="gate_spot_last",
+        watchlist={SIG},
+        now=T0 + timedelta(hours=4, seconds=1),
+    )
+    assert rows[0]["exit_reason"] == "4h"
+    assert rows[0]["ret_net_pct"] is None
+    assert rows[0]["ret_net_pct"] != 0
+
+
+def test_exit_guard_loop_continues(logs, monkeypatch):
+    warnings = []
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("exit blew up")
+
+    monkeypatch.setattr(shadow, "check_open_exits", _boom)
+    raw = _raw()
+    orch, _batch_calls, fetched = _arm_shadow_poll(
+        monkeypatch, raw, [SIG, OTHER], warnings=warnings
+    )
+    continued = True
+    try:
+        entry_sensor_loop._poll_once(orch)
+    except Exception:
+        continued = False
+    assert continued
+    assert set(fetched) == {SIG, OTHER}
+    assert len(fetched) == 2
+    assert any(level == "WARNING" and "shadow_log_error" in message for level, message in warnings)
+
+
+def test_link_guard_buy_result_continues(logs, monkeypatch):
+    warnings = []
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("link blew up")
+
+    def _log(message, level="INFO"):
+        warnings.append((level, message))
+
+    monkeypatch.setattr(shadow, "attach_shadow_signal_id", _boom)
+    monkeypatch.setattr("services.trading_service.log", _log)
+    from core.models import TradeOrder, TradeResult
+    from services.trading_service import _attach_shadow_link
+
+    order = TradeOrder(type="BUY", symbol=SIG, price=1.25, source="entry_sensor_15m")
+    result = TradeResult(True, "BUY", SIG, order_id="ord-shadow-2", message="filled")
+    continued = True
+    out = None
+    try:
+        out = _attach_shadow_link(order, result)
+    except Exception:
+        continued = False
+    assert continued
+    assert out is result
+    assert out.executed is True
+    assert out.message == "filled"
+    assert out.order_id == "ord-shadow-2"
+    assert any(level == "WARNING" and "shadow_log_error" in message for level, message in warnings)

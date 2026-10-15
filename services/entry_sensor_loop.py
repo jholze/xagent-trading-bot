@@ -335,13 +335,17 @@ def _poll_once(orchestrator) -> None:
                 set_pending_sensor_metrics(symbol, metrics)
             _active_trigger(orchestrator, symbol, coin, price, metrics)
         else:
-            gate_cache = {}
-            if mcap is not None:
-                gate_cache["market_cap_usd"] = mcap
-            cached_vol = (candidate_cache.get(symbol) or {}).get("quote_volume_24h_usdt")
-            if cached_vol is not None:
-                gate_cache["quote_volume_24h_usdt"] = cached_vol
             try:
+                from services.shadow_signal_log import snapshot_gate_inputs
+
+                cached_vol = (candidate_cache.get(symbol) or {}).get("quote_volume_24h_usdt")
+                gate_cache = snapshot_gate_inputs(
+                    symbol=symbol,
+                    timeframe=str(coin.get("timeframe") or "4h"),
+                    market_cap_usd=mcap,
+                    quote_volume_24h_usdt=cached_vol,
+                    config_raw=get_bot_config().raw,
+                )
                 _shadow_log(
                     symbol,
                     coin,

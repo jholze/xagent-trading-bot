@@ -72,6 +72,9 @@ class AuditTrail:
             ),
             "risk_message": risk_message or (trade_result.message if trade_result else ""),
         }
+        linked = getattr(trade_result, "shadow_signal_id", None) if trade_result is not None else None
+        if linked is not None:
+            entry["shadow_signal_id"] = linked
         pos = get_position(analysis.symbol, analysis.timeframe)
         has_position = is_open_position(pos)
         entry["has_position"] = has_position
