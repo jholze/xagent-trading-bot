@@ -164,6 +164,16 @@ def _book_fields(
         "planned_usdt": details.get("planned_usdt"),
         "quote_volume_24h_usdt": details.get("quote_volume_24h_usdt"),
         "depth_window_pct": details.get("depth_window_pct"),
+        "band_bid_usdt": details.get("band_bid_usdt", details.get("depth_bid_usdt")),
+        "band_ask_usdt": details.get("band_ask_usdt", details.get("depth_ask_usdt")),
+        "qv24_usdt": details.get("qv24_usdt", details.get("quote_volume_24h_usdt")),
+        "book_age_sec": details.get("book_age_sec"),
+        "liq_cap_usdt": details.get("liq_cap_usdt"),
+        "cap_depth": details.get("cap_depth"),
+        "cap_volume": details.get("cap_volume"),
+        "open_cost_usdt": details.get("open_cost_usdt"),
+        "final_usdt": details.get("final_usdt"),
+        "allowed_usdt": details.get("allowed_usdt"),
     }
     book["guard"] = guard
     return book
@@ -220,7 +230,7 @@ def emit_buy_decision_tape(
         "book": _book_fields(
             has_position=has_position,
             signal_name=signal_name,
-            details=None if approved else details,
+            details=details,
         ),
         "macro_stress": _observe_macro_stress(
             config,

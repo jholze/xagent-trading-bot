@@ -585,7 +585,7 @@ def _risk_manager_for_e2e(*, mode: str = "live"):
     risk = raw.setdefault("risk", {})
     risk["cash_policy"] = {"enabled": False}
     risk["position_capacity"] = {"enabled": False, "restart_warmup_min": 0}
-    risk["venue_quality"] = {"enabled": False}
+    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
     risk["min_trade_usdt"] = 5
     risk["slot_eviction"] = {
         "enabled": True,

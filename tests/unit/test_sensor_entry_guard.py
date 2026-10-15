@@ -293,6 +293,7 @@ class TestRiskVenueAndSoftBlockScope(unittest.TestCase):
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
                     "order_book_cache_ttl_sec": 15,
+                    "depth_to_order_multiple": 1,
                 },
             },
             "memory": {"gross_loss": {"soft_block_scope": "sensor_only"}},

@@ -23,7 +23,6 @@ _DEFAULTS: dict[str, Any] = {
     "min_quote_volume_24h_usdt": 50_000.0,
     "max_spread_pct": 1.5,
     "min_top_book_usdt_per_side": 200.0,
-    "min_volume_to_order_multiple": 20.0,
     "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
     "exempt_sources": ["manual"],
     "cache_ttl_sec": 90.0,
@@ -40,6 +39,10 @@ _DEFAULTS: dict[str, Any] = {
 _cache_lock = threading.RLock()
 _cache: dict[str, tuple[float, "VenueMetrics"]] = {}
 _book_cache: dict[str, tuple[float, tuple]] = {}
+
+# One log code for a buy whose size was cut to the liquidity room (#671).
+LIQ_GUARD_SIZE_CAPPED = "liq_guard_size_capped"
+_VOLUME_MULTIPLE_WARNED = False
 
 
 @dataclass(frozen=True)
@@ -226,13 +229,57 @@ def _positive_config_float(raw: dict, key: str) -> float | None:
     return number
 
 
+def raw_min_volume_to_order_multiple(config_raw: dict | None) -> float | None:
+    """Positive ``k`` from ``risk.venue_quality`` with no ``_DEFAULTS`` merge.
+
+    Missing or not a positive number is None. Buyers then fail closed.
+    The thin-stamp path must not invent a multiple either.
+    """
+    if not isinstance(config_raw, dict):
+        return None
+    risk = config_raw.get("risk")
+    if not isinstance(risk, dict):
+        return None
+    block = risk.get("venue_quality")
+    if not isinstance(block, dict):
+        return None
+    return _positive_config_float(block, "min_volume_to_order_multiple")
+
+
+def book_age_sec(symbol: str) -> float | None:
+    """Seconds since the cached book used for this pair, if one is stored."""
+    pair = _pair(symbol or "")
+    with _cache_lock:
+        hit = _book_cache.get(pair)
+    if not hit:
+        return None
+    try:
+        stamped = float(hit[0])
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, time.time() - stamped)
+
+
+def _warn_volume_multiple_missing() -> None:
+    """One WARNING when the stamp path has no positive volume multiple."""
+    global _VOLUME_MULTIPLE_WARNED
+    if _VOLUME_MULTIPLE_WARNED:
+        return
+    _VOLUME_MULTIPLE_WARNED = True
+    log(
+        "min_volume_to_order_multiple missing; thin-venue stamp tags nothing",
+        "WARNING",
+    )
+
+
 def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
-    """Gate 24h quote-volume floor, ±% mid window, and book-cache max age.
+    """Gate 24h quote-volume floor, ±% mid window, book-cache max age, and depth multiple.
 
     Volume is the pair's own Gate ticker ``quote_volume``, never CMC.
     ``depth_window_pct`` is a percent of mid, not a fraction and not a
-    level count. Each value is None when the key is missing or not a
-    positive number. Callers then block the buy.
+    level count. ``depth_to_order_multiple`` has no code default.
+    Each value is None when the key is missing or not a positive number.
+    Callers then block the buy.
     """
     if config_raw is None:
         try:
@@ -248,11 +295,18 @@ def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
     floor = _positive_config_float(raw, "min_quote_volume_24h_usdt")
     window = _positive_config_float(raw, "depth_window_pct")
     max_age = _positive_config_float(raw, "order_book_cache_ttl_sec")
+    depth_mult = _positive_config_float(raw, "depth_to_order_multiple")
     return {
         "min_quote_volume_24h_usdt": floor,
         "depth_window_pct": window,
         "order_book_cache_ttl_sec": max_age,
-        "complete": floor is not None and window is not None and max_age is not None,
+        "depth_to_order_multiple": depth_mult,
+        "complete": (
+            floor is not None
+            and window is not None
+            and max_age is not None
+            and depth_mult is not None
+        ),
     }
 
 
@@ -269,6 +323,7 @@ def evaluate_venue_quality(
     cfg: dict | None = None,
     *,
     planned_usdt: float = 0.0,
+    skip_volume_multiple: bool = False,
 ) -> VenueQualityResult:
     """Pure venue gate. Thin → ok=False with reasons. Missing metrics → not ok."""
     cfg = {**_DEFAULTS, **(cfg or {})}
@@ -328,11 +383,16 @@ def evaluate_venue_quality(
 
     planned = float(planned_usdt or 0)
     k = float(cfg.get("min_volume_to_order_multiple") or 0)
-    if k > 0 and planned > 0 and volume_data:
-        if m.quote_volume_24h_usdt < k * planned:
-            reasons.append(
-                f"quote_vol ${m.quote_volume_24h_usdt:.0f} < {k:.0f}× order ${planned:.0f}"
-            )
+    # Buys skip this yes/no. ``cap_volume`` in the hard lock replaces it.
+    # Stamp and thin-venue reads keep it, and never invent a multiple.
+    if not skip_volume_multiple:
+        if k > 0 and planned > 0 and volume_data:
+            if m.quote_volume_24h_usdt < k * planned:
+                reasons.append(
+                    f"quote_vol ${m.quote_volume_24h_usdt:.0f} < {k:.0f}× order ${planned:.0f}"
+                )
+        elif k <= 0:
+            _warn_volume_multiple_missing()
 
     if m.capture == "book_unavailable" and not depth_parsed:
         if not volume_data:
@@ -803,6 +863,37 @@ def get_venue_metrics(
     ).get(symbol) or VenueMetrics(symbol=symbol, capture="missing")
 
 
+def _stamp_liquidity(
+    out: VenueQualityResult,
+    *,
+    codes: list[str],
+    planned: float,
+    window: float | None,
+    qv: float | None,
+    bid_d: float | None,
+    ask_d: float | None,
+    cap_depth: float | None,
+    cap_volume: float | None,
+    liq_cap: float | None,
+    book_age: float | None,
+) -> VenueQualityResult:
+    """Cap fields on the pass path and the reject path (#671 R1, R6)."""
+    out.guard_codes = list(codes)  # type: ignore[attr-defined]
+    out.planned_usdt = planned  # type: ignore[attr-defined]
+    out.depth_window_pct = window  # type: ignore[attr-defined]
+    out.quote_volume_24h_usdt = qv  # type: ignore[attr-defined]
+    out.qv24_usdt = qv  # type: ignore[attr-defined]
+    out.depth_bid_usdt = bid_d  # type: ignore[attr-defined]
+    out.depth_ask_usdt = ask_d  # type: ignore[attr-defined]
+    out.band_bid_usdt = bid_d  # type: ignore[attr-defined]
+    out.band_ask_usdt = ask_d  # type: ignore[attr-defined]
+    out.cap_depth = cap_depth  # type: ignore[attr-defined]
+    out.cap_volume = cap_volume  # type: ignore[attr-defined]
+    out.liq_cap_usdt = liq_cap  # type: ignore[attr-defined]
+    out.book_age_sec = book_age  # type: ignore[attr-defined]
+    return out
+
+
 def _apply_hard_liquidity(
     prior: VenueQualityResult,
     metrics: VenueMetrics | dict | None,
@@ -810,12 +901,13 @@ def _apply_hard_liquidity(
     planned_usdt: float,
     config_raw: dict | None,
 ) -> VenueQualityResult:
-    """Repair the #563 gate: Gate volume floor and band depth vs final size.
+    """Repair the #563 gate: Gate volume floor and the position liquidity cap.
 
-    Does not replace a prior hard failure with a pass. When the old
-    thresholds would have allowed the buy, a failing hard rule becomes
-    the result. Hard codes are also attached when the old gate already
-    failed, so the tape can count ``liq_guard_*`` on its own.
+    Depth and the 24h-volume multiple no longer reject the buy here. They
+    set ``cap_depth`` and ``cap_volume`` on every result, including a pass.
+    The caller cuts or rejects from ``liq_cap_usdt``. A missing book, a
+    missing quote volume, or a missing positive config value is still
+    ``liq_guard_missing_input``. The quote-volume floor is unchanged.
     Sells must not call this.
     """
     lg = liquidity_guard_config(config_raw)
@@ -833,19 +925,38 @@ def _apply_hard_liquidity(
     floor = lg.get("min_quote_volume_24h_usdt")
     window = lg.get("depth_window_pct")
     max_age = lg.get("order_book_cache_ttl_sec")
+    depth_mult = lg.get("depth_to_order_multiple")
+    k = raw_min_volume_to_order_multiple(config_raw)
     planned = float(planned_usdt or 0)
-    if floor is None or window is None or max_age is None:
-        codes.append("liq_guard_missing_input")
-        reasons.append("liquidity guard config missing")
-        out = VenueQualityResult(ok=False, reasons=reasons, metrics=m, code="liq_guard_missing_input")
-        out.guard_codes = list(codes)  # type: ignore[attr-defined]
-        out.planned_usdt = planned  # type: ignore[attr-defined]
-        out.depth_window_pct = window  # type: ignore[attr-defined]
-        return out
+    symbol = "" if m is None else str(getattr(m, "symbol", "") or "")
     qv = None
     ask_d = None
     bid_d = None
-
+    if (
+        floor is None
+        or window is None
+        or max_age is None
+        or depth_mult is None
+        or k is None
+    ):
+        codes.append("liq_guard_missing_input")
+        reasons.append("liquidity guard config missing")
+        out = VenueQualityResult(
+            ok=False, reasons=reasons, metrics=m, code="liq_guard_missing_input"
+        )
+        return _stamp_liquidity(
+            out,
+            codes=codes,
+            planned=planned,
+            window=window,
+            qv=None,
+            bid_d=None,
+            ask_d=None,
+            cap_depth=None,
+            cap_volume=None,
+            liq_cap=None,
+            book_age=book_age_sec(symbol) if symbol else None,
+        )
     capture = "" if m is None else str(getattr(m, "capture", "") or "")
     if m is None or capture in ("missing", "stale"):
         codes.append("liq_guard_missing_input")
@@ -869,10 +980,6 @@ def _apply_hard_liquidity(
             if "liq_guard_missing_input" not in codes:
                 codes.append("liq_guard_missing_input")
                 reasons.append("band depth unavailable")
-        elif planned <= 0:
-            if "liq_guard_missing_input" not in codes:
-                codes.append("liq_guard_missing_input")
-                reasons.append("planned size unavailable")
         else:
             try:
                 bid_d = float(m.depth_bid_usdt or 0)
@@ -883,16 +990,39 @@ def _apply_hard_liquidity(
             if bid_d is None or ask_d is None:
                 if "liq_guard_missing_input" not in codes:
                     codes.append("liq_guard_missing_input")
-            elif ask_d < planned or bid_d < planned:
-                codes.append("liq_guard_depth_lt_order")
-                reasons.append(
-                    f"order book too thin: band depth ask ${ask_d:.0f} "
-                    f"bid ${bid_d:.0f} < order ${planned:.0f} "
-                    f"(±{window:.2f}% mid)"
-                )
+            if planned <= 0 and "liq_guard_missing_input" not in codes:
+                codes.append("liq_guard_missing_input")
+                reasons.append("planned size unavailable")
 
+    cap_depth = None
+    cap_volume = None
+    liq_cap = None
+    if bid_d is not None and ask_d is not None and qv is not None and k:
+        cap_depth = min(float(bid_d), float(ask_d)) / float(depth_mult)
+        cap_volume = float(qv) / float(k)
+        liq_cap = min(cap_depth, cap_volume)
+
+    age = book_age_sec(symbol) if symbol else None
     if not codes:
-        return prior
+        out = VenueQualityResult(
+            ok=bool(prior.ok),
+            reasons=list(prior.reasons),
+            metrics=m if m is not None else prior.metrics,
+            code="" if prior.ok else (prior.code or ""),
+        )
+        return _stamp_liquidity(
+            out,
+            codes=[],
+            planned=planned,
+            window=window,
+            qv=qv,
+            bid_d=bid_d,
+            ask_d=ask_d,
+            cap_depth=cap_depth,
+            cap_volume=cap_volume,
+            liq_cap=liq_cap,
+            book_age=age,
+        )
 
     # When the old gate already rejected, keep that code first so a thin
     # book still reports venue_liquidity_block. Hard codes stay on the
@@ -903,13 +1033,19 @@ def _apply_hard_liquidity(
         all_codes = [prior.code] + all_codes
     primary = all_codes[0]
     out = VenueQualityResult(ok=False, reasons=reasons, metrics=m, code=primary)
-    out.guard_codes = all_codes  # type: ignore[attr-defined]
-    out.planned_usdt = planned  # type: ignore[attr-defined]
-    out.quote_volume_24h_usdt = qv  # type: ignore[attr-defined]
-    out.depth_ask_usdt = ask_d  # type: ignore[attr-defined]
-    out.depth_bid_usdt = bid_d  # type: ignore[attr-defined]
-    out.depth_window_pct = window  # type: ignore[attr-defined]
-    return out
+    return _stamp_liquidity(
+        out,
+        codes=all_codes,
+        planned=planned,
+        window=window,
+        qv=qv,
+        bid_d=bid_d,
+        ask_d=ask_d,
+        cap_depth=cap_depth,
+        cap_volume=cap_volume,
+        liq_cap=liq_cap,
+        book_age=age,
+    )
 
 
 def check_venue_for_buy(
@@ -965,7 +1101,12 @@ def check_venue_for_buy(
             )
 
     try:
-        prior = evaluate_venue_quality(metrics, cfg, planned_usdt=planned_usdt)
+        prior = evaluate_venue_quality(
+            metrics,
+            cfg,
+            planned_usdt=planned_usdt,
+            skip_volume_multiple=True,
+        )
     except Exception as exc:
         log(f"liquidity guard evaluate failed {symbol}: {exc}", "WARNING")
         return VenueQualityResult(
@@ -1004,6 +1145,8 @@ def stamp_venue_for_fill(
 
 
 def reset_venue_cache_for_tests() -> None:
+    global _VOLUME_MULTIPLE_WARNED
+    _VOLUME_MULTIPLE_WARNED = False
     with _cache_lock:
         _cache.clear()
         _book_cache.clear()

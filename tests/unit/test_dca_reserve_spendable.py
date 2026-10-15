@@ -25,7 +25,7 @@ def _railway_like_config() -> BotConfig:
     risk["position_capacity"] = {"enabled": False}
     risk["cash_policy"] = {"enabled": False}
     risk["slot_eviction"] = {"enabled": False}
-    risk["venue_quality"] = {"enabled": False}
+    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
     # #411: staging default is "deny"; these tests cover reserve/spendable sizing,
     # not the degraded-oracle guard, so exercise the log branch explicitly.
     risk["fail_closed_guards"] = "log"

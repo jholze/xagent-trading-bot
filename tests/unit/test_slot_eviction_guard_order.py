@@ -33,7 +33,7 @@ def _cfg(**risk_over) -> BotConfig:
     risk["max_daily_dca_buys"] = 0
     risk["max_daily_dca_usdt"] = 0
     risk["max_daily_loss_pct"] = 0
-    risk["venue_quality"] = {"enabled": False}
+    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
     risk["position_capacity"] = {"enabled": False}
     risk["cash_policy"] = {"enabled": False}
     risk["slot_eviction"] = {

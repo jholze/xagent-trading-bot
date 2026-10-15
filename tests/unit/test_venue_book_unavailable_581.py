@@ -104,6 +104,7 @@ _LIQUIDITY_GUARD = {
     "min_quote_volume_24h_usdt": 500000,
     "depth_window_pct": 0.5,
     "order_book_cache_ttl_sec": 15,
+    "depth_to_order_multiple": 1,
 }
 
 CFG_RAW = {

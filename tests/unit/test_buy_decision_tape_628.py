@@ -164,7 +164,22 @@ def test_t2a_accepted_empty_book_row_schema(tmp_path, monkeypatch):
     assert row["outcome"] == "accepted"
     assert row["signal"] == {"name": "BUY", "source": "cmc"}
     assert row["filter_codes"] == []
-    assert row["book"] == {"state": "empty", "dca": False}
+    assert row["book"]["state"] == "empty"
+    assert row["book"]["dca"] is False
+    guard = row["book"]["guard"]
+    for key in (
+        "band_bid_usdt",
+        "band_ask_usdt",
+        "qv24_usdt",
+        "book_age_sec",
+        "liq_cap_usdt",
+        "cap_depth",
+        "cap_volume",
+        "open_cost_usdt",
+        "planned_usdt",
+        "final_usdt",
+    ):
+        assert key in guard, key
     assert row["macro_stress"] is None
     assert row["correlation_id"] == "tape-corr-628"
 
@@ -261,6 +276,21 @@ def test_t3_open_lot_buy_dca_has_position_no_first_buy_block(tmp_path, monkeypat
     assert len(rows) == 1
     row = rows[0]
     assert row["outcome"] == "accepted"
-    assert row["book"] == {"state": "has_position", "dca": True}
+    assert row["book"]["state"] == "has_position"
+    assert row["book"]["dca"] is True
+    guard = row["book"]["guard"]
+    for key in (
+        "band_bid_usdt",
+        "band_ask_usdt",
+        "qv24_usdt",
+        "book_age_sec",
+        "liq_cap_usdt",
+        "cap_depth",
+        "cap_volume",
+        "open_cost_usdt",
+        "planned_usdt",
+        "final_usdt",
+    ):
+        assert key in guard, key
     assert row["signal"]["name"] == "BUY_DCA"
     assert row["filter_codes"] == []

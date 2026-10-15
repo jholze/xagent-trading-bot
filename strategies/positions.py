@@ -1182,6 +1182,32 @@ def _symbol_key_base(symbol: str) -> str:
     return str(symbol or "").replace("/", "_").upper()
 
 
+def find_open_positions_for_symbol(symbol: str) -> list[tuple[str, dict]]:
+    """Every open lot for *symbol* in the active tenant store, all timeframes.
+
+    Same scan and lock as ``find_open_position_for_symbol``. Does not filter
+    by side: callers that need only longs or only shorts do that themselves.
+    Dust below ``MIN_OPEN_POSITION_USDT`` is not open, so it is not included.
+    """
+    _activate(_resolve_store_key())
+    want = _symbol_key_base(symbol)
+    if not want:
+        return []
+
+    matches: list[tuple[str, dict]] = []
+    with _positions_lock:
+        store = _active_store()
+        for key, raw in store.items():
+            sym, tf = parse_position_key(key)
+            if _symbol_key_base(sym) != want:
+                continue
+            if not isinstance(raw, dict) or not is_open_position(raw):
+                continue
+            # Copy under lock so callers can read safely without holding it.
+            matches.append((tf, dict(raw)))
+    return matches
+
+
 def find_open_position_for_symbol(
     symbol: str,
     preferred_timeframe: str | None = None,
@@ -1196,23 +1222,7 @@ def find_open_position_for_symbol(
     2. largest amount
     3. most recent ``entry_at`` / ``last_trade_at`` (stable tie-break)
     """
-    _activate(_resolve_store_key())
-    want = _symbol_key_base(symbol)
-    if not want:
-        return None
-
-    matches: list[tuple[str, dict]] = []
-    with _positions_lock:
-        store = _active_store()
-        for key, raw in store.items():
-            sym, tf = parse_position_key(key)
-            if _symbol_key_base(sym) != want:
-                continue
-            if not is_open_position(raw):
-                continue
-            # Copy under lock so callers can read safely without holding it.
-            matches.append((tf, dict(raw)))
-
+    matches = find_open_positions_for_symbol(symbol)
     if not matches:
         return None
 

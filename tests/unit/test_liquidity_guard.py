@@ -34,10 +34,12 @@ def _cfg(**risk):
         "min_trade_usdt": 5,
         "cash_floor_pct": 0,
         "max_daily_sells": 0,
+        "venue_quality": {"min_volume_to_order_multiple": 20},
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
             "order_book_cache_ttl_sec": 15,
+            "depth_to_order_multiple": 1,
         },
     }
     raw_risk.update(risk)
@@ -103,10 +105,12 @@ def test_floor_below_500k_is_used_not_clamped():
     """A configured floor is used as written. Nothing in code raises it to 500k."""
     raw = {
         "risk": {
+            "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 50_000,
                 "depth_window_pct": 0.5,
                 "order_book_cache_ttl_sec": 15,
+                "depth_to_order_multiple": 1,
             }
         }
     }
@@ -130,14 +134,17 @@ def test_missing_or_invalid_guard_config_blocks():
     assert cfg["depth_window_pct"] is None
     assert cfg["min_quote_volume_24h_usdt"] is None
     assert cfg["order_book_cache_ttl_sec"] is None
+    assert cfg["depth_to_order_multiple"] is None
     assert cfg["complete"] is False
     invalid = liquidity_guard_config(
         {
             "risk": {
+                "venue_quality": {"min_volume_to_order_multiple": 20},
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 0,
                     "depth_window_pct": "nope",
                     "order_book_cache_ttl_sec": -1,
+                    "depth_to_order_multiple": 1,
                 }
             }
         }
@@ -162,6 +169,7 @@ def test_config_json_pins_floor_window_and_book_age():
     assert float(guard["min_quote_volume_24h_usdt"]) >= 500_000
     assert float(guard["depth_window_pct"]) == pytest.approx(0.5)
     assert float(guard["order_book_cache_ttl_sec"]) <= 15
+    assert float(guard["depth_to_order_multiple"]) == pytest.approx(1)
 
 
 def test_band_not_level_count_aave_style_book_passes_a_1000_usdt_order():
@@ -212,22 +220,26 @@ def test_band_not_level_count_aave_style_book_passes_a_1000_usdt_order():
 
 
 def test_either_side_thinner_than_final_order_blocks():
+    """The thinner band caps the buy (#671). It is no longer a hard reject."""
     rm = RiskManager(_cfg())
     metrics = _book(depth_ask_usdt=5_000, depth_bid_usdt=500, symbol="LAB/USDT")
     lot = {"amount": 10.0, "average_entry": 1.0, "dca_rounds": 0}
-    dec = _eval(
-        rm,
-        TradeOrder(
-            "BUY", "LAB/USDT", 1.05, 0, usdt_amount=800, signal="BUY_DCA", source="dca"
-        ),
-        "dca",
-        metrics,
-        position=lot,
-    )
-    assert dec.approved is False
-    assert dec.code == "liq_guard_depth_lt_order"
+    with patch("logger.log") as log:
+        dec = _eval(
+            rm,
+            TradeOrder(
+                "BUY", "LAB/USDT", 1.05, 0, usdt_amount=800, signal="BUY_DCA", source="dca"
+            ),
+            "dca",
+            metrics,
+            position=lot,
+        )
+    assert dec.approved is True, dec.message
+    assert dec.order.usdt_amount == pytest.approx(500)
     assert dec.details["depth_bid_usdt"] == pytest.approx(500)
     assert dec.details["planned_usdt"] == pytest.approx(800)
+    texts = [str(call.args[0]) for call in log.call_args_list if call.args]
+    assert sum("liq_guard_size_capped" in line for line in texts) == 1
 
 
 def test_final_size_after_boost_is_what_the_book_is_compared_to():
@@ -240,8 +252,8 @@ def test_final_size_after_boost_is_what_the_book_is_compared_to():
     )
     with patch("risk.moderate_deploy.size_boost_for_regime", return_value=1.35):
         dec = _eval(rm, order, "dca", metrics, position=lot)
-    assert dec.approved is False
-    assert dec.code == "liq_guard_depth_lt_order"
+    assert dec.approved is True, dec.message
+    assert dec.order.usdt_amount == pytest.approx(1000)
     assert dec.details["planned_usdt"] == pytest.approx(1080)
 
 
@@ -385,6 +397,7 @@ def test_exempt_sources_cannot_skip_dca_deploy_boost_or_mcp():
         _cfg(
             venue_quality={
                 "enabled": False,
+                "min_volume_to_order_multiple": 20,
                 "exempt_sources": ["dca", "deploy_boost", "mcp"],
                 "book_unavailable_policy": "volume_ok",
                 "on_fetch_error": "allow",
@@ -404,9 +417,10 @@ def test_exempt_sources_cannot_skip_dca_deploy_boost_or_mcp():
         config_raw=rm.config.raw,
         metrics=thin,
     )
-    assert direct.ok is False
+    assert direct.ok is True, direct.reasons
     assert direct.code != "source_exempt"
-    assert "liq_guard_depth_lt_order" in (getattr(direct, "guard_codes", None) or [direct.code])
+    assert direct.liq_cap_usdt == pytest.approx(1)
+    assert "liq_guard_depth_lt_order" not in (getattr(direct, "guard_codes", None) or [])
     for source in ("dca", "deploy_boost", "mcp"):
         signal = "BUY_DCA" if source == "dca" else "BUY"
         position = (
