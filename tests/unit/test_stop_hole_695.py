@@ -312,6 +312,61 @@ def test_f1_resolver_config_cap_limits_dca_lot():
     assert full == 20
 
 
+def test_f1_cycle_path_full_stops_henry_dca_lot():
+    """The cycle stop in technical_rsi_bb uses resolver params.
+
+    Henry's DCA'd long (2Z-like, about -43 %) is past the cap and short of
+    the uncapped full stop. The cap has to arrive through the resolver;
+    the cycle does not add one of its own.
+    """
+    from core.config import BotConfig
+    from core.models import MarketContext
+    from core.tenant_context import tenant_context
+    from strategies.registry import resolve_strategy_params
+    from strategies.technical_rsi_bb import TechnicalRSIStrategy
+
+    lot = henry_2z_lot()
+    loss = (1 - HENRY_2Z_LAST / lot["average_entry"]) * 100.0
+    assert loss > CAP
+    assert loss < BASE_SL
+
+    cfg = BotConfig(raw=copy.deepcopy(_CFG))
+    with tenant_context("henry"):
+        params = resolve_strategy_params(
+            {"symbol": lot["symbol"], "timeframe": lot["timeframe"]},
+            has_position=True,
+            frozen_tier=lot["strategy_tier"],
+            cfg=cfg,
+        )
+        assert params.get(CAP_KEY) == CAP
+        market = MarketContext(
+            symbol=lot["symbol"],
+            timeframe=lot["timeframe"],
+            current_price=HENRY_2Z_LAST,
+            rsi=40.0,
+            lower_bb=HENRY_2Z_LAST * 0.9,
+            vol_multiplier=1.0,
+            has_position=True,
+            open_positions=1,
+            average_entry=lot["average_entry"],
+            sim_state={
+                "last_rsi": 45.0,
+                "dca_rounds": lot["dca_rounds"],
+                "last_dca_at": lot["last_dca_at"],
+                "average_entry": lot["average_entry"],
+                "amount": lot["amount"],
+            },
+            strategy_params=params,
+        )
+        result = TechnicalRSIStrategy().analyze(
+            {"symbol": lot["symbol"], "timeframe": lot["timeframe"]},
+            market,
+        )
+    assert result.action == "SELL_STOP_FULL"
+    assert result.long_hard_stop is True
+    assert "stop_loss" in result.sources
+
+
 def _logs(monkeypatch):
     import data_manager as dm
     import logger
