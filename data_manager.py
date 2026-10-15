@@ -854,7 +854,13 @@ def load_config(tenant_id: str | None = None):
         if _config_cache is not None:
             return _config_cache
         if _config_load_depth:
-            raise SystemExit(1)
+            # logger.log reads config while a load is already on the stack.
+            # SystemExit is a BaseException, so it would escape that handler
+            # and turn a missing config.json into a process abort. A normal
+            # error stops the recursion and lets the original failure surface:
+            # an unreadable base still rejects the save, and a bad cap still
+            # exits from _require_stop_cap_or_exit.
+            raise RuntimeError("config load re-entered")
         _config_load_depth += 1
         try:
             default_cfg = _load_default_config_from_disk()

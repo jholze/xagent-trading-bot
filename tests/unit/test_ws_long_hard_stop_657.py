@@ -447,15 +447,16 @@ class TestT3GraceAndPause:
             base_stop_loss_pct=10,
         )
         assert hit == ("SELL_STOP_FULL", "stop_loss")
-        # Partial band, pause still on: no partial after grace.
-        paused = evaluate_long_hard_stop(
+        # After grace the partial fires again (#695). The 14.08 rule kept
+        # it paused for the life of the lot.
+        after_grace = evaluate_long_hard_stop(
             price=0.92,
             entry=1.0,
             position=aged,
             strategy_params=params,
             base_stop_loss_pct=10,
         )
-        assert paused is None
+        assert after_grace == ("SELL_STOP_PARTIAL", "stop_loss")
         _seed(
             "AAA/USDT",
             amount=100,

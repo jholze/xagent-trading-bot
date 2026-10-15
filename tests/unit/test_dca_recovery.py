@@ -150,7 +150,9 @@ class TestDCARecoveryModule(unittest.TestCase):
         params = {"dca": {"interval_hours": 12, "stop_loss_widen_pct_per_round": 6}}
         full, partial, _ = effective_stop_loss_thresholds(pos, params, 50.0)
         self.assertEqual(full, 62.0)
-        self.assertIsNone(partial)
+        # Recovery rounds still widen the full stop. With no fill time the
+        # partial is not inside the grace window (#695), so it stays at 33.5.
+        self.assertAlmostEqual(partial, 33.5)
 
 
 class TestDCARecoveryDecisionEngine(unittest.TestCase):
