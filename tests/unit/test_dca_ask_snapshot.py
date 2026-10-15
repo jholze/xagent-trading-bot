@@ -87,8 +87,15 @@ class TestDcaAskSnapshot(unittest.TestCase):
 
 class TestTradeHistoryMemory(unittest.TestCase):
     def test_history_rows_map_to_memories(self):
+        from datetime import datetime, timedelta, timezone
+
         from intelligence.memory.rebuild import trade_history_to_trade_memories
 
+        # Rows must stay inside the 90-day lookback. Fixed July 2026 dates
+        # aged out of that window.
+        now = datetime.now(timezone.utc)
+        buy_ts = (now - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S")
+        sell_ts = (now - timedelta(days=17)).strftime("%Y-%m-%dT%H:%M:%S")
         rows = [
             {
                 "type": "BUY",
@@ -97,7 +104,7 @@ class TestTradeHistoryMemory(unittest.TestCase):
                 "amount": 100,
                 "usdt_amount": 9,
                 "source": "entry_sensor_15m",
-                "timestamp": "2026-07-15T12:00:00",
+                "timestamp": buy_ts,
                 "order_id": "abc1",
             },
             {
@@ -106,7 +113,7 @@ class TestTradeHistoryMemory(unittest.TestCase):
                 "price": 0.10,
                 "pnl": 32.8,
                 "source": "grid",
-                "timestamp": "2026-07-18T18:15:48",
+                "timestamp": sell_ts,
                 "order_id": "abc2",
             },
         ]
