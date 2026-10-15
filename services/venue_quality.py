@@ -1292,6 +1292,28 @@ def stamp_venue_for_fill(
     )
 
 
+def peek_cached_quote_volume(symbol: str, *, config_raw: dict | None = None) -> float | None:
+    """Return a still-fresh cached 24h quote volume. Does not fetch."""
+    cfg = venue_quality_config(config_raw)
+    raw_ttl = cfg.get("cache_ttl_sec")
+    if raw_ttl is None:
+        return None
+    try:
+        ttl = float(raw_ttl)
+    except (TypeError, ValueError):
+        return None
+    now = time.time()
+    with _cache_lock:
+        hit = _cache.get(symbol)
+    if not hit or now - hit[0] > ttl:
+        return None
+    try:
+        vol = float(hit[1].quote_volume_24h_usdt)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return vol if vol > 0 else None
+
+
 def reset_venue_cache_for_tests() -> None:
     global _VOLUME_MULTIPLE_WARNED
     _VOLUME_MULTIPLE_WARNED = False

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from logger import LOG_DIR, log
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
 
 WQE_EVENTS_LOG = os.path.join(LOG_DIR, "wqe_events.jsonl")
 
@@ -135,7 +136,7 @@ def log_sync_summary(summary: dict[str, Any], *, config: dict | None = None) -> 
                 "confidence": ai.get("confidence"),
                 "ai_source": ai.get("source"),
                 "ai_rationale": (ai.get("rationale") or "")[:200],
-                "quote_vol_24h": metrics.get("quote_vol_24h"),
+                "quote_vol_24h": metrics.get(QUOTE_VOL_24H_KEY),
                 "source": metrics.get("source"),
                 "cmc_rank": metrics.get("cmc_rank"),
             },

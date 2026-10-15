@@ -272,7 +272,9 @@ class DecisionEngine:
 
             vcfg = venue_quality_config(self.config.raw)
             if vcfg.get("enabled", True):
-                planned = float(get_bot_config().max_usdt_per_trade or 500) * 0.35
+                from strategies.sensor_entry_policy import venue_gate_planned_usdt
+
+                planned = venue_gate_planned_usdt(get_bot_config().max_usdt_per_trade)
                 vres = check_venue_for_buy(
                     symbol,
                     source=ENTRY_SENSOR_SOURCE,
@@ -330,7 +332,8 @@ class DecisionEngine:
                 return HOLD, out_sources, new_conf, rationale_extra, sensor.action
             return normalized, out_sources, new_conf, rationale_extra, sensor.action
 
-        # Mode-aware size + hold_override (sensor-entry-guard M1)
+        # Mode-aware size + hold_override (sensor-entry-guard M1).
+        # This ticket is not the venue-gate planned_usdt above.
         trading_mode = str((market.strategy_params or {}).get("trading_mode") or "")
         vol_tier = str(
             (market.strategy_params or {}).get("volatility_tier")

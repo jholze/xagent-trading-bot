@@ -101,6 +101,20 @@ def resolve_market_cap_usd(symbol: str, coin: dict | None = None) -> float | Non
     return fetch_market_cap_usd(symbol)
 
 
+def peek_cached_market_cap_usd(symbol: str) -> float | None:
+    """Return a still-fresh cached market cap. Does not fetch."""
+    base = _base_symbol(symbol)
+    if not base:
+        return None
+    cached = _CACHE.get(base)
+    if not cached:
+        return None
+    mcap, stored_at = cached
+    if (time.monotonic() - stored_at) >= _CACHE_TTL_SEC:
+        return None
+    return mcap if mcap > 0 else None
+
+
 def reset_market_cap_cache_for_tests() -> None:
     _CACHE.clear()
     _FAIL_CACHE.clear()

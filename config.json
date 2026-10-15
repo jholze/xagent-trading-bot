@@ -93,6 +93,7 @@
       "spot": {
         "fee_maker_pct": 0.2,
         "fee_taker_pct": 0.2,
+        "fee_taker_conservative_pct": 0.2,
         "slippage_pct": 0.15,
         "fee_side_buy": "base",
         "fee_side_sell": "quote"
@@ -384,6 +385,7 @@
     "price_cache_ttl_sec": 120,
     "stale_price_max_age_sec": 300,
     "gate_ticker_snapshot_ttl_sec": 25,
+    "gate_single_ticker_timeout_s": 6,
     "ohlcv_cache_enabled": true,
     "ohlcv_cache_ttl_sec": {
       "15m": 60,
@@ -1947,7 +1949,11 @@
     "memory_size_down_flow_only": true,
     "memory_flow_only_size_mult": 0.5,
     "memory_size_down_profit_taking": true,
-    "memory_profit_taking_size_mult": 0.7
+    "memory_profit_taking_size_mult": 0.7,
+    "shadow_exit_hours": 4,
+    "shadow_price_fetch_max_per_poll": 5,
+    "shadow_price_fetch_budget_s": 5,
+    "shadow_price_fetch_timeout_s": 2
   },
   "regime_detector": {
     "enabled": true,

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# Watchlist rows store Gate 24h quote volume under this key. Readers must
+# import it; the shadow log must not look up a second spelling.
+QUOTE_VOL_24H_KEY = "quote_vol_24h"
+
 
 def attach_quote_volumes(
     coins: list[dict[str, Any]],
@@ -43,7 +47,7 @@ def attach_quote_volumes(
             continue
         row = dict(c)
         sym = str(row.get("symbol") or "")
-        if row.get("quote_vol_24h") is None and sym in vol_map:
-            row["quote_vol_24h"] = vol_map[sym]
+        if row.get(QUOTE_VOL_24H_KEY) is None and sym in vol_map:
+            row[QUOTE_VOL_24H_KEY] = vol_map[sym]
         out.append(row)
     return out

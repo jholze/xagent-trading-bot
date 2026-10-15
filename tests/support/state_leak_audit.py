@@ -39,6 +39,9 @@ import pytest
 # (module, attribute) — only snapshotted when the module is already imported.
 _GLOBALS: tuple[tuple[str, str], ...] = (
     ("services.entry_sensor_loop", "_last_poll_at"),
+    ("services.shadow_signal_log", "_OPEN"),
+    ("services.shadow_signal_log", "_CLOSED"),
+    ("services.shadow_signal_log", "_DAY"),
     ("services.entry_sensor_loop", "_last_watch_seed_at"),
     ("services.entry_sensor_loop", "_loop_thread"),
     ("strategies.watch_15m_state", "_cache"),

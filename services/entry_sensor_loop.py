@@ -100,10 +100,24 @@ def _maybe_seed_watches(cfg: dict, *, force: bool = False) -> int:
     return added
 
 
-def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict, market_svc) -> None:
+def _shadow_log(
+    symbol: str,
+    coin: dict,
+    price: float,
+    metrics: dict,
+    cfg: dict,
+    market_svc,
+    *,
+    price_source: str,
+    sensor_policy_source: str,
+    price_batch: dict | None = None,
+    candidate_cache: dict | None = None,
+    market_cap_usd: float | None = None,
+    quote_volume_24h_usdt: float | None = None,
+) -> None:
     """Shadow annotation uses live 4h RSI — not the snapshot stored at set_watch."""
     tf = str(coin.get("timeframe") or "4h")
-    indicators = market_svc.fetch_indicators(symbol, tf, price)
+    indicators = market_svc.fetch_indicators(symbol, tf, price) or {}
     rsi_4h = float(indicators.get("rsi", 45))
     result = evaluate_entry_sensor_15m(
         watched=True,
@@ -114,9 +128,26 @@ def _shadow_log(symbol: str, coin: dict, price: float, metrics: dict, cfg: dict,
         tech_already_buy=False,
     )
     if result.triggered:
-        log(
-            f"15m sensor shadow {symbol}: {result.rationale} ({result.action})",
-            "INFO",
+        from services.shadow_signal_log import log_shadow_trigger
+
+        raw = get_bot_config().raw
+        log_shadow_trigger(
+            symbol=symbol,
+            timeframe=tf,
+            price=price,
+            price_source=price_source,
+            rationale=result.rationale,
+            action=result.action,
+            sensor_policy_source=sensor_policy_source,
+            config_raw=raw,
+            price_batch=price_batch,
+            candidate_cache=candidate_cache,
+            market_cap_usd=market_cap_usd,
+            quote_volume_24h_usdt=quote_volume_24h_usdt,
+            sensor_cfg=cfg,
+            atr_pct=indicators.get("atr_pct"),
+            range_24h_pct=indicators.get("range_24h_pct"),
+            change_24h_pct=indicators.get("change_24h_pct"),
         )
     elif result.rationale:
         log(f"15m sensor shadow skip {symbol}: {result.rationale}", "INFO")
@@ -180,96 +211,166 @@ def _poll_once(orchestrator) -> None:
         watched = watch_15m_state.list_watched()
     else:
         _maybe_seed_watches(cfg)
-    if not watched:
+    try:
+        from services.shadow_signal_log import open_signal_symbols
+
+        extra_symbols = open_signal_symbols()
+    except Exception as exc:
+        log(f"shadow_log_error symbols: {exc}", "WARNING")
+        extra_symbols = []
+    if not watched and not extra_symbols:
         return
 
-    watched = _sort_watched_for_poll(watched)
+    watched = _sort_watched_for_poll(watched) if watched else []
     symbols = [w["symbol"] for w in watched]
     gate_only = cfg.get("gate_only", cfg.get("exchange_only", True))
     ex = get_bot_config().exchange
-    # For now still use gate batch if gate_only (legacy), else general.
-    # TODO: make get_prices_batch(exchange=ex) when gate_only means exchange_only
-    prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
-    market_svc = orchestrator.market
-    vol_avg_period = int(cfg.get("vol_avg_period", 20))
-    ema_period = int(cfg.get("ema_period", 9))
-    ohlcv_limit = vol_avg_period + 30
-    poll_now = time.monotonic()
-    mode = str(cfg.get("mode", "shadow")).strip().lower()
-
-    for entry in watched:
-        symbol = entry["symbol"]
-        if not _should_poll_symbol(symbol, cfg, poll_now):
-            continue
-
-        coin = _coin_by_symbol(symbol, entry)
-        if not coin:
-            continue
-
-        if _has_open_position(symbol, coin):
-            watch_15m_state.clear_watch(symbol)
-            continue
-
-        price = float(prices.get(symbol) or 0)
-        if price <= 0:
-            if gate_only:
-                log(f"15m sensor skip {symbol}: not on {ex}", "INFO")
-            continue
-
-        df = market_svc.fetch_ohlcv(symbol, "15m", ohlcv_limit)
-        metrics = market_svc.compute_15m_sensor_metrics(
-            df,
-            ema_period=ema_period,
-            vol_avg_period=vol_avg_period,
-        )
-        if not passes_vol_spike_prefilter(metrics, cfg):
-            continue
-
-        from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
-
-        mcap = resolve_market_cap_usd(symbol, coin)
-        mcap_ok, mcap_reason = passes_market_cap_filter(mcap, cfg)
-        if not mcap_ok:
-            log(f"15m sensor skip {symbol}: {mcap_reason}", "INFO")
-            continue
-
-        cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
-        hours_since = watch_15m_state.hours_since_sensor_reject(symbol)
-        if hours_since is not None and hours_since < cooldown_h:
-            continue
-
-        # Global bias (oracle + santiment) sensor_policy: block / shadow.
-        effective_mode = mode
+    price_source = "gate_spot_last" if gate_only else "fallback"
+    # Watched symbols only. Off-watchlist shadow signals are priced after the
+    # active triggers, in their own try, and never via this batch.
+    prices: dict = {}
+    if symbols:
+        prices = get_gate_prices_batch(symbols) if gate_only else get_prices_batch(symbols)
+    try:
+        if not watched:
+            return
+        candidate_cache: dict = {}
         try:
-            from services.market_policy_fusion import get_global_market_bias
+            from services.shadow_signal_log import candidate_info_from_coin
 
-            bias = get_global_market_bias()
-            if bias.get("apply_sensor_policy") and bias.get("active"):
-                pol = str(bias.get("sensor_policy") or "active").lower()
-                if pol == "block":
-                    log(
-                        f"15m sensor skip {symbol}: market {bias.get('regime')} "
-                        f"[{bias.get('source')}] sensor_policy=block",
-                        "INFO",
+            raw_cfg = get_bot_config().raw
+            for entry in watched:
+                sym = entry["symbol"]
+                coin_for_cache = _coin_by_symbol(sym, entry) or {}
+                candidate_cache[sym] = candidate_info_from_coin(sym, coin_for_cache, raw_cfg)
+        except Exception as exc:
+            log(f"shadow_log_error candidates: {exc}", "WARNING")
+            candidate_cache = {}
+        market_svc = orchestrator.market
+        vol_avg_period = int(cfg.get("vol_avg_period", 20))
+        ema_period = int(cfg.get("ema_period", 9))
+        ohlcv_limit = vol_avg_period + 30
+        poll_now = time.monotonic()
+        mode = str(cfg.get("mode", "shadow")).strip().lower()
+
+        for entry in watched:
+            symbol = entry["symbol"]
+            if not _should_poll_symbol(symbol, cfg, poll_now):
+                continue
+
+            coin = _coin_by_symbol(symbol, entry)
+            if not coin:
+                continue
+
+            if _has_open_position(symbol, coin):
+                watch_15m_state.clear_watch(symbol)
+                continue
+
+            price = float(prices.get(symbol) or 0)
+            if price <= 0:
+                if gate_only:
+                    log(f"15m sensor skip {symbol}: not on {ex}", "INFO")
+                continue
+
+            df = market_svc.fetch_ohlcv(symbol, "15m", ohlcv_limit)
+            metrics = market_svc.compute_15m_sensor_metrics(
+                df,
+                ema_period=ema_period,
+                vol_avg_period=vol_avg_period,
+            )
+            if not passes_vol_spike_prefilter(metrics, cfg):
+                continue
+
+            from data.cmc_market_cap import passes_market_cap_filter, resolve_market_cap_usd
+
+            mcap = resolve_market_cap_usd(symbol, coin)
+            mcap_ok, mcap_reason = passes_market_cap_filter(mcap, cfg)
+            if not mcap_ok:
+                log(f"15m sensor skip {symbol}: {mcap_reason}", "INFO")
+                continue
+
+            cooldown_h = float(cfg.get("cooldown_after_reject_hours", 2))
+            hours_since = watch_15m_state.hours_since_sensor_reject(symbol)
+            if hours_since is not None and hours_since < cooldown_h:
+                continue
+
+            # Global bias (oracle + santiment) sensor_policy: block / shadow.
+            effective_mode = mode
+            sensor_policy_source = "mode"
+            try:
+                from services.market_policy_fusion import get_global_market_bias
+
+                bias = get_global_market_bias()
+                if bias.get("apply_sensor_policy") and bias.get("active"):
+                    pol = str(bias.get("sensor_policy") or "active").lower()
+                    if pol == "block":
+                        log(
+                            f"15m sensor skip {symbol}: market {bias.get('regime')} "
+                            f"[{bias.get('source')}] sensor_policy=block",
+                            "INFO",
+                        )
+                        continue
+                    if pol == "shadow":
+                        effective_mode = "shadow"
+                        sensor_policy_source = "global_bias"
+            except Exception:
+                pass
+
+            if effective_mode == "active":
+                from bus.eval_queue import eval_queue_enabled
+                from services.eval_queue_runtime import enqueue_entry_15m_eval
+
+                tf = str(coin.get("timeframe") or "4h")
+                if eval_queue_enabled():
+                    if enqueue_entry_15m_eval(symbol, tf, metrics=metrics):
+                        continue
+                    set_pending_sensor_metrics(symbol, metrics)
+                _active_trigger(orchestrator, symbol, coin, price, metrics)
+            else:
+                try:
+                    cached_vol = (candidate_cache.get(symbol) or {}).get("quote_volume_24h_usdt")
+                    _shadow_log(
+                        symbol,
+                        coin,
+                        price,
+                        metrics,
+                        cfg,
+                        market_svc,
+                        price_source=price_source,
+                        sensor_policy_source=sensor_policy_source,
+                        price_batch=prices,
+                        candidate_cache=candidate_cache,
+                        market_cap_usd=mcap,
+                        quote_volume_24h_usdt=cached_vol,
                     )
-                    continue
-                if pol == "shadow":
-                    effective_mode = "shadow"
-        except Exception:
-            pass
+                except Exception as exc:
+                    log(f"shadow_log_error {symbol}: {exc}", "WARNING")
+    finally:
+        _shadow_exit_prices(prices, watched, cfg, price_source)
 
-        if effective_mode == "active":
-            from bus.eval_queue import eval_queue_enabled
-            from services.eval_queue_runtime import enqueue_entry_15m_eval
 
-            tf = str(coin.get("timeframe") or "4h")
-            if eval_queue_enabled():
-                if enqueue_entry_15m_eval(symbol, tf, metrics=metrics):
-                    continue
-                set_pending_sensor_metrics(symbol, metrics)
-            _active_trigger(orchestrator, symbol, coin, price, metrics)
-        else:
-            _shadow_log(symbol, coin, price, metrics, cfg, market_svc)
+def _shadow_exit_prices(prices: dict, watched: list, cfg: dict, price_source: str) -> None:
+    """Single-ticker exit prices after this poll's triggers. Errors stay here."""
+    try:
+        from services.shadow_signal_log import (
+            check_open_exits,
+            fill_offwatch_signal_prices,
+            note_poll_clock,
+        )
+
+        note_poll_clock()
+        priced = fill_offwatch_signal_prices(
+            prices,
+            watchlist={w["symbol"] for w in watched},
+            sensor_cfg=cfg,
+        )
+        check_open_exits(
+            priced,
+            price_source=price_source,
+            watchlist={w["symbol"] for w in watched},
+        )
+    except Exception as exc:
+        log(f"shadow_log_error exit: {exc}", "WARNING")
 
 
 def _loop_main(orchestrator) -> None:
@@ -294,6 +395,13 @@ def start_entry_sensor_loop(orchestrator) -> threading.Thread | None:
         return None
     if _loop_thread is not None and _loop_thread.is_alive():
         return _loop_thread
+
+    try:
+        from services.shadow_signal_log import resolve_restart
+
+        resolve_restart()
+    except Exception as exc:
+        log(f"shadow_log_error restart: {exc}", "WARNING")
 
     _stop_event.clear()
     _loop_thread = threading.Thread(

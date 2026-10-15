@@ -9,6 +9,7 @@ from typing import Any
 
 from services.watchlist_quality.config import score_weights, vol_floor_t1_usd
 from services.watchlist_quality.memory_bias import MemoryWqeInput, get_memory_wqe_input
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -208,7 +209,7 @@ def score_coin(
         quality_score=round(quality, 4),
         scores=components,
         metrics={
-            "quote_vol_24h": quote_vol_24h,
+            QUOTE_VOL_24H_KEY: quote_vol_24h,
             "spread_pct": spread_pct,
             "change_24h_pct": change_24h_pct,
             "change_7d_pct": change_7d_pct,
@@ -252,7 +253,7 @@ def score_coin_from_watchlist_row(
     sym = str(coin.get("symbol") or coin.get("pair") or "").strip()
     venue = venue or {}
     vol = (
-        coin.get("quote_vol_24h")
+        coin.get(QUOTE_VOL_24H_KEY)
         or coin.get("volume_24h")
         or coin.get("quote_volume_24h_usdt")
         or venue.get("quote_volume_24h_usdt")

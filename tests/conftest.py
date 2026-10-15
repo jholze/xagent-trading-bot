@@ -426,6 +426,12 @@ def _reset_leaky_module_globals() -> None:
     except Exception:
         pass
     try:
+        from services.shadow_signal_log import reset_for_tests
+
+        reset_for_tests()
+    except Exception:
+        pass
+    try:
         from strategies.entry_sensor_15m import clear_pending_for_tests
 
         clear_pending_for_tests()

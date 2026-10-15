@@ -418,7 +418,7 @@ class SignalOrchestrator:
                 f"{executed}\n"
             )
 
-        return {
+        out = {
             "action": reported_action,
             "normalized_action": reported_normalized,
             "symbol": symbol,
@@ -440,6 +440,17 @@ class SignalOrchestrator:
                 else None
             ),
         }
+        if is_buy(analysis.action):
+            shadow_signal_id = None
+            try:
+                from services.shadow_signal_log import lookup_open_signal_id
+
+                shadow_signal_id = lookup_open_signal_id(symbol)
+            except Exception as exc:
+                log(f"shadow_log_error link: {exc}", "WARNING")
+                shadow_signal_id = None
+            out["shadow_signal_id"] = shadow_signal_id
+        return out
 
     def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:
         if not current_price:

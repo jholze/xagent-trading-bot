@@ -22,6 +22,7 @@ from services.watchlist_quality.config import (
 )
 from services.watchlist_quality.scoring import CoinQualityScore, score_coin_from_watchlist_row
 from services.watchlist_quality.store import save_quality_scores
+from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
 
 
 def _percentile(sorted_vals: list[float], p: float) -> float | None:
@@ -268,7 +269,7 @@ def run_shadow_score(
                     "symbol": s.symbol,
                     "quality_score": s.quality_score,
                     "quality_shadow_ai": s.quality_shadow_ai,
-                    "quote_vol_24h": (s.metrics or {}).get("quote_vol_24h"),
+                    QUOTE_VOL_24H_KEY: (s.metrics or {}).get(QUOTE_VOL_24H_KEY),
                     "source": (s.metrics or {}).get("source"),
                     "tier_hint": s.tier_hint,
                 }
@@ -390,10 +391,10 @@ def apply_soft_to_effective_candidates(
             row.setdefault("quality_score", sc.get("quality_score"))
             if sc.get("quality_shadow_ai") is not None:
                 row["quality_shadow_ai"] = sc.get("quality_shadow_ai")
-            if row.get("quote_vol_24h") is None:
+            if row.get(QUOTE_VOL_24H_KEY) is None:
                 m = sc.get("metrics") or {}
-                if m.get("quote_vol_24h") is not None:
-                    row["quote_vol_24h"] = m.get("quote_vol_24h")
+                if m.get(QUOTE_VOL_24H_KEY) is not None:
+                    row[QUOTE_VOL_24H_KEY] = m.get(QUOTE_VOL_24H_KEY)
         merged.append(row)
 
     from services.watchlist_quality.soft import apply_soft_watchlist
