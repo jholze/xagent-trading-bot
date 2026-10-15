@@ -2,7 +2,6 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import replace
 from datetime import datetime
 
 import ccxt
@@ -12,9 +11,13 @@ from core.costs import (
     COST_MODEL_VERSION,
     CostModel,
     Fill,
+    fee_rate_field,
     fee_usdt_from_legs,
+    fill_with_rate_fraction,
+    read_rate_fraction,
     swap_taker_estimate_rate,
     trade_cost_fields,
+    write_rate_fraction,
 )
 from core.models import OrderStatus, TradeOrder, TradeResult, trade_ctx_fields
 from data_manager import record_live_trade, uses_exchange_ledger
@@ -1239,7 +1242,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 "fee_estimated": True,
                 # R9b: this path is the conservative estimate, not a GT conversion.
                 "fee_rate_source": "config_conservative",
-                "fee_rate": est["rate"],
+                **fee_rate_field(est["rate"]),
             }
 
         estimated_cost = 0.0
@@ -1262,7 +1265,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         if saw_null:
             out["fee_estimated"] = True
             out["fee_rate_source"] = est_source
-            out["fee_rate"] = est_rate
+            out.update(fee_rate_field(est_rate))
         return out
 
     def _hydrate_swap_fee(
@@ -1291,7 +1294,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             if trades_fee.get("fee_estimated"):
                 raw["_fee_estimated"] = True
                 raw["_fee_rate_source"] = str(trades_fee.get("fee_rate_source") or "")
-                raw["_fee_rate"] = float(trades_fee.get("fee_rate") or 0)
+                raw["_est_rate"] = read_rate_fraction(trades_fee)
             return raw
         log(
             f"swap fee missing after fetch_my_trades for {swap_symbol} — "
@@ -2295,21 +2298,21 @@ class GateExecutionAdapter(ExecutionAdapter):
         fee_estimated = bool(isinstance(raw, dict) and raw.get("_fee_estimated"))
         fee_rate_source = str(raw.get("_fee_rate_source") or "") if isinstance(raw, dict) else ""
         try:
-            fee_rate = float(raw.get("_fee_rate") or 0) if isinstance(raw, dict) else 0.0
+            est_rate = float(raw.get("_est_rate") or 0) if isinstance(raw, dict) else 0.0
         except (TypeError, ValueError):
-            fee_rate = 0.0
+            est_rate = 0.0
         if isinstance(raw, dict) and raw.get("_fee_unknown"):
             force_unknown = True
             raw = dict(raw)
             raw.pop("_fee_unknown", None)
             raw.pop("_fee_estimated", None)
             raw.pop("_fee_rate_source", None)
-            raw.pop("_fee_rate", None)
+            raw.pop("_est_rate", None)
         elif fee_estimated and isinstance(raw, dict):
             raw = dict(raw)
             raw.pop("_fee_estimated", None)
             raw.pop("_fee_rate_source", None)
-            raw.pop("_fee_rate", None)
+            raw.pop("_est_rate", None)
         fill, fee_unknown = self._fill_or_unknown_fee(
             raw,
             order,
@@ -2319,12 +2322,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             force_unknown=force_unknown,
         )
         if fee_estimated and not fee_unknown:
-            fill = replace(
-                fill,
-                fee_estimated=True,
-                fee_rate_source=fee_rate_source,
-                fee_rate=fee_rate,
-            )
+            fill = fill_with_rate_fraction(fill, source=fee_rate_source, rate=est_rate)
         elif fee_unknown:
             fee_estimated = False
         cost = float(raw.get("cost") or fill.quote_gross or fill_price * filled)
@@ -2380,7 +2378,7 @@ class GateExecutionAdapter(ExecutionAdapter):
         result.fee_unknown = fee_unknown
         result.fee_estimated = bool(fee_estimated)
         result.fee_rate_source = fee_rate_source if fee_estimated else ""
-        result.fee_rate = fee_rate if fee_estimated else 0.0
+        write_rate_fraction(result, est_rate if fee_estimated else 0.0)
         result.needs_reconcile = bool(fee_unknown or fee_estimated)
         result.pending = status is OrderStatus.PARTIALLY_FILLED
         result.order_exist_in_exchange = order.order_exist_in_exchange
@@ -2526,7 +2524,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 fee_usdt=fill.fee_usdt if fill is not None else None,
                 fee_estimated=bool(getattr(fill, "fee_estimated", False)) if fill is not None else False,
                 fee_rate_source=str(getattr(fill, "fee_rate_source", "") or "") if fill is not None else "",
-                fee_rate=float(getattr(fill, "fee_rate", 0) or 0) if fill is not None else 0.0,
+                rate=read_rate_fraction(fill) if fill is not None else 0.0,
             )
         elif order.type == "COVER":
             local = self.portfolio.execute_cover(
@@ -2542,7 +2540,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 fee_usdt=fill.fee_usdt if fill is not None else None,
                 fee_estimated=bool(getattr(fill, "fee_estimated", False)) if fill is not None else False,
                 fee_rate_source=str(getattr(fill, "fee_rate_source", "") or "") if fill is not None else "",
-                fee_rate=float(getattr(fill, "fee_rate", 0) or 0) if fill is not None else 0.0,
+                rate=read_rate_fraction(fill) if fill is not None else 0.0,
             )
         elif order.type == "SELL":
             local = self.portfolio.execute_sell(
@@ -2618,10 +2616,11 @@ class GateExecutionAdapter(ExecutionAdapter):
                 or (getattr(fill, "fee_rate_source", "") if fill is not None else "")
                 or ""
             )
-            rec["fee_rate"] = float(
-                getattr(local, "fee_rate", 0)
-                or (getattr(fill, "fee_rate", 0) if fill is not None else 0)
-                or 0
+            rec.update(
+                fee_rate_field(
+                    read_rate_fraction(local)
+                    or (read_rate_fraction(fill) if fill is not None else 0)
+                )
             )
         if self._adapter_mode == "shadow":
             rec["precision_unverified"] = bool(self._precision_unverified)

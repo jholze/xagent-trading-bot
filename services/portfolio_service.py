@@ -1,7 +1,15 @@
 from datetime import datetime
 
 from core.config import get_bot_config
-from core.costs import COST_MODEL_VERSION, CostModel, Fill, trade_cost_fields
+from core.costs import (
+    COST_MODEL_VERSION,
+    CostModel,
+    Fill,
+    fee_rate_field,
+    read_rate_fraction,
+    trade_cost_fields,
+    write_rate_fraction,
+)
 from core.models import TradeResult, TradeOrder, ctx_float_or_none, trade_ctx_fields
 from data_manager import load_trade_history, record_trade
 from logger import log
@@ -144,7 +152,7 @@ def _replay_result(symbol: str, typ: str, order_id: str, rows: list[dict]) -> Tr
     result.booking_skipped = True
     result.fee_estimated = bool(last.get("fee_estimated"))
     result.fee_rate_source = str(last.get("fee_rate_source") or "")
-    result.fee_rate = float(last.get("fee_rate") or 0)
+    write_rate_fraction(result, read_rate_fraction(last))
     if typ == "COVER":
         result.funding_usdt = last.get("funding_usdt")
         result.funding_unknown = bool(last.get("funding_unknown"))
@@ -363,7 +371,7 @@ class PortfolioService:
         fee_usdt: float | None = None,
         fee_estimated: bool = False,
         fee_rate_source: str = "",
-        fee_rate: float = 0.0,
+        rate: float = 0.0,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
@@ -390,8 +398,8 @@ class PortfolioService:
         if fill is not None and getattr(fill, "fee_estimated", False):
             fee_estimated = True
             fee_rate_source = fee_rate_source or str(getattr(fill, "fee_rate_source", "") or "")
-            if not fee_rate:
-                fee_rate = float(getattr(fill, "fee_rate", 0) or 0)
+            if not rate:
+                rate = read_rate_fraction(fill)
 
         rows = _booking_rows(self.config, order_id, "SHORT") if order_id else []
         booked_qty = sum(_row_qty(row) for row in rows)
@@ -436,7 +444,7 @@ class PortfolioService:
             "open_fee_usdt": open_fee,
             "fee_estimated": open_est,
             "fee_rate_source": str(fee_rate_source or ""),
-            "fee_rate": float(fee_rate or 0),
+            **fee_rate_field(rate),
         }
         if sync_virtual_ledger:
             record_trade({
@@ -460,7 +468,7 @@ class PortfolioService:
         )
         result.fee_estimated = bool(fee_estimated)
         result.fee_rate_source = str(fee_rate_source or "")
-        result.fee_rate = float(fee_rate or 0)
+        write_rate_fraction(result, rate)
         result.open_fee_usdt = open_fee
         return result
 
@@ -478,7 +486,7 @@ class PortfolioService:
         fee_usdt: float | None = None,
         fee_estimated: bool = False,
         fee_rate_source: str = "",
-        fee_rate: float = 0.0,
+        rate: float = 0.0,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "COVER", symbol, message="Invalid price")
@@ -492,8 +500,8 @@ class PortfolioService:
         if fill is not None and getattr(fill, "fee_estimated", False):
             fee_estimated = True
             fee_rate_source = fee_rate_source or str(getattr(fill, "fee_rate_source", "") or "")
-            if not fee_rate:
-                fee_rate = float(getattr(fill, "fee_rate", 0) or 0)
+            if not rate:
+                rate = read_rate_fraction(fill)
 
         rows = _booking_rows(self.config, order_id, "COVER") if order_id else []
         booked_qty = sum(_row_qty(row) for row in rows)
@@ -560,7 +568,7 @@ class PortfolioService:
             "open_fee_usdt": open_share,
             "fee_estimated": bool(fee_estimated),
             "fee_rate_source": str(fee_rate_source or ""),
-            "fee_rate": float(fee_rate or 0),
+            **fee_rate_field(rate),
         }
         if sync_virtual_ledger:
             record_trade({
@@ -587,7 +595,7 @@ class PortfolioService:
         )
         result.fee_estimated = bool(fee_estimated)
         result.fee_rate_source = str(fee_rate_source or "")
-        result.fee_rate = float(fee_rate or 0)
+        write_rate_fraction(result, rate)
         result.open_fee_usdt = open_share
         return result
 

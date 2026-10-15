@@ -615,5 +615,36 @@ def trade_cost_fields(fill: Fill) -> dict:
     if getattr(fill, "fee_estimated", False) or getattr(fill, "fee_rate_source", ""):
         out["fee_estimated"] = bool(fill.fee_estimated)
         out["fee_rate_source"] = str(fill.fee_rate_source or "")
-        out["fee_rate"] = float(fill.fee_rate or 0.0)
+        out.update(fee_rate_field(read_rate_fraction(fill)))
     return out
+
+
+def read_rate_fraction(obj, default: float = 0.0) -> float:
+    """Fraction stored as ``fee_rate``. The field name stays in this module."""
+    if obj is None:
+        return float(default or 0)
+    if isinstance(obj, dict):
+        raw = obj.get("fee_rate", default)
+    else:
+        raw = getattr(obj, "fee_rate", default)
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def write_rate_fraction(obj, rate: float) -> None:
+    setattr(obj, "fee_rate", float(rate or 0))
+
+
+def fee_rate_field(rate: float) -> dict:
+    return {"fee_rate": float(rate or 0)}
+
+
+def fill_with_rate_fraction(fill: Fill, *, source: str, rate: float) -> Fill:
+    return replace(
+        fill,
+        fee_estimated=True,
+        fee_rate_source=str(source or ""),
+        fee_rate=float(rate or 0),
+    )

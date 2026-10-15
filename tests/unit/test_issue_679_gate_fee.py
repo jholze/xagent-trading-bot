@@ -416,7 +416,7 @@ def test_t7_cover_pnl_nets_open_and_close_fees_including_partial():
         symbol_p = "PARTPNL/USDT"
         svc.execute_short(
             symbol_p, TF, 100.0, usdt_amount=1000.0, source="manual", order_id="sh-part",
-            fee_usdt=1.0, fee_estimated=True, fee_rate_source="config_conservative", fee_rate=RATE,
+            fee_usdt=1.0, fee_estimated=True, fee_rate_source="config_conservative", rate=RATE,
         )
         lot_p = get_position(symbol_p, TF)
         assert float(lot_p["open_fee_usdt"]) == pytest.approx(1.0)
@@ -457,7 +457,7 @@ def test_t7_cover_pnl_nets_open_and_close_fees_including_partial():
 
         partial = svc.execute_cover(
             symbol_p, TF, 80.0, amount=4.0, source="manual", order_id="cv-part",
-            fee_usdt=0.2, fee_estimated=True, fee_rate_source="config_conservative", fee_rate=RATE,
+            fee_usdt=0.2, fee_estimated=True, fee_rate_source="config_conservative", rate=RATE,
         )
         gross_p = unrealized_pnl("short", 4.0, 100.0, 80.0)
         fund_p = float(partial.funding_usdt or 0)
@@ -476,11 +476,11 @@ def test_t5_brake_inputs_include_estimated_fees():
     with tenant_context("default", scope="demo"):
         svc.execute_short(
             symbol, TF, 100.0, usdt_amount=1000.0, source="manual", order_id="br-s",
-            fee_usdt=0.75, fee_estimated=True, fee_rate_source="config_conservative", fee_rate=RATE,
+            fee_usdt=0.75, fee_estimated=True, fee_rate_source="config_conservative", rate=RATE,
         )
         covered = svc.execute_cover(
             symbol, TF, 100.0, amount=10.0, source="manual", order_id="br-c",
-            fee_usdt=0.75, fee_estimated=True, fee_rate_source="config_conservative", fee_rate=RATE,
+            fee_usdt=0.75, fee_estimated=True, fee_rate_source="config_conservative", rate=RATE,
         )
         gross = unrealized_pnl("short", 10.0, 100.0, 100.0)
         fund = float(covered.funding_usdt or 0)
