@@ -20,6 +20,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from execution.gate_adapter import set_venue_limits_override
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import as_venue_config, venue_block
 from services.venue_quality import (
     VenueMetrics,
     check_venue_for_buy,
@@ -85,8 +86,8 @@ def _cfg(
     depth_multiple=1,
     volume_multiple=20,
     volume_floor=500_000.0,
-    venue_floor=0.0,
-    min_book=0.0,
+    venue_floor=1e-9,
+    min_book=1e-9,
     extra_risk=None,
     shorts=False,
 ) -> BotConfig:
@@ -108,13 +109,13 @@ def _cfg(
             "volatile": {"market_cap_min_usd": 0},
             "stable": {"market_cap_min_usd": 0},
         },
-        "venue_quality": {
-            "enabled": True,
-            "min_quote_volume_24h_usdt": venue_floor,
-            "min_top_book_usdt_per_side": min_book,
-            "max_spread_pct": 50,
-            "min_volume_to_order_multiple": volume_multiple,
-        },
+        "venue_quality": venue_block(
+            enabled=True,
+            min_quote_volume_24h_usdt=venue_floor,
+            min_top_book_usdt_per_side=min_book,
+            max_spread_pct=50,
+            min_volume_to_order_multiple=volume_multiple,
+        ),
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": volume_floor,
             "depth_window_pct": 0.5,
@@ -342,16 +343,14 @@ def test_t6_missing_multiples_fail_closed_and_the_stamp_does_not_invent_20():
     assert buy.approved is False
     assert buy.code == "liq_guard_missing_input"
 
-    raw = {
-        "risk": {
-            "venue_quality": {
-                "enabled": True,
-                "min_quote_volume_24h_usdt": 0,
-                "min_top_book_usdt_per_side": 0,
-                "max_spread_pct": 100,
-            }
-        }
-    }
+    block = venue_block(
+        enabled=True,
+        min_quote_volume_24h_usdt=1e-9,
+        min_top_book_usdt_per_side=1e-9,
+        max_spread_pct=100,
+    )
+    del block["min_volume_to_order_multiple"]
+    raw = {"risk": {"venue_quality": block}}
     metrics = _book(bid=10_000, ask=10_000, qv=100)
     reset_venue_cache_for_tests()
     with patch("services.venue_quality.log") as log:
@@ -361,11 +360,13 @@ def test_t6_missing_multiples_fail_closed_and_the_stamp_does_not_invent_20():
     warnings = [
         str(call.args[0])
         for call in log.call_args_list
-        if call.args and "min_volume_to_order_multiple missing" in str(call.args[0])
+        if call.args and "min_volume_to_order_multiple" in str(call.args[0])
     ]
-    assert warnings
     assert len(warnings) == 1
-    assert is_thin_venue_stamp(stamp, raw["risk"]["venue_quality"]) is False
+    assert "config_problem=missing" in warnings[0]
+    assert stamp.get("capture") == "missing"
+    assert stamp.get("volume_to_order_mult") != 20
+    assert is_thin_venue_stamp(stamp, raw["risk"]["venue_quality"]) is None
 
 
 def test_t7_dca_limit_sees_the_cut_size():
@@ -679,13 +680,13 @@ def test_t11_tape_records_the_guard_on_approve_cut_and_reject(monkeypatch, tmp_p
 def test_t12_fill_stamp_still_applies_the_volume_multiple():
     raw = {
         "risk": {
-            "venue_quality": {
-                "enabled": True,
-                "min_quote_volume_24h_usdt": 0,
-                "min_top_book_usdt_per_side": 0,
-                "max_spread_pct": 100,
-                "min_volume_to_order_multiple": 20,
-            }
+            "venue_quality": venue_block(
+                enabled=True,
+                min_quote_volume_24h_usdt=1e-9,
+                min_top_book_usdt_per_side=1e-9,
+                max_spread_pct=100,
+                min_volume_to_order_multiple=20,
+            )
         }
     }
     metrics = _book(bid=10_000, ask=10_000, qv=100)
@@ -694,7 +695,7 @@ def test_t12_fill_stamp_still_applies_the_volume_multiple():
     )
     assert stamp["venue_ok"] is False
     assert any("× order" in str(reason) for reason in stamp["venue_reasons"])
-    assert is_thin_venue_stamp(stamp, raw["risk"]["venue_quality"]) is True
+    assert is_thin_venue_stamp(stamp, as_venue_config(raw["risk"]["venue_quality"])) is True
 
 
 @pytest.mark.parametrize("bad", (float("nan"), float("inf")))
@@ -722,7 +723,7 @@ def test_non_finite_volume_multiple_is_missing_input(bad):
     ((float("nan"), 1_000.0), (float("inf"), float("inf"))),
 )
 def test_non_finite_depth_is_missing_input(bid, ask):
-    rm = RiskManager(_cfg(volume_floor=100, min_book=0))
+    rm = RiskManager(_cfg(volume_floor=100, min_book=1e-9))
     book = _book(bid=bid, ask=ask, qv=1_000_000)
     dec = _eval(rm, _buy(usdt=25), "technical", book, planned=25)
     assert dec.approved is False

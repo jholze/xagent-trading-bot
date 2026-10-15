@@ -13,6 +13,7 @@ import pytest
 from core.config import BotConfig
 from services import entry_sensor_loop, shadow_signal_log as shadow
 from services.watchlist_quality.venue_batch import QUOTE_VOL_24H_KEY
+from tests.support.venue_block import venue_block
 
 T0 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 SIG = "SIG/USDT"
@@ -44,8 +45,9 @@ def _raw(**overrides) -> dict:
                 "min_quote_volume_24h_usdt": 1000,
                 "depth_window_pct": 0.5,
                 "order_book_cache_ttl_sec": 15,
+                "depth_to_order_multiple": 1,
             },
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
         },
     }
     raw.update(overrides)
@@ -1792,19 +1794,19 @@ def test_parallel_thread_keeps_its_tenant_config(logs, monkeypatch):
     stop_gate = threading.Barrier(2, timeout=3)
     size_gate = threading.Barrier(2, timeout=3)
     real_resolve = registry_mod.resolve_strategy_params
-    real_size = size_mod.resolve_sensor_usdt
+    real_size = size_mod.venue_gate_planned_usdt
 
     def _hold_stops(*args, **kwargs):
         stop_gate.wait()
         return real_resolve(*args, **kwargs)
 
-    def _hold_size(*args, **kwargs):
+    def _hold_size(ticket):
         holder["sizing"] = True
         size_gate.wait()
-        return real_size(*args, **kwargs)
+        return real_size(ticket)
 
     monkeypatch.setattr(registry_mod, "resolve_strategy_params", _hold_stops)
-    monkeypatch.setattr(size_mod, "resolve_sensor_usdt", _hold_size)
+    monkeypatch.setattr(size_mod, "venue_gate_planned_usdt", _hold_size)
 
     def _worker():
         from core.config import get_bot_config as late_get
@@ -1930,36 +1932,37 @@ def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     assert row["venue_liquidity_missing_key"] == shadow.MISSING_FLOOR_KEY
     assert row["gates_passed"] is None
 
-    # A *_min key does not satisfy the floor. #686 removed
-    # min_volume_to_order_multiple from venue_quality._DEFAULTS, so a
-    # popped venue_quality block does not list it as a default fill and
-    # the merged multiple is 0. An explicit raw multiple still blocks.
+    # A *_min key does not satisfy the volume floor.
     min_key = _raw()
-    min_key["risk"]["liquidity_guard"] = {"min_quote_volume_24h_usdt_min": 1000}
+    min_key["risk"]["liquidity_guard"] = {
+        "min_quote_volume_24h_usdt_min": 1000,
+        "depth_to_order_multiple": 1,
+    }
     assert shadow.venue_liquidity_null_reason(cache, min_key) == "missing_floor"
+    # A missing venue block is invalid config, not a filled-in default.
     no_multiple = _raw()
     no_multiple["risk"].pop("venue_quality")
-    assert shadow.venue_liquidity_null_reason(cache, no_multiple) is None
-    assert "enabled" in shadow.venue_defaults_used(no_multiple)
-    assert shadow.VENUE_ORDER_MULTIPLE_KEY not in shadow.venue_defaults_used(no_multiple)
-    passed = _trigger(logs, no_multiple, symbol=FREE, gate=cache)
-    assert passed["gates"]["venue_liquidity"] is True
-    assert "venue_liquidity_null_reason" not in passed
-    assert shadow.VENUE_ORDER_MULTIPLE_KEY not in passed["venue_defaults_used"]
+    assert shadow.venue_liquidity_null_reason(cache, no_multiple) == "venue_config_invalid"
+    invalid = _trigger(logs, no_multiple, symbol=FREE, gate=cache)
+    assert invalid["gates"]["venue_liquidity"] is None
+    assert invalid["venue_liquidity_null_reason"] == "venue_config_invalid"
+    assert invalid["venue_config_problem"] == "missing"
+    assert "passed" not in str(invalid.get("venue_liquidity_null_reason"))
     from strategies.sensor_entry_policy import venue_gate_planned_usdt
 
-    assert passed["planned_order_usdt"] == pytest.approx(
-        venue_gate_planned_usdt(no_multiple["max_usdt_per_trade"])
+    kept = _raw()
+    assert _trigger(logs, kept, symbol="KEEP/USDT", gate=cache)["planned_order_usdt"] == pytest.approx(
+        venue_gate_planned_usdt(kept["max_usdt_per_trade"])
     )
-    assert passed["planned_order_usdt"] == pytest.approx(100 * 0.35)
 
+    # Volume multiple no longer rejects. It caps.
     thin = _raw()
     thin["max_usdt_per_trade"] = 200_000
     thin["risk"]["venue_quality"]["min_volume_to_order_multiple"] = 20
-    blocked = _trigger(logs, thin, symbol="THIN/USDT", gate=cache)
-    assert blocked["gates"]["venue_liquidity"] is False
-    assert blocked["gates_passed"] is False
-    assert blocked["planned_order_usdt"] is not None
+    capped = _trigger(logs, thin, symbol="THIN/USDT", gate=cache)
+    assert capped["gates"]["venue_liquidity"] is True
+    assert capped["capped"] is True
+    assert capped["planned_order_usdt"] is not None
 
 
 @pytest.mark.parametrize(
@@ -2207,15 +2210,14 @@ def test_planned_order_usdt_matches_live_venue_gate(logs):
     assert row_missing["planned_order_usdt"] == pytest.approx(52.5)
 
 
-def test_missing_depth_window_or_book_age_does_not_pass(logs):
-    """Live blocks when these liquidity-guard keys are missing. Not a structural null."""
+def test_missing_depth_window_or_book_age_does_not_fail_shadow(logs):
+    """Shadow is volume only. A missing window or book age is not a failed gate."""
     for key in ("depth_window_pct", "order_book_cache_ttl_sec"):
         raw = _raw()
         raw["risk"]["liquidity_guard"].pop(key)
         row = _trigger(logs, raw, price=100.0, now=T0, symbol=f"{key}/USDT")
-        assert row["gates"]["venue_liquidity"] is False
-        assert row["gates_passed"] is False
-        assert row.get("structurally_null") is not True
+        assert row["gates"]["venue_liquidity"] is True
+        assert row["cap_basis"] == "volume_only"
         assert row.get("venue_liquidity_null_reason") not in (
             "missing_quote_volume",
             "missing_floor",
@@ -2431,9 +2433,11 @@ def test_disabled_venue_quality_skips_order_multiple(logs):
     enabled = _raw()
     enabled["max_usdt_per_trade"] = 4500
     enabled["risk"]["venue_quality"]["min_volume_to_order_multiple"] = 20
-    blocked = _trigger(logs, enabled, symbol=OTHER, gate=gate, price=100.0, now=T0)
-    assert blocked["gates"]["venue_liquidity"] is False
-    assert blocked["gates_passed"] is False
+    capped = _trigger(logs, enabled, symbol=OTHER, gate=gate, price=100.0, now=T0)
+    # 5000 / 20 = 250, planned 1575, so the row is capped and still passes.
+    assert capped["gates"]["venue_liquidity"] is True
+    assert capped["capped"] is True
+    assert capped["cap_volume"] == pytest.approx(250)
 
 
 def test_missing_planned_order_is_normal_null(logs):

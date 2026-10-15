@@ -34,7 +34,11 @@ def setup_satellite_tenant(
 ) -> dict:
     from core.tenant_context import tenant_context
     from core.trading_profiles import build_operator_like_tenant_config
-    from data_manager import _load_default_config_from_disk, load_effective_watchlist
+    from data_manager import (
+        _apply_trading_profile_merge,
+        _load_default_config_from_disk,
+        load_effective_watchlist,
+    )
     from storage import tenant_meta_store as tms
     from storage.mongo_ledger import MongoLedgerStore
     from storage.tenant_registry import get_tenant
@@ -74,6 +78,21 @@ def setup_satellite_tenant(
     )
 
     tenant_body = build_operator_like_tenant_config(default_cfg)
+    merged = _apply_trading_profile_merge(default_cfg, tenant_body)
+    from core.config_guardrails import (
+        ConfigValidationError,
+        assert_venue_quality_within_bounds,
+        validate_config_for_save,
+    )
+    from services.venue_quality import VenueConfigError, load_venue_bounds
+
+    validate_config_for_save(merged)
+    bounds = load_venue_bounds()
+    if isinstance(bounds, VenueConfigError):
+        raise ConfigValidationError(
+            bounds.config_key, None, f"config_problem={bounds.config_problem}"
+        )
+    assert_venue_quality_within_bounds(merged, bounds)
     tms.save_tenant_config(tid, tenant_body, default_cfg=default_cfg)
 
     with tenant_context(copy_watchlist_from, scope=scope):

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from core.config import BotConfig
 from core.models import TradeOrder
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import venue_block
 
 
 class TestTicketUsdtCap(unittest.TestCase):
@@ -25,7 +26,7 @@ class TestTicketUsdtCap(unittest.TestCase):
             "aggression": {"max_position_multiplier": 2.5},
             "risk": {
                 "min_trade_usdt": 100,
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
@@ -108,7 +109,7 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,
@@ -192,7 +193,7 @@ class TestTicketUsdtCap(unittest.TestCase):
             "paper": {"initial_capital_usdt": 100_000},
             "risk": {
                 "min_trade_usdt": 100,
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,

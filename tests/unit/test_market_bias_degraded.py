@@ -26,6 +26,7 @@ from services.santiment.store import reset_for_tests as reset_san
 from services.santiment.store import store_snapshot as store_san
 from strategies.dca_policy import DcaContext, dca_policy_config, evaluate_dca_policy
 from strategies.oracle_climax import MODE_GRIND, MODE_IDLE, resolve_climax_decision
+from tests.support.venue_block import as_venue_config, venue_block
 
 
 # Keys `get_global_market_bias()` returned before Tier 1b. Values and semantics
@@ -151,7 +152,7 @@ def _risk_cfg(mode="log", **risk_over) -> BotConfig:
     raw["max_usdt_per_trade"] = 500
     risk = dict(raw.get("risk") or {})
     risk["fail_closed_guards"] = mode
-    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
+    risk["venue_quality"] = venue_block(enabled=False)
     risk["cash_floor_pct"] = 0
     risk["cash_policy"] = {"enabled": False}
     risk["position_capacity"] = {"enabled": False}
@@ -225,7 +226,10 @@ def _buy_eval_env(rm: RiskManager, extra=()):
         stack.enter_context(patch("core.stablecoins.stablecoin_buys_blocked", return_value=True))
         stack.enter_context(patch("services.watchlist_quality.config.wqe_mode", return_value="off"))
         stack.enter_context(
-            patch("services.venue_quality.venue_quality_config", return_value={"enabled": False})
+            patch(
+                "services.venue_quality.venue_quality_config",
+                return_value=as_venue_config(venue_block(enabled=False)),
+            )
         )
         for p in extra:
             stack.enter_context(p)

@@ -90,6 +90,12 @@ def _active_watchlist_symbols() -> frozenset[str]:
     return symbols
 
 
+def freeze_tier_on_entry(cfg) -> bool:
+    """Shared with the shadow log. The default True is moved, not changed."""
+    block = cfg if isinstance(cfg, dict) else {}
+    return bool(block.get("freeze_tier_on_entry", True))
+
+
 class DecisionEngine:
     """Merges technical strategy output with X, CMC, and market-structure signals."""
 
@@ -271,7 +277,10 @@ class DecisionEngine:
             from services.venue_quality import check_venue_for_buy, venue_quality_config
 
             vcfg = venue_quality_config(self.config.raw)
-            if vcfg.get("enabled", True):
+            from services.venue_quality import VenueConfigError
+
+            # Invalid config is gate-required. enabled=false keeps today's skip.
+            if isinstance(vcfg, VenueConfigError) or vcfg.enabled:
                 from strategies.sensor_entry_policy import venue_gate_planned_usdt
 
                 planned = venue_gate_planned_usdt(get_bot_config().max_usdt_per_trade)
@@ -500,7 +509,7 @@ class DecisionEngine:
                 coin = resolve_coin_config({**coin, "timeframe": tf})
         frozen = pos.get("strategy_tier") if has_position else None
         va_cfg = self.config.volatile_altcoin_config
-        if has_position and not frozen and va_cfg.get("freeze_tier_on_entry", True):
+        if has_position and not frozen and freeze_tier_on_entry(va_cfg):
             tier = volatility_tier(
                 coin, atr_pct, va_cfg,
                 range_24h_pct=range_24h_pct,

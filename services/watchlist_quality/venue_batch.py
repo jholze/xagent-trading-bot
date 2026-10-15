@@ -19,7 +19,7 @@ def attach_quote_volumes(
     if not coins:
         return []
     symbols = [str(c["symbol"]) for c in coins if isinstance(c, dict) and c.get("symbol")]
-    vol_map: dict[str, float] = {}
+    vol_map: dict[str, float | None] = {}
     try:
         if batch_fn is None:
             from services.venue_quality import fetch_gate_venue_metrics
@@ -29,6 +29,13 @@ def attach_quote_volumes(
             metrics = batch_fn(symbols) or {}
         for sym, m in (metrics or {}).items():
             if m is None:
+                continue
+            capture = getattr(m, "capture", None)
+            if capture is None and isinstance(m, dict):
+                capture = m.get("capture")
+            if capture == "missing":
+                # Never store 0.0 for a missing capture.
+                vol_map[str(sym)] = None
                 continue
             qv = getattr(m, "quote_volume_24h_usdt", None)
             if qv is None and isinstance(m, dict):
@@ -47,7 +54,9 @@ def attach_quote_volumes(
             continue
         row = dict(c)
         sym = str(row.get("symbol") or "")
-        if row.get(QUOTE_VOL_24H_KEY) is None and sym in vol_map:
+        if sym in vol_map and vol_map[sym] is None:
+            row[QUOTE_VOL_24H_KEY] = None
+        elif row.get(QUOTE_VOL_24H_KEY) is None and sym in vol_map:
             row[QUOTE_VOL_24H_KEY] = vol_map[sym]
         out.append(row)
     return out
