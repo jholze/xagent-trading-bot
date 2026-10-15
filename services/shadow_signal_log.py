@@ -27,7 +27,7 @@ _LOCK = threading.Lock()
 _BASE_STAT: tuple[int, int] | None = None
 _BASE_CFG: dict | None = None
 _BASE_SHA: str | None = None
-VENUE_GATE_VERSION = "e12v4"
+VENUE_GATE_VERSION = "e12v8"
 CAP_BASIS = "volume_only"
 _OPEN: dict[str, dict] = {}
 _CLOSED: set[str] = set()
@@ -66,6 +66,8 @@ _GATE_REJECT = {
 # Same method the exit path uses. The row stores the fraction of that percent.
 STOP_PCT_SOURCE = "strategies.dca.effective_stop_loss_thresholds"
 _VENUE_NULL_REASONS = ("missing_quote_volume", "missing_floor")
+# Shadow invalid lines. Separate from venue_quality._CONFIG_WARNED (M24).
+_SHADOW_VENUE_WARNED: set[tuple] = set()
 
 
 def validate_shadow_signal_row(row: dict) -> None:
@@ -149,6 +151,7 @@ def reset_for_tests() -> None:
     _PRICE_FETCH_CURSOR = 0
     _FETCH_DISABLED_LOGGED = False
     _EXIT_HOURS_MISSING_LOGGED = False
+    _SHADOW_VENUE_WARNED.clear()
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -496,13 +499,17 @@ class _ShadowVenue:
 
 
 def _log_shadow_venue_invalid(config_key: str, config_problem: str) -> None:
-    """ERROR line. Does not touch ``_CONFIG_WARNED``."""
+    """One ERROR per (tenant, key, problem). Does not touch ``_CONFIG_WARNED``."""
     try:
         from core.tenant_context import resolve_tenant_id
 
         tenant = str(resolve_tenant_id())
     except Exception:
         tenant = ""
+    token = (tenant, config_key, config_problem)
+    if token in _SHADOW_VENUE_WARNED:
+        return
+    _SHADOW_VENUE_WARNED.add(token)
     log(
         f"venue_config_invalid tenant={tenant} venue_config_key={config_key} "
         f"venue_config_problem={config_problem}",
@@ -530,6 +537,82 @@ def _shadow_venue_block(config_raw: dict | None):
     return risk.get("venue_quality")
 
 
+def _guard_block(config_raw: dict | None) -> dict | None:
+    if not isinstance(config_raw, dict):
+        return None
+    risk = config_raw.get("risk")
+    if not isinstance(risk, dict) or "liquidity_guard" not in risk:
+        return None
+    block = risk.get("liquidity_guard")
+    return block if isinstance(block, dict) else None
+
+
+def _liquidity_key_problem(block: dict | None, key: str) -> str | None:
+    """missing / null / type / range. No stand-in value."""
+    from services.venue_quality import _positive_problem
+
+    if not isinstance(block, dict) or key not in block:
+        return "missing"
+    value = block.get(key)
+    if value is None:
+        return "null"
+    return _positive_problem(value)
+
+
+def _depth_data_missing(cache: dict, ttl: float | None) -> bool:
+    """D-a / D-b. Absent, stale, unparsed, or non-finite depth is missing."""
+    from services.venue_quality import _as_finite
+
+    capture = cache.get("capture")
+    if capture in (None, "", "missing", "stale"):
+        return True
+    age = cache.get("book_age_sec")
+    if isinstance(age, bool):
+        return True
+    try:
+        age_n = float(age)
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(age_n):
+        return True
+    if ttl is not None and age_n > float(ttl):
+        return True
+    if cache.get("depth_parsed") is not True:
+        return True
+    if _as_finite(cache.get("depth_bid_usdt")) is None:
+        return True
+    if _as_finite(cache.get("depth_ask_usdt")) is None:
+        return True
+    return False
+
+
+def _cached_depth_fields(symbol: str, config_raw: dict | None) -> dict:
+    """Book the process already holds. No HTTP. No row means missing depth."""
+    from services.venue_quality import _book_cache, _cache_lock, _pair, liquidity_guard_config
+
+    guard = liquidity_guard_config(config_raw if isinstance(config_raw, dict) else {})
+    ttl = guard.get("order_book_cache_ttl_sec")
+    pair = _pair(str(symbol or ""))
+    with _cache_lock:
+        hit = _book_cache.get(pair)
+    if not hit:
+        return {"capture": "missing"}
+    try:
+        stamped = float(hit[0])
+        bid_d, ask_d, parsed = hit[1][0], hit[1][1], hit[1][2]
+    except (TypeError, ValueError, IndexError):
+        return {"capture": "missing"}
+    age = max(0.0, time.time() - stamped)
+    fresh = ttl is not None and age <= float(ttl)
+    return {
+        "capture": "ok" if fresh else "stale",
+        "book_age_sec": age,
+        "depth_parsed": bool(parsed),
+        "depth_bid_usdt": bid_d,
+        "depth_ask_usdt": ask_d,
+    }
+
+
 def _positive_path(raw: dict | None, path: str) -> float | None:
     from services.venue_quality import _lookup_path, _path_present, parse_liquidity_floor
 
@@ -544,9 +627,11 @@ def _evaluate_shadow_venue(
     *,
     base_snapshot: tuple | None = None,
 ) -> _ShadowVenue:
-    """Volume-only venue gate. Invalid config wins before any volume lookup.
+    """Volume-only value. Invalid config and missing depth never pass.
 
-    Does not call ``venue_quality_config`` or ``liquidity_multiple_floor_reasons``.
+    Rank: venue_config_invalid, missing_quote_volume, missing_floor,
+    missing_depth_input, planned_order_unavailable. Does not call
+    ``venue_quality_config`` or ``liquidity_multiple_floor_reasons``.
     """
     from services.venue_quality import (
         DEPTH_MULTIPLE_PATH,
@@ -570,23 +655,22 @@ def _evaluate_shadow_venue(
     if isinstance(validated, VenueConfigError):
         return _invalid_venue(validated.config_key, validated.config_problem, sha)
 
+    block = _guard_block(config_raw if isinstance(config_raw, dict) else None)
+    for key, path in (
+        ("depth_window_pct", "risk.liquidity_guard.depth_window_pct"),
+        ("order_book_cache_ttl_sec", "risk.liquidity_guard.order_book_cache_ttl_sec"),
+        ("depth_to_order_multiple", DEPTH_MULTIPLE_PATH),
+    ):
+        problem = _liquidity_key_problem(block, key)
+        if problem:
+            return _invalid_venue(path, problem, sha)
+
     depth = _positive_path(config_raw if isinstance(config_raw, dict) else None, DEPTH_MULTIPLE_PATH)
-    # A missing depth multiple is not a shadow null. A present one is floored.
-    # A huge stand-in keeps a missing multiple from looking "below floor"
-    # while a missing depth floor still reports floor_missing.
-    depth_for_floor = depth if depth is not None else 1e18
-    problems = liquidity_multiple_floor_problems(
-        depth_for_floor, validated.min_volume_to_order_multiple, base
-    )
     if depth is None:
-        problems = [
-            problem
-            for problem in problems
-            if not (
-                problem.multiple_path == DEPTH_MULTIPLE_PATH
-                and problem.kind == "below_floor"
-            )
-        ]
+        return _invalid_venue(DEPTH_MULTIPLE_PATH, "range", sha)
+    problems = liquidity_multiple_floor_problems(
+        depth, validated.min_volume_to_order_multiple, base
+    )
     if problems:
         problem = problems[0]
         if problem.kind == "below_floor":
@@ -599,6 +683,8 @@ def _evaluate_shadow_venue(
     floor = guard.get(LIQUIDITY_FLOOR_KEY)
     if floor is None:
         return _ShadowVenue(value=None, reason="missing_floor", base_sha=sha)
+    if _depth_data_missing(cache, guard.get("order_book_cache_ttl_sec")):
+        return _ShadowVenue(value=None, reason="missing_depth_input", base_sha=sha)
     if _gate_missing(cache, "planned_order_usdt"):
         return _ShadowVenue(value=None, reason="planned_order_unavailable", base_sha=sha)
     try:
@@ -922,6 +1008,7 @@ def snapshot_gate_inputs(
     _store("max_open_positions", _peek_max_open_positions(config_raw))
     _store("cooldown_blocked", _peek_cooldown_blocked(symbol, timeframe, config_raw))
     _store("rate_limited", _peek_rate_limited(config_raw))
+    cache.update(_cached_depth_fields(symbol, config_raw))
     return cache
 
 

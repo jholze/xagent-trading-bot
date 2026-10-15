@@ -625,7 +625,23 @@ def test_required_sources_are_enumerated_and_a_new_one_must_be_added():
         found.update(pat.findall(text))
     missing = sorted(s for s in found if s not in AUTOMATIC_BUY_SOURCES and s not in _NOT_A_BUY_SOURCE)
     assert missing == [], f"buy source added without the check: {missing}"
-    assert "a_buy_source_nobody_listed_yet" not in AUTOMATIC_BUY_SOURCES
+    unknown = "a_buy_source_nobody_listed_yet"
+    assert unknown not in AUTOMATIC_BUY_SOURCES
+    rm = RiskManager(_cfg(fail_closed_guards="log"))
+    metrics = _book(
+        symbol="UNK/USDT",
+        quote_volume_24h_usdt=5_000_000,
+        depth_bid_usdt=1,
+        depth_ask_usdt=1,
+    )
+    order = TradeOrder(
+        "BUY", "UNK/USDT", 1.0, 0, usdt_amount=400, signal="BUY", source=unknown
+    )
+    dec = _decide(rm, order, unknown, metrics)
+    assert dec.approved is False
+    assert any(
+        c.startswith("liq_guard_") or c == "venue_liquidity_block" for c in _codes(dec)
+    )
 
 
 def test_thin_book_rejects_in_log_mode_and_in_deny_mode():

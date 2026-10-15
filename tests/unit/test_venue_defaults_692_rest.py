@@ -5,8 +5,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import socket
-import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -47,7 +45,6 @@ from tests.unit.test_venue_defaults_692 import R2_KEYS, _disk_config, _trigger
 # with an in-memory stub. Exemption tests need the real guardrail path.
 _REAL_SAVE = data_manager.save_config
 ROOT = Path(__file__).resolve().parents[2]
-MONGO_BIN = "/tmp/mongo/mongodb-linux-x86_64-ubuntu2204-7.0.14/bin/mongod"
 
 
 def _bounds():
@@ -67,66 +64,26 @@ def _broken_disk(tmp_path, monkeypatch, *, mutate):
     return path
 
 
-def _free_port() -> int:
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = int(sock.getsockname()[1])
-    sock.close()
-    assert port != 27017
-    return port
-
-
 @contextmanager
-def _private_mongod(tmp_path, monkeypatch):
-    if not Path(MONGO_BIN).is_file():
-        pytest.fail(f"private mongod missing at {MONGO_BIN}")
-    port = _free_port()
-    dbpath = tmp_path / "db"
-    dbpath.mkdir()
-    proc = subprocess.Popen(
-        [
-            MONGO_BIN,
-            "--port",
-            str(port),
-            "--dbpath",
-            str(dbpath),
-            "--bind_ip",
-            "127.0.0.1",
-            "--nounixsocket",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    uri = f"mongodb://127.0.0.1:{port}"
-    deadline = time.time() + 20
-    ready = False
-    while time.time() < deadline:
-        try:
-            sock = socket.create_connection(("127.0.0.1", port), timeout=0.2)
-            sock.close()
-            ready = True
-            break
-        except OSError:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-    if not ready:
-        proc.kill()
-        pytest.fail("private mongod did not accept connections")
-    monkeypatch.setenv("MONGODB_URI", uri)
-    monkeypatch.setenv("XAGENT_TEST_MONGODB_URI", uri)
+def _ci_mongo():
+    """Mongo already selected by isolate_test_mongo / the CI service. No binary path."""
     from storage.mongo_client import close_client
 
+    uri = os.environ.get("MONGODB_URI") or "mongodb://127.0.0.1:27017"
+    from pymongo import MongoClient
+
+    client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+    try:
+        client.admin.command("ping")
+    except Exception as exc:
+        pytest.fail(f"mongo at {uri} is not reachable: {exc}")
+    finally:
+        client.close()
     close_client()
     try:
         yield uri
     finally:
         close_client()
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 def _use_real_save(monkeypatch):
@@ -322,7 +279,7 @@ def test_t10_rank_order_and_validator():
     gate.pop("quote_volume_24h_usdt", None)
     row = _trigger(raw, symbol="RANK/USDT", gate=gate)
     assert row["venue_liquidity_null_reason"] == "venue_config_invalid"
-    assert row["venue_gate_version"] == "e12v4"
+    assert row["venue_gate_version"] == "e12v8"
     shadow.validate_shadow_signal_row(row)
     bad = {"gates": {"venue_liquidity": None}}
     with pytest.raises(ValueError, match="without reason"):
@@ -630,7 +587,7 @@ def test_t20_mode_off_exemption_mongo(tmp_path, monkeypatch):
         )
         or body.setdefault("paper", {}).__setitem__("backend", "mongo"),
     )
-    with _private_mongod(tmp_path, monkeypatch):
+    with _ci_mongo():
         assert data_manager.patch_config(_mode_off_body(), tenant_id="lab692") is True
         with pytest.raises(ConfigValidationError):
             data_manager.patch_config({"trading_mode": "live"}, tenant_id="lab692")
@@ -718,7 +675,7 @@ def test_t21_entries_off_mongo_and_loader_spy(tmp_path, monkeypatch):
         or body.setdefault("trading", {}).__setitem__("entries_enabled", True)
         or body["trading"].__setitem__("exits_enabled", True),
     )
-    with _private_mongod(tmp_path, monkeypatch):
+    with _ci_mongo():
         assert (
             data_manager.patch_config(
                 {"trading": {"entries_enabled": False}}, tenant_id="lab692"
@@ -742,3 +699,70 @@ def test_t21_entries_off_mongo_and_loader_spy(tmp_path, monkeypatch):
     path.mkdir()
     data_manager._config_cache = None
     assert mode_commands.save_trading_flags(entries_enabled=False) is False
+
+
+def _disk_missing_exchange(tmp_path, monkeypatch):
+    def _mutate(body):
+        body["risk"]["venue_quality"].pop("exchange")
+        body.setdefault("paper", {})["backend"] = "mongo"
+
+    return _broken_disk(tmp_path, monkeypatch, mutate=_mutate)
+
+
+def test_m26a_default_save_stage2_rejects_missing_exchange(tmp_path, monkeypatch):
+    _use_real_save(monkeypatch)
+    _broken_disk(tmp_path, monkeypatch, mutate=lambda body: None)
+    body = _disk_config()
+    body["risk"]["venue_quality"].pop("exchange")
+    err = _reject(lambda: data_manager.save_config(body))
+    assert "exchange" in err.path
+
+
+def test_m20a_tenant_save_stage2_rejects_merged_missing_key(tmp_path, monkeypatch):
+    _use_real_save(monkeypatch)
+    _disk_missing_exchange(tmp_path, monkeypatch)
+    with _ci_mongo():
+        err = _reject(
+            lambda: data_manager.save_config({"trading_mode": "paper"}, tenant_id="lab692m20")
+        )
+    assert "exchange" in err.path
+
+
+def test_m26b_tenant_patch_stage2_rejects_merged_missing_key(tmp_path, monkeypatch):
+    _use_real_save(monkeypatch)
+    _disk_missing_exchange(tmp_path, monkeypatch)
+    with _ci_mongo():
+        err = _reject(
+            lambda: data_manager.patch_config({"trading_mode": "paper"}, tenant_id="lab692m26")
+        )
+    assert "exchange" in err.path
+
+
+def test_x10_satellite_script_runs_the_full_bounds_check(monkeypatch):
+    disk = _disk_config()
+    disk["risk"]["venue_quality"].pop("exchange")
+    monkeypatch.setattr(data_manager, "_load_default_config_from_disk", lambda: disk)
+    monkeypatch.setattr("storage.tenant_registry.get_tenant", lambda tid: {"tenant_id": tid})
+    saved = []
+
+    class _Store:
+        def save_orders(self, *args, **kwargs):
+            return None
+
+        def save_positions(self, *args, **kwargs):
+            return None
+
+        def save_trade_history(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr("storage.mongo_ledger.MongoLedgerStore", _Store)
+    monkeypatch.setattr(
+        "storage.tenant_meta_store.save_tenant_config",
+        lambda *args, **kwargs: saved.append(args) or True,
+    )
+    from scripts.setup_satellite_tenant import setup_satellite_tenant
+
+    with pytest.raises(ConfigValidationError) as caught:
+        setup_satellite_tenant("lab692sat", dry_run=False)
+    assert "exchange" in str(caught.value)
+    assert saved == []

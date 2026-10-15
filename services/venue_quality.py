@@ -291,13 +291,14 @@ def _tenant_for_log() -> str:
 def _emit_venue_config_error(err: VenueConfigError) -> None:
     tenant = _tenant_for_log()
     token = (tenant, err.config_key, err.config_problem)
-    if token not in _CONFIG_WARNED:
-        _CONFIG_WARNED.add(token)
-        log(
-            f"venue config tenant={tenant} config_key={err.config_key} "
-            f"config_problem={err.config_problem}",
-            "ERROR",
-        )
+    if token in _CONFIG_WARNED:
+        return
+    _CONFIG_WARNED.add(token)
+    log(
+        f"venue config tenant={tenant} config_key={err.config_key} "
+        f"config_problem={err.config_problem}",
+        "ERROR",
+    )
     if err.config_problem != "config_unavailable":
         return
     entry = {
@@ -323,8 +324,13 @@ def _emit_venue_config_error(err: VenueConfigError) -> None:
 
 
 def _rearm_venue_config() -> None:
+    """Drop venue and bounds error tokens for this tenant.
+
+    Floor WARNINGs are 2-tuples and stay until the test reset (M38).
+    """
     tenant = _tenant_for_log()
-    keys = {_VENUE_KEY, *(_venue_path(key) for key in _VENUE_REQUIRED_KEYS)}
+    keys = {_VENUE_KEY, _BOUNDS_KEY, *(_venue_path(key) for key in _VENUE_REQUIRED_KEYS)}
+    keys.update(VENUE_BOUND_PATHS)
     stale = {
         token
         for token in _CONFIG_WARNED

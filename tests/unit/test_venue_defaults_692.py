@@ -7,8 +7,6 @@ import copy
 import json
 import math
 import os
-import socket
-import subprocess
 import textwrap
 import threading
 import time
@@ -47,7 +45,6 @@ from tests.unit.test_shadow_signal_log_687 import _passing_gate, _raw
 
 _REAL_SAVE = data_manager.save_config
 ROOT = Path(__file__).resolve().parents[2]
-MONGO_BIN = "/tmp/mongo/mongodb-linux-x86_64-ubuntu2204-7.0.14/bin/mongod"
 R2_KEYS = (
     "enabled",
     "exchange",
@@ -413,7 +410,7 @@ def test_t13_base_reload_changes_sha(monkeypatch, tmp_path):
     shadow._BASE_CFG = None
     first = _trigger(_raw(), symbol="SHA1/USDT")
     assert first["base_config_sha"]
-    assert first["venue_gate_version"] == "e12v4"
+    assert first["venue_gate_version"] == "e12v8"
     assert first["cap_basis"] == "volume_only"
     src["risk"]["venue_quality"]["min_volume_to_order_multiple_min"] = 25
     path.write_text(json.dumps(src), encoding="utf-8")
@@ -517,8 +514,37 @@ def test_t15_manual_buy_logs_and_manual_short_skips(monkeypatch):
     rm = RiskManager(BotConfig(raw))
     with _eval_env(rm, metrics=_book()):
         buy = rm.evaluate(_buy(source="manual"), "4h", source="manual")
-    assert buy.approved is True or buy.code != "liq_guard_missing_input"
+    assert buy.approved is True
+    assert buy.code != "liq_guard_missing_input"
     assert any("manual_buy_guard" in str(m) for m in logged)
+    venue_calls = {"n": 0}
+    real_check = check_venue_for_buy
+
+    def _spy(*args, **kwargs):
+        venue_calls["n"] += 1
+        return real_check(*args, **kwargs)
+
+    monkeypatch.setattr("services.venue_quality.check_venue_for_buy", _spy)
+    short = TradeOrder(
+        type="SHORT",
+        symbol="LAB/USDT",
+        price=1.0,
+        amount=0,
+        usdt_amount=100,
+        signal="SHORT",
+        source="manual",
+        leverage=2,
+    )
+    raw["shorts"]["volatile"]["market_cap_min_usd"] = 0
+    raw["shorts"]["stable"]["market_cap_min_usd"] = 0
+    rm_short = RiskManager(BotConfig(raw))
+    monkeypatch.setattr("core.simulated_trading.is_real_live_trading", lambda *_a, **_k: False)
+    monkeypatch.setattr("strategies.short_policy.shorts_enabled", lambda *_a, **_k: True)
+    with _eval_env(rm_short, metrics=_book()):
+        short_dec = rm_short.evaluate(short, "4h", source="manual")
+    assert short_dec.approved is True
+    assert not str(short_dec.code or "").startswith("liq_guard_")
+    assert venue_calls["n"] == 0
 
 
 def test_t9_rearm_and_floor_warning_once(monkeypatch):
@@ -576,7 +602,8 @@ def test_t14_freeze_helper_is_shared():
     assert freeze_tier_on_entry({"freeze_tier_on_entry": False}) is False
     with patch("strategies.decision_engine.freeze_tier_on_entry", return_value=False):
         stops = shadow._stops_from_exit_path(_raw(), "LAB/USDT", "4h", atr_pct=12)
-    assert "stop_unavailable" == stops.get("stop_projection_null_reason") or stops["volatility_tier"] is None or True
+    assert stops.get("stop_projection_null_reason") is None
+    assert stops["volatility_tier"] is None
     text = (ROOT / "services/shadow_signal_log.py").read_text(encoding="utf-8")
     assert "__defaults__" not in text
     assert "_resolve_volatility_tier" not in text
@@ -647,3 +674,468 @@ def test_e11_structural_reasons_are_only_volume_and_floor():
     assert set(shadow._VENUE_NULL_REASONS) == {"missing_quote_volume", "missing_floor"}
     assert "venue_config_invalid" not in shadow._VENUE_NULL_REASONS
     assert "planned_order_unavailable" not in shadow._VENUE_NULL_REASONS
+    assert "missing_depth_input" not in shadow._VENUE_NULL_REASONS
+
+
+class _Pop:
+    """Sentinel: delete the liquidity-guard key instead of setting a value."""
+
+
+_POP = _Pop()
+
+
+def _guard_raw(**overrides) -> dict:
+    raw = _raw()
+    guard = raw["risk"]["liquidity_guard"]
+    for key, value in overrides.items():
+        if value is _POP:
+            guard.pop(key, None)
+        else:
+            guard[key] = value
+    return raw
+
+
+def _live_hard(raw: dict, metrics, planned: float = 100.0):
+    from services.venue_quality import VenueQualityResult, _apply_hard_liquidity
+
+    prior = VenueQualityResult(ok=True, reasons=[], metrics=metrics)
+    return _apply_hard_liquidity(prior, metrics, planned_usdt=planned, config_raw=raw)
+
+
+def _shadow_state(raw: dict, cache: dict):
+    shadow._BASE_STAT = None
+    shadow._BASE_CFG = None
+    return shadow._evaluate_shadow_venue(cache, raw)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "problem"),
+    [
+        ("depth_window_pct", _POP, "missing"),
+        ("depth_window_pct", "x", "type"),
+        ("depth_window_pct", 0, "range"),
+        ("depth_window_pct", -1, "range"),
+        ("depth_window_pct", float("inf"), "range"),
+        ("order_book_cache_ttl_sec", _POP, "missing"),
+        ("order_book_cache_ttl_sec", "x", "type"),
+        ("order_book_cache_ttl_sec", 0, "range"),
+        ("order_book_cache_ttl_sec", -1, "range"),
+        ("order_book_cache_ttl_sec", float("inf"), "range"),
+        ("depth_to_order_multiple", _POP, "missing"),
+        ("depth_to_order_multiple", "x", "type"),
+        ("depth_to_order_multiple", 0, "range"),
+        ("depth_to_order_multiple", -1, "range"),
+        ("depth_to_order_multiple", 0.5, "range"),
+    ],
+)
+def test_t22_bad_liquidity_config_blocks_live_and_shadow(key, value, problem):
+    raw = _guard_raw(**{key: value})
+    cache = _passing_gate(planned_order_usdt=100)
+    metrics = _book(symbol="LAB/USDT", quote_volume_24h_usdt=1_000_000)
+    live = _live_hard(raw, metrics)
+    state = _shadow_state(raw, cache)
+    assert live.ok is False
+    assert live.code == "liq_guard_missing_input"
+    assert state.value is not True
+    assert state.reason == "venue_config_invalid"
+    assert state.config_problem == problem
+    assert key in (state.config_key or "")
+
+
+def test_t22_stale_unparsed_and_missing_side_are_missing_depth_input():
+    raw = _guard_raw()
+    cases = [
+        _passing_gate(planned_order_usdt=100, capture="stale", book_age_sec=100),
+        _passing_gate(planned_order_usdt=100, capture="ok", book_age_sec=100),
+        _passing_gate(planned_order_usdt=100, depth_parsed=False),
+        _passing_gate(planned_order_usdt=100, depth_bid_usdt=None),
+        _passing_gate(planned_order_usdt=100, depth_ask_usdt=None),
+    ]
+    for cache in cases:
+        metrics = SimpleNamespace(
+            symbol="LAB/USDT",
+            capture=cache["capture"],
+            quote_volume_present=True,
+            quote_volume_24h_usdt=float(cache["quote_volume_24h_usdt"]),
+            depth_parsed=cache["depth_parsed"] is True,
+            depth_bid_usdt=cache.get("depth_bid_usdt"),
+            depth_ask_usdt=cache.get("depth_ask_usdt"),
+        )
+        state = _shadow_state(raw, cache)
+        assert state.value is not True
+        assert state.reason == "missing_depth_input"
+        # Age alone is a shadow input. Live blocks when capture, parse, or a side is bad.
+        if cache["capture"] == "stale" or cache["depth_parsed"] is not True or cache.get("depth_bid_usdt") is None or cache.get("depth_ask_usdt") is None:
+            live = _live_hard(raw, metrics)
+            assert live.ok is False
+            assert live.code == "liq_guard_missing_input"
+
+
+def test_t22_positive_control_and_volume_below_floor():
+    raw = _guard_raw()
+    cache = _passing_gate(planned_order_usdt=100, quote_volume_24h_usdt=1_000_000)
+    metrics = _book(symbol="LAB/USDT", quote_volume_24h_usdt=1_000_000)
+    live = _live_hard(raw, metrics, planned=100)
+    state = _shadow_state(raw, cache)
+    assert live.ok is True
+    assert state.value is True
+    assert state.reason is None
+    checked = check_venue_for_buy(
+        "LAB/USDT", planned_usdt=100, config_raw=raw, metrics=metrics
+    )
+    assert checked.ok is True
+
+    thin_cache = _passing_gate(planned_order_usdt=100, quote_volume_24h_usdt=10)
+    thin = _book(symbol="LAB/USDT", quote_volume_24h_usdt=10)
+    live_thin = _live_hard(raw, thin, planned=100)
+    state_thin = _shadow_state(raw, thin_cache)
+    assert live_thin.ok is False
+    assert "liq_guard_volume_low" in (getattr(live_thin, "guard_codes", None) or [live_thin.code])
+    assert state_thin.value is False
+    assert state_thin.reason is None
+
+
+def test_t13_missing_depth_multiple_does_not_pass(monkeypatch):
+    messages = []
+    monkeypatch.setattr(shadow, "log", lambda msg, level="INFO": messages.append(f"{level}:{msg}"))
+    raw = _guard_raw(depth_to_order_multiple=_POP)
+    row = _trigger(raw, symbol="DEPTH/USDT")
+    assert row["gates"]["venue_liquidity"] is not True
+    assert row["venue_liquidity_null_reason"] == "venue_config_invalid"
+    scrubbed = [msg.replace("gates_passed", "") for msg in messages]
+    assert all("passed" not in msg.lower() for msg in scrubbed)
+
+
+def test_t24_rank_pairs_and_gate_version():
+    invalid = _guard_raw(depth_window_pct=_POP)
+    no_volume = _passing_gate()
+    no_volume.pop("quote_volume_24h_usdt")
+    assert _shadow_state(invalid, no_volume).reason == "venue_config_invalid"
+
+    no_floor = _guard_raw(min_quote_volume_24h_usdt=_POP)
+    assert _shadow_state(no_floor, no_volume).reason == "missing_quote_volume"
+
+    present_volume = _passing_gate(quote_volume_24h_usdt=1_000_000)
+    for field in ("capture", "book_age_sec", "depth_parsed", "depth_bid_usdt", "depth_ask_usdt"):
+        present_volume.pop(field, None)
+    assert _shadow_state(no_floor, present_volume).reason == "missing_floor"
+
+    no_planned = dict(present_volume)
+    assert _shadow_state(_guard_raw(), no_planned).reason == "missing_depth_input"
+
+    row = _trigger(_raw(), symbol="VER/USDT")
+    assert row["venue_gate_version"] == "e12v8"
+    assert row["cap_basis"] == "volume_only"
+
+
+def test_t1_pair_fallback_ttl_edges_book_branches_and_cap(monkeypatch):
+    """Stored T1 pieces that the HTTP-params test does not cover."""
+    import services.venue_quality as venue
+    from services.venue_quality import (
+        VenueMetrics,
+        _apply_hard_liquidity,
+        evaluate_venue_quality,
+        fetch_gate_venue_metrics,
+    )
+    from tests.support.venue_block import as_venue_config
+
+    seen = []
+
+    def fake(path, params=None, *, timeout):
+        seen.append((path, dict(params or {}), float(timeout)))
+        if path == "/spot/order_book":
+            raise RuntimeError("book down")
+        if path == "/spot/tickers" and (params or {}).get("currency_pair"):
+            return [
+                {
+                    "currency_pair": "LAB_USDT",
+                    "last": "1",
+                    "highest_bid": "0.99",
+                    "lowest_ask": "1.01",
+                    "quote_volume": "8000000",
+                    "highest_size": "1000",
+                    "lowest_size": "1000",
+                }
+            ]
+        if path == "/spot/tickers":
+            return [
+                {
+                    "currency_pair": "LAB_USDT",
+                    "last": "1",
+                    "highest_bid": "0.99",
+                    "lowest_ask": "1.01",
+                    "quote_volume": "8000000",
+                    "highest_size": "1000",
+                    "lowest_size": "1000",
+                }
+            ]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(venue, "gate_public_rest_get", fake)
+    reset_venue_cache_for_tests()
+    raw = {
+        "risk": {
+            "venue_quality": venue_block(),
+            "liquidity_guard": {
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
+                "depth_to_order_multiple": 1,
+            },
+        }
+    }
+    fetch_gate_venue_metrics(["LAB/USDT"], config_raw=raw, fetch_depth=True)
+    pair = [row for row in seen if row[0] == "/spot/tickers" and row[1].get("currency_pair")]
+    assert pair
+    assert pair[0][2] == pytest.approx(5.0)
+    assert pair[0][2] != pytest.approx(12.0)
+
+    now = 1_000_000.0
+    monkeypatch.setattr(venue.time, "time", lambda: now)
+    reset_venue_cache_for_tests()
+    cached = _book(symbol="TTL/USDT", quote_volume_24h_usdt=8_000_000)
+    hits = {}
+    for age in (89, 90, 91):
+        seen.clear()
+        venue._cache["TTL/USDT"] = (now - age, cached)
+        fetch_gate_venue_metrics(["TTL/USDT"], config_raw=raw, fetch_depth=False)
+        hits[age] = bool(seen)
+    assert hits[89] is False
+    assert hits[90] is False
+    assert hits[91] is True
+
+    cfg = as_venue_config()
+    unavailable = _book(symbol="BOOK/USDT", capture="book_unavailable", depth_parsed=False, quote_volume_present=False)
+    blocked = evaluate_venue_quality(unavailable, cfg)
+    assert blocked.ok is False
+    assert blocked.code == "book_unavailable"
+    volume_ok = _book(
+        symbol="BOOK/USDT",
+        capture="book_unavailable",
+        depth_parsed=False,
+        quote_volume_present=True,
+        quote_volume_24h_usdt=8_000_000,
+    )
+    allowed = evaluate_venue_quality(volume_ok, cfg, skip_volume_multiple=True)
+    assert allowed.ok is True
+    assert is_thin_venue_stamp({"capture": "missing"}, cfg) is False
+    assert is_thin_venue_stamp({"capture": "book_unavailable", "venue_ok": False}, cfg) is True
+    assert is_thin_venue_stamp({"capture": "ok"}, VenueConfigError("risk.venue_quality", "missing")) is None
+
+    thick = _book(symbol="CAP/USDT", quote_volume_24h_usdt=2_000_000, depth_bid_usdt=4_000, depth_ask_usdt=6_000)
+    capped = _apply_hard_liquidity(
+        VenueQualityResult_ok(thick),
+        thick,
+        planned_usdt=100,
+        config_raw=raw,
+    )
+    assert capped.cap_volume == pytest.approx(2_000_000 / 20)
+    assert capped.cap_depth == pytest.approx(4_000 / 1)
+
+
+def VenueQualityResult_ok(metrics):
+    from services.venue_quality import VenueQualityResult
+
+    return VenueQualityResult(ok=True, reasons=[], metrics=metrics)
+
+
+def test_t1_floor_warning_once_across_rearm_and_other_tenant(monkeypatch):
+    reset_venue_cache_for_tests()
+    lines = []
+    monkeypatch.setattr(
+        "services.venue_quality.log",
+        lambda msg, level="INFO": lines.append((level, msg)),
+    )
+    tenant = {"id": "tenant-a"}
+    monkeypatch.setattr(
+        "core.tenant_context.resolve_tenant_id",
+        lambda *a, **k: tenant["id"],
+    )
+    liquidity_multiple_floor_reasons(0.5, 20)
+    assert isinstance(venue_quality_config({"risk": {"venue_quality": venue_block()}}), VenueQualityConfig)
+    liquidity_multiple_floor_reasons(0.5, 20)
+    warns = [msg for level, msg in lines if level == "WARNING"]
+    assert len(warns) == 1
+    assert "value=0.5" in warns[0]
+    assert "floor=1" in warns[0]
+    tenant["id"] = "tenant-b"
+    liquidity_multiple_floor_reasons(0.5, 20)
+    warns = [msg for level, msg in lines if level == "WARNING"]
+    assert len(warns) == 2
+    assert any("tenant-b" in msg for msg in warns)
+
+    reset_venue_cache_for_tests()
+    lines.clear()
+    tenant["id"] = "tenant-a"
+    base = _disk_config()
+    base["risk"]["liquidity_guard"].pop("depth_to_order_multiple_min")
+    monkeypatch.setattr("services.venue_quality._read_base_config_for_floors", lambda: base)
+    liquidity_multiple_floor_reasons(1, 20)
+    liquidity_multiple_floor_reasons(1, 20)
+    missing = [msg for level, msg in lines if level == "WARNING" and "floor=missing" in msg]
+    assert len(missing) == 1
+    assert any("depth_to_order_multiple_min" in msg for msg in missing)
+
+
+def test_t1_buy_and_short_missing_exchange():
+    from risk.risk_manager import RiskManager
+
+    raw = _cfg().raw
+    raw["risk"]["venue_quality"].pop("exchange")
+    raw["shorts"]["volatile"]["market_cap_min_usd"] = 0
+    raw["shorts"]["stable"]["market_cap_min_usd"] = 0
+    rm = RiskManager(BotConfig(raw))
+    short = TradeOrder(
+        type="SHORT",
+        symbol="LAB/USDT",
+        price=1.0,
+        amount=0,
+        usdt_amount=100,
+        signal="SHORT",
+        source="auto",
+        leverage=2,
+    )
+    with _eval_env(rm, metrics=_book(symbol="LAB/USDT", quote_volume_24h_usdt=5_000_000)):
+        buy = rm.evaluate(_buy(source="technical"), "4h", source="technical")
+        short_dec = rm.evaluate(short, "4h", source="auto")
+    for dec in (buy, short_dec):
+        assert dec.approved is False
+        assert dec.code == "liq_guard_missing_input"
+        assert dec.details["config_problem"] == "missing"
+
+
+def test_c6_unavailable_ledger_and_shadow_log_are_deduped(monkeypatch):
+    import services.venue_quality as venue
+
+    reset_venue_cache_for_tests()
+    writes = []
+    monkeypatch.setattr("logger.log_decision", lambda entry: writes.append(entry))
+    monkeypatch.setattr(
+        "services.observability_store.persist_decision",
+        lambda entry: writes.append(entry),
+    )
+    err = VenueConfigError("risk.venue_quality_bounds", "config_unavailable")
+    monkeypatch.setattr(venue, "load_venue_bounds", lambda: err)
+    venue_quality_config({"risk": {"venue_quality": venue_block()}})
+    venue_quality_config({"risk": {"venue_quality": venue_block()}})
+    assert len(writes) == 2
+
+    messages = []
+    monkeypatch.setattr(shadow, "log", lambda msg, level="INFO": messages.append((level, msg)))
+    before = set(venue._CONFIG_WARNED)
+    shadow._SHADOW_VENUE_WARNED.clear()
+    raw = _guard_raw(depth_window_pct=_POP)
+    _trigger(raw, symbol="DED1/USDT")
+    _trigger(raw, symbol="DED2/USDT")
+    errors = [msg for level, msg in messages if level == "ERROR" and "venue_config_invalid" in msg]
+    assert len(errors) == 1
+    assert set(venue._CONFIG_WARNED) == before
+
+
+def test_c7_bounds_rearm_does_not_clear_floor_warnings(monkeypatch):
+    import services.venue_quality as venue
+
+    reset_venue_cache_for_tests()
+    lines = []
+    monkeypatch.setattr(venue, "log", lambda msg, level="INFO": lines.append((level, msg)))
+    err = VenueConfigError("risk.venue_quality_bounds.cache_ttl_sec_min", "range")
+    real = venue.load_venue_bounds
+    state = {"bad": True}
+
+    def _bounds():
+        if state["bad"]:
+            return err
+        return real()
+
+    monkeypatch.setattr(venue, "load_venue_bounds", _bounds)
+    good = {"risk": {"venue_quality": venue_block()}}
+    assert isinstance(venue_quality_config(good), VenueConfigError)
+    state["bad"] = False
+    assert isinstance(venue_quality_config(good), VenueQualityConfig)
+    state["bad"] = True
+    assert isinstance(venue_quality_config(good), VenueConfigError)
+    errors = [msg for level, msg in lines if level == "ERROR"]
+    assert len(errors) == 2
+
+    reset_venue_cache_for_tests()
+    lines.clear()
+    monkeypatch.setattr(venue, "load_venue_bounds", real)
+    liquidity_multiple_floor_reasons(0.5, 20)
+    assert isinstance(venue_quality_config(good), VenueQualityConfig)
+    liquidity_multiple_floor_reasons(0.5, 20)
+    warns = [msg for level, msg in lines if level == "WARNING"]
+    assert len(warns) == 1
+
+
+def test_n2_hard_liquidity_rejects_invalid_config_without_the_outer_return():
+    raw = _guard_raw()
+    raw["risk"]["venue_quality"].pop("exchange")
+    metrics = _book(symbol="LAB/USDT", quote_volume_24h_usdt=5_000_000)
+    live = _live_hard(raw, metrics)
+    assert live.ok is False
+    assert live.code == "liq_guard_missing_input"
+
+
+def test_n9_buy_lock_backstop_rejects_missing_cap(monkeypatch):
+    from risk.risk_manager import RiskManager
+    from services.venue_quality import VenueQualityResult
+
+    rm = RiskManager(_cfg())
+    monkeypatch.setattr(rm, "_open_cost_usdt", lambda *a, **k: (0.0, None))
+    monkeypatch.setattr(
+        "services.venue_quality.check_venue_for_buy",
+        lambda *a, **k: VenueQualityResult(ok=True, reasons=[]),
+    )
+    locked = rm._buy_lock_decision(
+        _buy(source="technical"),
+        source="technical",
+        pos={"amount": 0},
+        has_position=False,
+        planned_usdt=100,
+        indicators={},
+    )
+    assert locked is not None
+    assert locked.decision is not None
+    assert locked.decision.code == "liq_guard_missing_input"
+    assert locked.apply_cap is False
+
+
+def test_x6_invalid_config_still_calls_the_live_gate():
+    raw = _sensor_raw()
+    raw["risk"]["venue_quality"].pop("exchange")
+    assert _live_planned(raw) is not None
+
+
+def test_x7_fail_open_missing_capture_stays_blocked(monkeypatch):
+    from services.venue_quality import VenueMetrics
+
+    monkeypatch.setattr(
+        "services.venue_quality.get_venue_metrics",
+        lambda *a, **k: VenueMetrics(symbol="LAB/USDT", capture="missing", quote_volume_present=False),
+    )
+    raw = _guard_raw()
+    raw["risk"]["venue_quality"]["on_fetch_error"] = "fail_open"
+    result = check_venue_for_buy("LAB/USDT", planned_usdt=100, config_raw=raw, metrics=None)
+    assert result.ok is False
+    assert "liq_guard_missing_input" in (getattr(result, "guard_codes", None) or [])
+
+
+def test_x3_cache_ttl_lower_bound_rejects_just_under_min():
+    from services.venue_quality import parse_venue_bounds, validate_venue_quality
+
+    bounds = parse_venue_bounds(_disk_config())
+    assert not isinstance(bounds, VenueConfigError)
+    lo = float(bounds.cache_ttl_sec_min)
+    assert isinstance(validate_venue_quality(venue_block(cache_ttl_sec=lo), bounds), VenueQualityConfig)
+    bad = validate_venue_quality(venue_block(cache_ttl_sec=lo - 1e-6), bounds)
+    assert isinstance(bad, VenueConfigError)
+    assert bad.config_problem == "range"
+
+
+def test_x13_non_positive_timeout_does_not_reach_requests(monkeypatch):
+    called = []
+    monkeypatch.setattr("requests.get", lambda *a, **k: called.append(a) or SimpleNamespace(status_code=200, json=lambda: []))
+    for timeout in (0, -1):
+        with pytest.raises(ValueError):
+            gate_public_rest_get("/spot/tickers", {}, timeout=timeout)
+    assert called == []

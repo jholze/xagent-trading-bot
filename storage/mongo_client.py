@@ -135,7 +135,7 @@ def operator_mongo_summary(*, config: dict | None = None) -> dict:
 
 def force_local_test_mongo(*, dev: bool = True) -> None:
     """Force localhost Mongo — dev bot uses xagent_test; pytest uses xagent_pytest."""
-    os.environ["MONGODB_URI"] = os.environ.get("XAGENT_TEST_MONGODB_URI") or DEFAULT_URI
+    os.environ["MONGODB_URI"] = DEFAULT_URI
     os.environ.pop("MONGO_URL", None)
     os.environ["MONGODB_TEST_DB"] = resolve_test_db_name()
     if dev and os.environ.get("PYTEST_RUNNING") != "1":

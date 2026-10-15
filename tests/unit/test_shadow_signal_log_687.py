@@ -69,6 +69,11 @@ def _passing_gate(**overrides) -> dict:
         "max_open_positions": 10,
         "cooldown_blocked": False,
         "rate_limited": False,
+        "capture": "ok",
+        "book_age_sec": 0.0,
+        "depth_parsed": True,
+        "depth_bid_usdt": 1_000_000.0,
+        "depth_ask_usdt": 1_000_000.0,
     }
     cache.update(overrides)
     return cache
@@ -980,11 +985,15 @@ def test_b1_loop_logs_per_gate_values(logs, monkeypatch):
         "services.venue_quality.peek_cached_quote_volume",
         lambda *args, **kwargs: None,
     )
+    from services.venue_quality import _book_cache, _pair
+
+    _book_cache[_pair(SIG)] = (time.time(), (1_000_000.0, 1_000_000.0, True, ()))
     try:
         orch, batch_calls, fetched = _arm_shadow_poll(monkeypatch, raw, [SIG])
         entry_sensor_loop._poll_once(orch)
     finally:
         _ORDERS_READ_CACHE.pop(cache_key, None)
+        _book_cache.pop(_pair(SIG), None)
     assert fetched == [SIG]
     assert ticker == []
     assert batch_calls and SIG in batch_calls[0]
@@ -1271,7 +1280,8 @@ def test_c5_cold_venue_cache_uses_watchlist_volume(logs, monkeypatch):
     controls = [row for row in _of(logs, "shadow_control") if row.get("control_symbol")]
     assert signals
     for row in signals:
-        assert row["gates"]["venue_liquidity"] is not None
+        assert row["gates"]["venue_liquidity"] is None
+        assert row["venue_liquidity_null_reason"] == "missing_depth_input"
         assert row["quote_volume_24h_usdt"] == 1_000_000
     assert controls
     assert controls[0]["universe_size"] > 0
@@ -1290,7 +1300,7 @@ def test_venue_liquidity_null_reason_only_for_that_gate(logs):
     assert [key for key in row if key.endswith("_null_reason")] == ["venue_liquidity_null_reason"]
 
     raw_floor = _raw()
-    raw_floor["risk"].pop("liquidity_guard")
+    raw_floor["risk"]["liquidity_guard"].pop("min_quote_volume_24h_usdt")
     row_floor = _trigger(logs, raw_floor, symbol=OTHER, gate=_passing_gate())
     assert row_floor["gates"]["venue_liquidity"] is None
     assert row_floor["gates"]["market_cap"] is True
@@ -1925,7 +1935,7 @@ def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     assert shadow.VENUE_ORDER_MULTIPLE_KEY == "min_volume_to_order_multiple"
 
     floor_gone = _raw()
-    floor_gone["risk"].pop("liquidity_guard")
+    floor_gone["risk"]["liquidity_guard"].pop("min_quote_volume_24h_usdt")
     assert shadow.venue_liquidity_null_reason(cache, floor_gone) == "missing_floor"
     row = _trigger(logs, floor_gone, symbol=OTHER, gate=cache)
     assert row["venue_liquidity_null_reason"] == "missing_floor"
@@ -1936,6 +1946,8 @@ def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     min_key = _raw()
     min_key["risk"]["liquidity_guard"] = {
         "min_quote_volume_24h_usdt_min": 1000,
+        "depth_window_pct": 0.5,
+        "order_book_cache_ttl_sec": 15,
         "depth_to_order_multiple": 1,
     }
     assert shadow.venue_liquidity_null_reason(cache, min_key) == "missing_floor"
@@ -2210,18 +2222,22 @@ def test_planned_order_usdt_matches_live_venue_gate(logs):
     assert row_missing["planned_order_usdt"] == pytest.approx(52.5)
 
 
-def test_missing_depth_window_or_book_age_does_not_fail_shadow(logs):
-    """Shadow is volume only. A missing window or book age is not a failed gate."""
+def test_t23_reverted_missing_depth_window_or_book_age_does_not_pass(logs):
+    """Reverted #688 test. A missing window or book-age config key does not pass.
+
+    Those keys are config, so the reason is venue_config_invalid. Missing or
+    stale depth data is missing_depth_input, which this test does not pop.
+    """
     for key in ("depth_window_pct", "order_book_cache_ttl_sec"):
         raw = _raw()
         raw["risk"]["liquidity_guard"].pop(key)
         row = _trigger(logs, raw, price=100.0, now=T0, symbol=f"{key}/USDT")
-        assert row["gates"]["venue_liquidity"] is True
+        assert row["gates"]["venue_liquidity"] is None
+        assert row["gates"]["venue_liquidity"] is not True
+        assert row["venue_liquidity_null_reason"] == "venue_config_invalid"
+        assert row["venue_config_problem"] == "missing"
+        assert key in row["venue_config_key"]
         assert row["cap_basis"] == "volume_only"
-        assert row.get("venue_liquidity_null_reason") not in (
-            "missing_quote_volume",
-            "missing_floor",
-        )
 
 
 def test_missing_shadow_exit_hours_stops_with_error(logs, monkeypatch):
