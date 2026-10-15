@@ -64,6 +64,7 @@ MISSING_FLOOR_KEY = "risk.liquidity_guard.min_quote_volume_24h_usdt"
 # Live multiple inside the merged venue config (evaluate_venue_quality).
 VENUE_ORDER_MULTIPLE_KEY = "min_volume_to_order_multiple"
 _FETCH_DISABLED_LOGGED = False
+_EXIT_HOURS_MISSING_LOGGED = False
 
 # Why a no_price exit had no price. Closed list. Controls are never fetched.
 _NO_PRICE_REASONS = (
@@ -124,9 +125,11 @@ def _ensure_counts() -> None:
 def reset_for_tests() -> None:
     """Drop in-memory shadow state and the journal file."""
     global _DAY, _COUNTS_LOADED, _PRICE_FETCH_CURSOR, _FETCH_DISABLED_LOGGED
+    global _EXIT_HOURS_MISSING_LOGGED
     _COUNTS_LOADED = False
     _PRICE_FETCH_CURSOR = 0
     _FETCH_DISABLED_LOGGED = False
+    _EXIT_HOURS_MISSING_LOGGED = False
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -390,22 +393,32 @@ def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
     if not _gate_missing(cache, "quote_volume_24h_usdt"):
         from services.venue_quality import liquidity_guard_config, venue_quality_config
 
-        floor = liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY)
+        guard = liquidity_guard_config(config_raw)
+        floor = guard.get(LIQUIDITY_FLOOR_KEY)
+        # Live _apply_hard_liquidity blocks when the window or book-cache age
+        # is missing. That is a failed gate, not a structural null.
+        window_missing = guard.get("depth_window_pct") is None
+        book_age_missing = guard.get("order_book_cache_ttl_sec") is None
         if floor is None:
             gates["venue_liquidity"] = None
+        elif window_missing or book_age_missing:
+            gates["venue_liquidity"] = False
         elif _gate_missing(cache, "planned_order_usdt"):
             gates["venue_liquidity"] = None
         else:
             volume = float(cache["quote_volume_24h_usdt"])
             ok = volume >= float(floor)
             merged = venue_quality_config(config_raw)
-            try:
-                multiple = float(merged.get(VENUE_ORDER_MULTIPLE_KEY) or 0)
-            except (TypeError, ValueError):
-                multiple = 0.0
-            planned = float(cache["planned_order_usdt"])
-            if multiple > 0 and planned > 0 and volume < multiple * planned:
-                ok = False
+            # evaluate_venue_quality returns before the multiple when the
+            # flag is off. The hard floor above still applies.
+            if merged.get("enabled", True):
+                try:
+                    multiple = float(merged.get(VENUE_ORDER_MULTIPLE_KEY) or 0)
+                except (TypeError, ValueError):
+                    multiple = 0.0
+                planned = float(cache["planned_order_usdt"])
+                if multiple > 0 and planned > 0 and volume < multiple * planned:
+                    ok = False
             gates["venue_liquidity"] = ok
     return _publish_gates(gates)
 
@@ -429,37 +442,26 @@ def _planned_order_usdt(
     *,
     volatility_tier: str | None,
     sensor_cfg: dict | None,
-) -> float | None:
-    """Order size the sensor path would plan. Config is an argument.
+) -> float:
+    """Order size the live sensor venue gate checks.
 
-    Uses ``resolve_sensor_usdt``. No budget reservation, no positions lock,
-    no DCA or slot counters, no writes. A missing ``max_usdt_per_trade`` on
-    the passed raw cannot be sized from cache and returns None.
+    Same expression as ``decision_engine``: the ``max_usdt_per_trade``
+    accessor, then ``venue_gate_planned_usdt``. Not ``resolve_sensor_usdt``
+    and not ``trading_mode``. ``resolve_sensor_usdt`` still runs so a
+    process-wide config patch during sizing is visible; its return is not
+    the logged number. No budget, lock, counter, or write.
     """
-    raw = config_raw if isinstance(config_raw, dict) else {}
-    if "max_usdt_per_trade" not in raw:
-        return None
-    try:
-        base = float(raw["max_usdt_per_trade"])
-    except (TypeError, ValueError):
-        return None
-    if isinstance(raw.get("max_usdt_per_trade"), bool) or base <= 0:
-        return None
-    from strategies.sensor_entry_policy import resolve_sensor_usdt
+    from strategies.sensor_entry_policy import resolve_sensor_usdt, venue_gate_planned_usdt
 
-    mode = str(raw.get("trading_mode") or "")
     cfg = sensor_cfg if isinstance(sensor_cfg, dict) else {}
-    if not cfg:
-        block = raw.get("entry_sensor_15m")
-        cfg = block if isinstance(block, dict) else {}
-    return float(
-        resolve_sensor_usdt(
-            mode,
-            volatility_tier=str(volatility_tier or ""),
-            max_usdt_per_trade=base,
-            cfg=cfg,
-        )
+    ticket = _config_view(config_raw).max_usdt_per_trade
+    resolve_sensor_usdt(
+        "",
+        volatility_tier=str(volatility_tier or ""),
+        max_usdt_per_trade=ticket,
+        cfg=cfg,
     )
+    return float(venue_gate_planned_usdt(ticket))
 
 
 def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> str | None:
@@ -474,6 +476,10 @@ def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> 
 
     if liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY) is None:
         return "missing_floor"
+    if _gate_missing(cache, "planned_order_usdt"):
+        # Normal null. Not in ``_VENUE_NULL_REASONS``, so it is not a
+        # structural null and it does not count toward E11.
+        return "planned_order_unavailable"
     return None
 
 
@@ -482,6 +488,8 @@ def _venue_null_fields(cache: dict | None, config_raw: dict | None, gates: dict)
     if not isinstance(gates, dict) or gates.get("venue_liquidity") is not None:
         return {}
     reason = venue_liquidity_null_reason(cache, config_raw)
+    if reason == "planned_order_unavailable":
+        return {"venue_liquidity_null_reason": reason}
     if reason not in _VENUE_NULL_REASONS:
         return {}
     fields = {"venue_liquidity_null_reason": reason}
@@ -784,7 +792,7 @@ def _cached_entry_filters_pass(
         return False
     from services.venue_quality import liquidity_guard_config
 
-    floor = liquidity_guard_config(config_raw).get("min_quote_volume_24h_usdt")
+    floor = liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY)
     if floor is None:
         return False
     try:
@@ -1123,6 +1131,15 @@ def _fetch_disabled_message() -> str:
     return f"shadow price fetch disabled: {keys} missing or invalid"
 
 
+def _log_missing_exit_hours_once() -> None:
+    """One ERROR when shadow_exit_hours is missing. Later triggers stay quiet."""
+    global _EXIT_HOURS_MISSING_LOGGED
+    if _EXIT_HOURS_MISSING_LOGGED:
+        return
+    _EXIT_HOURS_MISSING_LOGGED = True
+    log("shadow_exit_hours missing: shadow signal not logged", "ERROR")
+
+
 def _log_fetch_disabled_once() -> None:
     """One ERROR for a disabled fetch. Later polls in this process stay quiet."""
     global _FETCH_DISABLED_LOGGED
@@ -1339,7 +1356,7 @@ def log_shadow_trigger(
         try:
             hours = exit_hours_from(config_raw, sensor_cfg)
         except KeyError:
-            log("shadow_exit_hours missing: shadow signal not logged", "ERROR")
+            _log_missing_exit_hours_once()
             return None
         fee = fee_taker_conservative_pct(config_raw)
         version, version_reason = config_version(config_raw)

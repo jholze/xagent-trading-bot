@@ -291,7 +291,7 @@ def _buy_profile_overlay(base: dict, coin: dict, tier: str | None, cfg) -> dict:
 
 def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -> dict:
     profile = dict(va_cfg)
-    if is_dry_run_enhanced():
+    if is_dry_run_enhanced(cfg.raw):
         profile.update(cfg.dry_run_defaults)
     profile.update({
         "symbol": symbol,
@@ -468,7 +468,7 @@ def resolve_strategy_params(
 
     if coin.get("source") == "cmc_trending" or coin.get("market_cap_tier") == "micro":
         profile = dict(cfg.altcoin_social_config)
-        if is_dry_run_enhanced():
+        if is_dry_run_enhanced(cfg.raw):
             profile.update(cfg.dry_run_defaults)
         profile.update({"symbol": symbol, "timeframe": tf})
         profile = _buy_profile_overlay(profile, coin, tier, cfg)

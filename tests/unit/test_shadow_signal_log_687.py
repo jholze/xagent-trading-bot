@@ -1915,9 +1915,7 @@ def test_unlisted_volatile_stop_matches_live_exit(logs, monkeypatch):
 
 def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     """missing_floor is the hard floor. The multiple is checked with planned size."""
-    from strategies.sensor_entry_policy import resolve_sensor_usdt
-
-    cache = _passing_gate()
+    cache = _passing_gate(planned_order_usdt=35)
     present = _raw()
     assert shadow.venue_liquidity_null_reason(cache, present) is None
     assert shadow.MISSING_FLOOR_KEY == "risk.liquidity_guard.min_quote_volume_24h_usdt"
@@ -1944,13 +1942,12 @@ def test_missing_floor_is_liquidity_guard_and_multiple_stays_in_check(logs):
     assert passed["gates"]["venue_liquidity"] is True
     assert "venue_liquidity_null_reason" not in passed
     assert shadow.VENUE_ORDER_MULTIPLE_KEY in passed["venue_defaults_used"]
-    expected = resolve_sensor_usdt(
-        "",
-        volatility_tier=passed["volatility_tier"] or "",
-        max_usdt_per_trade=100,
-        cfg=no_multiple["entry_sensor_15m"],
+    from strategies.sensor_entry_policy import venue_gate_planned_usdt
+
+    assert passed["planned_order_usdt"] == pytest.approx(
+        venue_gate_planned_usdt(no_multiple["max_usdt_per_trade"])
     )
-    assert passed["planned_order_usdt"] == pytest.approx(expected)
+    assert passed["planned_order_usdt"] == pytest.approx(100 * 0.35)
 
     thin = _raw()
     thin["max_usdt_per_trade"] = 200_000
@@ -2029,6 +2026,53 @@ def test_fetch_timeout_is_its_own_reason(logs, monkeypatch):
     assert signal["no_price"] is True
 
 
+def test_cached_quote_volume_ttl_does_not_fall_back_to_90():
+    import time
+
+    from services.venue_quality import VenueMetrics, _cache, peek_cached_quote_volume, reset_venue_cache_for_tests
+
+    reset_venue_cache_for_tests()
+    try:
+        _cache["OLD/USDT"] = (
+            time.time() - 1,
+            VenueMetrics(symbol="OLD/USDT", quote_volume_24h_usdt=123.0),
+        )
+        raw = {"risk": {"venue_quality": {"cache_ttl_sec": 0}}}
+        assert peek_cached_quote_volume("OLD/USDT", config_raw=raw) is None
+    finally:
+        reset_venue_cache_for_tests()
+
+
+def test_config_pins_gate_single_ticker_timeout_at_6():
+    import json
+    from pathlib import Path
+
+    raw = json.loads(Path("config.json").read_text())
+    assert raw["architecture"]["gate_single_ticker_timeout_s"] == 6
+
+
+def test_missing_gate_single_timeout_logs_once(monkeypatch):
+    import price_fetcher
+
+    messages = []
+    price_fetcher._GATE_TIMEOUT_MISSING_LOGGED = False
+    monkeypatch.setattr(
+        price_fetcher, "log", lambda message, level="INFO": messages.append((level, message))
+    )
+    monkeypatch.setattr(
+        price_fetcher.requests, "get", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("http"))
+    )
+    monkeypatch.setattr(
+        "core.config.get_bot_config",
+        lambda tenant_id=None: BotConfig(raw={"architecture": {}}),
+    )
+    assert price_fetcher._fetch_gate_single("BTC/USDT") is None
+    assert price_fetcher._fetch_gate_single("ETH/USDT") is None
+    errors = [msg for level, msg in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "gate_single_ticker_timeout_s" in errors[0]
+
+
 def test_wqe_writer_stores_quote_volume_under_shared_key():
     from services.watchlist_quality.venue_batch import attach_quote_volumes
 
@@ -2074,7 +2118,10 @@ def test_planned_size_takes_no_lock_and_writes_nothing(logs, monkeypatch):
 
     writes = []
     locks = []
+    mongo_calls = []
     real_lock = posmod._positions_lock
+    counts_before = dict(posmod._open_counts)
+    stores_before = set(posmod._position_stores)
 
     class _CountLock:
         def acquire(self, *args, **kwargs):
@@ -2092,29 +2139,83 @@ def test_planned_size_takes_no_lock_and_writes_nothing(logs, monkeypatch):
             self.release()
 
     monkeypatch.setattr(posmod, "_positions_lock", _CountLock())
-    for name in ("save_trade_history_document", "save_orders", "save_trade_history"):
+    for name in (
+        "save_trade_history_document",
+        "save_orders",
+        "save_trade_history",
+        "save_positions_document",
+    ):
         if hasattr(data_manager, name):
             monkeypatch.setattr(
                 data_manager,
                 name,
                 lambda *a, _name=name, **k: writes.append(_name),
             )
+
+    def _mongo(*args, **kwargs):
+        mongo_calls.append("get_client")
+        raise AssertionError("sizing opened mongo")
+
+    monkeypatch.setattr("storage.mongo_client.get_client", _mongo)
     row = _trigger(logs, _raw(), price=100.0, now=T0)
     assert row["planned_order_usdt"] is not None
     assert locks == []
     assert writes == []
+    assert mongo_calls == []
+    assert dict(posmod._open_counts) == counts_before
+    assert set(posmod._position_stores) == stores_before
 
 
-def test_missing_max_usdt_nulls_gates_as_input_uncached(logs):
+def test_planned_order_usdt_matches_live_venue_gate(logs):
+    """Shadow logs the live gate ticket, not the regime-sized order.
+
+    Live passes ``max_usdt_per_trade`` through the accessor into
+    ``venue_gate_planned_usdt`` (``or 500``, then ×0.35). ``trading_mode``
+    and ``resolve_sensor_usdt`` do not change that number.
+    """
+    from strategies.sensor_entry_policy import resolve_sensor_usdt, venue_gate_planned_usdt
+
     raw = _raw()
-    raw.pop("max_usdt_per_trade")
+    raw["max_usdt_per_trade"] = 4500
+    raw["trading_mode"] = "live"
+    raw["entry_sensor_15m"]["max_usdt_absolute"] = 1000
     row = _trigger(logs, raw, price=100.0, now=T0)
-    assert row["planned_order_usdt"] is None
-    assert row["gates"]["venue_liquidity"] is None
-    assert row["gates_passed"] is None
-    assert row["gate_reject_reason"] == "input_uncached"
-    assert "venue_liquidity_null_reason" not in row
-    assert row.get("structurally_null") is not True
+    accessor = BotConfig(raw=raw).max_usdt_per_trade
+    live = venue_gate_planned_usdt(accessor)
+    assert live == pytest.approx(1575)
+    assert row["planned_order_usdt"] == pytest.approx(live)
+    sized = resolve_sensor_usdt(
+        "GRID",
+        volatility_tier="stable",
+        max_usdt_per_trade=accessor,
+        cfg=raw["entry_sensor_15m"],
+    )
+    assert sized == pytest.approx(990)
+    assert row["planned_order_usdt"] != pytest.approx(sized)
+
+    missing = _raw()
+    missing.pop("max_usdt_per_trade")
+    row_missing = _trigger(logs, missing, price=100.0, now=T0, symbol=OTHER)
+    missing_accessor = BotConfig(raw=missing).max_usdt_per_trade
+    assert row_missing["planned_order_usdt"] == pytest.approx(
+        venue_gate_planned_usdt(missing_accessor)
+    )
+    assert row_missing["planned_order_usdt"] == pytest.approx(52.5)
+
+
+def test_missing_depth_window_or_book_age_does_not_pass(logs):
+    """Live blocks when these liquidity-guard keys are missing. Not a structural null."""
+    for key in ("depth_window_pct", "order_book_cache_ttl_sec"):
+        raw = _raw()
+        raw["risk"]["liquidity_guard"].pop(key)
+        row = _trigger(logs, raw, price=100.0, now=T0, symbol=f"{key}/USDT")
+        assert row["gates"]["venue_liquidity"] is False
+        assert row["gates_passed"] is False
+        assert row.get("structurally_null") is not True
+        assert row.get("venue_liquidity_null_reason") not in (
+            "missing_quote_volume",
+            "missing_floor",
+        )
 
 
 def test_missing_shadow_exit_hours_stops_with_error(logs, monkeypatch):
@@ -2124,7 +2225,11 @@ def test_missing_shadow_exit_hours_stops_with_error(logs, monkeypatch):
     entry_sensor_loop._poll_once(orch)
     assert _of(logs, "shadow_signal") == []
     errors = [msg for level, msg in logs if level == "ERROR" and "shadow_exit_hours" in msg]
-    assert errors
+    assert len(errors) == 1
+    entry_sensor_loop._last_poll_at.clear()
+    entry_sensor_loop._poll_once(orch)
+    errors = [msg for level, msg in logs if level == "ERROR" and "shadow_exit_hours" in msg]
+    assert len(errors) == 1
 
 
 def test_fetch_disabled_error_is_logged_once(logs):
@@ -2260,3 +2365,176 @@ def test_drift_loop_no_ledger_io_per_poll(logs, monkeypatch):
     assert lock_takes == []
     assert ensure == []
     assert len(batch_calls) == polls
+
+
+def _volatile_unlisted(raw: dict) -> dict:
+    raw = dict(raw)
+    raw["stop_loss_pct"] = 50
+    raw["risk"] = dict(raw["risk"])
+    raw["risk"]["partial_stop_ratio"] = 0.8
+    raw["volatile_altcoin"] = {
+        "enabled": True,
+        "freeze_tier_on_entry": True,
+        "partial_stop_pct": 25,
+        "atr_volatile_enter_pct": 5.0,
+        "atr_stable_exit_pct": 3.5,
+        "tier_scoring": {
+            "enabled": True,
+            "volatile_enter_score": 4,
+            "volatile_exit_score": 2,
+            "atr_bands": [{"min_pct": 10.0, "points": 4}],
+            "class_points": {"mid_cap": 0, "large_cap": -99, "meme": 2},
+        },
+    }
+    return raw
+
+
+def test_poll_once_passes_indicator_atr_into_stop(logs, monkeypatch):
+    """MS-5c: the loop must pass fetch_indicators atr_pct into the shadow row."""
+    symbol = "UNL/USDT"
+    raw = _volatile_unlisted(_raw())
+    orch, _batch, _fetched = _arm_shadow_poll(monkeypatch, raw, [symbol])
+    orch.market.fetch_indicators = lambda _symbol, _tf, _price: {
+        "rsi": 40,
+        "atr_pct": 12,
+        "range_24h_pct": 20,
+        "change_24h_pct": 5,
+    }
+    entry_sensor_loop._poll_once(orch)
+    row = _of(logs, "shadow_signal")[0]
+    with_atr = shadow._stops_from_exit_path(raw, symbol, "4h", atr_pct=12)
+    without_atr = shadow._stops_from_exit_path(raw, symbol, "4h")
+    assert with_atr["volatility_tier"] == "volatile"
+    assert row["volatility_tier"] == "volatile"
+    assert row["stop_pct"] == pytest.approx(with_atr["stop_pct"])
+    assert row["stop_pct"] == pytest.approx(0.25)
+    assert without_atr["volatility_tier"] != "volatile"
+    assert row["stop_pct"] != pytest.approx(without_atr["stop_pct"])
+
+
+def test_disabled_venue_quality_skips_order_multiple(logs):
+    """N5: enabled=false skips the multiple. The hard floor still applies."""
+    raw = _raw()
+    raw["max_usdt_per_trade"] = 4500
+    raw["risk"]["venue_quality"]["enabled"] = False
+    raw["risk"]["venue_quality"]["min_volume_to_order_multiple"] = 20
+    gate = _passing_gate(quote_volume_24h_usdt=5_000)
+    row = _trigger(logs, raw, gate=gate, price=100.0, now=T0)
+    assert row["planned_order_usdt"] == pytest.approx(1575)
+    assert row["gates"]["venue_liquidity"] is True
+    assert row["gates_passed"] is True
+
+    enabled = _raw()
+    enabled["max_usdt_per_trade"] = 4500
+    enabled["risk"]["venue_quality"]["min_volume_to_order_multiple"] = 20
+    blocked = _trigger(logs, enabled, symbol=OTHER, gate=gate, price=100.0, now=T0)
+    assert blocked["gates"]["venue_liquidity"] is False
+    assert blocked["gates_passed"] is False
+
+
+def test_missing_planned_order_is_normal_null(logs):
+    """N6: a missing planned ticket is a normal venue null, not structural."""
+    cache = _passing_gate()
+    raw = _raw()
+    assert "planned_order_usdt" not in cache
+    assert shadow.venue_liquidity_null_reason(cache, raw) == "planned_order_unavailable"
+    assert "planned_order_unavailable" not in shadow._VENUE_NULL_REASONS
+    gates = shadow.project_gates(cache, raw)
+    assert gates["venue_liquidity"] is None
+    passed, reason = shadow.dry_check_gates(cache, raw)
+    assert passed is None
+    assert reason == "input_uncached"
+    fields = shadow._venue_null_fields(cache, raw, gates)
+    assert fields == {"venue_liquidity_null_reason": "planned_order_unavailable"}
+    assert fields.get("structurally_null") is not True
+
+
+def test_empty_watchlist_still_prices_open_exit(logs, monkeypatch):
+    """N7: an empty watchlist does not skip exits for an open shadow signal."""
+    raw = _raw()
+    raw["entry_sensor_15m"].update(_fetch_keys())
+    opened = datetime.now(timezone.utc) - timedelta(hours=5)
+    _trigger(logs, raw, price=100.0, now=opened)
+    orch, _batch, _fetched = _arm_shadow_poll(monkeypatch, raw, [])
+    monkeypatch.setattr(entry_sensor_loop, "_maybe_seed_watches", lambda *a, **k: None)
+    monkeypatch.setattr("price_fetcher._fetch_gate_single", lambda symbol, timeout=None: 1.0)
+    entry_sensor_loop._poll_once(orch)
+    exits = [row for row in _of(logs, "shadow_exit") if not row.get("control")]
+    assert exits
+    assert exits[0]["exit_price"] == pytest.approx(1.0)
+
+
+def test_dry_run_enhanced_reads_passed_config(monkeypatch):
+    """N1: is_dry_run_enhanced receives the caller config, not the process config."""
+    from strategies.registry import resolve_strategy_params
+    from strategies.sell_profile import overlay_volatile_sell
+
+    process = _raw()
+    process["dry_run_defaults"] = {"cmc_min_confidence": 11}
+    tenant = _volatile_unlisted(_raw())
+    tenant["live"] = {"dry_run_enhanced": True, "dry_run": True, "execution": "shadow"}
+    tenant["dry_run_defaults"] = {"cmc_min_confidence": 77}
+    process_cfg = BotConfig(raw=process)
+    tenant_cfg = BotConfig(raw=tenant)
+    monkeypatch.setattr("data_manager.get_config", lambda: process)
+    monkeypatch.setattr("core.config.get_config", lambda: process)
+    monkeypatch.setattr("core.config.get_bot_config", lambda tenant_id=None: process_cfg)
+    monkeypatch.setattr("strategies.registry.get_bot_config", lambda tenant_id=None: process_cfg)
+    monkeypatch.setattr("strategies.entry_recipe.load_personal_params", lambda *a, **k: None)
+    monkeypatch.setattr("hermes.memory.store.load_profile", lambda *a, **k: {})
+
+    volatile = resolve_strategy_params(
+        {"symbol": "UNLDRY/USDT", "timeframe": "4h"},
+        has_position=True,
+        frozen_tier="volatile",
+        cfg=tenant_cfg,
+    )
+    trending = resolve_strategy_params(
+        {
+            "symbol": "MICROX/USDT",
+            "timeframe": "4h",
+            "source": "cmc_trending",
+            "market_cap_tier": "micro",
+        },
+        has_position=False,
+        frozen_tier="stable",
+        atr_pct=1.0,
+        cfg=tenant_cfg,
+    )
+    sold = overlay_volatile_sell(
+        {},
+        {"enabled": True},
+        tier="volatile",
+        symbol="S/USDT",
+        tf="4h",
+        cfg=tenant_cfg,
+    )
+    assert volatile.get("cmc_min_confidence") == 77
+    assert trending.get("cmc_min_confidence") == 77
+    assert sold.get("cmc_min_confidence") == 77
+
+
+def test_explicit_strategy_entry_uses_passed_cfg(monkeypatch):
+    """N2: dropping cfg makes the explicit row come from the process config."""
+    from strategies.registry import resolve_strategy_params
+
+    process = _raw()
+    process["strategies"] = [
+        {"symbol": "EX/USDT", "timeframe": "4h", "stop_loss_pct": 99, "rsi_buy_low": 1}
+    ]
+    tenant = _raw()
+    tenant["strategies"] = [
+        {"symbol": "EX/USDT", "timeframe": "4h", "stop_loss_pct": 7, "rsi_buy_low": 2}
+    ]
+    monkeypatch.setattr(
+        "strategies.registry.get_bot_config",
+        lambda tenant_id=None: BotConfig(raw=process),
+    )
+    monkeypatch.setattr("core.config.get_bot_config", lambda tenant_id=None: BotConfig(raw=process))
+    monkeypatch.setattr("strategies.entry_recipe.load_personal_params", lambda *a, **k: None)
+    monkeypatch.setattr("hermes.memory.store.load_profile", lambda *a, **k: {})
+    params = resolve_strategy_params(
+        {"symbol": "EX/USDT", "timeframe": "4h"},
+        cfg=BotConfig(raw=tenant),
+    )
+    assert params["stop_loss_pct"] == 7

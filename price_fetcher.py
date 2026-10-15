@@ -252,6 +252,22 @@ def _apply_price_fallbacks(
     return sources
 
 
+_GATE_TIMEOUT_MISSING_LOGGED = False
+
+
+def _log_missing_gate_timeout_once() -> None:
+    """One ERROR when the live single-ticker timeout key is absent."""
+    global _GATE_TIMEOUT_MISSING_LOGGED
+    if _GATE_TIMEOUT_MISSING_LOGGED:
+        return
+    _GATE_TIMEOUT_MISSING_LOGGED = True
+    log(
+        "architecture.gate_single_ticker_timeout_s missing or invalid: "
+        "single-ticker fetch disabled",
+        "ERROR",
+    )
+
+
 def _gate_single_timeout_s() -> float | None:
     """Live single-ticker timeout. Value lives in config.json. No code default."""
     try:
@@ -273,6 +289,7 @@ def _fetch_gate_single(symbol: str, timeout: float | None = None):
     if timeout is None:
         timeout = _gate_single_timeout_s()
     if timeout is None:
+        _log_missing_gate_timeout_once()
         return None
     pair = symbol.replace("/", "_").upper()
     url = f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={pair}"

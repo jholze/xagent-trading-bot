@@ -106,7 +106,8 @@ def overlay_volatile_sell(
         keys=keys,
         strategy_profile="hermes_baseline+volatile",
     )
-    if is_dry_run_enhanced():
+    passed_raw = cfg.raw if cfg is not None and isinstance(getattr(cfg, "raw", None), dict) else None
+    if is_dry_run_enhanced(passed_raw):
         cfg = cfg or get_bot_config()
         for key in ("cmc_min_confidence", "cmc_sell_min_confidence", "cmc_min_hours_between_sells"):
             if key in cfg.dry_run_defaults:

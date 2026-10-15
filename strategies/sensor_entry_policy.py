@@ -97,6 +97,17 @@ def resolve_sensor_size_hint(
     return max(0.0, min(1.0, entry_sensor_buy_usdt_frac(mode, volatility_tier=tier)))
 
 
+def venue_gate_planned_usdt(max_usdt_per_trade) -> float:
+    """USDT the live sensor venue gate passes into ``check_venue_for_buy``.
+
+    The only copy of this expression. ``decision_engine`` calls it with
+    ``get_bot_config().max_usdt_per_trade``; the shadow calls it with that
+    same accessor on the config it was given. No regime mode and no
+    ``resolve_sensor_usdt``. The ``or 500`` stays here so it is not copied.
+    """
+    return float(max_usdt_per_trade or 500) * 0.35
+
+
 def resolve_sensor_usdt(
     trading_mode: str,
     *,
