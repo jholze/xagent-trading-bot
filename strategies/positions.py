@@ -1,8 +1,9 @@
+import copy
 import json
 import os
 import threading
 import time
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -29,9 +30,12 @@ _position_stores: dict[tuple[str, str], dict] = {}
 _open_counts: dict[tuple[str, str], int] = {}
 # Per-thread store key. A process-wide global let the multi-tenant cycle
 # redirect an HTTP/MCP write onto another tenant's book (#700).
-_active_key_var: ContextVar[tuple[str, str]] = ContextVar(
+# default=None: a thread that never activated must not silently use paper.
+# Readers resolve tenant_context + the configured scope. Writes with no key
+# and no explicit scope are refused.
+_active_key_var: ContextVar[tuple[str, str] | None] = ContextVar(
     "positions_active_key",
-    default=(DEFAULT_TENANT, "paper"),
+    default=None,
 )
 _open_positions_count = 0
 positions: dict = {}
@@ -42,7 +46,21 @@ _flush_unknown_logged: set[tuple[str, str]] = set()
 
 
 def _current_active_key() -> tuple[str, str]:
-    return _active_key_var.get()
+    """Store key for readers. An unset thread resolves tenant_context + config scope."""
+    key = _active_key_var.get()
+    if key is None:
+        return _resolve_store_key()
+    return key
+
+
+def capture_positions_key_token() -> Token:
+    """Remember this thread's key, including unset, so a later reset can restore it."""
+    return _active_key_var.set(_active_key_var.get())
+
+
+def restore_positions_key_token(token: Token) -> None:
+    """Put back the key from ``capture_positions_key_token``, including unset."""
+    _active_key_var.reset(token)
 
 
 def __getattr__(name: str):
@@ -1035,14 +1053,35 @@ def _flush_refused_unknown(key: tuple[str, str]) -> bool:
     return True
 
 
+def _write_target(scope: str | None, tenant_id: str | None) -> tuple[str, str] | None:
+    """Explicit tenant, or this thread's key. Unset thread and no scope: refuse."""
+    explicit = _active_key_var.get()
+    if tenant_id is not None:
+        if scope:
+            target = scope
+        elif explicit is not None:
+            target = explicit[1]
+        else:
+            target = _resolve_store_key()[1]
+        return (resolve_tenant_id(tenant_id), target)
+    if explicit is not None:
+        return (explicit[0], scope or explicit[1])
+    if scope:
+        resolved = _resolve_store_key(scope)
+        return resolved
+    log("positions write refused: no store key on this thread", "ERROR")
+    return None
+
+
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
     """Persist one tenant's book. The store is the explicit key, not a global."""
     from bus.locks import ledger_lock
     from storage.errors import LedgerUnavailable
 
-    active = _current_active_key()
-    target = scope or active[1]
-    tid = active[0] if tenant_id is None else resolve_tenant_id(tenant_id)
+    chosen = _write_target(scope, tenant_id)
+    if chosen is None:
+        return
+    tid, target = chosen
     store_key = (tid, target)
     if _flush_refused_unknown(store_key):
         return
@@ -1076,12 +1115,22 @@ def _write_store_document(store_key: tuple[str, str], target: str, tid: str) -> 
         log(f"Failed to save positions ({target}): {e}", "ERROR")
 
 
+def flush_known_position_stores() -> None:
+    """Persist every book that loaded successfully. Does not use this thread's key."""
+    _cancel_flush_timer()
+    for key, state in list(_positions_state.items()):
+        if state != "known":
+            continue
+        _do_save_positions(key[1], tenant_id=key[0])
+
+
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
     """Persist positions; debounced unless force=True (trade/shutdown)."""
     global _flush_timer
-    active = _current_active_key()
-    target = scope or active[1]
-    pinned_tenant = active[0]
+    chosen = _write_target(scope, None)
+    if chosen is None:
+        return
+    pinned_tenant, target = chosen
     if _flush_refused_unknown((pinned_tenant, target)):
         return
     if force:
@@ -1450,11 +1499,26 @@ def set_position_lock(symbol: str, timeframe: str, lock: dict | None, *, persist
             pos = _store_for_key(store_key).get(pos_key)
             if not isinstance(pos, dict) or not is_open_position(pos):
                 raise LookupError("no_open_lot")
+            prior_present = "lock" in pos
+            prior_lock = copy.deepcopy(pos.get("lock")) if prior_present else None
+
+            def _rollback_lock() -> None:
+                if prior_present:
+                    pos["lock"] = copy.deepcopy(prior_lock)
+                else:
+                    pos.pop("lock", None)
+
             out = _apply(pos)
-            _do_save_positions(store_key[1], tenant_id=store_key[0])
-            if not _document_lock_matches(
-                store_key[1], store_key[0], pos_key, enabled=expect_enabled
-            ):
+            try:
+                _do_save_positions(store_key[1], tenant_id=store_key[0])
+                matched = _document_lock_matches(
+                    store_key[1], store_key[0], pos_key, enabled=expect_enabled
+                )
+            except Exception:
+                _rollback_lock()
+                raise
+            if not matched:
+                _rollback_lock()
                 raise RuntimeError("lock_not_persisted")
     return out
 
@@ -2143,11 +2207,14 @@ def update_position(
 
 
 def count_open_positions():
+    """Open lots for this thread's tenant and scope.
+
+    An unset thread resolves the key from tenant_context and the configured
+    scope. It does not read the process-wide counter, which another thread's
+    activate can zero.
+    """
     with _positions_lock:
-        key = _current_active_key()
-        if key in _open_counts:
-            return _open_counts[key]
-        return _open_positions_count
+        return int(_open_counts.get(_current_active_key(), 0))
 
 
 def counts_toward_open_cap(pos: dict | None) -> bool:

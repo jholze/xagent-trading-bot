@@ -158,9 +158,10 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
     from storage.tenant_registry import get_tenant
     from strategies import positions as positions_mod
 
-    # Restore this thread's store key on the way out, including on exception.
-    # The key is context-local (#700). This cannot redirect another thread's write.
-    prev_key = tuple(positions_mod._active_key)
+    # Token reset restores this thread's previous key, including "never set".
+    # Re-activating a reconstructed (tenant, scope) would invent a paper key
+    # on a thread that had none (#700).
+    token = positions_mod.capture_positions_key_token()
     try:
         doc = get_tenant(tenant_id, test=test) or {}
         tg = doc.get("telegram") or {}
@@ -175,4 +176,4 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
             positions_mod.activate_tenant_positions(scope=scope, tenant_id=tenant_id)
             yield
     finally:
-        positions_mod._activate(prev_key)
+        positions_mod.restore_positions_key_token(token)

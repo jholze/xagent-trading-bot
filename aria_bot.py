@@ -153,14 +153,12 @@ def _flush_positions_on_exit(*_args) -> None:
             shutdown_writer_lease,
             writer_lease_held,
         )
-        from data_manager import resolve_ledger_scope
-        from strategies.positions import flush_positions
+        from strategies.positions import flush_known_position_stores
 
         if not lease_enabled() or writer_lease_held():
-            # This thread's store key is not the ledger scope. A cycle thread
-            # loads the book without updating the main thread, whose key stays
-            # on the context default (paper).
-            flush_positions(scope=resolve_ledger_scope(), force=True)
+            # This thread's key is not the set of loaded books. Flush each
+            # store that reached "known", by its own (tenant, scope).
+            flush_known_position_stores()
         shutdown_writer_lease()
     except Exception as e:
         log(f"Position flush on exit failed: {e}", "WARNING")
