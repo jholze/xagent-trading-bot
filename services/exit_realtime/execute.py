@@ -32,12 +32,11 @@ def exit_guard_key(symbol: str, tenant_id: str | None = None) -> str:
 
 @contextmanager
 def restoring_tenant_cycle_context(tenant_id: str) -> Iterator[None]:
-    """``tenant_cycle_context`` plus restore of the process-global positions store.
+    """``tenant_cycle_context`` plus restore of this thread's positions store key.
 
-    ``tenant_cycle_context`` calls ``activate_tenant_positions`` and does not
-    put ``_active_key`` back on exit (it is a module global, not a contextvar).
-    Bot-process callers (Flask fire, hub fire, book daemon) must restore so
-    the default cycle does not read/write the wrong store.
+    The active key is context-local. Exiting ``tenant_context`` does not reset
+    it, so bot-process callers (Flask fire, hub fire, book daemon) still restore
+    the previous key on this thread. That restore cannot redirect another thread.
     """
     from core.tenant_context import resolve_tenant_id
     from core.tenant_routing import tenant_cycle_context

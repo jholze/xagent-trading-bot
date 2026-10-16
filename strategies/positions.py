@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -26,13 +27,29 @@ _flush_timer: threading.Timer | None = None
 _flush_timer_lock = threading.RLock()
 _position_stores: dict[tuple[str, str], dict] = {}
 _open_counts: dict[tuple[str, str], int] = {}
-_active_key: tuple[str, str] = (DEFAULT_TENANT, "paper")
+# Per-thread store key. A process-wide global let the multi-tenant cycle
+# redirect an HTTP/MCP write onto another tenant's book (#700).
+_active_key_var: ContextVar[tuple[str, str]] = ContextVar(
+    "positions_active_key",
+    default=(DEFAULT_TENANT, "paper"),
+)
 _open_positions_count = 0
 positions: dict = {}
 # "known" | "unknown" — failed load must not look like an empty book (#318).
 _positions_state: dict[tuple[str, str], str] = {}
 _positions_unknown_logged: set[tuple[str, str]] = set()
 _flush_unknown_logged: set[tuple[str, str]] = set()
+
+
+def _current_active_key() -> tuple[str, str]:
+    return _active_key_var.get()
+
+
+def __getattr__(name: str):
+    """``_active_key`` stays a tuple for readers; the value is context-local."""
+    if name == "_active_key":
+        return _current_active_key()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resolve_store_key(
@@ -51,9 +68,7 @@ def _ensure_store(key: tuple[str, str]) -> dict:
 
 
 def _active_store() -> dict:
-    if _active_key[0] == DEFAULT_TENANT:
-        return positions
-    return _ensure_store(_active_key)
+    return _store_for_key(_current_active_key())
 
 
 def _store_for_key(key: tuple[str, str]) -> dict:
@@ -63,8 +78,10 @@ def _store_for_key(key: tuple[str, str]) -> dict:
 
 
 def _activate(key: tuple[str, str]) -> None:
-    global _active_key, _open_positions_count
-    _active_key = key
+    """Select the store for this thread only. Does not touch other threads."""
+    global _open_positions_count
+    key = (str(key[0]), str(key[1]))
+    _active_key_var.set(key)
     _open_counts.setdefault(key, 0)
     _open_positions_count = _open_counts[key]
 
@@ -396,7 +413,7 @@ def hard_clear_closed_lot(symbol: str, timeframe: str) -> bool:
 
 
 def get_active_scope() -> str:
-    return _active_key[1]
+    return _current_active_key()[1]
 
 
 def _realized_field(value, *, where: str):
@@ -520,9 +537,11 @@ def _position_persistable(p: dict) -> bool:
     return False
 
 
-def _serialize_positions() -> dict:
-    store = _active_store()
-    data = {"positions": {}, "ledger_scope": _active_key[1]}
+def _serialize_positions(store: dict | None = None, scope: str | None = None) -> dict:
+    if store is None:
+        store = _active_store()
+    ledger_scope = scope if scope is not None else _current_active_key()[1]
+    data = {"positions": {}, "ledger_scope": ledger_scope}
     for tf, p in store.items():
         if not _position_persistable(p):
             continue
@@ -619,9 +638,10 @@ def _serialize_positions() -> dict:
 def _recompute_open_count() -> None:
     """Recompute open-position counter; caller must hold _positions_lock."""
     global _open_positions_count
-    store = _active_store()
+    key = _current_active_key()
+    store = _store_for_key(key)
     count = sum(1 for p in store.values() if is_open_position(p))
-    _open_counts[_active_key] = count
+    _open_counts[key] = count
     _open_positions_count = count
 
 
@@ -958,7 +978,7 @@ def clear_positions_memory(tenant_id: str | None = None, scope: str | None = Non
 
 def reset_all_position_stores_for_tests() -> None:
     """Drop every tenant/scope in-memory book (pytest workers)."""
-    global _open_positions_count, _active_key
+    global _open_positions_count
     _cancel_flush_timer()
     with _positions_lock:
         positions.clear()
@@ -967,7 +987,7 @@ def reset_all_position_stores_for_tests() -> None:
         _positions_state.clear()
         _positions_unknown_logged.clear()
         _flush_unknown_logged.clear()
-        _active_key = (DEFAULT_TENANT, "paper")
+        _active_key_var.set((DEFAULT_TENANT, "paper"))
         _open_positions_count = 0
 
 
@@ -1016,47 +1036,52 @@ def _flush_refused_unknown(key: tuple[str, str]) -> bool:
 
 
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
+    """Persist one tenant's book. The store is the explicit key, not a global."""
     from bus.locks import ledger_lock
-    from core.tenant_context import resolve_tenant_id
     from storage.errors import LedgerUnavailable
 
-    target = scope or _active_key[1]
-    tid = resolve_tenant_id(tenant_id)
+    active = _current_active_key()
+    target = scope or active[1]
+    tid = active[0] if tenant_id is None else resolve_tenant_id(tenant_id)
     store_key = (tid, target)
     if _flush_refused_unknown(store_key):
         return
     try:
         with ledger_lock(target, tenant_id=tid):
             with _positions_lock:
-                prev_key = _active_key
-                _activate(store_key)
-                try:
-                    payload = _serialize_positions()
-                    payload["ledger_scope"] = target
-                    try:
-                        existing = load_positions_document(target, tenant_id=tid)
-                        payload = _preserve_locks_from_existing_doc(payload, existing)
-                    except LedgerUnavailable as e:
-                        log(f"flush aborted, positions unread ({target}): {e}", "ERROR")
-                        _mark_positions_unknown(store_key, e)
-                        return
-                    except Exception as e:
-                        log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
-                    if not save_positions_document(payload, target, tenant_id=tid):
-                        log(f"Failed to save positions ({target})", "ERROR")
-                except Exception as e:
-                    log(f"Failed to save positions ({target}): {e}", "ERROR")
-                finally:
-                    _activate(prev_key)
+                _write_store_document(store_key, target, tid)
     except LedgerUnavailable as e:
         log(f"flush aborted, ledger unavailable ({target}): {e}", "ERROR")
+
+
+def _write_store_document(store_key: tuple[str, str], target: str, tid: str) -> None:
+    """Serialize ``store_key`` and save it. Caller holds the ledger and positions locks."""
+    from storage.errors import LedgerUnavailable
+
+    try:
+        payload = _serialize_positions(_store_for_key(store_key), target)
+        payload["ledger_scope"] = target
+        try:
+            existing = load_positions_document(target, tenant_id=tid)
+            payload = _preserve_locks_from_existing_doc(payload, existing)
+        except LedgerUnavailable as e:
+            log(f"flush aborted, positions unread ({target}): {e}", "ERROR")
+            _mark_positions_unknown(store_key, e)
+            return
+        except Exception as e:
+            log(f"lock preserve on save skip ({target}): {e}", "DEBUG")
+        if not save_positions_document(payload, target, tenant_id=tid):
+            log(f"Failed to save positions ({target})", "ERROR")
+    except Exception as e:
+        log(f"Failed to save positions ({target}): {e}", "ERROR")
 
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
     """Persist positions; debounced unless force=True (trade/shutdown)."""
     global _flush_timer
-    target = scope or _active_key[1]
-    pinned_tenant = _active_key[0]
+    active = _current_active_key()
+    target = scope or active[1]
+    pinned_tenant = active[0]
     if _flush_refused_unknown((pinned_tenant, target)):
         return
     if force:
@@ -1363,23 +1388,74 @@ def set_position_field(symbol: str, timeframe: str, field: str, value) -> None:
         _ensure_key(_active_store(), key)[field] = value
 
 
+def _document_lock_matches(
+    scope: str, tenant_id: str, pos_key: str, *, enabled: bool
+) -> bool:
+    """True when the tenant document's lock matches the write we just saved."""
+    try:
+        doc = load_positions_document(scope, tenant_id=tenant_id)
+    except Exception:
+        return False
+    rows = (doc or {}).get("positions") if isinstance(doc, dict) else None
+    if not isinstance(rows, dict):
+        return False
+    lot = rows.get(pos_key)
+    if not isinstance(lot, dict):
+        return False
+    lock = lot.get("lock")
+    if not isinstance(lock, dict):
+        return False
+    return bool(lock.get("enabled", True)) is bool(enabled)
+
+
 def set_position_lock(symbol: str, timeframe: str, lock: dict | None, *, persist: bool = True) -> dict:
-    """Set or clear position lock; returns the updated position dict (copy of lock state)."""
-    init_position(symbol, timeframe)
-    key = get_key(symbol, timeframe)
-    with _positions_lock:
-        pos = _ensure_key(_active_store(), key)
+    """Set or clear a lock on the tenant from ``tenant_context``.
+
+    The lot must already be open. A missing lot raises ``LookupError``
+    (``no_open_lot``) instead of creating an empty shell. The write and the
+    save run under the ledger lock and ``_positions_lock`` so a satellite
+    reload cannot drop the lock between the two. Returns a copy of the lock.
+    """
+    store_key = _resolve_store_key()
+    _activate(store_key)
+    pos_key = get_key(symbol, timeframe)
+    expect_enabled = lock is not None
+
+    def _apply(pos: dict) -> dict:
         if lock is None:
             pos["lock"] = {
                 "enabled": False,
                 "cleared_at": datetime.now(timezone.utc).isoformat(),
                 "cleared_by": "unlock",
             }
-        else:
-            pos["lock"] = dict(lock)
-        out = dict(pos.get("lock") or {}) if lock else {}
-    if persist:
-        flush_positions(force=True)
+            return {}
+        pos["lock"] = dict(lock)
+        return dict(pos.get("lock") or {})
+
+    if not persist:
+        with _positions_lock:
+            pos = _store_for_key(store_key).get(pos_key)
+            if not isinstance(pos, dict) or not is_open_position(pos):
+                raise LookupError("no_open_lot")
+            return _apply(pos)
+
+    from bus.locks import ledger_lock
+
+    with ledger_lock(store_key[1], tenant_id=store_key[0]):
+        with _positions_lock:
+            if _positions_state.get(store_key) != "known":
+                load_positions(scope=store_key[1], tenant_id=store_key[0])
+            if _positions_state.get(store_key) != "known":
+                raise RuntimeError("positions_unavailable")
+            pos = _store_for_key(store_key).get(pos_key)
+            if not isinstance(pos, dict) or not is_open_position(pos):
+                raise LookupError("no_open_lot")
+            out = _apply(pos)
+            _do_save_positions(store_key[1], tenant_id=store_key[0])
+            if not _document_lock_matches(
+                store_key[1], store_key[0], pos_key, enabled=expect_enabled
+            ):
+                raise RuntimeError("lock_not_persisted")
     return out
 
 
@@ -1762,9 +1838,10 @@ def update_position(
     open_fee_tracked: bool = False,
 ):
     global _open_positions_count
-    _activate(_resolve_store_key())
+    store_key = _resolve_store_key()
+    _activate(store_key)
     key = get_key(symbol, timeframe)
-    store = _active_store()
+    store = _store_for_key(store_key)
     was_open = False
     attach_snapshot = False
     with _positions_lock:
@@ -2036,11 +2113,11 @@ def update_position(
             pos["amount"] = Decimal("0")
         is_open_now = is_open_position(pos)
         if was_open and not is_open_now:
-            _open_counts[_active_key] = max(0, _open_counts[_active_key] - 1)
-            _open_positions_count = _open_counts[_active_key]
+            _open_counts[store_key] = max(0, _open_counts.get(store_key, 0) - 1)
+            _open_positions_count = _open_counts[store_key]
         elif not was_open and is_open_now:
-            _open_counts[_active_key] += 1
-            _open_positions_count = _open_counts[_active_key]
+            _open_counts[store_key] = _open_counts.get(store_key, 0) + 1
+            _open_positions_count = _open_counts[store_key]
     flush_positions(force=True)
     if attach_snapshot:
         try:
@@ -2067,6 +2144,9 @@ def update_position(
 
 def count_open_positions():
     with _positions_lock:
+        key = _current_active_key()
+        if key in _open_counts:
+            return _open_counts[key]
         return _open_positions_count
 
 

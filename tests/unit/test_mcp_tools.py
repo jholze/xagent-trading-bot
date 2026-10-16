@@ -103,7 +103,8 @@ def test_owner_buy_posts_tenant():
 def test_operator_buy_forced_off_default():
     called = []
     out = tool_buy(HENRY, tenant="default", symbol="LAB/USDT", usdt=10, execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True})
-    assert called[0]["tenant_id"] == "henry"
+    assert out.get("ok") is False and out.get("error") == "tenant_forbidden"
+    assert called == []
 
 
 def test_buy_writes_disabled_does_not_call():
@@ -226,13 +227,14 @@ def test_owner_lock_and_unlock_post():
 
 def test_operator_lock_forced_off_default():
     called = []
-    tool_lock(
+    out = tool_lock(
         HENRY,
         tenant="default",
         symbol="LAB/USDT",
         execute_fn=lambda **k: called.append(k) or {"ok": True, "executed": True},
     )
-    assert called[0]["tenant_id"] == "henry"
+    assert out.get("ok") is False and out.get("error") == "tenant_forbidden"
+    assert called == []
 
 
 def test_execute_network_error_is_bot_unreachable(monkeypatch):

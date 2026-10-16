@@ -158,8 +158,9 @@ def tenant_cycle_context(tenant_id: str, *, test: bool = False) -> Iterator[None
     from storage.tenant_registry import get_tenant
     from strategies import positions as positions_mod
 
-    # R1: restore the previous tenant on the way out, including on exception.
-    prev_key = positions_mod._active_key
+    # Restore this thread's store key on the way out, including on exception.
+    # The key is context-local (#700). This cannot redirect another thread's write.
+    prev_key = tuple(positions_mod._active_key)
     try:
         doc = get_tenant(tenant_id, test=test) or {}
         tg = doc.get("telegram") or {}
