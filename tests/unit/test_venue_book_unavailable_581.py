@@ -15,9 +15,9 @@ from core.config import BotConfig
 from core.models import MarketContext, SignalAnalysis, TradeOrder
 from risk.risk_manager import RiskManager
 from services.venue_quality import (
+    VenueConfigError,
     VenueMetrics,
     check_venue_for_buy,
-    depth_from_gate_order_book,
     evaluate_venue_quality,
     fetch_gate_venue_metrics,
     get_venue_metrics,
@@ -29,6 +29,7 @@ from services.venue_quality import (
 )
 
 from services.watchlist_quality.venue_batch import attach_quote_volumes
+from tests.support.venue_block import as_venue_config
 from strategies.entry_sensor_15m import ENTRY_SENSOR_SOURCE, set_pending_sensor_metrics
 from strategies import watch_15m_state
 
@@ -48,6 +49,9 @@ _VENUE = {
     "cache_ttl_sec": 90.0,
     "order_book_cache_ttl_sec": 15.0,
     "order_book_timeout_sec": 5.0,
+    "exchange": "gate",
+    "order_book_limit": 100,
+    "ticker_timeout_sec": 12,
 }
 
 _EMPTY_BOOK_OK = VenueMetrics(
@@ -245,8 +249,12 @@ def _rest_router(bulk_rows, books=None, pair_rows=None, raise_on=None):
     raise_on = set(raise_on or ())
     calls: list[tuple[str, dict, float]] = []
 
-    def fake(path, params=None, *, timeout=12.0):
+    def fake(path, params=None, *, timeout):
         params = dict(params or {})
+        if path == "/spot/tickers" and not params.get("currency_pair"):
+            assert float(timeout) == 12.0
+        else:
+            assert float(timeout) == 5.0
         calls.append((path, params, float(timeout)))
         if path in raise_on:
             raise RuntimeError(f"boom {path}")
@@ -294,7 +302,7 @@ def test_bulk_row_missing_sizes_is_book_unavailable_not_zero_ok():
     assert m.capture == "book_unavailable"
     assert m.size_keys_present is False
     assert m.quote_volume_24h_usdt == 12_000_000.0
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     joined = "; ".join(r.reasons)
     assert "bid book $0" not in joined
     assert "ask book $0" not in joined
@@ -308,7 +316,7 @@ def test_non_numeric_size_keys_are_book_unavailable():
     row["lowest_size"] = "?"
     m = metrics_from_gate_ticker_row("QNT/USDT", row)
     assert m.capture == "book_unavailable"
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert "bid book $0" not in "; ".join(r.reasons)
 
 
@@ -318,7 +326,7 @@ def test_volume_ok_logs_warning(caplog):
 
     caplog.set_level(logging.WARNING)
     with patch("services.venue_quality.log") as mock_log:
-        r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+        r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert r.ok is True
     messages = [str(c.args[0]) for c in mock_log.call_args_list]
     levels = [c.args[1] if len(c.args) > 1 else "" for c in mock_log.call_args_list]
@@ -334,7 +342,7 @@ def test_unrecognised_book_unavailable_policy_fail_closed(policy):
     m = metrics_from_gate_ticker_row("QNT/USDT", QNT_BULK)
     assert m.capture == "book_unavailable"
     assert m.size_keys_present is False
-    r = evaluate_venue_quality(m, cfg, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(cfg), planned_usdt=500)
     assert r.ok is False
     assert r.code == "venue_liquidity_block"
     assert "book_unavailable" in r.reasons
@@ -355,13 +363,18 @@ def test_unrecognised_book_unavailable_policy_fail_closed(policy):
             planned_usdt=500,
             config_raw=raw,
         )
-    assert r2.metrics is not None
-    assert r2.metrics.size_keys_present is False
-    assert r2.metrics.depth_parsed is False
-    assert r2.metrics.capture == "book_unavailable"
-    assert r2.metrics.quote_volume_24h_usdt >= 50_000
     assert r2.ok is False
-    assert r2.code == "venue_liquidity_block"
+    if policy == "block":
+        assert r2.metrics is not None
+        assert r2.metrics.size_keys_present is False
+        assert r2.metrics.depth_parsed is False
+        assert r2.metrics.capture == "book_unavailable"
+        assert r2.metrics.quote_volume_24h_usdt >= 50_000
+        assert r2.code == "venue_liquidity_block"
+    else:
+        assert r2.code == "liq_guard_missing_input"
+        assert r2.detail_reason == "venue_config_missing"
+        assert r2.config_problem == "value"
 
 
 def test_book_unavailable_volume_under_floor_is_liquidity_block():
@@ -373,7 +386,7 @@ def test_book_unavailable_volume_under_floor_is_liquidity_block():
     }
     m = metrics_from_gate_ticker_row("JUNK/USDT", row)
     assert m.capture == "book_unavailable"
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert r.ok is False
     assert r.code == "venue_liquidity_block"
     joined = "; ".join(r.reasons)
@@ -390,7 +403,7 @@ def test_book_unavailable_no_volume_field_is_book_unavailable_code():
     m = metrics_from_gate_ticker_row("X/USDT", row)
     assert m.capture == "book_unavailable"
     assert m.quote_volume_present is False
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert r.ok is False
     assert r.code == "book_unavailable"
     assert "book_unavailable" in r.reasons
@@ -409,7 +422,7 @@ def test_sizes_present_missing_quote_volume_is_liquidity_block():
     assert m.size_keys_present is True
     assert m.quote_volume_present is False
     assert m.capture == "ok"
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert r.ok is False
     assert r.code == "venue_liquidity_block"
     assert "quote_vol_24h unavailable" in r.reasons
@@ -444,7 +457,7 @@ def test_missing_quote_volume_with_parsed_depth_above_floor_is_liquidity_block()
 
 def test_capture_missing_does_not_use_volume_ok():
     m = VenueMetrics(symbol="ZZZ/USDT", capture="missing", quote_volume_24h_usdt=12_000_000)
-    r = evaluate_venue_quality(m, _VENUE, planned_usdt=500)
+    r = evaluate_venue_quality(m, as_venue_config(_VENUE), planned_usdt=500)
     assert r.ok is False
     assert r.reasons == ["venue_capture_missing"]
     r2 = check_venue_for_buy(
@@ -460,7 +473,7 @@ def test_capture_missing_does_not_use_volume_ok():
 
 
 def test_frozen_empty_book_capture_ok_stays_thin():
-    r = evaluate_venue_quality(_EMPTY_BOOK_OK, _VENUE, planned_usdt=200)
+    r = evaluate_venue_quality(_EMPTY_BOOK_OK, as_venue_config(_VENUE), planned_usdt=200)
     assert r.ok is False
     assert r.code == "venue_liquidity_block"
     assert any("bid book $0" in x for x in r.reasons)
@@ -543,12 +556,41 @@ def test_one_touch_under_floor_depth_over_floor_passes():
     assert r.metrics.top_book_bid_usdt < 200
 
 
+def _depth_from_gate_order_book(payload, *, depth_levels: int = 5):
+    """Local copy of the deleted production helper. Tests only."""
+    if not isinstance(payload, dict):
+        raise TypeError("order_book payload must be a dict")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise TypeError("order_book payload missing bids/asks lists")
+    if not bids and not asks:
+        return 0.0, 0.0, False
+    n = max(int(depth_levels or 5), 1)
+
+    def _side(levels):
+        total = 0.0
+        for row in levels[:n]:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            try:
+                px = float(row[0])
+                sz = float(row[1])
+            except (TypeError, ValueError):
+                continue
+            if px > 0 and sz >= 0:
+                total += px * sz
+        return total
+
+    return _side(bids), _side(asks), True
+
+
 def test_depth_parser_sums_top_five_of_twenty():
     payload = {
         "bids": [[str(100 - i * 0.01), "1.0"] for i in range(20)],
         "asks": [[str(100 + i * 0.01), "1.0"] for i in range(20)],
     }
-    bid_d, ask_d, parsed = depth_from_gate_order_book(payload, depth_levels=5)
+    bid_d, ask_d, parsed = _depth_from_gate_order_book(payload, depth_levels=5)
     assert parsed is True
     assert bid_d == pytest.approx(sum(100 - i * 0.01 for i in range(5)))
     assert ask_d == pytest.approx(sum(100 + i * 0.01 for i in range(5)))
@@ -556,7 +598,7 @@ def test_depth_parser_sums_top_five_of_twenty():
 
 
 def test_empty_order_book_lists_are_unparsed_volume_fallback_applies():
-    bid_d, ask_d, parsed = depth_from_gate_order_book(EMPTY_BOOK, depth_levels=5)
+    bid_d, ask_d, parsed = _depth_from_gate_order_book(EMPTY_BOOK, depth_levels=5)
     assert parsed is False
     assert bid_d == 0.0
     assert ask_d == 0.0
@@ -581,7 +623,7 @@ def test_empty_order_book_lists_are_unparsed_volume_fallback_applies():
 
 def test_present_zero_size_levels_are_parsed_zero_not_empty():
     payload = {"bids": [["1.00", "0"]], "asks": [["1.01", "0"]]}
-    bid_d, ask_d, parsed = depth_from_gate_order_book(payload, depth_levels=5)
+    bid_d, ask_d, parsed = _depth_from_gate_order_book(payload, depth_levels=5)
     assert parsed is True
     assert bid_d == 0.0
     assert ask_d == 0.0
@@ -747,12 +789,12 @@ def test_qnt_fill_stamp_is_not_ok_with_zeros_and_not_thin():
         stamp.get("depth_bid_usdt") or 0
     ) == 0
     assert zeros is False
-    assert is_thin_venue_stamp(stamp, _VENUE) is False
+    assert is_thin_venue_stamp(stamp, as_venue_config(_VENUE)) is False
 
 
 def test_truly_thin_stamp_stays_thin():
     stamp = _EMPTY_BOOK_OK.to_stamp(planned_usdt=200, venue_ok=False, reasons=["bid book $0 < min $200"])
-    assert is_thin_venue_stamp(stamp, _VENUE) is True
+    assert is_thin_venue_stamp(stamp, as_venue_config(_VENUE)) is True
     high_vol_unavailable = {
         "capture": "book_unavailable",
         "quote_volume_24h_usdt": 12_000_000,
@@ -761,7 +803,7 @@ def test_truly_thin_stamp_stays_thin():
         "top_book_ask_usdt": 0,
         "planned_usdt": 500,
     }
-    assert is_thin_venue_stamp(high_vol_unavailable, _VENUE) is False
+    assert is_thin_venue_stamp(high_vol_unavailable, as_venue_config(_VENUE)) is False
 
 
 # --- 11. Watchlist batch ---
@@ -852,12 +894,10 @@ def test_sensor_exception_fail_open_risk_exception_fail_closed():
 
 
 def test_defaults_include_depth_and_volume_ok_policy():
+    """An empty block is not filled from code. Fail closed."""
     cfg = venue_quality_config({"risk": {"venue_quality": {}}})
-    assert cfg["depth_levels"] == 5
-    assert cfg["book_unavailable_policy"] == "volume_ok"
-    assert cfg["min_quote_volume_24h_usdt"] == 50_000
-    assert cfg["min_top_book_usdt_per_side"] == 200
-    assert cfg["exempt_sources"] == ["manual"]
+    assert isinstance(cfg, VenueConfigError)
+    assert cfg.config_problem == "missing"
 
 
 def test_book_unavailable_risk_code_when_volume_and_depth_absent():

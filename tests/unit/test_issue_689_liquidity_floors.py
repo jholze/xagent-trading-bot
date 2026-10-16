@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import data_manager
+from tests.support.venue_block import venue_block, venue_bounds
 from core.config_guardrails import (
     ConfigValidationError,
     frozen_shorts_changed,
@@ -63,6 +64,7 @@ def _base(depth_floor=1, volume_floor=20) -> dict:
         "risk": {
             "liquidity_guard": {"depth_to_order_multiple_min": depth_floor},
             "venue_quality": {"min_volume_to_order_multiple_min": volume_floor},
+            "venue_quality_bounds": venue_bounds(),
         },
     }
 
@@ -73,13 +75,13 @@ def _raw(*, depth=1, volume=20) -> dict:
         "max_usdt_per_trade": 4500,
         "risk": {
             "min_trade_usdt": 15,
-            "venue_quality": {
-                "enabled": True,
-                "min_quote_volume_24h_usdt": 0,
-                "min_top_book_usdt_per_side": 0,
-                "max_spread_pct": 50,
-                "min_volume_to_order_multiple": volume,
-            },
+            "venue_quality": venue_block(
+                enabled=True,
+                min_quote_volume_24h_usdt=1e-9,
+                min_top_book_usdt_per_side=1e-9,
+                max_spread_pct=50,
+                min_volume_to_order_multiple=volume,
+            ),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 100,
                 "depth_window_pct": 0.5,
@@ -117,6 +119,8 @@ def _blocked(result) -> None:
 
 
 def _floor_body(*, depth_floor=1, volume_floor=20, depth=1, volume=20) -> dict:
+    venue = venue_block(min_volume_to_order_multiple=volume)
+    venue["min_volume_to_order_multiple_min"] = volume_floor
     return {
         "trading_mode": "paper",
         "max_open_positions": 5,
@@ -124,11 +128,12 @@ def _floor_body(*, depth_floor=1, volume_floor=20, depth=1, volume=20) -> dict:
             "liquidity_guard": {
                 "depth_to_order_multiple_min": depth_floor,
                 "depth_to_order_multiple": depth,
+                "min_quote_volume_24h_usdt": 500000,
+                "depth_window_pct": 0.5,
+                "order_book_cache_ttl_sec": 15,
             },
-            "venue_quality": {
-                "min_volume_to_order_multiple_min": volume_floor,
-                "min_volume_to_order_multiple": volume,
-            },
+            "venue_quality": venue,
+            "venue_quality_bounds": venue_bounds(),
         },
     }
 
@@ -273,8 +278,9 @@ def test_689_t6b_disk_read_error_blocks(monkeypatch):
     monkeypatch.setattr(data_manager, "_load_default_config_from_disk", _boom)
     result = _lock(_raw())
     _blocked(result)
-    assert f"liquidity guard floor missing: {_DEPTH_FLOOR}" in result.reasons
-    assert f"liquidity guard floor missing: {_VOLUME_FLOOR}" in result.reasons
+    assert result.detail_reason == "venue_config_missing"
+    assert result.config_problem == "config_unavailable"
+    assert not any("liquidity guard floor missing" in reason for reason in result.reasons)
 
 
 def test_689_t7a_volume_below_floor_blocks_when_depth_is_ok(monkeypatch):
@@ -565,11 +571,17 @@ def test_689_t15_warning_has_tenant_key_value_floor(monkeypatch):
 
 def test_689_t16_non_positive_multiple_uses_the_existing_path(monkeypatch):
     _patch_disk(monkeypatch, _base())
-    for depth, volume in ((0, 20), (-1, 20), (1, 0), (1, -1)):
+    for depth, volume in ((0, 20), (-1, 20)):
         result = _lock(_raw(depth=depth, volume=volume))
         _blocked(result)
         assert "liquidity guard config missing" in result.reasons
         assert not any("below floor" in reason for reason in result.reasons)
+    for depth, volume in ((1, 0), (1, -1)):
+        result = _lock(_raw(depth=depth, volume=volume))
+        _blocked(result)
+        assert result.detail_reason == "venue_config_missing"
+        assert result.config_problem == "range"
+        assert _VOLUME_MULTIPLE in result.config_key
 
 
 def test_689_t17_non_finite_quote_volume_blocks(monkeypatch):

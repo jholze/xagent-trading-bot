@@ -24,6 +24,7 @@ from services.venue_quality import (
     liquidity_guard_config,
 )
 from tests.unit.test_long_mcap_venue_563 import _eval_env
+from tests.support.venue_block import venue_block
 
 _ZZ_VOLUME = 301_891.0
 
@@ -34,7 +35,7 @@ def _cfg(**risk):
         "min_trade_usdt": 5,
         "cash_floor_pct": 0,
         "max_daily_sells": 0,
-        "venue_quality": {"min_volume_to_order_multiple": 20},
+        "venue_quality": venue_block(),
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
@@ -105,7 +106,7 @@ def test_floor_below_500k_is_used_not_clamped():
     """A configured floor is used as written. Nothing in code raises it to 500k."""
     raw = {
         "risk": {
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 50_000,
                 "depth_window_pct": 0.5,
@@ -139,7 +140,7 @@ def test_missing_or_invalid_guard_config_blocks():
     invalid = liquidity_guard_config(
         {
             "risk": {
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 0,
                     "depth_window_pct": "nope",
@@ -395,13 +396,12 @@ def test_exempt_sources_cannot_skip_dca_deploy_boost_or_mcp():
     """A config list of sources is not an exemption. Bot buys stay blocked."""
     rm = RiskManager(
         _cfg(
-            venue_quality={
-                "enabled": False,
-                "min_volume_to_order_multiple": 20,
-                "exempt_sources": ["dca", "deploy_boost", "mcp"],
-                "book_unavailable_policy": "volume_ok",
-                "on_fetch_error": "allow",
-            }
+            venue_quality=venue_block(
+                enabled=False,
+                exempt_sources=["dca", "deploy_boost", "mcp"],
+                book_unavailable_policy="volume_ok",
+                on_fetch_error="allow",
+            )
         )
     )
     thin = _book(

@@ -167,10 +167,13 @@ def _by_source_stats(trades: list[TradeMemory]) -> dict[str, Any]:
     return {k: dict(v) for k, v in by.items()}
 
 
-def _venue_features(trades: list[TradeMemory], config_raw: dict | None = None) -> dict[str, Any]:
-    from services.venue_quality import is_thin_venue_stamp, venue_quality_config
+def _venue_features(trades: list[TradeMemory], config_raw: dict | None = None) -> dict[str, Any] | None:
+    from services.venue_quality import VenueConfigError, is_thin_venue_stamp, venue_quality_config
 
     vcfg = venue_quality_config(config_raw)
+    if isinstance(vcfg, VenueConfigError):
+        # One ERROR is already emitted by venue_quality_config. Omit the feature.
+        return None
     thin_n = 0
     thick_n = 0
     pnl_thin = 0.0

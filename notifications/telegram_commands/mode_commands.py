@@ -44,18 +44,36 @@ def _save_mode_updates(updates: dict) -> bool:
 
 
 def save_trading_flags(*, entries_enabled=None, exits_enabled=None) -> bool:
-    """Persist trading.entries_enabled / exits_enabled via the /mode save path."""
-    config = get_config()
-    current = config.get("trading") or {}
-    trading = {k: current[k] for k in _TRADING_FLAG_KEYS if k in current}
-    if entries_enabled is not None:
-        trading["entries_enabled"] = bool(entries_enabled)
-    if exits_enabled is not None:
-        trading["exits_enabled"] = bool(exits_enabled)
-    if not _save_mode_updates({"trading": trading}):
+    """Persist trading.entries_enabled / exits_enabled via the /mode save path.
+
+    A venue-bounds reject, a snapshot failure, or an unreadable config returns
+    False. The reason is logged. Callers keep their own summary.
+    """
+    from core.config_guardrails import ConfigValidationError
+    from data_manager import bind_exemption_running_exits, clear_exemption_running_exits
+    from logger import log
+    from storage.config_history import ConfigSnapshotError
+    from storage.errors import LedgerUnavailable
+
+    try:
+        config = get_config()
+        current = config.get("trading") or {}
+        exits_now = current.get("exits_enabled") if isinstance(current, dict) else None
+        bind_exemption_running_exits(exits_now)
+        trading = {k: current[k] for k in _TRADING_FLAG_KEYS if k in current}
+        if entries_enabled is not None:
+            trading["entries_enabled"] = bool(entries_enabled)
+        if exits_enabled is not None:
+            trading["exits_enabled"] = bool(exits_enabled)
+        if not _save_mode_updates({"trading": trading}):
+            return False
+        reload_config()
+        return True
+    except (ConfigValidationError, ConfigSnapshotError, LedgerUnavailable) as exc:
+        log(f"save_trading_flags failed: {exc}", "WARNING")
         return False
-    reload_config()
-    return True
+    finally:
+        clear_exemption_running_exits()
 
 
 def _apply_mode_switch(updates: dict) -> tuple[bool, str]:

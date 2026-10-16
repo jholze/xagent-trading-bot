@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.support.venue_block import venue_block
 
 from core.tenant_context import tenant_context
 from services.watchlist_quality.runtime import clear_runtime_cache
@@ -105,7 +106,7 @@ def _thin_risk_manager():
     rm = RiskManager(config=MagicMock())
     rm.config.raw = {
         "watchlist_quality": {"mode": "enforce", "min_buy_score": 0.4},
-        "risk": {"venue_quality": {"enabled": False}, "cash_floor_pct": 0},
+        "risk": {"venue_quality": venue_block(enabled=False), "cash_floor_pct": 0},
     }
     rm.config.max_open_positions = 50
     rm.config.max_position_percent = 100

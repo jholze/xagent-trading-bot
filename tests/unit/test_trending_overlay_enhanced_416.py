@@ -21,6 +21,7 @@ import pytest
 from core.config import BotConfig
 from core.models import TradeOrder
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import venue_block
 
 _EMPTY_OVERLAY = {"refreshed_at": "", "source": "", "coins": [], "added": [], "removed": []}
 
@@ -59,7 +60,7 @@ def _raw(*, enhanced: bool, cap: int = 11, size_pct: int = 50) -> dict:
         },
         "risk": {
             "min_trade_usdt": 5,
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,

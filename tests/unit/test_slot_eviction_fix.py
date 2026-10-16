@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from core.models import TradeOrder, TradeResult
+from tests.support.venue_block import venue_block
 from risk.slot_eviction import (
     ACTION_FULL,
     ACTION_REDUCE_TAIL,
@@ -585,7 +586,7 @@ def _risk_manager_for_e2e(*, mode: str = "live"):
     risk = raw.setdefault("risk", {})
     risk["cash_policy"] = {"enabled": False}
     risk["position_capacity"] = {"enabled": False, "restart_warmup_min": 0}
-    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
+    risk["venue_quality"] = venue_block(enabled=False)
     risk["min_trade_usdt"] = 5
     risk["slot_eviction"] = {
         "enabled": True,

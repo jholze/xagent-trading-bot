@@ -39,6 +39,7 @@ from strategies.positions import (
     get_key,
 )
 from tests.unit.test_long_mcap_venue_563 import _eval_env
+from tests.support.venue_block import venue_block, venue_bounds
 
 _REPO = Path(__file__).resolve().parents[2]
 _OVERLAY = _REPO / "deploy" / "live_caps_overlay.json"
@@ -137,7 +138,7 @@ def _cfg(**over) -> BotConfig:
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": {"enabled": False},
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": dict(_LIQ),
         },
         "sell_policy": {"rotation": {"tail_exempt_notional_usdt": 0}},
@@ -158,7 +159,7 @@ def _risk_cfg(usdt=None, pct=0.0, **over) -> BotConfig:
         "cash_floor_pct": 0,
         "cash_policy": {"enabled": False},
         "position_capacity": {"enabled": False},
-        "venue_quality": {"min_volume_to_order_multiple": 20},
+        "venue_quality": venue_block(),
         "liquidity_guard": dict(_LIQ),
         "fail_closed_guards": "log",
     }
@@ -691,7 +692,8 @@ def _arm_tenant_body(monkeypatch, body, *, tenant="tenant-a", multi=True, boom=F
             "demo": {"backend": "mongo"},
             "risk": {
                 "liquidity_guard": {"depth_to_order_multiple_min": 1},
-                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+                "venue_quality": {**venue_block(), "min_volume_to_order_multiple_min": 20},
+                "venue_quality_bounds": venue_bounds(),
             },
         },
     )
@@ -994,7 +996,7 @@ def test_t8_capped_below_minimum_is_rejected():
                 "cash_floor_pct": 0,
                 "cash_policy": {"enabled": False},
                 "position_capacity": {"enabled": False},
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": dict(_LIQ),
             },
         )
@@ -1148,7 +1150,7 @@ def test_new_short_open_rejected_when_book_is_full(monkeypatch):
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": copy.deepcopy(disk["risk"]["position_capacity"]),
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": dict(_LIQ),
             "fail_closed_guards": "log",
         },
@@ -1286,7 +1288,7 @@ def _live_slot_cfg(disk: dict, position_capacity: dict) -> BotConfig:
             "cash_floor_pct": 0,
             "cash_policy": {"enabled": False},
             "position_capacity": position_capacity,
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": dict(_LIQ),
             "fail_closed_guards": "log",
         },

@@ -10,6 +10,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from data_manager import get_config
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import venue_block
 
 
 def _cfg(**risk_over) -> BotConfig:
@@ -25,7 +26,7 @@ def _cfg(**risk_over) -> BotConfig:
     risk["cash_floor_basis"] = "initial"
     risk["dca_reserve_pct"] = 0
     risk["min_trade_usdt"] = 100.0
-    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
+    risk["venue_quality"] = venue_block(enabled=False)
     # Force static floor path — config.json may enable adaptive policy/capacity
     risk["position_capacity"] = {"enabled": False}
     risk["cash_policy"] = {"enabled": False}

@@ -23,6 +23,7 @@ from execution.gate_adapter import (
 )
 from risk.cash_policy import compute_dual_spendable
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import venue_block, venue_bounds
 from risk.slot_eviction_runtime import resolve_spendable_ok_for_entry
 from services.gainer_universe.relvol_shadow import size_usdt_for_signal
 from services.portfolio_service import PortfolioService
@@ -1057,7 +1058,8 @@ def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
             "demo": {"backend": "mongo"},
             "risk": {
                 "liquidity_guard": {"depth_to_order_multiple_min": 1},
-                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+                "venue_quality": {**venue_block(), "min_volume_to_order_multiple_min": 20},
+                "venue_quality_bounds": venue_bounds(),
             },
         },
     )

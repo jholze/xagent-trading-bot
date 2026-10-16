@@ -14,6 +14,7 @@ from risk.risk_manager import RiskManager
 from services.signal_orchestrator import SignalOrchestrator
 from strategies.ctx_axes import compute_volume_rel, compute_volume_rel_window, read_oracle_state
 from strategies.positions import update_position
+from tests.support.venue_block import venue_block
 
 _CTX = {
     "ctx_oracle_state": "RISK_ON",
@@ -208,7 +209,7 @@ def _risk_cfg() -> BotConfig:
             "cash_policy": {"enabled": False},
             "position_capacity": {"enabled": False},
             "moderate_deploy": {"enabled": False},
-            "venue_quality": {"enabled": False, "min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(enabled=False),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,

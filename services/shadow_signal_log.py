@@ -8,7 +8,9 @@ after the poll's active triggers, under the config cap and budget.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import random
 import tempfile
@@ -21,6 +23,12 @@ from typing import Any
 from logger import log
 
 _LOCK = threading.Lock()
+# Base config.json plus the stat taken before the load. The only module write.
+_BASE_STAT: tuple[int, int] | None = None
+_BASE_CFG: dict | None = None
+_BASE_SHA: str | None = None
+VENUE_GATE_VERSION = "e12v8"
+CAP_BASIS = "volume_only"
 _OPEN: dict[str, dict] = {}
 _CLOSED: set[str] = set()
 _COUNTS: dict[str, int] = {}
@@ -58,6 +66,19 @@ _GATE_REJECT = {
 # Same method the exit path uses. The row stores the fraction of that percent.
 STOP_PCT_SOURCE = "strategies.dca.effective_stop_loss_thresholds"
 _VENUE_NULL_REASONS = ("missing_quote_volume", "missing_floor")
+# Shadow invalid lines. Separate from venue_quality._CONFIG_WARNED (M24).
+_SHADOW_VENUE_WARNED: set[tuple] = set()
+
+
+def validate_shadow_signal_row(row: dict) -> None:
+    """Venue-gate nulls must name a reason. Other gates are out of scope."""
+    if not isinstance(row, dict):
+        raise ValueError("shadow row must be a dict")
+    gates = row.get("gates")
+    if not isinstance(gates, dict):
+        return
+    if gates.get("venue_liquidity") is None and not row.get("venue_liquidity_null_reason"):
+        raise ValueError("venue gate null without reason")
 # Live hard floor. No code default. A missing key is missing_floor.
 LIQUIDITY_FLOOR_KEY = "min_quote_volume_24h_usdt"
 MISSING_FLOOR_KEY = "risk.liquidity_guard.min_quote_volume_24h_usdt"
@@ -130,6 +151,7 @@ def reset_for_tests() -> None:
     _PRICE_FETCH_CURSOR = 0
     _FETCH_DISABLED_LOGGED = False
     _EXIT_HOURS_MISSING_LOGGED = False
+    _SHADOW_VENUE_WARNED.clear()
     with _LOCK:
         _OPEN.clear()
         _CLOSED.clear()
@@ -236,8 +258,10 @@ def _stops_from_exit_path(
         va_cfg = cfg.volatile_altcoin_config or {}
     except Exception:
         va_cfg = {}
+    from strategies.decision_engine import freeze_tier_on_entry
+
     frozen = None
-    if atr_pct is not None and va_cfg.get("freeze_tier_on_entry", True):
+    if atr_pct is not None and freeze_tier_on_entry(va_cfg):
         try:
             frozen = volatility_tier(
                 coin,
@@ -260,34 +284,38 @@ def _stops_from_exit_path(
     if change_24h_pct is not None:
         resolve_args["change_24h_pct"] = change_24h_pct
     params = dict(resolve_strategy_params(coin, **resolve_args) or {})
-    tier = params.get("volatility_tier") or frozen
+    tier = params.get("volatility_tier") or frozen or None
     if not tier:
-        try:
-            from strategies.registry import _resolve_volatility_tier
-
-            used_atr = atr_pct
-            if used_atr is None:
-                used_atr = resolve_strategy_params.__defaults__[1]
-            tier = _resolve_volatility_tier(
-                coin,
-                used_atr,
-                va_cfg,
-                frozen_tier=frozen,
-                range_24h_pct=range_24h_pct,
-                change_24h_pct=change_24h_pct,
-            )
-        except Exception:
-            tier = params.get("volatility_tier")
+        log(f"shadow volatility_tier unknown symbol={symbol}", "INFO")
     raw = params.get("stop_loss_pct")
+    accessor_failed = False
     if raw is None:
         try:
             raw = cfg.stop_loss_pct
         except Exception:
-            raw = 0
-    try:
-        base = float(raw or 0)
-    except (TypeError, ValueError):
-        base = 0.0
+            accessor_failed = True
+            raw = None
+    base = None
+    if not accessor_failed:
+        try:
+            base = float(raw)
+        except (TypeError, ValueError):
+            accessor_failed = True
+    if (
+        accessor_failed
+        or base is None
+        or not math.isfinite(base)
+        or base <= 0
+    ):
+        return {
+            "stop_pct": None,
+            "stop_full_pct": None,
+            "stop_partial_pct": None,
+            "stop_pct_source": STOP_PCT_SOURCE,
+            "partial_stop_ratio": None,
+            "volatility_tier": tier,
+            "stop_projection_null_reason": "stop_unavailable",
+        }
     fresh = {
         "dca_rounds": 0,
         "dca_recovery_rounds": 0,
@@ -358,7 +386,12 @@ def _gate_missing(cache: dict, key: str) -> bool:
     return key not in cache or cache[key] is None
 
 
-def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
+def project_gates(
+    cache: dict | None,
+    config_raw: dict | None = None,
+    *,
+    venue_state: _ShadowVenue | None = None,
+) -> dict:
     """One true/false/null per gate. Null only when that gate's input is missing.
 
     Does not mutate ``cache`` and does not call the active risk path.
@@ -382,7 +415,8 @@ def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
         blocked = max_slots > 0 and float(cache["open_slots"]) >= max_slots
         gates["max_open_positions"] = not blocked
 
-    sensor = (config_raw or {}).get("entry_sensor_15m") or {}
+    body = config_raw if isinstance(config_raw, dict) else {}
+    sensor = body.get("entry_sensor_15m") or {}
     if not isinstance(sensor, dict):
         sensor = {}
     if not _gate_missing(cache, "market_cap_usd"):
@@ -390,111 +424,335 @@ def project_gates(cache: dict | None, config_raw: dict | None = None) -> dict:
 
         mcap_ok, _reason = passes_market_cap_filter(float(cache["market_cap_usd"]), sensor)
         gates["market_cap"] = bool(mcap_ok)
-    if not _gate_missing(cache, "quote_volume_24h_usdt"):
-        from services.venue_quality import liquidity_guard_config, venue_quality_config
-
-        guard = liquidity_guard_config(config_raw)
-        floor = guard.get(LIQUIDITY_FLOOR_KEY)
-        # Live _apply_hard_liquidity blocks when the window or book-cache age
-        # is missing. That is a failed gate, not a structural null.
-        window_missing = guard.get("depth_window_pct") is None
-        book_age_missing = guard.get("order_book_cache_ttl_sec") is None
-        if floor is None:
-            gates["venue_liquidity"] = None
-        elif window_missing or book_age_missing:
-            gates["venue_liquidity"] = False
-        elif _gate_missing(cache, "planned_order_usdt"):
-            gates["venue_liquidity"] = None
-        else:
-            volume = float(cache["quote_volume_24h_usdt"])
-            ok = volume >= float(floor)
-            merged = venue_quality_config(config_raw)
-            # evaluate_venue_quality returns before the multiple when the
-            # flag is off. The hard floor above still applies.
-            if merged.get("enabled", True):
-                try:
-                    multiple = float(merged.get(VENUE_ORDER_MULTIPLE_KEY) or 0)
-                except (TypeError, ValueError):
-                    multiple = 0.0
-                planned = float(cache["planned_order_usdt"])
-                if multiple > 0 and planned > 0 and volume < multiple * planned:
-                    ok = False
-            gates["venue_liquidity"] = ok
+    state = venue_state
+    if state is None:
+        state = _evaluate_shadow_venue(cache, config_raw)
+    gates["venue_liquidity"] = state.value
     return _publish_gates(gates)
 
 
-def venue_defaults_used(config_raw: dict | None) -> list[str]:
-    """venue_quality keys filled from ``_DEFAULTS`` because raw omitted them.
+def base_config_sha(base: dict) -> str:
+    """Canonical sha256 of a base config. Shadow, tests, and evaluation share this."""
+    payload = json.dumps(
+        base,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    Informational. Never a null reason. ``_DEFAULTS`` itself is unchanged.
+
+def _refresh_base_config() -> tuple[dict | None, str | None, bool]:
+    """Stat config.json, then reload when the pair changed.
+
+    The stored pair is the stat taken before the load. A raise or a non-dict
+    is not cached. Returns ``(base, sha, failed)``.
     """
-    from services.venue_quality import _DEFAULTS
+    global _BASE_STAT, _BASE_CFG, _BASE_SHA
+    try:
+        st = os.stat("config.json")
+        pair = (int(st.st_mtime_ns), int(st.st_size))
+    except Exception:
+        _BASE_STAT = None
+        _BASE_CFG = None
+        _BASE_SHA = None
+        return None, None, True
+    if _BASE_CFG is not None and _BASE_STAT == pair:
+        return _BASE_CFG, _BASE_SHA, False
+    try:
+        from data_manager import _load_default_config_from_disk
 
-    risk = (config_raw or {}).get("risk") if isinstance(config_raw, dict) else None
-    raw = risk.get("venue_quality") if isinstance(risk, dict) else None
-    if not isinstance(raw, dict):
-        raw = {}
-    return sorted(key for key in _DEFAULTS if key not in raw)
+        loaded = _load_default_config_from_disk()
+    except Exception:
+        _BASE_STAT = None
+        _BASE_CFG = None
+        _BASE_SHA = None
+        return None, None, True
+    if not isinstance(loaded, dict):
+        _BASE_STAT = None
+        _BASE_CFG = None
+        _BASE_SHA = None
+        return None, None, True
+    sha = base_config_sha(loaded)
+    _BASE_STAT = pair
+    _BASE_CFG = loaded
+    _BASE_SHA = sha
+    return loaded, sha, False
 
 
-def _planned_order_usdt(
+class _ShadowVenue:
+    __slots__ = (
+        "value",
+        "reason",
+        "config_key",
+        "config_problem",
+        "cap_volume",
+        "planned_capped",
+        "capped",
+        "base_sha",
+    )
+
+    def __init__(self, **kwargs):
+        for name in self.__slots__:
+            setattr(self, name, kwargs.get(name))
+
+
+def _log_shadow_venue_invalid(config_key: str, config_problem: str) -> None:
+    """One ERROR per (tenant, key, problem). Does not touch ``_CONFIG_WARNED``."""
+    try:
+        from core.tenant_context import resolve_tenant_id
+
+        tenant = str(resolve_tenant_id())
+    except Exception:
+        tenant = ""
+    token = (tenant, config_key, config_problem)
+    if token in _SHADOW_VENUE_WARNED:
+        return
+    _SHADOW_VENUE_WARNED.add(token)
+    log(
+        f"venue_config_invalid tenant={tenant} venue_config_key={config_key} "
+        f"venue_config_problem={config_problem}",
+        "ERROR",
+    )
+
+
+def _invalid_venue(key: str, problem: str, sha: str | None) -> _ShadowVenue:
+    _log_shadow_venue_invalid(key, problem)
+    return _ShadowVenue(
+        value=None,
+        reason="venue_config_invalid",
+        config_key=key,
+        config_problem=problem,
+        base_sha=sha,
+    )
+
+
+def _shadow_venue_block(config_raw: dict | None):
+    if not isinstance(config_raw, dict):
+        return {}
+    risk = config_raw.get("risk")
+    if not isinstance(risk, dict) or "venue_quality" not in risk:
+        return {}
+    return risk.get("venue_quality")
+
+
+def _guard_block(config_raw: dict | None) -> dict | None:
+    if not isinstance(config_raw, dict):
+        return None
+    risk = config_raw.get("risk")
+    if not isinstance(risk, dict) or "liquidity_guard" not in risk:
+        return None
+    block = risk.get("liquidity_guard")
+    return block if isinstance(block, dict) else None
+
+
+def _liquidity_key_problem(block: dict | None, key: str) -> str | None:
+    """missing / null / type / range. No stand-in value."""
+    from services.venue_quality import _positive_problem
+
+    if not isinstance(block, dict) or key not in block:
+        return "missing"
+    value = block.get(key)
+    if value is None:
+        return "null"
+    return _positive_problem(value)
+
+
+def _depth_data_missing(cache: dict, ttl: float | None) -> bool:
+    """D-a / D-b. Absent, stale, unparsed, or non-finite depth is missing."""
+    from services.venue_quality import _as_finite
+
+    capture = cache.get("capture")
+    if capture in (None, "", "missing", "stale"):
+        return True
+    age = cache.get("book_age_sec")
+    if isinstance(age, bool):
+        return True
+    try:
+        age_n = float(age)
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(age_n):
+        return True
+    if ttl is not None and age_n > float(ttl):
+        return True
+    if cache.get("depth_parsed") is not True:
+        return True
+    if _as_finite(cache.get("depth_bid_usdt")) is None:
+        return True
+    if _as_finite(cache.get("depth_ask_usdt")) is None:
+        return True
+    return False
+
+
+def _cached_depth_fields(symbol: str, config_raw: dict | None) -> dict:
+    """Book the process already holds. No HTTP. No row means missing depth."""
+    from services.venue_quality import _book_cache, _cache_lock, _pair, liquidity_guard_config
+
+    guard = liquidity_guard_config(config_raw if isinstance(config_raw, dict) else {})
+    ttl = guard.get("order_book_cache_ttl_sec")
+    pair = _pair(str(symbol or ""))
+    with _cache_lock:
+        hit = _book_cache.get(pair)
+    if not hit:
+        return {"capture": "missing"}
+    try:
+        stamped = float(hit[0])
+        bid_d, ask_d, parsed = hit[1][0], hit[1][1], hit[1][2]
+    except (TypeError, ValueError, IndexError):
+        return {"capture": "missing"}
+    age = max(0.0, time.time() - stamped)
+    fresh = ttl is not None and age <= float(ttl)
+    return {
+        "capture": "ok" if fresh else "stale",
+        "book_age_sec": age,
+        "depth_parsed": bool(parsed),
+        "depth_bid_usdt": bid_d,
+        "depth_ask_usdt": ask_d,
+    }
+
+
+def _positive_path(raw: dict | None, path: str) -> float | None:
+    from services.venue_quality import _lookup_path, _path_present, parse_liquidity_floor
+
+    if not isinstance(raw, dict) or not _path_present(raw, path):
+        return None
+    return parse_liquidity_floor(_lookup_path(raw, path))
+
+
+def _evaluate_shadow_venue(
+    cache: dict | None,
     config_raw: dict | None,
     *,
-    volatility_tier: str | None,
-    sensor_cfg: dict | None,
-) -> float:
-    """Order size the live sensor venue gate checks.
+    base_snapshot: tuple | None = None,
+) -> _ShadowVenue:
+    """Volume-only value. Invalid config and missing depth never pass.
 
-    Same expression as ``decision_engine``: the ``max_usdt_per_trade``
-    accessor, then ``venue_gate_planned_usdt``. Not ``resolve_sensor_usdt``
-    and not ``trading_mode``. ``resolve_sensor_usdt`` still runs so a
-    process-wide config patch during sizing is visible; its return is not
-    the logged number. No budget, lock, counter, or write.
+    Rank: venue_config_invalid, missing_quote_volume, missing_floor,
+    missing_depth_input, planned_order_unavailable. Does not call
+    ``venue_quality_config`` or ``liquidity_multiple_floor_reasons``.
     """
-    from strategies.sensor_entry_policy import resolve_sensor_usdt, venue_gate_planned_usdt
-
-    cfg = sensor_cfg if isinstance(sensor_cfg, dict) else {}
-    ticket = _config_view(config_raw).max_usdt_per_trade
-    resolve_sensor_usdt(
-        "",
-        volatility_tier=str(volatility_tier or ""),
-        max_usdt_per_trade=ticket,
-        cfg=cfg,
+    from services.venue_quality import (
+        DEPTH_MULTIPLE_PATH,
+        VenueConfigError,
+        liquidity_guard_config,
+        liquidity_multiple_floor_problems,
+        parse_venue_bounds,
+        validate_venue_quality,
     )
-    return float(venue_gate_planned_usdt(ticket))
+
+    if base_snapshot is None:
+        base_snapshot = _refresh_base_config()
+    base, sha, failed = base_snapshot
+    if failed:
+        return _invalid_venue("risk.liquidity_guard", "config_unavailable", None)
+
+    bounds = parse_venue_bounds(base)
+    if isinstance(bounds, VenueConfigError):
+        return _invalid_venue(bounds.config_key, bounds.config_problem, sha)
+    validated = validate_venue_quality(_shadow_venue_block(config_raw), bounds)
+    if isinstance(validated, VenueConfigError):
+        return _invalid_venue(validated.config_key, validated.config_problem, sha)
+
+    block = _guard_block(config_raw if isinstance(config_raw, dict) else None)
+    for key, path in (
+        ("depth_window_pct", "risk.liquidity_guard.depth_window_pct"),
+        ("order_book_cache_ttl_sec", "risk.liquidity_guard.order_book_cache_ttl_sec"),
+        ("depth_to_order_multiple", DEPTH_MULTIPLE_PATH),
+    ):
+        problem = _liquidity_key_problem(block, key)
+        if problem:
+            return _invalid_venue(path, problem, sha)
+
+    depth = _positive_path(config_raw if isinstance(config_raw, dict) else None, DEPTH_MULTIPLE_PATH)
+    if depth is None:
+        return _invalid_venue(DEPTH_MULTIPLE_PATH, "range", sha)
+    problems = liquidity_multiple_floor_problems(
+        depth, validated.min_volume_to_order_multiple, base
+    )
+    if problems:
+        problem = problems[0]
+        if problem.kind == "below_floor":
+            return _invalid_venue(problem.multiple_path, "range", sha)
+        return _invalid_venue(problem.floor_path, "missing", sha)
+
+    if not isinstance(cache, dict) or _gate_missing(cache, "quote_volume_24h_usdt"):
+        return _ShadowVenue(value=None, reason="missing_quote_volume", base_sha=sha)
+    guard = liquidity_guard_config(config_raw if isinstance(config_raw, dict) else {})
+    floor = guard.get(LIQUIDITY_FLOOR_KEY)
+    if floor is None:
+        return _ShadowVenue(value=None, reason="missing_floor", base_sha=sha)
+    if _depth_data_missing(cache, guard.get("order_book_cache_ttl_sec")):
+        return _ShadowVenue(value=None, reason="missing_depth_input", base_sha=sha)
+    if _gate_missing(cache, "planned_order_usdt"):
+        return _ShadowVenue(value=None, reason="planned_order_unavailable", base_sha=sha)
+    try:
+        volume = float(cache["quote_volume_24h_usdt"])
+        planned = float(cache["planned_order_usdt"])
+        k = float(validated.min_volume_to_order_multiple)
+    except (TypeError, ValueError):
+        return _ShadowVenue(value=None, reason="planned_order_unavailable", base_sha=sha)
+    if not math.isfinite(volume) or not math.isfinite(planned) or not math.isfinite(k) or k <= 0:
+        return _ShadowVenue(value=None, reason="planned_order_unavailable", base_sha=sha)
+    cap_volume = volume / k
+    return _ShadowVenue(
+        value=volume >= float(floor),
+        reason=None,
+        cap_volume=cap_volume,
+        planned_capped=min(planned, cap_volume),
+        capped=planned > cap_volume,
+        base_sha=sha,
+    )
+
+
+def _planned_order_usdt(config_raw: dict | None) -> float:
+    """Live gate ticket: BotConfig accessor, then ``venue_gate_planned_usdt``.
+
+    An empty or non-dict config does not construct ``BotConfig`` and does not
+    call the accessor. The caller catches any exception.
+    """
+    if not isinstance(config_raw, dict) or len(config_raw) == 0:
+        raise _PlannedUnavailable()
+    from core.config import BotConfig
+    from strategies.sensor_entry_policy import venue_gate_planned_usdt
+
+    ticket = BotConfig(raw=config_raw).max_usdt_per_trade
+    planned = float(venue_gate_planned_usdt(ticket))
+    if not math.isfinite(planned) or planned <= 0:
+        raise _PlannedUnavailable()
+    return planned
+
+
+class _PlannedUnavailable(Exception):
+    """Internal signal. The shadow row records planned_order_unavailable."""
 
 
 def venue_liquidity_null_reason(cache: dict | None, config_raw: dict | None) -> str | None:
-    """Why the venue gate is null. Closed list, and only for that gate.
-
-    Missing quote volume wins when both inputs are absent, because the floor
-    is not consulted until a volume is present.
-    """
-    if not isinstance(cache, dict) or _gate_missing(cache, "quote_volume_24h_usdt"):
-        return "missing_quote_volume"
-    from services.venue_quality import liquidity_guard_config
-
-    if liquidity_guard_config(config_raw).get(LIQUIDITY_FLOOR_KEY) is None:
-        return "missing_floor"
-    if _gate_missing(cache, "planned_order_usdt"):
-        # Normal null. Not in ``_VENUE_NULL_REASONS``, so it is not a
-        # structural null and it does not count toward E11.
-        return "planned_order_unavailable"
-    return None
+    """Why the venue gate is null. Closed list, rank order, venue gate only."""
+    return _evaluate_shadow_venue(cache, config_raw).reason
 
 
-def _venue_null_fields(cache: dict | None, config_raw: dict | None, gates: dict) -> dict:
+def _venue_null_fields(
+    cache: dict | None,
+    config_raw: dict | None,
+    gates: dict,
+    state: _ShadowVenue | None = None,
+) -> dict:
     """One reason field, and only when the venue gate itself is null."""
     if not isinstance(gates, dict) or gates.get("venue_liquidity") is not None:
         return {}
-    reason = venue_liquidity_null_reason(cache, config_raw)
-    if reason == "planned_order_unavailable":
-        return {"venue_liquidity_null_reason": reason}
-    if reason not in _VENUE_NULL_REASONS:
+    if state is None:
+        state = _evaluate_shadow_venue(cache, config_raw)
+    reason = state.reason
+    if not reason:
         return {}
     fields = {"venue_liquidity_null_reason": reason}
     if reason == "missing_floor":
         fields["venue_liquidity_missing_key"] = MISSING_FLOOR_KEY
+    if reason == "venue_config_invalid":
+        fields["venue_config_key"] = state.config_key
+        fields["venue_config_problem"] = state.config_problem
     return fields
 
 
@@ -520,7 +778,8 @@ def dry_check_gates(cache: dict | None, config_raw: dict | None = None) -> tuple
 def _config_view(config_raw: dict | None):
     from core.config import BotConfig
 
-    return BotConfig(raw=config_raw or {})
+    body = config_raw if isinstance(config_raw, dict) else {}
+    return BotConfig(raw=body)
 
 
 def _parse_utc(value) -> datetime | None:
@@ -749,6 +1008,7 @@ def snapshot_gate_inputs(
     _store("max_open_positions", _peek_max_open_positions(config_raw))
     _store("cooldown_blocked", _peek_cooldown_blocked(symbol, timeframe, config_raw))
     _store("rate_limited", _peek_rate_limited(config_raw))
+    cache.update(_cached_depth_fields(symbol, config_raw))
     return cache
 
 
@@ -1323,6 +1583,8 @@ def log_shadow_trigger(
     now: datetime | None = None,
 ) -> dict | None:
     """Write one ``shadow_signal`` row, unless this symbol already has one open."""
+    # Stat and maybe reload before the shadow lock. Never under it.
+    base_snapshot = _refresh_base_config()
     current = _utc(now)
     with _LOCK:
         _touch_day(current)
@@ -1362,16 +1624,31 @@ def log_shadow_trigger(
         version, version_reason = config_version(config_raw)
         planned = None
         gate_for_check = gate_cache
+        venue_state = None
         if isinstance(gate_cache, dict):
-            planned = _planned_order_usdt(
-                config_raw,
-                volatility_tier=stops.get("volatility_tier"),
-                sensor_cfg=sensor_cfg,
-            )
+            try:
+                planned = _planned_order_usdt(config_raw)
+            except Exception:
+                planned = None
             gate_for_check = dict(gate_cache)
             gate_for_check["planned_order_usdt"] = planned
-        gates_passed, gate_reject_reason = dry_check_gates(gate_for_check, config_raw)
-        gates = project_gates(gate_for_check, config_raw)
+            venue_state = _evaluate_shadow_venue(
+                gate_for_check, config_raw, base_snapshot=base_snapshot
+            )
+        gates = project_gates(gate_for_check, config_raw, venue_state=venue_state)
+        if not isinstance(gate_for_check, dict):
+            gates_passed, gate_reject_reason = _null_gate("gate_check_unavailable")
+        else:
+            gates_passed = True
+            gate_reject_reason = None
+            for name in _GATE_ORDER:
+                if gates[name] is False:
+                    gates_passed = False
+                    gate_reject_reason = _GATE_REJECT.get(name, name)
+                    break
+            else:
+                if any(gates[name] is None for name in _GATE_ORDER):
+                    gates_passed, gate_reject_reason = _null_gate("input_uncached")
         px = float(price)
         cached_mcap = None
         cached_vol = None
@@ -1403,9 +1680,16 @@ def log_shadow_trigger(
             "market_cap_usd": cached_mcap,
             "quote_volume_24h_usdt": cached_vol,
             "planned_order_usdt": planned,
-            "venue_defaults_used": venue_defaults_used(config_raw),
+            "venue_gate_version": VENUE_GATE_VERSION,
+            "cap_basis": CAP_BASIS,
+            "base_config_sha": None if base_snapshot[2] else base_snapshot[1],
+            "cap_volume": None if venue_state is None else venue_state.cap_volume,
+            "planned_order_usdt_capped": None if venue_state is None else venue_state.planned_capped,
+            "capped": None if venue_state is None else venue_state.capped,
         }
-        row.update(_venue_null_fields(gate_for_check, config_raw, gates))
+        if stops.get("stop_projection_null_reason"):
+            row["stop_projection_null_reason"] = stops["stop_projection_null_reason"]
+        row.update(_venue_null_fields(gate_for_check, config_raw, gates, venue_state))
         if version_reason:
             row["config_version_reason"] = version_reason
         open_row = {

@@ -16,10 +16,10 @@ def test_parallel_thread_late_lookup(logs, monkeypatch):
     monkeypatch.setattr("data_manager.get_config", _config)
     g1 = threading.Barrier(2, timeout=3); g1b = threading.Barrier(2, timeout=3)
     g2 = threading.Barrier(2, timeout=3); g2b = threading.Barrier(2, timeout=3)
-    real_r = registry_mod.resolve_strategy_params; real_s = size_mod.resolve_sensor_usdt
+    real_r = registry_mod.resolve_strategy_params; real_s = size_mod.venue_gate_planned_usdt
     # main thread parks inside the call until the worker has read the config
     monkeypatch.setattr(registry_mod, "resolve_strategy_params", lambda *a, **k: (g1.wait(), g1b.wait(), real_r(*a, **k))[2])
-    monkeypatch.setattr(size_mod, "resolve_sensor_usdt", lambda *a, **k: (g2.wait(), g2b.wait(), real_s(*a, **k))[2])
+    monkeypatch.setattr(size_mod, "venue_gate_planned_usdt", lambda *a, **k: (g2.wait(), g2b.wait(), real_s(*a, **k))[2])
     seen = []
 
     def worker():
