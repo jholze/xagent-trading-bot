@@ -915,18 +915,21 @@ def _preserve_legacy_cache_lots(scope: str) -> None:
     from data_manager import load_positions_document
     from strategies.positions import (
         DUST_AMOUNT_EPSILON,
-        _active_store,
+        _activate,
         _deserialize_position,
         _positions_lock,
         _recompute_open_count,
+        _resolve_store_key,
+        _store_for_key,
     )
 
-    from core.tenant_context import resolve_tenant_id
-
-    tid = resolve_tenant_id()
-    cache_positions = load_positions_document(scope, tenant_id=tid).get("positions", {}) or {}
-    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
-    store = _active_store()
+    # One key: the caller's tenant context plus the scope argument.
+    # The thread's active store can name a different tenant.
+    store_key = _resolve_store_key(scope)
+    _activate(store_key)
+    cache_positions = load_positions_document(store_key[1], tenant_id=store_key[0]).get("positions", {}) or {}
+    order_snap = _build_positions_snapshot_from_orders(store_key[1], tenant_id=store_key[0])
+    store = _store_for_key(store_key)
     with _positions_lock:
         for key, cached in cache_positions.items():
             if key in order_snap or key in store:

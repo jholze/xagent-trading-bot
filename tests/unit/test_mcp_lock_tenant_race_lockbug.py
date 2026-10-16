@@ -4,6 +4,9 @@ Every test uses an in-memory fake ledger (no Mongo, no Redis). Thread interleavi
 are forced deterministically with hooks so the outcome does not depend on timing:
 a second thread runs *real* bot code (what the trading cycle does) inside the
 window between two statements of set_position_lock.
+
+A, B1, and B2 hook functions the lock path still calls after the store is bound
+to the request thread (``get_key``, ``_serialize_positions``, ``ledger_lock``).
 """
 
 from __future__ import annotations
@@ -159,6 +162,32 @@ def _henry_cycle_ran():
     P._activate(prev)
 
 
+def _spawn_default_cycle_switch():
+    """Default cycle re-activates, then enters ``get_position`` (takes the positions lock).
+
+    The caller continues as soon as the key has been switched. If the caller
+    already holds ``_positions_lock``, ``get_position`` waits until that lock
+    is released; join the returned thread after the request returns.
+    """
+    ready = threading.Event()
+    errors: list[BaseException] = []
+
+    def _run():
+        try:
+            with tenant_context("default", scope="paper"):
+                P._activate(P._resolve_store_key())
+                ready.set()
+                P.get_position("BTC/USDT", "4h")
+        except BaseException as exc:  # pragma: no cover - surfaced by the caller
+            errors.append(exc)
+            ready.set()
+
+    thread = threading.Thread(target=_run, name="cycle-default")
+    thread.start()
+    assert ready.wait(10), "cycle thread did not switch the store key"
+    return thread, errors
+
+
 # ---------------------------------------------------------------- defect A
 def test_A_lock_for_default_must_not_land_on_henry_while_henry_cycle_runs(ledger, monkeypatch):
     """06:23:55 UTC: xagent_lock(ZEC/USDT, default, 4h) -> ok, lock landed on henry ZEC 4h."""
@@ -166,13 +195,19 @@ def test_A_lock_for_default_must_not_land_on_henry_while_henry_cycle_runs(ledger
     with tenant_context("henry", scope="paper"):
         P.activate_tenant_positions(scope="paper", tenant_id="henry")
 
-    orig_init = P.init_position
+    orig_get_key = P.get_key
+    armed = {"on": True}
 
-    def init_then_cycle_switch(symbol, timeframe):
-        orig_init(symbol, timeframe)  # HTTP thread: _activate((default, paper))
-        _in_cycle_thread(_henry_cycle_touches_position)  # cycle thread: _activate((henry, paper))
+    def get_key_then_henry_cycle(symbol, timeframe):
+        key = orig_get_key(symbol, timeframe)
+        # set_position_lock calls get_key after choosing the request store.
+        # A process-wide key still follows the cycle thread; a context-local key does not.
+        if armed["on"]:
+            armed["on"] = False
+            _in_cycle_thread(_henry_cycle_touches_position)
+        return key
 
-    monkeypatch.setattr(P, "init_position", init_then_cycle_switch)
+    monkeypatch.setattr(P, "get_key", get_key_then_henry_cycle)
 
     rv = _post_lock(_client(), "default", "ZEC/USDT", "4h")
     assert rv.status_code == 200 and rv.get_json()["ok"] is True
@@ -187,21 +222,31 @@ def test_A_lock_for_default_must_not_land_on_henry_while_henry_cycle_runs(ledger
 
 # ---------------------------------------------------------------- defect B
 def test_B1_henry_lock_survives_when_default_cycle_switches_before_flush(ledger, monkeypatch):
-    """SKYAI (henry 4h) lost: flush_positions pins the *global* _active_key tenant."""
+    """SKYAI (henry 4h) lost: the save serializes whichever store the global key names."""
     _henry_cycle_ran()
-    orig_flush = P.flush_positions
+    orig_serialize = P._serialize_positions
+    pending: list[threading.Thread] = []
+    errors: list[BaseException] = []
 
-    def cycle_switch_then_flush(*a, **k):
-        _in_cycle_thread(_default_cycle_touches_position)
-        return orig_flush(*a, **k)
+    def serialize_after_default_switch(*a, **k):
+        thread, cycle_errors = _spawn_default_cycle_switch()
+        errors.extend(cycle_errors)
+        pending.append(thread)
+        return orig_serialize(*a, **k)
 
-    monkeypatch.setattr(P, "flush_positions", cycle_switch_then_flush)
-
-    rv = _post_lock(_client(), "henry", "SKYAI/USDT", "4h")
+    monkeypatch.setattr(P, "_serialize_positions", serialize_after_default_switch)
+    try:
+        rv = _post_lock(_client(), "henry", "SKYAI/USDT", "4h")
+    finally:
+        monkeypatch.setattr(P, "_serialize_positions", orig_serialize)
+        for thread in pending:
+            thread.join(10)
+            assert not thread.is_alive(), "cycle thread hung"
+    if errors:
+        raise errors[0]
     assert rv.status_code == 200 and rv.get_json()["ok"] is True
 
     # Next henry cycle: tenant_cycle_context -> activate_tenant_positions reloads from ledger.
-    monkeypatch.setattr(P, "flush_positions", orig_flush)
     with tenant_context("henry", scope="paper"):
         P.activate_tenant_positions(scope="paper", tenant_id="henry")
         ram_lock = (P.get_position("SKYAI/USDT", "4h") or {}).get("lock")
@@ -212,24 +257,29 @@ def test_B1_henry_lock_survives_when_default_cycle_switches_before_flush(ledger,
 
 
 def test_B2_henry_lock_survives_cycle_reload_between_write_and_flush(ledger, monkeypatch):
-    """Henry cycle reload (store.clear() + rebuild from ledger) lands in the write->flush gap."""
+    """Henry cycle reload (store.clear() + rebuild from ledger) lands in the save window."""
     _henry_cycle_ran()
-    orig_flush = P.flush_positions
+    calls = {"n": 0}
 
-    def henry_reload_then_flush(*a, **k):
-        def _reload():
-            with tenant_context("henry", scope="paper"):
-                P.activate_tenant_positions(scope="paper", tenant_id="henry")
+    def ledger_lock_then_henry_reload(*_a, **_k):
+        calls["n"] += 1
+        # The old save takes this lock after the RAM write. The new save takes
+        # it before the write, and again while the positions lock is held.
+        if calls["n"] == 1:
+            def _reload():
+                with tenant_context("henry", scope="paper"):
+                    P.activate_tenant_positions(scope="paper", tenant_id="henry")
 
-        _in_cycle_thread(_reload)
-        return orig_flush(*a, **k)
+            _in_cycle_thread(_reload)
+        return nullcontext()
 
-    monkeypatch.setattr(P, "flush_positions", henry_reload_then_flush)
+    monkeypatch.setattr("bus.locks.ledger_lock", ledger_lock_then_henry_reload)
     rv = _post_lock(_client(), "henry", "SKYAI/USDT", "4h")
     assert rv.status_code == 200 and rv.get_json()["ok"] is True
     assert ledger.persisted_lock("henry", "SKYAI_USDT_4h") is not None, (
         "lock wiped by henry reload before flush; bot_http still answered ok"
     )
+    assert calls["n"] >= 1, "lock path never took the ledger lock"
 
 
 def test_B0_sequential_lock_without_interleaving_persists(ledger):
