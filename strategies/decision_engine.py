@@ -87,12 +87,14 @@ _SHADOW_TAG_SOURCES = {
 # RSI profit sell (see _merge_sell around the rsi relabel) and must stay HOLD.
 # TODO(#696): add the cap-stop label once #696 names it. CAP_STOP_LABEL stays
 # None until then; do not guess a symbol or a tenant.
+# `manual` is intentionally absent: the engine never emits sell_source=manual
+# (Telegram manual orders bypass this path). A channel tag named manual is not
+# a stop.
 _UNSUPPRESSIBLE_STOP_LABELS = frozenset({
     "stop_loss",
     "partial_stop",
     "SELL_STOP_FULL",
     "x_stop_loss",
-    "manual",
 })
 
 # Technical/RSI profit sells stay HOLD while any shadow tag is present.
@@ -1300,23 +1302,20 @@ class DecisionEngine:
         execution_action: str,
         sell_source: str,
     ) -> bool:
-        """True for hard/partial/x/manual stops. Never for a technical RSI sell.
+        """True for hard/partial/x stops. Never for a technical RSI sell.
 
         ``SELL_STOP_FULL`` is both the hard-stop execution label and the legacy
         mapping of every ``SELL_FULL`` (trailing, lifetime). It protects a
         decision only when the winning source is a stop source, or when the
         normalized action is the literal label. A trailing full close stays
-        suppressible.
+        suppressible. The check is an OR: a stop source whose normalized
+        action is not itself in the set (partial_stop, x_stop_loss) is still
+        protected, and so is a literal ``SELL_STOP_FULL`` whose source is not.
         """
         source = str(sell_source or "")
         action = str(normalized or "")
         execution = str(execution_action or "")
         if source in _UNSUPPRESSIBLE_STOP_LABELS or action in _UNSUPPRESSIBLE_STOP_LABELS:
-            return True
-        if (
-            execution in _UNSUPPRESSIBLE_STOP_LABELS
-            and source in _UNSUPPRESSIBLE_STOP_LABELS
-        ):
             return True
         # TODO(#696): honor the cap-stop label once it is named.
         cap = CAP_STOP_LABEL
@@ -1332,18 +1331,6 @@ class DecisionEngine:
             if sell_source in _SHADOW_TAG_SOURCES[tag]:
                 return True
         return False
-
-    def _foreign_shadow_action(self, sell_source: str) -> str:
-        """Execution label of a shadow candidate that did not win."""
-        pending = getattr(self, "_shadow_candidate_actions", None) or []
-        for tag, action in pending:
-            owned = _SHADOW_TAG_SOURCES.get(tag) or frozenset()
-            if sell_source not in owned and action:
-                return action
-        for _tag, action in pending:
-            if action:
-                return action
-        return ""
 
     def _apply_shadow_mode(
         self,
@@ -1361,7 +1348,6 @@ class DecisionEngine:
         self._shadow_sell_source = ""
         sell_source = str(sell_source or "")
         tags = self._shadow_tags(sources)
-        shadow_log = ""
         if tags and is_sell(normalized):
             protected = self._is_unsuppressible_stop(
                 normalized, execution_action, sell_source
@@ -1369,26 +1355,25 @@ class DecisionEngine:
             owns = self._winner_is_shadow_source(tags, sell_source)
             technical = sell_source in _TECHNICAL_SELL_SOURCES
             if protected:
-                # Live stop stands. The shadow candidate is still logged.
-                shadow_log = self._foreign_shadow_action(sell_source)
+                # Live stop stands. Do not attach the shadow candidate.
+                pass
             elif technical or owns:
-                # Shadow-source sell, or a technical/RSI profit sell: HOLD.
+                # The sell being held is this one: its own execution action.
                 return HOLD, "HOLD", execution_action
-            else:
-                # A different live sell won. Execute it and keep the shadow row.
-                shadow_log = self._foreign_shadow_action(sell_source) or execution_action
+            # A different live sell won. Execute it with no shadow_action.
 
         profile = strategy_params.get("strategy_profile", "")
         if profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
-            return normalized, execution_action, shadow_log
-        # Missing key is live. Explicit mode=shadow still cannot hold a stop.
-        mode = self.config.volatile_altcoin_config.get("mode", "live")
+            return normalized, execution_action, ""
+        # Missing key stays shadow, matching the previous volatile behaviour
+        # for buys and non-stop sells. Stops are exempt below.
+        mode = self.config.volatile_altcoin_config.get("mode", "shadow")
         if mode != "shadow":
-            return normalized, execution_action, shadow_log
-        if normalized == HOLD or not is_sell(normalized):
-            return normalized, execution_action, shadow_log
+            return normalized, execution_action, ""
+        if normalized == HOLD:
+            return normalized, execution_action, ""
         if self._is_unsuppressible_stop(normalized, execution_action, sell_source):
-            return normalized, execution_action, shadow_log
+            return normalized, execution_action, ""
         return HOLD, "HOLD", execution_action
 
     def evaluate_with_market(
@@ -1900,6 +1885,9 @@ class DecisionEngine:
 
         profile = strategy_params.get("strategy_profile", "")
         tier = strategy_params.get("volatility_tier", "")
+        # True only when this decision held an action and recorded it.
+        # An executed sell leaves shadow_action empty, so the flag is false.
+        shadow_suppressed = bool(shadow_action) and execution_action == "HOLD"
 
         analysis = SignalAnalysis(
             action=execution_action,
@@ -1924,6 +1912,7 @@ class DecisionEngine:
             volatility_tier=tier,
             strategy_profile=profile,
             shadow_action=shadow_action,
+            shadow_suppressed=shadow_suppressed,
             sell_policy_audit=sell_policy_audit,
             sell_source=str(sell_source or ""),
         )
