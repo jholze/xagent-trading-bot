@@ -63,6 +63,38 @@ def tick_age_label(time_ms: Any, now: float | None = None) -> str:
     return f"{age:.3f}"
 
 
+_HARD_STOP_ACTIONS = frozenset({"SELL_STOP_FULL", "SELL_STOP_PARTIAL"})
+
+
+def _rejected_partial_escalates_to_full(action: str, source: str, message: str) -> bool:
+    """#709: retry a rejected hard partial once as SELL_STOP_FULL.
+
+    ``already sold …`` and ``position $… below minimum`` are risk-guard
+    rejects. ``below Gate minimum`` is the venue pause and is not this path.
+    """
+    if source != "stop_loss" or action != "SELL_STOP_PARTIAL":
+        return False
+    msg = message or ""
+    if "already sold" in msg:
+        return True
+    if "position $" in msg and "below minimum" in msg:
+        return True
+    return False
+
+
+def _positive_amount(*sources: dict | None) -> float:
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        try:
+            amount = float(src.get("amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            return amount
+    return 0.0
+
+
 def _ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     try:
@@ -147,6 +179,7 @@ class ExitRealtimeHub:
             "ws_stop_skip_no_bid": 0,
             "ws_stop_skip_no_base": 0,
             "ws_stop_below_min": 0,
+            "rejected_stops": 0,
         }
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
@@ -526,6 +559,12 @@ class ExitRealtimeHub:
                 liq.stop()
             except Exception:
                 pass
+
+    def _count_rejected_stop(self, action: str, source: str) -> None:
+        """Count a rejected hard stop. Readable via stats() on exit-radar /health."""
+        if source != "stop_loss" or action not in _HARD_STOP_ACTIONS:
+            return
+        self._stats["rejected_stops"] = int(self._stats.get("rejected_stops") or 0) + 1
 
     def _debounce_ok(
         self,
@@ -971,6 +1010,37 @@ class ExitRealtimeHub:
                 sell_amount=sell_amount,
                 strategy_params=params if src == "stop_loss" else None,
             )
+            if not result.get("executed"):
+                self._count_rejected_stop(action, src)
+                reject_msg = str(result.get("message") or "")
+                if _rejected_partial_escalates_to_full(action, src, reject_msg):
+                    held_now = _positive_amount(live_for_side, pos)
+                    if held_now > 0:
+                        # One full-stop attempt for this fire. A rejected full
+                        # stop is counted and is not escalated again.
+                        log(
+                            f"exit_ws stop escalate symbol={sym} "
+                            f"tenant={row_tenant or ''} from={action} "
+                            f"to=SELL_STOP_FULL reason={reject_msg[:160]}",
+                            "INFO",
+                        )
+                        result = try_execute_trail_exit(
+                            symbol=sym,
+                            timeframe=tf,
+                            price=price,
+                            action="SELL_STOP_FULL",
+                            exit_source=src,
+                            rationale=(
+                                str(ev.get("rationale") or "")
+                                + " escalated_to=SELL_STOP_FULL"
+                            )[:240],
+                            tenant_id=row_tenant,
+                            sell_amount=held_now,
+                            strategy_params=params if src == "stop_loss" else None,
+                        )
+                        action = "SELL_STOP_FULL"
+                        if not result.get("executed"):
+                            self._count_rejected_stop(action, src)
             ev["executed"] = bool(result.get("executed"))
             ev["message"] = result.get("message")
             if result.get("executed"):

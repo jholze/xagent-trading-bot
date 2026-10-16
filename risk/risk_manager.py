@@ -82,9 +82,87 @@ class _MissingMark(RuntimeError):
     """Open live lot has no mark. The USDT daily-loss check always denies."""
 
 
+# #709: rejected hard stops in this process. The exit-radar hub mirrors the
+# count it observes into stats()["rejected_stops"], which GET /health returns.
+_REJECTED_STOPS = 0
+_SOLD_PERCENT_PLAUSIBILITY_TOLERANCE = 0.01
+
+
 def reset_risk_manager_globals_for_tests() -> None:
-    global _EQUITY_MTM_UNAVAILABLE_LOGGED
+    global _EQUITY_MTM_UNAVAILABLE_LOGGED, _REJECTED_STOPS
     _EQUITY_MTM_UNAVAILABLE_LOGGED = False
+    _REJECTED_STOPS = 0
+
+
+def rejected_stop_count() -> int:
+    """How many hard stops this process has rejected since start (or the last test reset)."""
+    return _REJECTED_STOPS
+
+
+def _lower_sold_percent_for_check(pos: dict | None, stored: float) -> float:
+    """Sold fraction for the partial-sell check only (#709).
+
+    ``peak_amount`` is the opening fill. DCA and add-on buys raise ``amount``
+    and not peak, so the held basis is ``max(peak_amount, amount)``.
+    ``implied = 1 - amount / basis``. A stored value clearly above ``implied``
+    is stale and is lowered to ``implied``. The result is never higher than
+    ``stored``, and ``pos`` is not modified.
+    """
+    if not isinstance(pos, dict):
+        return stored
+    try:
+        amount_now = float(pos.get("amount") or 0)
+        peak = float(pos.get("peak_amount") or 0)
+    except (TypeError, ValueError):
+        return stored
+    # Without a peak there is no held basis. amount alone implies 0 sold and
+    # would wipe a real sold_percent.
+    if amount_now <= 0 or peak <= 0:
+        return stored
+    basis = max(peak, amount_now)
+    implied = max(0.0, 1.0 - (amount_now / basis))
+    if stored > implied + _SOLD_PERCENT_PLAUSIBILITY_TOLERANCE and implied < stored:
+        return implied
+    return stored
+
+
+def _rejected_stop_signal_kind(signal: str) -> str:
+    if str(signal or "") == "SELL_STOP_FULL":
+        return "SELL_STOP_FULL"
+    return "partial"
+
+
+def note_rejected_stop(
+    *,
+    tenant: str,
+    symbol: str,
+    timeframe: str,
+    signal: str,
+    reason: str,
+    sold_percent: float,
+    amount: float,
+    peak_amount: float,
+) -> None:
+    """WARNING plus the process counter for one rejected hard stop (#709).
+
+    The line is the log source for later measurement. ``sold_percent`` is the
+    stored lot value, not a plausibility correction. ``reason`` is last so the
+    earlier fields stay single tokens.
+    """
+    global _REJECTED_STOPS
+    from core.time_utils import format_display_time
+    from logger import log
+
+    _REJECTED_STOPS += 1
+    kind = _rejected_stop_signal_kind(signal)
+    log(
+        "rejected_stop "
+        f"timestamp={format_display_time()} tenant={tenant} symbol={symbol} "
+        f"tf={timeframe} signal={kind} sold_percent={sold_percent} "
+        f"amount={amount} peak_amount={peak_amount} "
+        f"rejected_stops={_REJECTED_STOPS} reason={reason}",
+        "WARNING",
+    )
 
 
 def _is_emergency_sell(signal: str) -> bool:
@@ -323,9 +401,47 @@ class RiskManager:
                     log(f"daily_gainer_desk emit failed: {exc}", "WARNING")
                 except Exception:
                     pass
+            try:
+                self._record_rejected_stop(order, timeframe, decision)
+            except Exception:
+                pass
             return decision
         finally:
             scope.doc = previous
+
+    def _record_rejected_stop(self, order: TradeOrder, timeframe: str, decision: RiskDecision) -> None:
+        """Log and count a rejected hard stop. Does not change the decision or the lot."""
+        if getattr(decision, "approved", True):
+            return
+        if str(getattr(order, "type", "") or "").upper() != "SELL":
+            return
+        signal = str(getattr(order, "signal", "") or "")
+        if not _is_stop_loss_sell(signal):
+            return
+        pos = {}
+        try:
+            pos = get_position(order.symbol, timeframe) or {}
+        except Exception:
+            pos = {}
+
+        def _num(key: str) -> float:
+            try:
+                return float(pos.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        from core.tenant_context import resolve_tenant_id
+
+        note_rejected_stop(
+            tenant=resolve_tenant_id(),
+            symbol=str(getattr(order, "symbol", "") or ""),
+            timeframe=str(timeframe or ""),
+            signal=signal,
+            reason=str(getattr(decision, "message", "") or ""),
+            sold_percent=_num("sold_percent"),
+            amount=_num("amount"),
+            peak_amount=_num("peak_amount"),
+        )
 
     def _eval_scope(self) -> threading.local:
         tls = self.__dict__.get("_eval_tls")
@@ -4038,6 +4154,8 @@ class RiskManager:
         pos_value = float(pos.get("amount", 0)) * order.price
         notional = float(order.amount) * order.price
         sold_pct = float(pos.get("sold_percent", 0))
+        # #709: lower a stale sold_percent for this check only. Not written back.
+        sold_pct = _lower_sold_percent_for_check(pos, sold_pct)
 
         if pos_value < limits["min_position_usdt"]:
             return True, (
