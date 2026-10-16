@@ -21,7 +21,11 @@ def test_load_config_skips_disk_on_cache_hit(monkeypatch):
 
     def counting_load():
         reads["n"] += 1
-        return {"trading_mode": "paper", "max_open_positions": 7}
+        return {
+            "trading_mode": "paper",
+            "max_open_positions": 7,
+            "risk": {"long_hard_stop_max_loss_pct": 20},
+        }
 
     monkeypatch.setattr(dm, "_load_default_config_from_disk", counting_load)
     monkeypatch.setattr(dm, "_apply_trading_profile_merge", lambda cfg, body: dict(cfg))
@@ -45,7 +49,11 @@ def test_reload_config_invalidates_and_rereads(monkeypatch):
 
     def counting_load():
         reads["n"] += 1
-        return {"trading_mode": "paper", "token": reads["n"]}
+        return {
+            "trading_mode": "paper",
+            "token": reads["n"],
+            "risk": {"long_hard_stop_max_loss_pct": 20},
+        }
 
     monkeypatch.setattr(dm, "_load_default_config_from_disk", counting_load)
     monkeypatch.setattr(dm, "_apply_trading_profile_merge", lambda cfg, body: dict(cfg))
@@ -67,7 +75,11 @@ def test_tenant_load_config_still_reads_disk(monkeypatch):
 
     def counting_load():
         reads["n"] += 1
-        return {"trading_mode": "paper", "max_open_positions": 3}
+        return {
+            "trading_mode": "paper",
+            "max_open_positions": 3,
+            "risk": {"long_hard_stop_max_loss_pct": 20},
+        }
 
     monkeypatch.setattr(dm, "_load_default_config_from_disk", counting_load)
     monkeypatch.setattr(dm, "_apply_trading_profile_merge", lambda cfg, body: dict(cfg))

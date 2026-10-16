@@ -103,6 +103,9 @@ except ImportError as e:
 
 with open("config.json", encoding="utf-8") as f:
     config = json.load(f)
+from core.config_guardrails import refuse_start_if_stop_cap_invalid
+
+refuse_start_if_stop_cap_invalid(config)
 trading_mode = config.get("trading_mode", "paper" if config.get("virtual_trading", True) else "off")
 print(f"Trading mode: {trading_mode.upper()}" + (" (demo)" if os.environ.get("DEMO_MODE") == "1" else ""))
 

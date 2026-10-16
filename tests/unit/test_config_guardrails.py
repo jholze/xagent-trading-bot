@@ -48,6 +48,9 @@ _INT_NN = ([0, 1, 10**7], [-1, 10**7 + 1, 0.5, "5", None, False, math.inf])
 _PCT = ([0, 0.0, 0.15, 50, 100, 100.0], [-0.01, 100.01, 1000, "5", None, True, math.nan, math.inf])
 _POSITIVE = ([0.01, 1, 4500, 1e9], [0, -1, "4500", None, True, math.nan, math.inf])
 _NON_NEG = ([0, 0.0, 800, 1e9], [-0.01, -1, "800", None, True, math.nan, -math.inf])
+# (0, 50]. 0 and anything above 50 are rejected (#695). Absence stays valid
+# on a partial save; start/reload require the key.
+_STOP_CAP = ([0.01, 1, 20, 50, 50.0], [0, -5, 50.01, 60, "abc", None, True, math.nan])
 
 BOUNDARY_TABLE: dict[str, tuple[list, list]] = {
     "max_open_positions": _POS,
@@ -89,6 +92,7 @@ BOUNDARY_TABLE: dict[str, tuple[list, list]] = {
     "risk.cash_policy.floor_pct_base": _PCT,
     "risk.cash_policy.floor_pct_min": _PCT,
     "risk.cash_policy.floor_pct_max": _PCT,
+    "risk.long_hard_stop_max_loss_pct": _STOP_CAP,
 }
 
 
@@ -184,6 +188,7 @@ def test_default_save_accepts_boundary_valid_values(default_tenant):
             "max_daily_loss_pct": 100,
             "max_daily_sells": 0,
             "min_trade_usdt": 0,
+            "long_hard_stop_max_loss_pct": 20,
             **_floor_keys(),
         },
     }
@@ -199,7 +204,13 @@ def test_default_save_validates_before_atomic_write(default_tenant, monkeypatch)
     with pytest.raises(ConfigValidationError):
         _REAL_SAVE_CONFIG({"risk": {"cash_floor_pct": 101}})
     assert calls == []
-    ok_body = {"risk": {"cash_floor_pct": 100, **_floor_keys()}}
+    ok_body = {
+        "risk": {
+            "cash_floor_pct": 100,
+            "long_hard_stop_max_loss_pct": 20,
+            **_floor_keys(),
+        }
+    }
     assert _REAL_SAVE_CONFIG(ok_body) is True
     assert calls == [("config.json", ok_body)]
 

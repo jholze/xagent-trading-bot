@@ -47,7 +47,10 @@ def history_home(monkeypatch, tmp_path):
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 return loaded
-        return {"trading_mode": "paper", "risk": _floor_keys()}
+        return {
+            "trading_mode": "paper",
+            "risk": {**_floor_keys(), "long_hard_stop_max_loss_pct": 20},
+        }
 
     monkeypatch.setattr(data_manager, "_load_default_config_from_disk", _loader)
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
@@ -69,7 +72,7 @@ def _valid_cfg(**overrides) -> dict:
         "max_usdt_per_trade": 100,
         "trading_mode": "paper",
         "live": {"execution": "shadow", "max_usdt_per_trade": 100},
-        "risk": _floor_keys(),
+        "risk": {**_floor_keys(), "long_hard_stop_max_loss_pct": 20},
     }
     body.update(overrides)
     return body
@@ -145,7 +148,10 @@ def test_tenant_save_snapshots_previous_mongo_body(history_home, monkeypatch):
     monkeypatch.setattr(
         data_manager,
         "_load_default_config_from_disk",
-        lambda: {"trading_mode": "demo", "risk": _floor_keys()},
+        lambda: {
+            "trading_mode": "demo",
+            "risk": {**_floor_keys(), "long_hard_stop_max_loss_pct": 20},
+        },
     )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_mongo_test_mode", lambda cfg=None: True)
@@ -172,7 +178,7 @@ def test_tenant_failed_snapshot_skips_meta_store(history_home, monkeypatch):
     monkeypatch.setattr(
         data_manager,
         "_load_default_config_from_disk",
-        lambda: {"risk": _floor_keys()},
+        lambda: {"risk": {**_floor_keys(), "long_hard_stop_max_loss_pct": 20}},
     )
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
     monkeypatch.setattr(data_manager, "_mongo_test_mode", lambda cfg=None: True)

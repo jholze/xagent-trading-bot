@@ -121,6 +121,7 @@ def _floor_body(*, depth_floor=1, volume_floor=20, depth=1, volume=20) -> dict:
         "trading_mode": "paper",
         "max_open_positions": 5,
         "risk": {
+            "long_hard_stop_max_loss_pct": 20,
             "liquidity_guard": {
                 "depth_to_order_multiple_min": depth_floor,
                 "depth_to_order_multiple": depth,
@@ -478,7 +479,11 @@ def test_689_t14b_default_save_presence_rule(monkeypatch, tmp_path):
     monkeypatch.setattr(data_manager, "_config_cache", None)
     monkeypatch.setattr("core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default")
     _patch_disk(monkeypatch, _base())
-    body = {"trading_mode": "paper", "max_open_positions": 5}
+    body = {
+        "trading_mode": "paper",
+        "max_open_positions": 5,
+        "risk": {"long_hard_stop_max_loss_pct": 20},
+    }
     with pytest.raises(ConfigValidationError, match="liquidity guard floor missing") as ei:
         _REAL_SAVE(body)
     assert ei.value.path in (_DEPTH_FLOOR, _VOLUME_FLOOR)

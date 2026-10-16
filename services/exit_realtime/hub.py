@@ -1235,6 +1235,9 @@ def _book_row_for_position(
             params = cfg.strategy_params(sym, tf)
         except Exception:
             params = {}
+        from strategies.registry import attach_long_hard_stop_cap
+
+        params = attach_long_hard_stop_cap(params, cfg)
 
     return {
         "symbol": sym,
