@@ -11,6 +11,7 @@ Routes (token-gated):
 
 from __future__ import annotations
 
+import functools
 import os
 from datetime import datetime
 from typing import Any
@@ -20,8 +21,20 @@ from services.dca_sniper.config import (
     dca_sniper_config,
     dca_sniper_enabled,
     internal_token,
+    sniper_actor_context,
     sniper_owns_tenant,
 )
+
+
+def _bind_sniper_actor(fn):
+    """Run a sniper entry on the #431 tenant when this thread has no context."""
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with sniper_actor_context():
+            return fn(*args, **kwargs)
+
+    return _wrapped
 
 
 def _tenant_refusal(action: str, symbol: str) -> tuple[dict[str, Any], int] | None:
@@ -122,6 +135,7 @@ def snapshot_cash() -> dict[str, Any]:
         }
 
 
+@_bind_sniper_actor
 def build_candidates() -> list[dict[str, Any]]:
     from strategies.positions import get_position, list_active_positions
     from strategies.registry import resolve_strategy_params
@@ -320,6 +334,7 @@ def build_candidates() -> list[dict[str, Any]]:
     return out
 
 
+@_bind_sniper_actor
 def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Execute BUY_DCA with recovery_hold; Risk final."""
     from core.actions import BUY_DCA
@@ -428,6 +443,7 @@ def execute_sniper_dca(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
         return {"ok": False, "executed": False, "message": str(e)[:200]}, 500
 
 
+@_bind_sniper_actor
 def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Sell a winner to free cash for DCA (rotation-safe)."""
     from core.actions import SELL_FULL, SELL_PARTIAL_50
@@ -445,7 +461,16 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if refused is not None:
         return refused
 
-    pos = get_position(symbol, tf)
+    try:
+        pos = get_position(symbol, tf)
+    except Exception as e:
+        log(f"dca_sniper fund-sell position read fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
     if not is_open_position(pos):
         return {"ok": False, "executed": False, "message": "no_position"}, 404
     if is_recovery_hold_active(pos):
@@ -465,9 +490,16 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
                 "ok": False,
                 "executed": False,
                 "message": why or "position_locked_no_auto_sell",
+                "code": "position_locked",
             }, 409
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"dca_sniper fund-sell lock check fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
 
     try:
         price = float(data.get("price") or 0)
@@ -513,6 +545,7 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
         return {"ok": False, "executed": False, "message": str(e)[:200]}, 500
 
 
+@_bind_sniper_actor
 def promote_position(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     from strategies.positions import get_position, flush_positions
     from strategies.recovery_hold import maybe_promote_recovery_hold, set_recovery_hold
@@ -520,9 +553,40 @@ def promote_position(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     symbol = str(data.get("symbol") or "").strip()
     tf = str(data.get("timeframe") or "1h")
     force_clear = bool(data.get("force_clear"))
-    pos = get_position(symbol, tf)
+    if not symbol:
+        return {"ok": False, "message": "bad_symbol"}, 400
+    refused = _tenant_refusal("promote", symbol)
+    if refused is not None:
+        return refused
+    try:
+        pos = get_position(symbol, tf)
+    except Exception as e:
+        log(f"dca_sniper promote position read fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
     if not pos:
         return {"ok": False, "message": "no_position"}, 404
+    # Any active lock blocks a sniper mutation of the lot, same as a DCA add.
+    try:
+        from strategies.position_lock import dca_blocked
+
+        blocked, why = dca_blocked(pos)
+    except Exception as e:
+        log(f"dca_sniper promote lock check fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
+    if blocked:
+        return {
+            "ok": False,
+            "message": why or "position_locked",
+            "code": "position_locked",
+        }, 409
     if force_clear:
         pos["recovery_hold"] = False
         pos["sniper_focus"] = False
@@ -550,6 +614,7 @@ def promote_position(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
 
 
+@_bind_sniper_actor
 def list_fund_winners(*, min_gain_pct: float = 3.0, limit: int = 10) -> list[dict[str, Any]]:
     """Green open lots eligible for fund-from-winner sells."""
     winners: list[dict[str, Any]] = []

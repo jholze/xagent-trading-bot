@@ -108,6 +108,22 @@ def _call_execute(execute_fn, **kwargs) -> dict:
     return out
 
 
+def _write_tenant(actor: Actor | None, requested: str | None) -> tuple[str, str | None]:
+    """Tenant for a write. A token may not be silently redirected onto another book.
+
+    An omitted tenant still uses the actor's own tenant. An explicit tenant the
+    token does not own is ``tenant_forbidden``. Reads keep ``_effective_tenant``.
+    """
+    req = str(requested or "").strip()
+    if actor is None or "*" in actor.tenants or not actor.tenants:
+        return (req or "default"), None
+    if not req:
+        return str(actor.tenants[0]), None
+    if req not in actor.tenants:
+        return req, "tenant_forbidden"
+    return req, None
+
+
 def _write(
     actor,
     cap: str,
@@ -121,7 +137,9 @@ def _write(
     rate_per_min: int | None = None,
     now: float | None = None,
 ) -> dict:
-    tenant_id = _effective_tenant(actor, tenant)
+    tenant_id, tenant_err = _write_tenant(actor, tenant)
+    if tenant_err:
+        return {"ok": False, "error": tenant_err}
     ok, err = authorize(
         actor, cap, tenant_id, enabled=enabled, writes_enabled=writes_enabled
     )
