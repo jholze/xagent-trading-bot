@@ -1,0 +1,129 @@
+{
+  "cutoff_utc": "2026-09-27T19:36:00",
+  "nav_prices": [
+    {
+      "tenant": "tenant_h",
+      "scope": "live",
+      "date": "2026-09-28",
+      "as_of": "2026-09-28T16:00:00+00:00",
+      "candle_start": "2026-09-28T16:00:00+00:00",
+      "close": 2,
+      "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+      "fetched_at": "2026-10-06T08:00:00+00:00"
+    },
+    {
+      "tenant": "tenant_h",
+      "scope": "live",
+      "date": "2026-10-02",
+      "as_of": "2026-10-02T11:00:00+00:00",
+      "candle_start": "2026-10-02T11:00:00+00:00",
+      "close": 5,
+      "source": "https://api.gateio.ws/api/v4/spot/candlesticks",
+      "fetched_at": "2026-10-06T08:00:00+00:00"
+    }
+  ],
+  "expected_counts": {
+    "mongo.orders_v2": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.orders (embedded entries)": {"tenant_a": 2, "tenant_h": 3},
+    "mongo.positions (lots)": {"tenant_a": 1, "tenant_h": 1},
+    "mongo.trade_history (embedded trades)": {"tenant_a": 2, "tenant_h": 5},
+    "mongo.memory_trades": {"not_a_real_tenant": 1, "tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_lessons": {"someone_else": 1, "tenant_a": 0, "tenant_h": 0},
+    "mongo.memory_coin_profiles": {"tenant_a": 1, "tenant_h": 0},
+    "mongo.memory_market_events": {"not_a_real_tenant": 1, "tenant_a": 0, "tenant_h": 1},
+    "mongo.memory_rag_chunks": {"tenant_a": 2, "tenant_h": 0}
+  },
+  "positions": {
+    "tenant_a": {
+      "lot_id": "positions:tenant_a:demo/AAA_USDT_1h",
+      "entry_order": "ord_a_entry",
+      "dca_orders": ["ord_a_dca"]
+    },
+    "tenant_h": {
+      "lot_id": "positions:tenant_h:demo/AAA_USDT_1h",
+      "entry_order": "ord_h_entry",
+      "dca_orders": ["ord_h_dca_demo", "ord_h_dca_live"]
+    }
+  },
+  "keep": {
+    "henry_0812_round_trip": {
+      "orders": ["ord_keep_buy", "ord_keep_sell"],
+      "trade_history": ["tenant_h:live#663", "tenant_h:live#671"]
+    },
+    "ctexp_orders": ["ord_ctexp_1", "ord_ctexp_2"]
+  },
+  "stores": {
+    "mongo.orders_v2": {
+      "in_scope_ids": [
+        {"_id": "tenant_a:demo:ord_a_entry", "tenant": "tenant_a", "order_id": "ord_a_entry"},
+        {"_id": "tenant_a:demo:ord_a_dca", "tenant": "tenant_a", "order_id": "ord_a_dca"},
+        {"_id": "tenant_h:demo:ord_h_entry", "tenant": "tenant_h", "order_id": "ord_h_entry"},
+        {"_id": "tenant_h:demo:ord_h_dca_demo", "tenant": "tenant_h", "order_id": "ord_h_dca_demo"},
+        {"_id": "tenant_h:live:ord_h_dca_live", "tenant": "tenant_h", "order_id": "ord_h_dca_live"},
+        {"_id": "tenant_h:live:ord_keep_sell", "tenant": "tenant_h", "order_id": "ord_keep_sell"}
+      ],
+      "keep_henry_0812_ids": ["ord_keep_buy", "ord_keep_sell"],
+      "keep_ctexp_ids": ["ord_ctexp_1", "ord_ctexp_2"]
+    },
+    "mongo.orders (embedded entries)": {
+      "in_scope_ids": [
+        {"doc_id": "tenant_a:demo", "index": 0, "order_id": "ord_a_entry"},
+        {"doc_id": "tenant_a:demo", "index": 5, "order_id": "ord_a_dca"},
+        {"doc_id": "tenant_h:demo", "index": 0, "order_id": "ord_h_entry"},
+        {"doc_id": "tenant_h:demo", "index": 9, "order_id": "ord_h_dca_demo"},
+        {"doc_id": "tenant_h:live", "index": 0, "order_id": "ord_h_dca_live"},
+        {"doc_id": "tenant_h:live", "index": 3, "order_id": "ord_keep_sell"}
+      ],
+      "keep_henry_0812_ids": ["ord_keep_buy", "ord_keep_sell"],
+      "keep_ctexp_ids": ["ord_ctexp_1", "ord_ctexp_2"]
+    },
+    "mongo.positions (lots)": {
+      "in_scope_ids": [
+        {"doc_id": "tenant_a:demo", "key": "AAA_USDT_1h"},
+        {"doc_id": "tenant_h:demo", "key": "AAA_USDT_1h"}
+      ],
+      "keep_henry_0812_ids": [],
+      "keep_ctexp_ids": []
+    },
+    "mongo.trade_history (embedded trades)": {
+      "in_scope_ids": [
+        {"doc_id": "tenant_a:demo", "index": 3, "order_id": "ord_a_entry"},
+        {"doc_id": "tenant_h:demo", "index": 0, "order_id": "ord_h_entry"},
+        {"doc_id": "tenant_h:live", "index": 0, "order_id": "ord_h_dca_live"},
+        {"doc_id": "tenant_h:live", "index": 7, "order_id": "ord_orphan_sell"}
+      ],
+      "keep_henry_0812_ids": ["tenant_h:live#663", "tenant_h:live#671", "ord_keep_buy", "ord_keep_sell"],
+      "keep_ctexp_ids": []
+    },
+    "mongo.memory_trades": {
+      "in_scope_ids": [{"_id": "mem_trade_1"}, {"_id": "mem_trade_2"}],
+      "keep_henry_0812_ids": [],
+      "keep_ctexp_ids": []
+    },
+    "mongo.memory_market_events": {
+      "in_scope_ids": [
+        {"_id": "evt_listed", "source": "dca_policy", "ts_utc": "2026-09-28T00:00:00Z"},
+        {"_id": "evt_keep_0812", "source": "dca_policy", "ts_utc": "2026-10-02T00:00:00Z"}
+      ],
+      "keep_henry_0812_ids": ["evt_keep_0812"],
+      "keep_ctexp_ids": []
+    },
+    "mongo.memory_rag_chunks": {
+      "in_scope_ids": [
+        {"_id": "rag_listed", "source_id": "demo:ord_a_entry"}
+      ],
+      "keep_henry_0812_ids": ["rag_keep"],
+      "keep_ctexp_ids": []
+    },
+    "mongo.memory_lessons": {
+      "in_scope_ids": [{"_id": "lesson_1"}],
+      "keep_henry_0812_ids": [],
+      "keep_ctexp_ids": []
+    },
+    "mongo.memory_coin_profiles": {
+      "in_scope_ids": [{"_id": "tenant_a|demo|AAA/USDT"}],
+      "keep_henry_0812_ids": [],
+      "keep_ctexp_ids": []
+    }
+  }
+}

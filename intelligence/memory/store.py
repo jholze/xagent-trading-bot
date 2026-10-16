@@ -248,6 +248,26 @@ class MemoryStore:
             log(f"memory list_lessons failed: {e}", "WARNING")
             return []
 
+    def iter_raw(self, collection: str, *, session=None) -> list[dict]:
+        """Documents in a memory collection. No tenant filter.
+
+        The tenant tag on these rows is not reliable, so callers select by id.
+        Embeddings are omitted; deletes address ``_id`` only.
+        """
+        _assert_safe_collection(collection)
+        return list(self._col(collection).find({}, {"embedding": 0}, session=session))
+
+    def delete_ids(self, collection: str, ids: list[str], *, session=None) -> int:
+        """Delete memory documents by ``_id``. Empty input is a no-op."""
+        _assert_safe_collection(collection)
+        wanted = [str(item) for item in ids if item]
+        if not wanted:
+            return 0
+        result = self._col(collection).delete_many(
+            {"_id": {"$in": wanted}}, session=session
+        )
+        return int(getattr(result, "deleted_count", 0) or 0)
+
     def ensure_indexes(self) -> None:
         """Idempotent indexes — safe on shared DB."""
         try:
@@ -341,6 +361,21 @@ class InMemoryMemoryStore(MemoryStore):
                 or base.lower() in [t.lower() for t in L.tags]
             ]
         return out[:limit]
+
+    def iter_raw(self, collection: str, *, session=None) -> list[dict]:
+        del session
+        _assert_safe_collection(collection)
+        return [dict(doc) for doc in self._docs.get(collection, {}).values()]
+
+    def delete_ids(self, collection: str, ids: list[str], *, session=None) -> int:
+        del session
+        _assert_safe_collection(collection)
+        bucket = self._docs.setdefault(collection, {})
+        removed = 0
+        for item in ids:
+            if bucket.pop(str(item), None) is not None:
+                removed += 1
+        return removed
 
     def ensure_indexes(self) -> None:
         return
