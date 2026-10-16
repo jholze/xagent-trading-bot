@@ -158,9 +158,29 @@ def _has_open_position(symbol: str, coin: dict) -> bool:
     try:
         return is_open_position(get_position(symbol, tf))
     except Exception as e:
-        # Never crash the 15m loop on a bad/missing position key
-        log(f"15m sensor position check skip {symbol} {tf}: {e}", "WARNING")
-        return False
+        # Fail closed. "No position" would hand the symbol to
+        # process_entry_sensor. execute_if_needed only skips that buy when
+        # its own get_position raises; once this thread has tenant context
+        # that second skip does not run, so an unreadable book must count
+        # as present.
+        log(
+            f"15m sensor position check failed {symbol} {tf}: {e} "
+            "(treating as open, no new entry)",
+            "ERROR",
+        )
+        return True
+
+
+def _entry_sensor_tenants() -> list[str]:
+    """Tenants this poll must read. A fresh thread has no tenant context."""
+    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+
+    if not multi_tenant_enabled():
+        return [DEFAULT_TENANT]
+    from core.tenant_routing import iter_price_cycle_tenants
+
+    ids = [str(tid).strip() for tid in iter_price_cycle_tenants() if str(tid or "").strip()]
+    return ids or [DEFAULT_TENANT]
 
 
 def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
@@ -374,13 +394,21 @@ def _shadow_exit_prices(prices: dict, watched: list, cfg: dict, price_source: st
 
 
 def _loop_main(orchestrator) -> None:
+    """Poll under each cycle tenant. The daemon thread inherits no contextvar."""
+    from core.tenant_routing import tenant_cycle_context
+
     while not _stop_event.is_set():
         try:
             get_bot_config().refresh()
-            _poll_once(orchestrator)
-        except KeyError as e:
-            # Position-key KeyErrors must not spam ERROR after get_position harden
-            log(f"Entry sensor loop key skip: {e}", "WARNING")
+            for tenant_id in _entry_sensor_tenants():
+                try:
+                    with tenant_cycle_context(tenant_id):
+                        _poll_once(orchestrator)
+                except KeyError as e:
+                    # Position-key KeyErrors must not spam ERROR after get_position harden
+                    log(f"Entry sensor loop key skip tenant={tenant_id}: {e}", "WARNING")
+                except Exception as e:
+                    log(f"Entry sensor loop error tenant={tenant_id}: {e}", "ERROR")
         except Exception as e:
             log(f"Entry sensor loop error: {e}", "ERROR")
         interval = float(get_bot_config().entry_sensor_15m_config.get("poll_interval_sec", 20))

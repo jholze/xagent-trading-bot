@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id
 
@@ -70,6 +71,42 @@ def dca_sniper_tenants(config: dict | None = None) -> list[str]:
             if tid and tid not in out:
                 out.append(tid)
     return out or [DEFAULT_TENANT]
+
+
+def unscoped_sniper_tenant(config: dict | None = None) -> str:
+    """Tenant an unscoped sniper thread binds (#431).
+
+    The live sniper has no tenant contextvar and historically reads the default
+    book. Bind default when it is allowlisted, otherwise the first listed
+    tenant. A context that is already set is left alone so a foreign request
+    still fails :func:`sniper_owns_tenant`.
+    """
+    tenants = dca_sniper_tenants(config)
+    if DEFAULT_TENANT in tenants:
+        return DEFAULT_TENANT
+    return tenants[0]
+
+
+@contextmanager
+def sniper_actor_context(config: dict | None = None) -> Iterator[None]:
+    """Bind a fresh sniper thread to its allowlisted tenant.
+
+    Daemon and request threads do not inherit contextvars. ``get_position``
+    raises without a tenant, which turned a locked add into HTTP 503 and a
+    fund-sell or promote into an uncaught 500.
+    """
+    from core.tenant_context import (
+        current_tenant_context,
+        resolve_tenant_scope,
+        tenant_context,
+    )
+
+    if current_tenant_context() is not None:
+        yield
+        return
+    tid = unscoped_sniper_tenant(config)
+    with tenant_context(tid, scope=resolve_tenant_scope()):
+        yield
 
 
 def sniper_owns_tenant(config: dict | None = None, tenant_id: str | None = None) -> bool:

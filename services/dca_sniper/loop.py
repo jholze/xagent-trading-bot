@@ -8,7 +8,11 @@ import time
 from typing import Any, Callable
 
 from logger import log
-from services.dca_sniper.config import dca_sniper_config, dca_sniper_enabled
+from services.dca_sniper.config import (
+    dca_sniper_config,
+    dca_sniper_enabled,
+    sniper_actor_context,
+)
 from services.dca_sniper.engine import run_cycle
 from services.dca_sniper import state as sniper_state
 
@@ -137,7 +141,9 @@ class DcaSniperLoop:
                 if dca_sniper_enabled(self._cfg_raw) or str(
                     os.environ.get("DCA_SNIPER_FORCE") or ""
                 ).lower() in ("1", "true"):
-                    audit = run_cycle(config=self._cfg_raw)
+                    # Fresh thread: bind the #431 tenant before any lot read.
+                    with sniper_actor_context(self._cfg_raw):
+                        audit = run_cycle(config=self._cfg_raw)
                     if self._last_wake_reason:
                         audit["wake_reason"] = self._last_wake_reason
                         self._last_wake_reason = ""
