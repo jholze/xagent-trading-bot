@@ -69,8 +69,37 @@ from strategies.entry_sensor_15m import (
 )
 from strategies import watch_15m_state
 from strategies.entry_guard import filter_sell_candidates, is_fresh_guarded_entry
-from strategies.exit_sensor import evaluate_exit_sensor_sells
+from strategies.exit_sensor import EXIT_SENSOR_SOURCES, evaluate_exit_sensor_sells
+from strategies.sell_sources import RSI_SELL_SOURCE
 from strategies.ctx_axes import compute_volume_rel_window, read_oracle_state
+
+# Shadow tags suppress only the sell that came from that shadow source.
+_SHADOW_TAG_SOURCES = {
+    "trailing_shadow": frozenset({"trailing_stop"}),
+    "trailing_take_profit_shadow": frozenset({"trailing_take_profit"}),
+    "profit_max_lifetime_shadow": frozenset({"profit_max_lifetime"}),
+    "time_profit_shadow": frozenset({"time_profit_exit"}),
+    "exit_sensor_shadow": EXIT_SENSOR_SOURCES | frozenset({"exit_sensor"}),
+}
+
+# Never turned into HOLD by a shadow tag or by volatile_altcoin shadow mode.
+# Source and action labels. Do NOT add "technical": that is the generic TA /
+# RSI profit sell (see _merge_sell around the rsi relabel) and must stay HOLD.
+# TODO(#696): add the cap-stop label once #696 names it. CAP_STOP_LABEL stays
+# None until then; do not guess a symbol or a tenant.
+_UNSUPPRESSIBLE_STOP_LABELS = frozenset({
+    "stop_loss",
+    "partial_stop",
+    "SELL_STOP_FULL",
+    "x_stop_loss",
+    "manual",
+})
+
+# Technical/RSI profit sells stay HOLD while any shadow tag is present.
+_TECHNICAL_SELL_SOURCES = frozenset({"technical", RSI_SELL_SOURCE})
+
+# TODO(#696): cap-stop source or action label. Unset on purpose.
+CAP_STOP_LABEL: str | None = None
 
 _WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
 _WATCHLIST_TTL_SEC = 60.0
@@ -107,6 +136,8 @@ class DecisionEngine:
         self.market = market_service or MarketService()
         self._tenant_regime_detector: RegimeDetector | None = None
         self._tenant_strategy_allocator: StrategyAllocator | None = None
+        self._shadow_candidate_actions: list[tuple[str, str]] = []
+        self._shadow_sell_source = ""
 
     def begin_tenant_cycle(self) -> None:
         """Prepare per-tenant cycle caches and reusable regime collaborators."""
@@ -862,6 +893,7 @@ class DecisionEngine:
         structure_rationales = []
         sell_source = ""
         sell_policy_audit = {}
+        self._shadow_candidate_actions = []
         consensus = self._consensus_multiplier(coin_signals)
 
         tech_norm = normalize(technical.action)
@@ -1004,6 +1036,7 @@ class DecisionEngine:
                         structure_rationales.append(cand.rationale)
                         if cand.shadow_only:
                             sources.append("exit_sensor_shadow")
+                            self._note_shadow_candidate("exit_sensor_shadow", cand.action)
                 except Exception as exc:
                     log(f"exit_sensor: metrics failed {market.symbol}: {exc}", "WARNING")
 
@@ -1023,6 +1056,9 @@ class DecisionEngine:
                 structure_rationales.append(trail_tp.rationale)
                 if trail_tp.shadow_only:
                     sources.append("trailing_take_profit_shadow")
+                    self._note_shadow_candidate(
+                        "trailing_take_profit_shadow", trail_tp.action
+                    )
 
             life = evaluate_profit_max_lifetime(market, position, strategy_params)
             if life:
@@ -1031,6 +1067,9 @@ class DecisionEngine:
                 structure_rationales.append(life.rationale)
                 if life.shadow_only:
                     sources.append("profit_max_lifetime_shadow")
+                    self._note_shadow_candidate(
+                        "profit_max_lifetime_shadow", life.action
+                    )
 
             trail = evaluate_trailing_stop(
                 market,
@@ -1045,6 +1084,7 @@ class DecisionEngine:
                 structure_rationales.append(trail.rationale)
                 if trail.shadow_only:
                     sources.append("trailing_shadow")
+                    self._note_shadow_candidate("trailing_shadow", trail.action)
 
             tpe = evaluate_time_profit_exit(market, position, strategy_params)
             if tpe:
@@ -1053,6 +1093,7 @@ class DecisionEngine:
                 structure_rationales.append(tpe.rationale)
                 if tpe.shadow_only:
                     sources.append("time_profit_shadow")
+                    self._note_shadow_candidate("time_profit_shadow", tpe.action)
 
         if market and position and candidates:
             try:
@@ -1246,40 +1287,109 @@ class DecisionEngine:
             social_conf = max(social_conf, getattr(lc_signal, "effective_confidence", 0))
         return best[0], sources, max(technical.confidence, social_conf), structure_rationales, sell_source, sell_policy_audit
 
+    def _note_shadow_candidate(self, tag: str, action: str) -> None:
+        bucket = getattr(self, "_shadow_candidate_actions", None)
+        if bucket is None:
+            bucket = []
+            self._shadow_candidate_actions = bucket
+        bucket.append((str(tag), to_execution_action(action)))
+
+    def _is_unsuppressible_stop(
+        self,
+        normalized: str,
+        execution_action: str,
+        sell_source: str,
+    ) -> bool:
+        """True for hard/partial/x/manual stops. Never for a technical RSI sell.
+
+        ``SELL_STOP_FULL`` is both the hard-stop execution label and the legacy
+        mapping of every ``SELL_FULL`` (trailing, lifetime). It protects a
+        decision only when the winning source is a stop source, or when the
+        normalized action is the literal label. A trailing full close stays
+        suppressible.
+        """
+        source = str(sell_source or "")
+        action = str(normalized or "")
+        execution = str(execution_action or "")
+        if source in _UNSUPPRESSIBLE_STOP_LABELS or action in _UNSUPPRESSIBLE_STOP_LABELS:
+            return True
+        if (
+            execution in _UNSUPPRESSIBLE_STOP_LABELS
+            and source in _UNSUPPRESSIBLE_STOP_LABELS
+        ):
+            return True
+        # TODO(#696): honor the cap-stop label once it is named.
+        cap = CAP_STOP_LABEL
+        if cap and cap in {source, action, execution}:
+            return True
+        return False
+
+    def _shadow_tags(self, sources: list) -> list[str]:
+        return [tag for tag in _SHADOW_TAG_SOURCES if tag in sources]
+
+    def _winner_is_shadow_source(self, tags: list[str], sell_source: str) -> bool:
+        for tag in tags:
+            if sell_source in _SHADOW_TAG_SOURCES[tag]:
+                return True
+        return False
+
+    def _foreign_shadow_action(self, sell_source: str) -> str:
+        """Execution label of a shadow candidate that did not win."""
+        pending = getattr(self, "_shadow_candidate_actions", None) or []
+        for tag, action in pending:
+            owned = _SHADOW_TAG_SOURCES.get(tag) or frozenset()
+            if sell_source not in owned and action:
+                return action
+        for _tag, action in pending:
+            if action:
+                return action
+        return ""
+
     def _apply_shadow_mode(
         self,
         normalized: str,
         execution_action: str,
         strategy_params: dict,
         sources: list | None = None,
+        sell_source: str = "",
     ) -> tuple:
-        sources = sources or []
-        if "trailing_shadow" in sources and is_sell(normalized):
-            shadow = execution_action
-            return HOLD, "HOLD", shadow
-        if "trailing_take_profit_shadow" in sources and is_sell(normalized):
-            shadow = execution_action
-            return HOLD, "HOLD", shadow
-        if "profit_max_lifetime_shadow" in sources and is_sell(normalized):
-            shadow = execution_action
-            return HOLD, "HOLD", shadow
-        if "time_profit_shadow" in sources and is_sell(normalized):
-            shadow = execution_action
-            return HOLD, "HOLD", shadow
-        if "exit_sensor_shadow" in sources and is_sell(normalized):
-            shadow = execution_action
-            return HOLD, "HOLD", shadow
+        sources = list(sources or [])
+        # The evaluate() call keeps the old positional signature so existing
+        # mocks stay valid. The winning source is stashed on the engine.
+        if not sell_source:
+            sell_source = str(getattr(self, "_shadow_sell_source", "") or "")
+        self._shadow_sell_source = ""
+        sell_source = str(sell_source or "")
+        tags = self._shadow_tags(sources)
+        shadow_log = ""
+        if tags and is_sell(normalized):
+            protected = self._is_unsuppressible_stop(
+                normalized, execution_action, sell_source
+            )
+            owns = self._winner_is_shadow_source(tags, sell_source)
+            technical = sell_source in _TECHNICAL_SELL_SOURCES
+            if protected:
+                # Live stop stands. The shadow candidate is still logged.
+                shadow_log = self._foreign_shadow_action(sell_source)
+            elif technical or owns:
+                # Shadow-source sell, or a technical/RSI profit sell: HOLD.
+                return HOLD, "HOLD", execution_action
+            else:
+                # A different live sell won. Execute it and keep the shadow row.
+                shadow_log = self._foreign_shadow_action(sell_source) or execution_action
 
         profile = strategy_params.get("strategy_profile", "")
         if profile not in ("volatile_altcoin", "hermes_baseline+volatile"):
-            return normalized, execution_action, ""
-        mode = self.config.volatile_altcoin_config.get("mode", "shadow")
+            return normalized, execution_action, shadow_log
+        # Missing key is live. Explicit mode=shadow still cannot hold a stop.
+        mode = self.config.volatile_altcoin_config.get("mode", "live")
         if mode != "shadow":
-            return normalized, execution_action, ""
-        if normalized == HOLD:
-            return normalized, execution_action, ""
-        shadow = execution_action
-        return HOLD, "HOLD", shadow
+            return normalized, execution_action, shadow_log
+        if normalized == HOLD or not is_sell(normalized):
+            return normalized, execution_action, shadow_log
+        if self._is_unsuppressible_stop(normalized, execution_action, sell_source):
+            return normalized, execution_action, shadow_log
+        return HOLD, "HOLD", execution_action
 
     def evaluate_with_market(
         self,
@@ -1707,6 +1817,7 @@ class DecisionEngine:
 
         execution_action = to_execution_action(normalized)
         strategy_params = market.strategy_params or {}
+        self._shadow_sell_source = str(sell_source or "")
         normalized, execution_action, shadow_action = self._apply_shadow_mode(
             normalized, execution_action, strategy_params, sources
         )
