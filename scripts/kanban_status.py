@@ -505,7 +505,23 @@ def apply_github_event(*, event_path: str | None, dry_run: bool) -> list[dict]:
                 nums.append(n)
         soak_blob = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
         for n in nums:
-            _item, _cur, issue = issue_project_item(n)
+            try:
+                _item, _cur, issue = issue_project_item(n)
+            except SystemExit as e:
+                # Bare "#N" refs in the PR text can point at other PRs
+                # (e.g. "includes #686"); repository.issue() returns NOT_FOUND
+                # for those. Skip them instead of failing the whole run.
+                if "Could not resolve to an Issue" not in str(e):
+                    raise
+                results.append(
+                    {
+                        "issue": n,
+                        "changed": False,
+                        "reason": f"#{n} is not an issue (likely a PR reference)",
+                        "labels_written": False,
+                    }
+                )
+                continue
             labs = labels_set(_issue_labels(issue))
             issue_blob = f"{issue.get('title') or ''}"
             if not is_soak_issue(labs, soak_blob, issue_blob):
