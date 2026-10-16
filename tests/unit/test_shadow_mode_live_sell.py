@@ -15,7 +15,7 @@ The cap-stop case stays xfail until #696 names that stop.
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -134,6 +134,9 @@ def _fixtures(
     shadow=None,
     extra_shadows=None,
     live_trail=None,
+    live_ttp=None,
+    structure_sells=None,
+    use_real_rotation=False,
     x_signals=None,
     cmc_signals=None,
     params=None,
@@ -150,12 +153,23 @@ def _fixtures(
     def _rotation(candidates, *args, **kwargs):
         return list(candidates), SellPolicyAudit()
 
+    # Ladder-terminal tests use the real rotation filter so
+    # evaluate_ladder_terminal is what adds the candidate.
+    rotation_cm = (
+        nullcontext()
+        if use_real_rotation
+        else patch(
+            "strategies.decision_engine.apply_rotation_sell_filters",
+            side_effect=_rotation,
+        )
+    )
+
     def _guard(candidates, **kwargs):
         return list(candidates), []
 
     exit_ret = []
     trail_ret = live_trail
-    ttp_ret = None
+    ttp_ret = live_ttp
     life_ret = None
     time_ret = None
     shadows = []
@@ -210,7 +224,8 @@ def _fixtures(
             ),
         ])
     with stack[0], stack[1], patch(
-        "strategies.decision_engine.evaluate_market_structure_sells", return_value=[]
+        "strategies.decision_engine.evaluate_market_structure_sells",
+        return_value=list(structure_sells or []),
     ), patch(
         "strategies.decision_engine.sync_profit_armed_at", return_value=False
     ), patch(
@@ -228,9 +243,7 @@ def _fixtures(
         return_value={"enabled": bool(exit_ret), "btc_rs": {"enabled": False}},
     ), patch.object(
         engine, "_oracle_climax_state", return_value=(None, {})
-    ), patch(
-        "strategies.decision_engine.apply_rotation_sell_filters", side_effect=_rotation
-    ), patch(
+    ), rotation_cm, patch(
         "strategies.decision_engine.filter_sell_candidates", side_effect=_guard
     ):
         # dca patches sit outside the long with so the context stays readable.
@@ -253,6 +266,9 @@ def _run(
     shadow=None,
     extra_shadows=None,
     live_trail=None,
+    live_ttp=None,
+    structure_sells=None,
+    use_real_rotation=False,
     position=None,
     params=None,
     x_signals=None,
@@ -269,6 +285,9 @@ def _run(
         shadow=shadow,
         extra_shadows=extra_shadows,
         live_trail=live_trail,
+        live_ttp=live_ttp,
+        structure_sells=structure_sells,
+        use_real_rotation=use_real_rotation,
         x_signals=x_signals,
         cmc_signals=cmc_signals,
         params=params,
@@ -852,3 +871,251 @@ def test_t7_cap_stop_explicit_volatile_shadow_is_sell_stop_full():
 
     assert analysis.action == "SELL_STOP_FULL"
     assert analysis.normalized_action != "HOLD"
+
+
+def _foreign_shadow():
+    """A shadow tag owned by exit_15m_weakness, lower priority than the live paths."""
+    return ("exit", _cand(SELL_PARTIAL_20, "exit_15m_weakness", 1, shadow=True))
+
+
+def _structure(action: str, source: str, priority: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        action=action,
+        source=source,
+        priority=priority,
+        rationale="fixture",
+        shadow_only=False,
+    )
+
+
+def _assert_foreign_tag_executes(analysis, source: str, execution: str) -> None:
+    assert "exit_sensor_shadow" in analysis.sources
+    assert analysis.sell_source == source
+    assert analysis.action == execution
+    assert analysis.action != "HOLD"
+    assert analysis.shadow_action == ""
+    assert analysis.shadow_suppressed is False
+
+
+def _assert_volatile_holds(analysis, source: str, held_action: str) -> None:
+    assert "exit_sensor_shadow" not in analysis.sources
+    assert analysis.sell_source == source
+    assert analysis.action == "HOLD"
+    assert analysis.shadow_action == held_action
+    assert analysis.shadow_suppressed is True
+
+
+def test_foreign_shadow_tag_x_take_profit_executes_live():
+    """A shadow tag owned by another source must not hold x_take_profit.
+
+    Making that foreign tag hold x_take_profit turns this red.
+    """
+    from x_analyzer import XSignal
+
+    symbol = _symbol()
+    x_sig = XSignal("fixture", symbol.split("/")[0], "HOLD", 70, price_target=1.0)
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        shadow=_foreign_shadow(),
+        x_signals=[x_sig],
+    )
+    _assert_foreign_tag_executes(analysis, "x_take_profit", "SELL_30")
+
+
+@pytest.mark.parametrize(
+    "source,action,priority,execution",
+    [
+        ("bb_upper", SELL_PARTIAL_30, 3, "SELL_30"),
+        ("vol_exhaustion", SELL_PARTIAL_20, 2, "SELL_20"),
+        ("vol_dump", SELL_PARTIAL_20, 2, "SELL_20"),
+    ],
+)
+def test_foreign_shadow_tag_market_structure_executes_live(source, action, priority, execution):
+    """bb_upper / vol_* have no shadow tag. A foreign tag must not hold them."""
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        shadow=_foreign_shadow(),
+        structure_sells=[_structure(action, source, priority)],
+    )
+    _assert_foreign_tag_executes(analysis, source, execution)
+
+
+def _ladder_position() -> dict:
+    return _position(exit_ladder_step=3, realized_pnl=1.0, sold_percent=0.9)
+
+
+def _ladder_params(**extra) -> dict:
+    params = {"exit_ladder": {"enabled": True, "tiers": [0.35, 0.35, 0.3]}}
+    params.update(extra)
+    return params
+
+
+def test_foreign_shadow_tag_ladder_terminal_executes_live():
+    """exit_ladder's ladder_terminal has no shadow tag. A foreign tag must not hold it."""
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        shadow=_foreign_shadow(),
+        position=_ladder_position(),
+        params=_ladder_params(),
+        use_real_rotation=True,
+    )
+    _assert_foreign_tag_executes(analysis, "ladder_terminal", "SELL_STOP_FULL")
+
+
+def test_foreign_shadow_tag_ttp_ladder_step_executes_live():
+    """A live trailing-take-profit ladder step is not the shadow tag's source."""
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        shadow=_foreign_shadow(),
+        live_ttp=_cand(SELL_PARTIAL_30, "trailing_take_profit", 4, shadow=False),
+    )
+    _assert_foreign_tag_executes(analysis, "trailing_take_profit", "SELL_30")
+
+
+@pytest.mark.parametrize("mode", ["shadow", None], ids=["explicit-shadow", "mode-missing"])
+def test_volatile_shadow_holds_x_take_profit(mode):
+    """No own tag. Volatile shadow, including a missing mode key, holds it."""
+    from x_analyzer import XSignal
+
+    engine = _engine()
+    _volatile_mode(engine, mode)
+    symbol = _symbol()
+    x_sig = XSignal("fixture", symbol.split("/")[0], "HOLD", 70, price_target=1.0)
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        x_signals=[x_sig],
+        params={"strategy_profile": "volatile_altcoin"},
+        engine=engine,
+    )
+    _assert_volatile_holds(analysis, "x_take_profit", "SELL_30")
+
+
+@pytest.mark.parametrize("mode", ["shadow", None], ids=["explicit-shadow", "mode-missing"])
+@pytest.mark.parametrize(
+    "source,action,priority,held",
+    [
+        ("bb_upper", SELL_PARTIAL_30, 3, "SELL_30"),
+        ("vol_exhaustion", SELL_PARTIAL_20, 2, "SELL_20"),
+        ("vol_dump", SELL_PARTIAL_20, 2, "SELL_20"),
+    ],
+)
+def test_volatile_shadow_holds_market_structure(mode, source, action, priority, held):
+    engine = _engine()
+    _volatile_mode(engine, mode)
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        structure_sells=[_structure(action, source, priority)],
+        params={"strategy_profile": "volatile_altcoin"},
+        engine=engine,
+    )
+    _assert_volatile_holds(analysis, source, held)
+
+
+@pytest.mark.parametrize("mode", ["shadow", None], ids=["explicit-shadow", "mode-missing"])
+def test_volatile_shadow_holds_ladder_terminal(mode):
+    engine = _engine()
+    _volatile_mode(engine, mode)
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        structure_sells=[_structure(SELL_PARTIAL_20, "bb_upper", 1)],
+        position=_ladder_position(),
+        params=_ladder_params(strategy_profile="volatile_altcoin"),
+        use_real_rotation=True,
+        engine=engine,
+    )
+    _assert_volatile_holds(analysis, "ladder_terminal", "SELL_STOP_FULL")
+
+
+@pytest.mark.parametrize("mode", ["shadow", None], ids=["explicit-shadow", "mode-missing"])
+def test_volatile_shadow_holds_ttp_ladder_step(mode):
+    engine = _engine()
+    _volatile_mode(engine, mode)
+    symbol = _symbol()
+    analysis = _run(
+        _technical(symbol, "HOLD", ["technical"]),
+        live_ttp=_cand(SELL_PARTIAL_30, "trailing_take_profit", 4, shadow=False),
+        params={"strategy_profile": "volatile_altcoin"},
+        engine=engine,
+    )
+    _assert_volatile_holds(analysis, "trailing_take_profit", "SELL_30")
+
+
+def test_tag_that_owns_stop_loss_still_executes_the_stop():
+    """Tag-path stop exemption: a shadow tag that owns stop_loss still lets it run.
+
+    Removing ``if protected: pass`` turns this red. Stops that are not owned
+    by the tag still execute through the foreign-winner branch, so this is
+    the case that needs the exemption.
+    """
+    from strategies.decision_engine import _SHADOW_TAG_SOURCES
+
+    owned = dict(_SHADOW_TAG_SOURCES)
+    owned["exit_sensor_shadow"] = _SHADOW_TAG_SOURCES["exit_sensor_shadow"] | frozenset(
+        {"stop_loss"}
+    )
+    symbol = _symbol()
+    with patch.dict(
+        "strategies.decision_engine._SHADOW_TAG_SOURCES",
+        owned,
+        clear=True,
+    ):
+        analysis = _run(
+            _technical(symbol, "SELL_STOP_FULL", ["technical", "stop_loss"]),
+            shadow=_foreign_shadow(),
+        )
+    assert "exit_sensor_shadow" in analysis.sources
+    assert analysis.sell_source == "stop_loss"
+    assert analysis.action == "SELL_STOP_FULL"
+    assert analysis.shadow_action == ""
+    assert analysis.shadow_suppressed is False
+
+
+def test_executed_buy_with_entry_sensor_shadow_is_not_suppressed():
+    """An executed BUY can still carry the sensor's shadow action.
+
+    ``shadow_suppressed = bool(shadow_action)`` (dropping the HOLD check)
+    turns this red. The buy itself ran.
+    """
+    from strategies.entry_sensor_15m import EntrySensor15mResult
+
+    engine = _engine()
+    sensor_cfg = engine.config.raw.setdefault("entry_sensor_15m", {})
+    sensor_cfg["enabled"] = True
+    sensor_cfg["gate_only"] = False
+    sensor_cfg["exchange_only"] = False
+    symbol = _symbol()
+    sensor = EntrySensor15mResult(
+        triggered=True,
+        action="BUY",
+        confidence_boost=1.0,
+        rationale="fixture",
+        shadow_only=True,
+    )
+    with patch(
+        "strategies.decision_engine.watch_15m_state.is_watched",
+        return_value=True,
+    ), patch(
+        "strategies.decision_engine.consume_pending_sensor_metrics",
+        return_value={"volume_spike_ratio": 2.0},
+    ), patch(
+        "strategies.decision_engine.evaluate_entry_sensor_15m",
+        return_value=sensor,
+    ), patch(
+        "data.cmc_market_cap.resolve_market_cap_usd",
+        return_value=50_000_000,
+    ), patch.object(engine, "_sync_watch_15m_state"):
+        analysis = _run(
+            _technical(symbol, "BUY", ["technical"]),
+            engine=engine,
+            has_position=False,
+            position=_flat_position(),
+        )
+    assert analysis.action == "BUY"
+    assert "entry_sensor_shadow" in analysis.sources
+    assert analysis.shadow_action == "BUY"
+    assert analysis.shadow_suppressed is False
