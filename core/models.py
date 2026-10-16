@@ -69,6 +69,9 @@ class SignalAnalysis:
     ctx_volume_window_days: float | None = None
     # True only when evaluate_long_hard_stop fired in this same analysis.
     long_hard_stop: bool = False
+    # True when shadow_action records an action this decision held.
+    # False when the action executed (including executed sells).
+    shadow_suppressed: bool = False
 
 
 class OrderStatus(str, Enum):

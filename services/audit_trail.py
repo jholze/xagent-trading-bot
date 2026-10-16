@@ -63,6 +63,8 @@ class AuditTrail:
             "volatility_tier": getattr(analysis, "volatility_tier", ""),
             "strategy_profile": getattr(analysis, "strategy_profile", ""),
             "shadow_action": getattr(analysis, "shadow_action", ""),
+            "shadow_suppressed": bool(getattr(analysis, "shadow_suppressed", False)),
+            "sell_source": str(getattr(analysis, "sell_source", "") or ""),
             "trading_mode": self.config.trading_mode,
             "executed": bool(trade_result.executed) if trade_result else False,
             "order_type": trade_result.order_type if trade_result else None,
