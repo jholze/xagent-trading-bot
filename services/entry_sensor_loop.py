@@ -172,15 +172,16 @@ def _has_open_position(symbol: str, coin: dict) -> bool:
 
 
 def _entry_sensor_tenants() -> list[str]:
-    """Tenants this poll must read. A fresh thread has no tenant context."""
-    from core.tenant_context import DEFAULT_TENANT, multi_tenant_enabled
+    """Only the default tenant, matching the pre-multi-tenant sensor.
 
-    if not multi_tenant_enabled():
-        return [DEFAULT_TENANT]
-    from core.tenant_routing import iter_price_cycle_tenants
+    Polling satellites deletes the default tenant's global watch and can open
+    sensor BUYs on satellite books. Reloading a book on this loop can also drop
+    an unflushed ``time_profit_exit_done`` marker and exit the same lot twice.
+    A multi-tenant sensor is a separate follow-up, not this loop.
+    """
+    from core.tenant_context import DEFAULT_TENANT
 
-    ids = [str(tid).strip() for tid in iter_price_cycle_tenants() if str(tid or "").strip()]
-    return ids or [DEFAULT_TENANT]
+    return [DEFAULT_TENANT]
 
 
 def _active_trigger(orchestrator, symbol: str, coin: dict, price: float, metrics: dict) -> None:
@@ -394,7 +395,7 @@ def _shadow_exit_prices(prices: dict, watched: list, cfg: dict, price_source: st
 
 
 def _loop_main(orchestrator) -> None:
-    """Poll under each cycle tenant. The daemon thread inherits no contextvar."""
+    """Poll the default book. The daemon thread inherits no contextvar."""
     from core.tenant_routing import tenant_cycle_context
 
     while not _stop_event.is_set():

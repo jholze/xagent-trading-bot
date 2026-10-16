@@ -11,6 +11,7 @@ Routes (token-gated):
 
 from __future__ import annotations
 
+import functools
 import os
 from datetime import datetime
 from typing import Any
@@ -28,12 +29,11 @@ from services.dca_sniper.config import (
 def _bind_sniper_actor(fn):
     """Run a sniper entry on the #431 tenant when this thread has no context."""
 
+    @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
         with sniper_actor_context():
             return fn(*args, **kwargs)
 
-    _wrapped.__name__ = getattr(fn, "__name__", "sniper")
-    _wrapped.__doc__ = getattr(fn, "__doc__", None)
     return _wrapped
 
 
@@ -492,8 +492,14 @@ def execute_fund_sell(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
                 "message": why or "position_locked_no_auto_sell",
                 "code": "position_locked",
             }, 409
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"dca_sniper fund-sell lock check fail {symbol}: {e}", "ERROR")
+        return {
+            "ok": False,
+            "executed": False,
+            "message": "lock_check_error",
+            "code": "position_lock_check_error",
+        }, 503
 
     try:
         price = float(data.get("price") or 0)
@@ -547,6 +553,11 @@ def promote_position(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     symbol = str(data.get("symbol") or "").strip()
     tf = str(data.get("timeframe") or "1h")
     force_clear = bool(data.get("force_clear"))
+    if not symbol:
+        return {"ok": False, "message": "bad_symbol"}, 400
+    refused = _tenant_refusal("promote", symbol)
+    if refused is not None:
+        return refused
     try:
         pos = get_position(symbol, tf)
     except Exception as e:

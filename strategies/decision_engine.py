@@ -76,6 +76,14 @@ _WATCHLIST_CACHE: tuple[float, frozenset[str]] | None = None
 _WATCHLIST_TTL_SEC = 60.0
 
 
+def _sim_book(market) -> dict | None:
+    """In-memory Hermes book. Live get_position/flush must not run when set."""
+    sim = getattr(market, "sim_state", None)
+    if sim is None:
+        return None
+    return sim if isinstance(sim, dict) else {}
+
+
 def _active_watchlist_symbols() -> frozenset[str]:
     global _WATCHLIST_CACHE
     now = time.time()
@@ -1007,7 +1015,10 @@ class DecisionEngine:
                 except Exception as exc:
                     log(f"exit_sensor: metrics failed {market.symbol}: {exc}", "WARNING")
 
-            if sync_profit_armed_at(market, position, strategy_params):
+            if (
+                sync_profit_armed_at(market, position, strategy_params)
+                and _sim_book(market) is None
+            ):
                 flush_positions()
 
             trail_tp = evaluate_trailing_take_profit(
@@ -1171,10 +1182,11 @@ class DecisionEngine:
                     strategy_params=strategy_params,
                     config_raw=self.config.raw,
                 ):
-                    try:
-                        flush_positions()
-                    except Exception:
-                        pass
+                    if _sim_book(market) is None:
+                        try:
+                            flush_positions()
+                        except Exception:
+                            pass
                     structure_rationales.append("recovery_hold cleared BE+")
                 candidates, rh_blocked = filter_sell_candidates_for_recovery_hold(
                     candidates,
@@ -1310,11 +1322,17 @@ class DecisionEngine:
     ) -> SignalAnalysis:
         coin = resolve_coin_config(coin)
         if not market.strategy_params:
+            sim = _sim_book(market)
+            frozen = (
+                sim.get("strategy_tier")
+                if sim is not None
+                else get_position(coin["symbol"], market.timeframe).get("strategy_tier")
+            )
             market.strategy_params = resolve_strategy_params(
                 coin,
                 has_position=market.has_position,
                 atr_pct=market.atr_pct,
-                frozen_tier=get_position(coin["symbol"], market.timeframe).get("strategy_tier"),
+                frozen_tier=frozen,
             )
 
         regime_result = None
@@ -1450,11 +1468,17 @@ class DecisionEngine:
         }
 
         if regime_result or allocation:
+            sim = _sim_book(market)
+            frozen = (
+                sim.get("strategy_tier")
+                if sim is not None
+                else get_position(coin["symbol"], market.timeframe).get("strategy_tier")
+            )
             market.strategy_params = resolve_strategy_params(
                 coin,
                 has_position=market.has_position,
                 atr_pct=market.atr_pct,
-                frozen_tier=get_position(coin["symbol"], market.timeframe).get("strategy_tier"),
+                frozen_tier=frozen,
                 regime_result=regime_result,
                 allocation=allocation,
             ) or market.strategy_params
@@ -1487,7 +1511,8 @@ class DecisionEngine:
         x_signal = coin_x[0] if coin_x else None
         cmc_signal = coin_cmc[0] if coin_cmc else None
         lc_signal = coin_lc[0] if coin_lc else None
-        position = get_position(coin["symbol"], market.timeframe)
+        sim = _sim_book(market)
+        position = sim if sim is not None else get_position(coin["symbol"], market.timeframe)
         structure_rationales = []
 
         dca_usdt = 0.0
@@ -1731,14 +1756,17 @@ class DecisionEngine:
             sources.append("sell_policy_shadow")
             normalized = HOLD
             execution_action = "HOLD"
-        if sell_source == "time_profit_exit":
-            from strategies.positions import mark_time_profit_exit_done
+        if _sim_book(market) is None:
+            if sell_source == "time_profit_exit":
+                from strategies.positions import mark_time_profit_exit_done
 
-            mark_time_profit_exit_done(coin["symbol"], market.timeframe)
-        if sell_source == "trailing_take_profit":
-            mark_trailing_take_profit_step(coin["symbol"], market.timeframe, market.current_price)
-        if sell_source == "profit_max_lifetime":
-            mark_profit_max_lifetime_done(coin["symbol"], market.timeframe)
+                mark_time_profit_exit_done(coin["symbol"], market.timeframe)
+            if sell_source == "trailing_take_profit":
+                mark_trailing_take_profit_step(
+                    coin["symbol"], market.timeframe, market.current_price
+                )
+            if sell_source == "profit_max_lifetime":
+                mark_profit_max_lifetime_done(coin["symbol"], market.timeframe)
 
         rationale_parts = []
         if "technical" in sources:

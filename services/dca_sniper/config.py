@@ -54,11 +54,11 @@ def _load_raw_config(config: dict | None) -> dict:
 def dca_sniper_tenants(config: dict | None = None) -> list[str]:
     """Tenants whose portfolio/heavy DCA the sniper actor owns (#431).
 
-    The live sniper is a single unscoped actor (``standalone: true`` → no tenant
-    contextvar → DEFAULT_TENANT). It only ever reads/writes the default tenant's
-    lots and cash, so only the tenants listed here may defer their portfolio DCA
-    to it. Missing, empty or malformed ``dca_sniper.tenants`` → ``["default"]``
-    (fail-closed: nothing beyond default is owned unless explicitly listed).
+    An unscoped sniper thread binds the default tenant only when default is in
+    this list. If default is absent, the request is refused (403) and no other
+    tenant's book is used. Missing, empty or malformed ``dca_sniper.tenants``
+    → ``["default"]`` (fail-closed: nothing beyond default is owned unless
+    explicitly listed).
     """
     sec = _load_raw_config(config).get("dca_sniper")
     raw_list = sec.get("tenants") if isinstance(sec, dict) else None
@@ -73,18 +73,18 @@ def dca_sniper_tenants(config: dict | None = None) -> list[str]:
     return out or [DEFAULT_TENANT]
 
 
-def unscoped_sniper_tenant(config: dict | None = None) -> str:
+def unscoped_sniper_tenant(config: dict | None = None) -> str | None:
     """Tenant an unscoped sniper thread binds (#431).
 
-    The live sniper has no tenant contextvar and historically reads the default
-    book. Bind default when it is allowlisted, otherwise the first listed
-    tenant. A context that is already set is left alone so a foreign request
+    Bind default when it is allowlisted. If default is not in the list, bind
+    nothing: the caller refuses with 403 and does not open another tenant's
+    book. A context that is already set is left alone so a foreign request
     still fails :func:`sniper_owns_tenant`.
     """
     tenants = dca_sniper_tenants(config)
     if DEFAULT_TENANT in tenants:
         return DEFAULT_TENANT
-    return tenants[0]
+    return None
 
 
 @contextmanager
@@ -105,6 +105,9 @@ def sniper_actor_context(config: dict | None = None) -> Iterator[None]:
         yield
         return
     tid = unscoped_sniper_tenant(config)
+    if not tid:
+        yield
+        return
     with tenant_context(tid, scope=resolve_tenant_scope()):
         yield
 

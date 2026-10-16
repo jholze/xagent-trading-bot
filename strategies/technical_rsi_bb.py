@@ -179,7 +179,11 @@ class TechnicalRSIStrategy(BaseStrategy):
                     sources.append("reversal")
         elif market.has_position:
             pos = _position_state(market, symbol, tf)
-            if not int(pos.get("dca_rounds") or 0) and not pos.get("last_dca_at"):
+            if (
+                market.sim_state is None
+                and not int(pos.get("dca_rounds") or 0)
+                and not pos.get("last_dca_at")
+            ):
                 live = get_position(symbol, tf)
                 if live:
                     pos = {**live, **pos}

@@ -720,22 +720,14 @@ def register_gainer_signal_routes(app: Flask) -> None:
                     cfg = None
                 body, status = process_gainer_signal(data, config=cfg)
         except Exception as e:
+            # No second call. A scope-less retry reads an empty book and can
+            # buy again after a fill, or buy when the tenant doc never loaded.
             log(f"gainer_signal route tenant_cycle_context fail tid={tid}: {e}", "WARNING")
-            # The request thread has no inherited context. Running unscoped
-            # makes get_position raise and the entry_source stamp is skipped.
-            # Bind the requested tenant anyway; refuse if that also fails.
-            try:
-                from core.tenant_context import tenant_context
-
-                with tenant_context(tid):
-                    body, status = process_gainer_signal(data)
-            except Exception as e2:
-                log(f"gainer_signal tenant_context fail tid={tid}: {e2}", "ERROR")
-                body, status = {
-                    "ok": False,
-                    "executed": False,
-                    "message": "tenant_context_error",
-                }, 503
+            body, status = {
+                "ok": False,
+                "executed": False,
+                "message": "tenant_context_error",
+            }, 503
         if isinstance(body, dict):
             body.setdefault("tenant_id", tid)
         return jsonify(body), status
