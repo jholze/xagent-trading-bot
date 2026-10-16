@@ -390,19 +390,22 @@ def reanchor_legacy_dca_peaks(scope: str, price_map: dict | None = None) -> int:
     """
     from datetime import datetime
 
-    from core.tenant_context import resolve_tenant_id
     from price_fetcher import get_prices_batch
     from strategies.dca import lot_has_dca_rounds
     from strategies.positions import (
+        _activate,
         _active_store,
         _positions_lock,
+        _resolve_store_key,
         flush_positions,
-        get_key,
         has_position_amount,
-        is_open_position,
     )
 
-    tid = resolve_tenant_id()
+    # One key for the order snapshot, the in-memory lots, and the flush.
+    # resolve_tenant_id() plus _active_store() wrote henry's peak onto default.
+    store_key = _resolve_store_key(scope)
+    _activate(store_key)
+    tid = store_key[0]
     lots = _lots_with_amount(include_dust=True)
     prices = dict(price_map or {})
     missing = sorted({lot["symbol"] for lot in lots if float(prices.get(lot["symbol"], 0) or 0) <= 0})
@@ -450,7 +453,7 @@ def reanchor_legacy_dca_peaks(scope: str, price_map: dict | None = None) -> int:
             changed_keys.append(key)
         log(outcome["line"], "INFO")
     if changed_keys:
-        flush_positions(scope=scope, force=True)
+        flush_positions(scope=store_key[1], force=True)
     return len(changed_keys)
 
 
@@ -791,14 +794,21 @@ def sync_ledger_files_peak_amounts(scope: str) -> bool:
 
     Ledger-internal — not exchange recovery (#314).
     """
-    from strategies.positions import _active_store, _positions_lock, flush_positions, has_position_amount
+    from strategies.positions import (
+        _activate,
+        _positions_lock,
+        _resolve_store_key,
+        _store_for_key,
+        flush_positions,
+        has_position_amount,
+    )
 
-    from core.tenant_context import resolve_tenant_id
-
-    tid = resolve_tenant_id()
-    order_snap = _build_positions_snapshot_from_orders(scope, tenant_id=tid)
+    # One key: caller's tenant context plus the scope argument, not the thread key.
+    store_key = _resolve_store_key(scope)
+    _activate(store_key)
+    order_snap = _build_positions_snapshot_from_orders(store_key[1], tenant_id=store_key[0])
     changed = False
-    store = _active_store()
+    store = _store_for_key(store_key)
     with _positions_lock:
         for key, pos in store.items():
             if not has_position_amount(pos):
@@ -822,7 +832,7 @@ def sync_ledger_files_peak_amounts(scope: str) -> bool:
                 pos["sold_percent"] = sold
                 changed = True
     if changed:
-        flush_positions(scope=scope, force=True)
+        flush_positions(scope=store_key[1], force=True)
         log(f"Reconciled peak_amount for scope={scope}", "INFO")
     return changed
 

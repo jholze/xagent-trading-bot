@@ -550,6 +550,7 @@ def test_ensure_writer_lease_redis_unavailable_is_readonly(monkeypatch):
 
 def test_positions_flush_reenters_held_ledger_lock():
     from bus.locks import LedgerLock
+    from core.tenant_context import tenant_context
     from strategies.positions import flush_positions
 
     done = threading.Event()
@@ -557,8 +558,10 @@ def test_positions_flush_reenters_held_ledger_lock():
 
     def _run():
         try:
-            with LedgerLock("demo", tenant_id="default", enabled=False):
-                flush_positions(scope="demo", force=True)
+            # Scope alone is not a tenant. The thread names default, then flushes.
+            with tenant_context("default", scope="demo"):
+                with LedgerLock("demo", tenant_id="default", enabled=False):
+                    flush_positions(scope="demo", force=True)
             done.set()
         except BaseException as exc:
             errors.append(exc)

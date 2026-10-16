@@ -73,7 +73,10 @@ def test_flush_without_a_key_is_refused(monkeypatch, isolated_books):
     P.positions[P.get_key("LAB/USDT", "1h")] = _lot(1.0)
 
     def _flush():
-        P.flush_positions(force=True)
+        try:
+            P.flush_positions(force=True)
+        except RuntimeError:
+            return
 
     worker = threading.Thread(target=_flush, name="unset-flush")
     worker.start()

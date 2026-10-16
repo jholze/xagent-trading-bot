@@ -158,14 +158,27 @@ def test_X4_fresh_thread_scope_is_config_scope_not_hardcoded_paper(ledger, monke
     assert scope == "live", f"X4 fresh-thread get_active_scope()={scope!r} with trading scope live"
 
 
-def test_X4b_shutdown_flush_in_fresh_thread_targets_live_doc(ledger, monkeypatch):
-    """flush_positions(scope=get_active_scope()) on a fresh thread writes the live doc."""
+def test_X4b_fresh_thread_flush_without_tenant_context_is_refused(ledger, monkeypatch):
+    """A scope string is not a tenant. No key and no tenant_context raises and writes nothing.
+
+    Readers still follow the configured scope (X4). The old assertion expected
+    this flush to write default/live via resolve_tenant_id().
+    """
     _go_live(monkeypatch)
     ledger.docs.pop(("default", "paper"), None)
     ledger.docs.pop(("default", "live"), None)
-    _in_fresh_thread(lambda: P.flush_positions(scope=P.get_active_scope(), force=True))
+
+    def _flush():
+        try:
+            P.flush_positions(scope=P.get_active_scope(), force=True)
+        except RuntimeError as exc:
+            return str(exc)
+        return ""
+
+    err = _in_fresh_thread(_flush)
     wrote = sorted(k for k in ledger.docs if k[0] == "default")
-    assert wrote == [("default", "live")], f"X4b shutdown flush wrote docs {wrote}"
+    assert err and "positions_key_missing" in err, f"X4b flush returned {err!r}"
+    assert wrote == [], f"X4b flush wrote docs {wrote}"
 
 
 def test_X5_count_open_positions_in_fresh_thread_after_restore_pattern(ledger, monkeypatch):

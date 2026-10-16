@@ -7,7 +7,12 @@ from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from core.tenant_context import DEFAULT_TENANT, resolve_tenant_id, resolve_tenant_scope
+from core.tenant_context import (
+    DEFAULT_TENANT,
+    current_tenant_context,
+    resolve_tenant_id,
+    resolve_tenant_scope,
+)
 from logger import log
 from storage.ledger_router import (
     ORDERS_SCOPE_FILES,
@@ -25,14 +30,17 @@ _positions_lock = threading.RLock()
 
 _FLUSH_DEBOUNCE_SEC = 5.0
 _flush_timer: threading.Timer | None = None
+_pending_flush_key: tuple[str, str] | None = None
 _flush_timer_lock = threading.RLock()
+# Default tenant: one RAM dict for every scope. This is the scope it holds.
+_default_ram_scope: str | None = None
 _position_stores: dict[tuple[str, str], dict] = {}
 _open_counts: dict[tuple[str, str], int] = {}
 # Per-thread store key. A process-wide global let the multi-tenant cycle
 # redirect an HTTP/MCP write onto another tenant's book (#700).
 # default=None: a thread that never activated must not silently use paper.
-# Readers resolve tenant_context + the configured scope. Writes with no key
-# and no explicit scope are refused.
+# Readers resolve tenant_context + the configured scope. A write with no
+# thread key and no tenant_context raises.
 _active_key_var: ContextVar[tuple[str, str] | None] = ContextVar(
     "positions_active_key",
     default=None,
@@ -112,6 +120,20 @@ def is_positions_state_unknown(
 
 
 def _mark_positions_known(key: tuple[str, str]) -> None:
+    """The book for ``key`` loaded. Default has one RAM dict, so a new scope
+    drops the other default scopes' known flags (they no longer match RAM).
+    """
+    global _default_ram_scope
+    key = (str(key[0]), str(key[1]))
+    if key[0] == DEFAULT_TENANT and _default_ram_scope != key[1]:
+        for existing in list(_positions_state):
+            if existing[0] == DEFAULT_TENANT and existing != key:
+                _positions_state.pop(existing, None)
+                _positions_unknown_logged.discard(existing)
+                _flush_unknown_logged.discard(existing)
+        _default_ram_scope = key[1]
+    elif key[0] == DEFAULT_TENANT:
+        _default_ram_scope = key[1]
     _positions_state[key] = "known"
     _positions_unknown_logged.discard(key)
     _flush_unknown_logged.discard(key)
@@ -309,7 +331,7 @@ def _log_venue_code(symbol: str, code: str, extra: str = "") -> None:
 
 def mark_exchange_min_reject(symbol: str, timeframe: str) -> bool:
     """Venue refused a stop or full sell. Enter the below-min state once. No retry."""
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     with _positions_lock:
         pos = _ensure_key(_active_store(), key)
@@ -338,7 +360,7 @@ def refresh_venue_min_mark(
     """
     from execution.gate_adapter import venue_limits_for
 
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     limits = venue_limits_for(symbol)
     min_cost = limits.get("min_cost") if limits.get("known") else None
@@ -418,7 +440,7 @@ def hard_clear_closed_lot(symbol: str, timeframe: str) -> bool:
 
     Material longs (``is_open_position``) are left untouched.
     """
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     store = _active_store()
     cleared = False
@@ -927,6 +949,9 @@ def apply_positions_snapshot(snapshot: dict, scope: str = None) -> None:
         for pos_key, raw in snapshot.items():
             store[pos_key] = _deserialize_position(raw)
         _recompute_open_count()
+        # Rebuild is the production load for the default book. Without this
+        # flag, shutdown never flushes that book.
+        _mark_positions_known(key)
 
 
 def load_positions(scope: str = None, tenant_id: str | None = None):
@@ -996,7 +1021,8 @@ def clear_positions_memory(tenant_id: str | None = None, scope: str | None = Non
 
 def reset_all_position_stores_for_tests() -> None:
     """Drop every tenant/scope in-memory book (pytest workers)."""
-    global _open_positions_count
+    global _open_positions_count, _default_ram_scope
+    _default_ram_scope = None
     _cancel_flush_timer()
     with _positions_lock:
         positions.clear()
@@ -1010,11 +1036,28 @@ def reset_all_position_stores_for_tests() -> None:
 
 
 def _cancel_flush_timer() -> None:
-    global _flush_timer
+    """Drop the debounce timer. Used when replacing it, and by test reset."""
+    global _flush_timer, _pending_flush_key
     with _flush_timer_lock:
         if _flush_timer is not None:
             _flush_timer.cancel()
             _flush_timer = None
+        _pending_flush_key = None
+
+
+def _cancel_flush_timer_if_key(key: tuple[str, str]) -> None:
+    """Cancel the debounce only when this save persists that same key.
+
+    A timer for a book this call does not write keeps running. Cancelling it
+    dropped the last ≤5s of peak and marker updates on shutdown.
+    """
+    global _flush_timer, _pending_flush_key
+    with _flush_timer_lock:
+        if _flush_timer is None or _pending_flush_key != key:
+            return
+        _flush_timer.cancel()
+        _flush_timer = None
+        _pending_flush_key = None
 
 
 def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
@@ -1053,8 +1096,16 @@ def _flush_refused_unknown(key: tuple[str, str]) -> bool:
     return True
 
 
-def _write_target(scope: str | None, tenant_id: str | None) -> tuple[str, str] | None:
-    """Explicit tenant, or this thread's key. Unset thread and no scope: refuse."""
+def _require_write_key(
+    scope: str | None = None, tenant_id: str | None = None
+) -> tuple[str, str]:
+    """Resolve a write. Raise when this thread has no key and no tenant_context.
+
+    An explicit ``tenant_id`` (shutdown of one known book) is enough on its
+    own. A set thread key is enough. ``tenant_context`` is enough. A bare
+    scope is not: that used to call ``resolve_tenant_id()`` and land on the
+    default book.
+    """
     explicit = _active_key_var.get()
     if tenant_id is not None:
         if scope:
@@ -1062,15 +1113,32 @@ def _write_target(scope: str | None, tenant_id: str | None) -> tuple[str, str] |
         elif explicit is not None:
             target = explicit[1]
         else:
-            target = _resolve_store_key()[1]
+            target = resolve_tenant_scope()
         return (resolve_tenant_id(tenant_id), target)
     if explicit is not None:
         return (explicit[0], scope or explicit[1])
-    if scope:
-        resolved = _resolve_store_key(scope)
-        return resolved
-    log("positions write refused: no store key on this thread", "ERROR")
-    return None
+    if current_tenant_context() is not None:
+        return _resolve_store_key(scope)
+    raise RuntimeError("positions_key_missing")
+
+
+def _activate_for_write() -> tuple[str, str]:
+    """Activate the store for an in-memory write, or raise.
+
+    Context still wins, matching ``_resolve_store_key``. The raise replaces
+    the old fallback to the default tenant when both the thread key and
+    ``tenant_context`` are missing.
+    """
+    if current_tenant_context() is None and _active_key_var.get() is None:
+        raise RuntimeError("positions_key_missing")
+    key = _resolve_store_key()
+    _activate(key)
+    return key
+
+
+def _write_target(scope: str | None, tenant_id: str | None) -> tuple[str, str]:
+    """Explicit tenant, this thread's key, or tenant_context. Otherwise raise."""
+    return _require_write_key(scope, tenant_id)
 
 
 def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
@@ -1078,10 +1146,7 @@ def _do_save_positions(scope: str, *, tenant_id: str | None = None) -> None:
     from bus.locks import ledger_lock
     from storage.errors import LedgerUnavailable
 
-    chosen = _write_target(scope, tenant_id)
-    if chosen is None:
-        return
-    tid, target = chosen
+    tid, target = _write_target(scope, tenant_id)
     store_key = (tid, target)
     if _flush_refused_unknown(store_key):
         return
@@ -1115,34 +1180,61 @@ def _write_store_document(store_key: tuple[str, str], target: str, tid: str) -> 
         log(f"Failed to save positions ({target}): {e}", "ERROR")
 
 
-def flush_known_position_stores() -> None:
-    """Persist every book that loaded successfully. Does not use this thread's key."""
-    _cancel_flush_timer()
+def _shutdown_flush_keys() -> list[tuple[str, str]]:
+    """Books a shutdown flush may write.
+
+    Satellite tenants have a store per scope, so every known key is written.
+    The default tenant has one RAM dict. Only the scope that dict currently
+    holds is written; the other default scopes are not.
+    """
+    keys: list[tuple[str, str]] = []
+    ram_key = (DEFAULT_TENANT, _default_ram_scope) if _default_ram_scope else None
     for key, state in list(_positions_state.items()):
         if state != "known":
             continue
+        if key[0] == DEFAULT_TENANT:
+            if ram_key is not None and key == ram_key:
+                keys.append(key)
+            continue
+        keys.append(key)
+    return keys
+
+
+def flush_known_position_stores() -> None:
+    """Persist each loaded book. Does not use this thread's key.
+
+    A debounced save whose key is not in that set is left armed. Cancelling
+    it discarded the write. A debounced save we are about to persist is
+    cancelled so the timer cannot write it again.
+    """
+    keys = _shutdown_flush_keys()
+    for key in keys:
+        _cancel_flush_timer_if_key(key)
         _do_save_positions(key[1], tenant_id=key[0])
 
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
     """Persist positions; debounced unless force=True (trade/shutdown)."""
-    global _flush_timer
-    chosen = _write_target(scope, None)
-    if chosen is None:
-        return
-    pinned_tenant, target = chosen
-    if _flush_refused_unknown((pinned_tenant, target)):
+    global _flush_timer, _pending_flush_key
+    pinned_tenant, target = _write_target(scope, None)
+    pinned = (pinned_tenant, target)
+    if _flush_refused_unknown(pinned):
         return
     if force:
-        _cancel_flush_timer()
+        _cancel_flush_timer_if_key(pinned)
         _do_save_positions(target, tenant_id=pinned_tenant)
         return
 
     def _delayed():
+        # The default book is one dict. After a scope switch the closure
+        # would write the new scope's rows into the old scope's document.
+        if pinned_tenant == DEFAULT_TENANT and _default_ram_scope not in (None, target):
+            return
         _do_save_positions(target, tenant_id=pinned_tenant)
 
     with _flush_timer_lock:
         _cancel_flush_timer()
+        _pending_flush_key = pinned
         _flush_timer = threading.Timer(_FLUSH_DEBOUNCE_SEC, _delayed)
         _flush_timer.daemon = True
         _flush_timer.start()
@@ -1176,7 +1268,7 @@ def update_market_snapshot(
     A V3 floor (``v3``) clears only when the new high is strictly above
     ``peak_epoch_high``.
     """
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     store = _active_store()
     changed = False
@@ -1221,7 +1313,7 @@ def update_market_snapshot(
 def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
     if tier not in ("stable", "volatile"):
         return
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     store = _active_store()
     changed = False
@@ -1415,7 +1507,7 @@ def bind_buy_timeframe(symbol: str, timeframe: str) -> str:
 
 def init_position(symbol, timeframe):
     """Ensure position key exists on the active tenant store (never KeyError)."""
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     with _positions_lock:
         _ensure_key(_active_store(), key)
@@ -1423,7 +1515,7 @@ def init_position(symbol, timeframe):
 
 def get_position(symbol, timeframe):
     """Return position dict. Always ensures key exists (never KeyError)."""
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     with _positions_lock:
         return _ensure_key(_active_store(), key)
@@ -1431,7 +1523,7 @@ def get_position(symbol, timeframe):
 
 def set_position_field(symbol: str, timeframe: str, field: str, value) -> None:
     """Update one position field under the positions lock."""
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     with _positions_lock:
         _ensure_key(_active_store(), key)[field] = value
@@ -1465,8 +1557,7 @@ def set_position_lock(symbol: str, timeframe: str, lock: dict | None, *, persist
     save run under the ledger lock and ``_positions_lock`` so a satellite
     reload cannot drop the lock between the two. Returns a copy of the lock.
     """
-    store_key = _resolve_store_key()
-    _activate(store_key)
+    store_key = _activate_for_write()
     pos_key = get_key(symbol, timeframe)
     expect_enabled = lock is not None
 
@@ -1573,7 +1664,7 @@ def mark_time_profit_exit_done(symbol: str, timeframe: str) -> None:
 
 def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: float) -> None:
     """Cooldown + reset recent_high after trail TP; sizing stays on exit ladder."""
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     with _positions_lock:
         pos = _ensure_key(_active_store(), key)
@@ -1584,7 +1675,7 @@ def mark_trailing_take_profit_step(symbol: str, timeframe: str, current_price: f
 
 
 def mark_profit_max_lifetime_done(symbol: str, timeframe: str) -> None:
-    _activate(_resolve_store_key())
+    _activate_for_write()
     key = get_key(symbol, timeframe)
     store = _active_store()
     with _positions_lock:
@@ -1902,8 +1993,7 @@ def update_position(
     open_fee_tracked: bool = False,
 ):
     global _open_positions_count
-    store_key = _resolve_store_key()
-    _activate(store_key)
+    store_key = _activate_for_write()
     key = get_key(symbol, timeframe)
     store = _store_for_key(store_key)
     was_open = False

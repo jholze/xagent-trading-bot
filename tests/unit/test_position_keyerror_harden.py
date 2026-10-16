@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from core.tenant_context import tenant_context
 from strategies.positions import (
     clear_positions_memory,
     get_key,
@@ -43,9 +44,11 @@ class TestGetPositionNeverKeyError(unittest.TestCase):
 
         def worker(i: int):
             try:
-                for _ in range(50):
-                    get_position(f"C{i}/USDT", "1h")
-                    get_position("PLUME/USDT", "1h")
+                # A fresh thread has no positions key. The write needs a tenant.
+                with tenant_context("default", scope="paper"):
+                    for _ in range(50):
+                        get_position(f"C{i}/USDT", "1h")
+                        get_position("PLUME/USDT", "1h")
             except BaseException as e:
                 errors.append(e)
 
