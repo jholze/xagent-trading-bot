@@ -101,6 +101,7 @@ def _operator_cfg() -> dict:
         "risk": {
             "max_daily_buys": 5,
             "cash_floor_pct": 10,
+            "long_hard_stop_max_loss_pct": 20,
             "liquidity_guard": {"depth_to_order_multiple_min": 1},
             "venue_quality": {"min_volume_to_order_multiple_min": 20},
         },

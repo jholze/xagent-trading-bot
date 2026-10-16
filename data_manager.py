@@ -791,31 +791,48 @@ def _stop_cap_error(config):
 _stop_cap_log_depth = 0
 
 
-def _log_stop_cap_rejected(where: str, err: str) -> None:
-    """ERROR log that does not re-enter config load through the log sink."""
+def _log_stop_cap_rejected(tenant_id: str, err: str, *, where: str) -> None:
+    """ERROR log that does not re-enter config load through the log sink.
+
+    Keeping the last valid config is never silent: the line names the tenant
+    and the cap key.
+    """
     global _stop_cap_log_depth
     if _stop_cap_log_depth:
         return
     _stop_cap_log_depth += 1
     try:
         log(
-            f"config risk.long_hard_stop_max_loss_pct rejected {where}: {err}",
+            "config risk.long_hard_stop_max_loss_pct rejected "
+            f"for tenant {tenant_id} {where}: {err}",
             "ERROR",
         )
     finally:
         _stop_cap_log_depth -= 1
 
 
-def _require_stop_cap_or_exit(config) -> None:
-    """Startup of a full bot config. A bad cap is not cached and does not start."""
-    from core.config_guardrails import stop_cap_applies
+def _raise_stop_cap_exit() -> None:
+    """Stop the process, unless this load is the log sink re-reading config.
 
-    if not stop_cap_applies(config):
-        return
+    ``logger.log`` calls ``get_config`` and only catches ``Exception``.
+    A nested ``SystemExit`` would hide the ``ConfigValidationError`` a save
+    is about to raise. The outer load still exits after the log returns.
+    """
+    if _stop_cap_log_depth:
+        raise RuntimeError("config load re-entered")
+    raise SystemExit(1)
+
+
+def _require_stop_cap_or_exit(config) -> None:
+    """Cold start. A missing or invalid cap is not cached and does not start.
+
+    The check does not depend on ``stop_loss_pct``. With an empty cache there
+    is no last valid config to keep.
+    """
     err = _stop_cap_error(config)
     if err:
-        _log_stop_cap_rejected("at start", err)
-        raise SystemExit(1)
+        _log_stop_cap_rejected("default", err, where="at start")
+        _raise_stop_cap_exit()
 
 
 def _last_valid_default_config() -> dict | None:
@@ -831,43 +848,34 @@ def _last_valid_default_config() -> dict | None:
 def _tenant_config_or_base(default_cfg: dict, tenant_body: dict | None, tid: str) -> dict:
     """Merge a tenant overlay onto the last valid default config.
 
-    An invalid cap rejects that overlay entirely: the tenant keeps the
-    reference config, including its cap, and no key from the rejected
-    overlay is applied. An overlay that does not touch the cap is merged
-    as before.
-
-    A disk ``config.json`` that has lost its cap is not the reference.
-    The last valid default stays in force, an ERROR is logged, and this
-    function does not return a config without a valid cap.
+    The cap is checked on every base and every merge, whether or not the
+    document has ``stop_loss_pct`` or a ``risk`` block. A missing or invalid
+    cap does not become the tenant config: the last valid default is kept
+    and an ERROR is logged with this tenant id. With no last valid default
+    the load stops. An overlay that removes the key, drops the risk block,
+    or sets the cap out of range is dropped the same way. The cap value
+    comes only from that validated config, never from a code constant.
     """
     import copy
 
-    from core.config_guardrails import stop_cap_applies, stop_cap_is_valid
+    from core.config_guardrails import stop_cap_is_valid
 
     disk_base = _apply_trading_profile_merge(default_cfg, None)
-    # Partial stubs are not this gate. A bot config is one that carries
-    # both stop_loss_pct and a risk block. Only that document, once its cap
-    # is missing or out of range, is replaced by the last valid default.
-    # A stub that sets stop_loss_pct and no risk block is merged as before.
-    if not stop_cap_applies(disk_base) or not isinstance(disk_base.get("risk"), dict):
-        return _apply_trading_profile_merge(default_cfg, tenant_body)
-
     reference = disk_base
     reference_src = default_cfg
     if not stop_cap_is_valid(disk_base):
         err = _stop_cap_error(disk_base) or "invalid"
         cached = _last_valid_default_config()
+        _log_stop_cap_rejected(tid, err, where="on load")
         if cached is None:
-            _log_stop_cap_rejected(f"for tenant {tid}", err)
-            raise SystemExit(1)
-        _log_stop_cap_rejected(f"for tenant {tid}", err)
+            _raise_stop_cap_exit()
         reference = cached
         reference_src = cached
     merged = _apply_trading_profile_merge(reference_src, tenant_body)
     if stop_cap_is_valid(merged):
         return merged
     err = _stop_cap_error(merged) or "invalid"
-    _log_stop_cap_rejected(f"for tenant {tid}", err)
+    _log_stop_cap_rejected(tid, err, where="on load")
     if reference is not disk_base:
         return copy.deepcopy(reference)
     return reference
@@ -888,10 +896,10 @@ def load_config(tenant_id: str | None = None):
     first miss and dropped by ``reload_config()`` (no mtime key). Tenant path is
     uncached — Mongo bodies can change without a reload, so caching would stale.
 
-    A full bot config (one that carries ``stop_loss_pct``) with a missing or
-    invalid ``risk.long_hard_stop_max_loss_pct`` does not start (#695). A tenant
-    overlay that removes the cap or sets it out of range is dropped for that
-    tenant; the base cap stays active.
+    A missing or invalid ``risk.long_hard_stop_max_loss_pct`` does not start,
+    including when ``stop_loss_pct`` is absent (#695). A tenant overlay that
+    removes the cap or sets it out of range is dropped; the last valid base
+    cap stays active.
     """
     global _config_cache, _config_load_depth
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
@@ -965,7 +973,7 @@ def reload_config(tenant_id: str | None = None):
     no last valid config, this is startup: the process does not continue.
     """
     global _config_cache
-    from core.config_guardrails import stop_cap_applies, stop_cap_is_valid
+    from core.config_guardrails import stop_cap_is_valid
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     tid = resolve_tenant_id(tenant_id)
     if tid != DEFAULT_TENANT:
@@ -973,17 +981,17 @@ def reload_config(tenant_id: str | None = None):
     previous = _config_cache
     fresh_disk = _load_default_config_from_disk()
     fresh = _apply_trading_profile_merge(fresh_disk, None)
-    if stop_cap_applies(fresh) or stop_cap_applies(previous):
-        err = _stop_cap_error(fresh)
-        if err:
-            # Leave the cache on the last valid document while logging, so
-            # the log sink cannot read the rejected file.
-            _log_stop_cap_rejected("on reload", err)
-            if stop_cap_is_valid(previous):
-                _config_cache = previous
-                return previous
-            _config_cache = None
-            raise SystemExit(1)
+    err = _stop_cap_error(fresh)
+    if err:
+        # Leave the cache on the last valid document while logging, so
+        # the log sink cannot read the rejected file. The cap check does
+        # not depend on stop_loss_pct.
+        _log_stop_cap_rejected(DEFAULT_TENANT, err, where="on reload")
+        if stop_cap_is_valid(previous):
+            _config_cache = previous
+            return previous
+        _config_cache = None
+        _raise_stop_cap_exit()
     _config_cache = fresh
     return fresh
 
@@ -1071,6 +1079,7 @@ def save_config(config, tenant_id: str | None = None):
     """
     global _config_cache
     from core.config_guardrails import (
+        LONG_HARD_STOP_CAP_PATH,
         ConfigValidationError,
         assert_default_config_floors_present,
         assert_liquidity_multiples_within_base_floor,
@@ -1080,17 +1089,13 @@ def save_config(config, tenant_id: str | None = None):
     )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from storage.config_history import config_write_lock
+    tid = resolve_tenant_id(tenant_id)
     try:
         validate_config_for_save(config)
     except ConfigValidationError as exc:
         if "long_hard_stop_max_loss_pct" in str(getattr(exc, "path", "") or ""):
-            log(
-                "config risk.long_hard_stop_max_loss_pct rejected on save: "
-                f"{exc}",
-                "ERROR",
-            )
+            _log_stop_cap_rejected(tid, str(exc), where="on save")
         raise
-    tid = resolve_tenant_id(tenant_id)
     with config_write_lock():
         if tid != DEFAULT_TENANT:
             default_cfg = _load_default_config_from_disk()
@@ -1125,7 +1130,16 @@ def save_config(config, tenant_id: str | None = None):
             except Exception as e:
                 log(f"Failed tenant_meta_store save_tenant_config for {tid}: {e}", "WARNING")
                 return False
-        # default
+        # default: the cap is required even when stop_loss_pct is absent.
+        # A partial tenant body is not this branch.
+        err = _stop_cap_error(config)
+        if err:
+            _log_stop_cap_rejected(tid, err, where="on save")
+            shown = None
+            risk = config.get("risk") if isinstance(config, dict) else None
+            if isinstance(risk, dict) and "long_hard_stop_max_loss_pct" in risk:
+                shown = risk.get("long_hard_stop_max_loss_pct")
+            raise ConfigValidationError(LONG_HARD_STOP_CAP_PATH, shown, err)
         previous = _load_previous_default_config()
         frozen = frozen_shorts_changed(
             config, previous, pinned_patch_paths()

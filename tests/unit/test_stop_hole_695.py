@@ -392,6 +392,16 @@ def _logs(monkeypatch):
     return found
 
 
+def _assert_cap_reject_logged(logs, tenant_id: str) -> None:
+    """Keeping the last valid config must name the tenant and the cap key."""
+    hits = [
+        msg
+        for level, msg in logs
+        if level == "ERROR" and f"for tenant {tenant_id} " in msg and CAP_KEY in msg
+    ]
+    assert hits, logs
+
+
 def test_f1_cap_key_missing_rejected_at_start(monkeypatch):
     import data_manager as dm
     from core.config_guardrails import refuse_start_if_stop_cap_invalid
@@ -448,7 +458,7 @@ def test_f1_reload_without_cap_keeps_last_valid(monkeypatch):
     assert reloaded["stop_loss_pct"] == snapshot["stop_loss_pct"]
     assert reloaded["max_usdt_per_trade"] == snapshot["max_usdt_per_trade"]
     assert "marker_from_rejected_reload" not in reloaded
-    assert any(level == "ERROR" for level, _msg in logs)
+    _assert_cap_reject_logged(logs, "default")
 
 
 def test_f1_tenant_overlay_cap_60_rejected(monkeypatch):
@@ -477,7 +487,7 @@ def test_f1_tenant_overlay_cap_60_rejected(monkeypatch):
         cfg = dm.load_config(tenant_id="t695")
         assert cfg["risk"][CAP_KEY] == 20
         assert "marker" not in cfg
-        assert any(level == "ERROR" for level, _msg in logs)
+        _assert_cap_reject_logged(logs, "t695")
 
     _install({"risk": {CAP_KEY: 15}, "marker": "ok"})
     ok = dm.load_config(tenant_id="t695")
@@ -525,6 +535,47 @@ def test_cap_fires_during_dca_grace_at_minus_25():
         strategy_params=_mid_cap_stable_params(), base_stop_loss_pct=BASE_SL,
     )
     assert wide is None
+
+
+def test_exact_loss_equal_to_cap_does_not_fire():
+    """Equality is not a stop. The cap is the loss the formula actually returns.
+
+    ``(80/100 - 1) * -100`` is not the float 20.0, so a cap of 20 never sits
+    on the boundary ``loss_pct > cap``. Pin the cap to that computed loss:
+    ``>`` stays quiet, ``>=`` would return a full stop.
+    """
+    entry = 100.0
+    price = 80.0
+    loss = (price / entry - 1.0) * -100.0
+    assert loss != CAP
+    lot = {
+        "symbol": "AAA/USDT",
+        "timeframe": "1h",
+        "average_entry": entry,
+        "entry_price": entry,
+        "amount": 1.0,
+        "dca_rounds": 0,
+        "last_dca_at": "2020-01-01T00:00:00",
+        "sold_percent": 0.0,
+        "lock": None,
+    }
+    params = _mid_cap_stable_params(**{CAP_KEY: loss})
+    exact = evaluate_long_hard_stop(
+        price=price, entry=entry, position=lot,
+        strategy_params=params, base_stop_loss_pct=BASE_SL,
+    )
+    assert exact is None
+    worse = evaluate_long_hard_stop(
+        price=79.0, entry=entry, position=lot,
+        strategy_params=params, base_stop_loss_pct=BASE_SL,
+    )
+    assert worse == ("SELL_STOP_FULL", "stop_loss")
+    configured = evaluate_long_hard_stop(
+        price=price, entry=entry, position=lot,
+        strategy_params=_mid_cap_stable_params(**{CAP_KEY: CAP}),
+        base_stop_loss_pct=BASE_SL,
+    )
+    assert configured is None
 
 
 def test_cap_measures_average_entry_after_dca_not_first_fill():
@@ -722,6 +773,55 @@ def test_startup_hook_refuses_invalid_stop_cap():
     assert "refuse_start_if_stop_cap_invalid" in calls
 
 
+def test_startup_hook_receives_loaded_config_object():
+    """The hook argument is the name bound by ``json.load``, not a literal."""
+    import ast
+    from pathlib import Path
+
+    import aria_bot
+
+    tree = ast.parse(Path(aria_bot.__file__).read_text(encoding="utf-8"))
+    loaded_name = None
+    for node in tree.body:
+        if not isinstance(node, ast.With):
+            continue
+        opens_config = False
+        for item in node.items:
+            call = item.context_expr
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                continue
+            if call.func.id != "open" or not call.args:
+                continue
+            arg0 = call.args[0]
+            if isinstance(arg0, ast.Constant) and arg0.value == "config.json":
+                opens_config = True
+        if not opens_config:
+            continue
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            value = stmt.value
+            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+                continue
+            func = value.func
+            if isinstance(func, ast.Attribute) and func.attr == "load":
+                loaded_name = target.id
+    assert loaded_name == "config"
+    hook_args = []
+    for node in tree.body:
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if isinstance(func, ast.Name) and func.id == "refuse_start_if_stop_cap_invalid":
+            hook_args.append(node.value.args)
+    assert len(hook_args) == 1
+    assert len(hook_args[0]) == 1
+    arg = hook_args[0][0]
+    assert isinstance(arg, ast.Name)
+    assert arg.id == loaded_name
+
+
 def test_disk_edit_reload_tenant_keeps_cap_20(monkeypatch):
     """A runtime-invalid config.json must not strip the tenant cap."""
     import data_manager as dm
@@ -755,13 +855,14 @@ def test_disk_edit_reload_tenant_keeps_cap_20(monkeypatch):
         assert reloaded["risk"][CAP_KEY] == 20
         assert dm.get_config()["risk"][CAP_KEY] == 20
         assert not any("at start" in msg for _level, msg in logs)
+        _assert_cap_reject_logged(logs, "default")
 
         logs.clear()
         _install({"risk": {"max_daily_buys": 4}, "marker": f"henry-{name}"})
         tenant = dm.load_config(tenant_id="henry")
         assert tenant["risk"][CAP_KEY] == 20, name
         assert tenant["marker"] == f"henry-{name}"
-        assert any(level == "ERROR" for level, _msg in logs)
+        _assert_cap_reject_logged(logs, "henry")
         again = dm.reload_config(tenant_id="henry")
         assert again["risk"][CAP_KEY] == 20
 
@@ -770,6 +871,7 @@ def test_disk_edit_reload_tenant_keeps_cap_20(monkeypatch):
         rejected = dm.load_config(tenant_id="henry")
         assert rejected["risk"][CAP_KEY] == 20
         assert "marker" not in rejected
+        _assert_cap_reject_logged(logs, "henry")
 
 
 def test_tenant_invalid_base_without_cache_does_not_return_overlay(monkeypatch):
@@ -830,6 +932,7 @@ def test_save_without_cap_keeps_last_valid_config(monkeypatch):
     assert dm._config_cache is before
     assert any("on save" in msg for _level, msg in logs)
     assert not any("at start" in msg for _level, msg in logs)
+    _assert_cap_reject_logged(logs, "default")
     # Present but illegal values stay rejected and do not exit the process.
     for illegal in (0, 60):
         worse = copy.deepcopy(_CFG)
@@ -873,6 +976,7 @@ def test_config_revert_to_pre_695_snapshot_rejected(monkeypatch):
     assert dm.get_config()["risk"][CAP_KEY] == before_cap == 20
     assert any("on save" in msg for _level, msg in logs)
     assert not any("at start" in msg for _level, msg in logs)
+    _assert_cap_reject_logged(logs, "default")
 
 
 def test_stop_partial_sold_percent_09999_escalates_to_full(monkeypatch):
@@ -954,49 +1058,196 @@ def test_cycle_below_venue_min_full_stop_uses_cap(monkeypatch):
         clear_positions_memory()
 
 
-def test_dca_guard_below_avg_stays_on_for_henry_overlay(monkeypatch):
+@pytest.mark.parametrize("tenant_id", [None, "henry"])
+def test_dca_guard_below_avg_rejects_buy_on_loaded_config(monkeypatch, tenant_id):
+    """A BUY under the running average is rejected through ``evaluate``.
+
+    The config is the real loader: default ``load_config()``, or
+    ``load_config(tenant_id="henry")``. Removing the guard call inside
+    ``RiskManager.evaluate`` leaves this red.
+    """
+    import data_manager as dm
     from core.config import BotConfig
-    from core.models import TradeOrder
     from risk.risk_manager import RiskManager
+    from tests.unit.test_dca_guard import _buy, _lot, _open
 
-    raw = copy.deepcopy(_CFG)
-    raw["dca_guard_below_avg"] = False
-    raw["risk"]["dca_guard_below_avg"] = False
-    raw["risk"]["disable_dca_guard"] = True
-    rm = RiskManager(BotConfig(raw=raw))
+    cfg = dm.load_config() if tenant_id is None else dm.load_config(tenant_id=tenant_id)
+    assert float(cfg["risk"][CAP_KEY]) == CAP
+    rm = RiskManager(BotConfig(raw=cfg))
     monkeypatch.setattr("strategies.dca_policy._price_is_stale", lambda *a, **k: False)
-    monkeypatch.setattr(rm, "_open_cost_usdt", lambda *a, **k: (0.0, None))
-
-    def _venue(*_a, **_k):
-        raise RuntimeError("venue skipped")
-
-    monkeypatch.setattr("services.venue_quality.check_venue_for_buy", _venue)
-    pos = {
-        "symbol": "AAA/USDT",
-        "amount": 100.0,
-        "average_entry": 1.0,
-        "entry_price": 0.8,
-        "dca_rounds": 1,
-        "lock": None,
-    }
-    order = TradeOrder(
-        type="BUY",
+    monkeypatch.setattr(rm, "_daily_loss_limit_blocked", lambda *a, **k: None)
+    monkeypatch.setattr(rm, "_missing_pnl_entry_block", lambda *a, **k: None)
+    monkeypatch.setattr(rm, "_live_caps_missing_blocked", lambda *a, **k: None)
+    monkeypatch.setattr(rm, "_venue_pair_buy_block", lambda *a, **k: None)
+    monkeypatch.setattr(rm, "_venue_min_merge", lambda *a, **k: (None, None))
+    lot = _lot(
         symbol="AAA/USDT",
-        price=0.75,
-        signal="BUY_DCA",
-        source="dca",
-        usdt_amount=100.0,
+        amount=100.0,
+        average_entry=1.0,
+        entry_price=1.0,
+        dca_rounds=0,
+        lock=None,
     )
-    result = rm._buy_lock_decision(
-        order,
-        source="dca",
-        pos=pos,
-        has_position=True,
-        planned_usdt=100.0,
-        indicators={"price_age_sec": 0, "rsi": 25},
+    with _open(rm, lot):
+        dec = rm.evaluate(
+            _buy(
+                symbol="AAA/USDT",
+                price=0.75,
+                usdt_amount=400,
+                signal="BUY_DCA",
+                source="dca",
+            ),
+            "1h",
+            source="dca",
+            indicators={"price_age_sec": 0, "rsi": 25},
+        )
+    assert dec.approved is False
+    assert dec.code == "dca_guard_below_avg"
+
+
+def _disk_without_cap(case: str) -> dict:
+    bad = copy.deepcopy(_CFG)
+    if case == "no_risk":
+        bad.pop("risk", None)
+    elif case == "no_slp_no_cap":
+        bad.pop("stop_loss_pct", None)
+        if isinstance(bad.get("risk"), dict):
+            bad["risk"].pop(CAP_KEY, None)
+    elif case == "risk_null":
+        bad["risk"] = None
+    else:
+        raise AssertionError(case)
+    return bad
+
+
+@pytest.mark.parametrize("case", ["no_risk", "no_slp_no_cap", "risk_null"])
+def test_tenant_base_without_gate_keys_keeps_cap_20(monkeypatch, case):
+    """A base file with no usable cap keeps the last valid config. Never None."""
+    import data_manager as dm
+
+    live = dm._config_cache
+    assert live["risk"][CAP_KEY] == CAP
+    bad = _disk_without_cap(case)
+    logs = _logs(monkeypatch)
+    monkeypatch.setattr(dm, "_load_default_config_from_disk", lambda body=bad: copy.deepcopy(body))
+    monkeypatch.setattr(dm, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
+    monkeypatch.setattr(dm, "_load_tenant_config_body", lambda tid, default_cfg: None)
+    cfg = dm.load_config(tenant_id="henry")
+    assert cfg["risk"][CAP_KEY] == CAP
+    _assert_cap_reject_logged(logs, "henry")
+    logs.clear()
+    reloaded = dm.reload_config()
+    assert reloaded["risk"][CAP_KEY] == CAP
+    assert reloaded["risk"][CAP_KEY] is not None
+    _assert_cap_reject_logged(logs, "default")
+
+
+@pytest.mark.parametrize("bad_cap", [60, 0, 50.5, None, "abc"])
+def test_tenant_overlay_cap_rejected_when_base_lacks_slp(monkeypatch, bad_cap):
+    """Base without ``stop_loss_pct`` still validates the overlay cap."""
+    import data_manager as dm
+
+    base = copy.deepcopy(_CFG)
+    base.pop("stop_loss_pct", None)
+    assert base["risk"][CAP_KEY] == CAP
+    monkeypatch.setattr(dm, "_load_default_config_from_disk", lambda: copy.deepcopy(base))
+    monkeypatch.setattr(dm, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
+    overlay = {"risk": {CAP_KEY: bad_cap}, "marker": "overlay-bad"}
+    monkeypatch.setattr(
+        dm,
+        "_load_tenant_config_body",
+        lambda tid, default_cfg, body=overlay: copy.deepcopy(body),
     )
-    assert result.decision is not None
-    assert result.decision.approved is False
-    codes = list((result.decision.details or {}).get("codes") or [])
-    assert "dca_guard_below_avg" in codes
-    assert result.decision.code == "dca_guard_below_avg"
+    logs = _logs(monkeypatch)
+    cfg = dm.load_config(tenant_id="henry")
+    assert cfg["risk"][CAP_KEY] == CAP
+    assert "marker" not in cfg
+    _assert_cap_reject_logged(logs, "henry")
+
+
+def test_tenant_overlay_without_risk_keeps_cap_when_base_lacks_slp(monkeypatch):
+    import data_manager as dm
+
+    base = copy.deepcopy(_CFG)
+    base.pop("stop_loss_pct", None)
+    monkeypatch.setattr(dm, "_load_default_config_from_disk", lambda: copy.deepcopy(base))
+    monkeypatch.setattr(dm, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
+    monkeypatch.setattr(
+        dm,
+        "_load_tenant_config_body",
+        lambda tid, default_cfg: {"marker": "no-risk-block"},
+    )
+    logs = _logs(monkeypatch)
+    cfg = dm.load_config(tenant_id="henry")
+    assert cfg["risk"][CAP_KEY] == CAP
+    assert cfg["marker"] == "no-risk-block"
+    assert not any(level == "ERROR" and CAP_KEY in msg for level, msg in logs)
+
+
+def test_default_save_without_slp_and_cap_rejected(monkeypatch):
+    import data_manager as dm
+    from core.config_guardrails import ConfigValidationError
+
+    wrote = []
+    monkeypatch.setattr(dm, "atomic_write_json", lambda *a, **k: wrote.append(a))
+    monkeypatch.setattr(dm, "save_config", _REAL_SAVE_CONFIG)
+    logs = _logs(monkeypatch)
+    before = dm.get_config()
+    bad = copy.deepcopy(_CFG)
+    bad.pop("stop_loss_pct", None)
+    bad["risk"].pop(CAP_KEY, None)
+    with pytest.raises(ConfigValidationError) as exc:
+        _REAL_SAVE_CONFIG(bad)
+    assert CAP_KEY in str(exc.value.path)
+    assert wrote == []
+    assert dm.get_config()["risk"][CAP_KEY] == before["risk"][CAP_KEY]
+    assert any("on save" in msg for _level, msg in logs)
+    _assert_cap_reject_logged(logs, "default")
+
+
+def test_default_cold_load_without_slp_and_cap_exits(monkeypatch):
+    import data_manager as dm
+
+    previous = dm._config_cache
+    bad = copy.deepcopy(_CFG)
+    bad.pop("stop_loss_pct", None)
+    bad["risk"].pop(CAP_KEY, None)
+    logs = _logs(monkeypatch)
+    monkeypatch.setattr(dm, "_load_default_config_from_disk", lambda: copy.deepcopy(bad))
+    dm._config_cache = None
+    try:
+        with pytest.raises(SystemExit):
+            dm.load_config()
+        assert dm._config_cache is None
+        _assert_cap_reject_logged(logs, "default")
+        assert any("at start" in msg for _level, msg in logs)
+    finally:
+        dm._config_cache = previous
+
+
+def test_kept_last_valid_logs_error_with_tenant_and_key(monkeypatch):
+    """A rejected merge or reload is an ERROR naming the tenant and the key."""
+    import data_manager as dm
+
+    live = dm._config_cache
+    assert live["risk"][CAP_KEY] == CAP
+    bad = copy.deepcopy(_CFG)
+    bad.pop("stop_loss_pct", None)
+    bad["risk"].pop(CAP_KEY, None)
+    logs = _logs(monkeypatch)
+    monkeypatch.setattr(dm, "_load_default_config_from_disk", lambda: copy.deepcopy(bad))
+    monkeypatch.setattr(dm, "_should_use_mongo_for_tenant_config", lambda cfg=None: True)
+    monkeypatch.setattr(
+        dm,
+        "_load_tenant_config_body",
+        lambda tid, default_cfg: {"risk": {CAP_KEY: 60}, "marker": "silent"},
+    )
+    kept = dm.load_config(tenant_id="henry")
+    assert kept["risk"][CAP_KEY] == CAP
+    assert "marker" not in kept
+    _assert_cap_reject_logged(logs, "henry")
+    logs.clear()
+    reloaded = dm.reload_config()
+    assert reloaded is live
+    assert reloaded["risk"][CAP_KEY] == CAP
+    _assert_cap_reject_logged(logs, "default")

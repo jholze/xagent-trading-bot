@@ -690,6 +690,7 @@ def _arm_tenant_body(monkeypatch, body, *, tenant="tenant-a", multi=True, boom=F
         lambda: {
             "demo": {"backend": "mongo"},
             "risk": {
+                "long_hard_stop_max_loss_pct": 20,
                 "liquidity_guard": {"depth_to_order_multiple_min": 1},
                 "venue_quality": {"min_volume_to_order_multiple_min": 20},
             },

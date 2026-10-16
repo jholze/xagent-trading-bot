@@ -188,6 +188,7 @@ def test_default_save_accepts_boundary_valid_values(default_tenant):
             "max_daily_loss_pct": 100,
             "max_daily_sells": 0,
             "min_trade_usdt": 0,
+            "long_hard_stop_max_loss_pct": 20,
             **_floor_keys(),
         },
     }
@@ -203,7 +204,13 @@ def test_default_save_validates_before_atomic_write(default_tenant, monkeypatch)
     with pytest.raises(ConfigValidationError):
         _REAL_SAVE_CONFIG({"risk": {"cash_floor_pct": 101}})
     assert calls == []
-    ok_body = {"risk": {"cash_floor_pct": 100, **_floor_keys()}}
+    ok_body = {
+        "risk": {
+            "cash_floor_pct": 100,
+            "long_hard_stop_max_loss_pct": 20,
+            **_floor_keys(),
+        }
+    }
     assert _REAL_SAVE_CONFIG(ok_body) is True
     assert calls == [("config.json", ok_body)]
 
