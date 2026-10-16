@@ -10,7 +10,13 @@ The plausibility check compares stored sold_percent with
 for the check. It is not written back onto the lot.
 
 The hub, after that rejection (or a position-below-minimum rejection),
-escalates the same fire to SELL_STOP_FULL.
+escalates the same fire to SELL_STOP_FULL when the lot has a usable peak.
+That escalation is once per lot and reason.
+
+Without a usable peak the stored sold_percent is ignored for one partial
+sized from the current amount. A second rejection may still take the
+existing dust full (lot under the partial minimum, or a remainder at or
+above 99%). Each of those follow-ups runs once per lot.
 """
 
 from __future__ import annotations
@@ -358,7 +364,9 @@ def test_rejected_stop_warning_fields_and_counter():
     assert "reason=cooldown for test" in full_msg
     assert "timestamp=" in full_msg
     assert full_lot["sold_percent"] == 0.0
-    assert count() == before + 2
+    # Cooldown is not one of the two counted reasons.
+    assert count() == before + 1
+    assert count("default") == before + 1
 
     hub = _hub()
     assert hub.stats().get("rejected_stops") == 0
@@ -380,32 +388,55 @@ def _hub() -> ExitRealtimeHub:
     )
 
 
-def _fire_rejected_partial(hub: ExitRealtimeHub, message: str, *, symbol: str = "HBAR/USDT"):
+def _reset_once() -> None:
+    import services.exit_realtime.hub as hubmod
+
+    reset = getattr(hubmod, "reset_stop_retry_memory_for_tests", None)
+    if reset:
+        reset()
+
+
+def _fire_rejected_partial(
+    hub: ExitRealtimeHub,
+    message: str,
+    *,
+    symbol: str = "HBAR/USDT",
+    lot: dict | None = None,
+    reset_once: bool = True,
+    tenant_id: str | None = None,
+    full_result: dict | None = None,
+    amounts: list | None = None,
+):
     from strategies import positions as pm
 
-    lot = _hbar_lot(1.0)
+    if reset_once:
+        _reset_once()
+    lot = dict(lot or _hbar_lot(1.0))
     pm.positions[pm.get_key(symbol, "1h")] = dict(lot)
-    hub.update_book(
-        [
-            {
-                "symbol": symbol,
-                "timeframe": "1h",
-                "position": dict(lot),
-                "average_entry": AVG,
-                "recent_high": AVG,
-                "strategy_params": {"stop_loss_pct": 50.0, "partial_stop_pct": 33.5},
-                "atr_pct": 3.0,
-            }
-        ]
-    )
+    row = {
+        "symbol": symbol,
+        "timeframe": "1h",
+        "position": dict(lot),
+        "average_entry": lot.get("average_entry", AVG),
+        "recent_high": AVG,
+        "strategy_params": {"stop_loss_pct": 50.0, "partial_stop_pct": 33.5},
+        "atr_pct": 3.0,
+    }
+    if tenant_id:
+        row["tenant_id"] = tenant_id
+    hub.update_book([row])
     calls: list[str] = []
 
     def _exec(**kwargs):
         action = kwargs.get("action")
         calls.append(action)
+        if amounts is not None:
+            amounts.append(kwargs.get("sell_amount"))
         if action == "SELL_STOP_PARTIAL":
             return {"ok": True, "executed": False, "message": message}
         if action == "SELL_STOP_FULL":
+            if full_result is not None:
+                return full_result
             return {"ok": True, "executed": True, "message": "filled"}
         return {"ok": False, "executed": False, "message": "unexpected"}
 
@@ -493,3 +524,506 @@ def test_helper_only_lowers_and_does_not_write_the_lot():
     no_peak = {"amount": 200.0, "sold_percent": 0.80}
     assert _lower_sold_percent_for_check(no_peak, 0.80) == 0.80
     assert no_peak["sold_percent"] == 0.80
+
+
+def test_nan_peak_does_not_zero_sold_percent():
+    """A NaN peak is not a basis. It must not lower sold_percent to 0."""
+    from risk.risk_manager import _lower_sold_percent_for_check
+
+    lot = {
+        "amount": PEAK,
+        "peak_amount": float("nan"),
+        "sold_percent": 1.0,
+        "average_entry": AVG,
+        "dca_rounds": 0,
+        "strategy_tier": "stable",
+        "side": "long",
+    }
+    assert _lower_sold_percent_for_check(lot, 1.0) == 1.0
+    blocked, reason = _blocked(lot, 0.08168)
+    assert blocked and "already sold" in reason, reason
+    assert lot["sold_percent"] == 1.0
+
+
+def test_missing_peak_logs_null_and_still_counts():
+    """No peak logs peak_amount=null, and the WARNING plus the counter still fire."""
+    import risk.risk_manager as rm
+
+    reset = getattr(rm, "reset_risk_manager_globals_for_tests", None)
+    if reset:
+        reset()
+    count = rm.rejected_stop_count
+    lot = {
+        "amount": PEAK,
+        "sold_percent": 1.0,
+        "average_entry": AVG,
+        "dca_rounds": 0,
+        "strategy_tier": "stable",
+        "side": "long",
+        "first_buy_at": "2026-10-15T04:16:54+00:00",
+    }
+    assert "peak_amount" not in lot
+    order = TradeOrder(
+        type="SELL",
+        symbol="HBAR/USDT",
+        price=0.08168,
+        amount=PEAK * 0.5,
+        signal="SELL_STOP_PARTIAL",
+        source="exit_ws",
+        exit_source="stop_loss",
+    )
+    before = count()
+    with patch("logger.log") as log:
+        decision = _evaluate_stop(lot, order)
+    assert decision.approved is False
+    assert "already sold" in (decision.message or "")
+    warnings = _warning_lines(log.call_args_list)
+    assert len(warnings) == 1, warnings
+    msg = warnings[0]
+    assert "peak_amount=null" in msg
+    assert "peak_amount=0.0" not in msg
+    assert "peak_amount=0 " not in msg
+    assert "signal=partial" in msg
+    assert count() == before + 1
+    assert count("default") == before + 1
+    assert lot.get("sold_percent") == 1.0
+
+
+class _Clock:
+    def __init__(self, now: float = 1_000_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _hub_cooldown() -> ExitRealtimeHub:
+    return ExitRealtimeHub(
+        {
+            "exit_realtime": {
+                "enabled": True,
+                "mode": "live",
+                "sources": ["stop_loss"],
+                "live_cooldown_sec": 15,
+                "default_atr_pct": 3.0,
+            }
+        }
+    )
+
+
+_ALREADY_SOLD = "Partial sell blocked: already sold 100% of position (max 99%)"
+_BELOW_MIN = (
+    "Partial sell blocked: position $100.00 below minimum $500 "
+    "(use full close or manual sell)"
+)
+
+
+def test_escalation_once_across_three_windows_and_hub_rebuild():
+    """Three cooldown windows plus a new hub escalate exactly once."""
+    _reset_once()
+    lot = _hbar_lot(1.0)
+    lot["first_buy_at"] = "2026-10-15T04:16:54+00:00"
+    clock = _Clock()
+    calls: list[str] = []
+    with patch("services.exit_realtime.hub.time.monotonic", clock):
+        hub = _hub_cooldown()
+        for _ in range(3):
+            calls.extend(
+                _fire_rejected_partial(
+                    hub, _ALREADY_SOLD, lot=lot, reset_once=False
+                )
+            )
+            clock.now += 15
+        rebuilt = _hub_cooldown()
+        calls.extend(
+            _fire_rejected_partial(
+                rebuilt, _ALREADY_SOLD, lot=lot, reset_once=False
+            )
+        )
+    fulls = [c for c in calls if c == "SELL_STOP_FULL"]
+    partials = [c for c in calls if c == "SELL_STOP_PARTIAL"]
+    assert fulls == ["SELL_STOP_FULL"], calls
+    assert len(partials) == 4, calls
+
+
+def test_partial_and_full_of_one_event_count_once_and_not_other_reasons():
+    """Inflight and exchange errors are not counted. Partial+full is one.
+
+    Each fire is its own cooldown window. A configured cooldown of 0 is read
+    as the 15s default, so the clock has to move or the later fires never leave.
+    """
+    import risk.risk_manager as rm
+
+    reset = getattr(rm, "reset_risk_manager_globals_for_tests", None)
+    if reset:
+        reset()
+    clock = _Clock()
+    hub = _hub()
+    with patch("services.exit_realtime.hub.time.monotonic", clock):
+        _fire_rejected_partial(hub, "inflight")
+        assert hub.stats()["rejected_stops"] == 0
+        clock.now += 15
+        _fire_rejected_partial(hub, "remote_error: exchange 503", reset_once=False)
+        assert hub.stats()["rejected_stops"] == 0
+
+        clock.now += 15
+        rejected = {"ok": True, "executed": False, "message": _ALREADY_SOLD}
+        calls = _fire_rejected_partial(
+            hub, _ALREADY_SOLD, full_result=rejected, reset_once=False
+        )
+        assert calls == ["SELL_STOP_PARTIAL", "SELL_STOP_FULL"], calls
+        assert hub.stats()["rejected_stops"] == 1
+        by_tenant = hub.stats()["rejected_stops_by_tenant"]
+        assert by_tenant.get("default") == 1
+
+        clock.now += 15
+        with patch("storage.tenant_registry.get_tenant", return_value={}):
+            _fire_rejected_partial(
+                hub,
+                _BELOW_MIN,
+                symbol="UNI/USDT",
+                lot=_uni_lot(1.0),
+                tenant_id="henry",
+                reset_once=False,
+            )
+    assert hub.stats()["rejected_stops_by_tenant"].get("default") == 1
+    assert hub.stats()["rejected_stops_by_tenant"].get("henry") == 1
+    assert hub.stats()["rejected_stops"] == 2
+    assert rm.rejected_stop_count("other") == 0
+
+
+def test_process_counter_splits_tenants_and_counts_one_event_once():
+    import risk.risk_manager as rm
+
+    rm.reset_risk_manager_globals_for_tests()
+    common = dict(
+        symbol="HBAR/USDT",
+        timeframe="1h",
+        sold_percent=1.0,
+        amount=PEAK,
+        peak_amount=PEAK,
+    )
+    rm.note_rejected_stop(
+        tenant="default",
+        signal="SELL_STOP_PARTIAL",
+        reason=_ALREADY_SOLD,
+        **common,
+    )
+    rm.note_rejected_stop(
+        tenant="henry",
+        signal="SELL_STOP_PARTIAL",
+        reason=_BELOW_MIN,
+        **common,
+    )
+    rm.note_rejected_stop(
+        tenant="default",
+        signal="SELL_STOP_PARTIAL",
+        reason="inflight",
+        **common,
+    )
+    assert rm.rejected_stop_count("default") == 1
+    assert rm.rejected_stop_count("henry") == 1
+    assert rm.rejected_stop_count() == 2
+
+    rm.reset_risk_manager_globals_for_tests()
+    with rm.rejected_stop_event():
+        rm.note_rejected_stop(
+            tenant="default",
+            signal="SELL_STOP_PARTIAL",
+            reason=_ALREADY_SOLD,
+            **common,
+        )
+        rm.note_rejected_stop(
+            tenant="default",
+            signal="SELL_STOP_FULL",
+            reason=_ALREADY_SOLD,
+            **common,
+        )
+    assert rm.rejected_stop_count("default") == 1
+    assert rm.rejected_stop_count() == 1
+
+
+def _no_peak_lot() -> dict:
+    lot = _hbar_lot(1.0)
+    lot.pop("peak_amount", None)
+    lot["first_buy_at"] = "2026-10-15T04:16:54+00:00"
+    return lot
+
+
+def _clear_execute_guards(symbol: str = "HBAR/USDT") -> None:
+    import services.exit_realtime.execute as ex
+    from services.exit_realtime.execute import exit_guard_key
+
+    with ex._inflight_lock:
+        for key in (symbol, exit_guard_key(symbol), exit_guard_key(symbol, "default")):
+            ex._inflight.discard(key)
+            ex._last_exit_at.pop(key, None)
+
+
+def test_no_peak_rejection_sells_partial_on_current_amount():
+    """Peak missing: sell the stop fraction of the current amount.
+
+    Not the full lot, and not zero. Red when the rejection escalates to a
+    full sell or the partial never leaves.
+    """
+    from types import SimpleNamespace
+
+    from services.trading_service import TradingService
+    from strategies import positions as pm
+
+    _reset_once()
+    lot = _no_peak_lot()
+    key = pm.get_key("HBAR/USDT", "1h")
+    pm.positions[key] = dict(lot)
+    _clear_execute_guards()
+    placed: list[dict] = []
+
+    def _execute(self, order, timeframe="4h", source=None, **kwargs):
+        decision = self.risk.evaluate(order, timeframe, source=source or "exit_ws")
+        placed.append(
+            {
+                "signal": order.signal,
+                "amount": float(order.amount),
+                "approved": bool(decision.approved),
+                "message": decision.message,
+            }
+        )
+        return SimpleNamespace(
+            executed=bool(decision.approved),
+            message=str(decision.message or ""),
+        )
+
+    events = [
+        {
+            "source": "stop_loss",
+            "action": "SELL_STOP_PARTIAL",
+            "priority": 8,
+            "rationale": "WS hard stop SELL_STOP_PARTIAL",
+            "strategy_shadow": False,
+        }
+    ]
+    hub = _hub()
+    try:
+        with patch(
+            "services.exit_realtime.hub.evaluate_would_sells", return_value=events
+        ), patch(
+            "services.exit_realtime.config.exit_execute_url", return_value=""
+        ), patch(
+            "strategies.exit_ladder.ladder_enabled", return_value=False
+        ), patch(
+            "strategies.position_lock.attach_lock_from_ledger",
+            side_effect=lambda pos, *a, **k: pos,
+        ), patch.object(
+            RiskManager, "_partial_sell_limits", return_value=LIMITS
+        ), patch.object(
+            RiskManager, "_trade_cooldown_blocked", return_value=(False, "")
+        ), patch.object(
+            RiskManager, "_effective_max_daily_sells", return_value=0
+        ), patch.object(
+            TradingService, "execute_order", _execute
+        ), patch(
+            "services.exit_realtime.hub._log_event"
+        ):
+            hub.update_book(
+                [
+                    {
+                        "symbol": "HBAR/USDT",
+                        "timeframe": "1h",
+                        "position": dict(lot),
+                        "average_entry": AVG,
+                        "recent_high": AVG,
+                        "strategy_params": {
+                            "stop_loss_pct": 50.0,
+                            "partial_stop_pct": 33.5,
+                        },
+                        "atr_pct": 3.0,
+                    }
+                ]
+            )
+            hub.on_ticker("HBAR_USDT", 0.08168, highest_bid=0.08164)
+    finally:
+        pm.positions.pop(key, None)
+
+    approved = [row for row in placed if row["approved"]]
+    assert len(approved) == 1, placed
+    assert approved[0]["signal"] == "SELL_STOP_PARTIAL"
+    assert approved[0]["amount"] == pytest.approx(PEAK * 0.5)
+    assert approved[0]["amount"] != pytest.approx(PEAK)
+    assert approved[0]["amount"] > 0
+    assert all(row["signal"] != "SELL_STOP_FULL" for row in placed), placed
+    assert pm.positions.get(key, lot).get("sold_percent", lot["sold_percent"]) == 1.0 or lot["sold_percent"] == 1.0
+
+
+def test_no_peak_repeated_rejections_one_partial_and_one_remainder():
+    """Three cooldown windows and a rebuilt hub: one partial, one remainder."""
+    _reset_once()
+    lot = _no_peak_lot()
+    rejected = {"ok": True, "executed": False, "message": _ALREADY_SOLD}
+    clock = _Clock()
+    calls: list[str] = []
+    with patch("services.exit_realtime.hub.time.monotonic", clock):
+        hub = _hub_cooldown()
+        for _ in range(3):
+            calls.extend(
+                _fire_rejected_partial(
+                    hub,
+                    _ALREADY_SOLD,
+                    lot=lot,
+                    reset_once=False,
+                    full_result=rejected,
+                )
+            )
+            clock.now += 15
+        rebuilt = _hub_cooldown()
+        calls.extend(
+            _fire_rejected_partial(
+                rebuilt,
+                _ALREADY_SOLD,
+                lot=lot,
+                reset_once=False,
+                full_result=rejected,
+            )
+        )
+    partials = [c for c in calls if c == "SELL_STOP_PARTIAL"]
+    fulls = [c for c in calls if c == "SELL_STOP_FULL"]
+    assert partials == ["SELL_STOP_PARTIAL"], calls
+    assert fulls == ["SELL_STOP_FULL"], calls
+
+
+def _locked(lot: dict) -> dict:
+    from strategies.position_lock import MODE_NO_AUTO_SELL, build_lock
+
+    out = dict(lot)
+    out["lock"] = build_lock(reason="c10", modes=[MODE_NO_AUTO_SELL])
+    return out
+
+
+def test_locked_lot_rejection_places_zero_orders_through_try_execute():
+    """Real lock, real try_execute. Already-sold and below-minimum lots place nothing."""
+    from services.exit_realtime.execute import try_execute_trail_exit
+    from services.trading_service import TradingService
+    from strategies import positions as pm
+
+    def _run(symbol: str, lot: dict, price: float) -> None:
+        key = pm.get_key(symbol, "1h")
+        pm.positions[key] = dict(lot)
+        _clear_execute_guards(symbol)
+        calls: list = []
+
+        def _execute(self, order, timeframe="4h", source=None, **kwargs):
+            calls.append(order)
+            raise AssertionError("locked lot placed an order")
+
+        try:
+            with patch(
+                "services.exit_realtime.config.exit_execute_url", return_value=""
+            ), patch.object(TradingService, "execute_order", _execute):
+                out = try_execute_trail_exit(
+                    symbol=symbol,
+                    timeframe="1h",
+                    price=price,
+                    action="SELL_STOP_PARTIAL",
+                    exit_source="stop_loss",
+                    force_local=True,
+                    sell_amount=float(lot["amount"]) * 0.5,
+                )
+            assert out.get("executed") is False
+            assert out.get("code") == "position_locked", out
+            assert calls == []
+            with patch(
+                "services.exit_realtime.config.exit_execute_url", return_value=""
+            ), patch.object(TradingService, "execute_order", _execute):
+                full = try_execute_trail_exit(
+                    symbol=symbol,
+                    timeframe="1h",
+                    price=price,
+                    action="SELL_STOP_FULL",
+                    exit_source="stop_loss",
+                    force_local=True,
+                    sell_amount=float(lot["amount"]),
+                )
+            assert full.get("executed") is False
+            assert full.get("code") == "position_locked", full
+            assert calls == []
+        finally:
+            pm.positions.pop(key, None)
+
+    sold = _locked(_hbar_lot(1.0))
+    _run("HBAR/USDT", sold, 0.08168)
+    small = _locked(
+        {
+            "amount": 100.0,
+            "peak_amount": 100.0,
+            "sold_percent": 0.0,
+            "average_entry": 1.0,
+            "dca_rounds": 0,
+            "strategy_tier": "stable",
+            "side": "long",
+            "first_buy_at": "2026-10-01T00:00:00+00:00",
+        }
+    )
+    _run("UNI/USDT", small, 1.0)
+
+
+def test_no_peak_locked_lot_places_zero_orders():
+    """Same no-peak rejection on a locked lot: zero orders, a warning, no sell."""
+    from services.trading_service import TradingService
+    from strategies import positions as pm
+
+    _reset_once()
+    lot = _locked(_no_peak_lot())
+    key = pm.get_key("HBAR/USDT", "1h")
+    pm.positions[key] = dict(lot)
+    _clear_execute_guards()
+    placed: list = []
+    warnings: list[str] = []
+
+    def _execute(self, order, timeframe="4h", source=None, **kwargs):
+        placed.append(order)
+        raise AssertionError("locked lot placed an order")
+
+    def _log(message, level="INFO"):
+        if level == "WARNING":
+            warnings.append(str(message))
+
+    events = [
+        {
+            "source": "stop_loss",
+            "action": "SELL_STOP_PARTIAL",
+            "priority": 8,
+            "rationale": "WS hard stop SELL_STOP_PARTIAL",
+            "strategy_shadow": False,
+        }
+    ]
+    hub = _hub()
+    try:
+        with patch(
+            "services.exit_realtime.hub.evaluate_would_sells", return_value=events
+        ), patch(
+            "services.exit_realtime.hub.log", side_effect=_log
+        ), patch(
+            "services.exit_realtime.config.exit_execute_url", return_value=""
+        ), patch.object(TradingService, "execute_order", _execute), patch(
+            "services.exit_realtime.hub._log_event"
+        ):
+            hub.update_book(
+                [
+                    {
+                        "symbol": "HBAR/USDT",
+                        "timeframe": "1h",
+                        "position": dict(lot),
+                        "average_entry": AVG,
+                        "recent_high": AVG,
+                        "strategy_params": {
+                            "stop_loss_pct": 50.0,
+                            "partial_stop_pct": 33.5,
+                        },
+                        "atr_pct": 3.0,
+                    }
+                ]
+            )
+            hub.on_ticker("HBAR_USDT", 0.08168, highest_bid=0.08164)
+    finally:
+        pm.positions.pop(key, None)
+    assert placed == []
+    assert any("no order" in line for line in warnings), warnings
