@@ -1142,27 +1142,37 @@ class ExitRealtimeHub:
             from risk.risk_manager import peak_amount_usable
 
             lot_pos = live_for_side if isinstance(live_for_side, dict) else pos
+            partial_key = _once_key(row_tenant, sym, tf, lot_pos, "partial_current")
+            dust_key = _once_key(row_tenant, sym, tf, lot_pos, "dust")
             no_peak_repeat = (
                 src == "stop_loss"
                 and action == "SELL_STOP_PARTIAL"
                 and peak_amount_usable(lot_pos) is None
-                and _once_done(_once_key(row_tenant, sym, tf, lot_pos, "partial_current"))
+                and _once_done(partial_key)
             )
+            # The current-amount partial already ran. One dust full may still
+            # be owed. After that flag is set, a later window only warns.
+            dust_only = False
+            repeat_reason = ""
             if no_peak_repeat:
-                # The current-amount partial already ran once for this lot.
-                # A later window only warns and counts. No further order.
-                partial_key = _once_key(row_tenant, sym, tf, lot_pos, "partial_current")
-                dust_key = _once_key(row_tenant, sym, tf, lot_pos, "dust")
-                stored = _STOP_ONCE.get(partial_key) or _STOP_ONCE.get(dust_key) or ""
-                if _rejection_class(stored):
-                    self._count_rejected_stop(row_tenant, action, src, stored)
-                    log(
-                        f"exit_ws stop repeat suppressed symbol={sym} "
-                        f"tenant={row_tenant or ''} signal={action} "
-                        f"reason={stored[:160]}",
-                        "WARNING",
-                    )
-                continue
+                repeat_reason = _STOP_ONCE.get(partial_key) or ""
+                dust_still_owed = (
+                    not _once_done(dust_key) and _rejection_class(repeat_reason) is not None
+                )
+                if not dust_still_owed:
+                    counted_reason = repeat_reason or _STOP_ONCE.get(dust_key) or ""
+                    if _rejection_class(counted_reason):
+                        self._count_rejected_stop(
+                            row_tenant, action, src, counted_reason
+                        )
+                        log(
+                            f"exit_ws stop repeat suppressed symbol={sym} "
+                            f"tenant={row_tenant or ''} signal={action} "
+                            f"reason={counted_reason[:160]}",
+                            "WARNING",
+                        )
+                    continue
+                dust_only = True
 
             ev["mode"] = mode
             ev["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1185,12 +1195,13 @@ class ExitRealtimeHub:
                 sell_amount = held * float(fraction or 0)
                 if action == "SELL_STOP_PARTIAL":
                     sell_amount = _partial_amount_on_current(held, float(fraction or 0))
-                log(
-                    f"exit_ws stop fire symbol={sym} tenant={row_tenant or ''} "
-                    f"signal={action} source=exit_ws exit_source=stop_loss "
-                    f"last={price} tick_age={age_label}",
-                    "INFO",
-                )
+                if not dust_only:
+                    log(
+                        f"exit_ws stop fire symbol={sym} tenant={row_tenant or ''} "
+                        f"signal={action} source=exit_ws exit_source=stop_loss "
+                        f"last={price} tick_age={age_label}",
+                        "INFO",
+                    )
 
             from risk.risk_manager import (
                 ignoring_unreliable_sold_percent,
@@ -1223,7 +1234,16 @@ class ExitRealtimeHub:
                     event_counted = True
 
             with rejected_stop_event():
-                if no_peak and not send_partial:
+                if dust_only:
+                    # Partial already ran on an earlier window. This window
+                    # only pays the one owed dust full, and only if that flag
+                    # is still open.
+                    result = {
+                        "ok": True,
+                        "executed": False,
+                        "message": repeat_reason,
+                    }
+                elif no_peak and not send_partial:
                     _claim_once(partial_key, "Order value below Gate minimum")
                     result = {
                         "ok": True,
