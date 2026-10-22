@@ -98,7 +98,7 @@ def register_exit_ws_fire_routes(app: Flask) -> None:
             )
 
         # Always local execute on the bot (ignore EXIT_EXECUTE_URL if set by mistake).
-        # Restore _active_key after the switch — tenant_cycle_context does not.
+        # Restore this thread's store key after the switch.
         with restoring_tenant_cycle_context(tid):
             result = try_execute_trail_exit(
                 symbol=symbol,

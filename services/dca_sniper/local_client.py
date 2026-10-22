@@ -46,18 +46,24 @@ class LocalBotClient:
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         from services.dca_sniper.bot_http import execute_sniper_dca
+        from services.dca_sniper.config import sniper_actor_context
 
-        body, _status = execute_sniper_dca(payload)
+        with sniper_actor_context():
+            body, _status = execute_sniper_dca(payload)
         return body
 
     def fund_sell(self, payload: dict[str, Any]) -> dict[str, Any]:
         from services.dca_sniper.bot_http import execute_fund_sell
+        from services.dca_sniper.config import sniper_actor_context
 
-        body, _status = execute_fund_sell(payload)
+        with sniper_actor_context():
+            body, _status = execute_fund_sell(payload)
         return body
 
     def promote(self, payload: dict[str, Any]) -> dict[str, Any]:
         from services.dca_sniper.bot_http import promote_position
+        from services.dca_sniper.config import sniper_actor_context
 
-        body, _status = promote_position(payload)
+        with sniper_actor_context():
+            body, _status = promote_position(payload)
         return body

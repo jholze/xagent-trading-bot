@@ -32,30 +32,24 @@ def exit_guard_key(symbol: str, tenant_id: str | None = None) -> str:
 
 @contextmanager
 def restoring_tenant_cycle_context(tenant_id: str) -> Iterator[None]:
-    """``tenant_cycle_context`` plus restore of the process-global positions store.
+    """``tenant_cycle_context`` plus restore of this thread's positions store key.
 
-    ``tenant_cycle_context`` calls ``activate_tenant_positions`` and does not
-    put ``_active_key`` back on exit (it is a module global, not a contextvar).
-    Bot-process callers (Flask fire, hub fire, book daemon) must restore so
-    the default cycle does not read/write the wrong store.
+    The active key is context-local. Reset the ContextVar token so a thread
+    that had never activated stays unset. Re-activating a reconstructed
+    (tenant, scope) reloaded the previous book and could invent a paper key.
     """
-    from core.tenant_context import resolve_tenant_id
     from core.tenant_routing import tenant_cycle_context
-    from strategies.positions import activate_tenant_positions, get_active_scope
+    from strategies.positions import (
+        capture_positions_key_token,
+        restore_positions_key_token,
+    )
 
-    prev_tid = resolve_tenant_id()
-    prev_scope = get_active_scope()
+    token = capture_positions_key_token()
     try:
         with tenant_cycle_context(tenant_id):
             yield
     finally:
-        try:
-            activate_tenant_positions(scope=prev_scope, tenant_id=prev_tid)
-        except Exception as exc:
-            log(
-                f"exit_ws restore positions tenant={prev_tid} scope={prev_scope}: {exc}",
-                "ERROR",
-            )
+        restore_positions_key_token(token)
 
 
 def recently_exited(

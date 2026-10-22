@@ -153,10 +153,12 @@ def _flush_positions_on_exit(*_args) -> None:
             shutdown_writer_lease,
             writer_lease_held,
         )
-        from strategies.positions import flush_positions, get_active_scope
+        from strategies.positions import flush_known_position_stores
 
         if not lease_enabled() or writer_lease_held():
-            flush_positions(scope=get_active_scope(), force=True)
+            # This thread's key is not the set of loaded books. Flush each
+            # store that reached "known", by its own (tenant, scope).
+            flush_known_position_stores()
         shutdown_writer_lease()
     except Exception as e:
         log(f"Position flush on exit failed: {e}", "WARNING")

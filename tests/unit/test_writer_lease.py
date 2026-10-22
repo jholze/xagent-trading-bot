@@ -473,10 +473,9 @@ def test_shutdown_flushes_only_when_held(monkeypatch):
     _enable_lease()
     flushed: list = []
     monkeypatch.setattr(
-        "strategies.positions.flush_positions",
-        lambda **k: flushed.append(k),
+        "strategies.positions.flush_known_position_stores",
+        lambda: flushed.append({"known": True}),
     )
-    monkeypatch.setattr("strategies.positions.get_active_scope", lambda: "demo")
 
     clock = FakeClock()
     redis = FakeRedis(clock)
@@ -491,8 +490,7 @@ def test_shutdown_flushes_only_when_held(monkeypatch):
     set_process_lease_for_tests(lease)
     assert redis.get(lease.lease_key) is not None
     _flush_positions_on_exit()
-    assert len(flushed) == 1
-    assert flushed[0].get("force") is True
+    assert flushed == [{"known": True}]
     assert redis.get(lease.lease_key) is None
     assert writer_lease_held() is False
 
@@ -552,6 +550,7 @@ def test_ensure_writer_lease_redis_unavailable_is_readonly(monkeypatch):
 
 def test_positions_flush_reenters_held_ledger_lock():
     from bus.locks import LedgerLock
+    from core.tenant_context import tenant_context
     from strategies.positions import flush_positions
 
     done = threading.Event()
@@ -559,8 +558,10 @@ def test_positions_flush_reenters_held_ledger_lock():
 
     def _run():
         try:
-            with LedgerLock("demo", tenant_id="default", enabled=False):
-                flush_positions(scope="demo", force=True)
+            # Scope alone is not a tenant. The thread names default, then flushes.
+            with tenant_context("default", scope="demo"):
+                with LedgerLock("demo", tenant_id="default", enabled=False):
+                    flush_positions(scope="demo", force=True)
             done.set()
         except BaseException as exc:
             errors.append(exc)

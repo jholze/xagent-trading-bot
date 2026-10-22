@@ -169,20 +169,73 @@ def register_mcp_bot_routes(app: Flask) -> None:
                     until=None,
                     modes=DEFAULT_MODES,
                 )
-                out = set_position_lock(symbol, timeframe, lock, persist=True)
-                return jsonify(
-                    {"ok": True, "executed": True, "message": "locked", "lock": out}
-                ), 200
+                return _position_lock_response(
+                    lambda: set_position_lock(symbol, timeframe, lock, persist=True),
+                    tenant_id=tenant_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    ok_message="locked",
+                )
 
             if action == "unlock":
                 from strategies.positions import set_position_lock
 
-                set_position_lock(symbol, timeframe, None, persist=True)
-                return jsonify({"ok": True, "executed": True, "message": "unlocked"}), 200
+                return _position_lock_response(
+                    lambda: set_position_lock(symbol, timeframe, None, persist=True),
+                    tenant_id=tenant_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    ok_message="unlocked",
+                )
 
         return jsonify({"ok": False, "error": "bad_action"}), 400
 
     log("mcp execute route registered (/internal/mcp/execute)", "INFO")
+
+
+def _position_lock_response(write, *, tenant_id: str, symbol: str, timeframe: str, ok_message: str):
+    """ok only after set_position_lock read back the tenant document."""
+    try:
+        out = write()
+    except LookupError:
+        return jsonify(
+            {
+                "ok": False,
+                "executed": False,
+                "error": "no_open_lot",
+                "message": "no_open_lot",
+                "tenant_id": tenant_id,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "persisted": False,
+            }
+        ), 404
+    except Exception:
+        log(f"mcp lock write failed tenant={tenant_id} symbol={symbol}", "ERROR")
+        return jsonify(
+            {
+                "ok": False,
+                "executed": False,
+                "error": "persist_failed",
+                "message": "persist_failed",
+                "tenant_id": tenant_id,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "persisted": False,
+            }
+        ), 500
+    body = {
+        "ok": True,
+        "executed": True,
+        "message": ok_message,
+        "tenant_id": tenant_id,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "persisted": True,
+    }
+    if out:
+        body["lock"] = out
+    return jsonify(body), 200
 
 
 def _config_raw() -> dict:

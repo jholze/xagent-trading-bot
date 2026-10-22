@@ -720,8 +720,14 @@ def register_gainer_signal_routes(app: Flask) -> None:
                     cfg = None
                 body, status = process_gainer_signal(data, config=cfg)
         except Exception as e:
+            # No second call. A scope-less retry reads an empty book and can
+            # buy again after a fill, or buy when the tenant doc never loaded.
             log(f"gainer_signal route tenant_cycle_context fail tid={tid}: {e}", "WARNING")
-            body, status = process_gainer_signal(data)
+            body, status = {
+                "ok": False,
+                "executed": False,
+                "message": "tenant_context_error",
+            }, 503
         if isinstance(body, dict):
             body.setdefault("tenant_id", tid)
         return jsonify(body), status
