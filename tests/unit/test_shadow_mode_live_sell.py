@@ -197,7 +197,9 @@ def _fixtures(
         open_positions=0,
         rsi=40.0,
         strategy_params=dict(params or {}),
-        sim_state={"rsi_sell_tiers_done": {}, "last_rsi": 40.0},
+        # None so the patched get_position is the book. A sim dict is the
+        # sim book (B1) and would hide the lock and ladder fields on that patch.
+        sim_state=None,
     )
 
     class _Strat:
