@@ -221,6 +221,7 @@ def test_facts_overlay_keeps_lot_dca_and_adds_ta():
     assert snap["ok"] is True
     assert snap["hud"]["ta"]["stance"] == "MISS"
     assert snap["hud"]["ta"]["path"] == "DCA 1/2"
-    assert snap["partial_stop_paused"] is True
+    # Rounds without a fill time are not inside the grace window (#695).
+    assert snap["partial_stop_paused"] is False
     assert "DCA" in snap["next_edge"]
     assert "RSI" in snap["next_edge"]

@@ -121,7 +121,12 @@ class TechnicalRSIStrategy(BaseStrategy):
         symbol = coin["symbol"]
         tf = self.get_timeframe(coin)
         config = get_bot_config()
-        params = market.strategy_params or config.strategy_params(symbol, tf)
+        resolved = market.strategy_params
+        params = resolved or config.strategy_params(symbol, tf)
+        if not resolved:
+            from strategies.registry import attach_long_hard_stop_cap
+
+            params = attach_long_hard_stop_cap(params, config)
 
         rsi_buy_low = params.get("rsi_buy_low", 28)
         rsi_buy_high = params.get("rsi_buy_high", 48)

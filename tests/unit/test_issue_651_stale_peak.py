@@ -1336,8 +1336,20 @@ class TestIssue651K3(unittest.TestCase):
         self.assertEqual(a, 3)
 
     def test_t26e_short_timezones_summer_and_winter(self):
+        # process_local_tz() reads TZ. Leaving Berlin set makes a UTC host
+        # tag naive stamps as Berlin, so day windows miss "today" between
+        # 22:00 and 24:00 UTC (CEST). Restore the previous value.
+        old_tz = os.environ.get("TZ")
         os.environ["TZ"] = "Europe/Berlin"
+        try:
+            self._t26e_short_timezones_summer_and_winter()
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
 
+    def _t26e_short_timezones_summer_and_winter(self):
         def window(day, hhmm, *, before):
             # day is a naive local stamp of the opening created time.
             created = datetime.fromisoformat(day)

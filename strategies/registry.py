@@ -304,6 +304,63 @@ def _pure_volatile_profile(va_cfg: dict, tier: str, symbol: str, tf: str, cfg) -
     return profile
 
 
+def _config_raw(cfg) -> dict | None:
+    raw = getattr(cfg, "raw", None) if cfg is not None else None
+    if isinstance(raw, dict):
+        return raw
+    return None
+
+
+def attach_long_hard_stop_cap(params: dict | None, cfg) -> dict:
+    """Copy the loaded cap onto fallback stop params.
+
+    Used when a path could not resolve strategy params and fell back to
+    ``strategy_params()``, which does not carry ``risk.*``. The number is
+    the one in the loaded config. Nothing is invented when the key is
+    absent or invalid: a full bot config then logs ERROR and the params
+    stay without a substitute cap.
+    """
+    out = dict(params or {})
+    if "long_hard_stop_max_loss_pct" in out:
+        return out
+    raw = _config_raw(cfg)
+    if raw is None:
+        return out
+    from core.config_guardrails import long_hard_stop_cap_error, stop_cap_applies
+
+    err = long_hard_stop_cap_error(raw) if stop_cap_applies(raw) else None
+    risk = raw.get("risk") if isinstance(raw.get("risk"), dict) else {}
+    if err is None and "long_hard_stop_max_loss_pct" in risk:
+        out["long_hard_stop_max_loss_pct"] = risk["long_hard_stop_max_loss_pct"]
+        return out
+    if stop_cap_applies(raw):
+        from logger import log
+
+        log(
+            "config risk.long_hard_stop_max_loss_pct missing on stop fallback: "
+            f"{err or 'missing'}",
+            "ERROR",
+        )
+    return out
+
+
+def _attach_long_hard_stop_cap(result: dict, cfg) -> dict:
+    """Copy ``risk.long_hard_stop_max_loss_pct`` onto resolved stop params.
+
+    The value is whatever the loaded config holds. This function does not
+    invent a number when the key is absent.
+    """
+    raw = _config_raw(cfg)
+    if raw is None:
+        return result
+    risk = raw.get("risk")
+    if not isinstance(risk, dict) or "long_hard_stop_max_loss_pct" not in risk:
+        return result
+    out = dict(result)
+    out["long_hard_stop_max_loss_pct"] = risk["long_hard_stop_max_loss_pct"]
+    return out
+
+
 def _apply_path_stats_soft_bias(result: dict, symbol: str, has_position: bool, cfg) -> dict:
     """Soft-bias trail/arm from path-stats memory (positions only). Fail-open."""
     if not has_position or not result or not symbol:
@@ -376,7 +433,7 @@ def resolve_strategy_params(
             )
         except Exception:
             pass
-        return result
+        return _attach_long_hard_stop_cap(result, cfg)
 
     # Personal / Hermes buy keys always beat config.strategies[] and tier overlay.
     # Load before explicit short-circuit so ARIA/USDT-style config entries still

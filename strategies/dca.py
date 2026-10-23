@@ -357,23 +357,29 @@ def should_pause_partial_stop(
     position: dict | None,
     strategy_params: dict | None = None,
 ) -> bool:
-    """True while a loser still has unused DCA rounds (or any completed DCA + pause flag).
+    """True only inside the post-DCA grace window.
 
-    Live hole 2026-08-14: TA emitted SELL_STOP_PARTIAL on LAB with dca_rounds=1/2.
-    Pause whenever rounds remain, even if *pause_partial_stop_during_dca* is missing
-    from the resolved strategy overlay.
+    The 14.08 rule paused for the life of the lot once any round was used, and
+    with the flag off it paused while rounds remained. Both left the partial
+    off for good: ``dca_guard_below_avg`` blocks every add while live is below
+    the average, so the remaining rounds never arrive. Pause only while the
+    grace window (``grace_hours_after_dca``, else ``interval_hours``) is open.
     """
     pos = position or {}
     used = _dca_rounds_used(pos)
     if used <= 0:
         return False
     cfg = dca_config(strategy_params)
-    if cfg.get("pause_partial_stop_during_dca", True):
-        return True
-    frozen = int(pos.get("dca_max_rounds", 0) or 0)
-    cfg_max = int(cfg.get("max_rounds", 0) or 0)
-    mx = frozen if frozen > 0 else cfg_max
-    return mx > 0 and used < mx
+    if not cfg.get("pause_partial_stop_during_dca", True):
+        return False
+    # Pause only inside the post-DCA grace window. "Rounds remain" is not
+    # a reason: dca_guard_below_avg blocks every add while live < avg, so the
+    # remaining rounds never come and the partial stayed off for good.
+    grace_hours = float(cfg.get("grace_hours_after_dca", 0) or 0)
+    if grace_hours <= 0:
+        grace_hours = float(cfg.get("interval_hours", 12) or 12)
+    since = _hours_since_last_dca(pos)
+    return since is not None and since < grace_hours
 
 
 def _partial_stop_ratio_from_config(cfg=None) -> float:
@@ -455,6 +461,16 @@ def effective_stop_loss_thresholds(
     else:
         partial_effective = partial_stop
 
+    # Absolute loss cap from the resolved params. DCA widening never pushes
+    # the full stop past it. No fallback number lives here: a missing key
+    # leaves today's full stop, and the config validator refuses to start
+    # or reload a bot config that does not carry a valid cap.
+    cap_raw = params.get("long_hard_stop_max_loss_pct")
+    if cap_raw is not None:
+        cap = float(cap_raw)
+        if cap > 0:
+            full_stop = min(full_stop, cap)
+
     return full_stop, partial_effective, in_grace
 
 
@@ -485,10 +501,20 @@ def evaluate_long_hard_stop(
     full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
         position or {}, strategy_params, float(base_stop_loss_pct)
     )
+    # Grace pauses the partial stop only. The absolute cap still closes
+    # the lot. With no cap configured, grace keeps suppressing the widened
+    # full stop, same as before the cap existed.
+    cap_hit = False
+    cap_raw = (strategy_params or {}).get("long_hard_stop_max_loss_pct")
+    try:
+        if cap_raw is not None and float(cap_raw) > 0 and loss_pct > float(cap_raw):
+            cap_hit = True
+    except (TypeError, ValueError):
+        cap_hit = False
+    if cap_hit or (not in_grace and loss_pct > full_stop):
+        return "SELL_STOP_FULL", "stop_loss"
     if in_grace:
         return None
-    if loss_pct > full_stop:
-        return "SELL_STOP_FULL", "stop_loss"
     if partial_stop is not None and loss_pct > partial_stop:
         # One hard partial per lot. A later full stop still fires.
         if (position or {}).get("hard_partial_stop_done"):
