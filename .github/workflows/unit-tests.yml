@@ -5,6 +5,14 @@ name: Unit tests
 on:
   pull_request:
 
+# One active run per pull request. A force-push and a base-branch change in
+# the same moment each deliver a pull_request event, and the next push
+# delivers another. Cancel the superseded runs. No paths-ignore: skipping
+# docs-only diffs is a separate decision.
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     runs-on: ubuntu-latest
