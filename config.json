@@ -645,7 +645,16 @@
         "grid_new_entry"
       ],
       "cache_ttl_sec": 90,
-      "on_fetch_error": "block_sensor"
+      "on_fetch_error": "block_sensor",
+      "order_book_timeout_sec": 5.0,
+      "ticker_timeout_sec": 12
+    },
+    "venue_quality_bounds": {
+      "order_book_timeout_sec_max": 10,
+      "ticker_timeout_sec_max": 15,
+      "cache_ttl_sec_min": 5,
+      "cache_ttl_sec_max": 120,
+      "order_book_limit_max": 100
     },
     "liquidity_guard": {
       "min_quote_volume_24h_usdt": 500000,

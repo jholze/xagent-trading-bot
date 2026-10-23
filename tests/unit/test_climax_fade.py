@@ -30,6 +30,7 @@ from strategies.short_cover import evaluate_short_cover
 from strategies.short_policy import AUTO_SOURCES, is_auto_short_source
 
 import data_manager as _data_manager
+from tests.support.venue_block import venue_block, venue_bounds
 
 _REAL_SAVE_CONFIG = _data_manager.save_config
 assert _REAL_SAVE_CONFIG.__name__ == "save_config"
@@ -958,9 +959,12 @@ def test_save_config_rejects_dropping_auto_after_sell(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.tenant_context.resolve_tenant_id", lambda tenant_id=None: "default"
     )
+    venue = venue_block()
+    venue["min_volume_to_order_multiple_min"] = 20
     floors = {
         "liquidity_guard": {"depth_to_order_multiple_min": 1},
-        "venue_quality": {"min_volume_to_order_multiple_min": 20},
+        "venue_quality": venue,
+        "venue_quality_bounds": venue_bounds(),
     }
     monkeypatch.setattr(
         _data_manager,

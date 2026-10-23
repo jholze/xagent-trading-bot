@@ -10,6 +10,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from data_manager import get_config
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import as_venue_config, venue_block
 
 
 def _cfg(**risk_over) -> BotConfig:
@@ -33,7 +34,7 @@ def _cfg(**risk_over) -> BotConfig:
     risk["max_daily_dca_buys"] = 0
     risk["max_daily_dca_usdt"] = 0
     risk["max_daily_loss_pct"] = 0
-    risk["venue_quality"] = {"enabled": False, "min_volume_to_order_multiple": 20}
+    risk["venue_quality"] = venue_block(enabled=False)
     risk["position_capacity"] = {"enabled": False}
     risk["cash_policy"] = {"enabled": False}
     risk["slot_eviction"] = {
@@ -101,7 +102,10 @@ def _new_buy_at_cap(rm: RiskManager, extra=()):
         stack.enter_context(patch("services.universe.split.universe_split_enabled", return_value=False))
         stack.enter_context(patch("services.watchlist_quality.config.wqe_mode", return_value="off"))
         stack.enter_context(
-            patch("services.venue_quality.venue_quality_config", return_value={"enabled": False})
+            patch(
+                "services.venue_quality.venue_quality_config",
+                return_value=as_venue_config(venue_block(enabled=False)),
+            )
         )
         stack.enter_context(patch("core.stablecoins.is_stablecoin_symbol", return_value=False))
         for p in extra:

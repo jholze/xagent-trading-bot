@@ -9,6 +9,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from core.models import TradeOrder
+from tests.support.venue_block import venue_block
 from strategies.positions import (
     apply_hard_clear_if_closed,
     clear_positions_memory,
@@ -40,7 +41,7 @@ _SHORTS_PAPER = {
         "volatile": {"market_cap_min_usd": 0},
     },
     "risk": {
-        "venue_quality": {"min_volume_to_order_multiple": 20},
+        "venue_quality": venue_block(),
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,

@@ -15,6 +15,7 @@ import pytest
 
 import data_manager
 from core.config import BotConfig
+from tests.support.venue_block import venue_block, venue_bounds
 from storage import tenant_meta_store as tms
 from strategies.registry import (
     STRATEGY_IDENTITY_META_KEYS,
@@ -102,7 +103,8 @@ def _operator_cfg() -> dict:
             "max_daily_buys": 5,
             "cash_floor_pct": 10,
             "liquidity_guard": {"depth_to_order_multiple_min": 1},
-            "venue_quality": {"min_volume_to_order_multiple_min": 20},
+            "venue_quality": {**venue_block(), "min_volume_to_order_multiple_min": 20},
+            "venue_quality_bounds": venue_bounds(),
         },
         "shorts": {"enabled": False},
         "live": {"dry_run": True, "execution": "shadow", "max_usdt_per_trade": 50},

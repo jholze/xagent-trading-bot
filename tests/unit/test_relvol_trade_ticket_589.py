@@ -19,6 +19,7 @@ from services.gainer_universe.relvol_shadow import (
     try_execute_relvol_buy,
 )
 from strategies.entry_sensor_15m import ENTRY_SENSOR_SOURCE
+from tests.support.venue_block import venue_block
 
 
 TRUST_MULT = 0.298
@@ -56,7 +57,7 @@ def _risk_cfg(*, max_usdt: float = 4500.0, min_trade: float = 100.0) -> BotConfi
             "cash_policy": {"enabled": False},
             "position_capacity": {"enabled": False},
             "moderate_deploy": {"enabled": False},
-            "venue_quality": {"enabled": False, "min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(enabled=False),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,

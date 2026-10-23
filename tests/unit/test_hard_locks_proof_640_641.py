@@ -28,7 +28,6 @@ from services.venue_quality import (
     AUTOMATIC_BUY_SOURCES,
     VenueMetrics,
     depth_within_mid_band,
-    source_applies_venue,
 )
 from strategies.positions import (
     MIN_OPEN_POSITION_USDT,
@@ -37,6 +36,7 @@ from strategies.positions import (
     update_position,
 )
 from tests.unit.test_long_mcap_venue_563 import _eval_env
+from tests.support.venue_block import venue_block
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "loss_cases_641.csv"
 _RULES = {
@@ -129,7 +129,7 @@ def _cfg(**risk) -> BotConfig:
         "max_daily_sells": 0,
         "fail_closed_guards": "deny",
         "block_stablecoin_buys": False,
-        "venue_quality": {"min_volume_to_order_multiple": 20},
+        "venue_quality": venue_block(),
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,
@@ -596,7 +596,6 @@ def test_aave_depth_inside_the_band_still_passes():
 
 @pytest.mark.parametrize("source", list(AUTOMATIC_BUY_SOURCES) + ["mcp:henry-bot"])
 def test_each_buy_source_is_rejected_on_a_thin_book(source):
-    assert source_applies_venue(source) is True
     rm = RiskManager(_cfg(fail_closed_guards="log"))
     metrics = _book(
         symbol="SRC/USDT",
@@ -626,7 +625,23 @@ def test_required_sources_are_enumerated_and_a_new_one_must_be_added():
         found.update(pat.findall(text))
     missing = sorted(s for s in found if s not in AUTOMATIC_BUY_SOURCES and s not in _NOT_A_BUY_SOURCE)
     assert missing == [], f"buy source added without the check: {missing}"
-    assert source_applies_venue("a_buy_source_nobody_listed_yet") is True
+    unknown = "a_buy_source_nobody_listed_yet"
+    assert unknown not in AUTOMATIC_BUY_SOURCES
+    rm = RiskManager(_cfg(fail_closed_guards="log"))
+    metrics = _book(
+        symbol="UNK/USDT",
+        quote_volume_24h_usdt=5_000_000,
+        depth_bid_usdt=1,
+        depth_ask_usdt=1,
+    )
+    order = TradeOrder(
+        "BUY", "UNK/USDT", 1.0, 0, usdt_amount=400, signal="BUY", source=unknown
+    )
+    dec = _decide(rm, order, unknown, metrics)
+    assert dec.approved is False
+    assert any(
+        c.startswith("liq_guard_") or c == "venue_liquidity_block" for c in _codes(dec)
+    )
 
 
 def test_thin_book_rejects_in_log_mode_and_in_deny_mode():

@@ -138,7 +138,6 @@ def _raise_patches(guard: str, rm: RiskManager):
     if guard == "venue_liquidity_block":
         return [
             patch("services.venue_quality.venue_quality_config", return_value={"enabled": True}),
-            patch("services.venue_quality.source_applies_venue", return_value=True),
             patch("services.venue_quality.check_venue_for_buy", side_effect=boom),
         ]
     if guard == "universe_trade_cap":

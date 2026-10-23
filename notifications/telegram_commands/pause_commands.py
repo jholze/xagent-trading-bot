@@ -356,7 +356,7 @@ def _execute_panic(lots: list[dict[str, Any]]) -> None:
             + _state_block(entries=False, exits=_current_exits_enabled())
         )
     else:
-        lines.append(t("config_save_failed"))
+        lines.append(t("entries_not_saved"))
     send_telegram_message("\n".join(lines))
 
 
@@ -368,7 +368,7 @@ def handle(text: str) -> bool:
     if lower == "/pause":
         exits = _current_exits_enabled()
         if not save_trading_flags(entries_enabled=False):
-            send_telegram_message(t("config_save_failed"))
+            send_telegram_message(t("entries_not_saved"))
             return True
         send_telegram_message(
             t("pause_done") + "\n\n" + _state_block(entries=False, exits=exits)
@@ -377,7 +377,7 @@ def handle(text: str) -> bool:
     if lower == "/resume":
         exits = _current_exits_enabled()
         if not save_trading_flags(entries_enabled=True):
-            send_telegram_message(t("config_save_failed"))
+            send_telegram_message(t("entries_not_saved"))
             return True
         send_telegram_message(
             t("resume_done") + "\n\n" + _state_block(entries=True, exits=exits)

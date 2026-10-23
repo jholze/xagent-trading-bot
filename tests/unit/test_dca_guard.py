@@ -24,6 +24,7 @@ from strategies.positions import (
     update_position,
 )
 from tests.unit.test_long_mcap_venue_563 import _eval_env
+from tests.support.venue_block import venue_block
 
 # Gate 24h volume recorded for 2Z on 06.10. Band depth is above every
 # order in this file so the volume rule is what blocks, not the book.
@@ -75,7 +76,7 @@ def _cfg():
                 "min_trade_usdt": 5,
                 "cash_floor_pct": 0,
                 "max_daily_sells": 0,
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "min_quote_volume_24h_usdt": 500000,
                     "depth_window_pct": 0.5,

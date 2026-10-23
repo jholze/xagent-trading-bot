@@ -21,6 +21,17 @@ import data_manager
 from core.config_guardrails import ConfigValidationError
 from storage import tenant_meta_store as tms
 from storage.errors import LedgerUnavailable
+from tests.support.venue_block import venue_block, venue_bounds
+
+
+def _operator_venue() -> dict:
+    block = venue_block()
+    block["min_volume_to_order_multiple_min"] = 20
+    return block
+
+
+def _operator_bounds() -> dict:
+    return venue_bounds()
 
 TID = "t456"
 
@@ -90,7 +101,8 @@ def _operator_cfg() -> dict:
             "max_daily_buys": 5,
             "cash_floor_pct": 10,
             "liquidity_guard": {"depth_to_order_multiple_min": 1},
-            "venue_quality": {"min_volume_to_order_multiple_min": 20},
+            "venue_quality": _operator_venue(),
+            "venue_quality_bounds": _operator_bounds(),
         },
         "shorts": {"enabled": False},
         # operator-only ``live.*`` knobs — must never end up in a tenant body
@@ -322,7 +334,7 @@ def test_pause_non_mongo_tenant_reports_failure(tenant_mongo, monkeypatch):
     _, db = tenant_mongo
     monkeypatch.setattr(data_manager, "_should_use_mongo_for_tenant_config", lambda cfg=None: False)
     msg = _pause()
-    assert msg == t("config_save_failed")
+    assert msg == t("entries_not_saved")
     assert t("pause_done") not in msg
     assert db[tms.TENANT_CONFIGS_COLL].ops == []
 
@@ -457,7 +469,7 @@ def test_panic_reports_failed_persist(monkeypatch):
         gbc.return_value.exits_enabled = True
         pause_commands._execute_panic([])
     summary = send.call_args[0][0]
-    assert t("config_save_failed") in summary
+    assert t("entries_not_saved") in summary
     assert t("panic_entries_off") not in summary
 
 
