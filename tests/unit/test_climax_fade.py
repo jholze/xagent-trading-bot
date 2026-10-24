@@ -970,13 +970,13 @@ def test_save_config_rejects_dropping_auto_after_sell(tmp_path, monkeypatch):
     prev = {
         "trading_mode": "paper",
         "shorts": {"auto_after_sell": False, "allow_live": False},
-        "risk": floors,
+        "risk": {**floors, "long_hard_stop_max_loss_pct": 20},
     }
     assert _REAL_SAVE_CONFIG(prev) is True
     body = {
         "trading_mode": "paper",
         "shorts": {"allow_live": False},
-        "risk": floors,
+        "risk": {**floors, "long_hard_stop_max_loss_pct": 20},
     }
     with pytest.raises(ConfigValidationError) as ei:
         _REAL_SAVE_CONFIG(body)

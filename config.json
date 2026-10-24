@@ -621,6 +621,7 @@
     "dust_sweep_min_remainder_usdt": 100,
     "relvol_min_trade_usdt": 1000,
     "partial_stop_ratio": 0.67,
+    "long_hard_stop_max_loss_pct": 20,
     "venue_min_hysteresis": 0.25,
     "venue_min_max_pct_of_ticket": 0.20,
     "venue_step_max_pct_of_ticket": 0.02,

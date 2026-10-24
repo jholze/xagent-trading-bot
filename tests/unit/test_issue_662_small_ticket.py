@@ -1056,6 +1056,7 @@ def test_v666_live_adapter_warms_cache_before_r4(monkeypatch):
         lambda: {
             "demo": {"backend": "mongo"},
             "risk": {
+                "long_hard_stop_max_loss_pct": 20,
                 "liquidity_guard": {"depth_to_order_multiple_min": 1},
                 "venue_quality": {"min_volume_to_order_multiple_min": 20},
             },

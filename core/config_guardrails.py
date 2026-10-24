@@ -164,6 +164,13 @@ GUARDED_KEYS: dict[str, Callable[[str, Any], None]] = {
 }
 
 
+# Acceptance ceiling for risk.long_hard_stop_max_loss_pct (#695).
+# The live stop comes only from the config value. This bound is the reject
+# line: missing, non-numeric, <= 0, or above the ceiling is invalid.
+LONG_HARD_STOP_CAP_PATH = "risk.long_hard_stop_max_loss_pct"
+LONG_HARD_STOP_CAP_MAX = 50.0
+
+
 # Operator-pinned shorts keys: Hermes / patch_config must not mention them (#614).
 # Leaf names kept for callers that inspect the set. The pin walks dotted paths
 # below; extending this set alone does not pin anything.
@@ -321,13 +328,102 @@ def assert_default_config_floors_present(config: Any) -> None:
             raise ConfigValidationError(path, shown, "liquidity guard floor missing")
 
 
+def _long_hard_stop_cap_reason(config: Any) -> str | None:
+    """Reason the cap is unusable, or None when it is a number in (0, 50]."""
+    if not isinstance(config, dict):
+        return "config must be a dict"
+    value = _get_path(config, LONG_HARD_STOP_CAP_PATH)
+    if value is _MISSING:
+        return "missing"
+    if not _is_number(value):
+        return "must be a number"
+    num = float(value)
+    if not math.isfinite(num) or num <= 0 or num > LONG_HARD_STOP_CAP_MAX:
+        return f"must be > 0 and <= {LONG_HARD_STOP_CAP_MAX:g}"
+    return None
+
+
+def long_hard_stop_cap_error(config: Any) -> str | None:
+    """None when ``risk.long_hard_stop_max_loss_pct`` is valid.
+
+    There is no code fallback. Callers that start the bot, reload config, or
+    apply a tenant overlay treat any other return as fail-closed.
+    """
+    reason = _long_hard_stop_cap_reason(config)
+    if reason:
+        return reason
+    return None
+
+
+def _guard_long_hard_stop_cap(path: str, value: Any) -> None:
+    """Save-path check for a present cap. Absence stays valid for partial bodies."""
+    probe = {"risk": {"long_hard_stop_max_loss_pct": value}}
+    err = _long_hard_stop_cap_reason(probe)
+    if err and err != "missing":
+        raise ConfigValidationError(path, value, err)
+
+
+# Present values only. A missing key is rejected at start, reload, and
+# tenant-overlay load (#695), not on a partial tenant save body.
+GUARDED_KEYS["risk.long_hard_stop_max_loss_pct"] = _guard_long_hard_stop_cap
+
+
+def stop_cap_applies(config: Any) -> bool:
+    """True for a bot config that carries a top-level ``stop_loss_pct``.
+
+    Partial stubs in unit tests do not, and are not this gate.
+    """
+    return isinstance(config, dict) and "stop_loss_pct" in config
+
+
+def stop_cap_is_valid(config: Any) -> bool:
+    return isinstance(config, dict) and long_hard_stop_cap_error(config) is None
+
+
+def refuse_start_if_stop_cap_invalid(config: Any) -> None:
+    """Process start: a missing or invalid cap aborts before the bot runs."""
+    err = long_hard_stop_cap_error(config)
+    if err:
+        from logger import log
+
+        log(
+            "config risk.long_hard_stop_max_loss_pct rejected at start: "
+            f"{err}",
+            "ERROR",
+        )
+        raise SystemExit(1)
+
+
+def _reject_full_config_without_stop_cap(config: Any) -> None:
+    """A bot document that carries ``stop_loss_pct`` and a ``risk`` block needs a valid cap.
+
+    Partial tenant bodies omit ``stop_loss_pct`` and stay valid without the
+    key. Tenant seeds set ``stop_loss_pct`` and no ``risk`` block; the cap
+    stays on the operator base and is merged at load. A present but
+    out-of-range cap is already rejected by the guarded key. This is the
+    missing-key case on a full save, including a /config restore of a
+    pre-cap snapshot.
+    """
+    if not stop_cap_applies(config):
+        return
+    if not isinstance(config.get("risk"), dict):
+        return
+    err = long_hard_stop_cap_error(config)
+    if not err:
+        return
+    value = _get_path(config, LONG_HARD_STOP_CAP_PATH)
+    shown = None if value is _MISSING else value
+    raise ConfigValidationError(LONG_HARD_STOP_CAP_PATH, shown, err)
+
+
 def validate_config_for_save(config: Any) -> None:
     """Raise :class:`ConfigValidationError` on the first out-of-bounds key.
 
     ``config`` must be a dict; missing keys are fine, ``None`` is treated as
     "unset" only for keys that consumers already default (all guarded keys
     use ``.get(key, default)``), so ``None`` is rejected to keep the written
-    file unambiguous.
+    file unambiguous. A full bot document must still include a valid
+    ``risk.long_hard_stop_max_loss_pct``.
     """
     if not isinstance(config, dict):
         raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
@@ -336,6 +432,7 @@ def validate_config_for_save(config: Any) -> None:
         if value is _MISSING:
             continue
         check(path, value)
+    _reject_full_config_without_stop_cap(config)
     # #631: shadow/enforce membership revise requires the named Ersatz-Cap.
     # Absent section and mode=off stay valid. Lazy import avoids a cycle.
     from services.universe.membership_revise import assert_membership_revise_config
