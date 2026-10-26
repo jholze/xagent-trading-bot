@@ -424,6 +424,13 @@ class TestT2CapUnderLock:
 
 class TestT3GraceAndPause:
     def test_grace_suppresses_then_full_fires_with_partial_paused(self):
+        """AC-A1: full stop holds inside grace; after grace the partial fires.
+
+        Three expectations that the grace fix changes together:
+        in grace at 0.50 the direct stop is SELL_STOP_FULL, 48 h later at
+        0.92 the partial is SELL_STOP_PARTIAL, and the WS hub writes one
+        SELL_STOP_FULL / exit_ws paper order inside the grace.
+        """
         params = _params(full=10, partial=5)
         recent = datetime.now().isoformat()
         old = (datetime.now() - timedelta(hours=48)).isoformat()
@@ -436,7 +443,7 @@ class TestT3GraceAndPause:
                 strategy_params=params,
                 base_stop_loss_pct=10,
             )
-            is None
+            == ("SELL_STOP_FULL", "stop_loss")
         )
         aged = _lot(amount=100, entry=1.0, dca_rounds=1, last_dca_at=old)
         hit = evaluate_long_hard_stop(
@@ -447,7 +454,7 @@ class TestT3GraceAndPause:
             base_stop_loss_pct=10,
         )
         assert hit == ("SELL_STOP_FULL", "stop_loss")
-        # Partial band, pause still on: no partial after grace.
+        # Partial band after the grace: open rounds no longer pause it.
         paused = evaluate_long_hard_stop(
             price=0.92,
             entry=1.0,
@@ -455,7 +462,7 @@ class TestT3GraceAndPause:
             strategy_params=params,
             base_stop_loss_pct=10,
         )
-        assert paused is None
+        assert paused == ("SELL_STOP_PARTIAL", "stop_loss")
         _seed(
             "AAA/USDT",
             amount=100,
@@ -467,7 +474,12 @@ class TestT3GraceAndPause:
         hub.update_book([_row("AAA/USDT", params=params)])
         with _paper():
             _fire(hub, "AAA/USDT", "0.50", "0.50")
-        assert _orders("AAA/USDT") == []
+        orders = [
+            o
+            for o in _orders("AAA/USDT")
+            if o.get("source") == "exit_ws" and o.get("signal") == "SELL_STOP_FULL"
+        ]
+        assert len(orders) == 1
 
 
 class TestT4ThresholdsFromConfig:

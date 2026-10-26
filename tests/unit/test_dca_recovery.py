@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.actions import BUY_DCA
+from core.config import get_bot_config
 from core.models import MarketContext, TradeOrder
 from risk.risk_manager import RiskManager
 from strategies.dca import effective_stop_loss_thresholds
@@ -148,9 +149,12 @@ class TestDCARecoveryModule(unittest.TestCase):
     def test_effective_stop_counts_recovery_rounds(self):
         pos = {"dca_rounds": 1, "dca_recovery_rounds": 1, "last_dca_recovery_at": None}
         params = {"dca": {"interval_hours": 12, "stop_loss_widen_pct_per_round": 6}}
-        full, partial, _ = effective_stop_loss_thresholds(pos, params, 50.0)
+        full, partial, grace = effective_stop_loss_thresholds(pos, params, 50.0)
         self.assertEqual(full, 62.0)
-        self.assertIsNone(partial)
+        self.assertFalse(grace)
+        # No timestamp: outside the grace, so the partial is not paused (U-C3-2).
+        ratio = float(get_bot_config().risk_config["partial_stop_ratio"])
+        self.assertAlmostEqual(partial, 50.0 * ratio)
 
 
 class TestDCARecoveryDecisionEngine(unittest.TestCase):
