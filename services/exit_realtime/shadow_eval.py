@@ -129,6 +129,8 @@ def evaluate_would_sells(
         return []
     entry = float(position.get("average_entry") or 0)
     stop_pos = dict(stop_position) if isinstance(stop_position, dict) else dict(position)
+    if symbol and not stop_pos.get("symbol"):
+        stop_pos["symbol"] = symbol
     stop_entry = float(stop_pos.get("average_entry") or 0)
     if entry <= 0 and (stop_entry <= 0 or "stop_loss" not in allowed):
         return []
