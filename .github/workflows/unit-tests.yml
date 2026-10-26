@@ -1,5 +1,20 @@
-# Unit suite. No Redis service: bus.redis_client.get_redis() returns None when
-# Redis is unreachable, and tests mock Redis or take that in-process fallback.
+# Unit suite. No Redis service is required for the suite itself:
+# bus.redis_client.get_redis() returns None when Redis is unreachable, and
+# tests mock Redis or take that in-process fallback. Redis and Mongo below
+# are still started for the pytest job so CI matches a local stack.
+#
+# Pytest is skipped only when every changed file is on the documentation
+# allowlist in scripts/ci_docs_only.py: a *.md file outside tests/ that is
+# not a fixture or a workflow file, or a non-config file under docs/.
+# Config, YAML/JSON/TOML, bundle specs, fixtures, tests/, workflow files,
+# and any other path run the full suite. An empty or unreadable file list
+# also runs the suite.
+#
+# The job named `unit` always completes (success or failure). Branch
+# protection should require `unit`, not `pytest`: `pytest` is skipped for
+# an allowlisted diff, and a skipped required check can block the merge.
+# This workflow does not lint. Do not put a lint job behind the pytest
+# condition — lint must keep running for documentation-only pull requests.
 name: Unit tests
 
 on:
@@ -7,14 +22,39 @@ on:
 
 # One active run per pull request. A force-push and a base-branch change in
 # the same moment each deliver a pull_request event, and the next push
-# delivers another. Cancel the superseded runs. No paths-ignore: skipping
-# docs-only diffs is a separate decision.
+# delivers another. Cancel the superseded runs.
 concurrency:
   group: unit-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
-  unit:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_pytest: ${{ steps.decide.outputs.run_pytest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Allowlist changed files
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci_docs_only.py \
+            --pull "$PR_NUMBER" \
+            --github-output "$GITHUB_OUTPUT"
+
+  pytest:
+    name: pytest
+    needs: classify
+    if: ${{ needs.classify.outputs.run_pytest == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -50,3 +90,23 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379/0
           PYTEST_DB_SUFFIX: ci
         run: ./scripts/run_unit_tests.sh -q
+
+  unit:
+    name: unit
+    needs: [classify, pytest]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish required unit check
+        env:
+          CLASSIFY: ${{ needs.classify.result }}
+          PYTEST: ${{ needs.pytest.result }}
+          RUN_PYTEST: ${{ needs.classify.outputs.run_pytest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci_docs_only.py --required-check \
+            --classify-result "$CLASSIFY" \
+            --pytest-result "$PYTEST" \
+            --run-pytest "$RUN_PYTEST"
