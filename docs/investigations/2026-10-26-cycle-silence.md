@@ -10,6 +10,8 @@ Order timestamps in the export are naive Berlin local time, as in that note.
 
 The cycle hard stop is not being executed for the open lots the websocket is already stopping. That is why there is no `source=auto` stop, and why a guard escalation that only watches the cycle never sees one.
 
+The fill drought from the morning of 23 Oct is a second fact. It is not the same defect, and it is not a dead fill adapter. After 23 Oct 08:16 every later row in this export is a risk reject (`risk.approved` false) recorded before `adapter.execute`. Detail is in "No fills after the morning of 23 Oct" below.
+
 `source=auto` is not a separate strategy. It is the leftover label in `SignalOrchestrator.execute_if_needed` when the decision's sources are not retagged to `x`, `cmc`, `lc`, `dca*`, `entry_sensor_15m`, or `grid` (`services/signal_orchestrator.py:141-158`). With `architecture.eval_queue_enabled: true` (`config.json:452`), the meta cycle does not call `process_coin`. It runs portfolio DCA and enqueues eval jobs (`aria_bot.py:929-966`). The only place a held lot is analyzed for a stop or a Bollinger exit is the eval worker: `process_eval_job` → `process_coin` → `DecisionEngine.evaluate` → `TechnicalRSIStrategy.analyze` (`services/eval_queue_runtime.py:184-213`, `services/signal_orchestrator.py:455-489`, `strategies/technical_rsi_bb.py:181-205`).
 
 The orders that are still being written do not go through that call:
@@ -246,6 +248,76 @@ Test. Call `note_tenant_cycle` the way `aria_bot` calls it. Do not unit-test a b
 
 W1 through W4 should use the real `note_tenant_cycle` and a ledger fixture. Patch `send_telegram_message` only. Do not patch the counter.
 
+## No fills after the morning of 23 Oct
+
+Risk review: from 23 Oct both tenants show orders and no fills. The tape supports a sharper version of that. There are two fills on 23 Oct itself, then none.
+
+| When (Berlin) | Tenant | Source | What filled |
+|---|---|---|---|
+| 2026-10-23 00:38:18 | henry | `dca` | BUY_DCA ASTER/USDT, risk message `Approved`, fill price 0.6936 |
+| 2026-10-23 08:15:52 | default | `exit_ws` | SELL_FULL DOS/USDT, `exit_source=trailing_take_profit`, risk `Sell approved`, request price 0.2306 |
+
+From 23 Oct 08:16 through 26 Oct 09:47 the export has 321 further orders. All 321 are `rejected` and `risk.approved` is false. There is no `ACTIVE`, pending, or approved-but-unfilled row anywhere in the 1068. `TradingService._execute_order_locked` calls `adapter.execute` only after approval (`services/trading_service.py:444-497`). A reject is written at `:447` and returns at `:450`. These 321 rows never reached the paper or venue fill.
+
+`architecture.trading_engine_mode` is `in_process` (`config.json:442`). The Redis trading-engine worker in `workers/trading_engine.py` runs only when that mode is `external` or `distributed` (`workers/trading_engine.py:27-28`). It is not the process that fills these rows. "Worker" below means the background producers that stamp their own `source`: `gainer_relvol`, `entry_sensor_15m`, `dca`, `dca_sniper`.
+
+### Last order and last fill
+
+`auto` is the cycle label. `exit_ws` is the websocket hub. `worker` is the four background sources above. `cmc`, `lc`, and `manual` are already quiet before 23 Oct (last fills 6 Oct, 15 Oct, and 12 Oct on henry; default manual is 30 Sep). They are not part of this drought.
+
+| Tenant | Bucket | Last order | Last fill |
+|---|---|---|---|
+| default | `auto` | 2026-10-20 06:18 WLD/USDT SELL_FULL `bb_upper`, filled | same row. No later auto order |
+| default | `exit_ws` | 2026-10-23 08:15 DOS/USDT SELL_FULL `trailing_take_profit`, filled | same row. No later `exit_ws` row |
+| default | `worker` | 2026-10-26 09:14 entry_sensor BUY 龙虾/USDT, `max_open_positions` | 2026-10-21 02:29 entry_sensor BUY DOS/USDT |
+| henry | `auto` | 2026-10-17 05:37 AKT/USDT SELL_FULL `bb_upper`, filled | same row. No later auto order |
+| henry | `exit_ws` | 2026-10-26 09:47 STRK/USDT SELL_STOP_PARTIAL, `partial_sell_guard` | 2026-10-22 15:18 ONDO/USDT SELL_FULL `trailing_stop` |
+| henry | `worker` | 2026-10-26 09:43 gainer NFLXON/USDT, `long_mcap` | 2026-10-23 00:38 dca BUY_DCA ASTER/USDT |
+
+Per worker source:
+
+| Tenant | Source | Last order | Last fill |
+|---|---|---|---|
+| default | `gainer_relvol` | 2026-10-13 20:56 QNT/USDT, filled | same row. No later gainer order |
+| default | `entry_sensor_15m` | 2026-10-26 09:14, `max_open_positions` | 2026-10-21 02:29 DOS/USDT BUY |
+| default | `dca` | 2026-10-20 15:55 GRAM/USDT, `dca_guard_below_avg` | 2026-10-06 04:44 DEXE/USDT |
+| default | `dca_sniper` | 2026-09-30 21:28 Q/USDT, filled | same row |
+| henry | `gainer_relvol` | 2026-10-26 09:43 NFLXON/USDT, `long_mcap` | 2026-10-19 01:06 ONDO/USDT |
+| henry | `entry_sensor_15m` | 2026-10-26 09:11 CT/USDT, `cash_floor` | 2026-10-16 17:13 AKT/USDT |
+| henry | `dca` | 2026-10-26 09:37 VVV/USDT, `dca_guard_below_avg` | 2026-10-23 00:38 ASTER/USDT |
+| henry | `dca_sniper` | no rows | no rows |
+
+### This is not the cycle-silence defect
+
+Cycle silence removes `source=auto` only. It started on 17 Oct (henry) and 20 Oct (default). Fills of other sources continued after those dates: default entry-sensor fills on 20 and 21 Oct, default `exit_ws` fills on 20, 21, 22, and 23 Oct, henry `exit_ws` ONDO on 22 Oct, henry DCA ASTER on 23 Oct. The position-heartbeat hole does not run the gainer, the entry sensor, portfolio DCA, or the websocket, and it does not sit in front of `adapter.execute`.
+
+What the 321 rows actually are:
+
+| Code | n since 23 Oct 00:00 | Who | What the guard is doing |
+|---|---|---|---|
+| `cash_floor` | 205, all henry, first row in the whole export is 2026-10-23 02:56 | gainer 201, entry sensor 4 | HARVEST, free $0.00 for new buys, floor about $16k, cash $7826.48 |
+| `partial_sell_guard` | 96, all henry `exit_ws` | STRK 79, ULTIMA 17 | Below-min hard partial. Same loop as the original note |
+| `long_mcap` | 79 henry gainer, plus 3 default entry sensor | new buys | Universe / cap gate, not a fill |
+| `max_open_positions` | 38 default entry sensor | book 50/22 or 51/22 under RISK_OFF HARVEST | Entry cap. Started 20 Oct, and default still filled after that |
+| `universe_trade_cap` | 32 default, 1 henry | entry sensor | Observe-only names. Started 20 Oct |
+| `dca_guard_below_avg` | 29 henry | DCA buys under the average | The 23 Oct ASTER fill was approved; later DCA prices are under the average |
+| other henry gainer | 11 | `stablecoin_blocked`, `coin_memory_soft_block`, `gainer_chase_guard` | Entry gates |
+
+`cash_floor` is the adaptive policy, not a new branch added on 23 Oct. `risk.cash_policy.enabled` is true and `mode` is `adaptive` (`config.json:493-495`). HARVEST is chosen when fusion `block_buys` is set or `size_mult` is below `size_mult_harvest` (0.7) (`risk/cash_policy.py:57-68`). The buy check is `_cash_floor_blocked` (`risk/risk_manager.py:2985-3018`). It does not run on sells. A hard stop or a trailing full close is not rejected by this code.
+
+Ticker price is present on every one of the 321. The DOS fill the same morning used a request price of 0.2306 and a trail rationale with a peak timestamp of 07:52 that day. The STRK guard text still carries `last=` and `bid=`. There is no zero-price cluster and no new "no ticker" reject code.
+
+#704 merged 22 Oct 23:06. Fills continued after that merge: default USELESS `exit_ws` at 22 Oct 23:21, henry ASTER at 23 Oct 00:38, default DOS at 23 Oct 08:15. The adapter was alive on the morning the drought starts. No staging commit on 23 Oct changes execution (`930792a` is CI only).
+
+### What is actually missing, by path
+
+- `auto`: no order, so no fill. That is the cycle silence. It does not explain the other buckets.
+- `exit_ws` default: the last row filled. Nothing was submitted after DOS. Whether a later default lot should have trailed or stopped is **UNCLEAR** without the book after 08:15. The path did not fail a fill.
+- `exit_ws` henry: orders keep coming and the guard rejects them. The fill path is not what stops STRK and ULTIMA. The partial-minimum guard is. A full close is still not submitted.
+- `worker` buys: submitted and rejected by cash floor, open-slot cap, universe cap, mcap, or DCA-below-average. Those guards are behaving as written. Henry's cash-floor outcome is new in this export at 02:56 on 23 Oct (no earlier `cash_floor` row). Whether fusion actually flipped henry to HARVEST then, or a tenant cash read changed after #704, is **UNCLEAR**. The message quotes henry cash $7826 against a ~$16k floor, so the block is consistent with that cash figure. It does not block the sells that are missing.
+
+A paper-fill or venue-fill failure would show an approved order that does not reach `filled` (status `ACTIVE`, or `executed` false after `adapter.execute`). This export has none of those in the drought window. Fixing the cycle heartbeat will not make a `cash_floor` or `max_open_positions` buy fill, and it will not turn a below-min `exit_ws` partial into a fill. Those stay rejects until the guard rules or the cash and slot state change.
+
 ## UNCLEAR
 
 - Redis eval-queue depth, 15m watch size, and whether STRK's heartbeat was trimmed or overwritten on 17–26 Oct. The mechanism is in the code. The historical saturation is not in the export.
@@ -255,3 +327,5 @@ W1 through W4 should use the real `note_tenant_cycle` and a ledger fixture. Patc
 - Production commit past `e357df2a`. `930792a` does not change this path.
 - Logs. Not readable from the attached data.
 - Whether any held lot had a real `bb_upper` setup after 20 Oct. The missing stop does not depend on that.
+- Why henry's first `cash_floor` row in this export is 23 Oct 02:56 (HARVEST, free $0 new, cash $7826, floor about $16k). The policy is older than that morning. Whether fusion `size_mult` / `block_buys` flipped then, or the #704 book split changed which cash figure the guard saw, is not in the tape.
+- Whether any default lot after the DOS trail fill at 23 Oct 08:15 should have produced another `exit_ws` row. The hub emitted nothing after that fill. The adapter had just filled DOS.
