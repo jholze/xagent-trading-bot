@@ -466,3 +466,147 @@ def test_ac_001e_ram_lock_roundtrip_uses_mongo(monkeypatch):
     finally:
         P.reset_all_position_stores_for_tests()
         drop_database(test=True)
+
+
+def test_p698_same_scope_debounce_both_books_saved(books, monkeypatch):
+    """#698 public repro: two flushes, same scope, neither debounce is cancelled.
+
+    Uses flush_positions and a fake Timer only. It does not read _flush_timers.
+    On a single process-wide timer the first book is cancelled, so both locks
+    are not saved.
+    """
+    created: list = []
+
+    class _RecordingTimer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            self.daemon = False
+            self.cancelled = False
+            created.append(self)
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(P.threading, "Timer", _RecordingTimer)
+    _seed_known("default", lock=True)
+    _seed_known("henry", lock=True)
+    _flush_as("default")
+    _flush_as("henry")
+    assert len(created) == 2
+    first, second = created
+    assert first.cancelled is False, "henry's debounce cancelled default's pending save"
+    assert second.cancelled is False
+    for timer in created:
+        if not timer.cancelled:
+            timer.function()
+    assert _lock_enabled(books, "default") and _lock_enabled(books, "henry")
+
+
+def test_p699_a_keeps_own_snapshot_while_b_refreshes(monkeypatch):
+    """H1: A keeps cap and trading_mode after B refreshes the shared config."""
+
+    def _reload_mode(tenant_id=None):
+        from core.tenant_context import resolve_tenant_id
+
+        tid = tenant_id or resolve_tenant_id()
+        return {
+            "max_usdt_per_trade": OVERLAY_HENRY if tid == "henry" else OVERLAY_DEFAULT,
+            "trading_mode": "live" if tid == "henry" else "paper",
+            "virtual_trading": True,
+            "tenant_marker": tid,
+        }
+
+    _patch_cycle(monkeypatch)
+    monkeypatch.setattr("core.config.reload_config", _reload_mode)
+    cfg = BotConfig(
+        {
+            "max_usdt_per_trade": 1,
+            "trading_mode": "paper",
+            "virtual_trading": True,
+            "tenant_marker": "unset",
+        }
+    )
+    first_done = threading.Event()
+    second_done = threading.Event()
+    seen: dict[str, tuple] = {}
+
+    def worker(tenant: str):
+        with tenant_cycle_context(tenant):
+            if tenant == "default":
+                cfg.refresh()
+                first_done.set()
+                assert second_done.wait(5)
+                raw = cfg.raw
+                seen[tenant] = (
+                    raw["tenant_marker"],
+                    cfg.max_usdt_per_trade,
+                    raw.get("trading_mode"),
+                )
+            else:
+                assert first_done.wait(5)
+                cfg.refresh()
+                second_done.set()
+                raw = cfg.raw
+                seen[tenant] = (
+                    raw["tenant_marker"],
+                    cfg.max_usdt_per_trade,
+                    raw.get("trading_mode"),
+                )
+
+    _run_pair(worker)
+    assert seen["default"] == ("default", OVERLAY_DEFAULT, "paper"), seen
+    assert seen["henry"] == ("henry", OVERLAY_HENRY, "live"), seen
+
+
+def test_b1_third_tenant_without_refresh_does_not_read_fallback(monkeypatch):
+    """B1: after two refreshes, a third tenant does not read _fallback_raw.
+
+    It gets its own snapshot. Fallback stays on the first refresh. Mutant
+    M699_fallback_tracks_last points fallback at the last refresh (henry).
+    An explicit raw that was never refreshed still returns that raw.
+    """
+    third = "ctexp"
+    third_cap = 333.0
+
+    def _reload_three(tenant_id=None):
+        from core.tenant_context import resolve_tenant_id
+
+        tid = tenant_id or resolve_tenant_id()
+        caps = {"default": OVERLAY_DEFAULT, "henry": OVERLAY_HENRY, third: third_cap}
+        return {
+            "max_usdt_per_trade": caps[tid],
+            "trading_mode": "paper",
+            "virtual_trading": True,
+            "tenant_marker": tid,
+        }
+
+    _patch_cycle(monkeypatch)
+    monkeypatch.setattr("core.config.reload_config", _reload_three)
+    cfg = _fresh_config()
+    with tenant_context("default", scope="paper"):
+        cfg.refresh()
+    with tenant_context("henry", scope="paper"):
+        cfg.refresh()
+
+    fallback = object.__getattribute__(cfg, "_fallback_raw")
+    assert fallback["tenant_marker"] == "default", fallback
+    with tenant_context(third, scope="paper"):
+        seen = cfg.raw
+    assert seen["tenant_marker"] == third, seen
+    assert seen["max_usdt_per_trade"] == third_cap
+    assert seen is not fallback
+
+    untouched = BotConfig(
+        {
+            "max_usdt_per_trade": 1,
+            "virtual_trading": True,
+            "trading_mode": "paper",
+            "tenant_marker": "init",
+        }
+    )
+    with tenant_context(third, scope="paper"):
+        assert untouched.raw["tenant_marker"] == "init"

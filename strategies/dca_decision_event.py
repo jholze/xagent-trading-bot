@@ -78,10 +78,20 @@ def persist_dca_decision_event(
         final_usdt=final_usdt,
         applied=applied,
     )
-    from core.tenant_context import resolve_tenant_id
+    from core.tenant_context import current_tenant_context
+    from logger import log
 
+    # No context must not be stored as the default tenant. The cycle caller
+    # sets a context; a bare call is a bug and writes nothing.
+    ctx_now = current_tenant_context()
+    if ctx_now is None:
+        log(
+            "DCA decision event not written: no tenant context",
+            "ERROR",
+        )
+        return ""
     # Tenant is part of the id so two books in the same second do not overwrite.
-    tid = resolve_tenant_id()
+    tid = ctx_now.tenant_id
     ts = _utc_now_iso()
     raw_id = (
         f"{tid}|{sym}|{ts}|{applied}|{result.skip}|{result.size_mult}|"

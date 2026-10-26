@@ -392,3 +392,34 @@ def test_ac_004_r1_r2_reflector_event_is_tenant_scoped():
     henry = _one("henry")
     default = _one("default")
     assert henry.event_id != default.event_id
+
+
+def test_p708_default_pack_excludes_henry_and_both_see_global():
+    """H1: default pack has no henry row; both packs include the global row."""
+    store = InMemoryMemoryStore()
+    store.upsert_event(_event("h", "henry"))
+    store.upsert_event(_event("d", "default"))
+    store.upsert_event(_event("g", GLOBAL_TENANT_ID))
+    default_ids = sorted(e["event_id"] for e in memory_pack("default", SYM, store=store)["events"])
+    henry_ids = sorted(e["event_id"] for e in memory_pack("henry", SYM, store=store)["events"])
+    assert default_ids == ["d", "g"], default_ids
+    assert henry_ids == ["g", "h"], henry_ids
+
+
+def test_h3_dca_writer_without_tenant_context_logs_and_does_not_write():
+    """H3: no tenant context logs ERROR and does not store a default-tenant event."""
+    store = InMemoryMemoryStore()
+    with (
+        patch("intelligence.memory.store.memory_enabled", return_value=True),
+        patch("logger.log") as logged,
+    ):
+        eid = persist_dca_decision_event(
+            symbol=SYM,
+            result=_result(),
+            store=store,
+            index_rag=False,
+        )
+    assert eid == ""
+    assert store.list_events() == []
+    levels = [call.args[1] for call in logged.call_args_list if len(call.args) > 1]
+    assert "ERROR" in levels

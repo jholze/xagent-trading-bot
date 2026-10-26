@@ -14,6 +14,10 @@ class BotConfig:
         object.__setattr__(self, "_snapshots", {})
         object.__setattr__(self, "_fallback_raw", {})
         object.__setattr__(self, "_tenant_id", tenant_id)
+        # Set once refresh() has run. Until then an explicit raw may be served
+        # to any reader. After that, a tenant context with no snapshot must
+        # not see _fallback_raw (#699 tenant check 4).
+        object.__setattr__(self, "_seen_refresh", False)
         if raw is not None:
             self._raw = raw
         elif tenant_id:
@@ -51,7 +55,7 @@ class BotConfig:
         object.__setattr__(self, "_raw", raw)
 
     def _visible_raw(self) -> dict:
-        from core.tenant_context import resolve_tenant_id
+        from core.tenant_context import current_tenant_context, resolve_tenant_id
 
         explicit = object.__getattribute__(self, "_tenant_id")
         tid = explicit or resolve_tenant_id()
@@ -59,7 +63,34 @@ class BotConfig:
         found = snaps.get(tid)
         if found is not None:
             return found
+        # Shared config, refresh already used, caller is inside a tenant
+        # context: do not serve _fallback_raw (another tenant's overlay or
+        # the process base). Load this tenant, or fail closed if that load
+        # does not return a config dict.
+        seen = object.__getattribute__(self, "_seen_refresh")
+        if seen and explicit is None and current_tenant_context() is not None:
+            return object.__getattribute__(self, "_materialize_tenant_snapshot")(tid)
         return object.__getattribute__(self, "_fallback_raw")
+
+    def _materialize_tenant_snapshot(self, tid: str) -> dict:
+        """Load ``tid`` after refresh() without adopting ``_fallback_raw``."""
+        try:
+            loaded = reload_config(tenant_id=tid)
+        except Exception as exc:
+            log(
+                f"BotConfig refused tenant {tid}: reload_config failed ({exc})",
+                "ERROR",
+            )
+            raise
+        if not isinstance(loaded, dict):
+            log(
+                f"BotConfig refused tenant {tid}: reload_config did not return a config",
+                "ERROR",
+            )
+            raise RuntimeError(f"config snapshot missing for tenant {tid}")
+        snaps = object.__getattribute__(self, "_snapshots")
+        snaps[tid] = loaded
+        return loaded
 
     def refresh(self):
         from core.tenant_context import resolve_tenant_id
@@ -69,6 +100,7 @@ class BotConfig:
         loaded = reload_config(tenant_id=tid)
         snaps = object.__getattribute__(self, "_snapshots")
         snaps[tid] = loaded
+        object.__setattr__(self, "_seen_refresh", True)
         # A context-free reader still sees the latest single-tenant refresh.
         # Once two tenants have snapshots, fallback must not track the last
         # writer or the other thread observes that overlay.
