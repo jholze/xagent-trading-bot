@@ -361,6 +361,56 @@ def test_702_rebuild_path_calls_replay_exactly_once(monkeypatch):
     assert rebuild_src.count("_build_positions_snapshot_from_orders(") == 1
 
 
+def test_ac_002d_writer_lease_blocks_rebuild_without_replay(monkeypatch):
+    """Given the writer lease is enabled and this process does not hold it,
+    When rebuild_positions_from_orders runs,
+    Then it returns 0 and replay_simulated_ledger is not called.
+    """
+    monkeypatch.setattr("bus.writer_lease.lease_enabled", lambda: True)
+    monkeypatch.setattr("bus.writer_lease.writer_lease_held", lambda: False)
+    replay_calls: list[tuple] = []
+
+    def _replay(*args, **kwargs):
+        replay_calls.append((args, kwargs))
+        return {"positions": {}}
+
+    monkeypatch.setattr("core.sim_ledger_replay.replay_simulated_ledger", _replay)
+    # Present only so a bypassed lease check reaches the replay spy.
+    monkeypatch.setattr(
+        "data_manager.load_orders",
+        lambda scope, tenant_id=None: {
+            "orders": [
+                {
+                    "id": "filled-1",
+                    "status": "filled",
+                    "symbol": "A/USDT",
+                    "timeframe": "4h",
+                    "side": "buy",
+                    "execution": {"price": 10.0, "amount": 1.0, "usdt": 10.0},
+                    "timestamps": {"filled": "2026-01-01T00:00:00"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr("data_manager.get_config", lambda tenant_id=None: {})
+    monkeypatch.setattr(
+        "core.portfolio_baseline.initial_capital",
+        lambda scope=None, config=None, history=None, trading_mode=None: 5000.0,
+    )
+    monkeypatch.setattr(
+        "data_manager.load_positions_document",
+        lambda scope, tenant_id=None: {"positions": {}},
+    )
+    monkeypatch.setattr("strategies.positions.flush_positions", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "strategies.positions.apply_positions_snapshot", lambda *a, **k: None
+    )
+
+    result = rebuild_positions_from_orders("paper", tenant_id="tenant-a")
+    assert replay_calls == []
+    assert result == 0
+
+
 # --- #703 -----------------------------------------------------------------
 
 
@@ -407,6 +457,30 @@ def test_703c_entry_sensor_buy_usdt_frac(mode, tier, expected):
     Then GRID is 0.22/0.35, HYBRID is 0.40/0.55, MOMENTUM is 0.30, and DEFENSIVE is 0.0.
     """
     assert entry_sensor_buy_usdt_frac(mode, volatility_tier=tier) == pytest.approx(expected)
+
+
+def test_ac_003c_per_tier_config_beats_fallback():
+    """Given non-default per-tier size hints,
+    When resolve_sensor_size_hint runs,
+    Then each tier is exactly that configured value, not the fraction fallback.
+    """
+    hints = {
+        "GRID": {"stable": 0.11, "volatile": 0.33},
+        "HYBRID": {"stable": 0.44, "volatile": 0.25},
+    }
+    cfg = {"size_hint_by_mode": hints}
+    cases = (
+        (MODE_GRID, "stable", 0.11),
+        (MODE_GRID, "volatile", 0.33),
+        (MODE_HYBRID, "stable", 0.44),
+        (MODE_HYBRID, "volatile", 0.25),
+    )
+    for mode, tier, expected in cases:
+        got = resolve_sensor_size_hint(mode, volatility_tier=tier, cfg=cfg)
+        fallback = entry_sensor_buy_usdt_frac(mode, volatility_tier=tier)
+        assert got == hints[mode][tier]
+        assert got == expected
+        assert got != fallback
 
 
 def test_703_deployed_size_hints_unchanged_and_resolve_matches_fractions():
