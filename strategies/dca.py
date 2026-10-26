@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from core.actions import BUY_DCA
 from core.config import get_bot_config
 from core.models import MarketContext
+from logger import log
 from strategies.positions import position_notional_usdt
 
 
@@ -137,20 +139,34 @@ def _hours_since_at(iso_ts: str | None, now: datetime | None) -> float | None:
     return (ref - last_ts).total_seconds() / 3600.0
 
 
+def _warn_nonfinite_grace(key: str, raw: object) -> None:
+    log(
+        f"dca grace invalid field={key} value={raw!r}; "
+        f"falling back to a finite window",
+        "WARNING",
+    )
+
+
 def grace_window_hours(strategy_params: dict | None) -> float:
     """Hours the hard-stop grace lasts.
 
-    ``grace_hours_after_dca`` when it is > 0, else ``dca.interval_hours``
-    when that is > 0, else ``_DEFAULT_GRACE_HOURS``. Zero and missing keys
-    fall through. A bad value falls through rather than raising.
+    ``grace_hours_after_dca`` when it is a finite number > 0, else
+    ``dca.interval_hours`` when that is a finite number > 0, else
+    ``_DEFAULT_GRACE_HOURS``. Zero and missing keys fall through. Infinity
+    and NaN are invalid: they log and fall through, so the window never
+    becomes a permanent pause. A bad value falls through rather than raising.
     """
     cfg = dca_config(strategy_params)
     for key in ("grace_hours_after_dca", "interval_hours"):
         if key not in cfg or cfg.get(key) is None:
             continue
+        raw = cfg.get(key)
         try:
-            value = float(cfg.get(key))
+            value = float(raw)
         except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            _warn_nonfinite_grace(key, raw)
             continue
         if value > 0:
             return value
@@ -173,22 +189,73 @@ def youngest_dca_age_hours(position: dict | None) -> float | None:
     return min(ages)
 
 
+_ROUND_FIELDS = ("dca_rounds", "dca_recovery_rounds")
+
+
+def _warn_bad_round_fields(position: dict | None, bad: list[tuple[str, object]]) -> None:
+    pos = position or {}
+    symbol = str(pos.get("symbol") or "")
+    tenant = str(pos.get("tenant_id") or "")
+    if not tenant:
+        try:
+            from core.tenant_context import resolve_tenant_id
+
+            tenant = str(resolve_tenant_id() or "")
+        except Exception:
+            tenant = ""
+    for key, raw in bad:
+        log(
+            f"dca round field malformed symbol={symbol} tenant={tenant} "
+            f"field={key} value={raw!r}; full stop uses the un-widened base",
+            "WARNING",
+        )
+
+
+def _widen_rounds(position: dict | None) -> int:
+    """Rounds that widen the full stop.
+
+    A non-numeric or malformed round field contributes no widening at all:
+    the caller keeps the base stop. Valid fields keep the previous count,
+    including a timestamp with no numeric rounds.
+    """
+    pos = position or {}
+    bad: list[tuple[str, object]] = []
+    total = 0
+    for key in _ROUND_FIELDS:
+        if key not in pos:
+            continue
+        raw = pos.get(key)
+        if raw is None or raw is False or raw == "" or raw == 0:
+            continue
+        try:
+            total += int(raw)
+        except (TypeError, ValueError):
+            bad.append((key, raw))
+    if bad:
+        _warn_bad_round_fields(pos, bad)
+        return 0
+    if total <= 0:
+        return _dca_rounds_used(pos)
+    return total
+
+
 def full_stop_loss_pct(
     position: dict | None,
     strategy_params: dict | None,
     base_stop_loss_pct: float,
 ) -> float:
-    """Widened full stop. Does not read timestamps."""
+    """Widened full stop. Does not read timestamps.
+
+    Malformed round fields do not raise and do not widen: the result is the
+    base stop.
+    """
     params = strategy_params or {}
     dca_cfg = dca_config(params)
     try:
         stop_loss_pct = float(params.get("stop_loss_pct") or base_stop_loss_pct)
     except (TypeError, ValueError):
         stop_loss_pct = float(base_stop_loss_pct)
-    pos = position or {}
-    rounds = _total_dca_rounds(pos)
-    if rounds <= 0:
-        rounds = _dca_rounds_used(pos)
+    rounds = _widen_rounds(position)
     try:
         widen = float(dca_cfg.get("stop_loss_widen_pct_per_round") or 0)
     except (TypeError, ValueError):
@@ -199,7 +266,9 @@ def full_stop_loss_pct(
 def dca_stop_in_grace(position: dict | None, strategy_params: dict | None) -> bool:
     """True only when a DCA round has a parsable timestamp inside the window.
 
-    Rounds with no parsable timestamp are outside the grace.
+    Rounds with no parsable timestamp are outside the grace. A future
+    timestamp (negative age) is outside as well: it does not pause the partial.
+    Age equal to the window is outside (the comparison is strict ``<``).
     """
     pos = position or {}
     rounds = _total_dca_rounds(pos)
@@ -208,7 +277,9 @@ def dca_stop_in_grace(position: dict | None, strategy_params: dict | None) -> bo
     if rounds <= 0:
         return False
     age = youngest_dca_age_hours(pos)
-    if age is None:
+    # A future timestamp (negative age) is outside the window. It must not
+    # pause the partial forever.
+    if age is None or age < 0:
         return False
     return age < grace_window_hours(strategy_params)
 
@@ -217,10 +288,15 @@ def trail_grace_hours_after_dca(strategy_params: dict | None) -> float:
     """Grace window for suppressing trail TP/stop after DCA (recovery mode)."""
     cfg = dca_config(strategy_params)
     if "trail_grace_hours_after_dca" in cfg and cfg.get("trail_grace_hours_after_dca") is not None:
+        raw = cfg.get("trail_grace_hours_after_dca")
         try:
-            return max(0.0, float(cfg.get("trail_grace_hours_after_dca")))
+            value = float(raw)
         except (TypeError, ValueError):
-            pass
+            value = None
+        if value is not None and math.isfinite(value):
+            return max(0.0, value)
+        if value is not None:
+            _warn_nonfinite_grace("trail_grace_hours_after_dca", raw)
     # No own key: the same chain as the hard-stop grace (AC-G09).
     return grace_window_hours(strategy_params)
 
@@ -340,8 +416,8 @@ def trail_exits_paused_after_dca(
     """True → do not fire trailing_stop / trailing_take_profit (DCA recovery window).
 
     Product: after DCA, bag is in recovery — old peak-based trail must not
-    immediately stop out the new average (BEAT-class failure). Mirrors intent of
-    pause_partial_stop_during_dca for classic SL, extended to trail exits.
+    immediately stop out the new average (BEAT-class failure). The classic
+    partial uses the same grace window, extended here to trail exits.
 
     This helper stays true for the whole grace window. Trailing take-profit
     alone may continue when recent_high_reached_after_dca is true.
@@ -528,11 +604,15 @@ def evaluate_long_hard_stop(
 ) -> tuple[str, str] | None:
     """Long hard stop shared by the cycle and the WS exit path.
 
-    Same formula, same ``effective_stop_loss_thresholds`` call, same strict
-    ``>`` and the same full-then-partial order. Returns
+    Loss is measured from ``entry``. Callers pass the position
+    ``average_entry`` (the post-rebuy average), not a stale fill price and
+    not the trail peak. Same formula, same ``effective_stop_loss_thresholds``
+    call, same strict ``>`` and the same full-then-partial order. Returns
     ``(SELL_STOP_FULL|SELL_STOP_PARTIAL, "stop_loss")`` or None.
     A non-positive entry does not fire. Price is not re-checked here: the
     cycle already refuses a missing price, and a 0 price is a 100% loss.
+    A malformed round field skips DCA widening and still evaluates this stop
+    against the un-widened base.
     """
     try:
         px = float(price)

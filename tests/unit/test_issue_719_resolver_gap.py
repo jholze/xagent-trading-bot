@@ -231,6 +231,11 @@ def test_ac_719_measured_resolver_gap(name):
     above = _fire(measured["params"], base, measured["s_full"] + 0.01)
     assert (below[0] if below else None) != "SELL_STOP_FULL"
     assert above == ("SELL_STOP_FULL", "stop_loss")
+    # Strict ``>``. When the price round-trips to exactly s_full, equality
+    # must not fire. A ``>=`` mutant dies here (m7).
+    if _round_trip_loss(measured["s_full"]) == measured["s_full"]:
+        equal = _fire(measured["params"], base, measured["s_full"])
+        assert (equal[0] if equal else None) != "SELL_STOP_FULL"
 
 
 @pytest.mark.parametrize("path", ["cycle", "ws"])
@@ -247,20 +252,84 @@ def test_ac_719_hermes_default_fires_strictly_above_stop(path):
     params = measured["params"]
     just_below = _price(stop - 0.01)
     just_above = _price(stop + 0.01)
+    equal_price = _price(stop)
+    assert _round_trip_loss(stop) == stop
     if path == "cycle":
         market_below = _market(just_below, params)
+        market_equal = _market(equal_price, params)
         market_above = _market(just_above, params)
         below = TechnicalRSIStrategy().analyze(
             {"symbol": case["sym"], "timeframe": _TF}, market_below
+        )
+        equal = TechnicalRSIStrategy().analyze(
+            {"symbol": case["sym"], "timeframe": _TF}, market_equal
         )
         above = TechnicalRSIStrategy().analyze(
             {"symbol": case["sym"], "timeframe": _TF}, market_above
         )
         assert below.action != "SELL_STOP_FULL"
+        assert equal.action != "SELL_STOP_FULL"
         assert above.action == "SELL_STOP_FULL"
         return
     assert _ws(just_below, params, stop) != "SELL_STOP_FULL"
+    assert _ws(equal_price, params, stop) != "SELL_STOP_FULL"
     assert _ws(just_above, params, stop) == "SELL_STOP_FULL"
+
+
+def _round_trip_loss(loss_pct: float) -> float:
+    """Loss the stop formula recomputes from ``_price``."""
+    price = _price(loss_pct)
+    return (price / _ENTRY - 1) * -100
+
+
+@pytest.mark.parametrize("path", ["direct", "cycle", "ws"])
+def test_ac_719_equal_loss_is_not_full_stop(path):
+    """m7: a loss equal to the stop is not SELL_STOP_FULL. Strict ``>``.
+
+    The configured global stop is used when the price round-trip is exact.
+    Otherwise the loss is the exact 3/4 ratio so ``>=`` still changes the result.
+    """
+    stop = float(get_bot_config().stop_loss_pct)
+    entry = _ENTRY
+    price = entry * (1.0 - stop / 100.0)
+    got = (price / entry - 1) * -100
+    if got != stop:
+        entry, price = 4.0, 3.0
+        got = (price / entry - 1) * -100
+        stop = got
+    assert got == stop
+    ratio = _partial_stop_ratio_from_config(get_bot_config())
+    params = {"stop_loss_pct": stop, "partial_stop_pct": stop * ratio}
+    if path == "direct":
+        hit = evaluate_long_hard_stop(
+            price=price,
+            entry=entry,
+            position={"average_entry": entry, **_FRESH},
+            strategy_params=params,
+            base_stop_loss_pct=stop,
+        )
+        assert (hit[0] if hit else None) != "SELL_STOP_FULL"
+        return
+    if path == "cycle":
+        market = _market(price, params)
+        market.average_entry = entry
+        market.sim_state = {"average_entry": entry, **_FRESH}
+        action = TechnicalRSIStrategy().analyze(
+            {"symbol": _UNLISTED, "timeframe": _TF}, market
+        ).action
+        assert action != "SELL_STOP_FULL"
+        return
+    events = evaluate_would_sells(
+        symbol=_UNLISTED,
+        timeframe=_TF,
+        price=price,
+        position={"average_entry": entry, "recent_high": entry, **_FRESH},
+        strategy_params=params,
+        sources=frozenset({"stop_loss"}),
+        bid=price,
+        base_stop_loss_pct=stop,
+    )
+    assert all(ev.get("action") != "SELL_STOP_FULL" for ev in events)
 
 
 def _market(price: float, params: dict) -> MarketContext:
