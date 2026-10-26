@@ -29,6 +29,11 @@ from data_manager import (
 _positions_lock = threading.RLock()
 
 _FLUSH_DEBOUNCE_SEC = 5.0
+# One debounce per (tenant, scope). A single process-wide timer cancelled
+# the other tenant's pending save (#698). `_flush_timer` / `_pending_flush_key`
+# mirror one still-armed timer so existing single-timer assertions keep
+# observing the timer they armed.
+_flush_timers: dict[tuple[str, str], threading.Timer] = {}
 _flush_timer: threading.Timer | None = None
 _pending_flush_key: tuple[str, str] | None = None
 _flush_timer_lock = threading.RLock()
@@ -1035,13 +1040,40 @@ def reset_all_position_stores_for_tests() -> None:
         _open_positions_count = 0
 
 
+def _retarget_flush_mirror() -> None:
+    """Point the single-timer mirror at a timer that is still armed.
+
+    Caller holds ``_flush_timer_lock``.
+    """
+    global _flush_timer, _pending_flush_key
+    if (
+        _pending_flush_key in _flush_timers
+        and _flush_timer is _flush_timers.get(_pending_flush_key)
+    ):
+        return
+    if _pending_flush_key in _flush_timers:
+        _flush_timer = _flush_timers[_pending_flush_key]
+        return
+    if not _flush_timers:
+        _flush_timer = None
+        _pending_flush_key = None
+        return
+    key, timer = next(iter(_flush_timers.items()))
+    _pending_flush_key = key
+    _flush_timer = timer
+
+
 def _cancel_flush_timer() -> None:
-    """Drop the debounce timer. Used when replacing it, and by test reset."""
+    """Drop every debounce timer. Used by test reset, not by a tenant save."""
     global _flush_timer, _pending_flush_key
     with _flush_timer_lock:
-        if _flush_timer is not None:
-            _flush_timer.cancel()
-            _flush_timer = None
+        timers = list(_flush_timers.values())
+        if _flush_timer is not None and _flush_timer not in timers:
+            timers.append(_flush_timer)
+        for timer in timers:
+            timer.cancel()
+        _flush_timers.clear()
+        _flush_timer = None
         _pending_flush_key = None
 
 
@@ -1053,11 +1085,29 @@ def _cancel_flush_timer_if_key(key: tuple[str, str]) -> None:
     """
     global _flush_timer, _pending_flush_key
     with _flush_timer_lock:
-        if _flush_timer is None or _pending_flush_key != key:
+        timer = _flush_timers.pop(key, None)
+        if timer is None and _pending_flush_key == key:
+            timer = _flush_timer
+        if timer is not None:
+            timer.cancel()
+        if _pending_flush_key == key:
+            _flush_timer = None
+            _pending_flush_key = None
+        _retarget_flush_mirror()
+
+
+def _drop_flush_timer_if_current(key: tuple[str, str], fn) -> None:
+    """Forget ``key``'s timer when the firing callback is still the armed one."""
+    global _flush_timer, _pending_flush_key
+    with _flush_timer_lock:
+        current = _flush_timers.get(key)
+        if current is None or getattr(current, "function", None) is not fn:
             return
-        _flush_timer.cancel()
-        _flush_timer = None
-        _pending_flush_key = None
+        _flush_timers.pop(key, None)
+        if _pending_flush_key == key:
+            _flush_timer = None
+            _pending_flush_key = None
+        _retarget_flush_mirror()
 
 
 def _preserve_locks_from_existing_doc(payload: dict, existing: dict | None) -> dict:
@@ -1214,7 +1264,12 @@ def flush_known_position_stores() -> None:
 
 
 def flush_positions(scope: str = None, *, force: bool = False) -> None:
-    """Persist positions; debounced unless force=True (trade/shutdown)."""
+    """Persist positions; debounced unless force=True (trade/shutdown).
+
+    Each (tenant, scope) has its own debounce. Scheduling or force-flushing
+    one book does not cancel another book's timer. Shutdown still walks every
+    known book (``flush_known_position_stores``), not this thread's key.
+    """
     global _flush_timer, _pending_flush_key
     pinned_tenant, target = _write_target(scope, None)
     pinned = (pinned_tenant, target)
@@ -1226,6 +1281,7 @@ def flush_positions(scope: str = None, *, force: bool = False) -> None:
         return
 
     def _delayed():
+        _drop_flush_timer_if_current(pinned, _delayed)
         # The default book is one dict. After a scope switch the closure
         # would write the new scope's rows into the old scope's document.
         if pinned_tenant == DEFAULT_TENANT and _default_ram_scope not in (None, target):
@@ -1233,11 +1289,18 @@ def flush_positions(scope: str = None, *, force: bool = False) -> None:
         _do_save_positions(target, tenant_id=pinned_tenant)
 
     with _flush_timer_lock:
-        _cancel_flush_timer()
+        old = _flush_timers.pop(pinned, None)
+        if old is not None:
+            old.cancel()
+        if _pending_flush_key == pinned:
+            _flush_timer = None
+            _pending_flush_key = None
+        timer = threading.Timer(_FLUSH_DEBOUNCE_SEC, _delayed)
+        timer.daemon = True
+        _flush_timers[pinned] = timer
+        _flush_timer = timer
         _pending_flush_key = pinned
-        _flush_timer = threading.Timer(_FLUSH_DEBOUNCE_SEC, _delayed)
-        _flush_timer.daemon = True
-        _flush_timer.start()
+        timer.start()
 
 
 def save_positions(scope: str = None):

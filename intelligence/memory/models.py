@@ -63,6 +63,12 @@ class CoinProfile:
             return None
 
 
+# Market-wide events (macro, news, social, coin facts, move attribution).
+# Not a tenant book. Legacy rows keep the dataclass default "default";
+# writers set this explicitly so a pack can include them for every tenant.
+GLOBAL_TENANT_ID = "global"
+
+
 @dataclass
 class MarketEvent:
     event_id: str

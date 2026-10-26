@@ -78,8 +78,15 @@ def persist_dca_decision_event(
         final_usdt=final_usdt,
         applied=applied,
     )
+    from core.tenant_context import resolve_tenant_id
+
+    # Tenant is part of the id so two books in the same second do not overwrite.
+    tid = resolve_tenant_id()
     ts = _utc_now_iso()
-    raw_id = f"{sym}|{ts}|{applied}|{result.skip}|{result.size_mult}|{','.join(result.reason_codes)}"
+    raw_id = (
+        f"{tid}|{sym}|{ts}|{applied}|{result.skip}|{result.size_mult}|"
+        f"{','.join(result.reason_codes)}"
+    )
     event_id = "dca_" + hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:20]
 
     meta = {
@@ -117,6 +124,7 @@ def persist_dca_decision_event(
             description=text[:2000],
             source="dca_policy",
             metadata=meta,
+            tenant_id=tid,
         )
         if not ms.upsert_event(ev):
             return ""
