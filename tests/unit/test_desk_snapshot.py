@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.desk.snapshot import build_snapshot
@@ -221,6 +222,41 @@ def test_facts_overlay_keeps_lot_dca_and_adds_ta():
     assert snap["ok"] is True
     assert snap["hud"]["ta"]["stance"] == "MISS"
     assert snap["hud"]["ta"]["path"] == "DCA 1/2"
-    assert snap["partial_stop_paused"] is True
+    # AC-G15 / U-C3-2: rounds with no parsable timestamp are outside grace.
+    assert snap["partial_stop_paused"] is False
     assert "DCA" in snap["next_edge"]
     assert "RSI" in snap["next_edge"]
+
+
+def test_facts_overlay_pauses_partial_only_inside_grace():
+    """AC-G02: the desk pause is the grace window, read from the lot timestamp."""
+    recent = (datetime.now() - timedelta(hours=1)).isoformat()
+    aged = (datetime.now() - timedelta(hours=48)).isoformat()
+    base = {
+        "tenant_id": "default",
+        "symbol": "LAB/USDT",
+        "config_raw": {
+            "desk": {"enabled": True, "tenants": ["default", "henry"]},
+            "dca": {"max_rounds": 2, "pause_partial_stop_during_dca": True},
+        },
+        "fusion": {"regime": "NEUTRAL", "size_mult": 0.85},
+        "cash_mode": "DEPLOY",
+        "relvol_open": 8,
+        "relvol_max": 8,
+        "facts": {
+            "rsi": 37.7,
+            "at_lower_bb": False,
+            "cmc_confidence": 83.0,
+            "cmc_trust": 72.0,
+        },
+    }
+    inside = build_snapshot(
+        **base,
+        lots=[{**_LAB_LOT, "last_dca_at": recent}],
+    )
+    outside = build_snapshot(
+        **base,
+        lots=[{**_LAB_LOT, "last_dca_at": aged}],
+    )
+    assert inside["partial_stop_paused"] is True
+    assert outside["partial_stop_paused"] is False
