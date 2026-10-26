@@ -328,6 +328,32 @@ def block_outbound_network():
 
 
 @pytest.fixture(autouse=True)
+def restore_process_tz():
+    """Do not let TZ leak into the next test.
+
+    ``process_local_tz()`` reads ``TZ``. Naive ``datetime.now()`` stamps stay
+    on the libc zone (UTC in CI when the test never calls ``time.tzset()``).
+    A leaked ``TZ=Europe/Berlin`` tags those UTC stamps as Berlin, so "today"
+    and the operator-day window miss fresh orders between 22:00 and 24:00 UTC
+    (00:00-02:00 Europe/Berlin, CEST). Snapshot the variable and put it back,
+    then ``tzset()`` so a test that did change the libc zone cannot linger.
+    """
+    import time
+
+    old = os.environ.get("TZ")
+    try:
+        yield
+    finally:
+        if os.environ.get("TZ") != old:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+
+@pytest.fixture(autouse=True)
 def isolate_test_mongo(monkeypatch):
     """Pytest uses isolated xagent_pytest — never the operator dev ledger xagent_test."""
     monkeypatch.delenv("MONGO_URL", raising=False)
