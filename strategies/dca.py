@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.actions import BUY_DCA
 from core.config import get_bot_config
@@ -49,14 +49,40 @@ def _unrealized_loss_pct(entry: float, price: float) -> float:
     return (price / entry - 1.0) * 100.0
 
 
-def _hours_since(iso_ts: str | None) -> float | None:
-    if not iso_ts:
+# Last step of the grace chain when neither grace_hours_after_dca nor
+# interval_hours is a positive number (Kay U-C4-1: 0 stays a fallback).
+_DEFAULT_GRACE_HOURS = 12.0
+
+
+def _parse_stop_timestamp(iso_ts: str | None) -> datetime | None:
+    """Parse a DCA timestamp for the hard-stop grace.
+
+    A trailing ``Z`` and a numeric offset are absolute instants. A naive
+    value stays naive: the live writer stores local wall time. Blank,
+    whitespace, and unparsable values are missing. This never raises.
+    """
+    if iso_ts is None:
         return None
+    text = str(iso_ts).strip()
+    if not text:
+        return None
+    if text[-1] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
     try:
-        last_ts = datetime.fromisoformat(str(iso_ts).replace("Z", ""))
+        return datetime.fromisoformat(text)
     except Exception:
         return None
-    return (datetime.now() - last_ts).total_seconds() / 3600.0
+
+
+def _hours_since(iso_ts: str | None) -> float | None:
+    parsed = _parse_stop_timestamp(iso_ts)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        delta = datetime.now() - parsed
+    else:
+        delta = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return delta.total_seconds() / 3600.0
 
 
 def _in_accumulation_phase(position: dict) -> bool:
@@ -111,6 +137,82 @@ def _hours_since_at(iso_ts: str | None, now: datetime | None) -> float | None:
     return (ref - last_ts).total_seconds() / 3600.0
 
 
+def grace_window_hours(strategy_params: dict | None) -> float:
+    """Hours the hard-stop grace lasts.
+
+    ``grace_hours_after_dca`` when it is > 0, else ``dca.interval_hours``
+    when that is > 0, else ``_DEFAULT_GRACE_HOURS``. Zero and missing keys
+    fall through. A bad value falls through rather than raising.
+    """
+    cfg = dca_config(strategy_params)
+    for key in ("grace_hours_after_dca", "interval_hours"):
+        if key not in cfg or cfg.get(key) is None:
+            continue
+        try:
+            value = float(cfg.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return _DEFAULT_GRACE_HOURS
+
+
+def youngest_dca_age_hours(position: dict | None) -> float | None:
+    """Age of the youngest parsable DCA / recovery timestamp, in hours.
+
+    None when neither timestamp parses. The youngest age controls grace.
+    """
+    pos = position or {}
+    ages: list[float] = []
+    for key in ("last_dca_at", "last_dca_recovery_at"):
+        age = _hours_since(pos.get(key) if key in pos else None)
+        if age is not None:
+            ages.append(age)
+    if not ages:
+        return None
+    return min(ages)
+
+
+def full_stop_loss_pct(
+    position: dict | None,
+    strategy_params: dict | None,
+    base_stop_loss_pct: float,
+) -> float:
+    """Widened full stop. Does not read timestamps."""
+    params = strategy_params or {}
+    dca_cfg = dca_config(params)
+    try:
+        stop_loss_pct = float(params.get("stop_loss_pct") or base_stop_loss_pct)
+    except (TypeError, ValueError):
+        stop_loss_pct = float(base_stop_loss_pct)
+    pos = position or {}
+    rounds = _total_dca_rounds(pos)
+    if rounds <= 0:
+        rounds = _dca_rounds_used(pos)
+    try:
+        widen = float(dca_cfg.get("stop_loss_widen_pct_per_round") or 0)
+    except (TypeError, ValueError):
+        widen = 0.0
+    return stop_loss_pct + rounds * widen
+
+
+def dca_stop_in_grace(position: dict | None, strategy_params: dict | None) -> bool:
+    """True only when a DCA round has a parsable timestamp inside the window.
+
+    Rounds with no parsable timestamp are outside the grace.
+    """
+    pos = position or {}
+    rounds = _total_dca_rounds(pos)
+    if rounds <= 0:
+        rounds = _dca_rounds_used(pos)
+    if rounds <= 0:
+        return False
+    age = youngest_dca_age_hours(pos)
+    if age is None:
+        return False
+    return age < grace_window_hours(strategy_params)
+
+
 def trail_grace_hours_after_dca(strategy_params: dict | None) -> float:
     """Grace window for suppressing trail TP/stop after DCA (recovery mode)."""
     cfg = dca_config(strategy_params)
@@ -119,17 +221,8 @@ def trail_grace_hours_after_dca(strategy_params: dict | None) -> float:
             return max(0.0, float(cfg.get("trail_grace_hours_after_dca")))
         except (TypeError, ValueError):
             pass
-    # Fall back to same grace as hard-stop grace after DCA
-    try:
-        g = float(cfg.get("grace_hours_after_dca") or 0)
-    except (TypeError, ValueError):
-        g = 0.0
-    if g <= 0:
-        try:
-            g = float(cfg.get("interval_hours") or 12)
-        except (TypeError, ValueError):
-            g = 12.0
-    return max(0.0, g)
+    # No own key: the same chain as the hard-stop grace (AC-G09).
+    return grace_window_hours(strategy_params)
 
 
 def _parse_position_ts(iso_ts: str | None) -> datetime | None:
@@ -357,23 +450,12 @@ def should_pause_partial_stop(
     position: dict | None,
     strategy_params: dict | None = None,
 ) -> bool:
-    """True while a loser still has unused DCA rounds (or any completed DCA + pause flag).
+    """True only inside the DCA grace window.
 
-    Live hole 2026-08-14: TA emitted SELL_STOP_PARTIAL on LAB with dca_rounds=1/2.
-    Pause whenever rounds remain, even if *pause_partial_stop_during_dca* is missing
-    from the resolved strategy overlay.
+    After the window, open rounds do not pause the partial (U-C3-2).
+    Rounds without a parsable timestamp are outside the window.
     """
-    pos = position or {}
-    used = _dca_rounds_used(pos)
-    if used <= 0:
-        return False
-    cfg = dca_config(strategy_params)
-    if cfg.get("pause_partial_stop_during_dca", True):
-        return True
-    frozen = int(pos.get("dca_max_rounds", 0) or 0)
-    cfg_max = int(cfg.get("max_rounds", 0) or 0)
-    mx = frozen if frozen > 0 else cfg_max
-    return mx > 0 and used < mx
+    return dca_stop_in_grace(position, strategy_params)
 
 
 def _partial_stop_ratio_from_config(cfg=None) -> float:
@@ -415,7 +497,7 @@ def effective_stop_loss_thresholds(
     and otherwise from ``get_bot_config()`` as before.
     """
     params = strategy_params or {}
-    dca_cfg = dca_config(params)
+    full_stop = full_stop_loss_pct(position, params, base_stop_loss_pct)
     stop_loss_pct = float(params.get("stop_loss_pct") or base_stop_loss_pct)
 
     if params.get("partial_stop_pct") is not None:
@@ -427,30 +509,8 @@ def effective_stop_loss_thresholds(
         partial_ratio = float(partial_ratio)
         partial_stop = stop_loss_pct * partial_ratio
 
-    dca_rounds = int(position.get("dca_rounds", 0) or 0)
-    recovery_rounds = int(position.get("dca_recovery_rounds", 0) or 0)
-    total_dca_rounds = dca_rounds + recovery_rounds
-    if total_dca_rounds <= 0:
-        total_dca_rounds = _dca_rounds_used(position)
-    widen = float(dca_cfg.get("stop_loss_widen_pct_per_round", 0))
-    full_stop = stop_loss_pct + total_dca_rounds * widen
-
-    grace_hours = float(dca_cfg.get("grace_hours_after_dca", 0))
-    if grace_hours <= 0:
-        grace_hours = float(dca_cfg.get("interval_hours", 12))
-
-    grace_elapsed: float | None = None
-    for ts_key in ("last_dca_recovery_at", "last_dca_at"):
-        elapsed = _hours_since(position.get(ts_key))
-        if elapsed is not None and (grace_elapsed is None or elapsed < grace_elapsed):
-            grace_elapsed = elapsed
-    in_grace = (
-        total_dca_rounds > 0
-        and grace_elapsed is not None
-        and grace_elapsed < grace_hours
-    )
-
-    if should_pause_partial_stop(position, params):
+    in_grace = dca_stop_in_grace(position, params)
+    if in_grace:
         partial_effective: float | None = None
     else:
         partial_effective = partial_stop
@@ -482,13 +542,24 @@ def evaluate_long_hard_stop(
     if ent <= 0:
         return None
     loss_pct = (px / ent - 1) * -100
-    full_stop, partial_stop, in_grace = effective_stop_loss_thresholds(
-        position or {}, strategy_params, float(base_stop_loss_pct)
-    )
-    if in_grace:
+    # Full stop is decided before any timestamp parse. A bad timestamp must
+    # not swallow a full stop (AC-G16).
+    try:
+        full_stop = full_stop_loss_pct(
+            position or {}, strategy_params, float(base_stop_loss_pct)
+        )
+    except (TypeError, ValueError):
         return None
     if loss_pct > full_stop:
         return "SELL_STOP_FULL", "stop_loss"
+    try:
+        _, partial_stop, in_grace = effective_stop_loss_thresholds(
+            position or {}, strategy_params, float(base_stop_loss_pct)
+        )
+    except Exception:
+        return None
+    if in_grace:
+        return None
     if partial_stop is not None and loss_pct > partial_stop:
         # One hard partial per lot. A later full stop still fires.
         if (position or {}).get("hard_partial_stop_done"):

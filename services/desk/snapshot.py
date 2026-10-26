@@ -266,7 +266,13 @@ def _lot_partial_stop_paused(
 
         return bool(
             should_pause_partial_stop(
-                {"dca_rounds": dca_rounds, "dca_max_rounds": dca_max},
+                {
+                    "dca_rounds": dca_rounds,
+                    "dca_max_rounds": dca_max,
+                    "dca_recovery_rounds": lot.get("dca_recovery_rounds"),
+                    "last_dca_at": lot.get("last_dca_at"),
+                    "last_dca_recovery_at": lot.get("last_dca_recovery_at"),
+                },
                 strategy_params=config_raw,
             )
         )
