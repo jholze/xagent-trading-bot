@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from core.tenant_context import tenant_context
 from strategies.dca_policy import (
     DcaContext,
     apply_policy_to_usdt,
@@ -71,22 +72,23 @@ class TestDcaDecisionEvent(unittest.TestCase):
         from strategies.dca_policy import DcaContext, DcaPolicyResult
 
         store = InMemoryMemoryStore()
-        eid = persist_dca_decision_event(
-            symbol="ZBT/USDT",
-            result=DcaPolicyResult(
-                size_mult=1.0,
-                skip=True,
-                reason_codes=("harvest_skip",),
-            ),
-            ctx=DcaContext(cash_mode="HARVEST", fusion_size_mult=0.4),
-            shadow=True,
-            base_usdt=500,
-            final_usdt=500,
-            applied="shadow",
-            policy_cfg={"persist_events": True, "index_rag": False},
-            store=store,
-            index_rag=False,
-        )
+        with tenant_context("default", scope="paper"):
+            eid = persist_dca_decision_event(
+                symbol="ZBT/USDT",
+                result=DcaPolicyResult(
+                    size_mult=1.0,
+                    skip=True,
+                    reason_codes=("harvest_skip",),
+                ),
+                ctx=DcaContext(cash_mode="HARVEST", fusion_size_mult=0.4),
+                shadow=True,
+                base_usdt=500,
+                final_usdt=500,
+                applied="shadow",
+                policy_cfg={"persist_events": True, "index_rag": False},
+                store=store,
+                index_rag=False,
+            )
         self.assertTrue(eid.startswith("dca_"))
         ev = store.get_event(eid)
         self.assertIsNotNone(ev)
@@ -167,7 +169,7 @@ class TestDcaPolicyAudit(unittest.TestCase):
             emit_dca_policy_audit,
         )
 
-        with patch("logger.log") as log_mock:
+        with tenant_context("default", scope="paper"), patch("logger.log") as log_mock:
             line = emit_dca_policy_audit(
                 symbol="ADA/USDT",
                 result=DcaPolicyResult(size_mult=0.4, skip=True, reason_codes=("harvest_skip",)),

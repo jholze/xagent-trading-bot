@@ -3,23 +3,110 @@ from logger import log
 
 
 class BotConfig:
-    """Typed accessors over config (supports per-tenant via tenant_id)."""
+    """Typed accessors over config (supports per-tenant via tenant_id).
+
+    One orchestrator is shared by the price loop and the eval worker. Each
+    thread's ``refresh()`` stores that tenant's snapshot. A read on the
+    calling thread sees its own snapshot, not the other thread's overlay (#699).
+    """
 
     def __init__(self, raw: dict | None = None, *, tenant_id: str | None = None):
+        object.__setattr__(self, "_snapshots", {})
+        object.__setattr__(self, "_fallback_raw", {})
+        object.__setattr__(self, "_tenant_id", tenant_id)
+        # Set once refresh() has run. Until then an explicit raw may be served
+        # to any reader. After that, a tenant context with no snapshot must
+        # not see _fallback_raw (#699 tenant check 4).
+        object.__setattr__(self, "_seen_refresh", False)
         if raw is not None:
             self._raw = raw
+        elif tenant_id:
+            self._raw = get_config(tenant_id=tenant_id)
         else:
-            if tenant_id:
-                self._raw = get_config(tenant_id=tenant_id)
-            else:
-                self._raw = get_config()
-        self._tenant_id = tenant_id
+            self._raw = get_config()
+
+    def __setattr__(self, name, value):
+        if name == "_raw":
+            self._assign_raw(value)
+            return
+        object.__setattr__(self, name, value)
+
+    def __getattribute__(self, name):
+        if name == "_raw":
+            return object.__getattribute__(self, "_visible_raw")()
+        return object.__getattribute__(self, name)
+
+    def _assign_raw(self, raw: dict) -> None:
+        """Publish ``raw`` for this thread's tenant and as the fallback.
+
+        Assignment replaces this tenant's view. It does not delete another
+        tenant's snapshot already stored by ``refresh()``.
+        """
+        from core.tenant_context import resolve_tenant_id
+
+        explicit = object.__getattribute__(self, "_tenant_id")
+        tid = explicit or resolve_tenant_id()
+        snaps = object.__getattribute__(self, "_snapshots")
+        snaps[tid] = raw
+        object.__setattr__(self, "_fallback_raw", raw)
+        # Keep a real instance attribute. unittest.mock.patch.object treats
+        # the name as local only when it is in __dict__; otherwise __exit__
+        # delattr's it and raises AttributeError.
+        object.__setattr__(self, "_raw", raw)
+
+    def _visible_raw(self) -> dict:
+        from core.tenant_context import current_tenant_context, resolve_tenant_id
+
+        explicit = object.__getattribute__(self, "_tenant_id")
+        tid = explicit or resolve_tenant_id()
+        snaps = object.__getattribute__(self, "_snapshots")
+        found = snaps.get(tid)
+        if found is not None:
+            return found
+        # Shared config, refresh already used, caller is inside a tenant
+        # context: do not serve _fallback_raw (another tenant's overlay or
+        # the process base). Load this tenant, or fail closed if that load
+        # does not return a config dict.
+        seen = object.__getattribute__(self, "_seen_refresh")
+        if seen and explicit is None and current_tenant_context() is not None:
+            return object.__getattribute__(self, "_materialize_tenant_snapshot")(tid)
+        return object.__getattribute__(self, "_fallback_raw")
+
+    def _materialize_tenant_snapshot(self, tid: str) -> dict:
+        """Load ``tid`` after refresh() without adopting ``_fallback_raw``."""
+        try:
+            loaded = reload_config(tenant_id=tid)
+        except Exception as exc:
+            log(
+                f"BotConfig refused tenant {tid}: reload_config failed ({exc})",
+                "ERROR",
+            )
+            raise
+        if not isinstance(loaded, dict):
+            log(
+                f"BotConfig refused tenant {tid}: reload_config did not return a config",
+                "ERROR",
+            )
+            raise RuntimeError(f"config snapshot missing for tenant {tid}")
+        snaps = object.__getattribute__(self, "_snapshots")
+        snaps[tid] = loaded
+        return loaded
 
     def refresh(self):
         from core.tenant_context import resolve_tenant_id
 
-        tid = getattr(self, "_tenant_id", None) or resolve_tenant_id()
-        self._raw = reload_config(tenant_id=tid)
+        explicit = object.__getattribute__(self, "_tenant_id")
+        tid = explicit or resolve_tenant_id()
+        loaded = reload_config(tenant_id=tid)
+        snaps = object.__getattribute__(self, "_snapshots")
+        snaps[tid] = loaded
+        object.__setattr__(self, "_seen_refresh", True)
+        # A context-free reader still sees the latest single-tenant refresh.
+        # Once two tenants have snapshots, fallback must not track the last
+        # writer or the other thread observes that overlay.
+        if explicit or len(snaps) == 1:
+            object.__setattr__(self, "_fallback_raw", loaded)
+            object.__setattr__(self, "_raw", loaded)
         return self
 
     @property

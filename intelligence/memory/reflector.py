@@ -214,7 +214,7 @@ def reflect(
 
                 eid = make_event_id(
                     "reflector",
-                    f"soft_block|{prof.symbol}|{prof.ledger_scope}",
+                    f"soft_block|{tenant_id}|{prof.symbol}|{prof.ledger_scope}",
                 )
                 store.upsert_event(
                     MarketEvent(
@@ -233,6 +233,7 @@ def reflect(
                             "sensorish": sensorish,
                         },
                         embedding=embed_event(text, event_type="soft_block"),
+                        tenant_id=tenant_id,
                     )
                 )
             except Exception as e:

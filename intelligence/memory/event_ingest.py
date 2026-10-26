@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from intelligence.memory.embeddings import embed_event
-from intelligence.memory.models import MarketEvent, utc_now_iso
+from intelligence.memory.models import GLOBAL_TENANT_ID, MarketEvent, utc_now_iso
 from intelligence.memory.store import MemoryStore
 from logger import log
 
@@ -131,6 +131,7 @@ def ingest_regime_event(
         source=source,
         metadata={"regime": regime_u, "size_mult": size_mult},
         embedding=embed_event(desc, event_type="regime_change"),
+        tenant_id=GLOBAL_TENANT_ID,
     )
     store.upsert_event(ev)
     return ev
@@ -213,6 +214,7 @@ def ingest_news_item(
         url=url or "",
         metadata=meta,
         embedding=embed_event(title, body, et),
+        tenant_id=GLOBAL_TENANT_ID,
     )
     store.upsert_event(ev)
     return ev
