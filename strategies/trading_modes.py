@@ -102,11 +102,6 @@ def resolve_trading_mode(
     return MODE_MOMENTUM
 
 
-def mode_allows_entry_sensor_full_size(mode: str) -> bool:
-    """Full entry-sensor size only outside pure GRID mode."""
-    return mode in (MODE_MOMENTUM, MODE_HYBRID)
-
-
 def mode_allows_new_grid_buys(mode: str) -> bool:
     return mode in (MODE_GRID, MODE_HYBRID)
 
