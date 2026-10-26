@@ -53,7 +53,12 @@ _CASES = [
     (["docs/railway.env.example"], True),
     (["docs/config.env.sample"], True),
     (["docs/x.py"], True),
+    (["docs/x.PY"], True),
+    (["docs/sub/x.py"], True),
+    (["docs/x.unknownext"], True),
     (["docs/example.py"], True),
+    (["docs/.env.local"], True),
+    (["docs/foo.env"], True),
     (["docs/conftest.py"], True),
     (["docs/sub/conftest.py"], True),
     (["docs/run.sh"], True),
@@ -197,6 +202,32 @@ class TestDocsAllowlist(unittest.TestCase):
             shutil.copy(product, dest / product.name)
             self.assertIn(path, ci.docs_referenced_by_tests([path], tmp))
             self.assertTrue(ci.pytest_required([path], tests_root=tmp))
+
+    def test_pull_requires_pytest_runs_for_doc_read_by_tests(self):
+        """CI decision path, not pytest_required alone.
+
+        Mutant M3d drops ``tests_root`` inside ``pull_requires_pytest``.
+        ``docs/universe_membership_631.md`` is still an allowlisted markdown
+        file, so that mutant returns a docs-only skip. This assertion goes red.
+        """
+        path = "docs/universe_membership_631.md"
+        listing = ci.PullFileList(
+            paths=[path],
+            fetched_count=1,
+            changed_files=1,
+            head_sha="abc123",
+            truncated=False,
+        )
+        run, reason = ci.pull_requires_pytest(
+            listing, "abc123", tests_root=ROOT / "tests"
+        )
+        self.assertTrue(run)
+        self.assertIn(path, reason)
+        skipped, skip_reason = ci.pull_requires_pytest(
+            listing, "abc123", tests_root=None
+        )
+        self.assertFalse(skipped)
+        self.assertEqual(skip_reason, "documentation allowlist")
 
     def test_missing_tests_tree_fails_closed_for_docs(self):
         missing = ROOT / "tests" / "does-not-exist-ci-docs"
@@ -430,7 +461,9 @@ class TestWorkflowWiring(unittest.TestCase):
         self.assertIn("!cancelled()", text)
         self.assertIn("github.event.pull_request.base.sha", text)
         self.assertGreaterEqual(text.count("git show"), 2)
-        self.assertIn("scripts/ci_docs_only.py", folded)
+        self.assertGreaterEqual(text.count("python3 /tmp/ci_docs_only.py"), 2)
+        self.assertNotIn("python3 scripts/ci_docs_only.py", text)
+        self.assertIn('echo "run_pytest=true"', text)
         self.assertIn("--pull", folded)
         self.assertIn("--head-sha", folded)
         self.assertIn("--tests-root", folded)
