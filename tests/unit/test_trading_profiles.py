@@ -22,6 +22,7 @@ from core.trading_profiles import (
 from core.tenant_context import tenant_context
 from data_manager import get_config, load_config, save_config
 from storage.mongo_client import TEST_DB_NAME, drop_database
+from tests.support.venue_block import venue_block, venue_bounds
 
 
 class TestTradingProfileMerge(unittest.TestCase):
@@ -88,7 +89,8 @@ class TestTradingProfileTenantLoad(unittest.TestCase):
             "architecture": {"ledger_backend": "mongo"},
             "risk": {
                 "liquidity_guard": {"depth_to_order_multiple_min": 1},
-                "venue_quality": {"min_volume_to_order_multiple_min": 20},
+                "venue_quality": {**venue_block(), "min_volume_to_order_multiple_min": 20},
+                "venue_quality_bounds": venue_bounds(),
             },
         }
 

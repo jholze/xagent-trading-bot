@@ -12,6 +12,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from core.models import RiskDecision
 from risk.risk_manager import RiskManager
+from tests.support.venue_block import venue_block
 
 NOW = datetime(2026, 9, 5, 12, 0, 0)
 
@@ -38,7 +39,7 @@ def _cfg(
         "cash_policy": {"enabled": False},
         "position_capacity": {"enabled": False},
         "slot_eviction": {"enabled": False},
-        "venue_quality": {"enabled": False, "min_volume_to_order_multiple": 20},
+        "venue_quality": venue_block(enabled=False),
         "liquidity_guard": {
             "min_quote_volume_24h_usdt": 500000,
             "depth_window_pct": 0.5,

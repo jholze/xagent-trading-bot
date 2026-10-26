@@ -64,15 +64,16 @@ BTC_THICK = VenueMetrics(
     capture="ok",
 )
 
-VENUE_CFG = {
-    "enabled": True,
-    "min_quote_volume_24h_usdt": 50_000,
-    "max_spread_pct": 1.5,
-    "min_top_book_usdt_per_side": 200,
-    "min_volume_to_order_multiple": 20,
-    "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
-    "on_fetch_error": "block_sensor",
-}
+from tests.support.venue_block import as_venue_config, venue_block
+
+VENUE_CFG = venue_block(
+    min_quote_volume_24h_usdt=50_000,
+    max_spread_pct=1.5,
+    min_top_book_usdt_per_side=200,
+    min_volume_to_order_multiple=20,
+    apply_to=["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
+    on_fetch_error="block_sensor",
+)
 
 
 class TestVenueQuality(unittest.TestCase):
@@ -80,12 +81,12 @@ class TestVenueQuality(unittest.TestCase):
         reset_venue_cache_for_tests()
 
     def test_bdx_thin_fails(self):
-        r = evaluate_venue_quality(BDX_THIN, VENUE_CFG, planned_usdt=3125.0)
+        r = evaluate_venue_quality(BDX_THIN, as_venue_config(VENUE_CFG), planned_usdt=3125.0)
         self.assertFalse(r.ok, r.reasons)
         self.assertTrue(any("quote_vol" in x or "spread" in x for x in r.reasons))
 
     def test_btc_thick_passes(self):
-        r = evaluate_venue_quality(BTC_THICK, VENUE_CFG, planned_usdt=3125.0)
+        r = evaluate_venue_quality(BTC_THICK, as_venue_config(VENUE_CFG), planned_usdt=3125.0)
         self.assertTrue(r.ok, r.reasons)
 
     def test_check_venue_for_buy_blocks_sensor_on_thin(self):
@@ -362,7 +363,7 @@ class TestRiskVenueAndSoftBlockScope(unittest.TestCase):
 
         rm = RiskManager(config=MagicMock())
         rm.config.raw = {
-            "risk": {"venue_quality": {"enabled": False}, "cash_floor_pct": 0},
+            "risk": {"venue_quality": venue_block(enabled=False), "cash_floor_pct": 0},
             "memory": {"gross_loss": {"soft_block_scope": "sensor_only"}},
         }
         rm.config.max_open_positions = 50
@@ -559,7 +560,7 @@ class TestBdxCounterfactualEndToEnd(unittest.TestCase):
 
     def test_bdx_full_story(self):
         # 1) Venue kills entry
-        v = evaluate_venue_quality(BDX_THIN, VENUE_CFG, planned_usdt=3125)
+        v = evaluate_venue_quality(BDX_THIN, as_venue_config(VENUE_CFG), planned_usdt=3125)
         self.assertFalse(v.ok)
 
         # 2) MOMENTUM hold override kills TA-HOLD sensor buy

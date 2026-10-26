@@ -189,9 +189,15 @@ def _liquidity_floor_paths() -> tuple[str, str]:
     return (DEPTH_FLOOR_PATH, VOLUME_FLOOR_PATH)
 
 
+def _venue_bound_paths() -> tuple[str, ...]:
+    from services.venue_quality import VENUE_BOUND_PATHS
+
+    return VENUE_BOUND_PATHS
+
+
 def pinned_patch_paths() -> tuple[str, ...]:
-    """Paths a patch body must not mention (shorts plus the two floors)."""
-    return PINNED_SHORTS_PATHS + _liquidity_floor_paths()
+    """Paths a patch body must not mention (shorts, floors, venue bounds)."""
+    return PINNED_SHORTS_PATHS + _liquidity_floor_paths() + _venue_bound_paths()
 
 
 def reject_pinned_patch(updates: Any, paths: tuple[str, ...] | list[str]) -> None:
@@ -321,7 +327,69 @@ def assert_default_config_floors_present(config: Any) -> None:
             raise ConfigValidationError(path, shown, "liquidity guard floor missing")
 
 
-def validate_config_for_save(config: Any) -> None:
+def _raise_venue(err) -> None:
+    raise ConfigValidationError(
+        err.config_key, None, f"config_problem={err.config_problem}"
+    )
+
+
+def _venue_bounds_or_raise():
+    from services.venue_quality import VenueBounds, VenueConfigError, load_venue_bounds
+
+    try:
+        bounds = load_venue_bounds()
+    except Exception as exc:
+        raise ConfigValidationError(
+            "risk.venue_quality_bounds", None, "config_problem=config_unavailable"
+        ) from exc
+    if isinstance(bounds, VenueConfigError):
+        _raise_venue(bounds)
+    if not isinstance(bounds, VenueBounds):
+        raise ConfigValidationError(
+            "risk.venue_quality_bounds", None, "config_problem=config_unavailable"
+        )
+    return bounds
+
+
+def assert_venue_quality_present_keys_within_bounds(body: Any, bounds: Any) -> None:
+    """Stage 1: keys present in the raw body. Absent keys are not an error."""
+    from services.venue_quality import present_venue_quality_error
+
+    err = present_venue_quality_error(body, bounds)
+    if err is not None:
+        _raise_venue(err)
+
+
+def assert_venue_quality_within_bounds(config: Any, bounds: Any) -> None:
+    """Full validator, including missing required keys."""
+    from services.venue_quality import VenueConfigError, validate_venue_quality
+
+    if isinstance(bounds, VenueConfigError):
+        _raise_venue(bounds)
+    if not isinstance(config, dict):
+        raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
+    risk = config.get("risk")
+    if not isinstance(risk, dict) or "venue_quality" not in risk:
+        block: Any = {}
+    else:
+        block = risk.get("venue_quality")
+    result = validate_venue_quality(block, bounds)
+    if isinstance(result, VenueConfigError):
+        _raise_venue(result)
+
+
+def assert_default_config_bounds_present(config: Any) -> None:
+    """Default-branch presence rule for the five venue bound paths."""
+    if not isinstance(config, dict):
+        raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
+    for path in _venue_bound_paths():
+        raw = _get_path(config, path)
+        if raw is _MISSING or raw is None:
+            shown = None if raw is _MISSING else raw
+            raise ConfigValidationError(path, shown, "config_problem=missing")
+
+
+def validate_config_for_save(config: Any, *, _skip_venue_bounds: bool = False) -> None:
     """Raise :class:`ConfigValidationError` on the first out-of-bounds key.
 
     ``config`` must be a dict; missing keys are fine, ``None`` is treated as
@@ -342,3 +410,5 @@ def validate_config_for_save(config: Any) -> None:
 
     assert_membership_revise_config(config)
     assert_liquidity_multiples_within_base_floor(config)
+    if not _skip_venue_bounds:
+        assert_venue_quality_present_keys_within_bounds(config, _venue_bounds_or_raise())

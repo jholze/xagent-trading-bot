@@ -11,6 +11,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from risk.risk_manager import RiskManager
 from services.portfolio_nav_history import capture_current_nav_snapshot, persist_peak_equity
+from tests.support.venue_block import venue_block
 
 
 def _cfg(**risk_over) -> BotConfig:
@@ -31,7 +32,7 @@ def _cfg(**risk_over) -> BotConfig:
             "cash_policy": {"enabled": False},
             "position_capacity": {"enabled": False},
             "moderate_deploy": {"enabled": False},
-            "venue_quality": {"enabled": False, "min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(enabled=False),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,

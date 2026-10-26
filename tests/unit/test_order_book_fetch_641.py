@@ -36,6 +36,7 @@ from services.venue_quality import (
 )
 from tests.unit.test_liquidity_guard import _cfg
 from tests.unit.test_long_mcap_venue_563 import _eval_env
+from tests.support.venue_block import venue_block
 
 _FIX = Path(__file__).resolve().parents[1] / "fixtures"
 _BULK_BTC = json.loads((_FIX / "gate_bulk_ticker_btc.json").read_text())
@@ -122,10 +123,12 @@ def test_real_aave_book_is_nonzero_logs_levels_and_a_normal_buy_passes():
         "quote_volume": "8000000",
     }
 
-    def fake(path, params=None, *, timeout=12.0):
+    def fake(path, params=None, *, timeout):
         if path == "/spot/tickers" and not (params or {}).get("currency_pair"):
+            assert float(timeout) == 12.0
             return [bulk]
         if path == "/spot/order_book":
+            assert float(timeout) == 5.0
             assert (params or {}).get("currency_pair") == "AAVE_USDT"
             assert int((params or {}).get("limit") or 0) == 100
             return _BOOK_AAVE
@@ -225,8 +228,9 @@ def test_unreadable_levels_are_a_failed_parse_not_a_thin_book():
 def test_live_400_body_raises_and_is_not_parsed_as_a_book():
     body = {"label": _ERR_400["label"], "message": _ERR_400["message"]}
 
-    def fake_get(url, params=None, timeout=12.0):
+    def fake_get(url, params=None, *, timeout):
         assert "/spot/order_book" in url
+        assert float(timeout) == 5.0
         return _Resp(400, body)
 
     with patch("requests.get", fake_get):
@@ -234,13 +238,15 @@ def test_live_400_body_raises_and_is_not_parsed_as_a_book():
             gate_public_rest_get(
                 "/spot/order_book",
                 {"currency_pair": "BTC/USDT", "limit": 100},
+                timeout=5.0,
             )
 
 
 def _rate_limit_router():
     calls: list[str] = []
 
-    def fake_get(url, params=None, timeout=12.0):
+    def fake_get(url, params=None, *, timeout):
+        assert timeout is not None and float(timeout) > 0
         calls.append(url)
         if url.endswith("/spot/tickers") and not (params or {}).get("currency_pair"):
             return _Resp(200, [_BULK_BTC])
@@ -302,7 +308,7 @@ def test_cached_book_expires_at_the_configured_max_age():
     """Book age comes from config. A missing age does not fall back to 15s."""
     configured = {
         "risk": {
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,
@@ -314,7 +320,7 @@ def test_cached_book_expires_at_the_configured_max_age():
     assert _book_cache_max_age(configured) == 15.0
     longer = {
         "risk": {
-            "venue_quality": {"min_volume_to_order_multiple": 20},
+            "venue_quality": venue_block(),
             "liquidity_guard": {
                 "min_quote_volume_24h_usdt": 500000,
                 "depth_window_pct": 0.5,
@@ -326,14 +332,13 @@ def test_cached_book_expires_at_the_configured_max_age():
     assert _book_cache_max_age(longer) == 10_000.0
     assert _book_cache_max_age({"risk": {}}) is None
     cfg = _cfg(
-        venue_quality={
-            "enabled": True,
-            "cache_ttl_sec": 90,
-            "order_book_limit": 100,
-            "min_quote_volume_24h_usdt": 50_000,
-            "min_top_book_usdt_per_side": 200,
-            "book_unavailable_policy": "volume_ok",
-        }
+        venue_quality=venue_block(
+            cache_ttl_sec=90,
+            order_book_limit=100,
+            min_quote_volume_24h_usdt=50_000,
+            min_top_book_usdt_per_side=200,
+            book_unavailable_policy="volume_ok",
+        )
     ).raw
     fresh_levels = (("bid", 181.59, 10.0), ("ask", 181.66, 10.0))
     cached = VenueMetrics(
@@ -358,7 +363,8 @@ def test_cached_book_expires_at_the_configured_max_age():
         (50_000.0, 50_000.0, True, fresh_levels),
     )
 
-    def fail_book(path, params=None, *, timeout=12.0):
+    def fail_book(path, params=None, *, timeout):
+        assert float(timeout) in (5.0, 12.0)
         if path == "/spot/order_book":
             raise RuntimeError("gate /spot/order_book HTTP 429 TOO_MANY_REQUESTS")
         if path == "/spot/tickers":
@@ -398,7 +404,8 @@ def test_cached_book_expires_at_the_configured_max_age():
     )
     calls: list[str] = []
 
-    def unexpected(path, params=None, *, timeout=12.0):
+    def unexpected(path, params=None, *, timeout):
+        assert timeout is not None
         calls.append(path)
         raise AssertionError(f"fresh book must not refetch {path}")
 
@@ -416,19 +423,18 @@ def test_cached_book_expires_at_the_configured_max_age():
     [
         (
             {
-                "venue_quality": {
-                    "enabled": False,
-                    "min_volume_to_order_multiple": 20,
-                    "book_unavailable_policy": "volume_ok",
-                    "on_fetch_error": "allow",
-                }
+                "venue_quality": venue_block(
+                    enabled=False,
+                    book_unavailable_policy="volume_ok",
+                    on_fetch_error="allow",
+                )
             },
             True,
         ),
         ({"fail_closed_guards": "log"}, False),
         (
             {
-                "venue_quality": {"min_volume_to_order_multiple": 20},
+                "venue_quality": venue_block(),
                 "liquidity_guard": {
                     "mode": "log",
                     "enabled": False,
@@ -443,12 +449,9 @@ def test_cached_book_expires_at_the_configured_max_age():
         ),
         (
             {
-                "venue_quality": {
-                    "enabled": True,
-                    "min_volume_to_order_multiple": 20,
-                    "book_unavailable_policy": "volume_ok",
-                    "on_fetch_error": "fail_open",
-                }
+                "venue_quality": venue_block(
+                    on_fetch_error="fail_open",
+                )
             },
             False,
         ),

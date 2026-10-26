@@ -1941,6 +1941,10 @@ class RiskManager:
                 "locked": locked_flag,
             }
         )
+        if liq is not None and getattr(liq, "detail_reason", "") == "venue_config_missing":
+            details["reason"] = "venue_config_missing"
+            details["config_key"] = liq.config_key
+            details["config_problem"] = liq.config_problem
         primary = codes[0]
         bits = [primary]
         if price is not None:
@@ -4308,6 +4312,21 @@ class RiskManager:
                 )
         src = str(source or order.source or "")
         if not is_human_operator_buy(src):
+            if not isinstance(raw, dict):
+                # Non-dict raw must not resolve the process config via None.
+                return RiskDecision(
+                    approved=False,
+                    message="venue_config_missing",
+                    code="liq_guard_missing_input",
+                    size_multiplier=0.0,
+                    details={
+                        "reason": "venue_config_missing",
+                        "config_key": "risk.venue_quality",
+                        "config_problem": "config_unavailable",
+                        "codes": ["liq_guard_missing_input"],
+                        "planned_usdt": float(usdt or 0),
+                    },
+                )
             try:
                 from services.venue_quality import check_venue_for_buy
 
@@ -4315,7 +4334,7 @@ class RiskManager:
                     order.symbol,
                     source=src,
                     planned_usdt=float(usdt or 0),
-                    config_raw=raw if isinstance(raw, dict) else None,
+                    config_raw=raw,
                 )
             except Exception as exc:
                 return RiskDecision(
@@ -4327,12 +4346,17 @@ class RiskManager:
                 extra = list(getattr(liq, "guard_codes", None) or [])
                 if liq.code and liq.code not in extra:
                     extra.append(liq.code)
+                short_details = {"codes": extra, "planned_usdt": float(usdt or 0)}
+                if getattr(liq, "detail_reason", "") == "venue_config_missing":
+                    short_details["reason"] = "venue_config_missing"
+                    short_details["config_key"] = liq.config_key
+                    short_details["config_problem"] = liq.config_problem
                 return RiskDecision(
                     approved=False,
                     message=(" ".join(str(r) for r in (liq.reasons or [])) or liq.code)[:400],
                     code=(extra[0] if extra else liq.code) or "liq_guard_missing_input",
                     size_multiplier=0.0,
-                    details={"codes": extra, "planned_usdt": float(usdt or 0)},
+                    details=short_details,
                 )
             room = self._short_liq_room_reject(order, liq, float(usdt or 0))
             if room is not None:

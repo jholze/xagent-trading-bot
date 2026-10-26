@@ -17,7 +17,8 @@ from notifications.user_explain import explain_risk
 from risk.risk_manager import RiskManager
 from services.venue_quality import (
     VenueMetrics,
-    source_applies_venue,
+    VenueConfigError,
+    VenueQualityConfig,
     venue_quality_config,
 )
 from strategies.position_lock import build_lock
@@ -25,10 +26,16 @@ from strategies.short_policy import resolve_long_market_cap_min_usd, resolve_sho
 
 _VENUE = {
     "enabled": True,
+    "exchange": "gate",
     "min_quote_volume_24h_usdt": 50_000,
     "max_spread_pct": 1.5,
     "min_top_book_usdt_per_side": 200,
     "min_volume_to_order_multiple": 20,
+    "order_book_limit": 100,
+    "order_book_timeout_sec": 5.0,
+    "ticker_timeout_sec": 12,
+    "cache_ttl_sec": 90.0,
+    "book_unavailable_policy": "volume_ok",
     "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
     "on_fetch_error": "block_sensor",
 }
@@ -231,11 +238,10 @@ def test_default_floors_and_apply_to_is_not_an_allowlist():
     )
     assert overridden == 7_000_000
     cfg = venue_quality_config({"risk": {"venue_quality": dict(_VENUE)}})
-    assert cfg["exempt_sources"] == ["manual"]
-    assert source_applies_venue("manual", cfg) is False
-    assert source_applies_venue("manual_sell_not_listed", cfg) is True
-    assert source_applies_venue("cmc", cfg) is True
-    assert source_applies_venue("not_a_real_source", cfg) is True
+    assert isinstance(cfg, VenueQualityConfig)
+    assert not isinstance(cfg, VenueConfigError)
+    assert cfg.exchange == "gate"
+    assert not hasattr(cfg, "exempt_sources")
     params = resolve_short_params(tier=None, config_raw={"shorts": _SHORTS})
     stable = resolve_short_params(tier="stable", config_raw={"shorts": _SHORTS})
     assert params["market_cap_min_usd"] == 50_000_000

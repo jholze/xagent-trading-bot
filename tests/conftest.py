@@ -359,7 +359,10 @@ def isolate_test_mongo(monkeypatch):
     monkeypatch.delenv("MONGO_URL", raising=False)
     monkeypatch.delenv("DEMO_LEDGER_BACKEND", raising=False)
     monkeypatch.setenv("PYTEST_RUNNING", "1")
-    monkeypatch.setenv("MONGODB_URI", "mongodb://127.0.0.1:27017")
+    monkeypatch.setenv(
+        "MONGODB_URI",
+        os.environ.get("XAGENT_TEST_MONGODB_URI") or "mongodb://127.0.0.1:27017",
+    )
     test_db = resolve_test_db_name()
     monkeypatch.setenv("MONGODB_DB", test_db)
     monkeypatch.setenv("MONGODB_TEST_DB", test_db)

@@ -18,34 +18,326 @@ from logger import log
 
 GATE_PUBLIC_REST_BASE = "https://api.gateio.ws/api/v4"
 
-_DEFAULTS: dict[str, Any] = {
-    "enabled": True,
-    "exchange": "gate",
-    "min_quote_volume_24h_usdt": 50_000.0,
-    "max_spread_pct": 1.5,
-    "min_top_book_usdt_per_side": 200.0,
-    "apply_to": ["entry_sensor_15m", "vol_spike_15m", "grid_new_entry"],
-    "exempt_sources": ["manual"],
-    "cache_ttl_sec": 90.0,
-    "on_fetch_error": "block_sensor",  # block_sensor | allow
-    "depth_levels": 5,
-    # One fetch deep enough that a tight book on a large pair still fills
-    # the ±0.5% band. If the returned book still ends inside the band, only
-    # the fetched notional counts and a shortfall blocks.
-    "order_book_limit": 100,
-    "book_unavailable_policy": "volume_ok",
-    "order_book_timeout_sec": 5.0,
-}
-
 _cache_lock = threading.RLock()
 _cache: dict[str, tuple[float, "VenueMetrics"]] = {}
 _book_cache: dict[str, tuple[float, tuple]] = {}
 
 # One log code for a buy whose size was cut to the liquidity room (#671).
 LIQ_GUARD_SIZE_CAPPED = "liq_guard_size_capped"
-_VOLUME_MULTIPLE_WARNED = False
-# One WARNING per tenant+key per process (R10). Reset with the venue cache.
-_FLOOR_WARNED: set[tuple[str, str]] = set()
+# Config errors re-arm. Floor WARNINGs stay (tenant, key) until the test reset.
+_CONFIG_WARNED: set[tuple] = set()
+
+_VENUE_KEY = "risk.venue_quality"
+_BOUNDS_KEY = "risk.venue_quality_bounds"
+_VENUE_REQUIRED_KEYS = (
+    "enabled",
+    "exchange",
+    "min_quote_volume_24h_usdt",
+    "max_spread_pct",
+    "min_top_book_usdt_per_side",
+    "order_book_limit",
+    "order_book_timeout_sec",
+    "ticker_timeout_sec",
+    "cache_ttl_sec",
+    "book_unavailable_policy",
+    "on_fetch_error",
+    "min_volume_to_order_multiple",
+)
+_BOOK_POLICIES = frozenset({"volume_ok", "block"})
+_FETCH_POLICIES = frozenset({"block_sensor", "allow", "fail_open"})
+_BOUND_SPECS = (
+    ("order_book_timeout_sec_max", "number"),
+    ("ticker_timeout_sec_max", "number"),
+    ("cache_ttl_sec_min", "number"),
+    ("cache_ttl_sec_max", "number"),
+    ("order_book_limit_max", "int"),
+)
+VENUE_BOUND_PATHS = tuple(f"{_BOUNDS_KEY}.{name}" for name, _kind in _BOUND_SPECS)
+
+
+@dataclass(frozen=True)
+class VenueConfigError:
+    config_key: str
+    config_problem: str
+
+
+@dataclass(frozen=True)
+class VenueBounds:
+    order_book_timeout_sec_max: float
+    ticker_timeout_sec_max: float
+    cache_ttl_sec_min: float
+    cache_ttl_sec_max: float
+    order_book_limit_max: int
+
+
+@dataclass(frozen=True)
+class VenueQualityConfig:
+    enabled: bool
+    exchange: str
+    min_quote_volume_24h_usdt: float
+    max_spread_pct: float
+    min_top_book_usdt_per_side: float
+    order_book_limit: int
+    order_book_timeout_sec: float
+    ticker_timeout_sec: float
+    cache_ttl_sec: float
+    book_unavailable_policy: str
+    on_fetch_error: str
+    min_volume_to_order_multiple: float
+
+
+@dataclass(frozen=True)
+class FloorProblem:
+    multiple_path: str
+    floor_path: str
+    kind: str
+    multiple: float | None
+    floor: float | None
+    reason: str
+
+
+def _venue_path(key: str) -> str:
+    return f"{_VENUE_KEY}.{key}"
+
+
+def _positive_problem(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "type"
+    if not math.isfinite(float(value)) or float(value) <= 0:
+        return "range"
+    return None
+
+
+def _bounded_positive(value: Any, *, hi: float, lo: float | None = None) -> str | None:
+    problem = _positive_problem(value)
+    if problem:
+        return problem
+    number = float(value)
+    if lo is not None and number < lo:
+        return "range"
+    if number > hi:
+        return "range"
+    return None
+
+
+def _limit_problem(value: Any, limit_max: int) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "type"
+    if isinstance(value, float) and not float(value).is_integer():
+        return "type"
+    if not math.isfinite(float(value)):
+        return "range"
+    number = int(value)
+    if number < 1 or number > int(limit_max):
+        return "range"
+    return None
+
+
+def _key_problem(key: str, present: bool, value: Any, bounds: VenueBounds) -> str | None:
+    if not present:
+        return "missing"
+    if value is None:
+        return "null"
+    if key == "enabled":
+        return None if type(value) is bool else "type"
+    if key == "exchange":
+        if not isinstance(value, str):
+            return "type"
+        return None if value == "gate" else "value"
+    if key == "book_unavailable_policy":
+        if not isinstance(value, str):
+            return "type"
+        return None if value in _BOOK_POLICIES else "value"
+    if key == "on_fetch_error":
+        if not isinstance(value, str):
+            return "type"
+        return None if value in _FETCH_POLICIES else "value"
+    if key == "order_book_limit":
+        return _limit_problem(value, bounds.order_book_limit_max)
+    if key == "order_book_timeout_sec":
+        return _bounded_positive(value, hi=bounds.order_book_timeout_sec_max)
+    if key == "ticker_timeout_sec":
+        return _bounded_positive(value, hi=bounds.ticker_timeout_sec_max)
+    if key == "cache_ttl_sec":
+        return _bounded_positive(
+            value, lo=bounds.cache_ttl_sec_min, hi=bounds.cache_ttl_sec_max
+        )
+    return _positive_problem(value)
+
+
+def parse_venue_bounds(base: Any) -> VenueBounds | VenueConfigError:
+    """Pure bounds parse. Disk and tenant merge stay with the caller."""
+    if not isinstance(base, dict):
+        return VenueConfigError(_BOUNDS_KEY, "config_unavailable")
+    risk = base.get("risk")
+    if not isinstance(risk, dict) or "venue_quality_bounds" not in risk:
+        return VenueConfigError(VENUE_BOUND_PATHS[0], "missing")
+    block = risk.get("venue_quality_bounds")
+    if block is None:
+        return VenueConfigError(_BOUNDS_KEY, "null")
+    if not isinstance(block, dict):
+        return VenueConfigError(_BOUNDS_KEY, "type")
+    parsed: dict[str, float | int] = {}
+    for name, kind in _BOUND_SPECS:
+        path = f"{_BOUNDS_KEY}.{name}"
+        if name not in block:
+            return VenueConfigError(path, "missing")
+        value = block.get(name)
+        if value is None:
+            return VenueConfigError(path, "null")
+        if isinstance(value, bool) or isinstance(value, str) or not isinstance(value, (int, float)):
+            return VenueConfigError(path, "type")
+        if kind == "int":
+            if isinstance(value, float) and not float(value).is_integer():
+                return VenueConfigError(path, "type")
+            if not math.isfinite(float(value)) or float(value) <= 0:
+                return VenueConfigError(path, "range")
+            parsed[name] = int(value)
+            continue
+        number = parse_liquidity_floor(value)
+        if number is None:
+            return VenueConfigError(path, "range")
+        parsed[name] = number
+    if float(parsed["cache_ttl_sec_min"]) > float(parsed["cache_ttl_sec_max"]):
+        return VenueConfigError(f"{_BOUNDS_KEY}.cache_ttl_sec_min", "range")
+    return VenueBounds(
+        order_book_timeout_sec_max=float(parsed["order_book_timeout_sec_max"]),
+        ticker_timeout_sec_max=float(parsed["ticker_timeout_sec_max"]),
+        cache_ttl_sec_min=float(parsed["cache_ttl_sec_min"]),
+        cache_ttl_sec_max=float(parsed["cache_ttl_sec_max"]),
+        order_book_limit_max=int(parsed["order_book_limit_max"]),
+    )
+
+
+def load_venue_bounds() -> VenueBounds | VenueConfigError:
+    """Bounds from base config.json at call time. No cache, no tenant merge."""
+    try:
+        import data_manager
+
+        loaded = data_manager._load_default_config_from_disk()
+    except Exception:
+        return VenueConfigError(_BOUNDS_KEY, "config_unavailable")
+    if not isinstance(loaded, dict):
+        return VenueConfigError(_BOUNDS_KEY, "config_unavailable")
+    return parse_venue_bounds(loaded)
+
+
+def validate_venue_quality(
+    block: Any, bounds: VenueBounds
+) -> VenueQualityConfig | VenueConfigError:
+    """Pure. No I/O, no logging, no result cache."""
+    if not isinstance(bounds, VenueBounds):
+        return VenueConfigError(_BOUNDS_KEY, "config_unavailable")
+    if block is None:
+        return VenueConfigError(_VENUE_KEY, "null")
+    if not isinstance(block, dict):
+        return VenueConfigError(_VENUE_KEY, "type")
+    values: dict[str, Any] = {}
+    for key in _VENUE_REQUIRED_KEYS:
+        present = key in block
+        value = block.get(key) if present else None
+        problem = _key_problem(key, present, value, bounds)
+        if problem:
+            return VenueConfigError(_venue_path(key), problem)
+        values[key] = value
+    return VenueQualityConfig(
+        enabled=values["enabled"],
+        exchange=str(values["exchange"]),
+        min_quote_volume_24h_usdt=float(values["min_quote_volume_24h_usdt"]),
+        max_spread_pct=float(values["max_spread_pct"]),
+        min_top_book_usdt_per_side=float(values["min_top_book_usdt_per_side"]),
+        order_book_limit=int(values["order_book_limit"]),
+        order_book_timeout_sec=float(values["order_book_timeout_sec"]),
+        ticker_timeout_sec=float(values["ticker_timeout_sec"]),
+        cache_ttl_sec=float(values["cache_ttl_sec"]),
+        book_unavailable_policy=str(values["book_unavailable_policy"]),
+        on_fetch_error=str(values["on_fetch_error"]),
+        min_volume_to_order_multiple=float(values["min_volume_to_order_multiple"]),
+    )
+
+
+def present_venue_quality_error(
+    body: Any, bounds: VenueBounds
+) -> VenueConfigError | None:
+    """Stage 1: type/range/value for keys the body actually carries."""
+    if not isinstance(body, dict) or not isinstance(bounds, VenueBounds):
+        return None
+    risk = body.get("risk")
+    if not isinstance(risk, dict) or "venue_quality" not in risk:
+        return None
+    block = risk.get("venue_quality")
+    if block is None:
+        return VenueConfigError(_VENUE_KEY, "null")
+    if not isinstance(block, dict):
+        return VenueConfigError(_VENUE_KEY, "type")
+    for key in _VENUE_REQUIRED_KEYS:
+        if key not in block:
+            continue
+        problem = _key_problem(key, True, block.get(key), bounds)
+        if problem:
+            return VenueConfigError(_venue_path(key), problem)
+    return None
+
+
+def _tenant_for_log() -> str:
+    try:
+        from core.tenant_context import resolve_tenant_id
+
+        return str(resolve_tenant_id())
+    except Exception:
+        return ""
+
+
+def _emit_venue_config_error(err: VenueConfigError) -> None:
+    tenant = _tenant_for_log()
+    token = (tenant, err.config_key, err.config_problem)
+    if token in _CONFIG_WARNED:
+        return
+    _CONFIG_WARNED.add(token)
+    log(
+        f"venue config tenant={tenant} config_key={err.config_key} "
+        f"config_problem={err.config_problem}",
+        "ERROR",
+    )
+    if err.config_problem != "config_unavailable":
+        return
+    entry = {
+        "type": "venue_config_error",
+        "tenant_id": tenant,
+        "config_key": err.config_key,
+        "config_problem": err.config_problem,
+        "reason": "venue_config_missing",
+    }
+    try:
+        from logger import log_decision
+        from services.observability_store import persist_decision
+
+        log_decision(entry)
+        persist_decision(entry)
+    except Exception as exc:
+        log(
+            f"venue config decision ledger failed tenant={tenant} "
+            f"config_key={err.config_key} config_problem={err.config_problem} "
+            f"error={exc}",
+            "ERROR",
+        )
+
+
+def _rearm_venue_config() -> None:
+    """Drop venue and bounds error tokens for this tenant.
+
+    Floor WARNINGs are 2-tuples and stay until the test reset (M38).
+    """
+    tenant = _tenant_for_log()
+    keys = {_VENUE_KEY, _BOUNDS_KEY, *(_venue_path(key) for key in _VENUE_REQUIRED_KEYS)}
+    keys.update(VENUE_BOUND_PATHS)
+    stale = {
+        token
+        for token in _CONFIG_WARNED
+        if len(token) == 3 and token[0] == tenant and token[1] in keys
+    }
+    _CONFIG_WARNED.difference_update(stale)
+
 
 # Multiples the hard lock reads from the passed config. Floors are not here:
 # they are read from base config.json only (R2). No numeric default.
@@ -79,6 +371,7 @@ class VenueMetrics:
     depth_parsed: bool = False
     quote_volume_present: bool = True
     size_keys_present: bool = True
+    config_key: str = ""
     # Prices of levels inside the ±mid band. Empty when the book was not parsed.
     band_levels: tuple = ()
 
@@ -122,6 +415,12 @@ class VenueQualityResult:
     reasons: list[str] = field(default_factory=list)
     metrics: VenueMetrics | None = None
     code: str = ""
+    config_key: str = ""
+    config_problem: str = ""
+    detail_reason: str = ""
+    cap_depth: float | None = None
+    cap_volume: float | None = None
+    liq_cap_usdt: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,10 +435,22 @@ def gate_public_rest_get(
     path: str,
     params: dict[str, Any] | None = None,
     *,
-    timeout: float = 12.0,
+    timeout: float,
 ) -> Any:
-    """Single public Gate REST GET for this gate (no auth). Isolated for #580."""
+    """Single public Gate REST GET for this gate (no auth). Isolated for #580.
+
+    ``timeout`` is required. A missing, non-finite, or non-positive value
+    never reaches ``requests``.
+    """
     import requests
+
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout))
+        or float(timeout) <= 0
+    ):
+        raise ValueError("gate timeout is not a positive finite number")
 
     if not str(path).startswith("/"):
         path = "/" + str(path)
@@ -159,21 +470,44 @@ def gate_public_rest_get(
     return resp.json()
 
 
-def venue_quality_config(config_raw: dict | None = None) -> dict[str, Any]:
+def _venue_block(config_raw: dict) -> Any:
+    risk = config_raw.get("risk")
+    if not isinstance(risk, dict) or "venue_quality" not in risk:
+        return {}
+    return risk.get("venue_quality")
+
+
+def venue_quality_config(
+    config_raw: dict | None = None,
+) -> VenueQualityConfig | VenueConfigError:
+    """Validated venue block, or one error. Never raises.
+
+    ``None`` resolves the current tenant config. A failed resolution is
+    ``config_unavailable``, not a filled-in block.
+    """
     if config_raw is None:
         try:
             from core.config import get_bot_config
 
             config_raw = get_bot_config().raw
         except Exception:
-            config_raw = {}
-    risk = (config_raw or {}).get("risk") or {}
-    raw = risk.get("venue_quality") or {}
-    if not isinstance(raw, dict):
-        raw = {}
-    merged = {**_DEFAULTS, **raw}
-    merged["enabled"] = bool(merged.get("enabled", True))
-    return merged
+            err = VenueConfigError(_VENUE_KEY, "config_unavailable")
+            _emit_venue_config_error(err)
+            return err
+    if not isinstance(config_raw, dict):
+        err = VenueConfigError(_VENUE_KEY, "config_unavailable")
+        _emit_venue_config_error(err)
+        return err
+    bounds = load_venue_bounds()
+    if isinstance(bounds, VenueConfigError):
+        _emit_venue_config_error(bounds)
+        return bounds
+    result = validate_venue_quality(_venue_block(config_raw), bounds)
+    if isinstance(result, VenueConfigError):
+        _emit_venue_config_error(result)
+        return result
+    _rearm_venue_config()
+    return result
 
 
 def compute_spread_pct(bid: float, ask: float) -> float:
@@ -297,61 +631,91 @@ def _read_base_config_for_floors() -> dict | None:
 
 
 def _warn_liquidity_floor(tenant_id: str, key: str, value: str, floor: str) -> None:
+    """Floor WARNINGs do not re-arm. Token is (tenant, key), not the config triple."""
     token = (tenant_id, key)
-    if token in _FLOOR_WARNED:
+    if token in _CONFIG_WARNED:
         return
-    _FLOOR_WARNED.add(token)
+    _CONFIG_WARNED.add(token)
     log(
         f"liquidity guard floor tenant={tenant_id} key={key} value={value} floor={floor}",
         "WARNING",
     )
 
 
-def liquidity_multiple_floor_reasons(depth_mult: float, volume_mult: float) -> list[str]:
-    """Block reasons when a multiple is below its base floor, or the floor is unusable.
+def liquidity_multiple_floor_problems(
+    depth_mult: float, volume_mult: float, base_cfg: dict | None
+) -> list[FloorProblem]:
+    """Pure floor check. No I/O, no tenant lookup, no warn-set write.
 
-    Read on every call. No cache and no numeric fallback. A disk error or a
-    non-dict is the same as a missing floor for each key (R4).
+    ``base_cfg is None`` is a missing floor for both pairs, same as a disk error.
+    ``below_floor`` only when ``multiple < floor``. Equality is valid.
     """
-    from core.tenant_context import resolve_tenant_id
-
-    tenant_id = resolve_tenant_id()
     values = {
         DEPTH_MULTIPLE_PATH: depth_mult,
         VOLUME_MULTIPLE_PATH: volume_mult,
     }
+    problems: list[FloorProblem] = []
+    for multiple_path, floor_path in _FLOOR_PAIRS:
+        multiple = values[multiple_path]
+        raw = None if not isinstance(base_cfg, dict) else _lookup_path(base_cfg, floor_path)
+        present = isinstance(base_cfg, dict) and _path_present(base_cfg, floor_path)
+        parsed = parse_liquidity_floor(raw) if present else None
+        if parsed is None:
+            problems.append(
+                FloorProblem(
+                    multiple_path=multiple_path,
+                    floor_path=floor_path,
+                    kind="floor_missing",
+                    multiple=None if multiple is None else float(multiple),
+                    floor=None,
+                    reason=f"liquidity guard floor missing: {floor_path}",
+                )
+            )
+            continue
+        if multiple is not None and float(multiple) < parsed:
+            problems.append(
+                FloorProblem(
+                    multiple_path=multiple_path,
+                    floor_path=floor_path,
+                    kind="below_floor",
+                    multiple=float(multiple),
+                    floor=float(parsed),
+                    reason=(
+                        f"{multiple_path} {_format_floor_number(float(multiple))} "
+                        f"below floor {_format_floor_number(parsed)}"
+                    ),
+                )
+            )
+    return problems
+
+
+def liquidity_multiple_floor_reasons(depth_mult: float, volume_mult: float) -> list[str]:
+    """Live wrapper: tenant, disk read, today's reason text, one WARNING per key."""
+    from core.tenant_context import resolve_tenant_id
+
+    tenant_id = resolve_tenant_id()
     try:
         base = _read_base_config_for_floors()
     except Exception:
         base = None
+    problems = liquidity_multiple_floor_problems(depth_mult, volume_mult, base)
     reasons: list[str] = []
-    for multiple_path, floor_path in _FLOOR_PAIRS:
-        multiple = values[multiple_path]
-        raw = None if not isinstance(base, dict) else _lookup_path(base, floor_path)
-        present = isinstance(base, dict) and _path_present(base, floor_path)
-        parsed = parse_liquidity_floor(raw) if present else None
-        if parsed is None:
-            reason = f"liquidity guard floor missing: {floor_path}"
-            reasons.append(reason)
+    for problem in problems:
+        reasons.append(problem.reason)
+        if problem.kind == "floor_missing":
             _warn_liquidity_floor(
                 tenant_id,
-                floor_path,
-                _format_floor_number(multiple),
+                problem.floor_path,
+                _format_floor_number(problem.multiple),
                 "missing",
             )
             continue
-        if multiple < parsed:
-            reason = (
-                f"{multiple_path} {_format_floor_number(multiple)} "
-                f"below floor {_format_floor_number(parsed)}"
-            )
-            reasons.append(reason)
-            _warn_liquidity_floor(
-                tenant_id,
-                multiple_path,
-                _format_floor_number(multiple),
-                _format_floor_number(parsed),
-            )
+        _warn_liquidity_floor(
+            tenant_id,
+            problem.multiple_path,
+            _format_floor_number(problem.multiple or 0),
+            _format_floor_number(problem.floor or 0),
+        )
     return reasons
 
 
@@ -362,23 +726,6 @@ def _path_present(raw: dict, path: str) -> bool:
             return False
         node = node[part]
     return True
-
-
-def raw_min_volume_to_order_multiple(config_raw: dict | None) -> float | None:
-    """Positive ``k`` from ``risk.venue_quality`` with no ``_DEFAULTS`` merge.
-
-    Missing or not a positive number is None. Buyers then fail closed.
-    The thin-stamp path must not invent a multiple either.
-    """
-    if not isinstance(config_raw, dict):
-        return None
-    risk = config_raw.get("risk")
-    if not isinstance(risk, dict):
-        return None
-    block = risk.get("venue_quality")
-    if not isinstance(block, dict):
-        return None
-    return _positive_config_float(block, "min_volume_to_order_multiple")
 
 
 def book_age_sec(symbol: str) -> float | None:
@@ -393,18 +740,6 @@ def book_age_sec(symbol: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return max(0.0, time.time() - stamped)
-
-
-def _warn_volume_multiple_missing() -> None:
-    """One WARNING when the stamp path has no positive volume multiple."""
-    global _VOLUME_MULTIPLE_WARNED
-    if _VOLUME_MULTIPLE_WARNED:
-        return
-    _VOLUME_MULTIPLE_WARNED = True
-    log(
-        "min_volume_to_order_multiple missing; thin-venue stamp tags nothing",
-        "WARNING",
-    )
 
 
 def liquidity_guard_config(config_raw: dict | None = None) -> dict[str, Any]:
@@ -455,14 +790,15 @@ def _reject_code(reasons: list[str]) -> str:
 
 def evaluate_venue_quality(
     metrics: VenueMetrics | dict[str, Any] | None,
-    cfg: dict | None = None,
+    cfg: VenueQualityConfig,
     *,
     planned_usdt: float = 0.0,
     skip_volume_multiple: bool = False,
 ) -> VenueQualityResult:
     """Pure venue gate. Thin → ok=False with reasons. Missing metrics → not ok."""
-    cfg = {**_DEFAULTS, **(cfg or {})}
-    if not cfg.get("enabled", True):
+    if not isinstance(cfg, VenueQualityConfig):
+        raise TypeError("evaluate_venue_quality requires VenueQualityConfig")
+    if not cfg.enabled:
         return VenueQualityResult(ok=True, reasons=["venue_quality_disabled"])
 
     if metrics is None:
@@ -487,18 +823,18 @@ def evaluate_venue_quality(
 
     reasons: list[str] = []
     volume_data = bool(getattr(m, "quote_volume_present", True))
-    min_qv = float(cfg.get("min_quote_volume_24h_usdt") or 0)
+    min_qv = float(cfg.min_quote_volume_24h_usdt)
     if min_qv > 0 and volume_data and m.quote_volume_24h_usdt < min_qv:
         reasons.append(
             f"quote_vol_24h ${m.quote_volume_24h_usdt:.0f} < min ${min_qv:.0f}"
         )
 
-    max_spread = float(cfg.get("max_spread_pct") or 0)
+    max_spread = float(cfg.max_spread_pct)
     spread = m.spread_pct if m.spread_pct > 0 else compute_spread_pct(m.bid, m.ask)
     if max_spread > 0 and spread > max_spread:
         reasons.append(f"spread {spread:.2f}% > max {max_spread:.2f}%")
 
-    min_book = float(cfg.get("min_top_book_usdt_per_side") or 0)
+    min_book = float(cfg.min_top_book_usdt_per_side)
     depth_parsed = bool(getattr(m, "depth_parsed", False))
     if min_book > 0:
         if depth_parsed:
@@ -517,17 +853,14 @@ def evaluate_venue_quality(
                 reasons.append(f"ask book ${ask_usdt:.0f} < min ${min_book:.0f}")
 
     planned = float(planned_usdt or 0)
-    k = float(cfg.get("min_volume_to_order_multiple") or 0)
+    k = float(cfg.min_volume_to_order_multiple)
     # Buys skip this yes/no. ``cap_volume`` in the hard lock replaces it.
     # Stamp and thin-venue reads keep it, and never invent a multiple.
-    if not skip_volume_multiple:
-        if k > 0 and planned > 0 and volume_data:
-            if m.quote_volume_24h_usdt < k * planned:
-                reasons.append(
-                    f"quote_vol ${m.quote_volume_24h_usdt:.0f} < {k:.0f}× order ${planned:.0f}"
-                )
-        elif k <= 0:
-            _warn_volume_multiple_missing()
+    if not skip_volume_multiple and k > 0 and planned > 0 and volume_data:
+        if m.quote_volume_24h_usdt < k * planned:
+            reasons.append(
+                f"quote_vol ${m.quote_volume_24h_usdt:.0f} < {k:.0f}× order ${planned:.0f}"
+            )
 
     if m.capture == "book_unavailable" and not depth_parsed:
         if not volume_data:
@@ -538,7 +871,7 @@ def evaluate_venue_quality(
                 metrics=m,
                 code="book_unavailable",
             )
-        policy = str(cfg.get("book_unavailable_policy") or "volume_ok")
+        policy = str(cfg.book_unavailable_policy)
         vol_ok = not any(r.startswith("quote_vol") for r in reasons)
         if policy == "volume_ok" and vol_ok and not reasons:
             log(
@@ -574,8 +907,15 @@ def evaluate_venue_quality(
     return VenueQualityResult(ok=len(reasons) == 0, reasons=reasons, metrics=m, code=code)
 
 
-def is_thin_venue_stamp(stamp: dict | None, cfg: dict | None = None) -> bool:
-    """Whether a fill-time venue stamp counts as thin (for memory learning)."""
+def is_thin_venue_stamp(
+    stamp: dict | None, cfg: VenueQualityConfig | VenueConfigError
+) -> bool | None:
+    """Whether a fill-time venue stamp counts as thin (for memory learning).
+
+    Invalid config is unknown (None), never thin.
+    """
+    if isinstance(cfg, VenueConfigError) or not isinstance(cfg, VenueQualityConfig):
+        return None
     if not stamp or stamp.get("capture") == "missing":
         return False
     if stamp.get("capture") == "book_unavailable":
@@ -601,9 +941,7 @@ def is_thin_venue_stamp(stamp: dict | None, cfg: dict | None = None) -> bool:
     return not evaluate_venue_quality(m, cfg, planned_usdt=planned).ok
 
 
-# Buy sources the proof test enumerates one by one. This is not an
-# allowlist: ``source_applies_venue`` still checks every non-manual
-# source, including one that is not in this tuple. A new buy source
+# Buy sources the proof test enumerates one by one. A new buy source
 # must be added here so the enumerated test fails until it is covered.
 AUTOMATIC_BUY_SOURCES = (
     "auto",
@@ -635,24 +973,6 @@ AUTOMATIC_BUY_SOURCES = (
     "webhook",
     "x",
 )
-
-
-def source_applies_venue(source: str, cfg: dict | None = None) -> bool:
-    """True unless source is an exact ``exempt_sources`` entry.
-
-    ``apply_to`` remains in config but is not an allowlist: an unknown source
-    is evaluated. Only the exact string ``manual`` is exempt by default.
-    """
-    if cfg is None:
-        cfg = venue_quality_config()
-    exempt = cfg.get("exempt_sources")
-    if exempt is None:
-        exempt = _DEFAULTS["exempt_sources"]
-    if isinstance(exempt, str):
-        exempt = [exempt]
-    if not isinstance(exempt, (list, tuple, set)):
-        exempt = _DEFAULTS["exempt_sources"]
-    return str(source or "") not in {str(item) for item in exempt}
 
 
 def _pair(symbol: str) -> str:
@@ -777,39 +1097,6 @@ def depth_within_mid_band(
     return bid_d, ask_d, parsed
 
 
-def depth_from_gate_order_book(
-    payload: Any, *, depth_levels: int = 5
-) -> tuple[float, float, bool]:
-    """Sum notional of the top N bid/ask levels. Raises if the payload is unusable."""
-    if not isinstance(payload, dict):
-        raise TypeError("order_book payload must be a dict")
-    bids = payload.get("bids")
-    asks = payload.get("asks")
-    if not isinstance(bids, list) or not isinstance(asks, list):
-        raise TypeError("order_book payload missing bids/asks lists")
-    # Empty lists are unparsed, not a measured $0 book. A present level with
-    # size 0 still parses (explicit zero on a present key).
-    if not bids and not asks:
-        return 0.0, 0.0, False
-    n = max(int(depth_levels or 5), 1)
-
-    def _side(levels: list) -> float:
-        total = 0.0
-        for row in levels[:n]:
-            if not isinstance(row, (list, tuple)) or len(row) < 2:
-                continue
-            try:
-                px = float(row[0])
-                sz = float(row[1])
-            except (TypeError, ValueError):
-                continue
-            if px > 0 and sz >= 0:
-                total += px * sz
-        return total
-
-    return _side(bids), _side(asks), True
-
-
 def _with_depth(
     m: VenueMetrics,
     bid_d: float,
@@ -831,10 +1118,10 @@ def _with_depth(
 
 
 def _attach_order_book_depth(
-    m: VenueMetrics, cfg: dict, *, config_raw: dict | None = None
+    m: VenueMetrics, cfg: VenueQualityConfig, *, config_raw: dict | None = None
 ) -> VenueMetrics:
-    limit = int(cfg.get("order_book_limit") or 100)
-    timeout = float(cfg.get("order_book_timeout_sec") or 5.0)
+    limit = int(cfg.order_book_limit)
+    timeout = float(cfg.order_book_timeout_sec)
     lg = liquidity_guard_config(config_raw)
     ttl = lg.get("order_book_cache_ttl_sec")
     window = lg.get("depth_window_pct")
@@ -919,7 +1206,12 @@ def fetch_gate_venue_metrics(
     off so this call does not fan out per-pair order-book HTTP.
     """
     cfg = venue_quality_config(config_raw)
-    ttl = float(cfg.get("cache_ttl_sec") or 90)
+    if isinstance(cfg, VenueConfigError):
+        return {
+            sym: VenueMetrics(symbol=sym, capture="missing", config_key=cfg.config_key)
+            for sym in list(dict.fromkeys(symbols))
+        }
+    ttl = float(cfg.cache_ttl_sec)
     now = time.time()
     unique = list(dict.fromkeys(symbols))
     out: dict[str, VenueMetrics] = {}
@@ -952,7 +1244,7 @@ def fetch_gate_venue_metrics(
     if missing:
         pairs = {_pair(s): s for s in missing}
         try:
-            data = gate_public_rest_get("/spot/tickers", timeout=12)
+            data = gate_public_rest_get("/spot/tickers", timeout=cfg.ticker_timeout_sec)
             for item in data:
                 pair = item.get("currency_pair", "")
                 if pair not in pairs:
@@ -1061,9 +1353,36 @@ def _apply_hard_liquidity(
     window = lg.get("depth_window_pct")
     max_age = lg.get("order_book_cache_ttl_sec")
     depth_mult = lg.get("depth_to_order_multiple")
-    k = raw_min_volume_to_order_multiple(config_raw)
-    planned = float(planned_usdt or 0)
     symbol = "" if m is None else str(getattr(m, "symbol", "") or "")
+    vq = venue_quality_config(config_raw)
+    planned = float(planned_usdt or 0)
+    if isinstance(vq, VenueConfigError):
+        codes = ["liq_guard_missing_input"]
+        reasons = list(prior.reasons)
+        reasons.append("venue_config_missing")
+        out = VenueQualityResult(
+            ok=False,
+            reasons=reasons,
+            metrics=m,
+            code="liq_guard_missing_input",
+            config_key=vq.config_key,
+            config_problem=vq.config_problem,
+            detail_reason="venue_config_missing",
+        )
+        return _stamp_liquidity(
+            out,
+            codes=codes,
+            planned=planned,
+            window=lg.get("depth_window_pct"),
+            qv=None,
+            bid_d=None,
+            ask_d=None,
+            cap_depth=None,
+            cap_volume=None,
+            liq_cap=None,
+            book_age=book_age_sec(symbol) if symbol else None,
+        )
+    k = vq.min_volume_to_order_multiple
     qv = None
     ask_d = None
     bid_d = None
@@ -1210,12 +1529,25 @@ def check_venue_for_buy(
     not raise and it does not apply to sells.
     """
     cfg = venue_quality_config(config_raw)
-    if not cfg.get("enabled", True):
-        # The old venue_quality.enabled flag is not an off-switch for the
-        # hard lock. The lock still runs.
-        pass
-    # exempt_sources is not a switch. Every source is evaluated. A human
-    # manual buy is logged and not auto-blocked by the caller.
+    if isinstance(cfg, VenueConfigError):
+        # Invalid config is gate-required. No HTTP.
+        return VenueQualityResult(
+            ok=False,
+            reasons=["venue_config_missing"],
+            metrics=VenueMetrics(
+                symbol=symbol,
+                capture="missing",
+                quote_volume_present=False,
+                config_key=cfg.config_key,
+            ),
+            code="liq_guard_missing_input",
+            config_key=cfg.config_key,
+            config_problem=cfg.config_problem,
+            detail_reason="venue_config_missing",
+        )
+    # enabled=false switches off the prior soft gate only. The hard lock
+    # still runs, so a missing book is fetched here the same as when enabled.
+    # A human manual buy is logged by the caller, not skipped here.
 
     if metrics is None:
         try:
@@ -1230,7 +1562,7 @@ def check_venue_for_buy(
                 code="liq_guard_missing_input",
             )
         if metrics.capture == "missing":
-            err_pol = str(cfg.get("on_fetch_error") or "block_sensor")
+            err_pol = str(cfg.on_fetch_error)
             # #641: fail closed for buys. The old allow/fail_open policy
             # must not let a buy through when Gate data is missing.
             if err_pol in ("allow", "fail_open"):
@@ -1276,11 +1608,19 @@ def stamp_venue_for_fill(
 ) -> dict[str, Any]:
     """Build execution.venue stamp for a filled buy (always attach something)."""
     cfg = venue_quality_config(config_raw)
+    if isinstance(cfg, VenueConfigError):
+        return {
+            "capture": "missing",
+            "symbol": symbol,
+            "planned_usdt": float(planned_usdt or 0),
+            "config_key": cfg.config_key,
+            "config_problem": cfg.config_problem,
+        }
     m = metrics or get_venue_metrics(symbol, config_raw=config_raw, fetch_depth=True)
     if m.capture == "missing":
         return {
             "capture": "missing",
-            "exchange": cfg.get("exchange") or "gate",
+            "exchange": cfg.exchange,
             "symbol": symbol,
             "planned_usdt": float(planned_usdt or 0),
         }
@@ -1295,13 +1635,9 @@ def stamp_venue_for_fill(
 def peek_cached_quote_volume(symbol: str, *, config_raw: dict | None = None) -> float | None:
     """Return a still-fresh cached 24h quote volume. Does not fetch."""
     cfg = venue_quality_config(config_raw)
-    raw_ttl = cfg.get("cache_ttl_sec")
-    if raw_ttl is None:
+    if isinstance(cfg, VenueConfigError):
         return None
-    try:
-        ttl = float(raw_ttl)
-    except (TypeError, ValueError):
-        return None
+    ttl = float(cfg.cache_ttl_sec)
     now = time.time()
     with _cache_lock:
         hit = _cache.get(symbol)
@@ -1315,9 +1651,7 @@ def peek_cached_quote_volume(symbol: str, *, config_raw: dict | None = None) -> 
 
 
 def reset_venue_cache_for_tests() -> None:
-    global _VOLUME_MULTIPLE_WARNED
-    _VOLUME_MULTIPLE_WARNED = False
-    _FLOOR_WARNED.clear()
+    _CONFIG_WARNED.clear()
     with _cache_lock:
         _cache.clear()
         _book_cache.clear()

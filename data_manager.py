@@ -3,6 +3,7 @@ import locale
 import os
 import shutil
 import tempfile
+import threading
 from datetime import datetime
 
 from core.execution_mode import places_real_orders
@@ -917,7 +918,7 @@ def _pinned_save_value(config, path: str):
     return node
 
 
-def save_config(config, tenant_id: str | None = None):
+def save_config(config, tenant_id: str | None = None, *, _skip_venue_bounds: bool = False):
     """Persist ``config`` for the resolved tenant.
 
     Guardrail (#330): trading-critical keys are bounds-checked *before* any
@@ -937,15 +938,20 @@ def save_config(config, tenant_id: str | None = None):
     global _config_cache
     from core.config_guardrails import (
         ConfigValidationError,
+        assert_default_config_bounds_present,
         assert_default_config_floors_present,
         assert_liquidity_multiples_within_base_floor,
+        assert_venue_quality_within_bounds,
         frozen_shorts_changed,
         pinned_patch_paths,
         validate_config_for_save,
+        PINNED_SHORTS_PATHS,
+        _venue_bound_paths,
+        _venue_bounds_or_raise,
     )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from storage.config_history import config_write_lock
-    validate_config_for_save(config)
+    validate_config_for_save(config, _skip_venue_bounds=_skip_venue_bounds)
     tid = resolve_tenant_id(tenant_id)
     with config_write_lock():
         if tid != DEFAULT_TENANT:
@@ -962,8 +968,12 @@ def save_config(config, tenant_id: str | None = None):
             if isinstance(config, dict):
                 merged = _apply_trading_profile_merge(default_cfg, config)
                 assert_liquidity_multiples_within_base_floor(merged)
+                if not _skip_venue_bounds:
+                    assert_venue_quality_within_bounds(merged, _venue_bounds_or_raise())
             previous = _load_previous_tenant_config(tid, default_cfg)
-            frozen = frozen_shorts_changed(config, previous)
+            frozen = frozen_shorts_changed(
+                config, previous, PINNED_SHORTS_PATHS + _venue_bound_paths()
+            )
             if frozen:
                 raise ConfigValidationError(
                     frozen,
@@ -993,6 +1003,9 @@ def save_config(config, tenant_id: str | None = None):
                 "operator-pinned; Hermes cannot write",
             )
         assert_default_config_floors_present(config)
+        if not _skip_venue_bounds:
+            assert_default_config_bounds_present(config)
+            assert_venue_quality_within_bounds(config, _venue_bounds_or_raise())
         _snapshot_previous_or_raise(previous, tid)
         path = "config.json"
         try:
@@ -1001,6 +1014,67 @@ def save_config(config, tenant_id: str | None = None):
             return True
         except Exception:
             return False
+
+
+_exemption_running_exits = threading.local()
+
+
+def bind_exemption_running_exits(value) -> None:
+    """Stash the in-memory exits flag save_trading_flags just read.
+
+    patch_config then does not load config again for the c5 comparison.
+    A direct patch_config call (no stash) reads get_config itself.
+    """
+    _exemption_running_exits.value = value
+    _exemption_running_exits.readable = type(value) is bool
+    _exemption_running_exits.active = True
+
+
+def clear_exemption_running_exits() -> None:
+    _exemption_running_exits.active = False
+
+
+def _running_exits_for_exemption():
+    if getattr(_exemption_running_exits, "active", False):
+        return _exemption_running_exits.value, bool(_exemption_running_exits.readable)
+    try:
+        cfg = get_config()
+    except Exception:
+        return None, False
+    if not isinstance(cfg, dict):
+        return None, False
+    trading = cfg.get("trading")
+    if not isinstance(trading, dict) or "exits_enabled" not in trading:
+        return None, False
+    value = trading.get("exits_enabled")
+    if type(value) is not bool:
+        return value, False
+    return value, True
+
+
+def _skip_venue_bounds(updates: dict) -> bool:
+    """c4a /mode off and c5 entries-off. Decided from the raw body only."""
+    if set(updates) == {"trading_mode", "virtual_trading"}:
+        return (
+            updates.get("trading_mode") == "off"
+            and updates.get("virtual_trading") is False
+        )
+    if set(updates) != {"trading"}:
+        return False
+    trading = updates.get("trading")
+    if not isinstance(trading, dict):
+        return False
+    if set(trading) - {"entries_enabled", "exits_enabled"}:
+        return False
+    if "entries_enabled" not in trading or trading.get("entries_enabled") is not False:
+        return False
+    if "exits_enabled" not in trading:
+        return True
+    running, readable = _running_exits_for_exemption()
+    if not readable:
+        return False
+    exits = trading.get("exits_enabled")
+    return type(exits) is bool and exits is running
 
 
 def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
@@ -1018,17 +1092,23 @@ def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
     Returns ``False`` when the write was skipped or failed — never a silent
     ``True`` without a persisted change.
     """
-    from core.config_guardrails import reject_frozen_shorts_patch, validate_config_for_save
+    from core.config_guardrails import (
+        assert_venue_quality_within_bounds,
+        reject_frozen_shorts_patch,
+        validate_config_for_save,
+        _venue_bounds_or_raise,
+    )
     from core.tenant_context import resolve_tenant_id, DEFAULT_TENANT
     from core.trading_profiles import deep_merge_dicts
 
     if not isinstance(updates, dict):
         return False
     reject_frozen_shorts_patch(updates)
+    skip = _skip_venue_bounds(updates)
     tid = resolve_tenant_id(tenant_id)
     if tid == DEFAULT_TENANT:
         merged = deep_merge_dicts(get_config(tenant_id=tid) or {}, updates)
-        return save_config(merged, tenant_id=tid)
+        return save_config(merged, tenant_id=tid, _skip_venue_bounds=skip)
     default_cfg = _load_default_config_from_disk()
     try:
         use_mongo = _should_use_mongo_for_tenant_config(default_cfg)
@@ -1043,7 +1123,10 @@ def patch_config(updates: dict, tenant_id: str | None = None) -> bool:
         log(f"patch_config: tenant body unavailable for {tid}: {e}", "WARNING")
         return False
     new_body = deep_merge_dicts(body, updates)
-    validate_config_for_save(_apply_trading_profile_merge(default_cfg, new_body))
+    merged = _apply_trading_profile_merge(default_cfg, new_body)
+    validate_config_for_save(merged, _skip_venue_bounds=skip)
+    if not skip:
+        assert_venue_quality_within_bounds(merged, _venue_bounds_or_raise())
     try:
         from storage import tenant_meta_store as _tms
         return bool(

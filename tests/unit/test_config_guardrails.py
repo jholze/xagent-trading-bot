@@ -143,9 +143,26 @@ def test_current_repo_config_json_is_valid():
 
 
 def _floor_keys() -> dict:
+    from tests.support.venue_block import venue_block
+
+    venue = venue_block()
+    venue["min_volume_to_order_multiple_min"] = 20
     return {
-        "liquidity_guard": {"depth_to_order_multiple_min": 1},
-        "venue_quality": {"min_volume_to_order_multiple_min": 20},
+        "liquidity_guard": {
+            "depth_to_order_multiple_min": 1,
+            "min_quote_volume_24h_usdt": 500000,
+            "depth_window_pct": 0.5,
+            "order_book_cache_ttl_sec": 15,
+            "depth_to_order_multiple": 1,
+        },
+        "venue_quality": venue,
+        "venue_quality_bounds": {
+            "order_book_timeout_sec_max": 10,
+            "ticker_timeout_sec_max": 15,
+            "cache_ttl_sec_min": 5,
+            "cache_ttl_sec_max": 120,
+            "order_book_limit_max": 100,
+        },
     }
 
 
