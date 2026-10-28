@@ -1232,3 +1232,34 @@ def test_c1_merged_lot_does_not_fire_partial_stop_same_cycle():
     )
     assert analysis.action != "SELL_STOP_PARTIAL"
     assert analysis.action != "SELL_STOP_FULL"
+
+
+def test_c1_profile_partial_stop_pct_fallback():
+    """Merge bound reads partial_stop_pct from the volatile profile when the row omits it."""
+    _limits()
+    full = 20.0
+    partial = 10.0
+    buffer = 6.21
+    ticket = 25.0
+    value = 2.0
+    ratio_stop = full * _partial_stop_ratio_from_config()
+    assert partial < ratio_stop
+    profile_bound = (partial - buffer) / 100.0 * ticket
+    ratio_bound = (ratio_stop - buffer) / 100.0 * ticket
+    loss = (profile_bound + ratio_bound) / 2.0
+    rm = RiskManager(_cfg(
+        stop_loss_pct=full,
+        volatile_altcoin={"partial_stop_pct": partial},
+        strategies=[{
+            "symbol": "SYM/USDT",
+            "timeframe": TF,
+            "stop_loss_pct": full,
+        }],
+    ))
+    row = rm.config.strategy_params("SYM/USDT", TF)
+    assert row.get("partial_stop_pct") is None
+    assert rm.config.volatile_altcoin_config.get("partial_stop_pct") == partial
+    _below("SYM/USDT", value + loss, 1, value)
+    refused = _merge_buy(rm, "SYM/USDT", value)
+    assert refused.code == VENUE_MIN_MERGE_LOSS_EXCEEDED
+    assert refused.details["stop_pct"] == pytest.approx(partial)
