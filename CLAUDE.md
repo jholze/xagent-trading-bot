@@ -80,6 +80,8 @@ from any session, worktree, or Grok run:
   admins too.
 - **Integration target is `rebuild/*`.** Topic branches merge there; the reviewed integration branch goes to `staging`
   as one PR when the phase is complete, at a moment the operator chooses.
+- **PR sidebar (2026-09-21):** issue is the Kanban card. Every `gh pr create` copies the issue's type + allowlisted `area:*` + `priority:p*`, sets `--assignee jholze`, `--add-project "Trading Bot Kanban"`, and puts `Fixes #<n>` in `--body-file`. Title `feat|fix|docs(<area>): … (#N)`.
+- Do not `kanban-set-status` on a PR number; Sprint/Backlog/Epics views use `is:issue`. devops STOPs squash if labels, assignee, or `Fixes #` is missing.
 
 ### Merging to `staging` — Claude's standing authority (decided 2026-09-09)
 
