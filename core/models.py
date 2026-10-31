@@ -265,6 +265,10 @@ class TradeOrder:
     # Why we sold (strategy/module). Distinct from channel `source` (auto/grid/dca/manual).
     exit_source: str = ""
     exit_rationale: str = ""
+    # H2 #735 (M-FIELD): explicit hard-stop origin marker, set only by the WS stop path ("exit_ws",
+    # services/exit_realtime/execute.py) and the cycle long_hard_stop ("long_hard_stop", signal_orchestrator).
+    # Not derived from exit_source. Empty = no explicit hard-stop origin (fail-closed for H2 escalation).
+    hard_stop_origin: str = ""
     order_id: str = ""
     idempotency_key: str = ""
     entry_15m_vol_ratio: float | None = None

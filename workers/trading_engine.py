@@ -102,6 +102,12 @@ def main():
     ensure_started(force_refresh=True)
     ensure_trading_engine()
     log(f"Trading engine worker mode={arch.get('trading_engine_mode')}", "INFO")
+    try:
+        from core.config_guardrails import report_hard_stop_escalation_scope
+
+        report_hard_stop_escalation_scope({"architecture": dict(arch or {})})  # H2 M-WARN
+    except Exception as e:
+        log(f"h2 engine scope report failed: {e}", "ERROR")
 
     while True:
         try:

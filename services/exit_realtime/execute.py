@@ -421,6 +421,7 @@ def try_execute_trail_exit(
             source="exit_ws",
             exit_source=str(exit_source or ""),
             exit_rationale=str(rationale or "")[:240],
+            hard_stop_origin="exit_ws" if str(exit_source or "") == "stop_loss" else "",  # H2 M-WS
         )
         if full_stop_on_below_min and isinstance(params, dict):
             # Risk re-checks evaluate_long_hard_stop with these params.

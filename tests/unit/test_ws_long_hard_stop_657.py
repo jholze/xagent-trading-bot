@@ -251,7 +251,8 @@ def _clear_guards():
     ex._last_exit_at.clear()
 
 
-def _sell(symbol, amount, signal, *, timeframe="1h", source="auto", exit_source="stop_loss", price=0.5):
+def _sell(symbol, amount, signal, *, timeframe="1h", source="auto", exit_source="stop_loss", price=0.5,
+          hard_stop_origin=""):
     from services.trading_service import TradingService
 
     order = TradeOrder(
@@ -262,6 +263,7 @@ def _sell(symbol, amount, signal, *, timeframe="1h", source="auto", exit_source=
         signal=signal,
         source=source,
         exit_source=exit_source,
+        hard_stop_origin=hard_stop_origin,  # H2 #735 marker (set by execute.py / orchestrator in production)
     )
     key = uuid.uuid4().hex
     return TradingService().execute_order(
@@ -997,14 +999,19 @@ class TestT12DailySellExemption:
         self._arm_limit(1)
         _seed_filled_sells(1)
         _seed("AAA/USDT", amount=12, entry=2.0)
+        _seed("CCC/USDT", amount=12, entry=2.0)
         with _paper(), _logs() as lines:
             closed = _sell("BBB/USDT", 10, "SELL_STOP_FULL", price=2.0)
-            capped = _sell("AAA/USDT", 40, "SELL_STOP_FULL", price=2.0)
+            at_entry = _sell("CCC/USDT", 40, "SELL_STOP_FULL", price=2.0)  # no marker, price == entry
+            capped = _sell("AAA/USDT", 40, "SELL_STOP_FULL", price=1.5, hard_stop_origin="long_hard_stop")
         assert closed.code == "sell_lot_closed"
+        assert at_entry.executed is False and at_entry.code == "max_daily_sells", (at_entry.code, at_entry.message)
+        assert _held("CCC/USDT") == 12
         assert capped.executed
         assert _held("AAA/USDT") == 0
         assert any("sell_amount_capped" in line and "old_amount=40" in line for line in lines)
-        assert any("daily_sells_limit_bypassed_hard_stop" in line for line in lines)
+        bypass = [line for line in lines if "daily_sells_limit_bypassed_hard_stop" in line]
+        assert len(bypass) == 1 and "symbol=AAA/USDT" in bypass[0] and "origin=long_hard_stop" in bypass[0]
 
 
 class TestT13TenantGuards:
@@ -1553,9 +1560,13 @@ class TestBelowVenueMinimumFullStop:
         assert [o for o in _orders(symbol) if o.get("status") == "filled"] == []
 
 
+def _lot_for_band():  # H2: the lot is gone after the FULL; the band check uses the seeded shape (27 @ 1.0)
+    return {"amount": 27.0, "average_entry": 1.0, "side": "long"}
+
+
 class TestB3PartialSellGuard:
     def test_ws_partial_stop_rejected_by_partial_sell_guard(self):
-        """WS hard partial on a 25 USDT lot stops at partial_sell_guard."""
+        """WS hard partial on a 25 USDT lot: guard rejects the partial, H2 escalates to ONE SELL_STOP_FULL."""
         from execution.gate_adapter import GateExecutionAdapter
 
         symbol = "GGG/USDT"
@@ -1570,22 +1581,15 @@ class TestB3PartialSellGuard:
                 _fire(hub, symbol, "0.93", "0.93")
         finally:
             GateExecutionAdapter._shadow_markets_cache = prev_cache
-        assert _held(symbol) == pytest.approx(27.0, abs=0.01)
+        assert _held(symbol) == pytest.approx(0.0, abs=1e-9)  # H2
         rows = _orders(symbol)
-        assert rows
-        assert all(o.get("status") != "filled" for o in rows)
-        rejected = [o for o in rows if o.get("status") == "rejected"]
-        assert rejected
-        assert rejected[-1]["signal"] == "SELL_STOP_PARTIAL"
-        assert (rejected[-1].get("risk") or {}).get("code") == "partial_sell_guard"
-        from strategies.positions import get_position
-
-        pos = get_position(symbol, "1h")
-        assert pos.get("hard_partial_stop_done") is not True
+        filled = [o for o in rows if o.get("status") == "filled"]
+        assert len(filled) == 1 and filled[0]["signal"] == "SELL_STOP_FULL", [(o.get("signal"), o.get("status")) for o in rows]
+        assert [o for o in rows if o.get("status") == "rejected"] == []  # escalated in the same evaluate()
         assert evaluate_long_hard_stop(
             price=0.93,
             entry=1.0,
-            position=pos,
+            position=_lot_for_band(),
             strategy_params=params,
             base_stop_loss_pct=10.0,
         ) == ("SELL_STOP_PARTIAL", "stop_loss")

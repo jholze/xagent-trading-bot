@@ -30,6 +30,7 @@ _ZZ_VOLUME = 301_891.0
 
 def _cfg(**risk):
     raw_risk = {
+        "block_partial_sell_if_sold_percent_above": 0.99,
         "daily_loss_limit_pct": 100,
         "min_trade_usdt": 5,
         "cash_floor_pct": 0,

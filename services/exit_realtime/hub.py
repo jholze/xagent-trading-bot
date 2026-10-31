@@ -536,8 +536,11 @@ class ExitRealtimeHub:
     ) -> bool:
         key = f"{str(tenant_id or '').strip()}|{symbol}|{source}"
         now = time.monotonic()
-        last = self._last_fire.get(key, 0.0)
-        if now - last < cooldown_sec:
+        # A missing stamp is "never fired". Defaulting to 0 treats process start
+        # (monotonic 0) as a fire, so the first stop is swallowed for the whole
+        # cooldown after boot.
+        last = self._last_fire.get(key)
+        if last is not None and now - last < cooldown_sec:
             return False
         self._last_fire[key] = now
         return True
@@ -915,6 +918,13 @@ class ExitRealtimeHub:
                 sym, "ws_stop_below_min", cooldown, tenant_id=row_tenant
             )
             full_hard_stop = action == "SELL_STOP_FULL" and src == "stop_loss"
+            # H2 (concept from #723 P723-KEY): a hard partial has its own debounce key, so a
+            # rejected partial does not consume the full-stop window.
+            debounce_src = (
+                f"{src}:partial"
+                if src == "stop_loss" and action == "SELL_STOP_PARTIAL"
+                else src
+            )  # H2-KEY
             full_stop_outranks_pause = (
                 venue_min_pause
                 and full_hard_stop
@@ -932,7 +942,9 @@ class ExitRealtimeHub:
                     tenant_id=row_tenant,
                 ):
                     continue
-            elif not self._debounce_ok(sym, src, cooldown, tenant_id=row_tenant):
+            elif not self._debounce_ok(
+                sym, debounce_src, cooldown, tenant_id=row_tenant
+            ):
                 continue
 
             ev["mode"] = mode
@@ -975,6 +987,9 @@ class ExitRealtimeHub:
             ev["message"] = result.get("message")
             if result.get("executed"):
                 self._stats["executed"] += 1
+                if debounce_src != src:
+                    # H2-STAMP: an executed partial (or its escalated FULL) also closes the full-stop window
+                    self._debounce_ok(sym, src, 0.0, tenant_id=row_tenant)
                 # drop this tenant's row until the next book refresh
                 self._drop_book_row(sym, row_tenant)
                 self._broadcast_gui(

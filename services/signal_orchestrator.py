@@ -243,11 +243,13 @@ class SignalOrchestrator:
                 sources=list(analysis.sources or []),
                 action=sell_signal,
             )
+            _h2_origin = ""
             if long_hard_stop and sell_signal in (
                 "SELL_STOP_FULL",
                 "SELL_STOP_PARTIAL",
             ):
                 exit_src = "stop_loss"
+                _h2_origin = "long_hard_stop"  # H2 M-CYCLE
             order = TradeOrder(
                 type="SELL",
                 symbol=symbol,
@@ -262,6 +264,7 @@ class SignalOrchestrator:
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
                 ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
             )
+            order.hard_stop_origin = _h2_origin  # H2 M-CYCLE
             tf = pos_tf
 
         from bus.trade_intents import make_idempotency_key

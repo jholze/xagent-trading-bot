@@ -9,7 +9,13 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from intelligence.memory.models import CoinProfile, Lesson, MarketEvent, TradeMemory
+from intelligence.memory.models import (
+    GLOBAL_TENANT_ID,
+    CoinProfile,
+    Lesson,
+    MarketEvent,
+    TradeMemory,
+)
 from logger import log
 
 # Dedicated collections — isolated from ledger SOT
@@ -46,6 +52,24 @@ def memory_enabled(config: dict | None = None) -> bool:
     except Exception:
         pass
     return True
+
+
+def event_visible_to_tenant(event_tenant: str | None, tenant_id: str | None) -> bool:
+    """True when ``tenant_id`` may see this event.
+
+    ``None`` keeps the unfiltered read used by paths that are not a tenant pack.
+    A pack sees its own rows plus market-wide ``global`` rows.
+    """
+    if not tenant_id:
+        return True
+    return (event_tenant or "") in (tenant_id, GLOBAL_TENANT_ID)
+
+
+def event_tenant_filter(tenant_id: str | None) -> dict[str, Any]:
+    """Mongo clause for :func:`event_visible_to_tenant`. Empty when unfiltered."""
+    if not tenant_id:
+        return {}
+    return {"tenant_id": {"$in": [tenant_id, GLOBAL_TENANT_ID]}}
 
 
 def resolve_memory_scope(explicit: str | None = None) -> str:
@@ -159,8 +183,10 @@ class MemoryStore:
         event_type: str | None = None,
         since_iso: str | None = None,
         limit: int = 50,
+        tenant_id: str | None = None,
     ) -> list[MarketEvent]:
         q: dict[str, Any] = {}
+        q.update(event_tenant_filter(tenant_id))
         if symbol:
             sym = symbol.upper()
             q["symbols"] = {"$in": [sym, sym.split("/")[0], f"{sym.split('/')[0]}/USDT"]}
@@ -294,11 +320,15 @@ class InMemoryMemoryStore(MemoryStore):
     def get_event(self, event_id: str):
         return MarketEvent.from_doc(self._docs[COL_EVENTS].get(event_id))
 
-    def list_events(self, *, symbol=None, event_type=None, since_iso=None, limit=50):
+    def list_events(
+        self, *, symbol=None, event_type=None, since_iso=None, limit=50, tenant_id=None
+    ):
         out = []
         for d in self._docs[COL_EVENTS].values():
             e = MarketEvent.from_doc(d)
             if not e:
+                continue
+            if not event_visible_to_tenant(e.tenant_id, tenant_id):
                 continue
             if event_type and e.event_type != event_type:
                 continue
