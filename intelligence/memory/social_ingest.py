@@ -13,7 +13,13 @@ from typing import Any
 
 from intelligence.memory.embeddings import embed_event
 from intelligence.memory.event_ingest import make_event_id
-from intelligence.memory.models import CoinProfile, MarketEvent, TradeMemory, utc_now_iso
+from intelligence.memory.models import (
+    GLOBAL_TENANT_ID,
+    CoinProfile,
+    MarketEvent,
+    TradeMemory,
+    utc_now_iso,
+)
 from intelligence.memory.store import MemoryStore, resolve_memory_scope
 from logger import log
 
@@ -165,6 +171,7 @@ def ingest_social_signal(
         source=source,
         metadata=dict(metadata or {}),
         embedding=embed_event(desc, event_type=et),
+        tenant_id=GLOBAL_TENANT_ID,
     )
     store.upsert_event(ev)
     return ev

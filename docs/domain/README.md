@@ -10,5 +10,6 @@ Knowledge from the retired review roles. Numbers are the handover values. Anythi
 | [hypothesis-protocol.md](hypothesis-protocol.md) | Strategy scout | Kill rules, cost model, pre-registered trials |
 | [exit-cause-rules.md](exit-cause-rules.md) | Cause rules v1.3 | How a realized loss is labeled |
 | [prevention-rules.md](prevention-rules.md) | Owner, 2026-08-24 | Denylist and DCA guards |
+| [../observability/observe-streams.md](../observability/observe-streams.md) | Observe | Mongo collections for shadow and observe JSONL |
 
 Operating rules for agents are [AGENTS.md](../../AGENTS.md). The coded hypothesis checks are `tools/hypothesis_protocol.py`. The merge gate is `scripts/ci/review_gates.py`.
