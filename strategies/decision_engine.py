@@ -950,7 +950,7 @@ class DecisionEngine:
                 candidates.append((tech_norm, pri, tech_src))
             elif position:
                 structure_rationales.append(
-                    "partial_stop paused (DCA rounds still open)"
+                    "partial_stop paused (DCA grace window)"
                 )
 
         if x_signal and self._x_stop_loss_triggered(x_signal, market.current_price if market else 0):

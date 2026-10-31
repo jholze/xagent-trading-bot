@@ -7,6 +7,8 @@ test means the pin is not wired to the guard.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from core.config import BotConfig
@@ -83,20 +85,52 @@ def _assert_missing(pos, price, indicators) -> None:
     assert result.codes == ["dca_guard_missing_input"]
 
 
+def _inside_grace_stamp() -> str:
+    """Naive wall time, matching the live writer. One hour is inside the 12h default."""
+    return (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+
+
+def _outside_grace_stamp() -> str:
+    return (datetime.now() - timedelta(hours=13)).isoformat(timespec="seconds")
+
+
 def _assert_partial_paused() -> None:
-    pos = {"dca_rounds": 1, "last_dca_at": None}
+    """#722: the partial is paused only inside the grace window.
+
+    Staging's pin used ``last_dca_at=None`` and expected a pause for the life
+    of the rounds. A missing timestamp is outside grace, so that assertion
+    got False. A timestamp one hour old still pauses.
+    """
+    pos = {"dca_rounds": 1, "last_dca_at": _inside_grace_stamp()}
     params = {"dca": {"pause_partial_stop_during_dca": True, "max_rounds": 2}}
     assert dca_mod.should_pause_partial_stop(pos, params) is True
     _full, partial, _grace = effective_stop_loss_thresholds(pos, params, 50.0)
     assert partial is None
+    missing = {"dca_rounds": 1, "last_dca_at": None}
+    assert dca_mod.should_pause_partial_stop(missing, params) is False
 
 
 def _assert_partial_paused_while_rounds_remain() -> None:
-    pos = {"dca_rounds": 1, "dca_max_rounds": 2}
+    """#722: the flag does not extend the pause past the window.
+
+    Inside grace the partial stays paused even when the flag is off.
+    Once the window has passed, open rounds do not keep it paused.
+    """
+    pos = {
+        "dca_rounds": 1,
+        "dca_max_rounds": 2,
+        "last_dca_at": _inside_grace_stamp(),
+    }
     params = {"dca": {"pause_partial_stop_during_dca": False, "max_rounds": 2}}
     assert dca_mod.should_pause_partial_stop(pos, params) is True
     _full, partial, _grace = effective_stop_loss_thresholds(pos, params, 50.0)
     assert partial is None
+    aged = {
+        "dca_rounds": 1,
+        "dca_max_rounds": 2,
+        "last_dca_at": _outside_grace_stamp(),
+    }
+    assert dca_mod.should_pause_partial_stop(aged, params) is False
 
 
 def test_no_dca_when_live_below_average():
@@ -201,11 +235,24 @@ def test_partial_stop_paused_during_dca():
 
 def test_partial_stop_stays_paused_while_rounds_remain_if_flag_off():
     _assert_partial_paused_while_rounds_remain()
-    done = {"dca_rounds": 2, "dca_max_rounds": 2}
+    # Reaching max rounds does not end the pause while the timestamp is
+    # still inside grace. After the window the partial level is back,
+    # including when the round count is already at the max.
     params = {"dca": {"pause_partial_stop_during_dca": False, "max_rounds": 2}}
-    assert dca_mod.should_pause_partial_stop(done, params) is False
+    done_inside = {
+        "dca_rounds": 2,
+        "dca_max_rounds": 2,
+        "last_dca_at": _inside_grace_stamp(),
+    }
+    assert dca_mod.should_pause_partial_stop(done_inside, params) is True
+    done_after = {
+        "dca_rounds": 2,
+        "dca_max_rounds": 2,
+        "last_dca_at": _outside_grace_stamp(),
+    }
+    assert dca_mod.should_pause_partial_stop(done_after, params) is False
     _full, partial, _grace = effective_stop_loss_thresholds(
-        done,
+        done_after,
         {**params, "partial_stop_pct": 25},
         50.0,
     )

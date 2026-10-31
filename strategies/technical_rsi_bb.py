@@ -192,10 +192,13 @@ class TechnicalRSIStrategy(BaseStrategy):
 
             entry = market.average_entry
             if entry > 0:
+                stop_pos = pos
+                if symbol and isinstance(pos, dict) and not pos.get("symbol"):
+                    stop_pos = {**pos, "symbol": symbol}
                 hit = evaluate_long_hard_stop(
                     price=market.current_price,
                     entry=entry,
-                    position=pos,
+                    position=stop_pos,
                     strategy_params=params,
                     base_stop_loss_pct=float(stop_loss_pct),
                 )

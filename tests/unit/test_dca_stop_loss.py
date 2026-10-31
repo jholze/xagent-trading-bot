@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from unittest import TestCase
 
+from core.config import get_bot_config
 from core.models import MarketContext
 from strategies.dca import effective_stop_loss_thresholds, should_pause_partial_stop
 from strategies.technical_rsi_bb import TechnicalRSIStrategy
@@ -26,7 +27,9 @@ class EffectiveStopLossThresholdsTests(TestCase):
         }
         full, partial, grace = effective_stop_loss_thresholds(pos, params, 50.0)
         self.assertEqual(full, 62.0)
-        self.assertIsNone(partial)
+        # No timestamp: outside the grace, so the partial is not paused (U-C3-2).
+        ratio = float(get_bot_config().risk_config["partial_stop_ratio"])
+        self.assertAlmostEqual(partial, 50.0 * ratio)
         self.assertFalse(grace)
 
     def test_grace_period_blocks_stop_after_recent_dca(self):
@@ -72,11 +75,35 @@ class TechnicalDcaStopLossTests(TestCase):
         return strategy.analyze({"symbol": "SKYAI/USDT", "timeframe": "4h"}, market)
 
     def test_partial_stop_suppressed_during_dca(self):
+        """AC-G14 / AC-A2: 48 h timestamp is outside the grace, so -38% is a partial.
+
+        ``grace_hours_after_dca: 0`` falls back to interval_hours 12. The 0
+        line itself is unchanged.
+        """
+        aged = (datetime.now() - timedelta(hours=48)).isoformat()
         # -38% loss would trigger partial at 33.5% without DCA pause
         result = self._analyze_with_position(
             entry=1.0,
             price=0.62,
             dca_rounds=1,
+            last_dca_at=aged,
+            dca_cfg={
+                "interval_hours": 12,
+                "stop_loss_widen_pct_per_round": 6,
+                "pause_partial_stop_during_dca": True,
+                "grace_hours_after_dca": 0,
+            },
+        )
+        self.assertEqual(result.action, "SELL_STOP_PARTIAL")
+
+    def test_partial_stays_hold_inside_grace_at_11_9h(self):
+        """AC-A2 twin: 11.9 h is still inside the 12 h fallback, so -38% holds."""
+        recent = (datetime.now() - timedelta(hours=11.9)).isoformat()
+        result = self._analyze_with_position(
+            entry=1.0,
+            price=0.62,
+            dca_rounds=1,
+            last_dca_at=recent,
             dca_cfg={
                 "interval_hours": 12,
                 "stop_loss_widen_pct_per_round": 6,
@@ -117,10 +144,27 @@ class TechnicalDcaStopLossTests(TestCase):
         self.assertEqual(result.action, "SELL_STOP_FULL")
 
     def test_pause_while_dca_rounds_remain_even_if_flag_off(self):
-        pos = {"dca_rounds": 1, "dca_max_rounds": 2, "last_dca_at": "2026-08-09T16:42:32"}
+        """AC-G03 / U-C3-2: the partial pause is the grace window, not open rounds."""
+        aged = (datetime.now() - timedelta(hours=48)).isoformat()
+        pos = {"dca_rounds": 1, "dca_max_rounds": 2, "last_dca_at": aged}
+        self.assertFalse(
+            should_pause_partial_stop(
+                pos,
+                {
+                    "dca": {
+                        "pause_partial_stop_during_dca": False,
+                        "max_rounds": 2,
+                        "grace_hours_after_dca": 12,
+                    }
+                },
+            )
+        )
+        recent = (datetime.now() - timedelta(hours=1)).isoformat()
+        inside = {"dca_rounds": 1, "dca_max_rounds": 2, "last_dca_at": recent}
         self.assertTrue(
             should_pause_partial_stop(
-                pos, {"dca": {"pause_partial_stop_during_dca": False, "max_rounds": 2}}
+                inside,
+                {"dca": {"pause_partial_stop_during_dca": False, "grace_hours_after_dca": 12}},
             )
         )
         done = {"dca_rounds": 2, "dca_max_rounds": 2}
@@ -131,9 +175,13 @@ class TechnicalDcaStopLossTests(TestCase):
         )
 
     def test_last_dca_at_counts_as_open_dca_without_rounds_field(self):
-        pos = {"last_dca_at": "2026-08-09T16:42:32"}
+        recent = (datetime.now() - timedelta(hours=1)).isoformat()
+        pos = {"last_dca_at": recent}
         self.assertTrue(should_pause_partial_stop(pos, {"dca": {}}))
-        full, partial, _ = effective_stop_loss_thresholds(pos, {"partial_stop_pct": 25}, 50.0)
+        full, partial, grace = effective_stop_loss_thresholds(
+            pos, {"partial_stop_pct": 25}, 50.0
+        )
+        self.assertTrue(grace)
         self.assertIsNone(partial)
         self.assertGreaterEqual(full, 50.0)
 
@@ -150,7 +198,7 @@ class TechnicalDcaStopLossTests(TestCase):
                 "grace_hours_after_dca": 0,
             },
         )
-        self.assertEqual(result.action, "HOLD")
+        self.assertEqual(result.action, "SELL_STOP_PARTIAL")
 
     def test_volatile_partial_stop_pct_override(self):
         full, partial, grace = effective_stop_loss_thresholds(

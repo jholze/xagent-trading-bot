@@ -26,11 +26,11 @@ No coin names belong in strategy code. The lists, when the bot enforces them, ar
 | No add when the lot is locked | `dca_guard_locked` | Any active lock blocks the add. There is no lock mode that allows DCA. |
 | Missing or stale inputs | `dca_guard_missing_input` | Fail closed: missing position, non-positive live or average, missing or negative `dca_rounds`, unreadable lock, stale price, or the guard raising. |
 
-Partial-stop pause, as implemented in `strategies/dca.py` `should_pause_partial_stop`:
+Partial-stop pause, as implemented in `strategies/dca.py` `should_pause_partial_stop` after the #722 grace change:
 
 - No completed DCA round → partial stop is not paused.
-- `pause_partial_stop_during_dca` defaults to true. While it is true and a round has been used, the partial stop is paused (`effective_stop_loss_thresholds` returns no partial level).
-- If the flag is false, the partial stop stays paused while used rounds are still below the max (`dca_max_rounds` on the lot, otherwise `max_rounds` in config). Once used rounds reach that max, the partial stop is not paused.
+- A round with no parsable timestamp, or a timestamp at or beyond the grace window, is outside grace. The default window is 12 hours. The partial is not paused. Open rounds do not extend the pause.
+- Inside the window the partial is paused (`effective_stop_loss_thresholds` returns no partial level). The full stop still fires. `pause_partial_stop_during_dca` does not lengthen that window, and reaching `dca_max_rounds` does not end it early.
 
 `gainer_rank_entry` is produced in `services/gainer_signal/pure.py` (`select_entry_signals`) and consumed in `services/gainer_signal/bot_http.py` (`process_gainer_signal`). As of `930792a` there is no central symbol or source denylist in `RiskManager`. Scattered `blacklist_bases` / `exclude_symbols` are not this rule.
 
