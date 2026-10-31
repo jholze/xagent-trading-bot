@@ -118,6 +118,13 @@ def _enum(allowed: frozenset[str], *, allow_unset: bool = False) -> Callable[[st
     return check
 
 
+def _sold_cap_fraction(path: str, value: Any) -> None:
+    """Sold-percent cap is a fraction: 0 < cap <= 1 (H2, from #723 annex B)."""
+    num = _finite_number(path, value)
+    if not (0 < num <= 1):
+        raise ConfigValidationError(path, value, "must be in (0, 1]")
+
+
 _int_positions = _int_in_range(0, MAX_OPEN_POSITIONS_CAP)
 _int_non_negative = _int_in_range(0, 10**7)
 _pct = _number_in_range(0.0, 100.0)
@@ -319,6 +326,70 @@ def assert_default_config_floors_present(config: Any) -> None:
         if parsed is None:
             shown = None if raw is _MISSING else raw
             raise ConfigValidationError(path, shown, "liquidity guard floor missing")
+
+
+# Keys that must be PRESENT in the effective config (no silent default in the consumer).
+REQUIRED_KEYS: dict[str, Callable[[str, Any], None]] = {
+    "risk.block_partial_sell_if_sold_percent_above": _sold_cap_fraction,  # H2 / #723 annex B Kay N4
+}
+
+
+def assert_required_keys_present(config: Any) -> None:  # P723B-REQUIRED
+    """Raise on the first required key that is missing, None or out of bounds."""
+    if not isinstance(config, dict):
+        raise ConfigValidationError("<root>", type(config).__name__, "config must be a dict")
+    for path, check in REQUIRED_KEYS.items():
+        value = _get_path(config, path)
+        if value is _MISSING or value is None:
+            raise ConfigValidationError(path, None, "required key missing (no silent default)")
+        check(path, value)
+
+
+def report_missing_required_keys(config: Any = None, tenant: str = "default") -> list:  # P723B-E1-REPORT
+    """Startup report, never aborts: one ERROR line per missing/invalid key."""
+    from logger import log
+
+    if config is None:
+        import data_manager
+
+        config = data_manager.get_config()
+    bad = []
+    for path, check in REQUIRED_KEYS.items():
+        try:
+            value = _get_path(config, path) if isinstance(config, dict) else _MISSING
+            if value is _MISSING or value is None:
+                raise ConfigValidationError(path, None, "required key missing (no silent default)")
+            check(path, value)
+        except ConfigValidationError as exc:
+            bad.append(path)
+            log(
+                f"config_required_key_missing path={path} tenant={tenant} reason={exc.reason} "
+                f"-> startup continues; hard partials escalate to SELL_STOP_FULL, other partials blocked",
+                "ERROR",
+            )
+    return bad
+
+
+def report_hard_stop_escalation_scope(config: Any = None, tenant: str = "default") -> bool:  # H2 M-WARN
+    """Startup WARNING when the trading engine is not in_process: the worker path drops exit_source and the
+    hard_stop_origin marker, so H2 hard-stop escalation does not apply there (fail-closed, #726). Never aborts."""
+    from logger import log
+
+    if config is None:
+        import data_manager
+
+        config = data_manager.get_config()
+    arch = (config.get("architecture") if isinstance(config, dict) else None) or {}
+    mode = str(arch.get("trading_engine_mode", "in_process") or "in_process")
+    if mode == "in_process":
+        return False
+    log(
+        f"h2_hard_stop_escalation_inactive trading_engine_mode={mode} tenant={tenant} "
+        "-> worker path: hard-stop partials below the minimum are NOT escalated (fail-closed; "
+        "exit_source/hard_stop_origin pass-through is #726)",
+        "WARNING",
+    )
+    return True
 
 
 def validate_config_for_save(config: Any) -> None:

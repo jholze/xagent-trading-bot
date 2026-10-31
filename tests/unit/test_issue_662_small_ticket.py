@@ -56,6 +56,7 @@ def _clean_book():
 
 def _raw(*, risk=None, **over) -> dict:
     block = {
+        "block_partial_sell_if_sold_percent_above": 0.99,
         "min_trade_usdt": 15,
         "cash_floor_pct": 0,
         "max_daily_loss_pct": 0,

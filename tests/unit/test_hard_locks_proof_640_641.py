@@ -123,6 +123,7 @@ def _rows(group: str) -> list[dict]:
 
 def _cfg(**risk) -> BotConfig:
     raw_risk = {
+        "block_partial_sell_if_sold_percent_above": 0.99,
         "daily_loss_limit_pct": 100,
         "min_trade_usdt": 5,
         "cash_floor_pct": 0,
