@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -9,16 +11,34 @@ from typing import Any, Callable
 from logger import log
 from services.gainer_universe.filters import normalize_symbol, passes_spot_usdt_filter
 
+# (symbol, start-date, end-date) -> (monotonic fetched_at, bars).
+# The window passed by run_scan includes microseconds, so the historical
+# cache never hits across scans. Reuse bars only for daily_refresh_sec.
+_daily_bar_cache: dict[tuple[str, str, str], tuple[float, list]] = {}
+_daily_bar_lock = threading.Lock()
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def fetch_gate_tickers() -> dict[str, dict]:
-    import ccxt
+def _clock() -> datetime:
+    """Wall clock for freshness stamps. Separate from the scan's logical ``now``."""
+    return _now()
 
-    ex = ccxt.gate({"enableRateLimit": True, "options": {"defaultType": "spot"}})
-    return ex.fetch_tickers() or {}
+
+def reset_daily_bar_cache() -> None:
+    """Test helper."""
+    with _daily_bar_lock:
+        _daily_bar_cache.clear()
+
+
+def fetch_gate_tickers() -> dict[str, dict]:
+    """All spot tickers through the shared Gate client (markets loaded once)."""
+    from historical_prices import use_gate
+
+    # Spot only, same board as the previous per-call client (defaultType=spot).
+    return use_gate(lambda ex: ex.fetch_tickers(params={"type": "spot"}) or {})
 
 
 def filter_and_rank_live(
@@ -103,6 +123,27 @@ def liquid_symbols_by_volume(tickers: dict[str, dict], cfg: dict) -> list[str]:
     return [s for s, _ in rows[: max(1, scan)]]
 
 
+def _daily_bars(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    ttl: float,
+    fetch: Callable,
+    fetched_at: float,
+) -> list:
+    """Bars for one symbol, reused until ``ttl`` seconds after the last fetch."""
+    key = (symbol, start.date().isoformat(), end.date().isoformat())
+    with _daily_bar_lock:
+        hit = _daily_bar_cache.get(key)
+        if hit is not None and fetched_at - hit[0] < ttl:
+            return hit[1]
+    bars = list(fetch(symbol, start, end) or [])
+    if bars and ttl > 0:
+        with _daily_bar_lock:
+            _daily_bar_cache[key] = (fetched_at, bars)
+    return bars
+
+
 def _day_returns_from_bars(bars: list) -> list[dict]:
     """Per-bar day_ret using prev close."""
     if not bars:
@@ -148,15 +189,21 @@ def build_daily_history(
     hist_days = int(days if days is not None else cfg.get("daily_history_days") or 10)
     start = now - timedelta(days=hist_days + 2)
     workers = int(cfg.get("scan_workers") or 8)
+    ttl = float(cfg.get("daily_refresh_sec") or 900)
     fetch = fetch_ohlcv_fn or (
         lambda sym, s, e: _fetch_ohlcv_range(sym, s, e, timeframe="1d")
     )
+    fetched_at = time.monotonic()
+    with _daily_bar_lock:
+        stale = [k for k, (ts, _bars) in _daily_bar_cache.items() if fetched_at - ts >= ttl]
+        for key in stale:
+            del _daily_bar_cache[key]
 
     by_day: dict[str, list[dict]] = {}
 
     def one(sym: str) -> tuple[str, list[dict]]:
         try:
-            bars = fetch(sym, start, now) or []
+            bars = _daily_bars(sym, start, now, ttl, fetch, fetched_at)
             return sym, _day_returns_from_bars(bars)
         except Exception:
             return sym, []
@@ -377,10 +424,14 @@ def run_scan(
 
     streaks = compute_streaks(daily_history, cfg) if daily_history else []
     eligible = build_eligible(daily_history, live_top, streaks, cfg, now=now)
+    # Stamp after the fetch. `now` is captured before the OHLCV wave; a wave
+    # that runs longer than daily_refresh_sec would otherwise look stale to
+    # the next tenant in the same price loop, which then fetches the board again.
+    completed_at = _clock()
 
     return {
         "live_scanned_at": now.isoformat(),
-        "daily_scanned_at": now.isoformat() if need_daily else prev.get("daily_scanned_at"),
+        "daily_scanned_at": completed_at.isoformat() if need_daily else prev.get("daily_scanned_at"),
         "live_top": live_top,
         "daily_history": daily_history,
         "streaks": streaks,

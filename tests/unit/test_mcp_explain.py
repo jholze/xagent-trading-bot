@@ -205,7 +205,9 @@ class FakeStore:
     def list_profiles(self, *, tenant_id="default", limit=200):
         return [p for p in self.profiles.values() if p.tenant_id == tenant_id][:limit]
 
-    def list_events(self, *, symbol=None, event_type=None, since_iso=None, limit=50):
+    def list_events(
+        self, *, symbol=None, event_type=None, since_iso=None, limit=50, tenant_id=None
+    ):
         out = list(self.events)
         if symbol:
             base = str(symbol).upper().split("/")[0]

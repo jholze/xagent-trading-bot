@@ -452,7 +452,12 @@ def memory_pack(
         events = _call_section(
             errors,
             "events",
-            lambda: [sanitize_event(e) for e in (store.list_events(symbol=sym, limit=event_limit) or [])],
+            lambda: [
+                sanitize_event(e)
+                for e in (
+                    store.list_events(symbol=sym, limit=event_limit, tenant_id=tenant_id) or []
+                )
+            ],
             [],
         )
         trades = _call_section(
@@ -488,7 +493,10 @@ def memory_pack(
         events = _call_section(
             errors,
             "events",
-            lambda: [sanitize_event(e) for e in (store.list_events(limit=event_limit) or [])],
+            lambda: [
+                sanitize_event(e)
+                for e in (store.list_events(limit=event_limit, tenant_id=tenant_id) or [])
+            ],
             [],
         )
 

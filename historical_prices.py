@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 
 import ccxt
@@ -8,6 +9,12 @@ from logger import log
 
 _ohlcv_cache: dict[tuple, list] = {}
 _indicator_cache: dict[tuple, dict] = {}
+# One client per process. A fresh client per symbol reloads Gate markets
+# (two HTTP calls) and keeps its own rate-limit clock, so the daily board's
+# worker pool stampedes the exchange. The lock serializes network calls;
+# ccxt's rateLimit clock is not safe to share across threads.
+_gate_lock = threading.RLock()
+_gate_client = None
 
 
 def _normalize_dt(dt: datetime) -> datetime:
@@ -28,7 +35,26 @@ def _bar_ms(timeframe: str) -> int:
 
 
 def _gate_exchange():
-    return ccxt.gate({"enableRateLimit": True})
+    """Return the process-wide rate-limited Gate client, creating it once."""
+    global _gate_client
+    with _gate_lock:
+        if _gate_client is None:
+            _gate_client = ccxt.gate({"enableRateLimit": True})
+        return _gate_client
+
+
+def reset_gate_client() -> None:
+    """Drop the shared client. Tests call this so a fake client cannot leak."""
+    global _gate_client
+    with _gate_lock:
+        _gate_client = None
+
+
+def use_gate(fn):
+    """Run ``fn(exchange)`` on the shared client while holding its lock."""
+    exchange = _gate_exchange()
+    with _gate_lock:
+        return fn(exchange)
 
 
 def _dedupe_bars(bars: list) -> list:
@@ -58,19 +84,20 @@ def _fetch_ohlcv_range(
 
     try:
         exchange = _gate_exchange()
-        while since_ms < end_ms:
-            chunk = exchange.fetch_ohlcv(
-                symbol, timeframe=timeframe, since=since_ms, limit=1000,
-            )
-            if not chunk:
-                break
-            merged.extend(chunk)
-            last_ts = int(chunk[-1][0])
-            if last_ts <= since_ms:
-                break
-            since_ms = last_ts + bar_ms
-            if len(chunk) < 1000:
-                break
+        with _gate_lock:
+            while since_ms < end_ms:
+                chunk = exchange.fetch_ohlcv(
+                    symbol, timeframe=timeframe, since=since_ms, limit=1000,
+                )
+                if not chunk:
+                    break
+                merged.extend(chunk)
+                last_ts = int(chunk[-1][0])
+                if last_ts <= since_ms:
+                    break
+                since_ms = last_ts + bar_ms
+                if len(chunk) < 1000:
+                    break
     except Exception as e:
         log(f"Historical OHLCV fetch failed for {symbol}: {e}", "WARNING")
         return []
@@ -210,3 +237,4 @@ def prefetch_for_posts(symbol_times: list[tuple[str, datetime]], hold_days: int 
 def clear_cache():
     _ohlcv_cache.clear()
     _indicator_cache.clear()
+    reset_gate_client()

@@ -93,11 +93,33 @@ def _observe(
 
 
 def test_defaults_observe_and_fire_false():
+    """Rev 2: observe defaults on. This test used to pin both flags false.
+
+    ``fire_enabled`` stays false. A record from an empty config is a proposal
+    only; the cycle test below checks it does not change the order decision.
+    """
     flags = macro_stress_observe_config({})
-    assert flags["observe_enabled"] is False
+    assert flags["observe_enabled"] is True
     assert flags["fire_enabled"] is False
-    assert observe_macro_stress({}, has_position=False, action=BUY) is None
-    assert observe_macro_stress(None, has_position=False, action=BUY) is None
+    flags_none = macro_stress_observe_config(None)
+    assert flags_none["observe_enabled"] is True
+    assert flags_none["fire_enabled"] is False
+    off = macro_stress_observe_config(
+        {"macro_stress_observe": {"observe_enabled": False}}
+    )
+    assert off["observe_enabled"] is False
+    assert off["fire_enabled"] is False
+    rec = observe_macro_stress(
+        {},
+        has_position=False,
+        action=BUY,
+        get_bias=lambda _c: _bias("RISK_OFF"),
+        get_multipliers=lambda _c: _mults(),
+    )
+    assert rec is not None
+    assert rec["observe_enabled"] is True
+    assert rec["fire_enabled"] is False
+    assert rec["would_block"] is True
 
 
 def test_observe_disabled_does_not_call_ist_sources():
@@ -428,7 +450,7 @@ def test_m3_long_mcap_not_cleared_by_observe_proposal():
 # --- DecisionEngine helpers ---
 
 
-def _engine(*, observe: bool, fire: bool = False):
+def _engine(*, observe: bool | None, fire: bool = False):
     from strategies.decision_engine import DecisionEngine
 
     raw = {
@@ -436,12 +458,13 @@ def _engine(*, observe: bool, fire: bool = False):
         "strategy_allocator": {"enabled": False},
         "volatile_altcoin": {"mode": "live"},
         "sell_rotation": {"mode": "off"},
-        "macro_stress_observe": {
-            "observe_enabled": observe,
-            "fire_enabled": fire,
-        },
         "risk": {"fail_closed_guards": "log", "position_locks": {"enabled": False}},
     }
+    if observe is not None:
+        raw["macro_stress_observe"] = {
+            "observe_enabled": observe,
+            "fire_enabled": fire,
+        }
     engine = DecisionEngine()
     engine.config = BotConfig(raw)
     return engine
@@ -578,9 +601,21 @@ def _engine_stack(
         yield
 
 
+def _order_decision(analysis):
+    """Fields that decide the order. Observe text is not one of them."""
+    return {
+        "normalized_action": analysis.normalized_action,
+        "action": analysis.action,
+        "shadow_action": analysis.shadow_action or "",
+        "confidence": analysis.confidence,
+        "dca_usdt": analysis.dca_usdt,
+        "sources": list(analysis.sources),
+    }
+
+
 def _run_engine_first_buy(
     *,
-    observe: bool,
+    observe: bool | None,
     fire: bool = False,
     regime: str = "RISK_OFF",
     calendar: float = 1.0,
@@ -643,3 +678,65 @@ def test_neutral_regime_first_buy_would_block_false():
     rec_none = _observe(regime=None)
     assert rec_none["would_block"] is False
     assert rec_none["regime"] is None
+
+
+def test_default_observe_emits_a_line_and_does_not_change_the_order_decision():
+    """Empty config (the new default) logs one observe line and leaves the buy.
+
+    Same market with observe forced off is the control. would_block is true
+    under RISK_OFF and is not applied. fire_enabled stays false.
+    """
+    logs: list[str] = []
+
+    def _capture(msg, level="INFO"):
+        logs.append(str(msg))
+
+    default_on = _run_engine_first_buy(
+        observe=None,
+        regime="RISK_OFF",
+        calendar=0.7,
+        log_side_effect=_capture,
+    )
+    forced_off = _run_engine_first_buy(observe=False, fire=False, regime="RISK_OFF", calendar=0.7)
+    assert _order_decision(default_on) == _order_decision(forced_off)
+    assert default_on.normalized_action == BUY
+    matched = [line for line in logs if "macro_stress_observe" in line and "would_block=" in line]
+    assert len(matched) == 1
+    assert "would_block=True" in matched[0]
+    assert "fire_enabled=False" in matched[0]
+    assert "observe_enabled=True" in matched[0]
+
+
+def test_default_observe_does_not_change_a_risk_decision():
+    """Tape observe runs after evaluate. The risk decision stays the control."""
+    cfg_on = _cfg()
+    cfg_off = _cfg()
+    cfg_off._raw["macro_stress_observe"] = {
+        "observe_enabled": False,
+        "fire_enabled": False,
+    }
+    rm_on = RiskManager(cfg_on)
+    rm_off = RiskManager(cfg_off)
+    with (
+        patch(
+            "services.market_policy_fusion.get_global_market_bias",
+            return_value=_bias("RISK_OFF"),
+        ),
+        patch(
+            "intelligence.macro.snapshot.get_risk_multipliers",
+            return_value=_mults(calendar=0.7),
+        ),
+    ):
+        with _eval_env(rm_on, mcap=6_000_000):
+            on = rm_on.evaluate(_buy(source="cmc"), "4h", source="cmc")
+        with _eval_env(rm_off, mcap=6_000_000):
+            off = rm_off.evaluate(_buy(source="cmc"), "4h", source="cmc")
+    assert on.approved is True and off.approved is True
+    assert on.code == off.code
+    assert on.size_multiplier == off.size_multiplier
+    assert (None if on.order is None else on.order.usdt_amount) == (
+        None if off.order is None else off.order.usdt_amount
+    )
+    assert (None if on.order is None else on.order.qty) == (
+        None if off.order is None else off.order.qty
+    )
