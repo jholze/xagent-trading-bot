@@ -32,7 +32,7 @@ from intelligence.macro.session_clock import session_status
 from intelligence.macro.snapshot import publish_macro_snapshot
 from intelligence.memory.event_ingest import make_event_id
 from intelligence.memory.embeddings import embed_event
-from intelligence.memory.models import MarketEvent, utc_now_iso
+from intelligence.memory.models import GLOBAL_TENANT_ID, MarketEvent, utc_now_iso
 from intelligence.memory.store import MemoryStore
 from logger import log
 
@@ -67,6 +67,7 @@ def _ingest_event(
         source=source,
         metadata={**(existing.metadata if existing and existing.metadata else {}), **dict(metadata or {})},
         embedding=embed_event(desc, event_type=event_type),
+        tenant_id=GLOBAL_TENANT_ID,
     )
     return bool(store.upsert_event(ev))
 

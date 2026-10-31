@@ -16,7 +16,7 @@ from intelligence.memory.coin_facts import (
 )
 from intelligence.memory.coin_facts_cmc import fetch_and_parse_coin, resolve_cmc_slug
 from intelligence.memory.event_ingest import make_event_id
-from intelligence.memory.models import MarketEvent, utc_now_iso
+from intelligence.memory.models import GLOBAL_TENANT_ID, MarketEvent, utc_now_iso
 from intelligence.memory.store import MemoryStore, memory_enabled
 from logger import log
 
@@ -115,6 +115,7 @@ def draft_to_event(
         source=draft.source,
         url=url or "",
         metadata=meta,
+        tenant_id=GLOBAL_TENANT_ID,
     )
 
 
