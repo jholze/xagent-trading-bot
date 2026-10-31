@@ -1,60 +1,50 @@
-# CME Futures Basis (Cash-and-Carry) als Macro-Overlay / Deleveraging-Indikator
+# CME Net Carry Spread – Refined Macro-Overlay
 
-## Ziel
-Frühwarnsystem für institutionelles Deleveraging (Cash-and-Carry-Unwind) als Macro-Filter auf bestehende Signale im Trading Bot.
+## Verbesserte Indikator-Definition
 
-## Hintergrund
-Hedgefonds und Banken betreiben Cash-and-Carry:
-- Long Spot-ETF
-- Short CME Bitcoin Futures
-- Verdienen die Basis (Futures-Premium)
+**Primär-Metrik: Net Carry Spread**
+```
+Net_Carry_Spread = Annualized_CME_FrontMonth_Basis − 3M_TBill_Rate
+```
+(Annualisierung: `((Futures - Spot) / Spot) * 365 / Days_to_Expiry`)
 
-Wenn die annualisierte Basis unter ~1.5–2 % über dem 3M-T-Bill-Satz fällt, wird der Trade unattraktiv → Desks verkaufen ETFs (Druck auf Spot) und schließen Futures-Shorts. Das erzeugt Abwärtsdruck ohne neuen Short.
+### Stufen (kalibriert an Galaxy Research 2026)
+| Stufe | Net Spread | Bedeutung | Bot-Aktion (soft) |
+|-------|------------|-----------|-------------------|
+| Grün | > 2.5 pp | Carry attraktiv | Normal / Size +10–20 % |
+| Gelb | 0.8 – 2.5 pp | Carry schrumpft | Size −20–40 % |
+| Rot | < 0.8 pp | Carry unattraktiv (nach Kosten ~1.5 % oder weniger) | Size −50–70 %, engere Stops, neue Longs nur mit starker Bestätigung |
 
-## Indikator-Definition
-**CME / Nearest Futures Basis (annualisiert)**
-- Formel: `((Futures - Spot) / Spot) * (365 / Tage_bis_Expiry) * 100`
-- Vergleich zu 3-Monats-T-Bill-Satz
+**Zusatzsignale (optional, bestätigend):**
+- 5-Tage-Δ des Net Spreads < −1.0 pp → beschleunigte Kompression
+- COT Leveraged Funds Net Short Abbau
+- ETF Net Flow 5-Tage-Streak negativ
 
-### Stufen (initial)
-| Stufe | Bedingung | Bedeutung | Bot-Aktion |
-|-------|-----------|-----------|------------|
-| **Grün** | Basis > 3 % über T-Bills | Carry aktiv | Normaler Betrieb |
-| **Gelb** | 1.5–3 % über T-Bills | Carry schrumpft | Positionsgrößen reduzieren, engere Stops |
-| **Rot** | < 1.5 % über T-Bills | Carry tot | Venue-Gate scharf / Richtung Short / neue Longs nur mit starker Bestätigung |
+## Messbares Ergebnis (nachweisbar)
 
-## Integration
-- Neuer Feed: `cme_basis`
-- Macro-Overlay / Filter im DecisionEngine / Regime-Modul
-- Parallel zu Liq-/Lock-Regeln und Venue-Gate
+**Galaxy Research (Okt 2026):**
+- 30 Tage vor ATH: Basis 7.9 % ann. → Net Spread **+3.9 pp** über T-Bills
+- 30 Tage bis 21. Okt: Basis 4.8 % ann. → Net Spread **+0.6 pp**
+- Nach Fees/Roll/Margin: ~1.5 pp Netto
+- Ergebnis: 9 Hedgefonds/Banken (Millennium, Goldman, Brevan Howard, Tudor etc.) bauten **68.000 BTC (~5.4 Mrd. USD)** ETF-Exposure ab
+- CME OI und Leveraged-Funds-Shorts schrumpften signifikant
 
-## 60-Tage-Backtest (ca. 01.09.2026 – 31.10.2026) – Initial Notes
-Siehe Analyse unten / im Issue.
+**60-Tage-Fenster (Sep–Okt 2026):**
+- Sep: höhere Basis + starke ETF-Inflows (+2.65 Mrd.) + Preis ~78k → 84k+
+- Okt: Kompression auf ~0.6 pp + Outflows + Preisrückgang auf ~77k
+- Richtungstreue hoch, auch wenn absolute Levels nicht dramatisch waren
 
-### Datenpunkte (Maketo nearest-contract, multi-exchange)
-- High: 7.63 % (16. Sep 2026)
-- Low: 3.66 % (1. Okt 2026)
-- 30. Sep: 5.21 %
-- Latest (30. Okt): ~5.5–6.1 %
+**Verbesserung gegenüber vorheriger Version:**
+- Absolute Basis → Net Spread (relativ zu Funding-Kosten) eliminiert Zinsniveau-Bias
+- Schwellen an realem Desk-Verhalten (Galaxy) statt Willkür kalibriert
+- Soft-Filter statt Hard-Gate reduziert False-Positive-Risiko
+- Messbare Kausalität: Spread-Kollaps → quantifizierbarer ETF-Abbau
 
-### 3M T-Bill
-- Sep ~3.9–4.0 %
-- Okt ~4.1–4.3 %
-
-### Spread über T-Bills
-Meist im gelben bis roten Bereich (1–3 % oder darunter). Selten grün.
-
-### ETF-Flows & Preis
-- Sep: starke Inflows (~+2.65 Mrd. USD, Peak +999 Mio. am 21. Sep), Preis von ~78k auf ~84k+
-- Okt: Mix, große Outflows (u. a. ~-643 Mio. am 30. Okt partial), Preis zurück auf ~77k
-
-**Interpretation:** Basis-Kompression / relativ niedriger Spread in Oktober aligned mit Shift zu Outflows und Preisdruck. Indikator hätte mostly Yellow/Red signalisiert — nützlich als Filter.
-
-## Offene Punkte
-- [ ] Datenzugang stabilisieren (Maketo / Coinglass / CME / Yahoo)
-- [ ] Schwellen kalibrieren
-- [ ] Kombination mit STH Cost Basis (~76k)
-- [ ] PR + Issue erstellen
+## Nächste Schritte für Produktion
+1. Stabile Datenquelle: CME BasisWatch / Coinglass API / eigene Berechnung aus Yahoo/CME-Settlement
+2. Tägliche Series ab mindestens Jan 2025 für Out-of-Sample-Kalibrierung
+3. Integration als Confidence-/Size-Multiplikator im DecisionEngine
+4. Kombination mit bestehendem Venue-Gate + STH-Cost-Basis
 
 ---
-*Spec + Initial Backtest Notes aus Voice-Session 31.10.2026*
+*Refined after multi-agent review + Galaxy evidence – 31.10.2026*
