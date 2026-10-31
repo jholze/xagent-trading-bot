@@ -1,0 +1,140 @@
+{
+  "as_of": "2026-06-01T12:00:00",
+  "lots": [
+    {
+      "symbol": "SYNA/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "current_price": 60,
+      "dca_rounds": 1,
+      "last_dca_at": "2020-01-01T00:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {
+          "grace_hours_after_dca": 12,
+          "stop_loss_widen_pct_per_round": 6
+        }
+      }
+    },
+    {
+      "symbol": "SYNB/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "current_price": 10,
+      "dca_rounds": 1,
+      "dca_recovery_rounds": 1,
+      "last_dca_recovery_at": "2026-06-01T10:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {
+          "grace_hours_after_dca": 12,
+          "stop_loss_widen_pct_per_round": 6
+        }
+      }
+    },
+    {
+      "symbol": "SYNC/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "current_price": 60,
+      "dca_rounds": 1,
+      "last_dca_at": "2026-06-01T06:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {
+          "grace_hours_after_dca": 12,
+          "stop_loss_widen_pct_per_round": 6
+        }
+      }
+    },
+    {
+      "symbol": "SYND/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "current_price": 60,
+      "dca_rounds": 1,
+      "last_dca_at": "2020-01-01T00:00:00",
+      "lock": {
+        "enabled": true,
+        "modes": ["no_auto_sell"],
+        "reason": "fixture",
+        "locked_by": "fixture",
+        "locked_at": "2026-06-01T00:00:00+00:00",
+        "until": null
+      },
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {
+          "grace_hours_after_dca": 12,
+          "stop_loss_widen_pct_per_round": 6
+        }
+      }
+    },
+    {
+      "symbol": "SYNE/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1e-6,
+      "average_entry": 100,
+      "current_price": 60,
+      "dca_rounds": 1,
+      "last_dca_at": "2020-01-01T00:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {
+          "grace_hours_after_dca": 12,
+          "stop_loss_widen_pct_per_round": 6
+        }
+      }
+    },
+    {
+      "symbol": "SYNF/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "dca_rounds": 1,
+      "last_dca_at": "2020-01-01T00:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {"grace_hours_after_dca": 12}
+      }
+    },
+    {
+      "symbol": "SYNG/USDT",
+      "timeframe": "4h",
+      "tenant_id": "fixture",
+      "side": "long",
+      "amount": 1000000,
+      "average_entry": 100,
+      "current_price": 90,
+      "dca_rounds": 1,
+      "last_dca_at": "2020-01-01T00:00:00",
+      "strategy_params": {
+        "stop_loss_pct": 50,
+        "partial_stop_pct": 33.5,
+        "dca": {"grace_hours_after_dca": 12}
+      }
+    }
+  ]
+}

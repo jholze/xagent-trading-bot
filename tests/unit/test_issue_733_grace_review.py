@@ -509,3 +509,63 @@ def test_ac_f1_decision_engine_grace_boundary(via, monkeypatch):
         )
     )
     assert full == "SELL_STOP_FULL"
+
+
+def test_f1_decision_engine_partial_pause_path(monkeypatch):
+    """F1: DecisionEngine._merge_sell pauses a partial only inside grace.
+
+    This is the second pause (decision_engine.py partial_stop branch). A grace
+    end of ``<=`` keeps the partial paused at age == window. Re-pausing every
+    open round drops the partial after the window. A full stop is not paused.
+    """
+    from core.actions import SELL_FULL, SELL_PARTIAL_50
+    from core.models import SignalAnalysis
+
+    stop = _base_stop()
+    window = _grace()
+    params = _params(stop=stop, grace=window, widen=_widen())
+    engine = DecisionEngine()
+
+    def _merge(action: str, stamp: str):
+        position = {
+            "dca_rounds": 1,
+            "last_dca_at": stamp,
+            "average_entry": _ENTRY,
+        }
+        market = _market_for(_price(_ENTRY, _partial_of(stop)), position, params)
+        technical = SignalAnalysis(
+            action=action,
+            symbol=_SYMBOL,
+            timeframe=_TF,
+            rsi=45.0,
+            lower_bb=0.0,
+            vol_multiplier=1.0,
+            ampel_emoji="",
+            ampel_text="",
+            sources=["technical", "stop_loss"],
+        )
+        normalized, _sources, _confidence, rationales, _sell, _audit = engine._merge_sell(
+            technical, None, None, [], market, position, None
+        )
+        return normalized, " ".join(str(item) for item in rationales)
+
+    inside = datetime.now().isoformat()
+    paused, why = _merge("SELL_STOP_PARTIAL", inside)
+    assert paused != SELL_PARTIAL_50
+    assert "partial_stop paused" in why
+
+    full_norm, full_why = _merge("SELL_STOP_FULL", inside)
+    assert full_norm == SELL_FULL
+    assert "partial_stop paused" not in full_why
+
+    monkeypatch.setattr(dca_mod, "datetime", _FixedNow)
+    on_window = (_FixedNow.fixed - timedelta(hours=window)).isoformat()
+    at_end, at_end_why = _merge("SELL_STOP_PARTIAL", on_window)
+    assert at_end == SELL_PARTIAL_50
+    assert "partial_stop paused" not in at_end_why
+    monkeypatch.undo()
+
+    aged = (datetime.now() - timedelta(hours=window + 1.0)).isoformat()
+    open_rounds, open_why = _merge("SELL_STOP_PARTIAL", aged)
+    assert open_rounds == SELL_PARTIAL_50
+    assert "partial_stop paused" not in open_why
