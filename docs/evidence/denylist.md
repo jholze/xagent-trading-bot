@@ -33,17 +33,17 @@ Source: `tests/fixtures/loss_cases_641.csv` (276 buy/add rows: 137 `entry`, 139 
 
 ## Tests
 
-Same command as the docs PR, against staging `930792a` and this branch. Local Mongo 7.0.14.
+Same command as the docs PR, against staging `fb078d7` and this branch. Local Mongo 7.0.14.
 
 | metric | before | after |
 | --- | --- | --- |
-| unit tests passed | 5477 | 5497 |
+| unit tests passed | 5556 | 5576 |
 | skipped | 5 | 5 |
 | xfailed | 1 | 1 |
-| collected (passed + skipped + xfailed) | 5483 | 5503 |
+| collected (passed + skipped + xfailed) | 5562 | 5582 |
 | new tests | 0 | 20 |
-| pytest runtime (s) | 47.75 | 45.99 |
-| wall clock (s) | 50 | 48 |
+| pytest runtime (s) | 47.29 | 47.73 |
+| wall clock (s) | 50 | 50 |
 | suite exit code | 0 | 0 |
 
 The 20 new tests are `tests/unit/test_symbol_source_denylist.py`. `test_t1` in `tests/unit/test_issue_671_liquidity_cap.py` still passes: it now buys `TAG/USDT` on the shipped config so the liquidity band stays covered. Listed bases are covered by the new file.
