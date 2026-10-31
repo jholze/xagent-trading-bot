@@ -705,6 +705,26 @@ def _process_telegram_update(update=None):
     return "OK", 200
 
 
+def _run_one_tenant_cycle(tenant_id, cycle_started, use_dashboard, **kwargs):
+    """CS-F4-HOOK: one tenant's meta cycle, then the cycle-silence watchdog in the SAME tenant context.
+
+    The watchdog runs in ``finally`` so a cycle that returns early or raises is still counted; a watchdog error
+    never breaks the trading loop. Not hooked on the eval worker or process_coin (a dead worker is what we want
+    to see)."""
+    from core.tenant_routing import tenant_cycle_context
+
+    with tenant_cycle_context(tenant_id):
+        try:
+            _run_tenant_price_cycle(cycle_started, use_dashboard, **kwargs)
+        finally:
+            try:
+                from services.cycle_silence_watchdog import note_tenant_cycle
+
+                note_tenant_cycle(tenant_id)  # CS-F4-CALL
+            except Exception as e:
+                log(f"cycle_watchdog failed tenant={tenant_id}: {e}", "WARNING")
+
+
 def _run_tenant_price_cycle(
     cycle_started: float,
     use_dashboard: bool,
@@ -1149,17 +1169,17 @@ def price_loop(analyzer=None, orchestrator=None, social_pipeline=None, sandbox=N
                     yield_to_interactive()
                 except Exception:
                     pass
-                with tenant_cycle_context(_cycle_tenant):
-                    _run_tenant_price_cycle(
-                        cycle_started,
-                        use_dashboard,
-                        analyzer=analyzer,
-                        orchestrator=orchestrator,
-                        social_pipeline=social_pipeline,
-                        sandbox=sandbox,
-                        trend_engine=trend_engine,
-                        shared_signals=shared_signals,
-                    )
+                _run_one_tenant_cycle(
+                    _cycle_tenant,
+                    cycle_started,
+                    use_dashboard,
+                    analyzer=analyzer,
+                    orchestrator=orchestrator,
+                    social_pipeline=social_pipeline,
+                    sandbox=sandbox,
+                    trend_engine=trend_engine,
+                    shared_signals=shared_signals,
+                )
 
             interval = get_config().get("update_interval", 600)
             cycle_elapsed = int(time.time() - cycle_started)

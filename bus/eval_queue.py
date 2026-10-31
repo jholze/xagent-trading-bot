@@ -173,18 +173,29 @@ def enqueue_eval(
             existing_pri = int(existing // _SCORE_SLOT)
             if priority >= existing_pri and (now - prev_at) < debounce:
                 return False
+        meta_reason = reason
+        if existing is not None and raw_meta and _is_entry_reason(reason):
+            # CS-F2: never replace a PENDING heartbeat with an entry job (the worker would return HOLD for the
+            # open lot before analyze). Coalesce: keep the heartbeat reason, take the better priority.
+            try:
+                prev_meta = json.loads(raw_meta)
+            except Exception:
+                prev_meta = {}
+            if str(prev_meta.get("reason") or "") == HEARTBEAT_REASON:  # CS-F2-KEEP
+                meta_reason = HEARTBEAT_REASON
+                existing_pri = int(existing // _SCORE_SLOT)
+                if existing_pri <= priority:
+                    new_score = float(existing)
 
         pipe = client.pipeline()
         pipe.zadd(queue_key, {member: new_score})
         max_len = int(cfg.get("eval_queue_max_len", 500))
-        if max_len > 0:
-            pipe.zremrangebyrank(queue_key, max_len, -1)
         pipe.hset(
             meta_key,
             member,
             json.dumps(
                 {
-                    "reason": reason,
+                    "reason": meta_reason,
                     "priority": priority,
                     "enqueued_at": now,
                     "tenant_id": tid,
@@ -193,10 +204,47 @@ def enqueue_eval(
             ),
         )
         pipe.execute()
+        if max_len > 0:
+            _trim_queue(client, queue_key, meta_key, max_len)  # CS-F3
         return True
     except Exception as e:
         log(f"eval_queue enqueue failed {member}: {e}", "WARNING")
         return False
+
+
+HEARTBEAT_REASON = "position_heartbeat"
+
+
+def _is_entry_reason(reason: str) -> bool:
+    r = str(reason or "")
+    return r.startswith("entry_15m") or r == "15m_watch"
+
+
+def _is_protected_member(client, meta_key: str, member) -> bool:
+    """CS-F3: a pending position heartbeat is never trimmed (it is the only path to analyze for a held lot)."""
+    try:
+        raw = client.hget(meta_key, member)
+        return bool(raw) and str(json.loads(raw).get("reason") or "") == HEARTBEAT_REASON  # CS-F3-PROTECT
+    except Exception:
+        return False
+
+
+def _trim_queue(client, queue_key: str, meta_key: str, max_len: int) -> int:
+    """CS-F3: trim the worst-ranked NON-heartbeat members until len <= max_len (or only heartbeats are left)."""
+    excess = int(client.zcard(queue_key)) - int(max_len)
+    if excess <= 0:
+        return 0
+    removed = 0
+    for member in client.zrevrange(queue_key, 0, -1):
+        if removed >= excess:
+            break
+        if _is_protected_member(client, meta_key, member):
+            continue
+        client.zrem(queue_key, member)
+        removed += 1
+    if removed < excess:
+        log(f"eval_queue over cap by {excess - removed} protected heartbeat(s) (max_len={max_len})", "WARNING")
+    return removed
 
 
 def pop_eval_batch(

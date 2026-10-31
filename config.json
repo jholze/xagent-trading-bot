@@ -838,6 +838,12 @@
     "chart_default_days": 365
   },
   "observability": {
+    "cycle_watchdog": {
+      "enabled": true,
+      "auto_silent_cycles": 60,
+      "fill_silent_cycles": 60,
+      "_doc": "Start value N=60 = ceil(7200 s / update_interval 120 s), about 2 h of cycles. A real cycle can run longer than update_interval, so 60 cycles is at least 2 h. Per tenant overridable via the tenant config body (observability.cycle_watchdog.auto_silent_cycles and fill_silent_cycles). OWNER CONFIRMATION REQUIRED before merge: Jens must confirm N. The no-fill alarm will fire while orders stay risk-rejected. Alarm sink: ERROR log + Redis list <prefix>learning_loop:inbox. No N literal in code."
+    },
     "terminal_dashboard": true,
     "json_logs": false,
     "notify_on_cycle": true,
