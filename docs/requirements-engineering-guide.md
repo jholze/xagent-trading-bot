@@ -24,18 +24,14 @@ Assistants and coding agents follow it. Humans may follow it.
 
 ## 1a. How this repo applies the guide
 
-These adaptations are binding for this repo. Where they differ from the generic text below, this section wins.
+These adaptations are binding for this repo. Where they differ from the generic text below, this section wins. Coding-agent operating rules are [AGENTS.md](../AGENTS.md). If this section and `AGENTS.md` disagree, `AGENTS.md` wins.
 
-1. **Owner OK per stage.** For work that targets `staging`, the lead (Kay) gives the stage OK. Only these need Jens' explicit yes: money, API keys, the live switch, merges to `main`, the henry account and the small-live config. Agents must not ask Jens for routine stage approvals.
-2. **Reviews.** The "two independent reviews" in the merge gate (section 6) are:
-   - Lena: backtest/validation (label `review:lena` or `veto:lena`).
-   - Viktor: risk/execution (label `review:viktor` or `veto:viktor`).
-
-   Reviews start only after CI is green. The first review is one combined pass that lists all blockers; after that, delta reviews only. At most two spec revisions; anything still open is settled in the Daily.
-3. **Ready chain.** Marcus writes the spec with Given/When/Then acceptance tests from the start, each with a fixture and a mutant that must turn the test red. Then `review:lena`, then `review:viktor`, then Kay sets `omnigent:ready`.
+1. **Paper only.** Pull requests target `staging`. Never `main`, never live trading, no API keys. Agents open the pull request and do not merge it.
+2. **Retired review chain (2026-10-31).** Kay, Marcus, Lena, Viktor, and the Omnigent labels (`omnigent:ready`, `review:lena`, `review:viktor`, `veto:*`) are retired. Do not set those labels and do not wait on those people. Their checks are `docs/domain/` and the required `unit` job. The generic "two independent reviews" and "owner OK to continue" in the sections below are not a ping to Jens for routine work.
+3. **Spec.** Numbered acceptance criteria and acceptance tests, frozen before the build. A revision is `Rev N`. Large work still uses the `specs/<feature>/` files in this guide. Money-path merges need the owner's `owner-approved` label (`AGENTS.md`).
 4. **Bundles.** Bugs with the same cause may ship in one PR. Each bug still needs its own test that is red without the fix, and one mutant per bug.
-5. **Larger strategy or logic changes** need measurement first: a backtest or shadow run against the current logic, with costs and walk-forward, plus PASS from Lena and Viktor. Repair existing functions instead of building parallel paths. No hardcoded values or coin names.
-6. **Explicit exclusions from section 8.** This project deliberately has **no daily-loss cap**, **no emergency brake / kill switch** for automatic trading halts, and **no fixed max-open-positions number**. Do not propose them as NFRs.
+5. **Measurement.** A behavior change needs a before/after metric. Strategy or logic changes need a backtest or shadow run against the current logic, with costs and walk-forward, judged by `tools/hypothesis_protocol.py`. Repair existing functions instead of building parallel paths. No hardcoded coin names.
+6. **Recorded exclusions, still open against R4.** This guide (2026-10-23) says the project deliberately has **no daily-loss cap**, **no emergency brake / kill switch**, and **no fixed max-open-positions number**. The risk handover names a kill switch and a per-trade max loss and does not give numbers (`docs/domain/risk-execution.md`). Do not add either until the owner decides.
 
 ---
 

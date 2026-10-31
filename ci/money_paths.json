@@ -1,0 +1,22 @@
+{
+  "prefixes": [
+    "risk/",
+    "strategies/",
+    "execution/",
+    "services/gainer_signal/",
+    "services/dca_sniper/"
+  ],
+  "config_json": {
+    "path": "config.json",
+    "key_prefixes": [
+      "risk",
+      "costs",
+      "max_usdt_per_trade",
+      "max_position_percent",
+      "stop_loss_pct",
+      "max_open_positions",
+      "max_daily_trades",
+      "trade_cooldown_hours"
+    ]
+  }
+}

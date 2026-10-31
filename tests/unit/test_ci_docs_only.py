@@ -578,7 +578,25 @@ class TestWorkflowWiring(unittest.TestCase):
         self.assertIn("base classifier missing or unreadable", text)
         unit = text.split("\n  unit:\n", 1)[1]
         header, _steps = unit.split("steps:", 1)
-        self.assertIn("needs: [classify, pytest]", header)
+        # Review gates, hypothesis JSON, and changed-file Ruff are part of
+        # the required unit result. They are not behind the pytest skip.
+        self.assertIn(
+            "needs: [classify, pytest, review-gates, hypothesis-evidence, ruff]",
+            header,
+        )
+        self.assertIn("\n  review-gates:\n", text)
+        self.assertIn("\n  hypothesis-evidence:\n", text)
+        self.assertIn("\n  ruff:\n", text)
+        # The docs-only pytest skip stays on the pytest job only.
+        self.assertEqual(
+            text.count(
+                "!cancelled() && needs.classify.outputs.run_pytest != 'false'"
+            ),
+            1,
+        )
+        self.assertIn("GATES:", unit)
+        self.assertIn("HYPOTHESIS:", unit)
+        self.assertIn("RUFF:", unit)
         self.assertIn("if: ${{ always() }}", header)
         self.assertNotIn("!cancelled()", unit)
         self.assertNotIn("continue-on-error", unit)
