@@ -27,6 +27,7 @@ whitelist drops secrets and any other extra fields.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -331,22 +332,71 @@ def _emit_key(row: dict) -> tuple:
     )
 
 
+_TALLY_RE = re.compile(
+    r"wrote n=(?P<n>\d+) hit=(?P<hit>\d+) late=(?P<late>\d+) "
+    r"missed=(?P<missed>\d+) rejected=(?P<rejected>\d+) sum=(?P<sum>\d+)\b"
+)
+
+
+def bucket_tally(rows: list[dict]) -> dict[str, int]:
+    """Count landed desk rows. Unknown buckets are not a fourth-plus category."""
+    counts = {name: 0 for name in BUCKETS}
+    for row in rows:
+        bucket = str(row.get("bucket") or "")
+        if bucket in counts:
+            counts[bucket] += 1
+    return counts
+
+
+def format_desk_tally(counts: dict[str, int], n: int) -> str:
+    """One line. ``n`` and ``sum`` are the rows appended, and the four buckets add up to both."""
+    total = sum(int(counts.get(name, 0)) for name in BUCKETS)
+    fields = {name: int(counts.get(name, 0)) for name in BUCKETS}
+    return (
+        "daily_gainer_desk wrote n={n} hit={hit} late={late} "
+        "missed={missed} rejected={rejected} sum={total}".format(
+            n=int(n), total=total, **fields
+        )
+    )
+
+
+def parse_desk_tally(line: str) -> dict[str, int] | None:
+    match = _TALLY_RE.search(line or "")
+    if not match:
+        return None
+    return {key: int(value) for key, value in match.groupdict().items()}
+
+
+def tally_is_consistent(parsed: dict[str, int]) -> bool:
+    """hit + late + missed + rejected == n == sum."""
+    buckets = parsed["hit"] + parsed["late"] + parsed["missed"] + parsed["rejected"]
+    return buckets == parsed["n"] == parsed["sum"]
+
+
 def _emit_rows(rows: list[dict]) -> int:
-    """Append new rows. Fail-open. Returns how many lines were written."""
+    """Append new rows. Fail-open. Returns how many lines were written.
+
+    The tally counts only lines that landed. A later append or rotate error
+    does not drop those lines from the tally and does not count rows that
+    were not written. The same emit key twice in one call is one line.
+    """
     if not rows:
         return 0
     if not _file_write_allowed():
         return 0
     pending: list[tuple[tuple, dict]] = []
+    appended: list[dict] = []
     with _lock:
+        seen_batch: set[tuple] = set()
         for row in rows:
             if set(row.keys()) != set(ROW_KEYS):
                 continue
             if row.get("bucket") not in BUCKETS or row.get("source") not in DESK_SOURCES:
                 continue
             key = _emit_key(row)
-            if key in _emitted:
+            if key in _emitted or key in seen_batch:
                 continue
+            seen_batch.add(key)
             pending.append((key, row))
         if not pending:
             return 0
@@ -354,27 +404,29 @@ def _emit_rows(rows: list[dict]) -> int:
             from services.observability_store import append_jsonl, maybe_rotate_jsonl
 
             path = desk_path()
-            written = 0
             for key, row in pending:
-                append_jsonl(path, row)
+                try:
+                    append_jsonl(path, row)
+                except Exception as exc:
+                    log(f"daily_gainer_desk emit failed: {exc}", "WARNING")
+                    break
                 _emitted.add(key)
-                written += 1
-            maybe_rotate_jsonl(path, max_bytes=ROTATE_MAX_BYTES, keep_lines=ROTATE_KEEP_LINES)
+                appended.append(row)
+            if appended:
+                try:
+                    maybe_rotate_jsonl(
+                        path, max_bytes=ROTATE_MAX_BYTES, keep_lines=ROTATE_KEEP_LINES
+                    )
+                except Exception as exc:
+                    log(f"daily_gainer_desk rotate failed: {exc}", "WARNING")
         except Exception as exc:
             log(f"daily_gainer_desk emit failed: {exc}", "WARNING")
-            return 0
-    if written:
-        counts = {name: 0 for name in BUCKETS}
-        for _key, row in pending[:written]:
-            bucket = str(row.get("bucket") or "")
-            if bucket in counts:
-                counts[bucket] += 1
-        log(
-            "daily_gainer_desk wrote n={n} hit={hit} late={late} "
-            "missed={missed} rejected={rejected}".format(n=written, **counts),
-            "INFO",
-        )
-    return written
+    if not appended:
+        return 0
+    counts = bucket_tally(appended)
+    n = len(appended)
+    log(format_desk_tally(counts, n), "INFO")
+    return n
 
 
 def observe_gainer_desk(
