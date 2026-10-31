@@ -1,0 +1,4 @@
+{
+  "symbol_denylist": ["BLESS", "LAB", "AVAIL", "H"],
+  "source_denylist": ["gainer_rank_entry"]
+}

@@ -202,9 +202,12 @@ def test_t1_shipped_config_approves_an_order_inside_the_band(monkeypatch):
     cfg = BotConfig()
     cfg._raw = raw
     rm = RiskManager(cfg)
-    book = _book()
+    # Shipped risk.symbol_denylist rejects the bases in
+    # tests/fixtures/prevention_denylist.json. This case is the liquidity
+    # band, so the order uses a base that is not on that list.
+    book = _book(symbol="TAG/USDT")
     with patch("logger.log") as log:
-        dec = _eval(rm, _buy(usdt=25), "technical", book, planned=25)
+        dec = _eval(rm, _buy(usdt=25, symbol="TAG/USDT"), "technical", book, planned=25)
     assert dec.approved is True, dec.message
     assert dec.order.usdt_amount == pytest.approx(25)
     assert _capped_lines(log) == []
