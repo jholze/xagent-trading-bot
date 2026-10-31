@@ -175,6 +175,27 @@ def _key(signal_id: str, control: bool) -> str:
 
 def _emit(row: dict) -> None:
     log(json.dumps(row, separators=(",", ":"), default=str), "INFO")
+    try:
+        _append_shadow_jsonl(row)
+    except Exception:
+        return
+
+
+def _append_shadow_jsonl(row: dict) -> None:
+    """One JSONL file per shadow type, then the Mongo mirror inside append_jsonl.
+
+    The text log above stays. ``shadow_link`` is not written into the
+    ``shadow_signal`` file: a search for the signal stream must not return links.
+    """
+    kind = str(row.get("type") or "")
+    if kind not in ("shadow_signal", "shadow_exit", "shadow_link", "shadow_control"):
+        return
+    from logger import LOG_DIR
+    from services.observability_store import append_jsonl, maybe_rotate_jsonl
+
+    path = os.path.join(LOG_DIR, f"{kind}.jsonl")
+    append_jsonl(path, row)
+    maybe_rotate_jsonl(path, max_bytes=8_000_000, keep_lines=20_000)
 
 
 def _null_gate(reason: str) -> tuple[None, str]:

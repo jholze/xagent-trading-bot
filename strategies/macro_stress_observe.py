@@ -41,12 +41,17 @@ class MacroStressObserveRecord(TypedDict):
 
 
 def macro_stress_observe_config(config: dict | None) -> dict[str, bool]:
-    """Viktor R1 defaults: both flags false. Not set in config.json."""
+    """Observe defaults on. ``fire_enabled`` defaults off and is never applied.
+
+    A missing section still observes. Config may set ``observe_enabled``
+    false. ``fire_enabled`` is copied onto the record only. It does not
+    block, size, or skip an order.
+    """
     raw = (config or {}).get(_CONFIG_KEY)
     if not isinstance(raw, dict):
         raw = {}
     return {
-        "observe_enabled": bool(raw.get("observe_enabled", False)),
+        "observe_enabled": bool(raw.get("observe_enabled", True)),
         "fire_enabled": bool(raw.get("fire_enabled", False)),
     }
 
