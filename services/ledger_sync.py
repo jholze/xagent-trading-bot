@@ -42,12 +42,6 @@ def migrate_legacy_positions() -> None:
         log(f"Legacy positions migration failed: {e}", "WARNING")
 
 
-def _is_dca_order(order: dict) -> bool:
-    signal = (order.get("signal") or "").upper()
-    source = (order.get("source") or "").lower()
-    return signal == "BUY_DCA" or source in ("dca", "dca_recovery", "dca_scheduled")
-
-
 def _empty_order_position() -> dict:
     return {
         "amount": 0.0,

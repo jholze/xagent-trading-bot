@@ -876,26 +876,6 @@ class OrderService:
         )
         return orders
 
-    @staticmethod
-    def _order_notional_usdt(order: dict) -> float:
-        exe = order.get("execution") or {}
-        req = order.get("request") or {}
-        for bag in (exe, req):
-            try:
-                usdt = float(bag.get("usdt") or 0)
-            except (TypeError, ValueError):
-                usdt = 0.0
-            if usdt > 0:
-                return usdt
-        try:
-            price = float(exe.get("price") or req.get("price") or 0)
-            amount = float(exe.get("amount") or req.get("amount") or 0)
-        except (TypeError, ValueError):
-            return 0.0
-        if price > 0 and amount > 0:
-            return price * amount
-        return 0.0
-
     @classmethod
     def stats_from_filled_orders(cls, orders: list) -> dict:
         """Pure stats from an already-filtered filled order list (no I/O).
