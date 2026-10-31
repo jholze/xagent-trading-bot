@@ -17,12 +17,16 @@
 #
 # The job named unit uses if: always(). A failed, skipped, or cancelled
 # pytest must not leave unit skipped or neutral. Its conclusion is the
-# required-check result for classify plus pytest. Branch protection should
-# require unit, not pytest: pytest is skipped for an allowlisted diff, and
-# a skipped required check can block the merge.
+# required-check result. Branch protection should require unit, not pytest:
+# pytest is skipped for an allowlisted diff, and a skipped required check
+# can block the merge.
 # Requiring unit on staging and main is a repository admin setting.
-# This workflow does not lint. Do not put a lint job behind the pytest
-# condition — lint must keep running for documentation-only pull requests.
+#
+# Review gates, hypothesis-evidence JSON, and changed-file Ruff are separate
+# jobs that always run, including when pytest is skipped. unit fails if any
+# of them fails. Ruff is not behind the pytest condition. The rule set is
+# E9, F821, F823 on added or modified Python files only, so it does not
+# reformat the tree.
 name: Unit tests
 
 on:
@@ -114,9 +118,66 @@ jobs:
           PYTEST_DB_SUFFIX: ci
         run: ./scripts/run_unit_tests.sh -q
 
+  review-gates:
+    name: review-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Fetch base
+        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Money-path and evidence gate
+        env:
+          REVIEW_GATE_BASE: ${{ github.event.pull_request.base.sha }}
+          REVIEW_GATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/ci/review_gates.py
+
+  hypothesis-evidence:
+    name: hypothesis-evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate docs/evidence JSON
+        run: python -m tools.hypothesis_protocol --evidence docs/evidence
+
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Fetch base
+        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Lint changed Python
+        env:
+          REVIEW_GATE_BASE: ${{ github.event.pull_request.base.sha }}
+          REVIEW_GATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pip install 'ruff==0.17.3'
+          python scripts/ci/ruff_changed.py
+
   unit:
     name: unit
-    needs: [classify, pytest]
+    needs: [classify, pytest, review-gates, hypothesis-evidence, ruff]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -131,6 +192,9 @@ jobs:
           CLASSIFY: ${{ needs.classify.result }}
           PYTEST: ${{ needs.pytest.result }}
           RUN_PYTEST: ${{ needs.classify.outputs.run_pytest }}
+          GATES: ${{ needs.review-gates.result }}
+          HYPOTHESIS: ${{ needs.hypothesis-evidence.result }}
+          RUFF: ${{ needs.ruff.result }}
         run: |
           set -euo pipefail
           if git fetch --no-tags --depth=1 origin "$BASE_SHA" \
@@ -149,3 +213,9 @@ jobs:
               exit 1
             fi
           fi
+          for result in "$GATES" "$HYPOTHESIS" "$RUFF"; do
+            if [ "$result" != "success" ]; then
+              echo "required gate result is ${result} (need success)"
+              exit 1
+            fi
+          done
