@@ -15,9 +15,11 @@
 # failures fail the classify job; pytest still runs because its condition
 # is "not the string false".
 #
-# The job named unit always completes unless the run was cancelled. Branch
-# protection should require unit, not pytest: pytest is skipped for an
-# allowlisted diff, and a skipped required check can block the merge.
+# The job named unit uses if: always(). A failed, skipped, or cancelled
+# pytest must not leave unit skipped or neutral. Its conclusion is the
+# required-check result for classify plus pytest. Branch protection should
+# require unit, not pytest: pytest is skipped for an allowlisted diff, and
+# a skipped required check can block the merge.
 # Requiring unit on staging and main is a repository admin setting.
 # This workflow does not lint. Do not put a lint job behind the pytest
 # condition — lint must keep running for documentation-only pull requests.
@@ -25,6 +27,10 @@ name: Unit tests
 
 on:
   pull_request:
+    # edited covers a base-branch change, which must reclassify the diff.
+    # A title or body edit reclassifies the same head. That keeps unit from
+    # being left skipped on a new run.
+    types: [opened, synchronize, reopened, edited]
 
 # One active run per pull request. A newer pull_request event for the same
 # pull request cancels the older run.
@@ -111,7 +117,7 @@ jobs:
   unit:
     name: unit
     needs: [classify, pytest]
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -119,6 +125,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Publish required unit check
+        if: always()
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CLASSIFY: ${{ needs.classify.result }}

@@ -50,12 +50,22 @@ _CASES = [
     (["plans/idea.md", "DOCUMENTATION.en.md"], False),
     (["docs/guide.md", "docs/sample.json"], True),
     (["docs/prod.env"], True),
+    (["docs/prod.ENV"], True),
+    (["docs/.env"], True),
     (["docs/railway.env.example"], True),
     (["docs/config.env.sample"], True),
+    (["docs/x.env.example"], True),
+    (["docs/sub/.env.production"], True),
+    (["docs/envfile"], True),
     (["docs/x.py"], True),
     (["docs/x.PY"], True),
     (["docs/sub/x.py"], True),
+    (["docs/x.md.py"], True),
+    (["docs/x.html"], True),
+    (["docs/x.pdf"], True),
     (["docs/x.unknownext"], True),
+    (["docs/foo.md", "docs/x.py"], True),
+    (["docs/foo.md", "README.md"], False),
     (["docs/example.py"], True),
     (["docs/.env.local"], True),
     (["docs/foo.env"], True),
@@ -206,9 +216,11 @@ class TestDocsAllowlist(unittest.TestCase):
     def test_pull_requires_pytest_runs_for_doc_read_by_tests(self):
         """CI decision path, not pytest_required alone.
 
-        Mutant M3d drops ``tests_root`` inside ``pull_requires_pytest``.
-        ``docs/universe_membership_631.md`` is still an allowlisted markdown
-        file, so that mutant returns a docs-only skip. This assertion goes red.
+        Commit 15e56b0f added this for mutant M3d. That mutant calls
+        ``pytest_required`` from ``pull_requires_pytest`` without
+        ``tests_root``. ``docs/universe_membership_631.md`` stays allowlisted
+        markdown, so the mutant returns a docs-only skip and this assertion
+        is red. The fixed call passes ``tests_root`` and the assertion is green.
         """
         path = "docs/universe_membership_631.md"
         listing = ci.PullFileList(
@@ -278,6 +290,97 @@ class TestDocsAllowlist(unittest.TestCase):
     def test_missing_filename_is_rejected(self):
         with self.assertRaises(ValueError):
             ci.paths_from_file_objects([{"status": "added"}])
+
+
+def _listing(paths, *, fetched=None, changed=None, sha="abc123"):
+    count = len(paths) if fetched is None else fetched
+    changed_files = count if changed is None else changed
+    return ci.PullFileList(list(paths), count, changed_files, sha, False)
+
+
+class TestPullDecisionScenarios(unittest.TestCase):
+    """Cases the re-review listed, through pull_requires_pytest."""
+
+    def test_docs_with_code_env_and_mixed_diffs(self):
+        cases = [
+            (["docs/x.py"], True),
+            (["docs/sub/x.py"], True),
+            (["docs/prod.env"], True),
+            (["docs/.env"], True),
+            (["docs/prod.ENV"], True),
+            (["docs/foo.md", "docs/x.py"], True),
+            (["docs/foo.md", "README.md"], False),
+        ]
+        for paths, runs in cases:
+            with self.subTest(paths=paths):
+                run, reason = ci.pull_requires_pytest(_listing(paths), "abc123")
+                self.assertEqual(run, runs, reason)
+
+    def test_deletions(self):
+        cases = [
+            ("D\tdocs/prod.env\n", True),
+            ("D\tdocs/x.py\n", True),
+            ("D\tdocs/foo.md\n", False),
+        ]
+        for line, runs in cases:
+            with self.subTest(line=line.strip()):
+                paths = ci.paths_from_name_status(line)
+                run, reason = ci.pull_requires_pytest(_listing(paths), "abc123")
+                self.assertEqual(run, runs, reason)
+
+    def test_renames_both_directions(self):
+        both_ways = [
+            ("R100\tdocs/old.py\tdocs/new.md\n", True),
+            ("R100\tdocs/old.md\tdocs/new.py\n", True),
+            ("R100\tREADME.md\tdocs/guide.md\n", False),
+        ]
+        for line, runs in both_ways:
+            with self.subTest(line=line.strip()):
+                paths = ci.paths_from_name_status(line)
+                listing = _listing(paths, fetched=1, changed=1)
+                run, reason = ci.pull_requires_pytest(listing, "abc123")
+                self.assertEqual(run, runs, reason)
+        code_to_md = ci.paths_from_file_objects(
+            [
+                {
+                    "filename": "docs/new.md",
+                    "status": "renamed",
+                    "previous_filename": "docs/old.py",
+                }
+            ]
+        )
+        run, _reason = ci.pull_requires_pytest(
+            _listing(code_to_md, fetched=1, changed=1), "abc123"
+        )
+        self.assertTrue(run)
+        md_to_md = ci.paths_from_file_objects(
+            [
+                {
+                    "filename": "docs/guide.md",
+                    "status": "renamed",
+                    "previous_filename": "README.md",
+                }
+            ]
+        )
+        run, reason = ci.pull_requires_pytest(
+            _listing(md_to_md, fetched=1, changed=1), "abc123"
+        )
+        self.assertFalse(run, reason)
+
+    def test_doc_read_by_tests_on_delete_rename_and_subdir(self):
+        root = ROOT / "tests"
+        path = "docs/universe_membership_631.md"
+        run, reason = ci.pull_requires_pytest(_listing([path]), "abc123", tests_root=root)
+        self.assertTrue(run)
+        self.assertIn(path, reason)
+        sub = "docs/sub/universe_membership_631.md"
+        run, reason = ci.pull_requires_pytest(_listing([sub]), "abc123", tests_root=root)
+        self.assertTrue(run)
+        self.assertIn(sub, reason)
+        renamed = _listing([path, "docs/renamed.md"], fetched=1, changed=1)
+        run, reason = ci.pull_requires_pytest(renamed, "abc123", tests_root=root)
+        self.assertTrue(run)
+        self.assertIn(path, reason)
 
 
 class TestPullFileList(unittest.TestCase):
@@ -454,11 +557,14 @@ class TestWorkflowWiring(unittest.TestCase):
         self.assertNotIn("paths-ignore", text)
         self.assertNotIn("paths:", text)
         self.assertIn(
+            "types: [opened, synchronize, reopened, edited]",
+            text,
+        )
+        self.assertIn(
             "!cancelled() && needs.classify.outputs.run_pytest != 'false'",
             folded,
         )
         self.assertNotIn("run_pytest == 'true'", text)
-        self.assertIn("!cancelled()", text)
         self.assertIn("github.event.pull_request.base.sha", text)
         self.assertGreaterEqual(text.count("git show"), 2)
         self.assertGreaterEqual(text.count("python3 /tmp/ci_docs_only.py"), 2)
@@ -468,9 +574,21 @@ class TestWorkflowWiring(unittest.TestCase):
         self.assertIn("--head-sha", folded)
         self.assertIn("--tests-root", folded)
         self.assertIn("--required-check", folded)
-        self.assertIn("\n  unit:\n", text)
         self.assertIn("\n  pytest:\n", text)
         self.assertIn("base classifier missing or unreadable", text)
+        unit = text.split("\n  unit:\n", 1)[1]
+        header, _steps = unit.split("steps:", 1)
+        self.assertIn("needs: [classify, pytest]", header)
+        self.assertIn("if: ${{ always() }}", header)
+        self.assertNotIn("!cancelled()", unit)
+        self.assertNotIn("continue-on-error", unit)
+        self.assertIn("if: always()", unit)
+        self.assertIn("CLASSIFY:", unit)
+        self.assertIn("PYTEST:", unit)
+        self.assertIn("RUN_PYTEST:", unit)
+        self.assertIn("--classify-result", unit)
+        self.assertIn("--pytest-result", unit)
+        self.assertIn("--run-pytest", unit)
 
 
 class TestCli(unittest.TestCase):
