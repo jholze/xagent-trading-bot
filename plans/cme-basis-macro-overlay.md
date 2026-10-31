@@ -34,11 +34,66 @@ Net_Carry_Spread = Annualized_CME_FrontMonth_Basis − 3M_TBill_Rate
 - Okt: Kompression auf ~0.6 pp + Outflows + Preisrückgang auf ~77k
 - Richtungstreue hoch, auch wenn absolute Levels nicht dramatisch waren
 
-**Verbesserung gegenüber vorheriger Version:**
-- Absolute Basis → Net Spread (relativ zu Funding-Kosten) eliminiert Zinsniveau-Bias
-- Schwellen an realem Desk-Verhalten (Galaxy) statt Willkür kalibriert
-- Soft-Filter statt Hard-Gate reduziert False-Positive-Risiko
-- Messbare Kausalität: Spread-Kollaps → quantifizierbarer ETF-Abbau
+## Acceptance Criteria & Testable Assertions
+
+Diese Kriterien sind so formuliert, dass ein Implementierungs-Agent sie direkt in Unit- und Integration-Tests gießen und validieren kann.
+
+### Unit Tests (pure functions, no network)
+
+**AC-U1: Spread Calculation**
+- Given: Futures=82000, Spot=81000, Days_to_Expiry=30, TBill=4.0
+- When: compute_net_carry_spread()
+- Then: result == (((82000-81000)/81000)*365/30) - 4.0 within 0.01 pp
+
+**AC-U2: Stage Classification**
+- Given: net_spread = 3.0 → stage == "green"
+- Given: net_spread = 1.5 → stage == "yellow"
+- Given: net_spread = 0.5 → stage == "red"
+- Boundary: 2.5 exact → green; 0.8 exact → yellow
+
+**AC-U3: Size Multiplier**
+- Given: stage="green" → size_multiplier in [1.10, 1.20]
+- Given: stage="yellow" → size_multiplier in [0.60, 0.80]
+- Given: stage="red" → size_multiplier in [0.30, 0.50]
+
+**AC-U4: Delta Signal**
+- Given: 5-day change = -1.2 pp → acceleration_flag == true
+- Given: 5-day change = -0.5 pp → acceleration_flag == false
+
+### Integration / Fixture Tests
+
+**AC-I1: Galaxy Window Validation**
+- Fixture: pre-ATH window with basis_ann=7.9, tbill=4.0 → net=3.9 → stage="green"
+- Fixture: Oct-21 window with basis_ann=4.8, tbill=4.2 → net=0.6 → stage="red"
+- Assert: stage transition from green to red occurs when net drops below 0.8
+
+**AC-I2: Soft Filter Application**
+- Given: base_size=1.0, stage="red" → effective_size <= 0.50
+- Given: stage="red" AND strong_confirmation=true → effective_size still reduced but entry not hard-blocked
+
+**AC-I3: Data Source Interface**
+- Mock CME basis source returns None → fallback to last known or neutral (yellow) without crash
+- Assert: no live network calls in unit/integration tests
+
+### Historical Validation Metrics (measurable)
+
+**AC-H1: 60-Day Directional Match**
+- On Sep high-spread period: average stage == green or yellow, size_multiplier >= 0.8
+- On Oct low-spread period: average stage == yellow or red, size_multiplier <= 0.7
+- Correlation between stage severity and subsequent 5-day ETF flow sign >= 0.6 (direction only)
+
+**AC-H2: Galaxy Desk Unwind Alignment**
+- When net_spread crosses below 1.0 pp and stays there for >=5 days → flag "elevated_unwind_risk" == true
+- Documented outcome: 68k BTC reduction aligns with this flag period
+
+### Non-Functional
+
+**AC-NF1: Soft Only**
+- Never hard-block an entry solely on red stage; only reduce size / tighten stops
+- Combined with existing Venue-Gate and STH-Cost-Basis rules
+
+**AC-NF2: Observability**
+- Every decision logs: raw_basis, tbill, net_spread, stage, size_multiplier, reason
 
 ## Nächste Schritte für Produktion
 1. Stabile Datenquelle: CME BasisWatch / Coinglass API / eigene Berechnung aus Yahoo/CME-Settlement
@@ -47,4 +102,4 @@ Net_Carry_Spread = Annualized_CME_FrontMonth_Basis − 3M_TBill_Rate
 4. Kombination mit bestehendem Venue-Gate + STH-Cost-Basis
 
 ---
-*Refined after multi-agent review + Galaxy evidence – 31.10.2026*
+*Expanded with concrete testable acceptance criteria – 31.10.2026*
