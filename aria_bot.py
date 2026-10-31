@@ -1213,6 +1213,15 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Telegram command menu registration skipped: {e}", "WARNING")
 
+    try:
+        from core.config_guardrails import report_missing_required_keys
+
+        report_missing_required_keys()  # P723B-E1-REPORT startup continues
+        from core.config_guardrails import report_hard_stop_escalation_scope
+
+        report_hard_stop_escalation_scope()  # H2 M-WARN startup continues
+    except Exception as e:
+        log(f"config_required_key_report failed: {e}", "ERROR")
     orchestrator = SignalOrchestrator(notify_callback=send_signal_message)
     try:
         from services.architecture_runtime import register_eval_orchestrator

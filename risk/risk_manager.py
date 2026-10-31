@@ -199,6 +199,31 @@ def _execution_places_real_orders(raw) -> bool:
 _HARD_STOP_SIGNALS = frozenset({"SELL_STOP_FULL", "SELL_STOP_PARTIAL"})
 
 
+HARD_STOP_ORIGINS = frozenset({"exit_ws", "long_hard_stop"})  # H2 M-ORIGIN
+
+
+def explicit_hard_stop_origin(order, source: str | None = None) -> str | None:
+    """H2 #735 (M-ORIGIN): the explicit hard-stop origin marker, fail-closed.
+
+    Returns "exit_ws" / "long_hard_stop" only when is_hard_stop_order holds AND the order carries the dedicated
+    marker TradeOrder.hard_stop_origin (set only in exit_realtime/execute.py and signal_orchestrator.py).
+    The exit_source label alone (incl. the exit_attribution fallback) never counts.
+    """
+    if not is_hard_stop_order(order, source):
+        return None
+    marker = str(getattr(order, "hard_stop_origin", "") or "")
+    return marker if marker in HARD_STOP_ORIGINS else None
+
+
+def _h2_price_below_entry(order, timeframe: str) -> bool:  # H2 M-DAILY below-entry condition
+    try:
+        pos = get_position(order.symbol, timeframe) or {}
+        entry = float(pos.get("average_entry") or 0)
+        return entry > 0 and float(order.price or 0) < entry
+    except (TypeError, ValueError):
+        return False
+
+
 def is_hard_stop_order(order, source: str | None = None) -> bool:
     """R11 hard stop. Fail closed when ``exit_source`` is not visible.
 
@@ -219,6 +244,52 @@ def is_hard_stop_order(order, source: str | None = None) -> bool:
     if order_source == "manual" or call_source == "manual":
         return False
     return True
+
+
+# H2 (from #723 annex A): partial_sell_guard reason codes (priority order = check order).
+PARTIAL_SELL_BLOCK_SOLD_CAP = "sold_cap"
+PARTIAL_SELL_BLOCK_MIN_POSITION = "min_position"
+PARTIAL_SELL_BLOCK_MIN_NOTIONAL = "min_notional"
+PARTIAL_SELL_BLOCK_CAP_MISSING = "sold_cap_unconfigured"
+PARTIAL_SELL_SIZE_CODES = frozenset(
+    {PARTIAL_SELL_BLOCK_MIN_POSITION, PARTIAL_SELL_BLOCK_MIN_NOTIONAL, PARTIAL_SELL_BLOCK_CAP_MISSING}
+)  # H2-ALLOW (P723A-ALLOW + P723B-E1-ALLOW)
+# H2 (from #723 annex B, Kay N4): the sold cap is always the configured key, never a default.
+PARTIAL_SELL_CAP_KEY = "block_partial_sell_if_sold_percent_above"
+_PARTIAL_SELL_CAP_LOGGED: set = set()
+
+
+def _log_partial_sell_cap_missing(symbol, detail):
+    from core.tenant_context import resolve_tenant_id
+    from logger import log
+
+    tid = resolve_tenant_id()
+    key = (tid, symbol, detail)
+    if key in _PARTIAL_SELL_CAP_LOGGED:
+        return
+    _PARTIAL_SELL_CAP_LOGGED.add(key)
+    log(
+        f"partial_sell_cap_missing key={PARTIAL_SELL_CAP_KEY} {detail} "
+        f"symbol={symbol} tenant={tid} -> non-hard partial sells blocked; "
+        "hard stop partials escalate to one SELL_STOP_FULL",
+        "ERROR",
+    )
+
+
+def _resolve_partial_sell_cap(params, risk_cfg, symbol):  # P723B-CAP
+    import math
+
+    for scope, cfg in (("strategy", params), ("risk", risk_cfg)):
+        raw = (cfg or {}).get(PARTIAL_SELL_CAP_KEY)
+        if raw is None:
+            continue
+        ok = isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw) and 0 < raw <= 1
+        if ok:
+            return float(raw)
+        _log_partial_sell_cap_missing(symbol, f"invalid {scope}={raw!r}")
+        return None
+    _log_partial_sell_cap_missing(symbol, "missing")
+    return None
 
 
 class RiskManager:
@@ -508,11 +579,23 @@ class RiskManager:
                 return venue_block
             partial_block, partial_reason = self._partial_sell_blocked(order, timeframe, source)
             if partial_block:
-                return RiskDecision(approved=False, message=partial_reason, code="partial_sell_guard")
+                escalated = None
+                if locked_sell_checks:  # H2-LOCKED (P723-LOCKED)
+                    escalated = self._escalate_rejected_hard_partial(
+                        order, timeframe, source, partial_reason,
+                        code=getattr(order, "_partial_sell_block_code", None),
+                    )
+                if escalated is None:
+                    return RiskDecision(approved=False, message=partial_reason, code="partial_sell_guard")
+                order = escalated
             max_daily_sells = self._effective_max_daily_sells()
             daily_sells = self._daily_sells_count()
             if max_daily_sells > 0 and daily_sells >= max_daily_sells:
-                if locked_sell_checks and is_hard_stop_order(order, source):
+                if (
+                    locked_sell_checks
+                    and explicit_hard_stop_origin(order, source)
+                    and _h2_price_below_entry(order, timeframe)
+                ):  # H2 M-DAILY (Viktor: marker + locked + below entry)
                     self._log_hard_stop_daily_bypass(
                         order, source, daily_sells, max_daily_sells
                     )
@@ -3740,12 +3823,7 @@ class RiskManager:
                 or risk_cfg.get("min_sell_notional_usdt")
                 or cmc_cfg.get("min_sell_notional_usdt", 15)
             ),
-            "max_sold_percent": float(
-                params.get("block_partial_sell_if_sold_percent_above")
-                or params.get("block_social_sell_if_sold_percent_above")
-                or risk_cfg.get("block_partial_sell_if_sold_percent_above")
-                or cmc_cfg.get("block_social_sell_if_sold_percent_above", 0.75)
-            ),
+            "max_sold_percent": _resolve_partial_sell_cap(params, risk_cfg, symbol),  # P723B-CAP
             "dust_sweep_max_position_usdt": float(
                 risk_cfg.get("dust_sweep_max_position_usdt", 15)
             ),
@@ -3788,6 +3866,53 @@ class RiskManager:
                 f"tenant={resolve_tenant_id()} old_amount={asked} new_amount={held}",
                 "WARNING",
             )
+        return order
+
+    def _escalate_rejected_hard_partial(
+        self, order: TradeOrder, timeframe: str, source: str, reason: str,
+        code: str | None = None,
+    ):
+        """H2: a marked hard partial the guard rejects for size becomes one SELL_STOP_FULL.
+
+        The lot is ``get_position(symbol, timeframe)`` (symbol + timeframe, not a 1h default).
+        Escalation requires an explicit hard-stop origin (``exit_ws`` or ``long_hard_stop``),
+        a size code, held > 0, and price strictly below that lot's average_entry.
+        A missing or zero entry fails closed. Returns the escalated order, or None
+        (the rejection stands).
+        """
+        if str(order.signal or "") != "SELL_STOP_PARTIAL":
+            return None
+        if not is_hard_stop_order(order, source):  # H2-HARD (signal + exit_source stop_loss + not manual)
+            return None
+        origin = explicit_hard_stop_origin(order, source)
+        if origin is None:  # M-ESC fail-closed: no explicit hard-stop origin marker -> the rejection stands
+            return None
+        if code not in PARTIAL_SELL_SIZE_CODES:  # H2-CODE allowlist (sold_cap / unknown keep blocking)
+            return None
+        pos = get_position(order.symbol, timeframe) or {}
+        try:
+            held = float(pos.get("amount") or 0)
+            entry = float(pos.get("average_entry") or 0)
+        except (TypeError, ValueError):
+            return None
+        if held <= 0:
+            return None
+        if not (entry > 0 and float(order.price or 0) < entry):  # H2-BELOW-ENTRY sanity barrier
+            return None
+        order.amount = held  # H2-AMOUNT
+        order.signal = "SELL_STOP_FULL"
+        order._h2_escalated = True  # M-ESC (daily-cap log escalated=1)
+        from core.tenant_context import resolve_tenant_id
+        from logger import log
+
+        log(
+            "partial_stop_upgraded_to_full "
+            f"symbol={order.symbol} timeframe={timeframe} "
+            f"tenant={resolve_tenant_id()} "
+            f"source={getattr(order, 'source', None) or source} amount={held:.10g} "
+            f"reason=partial_sell_guard block={code} origin={origin}",  # H2-LOG M-ESC
+            "ERROR" if code == PARTIAL_SELL_BLOCK_CAP_MISSING else "INFO",  # P723B-E1-LEVEL
+        )
         return order
 
     def _upgrade_partial_stop_below_gate_min(
@@ -3857,7 +3982,9 @@ class RiskManager:
             f"signal={getattr(order, 'signal', '')} "
             f"source={getattr(order, 'source', None) or source} "
             f"exit_source={getattr(order, 'exit_source', '')} "
-            f"count={daily_sells} limit={max_daily_sells}",
+            f"count={daily_sells} limit={max_daily_sells} "
+            f"origin={getattr(order, 'hard_stop_origin', '')} "
+            f"escalated={1 if getattr(order, '_h2_escalated', False) else 0}",  # H2 M-DAILY
             "INFO",
         )
 
@@ -4039,23 +4166,43 @@ class RiskManager:
         notional = float(order.amount) * order.price
         sold_pct = float(pos.get("sold_percent", 0))
 
-        if pos_value < limits["min_position_usdt"]:
+        if limits["max_sold_percent"] is None:  # P723B-MISSING block; only a hard partial escalates (allowlist)
+            try:
+                order._partial_sell_block_code = PARTIAL_SELL_BLOCK_CAP_MISSING
+            except Exception:
+                pass
             return True, (
+                f"Partial sell blocked: {PARTIAL_SELL_CAP_KEY} not configured "
+                "(non-hard partial blocked; hard stop partial escalates to SELL_STOP_FULL)"
+            )
+        code = None
+        message = ""
+        if sold_pct >= limits["max_sold_percent"]:  # P723A-PRIO-1 sold cap wins (Kay)
+            code = PARTIAL_SELL_BLOCK_SOLD_CAP
+            message = (
+                f"Partial sell blocked: already sold {sold_pct * 100:.0f}% of position "
+                f"(max {limits['max_sold_percent'] * 100:.0f}%)"
+            )
+        elif pos_value < limits["min_position_usdt"]:  # P723A-PRIO-2
+            code = PARTIAL_SELL_BLOCK_MIN_POSITION
+            message = (
                 f"Partial sell blocked: position ${pos_value:.2f} "
                 f"below minimum ${limits['min_position_usdt']:.0f} "
                 f"(use full close or manual sell)"
             )
-        if notional < limits["min_notional_usdt"]:
-            return True, (
+        elif notional < limits["min_notional_usdt"]:  # P723A-PRIO-3
+            code = PARTIAL_SELL_BLOCK_MIN_NOTIONAL
+            message = (
                 f"Partial sell blocked: notional ${notional:.2f} "
                 f"below minimum ${limits['min_notional_usdt']:.0f}"
             )
-        if sold_pct >= limits["max_sold_percent"]:
-            return True, (
-                f"Partial sell blocked: already sold {sold_pct * 100:.0f}% of position "
-                f"(max {limits['max_sold_percent'] * 100:.0f}%)"
-            )
-        return False, ""
+        try:
+            order._partial_sell_block_code = code  # P723A-RECORD
+        except Exception:
+            pass
+        if code is None:
+            return False, ""
+        return True, message
 
     def _social_sell_blocked(self, order: TradeOrder, timeframe: str, source: str) -> tuple[bool, str]:
         """Backward-compatible alias for tests and callers."""
