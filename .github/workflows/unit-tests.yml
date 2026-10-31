@@ -1,20 +1,87 @@
-# Unit suite. No Redis service: bus.redis_client.get_redis() returns None when
-# Redis is unreachable, and tests mock Redis or take that in-process fallback.
+# Unit suite. No Redis service is required for the suite itself:
+# bus.redis_client.get_redis() returns None when Redis is unreachable, and
+# tests mock Redis or take that in-process fallback. Redis and Mongo below
+# are still started for the pytest job so CI matches a local stack.
+#
+# Pytest is skipped only when the classifier on the pull request's base
+# commit says every changed file is documentation. The script is loaded
+# with git show of base.sha, not from the PR head, so a pull request cannot
+# replace the filter. Under docs/, only .md and image files can skip.
+# Config, other extensions, tests/, .github/, the classifier, and its test
+# run the full suite. An empty or unreadable file list also runs the suite.
+#
+# If that base blob is missing, classify records run_pytest=true and does
+# not fall back to the copy in the pull request. API, token, and PR-number
+# failures fail the classify job; pytest still runs because its condition
+# is "not the string false".
+#
+# The job named unit uses if: always(). A failed, skipped, or cancelled
+# pytest must not leave unit skipped or neutral. Its conclusion is the
+# required-check result. Branch protection should require unit, not pytest:
+# pytest is skipped for an allowlisted diff, and a skipped required check
+# can block the merge.
+# Requiring unit on staging and main is a repository admin setting.
+#
+# Review gates, hypothesis-evidence JSON, and changed-file Ruff are separate
+# jobs that always run, including when pytest is skipped. unit fails if any
+# of them fails. Ruff is not behind the pytest condition. The rule set is
+# E9, F821, F823 on added or modified Python files only, so it does not
+# reformat the tree.
 name: Unit tests
 
 on:
   pull_request:
+    # edited covers a base-branch change, which must reclassify the diff.
+    # A title or body edit reclassifies the same head. That keeps unit from
+    # being left skipped on a new run.
+    types: [opened, synchronize, reopened, edited]
 
-# One active run per pull request. A force-push and a base-branch change in
-# the same moment each deliver a pull_request event, and the next push
-# delivers another. Cancel the superseded runs. No paths-ignore: skipping
-# docs-only diffs is a separate decision.
+# One active run per pull request. A newer pull_request event for the same
+# pull request cancels the older run.
 concurrency:
   group: unit-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
-  unit:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_pytest: ${{ steps.decide.outputs.run_pytest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Allowlist changed files
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git fetch --no-tags --depth=1 origin "$BASE_SHA" \
+            && git show "${BASE_SHA}:scripts/ci_docs_only.py" > /tmp/ci_docs_only.py; then
+            python3 /tmp/ci_docs_only.py \
+              --pull "$PR_NUMBER" \
+              --head-sha "$PR_HEAD_SHA" \
+              --tests-root tests \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            echo "base classifier missing or unreadable; running full pytest"
+            echo "run_pytest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  pytest:
+    name: pytest
+    needs: classify
+    if: ${{ !cancelled() && needs.classify.outputs.run_pytest != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -50,3 +117,105 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379/0
           PYTEST_DB_SUFFIX: ci
         run: ./scripts/run_unit_tests.sh -q
+
+  review-gates:
+    name: review-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Fetch base
+        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Money-path and evidence gate
+        env:
+          REVIEW_GATE_BASE: ${{ github.event.pull_request.base.sha }}
+          REVIEW_GATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/ci/review_gates.py
+
+  hypothesis-evidence:
+    name: hypothesis-evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate docs/evidence JSON
+        run: python -m tools.hypothesis_protocol --evidence docs/evidence
+
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Fetch base
+        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Lint changed Python
+        env:
+          REVIEW_GATE_BASE: ${{ github.event.pull_request.base.sha }}
+          REVIEW_GATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pip install 'ruff==0.17.3'
+          python scripts/ci/ruff_changed.py
+
+  unit:
+    name: unit
+    needs: [classify, pytest, review-gates, hypothesis-evidence, ruff]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish required unit check
+        if: always()
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CLASSIFY: ${{ needs.classify.result }}
+          PYTEST: ${{ needs.pytest.result }}
+          RUN_PYTEST: ${{ needs.classify.outputs.run_pytest }}
+          GATES: ${{ needs.review-gates.result }}
+          HYPOTHESIS: ${{ needs.hypothesis-evidence.result }}
+          RUFF: ${{ needs.ruff.result }}
+        run: |
+          set -euo pipefail
+          if git fetch --no-tags --depth=1 origin "$BASE_SHA" \
+            && git show "${BASE_SHA}:scripts/ci_docs_only.py" > /tmp/ci_docs_only.py; then
+            python3 /tmp/ci_docs_only.py --required-check \
+              --classify-result "$CLASSIFY" \
+              --pytest-result "$PYTEST" \
+              --run-pytest "$RUN_PYTEST"
+          else
+            echo "base classifier unavailable; require a successful pytest run"
+            if [ "$PYTEST" != "success" ]; then
+              exit 1
+            fi
+            if [ "$CLASSIFY" = "success" ] && [ "$RUN_PYTEST" = "false" ]; then
+              echo "refusing a docs-only pass without the base classifier"
+              exit 1
+            fi
+          fi
+          for result in "$GATES" "$HYPOTHESIS" "$RUFF"; do
+            if [ "$result" != "success" ]; then
+              echo "required gate result is ${result} (need success)"
+              exit 1
+            fi
+          done
