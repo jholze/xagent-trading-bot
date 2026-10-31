@@ -53,6 +53,13 @@ def append_jsonl(path: str, record: dict) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    # Mongo mirror is best-effort. A failure here must not undo the file line.
+    try:
+        from services.observe_streams import mirror_jsonl_record
+
+        mirror_jsonl_record(path, record)
+    except Exception:
+        return
 
 
 def maybe_rotate_jsonl(
