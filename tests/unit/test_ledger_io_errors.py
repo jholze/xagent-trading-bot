@@ -240,7 +240,12 @@ def test_unreadable_config_raises_no_fallback(monkeypatch):
 
 
 def _operator_cfg():
-    return {"max_usdt_per_trade": 999, "max_open_positions": 99, "stop_loss_pct": 1.0}
+    return {
+        "max_usdt_per_trade": 999,
+        "max_open_positions": 99,
+        "stop_loss_pct": 1.0,
+        "risk": {"long_hard_stop_max_loss_pct": 20},
+    }
 
 
 def test_tenant_without_stored_body_is_base_only(monkeypatch):
