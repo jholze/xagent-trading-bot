@@ -1,15 +1,15 @@
 # Evidence: review gates and domain docs
 
-Non-money-path change. No trading runtime code. Measured on staging `930792a` versus this branch, local Mongo 7.0.14, `pytest tests/unit -n auto --dist loadfile`.
+Non-money-path change. No trading runtime code. Measured on staging `fb078d7` versus this branch, local Mongo 7.0.14, `pytest tests/unit -n auto --dist loadfile`.
 
 | metric | before | after |
 | --- | --- | --- |
-| unit tests passed | 5477 | 5533 |
+| unit tests passed | 5556 | 5612 |
 | skipped | 5 | 5 |
 | xfailed | 1 | 1 |
-| collected (passed + skipped + xfailed) | 5483 | 5539 |
+| collected (passed + skipped + xfailed) | 5562 | 5618 |
 | new tests | 0 | 56 |
-| pytest runtime (s) | 47.75 | 47.40 |
+| pytest runtime (s) | 47.29 | 48.69 |
 | wall clock (s) | 50 | 50 |
 | suite exit code | 0 | 0 |
 
