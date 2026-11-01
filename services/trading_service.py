@@ -205,21 +205,23 @@ class TradingService:
             order.idempotency_key = idem
             order.client_order_id = idem
 
-        # Observe only (obs_shadow_rules): snapshot entry candidates for the
-        # g/no-chase shadow rule. Never raises, never changes the order.
-        try:
-            from services.shadow_rules import observe_entry_candidate
-
-            observe_entry_candidate(order, timeframe=timeframe, source=source)
-        except Exception as exc:
-            log(f"shadow_rules entry hook skipped: {exc}", "WARNING")
-
         from bus.writer_lease import require_lease_for_order
 
         try:
             require_lease_for_order()
         except LedgerUnavailable as exc:
             return _attach_shadow_link(order, self._deny_ledger_unavailable(order, exc))
+
+        # Observe only (obs_shadow_rules): snapshot entry candidates for the
+        # g/no-chase shadow rule. Never raises, never changes the order. Runs
+        # after the writer-lease check so standby replicas do not record
+        # candidates; risk has not run yet, so rows are pre-risk candidates.
+        try:
+            from services.shadow_rules import observe_entry_candidate
+
+            observe_entry_candidate(order, timeframe=timeframe, source=source)
+        except Exception as exc:
+            log(f"shadow_rules entry hook skipped: {exc}", "WARNING")
 
         if should_queue_intent(source, self.config):
             return _attach_shadow_link(

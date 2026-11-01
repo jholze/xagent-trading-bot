@@ -276,11 +276,26 @@ def _fetch_1h(symbol: str, limit: int) -> list:
         return list(fetcher(symbol, limit) or [])
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return []  # unit tests never reach the network
-    import ccxt
-
-    ex = ccxt.gate({"enableRateLimit": True, "timeout": 10_000, "options": {"defaultType": "spot"}})
+    ex = _public_gate()
     bars = ex.fetch_ohlcv(symbol, timeframe="1h", limit=limit) or []
     return [list(b) for b in bars if len(b) >= 6]
+
+
+_exchange_lock = threading.Lock()
+_exchange: Any = None
+
+
+def _public_gate():
+    """One public ccxt Gate client for the worker (markets load once, one rate limiter)."""
+    global _exchange
+    with _exchange_lock:
+        if _exchange is None:
+            import ccxt
+
+            _exchange = ccxt.gate(
+                {"enableRateLimit": True, "timeout": 10_000, "options": {"defaultType": "spot"}}
+            )
+        return _exchange
 
 
 def _first_time(key: tuple) -> bool:

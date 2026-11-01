@@ -80,7 +80,7 @@ db.obs_cap_order_observe.find(
 
 | rule | when it is checked | trigger | action |
 | --- | --- | --- | --- |
-| `g_no_chase` | every BUY that would open a new long lot (`execute_order`, before risk) | price rose more than the limit over the closed 1h lows of the last 48 h (at least 36 bars). Limit: 10 % in `RISK_OFF`/`CRASH`, 20 % in `RISK_ON`, else 15 % | `would_skip_entry`; otherwise `would_allow_entry` or `no_data` |
+| `g_no_chase` | every BUY that would open a new long lot (`execute_order`, after the writer-lease check, before risk: rows are pre-risk candidates) | price rose more than the limit over the closed 1h lows of the last 48 h (at least 36 bars). Limit: 10 % in `RISK_OFF`/`CRASH`, 20 % in `RISK_ON`, else 15 % | `would_skip_entry`; otherwise `would_allow_entry` or `no_data` |
 | `h_oracle_early_exit` | each open long lot seen by `process_coin` | lot pnl <= -10 % within its first 72 h and oracle `RISK_OFF` or `CRASH` | `would_full_exit` |
 | `e_age_limit` | each open long lot seen by `process_coin` | lot older than 14 days and pnl <= -15 % | `would_close_aged` |
 
@@ -92,7 +92,7 @@ A lot rule writes once per lot and rule per process (the first cycle it triggers
 
 The work (1h candle fetch, oracle read, insert) runs on a background thread. A failure there is logged and dropped. Set `SHADOW_RULES=0` to switch the rules off; `OBSERVE_STREAMS_MONGO=0` also stops the insert.
 
-Every order document and ledger row now has `ctx_oracle_state`: the decision-time value when the analysis path set it, otherwise the oracle state when the row was written (`null` when no snapshot is available).
+Every order document and ledger row now has `ctx_oracle_state`: the decision-time value when the analysis path set it, otherwise the oracle state when the row was written (`null` when no snapshot is available). `ctx_oracle_state_src` tells them apart: `decision` or `record` (absent when the state is `null`). Analysis of decision-time state must filter on `ctx_oracle_state_src = "decision"`.
 
 ```javascript
 db.obs_shadow_rules.aggregate([
