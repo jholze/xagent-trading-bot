@@ -52,12 +52,16 @@ def _default_entry_source(source: str | None) -> str | None:
 def _ctx_ledger_fields(ctx: dict | None) -> dict:
     """Flat diagnostic ctx axes for trade-history rows. Always present."""
     bag = ctx if isinstance(ctx, dict) else {}
-    return {
+    out = {
         "ctx_oracle_state": bag.get("ctx_oracle_state"),
         "ctx_coin_regime": bag.get("ctx_coin_regime"),
         "ctx_volume_rel": ctx_float_or_none(bag.get("ctx_volume_rel")),
         "ctx_volume_window_days": ctx_float_or_none(bag.get("ctx_volume_window_days")),
     }
+    src = bag.get("ctx_oracle_state_src")
+    if src:
+        out["ctx_oracle_state_src"] = src
+    return out
 
 
 def _cover_funding_usdt(

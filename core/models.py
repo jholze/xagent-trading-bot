@@ -336,16 +336,49 @@ def ctx_float_or_none(value) -> float | None:
     return out
 
 
+def _oracle_state_at_record() -> str | None:
+    """Current Market Oracle state for a ledger row. Never raises (diagnostic only)."""
+    try:
+        from strategies.ctx_axes import read_oracle_state
+
+        return read_oracle_state()
+    except Exception:
+        return None
+
+
+ORACLE_STATE_SRC_DECISION = "decision"
+ORACLE_STATE_SRC_RECORD = "record"
+
+
 def trade_ctx_fields(order) -> dict:
-    """Flat diagnostic ctx axes for ledger records. ``order`` may be None."""
-    return {
-        "ctx_oracle_state": getattr(order, "ctx_oracle_state", None),
+    """Flat diagnostic ctx axes for ledger records. ``order`` may be None.
+
+    ``ctx_oracle_state`` keeps the decision-time value set on the order. Orders
+    that never went through the analysis path (DCA, exits, stops, gainer,
+    sensor, manual) take the oracle state read when the row is written.
+    ``ctx_oracle_state_src`` says which one it is: ``"decision"`` (set on the
+    order at decision time), ``"record"`` (read when the row was written); the key is
+    absent when there is no state. Analysis that needs the decision-time state must filter
+    on ``ctx_oracle_state_src == "decision"``. Ledger only, never a risk or
+    decision input.
+    """
+    oracle = getattr(order, "ctx_oracle_state", None)
+    src = ORACLE_STATE_SRC_DECISION if oracle else None
+    if not oracle:
+        oracle = _oracle_state_at_record()
+        src = ORACLE_STATE_SRC_RECORD if oracle else None
+    out = {
+        "ctx_oracle_state": oracle,
         "ctx_coin_regime": getattr(order, "ctx_coin_regime", None),
         "ctx_volume_rel": ctx_float_or_none(getattr(order, "ctx_volume_rel", None)),
         "ctx_volume_window_days": ctx_float_or_none(
             getattr(order, "ctx_volume_window_days", None)
         ),
     }
+    if src:
+        # Only present together with a state; readers use .get().
+        out["ctx_oracle_state_src"] = src
+    return out
 
 
 @dataclass

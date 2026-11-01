@@ -212,6 +212,17 @@ class TradingService:
         except LedgerUnavailable as exc:
             return _attach_shadow_link(order, self._deny_ledger_unavailable(order, exc))
 
+        # Observe only (obs_shadow_rules): snapshot entry candidates for the
+        # g/no-chase shadow rule. Never raises, never changes the order. Runs
+        # after the writer-lease check so standby replicas do not record
+        # candidates; risk has not run yet, so rows are pre-risk candidates.
+        try:
+            from services.shadow_rules import observe_entry_candidate
+
+            observe_entry_candidate(order, timeframe=timeframe, source=source)
+        except Exception as exc:
+            log(f"shadow_rules entry hook skipped: {exc}", "WARNING")
+
         if should_queue_intent(source, self.config):
             return _attach_shadow_link(
                 order,
