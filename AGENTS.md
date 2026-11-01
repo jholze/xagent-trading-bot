@@ -2,9 +2,9 @@
 
 This file is the single source of truth for every coding agent (Grok, DeepSeek, Claude, Cursor, Codex, ...) working in this repository. `CLAUDE.md` only points here.
 
-The owner is Jens Holze. Only Jens merges, with one project-specific exception for `staging` (mandatory rule 6).
+The owner is Jens Holze. Only Jens merges to `main`; Kay may merge any PR into `staging` (mandatory rule 6).
 
-> **Staging vs. live.** Branch `staging` is the **paper-trading** bot: merging to `staging` auto-deploys the paper bot on Railway (`xagent-test`). Anything that reaches `main` or touches live trading (real money, live Gate account, `*.live.json`) is **Jens only**. Open pull requests against `staging` only. Never push to `main` or `staging`. Only Jens merges, except Kay into `staging` under rule 6 below. Never enable live trading. Never add API keys, exchange secrets, or credentials.
+> **Staging vs. live.** Branch `staging` is the **paper-trading** bot: merging to `staging` auto-deploys the paper bot on Railway (`xagent-test`). Anything that reaches `main` or touches live trading (real money, live Gate account, `*.live.json`) is **Jens only**. Open pull requests against `staging` only. Never push to `main` or `staging`. Only Jens merges to `main`; Kay may merge into `staging` under rule 6 below. Never enable live trading. Never add API keys, exchange secrets, or credentials.
 
 ## Safety guardrail — this bot trades with real state
 
@@ -43,7 +43,7 @@ These rules are fixed by Jens (2026-11-01). They override anything else in this 
 3. Development and tests run **locally only**. Bind local services to `127.0.0.1` (for the bot: `HOST=127.0.0.1`; its default is `0.0.0.0`).
 4. This project is **production** (real money, live trading state). No deploy (Railway or any other target), no live config changes, no orders, no account or paid-service creation. Do not run `scripts/deploy_staging.sh`, `scripts/deploy_test_branch.sh`, `scripts/railway_trigger_test_deploy.sh`, or anything that writes to Railway or a Railway Mongo.
 5. **Never read or print secrets**: `.env`, `.env.local`, `ngrok.log`, credentials files, tokens (also `.cursor/mcp.json` and similar local tool configs).
-6. **Only Jens merges — project-specific exception.** Merge rule for this project (Jens, 2026-11-01): Kay may merge a PR into `staging` himself only if ALL hold: (1) demonstrated improvement with evidence in the PR (tests, backtest or paper-trading results); (2) it affects paper trading only; (3) review gate passed: a DeepSeek review on the PR, plus a Claude Opus review if any high-risk path is touched; (4) CI is green. Everything else stays with Jens: merges to `main`, any deploy, changes to live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and anything involving real money. For those, open the PR and stop.
+6. **Merges.** Merge rule for this project (Jens, 2026-11-01 22:57; replaces the 22:32 rule): Kay may merge any PR into `staging` himself, including PRs touching money paths and live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and may set the `owner-approved` label for staging merges. Jens only: merges to `main`, deploys other than the `staging` auto-deploy, real money, keys, withdraw. Kay's own quality bar before every staging merge: green CI `unit`, evidence in the PR, a DeepSeek review on every PR, and a Claude Opus review when a high-risk path is touched. Model rule unchanged: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review before anything live and on risky paths, at least two model families per PR, author and reviewer never the same family. Live paths stay protected on `main`/live: they reach live trading only through a `staging` → `main` release merged by Jens.
 
 Workflow, roles, branch naming, and test commands: [`docs/workflow.md`](docs/workflow.md). Project facts for new agents: [`docs/agent-onboarding.md`](docs/agent-onboarding.md).
 
@@ -92,7 +92,7 @@ Every change must be measurably better. Put a before/after metric on the pull re
 
 ## Money path
 
-Entries, exits, stops, DCA, sizing, risk limits, config limits, and locks are the money path. The path list is `ci/money_paths.json` and is the list the gate uses. A money-path pull request fails `unit` unless it has the label `owner-approved` and a file `docs/evidence/<pr-or-issue>.md` with a before/after table. The owner decides. Do not add `owner-approved` yourself. A money-path PR also needs the Claude Opus final review (model rule).
+Entries, exits, stops, DCA, sizing, risk limits, config limits, and locks are the money path. The path list is `ci/money_paths.json` and is the list the gate uses. A money-path pull request fails `unit` unless it has the label `owner-approved` and a file `docs/evidence/<pr-or-issue>.md` with a before/after table. For staging merges the label is set by Jens or by Kay (rule 6); no other agent adds `owner-approved`. A money-path PR also needs the Claude Opus final review (model rule).
 
 ## Symbols
 

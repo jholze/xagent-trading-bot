@@ -12,12 +12,12 @@ describes who does what and how a change travels from ticket to merge.
 
 | Role | Who / model | Does | Does not |
 |------|-------------|------|----------|
-| Lead | Kay (Jens' Grok Bot lead) | Writes and scopes tickets (English), assigns coder/reviewer/tester, keeps one worktree per task, reports to Jens; may merge PRs into `staging` only under the merge rule below | Merge to `main`, deploy, change live config |
+| Lead | Kay (Jens' Grok Bot lead) | Writes and scopes tickets (English), assigns coder/reviewer/tester, keeps one worktree per task, reports to Jens; may merge any PR into `staging` and set `owner-approved` for staging merges (merge rule below) | Merge to `main`, deploy (other than the `staging` auto-deploy), change live config, real money, keys, withdraw |
 | Coder | Grok 4.7 (`grok-4.7`) | Implements one ticket on one branch in one worktree, runs the unit suite locally, opens the PR against `staging` | Review own PR, touch secrets, push to `staging`/`main` |
 | Reviewer (per PR) | DeepSeek (`deepseek-v4-pro`) | Line-by-line review of every PR: spec/AC coverage, frozen tests, money-path impact, evidence | Write the code under review |
 | Final reviewer | Claude Opus (`claude-opus-5-5`) | Mandatory final review (real money). Always before anything goes live and for every PR touching a high-risk path | Merge |
 | Tester | Separate role (not the coder) | Runs the tests / acceptance checks locally and records the result as evidence | Change existing assertions to make tests pass |
-| Owner | Jens Holze | Approves money-path PRs (`owner-approved` label), merges, deploys, releases `staging` → `main` | — |
+| Owner | Jens Holze | Merges to `main`, deploys (other than the `staging` auto-deploy), releases `staging` → `main`, real money, keys, withdraw; may also set `owner-approved` | — |
 
 Model-family rule: at least two different model families see every PR, and the author and the reviewer are never the
 same family (Grok codes → DeepSeek and Claude review).
@@ -32,11 +32,11 @@ in `config.json`).
    (money path yes/no). Behavior changes follow `docs/domain/spec-writing.md`.
 2. **Coder** — creates the branch and its worktree, implements, adds tests, runs the unit suite locally.
 3. **PR** — against `staging`, English title, PR body with an `## Evidence` heading (test result, before/after metric).
-   Money path: `docs/evidence/<pr-or-issue>.md` with a before/after table; the `owner-approved` label is set by Jens only.
+   Money path: `docs/evidence/<pr-or-issue>.md` with a before/after table; the `owner-approved` label is set by Jens, or by Kay for staging merges.
 4. **CI green** — required check `unit` (aggregates `classify`, `pytest`, `review-gates`, `hypothesis-evidence`, `ruff`).
 5. **Review** — DeepSeek per-PR review; Claude Opus final review (mandatory for high-risk paths and before going live).
    Tester confirms acceptance tests.
-6. **Merge** — by Jens, with one project-specific exception. Merge rule for this project (Jens, 2026-11-01): Kay may merge a PR into `staging` himself only if ALL hold: (1) demonstrated improvement with evidence in the PR (tests, backtest or paper-trading results); (2) it affects paper trading only; (3) review gate passed: a DeepSeek review on the PR, plus a Claude Opus review if any high-risk path is touched; (4) CI is green. Everything else stays with Jens: merges to `main`, any deploy, changes to live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and anything involving real money. For those, open the PR and stop. Model rule: Grok 4.7 writes code, DeepSeek reviews every PR, Claude Opus does the final review before anything live and on risky paths (mandatory, real money), every PR needs at least two model families, author and reviewer never from the same family. Merging to `staging` deploys the paper bot (`xagent-test`).
+6. **Merge** — Merge rule for this project (Jens, 2026-11-01 22:57; replaces the 22:32 rule): Kay may merge any PR into `staging` himself, including PRs touching money paths and live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and may set the `owner-approved` label for staging merges. Jens only: merges to `main`, deploys other than the `staging` auto-deploy, real money, keys, withdraw. Kay's own quality bar before every staging merge: green CI `unit`, evidence in the PR, a DeepSeek review on every PR, and a Claude Opus review when a high-risk path is touched. Model rule unchanged: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review before anything live and on risky paths, at least two model families per PR, author and reviewer never the same family. Merging to `staging` deploys the paper bot (`xagent-test`).
 7. **Release** — `staging` → `main` PR (`gh pr create --base main --head staging`, see `DOCUMENTATION.en.md` §17),
    opened and merged by Jens only.
 
@@ -81,4 +81,4 @@ Local services bind to `127.0.0.1` (Mongo 27017, Redis 6379, bot 5000 with `HOST
 
 What must be green before a PR: the unit suite locally; in CI the required check `unit`. The `review-gates` job needs an
 `Evidence` heading (levels 1–3) in the PR body or a `docs/evidence/*.md` file; money-path PRs additionally need the
-`owner-approved` label (Jens) and `docs/evidence/<pr-or-issue>.md`.
+`owner-approved` label (Jens, or Kay for staging merges) and `docs/evidence/<pr-or-issue>.md`.
